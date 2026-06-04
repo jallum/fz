@@ -4,9 +4,8 @@ use super::dnf::is_dnf_top;
 use super::sigs::{ArrowSig, ClosureLit};
 use super::*;
 use crate::fz_ir::FnId;
-use crate::types::{ClosureTypes, MapKey, Nominals, Types};
+use crate::types::{MapKey, Nominals};
 use std::collections::{BTreeMap, HashMap};
-use std::slice::from_ref;
 
 // (`str_t` was promoted to a public Descr constructor by fz-ul4.31.1.)
 impl BasicBits {
@@ -504,36 +503,6 @@ fn arrow_covariance_in_output() {
 }
 
 #[test]
-fn arrow_join_return_union_of_clauses() {
-    // (int -> int) ∪ (str -> bool) joins return to int|bool.
-    let a = Descr::arrow([Descr::int()], Descr::int());
-    let b = Descr::arrow([Descr::str_t()], Descr::bool_t());
-    let u = a.union(&b);
-    let got = u.arrow_join_return();
-    let want = Descr::int().union(&Descr::bool_t());
-    assert!(
-        got.is_subtype(&want) && want.is_subtype(&got),
-        "got = {}, want = {}",
-        got,
-        want
-    );
-}
-
-#[test]
-fn arrow_join_return_top_is_any() {
-    // Saturated funcs axis (Conj::top) ⇒ any.
-    assert!(Descr::any().arrow_join_return().is_subtype(&Descr::any()));
-    assert!(Descr::any().is_subtype(&Descr::any().arrow_join_return()));
-}
-
-#[test]
-fn arrow_join_return_empty_is_any() {
-    // No arrow clauses (e.g., int-only Descr) ⇒ any (no info).
-    assert!(Descr::int().arrow_join_return().is_subtype(&Descr::any()));
-    assert!(Descr::any().is_subtype(&Descr::int().arrow_join_return()));
-}
-
-#[test]
 fn arrow_intersection_is_multiclause() {
     // (int -> int) ∩ (str -> str)  <:  (int|str) -> (int|str)
     // — the multi-clause function semantics. NOT equivalent because the
@@ -854,24 +823,6 @@ fn closure_lit_preserves_captures_for_recursive_spec_key() {
     );
 }
 
-#[test]
-fn erase_closure_identity_preserves_callable_surface_shape() {
-    let lit = Descr::closure_lit(fid(3), vec![Descr::int_lit(10)], 2);
-    let erased = lit.erase_closure_identity();
-    assert!(
-        erased.as_closure_lit().is_none(),
-        "closure identity should be erased: {}",
-        erased
-    );
-    let mut t = ConcreteTypes;
-    let clauses = t
-        .callable_clauses(&ty_from_descr(erased))
-        .expect("erased closure should remain callable");
-    assert_eq!(clauses.len(), 1);
-    assert_eq!(clauses[0].args.len(), 2);
-    assert!(clauses[0].closure.is_none());
-}
-
 // ---- opaque type tests ----
 
 #[test]
@@ -1067,17 +1018,6 @@ fn value_disjoint_distinct_atoms_is_true() {
         Descr::atom_lit("ok").value_disjoint(&Descr::atom_lit("error"), Nominals::new(&no_inners(), &no_inners()),),
         ":ok vs :error remains value-disjoint",
     );
-}
-
-#[test]
-fn differs_only_nominally_holds_for_brand_vs_unbranded() {
-    // The exact telemetry-delta set: brand-aware-disjoint yet not
-    // value-disjoint — the comparisons the old fold silently broke.
-    let inners = brand_inners(&[("utf8", Descr::str_t())]);
-    let utf8 = Descr::brand_of("utf8");
-    let aware_disjoint = utf8.intersect(&Descr::str_t()).is_empty();
-    let value_disjoint = utf8.value_disjoint(&Descr::str_t(), Nominals::new(&inners, &no_inners()));
-    assert!(aware_disjoint && !value_disjoint, "this is the delta the fold broke");
 }
 
 // fz-bsx.6 — soundness backstop for value-disjointness. The eq-fold and the
@@ -1344,78 +1284,6 @@ fn sigma_of(bindings: &[(u32, Descr)]) -> HashMap<TypeVarId, Descr> {
 }
 
 #[test]
-fn has_vars_distinguishes_concrete_from_polymorphic() {
-    assert!(!Descr::int().has_vars(), "int has no vars");
-    assert!(
-        !Descr::any().has_vars(),
-        "any (cofinite-empty vars) has no specific vars"
-    );
-    assert!(Descr::var(TypeVarId(0)).has_vars(), "var(α0) has vars");
-}
-
-#[test]
-fn instantiate_replaces_top_level_var() {
-    let pattern = Descr::var(TypeVarId(0));
-    let result = pattern.instantiate(&sigma_of(&[(0, Descr::int())]));
-    assert!(result.is_equiv(&Descr::int()), "α[α→int] = int, got {}", result);
-}
-
-#[test]
-fn instantiate_is_identity_when_no_vars_match() {
-    let pattern = Descr::var(TypeVarId(0));
-    let result = pattern.instantiate(&sigma_of(&[(1, Descr::int())]));
-    // α0 not in σ; passes through unchanged.
-    assert!(result.is_equiv(&pattern), "α0[α1→int] = α0, got {}", result);
-}
-
-#[test]
-fn instantiate_walks_into_lists() {
-    // list of α → list of int under σ.
-    let list_of_var = Descr::list_of(Descr::var(TypeVarId(0)));
-    let result = list_of_var.instantiate(&sigma_of(&[(0, Descr::int())]));
-    let list_of_int = Descr::list_of(Descr::int());
-    assert!(
-        result.is_equiv(&list_of_int),
-        "list(α)[α→int] = list(int), got {}",
-        result
-    );
-}
-
-#[test]
-fn instantiate_walks_into_tuples() {
-    // tuple(α, β) → tuple(int, str) under σ.
-    let t = Descr::tuple_of(vec![Descr::var(TypeVarId(0)), Descr::var(TypeVarId(1))]);
-    let result = t.instantiate(&sigma_of(&[(0, Descr::int()), (1, Descr::str_t())]));
-    let expected = Descr::tuple_of(vec![Descr::int(), Descr::str_t()]);
-    assert!(
-        result.is_equiv(&expected),
-        "tuple(α,β)[α→int,β→str] = tuple(int,str), got {}",
-        result
-    );
-}
-
-#[test]
-fn instantiate_walks_into_arrow_args_and_ret() {
-    // (α) -> β under σ = {α→int, β→bool} becomes (int) -> bool.
-    let arrow = Descr {
-        funcs: vec![Conj::pos_of(ArrowSig {
-            args: vec![Descr::var(TypeVarId(0))],
-            ret: Box::new(Descr::var(TypeVarId(1))),
-            lit: None,
-        })],
-        ..Descr::none()
-    };
-    let result = arrow.instantiate(&sigma_of(&[(0, Descr::int()), (1, Descr::bool_t())]));
-    // Pull the (single) clause and check its shape.
-    assert_eq!(result.funcs.len(), 1);
-    let clause = &result.funcs[0];
-    assert_eq!(clause.pos.len(), 1);
-    let sig = &clause.pos[0];
-    assert!(sig.args[0].is_equiv(&Descr::int()), "arg should be int");
-    assert!(sig.ret.is_equiv(&Descr::bool_t()), "ret should be bool");
-}
-
-#[test]
 fn instantiate_preserves_lit_tag_on_arrow() {
     let lit = ClosureLit {
         kind: crate::types::CallableValueKind::Closure,
@@ -1437,46 +1305,6 @@ fn instantiate_preserves_lit_tag_on_arrow() {
     let preserved = result.funcs[0].pos[0].lit.as_ref().unwrap();
     assert_eq!(preserved.fn_id, lit.fn_id);
     assert_eq!(preserved.captures, lit.captures);
-}
-
-#[test]
-fn collect_subst_binds_top_level_var_to_witness() {
-    let mut sigma = HashMap::new();
-    Descr::collect_subst_into(&Descr::var(TypeVarId(0)), &Descr::int(), &mut sigma);
-    assert_eq!(sigma.len(), 1);
-    assert!(sigma[&TypeVarId(0)].is_equiv(&Descr::int()));
-}
-
-#[test]
-fn collect_subst_is_noop_on_concrete_pattern() {
-    let mut sigma = HashMap::new();
-    Descr::collect_subst_into(&Descr::int(), &Descr::int(), &mut sigma);
-    assert!(sigma.is_empty(), "no vars in pattern means no bindings");
-}
-
-#[test]
-fn collect_subst_then_instantiate_is_identity_on_concrete_args() {
-    // The canonical call-site flow: pattern (Var α) ⇄ witness (int)
-    // produces σ = {α→int}; instantiating the *return* pattern Var(α)
-    // with σ yields the witness back.
-    let pat_arg = Descr::var(TypeVarId(0));
-    let pat_ret = Descr::var(TypeVarId(0));
-    let witness = Descr::int();
-    let mut sigma = HashMap::new();
-    Descr::collect_subst_into(&pat_arg, &witness, &mut sigma);
-    let resolved_ret = pat_ret.instantiate(&sigma);
-    assert!(resolved_ret.is_equiv(&Descr::int()));
-}
-
-#[test]
-fn collect_subst_distinct_vars_bind_independently() {
-    // (α, β) ⇄ (int, bool) ⇒ σ = {α→int, β→bool}.
-    let mut sigma = HashMap::new();
-    Descr::collect_subst_into(&Descr::var(TypeVarId(0)), &Descr::int(), &mut sigma);
-    Descr::collect_subst_into(&Descr::var(TypeVarId(1)), &Descr::bool_t(), &mut sigma);
-    assert_eq!(sigma.len(), 2);
-    assert!(sigma[&TypeVarId(0)].is_equiv(&Descr::int()));
-    assert!(sigma[&TypeVarId(1)].is_equiv(&Descr::bool_t()));
 }
 
 // ------------------------------------------------------------------
@@ -1693,47 +1521,6 @@ fn components_tuple_of_yields_only_tuples_with_correct_arity_and_projection() {
 }
 
 #[test]
-fn tuple_field_projection_skips_impossible_mixed_arity_conjunctions() {
-    let mut t = ConcreteTypes;
-    let done_tuple = {
-        let tag = t.atom_lit("done");
-        let payload = t.int();
-        t.tuple(&[tag, payload])
-    };
-    let halted_tuple = {
-        let tag = t.atom_lit("halted");
-        let payload = t.int();
-        t.tuple(&[tag, payload])
-    };
-    let suspended_tuple = {
-        let tag = t.atom_lit("suspended");
-        let payload = t.int();
-        let continuation = t.int();
-        t.tuple(&[tag, payload, continuation])
-    };
-    let outcomes = {
-        let two = t.union(done_tuple, halted_tuple);
-        t.union(two, suspended_tuple)
-    };
-    let two_tuple = {
-        let a = t.any();
-        let b = t.any();
-        t.tuple(&[a, b])
-    };
-    let narrowed = t.intersect(outcomes, two_tuple);
-    let first = t.tuple_field_type(&narrowed, 0);
-    let expected = {
-        let done = t.atom_lit("done");
-        let halted = t.atom_lit("halted");
-        t.union(done, halted)
-    };
-    assert!(
-        t.is_equivalent(&first, &expected),
-        "projecting a 2-tuple narrowing must ignore impossible 3-tuple conjunctions, got {first:?}"
-    );
-}
-
-#[test]
 fn components_list_of_yields_only_lists_with_joined_element_type() {
     let d = Descr::list_of(Descr::int());
     let mut seen = false;
@@ -1874,193 +1661,4 @@ fn components_int_singleton_extraction_works() {
             assert_eq!(v.singleton(), Some(42));
         }
     }
-}
-
-// ---- fz-g58.65.2 — refinement-lattice widen ----
-// Intent: refine_widen is the finite-height binary LUB the specialization
-// worklist uses. It collapses literal axes to their base so a slot ascends a
-// bounded chain. Simplified lattice for now: int_lit ⊑ int ⊑ any,
-// float_lit ⊑ float ⊑ any (no `number` rung), [] ⊔ nonempty_list(a) = list(a).
-
-#[test]
-fn refine_widen_collapses_int_literals_to_int() {
-    let mut t = ConcreteTypes;
-    let one = t.int_lit(1);
-    let two = t.int_lit(2);
-    let int = t.int();
-    let w_lits = t.refine_widen(&one, &two);
-    let w_lit_base = t.refine_widen(&one, &int);
-    let w_base = t.refine_widen(&int, &int);
-    assert!(t.is_equivalent(&w_lits, &int));
-    assert!(t.is_equivalent(&w_lit_base, &int));
-    assert!(t.is_equivalent(&w_base, &int));
-}
-
-#[test]
-fn refine_widen_collapses_float_literals_to_float() {
-    let mut t = ConcreteTypes;
-    let a = t.float_lit(1.0);
-    let b = t.float_lit(2.0);
-    let float = t.float();
-    let w = t.refine_widen(&a, &b);
-    assert!(t.is_equivalent(&w, &float));
-}
-
-#[test]
-fn refine_widen_recurses_into_list_elements() {
-    // The fold's list slot: list(1) ⊔ list(2) must land at list(int), not
-    // list(1 | 2) — the literal collapse reaches nested structure.
-    let mut t = ConcreteTypes;
-    let one = t.int_lit(1);
-    let two = t.int_lit(2);
-    let int = t.int();
-    let l1 = t.list(one);
-    let l2 = t.list(two);
-    let lint = t.list(int);
-    let w = t.refine_widen(&l1, &l2);
-    assert!(t.is_equivalent(&w, &lint));
-}
-
-#[test]
-fn refine_widen_merges_empty_and_non_empty_list_shapes() {
-    let mut t = ConcreteTypes;
-    let int = t.int();
-    let empty = t.empty_list();
-    let non_empty = t.non_empty_list(int.clone());
-    let expected = t.list(int);
-    let widened = t.refine_widen(&empty, &non_empty);
-    assert!(t.is_equivalent(&widened, &expected));
-}
-
-#[test]
-fn convergence_class_unifies_all_list_shapes_but_separates_other_families() {
-    let mut t = ConcreteTypes;
-    let int = t.int();
-    // Every pure list shape collapses to one class, so a list accumulator's
-    // emptiness and element type stop forking recursive activations.
-    let empty = t.empty_list();
-    let nonempty = t.non_empty_list(int.clone());
-    let list = t.list(int.clone());
-    let empty_class = t.convergence_class(&empty);
-    let nonempty_class = t.convergence_class(&nonempty);
-    let list_class = t.convergence_class(&list);
-    assert!(t.is_equivalent(&empty_class, &nonempty_class));
-    assert!(t.is_equivalent(&nonempty_class, &list_class));
-    // A tuple is a different family: it keeps its own class so a shape-changing
-    // accumulator (and its type errors) stays observable.
-    let tagged = t.tuple(&[int.clone(), int.clone()]);
-    let tagged_class = t.convergence_class(&tagged);
-    assert!(!t.is_equivalent(&tagged_class, &list_class));
-    // Scalars are their own class too — distinct from the list class.
-    let int_class = t.convergence_class(&int);
-    assert!(!t.is_equivalent(&int_class, &list_class));
-}
-
-#[test]
-fn refine_widen_recurses_into_tuple_fields() {
-    let mut t = ConcreteTypes;
-    let empty = t.empty_list();
-    let int = t.int();
-    let non_empty = t.non_empty_list(int.clone());
-    let two = t.int_lit(2);
-    let one = t.int_lit(1);
-    let lhs = t.tuple(&[empty, two]);
-    let rhs = t.tuple(&[non_empty, one]);
-    let list_int = t.list(int.clone());
-    let expected = t.tuple(&[list_int, int]);
-    let widened = t.refine_widen(&lhs, &rhs);
-    assert!(t.is_equivalent(&widened, &expected));
-}
-
-#[test]
-fn refine_widen_recurses_into_resource_payloads() {
-    let mut t = ConcreteTypes;
-    let one = t.int_lit(1);
-    let two = t.int_lit(2);
-    let int = t.int();
-    let lhs = t.resource(one);
-    let rhs = t.resource(two);
-    let expected = t.resource(int);
-    let widened = t.refine_widen(&lhs, &rhs);
-    assert!(t.is_equivalent(&widened, &expected));
-}
-
-#[test]
-fn refine_widen_recurses_into_arrow_returns_and_unions_args() {
-    let mut t = ConcreteTypes;
-    let int = t.int();
-    let float = t.float();
-    let empty = t.empty_list();
-    let one = t.int_lit(1);
-    let lhs_ret = t.tuple(&[empty, one]);
-    let lhs = t.arrow(from_ref(&int), lhs_ret);
-    let non_empty = t.non_empty_list(int.clone());
-    let two = t.int_lit(2);
-    let rhs_ret = t.tuple(&[non_empty, two]);
-    let rhs = t.arrow(from_ref(&float), rhs_ret);
-    let union = t.union(int.clone(), float);
-    let list_int = t.list(int.clone());
-    let ret = t.tuple(&[list_int, int]);
-    let expected = t.arrow(from_ref(&union), ret);
-    let widened = t.refine_widen(&lhs, &rhs);
-    assert!(t.is_equivalent(&widened, &expected));
-}
-
-#[test]
-fn refine_widen_recurses_into_map_fields() {
-    let mut t = ConcreteTypes;
-    let key = MapKey::Atom("value".to_string());
-    let int = t.int();
-    let empty = t.empty_list();
-    let one = t.int_lit(1);
-    let lhs_value = t.tuple(&[empty, one]);
-    let lhs = t.map(&[(key.clone(), lhs_value)]);
-    let non_empty = t.non_empty_list(int.clone());
-    let two = t.int_lit(2);
-    let rhs_value = t.tuple(&[non_empty, two]);
-    let rhs = t.map(&[(key.clone(), rhs_value)]);
-    let list_int = t.list(int.clone());
-    let expected_value = t.tuple(&[list_int, int]);
-    let expected = t.map(&[(key, expected_value)]);
-    let widened = t.refine_widen(&lhs, &rhs);
-    assert!(t.is_equivalent(&widened, &expected));
-}
-
-#[test]
-fn refine_widen_falls_back_to_union_for_incompatible_fields_monotonically() {
-    let mut t = ConcreteTypes;
-    let int = t.int();
-    let empty = t.empty_list();
-    let tuple = t.tuple(&[empty.clone(), int.clone()]);
-    let prev = t.union(int, tuple.clone());
-    let observed = tuple;
-    let widened = t.refine_widen(&prev, &observed);
-    assert!(t.is_subtype(&prev, &widened));
-    assert!(t.is_subtype(&observed, &widened));
-}
-
-#[test]
-fn refine_widen_keeps_int_and_float_apart_no_number_rung() {
-    // Simplified lattice has no `number` between {int,float} and any. int ⊔
-    // float stays the exact union (finite: base kinds are bounded), it does NOT
-    // over-widen to any.
-    let mut t = ConcreteTypes;
-    let i = t.int_lit(1);
-    let f = t.float_lit(2.0);
-    let int = t.int();
-    let float = t.float();
-    let union = t.union(int, float);
-    let any = t.any();
-    let widened = t.refine_widen(&i, &f);
-    assert!(t.is_equivalent(&widened, &union));
-    assert!(!t.is_equivalent(&widened, &any));
-}
-
-#[test]
-fn refine_widen_any_absorbs() {
-    let mut t = ConcreteTypes;
-    let int = t.int();
-    let any = t.any();
-    let w = t.refine_widen(&int, &any);
-    assert!(t.is_equivalent(&w, &any));
 }

@@ -607,19 +607,445 @@ mod conformance_tests {
         };
     }
 
+    macro_rules! semantic_helper_conformance_tests {
+        ($mod_name:ident, $ctor:expr) => {
+            mod $mod_name {
+                use super::*;
+
+                fn sigma_of<T>(bindings: impl IntoIterator<Item = (u32, T)>) -> Sigma<T> {
+                    bindings
+                        .into_iter()
+                        .map(|(id, ty)| (TypeVarId(id), ty))
+                        .collect()
+                }
+
+                #[test]
+                fn arrow_join_return_union_of_clauses() {
+                    let mut t = $ctor;
+                    let int_arg = t.int();
+                    let int_ret = t.int();
+                    let int_arrow = t.arrow(&[int_arg], int_ret);
+                    let str_arg = t.str_t();
+                    let bool_ret = t.bool();
+                    let bool_arrow = t.arrow(&[str_arg], bool_ret.clone());
+                    let callable = t.union(int_arrow, bool_arrow);
+                    let got = t.arrow_join_return(&callable);
+                    let int = t.int();
+                    let want = t.union(int, bool_ret);
+                    assert!(t.is_equivalent(&got, &want));
+                }
+
+                #[test]
+                fn arrow_join_return_top_is_any() {
+                    let mut t = $ctor;
+                    let any = t.any();
+                    let got = t.arrow_join_return(&any);
+                    assert!(t.is_top(&got));
+                }
+
+                #[test]
+                fn arrow_join_return_empty_is_any() {
+                    let mut t = $ctor;
+                    let int = t.int();
+                    let got = t.arrow_join_return(&int);
+                    assert!(t.is_top(&got));
+                }
+
+                #[test]
+                fn differs_only_nominally_holds_for_brand_vs_unbranded() {
+                    let mut t = $ctor;
+                    let str_inner = t.str_t();
+                    let mut brand_inners = HashMap::new();
+                    brand_inners.insert("utf8".to_string(), str_inner);
+                    let opaque_inners = HashMap::new();
+                    let utf8 = t.brand_of("utf8");
+                    let plain = t.str_t();
+                    assert!(t.differs_only_nominally(&utf8, &plain, Nominals::new(&brand_inners, &opaque_inners)));
+                }
+
+                #[test]
+                fn has_vars_distinguishes_concrete_from_polymorphic() {
+                    let mut t = $ctor;
+                    let int = t.int();
+                    let any = t.any();
+                    let var = t.type_var(TypeVarId(0));
+                    assert!(!t.has_vars(&int));
+                    assert!(!t.has_vars(&any));
+                    assert!(t.has_vars(&var));
+                }
+
+                #[test]
+                fn instantiate_replaces_top_level_var() {
+                    let mut t = $ctor;
+                    let pattern = t.type_var(TypeVarId(0));
+                    let int = t.int();
+                    let sigma = sigma_of([(0, int.clone())]);
+                    let result = t.instantiate(&pattern, &sigma);
+                    assert!(t.is_equivalent(&result, &int));
+                }
+
+                #[test]
+                fn instantiate_is_identity_when_no_vars_match() {
+                    let mut t = $ctor;
+                    let pattern = t.type_var(TypeVarId(0));
+                    let int = t.int();
+                    let sigma = sigma_of([(1, int)]);
+                    let result = t.instantiate(&pattern, &sigma);
+                    assert!(t.is_equivalent(&result, &pattern));
+                }
+
+                #[test]
+                fn instantiate_walks_into_lists() {
+                    let mut t = $ctor;
+                    let var = t.type_var(TypeVarId(0));
+                    let list_of_var = t.list(var);
+                    let int = t.int();
+                    let sigma = sigma_of([(0, int.clone())]);
+                    let result = t.instantiate(&list_of_var, &sigma);
+                    let list_of_int = t.list(int);
+                    assert!(t.is_equivalent(&result, &list_of_int));
+                }
+
+                #[test]
+                fn instantiate_walks_into_tuples() {
+                    let mut t = $ctor;
+                    let alpha = t.type_var(TypeVarId(0));
+                    let beta = t.type_var(TypeVarId(1));
+                    let tuple = t.tuple(&[alpha, beta]);
+                    let int = t.int();
+                    let str_t = t.str_t();
+                    let sigma = sigma_of([(0, int.clone()), (1, str_t.clone())]);
+                    let result = t.instantiate(&tuple, &sigma);
+                    let expected = t.tuple(&[int, str_t]);
+                    assert!(t.is_equivalent(&result, &expected));
+                }
+
+                #[test]
+                fn instantiate_walks_into_arrow_args_and_ret() {
+                    let mut t = $ctor;
+                    let alpha = t.type_var(TypeVarId(0));
+                    let beta = t.type_var(TypeVarId(1));
+                    let arrow = t.arrow(&[alpha], beta);
+                    let int = t.int();
+                    let bool_t = t.bool();
+                    let sigma = sigma_of([(0, int.clone()), (1, bool_t.clone())]);
+                    let result = t.instantiate(&arrow, &sigma);
+                    let expected = t.arrow(&[int], bool_t);
+                    assert!(t.is_equivalent(&result, &expected));
+                }
+
+                #[test]
+                fn collect_subst_binds_top_level_var_to_witness() {
+                    let mut t = $ctor;
+                    let pattern = t.type_var(TypeVarId(0));
+                    let witness = t.int();
+                    let mut sigma = HashMap::new();
+                    t.collect_instantiation_subst(&pattern, &witness, &mut sigma);
+                    assert_eq!(sigma.len(), 1);
+                    assert!(t.is_equivalent(&sigma[&TypeVarId(0)], &witness));
+                }
+
+                #[test]
+                fn collect_subst_is_noop_on_concrete_pattern() {
+                    let mut t = $ctor;
+                    let pattern = t.int();
+                    let witness = t.int();
+                    let mut sigma = HashMap::new();
+                    t.collect_instantiation_subst(&pattern, &witness, &mut sigma);
+                    assert!(sigma.is_empty());
+                }
+
+                #[test]
+                fn collect_subst_then_instantiate_is_identity_on_concrete_args() {
+                    let mut t = $ctor;
+                    let pat_arg = t.type_var(TypeVarId(0));
+                    let pat_ret = t.type_var(TypeVarId(0));
+                    let witness = t.int();
+                    let mut sigma = HashMap::new();
+                    t.collect_instantiation_subst(&pat_arg, &witness, &mut sigma);
+                    let resolved_ret = t.instantiate(&pat_ret, &sigma);
+                    assert!(t.is_equivalent(&resolved_ret, &witness));
+                }
+
+                #[test]
+                fn collect_subst_distinct_vars_bind_independently() {
+                    let mut t = $ctor;
+                    let alpha = t.type_var(TypeVarId(0));
+                    let beta = t.type_var(TypeVarId(1));
+                    let int = t.int();
+                    let bool_t = t.bool();
+                    let mut sigma = HashMap::new();
+                    t.collect_instantiation_subst(&alpha, &int, &mut sigma);
+                    t.collect_instantiation_subst(&beta, &bool_t, &mut sigma);
+                    assert_eq!(sigma.len(), 2);
+                    assert!(t.is_equivalent(&sigma[&TypeVarId(0)], &int));
+                    assert!(t.is_equivalent(&sigma[&TypeVarId(1)], &bool_t));
+                }
+
+                #[test]
+                fn tuple_field_projection_skips_impossible_mixed_arity_conjunctions() {
+                    let mut t = $ctor;
+                    let done_tuple = {
+                        let tag = t.atom_lit("done");
+                        let payload = t.int();
+                        t.tuple(&[tag, payload])
+                    };
+                    let halted_tuple = {
+                        let tag = t.atom_lit("halted");
+                        let payload = t.int();
+                        t.tuple(&[tag, payload])
+                    };
+                    let suspended_tuple = {
+                        let tag = t.atom_lit("suspended");
+                        let payload = t.int();
+                        let continuation = t.int();
+                        t.tuple(&[tag, payload, continuation])
+                    };
+                    let outcomes = {
+                        let two = t.union(done_tuple, halted_tuple);
+                        t.union(two, suspended_tuple)
+                    };
+                    let two_tuple = {
+                        let a = t.any();
+                        let b = t.any();
+                        t.tuple(&[a, b])
+                    };
+                    let narrowed = t.intersect(outcomes, two_tuple);
+                    let first = t.tuple_field_type(&narrowed, 0);
+                    let expected = {
+                        let done = t.atom_lit("done");
+                        let halted = t.atom_lit("halted");
+                        t.union(done, halted)
+                    };
+                    assert!(
+                        t.is_equivalent(&first, &expected),
+                        "projecting a 2-tuple narrowing must ignore impossible 3-tuple conjunctions, got {}",
+                        t.display(&first)
+                    );
+                }
+
+                #[test]
+                fn refine_widen_collapses_int_literals_to_int() {
+                    let mut t = $ctor;
+                    let one = t.int_lit(1);
+                    let two = t.int_lit(2);
+                    let int = t.int();
+                    let w_lits = t.refine_widen(&one, &two);
+                    let w_lit_base = t.refine_widen(&one, &int);
+                    let w_base = t.refine_widen(&int, &int);
+                    assert!(t.is_equivalent(&w_lits, &int));
+                    assert!(t.is_equivalent(&w_lit_base, &int));
+                    assert!(t.is_equivalent(&w_base, &int));
+                }
+
+                #[test]
+                fn refine_widen_collapses_float_literals_to_float() {
+                    let mut t = $ctor;
+                    let a = t.float_lit(1.0);
+                    let b = t.float_lit(2.0);
+                    let float = t.float();
+                    let w = t.refine_widen(&a, &b);
+                    assert!(t.is_equivalent(&w, &float));
+                }
+
+                #[test]
+                fn refine_widen_recurses_into_list_elements() {
+                    let mut t = $ctor;
+                    let one = t.int_lit(1);
+                    let two = t.int_lit(2);
+                    let int = t.int();
+                    let l1 = t.list(one);
+                    let l2 = t.list(two);
+                    let lint = t.list(int);
+                    let w = t.refine_widen(&l1, &l2);
+                    assert!(t.is_equivalent(&w, &lint));
+                }
+
+                #[test]
+                fn refine_widen_merges_empty_and_non_empty_list_shapes() {
+                    let mut t = $ctor;
+                    let int = t.int();
+                    let empty = t.empty_list();
+                    let non_empty = t.non_empty_list(int.clone());
+                    let expected = t.list(int);
+                    let widened = t.refine_widen(&empty, &non_empty);
+                    assert!(t.is_equivalent(&widened, &expected));
+                }
+
+                #[test]
+                fn convergence_class_unifies_all_list_shapes_but_separates_other_families() {
+                    let mut t = $ctor;
+                    let int = t.int();
+                    let empty = t.empty_list();
+                    let nonempty = t.non_empty_list(int.clone());
+                    let list = t.list(int.clone());
+                    let empty_class = t.convergence_class(&empty);
+                    let nonempty_class = t.convergence_class(&nonempty);
+                    let list_class = t.convergence_class(&list);
+                    assert!(t.is_equivalent(&empty_class, &nonempty_class));
+                    assert!(t.is_equivalent(&nonempty_class, &list_class));
+
+                    let tagged = t.tuple(&[int.clone(), int.clone()]);
+                    let tagged_class = t.convergence_class(&tagged);
+                    assert!(!t.is_equivalent(&tagged_class, &list_class));
+
+                    let int_class = t.convergence_class(&int);
+                    assert!(!t.is_equivalent(&int_class, &list_class));
+                }
+
+                #[test]
+                fn refine_widen_recurses_into_tuple_fields() {
+                    let mut t = $ctor;
+                    let empty = t.empty_list();
+                    let int = t.int();
+                    let non_empty = t.non_empty_list(int.clone());
+                    let two = t.int_lit(2);
+                    let one = t.int_lit(1);
+                    let lhs = t.tuple(&[empty, two]);
+                    let rhs = t.tuple(&[non_empty, one]);
+                    let list_int = t.list(int.clone());
+                    let expected = t.tuple(&[list_int, int]);
+                    let widened = t.refine_widen(&lhs, &rhs);
+                    assert!(t.is_equivalent(&widened, &expected));
+                }
+
+                #[test]
+                fn refine_widen_recurses_into_resource_payloads() {
+                    let mut t = $ctor;
+                    let one = t.int_lit(1);
+                    let two = t.int_lit(2);
+                    let int = t.int();
+                    let lhs = t.resource(one);
+                    let rhs = t.resource(two);
+                    let expected = t.resource(int);
+                    let widened = t.refine_widen(&lhs, &rhs);
+                    assert!(t.is_equivalent(&widened, &expected));
+                }
+
+                #[test]
+                fn refine_widen_recurses_into_arrow_returns_and_unions_args() {
+                    let mut t = $ctor;
+                    let int = t.int();
+                    let float = t.float();
+                    let empty = t.empty_list();
+                    let one = t.int_lit(1);
+                    let lhs_ret = t.tuple(&[empty, one]);
+                    let lhs = t.arrow(&[int.clone()], lhs_ret);
+                    let non_empty = t.non_empty_list(int.clone());
+                    let two = t.int_lit(2);
+                    let rhs_ret = t.tuple(&[non_empty, two]);
+                    let rhs = t.arrow(&[float.clone()], rhs_ret);
+                    let union = t.union(int.clone(), float);
+                    let list_int = t.list(int.clone());
+                    let ret = t.tuple(&[list_int, int]);
+                    let expected = t.arrow(&[union], ret);
+                    let widened = t.refine_widen(&lhs, &rhs);
+                    assert!(t.is_equivalent(&widened, &expected));
+                }
+
+                #[test]
+                fn refine_widen_recurses_into_map_fields() {
+                    let mut t = $ctor;
+                    let key = MapKey::Atom("value".to_string());
+                    let int = t.int();
+                    let empty = t.empty_list();
+                    let one = t.int_lit(1);
+                    let lhs_value = t.tuple(&[empty, one]);
+                    let lhs = t.map(&[(key.clone(), lhs_value)]);
+                    let non_empty = t.non_empty_list(int.clone());
+                    let two = t.int_lit(2);
+                    let rhs_value = t.tuple(&[non_empty, two]);
+                    let rhs = t.map(&[(key.clone(), rhs_value)]);
+                    let list_int = t.list(int.clone());
+                    let expected_value = t.tuple(&[list_int, int]);
+                    let expected = t.map(&[(key, expected_value)]);
+                    let widened = t.refine_widen(&lhs, &rhs);
+                    assert!(t.is_equivalent(&widened, &expected));
+                }
+
+                #[test]
+                fn refine_widen_falls_back_to_union_for_incompatible_fields_monotonically() {
+                    let mut t = $ctor;
+                    let int = t.int();
+                    let empty = t.empty_list();
+                    let tuple = t.tuple(&[empty.clone(), int.clone()]);
+                    let prev = t.union(int, tuple.clone());
+                    let observed = tuple;
+                    let widened = t.refine_widen(&prev, &observed);
+                    assert!(t.is_subtype(&prev, &widened));
+                    assert!(t.is_subtype(&observed, &widened));
+                }
+
+                #[test]
+                fn refine_widen_keeps_int_and_float_apart_no_number_rung() {
+                    let mut t = $ctor;
+                    let i = t.int_lit(1);
+                    let f = t.float_lit(2.0);
+                    let int = t.int();
+                    let float = t.float();
+                    let union = t.union(int, float);
+                    let any = t.any();
+                    let widened = t.refine_widen(&i, &f);
+                    assert!(t.is_equivalent(&widened, &union));
+                    assert!(!t.is_equivalent(&widened, &any));
+                }
+
+                #[test]
+                fn refine_widen_any_absorbs() {
+                    let mut t = $ctor;
+                    let int = t.int();
+                    let any = t.any();
+                    let w = t.refine_widen(&int, &any);
+                    assert!(t.is_equivalent(&w, &any));
+                }
+            }
+        };
+    }
+
+    macro_rules! closure_helper_conformance_tests {
+        ($mod_name:ident, $ctor:expr) => {
+            mod $mod_name {
+                use super::*;
+
+                #[test]
+                fn erase_closure_identity_preserves_callable_surface_shape() {
+                    let mut t = $ctor;
+                    let capture = t.int_lit(10);
+                    let lit = t.closure_lit(ClosureTarget(3), vec![capture], 2);
+                    let erased = t.erase_closure_identity(&lit);
+                    assert!(t.closure_lit_parts(&erased).is_none());
+                    let clauses = t
+                        .callable_clauses(&erased)
+                        .expect("erased closure should remain callable");
+                    assert_eq!(clauses.len(), 1);
+                    assert_eq!(clauses[0].args.len(), 2);
+                    assert!(clauses[0].closure.is_none());
+                }
+            }
+        };
+    }
+
     /// Register implementation-agnostic `Types` conformance tests.
     ///
     /// Each implementation gets one invocation here; capability-specific
     /// macros stay private so future suites can grow without scattering
     /// implementation registration sites.
     macro_rules! impl_types_conformance_tests {
-        ($key_mod:ident, $shape_mod:ident, $ctor:expr) => {
+        ($key_mod:ident, $shape_mod:ident, $semantic_mod:ident, $closure_mod:ident, $ctor:expr) => {
             key_helper_conformance_tests!($key_mod, $ctor);
             seam_helper_conformance_tests!($shape_mod, $ctor);
+            semantic_helper_conformance_tests!($semantic_mod, $ctor);
+            closure_helper_conformance_tests!($closure_mod, $ctor);
         };
     }
 
-    impl_types_conformance_tests!(concrete_types, concrete_types_helpers, ConcreteTypes);
+    impl_types_conformance_tests!(
+        concrete_types,
+        concrete_types_helpers,
+        concrete_types_semantics,
+        concrete_types_closure,
+        ConcreteTypes
+    );
 }
 
 // ----------------------------------------------------------------------
