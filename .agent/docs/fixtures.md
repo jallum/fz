@@ -53,6 +53,12 @@ per-fixture execution timeout is 3s. A `timeout.<path>_secs` override keeps a
 path in correctness coverage while temporarily relaxing that performance gate;
 the fixture README must name the ticket that restores the default.
 
+Fixtures whose README frontmatter declares `oracle: oracle.exs` add one static
+fixture-matrix trial: `oracle_goldens_match_elixir` runs the oracle script with
+the real `elixir` binary and asserts its stdout equals `expected.txt`. This is a
+hard prerequisite, not an optional skip. Local oracle verification and CI both
+require Elixir 1.19+ on PATH; CI installs Elixir through `erlef/setup-beam`.
+
 ## The media
 
 A fixture pins its claim in the most direct medium for what it tests:
