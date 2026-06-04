@@ -167,10 +167,11 @@ An interface says what can be called, not how the answer is computed.</p>
 <pre>interface Math abi=1
   exports
     add/2 :: (Ident("integer"), Ident("integer")) -&gt; Ident("integer")
+  fingerprint-digest d8df4874dee19e10
   fingerprint-inputs
     abi=1
     module=Math
-    fn=add/2:(Ident("integer"),Ident("integer"))-&gt;Ident("integer")</pre>
+    fn=add/2:specs=[(Ident("integer"),Ident("integer"))-&gt;Ident("integer")]</pre>
 
 <p>Notice what is missing: <code>x + y</code>. Private implementation
 details do not belong in the contract.</p>
@@ -234,8 +235,8 @@ implementation unit.</p>
 <div class="box yellow">
 <strong>Current implementation note:</strong> today's <code>.fzo</code> is a
 deterministic source-unit envelope for normal user code. It records identity,
-required imports, fingerprints, and a typed implementation payload. For normal compiled source that payload is a materializable source
-unit (<code>fz-source-unit-v1</code>), so graph loading can recover the provider
+required imports, fingerprints, and a typed implementation payload. For normal compiled source that payload is a materializable IR
+unit (<code>fz-ir-unit-v1</code>), so graph loading can recover the provider
 implementation input from the artifact without reading the original provider
 source path. Built-in runtime modules use <code>fz-runtime-module-v1</code>
 with the same materializable-source role. Final object bytes or a richer
@@ -358,7 +359,7 @@ they are omitted from public interfaces and do not require public
 <p>The runtime source directory has two jobs. <code>runtime.fz</code> is the
 tiny always-loaded prelude root: root runtime types and imports from core
 prelude modules. <code>Kernel</code> lives in its own file and owns the raw
-primitive extern contracts plus public helpers such as <code>print/1</code>
+primitive extern contracts plus public helpers such as <code>dbg/1</code>
 and <code>assert/1</code>. Ordinary runtime modules live next to it in
 individual files such as <code>src/modules/runtime_library/utf8.fz</code> and
 <code>src/modules/runtime_library/process.fz</code>. <code>List</code>,

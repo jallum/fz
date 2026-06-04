@@ -49,15 +49,16 @@ see the internals of a language that takes the BEAM seriously — keep reading.
 
 Three deliberate choices.
 
-### 1. Elixir's surface, because it's pleasant
+### 1. Elixir's surface, because it's pleasant (_thank you_, José!)
 
 If you've written Elixir, fz will read like a slightly stripped-down
-dialect. Same `fn name(args), do: body`, same `case` / `with` /
+dialect in some ways, more fleshed out in others. Same 
+`fn name(args), do: body`, same `case` / `with` /
 `receive`, same atoms, tuples, lists, maps, binaries, same
 `defmodule`, same `@type` / `@spec`, same `defmacro` + `quote` /
 `unquote`, same `|>`. We borrowed the surface syntax wholesale because
-Elixir is one of the most pleasant functional languages to read
-(_thank you_, José!), and there was no reason to relearn that lesson.
+Elixir is one of the most pleasant functional languages to read, and 
+there was no reason to relearn that lesson.
 
 ### 2. BEAM's concurrency model, because it works
 
@@ -160,19 +161,21 @@ before it is lowered.
 
 ```elixir
 fn double(x), do: x * 2
-fn compose(f, g, x), do: f(g(x))
+fn compose(f, g, x), do: f.(g.(x))
 
 defmacro inc(x) do
   quote do: unquote(x) + 1
 end
 
+fn add1(x), do: inc(x)
+
 fn main() do
-  dbg(compose(double, inc, 20))   # 42
+  dbg(compose(double, add1, 20))   # 42
 end
 ```
 
 Those closures are what the concurrency examples below spawn — when you
-write `spawn(fn() -> relay(n, home))`, that anonymous function is a
+write `spawn(fn() -> relay(n, home) end)`, that anonymous function is a
 first-class value handed to a brand-new process.
 
 ### Concurrency: processes, not threads
@@ -207,7 +210,7 @@ fn relay(0, home) do
 end
 
 fn relay(n, home) do
-  next = spawn(fn() -> relay(n - 1, home))
+  next = spawn(fn() -> relay(n - 1, home) end)
   value = receive do x -> x end
   send(next, value + 1)
 end
@@ -587,27 +590,6 @@ dump-budget mechanism — are explained in
   compiled to near-zero-allocation native code (JIT/AOT), no reference
   counting, no borrow annotations
 
-## Repository map
-
-- `src/parser/`, `src/parser/lexer.rs`, `src/ast/` — read source code
-- `src/types/`, `src/type_expr/`, `src/specs/`, `src/type_infer/`,
-  `src/ir_planner/` — type algebra, type syntax, spec contracts, inference,
-  and planning
-- `src/fz_ir/mod.rs`, `src/ir_lower/`, `src/ir_reducer/mod.rs` — build and
-  simplify fz IR
-- `src/ir_codegen*.rs` — Cranelift codegen for JIT and AOT
-- `src/ir_interp/` — run fz IR without native codegen
-- `src/modules/runtime_library/runtime.fz` — the fz runtime prelude and runtime-library modules
-- `runtime/` — the native runtime crate
-- `fixtures/` — small programs that document and test the language
-- `guides/` — long-form explainers
-  ([processes](guides/processes.html),
-  [modules](guides/modules.html),
-  [pattern matching](guides/pattern-matching.html),
-  [memory and destination planning](guides/memory.html#destination-planning),
-  [quicksort without temporaries](guides/quicksort-without-temporaries.html),
-  [externs](guides/externs.html))
-
 ---
 
 ## Status
@@ -635,6 +617,13 @@ What's next, roughly in order:
 The current focus is keeping the four execution paths in lockstep and
 teaching the compiler to turn more obvious functional code into
 efficient native code. Every other goal sits on top of that one.
+
+## Editor Support
+
+The `vscode-fz/` folder contains a minimal VS Code extension for FZ syntax
+highlighting and editor defaults. It is TextMate-based only for now: no
+language server, no diagnostics, just file association and a grammar tuned
+to the language surface.
 
 ## A note on the name
 

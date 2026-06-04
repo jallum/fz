@@ -257,8 +257,10 @@ representations use <code>fz_map_dest_put_parts</code>; unknown refs use
 <p>Some destinations are selected at call boundaries instead of local literal
 sites. The planner records these as <code>ReturnDemand</code> capabilities on the
 selected <code>SpecKey</code>. <code>TupleFields</code> delivers a tuple result
-as independent continuation values; <code>ListTail</code> passes a hidden list
-tail destination to a native callee. Codegen implements the planner-selected
+as independent continuation values; a tail-call edge can instead forward the
+caller's own demand. Recursive list code needs no list-tail delivery shape: it
+builds the list forward with an O(1) continuation (tail recursion modulo cons)
+plus owned-cons reuse. Codegen implements the planner-selected
 capability; it does not guess from source names.</p>
 
 <p>For recursive list code this is tail recursion modulo cons: the compiler
@@ -809,9 +811,8 @@ chosen context has to travel at runtime, that lowering becomes destination
 passing.</p>
 
 <p>The capability has two parts: how the result is delivered, and what context
-is already available. A function can return a material value, return tuple
-fields directly, receive a hidden list tail, or combine tuple-field delivery
-with a list-tail context. The executable context plan is a typed compiler fact
+is already available. A function can return a material value or return tuple
+fields directly, and a tail-call edge can forward the caller's own demand. The executable context plan is a typed compiler fact
 attached to a specific caller specialization and callsite. These are still
 ordinary immutable data constructions: no published tuple, list, or map is
 mutated after publication.</p>

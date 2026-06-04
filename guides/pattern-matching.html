@@ -120,14 +120,13 @@ runs <em>after</em> the structural tests for that clause have passed:</p>
   _                 -&gt; <span class="atm">:zero</span>
 <span class="kw">end</span>
 
-<span class="kw">fn</span> <span class="fn">classify</span>(n) <span class="kw">when</span> <span class="fn">is_integer</span>(n), <span class="kw">do</span>: <span class="atm">:int</span>
-<span class="kw">fn</span> <span class="fn">classify</span>(n) <span class="kw">when</span> <span class="fn">is_float</span>(n),   <span class="kw">do</span>: <span class="atm">:float</span></pre>
+<span class="kw">fn</span> <span class="fn">classify</span>(<span class="num">0</span>),      <span class="kw">do</span>: <span class="atm">:zero</span>
+<span class="kw">fn</span> <span class="fn">classify</span>(n) <span class="kw">when</span> n &gt; <span class="num">0</span>, <span class="kw">do</span>: <span class="atm">:positive</span></pre>
 
 <p>Guards are restricted to things the matcher can safely evaluate
-itself: arithmetic, comparisons, type predicates
-(<code>is_integer</code>, <code>is_atom</code>, ...), boolean
-connectives, simple field access. No allocations, no arbitrary function
-calls.</p>
+itself: arithmetic, comparisons, boolean
+connectives, simple field access, and calls to user-defined guard
+helpers. No allocations, no arbitrary function calls.</p>
 
 <p>That is exactly the <code>Guard(expr, on_true, on_false)</code> node
 from section 2. On <code>true</code>, the matcher proceeds to the
@@ -305,7 +304,7 @@ the receiver's whole program.</p>
 
 <p>That "ask" is a function call with a fixed shape:</p>
 
-<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span>(msg: u64, pinned: *<span class="kw">const</span> u64, out: *<span class="kw">mut</span> u64) -&gt; u32</pre>
+<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span>(process: *<span class="kw">mut</span> process, msg: u64, pinned: *<span class="kw">const</span> value, out: *<span class="kw">mut</span> value) -&gt; u32</pre>
 
 <ul>
   <li><code>msg</code> &mdash; the candidate message (raw value bits).</li>
@@ -432,7 +431,7 @@ binding, wildcard fallback, and repeated receives.</p>
     _ -&gt; <span class="atm">:unknown</span>
   <span class="kw">end</span>
 
-  <span class="fn">print</span>({a, b, c})
+  <span class="fn">dbg</span>({a, b, c})
 <span class="kw">end</span></pre>
 
 <p>Expected output:</p>
