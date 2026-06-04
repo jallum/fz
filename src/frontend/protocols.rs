@@ -145,11 +145,13 @@ mod callback_specs_as_seq {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::collections::BTreeMap;
 
-    pub fn serialize<S: Serializer>(map: &BTreeMap<(String, usize), Vec<SpecDecl>>, s: S) -> Result<S::Ok, S::Error> {
+    type CallbackSpecs = BTreeMap<(String, usize), Vec<SpecDecl>>;
+
+    pub fn serialize<S: Serializer>(map: &CallbackSpecs, s: S) -> Result<S::Ok, S::Error> {
         map.iter().collect::<Vec<_>>().serialize(s)
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<(String, usize), Vec<SpecDecl>>, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<CallbackSpecs, D::Error> {
         Ok(Vec::<((String, usize), Vec<SpecDecl>)>::deserialize(d)?
             .into_iter()
             .collect())

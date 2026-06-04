@@ -482,10 +482,9 @@ impl ActivationReturnFacts {
             };
         }
         let mut projected_call_edges: Vec<_> = projected_call_edges.into_iter().collect();
-        projected_call_edges
-            .sort_by(|left, right| activation_edge_inventory_entry(left).cmp(&activation_edge_inventory_entry(right)));
+        projected_call_edges.sort_by_key(activation_edge_inventory_entry);
         let mut projected_dead_arms: Vec<_> = projected_dead_arms.unwrap_or_default().into_iter().collect();
-        projected_dead_arms.sort_by(|left, right| dead_arm_inventory_entry(left).cmp(&dead_arm_inventory_entry(right)));
+        projected_dead_arms.sort_by_key(dead_arm_inventory_entry);
         let mut projected_state = self.return_state_for_key(t, &spec_key);
         if projected_state.is_none()
             && callable_entry_specs.contains(&spec_key)
@@ -619,7 +618,7 @@ impl ActivationReturnFacts {
                     })
             })
             .collect::<Vec<_>>();
-        covered.sort_by(|left, right| left.activation_id.cmp(&right.activation_id));
+        covered.sort_by_key(|left| left.activation_id);
         covered
     }
 
@@ -635,8 +634,7 @@ impl ActivationReturnFacts {
         }
         let covering = self
             .bucket_returns
-            .iter()
-            .map(|(candidate, _)| candidate)
+            .keys()
             .filter(|candidate| candidate.fn_id == requested_body.fn_id)
             .filter(|candidate| activation_key_covers_requested(t, candidate, &requested_body))
             .collect::<Vec<_>>();

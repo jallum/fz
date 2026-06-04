@@ -66,13 +66,16 @@ codegen.
   for the lowered module; it does not own dispatch.
 - Planned body materialization may fold a body using facts already present in
   the `ModulePlan`; it must not discover new semantic reachability.
-- Planned body materialization may erase a proven local direct call or known
-  zero-capture closure call by cloning the selected producer return graph and
-  selected continuation graph into the caller. This rewrite is allowed only
-  when the caller `SpecPlan` already has both call edges and the direct callee
-  has inline-safe effect facts. Continuation call edges are remapped from the
-  continuation `FnId` to the materialized caller; physical-bearing
-  continuations are moved only when they are statement-free transport graphs.
+- Planned body materialization may erase a proven local direct call, tail
+  direct call, known zero-capture closure call, or known zero-capture tail
+  closure call. Non-tail calls clone the selected producer return graph and
+  selected continuation graph into the caller, and require both call edges in
+  the caller `SpecPlan`. Tail calls clone only the selected producer return
+  graph and rewrite producer `Return` edges to the caller's `Return`. All such
+  rewrites require inline-safe direct-callee effect facts. Continuation call
+  edges are remapped from the continuation `FnId` to the materialized caller;
+  physical-bearing continuations are moved only when they are statement-free
+  transport graphs.
 - Materialized block fusion is limited to closed single-predecessor `Goto`
   targets: if a target block's params are used by successor blocks, the block
   stays in place. When materialization removes blocks, the materialized body is
@@ -87,19 +90,22 @@ codegen.
 
 `PlannedProgram` is the handoff between planner/fold and codegen. It preserves
 the registry invariant that any-key `SpecId.0 == FnId.0`, including reserved
-slots where needed, but exposes executable bodies as `PlannedBody` values keyed
-by semantic `BodyKey` rather than one body per `SpecKey` slot. If codegen is
-lowering a registered executable spec, the matching body exists by construction.
+slots where needed, and exposes executable bodies as `PlannedBody` values that
+carry both the exact `SpecKey` and its semantic `BodyKey`. If codegen is
+lowering a reachable registered executable spec, the matching body exists by
+construction.
 
 `ReturnDemand` can select an edge ABI, but it is not a distinct semantic return
-payload and does not justify a second executable body. Multiple compatible
-`SpecKey` slots may resolve to the same `PlannedBody`.
+payload. Demand siblings share `BodyKey`-level return facts while remaining
+separate materialized bodies when their ABI obligations differ.
 
 Codegen ABI derivation consumes the planned call edges attached to those
 materialized bodies. Continuation and direct-call `SpecId`s are resolved from
 `SpecPlan.call_edges`; return representations are then propagated through
 continuation chains and resolved tail-call edges. Codegen must not recover a
-target by assuming a raw `FnId` maps to the executable spec it wants.
+target by assuming a raw `FnId` maps to the executable spec it wants. ABI
+contract telemetry is emitted only for reachable executable specs, not for
+reserved or trap-body slots kept solely to preserve stable `SpecId`s.
 
 Per-spec folds run while materializing the planned program, not ad hoc inside
 the Cranelift lowering loop. Each body emits
@@ -110,9 +116,16 @@ the Cranelift lowering loop. Each body emits
 materialized body to report zero orphan call edges after accounting for
 callable-boundary and selective-receive outcome facts. The aggregate event
 `fz.planner.materialized` reports spec slots, executable body count, sentinel
-slots, fold/rewrite counts, reachable specs, and
-`post_plan_reachability_growth_count`. The consistency harness requires
-post-plan reachability growth to stay `0`.
+slots, fold/rewrite counts, reachable specs,
+`post_plan_reachability_growth_count`,
+`post_plan_reachability_pruned_count`, and
+`materialized_reachability_missing_body_count`. Materialized reachability is
+recomputed from the rewritten graph: entry specs seed the walk; surviving
+materialized call edges and live callable constructions add structural
+successors; activation/callable demand siblings are retained only for body
+keys that remain reachable. The consistency harness requires post-plan
+reachability growth and missing-body counts to stay `0`; pruning is allowed
+and measured when rewrites erase edges.
 
 ## Callable Entries And Static Singletons
 

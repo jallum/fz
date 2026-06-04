@@ -115,8 +115,8 @@ fn build_per_spec_schemas<T: Types<Ty = Ty>>(t: &mut T, planned_program: &Planne
     let spec_count = planned_program.spec_count();
     let spec_fnidx = planned_program.spec_fn_indices();
     let mut schemas: Vec<Schema> = Vec::with_capacity(spec_count);
-    for sid in 0..spec_count {
-        if spec_fnidx[sid].is_none() {
+    for (sid, fn_index) in spec_fnidx.iter().enumerate().take(spec_count) {
+        if fn_index.is_none() {
             schemas.push(build_frame_schema("__sentinel", &[]));
             continue;
         };
@@ -398,8 +398,8 @@ fn compute_tagged_slot0_cont_specs<T: Types<Ty = Ty>>(
     let spec_count = planned_program.spec_count();
     let spec_fnidx = planned_program.spec_fn_indices();
     let spec_registry = planned_program.spec_registry();
-    for sid_caller in 0..spec_count {
-        if spec_fnidx[sid_caller].is_none() {
+    for (sid_caller, fn_index) in spec_fnidx.iter().enumerate().take(spec_count) {
+        if fn_index.is_none() {
             continue;
         };
         let planned = planned_program.executable_body(SpecId(sid_caller as u32));
@@ -794,6 +794,7 @@ fn emit_codegen_abi_contracts(
     module: &Module,
     spec_count: usize,
     spec_fnidx: &[Option<usize>],
+    reachable_specs: &HashSet<u32>,
     spec_keys: &[SpecKey],
     param_reprs: &[Vec<ArgRepr>],
     return_reprs: &[ArgRepr],
@@ -803,6 +804,9 @@ fn emit_codegen_abi_contracts(
     tel: &dyn Telemetry,
 ) {
     for sid in 0..spec_count {
+        if !reachable_specs.contains(&(sid as u32)) {
+            continue;
+        }
         let Some(fn_idx) = spec_fnidx[sid] else {
             continue;
         };
@@ -1537,12 +1541,13 @@ fn compile_with_backend_preplanned_impl<
     let spec_keys = planned_program.spec_keys();
     let spec_fnidx = planned_program.spec_fn_indices();
     let abi_facts = AbiFacts::derive(module, &planned_program);
+    let reachable = planned_program.reachable_specs();
 
     let callable_entries = planned_program.callable_entries();
 
     let schemas = build_per_spec_schemas(t, &planned_program);
     let frame_sizes: Vec<u32> = schemas.iter().map(|s| s.allocation_payload_size() as u32).collect();
-    let return_tys = derive_return_tys(t, &spec_keys, &spec_fnidx, &module_plan);
+    let return_tys = derive_return_tys(t, spec_keys, spec_fnidx, &module_plan);
 
     let param_reprs = derive_param_reprs(t, &planned_program, &abi_facts.cont_fns);
     let tagged_return_specs = compute_tagged_return_specs(
@@ -1560,6 +1565,7 @@ fn compile_with_backend_preplanned_impl<
         module,
         spec_count,
         spec_fnidx,
+        reachable,
         spec_keys,
         &param_reprs,
         &return_reprs,
@@ -1599,8 +1605,6 @@ fn compile_with_backend_preplanned_impl<
     )?;
 
     let bs_const_data: RefCell<HashMap<Vec<u8>, BsConstSyms>> = RefCell::new(HashMap::new());
-    let reachable = planned_program.reachable_specs();
-
     let (matcher_fn_ids, receive_matched_sites) = declare_matcher_fns(backend.module_mut(), module, tel)?;
     let verifier_isa = host_isa();
 
@@ -1786,7 +1790,7 @@ fn compile_with_backend_preplanned_impl<
     let static_closure_targets = collect_static_closure_targets(
         callable_entries,
         reachable,
-        &spec_keys,
+        spec_keys,
         &fn_ids,
         &callable_entry_fn_ids,
         &return_reprs,
@@ -1812,7 +1816,7 @@ fn compile_with_backend_preplanned_impl<
         &callable_entry_fn_ids,
         callable_entries,
         &param_reprs,
-        &spec_keys,
+        spec_keys,
         tel,
         module.module_path(),
     )?;

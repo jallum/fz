@@ -1,8 +1,8 @@
 ---
 purpose: "pipe macro rewrite for call RHS and headless case RHS"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 7
-budget.codegen.instructions: 41
+budget.codegen.functions: 3
+budget.codegen.instructions: 8
 budget.specs.count: 7
 budget.planner.worklist_pops: 7
 budget.planner.walk_calls: 7

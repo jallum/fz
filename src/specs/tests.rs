@@ -160,7 +160,7 @@ fn scheme_result_widens_reduce_while_accumulator_from_reducer_exits() {
 fn scheme_result_rejects_structural_witness_mismatch() {
     let mut t = crate::types::new();
     let a = t.type_var(TypeVarId(0));
-    let param = t.tuple(&[a.clone()]);
+    let param = t.tuple(std::slice::from_ref(&a));
     let witness = t.int_lit(1);
 
     let constraints = HashMap::new();
@@ -280,7 +280,7 @@ fn resolved_spec_set_unions_results_only_after_arrow_selection() {
     };
 
     let int_arg = ct.int_lit(1);
-    let int_result = matching_result(&mut ct, &set, &[int_arg.clone()]).unwrap();
+    let int_result = matching_result(&mut ct, &set, std::slice::from_ref(&int_arg)).unwrap();
     assert!(ct.is_subtype(&int, &int_result));
     assert!(ct.is_subtype(&float, &int_result));
 

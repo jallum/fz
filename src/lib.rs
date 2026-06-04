@@ -37,7 +37,7 @@ use diag::{Diagnostic, FileId, SourceMap, Span, codes::LOWER_UNBOUND, report_or_
 use exec::runtime::Runtime;
 use frontend::resolve::InterfaceTable;
 use frontend::{FrontendOk, FrontendResult, compile_source_with_interface_table, compile_source_with_types};
-use fz_ir::{FnCategory, FnId, FnIr, Module};
+use fz_ir::{FnCategory, FnId, FnIr, Module, SpecId};
 use ir_codegen::{
     CompiledImage, CompiledProgram, asm_record_enable, asm_record_take, compile_aot_planned, compile_planned,
     ir_text_record_enable, ir_text_record_take,
@@ -45,7 +45,7 @@ use ir_codegen::{
 use ir_interp::run_main_with_plan;
 use ir_planner::{
     fn_types::{SpecKey, display_return_demand},
-    plan_module, pretty_module_plan,
+    materialize_program, plan_module, pretty_module_plan,
 };
 use libc::{c_int, close, write};
 use modules::artifact::FzoArtifact;
@@ -1084,11 +1084,11 @@ fn dump_bodies_pipeline(
     source_name: String,
     mode: CompileMode,
 ) -> String {
-    use crate::ir_planner::ModulePlan;
     use crate::telemetry::TelemetryExt as _;
     let frontend_result = compile_source_with_types(compiler.types(), src, source_name, tel);
     let prepared = checked_module_or_exit("fz dump", compiler.types(), frontend_result, sm_cell, tel, mode);
     let module = prepared.module;
+    let module_plan = prepared.module_plan;
     let _compile_span = tel.span(
         &["fz", "compile"],
         crate::metadata! {
@@ -1096,21 +1096,22 @@ fn dump_bodies_pipeline(
             module_path: module.module_path().to_owned(),
         },
     );
-    let mt: ModulePlan = plan_module(compiler.types(), &module, tel);
+    let planned_program = materialize_program(compiler.types(), &module, &module_plan, tel);
 
     // Group surviving specs by user-fn name. Skip the conventional
     // synthetic helpers (k_*, fn_clause_*, lambda_*) — they're
     // continuations or pattern-clause bodies, not user fns.
-    let mut by_name: BTreeMap<String, Vec<&SpecKey>> = BTreeMap::new();
-    for spec_key in mt.specs.keys() {
-        let Some(&idx) = module.fn_idx.get(&spec_key.fn_id) else {
-            continue;
-        };
-        let name = &module.fns[idx].name;
+    let mut by_name: BTreeMap<String, Vec<SpecKey>> = BTreeMap::new();
+    for sid in planned_program.reachable_specs() {
+        let planned_body = planned_program.executable_body(SpecId(*sid));
+        let name = &planned_body.body.name;
         if name.starts_with("k_") || name.starts_with("fn_clause_") || name.starts_with("lambda_") || name == "main" {
             continue;
         }
-        by_name.entry(name.clone()).or_default().push(spec_key);
+        by_name
+            .entry(name.clone())
+            .or_default()
+            .push(planned_body.spec_key.clone());
     }
 
     let mut out = String::new();
@@ -1118,6 +1119,9 @@ fn dump_bodies_pipeline(
         out.push_str("bodies emitted: 0 user functions\n");
         out.push_str("  (no user functions in the plan)\n");
         return out;
+    }
+    for keys in by_name.values_mut() {
+        keys.sort_by(|a, b| format!("{:?}", a).cmp(&format!("{:?}", b)));
     }
     out.push_str(&format!(
         "bodies emitted: {} user function{}\n",
@@ -1132,7 +1136,7 @@ fn dump_bodies_pipeline(
             if keys.len() == 1 { "" } else { "s" }
         ));
         for key in keys {
-            out.push_str(&format!("    {}\n", render_spec_key(compiler.types(), key)));
+            out.push_str(&format!("    {}\n", render_spec_key(compiler.types(), &key)));
         }
     }
     out

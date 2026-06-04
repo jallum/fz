@@ -1080,7 +1080,7 @@ fn capture_forces_heap_continuation<T: Types<Ty = Ty> + ClosureTypes>(
     cv: &Var,
 ) -> bool {
     let ty = block_env.and_then(|env| env.get(cv)).or_else(|| fn_types.vars.get(cv));
-    if !ty.is_some_and(|ty| t.callable_clauses(ty).is_some()) {
+    if ty.is_none_or(|ty| t.callable_clauses(ty).is_none()) {
         return false;
     }
     !matches!(

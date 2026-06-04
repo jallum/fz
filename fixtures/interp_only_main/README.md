@@ -1,8 +1,8 @@
 ---
 purpose: "tiny module with a single helper and a main — historical interp-tier-0 smoke test"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 3
-budget.codegen.instructions: 21
+budget.codegen.functions: 1
+budget.codegen.instructions: 7
 budget.specs.count: 3
 budget.planner.worklist_pops: 3
 budget.planner.walk_calls: 3

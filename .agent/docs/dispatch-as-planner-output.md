@@ -263,8 +263,16 @@ selection.
 Executable spec reachability belongs to `PlannedProgram`. Tests that prove a
 spec is semantically reachable live with planner/materializer coverage and
 observe `fz.planner.materialized` or `fz.planner.body_materialized` telemetry.
-Known direct-call and closure-call erasure is also materializer coverage:
-tests observe `direct_call_inline_count`, `continuation_inline_count`, and
+The materialized reachability set is recomputed from rewritten bodies, not
+copied blindly from `ModulePlan`: it follows surviving call edges and live
+callable constructions, then retains activation/callable demand siblings only
+for body keys that remain reachable. Tests assert
+`post_plan_reachability_growth_count == 0` and
+`materialized_reachability_missing_body_count == 0`; pruned specs are measured
+by `post_plan_reachability_pruned_count`.
+Known direct-call, tail-direct-call, closure-call, and tail-closure-call
+erasure is also materializer coverage: tests observe
+`direct_call_inline_count`, `continuation_inline_count`, and
 `fused_block_count` before inspecting codegen output.
 Codegen tests assert mechanical lowering effects for bodies the planned program
 already selected.

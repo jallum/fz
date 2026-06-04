@@ -1336,6 +1336,63 @@ fn direct_call_materialization_fuses_cloned_return_continuation_block() {
 }
 
 #[test]
+fn materialized_tail_direct_call_prunes_erased_callee_from_reachability() {
+    let m = lower_src_for_plan("fn add(x, y), do: x + y\nfn main(), do: add(20, 22)\n");
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&["fz", "planner"], cap.handler());
+    let mut t = crate::types::new();
+    let module_plan = plan_module(&mut t, &m, &tel);
+    let planned_program = materialize_program(&mut t, &m, &module_plan, &tel);
+    assert_authoritative_planner_consistent(&cap);
+
+    let main_event = cap
+        .find(&["fz", "planner", "body_materialized"])
+        .into_iter()
+        .find(|ev| matches!(ev.metadata.get("fn_name"), Some(Value::Str(name)) if name == "main"))
+        .expect("main materialization event");
+    assert!(matches!(
+        main_event.measurements.get("direct_call_inline_count"),
+        Some(Value::U64(1))
+    ));
+    assert!(matches!(
+        main_event.measurements.get("continuation_inline_count"),
+        Some(Value::U64(0))
+    ));
+
+    let materialized = cap
+        .last(&["fz", "planner", "materialized"])
+        .expect("materialized event");
+    assert!(matches!(
+        materialized
+            .measurements
+            .get("post_plan_reachability_pruned_count"),
+        Some(Value::U64(n)) if *n > 0
+    ));
+    assert!(matches!(
+        materialized
+            .measurements
+            .get("materialized_reachability_missing_body_count"),
+        Some(Value::U64(0))
+    ));
+
+    let mut reachable_names = planned_program
+        .reachable_specs()
+        .iter()
+        .map(|sid| planned_program.executable_body(SpecId(*sid)).body.name.clone())
+        .collect::<Vec<_>>();
+    reachable_names.sort();
+    assert!(
+        reachable_names.iter().any(|name| name == "main"),
+        "main should remain the materialized entry: {reachable_names:?}"
+    );
+    assert!(
+        !reachable_names.iter().any(|name| name == "add"),
+        "the rewritten tail callee should not remain reachable: {reachable_names:?}"
+    );
+}
+
+#[test]
 fn planned_program_materialization_reports_executable_body_folds() {
     let src = "fn check(x :: integer) do :is_int end\n\
                fn check(x) do :other end\n\
@@ -3371,7 +3428,7 @@ fn runtime_graph_enum_take_callers_supply_callable_args_to_indirect_closure_spec
                 let Some(target_key) = caller_plan.local_call_target(&cid) else {
                     continue;
                 };
-                let Some(target_sid) = planned_program.spec_registry().resolve_spec_key(&mut t, target_key) else {
+                let Some(target_sid) = planned_program.spec_registry().resolve_spec_key(&t, target_key) else {
                     continue;
                 };
                 if target_sid.0 != *sid {
@@ -4005,14 +4062,11 @@ fn returned_captured_closure_capability_propagates_into_cont_slot0() {
         let Some(&slot0) = f.block(f.entry).params.first() else {
             continue;
         };
-        match ft.callable_capabilities.get(&slot0) {
-            Some(CallableCapability::KnownClosure { fn_id, captures, .. }) => {
-                let lambda = m.fn_by_id(*fn_id);
-                if lambda.name.starts_with("lambda_") && !captures.is_empty() {
-                    saw_known_closure = true;
-                }
+        if let Some(CallableCapability::KnownClosure { fn_id, captures, .. }) = ft.callable_capabilities.get(&slot0) {
+            let lambda = m.fn_by_id(*fn_id);
+            if lambda.name.starts_with("lambda_") && !captures.is_empty() {
+                saw_known_closure = true;
             }
-            _ => {}
         }
     }
 

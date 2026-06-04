@@ -1,8 +1,8 @@
 ---
 purpose: VR.3.4 / VR.4.3 — typed captures survive cont handoffs via native chain
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 4
-budget.codegen.instructions: 26
+budget.codegen.functions: 2
+budget.codegen.instructions: 10
 budget.specs.count: 4
 budget.planner.worklist_pops: 4
 budget.planner.walk_calls: 4

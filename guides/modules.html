@@ -438,6 +438,11 @@ explicit LTO mode, after validation, those firewalls can be cleared for
 loaded implementations so reducer and inliner passes may cross the module
 edge.</p>
 
+<p><code>fz dump --emit bodies --lto</code> reports the materialized
+codegen-facing body set after those rewrites. If a validated cross-module
+tail call is erased and inlined, the provider body no longer appears as a
+reachable user body in that dump.</p>
+
 <div class="box blue">
 <strong>Important:</strong> LTO must not change what the program means. It
 only changes how much implementation code the optimizer is allowed to see

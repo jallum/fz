@@ -45,12 +45,12 @@ end
     Id Opaque = Ident("opaque") Ident("integer")
   exports
     add/2 :: (Upper("Id"), Upper("Id")) -> Upper("Id")
-  fingerprint-digest 97353785e9a2097f
+  fingerprint-digest 801a8be1a8eac35a
   fingerprint-inputs
     abi=1
     module=Math
     type=Id:Opaque:Ident("opaque") Ident("integer")
-    fn=add/2:(Upper("Id"),Upper("Id"))->Upper("Id")
+    fn=add/2:specs=[(Upper("Id"),Upper("Id"))->Upper("Id")]
 
 interface User abi=1
   moduledoc "Uses math."
@@ -58,13 +58,13 @@ interface User abi=1
     Math only [add/2]
   exports
     calc/2
-  fingerprint-digest 27e57c07ebacf97a
+  fingerprint-digest c1b427894f4a0a21
   fingerprint-inputs
     abi=1
     module=User
     moduledoc=Uses math.
     import=Math:only=[add/2]:except=[]
-    fn=calc/2:<unspecified>
+    fn=calc/2:specs=[<unspecified>]
 
 "#;
     assert_eq!(stdout, expected);

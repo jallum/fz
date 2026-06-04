@@ -833,19 +833,19 @@ fn erase_closure_identity(t: &mut InternedConcreteTypes, a: InternedTy) -> Descr
 fn refine_widen(t: &mut InternedConcreteTypes, a: InternedTy, b: InternedTy) -> Descr {
     let lhs = t.descr(&a).clone();
     let rhs = t.descr(&b).clone();
-    if let (Some(l), Some(r)) = (lhs.pure_tuple().cloned(), rhs.pure_tuple().cloned()) {
-        if l.elems.len() == r.elems.len() {
-            let elems: Vec<InternedTy> = l
-                .elems
-                .iter()
-                .zip(r.elems.iter())
-                .map(|(l, r)| {
-                    let d = refine_widen(t, *l, *r);
-                    t.intern(d)
-                })
-                .collect();
-            return Descr::tuple_of(elems);
-        }
+    if let (Some(l), Some(r)) = (lhs.pure_tuple().cloned(), rhs.pure_tuple().cloned())
+        && l.elems.len() == r.elems.len()
+    {
+        let elems: Vec<InternedTy> = l
+            .elems
+            .iter()
+            .zip(r.elems.iter())
+            .map(|(l, r)| {
+                let d = refine_widen(t, *l, *r);
+                t.intern(d)
+            })
+            .collect();
+        return Descr::tuple_of(elems);
     }
     if let (Some(l), Some(r)) = (lhs.as_pure_list(t.ctx()).cloned(), rhs.as_pure_list(t.ctx()).cloned()) {
         let elem = match (l.elem, r.elem) {
@@ -870,13 +870,13 @@ fn refine_widen(t: &mut InternedConcreteTypes, a: InternedTy, b: InternedTy) -> 
         let payload = t.intern(d);
         return Descr::resource_of(t.ctx(), payload);
     }
-    if let (Some(l), Some(r)) = (lhs.pure_arrow().cloned(), rhs.pure_arrow().cloned()) {
-        if l.args.len() == r.args.len() {
-            let args: Vec<InternedTy> = l.args.iter().zip(r.args.iter()).map(|(l, r)| t.union(*l, *r)).collect();
-            let d = refine_widen(t, l.ret, r.ret);
-            let ret = t.intern(d);
-            return Descr::arrow(args, ret);
-        }
+    if let (Some(l), Some(r)) = (lhs.pure_arrow().cloned(), rhs.pure_arrow().cloned())
+        && l.args.len() == r.args.len()
+    {
+        let args: Vec<InternedTy> = l.args.iter().zip(r.args.iter()).map(|(l, r)| t.union(*l, *r)).collect();
+        let d = refine_widen(t, l.ret, r.ret);
+        let ret = t.intern(d);
+        return Descr::arrow(args, ret);
     }
     if let (Some(l), Some(r)) = (lhs.pure_map().cloned(), rhs.pure_map().cloned()) {
         let mut fields = l.fields.clone();
@@ -982,28 +982,28 @@ fn collect_subst_into(
         }
         return;
     }
-    if let (Some(ps), Some(ws)) = (pat.pure_tuple(), wit.pure_tuple()) {
-        if ps.elems.len() == ws.elems.len() {
-            for (p, w) in ps.elems.iter().zip(ws.elems.iter()) {
-                collect_subst_into(t, *p, *w, sigma);
-            }
+    if let (Some(ps), Some(ws)) = (pat.pure_tuple(), wit.pure_tuple())
+        && ps.elems.len() == ws.elems.len()
+    {
+        for (p, w) in ps.elems.iter().zip(ws.elems.iter()) {
+            collect_subst_into(t, *p, *w, sigma);
         }
     }
-    if let (Some(ps), Some(ws)) = (pat.as_pure_list(t.ctx()), wit.as_pure_list(t.ctx())) {
-        if let (Some(p), Some(w)) = (ps.elem, ws.elem) {
-            collect_subst_into(t, p, w, sigma);
-        }
+    if let (Some(ps), Some(ws)) = (pat.as_pure_list(t.ctx()), wit.as_pure_list(t.ctx()))
+        && let (Some(p), Some(w)) = (ps.elem, ws.elem)
+    {
+        collect_subst_into(t, p, w, sigma);
     }
     if let (Some(ps), Some(ws)) = (pat.pure_resource(), wit.pure_resource()) {
         collect_subst_into(t, ps.payload, ws.payload, sigma);
     }
-    if let (Some(ps), Some(ws)) = (pat.pure_arrow(), wit.pure_arrow()) {
-        if ps.args.len() == ws.args.len() {
-            for (p, w) in ps.args.iter().zip(ws.args.iter()) {
-                collect_subst_into(t, *p, *w, sigma);
-            }
-            collect_subst_into(t, ps.ret, ws.ret, sigma);
+    if let (Some(ps), Some(ws)) = (pat.pure_arrow(), wit.pure_arrow())
+        && ps.args.len() == ws.args.len()
+    {
+        for (p, w) in ps.args.iter().zip(ws.args.iter()) {
+            collect_subst_into(t, *p, *w, sigma);
         }
+        collect_subst_into(t, ps.ret, ws.ret, sigma);
     }
     if let (Some(ps), Some(ws)) = (pat.pure_map(), wit.pure_map()) {
         for (key, p) in &ps.fields {

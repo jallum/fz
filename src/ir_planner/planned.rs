@@ -6,14 +6,16 @@ use crate::fz_ir::{
 use crate::ir_dce::{collect_used, dce_fn_with_telemetry};
 use crate::ir_fold::fold_planned_body;
 use crate::ir_fuse::{subst_prim, subst_stmt, subst_term};
+use crate::ir_planner::callgraph::entry_seeds;
 use crate::ir_planner::fn_types::{
-    CallEdgePlan, CallableCapability, EffectSummary, ModulePlan, SpecKey, SpecPlan, spec_key_input_tys,
+    CallEdgePlan, CallableCapability, EffectSummary, ModulePlan, SpecKey, SpecPlan, SpecReachabilityRole,
+    spec_key_for_fn_id, spec_key_input_tys,
 };
 use crate::ir_planner::reachable::reachable_spec_ids;
 use crate::ir_planner::type_fn::type_fn;
 use crate::telemetry::Telemetry;
 use crate::types::{ClosureTypes, Ty, Types, key_slot_var_count};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 pub(crate) struct PlannedProgram {
     spec_registry: SpecRegistry,
@@ -249,7 +251,16 @@ where
             _ => body_index_by_spec_slot.push(None),
         }
     }
-    let reachable_specs = reachable_spec_ids(t, &spec_registry, module_plan);
+    let pre_rewrite_reachable_specs = reachable_spec_ids(t, &spec_registry, module_plan);
+    let materialized_reachability = materialized_reachable_specs(
+        t,
+        module,
+        module_plan,
+        &spec_registry,
+        &bodies,
+        &body_index_by_spec_slot,
+    );
+    let reachable_specs = materialized_reachability.specs;
     let callable_entries =
         build_callable_entries(t, &bodies, &spec_registry, &body_index_by_spec_slot, &reachable_specs);
     let make_closure_callable_gaps = make_closure_callable_gap_issues(
@@ -263,6 +274,8 @@ where
     );
 
     let planned_body_count = bodies.len();
+    let post_plan_reachability_growth_count = reachable_specs.difference(&pre_rewrite_reachable_specs).count();
+    let post_plan_reachability_pruned_count = pre_rewrite_reachable_specs.difference(&reachable_specs).count();
     let stats = PlannedProgramStats {
         spec_slot_count: spec_registry.len(),
         planned_body_count,
@@ -285,13 +298,18 @@ where
             direct_call_inline_count: stats.direct_call_inline_count as u64,
             continuation_inline_count: stats.continuation_inline_count as u64,
             reachable_spec_count: reachable_specs.len() as u64,
-            post_plan_reachability_growth_count: 0,
+            post_plan_reachability_growth_count: post_plan_reachability_growth_count as u64,
+            post_plan_reachability_pruned_count: post_plan_reachability_pruned_count as u64,
+            materialized_reachability_missing_body_count:
+                materialized_reachability.missing_body_specs.len() as u64,
             make_closure_callable_gap_count: make_closure_callable_gaps.len() as u64,
         },
         &crate::metadata! {
             role: "authoritative",
             module_path: module.module_path().to_owned(),
             reachable_specs: display_spec_ids(&reachable_specs),
+            materialized_reachability_missing_body_specs:
+                materialized_reachability.missing_body_specs.clone(),
             make_closure_callable_gaps: make_closure_callable_gaps.clone(),
         },
     );
@@ -339,7 +357,7 @@ where
     let mut next_block = next_block_id(body);
     for block_idx in 0..body.blocks.len() {
         let term = body.blocks[block_idx].terminator.clone();
-        let Some(inlined) = build_direct_call_inline(
+        let Some(inlined) = build_known_call_inline(
             t,
             module,
             module_plan,
@@ -359,7 +377,9 @@ where
         body.blocks.extend(inlined.extra_blocks);
         stats.call_edges_to_add.extend(inlined.call_edges);
         stats.direct_call_inline_count += 1;
-        stats.continuation_inline_count += 1;
+        if inlined.inlined_continuation {
+            stats.continuation_inline_count += 1;
+        }
     }
     stats
 }
@@ -369,10 +389,11 @@ struct InlinedDirectCall {
     terminator: Term,
     extra_blocks: Vec<Block>,
     call_edges: HashMap<CallsiteId, CallEdgePlan>,
+    inlined_continuation: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_direct_call_inline<T>(
+fn build_known_call_inline<T>(
     t: &mut T,
     module: &Module,
     module_plan: &ModulePlan,
@@ -394,31 +415,30 @@ where
             callee: _,
             args,
             continuation,
-        } => (ident, args, continuation, None, EmitSlot::Direct),
+        } => (ident, args, Some(continuation), None, EmitSlot::Direct),
+        Term::TailCall {
+            ident,
+            callee: _,
+            args,
+            is_back_edge: _,
+        } => (ident, args, None, None, EmitSlot::Direct),
         Term::CallClosure {
             ident,
             closure,
             args,
             continuation,
-        } => (ident, args, continuation, Some(*closure), EmitSlot::ClosureCall),
+        } => (ident, args, Some(continuation), Some(*closure), EmitSlot::ClosureCall),
+        Term::TailCallClosure { ident, closure, args } => (ident, args, None, Some(*closure), EmitSlot::ClosureCall),
         _ => return None,
     };
     let direct_callsite = CallsiteId::new(caller_fn_id, ident, producer_slot);
-    let cont_callsite = CallsiteId::new(caller_fn_id, ident, EmitSlot::Cont);
-    let Some(direct_target) = caller_plan.local_call_target(&direct_callsite) else {
-        return None;
-    };
-    let Some(cont_target) = caller_plan.local_call_target(&cont_callsite) else {
-        return None;
-    };
+    let direct_target = caller_plan.local_call_target(&direct_callsite)?;
     if let Some(closure) = closure {
         let inlineable_closure_target =
             if let Some(info) = caller_plan.vars.get(&closure).and_then(|ty| t.closure_lit_parts(ty)) {
                 FnId::from(info.target) == direct_target.fn_id && info.captures.is_empty()
             } else {
-                let Some(capability) = caller_plan.callable_capabilities.get(&closure) else {
-                    return None;
-                };
+                let capability = caller_plan.callable_capabilities.get(&closure)?;
                 match capability {
                     CallableCapability::KnownFn(fn_id) => *fn_id == direct_target.fn_id,
                     CallableCapability::KnownClosure { fn_id, captures, .. } => {
@@ -431,7 +451,7 @@ where
             return None;
         }
     }
-    if direct_target.fn_id == caller_fn_id || cont_target.fn_id == caller_fn_id {
+    if direct_target.fn_id == caller_fn_id {
         return None;
     }
     let direct_effects = module_plan
@@ -442,47 +462,43 @@ where
     if !direct_callee_is_inline_safe(direct_effects) {
         return None;
     }
-    let Some(direct_sid) = spec_registry.resolve_spec_key(t, direct_target) else {
-        return None;
-    };
-    let Some(cont_sid) = spec_registry.resolve_spec_key(t, cont_target) else {
-        return None;
-    };
-    let Some(direct_key) = spec_keys.get(direct_sid.0 as usize) else {
-        return None;
-    };
-    let Some(cont_key) = spec_keys.get(cont_sid.0 as usize) else {
-        return None;
-    };
-    let Some(direct_plan) = spec_plans.get(direct_sid.0 as usize).and_then(|plan| *plan) else {
-        return None;
-    };
-    let Some(cont_plan) = spec_plans.get(cont_sid.0 as usize).and_then(|plan| *plan) else {
-        return None;
-    };
+    let direct_sid = spec_registry.resolve_spec_key(t, direct_target)?;
+    let direct_key = spec_keys.get(direct_sid.0 as usize)?;
+    let direct_plan = spec_plans.get(direct_sid.0 as usize).and_then(|plan| *plan)?;
     let direct_fn = module.fn_by_id(direct_key.fn_id);
-    let cont_fn = module.fn_by_id(cont_key.fn_id);
-    if module.boundary_fns.contains(&direct_fn.id) || module.boundary_fns.contains(&cont_fn.id) {
+    if module.boundary_fns.contains(&direct_fn.id) {
         return None;
     }
-    if inlineable_direct_return_graph(module, direct_fn, direct_plan).is_none() {
-        return None;
-    }
-    if !continuation_graph_can_move_into_caller(module, cont_fn) {
-        return None;
+    inlineable_direct_return_graph(module, direct_fn, direct_plan)?;
+
+    if let Some(continuation) = continuation {
+        let cont_callsite = CallsiteId::new(caller_fn_id, ident, EmitSlot::Cont);
+        let cont_target = caller_plan.local_call_target(&cont_callsite)?;
+        if cont_target.fn_id == caller_fn_id {
+            return None;
+        }
+        let cont_sid = spec_registry.resolve_spec_key(t, cont_target)?;
+        let cont_key = spec_keys.get(cont_sid.0 as usize)?;
+        let cont_plan = spec_plans.get(cont_sid.0 as usize).and_then(|plan| *plan)?;
+        let cont_fn = module.fn_by_id(cont_key.fn_id);
+        if module.boundary_fns.contains(&cont_fn.id) || !continuation_graph_can_move_into_caller(module, cont_fn) {
+            return None;
+        }
+
+        return clone_direct_return_graph(
+            direct_fn,
+            direct_plan,
+            cont_fn,
+            cont_plan,
+            caller_fn_id,
+            args,
+            continuation,
+            next_var,
+            next_block,
+        );
     }
 
-    clone_direct_return_graph(
-        direct_fn,
-        direct_plan,
-        cont_fn,
-        cont_plan,
-        caller_fn_id,
-        args,
-        continuation,
-        next_var,
-        next_block,
-    )
+    clone_direct_tail_graph(direct_fn, direct_plan, caller_fn_id, args, next_var, next_block)
 }
 
 fn direct_callee_is_inline_safe(effects: EffectSummary) -> bool {
@@ -540,10 +556,10 @@ fn stmts_can_move_into_caller(module: &Module, stmts: &[Stmt]) -> bool {
 }
 
 fn continuation_graph_can_move_into_caller(module: &Module, f: &FnIr) -> bool {
-    if !f.physical_entry_params.is_empty() || !f.physical_capabilities.is_empty() {
-        if f.blocks.iter().any(|block| !block.stmts.is_empty()) {
-            return false;
-        }
+    if (!f.physical_entry_params.is_empty() || !f.physical_capabilities.is_empty())
+        && f.blocks.iter().any(|block| !block.stmts.is_empty())
+    {
+        return false;
     }
     f.blocks.iter().all(|block| {
         stmts_can_move_into_caller(module, &block.stmts) && !matches!(block.terminator, Term::ReceiveMatched { .. })
@@ -650,6 +666,98 @@ fn clone_direct_return_graph(
         terminator: entry_terminator,
         extra_blocks,
         call_edges,
+        inlined_continuation: true,
+    })
+}
+
+fn clone_direct_tail_graph(
+    direct_fn: &FnIr,
+    direct_plan: &SpecPlan,
+    caller_fn_id: FnId,
+    args: &[Var],
+    next_var: &mut u32,
+    next_block: &mut u32,
+) -> Option<InlinedDirectCall> {
+    let direct_entry = direct_fn.block(direct_fn.entry);
+    if direct_entry.params.len() != args.len() {
+        return None;
+    }
+
+    let mut block_subst = HashMap::new();
+    for block in direct_fn
+        .blocks
+        .iter()
+        .filter(|block| direct_plan.reachable_blocks.contains(&block.id))
+    {
+        if block.id != direct_fn.entry {
+            block_subst.insert(block.id, fresh_block(next_block));
+        }
+    }
+
+    let mut var_subst = HashMap::new();
+    for (param, arg) in direct_entry.params.iter().zip(args) {
+        var_subst.insert(*param, *arg);
+    }
+    for block in direct_fn
+        .blocks
+        .iter()
+        .filter(|block| direct_plan.reachable_blocks.contains(&block.id))
+    {
+        if block.id == direct_fn.entry {
+            continue;
+        }
+        for param in &block.params {
+            var_subst.insert(*param, fresh_var(next_var));
+        }
+    }
+
+    let mut extra_blocks = Vec::new();
+    let mut entry_stmts = Vec::new();
+    clone_stmts_with_fresh_defs(&direct_entry.stmts, &mut var_subst, next_var, &mut entry_stmts);
+    let entry_terminator = clone_tail_graph_terminator(&direct_entry.terminator, &mut var_subst, &block_subst)?;
+
+    let mut call_edges = HashMap::new();
+    add_remapped_call_edges(
+        direct_fn.id,
+        caller_fn_id,
+        &direct_entry.terminator,
+        direct_plan,
+        &mut call_edges,
+    );
+    for block in direct_fn
+        .blocks
+        .iter()
+        .filter(|block| direct_plan.reachable_blocks.contains(&block.id))
+    {
+        if block.id == direct_fn.entry {
+            continue;
+        }
+        let mut stmts = Vec::new();
+        clone_stmts_with_fresh_defs(&block.stmts, &mut var_subst, next_var, &mut stmts);
+        let terminator = clone_tail_graph_terminator(&block.terminator, &mut var_subst, &block_subst)?;
+        add_remapped_call_edges(
+            direct_fn.id,
+            caller_fn_id,
+            &block.terminator,
+            direct_plan,
+            &mut call_edges,
+        );
+        let params = block.params.iter().map(|param| subst_var(*param, &var_subst)).collect();
+        let id = *block_subst.get(&block.id)?;
+        extra_blocks.push(Block {
+            id,
+            params,
+            stmts,
+            terminator,
+        });
+    }
+
+    Some(InlinedDirectCall {
+        stmts: entry_stmts,
+        terminator: entry_terminator,
+        extra_blocks,
+        call_edges,
+        inlined_continuation: false,
     })
 }
 
@@ -666,6 +774,17 @@ fn clone_direct_graph_terminator(
         args.push(subst_var(*result, var_subst));
         args.extend(continuation.captured.iter().copied());
         return Some(Term::Goto(cont_entry_block, args));
+    }
+    subst_term_with_blocks(term, var_subst, block_subst)
+}
+
+fn clone_tail_graph_terminator(
+    term: &Term,
+    var_subst: &mut HashMap<Var, Var>,
+    block_subst: &HashMap<BlockId, BlockId>,
+) -> Option<Term> {
+    if let Term::Return(result) = term {
+        return Some(Term::Return(subst_var(*result, var_subst)));
     }
     subst_term_with_blocks(term, var_subst, block_subst)
 }
@@ -1104,6 +1223,166 @@ fn display_spec_ids(reachable_specs: &HashSet<u32>) -> Vec<String> {
     let mut ids: Vec<u32> = reachable_specs.iter().copied().collect();
     ids.sort_unstable();
     ids.into_iter().map(|sid| sid.to_string()).collect()
+}
+
+#[derive(Debug, Default)]
+struct MaterializedReachability {
+    specs: HashSet<u32>,
+    missing_body_specs: Vec<String>,
+}
+
+fn materialized_reachable_specs<T>(
+    t: &mut T,
+    module: &Module,
+    module_plan: &ModulePlan,
+    spec_registry: &SpecRegistry,
+    bodies: &[PlannedBody],
+    body_index_by_spec_slot: &[Option<usize>],
+) -> MaterializedReachability
+where
+    T: Types<Ty = Ty> + ClosureTypes,
+{
+    let mut reachable = HashSet::new();
+    let mut work = VecDeque::new();
+    let mut missing_body_specs = Vec::new();
+    for (fn_id, input_tys) in entry_seeds(t, module) {
+        let key = spec_key_for_fn_id(module, fn_id, input_tys);
+        enqueue_materialized_spec(t, spec_registry, &mut reachable, &mut work, &key);
+    }
+    loop {
+        while let Some(sid) = work.pop_front() {
+            let Some(body_idx) = body_index_by_spec_slot.get(sid as usize).and_then(|idx| *idx) else {
+                missing_body_specs.push(format!("spec_id={sid}"));
+                continue;
+            };
+            let planned_body = &bodies[body_idx];
+            for target in materialized_successor_targets(t, spec_registry, planned_body, body_index_by_spec_slot) {
+                enqueue_materialized_spec(t, spec_registry, &mut reachable, &mut work, &target);
+            }
+        }
+        if !enqueue_role_siblings_for_reachable_body_keys(t, module_plan, spec_registry, &mut reachable, &mut work) {
+            break;
+        }
+    }
+
+    MaterializedReachability {
+        specs: reachable,
+        missing_body_specs,
+    }
+}
+
+fn enqueue_role_siblings_for_reachable_body_keys<T>(
+    t: &mut T,
+    module_plan: &ModulePlan,
+    spec_registry: &SpecRegistry,
+    reachable: &mut HashSet<u32>,
+    work: &mut VecDeque<u32>,
+) -> bool
+where
+    T: Types<Ty = Ty> + ClosureTypes,
+{
+    let reachable_body_keys: HashSet<_> = spec_registry
+        .iter()
+        .filter(|(sid, _)| reachable.contains(&sid.0))
+        .map(|(_, key)| key.body_key())
+        .collect();
+    let mut changed = false;
+    for key in &module_plan.reachable_specs {
+        if !reachable_body_keys.contains(&key.body_key()) {
+            continue;
+        }
+        let role = module_plan
+            .spec_roles
+            .get(&key.body_key())
+            .copied()
+            .unwrap_or(SpecReachabilityRole::ProjectionGap);
+        if !matches!(
+            role,
+            SpecReachabilityRole::Activation | SpecReachabilityRole::CallableEntry
+        ) {
+            continue;
+        }
+        let before = reachable.len();
+        enqueue_materialized_spec(t, spec_registry, reachable, work, key);
+        changed |= reachable.len() != before;
+    }
+    changed
+}
+
+fn enqueue_materialized_spec<T>(
+    t: &mut T,
+    spec_registry: &SpecRegistry,
+    reachable: &mut HashSet<u32>,
+    work: &mut VecDeque<u32>,
+    key: &SpecKey,
+) where
+    T: Types<Ty = Ty> + ClosureTypes,
+{
+    let sid = spec_registry
+        .resolve_spec_key(t, key)
+        .unwrap_or_else(|| panic!("materialized spec {:?} missing from spec registry", key));
+    if reachable.insert(sid.0) {
+        work.push_back(sid.0);
+    }
+}
+
+fn materialized_successor_targets<T>(
+    t: &mut T,
+    spec_registry: &SpecRegistry,
+    planned_body: &PlannedBody,
+    body_index_by_spec_slot: &[Option<usize>],
+) -> Vec<SpecKey>
+where
+    T: Types<Ty = Ty> + ClosureTypes,
+{
+    let spec_plan = &planned_body.spec_plan;
+    let mut out = Vec::new();
+    for edge in spec_plan.call_edges.values() {
+        if let Some(target) = edge.local_target() {
+            push_unique_spec_key(&mut out, target.clone());
+        }
+        if let Some(contract) = edge.return_contract.as_ref() {
+            push_unique_spec_key(&mut out, contract.target.clone());
+        }
+    }
+
+    let used_vars = collect_used(&planned_body.body);
+    for block in &planned_body.body.blocks {
+        if !spec_plan.reachable_blocks.contains(&block.id) {
+            continue;
+        }
+        let block_env = spec_plan.block_envs.get(&block.id);
+        for stmt in &block.stmts {
+            let Stmt::Let(dest, prim) = stmt;
+            let (fn_id, captured) = match prim {
+                Prim::MakeFnRef(_, fn_id) => (*fn_id, &[][..]),
+                Prim::MakeClosure(_, fn_id, captured) => (*fn_id, captured.as_slice()),
+                _ => continue,
+            };
+            if !used_vars.contains(dest) {
+                continue;
+            }
+            let Some(selection) = select_callable_entry_target(
+                t,
+                spec_registry,
+                spec_plan,
+                |sid| body_index_by_spec_slot.get(sid.0 as usize).is_some_and(Option::is_some),
+                fn_id,
+                captured,
+                block_env,
+            ) else {
+                continue;
+            };
+            push_unique_spec_key(&mut out, selection.target_key);
+        }
+    }
+    out
+}
+
+fn push_unique_spec_key(out: &mut Vec<SpecKey>, key: SpecKey) {
+    if !out.contains(&key) {
+        out.push(key);
+    }
 }
 
 fn build_callable_entries<T>(

@@ -172,6 +172,9 @@ Dump commands follow the same split:
 
 - `fz dump --emit interfaces` renders public module contracts.
 - `fz dump --emit specs` renders internal inferred planner specializations.
+- `fz dump --emit bodies` renders reachable materialized user bodies from the
+  codegen-facing `PlannedProgram`, after local rewrites and materialized
+  reachability pruning.
 
 Do not treat either dump as a replacement for the other. Interface dumps answer
 "what may other modules depend on?" Spec dumps answer "what did this compiler
@@ -582,8 +585,10 @@ CLI LTO path:
 4. `erase_boundaries` calls `Module::rewrite_external_calls_for_lto`;
 5. `erase_boundaries` clears spec-boundary firewalls for loaded
    implementations and emits `fz.lto.boundaries_erased`;
-6. the caller reduces and codegens the direct-call module through the ordinary
-   compile pipeline.
+6. the caller materializes and codegens the direct-call module through the
+   ordinary compile pipeline. `fz dump --emit bodies --lto` reads the same
+   materialized reachable body set, so a validated cross-module tail call may
+   disappear from the body dump after direct-call erasure and inlining.
 
 `LtoLinkedProgram` is intentionally private to `modules::pipeline` and is the
 only input to boundary erasure there. That keeps boundary erasure behind

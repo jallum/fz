@@ -1288,7 +1288,8 @@ impl<'m> Solver<'m> {
             let dispatch_slots: Vec<String> = mask
                 .iter()
                 .enumerate()
-                .filter_map(|(slot, is_dispatch)| is_dispatch.then(|| slot.to_string()))
+                .filter(|&(_, is_dispatch)| *is_dispatch)
+                .map(|(slot, _)| slot.to_string())
                 .collect();
             tel.event(
                 &["fz", "type_infer", "dispatch_mask"],
@@ -1613,9 +1614,7 @@ impl<'m> Solver<'m> {
         if !t.is_empty(&value.ty) {
             return None;
         }
-        let Some(kind) = invalid_operator_application(prim, env) else {
-            return None;
-        };
+        let kind = invalid_operator_application(prim, env)?;
         if self.diagnostic_sites.insert((fn_id, block_id, stmt_index)) {
             self.diagnostics.push(TypeInferDiagnostic {
                 fn_id,
@@ -1932,10 +1931,10 @@ fn refine_against<T: Types<Ty = Ty>>(t: &mut T, env: &mut Env, subject: Var, dom
         if !proof_fits(t, &current.proof, domain) {
             return false;
         }
-    } else if let Some(proof) = proof_ty(t, &current.proof) {
-        if t.is_subtype(&proof, domain) {
-            return false;
-        }
+    } else if let Some(proof) = proof_ty(t, &current.proof)
+        && t.is_subtype(&proof, domain)
+    {
+        return false;
     }
     let next = if truth {
         t.intersect(current.ty.clone(), domain.clone())

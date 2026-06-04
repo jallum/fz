@@ -19,14 +19,13 @@ struct LoweredCapture(Rc<RefCell<Option<Module>>>);
 
 impl Handler for LoweredCapture {
     fn handle(&self, ev: &Event<'_, '_, '_>) {
-        if let ["fz", "frontend", "lowered"] = ev.name {
-            if let Some(module) = ev
+        if let ["fz", "frontend", "lowered"] = ev.name
+            && let Some(module) = ev
                 .metadata
                 .get("module")
                 .and_then(|value| value.downcast_ref::<Module>())
-            {
-                *self.0.borrow_mut() = Some(module.clone());
-            }
+        {
+            *self.0.borrow_mut() = Some(module.clone());
         }
     }
 }
@@ -431,6 +430,34 @@ pub(crate) fn authoritative_planner_consistency_issues(cap: &Capture) -> Vec<Str
         if reachability_growth_count != 0 {
             issues.push(format!(
                 "materialization grew semantic reachability by {reachability_growth_count} specs"
+            ));
+        }
+        let missing_body_count = match materialized
+            .measurements
+            .get("materialized_reachability_missing_body_count")
+        {
+            Some(Value::U64(n)) => *n as usize,
+            Some(Value::I64(n)) => *n as usize,
+            other => {
+                panic!("materialized_reachability_missing_body_count missing or wrong type: {other:?}")
+            }
+        };
+        let missing_body_specs = match materialized
+            .metadata
+            .get("materialized_reachability_missing_body_specs")
+        {
+            Some(Value::StrSeq(specs)) => specs.clone(),
+            other => panic!("materialized_reachability_missing_body_specs missing or wrong type: {other:?}"),
+        };
+        assert_eq!(
+            missing_body_specs.len(),
+            missing_body_count,
+            "materialized missing-body telemetry must identify every counted spec"
+        );
+        if missing_body_count != 0 {
+            issues.push(format!(
+                "materialized reachability referenced specs without bodies: {:?}",
+                missing_body_specs
             ));
         }
     }

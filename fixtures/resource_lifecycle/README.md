@@ -1,8 +1,8 @@
 ---
 purpose: "fz-swt.12 — resource lifecycle (make_resource + .value + dtor) is observably identical across interp, JIT, AOT"
 paths: [interp, jit, aot, repl]
-budget.codegen.functions: 11
-budget.codegen.instructions: 170
+budget.codegen.functions: 9
+budget.codegen.instructions: 129
 budget.specs.count: 11
 budget.planner.worklist_pops: 11
 budget.planner.walk_calls: 11

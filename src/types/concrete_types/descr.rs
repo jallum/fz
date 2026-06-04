@@ -629,7 +629,7 @@ impl Descr {
                 && d.vars.is_none()
         }
 
-        fn single_positive<'a, T>(clauses: &'a [Conj<T>]) -> Option<&'a T> {
+        fn single_positive<T>(clauses: &[Conj<T>]) -> Option<&T> {
             let [clause] = clauses else {
                 return None;
             };

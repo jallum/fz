@@ -2119,6 +2119,7 @@ struct PlannerStats {
     dispatch_count: usize,
     activation_return_projection_gap_count: usize,
     post_plan_reachability_growth_count: usize,
+    materialized_reachability_missing_body_count: usize,
     make_closure_callable_gap_count: usize,
 }
 
@@ -2206,6 +2207,13 @@ fn dump_telemetry_stats(fixture: &Path) -> DumpTelemetryStats {
                         fixture.display()
                     )
                 });
+            stats.planner.materialized_reachability_missing_body_count =
+                parse_json_u64_field(line, "materialized_reachability_missing_body_count").unwrap_or_else(|| {
+                    panic!(
+                        "{} telemetry missing materialized_reachability_missing_body_count",
+                        fixture.display()
+                    )
+                });
             stats.planner.make_closure_callable_gap_count =
                 parse_json_u64_field(line, "make_closure_callable_gap_count").unwrap_or_else(|| {
                     panic!(
@@ -2247,6 +2255,11 @@ fn assert_planner_stats_consistent(fixture: &str, stats: &DumpTelemetryStats) {
     assert_eq!(
         stats.planner.post_plan_reachability_growth_count, 0,
         "{} materialization grew semantic reachability after the authoritative plan",
+        fixture
+    );
+    assert_eq!(
+        stats.planner.materialized_reachability_missing_body_count, 0,
+        "{} materialized reachability referenced specs without bodies",
         fixture
     );
     assert_eq!(
