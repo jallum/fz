@@ -94,9 +94,6 @@ impl Types for ConcreteTypes {
     fn bool(&mut self) -> Ty {
         ty_from_descr(Descr::bool_t())
     }
-    fn bool_lit(&mut self, b: bool) -> Ty {
-        ty_from_descr(Descr::atom_lit(if b { "true" } else { "false" }))
-    }
     fn int(&mut self) -> Ty {
         ty_from_descr(Descr::int())
     }
@@ -117,9 +114,6 @@ impl Types for ConcreteTypes {
     }
     fn type_var(&mut self, id: TypeVarId) -> Ty {
         ty_from_descr(Descr::var(id))
-    }
-    fn cpointer(&mut self) -> Ty {
-        ty_from_descr(Descr::opaque_of("cpointer"))
     }
     fn resource(&mut self, payload: Ty) -> Ty {
         ty_from_descr(Descr::resource_of(ty_descr(&payload).clone()))
@@ -253,9 +247,6 @@ impl Types for ConcreteTypes {
         let oi = descr_inner_map(nominals.opaque_inners);
         ty_descr(a).value_disjoint(ty_descr(b), Nominals::new(&bi, &oi))
     }
-    fn is_equivalent(&self, a: &Ty, b: &Ty) -> bool {
-        ty_descr(a).is_equiv(ty_descr(b))
-    }
     fn key_var_count(&self, key: &[Ty]) -> usize {
         key.iter()
             .map(|t| {
@@ -334,9 +325,6 @@ impl Types for ConcreteTypes {
     #[cfg(test)]
     fn tuple_lit_elems(&self, a: &Ty) -> Option<Vec<Ty>> {
         concrete_tuple_lit_elems(a)
-    }
-    fn as_map_key(&self, a: &Ty) -> Option<MapKey> {
-        ty_descr(a).as_map_key()
     }
     fn is_integer(&self, a: &Ty) -> bool {
         ty_descr(a).is_subtype(&Descr::int())

@@ -572,18 +572,6 @@ impl Descr {
         self.as_int_singleton().is_some() || self.as_atom_singleton().is_some() || self.as_float_singleton().is_some()
     }
 
-    /// If this descriptor is a singleton scalar that can serve as a
-    /// MapKey (int or atom literal), return it.
-    pub(crate) fn as_map_key(&self) -> Option<MapKey> {
-        if let Some(n) = self.as_int_singleton() {
-            return Some(MapKey::Int(n));
-        }
-        if let Some(s) = self.as_atom_singleton() {
-            return Some(MapKey::Atom(s.to_string()));
-        }
-        None
-    }
-
     /// Refine every positive map clause so that field `key` has value type
     /// `vt`. Negations and non-map axes are unchanged. Used by the planner
     /// for narrowing under map-pattern matches.

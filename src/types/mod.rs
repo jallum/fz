@@ -125,7 +125,9 @@ pub trait Types {
     fn none(&mut self) -> Self::Ty;
     fn nil(&mut self) -> Self::Ty;
     fn bool(&mut self) -> Self::Ty;
-    fn bool_lit(&mut self, b: bool) -> Self::Ty;
+    fn bool_lit(&mut self, b: bool) -> Self::Ty {
+        self.atom_lit(if b { "true" } else { "false" })
+    }
     fn int(&mut self) -> Self::Ty;
     fn int_lit(&mut self, n: i64) -> Self::Ty;
     fn float(&mut self) -> Self::Ty;
@@ -133,7 +135,9 @@ pub trait Types {
     fn atom(&mut self) -> Self::Ty;
     fn atom_lit(&mut self, name: &str) -> Self::Ty;
     fn type_var(&mut self, id: TypeVarId) -> Self::Ty;
-    fn cpointer(&mut self) -> Self::Ty;
+    fn cpointer(&mut self) -> Self::Ty {
+        self.opaque_of("cpointer")
+    }
     fn resource(&mut self, payload: Self::Ty) -> Self::Ty;
     fn arrow(&mut self, args: &[Self::Ty], ret: Self::Ty) -> Self::Ty;
     fn tuple(&mut self, elems: &[Self::Ty]) -> Self::Ty;
@@ -266,7 +270,9 @@ pub trait Types {
     fn differs_only_nominally(&self, a: &Self::Ty, b: &Self::Ty, nominals: Nominals<'_, Self::Ty>) -> bool {
         self.is_disjoint(a, b) && !self.is_value_disjoint(a, b, nominals)
     }
-    fn is_equivalent(&self, a: &Self::Ty, b: &Self::Ty) -> bool;
+    fn is_equivalent(&self, a: &Self::Ty, b: &Self::Ty) -> bool {
+        a == b || (self.is_subtype(a, b) && self.is_subtype(b, a))
+    }
 
     /// Count top-level named type vars across a spec key. Used by
     /// most-specific-wins dispatch ordering: fewer vars = more concrete.
@@ -335,9 +341,9 @@ pub trait Types {
 
     /// If `a` is a singleton literal suitable as a map key, return it.
     fn as_map_key(&self, a: &Self::Ty) -> Option<MapKey> {
-        self.as_atom_singleton(a)
-            .map(MapKey::Atom)
-            .or_else(|| self.as_int_singleton(a).map(MapKey::Int))
+        self.as_int_singleton(a)
+            .map(MapKey::Int)
+            .or_else(|| self.as_atom_singleton(a).map(MapKey::Atom))
     }
 
     /// Join the return side of a callable type.
@@ -418,6 +424,32 @@ mod conformance_tests {
                     assert!(
                         !t.key_is_strictly_more_specific(std::slice::from_ref(&int), std::slice::from_ref(&int_lit))
                     );
+                }
+
+                #[test]
+                fn default_bool_lit_uses_reserved_atom_literals() {
+                    let mut t = $ctor;
+                    let true_lit = t.bool_lit(true);
+                    let false_lit = t.bool_lit(false);
+                    assert_eq!(t.as_atom_singleton(&true_lit).as_deref(), Some("true"));
+                    assert_eq!(t.as_atom_singleton(&false_lit).as_deref(), Some("false"));
+                }
+
+                #[test]
+                fn default_cpointer_is_builtin_opaque() {
+                    let mut t = $ctor;
+                    let ptr = t.cpointer();
+                    assert_eq!(t.opaque_singleton(&ptr).as_deref(), Some("cpointer"));
+                }
+
+                #[test]
+                fn default_is_equivalent_recognizes_mutual_subtypes() {
+                    let mut t = $ctor;
+                    let true_lit = t.bool_lit(true);
+                    let false_lit = t.bool_lit(false);
+                    let bool_union = t.union(true_lit, false_lit);
+                    let bool_t = t.bool();
+                    assert!(t.is_equivalent(&bool_union, &bool_t));
                 }
             }
         };
