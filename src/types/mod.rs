@@ -1027,9 +1027,9 @@ mod conformance_tests {
 
     /// Register implementation-agnostic `Types` conformance tests.
     ///
-    /// Each implementation gets one invocation here; capability-specific
-    /// macros stay private so future suites can grow without scattering
-    /// implementation registration sites.
+    /// Each complete implementation gets one invocation here. Behavior that
+    /// can be expressed through public `Types` hooks belongs in these suites;
+    /// representation assertions stay in the implementation's own tests.
     macro_rules! impl_types_conformance_tests {
         ($key_mod:ident, $shape_mod:ident, $semantic_mod:ident, $closure_mod:ident, $ctor:expr) => {
             key_helper_conformance_tests!($key_mod, $ctor);

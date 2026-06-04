@@ -40,6 +40,34 @@ A value belongs to a `Descr` if it belongs to the axis for its kind. `any()`
 is every axis at top, `none()` every axis at bottom, and `is_empty` holds when
 every axis is empty (structural clauses checked recursively).
 
+## Implementation Boundary
+
+Consumers should ask type questions through `Types`, not by inspecting
+`Descr`. `ConcreteTypes` is the current `Ty(Arc<Descr>)` implementation, but
+`Types` is the abstraction boundary for construction, projection, substitution,
+nominal disjointness, widening, and equivalence.
+
+Put behavior in the highest layer that can express it without knowing the
+representation:
+
+- `Types` default methods are for pure composition over existing trait hooks,
+  such as `bool_lit`, `cpointer`, `as_map_key`, `is_equivalent`, and
+  `differs_only_nominally`.
+- A `Types` implementation supplies representation primitives: constructors,
+  lattice operations, shape projections, subtype/disjointness decisions, and
+  widening/classification hooks whose answers depend on its internal model.
+- `ConcreteTypes`/`Descr` tests are for representation mechanics only: DNF
+  normalization, axis views, exact rendering, literal tag preservation, and
+  other facts a future non-`Descr` implementation should not be forced to
+  expose.
+
+Shared behavior is tested from `src/types/mod.rs`. A complete implementation
+registers with `impl_types_conformance_tests!`, which expands the key,
+shape/seam, semantic, and closure-surface suites. When adding a new public
+`Types` behavior, add the implementation-agnostic test there first; keep a
+concrete test only when the assertion mentions `Descr`, DNF clauses,
+components, or another concrete representation detail.
+
 ## Schemes Vs Concrete Facts
 
 Free type variables are meaningful only inside a **type scheme**. A scheme is a
@@ -144,21 +172,26 @@ edge with an opaque slot and lets the worklist refine it; it does not encode
 
 ## Brands And Opaques
 
-`brands` and `opaques` are **nominal refinements** layered on a structural
-type. A brand `B` is declared `@type B :: refines U`; the module records
-`brand_inners[B] = U`. `utf8` is the canonical brand: `utf8 <: binary`, while a
-plain `binary` is not a `utf8` — the refinement means something precisely
-because the unbranded type excludes it.
+`brands` and `opaques` are **nominal refinements** over structural
+representations. A brand `B` is declared `@type B :: refines U`; the module
+records `brand_inners[B] = U`. `utf8` is the canonical brand: `utf8 <: binary`,
+while a plain `binary` is not a `utf8` — the refinement means something
+precisely because the unbranded type excludes it.
 
-A minted brand value is a **pure tag**. `Descr::brand_of("utf8")` sets
-`brands = {utf8}` and leaves every structural axis — including `basic` —
-empty. The "it is really a binary" fact lives in `brand_inners`, not in the
-value's `Descr`. `is_subtype_under` consults `brand_inners` to discharge a tag:
-a `utf8` is a `binary` because `brand_inners[utf8] <: binary`.
+There are two construction forms:
+
+- `brand_of("utf8")` is the pure nominal tag. It sets `brands = {utf8}` and
+  leaves every structural axis — including `basic` — empty. The representation
+  fact lives in `brand_inners`, and `is_subtype_under` can discharge the tag
+  through that map.
+- `mint_brand(inner, "utf8")` overlays the brand tag onto the already-known
+  structural `inner`. The resulting type carries both the nominal tag and the
+  structural axes, which is useful at mint sites before later runtime erasure.
 
 ```text
-utf8 value's Descr   : { brands = {utf8} }          (basic empty)
-plain binary's Descr : { basic  = binary }
+brand_of("utf8")     : { brands = {utf8} }          (basic empty)
+mint_brand(binary)   : { brands = {utf8}, basic = binary }
+plain binary         : { basic  = binary }
 brand_inners[utf8]   = { basic  = binary }          (the representation)
 ```
 
@@ -271,6 +304,10 @@ only thing separating the operand types.
 
 Gate this model with:
 
+- `cargo test --lib types::conformance_tests` — implementation-agnostic
+  `Types` semantics, defaults, seams, and closure-surface behavior
+- `cargo test --lib concrete_types::tests::` — concrete `Descr`/DNF/component
+  representation mechanics
 - `cargo test concrete_types::tests::value_disjoint_soundness_table`
 - `cargo test concrete_types::tests::value_disjoint_nested_in_tuple_is_false`
 - `cargo test reducer::tests::fold_runtime_eq_is_brand_blind`
