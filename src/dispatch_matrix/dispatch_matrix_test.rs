@@ -5,6 +5,7 @@ use crate::fz_ir::Var;
 use crate::pattern_matrix::{BodyId, PatternMatrix, Row, compile_pattern_matrix};
 use crate::types::{Ty, Types};
 use std::collections::BTreeMap;
+use std::path::Path;
 
 #[test]
 fn builder_mints_stable_subject_and_arm_ids() {
@@ -17,15 +18,18 @@ fn builder_mints_stable_subject_and_arm_ids() {
     let shared = builder.add_outcome(OutcomeMultiplicity::Shared);
 
     let first_arm = builder
-        .add_arm(
-            vec![RegionPredicate::new(first_subject, Region::List(ListRegion::Cons))],
+        .add_arm_questions(
+            vec![RegionQuestion::new(RegionPredicate::new(
+                first_subject,
+                Region::List(ListRegion::Cons),
+            ))],
             EdgeEvidence::empty(),
             shared,
         )
         .expect("first arm should be accepted");
     let second_arm = builder
-        .add_arm(
-            vec![RegionPredicate::new(second_subject, Region::Any)],
+        .add_arm_questions(
+            vec![RegionQuestion::new(RegionPredicate::new(second_subject, Region::Any))],
             EdgeEvidence::empty(),
             shared,
         )
@@ -53,22 +57,22 @@ fn unique_outcome_cannot_be_routed_from_multiple_arms() {
     let unique = builder.add_outcome(OutcomeMultiplicity::Unique);
 
     builder
-        .add_arm(
-            vec![RegionPredicate::new(
+        .add_arm_questions(
+            vec![RegionQuestion::new(RegionPredicate::new(
                 subject,
                 Region::Equal(ComparisonValue::Const(DispatchConst::Nil)),
-            )],
+            ))],
             EdgeEvidence::empty(),
             unique,
         )
         .expect("first use of a unique outcome is valid");
 
     let err = builder
-        .add_arm(
-            vec![RegionPredicate::new(
+        .add_arm_questions(
+            vec![RegionQuestion::new(RegionPredicate::new(
                 subject,
                 Region::Equal(ComparisonValue::Const(DispatchConst::Nil)),
-            )],
+            ))],
             EdgeEvidence::empty(),
             unique,
         )
@@ -99,7 +103,7 @@ fn edge_evidence_keeps_proofs_and_projections_branch_local() {
     };
 
     let arm = builder
-        .add_arm(vec![predicate], evidence.clone(), outcome)
+        .add_arm_questions(vec![RegionQuestion::new(predicate)], evidence.clone(), outcome)
         .expect("evidence references known subjects");
     let matrix = builder.build().expect("source order is valid");
 
@@ -169,6 +173,28 @@ fn present_nil_map_value_is_value_equality_after_presence() {
 fn map_miss_is_not_source_level_vocabulary() {
     let dispatch_matrix_source = include_str!("mod.rs");
     assert!(!dispatch_matrix_source.contains("IsMatcherMapMiss"));
+}
+
+#[test]
+fn retired_dispatch_scaffolding_stays_retired() {
+    assert!(
+        !Path::new(concat!("src/ir_planner/", "switch_dispatch", ".rs")).exists(),
+        "protocol dispatch must not revive the retired switch-dispatch module"
+    );
+
+    let planner_mod = include_str!("../ir_planner/mod.rs");
+    assert!(
+        !planner_mod.contains(concat!("switch", "_dispatch")),
+        "ir_planner should export protocol_dispatch, not the retired switch-dispatch name"
+    );
+
+    let pattern_analysis = include_str!("../pattern_matrix/analysis.rs");
+    for needle in ["MatcherNode", "has_reachable_fail_in_matcher"] {
+        assert!(
+            !pattern_analysis.contains(needle),
+            "pattern diagnostics should traverse DispatchGraph, not stale Matcher analysis: {needle}"
+        );
+    }
 }
 
 #[test]
@@ -299,6 +325,23 @@ fn eval_predicate(predicate: &RegionPredicate, values: &BTreeMap<SubjectId, Test
     }
 }
 
+#[test]
+fn test_graph_evaluator_covers_non_int_fixture_values() {
+    let subject = SubjectId(0);
+    for (value, region) in [
+        (
+            TestValue::Nil,
+            Region::Equal(ComparisonValue::Const(DispatchConst::Nil)),
+        ),
+        (TestValue::EmptyList, Region::List(ListRegion::Empty)),
+        (TestValue::Cons, Region::List(ListRegion::Cons)),
+    ] {
+        let mut values = BTreeMap::new();
+        values.insert(subject, value);
+        assert!(eval_predicate(&RegionPredicate::new(subject, region), &values));
+    }
+}
+
 fn matrix_with_subject() -> (DispatchMatrixBuilder, SubjectId) {
     let mut builder = DispatchMatrixBuilder::new(Order::Source);
     let subject = builder.add_input_subject();
@@ -322,7 +365,7 @@ fn compile_source_order_uses_first_matching_arm() {
         )
         .expect("specific arm");
     builder
-        .add_arm(Vec::new(), EdgeEvidence::empty(), fallback)
+        .add_arm_questions(Vec::new(), EdgeEvidence::empty(), fallback)
         .expect("source fallback arm");
     let matrix = builder.build().expect("matrix");
 
@@ -754,8 +797,8 @@ fn pattern_row_with_guard_preconditions(
 }
 
 fn pattern_plan(pattern_matrix: PatternMatrix) -> (Matcher, pattern::PatternDispatchPlan) {
-    let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
-    let plan = pattern::pattern_dispatch_from_matcher(&matcher).expect("pattern dispatch matrix");
+    let matcher = compile_pattern_matrix(pattern_matrix.clone()).expect("compile pattern matrix");
+    let plan = pattern::pattern_dispatch_from_matrix(pattern_matrix).expect("pattern dispatch matrix");
     (matcher, plan)
 }
 

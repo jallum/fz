@@ -4,8 +4,8 @@
 (`fz-v19`). Protocol finite-union dispatch and source-pattern dispatch now both
 build a `DispatchMatrix`, compile it to a `DispatchGraph`, and let producer
 policy decide what a winning outcome means. `PatternMatrix` still normalizes AST
-patterns into rows and emits the current `Matcher` shape as adapter input, but
-the runtime decision graph for source patterns is owned by `DispatchMatrix`.
+patterns into rows, but the runtime decision graph for source patterns is owned
+by `DispatchMatrix`.
 
 The model names four separate concepts so future dispatch work does not grow new
 subsystem-specific cascades:
@@ -45,16 +45,16 @@ lowers the compiled `DispatchGraph` into the current `TypeTest`/`If` IR shape:
 closed graph `Fail` tails become the final direct `else`, while open residual
 fallbacks become the original stub call.
 
-`pattern_dispatch_from_matcher` is the source-pattern producer. It consumes the
-AST-free `Matcher` that `PatternMatrix` emits as a compatibility input, extracts
-positive proof paths into `Order::Source` arms, and keeps pattern-specific
-payloads as opaque outcome metadata: body id, leaf bindings, pinned inputs,
-prepared keys, and guard expressions. `matcher_from_pattern_dispatch_plan`
-rebuilds a graph-derived `Matcher` from the compiled `DispatchGraph` so existing
-inline lowering and the receive ABI can keep using their current backend shape
-while their decisions come from `DispatchMatrix`. Receive accept/reject policy is
-not encoded in `DispatchMatrix`; receive remains a producer/outcome policy
-layered above the same regions.
+`pattern_dispatch_from_matrix` is the source-pattern producer. It consumes the
+AST-facing `PatternMatrix`, extracts positive proof paths into `Order::Source`
+arms, and keeps pattern-specific payloads as opaque outcome metadata: body id,
+leaf bindings, pinned inputs, prepared keys, and guard expressions.
+`matcher_from_pattern_dispatch_plan` rebuilds a graph-derived `Matcher` from the
+compiled `DispatchGraph` so existing inline lowering and the receive ABI can keep
+using their current backend shape while their decisions come from
+`DispatchMatrix`. Receive accept/reject policy is not encoded in
+`DispatchMatrix`; receive remains a producer/outcome policy layered above the
+same regions.
 
 ## Vocabulary Boundary
 

@@ -119,9 +119,10 @@ known to be a list, the compiler can call the list implementation directly.
 That matters for scalars and tight loops: static protocol dispatch does not
 need a generic heap-boxed lookup just to find the callback.</p>
 
-<p>If the compiler cannot prove one implementation, today's compiler does not
-secretly fall back to a broad dynamic lookup. The call must remain behind a
-supported public wrapper or become a diagnostic.</p>
+<p>If the compiler proves a finite union of local implementations, it builds a
+DispatchMatrix and lowers a small type dispatch to those implementations. If the
+receiver is open or erased, the unmatched residual stays behind the protocol
+stub; there is still no broad dynamic lookup hidden behind the call.</p>
 
 <h2 id="limits">7. Current limits</h2>
 

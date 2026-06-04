@@ -5,8 +5,8 @@ use super::fn_types::{
     fixed_point_spec_key_for_arity,
 };
 use super::narrow::narrow_for_cond;
+use super::protocol_dispatch::{ProtocolDispatchMatrixSelection, collect_protocol_dispatch_matrix_candidates};
 use super::reachable::{cont_key_from_slot0, cont_slot0_descr, reachable_spec_ids};
-use super::switch_dispatch::{ProtocolDispatchMatrixSelection, collect_protocol_dispatch_matrix_candidates};
 use super::type_fn::type_fn;
 use super::*;
 use crate::diag::{Span, codes};
@@ -5124,7 +5124,7 @@ fn main(), do: P.each([1])
     );
 }
 
-// ---- fz-t1m.1.5 — closed-domain protocol switch dispatch ----
+// ---- fz-t1m.1.5 — closed-domain protocol dispatch ----
 
 /// A protocol call whose receiver is a closed union of two implementing
 /// targets (`7 | list(int)`, covered by `Integer` and `List`) is rewritten

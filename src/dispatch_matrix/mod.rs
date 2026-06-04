@@ -1,9 +1,8 @@
-//! Side-by-side model for region-based dispatch.
+//! Shared model for region-based dispatch.
 //!
-//! fz-v19.1 deliberately adds only the data model. Later tickets add producers
-//! and graph compilation; until then these public-in-crate types have no
-//! production callers.
-#![allow(dead_code)]
+//! Pattern matching, protocol finite-union dispatch, and future dispatch-shaped
+//! compiler work use this vocabulary: ordered value-space questions prove an
+//! arm, and opaque outcomes stay producer-owned.
 
 use crate::types::{Ty, Types};
 use std::collections::{BTreeMap, BTreeSet};
@@ -37,6 +36,7 @@ pub(crate) struct DispatchMatrix {
 }
 
 impl DispatchMatrix {
+    #[cfg(test)]
     pub(crate) fn subject(&self, id: SubjectId) -> Option<&Subject> {
         self.subjects.get(id.0 as usize)
     }
@@ -99,14 +99,18 @@ impl RegionPredicate {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Region {
+    #[allow(dead_code)] // Permanent top-region vocabulary; current producers emit concrete regions.
     Any,
+    #[allow(dead_code)] // Permanent bottom-region vocabulary used by model tests and future residuals.
     Never,
     Type(Ty),
     Equal(ComparisonValue),
     TupleArity(u32),
     List(ListRegion),
     MapKind,
-    MapKeyPresent { key: DispatchConst },
+    MapKeyPresent {
+        key: DispatchConst,
+    },
     Bitstring(BitstringShape),
     Guard(GuardId),
 }
@@ -182,6 +186,7 @@ pub(crate) enum Order {
     /// overlaps are diagnosed by later analysis.
     Specificity,
     /// A fully materialized order. Useful for tests and future graph snapshots.
+    #[allow(dead_code)] // Explicit orders are model vocabulary; production producers use Source/Specificity today.
     Explicit(Vec<ArmId>),
 }
 
@@ -196,6 +201,7 @@ pub(crate) enum OutcomeMultiplicity {
     /// At most one arm may route to this outcome.
     Unique,
     /// Multiple arms may share this outcome.
+    #[allow(dead_code)] // Shared outcomes are part of the model; current producers mostly mint unique outcomes.
     Shared,
 }
 
@@ -352,6 +358,7 @@ pub(crate) struct DispatchEdge {
 }
 
 impl DispatchEdge {
+    #[cfg(test)]
     pub(crate) fn new(target: GraphNodeId) -> Self {
         Self {
             target,
@@ -560,6 +567,7 @@ pub(crate) enum TypeRegionRelation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EqualTypeRegionPolicy {
     DuplicateCoverage,
+    #[allow(dead_code)] // Ambiguity policy is model-tested; production protocol dispatch treats equals as duplicates.
     Ambiguous,
 }
 
@@ -599,12 +607,14 @@ pub(crate) struct TypeRegionAnalysis {
     pub(crate) diagnostics: Vec<TypeRegionDiagnostic>,
 }
 
+#[allow(dead_code)] // Type coverage is a DispatchMatrix model signal; protocol lowering stores the bool it needs today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TypeCoverageStatus {
     Closed,
     Open,
 }
 
+#[allow(dead_code)] // See TypeCoverageStatus: retained as the typed result of coverage analysis.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TypeCoverage {
     pub(crate) domain: Ty,
@@ -678,6 +688,7 @@ pub(crate) fn analyze_type_region_arms<T: Types<Ty = Ty>>(
     }
 }
 
+#[allow(dead_code)] // Coverage analysis is kept as tested model API even when producers consume simpler facts.
 pub(crate) fn analyze_type_coverage<T: Types<Ty = Ty>>(t: &mut T, domain: Ty, arms: &[TypeRegionArm]) -> TypeCoverage {
     let mut covered = t.none();
     for arm in arms {
@@ -844,16 +855,6 @@ impl DispatchMatrixBuilder {
         let id = OutcomeId(self.outcomes.len() as u32);
         self.outcomes.push(Outcome { id, multiplicity });
         id
-    }
-
-    pub(crate) fn add_arm(
-        &mut self,
-        predicates: Vec<RegionPredicate>,
-        evidence: EdgeEvidence,
-        outcome: OutcomeId,
-    ) -> Result<ArmId, DispatchMatrixError> {
-        let questions = predicates.into_iter().map(RegionQuestion::new).collect();
-        self.add_arm_questions(questions, evidence, outcome)
     }
 
     pub(crate) fn add_arm_questions(

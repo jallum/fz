@@ -1,4 +1,4 @@
-//! DispatchMatrix-backed protocol switch dispatch.
+//! DispatchMatrix-backed protocol dispatch.
 //!
 //! A protocol call dispatches on its first argument's runtime type. When the
 //! planner can prove the receiver is a *single* implementing target it

@@ -510,7 +510,7 @@ fn main(), do: Integerish.id(41)
 /// constant 100), so a swapped or missing arm would change the result:
 /// `describe(7) + describe([1,2,3])` = `7 + 100` = `107`.
 #[test]
-fn closed_union_protocol_switch_dispatch_runs_in_interp_and_native() {
+fn closed_union_protocol_dispatch_runs_in_interp_and_native() {
     const SRC: &str = r#"
 defprotocol Sizer do
   fn size(value)
@@ -541,12 +541,12 @@ end
 
     // Interpreter path — runs the frontend module directly.
     let interp = crate::ir_interp::run_main(&tel, &frontend.module).expect("interp run");
-    assert_eq!(interp, 107, "interpreter switch dispatch");
+    assert_eq!(interp, 107, "interpreter protocol dispatch");
 
     // Native path — same module through codegen.
     let compiled = compile_planned(&mut t, &frontend.module, &frontend.module_plan, &tel).expect("compile planned");
     let image = CompiledImage::from_linked(compiled);
-    assert_eq!(image.run(entry), 107, "native switch dispatch");
+    assert_eq!(image.run(entry), 107, "native protocol dispatch");
 }
 
 #[test]

@@ -53,10 +53,10 @@ pub(crate) mod narrow;
 pub(crate) mod planned;
 pub mod pretty;
 pub(crate) mod prim;
+pub mod protocol_dispatch;
 pub mod purity;
 pub mod reachable;
 pub(crate) mod return_context;
-pub mod switch_dispatch;
 pub mod type_fn;
 pub(crate) mod walk;
 pub mod worklist;
@@ -66,7 +66,7 @@ pub use fn_types::{ModulePlan, SpecPlan};
 pub(crate) use narrow::{find_emptied_var, narrow_for_if};
 pub(crate) use planned::materialize_program;
 pub use pretty::pretty_module_plan;
-pub use switch_dispatch::rewrite_closed_union_protocol_dispatch;
+pub use protocol_dispatch::rewrite_closed_union_protocol_dispatch;
 pub use worklist::plan_module;
 
 // ----------------------------------------------------------------------

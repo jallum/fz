@@ -3,21 +3,21 @@
 Pattern matching has one decision model shared by every match site. A
 `PatternMatrix` (rows of patterns over a list of subjects) normalizes source AST
 patterns into ordered rows. Those rows are converted through the current
-AST-free `Matcher` shape into a `DispatchMatrix`, compiled to a `DispatchGraph`,
-and then adapted back to `Matcher` for the existing inline lowering and receive
-ABI. The rule the whole model enforces is **test first, project second**: a
+adapter compiler into a `DispatchMatrix`, compiled to a `DispatchGraph`, and
+then adapted back to the Matcher ABI for existing inline lowering and receive
+storage. The rule the whole model enforces is **test first, project second**: a
 constructor's fields are read only on the control-flow edge where that
 constructor's shape is already proven.
 
 Four layers, one decision model:
 
 - `src/pattern_matrix` owns AST-facing row construction and diagnostics input.
-  It still emits the current `Matcher` form as compatibility input to the
-  dispatch producer.
+  Its Matcher compiler is crate-internal adapter machinery, not a separate
+  semantics owner.
 - `src/dispatch_matrix/pattern.rs` owns source-pattern dispatch decisions. It
-  converts matcher tests/switches/guards into `DispatchMatrix` region questions,
-  compiles them to a `DispatchGraph`, and keeps body ids plus leaf bindings as
-  opaque outcomes.
+  converts AST-facing rows into `DispatchMatrix` region questions, compiles them
+  to a `DispatchGraph`, and keeps body ids plus leaf bindings as opaque
+  outcomes.
 - `src/exec/matcher` owns the remaining backend ABI shape: subjects, tests,
   switch keys, guards, bindings, and outcomes, with no AST inside.
 - `src/ir_lower/matcher.rs` owns turning the graph-derived `Matcher` adapter
@@ -37,7 +37,8 @@ peeled columns away, an optional `guard`, and a `body_id`. Rows arrive in source
 order with strictly increasing `BodyId`s; `validate_source_order` rejects
 anything else, because first-match priority is encoded in that order.
 
-`compile_pattern_matrix` runs a Maranget-lite algorithm in `builder.rs`:
+The crate-internal PatternMatrix adapter compiler runs a Maranget-lite
+algorithm in `builder.rs`:
 
 - Pick the leftmost column that any row constrains (`pick_specialization_column`).
   `Wildcard`/`Var` rows are transparent and join every specialization, recording
@@ -65,11 +66,12 @@ per-row path (`per_row_to_matcher_node`), which walks the pattern with
 pattern dispatches on a runtime value (`MatcherTest::EqPinned` against a
 `pinned` slot), so there is no switch kind for it.
 
-## The Matcher Graph
+## The Matcher ABI Adapter
 
 `Matcher` holds `inputs`, `pinned` slots, `prepared_keys` (heap constants
 materialized outside matcher execution, e.g. float/binary map keys), a `nodes`
-arena, and a `root`. Every `MatcherNode` is one of:
+arena, and a `root`. It is the current backend ABI shape. Every `MatcherNode` is
+one of:
 
 - `Fail` — no row matched on this edge.
 - `Leaf` — a `body_id` plus the `MatcherBinding`s (name -> `SubjectRef`) to
@@ -96,7 +98,8 @@ unified.
 
 A `Guard` node holds a `GuardExpr` — constants, subject/pinned references, and
 unary/binary operators. A guard that calls a helper function compiles that
-helper's clauses into a nested `Matcher` and stores it as
+helper's clauses through `DispatchMatrix` into a nested graph-derived `Matcher`
+and stores it as
 `GuardExpr::Dispatch { inputs, dispatch }`. `lower_guard_helper_call_to_dispatch`
 builds the nested matrix, tracks a call stack to reject guard-call cycles
 (`GuardCallCycle`), and lifts the helper's free names into `pinned` slots.
@@ -187,13 +190,13 @@ inherits it. (The single-clause inline `match_map` path instead uses a plain
 
 ## Compile-Time Analysis
 
-`src/pattern_matrix/analysis.rs` reuses the compiler and dispatch adapter for
+`src/pattern_matrix/analysis.rs` reuses the dispatch producer for
 diagnostics. `find_unreachable_rows` compiles the matrix (with guards normalized
 to `true`, so a guard's reject edge is kept without evaluating it), routes it
-through `DispatchMatrix`, and reports any `body_id` the graph-derived matcher
-cannot reach. `is_inexhaustive_with_domains` reports `true` when some path
-reaches `Fail`; `SubjectDomain::List` lets a subject known to be a list count as
-covered once both `EmptyList` and `Cons` cases exist in the dispatch matrix.
+through `DispatchMatrix`, and reports any `body_id` the `DispatchGraph` cannot
+reach. `is_inexhaustive_with_domains` reports `true` when some graph path reaches
+`Fail`; `SubjectDomain::List` lets a subject known to be a list count as covered
+once both `EmptyList` and `Cons` cases exist in the dispatch matrix.
 `src/frontend/pattern_check.rs` drives these over every match site and emits
 warnings; it skips fns whose body is unreachable and skips coverage verdicts
 when guards or type annotations are present, since the matrix treats those
@@ -206,11 +209,11 @@ fn f([h | t]), do: ...
 fn f([]),      do: ...
 
 matrix: subject s0, rows [ [h|t] -> 0 ], [ [] -> 1 ]
-compile: Switch(s0, ListCons) {
-           Cons      -> Leaf 0  bind h=ListHead(s0), t=ListTail(s0)
-           EmptyList -> Leaf 1
-           default   -> Fail
-         }
+graph:   Test ListCons(s0)
+           match -> Outcome 0  bind h=ListHead(s0), t=ListTail(s0)
+           miss  -> Test EmptyList(s0)
+                      match -> Outcome 1
+                      miss  -> Fail
 lower:   isc = IsListCons(s0); if isc -> cons-edge else next
            cons-edge: h = ListHead(s0); t = ListTail(s0); TailCall fn_clause_0
          else: ise = IsEmptyList(s0); if ise -> TailCall fn_clause_1 else Fail

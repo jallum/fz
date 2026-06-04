@@ -2,17 +2,13 @@
 // fz-ul4.45 — Exhaustiveness + unreachability analysis
 // ---------------------------------------------------------------------------
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
 use crate::ast::{Expr, Spanned};
-use crate::dispatch_matrix::pattern::{
-    PatternDispatchPlan, matcher_from_pattern_dispatch_plan, pattern_dispatch_from_matcher,
-};
-use crate::dispatch_matrix::{ListRegion, Region, SubjectId};
-use crate::exec::matcher::{Matcher, MatcherNode, NodeId, SubjectRef, SwitchKey, SwitchKind};
-use crate::fz_ir::Var;
+use crate::dispatch_matrix::pattern::{PatternDispatchPlan, pattern_dispatch_from_matrix};
+use crate::dispatch_matrix::{DispatchNode, GraphNodeId, ListRegion, Region, SubjectId};
 
-use super::{BodyId, PatternMatrix, SubjectDomain, compile_pattern_matrix};
+use super::{BodyId, PatternMatrix, SubjectDomain};
 
 /// Body ids that no path through the matcher graph reaches. Guarded rows do
 /// not consume coverage: for diagnostics we replace concrete guards with
@@ -20,9 +16,9 @@ use super::{BodyId, PatternMatrix, SubjectDomain, compile_pattern_matrix};
 /// the "guard may reject" fallthrough edge without evaluating guard bodies.
 pub fn find_unreachable_rows(pattern_matrix: &PatternMatrix) -> Vec<BodyId> {
     let row_bodies: BTreeSet<BodyId> = pattern_matrix.rows.iter().map(|r| r.body_id).collect();
-    let (matcher, _) = matcher_for_analysis(normalize_guards_for_analysis(pattern_matrix.clone()));
+    let plan = plan_for_analysis(normalize_guards_for_analysis(pattern_matrix.clone()));
     let mut reached = BTreeSet::new();
-    collect_reachable_bodies_from_matcher(&matcher, matcher.root, &mut reached);
+    collect_reachable_bodies_from_graph(&plan, plan.graph.root, &mut reached);
     row_bodies.difference(&reached).copied().collect()
 }
 
@@ -37,23 +33,13 @@ pub fn is_inexhaustive(pattern_matrix: &PatternMatrix) -> bool {
 
 pub fn is_inexhaustive_with_domains(pattern_matrix: &PatternMatrix, domains: &[SubjectDomain]) -> bool {
     let normalized = normalize_guards_for_analysis(pattern_matrix.clone());
-    let (matcher, plan) = matcher_for_analysis(normalized);
-    let domain_by_subject: HashMap<Var, SubjectDomain> = pattern_matrix
-        .subjects
-        .iter()
-        .copied()
-        .zip(domains.iter().copied())
-        .collect();
-    has_reachable_fail_in_matcher(&matcher, matcher.root, &domain_by_subject)
+    let plan = plan_for_analysis(normalized);
+    has_reachable_fail_in_graph(&plan, plan.graph.root)
         && !list_domain_is_covered_in_dispatch_matrix(pattern_matrix, domains, &plan)
 }
 
-fn matcher_for_analysis(pattern_matrix: PatternMatrix) -> (Matcher, PatternDispatchPlan) {
-    let matcher = compile_pattern_matrix(pattern_matrix).expect("pattern analysis matcher must compile");
-    let plan = pattern_dispatch_from_matcher(&matcher).expect("pattern analysis dispatch matrix must compile");
-    let matcher =
-        matcher_from_pattern_dispatch_plan(&plan).expect("pattern analysis dispatch graph must lower through matcher");
-    (matcher, plan)
+fn plan_for_analysis(pattern_matrix: PatternMatrix) -> PatternDispatchPlan {
+    pattern_dispatch_from_matrix(pattern_matrix).expect("pattern analysis dispatch matrix must compile")
 }
 
 fn normalize_guards_for_analysis(mut pattern_matrix: PatternMatrix) -> PatternMatrix {
@@ -65,80 +51,35 @@ fn normalize_guards_for_analysis(mut pattern_matrix: PatternMatrix) -> PatternMa
     pattern_matrix
 }
 
-fn collect_reachable_bodies_from_matcher(matcher: &Matcher, node: NodeId, out: &mut BTreeSet<BodyId>) {
-    let Some(node) = matcher.node(node) else {
+fn collect_reachable_bodies_from_graph(plan: &PatternDispatchPlan, node: GraphNodeId, out: &mut BTreeSet<BodyId>) {
+    let Some(node) = plan.graph.node(node) else {
         return;
     };
     match node {
-        MatcherNode::Fail { .. } => {}
-        MatcherNode::Leaf(leaf) => {
-            out.insert(leaf.body_id);
-        }
-        MatcherNode::Switch { cases, default, .. } => {
-            for (_, sub) in cases {
-                collect_reachable_bodies_from_matcher(matcher, *sub, out);
+        DispatchNode::Fail => {}
+        DispatchNode::Outcome { outcome, .. } => {
+            if let Some(outcome) = plan.outcomes.iter().find(|entry| entry.outcome == *outcome) {
+                out.insert(outcome.body_id);
             }
-            collect_reachable_bodies_from_matcher(matcher, *default, out);
         }
-        MatcherNode::Test { on_true, on_false, .. } | MatcherNode::Guard { on_true, on_false, .. } => {
-            collect_reachable_bodies_from_matcher(matcher, *on_true, out);
-            collect_reachable_bodies_from_matcher(matcher, *on_false, out);
+        DispatchNode::Test { on_match, on_miss, .. } => {
+            collect_reachable_bodies_from_graph(plan, on_match.target, out);
+            collect_reachable_bodies_from_graph(plan, on_miss.target, out);
         }
     }
 }
 
-fn has_reachable_fail_in_matcher(
-    matcher: &Matcher,
-    node: NodeId,
-    domain_by_subject: &HashMap<Var, SubjectDomain>,
-) -> bool {
-    let Some(node_ref) = matcher.node(node) else {
+fn has_reachable_fail_in_graph(plan: &PatternDispatchPlan, node: GraphNodeId) -> bool {
+    let Some(node_ref) = plan.graph.node(node) else {
         return false;
     };
     match node_ref {
-        MatcherNode::Fail { .. } => true,
-        MatcherNode::Leaf(_) => false,
-        MatcherNode::Switch { cases, default, .. } => {
-            if cases
-                .iter()
-                .any(|(_, sub)| has_reachable_fail_in_matcher(matcher, *sub, domain_by_subject))
-            {
-                return true;
-            }
-            if list_domain_is_covered_in_matcher(matcher, node, domain_by_subject) {
-                return false;
-            }
-            has_reachable_fail_in_matcher(matcher, *default, domain_by_subject)
-        }
-        MatcherNode::Test { on_true, on_false, .. } | MatcherNode::Guard { on_true, on_false, .. } => {
-            has_reachable_fail_in_matcher(matcher, *on_true, domain_by_subject)
-                || has_reachable_fail_in_matcher(matcher, *on_false, domain_by_subject)
+        DispatchNode::Fail => true,
+        DispatchNode::Outcome { .. } => false,
+        DispatchNode::Test { on_match, on_miss, .. } => {
+            has_reachable_fail_in_graph(plan, on_match.target) || has_reachable_fail_in_graph(plan, on_miss.target)
         }
     }
-}
-
-fn list_domain_is_covered_in_matcher(
-    matcher: &Matcher,
-    node: NodeId,
-    domain_by_subject: &HashMap<Var, SubjectDomain>,
-) -> bool {
-    let Some(MatcherNode::Switch {
-        subject,
-        kind: SwitchKind::ListCons,
-        cases,
-        ..
-    }) = matcher.node(node)
-    else {
-        return false;
-    };
-    if matcher_subject_root_var(matcher, subject).and_then(|v| domain_by_subject.get(&v).copied())
-        != Some(SubjectDomain::List)
-    {
-        return false;
-    }
-    let has_empty = cases.iter().any(|(key, _)| matches!(key, SwitchKey::EmptyList));
-    let has_cons = cases.iter().any(|(key, _)| matches!(key, SwitchKey::Cons));
-    has_empty && has_cons
 }
 
 fn list_domain_is_covered_in_dispatch_matrix(
@@ -146,7 +87,7 @@ fn list_domain_is_covered_in_dispatch_matrix(
     domains: &[SubjectDomain],
     plan: &PatternDispatchPlan,
 ) -> bool {
-    if pattern_matrix.subjects.len() != 1 || domains.first().copied() != Some(SubjectDomain::List) {
+    if domains.is_empty() {
         return false;
     }
     if pattern_matrix
@@ -156,29 +97,37 @@ fn list_domain_is_covered_in_dispatch_matrix(
     {
         return false;
     }
-    let subject = SubjectId(0);
-    let has_empty = plan.matrix.arms.iter().any(|arm| {
-        arm.questions.iter().any(|question| {
-            question.predicate.subject == subject
-                && matches!(question.predicate.region, Region::List(ListRegion::Empty))
+    domains
+        .iter()
+        .enumerate()
+        .filter(|(_, domain)| **domain == SubjectDomain::List)
+        .any(|(index, _)| {
+            let subject = SubjectId(index as u32);
+            let only_simple_list_partition = plan.matrix.arms.iter().all(|arm| {
+                arm.questions.len() == 1
+                    && arm.questions.iter().all(|question| {
+                        question.predicate.subject == subject
+                            && matches!(
+                                question.predicate.region,
+                                Region::List(ListRegion::Empty) | Region::List(ListRegion::Cons)
+                            )
+                    })
+            });
+            if !only_simple_list_partition {
+                return false;
+            }
+            let has_empty = plan.matrix.arms.iter().any(|arm| {
+                arm.questions.iter().any(|question| {
+                    question.predicate.subject == subject
+                        && matches!(question.predicate.region, Region::List(ListRegion::Empty))
+                })
+            });
+            let has_cons = plan.matrix.arms.iter().any(|arm| {
+                arm.questions.iter().any(|question| {
+                    question.predicate.subject == subject
+                        && matches!(question.predicate.region, Region::List(ListRegion::Cons))
+                })
+            });
+            has_empty && has_cons
         })
-    });
-    let has_cons = plan.matrix.arms.iter().any(|arm| {
-        arm.questions.iter().any(|question| {
-            question.predicate.subject == subject && matches!(question.predicate.region, Region::List(ListRegion::Cons))
-        })
-    });
-    has_empty && has_cons
-}
-
-fn matcher_subject_root_var(matcher: &Matcher, subject: &SubjectRef) -> Option<Var> {
-    let input = match subject {
-        SubjectRef::Input(input) => *input,
-        SubjectRef::TupleField { tuple, .. }
-        | SubjectRef::ListHead(tuple)
-        | SubjectRef::ListTail(tuple)
-        | SubjectRef::MapValue { map: tuple, .. }
-        | SubjectRef::BitstringField { bitstring: tuple, .. } => return matcher_subject_root_var(matcher, tuple),
-    };
-    matcher.inputs.get(input.0 as usize).and_then(|i| i.var)
 }

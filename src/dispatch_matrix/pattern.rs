@@ -10,6 +10,9 @@ use crate::exec::matcher::{
     MatcherEndian, MatcherInput, MatcherLeaf, MatcherNode, MatcherTest, NodeId, PinnedInput, SubjectRef, SwitchKey,
     SwitchKind,
 };
+use crate::pattern_matrix::{
+    PatternMatrix, PatternMatrixCompileError, compile_pattern_matrix, compile_pattern_matrix_with_guard_resolver,
+};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,8 +54,39 @@ pub(crate) enum PatternDispatchError {
     MissingBitstringBindingName(SubjectId),
     UnsupportedSwitchCase { kind: SwitchKind, key: SwitchKey },
     UnsupportedRegion(Region),
+    PatternCompile(PatternMatrixCompileError),
     MatrixBuild(DispatchMatrixError),
     Compile(DispatchCompileError),
+}
+
+pub(crate) fn pattern_dispatch_from_matrix(
+    pattern_matrix: PatternMatrix,
+) -> Result<PatternDispatchPlan, PatternDispatchError> {
+    let matcher = compile_pattern_matrix(pattern_matrix).map_err(PatternDispatchError::PatternCompile)?;
+    pattern_dispatch_from_matcher(&matcher)
+}
+
+pub(crate) fn pattern_dispatch_from_matrix_with_guard_resolver<F>(
+    pattern_matrix: PatternMatrix,
+    guard_call_resolver: &mut F,
+) -> Result<PatternDispatchPlan, PatternDispatchError>
+where
+    F: FnMut(&str, usize, Vec<GuardExpr>) -> Result<Option<GuardExpr>, PatternMatrixCompileError>,
+{
+    let matcher = compile_pattern_matrix_with_guard_resolver(pattern_matrix, guard_call_resolver)
+        .map_err(PatternDispatchError::PatternCompile)?;
+    pattern_dispatch_from_matcher(&matcher)
+}
+
+pub(crate) fn matcher_from_pattern_matrix_with_guard_resolver<F>(
+    pattern_matrix: PatternMatrix,
+    guard_call_resolver: &mut F,
+) -> Result<Matcher, PatternDispatchError>
+where
+    F: FnMut(&str, usize, Vec<GuardExpr>) -> Result<Option<GuardExpr>, PatternMatrixCompileError>,
+{
+    let plan = pattern_dispatch_from_matrix_with_guard_resolver(pattern_matrix, guard_call_resolver)?;
+    matcher_from_pattern_dispatch_plan(&plan)
 }
 
 pub(crate) fn pattern_dispatch_from_matcher(matcher: &Matcher) -> Result<PatternDispatchPlan, PatternDispatchError> {

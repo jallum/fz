@@ -1,12 +1,10 @@
-use super::matcher::matcher_via_dispatch_matrix;
 use super::*;
 use crate::ast::{AfterClause, MatchClause};
 use crate::diag::Span;
+use crate::dispatch_matrix::pattern::matcher_from_pattern_matrix_with_guard_resolver;
 use crate::exec::matcher::{GuardExpr, prepared_key_name};
 use crate::fz_ir::{CallsiteIdent, FnCategory, ReceiveAfter, ReceiveClause, Term, Var};
-use crate::pattern_matrix::{
-    BodyId, PatternMatrix, Row, collect_guard_capture_names, compile_pattern_matrix_with_guard_resolver,
-};
+use crate::pattern_matrix::{BodyId, PatternMatrix, Row, collect_guard_capture_names};
 use crate::types::{Ty, Types};
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
@@ -168,12 +166,12 @@ pub(crate) fn lower_receive<T: Types<Ty = Ty>>(
     let mut guard_resolver = |name: &str, arity: usize, args: Vec<GuardExpr>| {
         lower_guard_helper_call_to_dispatch(ctx, name, arity, args, &mut guard_stack)
     };
-    let receive_matcher = compile_pattern_matrix_with_guard_resolver(receive_pattern_matrix, &mut guard_resolver)
+    let receive_matcher = matcher_from_pattern_matrix_with_guard_resolver(receive_pattern_matrix, &mut guard_resolver)
         .map_err(|err| LowerError::Unsupported {
             span: rx_span,
             what: format!("receive matcher cannot be lowered: {:?}", err),
-        })?;
-    let receive_matcher = matcher_via_dispatch_matrix(receive_matcher, rx_span, "receive matcher").map(Arc::new)?;
+        })
+        .map(Arc::new)?;
     for (index, key) in receive_matcher.prepared_keys.iter().enumerate() {
         let name = prepared_key_name(index);
         if !seen_pinned.insert(name.clone()) {

@@ -97,11 +97,12 @@ pub enum PatternMatrixCompileError {
     UnknownPinned(String),
     UnknownGuardVar(String),
     GuardCallCycle(String, usize),
+    DispatchMatrixAdapter(String),
     NonMonotonicBodyId { previous: BodyId, current: BodyId },
 }
 
 /// Compile a PatternMatrix into the AST-free `Matcher` adapter representation.
-pub fn compile_pattern_matrix(pattern_matrix: PatternMatrix) -> Result<Matcher, PatternMatrixCompileError> {
+pub(crate) fn compile_pattern_matrix(pattern_matrix: PatternMatrix) -> Result<Matcher, PatternMatrixCompileError> {
     let mut resolver = |_name: &str,
                         _arity: usize,
                         _args: Vec<GuardExpr>|
@@ -109,7 +110,7 @@ pub fn compile_pattern_matrix(pattern_matrix: PatternMatrix) -> Result<Matcher, 
     compile_pattern_matrix_with_guard_resolver(pattern_matrix, &mut resolver)
 }
 
-pub fn compile_pattern_matrix_with_guard_resolver<F>(
+pub(crate) fn compile_pattern_matrix_with_guard_resolver<F>(
     pattern_matrix: PatternMatrix,
     guard_call_resolver: &mut F,
 ) -> Result<Matcher, PatternMatrixCompileError>

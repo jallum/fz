@@ -1,7 +1,9 @@
 use super::*;
 use crate::ast::{BitType, Endian, Expr, Pattern, Spanned};
 use crate::diag::Span;
-use crate::dispatch_matrix::pattern::{matcher_from_pattern_dispatch_plan, pattern_dispatch_from_matcher};
+use crate::dispatch_matrix::pattern::{
+    matcher_from_pattern_dispatch_plan, matcher_from_pattern_matrix_with_guard_resolver, pattern_dispatch_from_matcher,
+};
 use crate::exec::matcher::{
     GuardBinOp, GuardDispatch, GuardExpr, GuardUnaryOp, Matcher, MatcherBitField, MatcherBitSize, MatcherBitType,
     MatcherConst, MatcherEndian, MatcherNode, MatcherTest, NodeId, PinnedId, PinnedInput, SubjectRef, SwitchKey,
@@ -51,28 +53,26 @@ pub(crate) fn lower_pattern_matrix_to_current_fn<T: Types<Ty = Ty>>(
     let mut guard_resolver = |name: &str, arity: usize, args: Vec<GuardExpr>| {
         lower_guard_helper_call_to_dispatch(ctx, name, arity, args, &mut guard_stack)
     };
-    let matcher = compile_pattern_matrix_with_guard_resolver(pattern_matrix, &mut guard_resolver).map_err(|err| {
-        LowerError::Unsupported {
-            span: Span::DUMMY,
-            what: format!("matcher cannot be lowered inline: {:?}", err),
-        }
-    })?;
-    let matcher = matcher_via_dispatch_matrix(matcher, Span::DUMMY, "inline matcher")?;
+    let matcher =
+        matcher_from_pattern_matrix_with_guard_resolver(pattern_matrix, &mut guard_resolver).map_err(|err| {
+            LowerError::Unsupported {
+                span: Span::DUMMY,
+                what: format!("inline matcher cannot be represented as DispatchMatrix: {:?}", err),
+            }
+        })?;
     let mut state = MatcherLowerState::default();
     lower_matcher_node(ctx, t, &matcher, matcher.root, fail_block, body_cb, &mut state)
 }
 
-pub(super) fn matcher_via_dispatch_matrix(matcher: Matcher, span: Span, context: &str) -> Result<Matcher, LowerError> {
-    // DispatchMatrix owns the decision graph; Matcher remains the ABI consumed
-    // by existing inline lowering and receive records during the migration.
-    let plan = pattern_dispatch_from_matcher(&matcher).map_err(|err| LowerError::Unsupported {
-        span,
-        what: format!("{context} cannot be represented as DispatchMatrix: {err:?}"),
-    })?;
-    matcher_from_pattern_dispatch_plan(&plan).map_err(|err| LowerError::Unsupported {
-        span,
-        what: format!("{context} DispatchGraph cannot be lowered through Matcher ABI: {err:?}"),
-    })
+fn matcher_via_dispatch_matrix(matcher: Matcher) -> Result<Matcher, PatternMatrixCompileError> {
+    let plan = pattern_dispatch_from_matcher(&matcher).map_err(pattern_dispatch_adapter_error)?;
+    matcher_from_pattern_dispatch_plan(&plan).map_err(pattern_dispatch_adapter_error)
+}
+
+fn pattern_dispatch_adapter_error(
+    err: crate::dispatch_matrix::pattern::PatternDispatchError,
+) -> PatternMatrixCompileError {
+    PatternMatrixCompileError::DispatchMatrixAdapter(format!("{err:?}"))
 }
 
 pub(super) fn lower_matcher_node<T: Types<Ty = Ty>>(
@@ -855,6 +855,7 @@ pub(crate) fn lower_guard_helper_call_to_dispatch(
             pinned.var = Some(*input);
         }
     }
+    let mut matcher = matcher_via_dispatch_matrix(matcher)?;
 
     let mut pinned_by_name: HashMap<String, PinnedId> = matcher
         .pinned
