@@ -77,9 +77,16 @@ fn non_binary_aborts_in_subprocess() {
         exit(0);
     }
     let exe = current_exe().expect("current_exe");
+    // Locate this test by its own module path so a module rename can't
+    // silently desync the child's --exact filter. The stale "tests" path
+    // left over from splitting tests into their own module matched no
+    // tests, so the child ran nothing and exited 0 instead of aborting.
+    let self_path = format!("{}::non_binary_aborts_in_subprocess", module_path!());
+    // libtest's --exact names omit the crate; module_path! includes it.
+    let filter = self_path.split_once("::").map_or(self_path.as_str(), |(_, rest)| rest);
     let out = Command::new(exe)
         .env("FZ_EB_ABORT_NON_BIN", "1")
-        .args(["--exact", "extern_binary::tests::non_binary_aborts_in_subprocess"])
+        .args(["--exact", filter])
         .output()
         .expect("spawn child");
     // The child should not exit cleanly — coerce_binary_ptr aborts.
