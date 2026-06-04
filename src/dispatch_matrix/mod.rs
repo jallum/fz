@@ -78,7 +78,7 @@ pub(crate) enum ProjectionKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DispatchArm {
     pub(crate) id: ArmId,
-    pub(crate) predicates: Vec<RegionPredicate>,
+    pub(crate) questions: Vec<RegionQuestion>,
     pub(crate) evidence: EdgeEvidence,
     pub(crate) outcome: OutcomeId,
 }
@@ -361,6 +361,197 @@ pub(crate) enum DispatchMatrixError {
     IncompleteExplicitOrder { expected: usize, actual: usize },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DispatchCompileError {
+    UnknownOutcome(OutcomeId),
+    UnknownArm(ArmId),
+    SpecificityOrderRequiresTypeAnalysis,
+    InvalidGraph(DispatchGraphError),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResidualCoverage {
+    Closed,
+    Open { fallback: OutcomeId },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DispatchCompileOptions {
+    pub(crate) residual: ResidualCoverage,
+}
+
+impl DispatchCompileOptions {
+    pub(crate) fn closed() -> Self {
+        Self {
+            residual: ResidualCoverage::Closed,
+        }
+    }
+
+    pub(crate) fn open(fallback: OutcomeId) -> Self {
+        Self {
+            residual: ResidualCoverage::Open { fallback },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct DispatchCompileStats {
+    pub(crate) arms: usize,
+    pub(crate) test_nodes: usize,
+    pub(crate) outcome_nodes: usize,
+    pub(crate) fail_nodes: usize,
+    pub(crate) fallback_nodes: usize,
+    pub(crate) shared_prefix_tests: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompiledDispatchGraph {
+    pub(crate) graph: DispatchGraph,
+    pub(crate) stats: DispatchCompileStats,
+}
+
+#[derive(Debug, Clone)]
+struct ArmCompileState<'a> {
+    arm: &'a DispatchArm,
+    questions: Vec<RegionQuestion>,
+}
+
+pub(crate) fn compile_dispatch_matrix(
+    matrix: &DispatchMatrix,
+    options: DispatchCompileOptions,
+) -> Result<CompiledDispatchGraph, DispatchCompileError> {
+    let ordered_arms = ordered_arms(matrix)?;
+    let mut stats = DispatchCompileStats {
+        arms: ordered_arms.len(),
+        ..DispatchCompileStats::default()
+    };
+    let mut builder = DispatchGraphBuilder::new();
+    let fallback = fallback_node(matrix, options, &mut builder, &mut stats)?;
+    let states = ordered_arms
+        .into_iter()
+        .map(|arm| ArmCompileState {
+            arm,
+            questions: arm.questions.clone(),
+        })
+        .collect::<Vec<_>>();
+    let root = compile_arm_sequence(&states, fallback, &mut builder, &mut stats);
+    let graph = builder.build(root).map_err(DispatchCompileError::InvalidGraph)?;
+    Ok(CompiledDispatchGraph { graph, stats })
+}
+
+fn fallback_node(
+    matrix: &DispatchMatrix,
+    options: DispatchCompileOptions,
+    builder: &mut DispatchGraphBuilder,
+    stats: &mut DispatchCompileStats,
+) -> Result<GraphNodeId, DispatchCompileError> {
+    match options.residual {
+        ResidualCoverage::Closed => {
+            stats.fail_nodes += 1;
+            Ok(builder.add_node(DispatchNode::Fail))
+        }
+        ResidualCoverage::Open { fallback } => {
+            matrix
+                .outcome(fallback)
+                .ok_or(DispatchCompileError::UnknownOutcome(fallback))?;
+            stats.outcome_nodes += 1;
+            stats.fallback_nodes += 1;
+            Ok(builder.add_node(DispatchNode::Outcome {
+                outcome: fallback,
+                evidence: EdgeEvidence::empty(),
+            }))
+        }
+    }
+}
+
+fn ordered_arms(matrix: &DispatchMatrix) -> Result<Vec<&DispatchArm>, DispatchCompileError> {
+    match &matrix.order {
+        Order::Source => Ok(matrix.arms.iter().collect()),
+        Order::Explicit(order) => {
+            let mut out = Vec::with_capacity(order.len());
+            for &id in order {
+                let Some(arm) = matrix.arm(id) else {
+                    return Err(DispatchCompileError::UnknownArm(id));
+                };
+                out.push(arm);
+            }
+            Ok(out)
+        }
+        Order::Specificity => Err(DispatchCompileError::SpecificityOrderRequiresTypeAnalysis),
+    }
+}
+
+fn compile_arm_sequence(
+    arms: &[ArmCompileState<'_>],
+    fallback: GraphNodeId,
+    builder: &mut DispatchGraphBuilder,
+    stats: &mut DispatchCompileStats,
+) -> GraphNodeId {
+    let Some(first) = arms.first() else {
+        return fallback;
+    };
+    let Some(first_question) = first.questions.first().cloned() else {
+        return outcome_node(first.arm, builder, stats);
+    };
+
+    let shared_count = arms
+        .iter()
+        .take_while(|arm| arm.questions.first() == Some(&first_question))
+        .count();
+    if shared_count > 1 {
+        stats.shared_prefix_tests += 1;
+        let after_shared = compile_arm_sequence(&arms[shared_count..], fallback, builder, stats);
+        let stripped = arms[..shared_count]
+            .iter()
+            .map(|arm| ArmCompileState {
+                arm: arm.arm,
+                questions: arm.questions[1..].to_vec(),
+            })
+            .collect::<Vec<_>>();
+        let on_match = compile_arm_sequence(&stripped, after_shared, builder, stats);
+        return test_node(first_question, on_match, after_shared, builder, stats);
+    }
+
+    let on_miss = compile_arm_sequence(&arms[1..], fallback, builder, stats);
+    compile_single_arm(first, on_miss, builder, stats)
+}
+
+fn compile_single_arm(
+    arm: &ArmCompileState<'_>,
+    on_miss: GraphNodeId,
+    builder: &mut DispatchGraphBuilder,
+    stats: &mut DispatchCompileStats,
+) -> GraphNodeId {
+    let mut current = outcome_node(arm.arm, builder, stats);
+    for question in arm.questions.iter().rev() {
+        current = test_node(question.clone(), current, on_miss, builder, stats);
+    }
+    current
+}
+
+fn outcome_node(
+    arm: &DispatchArm,
+    builder: &mut DispatchGraphBuilder,
+    stats: &mut DispatchCompileStats,
+) -> GraphNodeId {
+    stats.outcome_nodes += 1;
+    builder.add_node(DispatchNode::Outcome {
+        outcome: arm.outcome,
+        evidence: arm.evidence.clone(),
+    })
+}
+
+fn test_node(
+    question: RegionQuestion,
+    on_match: GraphNodeId,
+    on_miss: GraphNodeId,
+    builder: &mut DispatchGraphBuilder,
+    stats: &mut DispatchCompileStats,
+) -> GraphNodeId {
+    stats.test_nodes += 1;
+    builder.add_node(question.into_test_node(on_match, on_miss))
+}
+
 pub(crate) struct DispatchMatrixBuilder {
     order: Order,
     subjects: Vec<Subject>,
@@ -419,8 +610,18 @@ impl DispatchMatrixBuilder {
         evidence: EdgeEvidence,
         outcome: OutcomeId,
     ) -> Result<ArmId, DispatchMatrixError> {
-        for predicate in &predicates {
-            self.ensure_subject(predicate.subject)?;
+        let questions = predicates.into_iter().map(RegionQuestion::new).collect();
+        self.add_arm_questions(questions, evidence, outcome)
+    }
+
+    pub(crate) fn add_arm_questions(
+        &mut self,
+        questions: Vec<RegionQuestion>,
+        evidence: EdgeEvidence,
+        outcome: OutcomeId,
+    ) -> Result<ArmId, DispatchMatrixError> {
+        for question in &questions {
+            self.ensure_question_subjects(question)?;
         }
         self.ensure_evidence_subjects(&evidence)?;
         let outcome_id = outcome;
@@ -434,7 +635,7 @@ impl DispatchMatrixBuilder {
         let id = ArmId(self.arms.len() as u32);
         self.arms.push(DispatchArm {
             id,
-            predicates,
+            questions,
             evidence,
             outcome: outcome_id,
         });
@@ -497,6 +698,12 @@ impl DispatchMatrixBuilder {
             self.ensure_subject(projection.result)?;
         }
         Ok(())
+    }
+
+    fn ensure_question_subjects(&self, question: &RegionQuestion) -> Result<(), DispatchMatrixError> {
+        self.ensure_subject(question.predicate.subject)?;
+        self.ensure_evidence_subjects(&question.match_evidence)?;
+        self.ensure_evidence_subjects(&question.miss_evidence)
     }
 }
 

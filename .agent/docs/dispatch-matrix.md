@@ -19,6 +19,11 @@ subsystem-specific cascades:
 - `DispatchGraph` is the executable decision shape: tests route to nodes, and
   successful edges carry branch-local proofs and projections.
 
+`compile_dispatch_matrix` is pure and side-effect-free. It compiles ordered arms
+into a deterministic graph and returns `DispatchCompileStats` so tests can assert
+shape signals such as test count, fallback count, and shared-prefix tests without
+depending on formatted graph dumps.
+
 ## Vocabulary Boundary
 
 DispatchMatrix has three layers that must stay separate:
@@ -34,7 +39,7 @@ DispatchMatrix has three layers that must stay separate:
   `IsListCons`, `IsEmptyList`, or `MatcherMapGet` plus `IsMatcherMapMiss`.
   Those names are lowering choices, not DispatchMatrix source vocabulary.
 
-Future dispatch changes should add producers or graph compilation on top of this
-model instead of adding one-off matcher or planner dispatch passes. At this
-ticket boundary, tests cover only construction invariants; no runtime behavior is
-owned by `DispatchMatrix`.
+Future dispatch changes should add producers on top of this model instead of
+adding one-off matcher or planner dispatch passes. At this ticket boundary, graph
+compilation is tested only with fake outcome handles; no PatternMatrix or protocol
+runtime behavior is owned by `DispatchMatrix`.

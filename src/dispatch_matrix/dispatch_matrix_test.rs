@@ -1,5 +1,6 @@
 use super::*;
 use crate::types::Types;
+use std::collections::BTreeMap;
 
 #[test]
 fn builder_mints_stable_subject_and_arm_ids() {
@@ -241,6 +242,264 @@ fn type_shape_and_equality_questions_share_graph_branch_shape() {
             EdgeEvidence::from_proof(predicate, ProofSense::DoesNotHold)
         );
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TestValue {
+    Int(i64),
+    Nil,
+    EmptyList,
+    Cons,
+}
+
+fn eval_graph(graph: &DispatchGraph, subject: SubjectId, value: TestValue) -> Option<OutcomeId> {
+    let mut values = BTreeMap::new();
+    values.insert(subject, value);
+    eval_node(graph, graph.root, &values)
+}
+
+fn eval_node(graph: &DispatchGraph, node: GraphNodeId, values: &BTreeMap<SubjectId, TestValue>) -> Option<OutcomeId> {
+    match graph.node(node).expect("node exists") {
+        DispatchNode::Fail => None,
+        DispatchNode::Outcome { outcome, .. } => Some(*outcome),
+        DispatchNode::Test {
+            predicate,
+            on_match,
+            on_miss,
+        } => {
+            let edge = if eval_predicate(predicate, values) {
+                on_match
+            } else {
+                on_miss
+            };
+            eval_node(graph, edge.target, values)
+        }
+    }
+}
+
+fn eval_predicate(predicate: &RegionPredicate, values: &BTreeMap<SubjectId, TestValue>) -> bool {
+    let Some(value) = values.get(&predicate.subject) else {
+        return false;
+    };
+    match (&predicate.region, value) {
+        (Region::Any, _) => true,
+        (Region::Never, _) => false,
+        (Region::Equal(ComparisonValue::Const(DispatchConst::Int(expected))), TestValue::Int(actual)) => {
+            expected == actual
+        }
+        (Region::Equal(ComparisonValue::Const(DispatchConst::Nil)), TestValue::Nil) => true,
+        (Region::Equal(ComparisonValue::Const(DispatchConst::EmptyList)), TestValue::EmptyList) => true,
+        (Region::List(ListRegion::Empty), TestValue::EmptyList) => true,
+        (Region::List(ListRegion::Cons), TestValue::Cons) => true,
+        _ => false,
+    }
+}
+
+fn matrix_with_subject() -> (DispatchMatrixBuilder, SubjectId) {
+    let mut builder = DispatchMatrixBuilder::new(Order::Source);
+    let subject = builder.add_input_subject();
+    (builder, subject)
+}
+
+#[test]
+fn compile_source_order_uses_first_matching_arm() {
+    let (mut builder, subject) = matrix_with_subject();
+    let one = builder.add_outcome(OutcomeMultiplicity::Unique);
+    let fallback = builder.add_outcome(OutcomeMultiplicity::Unique);
+
+    builder
+        .add_arm_questions(
+            vec![RegionQuestion::equality(
+                subject,
+                ComparisonValue::Const(DispatchConst::Int(1)),
+            )],
+            EdgeEvidence::empty(),
+            one,
+        )
+        .expect("specific arm");
+    builder
+        .add_arm(Vec::new(), EdgeEvidence::empty(), fallback)
+        .expect("source fallback arm");
+    let matrix = builder.build().expect("matrix");
+
+    let compiled = compile_dispatch_matrix(&matrix, DispatchCompileOptions::closed()).expect("compile");
+
+    assert_eq!(eval_graph(&compiled.graph, subject, TestValue::Int(1)), Some(one));
+    assert_eq!(eval_graph(&compiled.graph, subject, TestValue::Int(2)), Some(fallback));
+}
+
+#[test]
+fn compile_orthogonal_arms_in_deterministic_source_order() {
+    let (mut builder, subject) = matrix_with_subject();
+    let two = builder.add_outcome(OutcomeMultiplicity::Unique);
+    let one = builder.add_outcome(OutcomeMultiplicity::Unique);
+
+    builder
+        .add_arm_questions(
+            vec![RegionQuestion::equality(
+                subject,
+                ComparisonValue::Const(DispatchConst::Int(2)),
+            )],
+            EdgeEvidence::empty(),
+            two,
+        )
+        .expect("first orthogonal arm");
+    builder
+        .add_arm_questions(
+            vec![RegionQuestion::equality(
+                subject,
+                ComparisonValue::Const(DispatchConst::Int(1)),
+            )],
+            EdgeEvidence::empty(),
+            one,
+        )
+        .expect("second orthogonal arm");
+    let matrix = builder.build().expect("matrix");
+
+    let compiled = compile_dispatch_matrix(&matrix, DispatchCompileOptions::closed()).expect("compile");
+    let Some(DispatchNode::Test { predicate, .. }) = compiled.graph.node(compiled.graph.root) else {
+        panic!("expected root test");
+    };
+
+    assert_eq!(
+        predicate.region,
+        Region::Equal(ComparisonValue::Const(DispatchConst::Int(2)))
+    );
+    assert_eq!(eval_graph(&compiled.graph, subject, TestValue::Int(2)), Some(two));
+    assert_eq!(eval_graph(&compiled.graph, subject, TestValue::Int(1)), Some(one));
+}
+
+#[test]
+fn compile_shares_consecutive_common_prefix_tests() {
+    let mut builder = DispatchMatrixBuilder::new(Order::Source);
+    let list = builder.add_input_subject();
+    let head = builder
+        .add_projected_subject(list, ProjectionKind::ListHead)
+        .expect("head subject");
+    let tail = builder
+        .add_projected_subject(list, ProjectionKind::ListTail)
+        .expect("tail subject");
+    let first = builder.add_outcome(OutcomeMultiplicity::Unique);
+    let second = builder.add_outcome(OutcomeMultiplicity::Unique);
+    let cons = RegionQuestion::list_cons(list, head, tail);
+
+    builder
+        .add_arm_questions(
+            vec![
+                cons.clone(),
+                RegionQuestion::equality(head, ComparisonValue::Const(DispatchConst::Int(1))),
+            ],
+            EdgeEvidence::empty(),
+            first,
+        )
+        .expect("first cons arm");
+    builder
+        .add_arm_questions(
+            vec![
+                cons.clone(),
+                RegionQuestion::equality(head, ComparisonValue::Const(DispatchConst::Int(2))),
+            ],
+            EdgeEvidence::empty(),
+            second,
+        )
+        .expect("second cons arm");
+    let matrix = builder.build().expect("matrix");
+
+    let compiled = compile_dispatch_matrix(&matrix, DispatchCompileOptions::closed()).expect("compile");
+    let Some(DispatchNode::Test { predicate, .. }) = compiled.graph.node(compiled.graph.root) else {
+        panic!("expected shared root test");
+    };
+
+    assert_eq!(*predicate, cons.predicate);
+    assert_eq!(compiled.stats.shared_prefix_tests, 1);
+    assert_eq!(compiled.stats.test_nodes, 3);
+}
+
+#[test]
+fn compile_open_residual_uses_fallback_and_closed_residual_fails() {
+    let (mut builder, subject) = matrix_with_subject();
+    let one = builder.add_outcome(OutcomeMultiplicity::Unique);
+    let fallback = builder.add_outcome(OutcomeMultiplicity::Unique);
+    builder
+        .add_arm_questions(
+            vec![RegionQuestion::equality(
+                subject,
+                ComparisonValue::Const(DispatchConst::Int(1)),
+            )],
+            EdgeEvidence::empty(),
+            one,
+        )
+        .expect("specific arm");
+    let matrix = builder.build().expect("matrix");
+
+    let closed = compile_dispatch_matrix(&matrix, DispatchCompileOptions::closed()).expect("closed compile");
+    let open = compile_dispatch_matrix(&matrix, DispatchCompileOptions::open(fallback)).expect("open compile");
+
+    assert_eq!(eval_graph(&closed.graph, subject, TestValue::Int(2)), None);
+    assert_eq!(eval_graph(&open.graph, subject, TestValue::Int(2)), Some(fallback));
+    assert_eq!(closed.stats.fail_nodes, 1);
+    assert_eq!(closed.stats.fallback_nodes, 0);
+    assert_eq!(open.stats.fail_nodes, 0);
+    assert_eq!(open.stats.fallback_nodes, 1);
+}
+
+#[test]
+fn compile_places_projection_only_on_proven_edge() {
+    let mut builder = DispatchMatrixBuilder::new(Order::Source);
+    let map = builder.add_input_subject();
+    let value = builder
+        .add_projected_subject(
+            map,
+            ProjectionKind::MapValue {
+                key: DispatchConst::AtomName("id".to_string()),
+            },
+        )
+        .expect("map value subject");
+    let matched = builder.add_outcome(OutcomeMultiplicity::Unique);
+    let key = DispatchConst::AtomName("id".to_string());
+
+    builder
+        .add_arm_questions(
+            vec![
+                RegionQuestion::map_key_present(map, key.clone(), value),
+                RegionQuestion::equality(value, ComparisonValue::Const(DispatchConst::Nil)),
+            ],
+            EdgeEvidence::empty(),
+            matched,
+        )
+        .expect("map presence arm");
+    let matrix = builder.build().expect("matrix");
+
+    let compiled = compile_dispatch_matrix(&matrix, DispatchCompileOptions::closed()).expect("compile");
+    let Some(DispatchNode::Test {
+        predicate,
+        on_match,
+        on_miss,
+    }) = compiled.graph.node(compiled.graph.root)
+    else {
+        panic!("expected map presence root");
+    };
+
+    assert_eq!(predicate.region, Region::MapKeyPresent { key: key.clone() });
+    assert_eq!(
+        on_match.evidence.projections,
+        vec![EdgeProjection {
+            source: map,
+            kind: ProjectionKind::MapValue { key },
+            result: value,
+        }]
+    );
+    assert!(on_miss.evidence.projections.is_empty());
+    assert!(matches!(
+        compiled.graph.node(on_match.target),
+        Some(DispatchNode::Test {
+            predicate: RegionPredicate {
+                subject,
+                region: Region::Equal(ComparisonValue::Const(DispatchConst::Nil)),
+            },
+            ..
+        }) if *subject == value
+    ));
 }
 
 #[test]
