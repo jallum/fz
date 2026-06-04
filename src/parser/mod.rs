@@ -339,4 +339,4 @@ mod items;
 mod patterns;
 
 #[cfg(test)]
-mod tests;
+mod parser_test;

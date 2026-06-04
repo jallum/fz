@@ -74,4 +74,4 @@ pub use worklist::plan_module;
 // ----------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests;
+mod ir_planner_test;

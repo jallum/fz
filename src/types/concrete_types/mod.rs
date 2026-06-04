@@ -690,4 +690,4 @@ fn concrete_is_literal(a: &Ty) -> bool {
 }
 
 #[cfg(test)]
-mod tests;
+mod concrete_types_test;

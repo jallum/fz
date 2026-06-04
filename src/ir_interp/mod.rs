@@ -49,7 +49,7 @@ mod scheduler;
 mod value;
 
 #[cfg(test)]
-mod tests;
+mod ir_interp_test;
 
 use binop::*;
 use extern_call::*;

@@ -120,4 +120,4 @@ pub(crate) fn compile_aot_planned<T: Types<Ty = Ty> + ClosureTypes + LiteralType
 }
 
 #[cfg(test)]
-mod tests;
+mod ir_codegen_test;

@@ -28,7 +28,7 @@ mod schema;
 mod stats;
 
 #[cfg(test)]
-mod tests;
+mod heap_test;
 
 use self::fragment::Fragment;
 use crate::process::Process;

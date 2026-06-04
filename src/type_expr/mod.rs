@@ -292,4 +292,4 @@ pub fn opaque_owner_module(qualified: &str) -> Option<&str> {
 }
 
 #[cfg(test)]
-mod tests;
+mod type_expr_test;

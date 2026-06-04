@@ -2398,4 +2398,4 @@ fn solve_from_entry<'m, T: Types<Ty = Ty> + ClosureTypes>(
 }
 
 #[cfg(test)]
-mod tests;
+mod type_infer_test;

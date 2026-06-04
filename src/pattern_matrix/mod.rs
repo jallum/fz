@@ -24,7 +24,7 @@ pub(crate) mod guard;
 pub(crate) mod pattern_ops;
 
 #[cfg(test)]
-mod tests;
+mod pattern_matrix_test;
 
 #[cfg(test)]
 use std::cell::Cell;
