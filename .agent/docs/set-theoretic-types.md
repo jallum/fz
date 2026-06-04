@@ -18,7 +18,8 @@ Everything reduces to deciding emptiness: `is_subtype(a, b)` asks whether
 `(a and not b)` is empty; `is_disjoint(a, b)` asks whether `(a and b)` is
 empty.
 
-The carrier is `Descr` (`src/concrete_types/descr.rs`). A `Descr` is a union
+The model is represented by each `Types` implementation's private carrier.
+`ConcreteTypes` uses `src/concrete_types/descr.rs::Descr`; a `Descr` is a union
 across independent **axes**, one per runtime kind, held in DNF:
 
 ```text
@@ -36,16 +37,28 @@ funcs      DNF of arrow shapes
 resources  DNF of resource shapes
 ```
 
-A value belongs to a `Descr` if it belongs to the axis for its kind. `any()`
+A value belongs to a descriptor if it belongs to the axis for its kind. `any()`
 is every axis at top, `none()` every axis at bottom, and `is_empty` holds when
 every axis is empty (structural clauses checked recursively).
 
 ## Implementation Boundary
 
-Consumers should ask type questions through `Types`, not by inspecting
-`Descr`. `ConcreteTypes` is the current `Ty(Arc<Descr>)` implementation, but
-`Types` is the abstraction boundary for construction, projection, substitution,
-nominal disjointness, widening, and equivalence.
+Consumers should ask type questions through `Types`, not by inspecting a
+descriptor. `Types::Ty` is an associated type and may vary by implementation.
+`ConcreteTypes` uses `Ty(Arc<concrete_types::Descr>)`; `InternedConcreteTypes`
+uses `InternedTy(u32)` handles backed by an interner owned by the
+`InternedConcreteTypes` instance.
+
+The interned implementation intentionally duplicates the concrete kernel under
+`src/interned_types/` instead of importing `concrete_types::Descr`. Its own
+`Descr` is `pub(super)` and structural children store already-interned
+`InternedTy` handles. There is no global/static interner: every handle is
+allocated by, and meaningful only with, the owning `InternedConcreteTypes`
+value. Raw-handle serde is deliberately absent because serializing an interned
+id without its arena would be a misleading wire format.
+
+`Types` is the abstraction boundary for construction, projection,
+substitution, nominal disjointness, widening, and equivalence.
 
 Put behavior in the highest layer that can express it without knowing the
 representation:
@@ -67,6 +80,12 @@ shape/seam, semantic, and closure-surface suites. When adding a new public
 `Types` behavior, add the implementation-agnostic test there first; keep a
 concrete test only when the assertion mentions `Descr`, DNF clauses,
 components, or another concrete representation detail.
+
+The compiler pipeline still imports the concrete `types::Ty` /
+`ConcreteTypes` pair. Switching production inference/planning to an alternate
+implementation is a separate migration: genericize the IR/compiler data that
+stores type handles, decide how module/artifact serialization carries any
+implementation-owned arena, and then replace the factory at the pipeline edge.
 
 ## Schemes Vs Concrete Facts
 
@@ -306,8 +325,13 @@ Gate this model with:
 
 - `cargo test --lib types::conformance_tests` — implementation-agnostic
   `Types` semantics, defaults, seams, and closure-surface behavior
+- `cargo test --lib interned_types::` — interned handle representation tests
+  plus the registered interned conformance subset
 - `cargo test --lib concrete_types::tests::` — concrete `Descr`/DNF/component
   representation mechanics
+- `cargo test --no-run` — compile all test targets and catch controlled
+  warnings without running fixture baselines
+- `cargo test --lib` — full library regression suite
 - `cargo test concrete_types::tests::value_disjoint_soundness_table`
 - `cargo test concrete_types::tests::value_disjoint_nested_in_tuple_is_false`
 - `cargo test reducer::tests::fold_runtime_eq_is_brand_blind`
