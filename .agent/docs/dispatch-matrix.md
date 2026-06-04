@@ -33,6 +33,15 @@ classify equal regions with different outcomes as duplicate coverage or as an
 ambiguity. `analyze_type_coverage` computes covered and residual receiver
 domains, distinguishing closed coverage from open residuals.
 
+`collect_protocol_dispatch_matrix_candidates` is the side-by-side protocol
+producer. It reads the same planner facts as `switch_dispatch` and classifies a
+protocol callsite as ordinary static dispatch, no local dispatch, or a
+specificity-ordered matrix over visible local impls. A closed receiver union gets
+one direct-call outcome per covering local impl and no fallback; an open,
+erased, or provider-only overlap gets an explicit residual fallback outcome that
+preserves the existing protocol stub path. This producer is an oracle only until
+`fz-v19.5`: `rewrite_closed_union_protocol_dispatch` still owns the emitted IR.
+
 ## Vocabulary Boundary
 
 DispatchMatrix has three layers that must stay separate:
@@ -50,5 +59,6 @@ DispatchMatrix has three layers that must stay separate:
 
 Future dispatch changes should add producers on top of this model instead of
 adding one-off matcher or planner dispatch passes. At this ticket boundary, graph
-compilation is tested only with fake outcome handles; no PatternMatrix or protocol
-runtime behavior is owned by `DispatchMatrix`.
+compilation is tested with fake outcome handles and with protocol dispatch
+outcome handles; no PatternMatrix or protocol runtime behavior is owned by
+`DispatchMatrix`.

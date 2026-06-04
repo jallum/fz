@@ -6,9 +6,11 @@ use super::fn_types::{
 };
 use super::narrow::narrow_for_cond;
 use super::reachable::{cont_key_from_slot0, cont_slot0_descr, reachable_spec_ids};
+use super::switch_dispatch::{ProtocolDispatchMatrixSelection, collect_protocol_dispatch_matrix_candidates};
 use super::type_fn::type_fn;
 use super::*;
 use crate::diag::{Span, codes};
+use crate::frontend::protocols::{ImplTarget, ProtocolImplFact, ProtocolImplKey};
 use crate::frontend::resolve::{InterfaceTable, ResolveError, flatten_modules};
 use crate::frontend::spec_registry::SpecRegistry;
 use crate::frontend::{compile_source_with_interface_table, compile_source_with_types};
@@ -20,7 +22,7 @@ use crate::ir_codegen::compile_planned;
 use crate::ir_dest::{lower_list_destinations, lower_map_destinations, lower_tuple_destinations};
 use crate::ir_lower::lower_program;
 use crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT;
-use crate::modules::identity::ModuleName;
+use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::pipeline::{
     CompileMode, ProviderInputs, checked_module_for_mode, compile_source_with_providers, prepare_execution_graph,
 };
@@ -36,7 +38,7 @@ use crate::test_support::{
     runtime_graph_reachable_materialized_body_signals,
 };
 use crate::types::{ClosureTypes, DefaultTypes, KeySlot, Ty, TypeVarId, Types, display_key_slots, key_slots_from_tys};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::read_to_string;
 use std::slice::from_ref;
 
@@ -5195,6 +5197,60 @@ end
     );
 }
 
+#[test]
+fn closed_union_protocol_receiver_matrix_has_direct_outcomes_no_fallback() {
+    let src = r#"
+defprotocol Sizer do
+  fn size(value)
+end
+
+defimpl Sizer, for: Integer do
+  fn size(value), do: 1
+end
+
+defimpl Sizer, for: List do
+  fn size(value), do: 2
+end
+
+fn describe(value), do: Sizer.size(value)
+
+fn main() do
+  case [7, [1, 2, 3]] do
+    [a, b] -> describe(a) + describe(b)
+    _ -> 0
+  end
+end
+"#;
+    let (mut t, m, mt) = plan_protocol_src(src);
+    let candidates = collect_protocol_dispatch_matrix_candidates(&mut t, &m, &mt).expect("protocol matrix candidates");
+    let describe = m.fn_by_name("describe").expect("describe fn");
+    let candidate = candidates
+        .iter()
+        .find(|candidate| candidate.fn_id == describe.id)
+        .expect("describe protocol candidate");
+    let ProtocolDispatchMatrixSelection::Matrix(plan) = &candidate.selection else {
+        panic!(
+            "closed union should request matrix dispatch, got {:?}",
+            candidate.selection
+        );
+    };
+
+    assert!(plan.fully_covered);
+    assert_eq!(plan.fallback_outcome, None);
+    assert_eq!(plan.direct_outcomes.len(), 2);
+    assert_eq!(plan.matrix.arms.len(), 2);
+    assert_eq!(plan.graph.stats.fallback_nodes, 0);
+    assert_eq!(plan.graph.stats.fail_nodes, 1);
+
+    let mut impl_names = plan
+        .direct_outcomes
+        .iter()
+        .map(|outcome| m.fn_by_id(outcome.impl_fn).name.clone())
+        .collect::<Vec<_>>();
+    impl_names.sort();
+    assert_eq!(impl_names, vec!["Sizer.Integer.size", "Sizer.List.size"]);
+}
+
 /// A single-target receiver (a plain list, only `List` implements `Sizer`)
 /// is left untouched — ordinary single dispatch, no cascade.
 #[test]
@@ -5217,6 +5273,35 @@ fn main(), do: describe([1, 2, 3])
     rewrite_closed_union_protocol_dispatch(&mut t, &mut m, &mt);
     let after = m.fn_by_name("describe").unwrap().blocks.len();
     assert_eq!(before, after, "a single-target receiver must not grow a switch cascade");
+}
+
+#[test]
+fn single_target_protocol_receiver_matrix_is_static_direct() {
+    let src = r#"
+defprotocol Sizer do
+  fn size(value)
+end
+
+defimpl Sizer, for: List do
+  fn size(value), do: 2
+end
+
+fn describe(value), do: Sizer.size(value)
+
+fn main(), do: describe([1, 2, 3])
+"#;
+    let (mut t, m, mt) = plan_protocol_src(src);
+    let candidates = collect_protocol_dispatch_matrix_candidates(&mut t, &m, &mt).expect("protocol matrix candidates");
+    let describe = m.fn_by_name("describe").expect("describe fn");
+    let candidate = candidates
+        .iter()
+        .find(|candidate| candidate.fn_id == describe.id)
+        .expect("describe protocol candidate");
+
+    assert!(matches!(
+        candidate.selection,
+        ProtocolDispatchMatrixSelection::StaticDirect
+    ));
 }
 
 // ---- fz-t1m.1.6 — open/erased protocol dispatch (cascade + fallthrough) ----
@@ -5285,6 +5370,111 @@ end
         keeps_stub_fallthrough,
         "an open receiver must keep the stub call as the no-match fallthrough"
     );
+}
+
+#[test]
+fn open_protocol_receiver_matrix_has_residual_stub_fallback() {
+    let src = r#"
+defprotocol Sizer do
+  fn size(value)
+end
+
+defimpl Sizer, for: Integer do
+  fn size(value), do: 1
+end
+
+defimpl Sizer, for: List do
+  fn size(value), do: 2
+end
+
+fn describe(value), do: Sizer.size(value)
+
+fn main() do
+  case [7, [1, 2, 3], :other] do
+    [a, b, c] -> describe(a) + describe(b)
+    _ -> 0
+  end
+end
+"#;
+    let (mut t, m, mt) = plan_protocol_src(src);
+    let candidates = collect_protocol_dispatch_matrix_candidates(&mut t, &m, &mt).expect("protocol matrix candidates");
+    let describe = m.fn_by_name("describe").expect("describe fn");
+    let candidate = candidates
+        .iter()
+        .find(|candidate| candidate.fn_id == describe.id)
+        .expect("describe protocol candidate");
+    let ProtocolDispatchMatrixSelection::Matrix(plan) = &candidate.selection else {
+        panic!(
+            "open receiver should request matrix dispatch, got {:?}",
+            candidate.selection
+        );
+    };
+
+    assert!(!plan.fully_covered);
+    assert!(plan.fallback_outcome.is_some());
+    assert_eq!(plan.direct_outcomes.len(), 2);
+    assert_eq!(plan.graph.stats.fallback_nodes, 1);
+}
+
+#[test]
+fn external_protocol_impl_overlap_remains_residual_in_matrix() {
+    let src = r#"
+defprotocol Sizer do
+  fn size(value)
+end
+
+defimpl Sizer, for: Integer do
+  fn size(value), do: 1
+end
+
+fn describe(value), do: Sizer.size(value)
+
+fn main() do
+  case [7, 1.0] do
+    [a, b] -> describe(a) + describe(b)
+    _ -> 0
+  end
+end
+"#;
+    let (mut t, mut m, mt) = plan_protocol_src(src);
+    let protocol = ModuleName::parse_dotted("Sizer").expect("protocol name");
+    let target = ImplTarget::module(ModuleName::parse_dotted("Float").expect("target name"));
+    let export = ExportKey::new(
+        ModuleName::parse_dotted("Provider.Sizer.Float").expect("provider module"),
+        "size",
+        1,
+    );
+    m.protocol_registry.impls.insert(
+        ProtocolImplKey {
+            protocol: protocol.clone(),
+            target: target.clone(),
+        },
+        ProtocolImplFact {
+            protocol,
+            target,
+            callbacks: BTreeMap::from([(("size".to_string(), 1), export)]),
+            callback_specs: BTreeMap::new(),
+            span: Span::DUMMY,
+        },
+    );
+
+    let candidates = collect_protocol_dispatch_matrix_candidates(&mut t, &m, &mt).expect("protocol matrix candidates");
+    let describe = m.fn_by_name("describe").expect("describe fn");
+    let candidate = candidates
+        .iter()
+        .find(|candidate| candidate.fn_id == describe.id)
+        .expect("describe protocol candidate");
+    let ProtocolDispatchMatrixSelection::Matrix(plan) = &candidate.selection else {
+        panic!(
+            "local Integer plus external Float overlap should request open matrix dispatch, got {:?}",
+            candidate.selection
+        );
+    };
+
+    assert!(!plan.fully_covered);
+    assert!(plan.fallback_outcome.is_some());
+    assert_eq!(plan.direct_outcomes.len(), 1);
+    assert_eq!(m.fn_by_id(plan.direct_outcomes[0].impl_fn).name, "Sizer.Integer.size");
 }
 
 // ---- fz-swt.8 — `.value` accessor: typing + visibility gating ----

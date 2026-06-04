@@ -34,6 +34,11 @@
 use super::diagnostics::env_after_block_stmts;
 use super::fn_types::{ModulePlan, SpecPlan};
 use crate::diag::Span;
+use crate::dispatch_matrix::{
+    CompiledDispatchGraph, DispatchCompileError, DispatchCompileOptions, DispatchMatrix, DispatchMatrixBuilder,
+    EdgeEvidence, EqualTypeRegionPolicy, OutcomeId, OutcomeMultiplicity, RegionQuestion,
+    compile_dispatch_matrix_with_type_order,
+};
 use crate::frontend::protocols::impl_target_type;
 use crate::fz_ir::{
     BitSizeIr, Block, BlockId, BranchOrigin, CallsiteIdent, FnId, FnIr, Module, Prim, ProtocolCallTarget, Stmt, Term,
@@ -44,6 +49,7 @@ use std::collections::HashMap;
 
 /// One arm of a switch: the runtime type to test the receiver against and the
 /// local impl fn to call when it matches.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct SwitchArm {
     target_ty: Ty,
     impl_fn: FnId,
@@ -63,6 +69,46 @@ struct BlockRewrite {
     /// preserves the original stub call, so a runtime value matching no impl
     /// halts exactly as it does today.
     fully_covered: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // fz-v19.4 oracle surface; fz-v19.5 wires it into lowering.
+pub(crate) struct ProtocolDispatchMatrixCandidate {
+    pub(crate) fn_id: FnId,
+    pub(crate) block_id: BlockId,
+    pub(crate) selection: ProtocolDispatchMatrixSelection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // fz-v19.4 oracle surface; fz-v19.5 wires it into lowering.
+pub(crate) enum ProtocolDispatchMatrixSelection {
+    StaticDirect,
+    Matrix(Box<ProtocolDispatchMatrixPlan>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // fz-v19.4 oracle surface; fz-v19.5 wires it into lowering.
+pub(crate) struct ProtocolDispatchMatrixPlan {
+    pub(crate) matrix: DispatchMatrix,
+    pub(crate) graph: CompiledDispatchGraph,
+    pub(crate) direct_outcomes: Vec<ProtocolDirectOutcome>,
+    pub(crate) fallback_outcome: Option<OutcomeId>,
+    pub(crate) fully_covered: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // fz-v19.4 oracle surface; fz-v19.5 wires it into lowering.
+pub(crate) struct ProtocolDirectOutcome {
+    pub(crate) outcome: OutcomeId,
+    pub(crate) target_ty: Ty,
+    pub(crate) impl_fn: FnId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProtocolSwitchSelection {
+    NoLocalArms,
+    StaticDirect,
+    Cascade { arms: Vec<SwitchArm>, fully_covered: bool },
 }
 
 fn max_var(f: &FnIr) -> u32 {
@@ -221,6 +267,47 @@ pub fn rewrite_closed_union_protocol_dispatch<T: Types<Ty = Ty> + ClosureTypes>(
     changed
 }
 
+/// Build DispatchMatrix protocol-dispatch candidates from the same planner
+/// facts the current IR rewrite consumes. This is an oracle/producer only:
+/// `rewrite_closed_union_protocol_dispatch` remains the behavior owner until
+/// fz-v19.5.
+#[allow(dead_code)] // fz-v19.4 oracle surface; fz-v19.5 wires it into lowering.
+pub(crate) fn collect_protocol_dispatch_matrix_candidates<T: Types<Ty = Ty> + ClosureTypes>(
+    t: &mut T,
+    module: &Module,
+    plan: &ModulePlan,
+) -> Result<Vec<ProtocolDispatchMatrixCandidate>, DispatchCompileError> {
+    let specs_by_fn = value_specs_by_fn(plan);
+    let mut out = Vec::new();
+    for f in &module.fns {
+        let Some(specs) = specs_by_fn.get(&f.id) else {
+            continue;
+        };
+        for b in &f.blocks {
+            let (callee, args) = match &b.terminator {
+                Term::Call { callee, args, .. } | Term::TailCall { callee, args, .. } => (*callee, args),
+                _ => continue,
+            };
+            let Some(target) = module.protocol_call_targets.get(&callee) else {
+                continue;
+            };
+            let Some(receiver_var) = args.first().copied() else {
+                continue;
+            };
+            let receiver_ty = merged_receiver_ty(t, module, specs, b, receiver_var);
+            let Some(selection) = protocol_dispatch_matrix_for_receiver(t, module, target, &receiver_ty)? else {
+                continue;
+            };
+            out.push(ProtocolDispatchMatrixCandidate {
+                fn_id: f.id,
+                block_id: b.id,
+                selection,
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// Decide which blocks to rewrite. Read-only over `module` + `plan`.
 fn collect_block_rewrites<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
@@ -298,8 +385,73 @@ fn switch_arms<T: Types<Ty = Ty>>(
     target: &ProtocolCallTarget,
     receiver_ty: &Ty,
 ) -> Option<(Vec<SwitchArm>, bool)> {
+    match protocol_switch_selection(t, module, target, receiver_ty) {
+        ProtocolSwitchSelection::Cascade { arms, fully_covered } => Some((arms, fully_covered)),
+        ProtocolSwitchSelection::NoLocalArms | ProtocolSwitchSelection::StaticDirect => None,
+    }
+}
+
+#[allow(dead_code)] // Called by the fz-v19.4 oracle entrypoint until fz-v19.5.
+fn protocol_dispatch_matrix_for_receiver<T: Types<Ty = Ty>>(
+    t: &mut T,
+    module: &Module,
+    target: &ProtocolCallTarget,
+    receiver_ty: &Ty,
+) -> Result<Option<ProtocolDispatchMatrixSelection>, DispatchCompileError> {
+    match protocol_switch_selection(t, module, target, receiver_ty) {
+        ProtocolSwitchSelection::NoLocalArms => Ok(None),
+        ProtocolSwitchSelection::StaticDirect => Ok(Some(ProtocolDispatchMatrixSelection::StaticDirect)),
+        ProtocolSwitchSelection::Cascade { arms, fully_covered } => {
+            let mut builder = DispatchMatrixBuilder::new(crate::dispatch_matrix::Order::Specificity);
+            let receiver = builder.add_input_subject();
+            let mut direct_outcomes = Vec::new();
+            for arm in arms {
+                let outcome = builder.add_outcome(OutcomeMultiplicity::Unique);
+                builder
+                    .add_arm_questions(
+                        vec![RegionQuestion::type_region(receiver, arm.target_ty.clone())],
+                        EdgeEvidence::empty(),
+                        outcome,
+                    )
+                    .map_err(DispatchCompileError::MatrixBuild)?;
+                direct_outcomes.push(ProtocolDirectOutcome {
+                    outcome,
+                    target_ty: arm.target_ty,
+                    impl_fn: arm.impl_fn,
+                });
+            }
+            let fallback_outcome = if fully_covered {
+                None
+            } else {
+                Some(builder.add_outcome(OutcomeMultiplicity::Unique))
+            };
+            let matrix = builder.build().map_err(DispatchCompileError::MatrixBuild)?;
+            let options = fallback_outcome
+                .map(DispatchCompileOptions::open)
+                .unwrap_or_else(DispatchCompileOptions::closed);
+            let graph =
+                compile_dispatch_matrix_with_type_order(t, &matrix, options, EqualTypeRegionPolicy::DuplicateCoverage)?;
+            Ok(Some(ProtocolDispatchMatrixSelection::Matrix(Box::new(
+                ProtocolDispatchMatrixPlan {
+                    matrix,
+                    graph,
+                    direct_outcomes,
+                    fallback_outcome,
+                    fully_covered,
+                },
+            ))))
+        }
+    }
+}
+
+fn protocol_switch_selection<T: Types<Ty = Ty>>(
+    t: &mut T,
+    module: &Module,
+    target: &ProtocolCallTarget,
+    receiver_ty: &Ty,
+) -> ProtocolSwitchSelection {
     if t.is_empty(receiver_ty) {
-        return None;
+        return ProtocolSwitchSelection::NoLocalArms;
     }
     let mut arms = Vec::new();
     let mut covered = t.none();
@@ -328,17 +480,17 @@ fn switch_arms<T: Types<Ty = Ty>>(
         arms.push(SwitchArm { target_ty, impl_fn });
     }
     if arms.is_empty() {
-        return None;
+        return ProtocolSwitchSelection::NoLocalArms;
     }
     let fully_covered = t.is_subtype(receiver_ty, &covered);
     // A single arm that covers the whole receiver is ordinary single dispatch
     // (`protocol_dispatch_key` already matched it by subtype); no cascade.
     if arms.len() == 1 && fully_covered {
-        return None;
+        return ProtocolSwitchSelection::StaticDirect;
     }
     // Sort arms by impl FnId for a deterministic cascade order.
     arms.sort_by_key(|arm| arm.impl_fn.0);
-    Some((arms, fully_covered))
+    ProtocolSwitchSelection::Cascade { arms, fully_covered }
 }
 
 /// Replace the protocol-call terminator in one block with the switch cascade.

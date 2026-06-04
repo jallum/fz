@@ -367,6 +367,7 @@ pub(crate) enum DispatchCompileError {
     UnknownArm(ArmId),
     SpecificityOrderRequiresTypeAnalysis,
     InvalidGraph(DispatchGraphError),
+    MatrixBuild(DispatchMatrixError),
     NonTypeArmInSpecificityOrder(ArmId),
     TypeOrderDiagnostics(Vec<TypeRegionDiagnostic>),
 }
