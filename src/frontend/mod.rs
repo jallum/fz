@@ -9,6 +9,7 @@ use self::resolve::InterfaceTable;
 use crate::ast::{Expr, FnClause, FnDef, Item, Pattern, Program, Spanned, TypeExprBody};
 use crate::diag::codes;
 use crate::diag::{Diagnostic, Diagnostics, SourceMap, Span};
+use crate::dispatch_matrix::pattern::KnownSubjectDomain;
 use crate::fz_ir::{CallsiteId, EmitSlot, FnId, Module, rewrite_external_callsite_for_link};
 use crate::ir_extern_marshal::resolve_module_types;
 use crate::ir_lower::{lower_program, repl_output_frame_names};
@@ -18,7 +19,6 @@ use crate::measurements;
 use crate::metadata;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
-use crate::pattern_matrix::SubjectDomain;
 use crate::telemetry::value::opaque;
 use crate::telemetry::{NullTelemetry, Telemetry, next_compile_nonce};
 use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Ty, Types};
@@ -78,7 +78,7 @@ fn fn_subject_domains<T: Types<Ty = Ty>>(
     t: &mut T,
     module: &Module,
     module_plan: &ModulePlan,
-) -> HashMap<(String, usize), Vec<SubjectDomain>> {
+) -> HashMap<(String, usize), Vec<KnownSubjectDomain>> {
     let any = t.any();
     let list_any = t.list(any);
     let mut by_fn: HashMap<(String, usize), Vec<bool>> = HashMap::new();
@@ -107,9 +107,9 @@ fn fn_subject_domains<T: Types<Ty = Ty>>(
                     .into_iter()
                     .map(|is_list| {
                         if is_list {
-                            SubjectDomain::List
+                            KnownSubjectDomain::List
                         } else {
-                            SubjectDomain::Any
+                            KnownSubjectDomain::Any
                         }
                     })
                     .collect(),

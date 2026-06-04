@@ -33,9 +33,9 @@ use crate::ast::{Attribute, Expr, FnDef, Item, Program, Spanned};
 use crate::diag::Span;
 #[cfg(test)]
 use crate::diag::{codes, emit_through};
-use crate::exec::matcher::SubjectRef;
 #[cfg(test)]
-use crate::exec::matcher::{GuardExpr, Matcher, MatcherConst, MatcherNode};
+use crate::dispatch_matrix::pattern::PatternBodyId;
+use crate::dispatch_matrix::pattern::PatternSubjectRef;
 #[cfg(test)]
 use crate::exec::runtime::{DbgCapture, Runtime};
 use crate::frontend::protocols::{
@@ -59,8 +59,6 @@ use crate::modules::runtime_library::{
 };
 use crate::parser::Parser;
 use crate::parser::lexer::{Lexer, Tok};
-#[cfg(test)]
-use crate::pattern_matrix::BodyId;
 use crate::specs::{
     StructuralCorrespondenceGroup, StructuralOccurrence, StructuralPathStep, spec_set_correspondence_groups,
 };
@@ -86,8 +84,8 @@ mod error;
 mod expr;
 mod extern_table;
 mod lambda;
-mod matcher;
 mod param_guards;
+mod pattern_dispatch;
 mod receive;
 
 // `LowerError` is the module's only public type: it is the coarse error in the
@@ -107,13 +105,13 @@ use ctx::LowerCtx;
 use expr::{bind_param_topname, lower_expr, lower_fn, lower_pattern_bind};
 use extern_table::{ExternTable, extern_symbol_from_name, extern_ty_from_name};
 use lambda::{collect_pattern_bound_names, collect_pattern_pinned_names, lower_lambda};
-use matcher::{
-    MatchedBinding, collect_matcher_pinned_names_recursive, lower_guard_helper_call_to_dispatch,
-    lower_pattern_matrix_to_current_fn, materialize_prepared_matcher_key,
-};
 use param_guards::emit_param_type_guards;
+use pattern_dispatch::{
+    MatchedBinding, collect_dispatch_pinned_names_recursive, lower_guard_helper_call_to_dispatch,
+    lower_source_patterns_to_current_fn, materialize_prepared_dispatch_key,
+};
 #[cfg(test)]
-use receive::build_receive_pattern_matrix;
+use receive::build_receive_pattern_rows;
 use receive::lower_receive;
 
 pub(crate) const REPL_ENTRY_PREFIX: &str = "__repl_eval_";
@@ -512,9 +510,9 @@ pub(crate) fn compute_current_function_correspondence(
             .collect()
     }
 
-    fn project_path_through_matcher_subject(
+    fn project_path_through_dispatch_subject(
         path: &[StructuralPathStep],
-        subject: &SubjectRef,
+        subject: &PatternSubjectRef,
     ) -> Option<Vec<StructuralPathStep>> {
         fn strip_after_union_prefix(
             path: &[StructuralPathStep],
@@ -528,32 +526,32 @@ pub(crate) fn compute_current_function_correspondence(
         }
 
         match subject {
-            SubjectRef::Input(_) => Some(path.to_vec()),
-            SubjectRef::TupleField { tuple, index } => {
-                let inner = project_path_through_matcher_subject(path, tuple)?;
+            PatternSubjectRef::Input(_) => Some(path.to_vec()),
+            PatternSubjectRef::TupleField { tuple, index } => {
+                let inner = project_path_through_dispatch_subject(path, tuple)?;
                 strip_after_union_prefix(&inner, StructuralPathStep::TupleElem(*index as usize))
             }
-            SubjectRef::ListHead(list) => {
-                let inner = project_path_through_matcher_subject(path, list)?;
+            PatternSubjectRef::ListHead(list) => {
+                let inner = project_path_through_dispatch_subject(path, list)?;
                 strip_after_union_prefix(&inner, StructuralPathStep::ListElem)
             }
-            SubjectRef::ListTail(list) => project_path_through_matcher_subject(path, list),
-            SubjectRef::MapValue { .. } | SubjectRef::BitstringField { .. } => None,
+            PatternSubjectRef::ListTail(list) => project_path_through_dispatch_subject(path, list),
+            PatternSubjectRef::MapValue { .. } | PatternSubjectRef::BitstringField { .. } => None,
         }
     }
 
-    fn project_matcher_binding_groups(
+    fn project_dispatch_binding_groups(
         provenance: &ContinuationProvenance,
-        bindings: &[(Var, SubjectRef)],
+        bindings: &[(Var, PatternSubjectRef)],
         groups: &[StructuralCorrespondenceGroup],
     ) -> Vec<BTreeSet<StructuralOccurrence>> {
-        fn binding_input_id(source: &SubjectRef) -> Option<u32> {
+        fn binding_input_id(source: &PatternSubjectRef) -> Option<u32> {
             match source {
-                SubjectRef::Input(input_id) => Some(input_id.0),
-                SubjectRef::TupleField { tuple, .. } | SubjectRef::ListHead(tuple) | SubjectRef::ListTail(tuple) => {
-                    binding_input_id(tuple)
-                }
-                SubjectRef::MapValue { .. } | SubjectRef::BitstringField { .. } => None,
+                PatternSubjectRef::Input(input_id) => Some(*input_id),
+                PatternSubjectRef::TupleField { tuple, .. }
+                | PatternSubjectRef::ListHead(tuple)
+                | PatternSubjectRef::ListTail(tuple) => binding_input_id(tuple),
+                PatternSubjectRef::MapValue { .. } | PatternSubjectRef::BitstringField { .. } => None,
             }
         }
 
@@ -575,7 +573,7 @@ pub(crate) fn compute_current_function_correspondence(
                                 else {
                                     continue;
                                 };
-                                let Some(projected_path) = project_path_through_matcher_subject(path, source) else {
+                                let Some(projected_path) = project_path_through_dispatch_subject(path, source) else {
                                     continue;
                                 };
                                 out.insert(StructuralOccurrence::Param {
@@ -632,9 +630,9 @@ pub(crate) fn compute_current_function_correspondence(
                         &caller_groups,
                     ));
                 }
-                ContinuationProvenanceKind::MatcherBody { bindings } => {
+                ContinuationProvenanceKind::DispatchBody { bindings } => {
                     sets.extend(rebase_caller_groups(provenance, &caller_params, &caller_groups, true));
-                    sets.extend(project_matcher_binding_groups(provenance, bindings, &caller_groups));
+                    sets.extend(project_dispatch_binding_groups(provenance, bindings, &caller_groups));
                 }
             }
 
@@ -695,7 +693,7 @@ pub fn lower_program<T: Types<Ty = Ty>>(t: &mut T, prog: &Program, tel: &dyn Tel
         .collect();
 
     // Snapshot user FnDefs (non-extern, non-prelude) by (name, arity) for
-    // guard helpers. Receive guards lower helper calls through Matcher
+    // guard helpers. Receive guards lower helper calls through DispatchMatrix
     // dispatch; non-receive dispatch still uses the AST fallback until
     // the general matcher fallback is removed.
     for item in all_items.iter().skip(runtime_item_count) {

@@ -43,6 +43,21 @@ fn range_ref(process: &mut Process, first: i64, last: i64, step: i64) -> u64 {
 }
 
 #[test]
+fn list_cons_predicate_rejects_empty_list() {
+    with_process(|process| {
+        let empty = AnyValueRef::empty_list().raw_word();
+        assert_eq!(fz_list_is_cons(empty), 0, "[] is list-typed, but it is not a cons cell");
+
+        let cons_bits = process.heap.alloc_list_cons_slot(AnyValue::int(1), EMPTY_LIST_BITS);
+        let cons_addr = list_addr_from_tagged(cons_bits).expect("cons addr");
+        let cons = AnyValueRef::from_heap_object(ValueKind::LIST, cons_addr)
+            .expect("cons ref")
+            .raw_word();
+        assert_eq!(fz_list_is_cons(cons), 1, "a heap list cell is a cons cell");
+    });
+}
+
+#[test]
 fn range_constructor_reuses_schema_and_renders_like_elixir() {
     with_process(|process| {
         let process_ptr = process as *mut Process;

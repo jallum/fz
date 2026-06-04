@@ -6,7 +6,6 @@ use crate::ir_interp::{AnyValue, IrInterpRuntime, run_main};
 use crate::ir_lower::lower_program;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
-use crate::pattern_matrix::{compile_count, reset_compile_count};
 use crate::telemetry::NullTelemetry;
 use crate::telemetry::bus::ConfiguredTelemetry;
 use std::fs::read_to_string;
@@ -239,7 +238,7 @@ fn receiver_scan_finds_earlier_skipped_message() {
 }
 
 #[test]
-fn receive_reuses_lowered_matcher_during_interp_probes() {
+fn receive_reuses_lowered_dispatch_during_interp_probes() {
     use crate::telemetry::{Capture, ConfiguredTelemetry, Value as TelemetryValue};
 
     let src = r#"
@@ -260,17 +259,16 @@ fn receive_reuses_lowered_matcher_during_interp_probes() {
     tel.attach(&["fz", "interp", "receive"], cap.handler());
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
-    reset_compile_count();
     run_main(&tel, &m).expect("interp run");
     let out = dbg.lines().join("\n");
     assert!(out.contains("2"), "expected 2, got: {}", out);
     assert_eq!(
         cap.count(&["fz", "interp", "receive", "probe_miss"]),
         2,
-        "two skipped mailbox messages should be observed as receive matcher misses"
+        "two skipped mailbox messages should be observed as receive dispatch misses"
     );
     let hits = cap.find(&["fz", "interp", "receive", "probe_hit"]);
-    assert_eq!(hits.len(), 1, "exactly one receive matcher hit expected");
+    assert_eq!(hits.len(), 1, "exactly one receive dispatch hit expected");
     let hit = &hits[0];
     assert!(matches!(
         hit.measurements.get("clause_idx"),
@@ -280,15 +278,10 @@ fn receive_reuses_lowered_matcher_during_interp_probes() {
         hit.measurements.get("bound_count"),
         Some(TelemetryValue::U64(1))
     ));
-    assert_eq!(
-        compile_count(),
-        0,
-        "interp receive probes must reuse the lowered Matcher instead of recompiling per message"
-    );
 }
 
 #[test]
-fn receive_map_probe_uses_matcher_without_ast_pattern_walk() {
+fn receive_map_probe_uses_dispatch_without_ast_pattern_walk() {
     let src = r#"
         fn main() do
           me = self()

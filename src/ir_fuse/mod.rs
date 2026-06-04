@@ -221,14 +221,14 @@ pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
         Term::ReceiveMatched {
             ident,
             clauses,
-            matcher,
+            dispatch,
             after,
             pinned,
             captures,
         } => Term::ReceiveMatched {
             ident: ident.clone(),
             clauses: clauses.clone(),
-            matcher: matcher.clone(),
+            dispatch: dispatch.clone(),
             after: after.as_ref().map(|a| ReceiveAfter {
                 ident: a.ident.clone(),
                 timeout: sv(a.timeout),

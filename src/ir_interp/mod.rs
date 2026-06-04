@@ -41,8 +41,8 @@ use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, 
 use fz_runtime::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
 
 mod binop;
+mod dispatch_exec;
 mod extern_call;
-mod matcher_exec;
 mod prim;
 mod run;
 mod scheduler;
@@ -52,13 +52,13 @@ mod value;
 mod ir_interp_test;
 
 use binop::*;
+use dispatch_exec::*;
 use extern_call::*;
 #[cfg(test)]
 pub(crate) use extern_call::{
     tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
     tests_support_test_dtor_addr,
 };
-use matcher_exec::*;
 use prim::*;
 use run::*;
 use scheduler::*;

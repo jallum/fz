@@ -1,11 +1,11 @@
 use super::*;
 use crate::ast::{BinOp as AstBinOp, Expr as AstExpr, Pattern as AstPattern, Spanned};
 use crate::diag::Span;
-use crate::exec::matcher::Matcher;
+use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, SourcePatternRows};
+use crate::dispatch_matrix::pattern::{PatternDispatchPlan, pattern_dispatch_from_source};
 use crate::fz_ir::{CallsiteIdent, FnId, ReceiveClause, Var};
 use crate::ir_codegen::backend::register_runtime_symbols;
 use crate::ir_codegen::runtime_syms::declare_runtime_symbols;
-use crate::pattern_matrix::{BodyId, PatternMatrix, Row, compile_pattern_matrix};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Module as CraneliftModule, default_libcall_names};
@@ -32,7 +32,7 @@ fn make_jit() -> (JITModule, FunctionBuilderContext) {
     (JITModule::new(builder), FunctionBuilderContext::new())
 }
 
-type MatcherAbi = extern "C" fn(*mut Process, u64, *const AnyValueRef, *mut AnyValueRef) -> u32;
+type ReceiveDispatchAbi = extern "C" fn(*mut Process, u64, *const AnyValueRef, *mut AnyValueRef) -> u32;
 
 /// Stand up a fresh process for a matcher test. The caller holds the box
 /// and threads `process.as_mut()` to the matcher fn (its 1st arg) and to
@@ -75,47 +75,46 @@ fn clause_meta(bound_names: Vec<&str>) -> ReceiveClause {
     }
 }
 
-fn matcher_from_rows(rows: Vec<(AstPattern, Option<Spanned<AstExpr>>)>) -> Matcher {
-    let pattern_matrix = PatternMatrix {
+fn dispatch_from_rows(rows: Vec<(AstPattern, Option<Spanned<AstExpr>>)>) -> PatternDispatchPlan {
+    let source_patterns = SourcePatternRows {
         subjects: vec![Var(0)],
         rows: rows
             .into_iter()
             .enumerate()
-            .map(|(i, (pattern, guard))| Row {
+            .map(|(i, (pattern, guard))| PatternRow {
                 patterns: vec![sp(pattern)],
                 preconditions: Vec::new(),
-                bindings: Vec::new(),
                 guard,
-                body_id: i as BodyId,
+                body_id: i as PatternBodyId,
             })
             .collect(),
     };
-    compile_pattern_matrix(pattern_matrix).expect("compile matcher")
+    pattern_dispatch_from_source(source_patterns).expect("compile dispatch")
 }
 
-fn finalize_and_get(mut jmod: JITModule, fid: FuncId) -> MatcherAbi {
+fn finalize_and_get(mut jmod: JITModule, fid: FuncId) -> ReceiveDispatchAbi {
     jmod.finalize_definitions().expect("finalize");
     let addr = jmod.get_finalized_function(fid);
     Box::leak(Box::new(jmod));
     unsafe { transmute(addr) }
 }
 
-fn build_matcher_fn(
+fn build_dispatch_fn(
     jmod: &mut JITModule,
     fbctx: &mut FunctionBuilderContext,
     fz_module: &Module,
     tuple_schemas: &HashMap<usize, u32>,
     pinned: &[(String, Var)],
     clauses: &[ReceiveClause],
-    matcher: &Matcher,
+    dispatch: &PatternDispatchPlan,
     name: &str,
-) -> MatcherAbi {
-    let fid = declare_matcher(jmod, name).expect("declare matcher");
-    // Declare the runtime symbols from the production source so the matcher's
+) -> ReceiveDispatchAbi {
+    let fid = declare_receive_dispatch(jmod, name).expect("declare receive dispatch");
+    // Declare the runtime symbols from the production source so the dispatch
     // helper signatures can never drift from the real pipeline (tests use
-    // production code). Mirrors the MatcherRuntimeHelpers wiring in driver.rs.
+    // production code). Mirrors the DispatchRuntimeHelpers wiring in driver.rs.
     let runtime = declare_runtime_symbols(jmod).expect("declare runtime symbols");
-    emit_matcher_body_from_matcher(
+    emit_receive_dispatch_body(
         jmod,
         fbctx,
         fid,
@@ -123,8 +122,8 @@ fn build_matcher_fn(
         tuple_schemas,
         pinned,
         clauses,
-        matcher,
-        &MatcherRuntimeHelpers {
+        dispatch,
+        &DispatchRuntimeHelpers {
             value_eq_typed_id: Some(runtime.value_eq_ref_id),
             matcher_eq_bytes_id: Some(runtime.matcher_eq_bytes_id),
             matcher_map_get_id: Some(runtime.matcher_map_get_id),
@@ -147,7 +146,7 @@ fn build_matcher_fn(
             list_tail_id: Some(runtime.list_tail_fallback_id),
         },
     )
-    .expect("emit cached matcher");
+    .expect("emit receive dispatch");
     finalize_and_get(replace(jmod, make_jit().0), fid)
 }
 
@@ -160,15 +159,15 @@ fn cached_matcher_int_literal_hits_only_exact_tagged_value() {
     let tuple_ids = HashMap::new();
     let pinned = Vec::new();
     let clauses = vec![clause_meta(vec![])];
-    let matcher = matcher_from_rows(vec![(AstPattern::Int(42), None)]);
-    let f = build_matcher_fn(
+    let dispatch = dispatch_from_rows(vec![(AstPattern::Int(42), None)]);
+    let f = build_dispatch_fn(
         &mut jmod,
         &mut fbctx,
         &m,
         &tuple_ids,
         &pinned,
         &clauses,
-        &matcher,
+        &dispatch,
         "cached_matcher_int_42",
     );
     let pin: [AnyValueRef; 0] = [];
@@ -186,15 +185,15 @@ fn cached_matcher_var_writes_input_to_out_slot_zero() {
     let tuple_ids = HashMap::new();
     let pinned = Vec::new();
     let clauses = vec![clause_meta(vec!["x"])];
-    let matcher = matcher_from_rows(vec![(AstPattern::Var("x".into()), None)]);
-    let f = build_matcher_fn(
+    let dispatch = dispatch_from_rows(vec![(AstPattern::Var("x".into()), None)]);
+    let f = build_dispatch_fn(
         &mut jmod,
         &mut fbctx,
         &m,
         &tuple_ids,
         &pinned,
         &clauses,
-        &matcher,
+        &dispatch,
         "cached_matcher_var_x",
     );
     let pin: [AnyValueRef; 0] = [];
@@ -218,18 +217,18 @@ fn cached_matcher_guard_falls_through_when_false() {
         Box::new(sp(AstExpr::Var("x".into()))),
         Box::new(sp(AstExpr::Int(10))),
     ));
-    let matcher = matcher_from_rows(vec![
+    let dispatch = dispatch_from_rows(vec![
         (AstPattern::Var("x".into()), Some(guard)),
         (AstPattern::Wildcard, None),
     ]);
-    let f = build_matcher_fn(
+    let f = build_dispatch_fn(
         &mut jmod,
         &mut fbctx,
         &m,
         &tuple_ids,
         &pinned,
         &clauses,
-        &matcher,
+        &dispatch,
         "cached_matcher_guard_gt",
     );
     let pin: [AnyValueRef; 0] = [];
@@ -253,15 +252,15 @@ fn cached_matcher_guard_reads_pinned_capture() {
         Box::new(sp(AstExpr::Var("limit".into()))),
         Box::new(sp(AstExpr::Int(9))),
     ));
-    let matcher = matcher_from_rows(vec![(AstPattern::Wildcard, Some(guard)), (AstPattern::Wildcard, None)]);
-    let f = build_matcher_fn(
+    let dispatch = dispatch_from_rows(vec![(AstPattern::Wildcard, Some(guard)), (AstPattern::Wildcard, None)]);
+    let f = build_dispatch_fn(
         &mut jmod,
         &mut fbctx,
         &m,
         &tuple_ids,
         &pinned,
         &clauses,
-        &matcher,
+        &dispatch,
         "cached_matcher_guard_pinned",
     );
     let mut out: [AnyValueRef; 0] = [];
@@ -291,15 +290,15 @@ fn cached_matcher_tuple_with_atom_pinned_var_matches_arrived_message() {
         sp(AstPattern::Pinned("ref".into())),
         sp(AstPattern::Var("v".into())),
     ]);
-    let matcher = matcher_from_rows(vec![(pat, None)]);
-    let f = build_matcher_fn(
+    let dispatch = dispatch_from_rows(vec![(pat, None)]);
+    let f = build_dispatch_fn(
         &mut jmod,
         &mut fbctx,
         &m,
         &tuple_ids,
         &pinned,
         &clauses,
-        &matcher,
+        &dispatch,
         "cached_matcher_tuple_reply",
     );
 

@@ -2,7 +2,7 @@
 
 #[cfg(debug_assertions)]
 use super::invariants::{assert_no_new_call_shapes, emit_and_assert_spec_dispatch_coverage, snapshot_call_shapes};
-use super::receive::{MatcherRuntimeHelpers, declare_matcher, emit_matcher_body_from_matcher};
+use super::receive::{DispatchRuntimeHelpers, declare_receive_dispatch, emit_receive_dispatch_body};
 use super::*;
 use crate::fz_ir::{
     BinOp, BlockId, CallsiteId, CallsiteIdent, Const, EmitSlot, FnId, Module, Prim, SpecId, Stmt, Term, UnOp,
@@ -1142,26 +1142,26 @@ fn declare_spec_fns<M: cranelift_module::Module>(
     Ok(fn_ids)
 }
 
-/// Pre-pass over Term::ReceiveMatched sites: one matcher FuncId per
+/// Pre-pass over Term::ReceiveMatched sites: one receive-dispatch FuncId per
 /// site, keyed by `(fn_id.0, block_id.0)`. Declared up front so the
 /// park-site terminator arm can take a `func_addr` of an as-yet-unemitted
 /// symbol; the body is emitted in a post-fn-loop pass.
-type MatcherFnIds = HashMap<(u32, u32), FuncId>;
+type ReceiveDispatchFnIds = HashMap<(u32, u32), FuncId>;
 type ReceiveMatchedSites = Vec<(FnId, BlockId)>;
 type MidFlightContFnIds = HashMap<(u32, Vec<MidFlightArgShape>), FuncId>;
 
-fn declare_matcher_fns<M: cranelift_module::Module>(
+fn declare_receive_dispatch_fns<M: cranelift_module::Module>(
     m: &mut M,
     module: &Module,
     tel: &dyn Telemetry,
-) -> Result<(MatcherFnIds, ReceiveMatchedSites), CodegenError> {
-    let mut matcher_fn_ids: HashMap<(u32, u32), FuncId> = HashMap::new();
+) -> Result<(ReceiveDispatchFnIds, ReceiveMatchedSites), CodegenError> {
+    let mut dispatch_fn_ids: HashMap<(u32, u32), FuncId> = HashMap::new();
     let mut receive_matched_sites: Vec<(FnId, BlockId)> = Vec::new();
     for f in &module.fns {
         for blk in &f.blocks {
             let Term::ReceiveMatched {
                 clauses,
-                matcher,
+                dispatch,
                 after,
                 pinned,
                 captures,
@@ -1170,9 +1170,9 @@ fn declare_matcher_fns<M: cranelift_module::Module>(
             else {
                 continue;
             };
-            let name = format!("fz_matcher_fn_{}_b{}", f.id.0, blk.id.0);
-            let m_id = declare_matcher(m, &name)?;
-            matcher_fn_ids.insert((f.id.0, blk.id.0), m_id);
+            let name = format!("fz_receive_dispatch_fn_{}_b{}", f.id.0, blk.id.0);
+            let m_id = declare_receive_dispatch(m, &name)?;
+            dispatch_fn_ids.insert((f.id.0, blk.id.0), m_id);
             receive_matched_sites.push((f.id, blk.id));
             tel.execute(
                 &["fz", "codegen", "receive", "site"],
@@ -1183,35 +1183,34 @@ fn declare_matcher_fns<M: cranelift_module::Module>(
                     after_count: if after.is_some() { 1u64 } else { 0u64 },
                     pinned_count: pinned.len() as u64,
                     capture_count: captures.len() as u64,
-                    matcher_input_count: matcher.inputs.len() as u64,
-                    matcher_prepared_key_count: matcher.prepared_keys.len() as u64,
-                    matcher_node_count: matcher.nodes.len() as u64,
+                    dispatch_input_count: dispatch.inputs.len() as u64,
+                    dispatch_prepared_key_count: dispatch.prepared_keys.len() as u64,
+                    dispatch_node_count: dispatch.graph.nodes.len() as u64,
                 },
                 &crate::metadata! {
                     module_path: module.module_path().to_owned(),
                     fn_name: f.name.clone(),
-                    matcher: opaque(matcher),
+                    dispatch: opaque(dispatch),
                 },
             );
         }
     }
-    Ok((matcher_fn_ids, receive_matched_sites))
+    Ok((dispatch_fn_ids, receive_matched_sites))
 }
 
-/// Emit matcher fn bodies for every Term::ReceiveMatched site
-/// discovered in the pre-pass above. Matchers were declared before the
+/// Emit receive-dispatch fn bodies for every Term::ReceiveMatched site
+/// discovered in the pre-pass above. Dispatch fns were declared before the
 /// fn-compilation loop so the park-site terminator arm could take
 /// `func_addr` of the still-undefined symbols. Bodies are pure leaf fns
-/// (no allocation, no extern); the emitter refuses any clause with a
-/// guard.
+/// (no allocation, no extern).
 #[allow(clippy::too_many_arguments)]
-fn emit_matcher_bodies<M: cranelift_module::Module>(
+fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
     module: &Module,
     runtime: &RuntimeRefs,
     tuple_schema_ids: &HashMap<usize, u32>,
-    matcher_fn_ids: &HashMap<(u32, u32), FuncId>,
+    dispatch_fn_ids: &HashMap<(u32, u32), FuncId>,
     receive_matched_sites: &[(FnId, BlockId)],
     tel: &dyn Telemetry,
 ) -> Result<(), CodegenError> {
@@ -1221,26 +1220,26 @@ fn emit_matcher_bodies<M: cranelift_module::Module>(
         let Term::ReceiveMatched {
             clauses,
             pinned,
-            matcher,
+            dispatch,
             ..
         } = &blk.terminator
         else {
             unreachable!("receive_matched_sites holds only Term::ReceiveMatched terms");
         };
-        let m_id = matcher_fn_ids[&(fn_id.0, blk_id.0)];
-        let display_name = format!("fz_matcher_fn_{}_b{}", fn_id.0, blk_id.0);
+        let m_id = dispatch_fn_ids[&(fn_id.0, blk_id.0)];
+        let display_name = format!("fz_receive_dispatch_fn_{}_b{}", fn_id.0, blk_id.0);
         let (block_count, instruction_count) = {
             let _span = tel.span(
                 &["fz", "codegen", "lower_function"],
                 crate::metadata! {
-                    body_kind: "receive_matcher",
+                    body_kind: "receive_dispatch",
                     module_path: module.module_path().to_owned(),
                     fn_name: display_name.clone(),
                     fn_id: fn_id.0 as u64,
                     block_id: blk_id.0 as u64,
                 },
             );
-            emit_matcher_body_from_matcher(
+            emit_receive_dispatch_body(
                 m,
                 fbctx,
                 m_id,
@@ -1248,8 +1247,8 @@ fn emit_matcher_bodies<M: cranelift_module::Module>(
                 tuple_schema_ids,
                 pinned.as_slice(),
                 clauses.as_slice(),
-                matcher,
-                &MatcherRuntimeHelpers {
+                dispatch,
+                &DispatchRuntimeHelpers {
                     value_eq_typed_id: Some(runtime.value_eq_ref_id),
                     matcher_eq_bytes_id: Some(runtime.matcher_eq_bytes_id),
                     matcher_map_get_id: Some(runtime.matcher_map_get_id),
@@ -1282,15 +1281,15 @@ fn emit_matcher_bodies<M: cranelift_module::Module>(
                 instruction_count: instruction_count as u64,
                 clause_count: clauses.len() as u64,
                 pinned_count: pinned.len() as u64,
-                matcher_input_count: matcher.inputs.len() as u64,
-                matcher_prepared_key_count: matcher.prepared_keys.len() as u64,
-                matcher_node_count: matcher.nodes.len() as u64,
+                dispatch_input_count: dispatch.inputs.len() as u64,
+                dispatch_prepared_key_count: dispatch.prepared_keys.len() as u64,
+                dispatch_node_count: dispatch.graph.nodes.len() as u64,
             },
             &crate::metadata! {
-                body_kind: "receive_matcher",
+                body_kind: "receive_dispatch",
                 module_path: module.module_path().to_owned(),
                 fn_name: display_name,
-                matcher: opaque(matcher),
+                dispatch: opaque(dispatch),
             },
         );
     }
@@ -1605,7 +1604,8 @@ fn compile_with_backend_preplanned_impl<
     )?;
 
     let bs_const_data: RefCell<HashMap<Vec<u8>, BsConstSyms>> = RefCell::new(HashMap::new());
-    let (matcher_fn_ids, receive_matched_sites) = declare_matcher_fns(backend.module_mut(), module, tel)?;
+    let (receive_dispatch_fn_ids, receive_matched_sites) =
+        declare_receive_dispatch_fns(backend.module_mut(), module, tel)?;
     let verifier_isa = host_isa();
 
     for sid in 0..spec_count {
@@ -1677,7 +1677,7 @@ fn compile_with_backend_preplanned_impl<
             cont_fns: &abi_facts.cont_fns,
             closure_capture_counts: &abi_facts.closure_capture_counts,
             cont_extras_count: &abi_facts.cont_extras_count,
-            matcher_fn_ids: &matcher_fn_ids,
+            receive_dispatch_fn_ids: &receive_dispatch_fn_ids,
         };
         {
             let _span = tel.span(
@@ -1774,13 +1774,13 @@ fn compile_with_backend_preplanned_impl<
         backend.module_mut().clear_context(&mut ctx);
     }
 
-    emit_matcher_bodies(
+    emit_receive_dispatch_bodies(
         backend.module_mut(),
         &mut fbctx,
         module,
         &runtime,
         &tuple_schema_ids,
-        &matcher_fn_ids,
+        &receive_dispatch_fn_ids,
         &receive_matched_sites,
         tel,
     )?;

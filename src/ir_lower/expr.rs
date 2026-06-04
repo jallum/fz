@@ -5,6 +5,7 @@ use crate::ast::{
     TypeExprBody, UnOp as AstUnOp, WithBinding, lambda_direct_clause,
 };
 use crate::diag::Span;
+use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, SourcePatternRows};
 use crate::fz_ir::{
     BinOp, BitFieldIr, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, ContinuationProvenance,
     ContinuationProvenanceKind, ExternArg, ExternDecl, ExternId, ExternTy, FnBuilder, FnCategory, Prim, Term, UnOp,
@@ -12,7 +13,6 @@ use crate::fz_ir::{
 };
 use crate::modules::identity::ModuleName;
 use crate::parser::lexer::Tok;
-use crate::pattern_matrix::{BodyId, PatternMatrix, Row};
 use crate::types::{Ty, Types};
 use std::collections::HashMap;
 use std::mem::discriminant;
@@ -1088,7 +1088,7 @@ pub(super) fn lower_case<T: Types<Ty = Ty>>(
     //
     // The clause-fn captures are snapshotted *after* pattern bind so the
     // newly-bound pattern names are included.
-    // fz-ul4.43.F — PatternMatrix dispatch replaces the per-clause try_blocks
+    // fz-ul4.43.F — SourcePatternRows dispatch replaces the per-clause try_blocks
     // cascade. body_cb mints per-clause cont fns (case bodies always
     // wrap; no inline fast path here unlike multi_clause). join_opt
     // handles non-tail return-value plumbing.
@@ -1119,17 +1119,16 @@ pub(super) fn lower_case<T: Types<Ty = Ty>>(
     ctx.cur_block = Some(matrix_entry);
     ctx.terminated = false;
 
-    let pattern_matrix = PatternMatrix {
+    let source_patterns = SourcePatternRows {
         subjects: vec![sv],
         rows: clauses
             .iter()
             .enumerate()
-            .map(|(i, c)| Row {
+            .map(|(i, c)| PatternRow {
                 patterns: vec![c.pattern.clone()],
                 preconditions: Vec::new(),
-                bindings: Vec::new(),
                 guard: c.guard.clone(),
-                body_id: i as BodyId,
+                body_id: i as PatternBodyId,
             })
             .collect(),
     };
@@ -1147,7 +1146,7 @@ pub(super) fn lower_case<T: Types<Ty = Ty>>(
         let saved_order_ref = &saved_order;
         let mut cb = |ctx: &mut LowerCtx,
                       t: &mut T,
-                      body_id: BodyId,
+                      body_id: PatternBodyId,
                       bindings: Vec<MatchedBinding>,
                       _preconds: Vec<(Var, Ty)>,
                       guard: Option<Spanned<Expr>>,
@@ -1182,7 +1181,7 @@ pub(super) fn lower_case<T: Types<Ty = Ty>>(
                             caller: ctx.cur_fn_id.expect("lower_case: missing current fn id"),
                             captured: cont.outer_captured.iter().map(|(_, var)| *var).collect(),
                             capture_param_offset: 0,
-                            kind: ContinuationProvenanceKind::MatcherBody {
+                            kind: ContinuationProvenanceKind::DispatchBody {
                                 bindings: bindings
                                     .iter()
                                     .map(|binding| (binding.var, binding.source.clone()))
@@ -1204,7 +1203,7 @@ pub(super) fn lower_case<T: Types<Ty = Ty>>(
             ctx.terminated = true;
             Ok(())
         };
-        let result = lower_pattern_matrix_to_current_fn(ctx, t, pattern_matrix, fail_block, &mut cb);
+        let result = lower_source_patterns_to_current_fn(ctx, t, source_patterns, fail_block, &mut cb);
         ctx.branch_origin = prev_origin;
         result?;
     }
@@ -1443,17 +1442,16 @@ pub(super) fn lower_with<T: Types<Ty = Ty>>(
         ctx.cur_block = Some(matrix_entry);
         ctx.terminated = false;
 
-        let pattern_matrix = PatternMatrix {
+        let source_patterns = SourcePatternRows {
             subjects: vec![unmatched_v],
             rows: else_clauses
                 .iter()
                 .enumerate()
-                .map(|(i, c)| Row {
+                .map(|(i, c)| PatternRow {
                     patterns: vec![c.pattern.clone()],
                     preconditions: Vec::new(),
-                    bindings: Vec::new(),
                     guard: c.guard.clone(),
-                    body_id: i as BodyId,
+                    body_id: i as PatternBodyId,
                 })
                 .collect(),
         };
@@ -1470,7 +1468,7 @@ pub(super) fn lower_with<T: Types<Ty = Ty>>(
             let saved_fail_order_ref = &saved_fail_order;
             let mut cb = |ctx: &mut LowerCtx,
                           t: &mut T,
-                          body_id: BodyId,
+                          body_id: PatternBodyId,
                           bindings: Vec<MatchedBinding>,
                           _preconds: Vec<(Var, Ty)>,
                           guard: Option<Spanned<Expr>>,
@@ -1505,7 +1503,7 @@ pub(super) fn lower_with<T: Types<Ty = Ty>>(
                                 caller: ctx.cur_fn_id.expect("lower_with else: missing current fn id"),
                                 captured: cont.outer_captured.iter().map(|(_, var)| *var).collect(),
                                 capture_param_offset: 0,
-                                kind: ContinuationProvenanceKind::MatcherBody {
+                                kind: ContinuationProvenanceKind::DispatchBody {
                                     bindings: bindings
                                         .iter()
                                         .map(|binding| (binding.var, binding.source.clone()))
@@ -1527,7 +1525,7 @@ pub(super) fn lower_with<T: Types<Ty = Ty>>(
                 ctx.terminated = true;
                 Ok(())
             };
-            let result = lower_pattern_matrix_to_current_fn(ctx, t, pattern_matrix, fail_block, &mut cb);
+            let result = lower_source_patterns_to_current_fn(ctx, t, source_patterns, fail_block, &mut cb);
             ctx.branch_origin = prev_origin;
             result?;
         }

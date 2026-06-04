@@ -25,7 +25,6 @@ mod ir_lower;
 mod ir_planner;
 mod modules;
 mod parser;
-mod pattern_matrix;
 mod specs;
 mod telemetry;
 #[cfg(test)]

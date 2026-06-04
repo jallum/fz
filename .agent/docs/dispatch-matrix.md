@@ -1,13 +1,13 @@
 # Dispatch Matrix
 
-`src/dispatch_matrix` is the shared model for the dispatch unification epic
-(`fz-v19`). Protocol finite-union dispatch and source-pattern dispatch now both
-build a `DispatchMatrix`, compile it to a `DispatchGraph`, and let producer
-policy decide what a winning outcome means. `PatternMatrix` still normalizes AST
-patterns into rows, but the runtime decision graph for source patterns is owned
-by `DispatchMatrix`.
+`src/dispatch_matrix` is the shared model for source-pattern and type-directed
+dispatch. Function heads, `case`, `with else`, selective receive, guard helper
+dispatch, and protocol finite-union dispatch all build a `DispatchMatrix`,
+compile it to a `DispatchGraph`, and let producer policy decide what a winning
+outcome means. `SourcePatternRows` normalizes AST patterns into rows, but the
+runtime decision graph for source patterns is owned by `DispatchMatrix`.
 
-The model names four separate concepts so future dispatch work does not grow new
+The model names four separate concepts so dispatch work does not grow new
 subsystem-specific cascades:
 
 - `Region` is the value-space question an arm asks of a subject: type,
@@ -45,16 +45,15 @@ lowers the compiled `DispatchGraph` into the current `TypeTest`/`If` IR shape:
 closed graph `Fail` tails become the final direct `else`, while open residual
 fallbacks become the original stub call.
 
-`pattern_dispatch_from_matrix` is the source-pattern producer. It consumes the
-AST-facing `PatternMatrix`, extracts positive proof paths into `Order::Source`
+`pattern_dispatch_from_source` is the source-pattern producer. It consumes the
+AST-facing `SourcePatternRows`, extracts positive proof paths into `Order::Source`
 arms, and keeps pattern-specific payloads as opaque outcome metadata: body id,
 leaf bindings, pinned inputs, prepared keys, and guard expressions.
-`matcher_from_pattern_dispatch_plan` rebuilds a graph-derived `Matcher` from the
-compiled `DispatchGraph` so existing inline lowering and the receive ABI can keep
-using their current backend shape while their decisions come from
-`DispatchMatrix`. Receive accept/reject policy is not encoded in
-`DispatchMatrix`; receive remains a producer/outcome policy layered above the
-same regions.
+Inline lowering for function heads, `case`, and `with else`, plus interpreter
+receive probes and native receive codegen, walk the resulting
+`PatternDispatchPlan` directly. Receive accept/reject policy is not encoded in
+`DispatchMatrix`; selective receive remains a producer/outcome policy layered
+above the same regions.
 
 ## Vocabulary Boundary
 
@@ -72,8 +71,8 @@ DispatchMatrix has three layers that must stay separate:
   Those names are lowering choices, not DispatchMatrix source vocabulary.
 
 Future dispatch changes should add producers on top of this model instead of
-adding one-off matcher or planner dispatch passes. At this ticket boundary,
-graph compilation is tested with fake outcome handles, protocol direct-call /
-stub outcomes, and PatternMatrix-derived pattern outcomes. Protocol dispatch and
-source-pattern dispatch share the same decision model; the remaining `Matcher`
-usage is an ABI/lowering adapter, not a separate runtime semantics owner.
+adding one-off pattern, protocol, or planner dispatch passes. Graph compilation
+is tested with fake outcome handles, protocol direct-call / residual outcomes,
+and source-pattern-derived pattern outcomes. Protocol dispatch and source-pattern
+dispatch share the same decision model; runtime helper names that still say
+"matcher" are ABI vocabulary, not a separate compiler data model.

@@ -54,11 +54,11 @@ pub(crate) struct CodegenEnv<'a> {
     /// their values are closure-env slots. Unmapped call continuations keep
     /// the normal one-result input shape.
     pub(super) cont_extras_count: &'a HashMap<FnId, usize>,
-    /// Matcher FuncId per ReceiveMatched site, keyed by `(parent_fn_id.0,
-    /// block_id.0)`. Populated by the planned codegen matcher declaration pass
+    /// Receive-dispatch FuncId per ReceiveMatched site, keyed by `(parent_fn_id.0,
+    /// block_id.0)`. Populated by the planned codegen declaration pass
     /// and consumed by the Term::ReceiveMatched arm in
     /// `compile_block_terminator` (`fn_addr` -> call site arg).
-    pub(super) matcher_fn_ids: &'a HashMap<(u32, u32), FuncId>,
+    pub(super) receive_dispatch_fn_ids: &'a HashMap<(u32, u32), FuncId>,
 }
 
 #[derive(Clone, Copy)]

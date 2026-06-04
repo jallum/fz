@@ -1482,7 +1482,8 @@ pub extern "C" fn fz_map_is_map(map_ref_word: u64) -> u8 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_list_is_cons(list_ref_word: u64) -> u8 {
-    (any_value_ref_from_word(list_ref_word, "fz_list_is_cons").tag() == ValueKind::LIST) as u8
+    let list = any_value_ref_from_word(list_ref_word, "fz_list_is_cons");
+    (list.tag() == ValueKind::LIST && !list.is_empty_list()) as u8
 }
 
 #[unsafe(no_mangle)]

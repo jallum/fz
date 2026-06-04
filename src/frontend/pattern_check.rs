@@ -1,8 +1,8 @@
 //! fz-ul4.45 — Pattern-match correctness analysis.
 //!
 //! Walks the program's AST, finds every match site (multi-clause `fn`,
-//! `case` expression, `with`'s `else` cascade), builds a `PatternMatrix` from
-//! its clauses, and runs `pattern_matrix::find_unreachable_rows` and
+//! `case` expression, `with`'s `else` cascade), builds a `SourcePatternRows` from
+//! its clauses, and runs `dispatch_matrix::pattern::find_unreachable_rows` and
 //! `is_inexhaustive`. Emits a `Diagnostic` per finding.
 //!
 //! Pipeline position: runs alongside `spec_check::validate_specs` after
@@ -11,10 +11,11 @@
 
 use crate::ast::{Expr, FnClause, FnDef, Item, MatchClause, Pattern, Program, Spanned, WithBinding};
 use crate::diag::{Diagnostic, Span, codes};
-use crate::fz_ir::Var;
-use crate::pattern_matrix::{
-    BodyId, PatternMatrix, Row, SubjectDomain, find_unreachable_rows, is_inexhaustive_with_domains,
+use crate::dispatch_matrix::pattern::{
+    KnownSubjectDomain, PatternBodyId, PatternRow, SourcePatternRows, find_unreachable_rows,
+    is_inexhaustive_with_domains,
 };
+use crate::fz_ir::Var;
 use crate::types::Types;
 use std::collections::{HashMap, HashSet};
 
@@ -31,7 +32,7 @@ pub fn check_program<T: Types>(
     _t: &mut T,
     prog: &Program,
     survivors: Option<&HashSet<(String, usize)>>,
-    domains: Option<&HashMap<(String, usize), Vec<SubjectDomain>>>,
+    domains: Option<&HashMap<(String, usize), Vec<KnownSubjectDomain>>>,
 ) -> Vec<Diagnostic> {
     let mut diags: Vec<Diagnostic> = Vec::new();
     for item in &prog.items {
@@ -50,7 +51,7 @@ pub fn check_program<T: Types>(
     diags
 }
 
-fn check_fn_def(fn_def: &FnDef, domains: Option<&[SubjectDomain]>, diags: &mut Vec<Diagnostic>) {
+fn check_fn_def(fn_def: &FnDef, domains: Option<&[KnownSubjectDomain]>, diags: &mut Vec<Diagnostic>) {
     if fn_def.clauses.len() > 1 {
         check_fn_clauses(fn_def, domains, diags);
     }
@@ -62,29 +63,28 @@ fn check_fn_def(fn_def: &FnDef, domains: Option<&[SubjectDomain]>, diags: &mut V
     }
 }
 
-/// Multi-clause `fn` heads. PatternMatrix has one column per parameter; rows
+/// Multi-clause `fn` heads. SourcePatternRows has one column per parameter; rows
 /// are the clauses' parameter lists. Inexhaustive matches halt with
 /// `:function_clause` at runtime — surfacing as a warning gives an
 /// early signal.
-fn check_fn_clauses(fn_def: &FnDef, domains: Option<&[SubjectDomain]>, diags: &mut Vec<Diagnostic>) {
+fn check_fn_clauses(fn_def: &FnDef, domains: Option<&[KnownSubjectDomain]>, diags: &mut Vec<Diagnostic>) {
     let arity = fn_def.clauses[0].params.len();
     let subjects: Vec<Var> = (0..arity as u32).map(Var).collect();
-    let rows: Vec<Row> = fn_def
+    let rows: Vec<PatternRow> = fn_def
         .clauses
         .iter()
         .enumerate()
-        .map(|(i, c)| Row {
+        .map(|(i, c)| PatternRow {
             patterns: c.params.clone(),
             preconditions: Vec::new(),
-            bindings: Vec::new(),
             guard: c.guard.clone(),
-            body_id: i as BodyId,
+            body_id: i as PatternBodyId,
         })
         .collect();
-    let pattern_matrix = PatternMatrix { subjects, rows };
+    let source_patterns = SourcePatternRows { subjects, rows };
 
     // Type-ascribed params (`x :: integer`) and clause guards add match
-    // constraints the PatternMatrix does not model — it sees an ascribed or
+    // constraints the SourcePatternRows does not model — it sees an ascribed or
     // guarded param as a plain binding (catch-all). Its first-match coverage
     // verdict is therefore unsound when either is present: a later clause can be
     // reachable for inputs the ascribed/guarded clause rejects (e.g.
@@ -100,13 +100,13 @@ fn check_fn_clauses(fn_def: &FnDef, domains: Option<&[SubjectDomain]>, diags: &m
         return;
     }
 
-    for dead_id in find_unreachable_rows(&pattern_matrix) {
+    for dead_id in find_unreachable_rows(&source_patterns) {
         let dead = &fn_def.clauses[dead_id as usize];
         diags.push(unreachable_clause_diag(dead, &fn_def.clauses[..dead_id as usize], "fn"));
     }
 
     let domain_slice = domains.unwrap_or(&[]);
-    if is_inexhaustive_with_domains(&pattern_matrix, domain_slice) {
+    if is_inexhaustive_with_domains(&source_patterns, domain_slice) {
         let last = fn_def.clauses.last().unwrap();
         diags.push(inexhaustive_diag(fn_def, last.span, "fn", "function_clause"));
     }
@@ -117,20 +117,19 @@ fn check_case_clauses(case_span: Span, clauses: &[MatchClause], diags: &mut Vec<
         return;
     }
     let subjects = vec![Var(0)];
-    let rows: Vec<Row> = clauses
+    let rows: Vec<PatternRow> = clauses
         .iter()
         .enumerate()
-        .map(|(i, c)| Row {
+        .map(|(i, c)| PatternRow {
             patterns: vec![c.pattern.clone()],
             preconditions: Vec::new(),
-            bindings: Vec::new(),
             guard: c.guard.clone(),
-            body_id: i as BodyId,
+            body_id: i as PatternBodyId,
         })
         .collect();
-    let pattern_matrix = PatternMatrix { subjects, rows };
+    let source_patterns = SourcePatternRows { subjects, rows };
 
-    for dead_id in find_unreachable_rows(&pattern_matrix) {
+    for dead_id in find_unreachable_rows(&source_patterns) {
         let dead = &clauses[dead_id as usize];
         diags.push(unreachable_clause_diag_match(
             dead,
@@ -140,7 +139,7 @@ fn check_case_clauses(case_span: Span, clauses: &[MatchClause], diags: &mut Vec<
     }
 
     let any_guard = clauses.iter().any(|c| c.guard.is_some());
-    if !any_guard && is_inexhaustive_with_domains(&pattern_matrix, &[]) {
+    if !any_guard && is_inexhaustive_with_domains(&source_patterns, &[]) {
         diags.push(inexhaustive_diag_at(case_span, "case", "case_clause"));
     }
 }
@@ -151,19 +150,18 @@ fn check_with_else(with_span: Span, else_clauses: &[MatchClause], diags: &mut Ve
         return;
     }
     let subjects = vec![Var(0)];
-    let rows: Vec<Row> = else_clauses
+    let rows: Vec<PatternRow> = else_clauses
         .iter()
         .enumerate()
-        .map(|(i, c)| Row {
+        .map(|(i, c)| PatternRow {
             patterns: vec![c.pattern.clone()],
             preconditions: Vec::new(),
-            bindings: Vec::new(),
             guard: c.guard.clone(),
-            body_id: i as BodyId,
+            body_id: i as PatternBodyId,
         })
         .collect();
-    let pattern_matrix = PatternMatrix { subjects, rows };
-    for dead_id in find_unreachable_rows(&pattern_matrix) {
+    let source_patterns = SourcePatternRows { subjects, rows };
+    for dead_id in find_unreachable_rows(&source_patterns) {
         let dead = &else_clauses[dead_id as usize];
         diags.push(unreachable_clause_diag_match(
             dead,
@@ -172,7 +170,7 @@ fn check_with_else(with_span: Span, else_clauses: &[MatchClause], diags: &mut Ve
         ));
     }
     let any_guard = else_clauses.iter().any(|c| c.guard.is_some());
-    if !any_guard && is_inexhaustive_with_domains(&pattern_matrix, &[]) {
+    if !any_guard && is_inexhaustive_with_domains(&source_patterns, &[]) {
         diags.push(inexhaustive_diag_at(with_span, "with else", "with_clause"));
     }
 }

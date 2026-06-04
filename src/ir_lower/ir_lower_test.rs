@@ -1,4 +1,6 @@
 use super::*;
+use crate::dispatch_matrix::DispatchConst;
+use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
 
 fn lower_src(src: &str) -> Module {
     let toks = Lexer::new(src).tokenize().expect("lex");
@@ -411,7 +413,7 @@ fn lower_persists_matcher_body_continuation_provenance() {
         .get(&continuation.id)
         .expect("matcher-body provenance missing");
     match &provenance.kind {
-        ContinuationProvenanceKind::MatcherBody { bindings } => {
+        ContinuationProvenanceKind::DispatchBody { bindings } => {
             assert_eq!(provenance.capture_param_offset, 0);
             assert_eq!(bindings.len(), 2, "expected head/tail bindings");
         }
@@ -850,8 +852,8 @@ fn branch_origin_tagged_per_lowering_path() {
 }
 
 #[test]
-fn multi_clause_dispatch_lowers_matcher_inline() {
-    // fz-puj.52.7 — multi-clause fns lower the Matcher inline
+fn multi_clause_dispatch_lowers_dispatch_graph_inline() {
+    // fz-puj.52.7 — multi-clause fns lower the DispatchGraph inline
     // into the user fn again so dispatch does not become a separate
     // spec-producing matcher fn.
     let m = lower_src("fn fact(0), do: 1\nfn fact(n), do: n * fact(n - 1)");
@@ -1170,8 +1172,8 @@ fn bitstring_expr_lowers() {
 }
 
 #[test]
-fn case_lowers_matcher_inline() {
-    // fz-puj.52.7 — case sites lower the Matcher inline so the
+fn case_lowers_dispatch_graph_inline() {
+    // fz-puj.52.7 — case sites lower the DispatchGraph inline so the
     // planner does not see a case_matcher_N function boundary.
     let m = lower_src(
         r#"
@@ -1231,7 +1233,7 @@ fn map_pattern_uses_map_get_check() {
 }
 
 #[test]
-fn inline_matcher_reuses_tuple_subject_across_test_guard_and_binding() {
+fn inline_dispatch_reuses_tuple_subject_across_test_guard_and_binding() {
     let m = lower_src(
         "fn positive(n), do: n > 0
          fn classify(t) do
@@ -1252,7 +1254,7 @@ fn inline_matcher_reuses_tuple_subject_across_test_guard_and_binding() {
 }
 
 #[test]
-fn inline_matcher_reuses_list_head_across_guard_and_binding() {
+fn inline_dispatch_reuses_list_head_across_guard_and_binding() {
     let m = lower_src(
         "fn positive(n), do: n > 0
          fn classify(xs) do
@@ -1273,7 +1275,7 @@ fn inline_matcher_reuses_list_head_across_guard_and_binding() {
 }
 
 #[test]
-fn inline_matcher_reuses_map_value_across_guard_and_binding() {
+fn inline_dispatch_reuses_map_value_across_guard_and_binding() {
     let m = lower_src(
         "fn positive(n), do: n > 0
          fn classify(m) do
@@ -1777,7 +1779,7 @@ end
 // longer mints production matcher fns. Receive remains the ABI-driven
 // matcher-fn path.
 
-// ----- fz-puj.36 (H7) — PatternMatrix construction from receive clauses -----
+// ----- fz-puj.36 (H7) — SourcePatternRows construction from receive clauses -----
 
 fn parse_receive_clauses(src: &str) -> Vec<MatchClause> {
     let toks = Lexer::new(src).tokenize().expect("lex");
@@ -1802,19 +1804,19 @@ fn parse_receive_clauses(src: &str) -> Vec<MatchClause> {
 }
 
 #[test]
-fn build_receive_pattern_matrix_one_clause_shape() {
+fn build_receive_pattern_rows_one_clause_shape() {
     let clauses = parse_receive_clauses("fn rx() do receive do {:ping, _} -> :pong end end");
-    let pattern_matrix = build_receive_pattern_matrix(Var(0), &clauses);
-    assert_eq!(pattern_matrix.subjects, vec![Var(0)]);
-    assert_eq!(pattern_matrix.rows.len(), 1);
-    assert_eq!(pattern_matrix.rows[0].patterns.len(), 1);
-    assert!(pattern_matrix.rows[0].preconditions.is_empty());
-    assert!(pattern_matrix.rows[0].guard.is_none());
-    assert_eq!(pattern_matrix.rows[0].body_id, 0);
+    let source_patterns = build_receive_pattern_rows(Var(0), &clauses);
+    assert_eq!(source_patterns.subjects, vec![Var(0)]);
+    assert_eq!(source_patterns.rows.len(), 1);
+    assert_eq!(source_patterns.rows[0].patterns.len(), 1);
+    assert!(source_patterns.rows[0].preconditions.is_empty());
+    assert!(source_patterns.rows[0].guard.is_none());
+    assert_eq!(source_patterns.rows[0].body_id, 0);
 }
 
 #[test]
-fn build_receive_pattern_matrix_multi_clause_preserves_order_and_ids() {
+fn build_receive_pattern_rows_multi_clause_preserves_order_and_ids() {
     let clauses = parse_receive_clauses(
         "fn rx() do receive do
             :ping -> :pong
@@ -1822,31 +1824,31 @@ fn build_receive_pattern_matrix_multi_clause_preserves_order_and_ids() {
             _ -> :other
         end end",
     );
-    let pattern_matrix = build_receive_pattern_matrix(Var(7), &clauses);
-    assert_eq!(pattern_matrix.subjects, vec![Var(7)]);
-    assert_eq!(pattern_matrix.rows.len(), 3);
-    for (i, row) in pattern_matrix.rows.iter().enumerate() {
-        assert_eq!(row.body_id, i as BodyId);
+    let source_patterns = build_receive_pattern_rows(Var(7), &clauses);
+    assert_eq!(source_patterns.subjects, vec![Var(7)]);
+    assert_eq!(source_patterns.rows.len(), 3);
+    for (i, row) in source_patterns.rows.iter().enumerate() {
+        assert_eq!(row.body_id, i as PatternBodyId);
         assert_eq!(row.patterns.len(), 1);
         assert!(row.preconditions.is_empty());
     }
 }
 
 #[test]
-fn build_receive_pattern_matrix_carries_guard() {
+fn build_receive_pattern_rows_carries_guard() {
     let clauses = parse_receive_clauses(
         "fn rx() do receive do
             n when n > 0 -> :positive
             _ -> :other
         end end",
     );
-    let pattern_matrix = build_receive_pattern_matrix(Var(0), &clauses);
-    assert_eq!(pattern_matrix.rows.len(), 2);
+    let source_patterns = build_receive_pattern_rows(Var(0), &clauses);
+    assert_eq!(source_patterns.rows.len(), 2);
     assert!(
-        pattern_matrix.rows[0].guard.is_some(),
+        source_patterns.rows[0].guard.is_some(),
         "first clause's `when n > 0` guard must appear in row[0].guard"
     );
-    assert!(pattern_matrix.rows[1].guard.is_none());
+    assert!(source_patterns.rows[1].guard.is_none());
 }
 
 #[test]
@@ -1984,7 +1986,7 @@ fn lower_receive_planner_accepts_well_formed() {
 #[test]
 fn lower_receive_rejects_impure_guard() {
     // The helper body calls an extern-backed runtime fn, so it cannot
-    // lower into the restricted Matcher guard subset.
+    // lower into the restricted dispatch guard subset.
     let src = "fn helper(), do: make_ref()
         fn rx() do
           receive do
@@ -1999,36 +2001,31 @@ fn lower_receive_rejects_impure_guard() {
     );
 }
 
-fn first_receive_matcher(m: &Module) -> Option<&Matcher> {
+fn first_receive_dispatch(m: &Module) -> Option<&PatternDispatchPlan> {
     for f in &m.fns {
         for b in &f.blocks {
-            if let Term::ReceiveMatched { matcher, .. } = &b.terminator {
-                return Some(matcher.as_ref());
+            if let Term::ReceiveMatched { dispatch, .. } = &b.terminator {
+                return Some(dispatch.as_ref());
             }
         }
     }
     None
 }
 
-fn matcher_has_guard_dispatch(matcher: &Matcher) -> bool {
-    fn expr_has_dispatch(expr: &GuardExpr) -> bool {
+fn dispatch_has_guard_dispatch(dispatch: &PatternDispatchPlan) -> bool {
+    fn expr_has_dispatch(expr: &PatternGuardExpr) -> bool {
         match expr {
-            GuardExpr::Dispatch { .. } => true,
-            GuardExpr::Unary { expr, .. } => expr_has_dispatch(expr),
-            GuardExpr::Binary { lhs, rhs, .. } => expr_has_dispatch(lhs) || expr_has_dispatch(rhs),
-            GuardExpr::Const(_) | GuardExpr::Subject(_) | GuardExpr::Pinned(_) => false,
+            PatternGuardExpr::Dispatch { .. } => true,
+            PatternGuardExpr::Unary { expr, .. } => expr_has_dispatch(expr),
+            PatternGuardExpr::Binary { lhs, rhs, .. } => expr_has_dispatch(lhs) || expr_has_dispatch(rhs),
+            PatternGuardExpr::Const(_) | PatternGuardExpr::Subject(_) | PatternGuardExpr::Pinned(_) => false,
         }
     }
-    matcher.nodes.iter().any(|node| {
-        matches!(
-            node,
-            MatcherNode::Guard { expr, .. } if expr_has_dispatch(expr)
-        )
-    })
+    dispatch.guards.iter().any(expr_has_dispatch)
 }
 
 #[test]
-fn receive_guard_with_single_clause_helper_lowers_into_matcher() {
+fn receive_guard_with_single_clause_helper_lowers_into_dispatch() {
     let src = "fn positive(n), do: n > 0
         fn rx() do
           receive do
@@ -2037,14 +2034,11 @@ fn receive_guard_with_single_clause_helper_lowers_into_matcher() {
           end
         end";
     let m = lower_src(src);
-    let matcher = first_receive_matcher(&m).expect("receive matcher");
+    let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
     assert!(
-        matcher
-            .nodes
-            .iter()
-            .any(|node| matches!(node, MatcherNode::Guard { .. })),
-        "expected inlined helper guard in Matcher: {:#?}",
-        matcher
+        !dispatch.guards.is_empty(),
+        "expected inlined helper guard in dispatch: {:#?}",
+        dispatch
     );
 }
 
@@ -2058,16 +2052,16 @@ fn receive_guard_capture_walks_helper_call_args() {
           end
         end";
     let m = lower_src(src);
-    let matcher = first_receive_matcher(&m).expect("receive matcher");
+    let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
     assert!(
-        matcher.pinned.iter().any(|pinned| pinned.name == "limit"),
-        "expected guard call argument capture in Matcher pinned inputs: {:#?}",
-        matcher
+        dispatch.pinned.iter().any(|pinned| pinned.name == "limit"),
+        "expected guard call argument capture in dispatch pinned inputs: {:#?}",
+        dispatch
     );
 }
 
 #[test]
-fn receive_guard_with_transitive_helper_lowers_into_matcher() {
+fn receive_guard_with_transitive_helper_lowers_into_dispatch() {
     let src = "fn positive(n), do: n > 0
         fn wanted(n), do: positive(n)
         fn rx() do
@@ -2077,14 +2071,11 @@ fn receive_guard_with_transitive_helper_lowers_into_matcher() {
           end
         end";
     let m = lower_src(src);
-    let matcher = first_receive_matcher(&m).expect("receive matcher");
+    let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
     assert!(
-        matcher
-            .nodes
-            .iter()
-            .any(|node| matches!(node, MatcherNode::Guard { .. })),
-        "expected transitive helper guard in Matcher: {:#?}",
-        matcher
+        !dispatch.guards.is_empty(),
+        "expected transitive helper guard in dispatch: {:#?}",
+        dispatch
     );
 }
 
@@ -2099,11 +2090,11 @@ fn receive_guard_with_multi_clause_helper_lowers_dispatch() {
           end
         end";
     let m = lower_src(src);
-    let matcher = first_receive_matcher(&m).expect("receive matcher");
+    let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
     assert!(
-        matcher_has_guard_dispatch(matcher),
-        "expected multi-clause helper guard dispatch in Matcher: {:#?}",
-        matcher
+        dispatch_has_guard_dispatch(dispatch),
+        "expected multi-clause helper guard dispatch in receive dispatch: {:#?}",
+        dispatch
     );
 }
 
@@ -2118,16 +2109,16 @@ fn receive_guard_helper_dispatch_handles_destructuring() {
           end
         end";
     let m = lower_src(src);
-    let matcher = first_receive_matcher(&m).expect("receive matcher");
+    let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
     assert!(
-        matcher_has_guard_dispatch(matcher),
+        dispatch_has_guard_dispatch(dispatch),
         "expected nested helper dispatch for destructuring helper: {:#?}",
-        matcher
+        dispatch
     );
 }
 
 #[test]
-fn receive_matcher_prepares_heap_map_keys_outside_matcher() {
+fn receive_dispatch_prepares_heap_map_keys_outside_graph() {
     let src = "fn rx() do
           receive do
             %{\"id\" => value} -> value
@@ -2135,11 +2126,11 @@ fn receive_matcher_prepares_heap_map_keys_outside_matcher() {
           end
         end";
     let m = lower_src(src);
-    let matcher = first_receive_matcher(&m).expect("receive matcher");
-    assert_eq!(matcher.prepared_keys, vec![MatcherConst::Utf8Binary(b"id".to_vec())]);
+    let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
+    assert_eq!(dispatch.prepared_keys, vec![DispatchConst::Utf8Binary(b"id".to_vec())]);
     let s = format!("{}", m);
     assert!(
-        s.contains("pinned=[^__matcher_key_0="),
+        s.contains("pinned=[^__dispatch_key_0="),
         "expected prepared map key to be threaded as receive pinned input, got:\n{}",
         s
     );

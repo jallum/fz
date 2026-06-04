@@ -1,8 +1,7 @@
 use super::*;
 use crate::ast::{BitField, BitFieldSpec, BitSize, BitType, Endian, Expr, Pattern, Spanned};
-use crate::exec::matcher::{Matcher, MatcherBitSize, MatcherConst, MatcherNode, MatcherTest};
+use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, SourcePatternRows};
 use crate::fz_ir::Var;
-use crate::pattern_matrix::{BodyId, PatternMatrix, Row, compile_pattern_matrix};
 use crate::types::{Ty, Types};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -176,7 +175,7 @@ fn map_miss_is_not_source_level_vocabulary() {
 }
 
 #[test]
-fn retired_dispatch_scaffolding_stays_retired() {
+fn retired_stale_dispatch_paths_stay_retired() {
     assert!(
         !Path::new(concat!("src/ir_planner/", "switch_dispatch", ".rs")).exists(),
         "protocol dispatch must not revive the retired switch-dispatch module"
@@ -188,7 +187,7 @@ fn retired_dispatch_scaffolding_stays_retired() {
         "ir_planner should export protocol_dispatch, not the retired switch-dispatch name"
     );
 
-    let pattern_analysis = include_str!("../pattern_matrix/analysis.rs");
+    let pattern_analysis = include_str!("pattern/source.rs");
     for needle in ["MatcherNode", "has_reachable_fail_in_matcher"] {
         assert!(
             !pattern_analysis.contains(needle),
@@ -771,11 +770,10 @@ fn sp<T>(node: T) -> Spanned<T> {
     Spanned::dummy(node)
 }
 
-fn pattern_row(patterns: Vec<Pattern>, body_id: BodyId) -> Row {
-    Row {
+fn pattern_row(patterns: Vec<Pattern>, body_id: PatternBodyId) -> PatternRow {
+    PatternRow {
         patterns: patterns.into_iter().map(sp).collect(),
         preconditions: Vec::new(),
-        bindings: Vec::new(),
         guard: None,
         body_id,
     }
@@ -783,39 +781,23 @@ fn pattern_row(patterns: Vec<Pattern>, body_id: BodyId) -> Row {
 
 fn pattern_row_with_guard_preconditions(
     patterns: Vec<Pattern>,
-    body_id: BodyId,
+    body_id: PatternBodyId,
     guard: Expr,
     preconditions: Vec<(Var, Ty)>,
-) -> Row {
-    Row {
+) -> PatternRow {
+    PatternRow {
         patterns: patterns.into_iter().map(sp).collect(),
         preconditions,
-        bindings: Vec::new(),
         guard: Some(sp(guard)),
         body_id,
     }
 }
 
-fn pattern_plan(pattern_matrix: PatternMatrix) -> (Matcher, pattern::PatternDispatchPlan) {
-    let matcher = compile_pattern_matrix(pattern_matrix.clone()).expect("compile pattern matrix");
-    let plan = pattern::pattern_dispatch_from_matrix(pattern_matrix).expect("pattern dispatch matrix");
-    (matcher, plan)
+fn pattern_plan(source_patterns: SourcePatternRows) -> pattern::PatternDispatchPlan {
+    pattern::pattern_dispatch_from_source(source_patterns).expect("pattern dispatch matrix")
 }
 
-fn matcher_leaf_body_ids(matcher: &Matcher) -> Vec<BodyId> {
-    let mut ids = matcher
-        .nodes
-        .iter()
-        .filter_map(|node| match node {
-            MatcherNode::Leaf(leaf) => Some(leaf.body_id),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    ids.sort();
-    ids
-}
-
-fn plan_body_ids(plan: &pattern::PatternDispatchPlan) -> Vec<BodyId> {
+fn plan_body_ids(plan: &pattern::PatternDispatchPlan) -> Vec<PatternBodyId> {
     let mut ids = plan.outcomes.iter().map(|outcome| outcome.body_id).collect::<Vec<_>>();
     ids.sort();
     ids
@@ -823,7 +805,7 @@ fn plan_body_ids(plan: &pattern::PatternDispatchPlan) -> Vec<BodyId> {
 
 fn arm_for_body(
     plan: &pattern::PatternDispatchPlan,
-    body_id: BodyId,
+    body_id: PatternBodyId,
 ) -> (&DispatchArm, &pattern::PatternDispatchOutcome) {
     let outcome = plan
         .outcomes
@@ -848,8 +830,8 @@ fn has_region(plan: &pattern::PatternDispatchPlan, pred: impl Fn(&Region) -> boo
 }
 
 #[test]
-fn pattern_dispatch_matrix_mirrors_literal_matcher_leaves_and_default() {
-    let pattern_matrix = PatternMatrix {
+fn pattern_dispatch_matrix_preserves_literal_outcomes_and_default() {
+    let source_patterns = SourcePatternRows {
         subjects: vec![Var(0)],
         rows: vec![
             pattern_row(vec![Pattern::Int(7)], 0),
@@ -861,10 +843,10 @@ fn pattern_dispatch_matrix_mirrors_literal_matcher_leaves_and_default() {
         ],
     };
 
-    let (matcher, plan) = pattern_plan(pattern_matrix);
+    let plan = pattern_plan(source_patterns);
 
     assert_eq!(plan.matrix.order, Order::Source);
-    assert_eq!(plan_body_ids(&plan), matcher_leaf_body_ids(&matcher));
+    assert_eq!(plan_body_ids(&plan), vec![0, 1, 2, 3, 4, 5]);
     assert!(matches!(
         plan.graph.node(plan.graph.root),
         Some(DispatchNode::Test { .. })
@@ -901,7 +883,7 @@ fn pattern_dispatch_matrix_preserves_tuple_list_projections_and_leaf_bindings() 
         vec![sp(Pattern::Var("h".to_string()))],
         Some(Box::new(sp(Pattern::Var("t".to_string())))),
     );
-    let pattern_matrix = PatternMatrix {
+    let source_patterns = SourcePatternRows {
         subjects: vec![Var(0)],
         rows: vec![
             pattern_row(
@@ -917,7 +899,7 @@ fn pattern_dispatch_matrix_preserves_tuple_list_projections_and_leaf_bindings() 
         ],
     };
 
-    let (_matcher, plan) = pattern_plan(pattern_matrix);
+    let plan = pattern_plan(source_patterns);
 
     assert!(has_region(&plan, |region| matches!(region, Region::TupleArity(2))));
     assert!(has_region(&plan, |region| matches!(
@@ -976,7 +958,7 @@ fn pattern_dispatch_matrix_preserves_tuple_list_projections_and_leaf_bindings() 
 
 #[test]
 fn pattern_dispatch_matrix_preserves_map_presence_before_value_tests() {
-    let pattern_matrix = PatternMatrix {
+    let source_patterns = SourcePatternRows {
         subjects: vec![Var(0)],
         rows: vec![pattern_row(
             vec![Pattern::Map(vec![(
@@ -987,9 +969,9 @@ fn pattern_dispatch_matrix_preserves_map_presence_before_value_tests() {
         )],
     };
 
-    let (_matcher, plan) = pattern_plan(pattern_matrix);
+    let plan = pattern_plan(source_patterns);
 
-    assert_eq!(plan.prepared_keys, vec![MatcherConst::AtomName("id".to_string())]);
+    assert_eq!(plan.prepared_keys, vec![DispatchConst::AtomName("id".to_string())]);
     assert!(has_region(&plan, |region| matches!(region, Region::MapKind)));
     let map_key_question = plan
         .matrix
@@ -1021,7 +1003,7 @@ fn pattern_dispatch_matrix_preserves_map_presence_before_value_tests() {
 
 #[test]
 fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() {
-    let pattern_matrix = PatternMatrix {
+    let source_patterns = SourcePatternRows {
         subjects: vec![Var(0)],
         rows: vec![pattern_row(
             vec![Pattern::Bitstring(vec![
@@ -1048,7 +1030,7 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
         )],
     };
 
-    let (_matcher, plan) = pattern_plan(pattern_matrix);
+    let plan = pattern_plan(source_patterns);
     let bitstring = plan
         .matrix
         .arms
@@ -1087,8 +1069,8 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
 }
 
 #[test]
-fn pattern_dispatch_graph_rebuilds_matcher_abi_payloads() {
-    let pattern_matrix = PatternMatrix {
+fn pattern_dispatch_plan_carries_executable_payloads_directly() {
+    let source_patterns = SourcePatternRows {
         subjects: vec![Var(0)],
         rows: vec![
             pattern_row(
@@ -1127,56 +1109,50 @@ fn pattern_dispatch_graph_rebuilds_matcher_abi_payloads() {
             ),
         ],
     };
-    let (matcher, plan) = pattern_plan(pattern_matrix);
+    let plan = pattern_plan(source_patterns);
 
-    let rebuilt = pattern::matcher_from_pattern_dispatch_plan(&plan).expect("dispatch graph rebuilds matcher ABI");
-
-    assert_eq!(rebuilt.inputs, matcher.inputs);
-    assert_eq!(rebuilt.pinned, matcher.pinned);
-    assert_eq!(rebuilt.prepared_keys, matcher.prepared_keys);
-    assert_eq!(matcher_leaf_body_ids(&rebuilt), plan_body_ids(&plan));
-    assert!(rebuilt.nodes.iter().any(|node| matches!(
-        node,
-        MatcherNode::Test {
-            test: MatcherTest::MapHasKey {
-                key: MatcherConst::PreparedKey(0),
-                ..
-            },
-            ..
-        }
+    assert_eq!(plan.prepared_keys, vec![DispatchConst::AtomName("id".to_string())]);
+    assert_eq!(plan.pinned[0].name, "want");
+    assert_eq!(plan_body_ids(&plan), vec![0, 1, 2]);
+    assert!(has_region(&plan, |region| matches!(
+        region,
+        Region::MapKeyPresent {
+            key: DispatchConst::AtomName(name),
+        } if name == "id"
     )));
-    assert!(rebuilt.nodes.iter().any(|node| matches!(
-        node,
-        MatcherNode::Test {
-            test: MatcherTest::EqPinned { .. },
-            ..
-        }
+    assert!(has_region(&plan, |region| matches!(
+        region,
+        Region::Equal(ComparisonValue::Pinned(PinnedValueId(0)))
     )));
-    assert!(
-        rebuilt
-            .nodes
-            .iter()
-            .any(|node| matches!(node, MatcherNode::Guard { .. }))
-    );
-    assert!(rebuilt.nodes.iter().any(|node| matches!(
-        node,
-        MatcherNode::Test {
-            test: MatcherTest::Bitstring { fields, .. },
-            ..
-        } if fields.len() == 2
-            && fields[0].direct_bindings.len() == 1
-            && fields[0].direct_bindings[0] == "n"
-            && fields[1].direct_bindings.len() == 1
-            && fields[1].direct_bindings[0] == "payload"
-            && fields[1].size == Some(MatcherBitSize::BindingName("n".to_string()))
-    )));
+    assert!(has_region(&plan, |region| matches!(region, Region::Guard(_))));
+    let bitstring = plan
+        .matrix
+        .arms
+        .iter()
+        .flat_map(|arm| arm.questions.iter())
+        .find_map(|question| match &question.predicate.region {
+            Region::Bitstring(shape) => Some(shape),
+            _ => None,
+        })
+        .expect("bitstring region");
+    assert_eq!(bitstring.fields.len(), 2);
+    assert_eq!(bitstring.fields[0].size, Some(BitstringFieldSize::Literal(8)));
+    let direct_names = plan
+        .bitstring_direct_bindings
+        .values()
+        .flatten()
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(direct_names.contains(&"n".to_string()));
+    assert!(direct_names.contains(&"payload".to_string()));
+    assert!(matches!(bitstring.fields[1].size, Some(BitstringFieldSize::Binding(_))));
 }
 
 #[test]
 fn pattern_dispatch_matrix_preserves_pins_guards_and_preconditions_as_questions() {
     let mut types = crate::types::new();
     let int = types.int();
-    let pattern_matrix = PatternMatrix {
+    let source_patterns = SourcePatternRows {
         subjects: vec![Var(0)],
         rows: vec![
             pattern_row_with_guard_preconditions(
@@ -1189,12 +1165,12 @@ fn pattern_dispatch_matrix_preserves_pins_guards_and_preconditions_as_questions(
         ],
     };
 
-    let (_matcher, plan) = pattern_plan(pattern_matrix);
+    let plan = pattern_plan(source_patterns);
 
     assert_eq!(plan.pinned[0].name, "want");
     assert_eq!(
         plan.guards,
-        vec![crate::exec::matcher::GuardExpr::Const(MatcherConst::Bool(true))]
+        vec![pattern::PatternGuardExpr::Const(DispatchConst::Bool(true))]
     );
     let (arm, _outcome) = arm_for_body(&plan, 0);
     assert!(arm.questions.iter().any(|question| {
@@ -1217,12 +1193,12 @@ fn pattern_dispatch_matrix_preserves_pins_guards_and_preconditions_as_questions(
 
 #[test]
 fn receive_policy_is_not_encoded_in_pattern_dispatch_matrix() {
-    let pattern_matrix = PatternMatrix {
+    let source_patterns = SourcePatternRows {
         subjects: vec![Var(0)],
         rows: vec![pattern_row(vec![Pattern::Wildcard], 0)],
     };
 
-    let (_matcher, plan) = pattern_plan(pattern_matrix);
+    let plan = pattern_plan(source_patterns);
 
     assert_eq!(plan.outcomes.len(), 1);
     assert_eq!(plan.outcomes[0].body_id, 0);

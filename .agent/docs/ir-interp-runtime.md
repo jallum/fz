@@ -165,18 +165,19 @@ state later chunks depend on.
 
 ## Selective Receive
 
-`Term::ReceiveMatched` scans the mailbox head-to-tail, trying each clause via
-the cached `Matcher` lowered at the receive site; first match wins, and the
-matched message is removed. On a miss, an `after` with a literal `0` timeout
-fires its body inline; any other timeout (including `:infinity`) parks without a
-timer, because the interpreter has no wall clock. Parking returns
-`BlockedMatched(ParkRecord, after)`.
+`Term::ReceiveMatched` scans the mailbox head-to-tail, running the cached
+`PatternDispatchPlan` from the receive site against each message; first match
+wins, and the matched message is removed. On a miss, an `after` with a literal
+`0` timeout fires its body inline; any other timeout (including `:infinity`)
+parks without a timer, because the interpreter has no wall clock. Parking
+returns `BlockedMatched(ParkRecord, after)`.
 
 A `ParkRecord` snapshots exactly what the sender-side probe needs to re-run the
 match later: the per-clause `MatchedClause` list (`bound_names`, optional
-`guard` FnId, body FnId), the `Arc<Matcher>`, the pinned `^name` bindings, and
-the capture values from the receive site. Guards execute inside the cached
-matcher, so a parked clause needs no AST re-walk when a new message arrives.
+`guard` FnId, body FnId), the `Arc<PatternDispatchPlan>`, the pinned `^name`
+bindings, and the capture values from the receive site. Guards execute inside
+the cached dispatch plan, so a parked clause needs no AST re-walk when a new
+message arrives.
 
 ## Compile-Time Evaluator Boundary
 

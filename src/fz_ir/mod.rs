@@ -19,7 +19,7 @@
 
 use crate::ast::{BitType, Endian};
 use crate::diag::{FileId, Span};
-use crate::exec::matcher::{Matcher, SubjectRef};
+use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternSubjectRef};
 use crate::frontend::protocols::ProtocolRegistry;
 use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::interface::ModuleInterface;
@@ -729,9 +729,9 @@ pub enum Term {
     },
     Return(Var),
     Halt(Var),
-    /// fz-yxs — selective `receive do … after … end` (see
-    /// `docs/receive-matched.md §7`). The cached Matcher is the executable
-    /// route. Clause bodies receive bound pattern vars (source order)
+    /// fz-yxs — selective `receive do … after … end`. The cached dispatch
+    /// plan is the executable route. Clause bodies receive bound pattern vars
+    /// (source order)
     /// followed by `captures`. Body fns tail-call the join cont set up by
     /// lowering — Term::ReceiveMatched is itself a terminator.
     ///
@@ -742,8 +742,8 @@ pub enum Term {
     ReceiveMatched {
         ident: CallsiteIdent,
         clauses: Vec<ReceiveClause>,
-        /// Cached AST-free matcher for interpreter and native receive probes.
-        matcher: Arc<Matcher>,
+        /// Cached AST-free dispatch plan for interpreter and native receive probes.
+        dispatch: Arc<PatternDispatchPlan>,
         after: Option<ReceiveAfter>,
         /// Outer-scope vars referenced by `^name` patterns across all
         /// clauses, paired with their source names so backends can
@@ -758,7 +758,7 @@ pub enum Term {
 pub enum ContinuationProvenanceKind {
     DirectCall { callee: FnId, args: Vec<Var> },
     ClosureCall { closure: Var, args: Vec<Var> },
-    MatcherBody { bindings: Vec<(Var, SubjectRef)> },
+    DispatchBody { bindings: Vec<(Var, PatternSubjectRef)> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1512,7 +1512,7 @@ impl Module {
     ///   - `Prim::MakeClosure` callsite ident (the only span-carrying Prim).
     ///   - the six call-ident `Term`s (rebuilt via `from_source`), plus
     ///     `ReceiveClause`/`ReceiveAfter` spans and the `ReceiveMatched`
-    ///     matcher (`Matcher::remap_file_ids`).
+    ///     dispatch plan.
     ///   - `external_call_edges[].callsite.ident`.
     pub fn remap_file_ids(&mut self, remap: &HashMap<FileId, FileId>) {
         // SourceInfo side-tables.
@@ -1841,7 +1841,7 @@ fn remap_prim_span(prim: &mut Prim, remap: &HashMap<FileId, FileId>) {
 
 /// Remap every span carried by a `Term`: the six call-ident terms rebuild
 /// their `CallsiteIdent`; `ReceiveMatched` also remaps its clause/after spans
-/// and its cached matcher. The `match` is exhaustive so a future span-carrying
+/// and its cached dispatch plan. The `match` is exhaustive so a future span-carrying
 /// terminator variant fails to compile rather than being silently skipped.
 fn remap_term_span(term: &mut Term, remap: &HashMap<FileId, FileId>) {
     match term {
@@ -1852,7 +1852,7 @@ fn remap_term_span(term: &mut Term, remap: &HashMap<FileId, FileId>) {
         Term::ReceiveMatched {
             ident,
             clauses,
-            matcher,
+            dispatch,
             after,
             ..
         } => {
@@ -1865,7 +1865,7 @@ fn remap_term_span(term: &mut Term, remap: &HashMap<FileId, FileId>) {
                 remap_ident(&mut after.ident, remap);
                 remap_span(&mut after.span, remap);
             }
-            Arc::make_mut(matcher).remap_file_ids(remap);
+            Arc::make_mut(dispatch).remap_file_ids(remap);
         }
         // Span-free terminators: explicit no-op arms keep the match exhaustive.
         Term::Goto(_, _) | Term::If { .. } | Term::Return(_) | Term::Halt(_) => {}
@@ -1917,7 +1917,7 @@ fn visit_prim_span(prim: &Prim, f: &mut impl FnMut(Span)) {
 }
 
 /// Read-only twin of `remap_term_span`: visits every span carried by a `Term`,
-/// including the `ReceiveMatched` clause/after spans and its cached matcher.
+/// including the `ReceiveMatched` clause/after spans and its cached dispatch plan.
 /// The `match` is exhaustive so a future span-carrying terminator variant fails
 /// to compile rather than being silently skipped.
 fn visit_term_span(term: &Term, f: &mut impl FnMut(Span)) {
@@ -1929,7 +1929,7 @@ fn visit_term_span(term: &Term, f: &mut impl FnMut(Span)) {
         Term::ReceiveMatched {
             ident,
             clauses,
-            matcher,
+            dispatch,
             after,
             ..
         } => {
@@ -1942,7 +1942,7 @@ fn visit_term_span(term: &Term, f: &mut impl FnMut(Span)) {
                 f(after.ident.span());
                 f(after.span);
             }
-            matcher.visit_spans(f);
+            dispatch.visit_spans(f);
         }
         // Span-free terminators: explicit no-op arms keep the match exhaustive.
         Term::Goto(_, _) | Term::If { .. } | Term::Return(_) | Term::Halt(_) => {}

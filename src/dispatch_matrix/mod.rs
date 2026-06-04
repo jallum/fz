@@ -1,33 +1,76 @@
-//! Shared model for region-based dispatch.
+//! Shared model for compiling ordered semantic dispatch into an executable
+//! decision graph.
 //!
-//! Pattern matching, protocol finite-union dispatch, and future dispatch-shaped
-//! compiler work use this vocabulary: ordered value-space questions prove an
-//! arm, and opaque outcomes stay producer-owned.
+//! This module is directly indebted to Luc Maranget's "Compiling Pattern
+//! Matching to Good Decision Trees" (ML'08):
+//! <http://moscova.inria.fr/~maranget/papers/ml05e-maranget.pdf>.
+//! Maranget's central lesson for us is the separation between a source-level
+//! collection of rows and a lower-level decision tree: choose tests over
+//! subterms, preserve source priority, avoid retesting the same projected value,
+//! and share common decision structure where doing so keeps the generated code
+//! compact.
+//!
+//! `DispatchMatrix` keeps that decision-tree spine but makes the row language
+//! more general than ML constructor patterns. Function heads, `case`, `with`
+//! `else`, selective receive, and guard helper dispatch are source-pattern
+//! producers over `Order::Source`; protocol dispatch is a type-region producer
+//! over `Order::Specificity` or an explicit residual order. All of them compile
+//! through this module rather than through construct-specific dispatch passes.
+//! A producer supplies:
+//!
+//! - `Subject`s: root inputs plus projections that can be proven on branches.
+//! - `Region` questions: value-space tests such as type membership, equality,
+//!   tuple/list/map/bitstring shape, map-key presence, or a guard predicate.
+//! - ordered `DispatchArm`s: conjunctions of region questions that prove one
+//!   opaque `Outcome`.
+//! - an `Order`: source priority for pattern matching, type specificity for
+//!   closed protocol/type dispatch, or an explicit materialized order.
+//!
+//! The compiler then lowers those arms into a `DispatchGraph`. The graph is
+//! intentionally producer-neutral: it decides only which outcome wins or that
+//! dispatch failed. What a win means remains outside this module. Function
+//! heads, `case`, and `with else` map source-pattern outcomes to continuation
+//! bodies and bindings; selective receive maps outcomes to mailbox accept/reject
+//! behavior; protocol dispatch maps outcomes to direct calls or residual
+//! fallback.
+//!
+//! Branch-local evidence is the main correctness boundary. A successful
+//! `List(Cons)` edge can project `ListHead` and `ListTail`; a successful
+//! `TupleArity(2)` edge can project tuple fields; a successful
+//! `MapKeyPresent` edge can project the map value, including `nil`. The miss
+//! edge does not get those projections. Lowering and codegen consume this
+//! evidence directly instead of re-deriving safety from syntax, which keeps
+//! test-first/project-second semantics correct by construction.
+//!
+//! `dispatch_matrix::pattern` is now just a producer on top of this model. Its
+//! `SourcePatternRows` are AST-facing input rows; they are not a second matcher
+//! model, and they do not own executable dispatch semantics.
 
 use crate::types::{Ty, Types};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) mod pattern;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) struct SubjectId(pub(crate) u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) struct ArmId(pub(crate) u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) struct OutcomeId(pub(crate) u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) struct GraphNodeId(pub(crate) u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) struct GuardId(pub(crate) u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) struct PinnedValueId(pub(crate) u32);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DispatchMatrix {
     pub(crate) subjects: Vec<Subject>,
     pub(crate) outcomes: Vec<Outcome>,
@@ -50,25 +93,25 @@ impl DispatchMatrix {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Subject {
     pub(crate) id: SubjectId,
     pub(crate) source: SubjectSource,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum SubjectSource {
     Input { ordinal: u32 },
     Projection(SubjectProjection),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SubjectProjection {
     pub(crate) source: SubjectId,
     pub(crate) kind: ProjectionKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) enum ProjectionKind {
     TupleField(u32),
     ListHead,
@@ -77,7 +120,7 @@ pub(crate) enum ProjectionKind {
     BitstringField(u32),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DispatchArm {
     pub(crate) id: ArmId,
     pub(crate) questions: Vec<RegionQuestion>,
@@ -85,7 +128,7 @@ pub(crate) struct DispatchArm {
     pub(crate) outcome: OutcomeId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RegionPredicate {
     pub(crate) subject: SubjectId,
     pub(crate) region: Region,
@@ -97,7 +140,7 @@ impl RegionPredicate {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Region {
     #[allow(dead_code)] // Permanent top-region vocabulary; current producers emit concrete regions.
     Any,
@@ -115,25 +158,25 @@ pub(crate) enum Region {
     Guard(GuardId),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) enum ComparisonValue {
     Const(DispatchConst),
     Pinned(PinnedValueId),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) enum ListRegion {
     Empty,
     Cons,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BitstringShape {
     pub(crate) fields: Vec<BitstringFieldShape>,
     pub(crate) require_done: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BitstringFieldShape {
     pub(crate) kind: BitstringFieldKind,
     pub(crate) size: Option<BitstringFieldSize>,
@@ -142,7 +185,7 @@ pub(crate) struct BitstringFieldShape {
     pub(crate) unit: Option<u32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) enum BitstringFieldKind {
     Integer,
     Float,
@@ -153,21 +196,21 @@ pub(crate) enum BitstringFieldKind {
     Utf32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum BitstringFieldSize {
     Literal(u32),
     Binding(SubjectId),
     BindingName(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) enum BitstringEndian {
     Big,
     Little,
     Native,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) enum DispatchConst {
     Int(i64),
     FloatBits(u64),
@@ -178,7 +221,7 @@ pub(crate) enum DispatchConst {
     Utf8Binary(Vec<u8>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Order {
     /// Source-pattern semantics: first matching arm wins.
     Source,
@@ -190,13 +233,13 @@ pub(crate) enum Order {
     Explicit(Vec<ArmId>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Outcome {
     pub(crate) id: OutcomeId,
     pub(crate) multiplicity: OutcomeMultiplicity,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum OutcomeMultiplicity {
     /// At most one arm may route to this outcome.
     Unique,
@@ -205,7 +248,7 @@ pub(crate) enum OutcomeMultiplicity {
     Shared,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub(crate) struct EdgeEvidence {
     pub(crate) proofs: Vec<Proof>,
     pub(crate) projections: Vec<EdgeProjection>,
@@ -229,19 +272,19 @@ impl EdgeEvidence {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Proof {
     pub(crate) predicate: RegionPredicate,
     pub(crate) sense: ProofSense,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ProofSense {
     Holds,
     DoesNotHold,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct EdgeProjection {
     pub(crate) source: SubjectId,
     pub(crate) kind: ProjectionKind,
@@ -254,7 +297,7 @@ pub(crate) struct EdgeProjection {
 /// being tested and the evidence each branch produces. Existing backend
 /// primitives are lowering choices for these questions, not additional semantic
 /// variants in this model.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RegionQuestion {
     pub(crate) predicate: RegionPredicate,
     pub(crate) match_evidence: EdgeEvidence,
@@ -280,6 +323,23 @@ impl RegionQuestion {
 
     pub(crate) fn list_empty(subject: SubjectId) -> Self {
         Self::new(RegionPredicate::new(subject, Region::List(ListRegion::Empty)))
+    }
+
+    pub(crate) fn tuple_arity(subject: SubjectId, arity: u32, fields: impl IntoIterator<Item = SubjectId>) -> Self {
+        let predicate = RegionPredicate::new(subject, Region::TupleArity(arity));
+        let mut match_evidence = EdgeEvidence::from_proof(predicate.clone(), ProofSense::Holds);
+        for (index, result) in fields.into_iter().enumerate() {
+            match_evidence = match_evidence.with_projection(EdgeProjection {
+                source: subject,
+                kind: ProjectionKind::TupleField(index as u32),
+                result,
+            });
+        }
+        Self {
+            match_evidence,
+            miss_evidence: EdgeEvidence::from_proof(predicate.clone(), ProofSense::DoesNotHold),
+            predicate,
+        }
     }
 
     pub(crate) fn list_cons(subject: SubjectId, head: SubjectId, tail: SubjectId) -> Self {
@@ -325,7 +385,7 @@ impl RegionQuestion {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DispatchGraph {
     pub(crate) nodes: Vec<DispatchNode>,
     pub(crate) root: GraphNodeId,
@@ -337,7 +397,7 @@ impl DispatchGraph {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum DispatchNode {
     Fail,
     Outcome {
@@ -351,7 +411,7 @@ pub(crate) enum DispatchNode {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DispatchEdge {
     pub(crate) target: GraphNodeId,
     pub(crate) evidence: EdgeEvidence,
