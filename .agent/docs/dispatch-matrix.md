@@ -1,9 +1,9 @@
 # Dispatch Matrix
 
-`src/dispatch_matrix` is the side-by-side model for the dispatch unification
-epic (`fz-v19`). It is deliberately not in the production path yet: today,
-`PatternMatrix` still owns source-pattern matching and
-`rewrite_closed_union_protocol_dispatch` still owns protocol union rewrites.
+`src/dispatch_matrix` is the shared model for the dispatch unification epic
+(`fz-v19`). Today, protocol finite-union dispatch is built from this model;
+`PatternMatrix` still owns source-pattern matching until the later migration
+tickets move source patterns onto DispatchMatrix.
 
 The model names four separate concepts so future dispatch work does not grow new
 subsystem-specific cascades:
@@ -33,14 +33,15 @@ classify equal regions with different outcomes as duplicate coverage or as an
 ambiguity. `analyze_type_coverage` computes covered and residual receiver
 domains, distinguishing closed coverage from open residuals.
 
-`collect_protocol_dispatch_matrix_candidates` is the side-by-side protocol
-producer. It reads the same planner facts as `switch_dispatch` and classifies a
-protocol callsite as ordinary static dispatch, no local dispatch, or a
-specificity-ordered matrix over visible local impls. A closed receiver union gets
-one direct-call outcome per covering local impl and no fallback; an open,
-erased, or provider-only overlap gets an explicit residual fallback outcome that
-preserves the existing protocol stub path. This producer is an oracle only until
-`fz-v19.5`: `rewrite_closed_union_protocol_dispatch` still owns the emitted IR.
+`collect_protocol_dispatch_matrix_candidates` is the protocol producer. It reads
+planner facts and classifies a protocol callsite as ordinary static dispatch, no
+local dispatch, or a specificity-ordered matrix over visible local impls. A
+closed receiver union gets one direct-call outcome per covering local impl and no
+fallback; an open, erased, or provider-only overlap gets an explicit residual
+fallback outcome that preserves the protocol stub path. The frontend rewrite hook
+lowers the compiled `DispatchGraph` into the current `TypeTest`/`If` IR shape:
+closed graph `Fail` tails become the final direct `else`, while open residual
+fallbacks become the original stub call.
 
 ## Vocabulary Boundary
 
@@ -60,5 +61,6 @@ DispatchMatrix has three layers that must stay separate:
 Future dispatch changes should add producers on top of this model instead of
 adding one-off matcher or planner dispatch passes. At this ticket boundary, graph
 compilation is tested with fake outcome handles and with protocol dispatch
-outcome handles; no PatternMatrix or protocol runtime behavior is owned by
-`DispatchMatrix`.
+outcome handles; protocol union dispatch construction is owned by
+`DispatchMatrix`, while source-pattern runtime behavior is still owned by
+`PatternMatrix`.

@@ -1,4 +1,4 @@
-//! fz-t1m.1.5 — Closed-domain protocol switch dispatch.
+//! DispatchMatrix-backed protocol switch dispatch.
 //!
 //! A protocol call dispatches on its first argument's runtime type. When the
 //! planner can prove the receiver is a *single* implementing target it
@@ -9,9 +9,10 @@
 //! to the `__protocol__` stub and halt at runtime with
 //! `:protocol_dispatch_unplanned`.
 //!
-//! This pass closes that gap by *rewriting the IR*, not by adding a new
-//! dispatch state. For each such callsite it emits a `TypeTest`/`If` cascade
-//! with one direct-call arm per implementing target:
+//! This pass closes that gap by building a `DispatchMatrix` over the receiver
+//! domain and lowering the resulting `DispatchGraph` into IR. For each such
+//! callsite it emits a `TypeTest`/`If` cascade with one direct-call arm per
+//! implementing target:
 //!
 //! ```text
 //!   t0 = TypeTest(recv, integer)
@@ -36,8 +37,8 @@ use super::fn_types::{ModulePlan, SpecPlan};
 use crate::diag::Span;
 use crate::dispatch_matrix::{
     CompiledDispatchGraph, DispatchCompileError, DispatchCompileOptions, DispatchMatrix, DispatchMatrixBuilder,
-    EdgeEvidence, EqualTypeRegionPolicy, OutcomeId, OutcomeMultiplicity, RegionQuestion,
-    compile_dispatch_matrix_with_type_order,
+    DispatchNode, EdgeEvidence, EqualTypeRegionPolicy, GraphNodeId, OutcomeId, OutcomeMultiplicity, Region,
+    RegionQuestion, SubjectId, compile_dispatch_matrix_with_type_order,
 };
 use crate::frontend::protocols::impl_target_type;
 use crate::fz_ir::{
@@ -47,32 +48,39 @@ use crate::fz_ir::{
 use crate::types::{ClosureTypes, Ty, Types};
 use std::collections::HashMap;
 
-/// One arm of a switch: the runtime type to test the receiver against and the
-/// local impl fn to call when it matches.
+/// One visible local protocol implementation arm before it is assigned a
+/// DispatchMatrix outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SwitchArm {
+struct ProtocolImplArm {
     target_ty: Ty,
     impl_fn: FnId,
 }
 
-/// A rewrite to apply to one block whose terminator is a protocol call.
-/// Collected in a read-only pass, then applied in a second mutating pass so the
-/// planner facts stay valid while we decide.
-struct BlockRewrite {
+struct ProtocolDispatchRewrite {
     fn_id: FnId,
     block_id: BlockId,
-    arms: Vec<SwitchArm>,
-    /// True when the arms together cover the whole receiver (a closed union):
-    /// the last arm is the cascade's final `else` and no fallthrough is needed.
-    /// False for an open or erased receiver (an `any`, or a union with a
-    /// residual outside every impl): every arm is tested and the final `else`
-    /// preserves the original stub call, so a runtime value matching no impl
-    /// halts exactly as it does today.
-    fully_covered: bool,
+    lowering: ProtocolDispatchLowering,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // fz-v19.4 oracle surface; fz-v19.5 wires it into lowering.
+struct ProtocolDispatchLowering {
+    tests: Vec<ProtocolDispatchTest>,
+    final_else: ProtocolDispatchTerminal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProtocolDispatchTest {
+    target_ty: Ty,
+    impl_fn: FnId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProtocolDispatchTerminal {
+    Direct { impl_fn: FnId },
+    Fallback,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProtocolDispatchMatrixCandidate {
     pub(crate) fn_id: FnId,
     pub(crate) block_id: BlockId,
@@ -80,14 +88,12 @@ pub(crate) struct ProtocolDispatchMatrixCandidate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // fz-v19.4 oracle surface; fz-v19.5 wires it into lowering.
 pub(crate) enum ProtocolDispatchMatrixSelection {
     StaticDirect,
     Matrix(Box<ProtocolDispatchMatrixPlan>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // fz-v19.4 oracle surface; fz-v19.5 wires it into lowering.
 pub(crate) struct ProtocolDispatchMatrixPlan {
     pub(crate) matrix: DispatchMatrix,
     pub(crate) graph: CompiledDispatchGraph,
@@ -97,7 +103,6 @@ pub(crate) struct ProtocolDispatchMatrixPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // fz-v19.4 oracle surface; fz-v19.5 wires it into lowering.
 pub(crate) struct ProtocolDirectOutcome {
     pub(crate) outcome: OutcomeId,
     pub(crate) target_ty: Ty,
@@ -105,10 +110,28 @@ pub(crate) struct ProtocolDirectOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ProtocolSwitchSelection {
+enum ProtocolImplSelection {
     NoLocalArms,
     StaticDirect,
-    Cascade { arms: Vec<SwitchArm>, fully_covered: bool },
+    Matrix {
+        arms: Vec<ProtocolImplArm>,
+        fully_covered: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProtocolDispatchLowerError {
+    UnknownGraphNode(GraphNodeId),
+    UnsupportedGraphShape(&'static str),
+    UnsupportedPredicate,
+    UnsupportedSubject(SubjectId),
+    UnknownOutcome(OutcomeId),
+    FallbackOnMatch(OutcomeId),
+    DirectOutcomeTypeMismatch {
+        outcome: OutcomeId,
+        predicate_ty: Ty,
+        outcome_ty: Ty,
+    },
 }
 
 fn max_var(f: &FnIr) -> u32 {
@@ -247,10 +270,10 @@ fn max_var_in_term(term: &Term) -> u32 {
     max
 }
 
-/// Rewrite every closed-union protocol-dispatch callsite into a `TypeTest`/`If`
-/// cascade of per-target direct calls. Module mutation only; returns `true` if
-/// anything was rewritten so the caller can refresh its `ModulePlan` against
-/// the new IR.
+/// Rewrite every matrix-backed protocol-dispatch callsite into a `TypeTest`/`If`
+/// cascade of per-target direct calls plus any residual stub fallthrough.
+/// Module mutation only; returns `true` if anything was rewritten so the caller
+/// can refresh its `ModulePlan` against the new IR.
 pub fn rewrite_closed_union_protocol_dispatch<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &mut Module,
@@ -259,19 +282,32 @@ pub fn rewrite_closed_union_protocol_dispatch<T: Types<Ty = Ty> + ClosureTypes>(
     if module.protocol_call_targets.is_empty() {
         return false;
     }
-    let rewrites = collect_block_rewrites(t, module, plan);
+    let candidates = collect_protocol_dispatch_matrix_candidates(t, module, plan)
+        .expect("protocol dispatch matrix construction should be valid");
+    let rewrites = candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            let ProtocolDispatchMatrixSelection::Matrix(plan) = candidate.selection else {
+                return None;
+            };
+            let lowering =
+                protocol_dispatch_lowering(&plan).expect("protocol DispatchGraph should lower to protocol TypeTest IR");
+            Some(ProtocolDispatchRewrite {
+                fn_id: candidate.fn_id,
+                block_id: candidate.block_id,
+                lowering,
+            })
+        })
+        .collect::<Vec<_>>();
     let changed = !rewrites.is_empty();
     for rewrite in rewrites {
-        apply_block_rewrite(module, rewrite);
+        apply_protocol_dispatch_matrix_rewrite(module, rewrite);
     }
     changed
 }
 
 /// Build DispatchMatrix protocol-dispatch candidates from the same planner
-/// facts the current IR rewrite consumes. This is an oracle/producer only:
-/// `rewrite_closed_union_protocol_dispatch` remains the behavior owner until
-/// fz-v19.5.
-#[allow(dead_code)] // fz-v19.4 oracle surface; fz-v19.5 wires it into lowering.
+/// facts the IR rewrite consumes.
 pub(crate) fn collect_protocol_dispatch_matrix_candidates<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
@@ -308,43 +344,6 @@ pub(crate) fn collect_protocol_dispatch_matrix_candidates<T: Types<Ty = Ty> + Cl
     Ok(out)
 }
 
-/// Decide which blocks to rewrite. Read-only over `module` + `plan`.
-fn collect_block_rewrites<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    module: &Module,
-    plan: &ModulePlan,
-) -> Vec<BlockRewrite> {
-    let specs_by_fn = value_specs_by_fn(plan);
-    let mut out = Vec::new();
-    for f in &module.fns {
-        let Some(specs) = specs_by_fn.get(&f.id) else {
-            continue;
-        };
-        for b in &f.blocks {
-            let (callee, args) = match &b.terminator {
-                Term::Call { callee, args, .. } | Term::TailCall { callee, args, .. } => (*callee, args),
-                _ => continue,
-            };
-            let Some(target) = module.protocol_call_targets.get(&callee) else {
-                continue;
-            };
-            let Some(receiver_var) = args.first().copied() else {
-                continue;
-            };
-            let receiver_ty = merged_receiver_ty(t, module, specs, b, receiver_var);
-            if let Some((arms, fully_covered)) = switch_arms(t, module, target, &receiver_ty) {
-                out.push(BlockRewrite {
-                    fn_id: f.id,
-                    block_id: b.id,
-                    arms,
-                    fully_covered,
-                });
-            }
-        }
-    }
-    out
-}
-
 /// The receiver's type at `block`, merged (unioned) across every value spec of
 /// the enclosing fn. The rewrite must be sound for all specializations that
 /// reach this block, so we test against their union.
@@ -367,41 +366,28 @@ fn merged_receiver_ty<T: Types<Ty = Ty> + ClosureTypes>(
     merged
 }
 
-/// Compute the dispatch arms for a protocol callsite, with one arm per local
-/// implementing target the receiver overlaps. Returns the arms and whether they
-/// cover the whole receiver (a closed union) or leave a residual (an open or
-/// erased domain). `None` when no cascade is warranted: no overlapping local
-/// impl, or a single fully-covering impl (ordinary static dispatch, already
-/// devirtualized by `apply_planned_direct_call_targets`).
+/// Compute the local impl arms for a protocol callsite, with one arm per local
+/// implementing target the receiver overlaps. The result also records whether
+/// those arms cover the whole receiver (a closed union) or leave a residual (an
+/// open or erased domain). No matrix is warranted when there is no overlapping
+/// local impl, or a single fully-covering impl (ordinary static dispatch,
+/// already devirtualized by `apply_planned_direct_call_targets`).
 ///
 /// Arms are local-only: an arm calls its impl directly, so the callback must
 /// resolve to an in-module fn. An overlapping target whose impl is external
 /// (a provider not yet linked) makes the receiver not fully covered here — its
 /// part of the receiver becomes residual handled by the fallthrough, the same
 /// boundary `protocol_dispatch_key` draws between local and external dispatch.
-fn switch_arms<T: Types<Ty = Ty>>(
-    t: &mut T,
-    module: &Module,
-    target: &ProtocolCallTarget,
-    receiver_ty: &Ty,
-) -> Option<(Vec<SwitchArm>, bool)> {
-    match protocol_switch_selection(t, module, target, receiver_ty) {
-        ProtocolSwitchSelection::Cascade { arms, fully_covered } => Some((arms, fully_covered)),
-        ProtocolSwitchSelection::NoLocalArms | ProtocolSwitchSelection::StaticDirect => None,
-    }
-}
-
-#[allow(dead_code)] // Called by the fz-v19.4 oracle entrypoint until fz-v19.5.
 fn protocol_dispatch_matrix_for_receiver<T: Types<Ty = Ty>>(
     t: &mut T,
     module: &Module,
     target: &ProtocolCallTarget,
     receiver_ty: &Ty,
 ) -> Result<Option<ProtocolDispatchMatrixSelection>, DispatchCompileError> {
-    match protocol_switch_selection(t, module, target, receiver_ty) {
-        ProtocolSwitchSelection::NoLocalArms => Ok(None),
-        ProtocolSwitchSelection::StaticDirect => Ok(Some(ProtocolDispatchMatrixSelection::StaticDirect)),
-        ProtocolSwitchSelection::Cascade { arms, fully_covered } => {
+    match protocol_impl_selection(t, module, target, receiver_ty) {
+        ProtocolImplSelection::NoLocalArms => Ok(None),
+        ProtocolImplSelection::StaticDirect => Ok(Some(ProtocolDispatchMatrixSelection::StaticDirect)),
+        ProtocolImplSelection::Matrix { arms, fully_covered } => {
             let mut builder = DispatchMatrixBuilder::new(crate::dispatch_matrix::Order::Specificity);
             let receiver = builder.add_input_subject();
             let mut direct_outcomes = Vec::new();
@@ -444,14 +430,14 @@ fn protocol_dispatch_matrix_for_receiver<T: Types<Ty = Ty>>(
     }
 }
 
-fn protocol_switch_selection<T: Types<Ty = Ty>>(
+fn protocol_impl_selection<T: Types<Ty = Ty>>(
     t: &mut T,
     module: &Module,
     target: &ProtocolCallTarget,
     receiver_ty: &Ty,
-) -> ProtocolSwitchSelection {
+) -> ProtocolImplSelection {
     if t.is_empty(receiver_ty) {
-        return ProtocolSwitchSelection::NoLocalArms;
+        return ProtocolImplSelection::NoLocalArms;
     }
     let mut arms = Vec::new();
     let mut covered = t.none();
@@ -477,23 +463,141 @@ fn protocol_switch_selection<T: Types<Ty = Ty>>(
             continue;
         };
         covered = t.union(covered, overlap);
-        arms.push(SwitchArm { target_ty, impl_fn });
+        arms.push(ProtocolImplArm { target_ty, impl_fn });
     }
     if arms.is_empty() {
-        return ProtocolSwitchSelection::NoLocalArms;
+        return ProtocolImplSelection::NoLocalArms;
     }
     let fully_covered = t.is_subtype(receiver_ty, &covered);
     // A single arm that covers the whole receiver is ordinary single dispatch
     // (`protocol_dispatch_key` already matched it by subtype); no cascade.
     if arms.len() == 1 && fully_covered {
-        return ProtocolSwitchSelection::StaticDirect;
+        return ProtocolImplSelection::StaticDirect;
     }
-    // Sort arms by impl FnId for a deterministic cascade order.
+    // Specificity ordering in DispatchMatrix determines semantic priority; this
+    // pre-sort keeps orthogonal arms deterministic before matrix construction.
     arms.sort_by_key(|arm| arm.impl_fn.0);
-    ProtocolSwitchSelection::Cascade { arms, fully_covered }
+    ProtocolImplSelection::Matrix { arms, fully_covered }
 }
 
-/// Replace the protocol-call terminator in one block with the switch cascade.
+fn protocol_dispatch_lowering(
+    plan: &ProtocolDispatchMatrixPlan,
+) -> Result<ProtocolDispatchLowering, ProtocolDispatchLowerError> {
+    let mut tests = Vec::new();
+    let mut node = plan.graph.graph.root;
+    loop {
+        let graph_node = plan
+            .graph
+            .graph
+            .node(node)
+            .ok_or(ProtocolDispatchLowerError::UnknownGraphNode(node))?;
+        match graph_node {
+            DispatchNode::Test {
+                predicate,
+                on_match,
+                on_miss,
+            } => {
+                if predicate.subject != SubjectId(0) {
+                    return Err(ProtocolDispatchLowerError::UnsupportedSubject(predicate.subject));
+                }
+                let Region::Type(target_ty) = &predicate.region else {
+                    return Err(ProtocolDispatchLowerError::UnsupportedPredicate);
+                };
+                let outcome = direct_outcome_for_node(plan, on_match.target)?;
+                if outcome.target_ty != *target_ty {
+                    return Err(ProtocolDispatchLowerError::DirectOutcomeTypeMismatch {
+                        outcome: outcome.outcome,
+                        predicate_ty: target_ty.clone(),
+                        outcome_ty: outcome.target_ty.clone(),
+                    });
+                }
+                tests.push(ProtocolDispatchTest {
+                    target_ty: target_ty.clone(),
+                    impl_fn: outcome.impl_fn,
+                });
+                node = on_miss.target;
+            }
+            DispatchNode::Outcome { outcome, .. } if Some(*outcome) == plan.fallback_outcome => {
+                if plan.fully_covered {
+                    return Err(ProtocolDispatchLowerError::UnsupportedGraphShape(
+                        "closed protocol matrix cannot end in fallback",
+                    ));
+                }
+                if tests.is_empty() {
+                    return Err(ProtocolDispatchLowerError::UnsupportedGraphShape(
+                        "protocol matrix needs at least one test",
+                    ));
+                }
+                return Ok(ProtocolDispatchLowering {
+                    tests,
+                    final_else: ProtocolDispatchTerminal::Fallback,
+                });
+            }
+            DispatchNode::Outcome { outcome, .. } => {
+                let direct =
+                    direct_outcome(plan, *outcome).ok_or(ProtocolDispatchLowerError::UnknownOutcome(*outcome))?;
+                if tests.is_empty() {
+                    return Err(ProtocolDispatchLowerError::UnsupportedGraphShape(
+                        "protocol matrix needs at least one test",
+                    ));
+                }
+                return Ok(ProtocolDispatchLowering {
+                    tests,
+                    final_else: ProtocolDispatchTerminal::Direct {
+                        impl_fn: direct.impl_fn,
+                    },
+                });
+            }
+            DispatchNode::Fail => {
+                if !plan.fully_covered {
+                    return Err(ProtocolDispatchLowerError::UnsupportedGraphShape(
+                        "open protocol matrix cannot end in fail",
+                    ));
+                }
+                let Some(last) = tests.pop() else {
+                    return Err(ProtocolDispatchLowerError::UnsupportedGraphShape(
+                        "closed protocol matrix needs a final direct outcome",
+                    ));
+                };
+                if tests.is_empty() {
+                    return Err(ProtocolDispatchLowerError::UnsupportedGraphShape(
+                        "closed protocol matrix needs a tested arm before its final direct else",
+                    ));
+                }
+                return Ok(ProtocolDispatchLowering {
+                    tests,
+                    final_else: ProtocolDispatchTerminal::Direct { impl_fn: last.impl_fn },
+                });
+            }
+        }
+    }
+}
+
+fn direct_outcome_for_node(
+    plan: &ProtocolDispatchMatrixPlan,
+    node: GraphNodeId,
+) -> Result<&ProtocolDirectOutcome, ProtocolDispatchLowerError> {
+    let graph_node = plan
+        .graph
+        .graph
+        .node(node)
+        .ok_or(ProtocolDispatchLowerError::UnknownGraphNode(node))?;
+    let DispatchNode::Outcome { outcome, .. } = graph_node else {
+        return Err(ProtocolDispatchLowerError::UnsupportedGraphShape(
+            "protocol match edge must target a direct outcome",
+        ));
+    };
+    if Some(*outcome) == plan.fallback_outcome {
+        return Err(ProtocolDispatchLowerError::FallbackOnMatch(*outcome));
+    }
+    direct_outcome(plan, *outcome).ok_or(ProtocolDispatchLowerError::UnknownOutcome(*outcome))
+}
+
+fn direct_outcome(plan: &ProtocolDispatchMatrixPlan, outcome: OutcomeId) -> Option<&ProtocolDirectOutcome> {
+    plan.direct_outcomes.iter().find(|direct| direct.outcome == outcome)
+}
+
+/// Replace the protocol-call terminator in one block with the matrix dispatch cascade.
 ///
 /// The original block keeps its statements and becomes the cascade head. Each
 /// arm gets a fresh block that calls its impl directly with the original call's
@@ -504,7 +608,7 @@ fn protocol_switch_selection<T: Types<Ty = Ty>>(
 /// is the final `else`. An open or erased receiver tests every arm and routes
 /// the final `else` to a fallthrough block that preserves the original stub
 /// call, so a runtime value matching no arm halts as it does today.
-fn apply_block_rewrite(module: &mut Module, rewrite: BlockRewrite) {
+fn apply_protocol_dispatch_matrix_rewrite(module: &mut Module, rewrite: ProtocolDispatchRewrite) {
     let f = module
         .fns
         .iter_mut()
@@ -526,19 +630,31 @@ fn apply_block_rewrite(module: &mut Module, rewrite: BlockRewrite) {
         other => unreachable!("rewrite block terminator is a protocol call, got {:?}", other),
     };
     let receiver = args[0];
-    let n = rewrite.arms.len();
-    // Arms tested in the cascade. A closed union leaves its last arm untested
-    // (the final `else`); an open receiver tests them all.
-    let num_tests = if rewrite.fully_covered { n - 1 } else { n };
+    let num_tests = rewrite.lowering.tests.len();
+    debug_assert!(
+        num_tests > 0,
+        "protocol matrix lowerer rejects empty executable matrices"
+    );
+    let mut direct_impls = rewrite
+        .lowering
+        .tests
+        .iter()
+        .map(|test| test.impl_fn)
+        .collect::<Vec<_>>();
+    let final_else_is_fallback = rewrite.lowering.final_else == ProtocolDispatchTerminal::Fallback;
+    if let ProtocolDispatchTerminal::Direct { impl_fn } = rewrite.lowering.final_else {
+        direct_impls.push(impl_fn);
+    }
+    let direct_count = direct_impls.len();
 
     let var_base = max_var(f) + 1;
     let block_base = max_block(f) + 1;
-    // Block id layout: arm blocks [0, n), then (open only) the fallthrough
+    // Block id layout: direct outcome blocks, then (open only) the fallthrough
     // block, then the intermediate test blocks (tests 1..num_tests; test 0 is
     // the head block).
     let arm_block = |i: usize| BlockId(block_base + i as u32);
-    let fallthrough_block = BlockId(block_base + n as u32);
-    let test_extra_base = block_base + n as u32 + if rewrite.fully_covered { 0 } else { 1 };
+    let fallthrough_block = BlockId(block_base + direct_count as u32);
+    let test_extra_base = block_base + direct_count as u32 + u32::from(final_else_is_fallback);
     let test_point = |i: usize| {
         if i == 0 {
             rewrite.block_id
@@ -546,10 +662,10 @@ fn apply_block_rewrite(module: &mut Module, rewrite: BlockRewrite) {
             BlockId(test_extra_base + (i as u32 - 1))
         }
     };
-    let final_else = if rewrite.fully_covered {
-        arm_block(n - 1)
-    } else {
+    let final_else = if final_else_is_fallback {
         fallthrough_block
+    } else {
+        arm_block(direct_count - 1)
     };
 
     let arm_terminator = |impl_fn: FnId| -> Term {
@@ -574,12 +690,12 @@ fn apply_block_rewrite(module: &mut Module, rewrite: BlockRewrite) {
     // Emit the test cascade onto the head block and the intermediate test
     // blocks. Tested arm i branches then→arm i, else→the next test point, or
     // the final `else` (the untested last arm, or the fallthrough).
-    let mut new_blocks: Vec<Block> = Vec::with_capacity(2 * n + 1);
+    let mut new_blocks: Vec<Block> = Vec::with_capacity(num_tests + direct_count + usize::from(final_else_is_fallback));
     for i in 0..num_tests {
         let tv = Var(var_base + i as u32);
         let test_stmt = Stmt::Let(
             tv,
-            Prim::TypeTest(receiver, Box::new(rewrite.arms[i].target_ty.clone())),
+            Prim::TypeTest(receiver, Box::new(rewrite.lowering.tests[i].target_ty.clone())),
         );
         let else_b = if i + 1 < num_tests {
             test_point(i + 1)
@@ -605,19 +721,19 @@ fn apply_block_rewrite(module: &mut Module, rewrite: BlockRewrite) {
         }
     }
 
-    // One arm block per target, each a direct call to the impl.
-    for (i, arm) in rewrite.arms.iter().enumerate() {
+    // One direct outcome block per target, each a direct call to the impl.
+    for (i, impl_fn) in direct_impls.into_iter().enumerate() {
         new_blocks.push(Block {
             id: arm_block(i),
             params: vec![],
             stmts: vec![],
-            terminator: arm_terminator(arm.impl_fn),
+            terminator: arm_terminator(impl_fn),
         });
     }
 
     // Open receiver: the fallthrough preserves the original stub call so a
     // value matching no arm halts exactly as before the rewrite.
-    if !rewrite.fully_covered {
+    if final_else_is_fallback {
         new_blocks.push(Block {
             id: fallthrough_block,
             params: vec![],

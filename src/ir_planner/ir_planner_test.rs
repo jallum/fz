@@ -5170,7 +5170,20 @@ end
         "after the rewrite, describe must not call the __protocol__ stub"
     );
 
-    // It tests the receiver's type at least once...
+    // A two-arm closed union tests the first arm and uses the final `else` as
+    // the second direct arm. Lowering the graph's closed `Fail` tail to an IR
+    // fail/halt would be a behavioral-shape regression.
+    let type_test_count = describe.blocks.iter().fold(0, |count, b| {
+        count
+            + b.stmts
+                .iter()
+                .filter(|Stmt::Let(_, prim)| matches!(prim, Prim::TypeTest(..)))
+                .count()
+    });
+    assert_eq!(
+        type_test_count, 1,
+        "two-arm closed union must lower as one test plus final direct else"
+    );
     let has_type_test = describe.blocks.iter().any(|b| {
         b.stmts
             .iter()
@@ -5459,10 +5472,10 @@ end
     );
 
     let candidates = collect_protocol_dispatch_matrix_candidates(&mut t, &m, &mt).expect("protocol matrix candidates");
-    let describe = m.fn_by_name("describe").expect("describe fn");
+    let describe_id = m.fn_by_name("describe").expect("describe fn").id;
     let candidate = candidates
         .iter()
-        .find(|candidate| candidate.fn_id == describe.id)
+        .find(|candidate| candidate.fn_id == describe_id)
         .expect("describe protocol candidate");
     let ProtocolDispatchMatrixSelection::Matrix(plan) = &candidate.selection else {
         panic!(
@@ -5475,6 +5488,32 @@ end
     assert!(plan.fallback_outcome.is_some());
     assert_eq!(plan.direct_outcomes.len(), 1);
     assert_eq!(m.fn_by_id(plan.direct_outcomes[0].impl_fn).name, "Sizer.Integer.size");
+
+    assert!(rewrite_closed_union_protocol_dispatch(&mut t, &mut m, &mt));
+    let describe = m.fn_by_id(describe_id);
+    let mut direct_impl_callees = describe
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.terminator {
+            Term::Call { callee, .. } | Term::TailCall { callee, .. } => {
+                (!m.protocol_call_targets.contains_key(callee)).then_some(*callee)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    direct_impl_callees.sort();
+    direct_impl_callees.dedup();
+    assert_eq!(direct_impl_callees.len(), 1);
+    assert_eq!(m.fn_by_id(direct_impl_callees[0]).name, "Sizer.Integer.size");
+
+    let keeps_stub_fallthrough = describe.blocks.iter().any(|b| match &b.terminator {
+        Term::Call { callee, .. } | Term::TailCall { callee, .. } => m.protocol_call_targets.contains_key(callee),
+        _ => false,
+    });
+    assert!(
+        keeps_stub_fallthrough,
+        "external/provider overlap must remain residual after matrix lowering"
+    );
 }
 
 // ---- fz-swt.8 — `.value` accessor: typing + visibility gating ----

@@ -270,12 +270,10 @@ where
     // rewritten before the interpreter or native backends see the module.
     loop {
         let direct_changed = apply_planned_direct_call_targets(module, module_plan);
-        // Closed-domain protocol switch dispatch. A protocol call whose
-        // receiver is a closed union of implementing targets (`integer |
-        // list(...)`) has no single planned target for direct-call application,
-        // so it would stay a call to the `__protocol__` stub and halt. This
-        // rewrites such callsites into a TypeTest/If cascade of per-target
-        // direct calls, reusing IR that already lowers in every engine.
+        // Protocol union dispatch. A protocol call whose receiver spans
+        // multiple implementing targets has no single direct-call target, so
+        // DispatchMatrix builds a type-region graph and this hook lowers it to
+        // TypeTest/If IR that every engine already supports.
         let switch_changed = rewrite_closed_union_protocol_dispatch(t, module, module_plan);
         if !(direct_changed || switch_changed) {
             break;

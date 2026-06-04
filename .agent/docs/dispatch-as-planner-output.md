@@ -203,13 +203,14 @@ visible implementation domains the planner builds a `ProtocolDispatch::Local`
 (static-direct), `ProtocolDispatch::External` (provider boundary), or diagnostic
 edge.
 
-A finite-union receiver domain is rewritten before execution
-(`rewrite_closed_union_protocol_dispatch`) into a `TypeTest`/`If` cascade with a
-direct-call arm per visible local implementation. `narrow` intersects the
-receiver with each arm's target type, so when the authoritative plan re-types the
-rewritten module each arm's ordinary direct call specs to the right impl. A
-closed union needs no fallthrough; an open or erased receiver keeps the protocol
-stub as the final `else`, so a value matching no impl halts with
+A finite-union receiver domain is lowered before execution from a
+specificity-ordered DispatchMatrix into a `TypeTest`/`If` cascade with a
+direct-call outcome per visible local implementation. `narrow` intersects the
+receiver with each arm's target type, so when the authoritative plan re-types
+the rewritten module each arm's ordinary direct call specs to the right impl. A
+closed union needs no fallthrough: the graph's closed residual `Fail` tail lowers
+to the final direct `else`. An open or erased receiver keeps the protocol stub
+as the final `else`, so a value matching no impl halts with
 `:protocol_dispatch_unplanned`. Codegen lowers each `TypeTest` by schema id for
 named structs and by value kind for kinded containers such as lists and maps; no
 runtime lookup table is emitted.
