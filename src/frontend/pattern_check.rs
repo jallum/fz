@@ -83,24 +83,30 @@ fn check_fn_clauses(fn_def: &FnDef, domains: Option<&[SubjectDomain]>, diags: &m
         .collect();
     let pattern_matrix = PatternMatrix { subjects, rows };
 
-    for dead_id in find_unreachable_rows(&pattern_matrix) {
-        let dead = &fn_def.clauses[dead_id as usize];
-        diags.push(unreachable_clause_diag(dead, &fn_def.clauses[..dead_id as usize], "fn"));
-    }
-
-    // Skip exhaustiveness for fns with @spec preconditions or clause
-    // guards — those decline first-match-wins coverage without invalidating
-    // the source code. Future ticket: factor guards into the PatternMatrix
-    // analysis. Multi-clause fns without guards/preconditions: every
-    // multi-clause head needs a wildcard catch-all or a complete cover,
-    // else `:function_clause` halt at runtime.
+    // Type-ascribed params (`x :: integer`) and clause guards add match
+    // constraints the PatternMatrix does not model — it sees an ascribed or
+    // guarded param as a plain binding (catch-all). Its first-match coverage
+    // verdict is therefore unsound when either is present: a later clause can be
+    // reachable for inputs the ascribed/guarded clause rejects (e.g.
+    // `check(x :: integer)` then `check(x)` — the second catches non-integers).
+    // Both reachability and exhaustiveness reporting are gated on neither being
+    // present. Modeling the constraints in the matrix is future work (fz-ldj).
     let any_guard = fn_def.clauses.iter().any(|c| c.guard.is_some());
     let any_annot = fn_def
         .clauses
         .iter()
         .any(|c| c.param_annotations.iter().any(|a| a.is_some()));
+    if any_guard || any_annot {
+        return;
+    }
+
+    for dead_id in find_unreachable_rows(&pattern_matrix) {
+        let dead = &fn_def.clauses[dead_id as usize];
+        diags.push(unreachable_clause_diag(dead, &fn_def.clauses[..dead_id as usize], "fn"));
+    }
+
     let domain_slice = domains.unwrap_or(&[]);
-    if !any_guard && !any_annot && is_inexhaustive_with_domains(&pattern_matrix, domain_slice) {
+    if is_inexhaustive_with_domains(&pattern_matrix, domain_slice) {
         let last = fn_def.clauses.last().unwrap();
         diags.push(inexhaustive_diag(fn_def, last.span, "fn", "function_clause"));
     }
