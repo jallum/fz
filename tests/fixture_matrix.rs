@@ -1656,10 +1656,9 @@ fn closure_typed_captures_matches_cps_in_clif_section_8_3() {
         "main must materialize the lazy continuation code pointer via func_addr (add_to inlined):\n{}",
         main_body
     );
-    assert!(
-        main_body.contains("stack_store") && main_body.contains("bor_imm v8, 0x0800_0000_0000_0000"),
-        "main must keep the caller continuation as a lazy stack descriptor (add_to inlined):\n{}",
-        main_body
+    assert_lazy_cont_pointer_packing_matches_target(
+        main_body,
+        "main must keep the caller continuation as a lazy stack descriptor (add_to inlined)",
     );
     assert!(
         !main_body.contains("@fz_alloc_closure"),
@@ -1714,10 +1713,9 @@ fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
         "main must materialize the spawned child through the static callable path:\n{}",
         stdout
     );
-    assert!(
-        stdout.contains("stack_addr.i64") && stdout.contains("bor_imm"),
-        "main must build a lazy stack descriptor for the post-spawn continuation:\n{}",
-        stdout
+    assert_lazy_cont_pointer_packing_matches_target(
+        &stdout,
+        "main must build a lazy stack descriptor for the post-spawn continuation",
     );
     assert!(
         stdout.contains(" call ") && stdout.contains("return "),
@@ -3021,6 +3019,10 @@ fn quicksort_list_literal_uses_static_tail_links() {
         "quicksort's literal list should pass a single tagged list ref and lazy continuation into qsort:\n{}",
         main
     );
+    assert_lazy_cont_pointer_packing_matches_target(
+        main,
+        "quicksort's lazy continuation pointer packing must match the target",
+    );
 }
 
 fn quicksort_pins_return_demand_target() {
@@ -3518,6 +3520,49 @@ fn clif_last_assigned_value<'a>(function: &'a str, op: &str) -> Option<&'a str> 
         .lines()
         .filter_map(|line| line.trim().split_once(op).map(|(lhs, _)| lhs.trim()))
         .next_back()
+}
+
+fn assert_lazy_cont_pointer_packing_matches_target(clif: &str, context: &str) {
+    assert!(
+        clif.contains("stack_addr.i64") && clif.contains("bor_imm"),
+        "{}:\n{}",
+        context,
+        clif
+    );
+    assert!(
+        !clif.contains("band_imm"),
+        "{} must not clear lazy continuation pointer bits with band_imm:\n{}",
+        context,
+        clif
+    );
+
+    if cfg!(target_arch = "aarch64") {
+        assert!(
+            !clif.contains("ishl_imm") && !clif.contains("ushr_imm"),
+            "{} must not shift-clear fresh lazy continuation stack pointers on arm64/TBI:\n{}",
+            context,
+            clif
+        );
+        assert!(
+            clif.contains("0x0800_0000_0000_0000"),
+            "{} must tag lazy continuation refs in the arm64/TBI top byte:\n{}",
+            context,
+            clif
+        );
+    } else if cfg!(target_arch = "x86_64") {
+        assert!(
+            clif.contains("ishl_imm") && clif.contains("ushr_imm"),
+            "{} must shift-clear lazy continuation pointer bits on x86_64 canonical refs:\n{}",
+            context,
+            clif
+        );
+        assert!(
+            clif.contains("0x1000_0000_0000_0000"),
+            "{} must tag lazy continuation refs in x86_64 canonical tag bits:\n{}",
+            context,
+            clif
+        );
+    }
 }
 
 fn spec_continuation_capture_lengths(specs: &str) -> Vec<usize> {

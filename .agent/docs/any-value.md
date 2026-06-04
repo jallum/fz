@@ -181,6 +181,14 @@ Never dereference an AnyValueRef directly.
 Always go through the AnyValueRef API.
 ```
 
+Compiler-created pointer refs must follow the same target split. On arm64/TBI,
+fresh stack/heap pointers can be tagged by OR-ing the top-byte tag word directly;
+the compiler must not emit a defensive address-mask clear in that path. On
+x86_64 canonical refs, clear the non-address/tag extension bits with a
+left-shift followed by a logical-right-shift, then OR in the tag word. This
+keeps `fz dump --emit clif` aligned with the runtime packing model instead of
+pinning one platform's mask shape into codegen.
+
 ## Container Storage
 
 Containers appear to store `AnyValueRef`s. That is a logical API rule, not a

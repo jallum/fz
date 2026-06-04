@@ -11,7 +11,7 @@ use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
-use fz_runtime::any_value::{AnyValueRefPacking, TAG_FWD};
+use fz_runtime::any_value::{AnyValueRefPacking, TAG_FWD, TaggedRefArch};
 use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -205,10 +205,33 @@ pub(crate) fn build_lazy_cont_descriptor<M: cranelift_module::Module>(
         }
     });
     let ptr = body.b.ins().stack_addr(types::I64, slot, 0);
-    let address_mask = AnyValueRefPacking::current().address_mask() as i64;
-    let ptr_payload = body.b.ins().band_imm(ptr, address_mask);
-    let tag_word = (TAG_FWD << AnyValueRefPacking::current().tag_shift()) as i64;
-    body.b.ins().bor_imm(ptr_payload, tag_word)
+    emit_tagged_pointer_ref_word(body.b, ptr, TAG_FWD)
+}
+
+fn emit_tagged_pointer_ref_word(b: &mut FunctionBuilder<'_>, ptr: ir::Value, tag: u64) -> ir::Value {
+    emit_tagged_pointer_ref_word_for_arch(b, ptr, tag, TaggedRefArch::current())
+}
+
+fn emit_tagged_pointer_ref_word_for_arch(
+    b: &mut FunctionBuilder<'_>,
+    ptr: ir::Value,
+    tag: u64,
+    arch: TaggedRefArch,
+) -> ir::Value {
+    let ptr_payload = emit_tagged_pointer_payload_for_arch(b, ptr, arch);
+    let tag_word = (tag << AnyValueRefPacking::for_arch(arch).tag_shift()) as i64;
+    b.ins().bor_imm(ptr_payload, tag_word)
+}
+
+fn emit_tagged_pointer_payload_for_arch(b: &mut FunctionBuilder<'_>, ptr: ir::Value, arch: TaggedRefArch) -> ir::Value {
+    match arch {
+        TaggedRefArch::Arm64Tbi => ptr,
+        TaggedRefArch::X86_64Canonical57 => {
+            let clear_shift = i64::from(64 - AnyValueRefPacking::for_arch(arch).tag_shift());
+            let shifted = b.ins().ishl_imm(ptr, clear_shift);
+            b.ins().ushr_imm(shifted, clear_shift)
+        }
+    }
 }
 
 fn store_lazy_capture(
@@ -224,4 +247,68 @@ fn store_lazy_capture(
         .stack_store(raw, slot, (raw_base + idx * SLOT_BYTES as usize) as i32);
     let kind_v = b.ins().iconst(types::I8, kind);
     b.ins().stack_store(kind_v, slot, (kind_base + idx) as i32);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cranelift_codegen::Context;
+    use cranelift_codegen::ir::{AbiParam, Signature};
+    use cranelift_codegen::isa::CallConv;
+
+    fn render_pointer_ref_pack_for_arch(arch: TaggedRefArch) -> String {
+        let mut ctx = Context::new();
+        ctx.func.signature = Signature::new(CallConv::SystemV);
+        ctx.func.signature.params.push(AbiParam::new(types::I64));
+        ctx.func.signature.returns.push(AbiParam::new(types::I64));
+        let mut fbctx = FunctionBuilderContext::new();
+        {
+            let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+            let entry = b.create_block();
+            b.append_block_params_for_function_params(entry);
+            b.switch_to_block(entry);
+            b.seal_block(entry);
+            let ptr = b.block_params(entry)[0];
+            let value = emit_tagged_pointer_ref_word_for_arch(&mut b, ptr, TAG_FWD, arch);
+            b.ins().return_(&[value]);
+            b.finalize();
+        }
+        ctx.func.display().to_string()
+    }
+
+    #[test]
+    fn arm64_tbi_pointer_ref_pack_omits_clear_step() {
+        let clif = render_pointer_ref_pack_for_arch(TaggedRefArch::Arm64Tbi);
+
+        assert!(
+            !clif.contains("band_imm"),
+            "arm64/TBI must not mask fresh pointers:\n{clif}"
+        );
+        assert!(
+            !clif.contains("ishl_imm") && !clif.contains("ushr_imm"),
+            "arm64/TBI must not shift-clear fresh pointers:\n{clif}"
+        );
+        assert!(
+            clif.contains("bor_imm v0, 0x0800_0000_0000_0000"),
+            "arm64/TBI should OR the top-byte tag directly into the pointer:\n{clif}"
+        );
+    }
+
+    #[test]
+    fn x86_64_pointer_ref_pack_shift_clears_before_tagging() {
+        let clif = render_pointer_ref_pack_for_arch(TaggedRefArch::X86_64Canonical57);
+
+        assert!(
+            clif.contains("ishl_imm v0, 7") && clif.contains("ushr_imm"),
+            "x86_64 canonical refs must shift-clear high bits before tagging:\n{clif}"
+        );
+        assert!(
+            !clif.contains("band_imm"),
+            "x86_64 must not use mask immediates for this clear:\n{clif}"
+        );
+        assert!(
+            clif.contains("bor_imm") && clif.contains("0x1000_0000_0000_0000"),
+            "x86_64 canonical refs should OR the shifted tag word after clearing:\n{clif}"
+        );
+    }
 }

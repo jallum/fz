@@ -123,6 +123,19 @@ pub enum TaggedRefArch {
     X86_64Canonical57,
 }
 
+impl TaggedRefArch {
+    pub const fn current() -> Self {
+        #[cfg(target_arch = "aarch64")]
+        {
+            Self::Arm64Tbi
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            Self::X86_64Canonical57
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AnyValueRefPacking {
     tag_shift: u8,
@@ -138,14 +151,7 @@ impl AnyValueRefPacking {
     }
 
     pub const fn current() -> Self {
-        #[cfg(target_arch = "aarch64")]
-        {
-            Self::for_arch(TaggedRefArch::Arm64Tbi)
-        }
-        #[cfg(target_arch = "x86_64")]
-        {
-            Self::for_arch(TaggedRefArch::X86_64Canonical57)
-        }
+        Self::for_arch(TaggedRefArch::current())
     }
 
     const fn new(tag_shift: u8) -> Self {
