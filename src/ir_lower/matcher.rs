@@ -1,6 +1,7 @@
 use super::*;
 use crate::ast::{BitType, Endian, Expr, Pattern, Spanned};
 use crate::diag::Span;
+use crate::dispatch_matrix::pattern::{matcher_from_pattern_dispatch_plan, pattern_dispatch_from_matcher};
 use crate::exec::matcher::{
     GuardBinOp, GuardDispatch, GuardExpr, GuardUnaryOp, Matcher, MatcherBitField, MatcherBitSize, MatcherBitType,
     MatcherConst, MatcherEndian, MatcherNode, MatcherTest, NodeId, PinnedId, PinnedInput, SubjectRef, SwitchKey,
@@ -56,8 +57,22 @@ pub(crate) fn lower_pattern_matrix_to_current_fn<T: Types<Ty = Ty>>(
             what: format!("matcher cannot be lowered inline: {:?}", err),
         }
     })?;
+    let matcher = matcher_via_dispatch_matrix(matcher, Span::DUMMY, "inline matcher")?;
     let mut state = MatcherLowerState::default();
     lower_matcher_node(ctx, t, &matcher, matcher.root, fail_block, body_cb, &mut state)
+}
+
+pub(super) fn matcher_via_dispatch_matrix(matcher: Matcher, span: Span, context: &str) -> Result<Matcher, LowerError> {
+    // DispatchMatrix owns the decision graph; Matcher remains the ABI consumed
+    // by existing inline lowering and receive records during the migration.
+    let plan = pattern_dispatch_from_matcher(&matcher).map_err(|err| LowerError::Unsupported {
+        span,
+        what: format!("{context} cannot be represented as DispatchMatrix: {err:?}"),
+    })?;
+    matcher_from_pattern_dispatch_plan(&plan).map_err(|err| LowerError::Unsupported {
+        span,
+        what: format!("{context} DispatchGraph cannot be lowered through Matcher ABI: {err:?}"),
+    })
 }
 
 pub(super) fn lower_matcher_node<T: Types<Ty = Ty>>(

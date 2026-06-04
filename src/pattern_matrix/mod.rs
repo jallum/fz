@@ -1,10 +1,10 @@
-//! PatternMatrix data types and Matcher compiler.
+//! PatternMatrix data types and the AST-facing matcher adapter compiler.
 //!
-//! Compiles a list of clause patterns into a shared Matcher graph, so that
-//! cross-clause constructor tests (same arity, same atom) are emitted ONCE
-//! and dispatched into per-clause continuations. Replaces the per-clause
-//! `lower_pattern_bind` cascade currently duplicated across
-//! `lower_multi_clause`, `lower_case`, and `lower_with`.
+//! Compiles a list of clause patterns into the current AST-free `Matcher` shape
+//! so source patterns, bindings, guard calls, and diagnostics have one
+//! normalized input. Runtime decision ownership then moves through
+//! `dispatch_matrix::pattern` into `DispatchMatrix`/`DispatchGraph`; `Matcher`
+//! remains the backend ABI that inline lowering and receive records consume.
 //!
 //! Algorithm: Maranget-lite. First column with a constructor pattern drives
 //! specialization. Wildcards/Vars participate in every specialization
@@ -100,8 +100,7 @@ pub enum PatternMatrixCompileError {
     NonMonotonicBodyId { previous: BodyId, current: BodyId },
 }
 
-/// Compile a PatternMatrix into the AST-free `Matcher`
-/// representation.
+/// Compile a PatternMatrix into the AST-free `Matcher` adapter representation.
 pub fn compile_pattern_matrix(pattern_matrix: PatternMatrix) -> Result<Matcher, PatternMatrixCompileError> {
     let mut resolver = |_name: &str,
                         _arity: usize,

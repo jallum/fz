@@ -1,3 +1,4 @@
+use super::matcher::matcher_via_dispatch_matrix;
 use super::*;
 use crate::ast::{AfterClause, MatchClause};
 use crate::diag::Span;
@@ -18,8 +19,9 @@ use std::sync::Arc;
 /// `body_id`. Captures/pinned threading is unchanged from receive's
 /// existing wiring — those are not PatternMatrix concerns.
 ///
-/// The PatternMatrix itself accepts arbitrary patterns; lowering turns it into a
-/// cached AST-free Matcher before any receive probe executes.
+/// The PatternMatrix itself accepts arbitrary patterns; lowering routes it
+/// through DispatchMatrix and caches the graph-derived AST-free Matcher before
+/// any receive probe executes.
 pub(crate) fn build_receive_pattern_matrix(msg_var: Var, clauses: &[MatchClause]) -> PatternMatrix {
     PatternMatrix {
         subjects: vec![msg_var],
@@ -170,8 +172,8 @@ pub(crate) fn lower_receive<T: Types<Ty = Ty>>(
         .map_err(|err| LowerError::Unsupported {
             span: rx_span,
             what: format!("receive matcher cannot be lowered: {:?}", err),
-        })
-        .map(Arc::new)?;
+        })?;
+    let receive_matcher = matcher_via_dispatch_matrix(receive_matcher, rx_span, "receive matcher").map(Arc::new)?;
     for (index, key) in receive_matcher.prepared_keys.iter().enumerate() {
         let name = prepared_key_name(index);
         if !seen_pinned.insert(name.clone()) {

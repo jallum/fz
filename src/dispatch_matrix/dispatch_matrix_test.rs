@@ -1,6 +1,6 @@
 use super::*;
 use crate::ast::{BitField, BitFieldSpec, BitSize, BitType, Endian, Expr, Pattern, Spanned};
-use crate::exec::matcher::{Matcher, MatcherConst, MatcherNode};
+use crate::exec::matcher::{Matcher, MatcherBitSize, MatcherConst, MatcherNode, MatcherTest};
 use crate::fz_ir::Var;
 use crate::pattern_matrix::{BodyId, PatternMatrix, Row, compile_pattern_matrix};
 use crate::types::{Ty, Types};
@@ -1041,6 +1041,92 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
         })
     ));
     assert!(outcome.bindings.iter().any(|binding| binding.name == "payload"));
+}
+
+#[test]
+fn pattern_dispatch_graph_rebuilds_matcher_abi_payloads() {
+    let pattern_matrix = PatternMatrix {
+        subjects: vec![Var(0)],
+        rows: vec![
+            pattern_row(
+                vec![Pattern::Bitstring(vec![
+                    BitField {
+                        value: sp(Pattern::Var("n".to_string())),
+                        spec: BitFieldSpec {
+                            ty: BitType::Integer,
+                            size: Some(BitSize::Literal(8)),
+                            ..Default::default()
+                        },
+                    },
+                    BitField {
+                        value: sp(Pattern::Var("payload".to_string())),
+                        spec: BitFieldSpec {
+                            ty: BitType::Binary,
+                            size: Some(BitSize::Var("n".to_string())),
+                            ..Default::default()
+                        },
+                    },
+                ])],
+                0,
+            ),
+            pattern_row(
+                vec![Pattern::Map(vec![(
+                    sp(Pattern::Atom("id".to_string())),
+                    sp(Pattern::Nil),
+                )])],
+                1,
+            ),
+            pattern_row_with_guard_preconditions(
+                vec![Pattern::Pinned("want".to_string())],
+                2,
+                Expr::Bool(true),
+                Vec::new(),
+            ),
+        ],
+    };
+    let (matcher, plan) = pattern_plan(pattern_matrix);
+
+    let rebuilt = pattern::matcher_from_pattern_dispatch_plan(&plan).expect("dispatch graph rebuilds matcher ABI");
+
+    assert_eq!(rebuilt.inputs, matcher.inputs);
+    assert_eq!(rebuilt.pinned, matcher.pinned);
+    assert_eq!(rebuilt.prepared_keys, matcher.prepared_keys);
+    assert_eq!(matcher_leaf_body_ids(&rebuilt), plan_body_ids(&plan));
+    assert!(rebuilt.nodes.iter().any(|node| matches!(
+        node,
+        MatcherNode::Test {
+            test: MatcherTest::MapHasKey {
+                key: MatcherConst::PreparedKey(0),
+                ..
+            },
+            ..
+        }
+    )));
+    assert!(rebuilt.nodes.iter().any(|node| matches!(
+        node,
+        MatcherNode::Test {
+            test: MatcherTest::EqPinned { .. },
+            ..
+        }
+    )));
+    assert!(
+        rebuilt
+            .nodes
+            .iter()
+            .any(|node| matches!(node, MatcherNode::Guard { .. }))
+    );
+    assert!(rebuilt.nodes.iter().any(|node| matches!(
+        node,
+        MatcherNode::Test {
+            test: MatcherTest::Bitstring { fields, .. },
+            ..
+        } if fields.len() == 2
+            && fields[0].direct_bindings.len() == 1
+            && fields[0].direct_bindings[0] == "n"
+            && fields[1].direct_bindings.len() == 1
+            && fields[1].direct_bindings[0] == "payload"
+            && fields[1].size == Some(MatcherBitSize::BindingName("n".to_string()))
+    )));
 }
 
 #[test]

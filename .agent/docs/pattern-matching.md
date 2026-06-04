@@ -1,31 +1,33 @@
 # Pattern Matching
 
 Pattern matching has one decision model shared by every match site. A
-`PatternMatrix` (rows of patterns over a list of subjects) compiles into a
-`Matcher`: an AST-free graph of tests, switches, guards, failures, and leaves.
-Lowering walks that graph into CPS IR. The rule the whole model enforces is
-**test first, project second**: a constructor's fields are read only on the
-control-flow edge where that constructor's shape is already proven.
+`PatternMatrix` (rows of patterns over a list of subjects) normalizes source AST
+patterns into ordered rows. Those rows are converted through the current
+AST-free `Matcher` shape into a `DispatchMatrix`, compiled to a `DispatchGraph`,
+and then adapted back to `Matcher` for the existing inline lowering and receive
+ABI. The rule the whole model enforces is **test first, project second**: a
+constructor's fields are read only on the control-flow edge where that
+constructor's shape is already proven.
 
-Three layers, three owners:
+Four layers, one decision model:
 
-- `src/pattern_matrix` owns the matrix and the compiler that turns it into a
-  `Matcher`. It chooses the test order and where bindings land.
-- `src/exec/matcher` owns the `Matcher` data type — the executable shape that
-  carries subjects, tests, switch keys, guards, bindings, and outcomes, with no
-  AST inside.
-- `src/ir_lower/matcher.rs` owns turning a `Matcher` into IR primitives and the
-  branch structure around them.
-- `src/dispatch_matrix/pattern.rs` is the side-by-side adapter for the
-  dispatch-matrix migration. It reads the compiled `Matcher`, converts matcher
-  tests/switches/guards into `DispatchMatrix` region questions, and keeps body
-  ids plus leaf bindings as opaque outcomes. It does not lower runtime pattern
-  matching yet.
+- `src/pattern_matrix` owns AST-facing row construction and diagnostics input.
+  It still emits the current `Matcher` form as compatibility input to the
+  dispatch producer.
+- `src/dispatch_matrix/pattern.rs` owns source-pattern dispatch decisions. It
+  converts matcher tests/switches/guards into `DispatchMatrix` region questions,
+  compiles them to a `DispatchGraph`, and keeps body ids plus leaf bindings as
+  opaque outcomes.
+- `src/exec/matcher` owns the remaining backend ABI shape: subjects, tests,
+  switch keys, guards, bindings, and outcomes, with no AST inside.
+- `src/ir_lower/matcher.rs` owns turning the graph-derived `Matcher` adapter
+  into IR primitives and branch structure.
 
 Function clauses, `case`, `with` else arms, and `receive` all build a
-`PatternMatrix` and lower the resulting `Matcher` the same way. Single-clause
-`fn` heads and single, unguarded `fn` lambdas skip the matrix and bind their
-parameters inline, but obey the same test-first rule.
+`PatternMatrix`, route through `DispatchMatrix`, and lower/store the
+graph-derived `Matcher` adapter the same way. Single-clause `fn` heads and
+single, unguarded `fn` lambdas skip the matrix and bind their parameters inline,
+but obey the same test-first rule.
 
 ## The Matrix And Its Compiler
 
@@ -82,11 +84,13 @@ arena, and a `root`. Every `MatcherNode` is one of:
 `Bitstring`, `Type`. Bindings live only on `Leaf` nodes, so a name is exposed
 only once its row's tests have all passed.
 
-The DispatchMatrix adapter preserves that boundary: tests become region
+The DispatchMatrix producer preserves that boundary: tests become region
 questions and leaf bindings become outcome metadata. Map-value and bitstring
 field subjects are attached to successful branch evidence, not to failed edges.
 Guards become guard-region questions with the original `GuardExpr` stored beside
-the matrix as producer metadata.
+the matrix as producer metadata. The graph-derived `Matcher` exists so current
+lowering code and receive records can keep their ABI while the decision model is
+unified.
 
 ### Guards
 
@@ -102,10 +106,12 @@ halting.
 
 ## Lowering To IR
 
-`lower_pattern_matrix_to_current_fn` compiles the matrix, then walks the graph
-with `lower_matcher_node`, threading a `fail_block` and a body callback. A
-`MatcherLowerState` caches each `SubjectRef`'s materialized `Var` per
-control-flow edge, so a projection is computed once and only where it is legal.
+`lower_pattern_matrix_to_current_fn` compiles the matrix, routes it through
+`DispatchMatrix`, adapts the resulting `DispatchGraph` back to `Matcher`, then
+walks that adapter with `lower_matcher_node`, threading a `fail_block` and a
+body callback. A `MatcherLowerState` caches each `SubjectRef`'s materialized
+`Var` per control-flow edge, so a projection is computed once and only where it
+is legal.
 
 `materialize_matcher_subject` is where projections become primitives:
 
@@ -172,20 +178,22 @@ inherits it. (The single-clause inline `match_map` path instead uses a plain
 - `lower_case` builds a single-column matrix over the scrutinee; leaves route to
   `case_clause_N` continuations; exhaustion halts with `:case_clause`.
 - `lower_with` lowers the `else` cascade through the same machinery.
-- `lower_receive` compiles a one-column matrix over the candidate message into a
-  cached `Matcher` carried on the receive term.
+- `lower_receive` compiles a one-column matrix over the candidate message
+  through `DispatchMatrix` into a graph-derived cached `Matcher` carried on the
+  receive term.
 - Single-clause `fn` heads and single, unguarded lambdas bind parameters with
   `lower_pattern_bind`; on mismatch they halt with `:match_error`. A multi-clause
   or guarded lambda is rejected at lowering (`LowerError::Unsupported`).
 
 ## Compile-Time Analysis
 
-`src/pattern_matrix/analysis.rs` reuses the compiler for diagnostics.
-`find_unreachable_rows` compiles the matrix (with guards normalized to `true`,
-so a guard's reject edge is kept without evaluating it) and reports any
-`body_id` the graph cannot reach. `is_inexhaustive_with_domains` reports `true`
-when some path reaches `Fail`; `SubjectDomain::List` lets a subject known to be
-a list count as covered once both `EmptyList` and `Cons` cases exist.
+`src/pattern_matrix/analysis.rs` reuses the compiler and dispatch adapter for
+diagnostics. `find_unreachable_rows` compiles the matrix (with guards normalized
+to `true`, so a guard's reject edge is kept without evaluating it), routes it
+through `DispatchMatrix`, and reports any `body_id` the graph-derived matcher
+cannot reach. `is_inexhaustive_with_domains` reports `true` when some path
+reaches `Fail`; `SubjectDomain::List` lets a subject known to be a list count as
+covered once both `EmptyList` and `Cons` cases exist in the dispatch matrix.
 `src/frontend/pattern_check.rs` drives these over every match site and emits
 warnings; it skips fns whose body is unreachable and skips coverage verdicts
 when guards or type annotations are present, since the matrix treats those

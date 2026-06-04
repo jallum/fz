@@ -1,9 +1,10 @@
 //! AST-free executable matching representation.
 //!
-//! `Matcher` is the migration target for function clauses, `case`, `with`
-//! else arms, receive probes, and guard-compatible helper functions. The
-//! frontend may build it from AST patterns, but executable matcher data must
-//! carry only subjects, constants, spans, tests, bindings, and outcomes.
+//! `Matcher` is the current backend ABI for function clauses, `case`, `with`
+//! else arms, receive probes, and guard-compatible helper functions. Source
+//! pattern decisions are routed through `DispatchMatrix` before lowering, but
+//! executable matcher data must still carry only subjects, constants, spans,
+//! tests, bindings, and outcomes.
 
 use crate::diag::{FileId, Span};
 use crate::fz_ir::Var;

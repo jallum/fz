@@ -1,10 +1,11 @@
 # Dispatch Matrix
 
 `src/dispatch_matrix` is the shared model for the dispatch unification epic
-(`fz-v19`). Today, protocol finite-union dispatch is built from this model;
-`dispatch_matrix::pattern` can mirror compiled `Matcher` graphs into this model,
-and `PatternMatrix` still owns source-pattern runtime lowering until the later
-migration tickets switch callers over.
+(`fz-v19`). Protocol finite-union dispatch and source-pattern dispatch now both
+build a `DispatchMatrix`, compile it to a `DispatchGraph`, and let producer
+policy decide what a winning outcome means. `PatternMatrix` still normalizes AST
+patterns into rows and emits the current `Matcher` shape as adapter input, but
+the runtime decision graph for source patterns is owned by `DispatchMatrix`.
 
 The model names four separate concepts so future dispatch work does not grow new
 subsystem-specific cascades:
@@ -44,13 +45,16 @@ lowers the compiled `DispatchGraph` into the current `TypeTest`/`If` IR shape:
 closed graph `Fail` tails become the final direct `else`, while open residual
 fallbacks become the original stub call.
 
-`pattern_dispatch_from_matcher` is the side-by-side pattern producer. It consumes
-the AST-free `Matcher` that `PatternMatrix` already emits, extracts positive
-proof paths into `Order::Source` arms, and keeps pattern-specific payloads as
-opaque outcome metadata: body id, leaf bindings, pinned inputs, prepared keys,
-and guard expressions. Receive accept/reject policy is not encoded in
-DispatchMatrix; receive remains a producer/outcome policy layered above the same
-regions.
+`pattern_dispatch_from_matcher` is the source-pattern producer. It consumes the
+AST-free `Matcher` that `PatternMatrix` emits as a compatibility input, extracts
+positive proof paths into `Order::Source` arms, and keeps pattern-specific
+payloads as opaque outcome metadata: body id, leaf bindings, pinned inputs,
+prepared keys, and guard expressions. `matcher_from_pattern_dispatch_plan`
+rebuilds a graph-derived `Matcher` from the compiled `DispatchGraph` so existing
+inline lowering and the receive ABI can keep using their current backend shape
+while their decisions come from `DispatchMatrix`. Receive accept/reject policy is
+not encoded in `DispatchMatrix`; receive remains a producer/outcome policy
+layered above the same regions.
 
 ## Vocabulary Boundary
 
@@ -68,8 +72,8 @@ DispatchMatrix has three layers that must stay separate:
   Those names are lowering choices, not DispatchMatrix source vocabulary.
 
 Future dispatch changes should add producers on top of this model instead of
-adding one-off matcher or planner dispatch passes. At this ticket boundary, graph
-compilation is tested with fake outcome handles and with protocol dispatch
-outcome handles plus PatternMatrix-derived pattern outcome handles; protocol
-union dispatch construction is owned by `DispatchMatrix`, while source-pattern
-runtime behavior is still owned by `PatternMatrix`.
+adding one-off matcher or planner dispatch passes. At this ticket boundary,
+graph compilation is tested with fake outcome handles, protocol direct-call /
+stub outcomes, and PatternMatrix-derived pattern outcomes. Protocol dispatch and
+source-pattern dispatch share the same decision model; the remaining `Matcher`
+usage is an ABI/lowering adapter, not a separate runtime semantics owner.

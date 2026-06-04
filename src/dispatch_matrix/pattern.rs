@@ -1,12 +1,14 @@
 use super::{
     BitstringEndian, BitstringFieldKind, BitstringFieldShape, BitstringFieldSize, BitstringShape, ComparisonValue,
     DispatchCompileError, DispatchCompileOptions, DispatchConst, DispatchGraph, DispatchMatrix, DispatchMatrixBuilder,
-    DispatchMatrixError, EdgeEvidence, EdgeProjection, GuardId, OutcomeId, OutcomeMultiplicity, PinnedValueId,
-    ProjectionKind, Region, RegionPredicate, RegionQuestion, SubjectId, compile_dispatch_matrix,
+    DispatchMatrixError, DispatchNode, EdgeEvidence, EdgeProjection, GraphNodeId, GuardId, OutcomeId,
+    OutcomeMultiplicity, PinnedValueId, ProjectionKind, Region, RegionPredicate, RegionQuestion, SubjectId,
+    compile_dispatch_matrix,
 };
 use crate::exec::matcher::{
     GuardExpr, InputId, Matcher, MatcherBinding, MatcherBitField, MatcherBitSize, MatcherBitType, MatcherConst,
-    MatcherEndian, MatcherNode, MatcherTest, NodeId, PinnedInput, SubjectRef, SwitchKey, SwitchKind,
+    MatcherEndian, MatcherInput, MatcherLeaf, MatcherNode, MatcherTest, NodeId, PinnedInput, SubjectRef, SwitchKey,
+    SwitchKind,
 };
 use std::collections::HashMap;
 
@@ -14,10 +16,13 @@ use std::collections::HashMap;
 pub(crate) struct PatternDispatchPlan {
     pub(crate) matrix: DispatchMatrix,
     pub(crate) graph: DispatchGraph,
+    pub(crate) inputs: Vec<MatcherInput>,
+    pub(crate) subjects: Vec<Option<SubjectRef>>,
     pub(crate) outcomes: Vec<PatternDispatchOutcome>,
     pub(crate) guards: Vec<GuardExpr>,
     pub(crate) pinned: Vec<PinnedInput>,
     pub(crate) prepared_keys: Vec<MatcherConst>,
+    pub(crate) bitstring_direct_bindings: HashMap<SubjectId, Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +30,7 @@ pub(crate) struct PatternDispatchOutcome {
     pub(crate) outcome: OutcomeId,
     pub(crate) body_id: u32,
     pub(crate) bindings: Vec<PatternDispatchBinding>,
+    pub(crate) matcher_bindings: Vec<MatcherBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,7 +44,13 @@ pub(crate) enum PatternDispatchError {
     UnknownMatcherNode(NodeId),
     UnknownInput(InputId),
     UnknownPreparedKey(u32),
+    UnknownSubject(SubjectId),
+    UnknownOutcome(OutcomeId),
+    UnknownGuard(GuardId),
+    UnknownGraphNode(GraphNodeId),
+    MissingBitstringBindingName(SubjectId),
     UnsupportedSwitchCase { kind: SwitchKind, key: SwitchKey },
+    UnsupportedRegion(Region),
     MatrixBuild(DispatchMatrixError),
     Compile(DispatchCompileError),
 }
@@ -46,6 +58,7 @@ pub(crate) enum PatternDispatchError {
 pub(crate) fn pattern_dispatch_from_matcher(matcher: &Matcher) -> Result<PatternDispatchPlan, PatternDispatchError> {
     let mut producer = PatternDispatchProducer::new(matcher);
     producer.walk(matcher.root, Vec::new())?;
+    let subjects = producer.subject_refs_by_id();
     let matrix = producer.builder.build().map_err(PatternDispatchError::MatrixBuild)?;
     let graph = compile_dispatch_matrix(&matrix, DispatchCompileOptions::closed())
         .map_err(PatternDispatchError::Compile)?
@@ -53,10 +66,29 @@ pub(crate) fn pattern_dispatch_from_matcher(matcher: &Matcher) -> Result<Pattern
     Ok(PatternDispatchPlan {
         matrix,
         graph,
+        inputs: matcher.inputs.clone(),
+        subjects,
         outcomes: producer.outcomes,
         guards: producer.guards,
         pinned: matcher.pinned.clone(),
         prepared_keys: matcher.prepared_keys.clone(),
+        bitstring_direct_bindings: producer.bitstring_direct_bindings,
+    })
+}
+
+pub(crate) fn matcher_from_pattern_dispatch_plan(plan: &PatternDispatchPlan) -> Result<Matcher, PatternDispatchError> {
+    let mut builder = PatternMatcherBuilder {
+        plan,
+        nodes: Vec::new(),
+        cache: HashMap::new(),
+    };
+    let root = builder.node(plan.graph.root)?;
+    Ok(Matcher {
+        inputs: plan.inputs.clone(),
+        pinned: plan.pinned.clone(),
+        prepared_keys: plan.prepared_keys.clone(),
+        nodes: builder.nodes,
+        root,
     })
 }
 
@@ -67,6 +99,7 @@ struct PatternDispatchProducer<'a> {
     guard_subject: SubjectId,
     outcomes: Vec<PatternDispatchOutcome>,
     guards: Vec<GuardExpr>,
+    bitstring_direct_bindings: HashMap<SubjectId, Vec<String>>,
 }
 
 impl<'a> PatternDispatchProducer<'a> {
@@ -87,6 +120,7 @@ impl<'a> PatternDispatchProducer<'a> {
             guard_subject,
             outcomes: Vec::new(),
             guards: Vec::new(),
+            bitstring_direct_bindings: HashMap::new(),
         }
     }
 
@@ -106,6 +140,7 @@ impl<'a> PatternDispatchProducer<'a> {
                     outcome,
                     body_id: leaf.body_id,
                     bindings,
+                    matcher_bindings: leaf.bindings.clone(),
                 });
                 Ok(())
             }
@@ -304,6 +339,8 @@ impl<'a> PatternDispatchProducer<'a> {
             for name in &field.direct_bindings {
                 binding_subjects.insert(name.clone(), field_subject);
             }
+            self.bitstring_direct_bindings
+                .insert(field_subject, field.direct_bindings.clone());
             shapes.push(BitstringFieldShape {
                 kind: bitstring_field_kind(field.ty),
                 size,
@@ -387,6 +424,227 @@ impl<'a> PatternDispatchProducer<'a> {
             }
         })
     }
+
+    fn subject_refs_by_id(&self) -> Vec<Option<SubjectRef>> {
+        let max_subject = self
+            .subjects
+            .values()
+            .map(|id| id.0)
+            .chain(std::iter::once(self.guard_subject.0))
+            .max()
+            .unwrap_or(0);
+        let mut out = vec![None; max_subject as usize + 1];
+        for (subject, id) in &self.subjects {
+            out[id.0 as usize] = Some(subject.clone());
+        }
+        out
+    }
+}
+
+struct PatternMatcherBuilder<'a> {
+    plan: &'a PatternDispatchPlan,
+    nodes: Vec<MatcherNode>,
+    cache: HashMap<GraphNodeId, NodeId>,
+}
+
+impl PatternMatcherBuilder<'_> {
+    fn node(&mut self, graph_node: GraphNodeId) -> Result<NodeId, PatternDispatchError> {
+        if let Some(node) = self.cache.get(&graph_node).copied() {
+            return Ok(node);
+        }
+        let Some(dispatch_node) = self.plan.graph.node(graph_node).cloned() else {
+            return Err(PatternDispatchError::UnknownGraphNode(graph_node));
+        };
+        let matcher_node = match dispatch_node {
+            DispatchNode::Fail => MatcherNode::Fail {
+                span: crate::diag::Span::DUMMY,
+            },
+            DispatchNode::Outcome { outcome, .. } => {
+                let outcome = self
+                    .plan
+                    .outcomes
+                    .iter()
+                    .find(|entry| entry.outcome == outcome)
+                    .ok_or(PatternDispatchError::UnknownOutcome(outcome))?;
+                MatcherNode::Leaf(MatcherLeaf {
+                    body_id: outcome.body_id,
+                    bindings: outcome.matcher_bindings.clone(),
+                    span: crate::diag::Span::DUMMY,
+                })
+            }
+            DispatchNode::Test {
+                predicate,
+                on_match,
+                on_miss,
+            } => {
+                let on_true = self.node(on_match.target)?;
+                let on_false = self.node(on_miss.target)?;
+                if let Region::Guard(guard) = predicate.region {
+                    let expr = self
+                        .plan
+                        .guards
+                        .get(guard.0 as usize)
+                        .cloned()
+                        .ok_or(PatternDispatchError::UnknownGuard(guard))?;
+                    MatcherNode::Guard {
+                        expr,
+                        on_true,
+                        on_false,
+                        span: crate::diag::Span::DUMMY,
+                    }
+                } else {
+                    MatcherNode::Test {
+                        test: self.matcher_test(predicate.subject, &predicate.region, &on_match.evidence)?,
+                        on_true,
+                        on_false,
+                        span: crate::diag::Span::DUMMY,
+                    }
+                }
+            }
+        };
+        let id = NodeId(self.nodes.len() as u32);
+        self.nodes.push(matcher_node);
+        self.cache.insert(graph_node, id);
+        Ok(id)
+    }
+
+    fn matcher_test(
+        &self,
+        subject: SubjectId,
+        region: &Region,
+        evidence: &EdgeEvidence,
+    ) -> Result<MatcherTest, PatternDispatchError> {
+        let subject_ref = self.matcher_subject(subject)?;
+        Ok(match region {
+            Region::Type(ty) => MatcherTest::Type {
+                subject: subject_ref,
+                ty: ty.clone(),
+            },
+            Region::Equal(ComparisonValue::Const(value)) => MatcherTest::EqConst {
+                subject: subject_ref,
+                value: matcher_const(value),
+            },
+            Region::Equal(ComparisonValue::Pinned(pinned)) => MatcherTest::EqPinned {
+                subject: subject_ref,
+                pinned: crate::exec::matcher::PinnedId(pinned.0),
+            },
+            Region::TupleArity(arity) => MatcherTest::TupleArity {
+                subject: subject_ref,
+                arity: *arity,
+            },
+            Region::List(super::ListRegion::Empty) => MatcherTest::EqConst {
+                subject: subject_ref,
+                value: MatcherConst::EmptyList,
+            },
+            Region::List(super::ListRegion::Cons) => MatcherTest::ListCons { subject: subject_ref },
+            Region::MapKind => MatcherTest::MapKind { subject: subject_ref },
+            Region::MapKeyPresent { key } => MatcherTest::MapHasKey {
+                subject: subject_ref,
+                key: self.matcher_map_key(subject, key, evidence),
+            },
+            Region::Bitstring(shape) => MatcherTest::Bitstring {
+                subject: subject_ref,
+                fields: self.matcher_bitstring_fields(subject, shape)?,
+            },
+            other => return Err(PatternDispatchError::UnsupportedRegion(other.clone())),
+        })
+    }
+
+    fn matcher_subject(&self, subject: SubjectId) -> Result<SubjectRef, PatternDispatchError> {
+        self.plan
+            .subjects
+            .get(subject.0 as usize)
+            .and_then(|subject| subject.clone())
+            .ok_or(PatternDispatchError::UnknownSubject(subject))
+    }
+
+    fn matcher_map_key(&self, map_subject: SubjectId, key: &DispatchConst, evidence: &EdgeEvidence) -> MatcherConst {
+        evidence
+            .projections
+            .iter()
+            .find_map(|projection| {
+                if projection.source != map_subject {
+                    return None;
+                }
+                let ProjectionKind::MapValue { .. } = &projection.kind else {
+                    return None;
+                };
+                match self.plan.subjects.get(projection.result.0 as usize) {
+                    Some(Some(SubjectRef::MapValue { key, .. })) => Some(key.clone()),
+                    _ => None,
+                }
+            })
+            .unwrap_or_else(|| matcher_const(key))
+    }
+
+    fn matcher_bitstring_fields(
+        &self,
+        bitstring: SubjectId,
+        shape: &BitstringShape,
+    ) -> Result<Vec<MatcherBitField>, PatternDispatchError> {
+        shape
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(index, field)| {
+                let field_subject = self
+                    .projected_subject(bitstring, ProjectionKind::BitstringField(index as u32))
+                    .ok_or(PatternDispatchError::UnknownSubject(SubjectId(u32::MAX)))?;
+                Ok(MatcherBitField {
+                    ty: matcher_bit_type(field.kind),
+                    size: self.matcher_bit_size(&field.size)?,
+                    endian: matcher_endian(field.endian),
+                    signed: field.signed,
+                    unit: field.unit,
+                    direct_bindings: self
+                        .plan
+                        .bitstring_direct_bindings
+                        .get(&field_subject)
+                        .cloned()
+                        .unwrap_or_default(),
+                })
+            })
+            .collect()
+    }
+
+    fn matcher_bit_size(
+        &self,
+        size: &Option<BitstringFieldSize>,
+    ) -> Result<Option<MatcherBitSize>, PatternDispatchError> {
+        Ok(match size {
+            None => None,
+            Some(BitstringFieldSize::Literal(value)) => Some(MatcherBitSize::Literal(*value)),
+            Some(BitstringFieldSize::BindingName(name)) => Some(MatcherBitSize::BindingName(name.clone())),
+            Some(BitstringFieldSize::Binding(subject)) => {
+                let names = self
+                    .plan
+                    .bitstring_direct_bindings
+                    .get(subject)
+                    .ok_or(PatternDispatchError::MissingBitstringBindingName(*subject))?;
+                Some(MatcherBitSize::BindingName(
+                    names
+                        .first()
+                        .cloned()
+                        .ok_or(PatternDispatchError::MissingBitstringBindingName(*subject))?,
+                ))
+            }
+        })
+    }
+
+    fn projected_subject(&self, source: SubjectId, kind: ProjectionKind) -> Option<SubjectId> {
+        self.plan
+            .matrix
+            .subjects
+            .iter()
+            .find_map(|subject| match &subject.source {
+                super::SubjectSource::Projection(projection)
+                    if projection.source == source && projection.kind == kind =>
+                {
+                    Some(subject.id)
+                }
+                _ => None,
+            })
+    }
 }
 
 fn bitstring_field_kind(kind: MatcherBitType) -> BitstringFieldKind {
@@ -406,5 +664,37 @@ fn bitstring_endian(endian: MatcherEndian) -> BitstringEndian {
         MatcherEndian::Big => BitstringEndian::Big,
         MatcherEndian::Little => BitstringEndian::Little,
         MatcherEndian::Native => BitstringEndian::Native,
+    }
+}
+
+fn matcher_const(value: &DispatchConst) -> MatcherConst {
+    match value {
+        DispatchConst::Int(value) => MatcherConst::Int(*value),
+        DispatchConst::FloatBits(bits) => MatcherConst::FloatBits(*bits),
+        DispatchConst::AtomName(name) => MatcherConst::AtomName(name.clone()),
+        DispatchConst::Bool(value) => MatcherConst::Bool(*value),
+        DispatchConst::Nil => MatcherConst::Nil,
+        DispatchConst::EmptyList => MatcherConst::EmptyList,
+        DispatchConst::Utf8Binary(bytes) => MatcherConst::Utf8Binary(bytes.clone()),
+    }
+}
+
+fn matcher_bit_type(kind: BitstringFieldKind) -> MatcherBitType {
+    match kind {
+        BitstringFieldKind::Integer => MatcherBitType::Integer,
+        BitstringFieldKind::Float => MatcherBitType::Float,
+        BitstringFieldKind::Binary => MatcherBitType::Binary,
+        BitstringFieldKind::Bits => MatcherBitType::Bits,
+        BitstringFieldKind::Utf8 => MatcherBitType::Utf8,
+        BitstringFieldKind::Utf16 => MatcherBitType::Utf16,
+        BitstringFieldKind::Utf32 => MatcherBitType::Utf32,
+    }
+}
+
+fn matcher_endian(endian: BitstringEndian) -> MatcherEndian {
+    match endian {
+        BitstringEndian::Big => MatcherEndian::Big,
+        BitstringEndian::Little => MatcherEndian::Little,
+        BitstringEndian::Native => MatcherEndian::Native,
     }
 }

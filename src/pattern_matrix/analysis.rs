@@ -5,6 +5,10 @@
 use std::collections::{BTreeSet, HashMap};
 
 use crate::ast::{Expr, Spanned};
+use crate::dispatch_matrix::pattern::{
+    PatternDispatchPlan, matcher_from_pattern_dispatch_plan, pattern_dispatch_from_matcher,
+};
+use crate::dispatch_matrix::{ListRegion, Region, SubjectId};
 use crate::exec::matcher::{Matcher, MatcherNode, NodeId, SubjectRef, SwitchKey, SwitchKind};
 use crate::fz_ir::Var;
 
@@ -16,7 +20,7 @@ use super::{BodyId, PatternMatrix, SubjectDomain, compile_pattern_matrix};
 /// the "guard may reject" fallthrough edge without evaluating guard bodies.
 pub fn find_unreachable_rows(pattern_matrix: &PatternMatrix) -> Vec<BodyId> {
     let row_bodies: BTreeSet<BodyId> = pattern_matrix.rows.iter().map(|r| r.body_id).collect();
-    let matcher = matcher_for_analysis(normalize_guards_for_analysis(pattern_matrix.clone()));
+    let (matcher, _) = matcher_for_analysis(normalize_guards_for_analysis(pattern_matrix.clone()));
     let mut reached = BTreeSet::new();
     collect_reachable_bodies_from_matcher(&matcher, matcher.root, &mut reached);
     row_bodies.difference(&reached).copied().collect()
@@ -32,7 +36,8 @@ pub fn is_inexhaustive(pattern_matrix: &PatternMatrix) -> bool {
 }
 
 pub fn is_inexhaustive_with_domains(pattern_matrix: &PatternMatrix, domains: &[SubjectDomain]) -> bool {
-    let matcher = matcher_for_analysis(normalize_guards_for_analysis(pattern_matrix.clone()));
+    let normalized = normalize_guards_for_analysis(pattern_matrix.clone());
+    let (matcher, plan) = matcher_for_analysis(normalized);
     let domain_by_subject: HashMap<Var, SubjectDomain> = pattern_matrix
         .subjects
         .iter()
@@ -40,10 +45,15 @@ pub fn is_inexhaustive_with_domains(pattern_matrix: &PatternMatrix, domains: &[S
         .zip(domains.iter().copied())
         .collect();
     has_reachable_fail_in_matcher(&matcher, matcher.root, &domain_by_subject)
+        && !list_domain_is_covered_in_dispatch_matrix(pattern_matrix, domains, &plan)
 }
 
-fn matcher_for_analysis(pattern_matrix: PatternMatrix) -> Matcher {
-    compile_pattern_matrix(pattern_matrix).expect("pattern analysis matcher must compile")
+fn matcher_for_analysis(pattern_matrix: PatternMatrix) -> (Matcher, PatternDispatchPlan) {
+    let matcher = compile_pattern_matrix(pattern_matrix).expect("pattern analysis matcher must compile");
+    let plan = pattern_dispatch_from_matcher(&matcher).expect("pattern analysis dispatch matrix must compile");
+    let matcher =
+        matcher_from_pattern_dispatch_plan(&plan).expect("pattern analysis dispatch graph must lower through matcher");
+    (matcher, plan)
 }
 
 fn normalize_guards_for_analysis(mut pattern_matrix: PatternMatrix) -> PatternMatrix {
@@ -128,6 +138,36 @@ fn list_domain_is_covered_in_matcher(
     }
     let has_empty = cases.iter().any(|(key, _)| matches!(key, SwitchKey::EmptyList));
     let has_cons = cases.iter().any(|(key, _)| matches!(key, SwitchKey::Cons));
+    has_empty && has_cons
+}
+
+fn list_domain_is_covered_in_dispatch_matrix(
+    pattern_matrix: &PatternMatrix,
+    domains: &[SubjectDomain],
+    plan: &PatternDispatchPlan,
+) -> bool {
+    if pattern_matrix.subjects.len() != 1 || domains.first().copied() != Some(SubjectDomain::List) {
+        return false;
+    }
+    if pattern_matrix
+        .rows
+        .iter()
+        .any(|row| row.guard.is_some() || !row.preconditions.is_empty())
+    {
+        return false;
+    }
+    let subject = SubjectId(0);
+    let has_empty = plan.matrix.arms.iter().any(|arm| {
+        arm.questions.iter().any(|question| {
+            question.predicate.subject == subject
+                && matches!(question.predicate.region, Region::List(ListRegion::Empty))
+        })
+    });
+    let has_cons = plan.matrix.arms.iter().any(|arm| {
+        arm.questions.iter().any(|question| {
+            question.predicate.subject == subject && matches!(question.predicate.region, Region::List(ListRegion::Cons))
+        })
+    });
     has_empty && has_cons
 }
 

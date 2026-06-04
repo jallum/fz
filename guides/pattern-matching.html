@@ -44,8 +44,8 @@ its plucked values.</p>
 
 <p>This is not just a metaphor. The executable matching path is
 documented as
-<code>Pattern -&gt; PatternMatrix rows -&gt; Matcher graph -&gt; inline lowering or receive ABI lowering</code>.
-The runtime-facing matcher is AST-free: once compiled, it carries
+<code>Pattern -&gt; PatternMatrix rows -&gt; DispatchMatrix -&gt; DispatchGraph -&gt; Matcher ABI -&gt; inline lowering or receive ABI lowering</code>.
+The backend matcher ABI is AST-free: once compiled, it carries
 subjects, constants, tests, guards, bindings, and outcomes, not source
 patterns.</p>
 
@@ -238,30 +238,31 @@ matching clause.</p>
 
 <p>The frontend, parser, pattern checker, macro system, and
 PatternMatrix builder all still speak AST patterns. That is the source
-language. AST patterns are not the thing the runtime-facing matcher
+language. AST patterns are not the thing the runtime decision graph
 executes.</p>
 
 <p>Once we cross into "what the runtime actually executes," it's the
-same Matcher graph every time:</p>
+same DispatchGraph, adapted to the current Matcher ABI every time:</p>
 
 <table class="data">
   <thead>
-    <tr><th>surface form</th><th>subject</th><th>where the matcher lives</th></tr>
+    <tr><th>surface form</th><th>subject</th><th>where the adapter lives</th></tr>
   </thead>
   <tbody>
-    <tr><td class="term">function clauses</td><td class="shape">the call args</td><td>matcher lowered inline into the function dispatch path</td></tr>
-    <tr><td class="term">case</td><td class="shape">the case subject</td><td>matcher lowered inline into the current function</td></tr>
-    <tr><td class="term">with else</td><td class="shape">the failed <code>with</code> value</td><td>matcher lowered inline into the current function</td></tr>
-    <tr><td class="term">receive</td><td class="shape">one mailbox message at a time</td><td>same Matcher, but emitted behind a small ABI function</td></tr>
+    <tr><td class="term">function clauses</td><td class="shape">the call args</td><td>graph-derived matcher lowered inline into the function dispatch path</td></tr>
+    <tr><td class="term">case</td><td class="shape">the case subject</td><td>graph-derived matcher lowered inline into the current function</td></tr>
+    <tr><td class="term">with else</td><td class="shape">the failed <code>with</code> value</td><td>graph-derived matcher lowered inline into the current function</td></tr>
+    <tr><td class="term">receive</td><td class="shape">one mailbox message at a time</td><td>same graph-derived matcher, but emitted behind a small ABI function</td></tr>
   </tbody>
 </table>
 
 <p>Receive is the odd-looking one only because the scheduler has to run
 the matcher against mailbox messages over time. The decision language
-is the same; the entry point is different. The PatternMatrix compiler
-turns rows of patterns into a <code>Matcher</code>, and from there it's
-just a question of whether the matcher is inlined into the current
-function or emitted behind a tiny call boundary.</p>
+is the same; the entry point is different. PatternMatrix turns source
+patterns into rows, DispatchMatrix turns those rows into the decision
+graph, and the existing Matcher ABI decides whether that graph is
+inlined into the current function or emitted behind a tiny call
+boundary.</p>
 
 <!-- ─────────────────────────────── 6 ─────────────────────────────── -->
 <h2 id="keyword-lists">6. Keyword lists are ordinary lists</h2>
@@ -509,8 +510,9 @@ The body returns <code>:unknown</code>.</p>
 
 <ul>
   <li><strong>One executable matching language.</strong> The same
-      Matcher graph describes function dispatch, case dispatch,
-      guard-compatible nested dispatch, and receive probes.</li>
+      DispatchGraph describes function dispatch, case dispatch,
+      guard-compatible nested dispatch, and receive probes, with Matcher
+      retained as the backend ABI shape.</li>
   <li><strong>AST stays at the front.</strong> Source patterns are used
       to build PatternMatrix rows and diagnostics, but runtime matching
       does not fall back to walking AST clauses.</li>
