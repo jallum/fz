@@ -16,7 +16,7 @@ use crate::modules::identity::ModuleName;
 use crate::modules::interface::{ModuleInterface, validate_public_export_specs};
 use crate::modules::runtime_library;
 use crate::telemetry::{Telemetry, next_compile_nonce};
-use crate::types::ConcreteTypes;
+use crate::types::DefaultTypes;
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -146,7 +146,7 @@ pub(crate) fn load_interface_table(
 }
 
 pub(crate) fn compile_source_with_providers(
-    t: &mut ConcreteTypes,
+    t: &mut DefaultTypes,
     src: String,
     source_name: String,
     providers: &ProviderInputs,
@@ -167,7 +167,7 @@ pub(crate) fn compile_source_with_providers(
 }
 
 pub(crate) fn checked_module_for_mode(
-    t: &mut ConcreteTypes,
+    t: &mut DefaultTypes,
     result: FrontendResult,
     tel: &dyn Telemetry,
     mode: CompileMode,
@@ -213,7 +213,7 @@ pub(crate) fn checked_module_for_mode(
 }
 
 pub(crate) fn prepare_execution_graph(
-    t: &mut ConcreteTypes,
+    t: &mut DefaultTypes,
     mut prepared: CheckedModule,
     providers: &ProviderInputs,
     tel: &dyn Telemetry,
@@ -265,7 +265,7 @@ pub(crate) fn prepare_execution_graph(
 }
 
 pub(crate) fn link_execution_module(
-    t: &mut ConcreteTypes,
+    t: &mut DefaultTypes,
     prepared: &mut CheckedModule,
     providers: &ProviderInputs,
     tel: &dyn Telemetry,
@@ -307,7 +307,7 @@ fn has_errors(diagnostics: &Diagnostics) -> bool {
 
 #[allow(clippy::too_many_arguments)]
 fn load_provider_units(
-    t: &mut ConcreteTypes,
+    t: &mut DefaultTypes,
     prepared: &mut CheckedModule,
     providers: &ProviderInputs,
     tel: &dyn Telemetry,
@@ -388,7 +388,7 @@ fn load_provider_units(
 /// loaded unit (the plan regenerates the protocol provider-boundary facts that
 /// link depends on).
 fn materialize_ir_unit(
-    t: &mut ConcreteTypes,
+    t: &mut DefaultTypes,
     object: FzoArtifact,
     module_name: &ModuleName,
     interface: Option<ModuleInterface>,
@@ -482,7 +482,7 @@ mod tests {
 
     #[test]
     fn execution_graph_loads_runtime_import_without_user_providers() {
-        let mut concrete_types = ConcreteTypes;
+        let mut concrete_types = crate::types::new();
         let tel = NullTelemetry;
         let providers = ProviderInputs::new(
             temp_dir()
@@ -523,7 +523,7 @@ end
 
     #[test]
     fn protocol_impl_reduce_callback_plans_to_fixed_point() {
-        let mut concrete_types = ConcreteTypes;
+        let mut concrete_types = crate::types::new();
         let tel = ConfiguredTelemetry::new();
         let capture = Capture::new();
         tel.attach(&["fz", "planner", "planned"], capture.handler());
@@ -619,7 +619,7 @@ fn main(), do: User.run()
     /// the production `fz build` emit shape, so the consumer below loads the
     /// provider structurally — no recompile.
     fn write_structural_provider(tag: &str) -> (StructuralProviderFixture, ModuleName) {
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let tel = NullTelemetry;
         let provider = compile_source_with_types(&mut t, PROVIDER_SRC.to_string(), "contracts.fz".to_string(), &tel)
             .unwrap_or_else(|err| panic!("provider frontend: {:?}", err.diagnostics));
@@ -663,7 +663,7 @@ fn main(), do: User.run()
     /// provider in `root`, returning the prepared graph and the consumer's
     /// SourceMap (which the loader merges provider sources into).
     fn prepare_consumer_against(root: &str, provider: &ModuleName, tel: &dyn Telemetry) -> PreparedExecutionGraph {
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let providers = ProviderInputs::new(root.to_string(), vec![provider.clone()]);
         let frontend =
             compile_source_with_providers(&mut t, CONSUMER_SRC.to_string(), "user.fz".to_string(), &providers, tel)
@@ -778,7 +778,7 @@ fn main(), do: User.run()
     fn linked_runtime_graph_keeps_cont_dispatches_for_enum_take_drop_split() {
         use crate::fz_ir::{CallsiteId, EmitSlot, Term};
 
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let tel = NullTelemetry;
         let providers = ProviderInputs::new(
             temp_dir()
@@ -832,7 +832,7 @@ fn main(), do: User.run()
     fn linked_runtime_graph_keeps_cont_dispatches_for_spawn_with_captures() {
         use crate::fz_ir::{CallsiteId, EmitSlot, Term};
 
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let tel = NullTelemetry;
         let providers = ProviderInputs::new(
             temp_dir()

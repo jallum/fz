@@ -21,8 +21,6 @@ use crate::parser::lexer::Lexer;
 use crate::pattern_matrix::SubjectDomain;
 use crate::telemetry::value::opaque;
 use crate::telemetry::{NullTelemetry, Telemetry, next_compile_nonce};
-#[cfg(test)]
-use crate::types::ConcreteTypes;
 use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Ty, Types};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -143,7 +141,7 @@ where
 
 #[cfg(test)]
 pub fn compile_source(src: String, source_name: String) -> FrontendResult {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     compile_source_with_types(&mut t, src, source_name, &NullTelemetry)
 }
 
@@ -229,7 +227,7 @@ where
             program: opaque(&prog),
         },
     );
-    if let Err(e) = macros::expand_program(&mut prog) {
+    if let Err(e) = macros::expand_program_with_types(t, &mut prog) {
         return Err(fail(sm, e.to_diagnostic()));
     }
     resolve::add_macro_requested_runtime_interfaces(&mut prog);
@@ -505,7 +503,7 @@ fn main(), do: classify(7)
         tel.attach(&["fz"], Box::new(StructuralHandler(facts.clone())));
 
         let src = "fn id(x), do: x\nfn main(), do: id(1)\n";
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let out = match compile_source_with_types(&mut t, src.to_string(), "test.fz".to_string(), &tel) {
             Ok(out) => out,
             Err(_) => panic!("frontend ok"),
@@ -539,7 +537,7 @@ fn main(), do: classify(7)
     fn compile_program_with_types_compiles_parsed_program() {
         let src = "fn id(x), do: x\nfn main(), do: id(41)\n";
         let (prog, sm) = parse_with_source_map(src, "parsed.fz");
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let out = match compile_program_with_types(&mut t, prog, sm, &NullTelemetry) {
             Ok(out) => out,
             Err(_) => panic!("compile parsed program"),
@@ -555,7 +553,7 @@ fn main(), do: classify(7)
             Err(_) => panic!("compile source program"),
         };
         let (prog, sm) = parse_with_source_map(src, "source.fz");
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let parsed_out = match compile_program_with_types(&mut t, prog, sm, &NullTelemetry) {
             Ok(out) => out,
             Err(_) => panic!("compile parsed program"),
@@ -569,7 +567,7 @@ fn main(), do: classify(7)
     fn compile_program_with_types_preserves_diagnostics() {
         let src = "fn main(), do: missing + 1\n";
         let (prog, sm) = parse_with_source_map(src, "bad-parsed.fz");
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let err = match compile_program_with_types(&mut t, prog, sm, &NullTelemetry) {
             Ok(_) => panic!("unbound name should fail lowering"),
             Err(err) => err,
@@ -579,7 +577,7 @@ fn main(), do: classify(7)
 
     #[test]
     fn compile_source_accepts_loaded_interfaces_without_provider_body() {
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let math = ModuleName::from_segments(vec!["Math".to_string()]);
         let mut interfaces = InterfaceTable::new();
         interfaces.insert(
@@ -646,7 +644,7 @@ fn main(), do: inc(41)
             Err(_) => panic!("compile source program"),
         };
         let (prog, sm) = parse_with_source_map(src, "macro-source.fz");
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let parsed_out = match compile_program_with_types(&mut t, prog, sm, &NullTelemetry) {
             Ok(out) => out,
             Err(_) => panic!("compile parsed program"),
@@ -658,7 +656,7 @@ fn main(), do: inc(41)
     #[test]
     fn compile_repl_expr_returns_entry_and_frame_layout_for_plain_expression() {
         let (expr, sm) = parse_expr_with_source_map("x + 1", "repl.fz");
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let out = match compile_repl_expr_with_types(
             &mut t,
             Program::default(),
@@ -690,7 +688,7 @@ fn main(), do: inc(41)
         ];
         for (src, input, expected_output) in cases {
             let (expr, sm) = parse_expr_with_source_map(src, "repl.fz");
-            let mut t = ConcreteTypes;
+            let mut t = crate::types::new();
             let out = match compile_repl_expr_with_types(
                 &mut t,
                 Program::default(),
@@ -711,7 +709,7 @@ fn main(), do: inc(41)
     #[test]
     fn compile_repl_expr_lowers_match_failure_path() {
         let (expr, sm) = parse_expr_with_source_map("{:ok, y} = {:error, 2}", "repl.fz");
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let out = match compile_repl_expr_with_types(
             &mut t,
             Program::default(),

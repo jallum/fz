@@ -120,7 +120,7 @@ mod purity_tests {
         Stmt, Term, Var,
     };
     use crate::ir_planner::diagnostics::check_matcher_purity;
-    use crate::types::{ConcreteTypes, Types};
+    use crate::types::Types;
 
     fn v(n: u32) -> Var {
         Var(n)
@@ -161,7 +161,7 @@ mod purity_tests {
 
     #[test]
     fn pure_type_test_accepted() {
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let stmts = vec![s(Prim::TypeTest(v(1), Box::new(t.int())))];
         assert!(check_pure_codegen(&stmts).is_ok());
     }

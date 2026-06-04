@@ -159,7 +159,7 @@ impl IrInterpRuntime {
 
     /// Spawn a new task: enqueue it and return its pid immediately.
     /// The child runs in a later scheduler quantum, not in the parent's.
-    pub(crate) fn spawn(&mut self, module: &Module, fn_id: FnId, args: Vec<AnyValue>) -> Result<u32, String> {
+    pub(crate) fn spawn(&mut self, _module: &Module, fn_id: FnId, args: Vec<AnyValue>) -> Result<u32, String> {
         let pid = self.next_pid();
         let user_schemas = self.schemas();
         // Child shares the interpreter's node (same atom table) by Rc clone.
@@ -176,13 +176,11 @@ impl IrInterpRuntime {
         child.state = ProcessState::Ready;
         self.insert_task(pid, child);
         let parent_ptr = self.current_proc;
-        let image = if let Some(image) = (!parent_ptr.is_null())
+        let Some(image) = (!parent_ptr.is_null())
             .then(|| unsafe { (*parent_ptr).pid })
             .and_then(|parent_pid| self.task_code_image(parent_pid))
-        {
-            image
-        } else {
-            Rc::new(CodeImage::from_module(module)?)
+        else {
+            return Err("spawn: current process has no interpreter code image".to_string());
         };
         self.set_task_code_image(pid, image);
         self.enqueue_resume(pid, (fn_id, args, vec![]));

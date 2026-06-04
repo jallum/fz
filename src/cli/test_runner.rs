@@ -26,19 +26,20 @@
 //! error on failure; the runner catches the error.
 
 use crate::ast::Item;
+use crate::compiler::Compiler;
 use crate::diag::{SourceMap, render_one_to_string};
-use crate::frontend::macros::expand_program;
+use crate::frontend::macros::expand_program_with_types;
 use crate::frontend::resolve::flatten_modules;
 use crate::fz_ir::FnId;
 use crate::ir_interp::run_test_fn;
 use crate::ir_lower::lower_program;
+use crate::ir_planner::plan_module;
 use crate::measurements;
 use crate::metadata;
 use crate::notify_fixture_execution_start;
 use crate::parser::Parser;
 use crate::parser::lexer::{Lexer, Tok, Token};
 use crate::telemetry::{ConfiguredTelemetry, Event, Handler, Metadata, NullTelemetry, Telemetry};
-use crate::types::ConcreteTypes;
 use std::borrow::Cow;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
@@ -157,7 +158,7 @@ impl Handler for ConsoleTestHandler {
 }
 
 fn run_named_through(tel: &dyn Telemetry, user_src: &str, user_name: &str) -> Result<(), TestRunError> {
-    let mut t = ConcreteTypes;
+    let mut compiler = Compiler::new();
     // Lex prelude and user source separately into their own FileIds. Token
     // spans then point at the *real* offsets in their respective files, so
     // later stages render user-facing locations against the user's file
@@ -180,10 +181,11 @@ fn run_named_through(tel: &dyn Telemetry, user_src: &str, user_name: &str) -> Re
     let prog = Parser::new(toks)
         .parse_program()
         .map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
-    let prog =
-        flatten_modules(&mut t, prog).map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
+    let prog = flatten_modules(compiler.types(), prog)
+        .map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
     let mut prog = prog;
-    expand_program(&mut prog).map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
+    expand_program_with_types(compiler.types(), &mut prog)
+        .map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
 
     // Discover tests: post-expansion Item::Fn whose final segment starts
     // with "test_".
@@ -211,8 +213,9 @@ fn run_named_through(tel: &dyn Telemetry, user_src: &str, user_name: &str) -> Re
     // AST evaluator (eval::CompileTimeEvaluator, which stays only for macro
     // expansion above) and runs on the same IR interpreter the fixture matrix
     // uses.
-    let module = lower_program(&mut t, &prog, &NullTelemetry)
+    let module = lower_program(compiler.types(), &prog, &NullTelemetry)
         .map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
+    let module_plan = plan_module(compiler.types(), &module, &NullTelemetry);
     // Map test name → FnId once.
     let test_ids: Vec<(String, FnId)> = tests
         .iter()
@@ -237,7 +240,7 @@ fn run_named_through(tel: &dyn Telemetry, user_src: &str, user_name: &str) -> Re
         // one test doesn't leak into the next. ir_interp::run_main isn't
         // quite right (it expects a `main` fn); we call the test fn
         // directly through the IR interp on a temporary task.
-        match run_test_fn(tel, &module, *fn_id) {
+        match run_test_fn(compiler.types(), tel, &module, &module_plan, *fn_id) {
             Ok(()) => {
                 tel.event(&["fz", "test", "passed"], metadata! { name: name.clone() });
             }

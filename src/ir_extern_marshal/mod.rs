@@ -12,7 +12,11 @@ where
     specs.sort_by_key(|key| {
         (
             key.fn_id.0,
-            module_types.spec_precedence.get(&key.body_key()).copied().unwrap_or(u32::MAX),
+            module_types
+                .spec_precedence
+                .get(&key.body_key())
+                .copied()
+                .unwrap_or(u32::MAX),
         )
     });
 

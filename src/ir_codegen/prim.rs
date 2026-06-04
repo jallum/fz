@@ -1,12 +1,12 @@
 //! Primitive lowering helpers for codegen.
 
 use super::*;
-use crate::concrete_types::{Descr, ty_descr};
 use crate::fz_ir::{
     BinOp, BitSizeIr, BlockId, CallsiteIdent, Const, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternTy,
     FnId, Prim, UnOp, Var,
 };
 use crate::ir_planner::SpecPlan;
+use crate::types::{Descr, ty_descr};
 use cranelift_codegen::ir::{
     self, BlockArg, InstBuilder, MemFlags,
     condcodes::{FloatCC, IntCC},

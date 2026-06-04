@@ -19,7 +19,7 @@ Everything reduces to deciding emptiness: `is_subtype(a, b)` asks whether
 empty.
 
 The model is represented by each `Types` implementation's private carrier.
-`ConcreteTypes` uses `src/concrete_types/descr.rs::Descr`; a `Descr` is a union
+`ConcreteTypes` uses `src/types/concrete_types/descr.rs::Descr`; a `Descr` is a union
 across independent **axes**, one per runtime kind, held in DNF:
 
 ```text
@@ -50,12 +50,12 @@ uses `InternedTy(u32)` handles backed by an interner owned by the
 `InternedConcreteTypes` instance.
 
 The interned implementation intentionally duplicates the concrete kernel under
-`src/interned_types/` instead of importing `concrete_types::Descr`. Its own
-`Descr` is `pub(super)` and structural children store already-interned
-`InternedTy` handles. There is no global/static interner: every handle is
-allocated by, and meaningful only with, the owning `InternedConcreteTypes`
-value. Raw-handle serde is deliberately absent because serializing an interned
-id without its arena would be a misleading wire format.
+`src/types/interned_types/` instead of importing
+`types::concrete_types::Descr`. Its own `Descr` is `pub(super)` and structural
+children store already-interned `InternedTy` handles. There is no global/static
+interner: every handle is allocated by, and meaningful only with, the owning
+`InternedConcreteTypes` value. Raw-handle serde is deliberately absent because
+serializing an interned id without its arena would be a misleading wire format.
 
 `Types` is the abstraction boundary for construction, projection,
 substitution, nominal disjointness, widening, and equivalence.
@@ -81,11 +81,21 @@ shape/seam, semantic, and closure-surface suites. When adding a new public
 concrete test only when the assertion mentions `Descr`, DNF clauses,
 components, or another concrete representation detail.
 
-The compiler pipeline still imports the concrete `types::Ty` /
-`ConcreteTypes` pair. Switching production inference/planning to an alternate
-implementation is a separate migration: genericize the IR/compiler data that
-stores type handles, decide how module/artifact serialization carries any
-implementation-owned arena, and then replace the factory at the pipeline edge.
+Production code creates the system default implementation through the compiler
+owner: `Compiler::new()` calls `types::new()` once, stores `DefaultTypes`, and
+threads `&mut DefaultTypes` through frontend expansion/checking, lowering,
+planning, interpretation, and codegen. Do not allocate `Types` instances
+ad-hoc in production code. Interned `Ty` handles are meaningful only with their
+owning implementation value, so composing handles created by different owners
+would be invalid by construction.
+
+`types::new()` is the public factory for selecting the process default
+implementation; tests may still create isolated instances intentionally.
+Switching production inference/planning to an alternate implementation is a
+separate migration after the current concrete `types::Ty` storage boundary:
+genericize IR/compiler data that stores type handles, decide how
+module/artifact serialization carries any implementation-owned arena, and then
+replace the default factory at the compiler edge.
 
 ## Schemes Vs Concrete Facts
 
@@ -325,15 +335,15 @@ Gate this model with:
 
 - `cargo test --lib types::conformance_tests` — implementation-agnostic
   `Types` semantics, defaults, seams, and closure-surface behavior
-- `cargo test --lib interned_types::` — interned handle representation tests
+- `cargo test --lib types::interned_types::` — interned handle representation tests
   plus the registered interned conformance subset
-- `cargo test --lib concrete_types::tests::` — concrete `Descr`/DNF/component
+- `cargo test --lib types::concrete_types::tests::` — concrete `Descr`/DNF/component
   representation mechanics
 - `cargo test --no-run` — compile all test targets and catch controlled
   warnings without running fixture baselines
 - `cargo test --lib` — full library regression suite
-- `cargo test concrete_types::tests::value_disjoint_soundness_table`
-- `cargo test concrete_types::tests::value_disjoint_nested_in_tuple_is_false`
+- `cargo test types::concrete_types::tests::value_disjoint_soundness_table`
+- `cargo test types::concrete_types::tests::value_disjoint_nested_in_tuple_is_false`
 - `cargo test reducer::tests::fold_runtime_eq_is_brand_blind`
 - `cargo test ir_lower::tests::dead_binop_diagnostic_observable_via_telemetry`
 - `cargo test --test fixture_matrix bsx_nested_eq` (and `bsx_nested_match`,

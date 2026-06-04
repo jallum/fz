@@ -18,6 +18,7 @@
 //! exact-comparable to the other legs' golden.
 
 use crate::ast::{Expr, FnDef, Item, Program, Spanned};
+use crate::compiler::Compiler;
 use crate::diag::diagnostic::Severity;
 use crate::diag::style::ColorMode;
 use crate::diag::{Diagnostic, SourceMap, render_one_to_string};
@@ -28,6 +29,7 @@ use crate::frontend::resolve::flatten_modules;
 use crate::frontend::{FrontendOk, compile_program_with_types, compile_repl_expr_with_types};
 use crate::fz_ir::{FnId, Module};
 use crate::ir_interp::{AnyValue, IrInterpRuntime};
+use crate::ir_planner::ModulePlan;
 use crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT;
 use crate::modules::pipeline::{
     CompileMode, PipelineError, PreparedExecutionGraph, ProviderInputs, checked_module_for_mode,
@@ -37,7 +39,7 @@ use crate::notify_fixture_execution_start;
 use crate::parser::Parser;
 use crate::parser::lexer::{Lexer, Tok};
 use crate::telemetry::{ConfiguredTelemetry, DiagRenderer, NullTelemetry, Telemetry};
-use crate::types::ConcreteTypes;
+use crate::types::{DefaultTypes, RenderTypes, Ty, Types};
 use rustyline::completion::Completer;
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
@@ -261,15 +263,15 @@ impl ReplSession {
         tel: &dyn Telemetry,
         diagnostics: &Rc<RefCell<Vec<u8>>>,
     ) -> io::Result<()> {
-        let mut t = ConcreteTypes;
         let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-        let frontend = match compile_source_with_providers(&mut t, src.to_string(), source_name, &providers, tel) {
-            Ok(ok) => ok,
-            Err(err) => return Err(pipeline_error_to_io_error(err, diagnostics)),
-        };
-        let checked = checked_module_for_mode(&mut t, frontend, tel, CompileMode::Normal)
+        let frontend =
+            match compile_source_with_providers(self.world.types(), src.to_string(), source_name, &providers, tel) {
+                Ok(ok) => ok,
+                Err(err) => return Err(pipeline_error_to_io_error(err, diagnostics)),
+            };
+        let checked = checked_module_for_mode(self.world.types(), frontend, tel, CompileMode::Normal)
             .map_err(|err| pipeline_error_to_io_error(err, diagnostics))?;
-        let prepared = prepare_execution_graph(&mut t, checked, &providers, tel, CompileMode::Normal)
+        let prepared = prepare_execution_graph(self.world.types(), checked, &providers, tel, CompileMode::Normal)
             .map_err(|err| pipeline_error_to_io_error(err, diagnostics))?;
 
         let Some(main) = prepared.module.fn_by_name("main") else {
@@ -280,7 +282,7 @@ impl ReplSession {
         }
 
         notify_fixture_execution_start();
-        ReplRuntime::run_script_main(&prepared.module, main.id)
+        ReplRuntime::run_script_main(self.world.types(), &prepared.module, prepared.module_plan, main.id)
     }
 
     pub(crate) fn eval_chunk(&mut self, src: &str) -> ReplChunkOutcome {
@@ -308,7 +310,13 @@ impl ReplSession {
             Ok(args) => args,
             Err(e) => return ReplChunkOutcome::Err(e),
         };
-        let value = match runtime.eval_entry(&compiled.module, compiled.fn_id, args) {
+        let value = match runtime.eval_entry(
+            self.world.types(),
+            &compiled.module,
+            compiled.module_plan,
+            compiled.fn_id,
+            args,
+        ) {
             Ok(value) => value,
             Err(e) => return ReplChunkOutcome::Err(e),
         };
@@ -357,10 +365,15 @@ impl ReplRuntime {
         }
     }
 
-    fn run_script_main(module: &Module, main_id: FnId) -> io::Result<()> {
+    fn run_script_main(
+        t: &mut DefaultTypes,
+        module: &Module,
+        module_plan: ModulePlan,
+        main_id: FnId,
+    ) -> io::Result<()> {
         let mut runtime = Self::new(module);
         let completions = runtime
-            .enqueue_and_drive(module, main_id, vec![], /*keepalive=*/ false)
+            .enqueue_and_drive(t, module, module_plan, main_id, vec![], /*keepalive=*/ false)
             .map_err(io::Error::other)?;
         if completions.iter().any(|(pid, _)| *pid == runtime.evaluator_pid) {
             Ok(())
@@ -369,8 +382,15 @@ impl ReplRuntime {
         }
     }
 
-    fn eval_entry(&mut self, module: &Module, fn_id: FnId, args: Vec<AnyValue>) -> Result<AnyValue, String> {
-        let completions = self.enqueue_and_drive(module, fn_id, args, /*keepalive=*/ true)?;
+    fn eval_entry(
+        &mut self,
+        t: &mut DefaultTypes,
+        module: &Module,
+        module_plan: ModulePlan,
+        fn_id: FnId,
+        args: Vec<AnyValue>,
+    ) -> Result<AnyValue, String> {
+        let completions = self.enqueue_and_drive(t, module, module_plan, fn_id, args, /*keepalive=*/ true)?;
         completions
             .into_iter()
             .rev()
@@ -380,15 +400,18 @@ impl ReplRuntime {
 
     fn enqueue_and_drive(
         &mut self,
+        t: &mut DefaultTypes,
         module: &Module,
+        module_plan: ModulePlan,
         fn_id: FnId,
         args: Vec<AnyValue>,
         keepalive: bool,
     ) -> Result<Vec<(u32, AnyValue)>, String> {
         self.current_module = module.clone();
-        self.interp.enqueue_entry(module, self.evaluator_pid, fn_id, args)?;
+        self.interp
+            .enqueue_entry_with_plan(t, module, module_plan, self.evaluator_pid, fn_id, args)?;
         let keepalive_pid = keepalive.then_some(self.evaluator_pid);
-        self.interp.drive_until_idle(&NullTelemetry, keepalive_pid)
+        self.interp.drive_until_idle(t, &NullTelemetry, keepalive_pid)
     }
 
     fn read_tuple_fields(&self, value: AnyValue, arity: usize) -> Result<Vec<AnyValue>, String> {
@@ -441,6 +464,7 @@ impl ReplFrame {
 }
 
 struct ReplWorld {
+    compiler: Compiler,
     compile_time: CompileTimeEvaluator,
     item_chunks: Vec<ReplItemChunk>,
     eval_chunks: Vec<Program>,
@@ -453,6 +477,7 @@ struct ReplItemChunk {
 
 struct ReplCompiledEntry {
     module: Module,
+    module_plan: ModulePlan,
     fn_id: FnId,
     input_frame: Vec<String>,
     output_frame: Vec<String>,
@@ -473,10 +498,15 @@ enum ReplWorldParse {
 impl ReplWorld {
     fn new() -> Self {
         Self {
+            compiler: Compiler::new(),
             compile_time: CompileTimeEvaluator::new(),
             item_chunks: Vec::new(),
             eval_chunks: Vec::new(),
         }
+    }
+
+    fn types(&mut self) -> &mut DefaultTypes {
+        self.compiler.types()
     }
 
     fn parse_chunk(&self, src: &str) -> Result<ReplWorldChunk, ReplWorldParse> {
@@ -535,16 +565,16 @@ impl ReplWorld {
     }
 
     fn compile_repl_expr(
-        &self,
+        &mut self,
         expr: Spanned<Expr>,
         input_frame: Vec<String>,
         entry_name: String,
         sm: SourceMap,
     ) -> io::Result<ReplCompiledEntry> {
-        let mut t = ConcreteTypes;
+        let prog = self.session_program();
         let out = match compile_repl_expr_with_types(
-            &mut t,
-            self.session_program(),
+            self.types(),
+            prog,
             expr,
             input_frame,
             entry_name.clone(),
@@ -568,7 +598,7 @@ impl ReplWorld {
                 out.frontend.diagnostics.as_slice(),
             ));
         }
-        let graph = prepare_repl_frontend(&mut t, out.frontend)?;
+        let graph = prepare_repl_frontend(self.types(), out.frontend)?;
         let Some(entry_fn) = graph.module.fn_by_name(&entry_name).map(|f| f.id) else {
             return Err(io::Error::other(format!("repl entry `{}` not lowered", entry_name)));
         };
@@ -576,6 +606,7 @@ impl ReplWorld {
         entry_program.items.push(out.entry_item);
         Ok(ReplCompiledEntry {
             module: graph.module,
+            module_plan: graph.module_plan,
             fn_id: entry_fn,
             input_frame: out.input_frame,
             output_frame: out.output_frame,
@@ -591,8 +622,9 @@ impl ReplWorld {
         lookup_doc(&self.compile_time, name)
     }
 
-    fn compile_session_module(&self) -> io::Result<Module> {
-        compile_parsed_program_module(self.session_program())
+    fn compile_session_module(&mut self) -> io::Result<Module> {
+        let prog = self.session_program();
+        compile_parsed_program_module(self.types(), prog)
     }
 
     fn session_program(&self) -> Program {
@@ -607,22 +639,23 @@ impl ReplWorld {
     }
 
     fn load_docs_and_macros(&mut self, prog: Program) -> Result<(), String> {
-        let mut ct = ConcreteTypes;
-        let mut prog = flatten_modules(&mut ct, prog).map_err(|e| format!("module: {}", e))?;
+        let mut prog = flatten_modules(self.types(), prog).map_err(|e| format!("module: {}", e))?;
         for (path, doc) in &prog.module_docs {
             self.compile_time
                 .module_docs
                 .borrow_mut()
                 .insert(path.clone(), doc.clone());
         }
-        if let Err(e) = load_items_filtered(&self.compile_time, &prog, /*macros=*/ true) {
+        let compiler = &mut self.compiler;
+        let compile_time = &self.compile_time;
+        if let Err(e) = load_items_filtered(compiler.types(), compile_time, &prog, /*macros=*/ true) {
             return Err(format!("load macros: {}", e));
         }
-        let live = self.compile_time.macro_names.borrow().clone();
-        if let Err(e) = expand_with(&mut prog, &self.compile_time, &live) {
+        let live = compile_time.macro_names.borrow().clone();
+        if let Err(e) = expand_with(&mut prog, compile_time, &live) {
             return Err(format!("macro: {}", e));
         }
-        if let Err(e) = load_items_filtered(&self.compile_time, &prog, /*macros=*/ false) {
+        if let Err(e) = load_items_filtered(compiler.types(), compile_time, &prog, /*macros=*/ false) {
             return Err(format!("load fns: {}", e));
         }
         Ok(())
@@ -634,9 +667,8 @@ pub(crate) enum ReplChunkOutcome {
     Err(String),
 }
 
-fn compile_parsed_program_module(prog: Program) -> io::Result<Module> {
-    let mut t = ConcreteTypes;
-    let frontend = match compile_program_with_types(&mut t, prog, SourceMap::new(), &NullTelemetry) {
+fn compile_parsed_program_module(t: &mut DefaultTypes, prog: Program) -> io::Result<Module> {
+    let frontend = match compile_program_with_types(t, prog, SourceMap::new(), &NullTelemetry) {
         Ok(ok) => ok,
         Err(err) => {
             return Err(diagnostics_to_io_error(&err.sm, err.diagnostics.as_slice()));
@@ -650,10 +682,10 @@ fn compile_parsed_program_module(prog: Program) -> io::Result<Module> {
     {
         return Err(diagnostics_to_io_error(&frontend.sm, frontend.diagnostics.as_slice()));
     }
-    Ok(prepare_repl_frontend(&mut t, frontend)?.module)
+    Ok(prepare_repl_frontend(t, frontend)?.module)
 }
 
-fn prepare_repl_frontend(t: &mut ConcreteTypes, frontend: FrontendOk) -> io::Result<PreparedExecutionGraph> {
+fn prepare_repl_frontend(t: &mut DefaultTypes, frontend: FrontendOk) -> io::Result<PreparedExecutionGraph> {
     let (tel, diagnostics) = repl_diagnostic_telemetry();
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
     let checked = checked_module_for_mode(t, Ok(frontend), &tel, CompileMode::Normal)
@@ -773,7 +805,15 @@ fn pipeline_error_to_io_error(err: PipelineError, diagnostics: &Rc<RefCell<Vec<u
 /// `which == true` loads only macros; `which == false` loads only non-macros.
 /// Splitting the two phases lets the REPL register macros before running
 /// expansion on fn bodies that may call them.
-fn load_items_filtered(interp: &CompileTimeEvaluator, prog: &Program, macros_only: bool) -> Result<(), String> {
+fn load_items_filtered<T>(
+    t: &mut T,
+    interp: &CompileTimeEvaluator,
+    prog: &Program,
+    macros_only: bool,
+) -> Result<(), String>
+where
+    T: Types<Ty = Ty> + RenderTypes,
+{
     for item in &prog.items {
         match &**item {
             Item::Module(_)
@@ -800,7 +840,7 @@ fn load_items_filtered(interp: &CompileTimeEvaluator, prog: &Program, macros_onl
                 let existing = interp.globals.lookup(&def.name);
                 let mut clauses = def.clauses.clone();
                 let mut doc = def.doc().map(String::from);
-                let mut spec_text = format_spec_text(def, prog);
+                let mut spec_text = format_spec_text(t, def, prog);
                 if let Some(Value::Closure(c)) = existing {
                     let same_arity =
                         c.clauses.first().map(|cl| cl.params.len()) == clauses.first().map(|cl| cl.params.len());
@@ -901,8 +941,9 @@ mod tests {
     }
 
     fn load_program_test(interp: &CompileTimeEvaluator, prog: &Program) -> Result<(), String> {
-        load_items_filtered(interp, prog, false)?;
-        load_items_filtered(interp, prog, true)?;
+        let mut t = crate::types::new();
+        load_items_filtered(&mut t, interp, prog, false)?;
+        load_items_filtered(&mut t, interp, prog, true)?;
         Ok(())
     }
 
@@ -1380,7 +1421,7 @@ fn add1(n), do: n + 1"#
         let interp = CompileTimeEvaluator::new();
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let prog = flatten_modules(&mut ct, prog).expect("resolve");
         for (path, doc) in &prog.module_docs {
             interp.module_docs.borrow_mut().insert(path.clone(), doc.clone());

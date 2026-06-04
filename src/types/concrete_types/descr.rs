@@ -740,7 +740,11 @@ impl Descr {
             && self.opaques.is_none()
             && self.brands.is_none()
             && self.vars.is_none();
-        if !axis_free || !self.tuples.is_empty() || !self.resources.is_empty() || !self.funcs.is_empty() || !self.maps.is_empty()
+        if !axis_free
+            || !self.tuples.is_empty()
+            || !self.resources.is_empty()
+            || !self.funcs.is_empty()
+            || !self.maps.is_empty()
         {
             return None;
         }

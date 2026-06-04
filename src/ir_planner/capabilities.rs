@@ -258,9 +258,7 @@ fn term_uses_var(term: &Term, v: Var) -> bool {
     match term {
         Term::Goto(_, args) => args.contains(&v),
         Term::If { cond, .. } => *cond == v,
-        Term::Call {
-            args, continuation, ..
-        } => args.contains(&v) || continuation.captured.contains(&v),
+        Term::Call { args, continuation, .. } => args.contains(&v) || continuation.captured.contains(&v),
         Term::TailCall { args, .. } => args.contains(&v),
         Term::CallClosure {
             closure,

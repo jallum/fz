@@ -4,7 +4,6 @@
 use super::invariants::{assert_no_new_call_shapes, emit_and_assert_spec_dispatch_coverage, snapshot_call_shapes};
 use super::receive::{MatcherRuntimeHelpers, declare_matcher, emit_matcher_body_from_matcher};
 use super::*;
-use crate::concrete_types::ty_descr;
 use crate::fz_ir::{BinOp, BlockId, CallsiteId, Const, EmitSlot, FnId, Module, Prim, SpecId, Stmt, Term, UnOp};
 use crate::ir_dest::{lower_destinations, verify_module};
 use crate::ir_extern_marshal::resolve_module_types;
@@ -15,7 +14,7 @@ use crate::telemetry::value::opaque;
 use crate::telemetry::{Telemetry, TelemetryExt as _, next_compile_nonce};
 use crate::types::{
     ClosureTarget, ClosureTypes, LiteralTypes, RenderTypes, Ty, Types, VisibilityTypes, key_slots_from_tys,
-    key_slots_to_tys,
+    key_slots_to_tys, ty_descr,
 };
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{

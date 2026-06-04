@@ -5,7 +5,7 @@ use super::{
     SpecApplicationOutcome, apply_spec_set, declared_specs_cover_inferred_spec, instantiate_match,
     resolve_closure_return, unique_matching_params,
 };
-use crate::types::{ClosureTarget, ClosureTypes, ConcreteTypes, MapKey, Ty, TypeVarId, Types};
+use crate::types::{ClosureTarget, ClosureTypes, DefaultTypes, MapKey, Ty, TypeVarId, Types};
 
 fn resolved_spec(params: Vec<Ty>, result: Ty) -> ResolvedSpec {
     let param_shapes = vec![ResolvedTypeShape::Any; params.len()];
@@ -18,7 +18,7 @@ fn resolved_spec(params: Vec<Ty>, result: Ty) -> ResolvedSpec {
     }
 }
 
-fn matching_result(t: &mut ConcreteTypes, spec_set: &ResolvedSpecSet, arg_tys: &[Ty]) -> Option<Ty> {
+fn matching_result(t: &mut DefaultTypes, spec_set: &ResolvedSpecSet, arg_tys: &[Ty]) -> Option<Ty> {
     match apply_spec_set::<_, (), _>(t, spec_set, arg_tys, |_t, _query| None) {
         SpecApplicationOutcome::Known(application) => Some(application.result),
         SpecApplicationOutcome::Underconstrained(_) | SpecApplicationOutcome::NoMatch => None,
@@ -27,7 +27,7 @@ fn matching_result(t: &mut ConcreteTypes, spec_set: &ResolvedSpecSet, arg_tys: &
 
 #[test]
 fn scheme_result_instantiates_tuple_from_param_witnesses() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let a = t.type_var(TypeVarId(0));
     let b = t.type_var(TypeVarId(1));
     let result = t.tuple(&[a.clone(), b.clone()]);
@@ -50,7 +50,7 @@ fn scheme_result_instantiates_tuple_from_param_witnesses() {
 
 #[test]
 fn scheme_result_instantiates_list_element_witness() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let a = t.type_var(TypeVarId(0));
     let param = t.list(a.clone());
     let result = a;
@@ -69,7 +69,7 @@ fn scheme_result_instantiates_list_element_witness() {
 
 #[test]
 fn scheme_result_instantiates_resource_payload_witness() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let a = t.type_var(TypeVarId(0));
     let param = t.resource(a.clone());
     let result = a;
@@ -88,7 +88,7 @@ fn scheme_result_instantiates_resource_payload_witness() {
 
 #[test]
 fn scheme_result_reports_underconstrained_free_result_var() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let param = t.int();
     let result = t.type_var(TypeVarId(9));
     let witness = t.int_lit(1);
@@ -104,7 +104,7 @@ fn scheme_result_reports_underconstrained_free_result_var() {
 
 #[test]
 fn scheme_result_widens_reduce_while_accumulator_from_reducer_exits() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let entry_var = t.type_var(TypeVarId(0));
     let acc_var = t.type_var(TypeVarId(1));
     let reducer_result = {
@@ -158,7 +158,7 @@ fn scheme_result_widens_reduce_while_accumulator_from_reducer_exits() {
 
 #[test]
 fn scheme_result_rejects_structural_witness_mismatch() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let a = t.type_var(TypeVarId(0));
     let param = t.tuple(&[a.clone()]);
     let witness = t.int_lit(1);
@@ -174,7 +174,7 @@ fn scheme_result_rejects_structural_witness_mismatch() {
 
 #[test]
 fn scheme_result_instantiates_map_field_witness() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let a = t.type_var(TypeVarId(0));
     let key = MapKey::Atom("value".to_string());
     let param = t.map(&[(key.clone(), a.clone())]);
@@ -197,7 +197,7 @@ fn scheme_result_instantiates_map_field_witness() {
 
 #[test]
 fn callable_scheme_result_instantiates_tuple_from_call_args() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let a = t.type_var(TypeVarId(0));
     let b = t.type_var(TypeVarId(1));
     let ret = t.tuple(&[a.clone(), b.clone()]);
@@ -217,7 +217,7 @@ fn callable_scheme_result_instantiates_tuple_from_call_args() {
 
 #[test]
 fn resolved_spec_set_selects_return_by_matching_arrow() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let int = ct.int();
     let float = ct.float();
     let set = ResolvedSpecSet {
@@ -250,7 +250,7 @@ fn resolved_spec_set_selects_return_by_matching_arrow() {
 
 #[test]
 fn resolved_spec_set_unions_results_only_after_arrow_selection() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let int = ct.int();
     let float = ct.float();
     let set = ResolvedSpecSet {
@@ -293,7 +293,7 @@ fn resolved_spec_set_unions_results_only_after_arrow_selection() {
 
 #[test]
 fn declared_spec_coverage_accepts_matching_overload_arrow() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let int = t.int();
     let float = t.float();
     let set = ResolvedSpecSet {
@@ -316,7 +316,7 @@ fn declared_spec_coverage_accepts_matching_overload_arrow() {
 
 #[test]
 fn declared_spec_coverage_preserves_overload_param_result_correlation() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let int = t.int();
     let float = t.float();
     let set = ResolvedSpecSet {
@@ -337,7 +337,7 @@ fn declared_spec_coverage_preserves_overload_param_result_correlation() {
 
 #[test]
 fn declared_spec_coverage_allows_hole_when_result_is_still_proven() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let int = t.int();
     let set = ResolvedSpecSet {
         arrows: vec![resolved_spec(vec![int.clone(), int.clone()], int)],
@@ -356,7 +356,7 @@ fn declared_spec_coverage_allows_hole_when_result_is_still_proven() {
 
 #[test]
 fn declared_spec_coverage_rejects_hole_that_leaves_result_underconstrained() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let a = t.type_var(TypeVarId(0));
     let int = t.int();
     let set = ResolvedSpecSet {
@@ -374,7 +374,7 @@ fn declared_spec_coverage_rejects_hole_that_leaves_result_underconstrained() {
 
 #[test]
 fn spec_application_unions_successful_overlap_returns() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let int = t.int();
     let float = t.float();
     let set = ResolvedSpecSet {
@@ -404,7 +404,7 @@ fn spec_application_unions_successful_overlap_returns() {
 
 #[test]
 fn spec_application_reports_no_match_for_proved_contradiction() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let int = t.int();
     let set = ResolvedSpecSet {
         arrows: vec![resolved_spec(vec![int.clone()], int)],
@@ -421,7 +421,7 @@ fn spec_application_reports_no_match_for_proved_contradiction() {
 
 #[test]
 fn spec_application_reports_underconstrained_free_result() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let int = t.int();
     let result = t.type_var(TypeVarId(0));
     let set = ResolvedSpecSet {
@@ -444,7 +444,7 @@ fn spec_application_reports_underconstrained_free_result() {
 
 #[test]
 fn spec_application_tracks_pending_callback_return_reads() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let set = reduce_while_spec_set(&mut t);
     let not_found = t.atom_lit("not_found");
     let zero = t.int_lit(0);
@@ -469,7 +469,7 @@ fn spec_application_tracks_pending_callback_return_reads() {
 
 #[test]
 fn spec_application_refines_result_from_callback_return_witness() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let set = reduce_while_spec_set(&mut t);
     let not_found = t.atom_lit("not_found");
     let found = t.atom_lit("found");
@@ -513,7 +513,7 @@ fn spec_application_refines_result_from_callback_return_witness() {
     assert_eq!(application.reads, vec!["reducer"]);
 }
 
-fn reduce_while_spec_set(t: &mut ConcreteTypes) -> ResolvedSpecSet {
+fn reduce_while_spec_set(t: &mut DefaultTypes) -> ResolvedSpecSet {
     let entry_var = t.type_var(TypeVarId(0));
     let acc_var = t.type_var(TypeVarId(1));
     let reducer_ret = {

@@ -16,7 +16,7 @@ use crate::exec::bitstr::*;
 use crate::exec::value::*;
 use crate::parser::lexer::Tok;
 use crate::type_expr::{ModuleTypeEnv, resolve_spec_decl};
-use crate::types::ConcreteTypes;
+use crate::types::{RenderTypes, Ty, Types};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
@@ -29,7 +29,10 @@ pub type EvalResult = Result<Value, String>;
 /// `?<name>` surfacing. Returns `None` when the fn has no resolvable `@spec`
 /// arrows. The validation pass surfaces bad specs as diagnostics; the REPL
 /// renderer just skips unresolved arrows.
-pub fn format_spec_text(def: &FnDef, prog: &Program) -> Option<String> {
+pub fn format_spec_text<T>(t: &mut T, def: &FnDef, prog: &Program) -> Option<String>
+where
+    T: Types<Ty = Ty> + RenderTypes,
+{
     let specs = def.attrs.iter().filter_map(|a| match a {
         Attribute::Spec(s) => Some(s),
         _ => None,
@@ -40,12 +43,11 @@ pub fn format_spec_text(def: &FnDef, prog: &Program) -> Option<String> {
     };
     let empty = ModuleTypeEnv::new();
     let env = prog.module_type_envs.get(&module_path).unwrap_or(&empty);
-    let mut ct = ConcreteTypes;
     let mut lines = Vec::new();
     for spec in specs {
-        if let Ok(resolved) = resolve_spec_decl(&mut ct, spec, env) {
-            let params: Vec<String> = resolved.params.iter().map(|ty| ct.display(ty)).collect();
-            lines.push(format!("({}) -> {}", params.join(", "), ct.display(&resolved.result)));
+        if let Ok(resolved) = resolve_spec_decl(t, spec, env) {
+            let params: Vec<String> = resolved.params.iter().map(|ty| t.display(ty)).collect();
+            lines.push(format!("({}) -> {}", params.join(", "), t.display(&resolved.result)));
         }
     }
     (!lines.is_empty()).then(|| lines.join("\n"))
@@ -171,9 +173,7 @@ impl CompileTimeEvaluator {
             ("make_ref", 0, |_, _| {
                 unreachable!("make_ref/0 handled by CompileTimeEvaluator::apply")
             }),
-            ("receive", 0, |_, _| {
-                unreachable!("receive is handled by Expr::Receive")
-            }),
+            ("receive", 0, |_, _| unreachable!("receive is handled by Expr::Receive")),
         ];
         for (name, arity, func) in builtins {
             self.globals.bind(
@@ -187,7 +187,16 @@ impl CompileTimeEvaluator {
         }
     }
 
+    #[cfg(test)]
     pub fn load_program(&self, prog: &Program) -> Result<(), String> {
+        let mut t = crate::types::new();
+        self.load_program_with_types(&mut t, prog)
+    }
+
+    pub fn load_program_with_types<T>(&self, t: &mut T, prog: &Program) -> Result<(), String>
+    where
+        T: Types<Ty = Ty> + RenderTypes,
+    {
         // Merge any moduledocs flatten_modules captured. Later loads
         // overwrite earlier ones for the same path (REPL re-defining a
         // module replaces its @moduledoc).
@@ -207,7 +216,7 @@ impl CompileTimeEvaluator {
                     }
                     // Macros load alongside regular fns so the expansion pass
                     // can dispatch them by name through the same interp.
-                    let spec_text = format_spec_text(def, prog);
+                    let spec_text = format_spec_text(t, def, prog);
                     let closure = Value::Closure(Rc::new(Closure {
                         name: Some(def.name.clone()),
                         clauses: def.clauses.clone(),

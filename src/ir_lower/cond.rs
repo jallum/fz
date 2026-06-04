@@ -78,6 +78,7 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
         let param_vars_ref = param_vars;
         let clause_conts_ref = &mut clause_conts;
         let mut cb = |ctx: &mut LowerCtx,
+                      t: &mut T,
                       body_id: BodyId,
                       bindings: Vec<MatchedBinding>,
                       preconditions: Vec<(Var, Ty)>,
@@ -102,7 +103,7 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
                 ctx.terminated = false;
             }
             if let Some(g) = &guard {
-                let guard_var = lower_expr(ctx, g, false)?;
+                let guard_var = lower_expr(ctx, t, g, false)?;
                 let body_b = ctx.cur_mut().block(vec![]);
                 ctx.set_if_term(guard_var, body_b, fall_block);
                 ctx.cur_block = Some(body_b);
@@ -147,7 +148,7 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
             ctx.terminated = true;
             Ok(())
         };
-        let result = lower_pattern_matrix_to_current_fn(ctx, pattern_matrix, fail_block, &mut cb);
+        let result = lower_pattern_matrix_to_current_fn(ctx, t, pattern_matrix, fail_block, &mut cb);
         ctx.branch_origin = prev_origin;
         result?;
     }
@@ -157,7 +158,7 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
             continue;
         };
         let _ = switch_to_cont_fn(ctx, &cont, 0);
-        let result = lower_expr(ctx, &clause.body, /* is_tail */ true)?;
+        let result = lower_expr(ctx, t, &clause.body, /* is_tail */ true)?;
         if !ctx.terminated {
             ctx.set_term(Term::Return(result));
             ctx.terminated = true;
@@ -183,8 +184,9 @@ fn owned_cons_captures_for_bindings(ctx: &LowerCtx, bindings: &[MatchedBinding])
         .collect()
 }
 
-pub(crate) fn lower_if(
+pub(crate) fn lower_if<T: Types<Ty = Ty>>(
     ctx: &mut LowerCtx,
+    t: &mut T,
     cond: &Spanned<Expr>,
     then_e: &Spanned<Expr>,
     else_opt: &Option<Box<Spanned<Expr>>>,
@@ -217,7 +219,7 @@ pub(crate) fn lower_if(
     // consume the coherent module and may choose tighter planned bodies without
     // relying on a cleanup pass to make this transform valid.
 
-    let cv = lower_expr(ctx, cond, false)?;
+    let cv = lower_expr(ctx, t, cond, false)?;
 
     let then_cont = mint_cont_fn(ctx, "if_then", if_span, FnCategory::ControlFlowCont);
     let else_cont = mint_cont_fn(ctx, "if_else", if_span, FnCategory::ControlFlowCont);
@@ -261,13 +263,13 @@ pub(crate) fn lower_if(
 
     // Move to then_fn. Finalizes the outer fn (which is now fully populated).
     let _ = switch_to_cont_fn(ctx, &then_cont, 0);
-    let tv = lower_expr(ctx, then_e, arm_is_tail)?;
+    let tv = lower_expr(ctx, t, then_e, arm_is_tail)?;
     finalize_arm(ctx, tv, join_opt.as_ref());
 
     // Move to else_fn. Finalizes then_fn (or its CPS-split descendant).
     let _ = switch_to_cont_fn(ctx, &else_cont, 0);
     let ev = if let Some(else_e) = else_opt {
-        lower_expr(ctx, else_e, arm_is_tail)?
+        lower_expr(ctx, t, else_e, arm_is_tail)?
     } else {
         ctx.let_(Prim::Const(Const::Nil))
     };

@@ -6,6 +6,7 @@ use crate::fz_ir::{CallsiteIdent, FnCategory, ReceiveAfter, ReceiveClause, Term,
 use crate::pattern_matrix::{
     BodyId, PatternMatrix, Row, collect_guard_capture_names, compile_pattern_matrix_with_guard_resolver,
 };
+use crate::types::{Ty, Types};
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
@@ -36,8 +37,9 @@ pub(crate) fn build_receive_pattern_matrix(msg_var: Var, clauses: &[MatchClause]
     }
 }
 
-pub(crate) fn lower_receive(
+pub(crate) fn lower_receive<T: Types<Ty = Ty>>(
     ctx: &mut LowerCtx,
+    t: &mut T,
     clauses: &[MatchClause],
     after: Option<&AfterClause>,
     is_tail: bool,
@@ -55,7 +57,7 @@ pub(crate) fn lower_receive(
     // fn — every Var snapshot that follows must come from the post-split
     // env so they belong to the right fn.
     let timeout_var = match after {
-        Some(a) => Some(lower_expr(ctx, &a.timeout, false)?),
+        Some(a) => Some(lower_expr(ctx, t, &a.timeout, false)?),
         None => None,
     };
 
@@ -218,6 +220,7 @@ pub(crate) fn lower_receive(
             }
             let g_val = lower_expr(
                 ctx,
+                t,
                 clause.guard.as_ref().expect("guard cont implies guard expr"),
                 /* is_tail */ true,
             )?;
@@ -234,13 +237,13 @@ pub(crate) fn lower_receive(
         for (name, &v) in slot.bound_names.iter().zip(extras.iter()) {
             ctx.bind(name, v);
         }
-        let result = lower_expr(ctx, &clause.body, arm_is_tail)?;
+        let result = lower_expr(ctx, t, &clause.body, arm_is_tail)?;
         finalize_arm(ctx, result, join_opt.as_ref());
     }
 
     if let Some((cont, a)) = after_slot {
         let _extras = switch_to_cont_fn(ctx, &cont, 0);
-        let result = lower_expr(ctx, &a.body, arm_is_tail)?;
+        let result = lower_expr(ctx, t, &a.body, arm_is_tail)?;
         finalize_arm(ctx, result, join_opt.as_ref());
     }
 

@@ -6,13 +6,11 @@ use super::effects::{prim_effects, term_effects};
 use super::fn_types::{
     BodyKey, CallEdgePlan, CallEdgeTarget, CallableCapability, EffectSummary, FnEffects,
     IncomingParamCallableCapabilities, ModulePlan, ReturnCapabilities, ReturnDemand, SpecKey, SpecKeySet, SpecPlan,
-    SpecReachabilityRole,
-    TYPE_FN_CALLS, VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS, body_key_for_fn_id, build_any_key_index,
-    fixed_point_spec_key_for_arity, key_precedence_order, spec_key_for_fn_id, spec_key_input_tys,
+    SpecReachabilityRole, TYPE_FN_CALLS, VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS, body_key_for_fn_id,
+    build_any_key_index, fixed_point_spec_key_for_arity, key_precedence_order, spec_key_for_fn_id, spec_key_input_tys,
 };
 use super::type_fn::type_fn;
 use super::walk::{WalkResult, walk_spec_for_discovery};
-use crate::concrete_types::ty_display;
 use crate::fz_ir::{BlockId, CallsiteId, CallsiteIdent, DeadBranch, EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term};
 use crate::ir_planner::inventory::{body_callsite_inventory, plan_call_edge_inventory};
 use crate::specs::{
@@ -25,7 +23,7 @@ use crate::type_infer::{
     TypeInferActivationEdgeFact, TypeInferActivationFact, TypeInferActivationId, TypeInferDeadArmFact,
     TypeInferReturnState, TypeInferStatus, infer_from_entry,
 };
-use crate::types::{ClosureTarget, ClosureTypes, RenderTypes, Ty, Types, key_slots_observed};
+use crate::types::{ClosureTarget, ClosureTypes, RenderTypes, Ty, Types, key_slots_observed, ty_display};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 pub(crate) enum ResultSlot0 {
@@ -1528,7 +1526,12 @@ fn ensure_spec_typed<T: Types<Ty = Ty> + ClosureTypes>(
     specs: &mut HashMap<SpecKey, SpecPlan>,
 ) {
     if specs.get(spec_key).is_some_and(|ft| {
-        entry_callable_capabilities_match(m, fn_idx, ft, incoming_param_callable_capabilities.get(&spec_key.body_key()))
+        entry_callable_capabilities_match(
+            m,
+            fn_idx,
+            ft,
+            incoming_param_callable_capabilities.get(&spec_key.body_key()),
+        )
     }) {
         return;
     }

@@ -4,11 +4,10 @@ use std::ptr::write;
 
 use super::*;
 use crate::ast::{BitType as AstBitType, Endian};
-use crate::concrete_types::ty_descr;
 use crate::fz_ir::{BitSizeIr, BlockId, Module, Prim, Var};
 use crate::ir_planner::SpecPlan;
 use crate::telemetry::Telemetry;
-use crate::types::{ClosureTypes, Ty, Types};
+use crate::types::{ClosureTypes, Ty, Types, ty_descr};
 use fz_runtime::any_value::{AnyValueRef, NIL_ATOM_ID, ValueKind, closure_addr_from_tagged, struct_schema_id};
 use fz_runtime::heap::Schema;
 use fz_runtime::ir_runtime::{

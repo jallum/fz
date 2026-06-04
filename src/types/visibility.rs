@@ -50,7 +50,7 @@ mod tests {
     use crate::type_expr::{
         ModuleTypeEnv, build_module_type_env_for_with_base, opaque_owner_module, qualify_opaque_name,
     };
-    use crate::types::{ConcreteTypes, Types};
+    use crate::types::Types;
 
     fn alias_attr(name: &str, body_src: &str) -> Attribute {
         use crate::ast::{Attribute, TypeAliasDecl, TypeExprBody};
@@ -68,7 +68,7 @@ mod tests {
     }
 
     fn env_for(module: &str, attrs: &[Attribute]) -> ModuleTypeEnv {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         build_module_type_env_for_with_base(&mut ct, attrs, module, &ModuleTypeEnv::new())
             .expect("build env")
             .0
@@ -92,7 +92,7 @@ mod tests {
     fn opaque_alias_carries_declaring_module() {
         let attrs = vec![alias_attr("t", "opaque integer")];
         let env = env_for("File", &attrs);
-        let ct = ConcreteTypes;
+        let ct = crate::types::new();
         let t = env.get("t").expect("alias resolved");
         assert_eq!(ct.opaque_singleton(t), Some("File::t".to_string()));
     }
@@ -101,7 +101,7 @@ mod tests {
     fn check_passes_inside_declaring_module() {
         let attrs = vec![alias_attr("t", "opaque integer")];
         let env = env_for("File", &attrs);
-        let ct = ConcreteTypes;
+        let ct = crate::types::new();
         let t = env.get("t").unwrap();
         assert!(ct.check_opaque_visibility(t, "File").is_ok());
     }
@@ -110,7 +110,7 @@ mod tests {
     fn check_rejects_from_other_module() {
         let attrs = vec![alias_attr("t", "opaque integer")];
         let env = env_for("File", &attrs);
-        let ct = ConcreteTypes;
+        let ct = crate::types::new();
         let t = env.get("t").unwrap();
         let err = ct.check_opaque_visibility(t, "Other").expect_err("must reject");
         assert_eq!(err.opaque, "File::t");
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn check_passes_on_non_opaque_types() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let int = ct.int();
         let any = ct.any();
         let none = ct.none();
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn check_passes_on_unqualified_builtin_opaque() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let d = ct.opaque_of("resource");
         assert!(ct.check_opaque_visibility(&d, "AnyModule").is_ok());
     }
@@ -143,7 +143,7 @@ mod tests {
     fn two_modules_declaring_t_are_distinct_opaques() {
         let a = env_for("A", &[alias_attr("t", "opaque integer")]);
         let b = env_for("B", &[alias_attr("t", "opaque integer")]);
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let ta = a.get("t").unwrap();
         let tb = b.get("t").unwrap();
         assert_eq!(ct.opaque_singleton(ta), Some("A::t".to_string()));
@@ -175,7 +175,7 @@ mod tests {
     fn opaque_alias_wrapping_resource_is_gated() {
         let attrs = vec![alias_attr("t", "opaque resource(integer)")];
         let env = env_for("File", &attrs);
-        let ct = ConcreteTypes;
+        let ct = crate::types::new();
         let t = env.get("t").unwrap();
         assert_eq!(ct.opaque_singleton(t), Some("File::t".to_string()));
         assert!(ct.check_opaque_visibility(t, "File").is_ok());

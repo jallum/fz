@@ -2816,9 +2816,7 @@ fn quicksort_has_no_tuple_dp_any_fanout() {
         specs
     );
     assert!(
-        stanzas
-            .iter()
-            .any(|s| s.key == "[{list(int), list(int)}, int, _]"),
+        stanzas.iter().any(|s| s.key == "[{list(int), list(int)}, int, _]"),
         "the qsort tuple continuation should receive the converged partition tuple {{list(int), list(int)}}, \
          integer pivot, and physical source-cons hole — fz-y6w collapsed the old four-way accumulator union \
          to one tuple shape, and fz-qwf.2 builds tuple-field delivery on that converged shape:\n{}",

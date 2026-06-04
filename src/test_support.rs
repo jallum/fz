@@ -7,7 +7,7 @@ use crate::modules::pipeline::{
     link_execution_module, prepare_execution_graph,
 };
 use crate::telemetry::{Capture, ConfiguredTelemetry, Event, Handler, NullTelemetry, Telemetry};
-use crate::types::{ClosureTypes, ConcreteTypes, RenderTypes, Ty, Types};
+use crate::types::{ClosureTypes, DefaultTypes, RenderTypes, Ty, Types};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::panic::AssertUnwindSafe;
@@ -41,7 +41,7 @@ pub(crate) fn lower_frontend_module(src: &str) -> Module {
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
         let _ = compile_source_with_providers(&mut t, src.to_string(), "test_fixture.fz".to_string(), &providers, &tel);
     }));
@@ -56,7 +56,7 @@ pub(crate) fn lower_frontend_module(src: &str) -> Module {
 /// Compile a program through the production pipeline to the linked runtime IR:
 /// protocol impls, runtime helpers, and execution-graph rewrites are local.
 pub(crate) fn linked_runtime_graph_with_telemetry(
-    t: &mut ConcreteTypes,
+    t: &mut DefaultTypes,
     src: &str,
     tel: &dyn Telemetry,
 ) -> PreparedExecutionGraph {
@@ -70,14 +70,14 @@ pub(crate) fn linked_runtime_graph_with_telemetry(
 }
 
 pub(crate) fn linked_runtime_graph(src: &str) -> PreparedExecutionGraph {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     linked_runtime_graph_with_telemetry(&mut t, src, &NullTelemetry)
 }
 
 /// Compile through the production frontend/provider/link path and stop at the
 /// linked runtime module, without running the authoritative planner.
 pub(crate) fn linked_runtime_module_unplanned(src: &str) -> Module {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
     let frontend = compile_source_with_providers(
         &mut t,
@@ -188,7 +188,7 @@ pub(crate) fn runtime_graph_planner_activation_projection_signals(src: &str) -> 
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
 
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = linked_runtime_graph_with_telemetry(&mut t, src, &tel);
     cap.clear();
     let _ = plan_module(&mut t, &graph.module, &tel);
@@ -205,7 +205,7 @@ pub(crate) fn runtime_graph_codegen_materialized_body_signals(src: &str) -> Vec<
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
 
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = linked_runtime_graph_with_telemetry(&mut t, src, &tel);
     let _ = materialize_program(&mut t, &graph.module, &graph.module_plan, &tel);
     assert_authoritative_planner_consistent(&cap);
@@ -243,7 +243,7 @@ pub(crate) fn runtime_graph_codegen_materialized_body_signals(src: &str) -> Vec<
 
 #[cfg(test)]
 fn reachable_materialized_body_signals_from_planned_compile(
-    t: &mut ConcreteTypes,
+    t: &mut DefaultTypes,
     module: &Module,
     module_plan: &ModulePlan,
     tel: &ConfiguredTelemetry,
@@ -309,7 +309,7 @@ pub(crate) fn runtime_graph_reachable_materialized_body_signals(src: &str) -> Ve
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
 
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = linked_runtime_graph_with_telemetry(&mut t, src, &tel);
     let _ = materialize_program(&mut t, &graph.module, &graph.module_plan, &tel);
     assert_authoritative_planner_consistent(&cap);
@@ -318,7 +318,7 @@ pub(crate) fn runtime_graph_reachable_materialized_body_signals(src: &str) -> Ve
 
 #[cfg(test)]
 pub(crate) fn module_reachable_materialized_body_signals(
-    t: &mut ConcreteTypes,
+    t: &mut DefaultTypes,
     module: &Module,
     module_plan: &ModulePlan,
 ) -> Vec<ReachableMaterializedBodySignal> {

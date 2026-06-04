@@ -4,7 +4,7 @@ use crate::types::{KeySlot, Ty, TypeVarId, Types, key_slot_var_count};
 use std::collections::HashMap;
 
 #[cfg(test)]
-use crate::types::{ConcreteTypes, key_slots_from_tys};
+use crate::types::key_slots_from_tys;
 
 #[derive(Clone)]
 struct SpecEntry {
@@ -348,7 +348,7 @@ fn fully_typed_key(input_key: &[KeySlot]) -> Option<Vec<Ty>> {
 impl SpecRegistry {
     /// Look up a fn's any-key SpecId. Test-only helper.
     pub fn any_key(&self, fn_id: FnId, n_params: usize) -> SpecId {
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let key: Vec<KeySlot> = (0..n_params).map(|_| Some(t.any())).collect();
         self.exact_match(fn_id, key.as_slice())
             .expect("any-key spec must always be registered for every fn")
@@ -362,7 +362,7 @@ impl SpecRegistry {
 #[cfg(test)]
 mod var_subsumption_tests {
     use super::*;
-    use crate::types::{ConcreteTypes, Types};
+    use crate::types::Types;
 
     fn fid(n: u32) -> FnId {
         FnId(n)
@@ -370,7 +370,7 @@ mod var_subsumption_tests {
 
     #[test]
     fn return_demand_participates_in_spec_identity() {
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let mut reg = SpecRegistry::new();
         let key = vec![Some(t.int())];
         let value = SpecKey::value(fid(7), key.clone());
@@ -390,7 +390,7 @@ mod var_subsumption_tests {
 
     #[test]
     fn concrete_query_matches_var_key_with_binding() {
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let mut reg = SpecRegistry::new();
         let alpha = t.type_var(TypeVarId(0));
         let sid = reg.register(&t, fid(7), vec![alpha]);
@@ -401,7 +401,7 @@ mod var_subsumption_tests {
 
     #[test]
     fn var_query_matches_same_var_key() {
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let mut reg = SpecRegistry::new();
         let alpha = t.type_var(TypeVarId(0));
         let sid = reg.register(&t, fid(7), vec![alpha]);
@@ -413,7 +413,7 @@ mod var_subsumption_tests {
 
     #[test]
     fn var_query_matches_different_var_key_via_binding() {
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let mut reg = SpecRegistry::new();
         let alpha = t.type_var(TypeVarId(0));
         let sid = reg.register(&t, fid(7), vec![alpha]);
@@ -426,7 +426,7 @@ mod var_subsumption_tests {
 
     #[test]
     fn var_query_does_not_match_concrete_key() {
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let mut reg = SpecRegistry::new();
         let int = t.int();
         let _ = reg.register(&t, fid(7), vec![int]);
@@ -441,7 +441,7 @@ mod var_subsumption_tests {
     fn most_specific_wins_concrete_over_var() {
         // Both a concrete-keyed spec and a var-keyed spec cover an `int`
         // query. Dispatch must pick the concrete (most specific).
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let mut reg = SpecRegistry::new();
         let alpha = t.type_var(TypeVarId(0));
         let var_sid = reg.register(&t, fid(7), vec![alpha]);
@@ -456,7 +456,7 @@ mod var_subsumption_tests {
     #[test]
     fn positionally_inconsistent_binding_fails() {
         // Key: (α, α). Query: (int, str). Single α can't bind both → no cover.
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let mut reg = SpecRegistry::new();
         let alpha = t.type_var(TypeVarId(0));
         let _ = reg.register(&t, fid(7), vec![alpha.clone(), alpha]);
@@ -470,7 +470,7 @@ mod var_subsumption_tests {
     #[test]
     fn positionally_consistent_binding_succeeds() {
         // Key: (α, α). Query: (int, int). Single α binds to int consistently.
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let mut reg = SpecRegistry::new();
         let alpha = t.type_var(TypeVarId(0));
         let sid = reg.register(&t, fid(7), vec![alpha.clone(), alpha]);
@@ -484,7 +484,7 @@ mod var_subsumption_tests {
     fn any_query_still_does_not_match_concrete_key() {
         // Pre-fz-try.8 invariant preserved: a saturated `any` query never
         // covers a concrete key (would be unsafe — body assumes narrow inputs).
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let mut reg = SpecRegistry::new();
         let int = t.int();
         let _ = reg.register(&t, fid(7), vec![int]);
@@ -496,7 +496,7 @@ mod var_subsumption_tests {
 
     #[test]
     fn hole_slot_preserves_arity_and_skips_coverage_coordinate() {
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let mut reg = SpecRegistry::new();
         let int = t.int();
         let str_t = t.str_t();

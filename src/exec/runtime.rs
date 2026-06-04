@@ -719,7 +719,6 @@ mod tests {
     use crate::telemetry::capture::Capture;
     use crate::telemetry::handler::{Event, Handler};
     use crate::test_support::linked_runtime_graph_with_telemetry;
-    use crate::types::ConcreteTypes;
     use fz_runtime::any_value::{
         ListCons, ValueKind, closure_addr_from_tagged, closure_capture_ref_word, closure_capture_set,
         closure_size_for_count,
@@ -732,7 +731,7 @@ mod tests {
     use std::time::Duration;
 
     fn compile_src(src: &str) -> (CompiledModule, Module, FnId) {
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let graph = linked_runtime_graph_with_telemetry(&mut t, src, &NullTelemetry);
         let entry = graph.module.fn_by_name("main").expect("main fn").id;
         let compiled =

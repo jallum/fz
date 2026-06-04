@@ -4,10 +4,10 @@ use std::collections::{BTreeMap, HashSet};
 
 use crate::types::MapKey;
 
+use super::TyCtx;
 use super::conj::Conj;
 use super::descr::Descr;
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
-use super::TyCtx;
 
 #[derive(Default)]
 pub(crate) struct Memo {
@@ -70,11 +70,7 @@ pub(crate) fn list_clause_empty(cx: TyCtx<'_>, c: &Conj<ListSig>, memo: &mut Mem
                 (Some(prev), None) => Some(prev),
                 (Some(prev), Some(elem)) => {
                     let next = prev.intersect(cx.descr(&elem));
-                    if next.is_empty_memo(cx, memo) {
-                        None
-                    } else {
-                        Some(next)
-                    }
+                    if next.is_empty_memo(cx, memo) { None } else { Some(next) }
                 }
             };
         }

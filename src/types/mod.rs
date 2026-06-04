@@ -1,14 +1,12 @@
 //! types.1 — stable type API over the concrete type implementation.
 //!
-//! Today every type-system consumer touches the concrete representation directly. To enable
-//! future representation changes (interning, BDDs, bounded polymorphism)
-//! without rippling through every consumer at once, this module installs
-//! the `Types` trait — a single object that owns every construction,
-//! query, and decision about types — and `Ty`, an opaque handle.
+//! Today most compiler data still stores the concrete `Ty` handle. The public
+//! boundary is the `Types` trait: a single object that owns every construction,
+//! query, and decision about types.
 //!
-//! Day-one is pure wrapping: `Ty(Arc<Descr>)`, and `ConcreteTypes`
-//! delegates each method to the current concrete implementation. Later passes thread
-//! `T: Types` to consumers and migrate the representation behind `Ty`.
+//! `new()` is the system-wide default factory. Use explicit implementation
+//! constructors only when a test or migration step is intentionally selecting a
+//! non-default implementation.
 //!
 //! Parent epic: fz-mm2 (inch-worm strategy — every sub-ticket points back
 //! so the plan survives compaction).
@@ -17,10 +15,12 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 
-pub use crate::concrete_types::ConcreteTypes;
-use crate::concrete_types::Descr;
-#[cfg(test)]
-use crate::interned_types::InternedConcreteTypes;
+pub mod concrete_types;
+pub mod interned_types;
+
+pub use concrete_types::ConcreteTypes;
+pub(crate) use concrete_types::{Descr, ty_descr, ty_display};
+pub use interned_types::InternedConcreteTypes;
 
 mod closure;
 mod literal;
@@ -65,6 +65,13 @@ pub use poly::TypeVarId;
 pub use render::RenderTypes;
 pub(crate) use visibility::check_brand_mint_visibility;
 pub use visibility::{OpaqueVisibilityError, VisibilityTypes};
+
+pub type DefaultTypes = ConcreteTypes;
+
+/// Construct the system-wide default type implementation.
+pub fn new() -> DefaultTypes {
+    ConcreteTypes
+}
 
 /// Opaque handle to a type. Inner representation is private and is
 /// expected to change (interned id, BDD root, ...) without consumer

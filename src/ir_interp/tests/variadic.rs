@@ -8,12 +8,11 @@ use crate::ir_lower::lower_program;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
 use crate::telemetry::NullTelemetry;
-use crate::types::ConcreteTypes;
 
 fn lower_src(src: &str) -> Module {
     let toks = Lexer::new(src).tokenize().expect("lex");
     let prog = Parser::new(toks).parse_program().expect("parse");
-    lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower")
+    lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower")
 }
 
 #[cfg(unix)]

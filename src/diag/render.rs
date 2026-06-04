@@ -303,7 +303,6 @@ mod tests {
     use crate::frontend::resolve::flatten_modules;
     use crate::ir_lower::lower_program;
     use crate::telemetry::NullTelemetry;
-    use crate::types::ConcreteTypes;
 
     fn rebuild(src: &str) -> (SourceMap, FileId) {
         let mut sm = SourceMap::new();
@@ -423,7 +422,7 @@ warning[type/unreachable-arm]: the then branch is never reachable
             Err(e) => return render(&e.to_diagnostic(), sm),
             Ok(p) => p,
         };
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let mut prog = match flatten_modules(&mut ct, prog) {
             Err(e) => return render(&e.to_diagnostic(), sm),
             Ok(p) => p,
@@ -431,7 +430,7 @@ warning[type/unreachable-arm]: the then branch is never reachable
         if let Err(e) = expand_program(&mut prog) {
             return render(&e.to_diagnostic(), sm);
         }
-        if let Err(e) = lower_program(&mut ConcreteTypes, &prog, &NullTelemetry) {
+        if let Err(e) = lower_program(&mut crate::types::new(), &prog, &NullTelemetry) {
             return render(&e.to_diagnostic(), sm);
         }
         panic!("fixture {} completed pipeline successfully — expected an error", rel);

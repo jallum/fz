@@ -1,6 +1,6 @@
 mod ast;
 mod callsite_walk;
-mod concrete_types;
+mod compiler;
 mod diag;
 mod frontend;
 mod fz_ir;
@@ -9,7 +9,6 @@ mod ir_codegen;
 mod ir_dest;
 mod ir_extern_marshal;
 mod ir_interp;
-pub mod interned_types;
 // ir_liveness removed (fz-ul4.11.31 subsumes .11.30): frame schemas are
 // uniformly `[cont_ptr, ...entry_params]` with every Var slot as an opaque value ref;
 // Cranelift handles temporary spills. The richer per-call liveness was
@@ -31,8 +30,9 @@ mod telemetry;
 mod test_support;
 mod type_expr;
 mod type_infer;
-mod types;
+pub mod types;
 use cli::repl::run_script;
+use compiler::Compiler;
 use diag::{Diagnostic, FileId, SourceMap, Span, codes::LOWER_UNBOUND, report_or_exit_through};
 use exec::runtime::Runtime;
 use frontend::resolve::InterfaceTable;
@@ -67,7 +67,7 @@ use std::rc::Rc;
 use telemetry::{
     ConfiguredTelemetry, DiagRenderer, Event, Handler, JsonlBackend, StatsHandler, Telemetry, next_compile_nonce,
 };
-use types::{ConcreteTypes, KeySlot, display_key_slots};
+use types::{DefaultTypes, KeySlot, display_key_slots};
 
 const FZ_EXEC_READY_FD_ENV: &str = "FZ_EXEC_READY_FD";
 
@@ -310,7 +310,7 @@ fn run_build(tel: &ConfiguredTelemetry, args: &[String]) {
     tel.attach(&["fz", "diag"], Box::new(DiagRenderer::new_stderr(sm_cell.clone())));
     tel.attach(&["fz", "build"], Box::new(ConsoleBuildHandler));
 
-    let mut t = ConcreteTypes;
+    let mut compiler = Compiler::new();
     let mut src_path: Option<String> = None;
     let mut out_path: Option<String> = None;
     let mut artifact_root = DEFAULT_ARTIFACT_ROOT.to_string();
@@ -373,9 +373,9 @@ fn run_build(tel: &ConfiguredTelemetry, args: &[String]) {
     });
 
     let providers = ProviderInputs::new(artifact_root.clone(), provider_modules);
-    let frontend_result = compile_source_with_providers(&mut t, src, src_path.clone(), &providers, tel)
+    let frontend_result = compile_source_with_providers(compiler.types(), src, src_path.clone(), &providers, tel)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz build", tel, &sm_cell, err));
-    let prepared = checked_module_or_exit("fz build", &mut t, frontend_result, &sm_cell, tel, mode);
+    let prepared = checked_module_or_exit("fz build", compiler.types(), frontend_result, &sm_cell, tel, mode);
     if emit_fzi || emit_fzo {
         let diags = validate_public_export_specs(&prepared.interfaces);
         report_or_exit_through(tel, &diags);
@@ -390,7 +390,7 @@ fn run_build(tel: &ConfiguredTelemetry, args: &[String]) {
             });
     }
 
-    let graph = prepare_execution_graph(&mut t, prepared, &providers, tel, mode)
+    let graph = prepare_execution_graph(compiler.types(), prepared, &providers, tel, mode)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz build", tel, &sm_cell, err));
 
     if emit_fzo {
@@ -419,10 +419,11 @@ fn run_build(tel: &ConfiguredTelemetry, args: &[String]) {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("fz_program");
-    let artifact = compile_aot_planned(&mut t, &graph.module, &graph.module_plan, obj_name, tel).unwrap_or_else(|e| {
-        report_or_exit_through(tel, &[e.to_diagnostic()]);
-        exit(1);
-    });
+    let artifact = compile_aot_planned(compiler.types(), &graph.module, &graph.module_plan, obj_name, tel)
+        .unwrap_or_else(|e| {
+            report_or_exit_through(tel, &[e.to_diagnostic()]);
+            exit(1);
+        });
 
     if artifact.main_symbol.is_none() {
         tel.emit(&["fz", "build", "no_main"]);
@@ -500,7 +501,7 @@ fn run_interp(tel: &ConfiguredTelemetry, args: &[String]) {
     let sm_cell: Rc<RefCell<SourceMap>> = Rc::new(RefCell::new(SourceMap::new()));
     tel.attach(&["fz", "diag"], Box::new(DiagRenderer::new_stderr(sm_cell.clone())));
 
-    let mut t = ConcreteTypes;
+    let mut compiler = Compiler::new();
     let path = args.first().cloned().unwrap_or_else(|| {
         eprintln!("fz interp <src.fz>");
         exit(2);
@@ -510,13 +511,20 @@ fn run_interp(tel: &ConfiguredTelemetry, args: &[String]) {
         exit(1);
     });
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-    let frontend_result = compile_source_with_providers(&mut t, src, path, &providers, tel)
+    let frontend_result = compile_source_with_providers(compiler.types(), src, path, &providers, tel)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz interp", tel, &sm_cell, err));
-    let checked = checked_module_or_exit("fz interp", &mut t, frontend_result, &sm_cell, tel, CompileMode::Normal);
-    let graph = prepare_execution_graph(&mut t, checked, &providers, tel, CompileMode::Normal)
+    let checked = checked_module_or_exit(
+        "fz interp",
+        compiler.types(),
+        frontend_result,
+        &sm_cell,
+        tel,
+        CompileMode::Normal,
+    );
+    let graph = prepare_execution_graph(compiler.types(), checked, &providers, tel, CompileMode::Normal)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz interp", tel, &sm_cell, err));
     notify_fixture_execution_start();
-    match run_main_with_plan(tel, &graph.module, graph.module_plan) {
+    match run_main_with_plan(compiler.types(), tel, &graph.module, graph.module_plan) {
         Ok(_halt) => {}
         Err(msg) => {
             eprintln!("fz interp: {}", msg);
@@ -794,12 +802,13 @@ fn run_dump(tel: &ConfiguredTelemetry, args: &[String]) {
     });
     let interface_table = load_interface_table(&artifact_root, &interface_modules, tel)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz dump", tel, &sm_cell, err));
+    let mut compiler = Compiler::new();
 
     if emit_specs {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit specs (spec dump is per-module)");
         }
-        let dump = dump_specs_pipeline(tel, &sm_cell, src, path.clone(), interface_table);
+        let dump = dump_specs_pipeline(&mut compiler, tel, &sm_cell, src, path.clone(), interface_table);
         tel.event(&["fz", "dump", "specs"], metadata! { text: dump });
         return;
     }
@@ -808,7 +817,15 @@ fn run_dump(tel: &ConfiguredTelemetry, args: &[String]) {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit interfaces");
         }
-        let dump = dump_interfaces_pipeline(tel, &sm_cell, src, path.clone(), strict_interfaces, interface_table);
+        let dump = dump_interfaces_pipeline(
+            &mut compiler,
+            tel,
+            &sm_cell,
+            src,
+            path.clone(),
+            strict_interfaces,
+            interface_table,
+        );
         tel.event(&["fz", "dump", "interfaces"], metadata! { text: dump });
         return;
     }
@@ -819,7 +836,7 @@ fn run_dump(tel: &ConfiguredTelemetry, args: &[String]) {
         }
         tel.event(
             &["fz", "dump", "bodies"],
-            metadata! { text: dump_bodies_pipeline(tel, &sm_cell, src, path.clone(), mode) },
+            metadata! { text: dump_bodies_pipeline(&mut compiler, tel, &sm_cell, src, path.clone(), mode) },
         );
         return;
     }
@@ -830,7 +847,9 @@ fn run_dump(tel: &ConfiguredTelemetry, args: &[String]) {
         }
         tel.event(
             &["fz", "dump", "outcomes"],
-            metadata! { text: dump_outcomes_pipeline(tel, &sm_cell, src, path.clone(), show_all, mode) },
+            metadata! {
+                text: dump_outcomes_pipeline(&mut compiler, tel, &sm_cell, src, path.clone(), show_all, mode)
+            },
         );
         return;
     }
@@ -840,7 +859,7 @@ fn run_dump(tel: &ConfiguredTelemetry, args: &[String]) {
             eprintln!("fz dump: --fn is ignored with --emit stats");
         }
         let providers = ProviderInputs::new(artifact_root.clone(), Vec::new());
-        let _ = compile_pipeline(tel, &sm_cell, src, path.clone(), mode, &providers);
+        let _ = compile_pipeline(&mut compiler, tel, &sm_cell, src, path.clone(), mode, &providers);
         return;
     }
 
@@ -851,7 +870,7 @@ fn run_dump(tel: &ConfiguredTelemetry, args: &[String]) {
         asm_record_enable();
     }
     let providers = ProviderInputs::new(artifact_root.clone(), Vec::new());
-    let compiled = compile_pipeline(tel, &sm_cell, src, path.clone(), mode, &providers);
+    let compiled = compile_pipeline(&mut compiler, tel, &sm_cell, src, path.clone(), mode, &providers);
     let clif_entries = if emit_clif { ir_text_record_take() } else { Vec::new() };
     let asm_entries = if emit_asm { asm_record_take() } else { Vec::new() };
 
@@ -975,7 +994,7 @@ fn report_pipeline_error_or_exit(
 
 fn checked_module_or_exit(
     context: &str,
-    t: &mut ConcreteTypes,
+    t: &mut DefaultTypes,
     result: FrontendResult,
     sm_cell: &Rc<RefCell<SourceMap>>,
     tel: &dyn Telemetry,
@@ -992,22 +1011,23 @@ fn checked_module_or_exit(
 /// → ir_lower → plan_module, then pretty-print `ModulePlan` for golden
 /// inspection. Skips codegen entirely; the dump is a planner-only view.
 fn dump_specs_pipeline(
+    compiler: &mut Compiler,
     tel: &dyn Telemetry,
     sm_cell: &Rc<RefCell<SourceMap>>,
     src: String,
     source_name: String,
     interface_table: InterfaceTable,
 ) -> String {
-    let mut t = ConcreteTypes;
     let frontend = run_frontend(
-        compile_source_with_interface_table(&mut t, src, source_name, interface_table, tel),
+        compile_source_with_interface_table(compiler.types(), src, source_name, interface_table, tel),
         sm_cell,
         tel,
     );
-    pretty_module_plan(&mut t, &frontend.module, &frontend.module_plan)
+    pretty_module_plan(compiler.types(), &frontend.module, &frontend.module_plan)
 }
 
 fn dump_interfaces_pipeline(
+    compiler: &mut Compiler,
     tel: &dyn Telemetry,
     sm_cell: &Rc<RefCell<SourceMap>>,
     src: String,
@@ -1015,9 +1035,8 @@ fn dump_interfaces_pipeline(
     strict: bool,
     interface_table: InterfaceTable,
 ) -> String {
-    let mut t = ConcreteTypes;
     let frontend = run_frontend(
-        compile_source_with_interface_table(&mut t, src, source_name, interface_table, tel),
+        compile_source_with_interface_table(compiler.types(), src, source_name, interface_table, tel),
         sm_cell,
         tel,
     );
@@ -1028,11 +1047,11 @@ fn dump_interfaces_pipeline(
     render_interfaces(&frontend._prog.module_interfaces)
 }
 
-fn render_key_slots(t: &mut ConcreteTypes, key: &[KeySlot]) -> String {
+fn render_key_slots(t: &mut DefaultTypes, key: &[KeySlot]) -> String {
     display_key_slots(t, key)
 }
 
-fn render_spec_key(t: &mut ConcreteTypes, spec_key: &SpecKey) -> String {
+fn render_spec_key(t: &mut DefaultTypes, spec_key: &SpecKey) -> String {
     format!(
         "{} demand={}",
         render_key_slots(t, &spec_key.input),
@@ -1040,7 +1059,7 @@ fn render_spec_key(t: &mut ConcreteTypes, spec_key: &SpecKey) -> String {
     )
 }
 
-fn render_dispatch_target<F: Fn(FnId) -> String>(t: &mut ConcreteTypes, fn_name: &F, target: &SpecKey) -> String {
+fn render_dispatch_target<F: Fn(FnId) -> String>(t: &mut DefaultTypes, fn_name: &F, target: &SpecKey) -> String {
     format!(
         "{}#{} {}",
         fn_name(target.fn_id),
@@ -1058,6 +1077,7 @@ fn render_dispatch_target<F: Fn(FnId) -> String>(t: &mut ConcreteTypes, fn_name:
 /// dump runs the compile pipeline through `plan_module`; the surviving
 /// fns and their spec keys are read out of `ModulePlan`.
 fn dump_bodies_pipeline(
+    compiler: &mut Compiler,
     tel: &dyn Telemetry,
     sm_cell: &Rc<RefCell<SourceMap>>,
     src: String,
@@ -1066,9 +1086,8 @@ fn dump_bodies_pipeline(
 ) -> String {
     use crate::ir_planner::ModulePlan;
     use crate::telemetry::TelemetryExt as _;
-    let mut t = ConcreteTypes;
-    let frontend_result = compile_source_with_types(&mut t, src, source_name, tel);
-    let prepared = checked_module_or_exit("fz dump", &mut t, frontend_result, sm_cell, tel, mode);
+    let frontend_result = compile_source_with_types(compiler.types(), src, source_name, tel);
+    let prepared = checked_module_or_exit("fz dump", compiler.types(), frontend_result, sm_cell, tel, mode);
     let module = prepared.module;
     let _compile_span = tel.span(
         &["fz", "compile"],
@@ -1077,7 +1096,7 @@ fn dump_bodies_pipeline(
             module_path: module.module_path().to_owned(),
         },
     );
-    let mt: ModulePlan = plan_module(&mut t, &module, tel);
+    let mt: ModulePlan = plan_module(compiler.types(), &module, tel);
 
     // Group surviving specs by user-fn name. Skip the conventional
     // synthetic helpers (k_*, fn_clause_*, lambda_*) — they're
@@ -1113,7 +1132,7 @@ fn dump_bodies_pipeline(
             if keys.len() == 1 { "" } else { "s" }
         ));
         for key in keys {
-            out.push_str(&format!("    {}\n", render_spec_key(&mut t, key)));
+            out.push_str(&format!("    {}\n", render_spec_key(compiler.types(), key)));
         }
     }
     out
@@ -1146,6 +1165,7 @@ fn dump_bodies_pipeline(
 ///
 /// Pass `show_all=true` (CLI `--all`) to bypass both filters.
 fn dump_outcomes_pipeline(
+    compiler: &mut Compiler,
     tel: &dyn Telemetry,
     sm_cell: &Rc<RefCell<SourceMap>>,
     src: String,
@@ -1155,9 +1175,8 @@ fn dump_outcomes_pipeline(
 ) -> String {
     use crate::fz_ir::{CallsiteId, EmitSlot};
     use crate::telemetry::TelemetryExt as _;
-    let mut t = ConcreteTypes;
-    let frontend_result = compile_source_with_types(&mut t, src, source_name.clone(), tel);
-    let prepared = checked_module_or_exit("fz dump", &mut t, frontend_result, sm_cell, tel, mode);
+    let frontend_result = compile_source_with_types(compiler.types(), src, source_name.clone(), tel);
+    let prepared = checked_module_or_exit("fz dump", compiler.types(), frontend_result, sm_cell, tel, mode);
     let module = prepared.module;
     let _compile_span = tel.span(
         &["fz", "compile"],
@@ -1166,7 +1185,7 @@ fn dump_outcomes_pipeline(
             module_path: module.module_path().to_owned(),
         },
     );
-    let mt = plan_module(&mut t, &module, tel);
+    let mt = plan_module(compiler.types(), &module, tel);
 
     let fn_name = |fid: FnId| -> String {
         module
@@ -1203,7 +1222,7 @@ fn dump_outcomes_pipeline(
         Indirect(SpecKey),
     }
 
-    fn render_outcome<F: Fn(FnId) -> String>(t: &mut ConcreteTypes, fn_name: &F, outcome: &Outcome) -> String {
+    fn render_outcome<F: Fn(FnId) -> String>(t: &mut DefaultTypes, fn_name: &F, outcome: &Outcome) -> String {
         match outcome {
             Outcome::Static(target) => {
                 format!("Static({})", render_dispatch_target(t, fn_name, target))
@@ -1243,7 +1262,7 @@ fn dump_outcomes_pipeline(
                 EmitSlot::ClosureCall => Outcome::Indirect(target.clone()),
                 _ => Outcome::Static(target.clone()),
             };
-            let sort_key = render_spec_key(&mut t, caller_key);
+            let sort_key = render_spec_key(compiler.types(), caller_key);
             push_row(
                 &mut rows_by_spec,
                 caller_key.fn_id,
@@ -1264,7 +1283,13 @@ fn dump_outcomes_pipeline(
                 .start
                 .cmp(&b.0.ident.span().start)
                 .then_with(|| slot_str(a.0.slot).cmp(slot_str(b.0.slot)))
-                .then_with(|| render_outcome(&mut t, &fn_name, &a.1).cmp(&render_outcome(&mut t, &fn_name, &b.1)))
+                .then_with(|| {
+                    render_outcome(compiler.types(), &fn_name, &a.1).cmp(&render_outcome(
+                        compiler.types(),
+                        &fn_name,
+                        &b.1,
+                    ))
+                })
         });
     }
 
@@ -1303,13 +1328,17 @@ fn dump_outcomes_pipeline(
             continue;
         }
         // fz-try.11 — section header carries the caller spec inline.
-        out.push_str(&format!("\n{}{}:\n", f.name, render_spec_key(&mut t, caller_key)));
+        out.push_str(&format!(
+            "\n{}{}:\n",
+            f.name,
+            render_spec_key(compiler.types(), caller_key)
+        ));
         for (cid, dispatch) in rows {
             out.push_str(&format!(
                 "  @{} {} -> {}\n",
                 render_span(cid.ident.span()),
                 slot_str(cid.slot),
-                render_outcome(&mut t, &fn_name, dispatch),
+                render_outcome(compiler.types(), &fn_name, dispatch),
             ));
         }
     }
@@ -1317,6 +1346,7 @@ fn dump_outcomes_pipeline(
 }
 
 fn compile_pipeline(
+    compiler: &mut Compiler,
     tel: &dyn Telemetry,
     sm_cell: &Rc<RefCell<SourceMap>>,
     src: String,
@@ -1324,14 +1354,13 @@ fn compile_pipeline(
     mode: CompileMode,
     providers: &ProviderInputs,
 ) -> Compiled {
-    let mut t = ConcreteTypes;
-    let frontend_result = compile_source_with_providers(&mut t, src, source_name, providers, tel)
+    let frontend_result = compile_source_with_providers(compiler.types(), src, source_name, providers, tel)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz run", tel, sm_cell, err));
-    let prepared = checked_module_or_exit("fz run", &mut t, frontend_result, sm_cell, tel, mode);
-    let graph = prepare_execution_graph(&mut t, prepared, providers, tel, mode)
+    let prepared = checked_module_or_exit("fz run", compiler.types(), frontend_result, sm_cell, tel, mode);
+    let graph = prepare_execution_graph(compiler.types(), prepared, providers, tel, mode)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz run", tel, sm_cell, err));
     let main_fn = graph.module.fn_by_name("main").map(|f| f.id);
-    let executable = compile_planned(&mut t, &graph.module, &graph.module_plan, tel).unwrap_or_else(|e| {
+    let executable = compile_planned(compiler.types(), &graph.module, &graph.module_plan, tel).unwrap_or_else(|e| {
         report_or_exit_through(tel, &[e.to_diagnostic()]);
         exit(1);
     });
@@ -1397,7 +1426,8 @@ fn run_jit_src(
 ) {
     let sm_cell: Rc<RefCell<SourceMap>> = Rc::new(RefCell::new(SourceMap::new()));
     tel.attach(&["fz", "diag"], Box::new(DiagRenderer::new_stderr(sm_cell.clone())));
-    let compiled = compile_pipeline(tel, &sm_cell, src, source_name, mode, providers);
+    let mut compiler = Compiler::new();
+    let compiled = compile_pipeline(&mut compiler, tel, &sm_cell, src, source_name, mode, providers);
     let Some(main_fn) = compiled.main_fn else {
         report_or_exit_through(
             tel,
@@ -1440,8 +1470,10 @@ fn main(), do: User.run()
         let capture = Capture::new();
         tel.attach(&["fz"], capture.handler());
         let sm_cell = Rc::new(RefCell::new(SourceMap::new()));
+        let mut compiler = Compiler::new();
 
         let _compiled = compile_pipeline(
+            &mut compiler,
             &tel,
             &sm_cell,
             src.to_string(),
@@ -1461,8 +1493,10 @@ fn main(), do: User.run()
         let exits = ProcessExitCapture::new();
         tel.attach(&["fz", "runtime"], exits.handler());
         let sm_cell = Rc::new(RefCell::new(SourceMap::new()));
+        let mut compiler = Compiler::new();
 
         let compiled = compile_pipeline(
+            &mut compiler,
             &tel,
             &sm_cell,
             include_str!("../fixtures/spawn_with_captures/input.fz").to_string(),

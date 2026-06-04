@@ -25,7 +25,7 @@ use crate::test_support::{
     assert_authoritative_planner_consistent, assert_module_planner_consistent,
     module_reachable_materialized_body_signals, runtime_graph_codegen_materialized_body_signals,
 };
-use crate::types::{ConcreteTypes, KeySlot, Types, key_slots_from_tys};
+use crate::types::{DefaultTypes, KeySlot, Types, key_slots_from_tys};
 use cranelift_codegen::ir::types;
 use fz_runtime::any_value::debug::render_value;
 use fz_runtime::any_value::{
@@ -42,13 +42,13 @@ const FALSE_HALT: i64 = FALSE_ATOM_ID as i64;
 fn lower_src(src: &str) -> Module {
     let toks = Lexer::new(src).tokenize().expect("lex");
     let prog = Parser::new(toks).parse_program().expect("parse");
-    lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower")
+    lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower")
 }
 
 fn lower_resolved_src(src: &str) -> Module {
     let toks = Lexer::new(src).tokenize().expect("lex");
     let prog = Parser::new(toks).parse_program().expect("parse");
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let prog = flatten_modules(&mut t, prog).expect("resolve");
     lower_program(&mut t, &prog, &NullTelemetry).expect("lower")
 }
@@ -200,7 +200,7 @@ fn codegen_rejects_unresolved_external_module_calls() {
         ),
         target: export,
     });
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let plan = plan_module(&mut t, &m, &NullTelemetry);
     let err = match compile_planned(&mut t, &m, &plan, &NullTelemetry) {
         Ok(_) => panic!("expected unresolved external call error"),
@@ -286,7 +286,7 @@ fn main(), do: User.run()
 "#;
     let m = lower_resolved_src(src);
     let entry = m.fn_by_name("main").unwrap().id;
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let plan = plan_module(&mut t, &m, &NullTelemetry);
     let compiled = compile_planned(&mut t, &m, &plan, &NullTelemetry).expect("compile planned");
     let (math, _) = link_test_unit("Math", &[("add", 2)], Vec::new());
@@ -312,7 +312,7 @@ fn main(), do: User.run()
 
 #[test]
 fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let tel = NullTelemetry;
     let math = compile_source_with_types(
         &mut t,
@@ -383,7 +383,7 @@ fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
 
 #[test]
 fn linked_ir_units_preserve_provider_protocol_dispatch_plan() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let tel = NullTelemetry;
     let provider = compile_source_with_types(
         &mut t,
@@ -456,7 +456,7 @@ fn main(), do: User.run()
 
 #[test]
 fn native_static_protocol_dispatch_preserves_integer_abi() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let tel = NullTelemetry;
     let frontend = compile_source_with_types(
         &mut t,
@@ -516,7 +516,7 @@ fn main() do
   end
 end
 "#;
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let tel = NullTelemetry;
     let frontend = compile_source_with_types(&mut t, SRC.to_string(), "sizer.fz".to_string(), &tel)
         .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
@@ -585,7 +585,7 @@ fn main() do
   })
 end
 "#;
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     let module = graph.module;
     let plan = graph.module_plan;
@@ -693,7 +693,7 @@ fn main() do
   dbg(finish(collapsed()))
 end
 "#;
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     let module = graph.module;
 
@@ -827,7 +827,7 @@ fn image_linker_rejects_unresolved_external_imports_without_provider() {
 #[test]
 fn aot_compile_produces_object_with_main_symbol() {
     let src = "fn add1(n) do n + 1 end\nfn main() do dbg(add1(41)) end";
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     let artifact = compile_aot_planned(&mut t, &graph.module, &graph.module_plan, "add1_smoke", &NullTelemetry)
         .expect("compile_aot planned");
@@ -878,7 +878,7 @@ fn run_main(src: &str) -> i64 {
 }
 
 fn run_main_returning_module(src: &str) -> (i64, Module) {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     let entry = graph.module.fn_by_name("main").unwrap().id;
     let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
@@ -891,7 +891,7 @@ fn capture_main(src: &str) -> Vec<String> {
 }
 
 fn capture_main_with_runtime_graph(src: &str) -> Vec<String> {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     let entry = graph.module.fn_by_name("main").unwrap().id;
     assert_direct_call_arities(&graph.module);
@@ -899,11 +899,11 @@ fn capture_main_with_runtime_graph(src: &str) -> Vec<String> {
     observe(&compiled, entry).output
 }
 
-fn runtime_graph(t: &mut ConcreteTypes, src: &str) -> PreparedExecutionGraph {
+fn runtime_graph(t: &mut DefaultTypes, src: &str) -> PreparedExecutionGraph {
     runtime_graph_with_tel(t, src, &NullTelemetry)
 }
 
-fn runtime_graph_with_tel(t: &mut ConcreteTypes, src: &str, tel: &dyn Telemetry) -> PreparedExecutionGraph {
+fn runtime_graph_with_tel(t: &mut DefaultTypes, src: &str, tel: &dyn Telemetry) -> PreparedExecutionGraph {
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
     let frontend = compile_source_with_providers(t, src.to_string(), "test.fz".to_string(), &providers, tel)
         .unwrap_or_else(|err| panic!("frontend result: {err}"));
@@ -915,7 +915,7 @@ fn runtime_graph_with_tel(t: &mut ConcreteTypes, src: &str, tel: &dyn Telemetry)
     prepared
 }
 
-fn capture_main_module_planned(t: &mut ConcreteTypes, m: Module, plan: ModulePlan) -> Vec<String> {
+fn capture_main_module_planned(t: &mut DefaultTypes, m: Module, plan: ModulePlan) -> Vec<String> {
     let entry = m.fn_by_name("main").unwrap().id;
     assert_direct_call_arities(&m);
     let compiled = compile_planned(t, &m, &plan, &NullTelemetry).expect("compile planned");
@@ -923,7 +923,7 @@ fn capture_main_module_planned(t: &mut ConcreteTypes, m: Module, plan: ModulePla
 }
 
 fn run_runtime_graph_main_planned(src: &str) -> i64 {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     let entry = graph.module.fn_by_name("main").unwrap().id;
     let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
@@ -963,7 +963,7 @@ fn run_capturing(compiled: &CompiledModule, entry: FnId) -> (i64, usize) {
 }
 
 fn count_live_objects(src: &str) -> usize {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     let entry = graph.module.fn_by_name("main").unwrap().id;
     let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
@@ -987,7 +987,7 @@ fn atom_identity_preserved_across_processes_from_same_module() {
     // `:ok` halts as the atom's raw u32 id; both Processes must agree
     // because the id was assigned once at compile time.
     let src = "fn main(), do: :ok";
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
     let entry = graph.module.fn_by_name("main").unwrap().id;
@@ -1033,7 +1033,7 @@ fn planned_codegen_runs_runtime_graph_selective_receive() {
                  spawn(child)\n\
                  dbg(receive do x -> x end)\n\
                end";
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     let entry = graph.module.fn_by_name("main").expect("main fn").id;
     let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
@@ -1047,7 +1047,7 @@ fn materialization_keeps_selective_receive_outcome_bodies_reachable() {
                  spawn(child)\n\
                  dbg(receive do x -> x end)\n\
                end";
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     let reachable = module_reachable_materialized_body_signals(&mut t, &graph.module, &graph.module_plan);
 
@@ -1063,9 +1063,9 @@ fn materialization_keeps_selective_receive_outcome_bodies_reachable() {
 
 #[test]
 fn runtime_graph_plain_spawn_runs_via_planned_interp_path() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, "fn child(), do: nil\nfn main() do spawn(child) end");
-    let (halt, _) = run_main_with_plan(&NullTelemetry, &graph.module, graph.module_plan).expect("interp run");
+    let (halt, _) = run_main_with_plan(&mut t, &NullTelemetry, &graph.module, graph.module_plan).expect("interp run");
     assert_eq!(halt, 2);
 }
 
@@ -1098,7 +1098,7 @@ fn runtime_graph_spawn_then_receive_runs_via_planned_codegen_path() {
 
 #[test]
 fn runtime_graph_plain_spawn_make_fn_ref_registers_zero_cap_target() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, "fn child(), do: nil\nfn main() do spawn(child) end");
     let module = graph.module;
     let child = module.fn_by_name("child").expect("child fn");
@@ -1168,7 +1168,7 @@ fn runtime_graph_plain_spawn_make_fn_ref_registers_zero_cap_target() {
 
 #[test]
 fn runtime_graph_plain_spawn_finalizes_resume_addr() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, "fn child(), do: nil\nfn main() do spawn(child) end");
     let module = graph.module;
     let child_id = module.fn_by_name("child").expect("child fn").id.0;
@@ -1198,7 +1198,7 @@ fn runtime_graph_plain_spawn_finalizes_resume_addr() {
 
 #[test]
 fn materialized_enum_take_closure_operands_stay_value_ref_typed() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let src = "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
     let graph = runtime_graph(&mut t, src);
     let module = graph.module;
@@ -1248,7 +1248,7 @@ fn codegen_lowering_keeps_enum_take_closure_bindings_on_value_ref_lane() {
     let cap = Capture::new();
     tel.attach(&["fz", "codegen", "closure_call_lowered"], cap.handler());
 
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph_with_tel(&mut t, src, &tel);
     compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile planned");
 
@@ -1272,7 +1272,7 @@ fn codegen_lowering_keeps_enum_take_closure_bindings_on_value_ref_lane() {
 
 #[test]
 fn planned_enum_take_indirect_closure_body_preserves_spec_key_arity() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let src = "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
     let graph = runtime_graph(&mut t, src);
     let planned_program = materialize_program(&mut t, &graph.module, &graph.module_plan, &NullTelemetry);
@@ -1314,11 +1314,11 @@ fn two_processes_run_independent_map_builds() {
     let src_a = "fn main(), do: %{1 => 10, 2 => 20}[1]";
     let src_b = "fn main(), do: %{3 => 30, 4 => 40}[3]";
 
-    let mut ta = ConcreteTypes;
+    let mut ta = crate::types::new();
     let graph_a = runtime_graph(&mut ta, src_a);
     let ca = compile_planned(&mut ta, &graph_a.module, &graph_a.module_plan, &NullTelemetry).expect("compile planned");
     let entry_a = graph_a.module.fn_by_name("main").unwrap().id;
-    let mut tb = ConcreteTypes;
+    let mut tb = crate::types::new();
     let graph_b = runtime_graph(&mut tb, src_b);
     let cb = compile_planned(&mut tb, &graph_b.module, &graph_b.module_plan, &NullTelemetry).expect("compile planned");
     let entry_b = graph_b.module.fn_by_name("main").unwrap().id;
@@ -1928,7 +1928,7 @@ fn loop_with(f, 0, acc), do: acc
 fn loop_with(f, n, acc), do: f.(f, n - 1, acc + 1)
 fn main(), do: loop_with(loop_with, 100000, 0)
 "#;
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     let entry = graph.module.fn_by_name("main").expect("main").id;
     let loop_with = graph.module.fn_by_name("loop_with").expect("loop_with").id;
@@ -1949,7 +1949,7 @@ fn main(), do: loop_with(loop_with, 100000, 0)
 
 #[test]
 fn list_projection_accepts_block_env_nonempty_fact() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let xs = Var(1);
     let mut fn_types = SpecPlan::default();
     let list_ty = {
@@ -1973,7 +1973,7 @@ fn list_projection_accepts_block_env_nonempty_fact() {
 
 #[test]
 fn list_projection_rejects_unnarrowed_block_env() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let xs = Var(1);
     let mut fn_types = SpecPlan::default();
     let list_ty = {
@@ -1994,7 +1994,7 @@ fn list_projection_rejects_unnarrowed_block_env() {
 /// Compile `src` through the production execution graph with IR text recording
 /// enabled, and return every emitted CLIF body.
 fn compile_and_grab_all_ir(src: &str) -> Vec<(String, String)> {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     ir_text_record_enable();
     let _ = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
@@ -2042,10 +2042,10 @@ fn signature_uniform_when_not_native() {
     // Uniform (non-native) sig: `(i64, i64) -> i64` regardless of the
     // typer's narrower facts on the params.
     let m = lower_src("fn add(a, b) do a + b end\nfn main() do dbg(add(1, 2)) end");
-    let mt = plan_module(&mut ConcreteTypes, &m, &NullTelemetry);
+    let mt = plan_module(&mut crate::types::new(), &m, &NullTelemetry);
     let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
     let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let prs = build_param_reprs(&mut t, &m.fns[add_idx], ft);
     let sig = build_fn_signature(&prs, false, true, None, None);
     assert_eq!(sig.params.len(), 2);
@@ -2057,7 +2057,7 @@ fn signature_uniform_when_not_native() {
 
 #[test]
 fn param_reprs_for_spec_use_concrete_key_when_entry_var_is_generic() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mut builder = FnBuilder::new(FnId(0), "k");
     let x = builder.fresh_var();
     let entry = builder.block(vec![x]);
@@ -2076,7 +2076,7 @@ fn param_reprs_for_spec_use_concrete_key_when_entry_var_is_generic() {
 
 #[test]
 fn tuple_field_return_demand_does_not_rewrite_plain_function_params() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mut builder = FnBuilder::new(FnId(0), "pair");
     let a = builder.fresh_var();
     let b = builder.fresh_var();
@@ -2108,7 +2108,7 @@ fn codegen_lowers_distinct_native_bodies_for_demand_specializations() {
                  {a, b} = pair(1)\n\
                  dbg({a, b, pair(2)})\n\
                end\n";
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
@@ -2140,10 +2140,10 @@ fn signature_native_uses_typed_params_and_cont() {
     // Same `add`, but call-site narrowing has typed both params as int.
     // Native sig is `(i64, i64, cont: i64) -> i64` (cont trailing).
     let m = lower_src("fn add(a, b) do a + b end\nfn main() do dbg(add(1, 2)) end");
-    let mt = plan_module(&mut ConcreteTypes, &m, &NullTelemetry);
+    let mt = plan_module(&mut crate::types::new(), &m, &NullTelemetry);
     let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
     let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let prs = build_param_reprs(&mut t, &m.fns[add_idx], ft);
     let sig = build_fn_signature(&prs, true, false, None, None);
     assert_eq!(sig.params.len(), 3);
@@ -2159,10 +2159,10 @@ fn signature_native_arity_matches_entry_params_plus_cont() {
     // (Return is canonicalized to i64 even when the value is a float —
     // see the i64-return assertion below.)
     let m = lower_src("fn dist(x, y) do x * x + y * y end\nfn main() do dbg(dist(1.5, 2.5)) end");
-    let mt = plan_module(&mut ConcreteTypes, &m, &NullTelemetry);
+    let mt = plan_module(&mut crate::types::new(), &m, &NullTelemetry);
     let dist_idx = m.fns.iter().position(|f| f.name == "dist").unwrap();
     let ft = mt.any_spec_for(m.fns[dist_idx].id).expect("registered spec");
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let prs = build_param_reprs(&mut t, &m.fns[dist_idx], ft);
     let sig = build_fn_signature(&prs, true, false, None, None);
     assert_eq!(sig.params.len(), 3);
@@ -2179,7 +2179,7 @@ fn signature_native_arity_matches_entry_params_plus_cont() {
 fn spec_registry_registers_any_key_per_fn_with_spec_id_eq_fn_id() {
     // Pipeline registry must hold one any-key spec per fn, with
     // SpecId.0 == FnId.0.
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, "fn add(a, b) do a + b end\nfn main() do dbg(add(1, 2)) end");
     let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
     // Driving a run forces the pipeline registry construction path
@@ -2191,7 +2191,7 @@ fn spec_registry_registers_any_key_per_fn_with_spec_id_eq_fn_id() {
 fn spec_registry_any_key_lookup() {
     // Direct register/resolve/any_key contract — does not go through compile().
     let mut reg = SpecRegistry::new();
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let fid = FnId(0);
     let any_key_2 = vec![t.any(); 2];
     let sid = reg.register(&t, fid, any_key_2.clone());
@@ -2212,7 +2212,7 @@ fn spec_registry_distinct_narrow_keys() {
     // Narrow keys are distinguished by the exact-match fast path
     // (subsumption fallback is exercised below).
     let mut reg = SpecRegistry::new();
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let fid = FnId(0);
     let int1 = vec![t.int()];
     let float1 = vec![t.float()];
@@ -2229,7 +2229,7 @@ fn spec_registry_distinct_narrow_keys() {
 fn resolve_subsumes_narrower_query_to_wider_registered_spec() {
     // Only [int] registered; query [int_lit(4)] should subsume to it.
     let mut reg = SpecRegistry::new();
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let fid = FnId(0);
     let int = t.int();
     let int_spec = reg.register(&t, fid, vec![int]);
@@ -2241,7 +2241,7 @@ fn resolve_subsumes_narrower_query_to_wider_registered_spec() {
 fn resolve_picks_narrowest_among_multiple_supertype_matches() {
     // Both [int] and [any] cover [int_lit(4)]. [int] is narrower; pick it.
     let mut reg = SpecRegistry::new();
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let fid = FnId(0);
     let any = t.any();
     let any_spec = reg.register(&t, fid, vec![any]);
@@ -2263,7 +2263,7 @@ fn resolve_picks_narrowest_among_multiple_supertype_matches() {
 fn resolve_returns_none_when_nothing_covers() {
     // [float] registered; query [int_lit(4)] is not a subtype → None.
     let mut reg = SpecRegistry::new();
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let fid = FnId(0);
     let float = t.float();
     reg.register(&t, fid, vec![float]);
@@ -2281,7 +2281,7 @@ fn resolve_subtype_incomparable_uses_stable_precedence() {
     // neither key is a subtype of the other on every axis. Stable
     // per-family precedence (not incidental SpecId order) breaks the tie.
     let mut reg = SpecRegistry::new();
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let fid = FnId(0);
     let int = t.int();
     let any_a = t.any();
@@ -2303,7 +2303,7 @@ fn resolve_subtype_incomparable_uses_stable_precedence() {
 fn resolve_exact_match_takes_fast_path() {
     // O(1) exact-match path still works alongside subsumption fallback.
     let mut reg = SpecRegistry::new();
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let fid = FnId(0);
     let key = vec![t.int(), t.float()];
     let sid = reg.register(&t, fid, key.clone());
@@ -2314,7 +2314,7 @@ fn resolve_exact_match_takes_fast_path() {
 fn resolve_per_fn_isolation() {
     // Specs for one fn must not subsume queries for a different fn.
     let mut reg = SpecRegistry::new();
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let any = t.any();
     let _sid0 = reg.register(&t, FnId(0), vec![any]);
     let q = vec![t.int()];
@@ -2328,7 +2328,7 @@ fn hot_loop_native_continuations_allocate_no_heap_closures() {
     let src = "fn step(x), do: x + 1\n\
                fn main(), do: step(step(step(step(step(step(step(step(step(step(0))))))))))";
 
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     frame_alloc_count_reset();
     let entry = graph.module.fn_by_name("main").unwrap().id;
@@ -2432,7 +2432,7 @@ fn condition_cache_bypasses_is_truthy_in_type_dispatch() {
                  dbg(c.(42))\n\
                  dbg(c.(:foo))\n\
                end";
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     ir_text_record_enable();
     let _ = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
@@ -2471,7 +2471,7 @@ fn pure_branch_type_test_does_not_materialize_bool() {
                  dbg(c.(42))\n\
                  dbg(c.(:foo))\n\
                end";
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     ir_text_record_enable();
     let _ = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
@@ -2557,7 +2557,7 @@ fn codegen_pipeline_reports_only_one_authoritative_plan() {
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&["fz", "planner", "planned"], cap.handler());
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph_with_tel(&mut t, src, &tel);
     let roles = planner_roles(&cap);
     assert_eq!(
@@ -2580,7 +2580,7 @@ fn frontend_to_codegen_pipeline_reports_planner_phase_events() {
     tel.attach(&[], cap.handler());
 
     let src = "fn id(x), do: x\nfn main(), do: dbg(id(42))\n";
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let frontend = match compile_source_with_types(&mut t, src.to_string(), "test.fz".to_string(), &tel) {
         Ok(frontend) => frontend,
         Err(_) => panic!("frontend"),
@@ -2607,7 +2607,7 @@ fn enum_take_drop_split_codegen_plan_reports_activation_projection_telemetry() {
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&["fz", "planner", "planned"], cap.handler());
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph_with_tel(&mut t, src, &tel);
     compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile");
 
@@ -2632,7 +2632,7 @@ fn enum_take_drop_split_planner_telemetry_reports_continuation_edges() {
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&["fz", "planner", "spec_pair_inventory"], cap.handler());
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph_with_tel(&mut t, src, &tel);
     compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile");
 
@@ -2674,7 +2674,7 @@ fn compile_emits_spec_pair_inventory_telemetry() {
     tel.attach(&[], cap.handler());
 
     let src = "fn id(x), do: x\nfn main(), do: dbg(id(42))\n";
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let frontend = compile_source_with_types(&mut t, src.to_string(), "test.fz".to_string(), &tel)
         .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
 
@@ -2739,7 +2739,7 @@ fn main() do
   each(fn(x) -> dbg(x + k) end, [1, 2, 3])
 end
 "#;
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     ir_text_record_enable();
     let _ = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
@@ -2798,7 +2798,7 @@ fn main() do
   f([7]) + f([]) + f(%{a: 1}) + f(42)
 end
 "#;
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let tel = NullTelemetry;
     let frontend = compile_source_with_types(&mut t, SRC.to_string(), "cons_clause.fz".into(), &tel)
         .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
@@ -2823,7 +2823,7 @@ fn main() do
   count([1, 2]) + count([]) + count(%{a: 1}) + count(42)
 end
 "#;
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
@@ -2897,7 +2897,7 @@ mod resource_jit_tests {
     /// `run_until_idle`, by which point the dtor counters reflect every
     /// Resource the run produced.
     fn run_jit_with_resources(src: &str) {
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let graph = runtime_graph(&mut t, src);
         let entry = graph.module.fn_by_name("main").expect("main fn").id;
         let compiled =

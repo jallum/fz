@@ -16,12 +16,11 @@ use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
 use crate::telemetry::bus::ConfiguredTelemetry;
 use crate::telemetry::{NullTelemetry, Telemetry};
-use crate::types::ConcreteTypes;
 
 fn lower_src(src: &str) -> Module {
     let toks = Lexer::new(src).tokenize().expect("lex");
     let prog = Parser::new(toks).parse_program().expect("parse");
-    lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower")
+    lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower")
 }
 
 /// A telemetry sink that captures `dbg` lines, returned alongside the capture
@@ -35,8 +34,9 @@ fn capture() -> (ConfiguredTelemetry, DbgCapture) {
 
 fn drive_main(runtime: &mut IrInterpRuntime, module: &Module, tel: &dyn Telemetry) {
     let main_id = module.fn_by_name("main").expect("main/0").id;
+    let mut t = crate::types::new();
     runtime.enqueue_entry(module, 1, main_id, vec![]).expect("enqueue");
-    runtime.drive_until_idle(tel, None).expect("drive");
+    runtime.drive_until_idle(&mut t, tel, None).expect("drive");
 }
 
 #[test]

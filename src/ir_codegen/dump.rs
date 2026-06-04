@@ -3,11 +3,10 @@
 #![allow(unused_imports)]
 
 use super::*;
-use crate::concrete_types::ty_display;
 use crate::fz_ir::{BinOp, Const, FnId, FnIr, Module, Prim, Stmt, Term, UnOp};
 use crate::ir_planner::SpecPlan;
 use crate::ir_planner::fn_types::{ReturnDemand, display_return_demand};
-use crate::types::{RenderTypes, Ty, Types};
+use crate::types::{RenderTypes, Ty, Types, ty_display};
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
     self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,

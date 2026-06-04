@@ -70,7 +70,7 @@ use crate::telemetry::{Capture, ConfiguredTelemetry, NullTelemetry, Value, bus};
 #[cfg(test)]
 use crate::test_support::linked_runtime_graph_with_telemetry;
 use crate::type_expr::{ModuleTypeEnv, parse_type_expr, resolve_spec_decls};
-use crate::types::{ConcreteTypes, Ty, TypeVarId, Types, check_brand_mint_visibility};
+use crate::types::{Ty, TypeVarId, Types, check_brand_mint_visibility};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::mem::take;
 use std::rc::Rc;
@@ -1183,14 +1183,12 @@ pub(super) fn ty_to_extern_ty<T: Types>(t: &mut T, d: &T::Ty) -> ExternTy {
     ExternTy::Any
 }
 
-pub(super) fn concrete_any_tuple(arity: usize) -> Ty {
-    let mut t = ConcreteTypes;
+pub(super) fn concrete_any_tuple<T: Types<Ty = Ty>>(t: &mut T, arity: usize) -> Ty {
     let elems: Vec<Ty> = (0..arity).map(|_| t.any()).collect();
     t.tuple(&elems)
 }
 
-pub(super) fn concrete_any_map() -> Ty {
-    let mut t = ConcreteTypes;
+pub(super) fn concrete_any_map<T: Types<Ty = Ty>>(t: &mut T) -> Ty {
     t.map_top()
 }
 
@@ -1378,13 +1376,13 @@ mod tests {
     fn lower_src(src: &str) -> Module {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower failed")
+        lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower failed")
     }
 
-    fn lower_flat_src(src: &str) -> (ConcreteTypes, Module) {
+    fn lower_flat_src(src: &str) -> (crate::types::DefaultTypes, Module) {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let prog = flatten_modules(&mut ct, prog).expect("flatten");
         let module = lower_program(&mut ct, &prog, &NullTelemetry).expect("lower failed");
         (ct, module)
@@ -1396,14 +1394,14 @@ mod tests {
         tel.attach(&[], cap.handler());
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let module = lower_program(&mut ConcreteTypes, &prog, &tel).expect("lower failed");
+        let module = lower_program(&mut crate::types::new(), &prog, &tel).expect("lower failed");
         (module, cap)
     }
 
     fn lower_src_err(src: &str) -> LowerError {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect_err("expected lower error")
+        lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect_err("expected lower error")
     }
 
     #[test]
@@ -1432,7 +1430,7 @@ end
     /// capture_main`; lets ir_lower-level tests assert end-to-end runtime
     /// correctness rather than just IR shape.
     fn run_and_capture(src: &str) -> String {
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let graph = linked_runtime_graph_with_telemetry(&mut t, src, &NullTelemetry);
         let entry = graph.module.fn_by_name("main").expect("no main fn").id;
         let compiled =
@@ -2078,7 +2076,7 @@ end
             "  fst(a + b)\n",
             "end\n",
         ));
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let mt = plan_module(&mut ct, &m, &NullTelemetry);
         let diags = collect_diagnostics(&mut ct, &m, &mt, &NullTelemetry);
         let unreachable: Vec<_> = diags
@@ -2099,7 +2097,7 @@ end
     #[test]
     fn dead_binop_diagnostic_observable_via_telemetry() {
         let m = lower_src("fn main() do\n  dbg(1 == :ok)\nend\n");
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let mt = plan_module(&mut ct, &m, &NullTelemetry);
         let diags = collect_diagnostics(&mut ct, &m, &mt, &NullTelemetry);
 
@@ -2130,7 +2128,7 @@ end
         mb.add_fn(f.build());
         let m = mb.build();
 
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let mt = plan_module(&mut ct, &m, &NullTelemetry);
         let diags = collect_diagnostics(&mut ct, &m, &mt, &NullTelemetry);
 
@@ -2149,7 +2147,7 @@ end
         // Irrefutable destructure on a known-2-tuple — the planner proves
         // the synthesized fail edge dead under the one live spec.
         let m = lower_src("fn main() do\n  {a, b} = {1, 2}\n  a + b\nend\n");
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let mt = plan_module(&mut ct, &m, &NullTelemetry);
         assert!(
             mt.dead_branches.values().any(|d| matches!(d, DeadBranch::Else)),
@@ -2406,7 +2404,9 @@ end
         };
         assert_eq!(callee, spawn.id);
         assert!(
-            !p.blocks.iter().any(|b| matches!(b.terminator, Term::ReceiveMatched { .. })),
+            !p.blocks
+                .iter()
+                .any(|b| matches!(b.terminator, Term::ReceiveMatched { .. })),
             "lambda lowering must not leak receive termination into the caller"
         );
     }
@@ -2693,7 +2693,7 @@ end
         let src = "fn double(x), do: x * 2";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let m = lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower");
+        let m = lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower");
         let f = m.fn_by_name("double").unwrap();
         let param = f.blocks[0].params[0];
         assert_eq!(m.source.var_name_of(param), Some("x"));
@@ -2710,7 +2710,7 @@ end
         let src = "fn alpha(), do: 1\nfn beta(), do: 2";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let m = lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower");
+        let m = lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower");
         let beta = m.fn_by_name("beta").unwrap();
         let sp = m.source.fn_span_of(beta.id);
         let txt = &src[sp.start as usize..sp.end as usize];
@@ -2727,7 +2727,7 @@ end
         let src = "fn callee(y), do: y\nfn caller(x), do: callee(x) + 1";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let m = lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower");
+        let m = lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower");
         let caller = m.fn_by_name("caller").unwrap();
         // The continuation fn is the one whose name starts with "k_".
         // Filter out continuations from the runtime.fz prelude (e.g.
@@ -2767,7 +2767,7 @@ end
         let src = "fn add_one(x), do: x + 1";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let m = lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower");
+        let m = lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower");
         let f = m.fn_by_name("add_one").unwrap();
         // Find a Var bound to `Const(Int(1))`.
         let mut const1_var: Option<Var> = None;
@@ -2840,7 +2840,7 @@ end
             .tokenize()
             .expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let module = lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower");
+        let module = lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower");
         // fz_nop is at the end (user externs follow runtime.fz externs).
         let nop = module
             .externs
@@ -2870,7 +2870,7 @@ fn main() do fz_open(\"x\", 0) end
 ";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let module = lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower");
+        let module = lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower");
         let open = module
             .externs
             .iter()
@@ -2901,7 +2901,7 @@ fn main() do &libc::close/1 end
 ";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let module = lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower");
+        let module = lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower");
         let wrap = module
             .fns
             .iter()
@@ -2930,7 +2930,7 @@ fn main() do libc::open(\"x\", 0) end
 ";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let module = lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower");
+        let module = lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower");
         let open = module
             .externs
             .iter()
@@ -3038,7 +3038,7 @@ fn main() do libc::open(\"x\") end
             .tokenize()
             .expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let module = lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower");
+        let module = lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower");
         // extern_idx must have an entry for every extern.
         assert_eq!(module.extern_idx.len(), module.externs.len());
         // Each extern's id field must resolve via extern_by_id to itself.
@@ -3078,7 +3078,7 @@ end
 ";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let module = lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower");
+        let module = lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower");
 
         let user_names = ["id", "pick", "make_adder", "main"];
         for f in &module.fns {
@@ -3309,7 +3309,7 @@ end
         // Typing must not panic and must produce a ModulePlan for the
         // module. We don't pin the return type — that depends on the
         // body return type which the bodies set to const ints.
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let mt = plan_module(&mut ct, &m, &NullTelemetry);
         // No diagnostics from the pure-guard / pure-pattern pass either.
         let diags = collect_diagnostics(&mut ct, &m, &mt, &NullTelemetry);
@@ -3506,7 +3506,7 @@ end
         // from any fn — even a user module — is allowed.
         let (m, spans) = module_with_brand_in_fn("Mail.send", "utf8");
         let fn_spans = HashMap::new();
-        check_brand_visibility(&mut ConcreteTypes, &m, &spans, &fn_spans).expect("utf8 mint must be allowed");
+        check_brand_visibility(&mut crate::types::new(), &m, &spans, &fn_spans).expect("utf8 mint must be allowed");
     }
 
     #[test]
@@ -3515,7 +3515,8 @@ end
         // = "Mail") is fine — same owner.
         let (m, spans) = module_with_brand_in_fn("Mail.send", "Mail::Email");
         let fn_spans = HashMap::new();
-        check_brand_visibility(&mut ConcreteTypes, &m, &spans, &fn_spans).expect("same-module mint must be allowed");
+        check_brand_visibility(&mut crate::types::new(), &m, &spans, &fn_spans)
+            .expect("same-module mint must be allowed");
     }
 
     #[test]
@@ -3524,7 +3525,7 @@ end
         // (using_module = "Other") must be rejected.
         let (m, spans) = module_with_brand_in_fn("Other.handler", "Mail::Email");
         let fn_spans = HashMap::new();
-        let err = check_brand_visibility(&mut ConcreteTypes, &m, &spans, &fn_spans)
+        let err = check_brand_visibility(&mut crate::types::new(), &m, &spans, &fn_spans)
             .expect_err("cross-module mint must be rejected");
         match err {
             LowerError::BrandMintVisibility {
@@ -3547,7 +3548,7 @@ end
         // module-owned brand is also rejected.
         let (m, spans) = module_with_brand_in_fn("main", "Mail::Email");
         let fn_spans = HashMap::new();
-        let err = check_brand_visibility(&mut ConcreteTypes, &m, &spans, &fn_spans)
+        let err = check_brand_visibility(&mut crate::types::new(), &m, &spans, &fn_spans)
             .expect_err("top-level mint of owned brand must be rejected");
         let diag = err.to_diagnostic();
         assert!(

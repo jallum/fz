@@ -18,14 +18,13 @@
 //! If-else continuations in this IR.
 
 use crate::ast::{BitType, Endian};
-use crate::concrete_types::ty_display;
 use crate::diag::{FileId, Span};
 use crate::exec::matcher::{Matcher, SubjectRef};
 use crate::frontend::protocols::ProtocolRegistry;
 use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::interface::ModuleInterface;
 use crate::specs::{ResolvedSpecSet, StructuralCorrespondenceGroup};
-use crate::types::{KeySlot, Nominals, Ty};
+use crate::types::{KeySlot, Nominals, Ty, ty_display};
 use fz_runtime::heap::Schema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -2536,7 +2535,6 @@ mod tests {
     use crate::diag::FileId;
     use crate::modules::identity::ModuleName;
     use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn, InterfaceSpec, ModuleInterface};
-    use crate::types::ConcreteTypes;
 
     /// fz-t1m.3.1.1 — a compiled `Module` round-trips losslessly through
     /// serde_json. Builds a non-trivial module (two fns, a Call term, an If, a
@@ -2900,7 +2898,7 @@ mod tests {
         );
         assert_eq!(fn_ir.semantic_entry_params(), vec![value]);
 
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let key = fn_ir.semantic_key(vec![t.any(), t.int()]);
         assert!(key[0].is_none());
         assert!(key[1].is_some());

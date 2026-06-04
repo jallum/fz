@@ -6,7 +6,7 @@ use super::bits::{BasicBits, F64Bits};
 use super::conj::Conj;
 use super::dnf::{dnf_intersect, dnf_neg, dnf_union, is_dnf_top, normalize_empty_nonempty_list_unions};
 use super::emptiness::{
-    func_clause_empty, list_clause_empty, map_clause_empty, resource_clause_empty, tuple_clause_empty, Memo,
+    Memo, func_clause_empty, list_clause_empty, map_clause_empty, resource_clause_empty, tuple_clause_empty,
 };
 use super::lit_set::{AtomSet, FloatSet, IntSet, LiteralSet, VarSet};
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};

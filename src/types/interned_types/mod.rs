@@ -24,7 +24,7 @@ use crate::types::{
 
 use conj::Conj;
 use descr::Descr;
-use lit_set::{closure_ret_var_id, closure_var_id, LiteralSet};
+use lit_set::{LiteralSet, closure_ret_var_id, closure_var_id};
 use sigs::{ArrowSig, ClosureLit, ListSig};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -596,11 +596,7 @@ fn list_element_type(cx: TyCtx<'_>, d: &Descr) -> Descr {
             found = true;
         }
     }
-    if found {
-        elem
-    } else {
-        Descr::none()
-    }
+    if found { elem } else { Descr::none() }
 }
 
 fn resource_payload_type(cx: TyCtx<'_>, d: &Descr) -> Option<Descr> {
@@ -650,11 +646,7 @@ fn tuple_projections(cx: TyCtx<'_>, d: &Descr, arity: usize) -> Vec<Descr> {
             found = true;
         }
     }
-    if found {
-        comps
-    } else {
-        vec![Descr::any(); arity]
-    }
+    if found { comps } else { vec![Descr::any(); arity] }
 }
 
 fn tuple_field_type(cx: TyCtx<'_>, d: &Descr, index: usize) -> Descr {
@@ -692,11 +684,7 @@ fn tuple_field_type(cx: TyCtx<'_>, d: &Descr, index: usize) -> Descr {
         out = out.union(cx, &fields[index]);
         found = true;
     }
-    if found {
-        out
-    } else {
-        Descr::none()
-    }
+    if found { out } else { Descr::none() }
 }
 
 fn map_field_lookup(cx: TyCtx<'_>, d: &Descr, key: &MapKey) -> Option<Descr> {
@@ -727,11 +715,7 @@ fn map_field_lookup(cx: TyCtx<'_>, d: &Descr, key: &MapKey) -> Option<Descr> {
             found = true;
         }
     }
-    if found {
-        Some(acc)
-    } else {
-        None
-    }
+    if found { Some(acc) } else { None }
 }
 
 fn map_known_keys(d: &Descr) -> Vec<MapKey> {

@@ -5,7 +5,7 @@ use crate::test_support::{
     entry_main_fn_id as main_id, linked_runtime_module as linked, linked_runtime_module_unplanned as linked_unplanned,
     lower_frontend_module as lower,
 };
-use crate::types::{CallableValueKind, ClosureTarget, ClosureTypes, ConcreteTypes, Ty, Types};
+use crate::types::{CallableValueKind, ClosureTarget, ClosureTypes, DefaultTypes, Ty, Types};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -281,7 +281,7 @@ impl TelemetryReport {
     }
 }
 
-fn infer_report_via_main(t: &mut ConcreteTypes, module: &Module) -> TelemetryReport {
+fn infer_report_via_main(t: &mut DefaultTypes, module: &Module) -> TelemetryReport {
     let tel = ConfiguredTelemetry::new();
     let cap = TypeInferCapture::new();
     tel.attach(&["fz", "type_infer"], cap.handler());
@@ -293,13 +293,13 @@ fn infer_report_via_main(t: &mut ConcreteTypes, module: &Module) -> TelemetryRep
 }
 
 fn infer_fn_via_main(module: &Module, fn_name: &str) -> Ty {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let report = infer_report_via_main(&mut t, module);
     report.facts.return_for_fn_named(fn_name)
 }
 
 fn infer_entry_return_via_main(module: &Module) -> Ty {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     infer_return(&mut t, module, main_id(module), &[])
 }
 
@@ -327,7 +327,7 @@ fn partition_dispatch_mask_excludes_accumulators() {
 #[test]
 fn partition_dispatch_mask_is_emitted() {
     let module = linked(include_str!("../../fixtures/quicksort/input.fz"));
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let report = infer_report_via_main(&mut t, &module);
     let partition = report
         .facts
@@ -393,7 +393,7 @@ fn fixpoint_leaves_no_reached_fn_unknown() {
         ("fold_state_machine", include_str!("fixtures/fold_state_machine.fz")),
     ] {
         let module = lower(src);
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let report = infer_report_via_main(&mut t, &module);
         assert_eq!(report.outcome.status, TypeInferStatus::Complete);
         let unsettled = report.unsettled_fn_names();
@@ -420,7 +420,7 @@ fn runtime_graph_enum_ops_settle_to_int() {
             include_str!("fixtures/enum_reduce_range.fz"),
         ),
     ];
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let int = t.int();
     for (label, entry, src) in cases {
         let module = linked(src);
@@ -435,7 +435,7 @@ fn runtime_graph_enum_ops_settle_to_int() {
 #[test]
 fn enum_reduce_operator_refs_settle_through_kernel_specs() {
     let module = linked(include_str!("fixtures/enum_reduce_operator_ref.fz"));
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let int = t.int();
     let expected = t.tuple(&[int.clone(), int]);
     let report = infer_report_via_main(&mut t, &module);
@@ -451,7 +451,7 @@ fn enum_reduce_operator_refs_settle_through_kernel_specs() {
 #[test]
 fn enum_reduce_erased_list_operator_ref_preserves_concrete_caller_witness() {
     let module = linked(include_str!("fixtures/enum_reduce_erased_list_operator_ref.fz"));
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let int = t.int();
     let non_empty_ints = t.non_empty_list(int.clone());
     let report = infer_report_via_main(&mut t, &module);
@@ -514,7 +514,7 @@ fn main() do
 end
 "#,
     );
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let report = infer_report_via_main(&mut t, &module);
     let range = t.opaque_of("impl-target::Range");
     let int = t.int();
@@ -545,7 +545,7 @@ end
 #[test]
 fn receive_clause_body_keeps_typed_capture_and_settles_caller_return() {
     let module = linked(include_str!("fixtures/receive_cont_capture.fz"));
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let int = t.int();
     let any = t.any();
     let parent_ret = t.tuple(&[int.clone(), any.clone()]);
@@ -658,7 +658,7 @@ fn receive_clause_body_keeps_typed_capture_and_settles_caller_return() {
 #[test]
 fn linked_runtime_spawn_receive_converges_through_extern_return_contract() {
     let module = linked(include_str!("fixtures/spawn_receive_capture.fz"));
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let any = t.any();
     let report = infer_report_via_main(&mut t, &module);
     let unsettled = report.unsettled_fn_names();
@@ -798,7 +798,7 @@ fn linked_runtime_spawn_receive_converges_through_extern_return_contract() {
 #[test]
 fn linked_runtime_plain_spawn_surfaces_callable_boundary_to_child() {
     let module = linked(include_str!("fixtures/spawn_plain.fz"));
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let nil = t.nil();
     let report = infer_report_via_main(&mut t, &module);
 
@@ -875,7 +875,7 @@ fn linked_runtime_plain_spawn_surfaces_callable_boundary_to_child() {
 #[test]
 fn string_literal_argument_types_as_str_t() {
     let module = lower("fn id(x), do: x\nfn main(), do: id(\"hi\")");
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let str_t = t.str_t();
     let report = infer_report_via_main(&mut t, &module);
 
@@ -916,7 +916,7 @@ fn string_literal_argument_types_as_str_t() {
 #[test]
 fn enum_reduce_runtime_graph_settles() {
     let module = linked(include_str!("fixtures/enum_reduce.fz"));
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let int = t.int();
 
     let reduce_ret = infer_fn_via_main(&module, "Enum.reduce");
@@ -940,7 +940,7 @@ fn enum_reduce_runtime_graph_settles() {
 #[test]
 fn outcome_exposes_activation_facts_as_production_data() {
     let module = linked(include_str!("fixtures/enum_reduce.fz"));
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let int = t.int();
     let report = infer_report_via_main(&mut t, &module);
 
@@ -1061,7 +1061,7 @@ fn outcome_exposes_activation_facts_as_production_data() {
 #[test]
 fn invalid_named_reduce_reducer_emits_operator_diagnostic() {
     let module = linked_unplanned(include_str!("fixtures/enum_reduce_named_ref.fz"));
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let report = infer_report_via_main(&mut t, &module);
     assert_eq!(report.outcome.status, TypeInferStatus::Invalid);
     assert!(
@@ -1094,7 +1094,7 @@ fn kernel_declares_the_arithmetic_operator_surface() {
 
 #[test]
 fn arithmetic_binops_infer_from_kernel_operator_specs() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module = lower("fn main() do\n  {1 + 2, 4 - 1, 2 * 3, 4 / 2, 5 % 2, 1 + 2.0, 4.0 - 1, 2 * 3.0}\nend");
     let ret = infer_entry_return_via_main(&module);
     let int = t.int();
@@ -1123,7 +1123,7 @@ fn arithmetic_binops_union_successful_returns_for_any_operands() {
     let cap = TypeInferCapture::new();
     tel.attach(&["fz", "type_infer"], cap.handler());
 
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let any = t.any();
     let int = t.int();
     let float = t.float();
@@ -1150,7 +1150,7 @@ fn arithmetic_binops_union_successful_returns_for_any_operands() {
 
 #[test]
 fn add_infers_int_via_harness() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module = lower(include_str!("fixtures/add.fz"));
     let add_id = module.fn_by_name("add").expect("add fn").id;
     let int = t.int();
@@ -1172,7 +1172,7 @@ fn infer_return_erases_residual_unknown_to_any_at_boundary() {
     mb.add_fn(b.build());
     let module = mb.build();
 
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let ret = infer_return(&mut t, &module, FnId(0), &[]);
     let any = t.any();
     assert!(
@@ -1201,7 +1201,7 @@ fn live_unknown_branch_survives_control_join_to_boundary() {
     mb.add_fn(b.build());
     let module = mb.build();
 
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let bool_ty = t.bool();
     let ret = infer_return(&mut t, &module, FnId(0), &[bool_ty]);
     let any = t.any();
@@ -1228,7 +1228,7 @@ fn halt_branch_contributes_no_return_value_to_control_join() {
     mb.add_fn(b.build());
     let module = mb.build();
 
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let bool_ty = t.bool();
     let ret = infer_return(&mut t, &module, FnId(0), &[bool_ty]);
     let int = t.int();
@@ -1240,7 +1240,7 @@ fn halt_branch_contributes_no_return_value_to_control_join() {
 
 #[test]
 fn direct_calls_instantiate_polymorphic_identity_per_callsite() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module = lower(include_str!("fixtures/poly_id.fz"));
     let ret = infer_entry_return_via_main(&module);
     let expected = {
@@ -1256,7 +1256,7 @@ fn direct_calls_instantiate_polymorphic_identity_per_callsite() {
 
 #[test]
 fn named_refs_instantiate_polymorphic_identity_per_callsite() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module = lower(include_str!("fixtures/poly_named_ref.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
@@ -1272,7 +1272,7 @@ fn named_refs_instantiate_polymorphic_identity_per_callsite() {
 
 #[test]
 fn named_ref_return_preserves_thin_callable_kind() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module = lower("fn id(x), do: x\nfn main(), do: &id/1");
     let ret = infer_return(&mut t, &module, main_id(&module), &[]);
 
@@ -1286,7 +1286,7 @@ fn named_ref_return_preserves_thin_callable_kind() {
 
 #[test]
 fn zero_capture_lambda_return_preserves_thin_callable_kind() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module = lower("fn main(), do: fn(x) -> x end");
     let ret = infer_return(&mut t, &module, main_id(&module), &[]);
 
@@ -1300,7 +1300,7 @@ fn zero_capture_lambda_return_preserves_thin_callable_kind() {
 
 #[test]
 fn captured_lambda_return_preserves_closure_kind() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module = lower("fn mk(x), do: fn(y) -> x + y end\nfn main(), do: mk(1)");
     let ret = infer_return(&mut t, &module, main_id(&module), &[]);
 
@@ -1314,7 +1314,7 @@ fn captured_lambda_return_preserves_closure_kind() {
 
 #[test]
 fn named_refs_drive_pattern_dispatch_per_activation() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module = lower(include_str!("fixtures/poly_named_ref_pattern.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
@@ -1330,7 +1330,7 @@ fn named_refs_drive_pattern_dispatch_per_activation() {
 
 #[test]
 fn captured_closure_refs_instantiate_by_capture_and_arg_facts() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module = lower(include_str!("fixtures/poly_capture_ref.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
@@ -1349,7 +1349,7 @@ fn captured_closure_refs_instantiate_by_capture_and_arg_facts() {
 
 #[test]
 fn direct_calls_specialize_atom_pattern_dispatch_by_input() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module = lower(include_str!("fixtures/match_atom_partition.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
@@ -1365,7 +1365,7 @@ fn direct_calls_specialize_atom_pattern_dispatch_by_input() {
 
 #[test]
 fn direct_calls_specialize_list_pattern_dispatch_by_shape() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module = lower(include_str!("fixtures/match_list_partition.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
@@ -1381,7 +1381,7 @@ fn direct_calls_specialize_list_pattern_dispatch_by_shape() {
 
 #[test]
 fn list_pattern_binding_flows_into_selected_leaf() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module = lower(include_str!("fixtures/match_list_binding.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
@@ -1397,7 +1397,7 @@ fn list_pattern_binding_flows_into_selected_leaf() {
 
 #[test]
 fn tuple_pattern_binding_flows_into_selected_leaf() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module = lower(include_str!("fixtures/match_tuple_binding.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
@@ -1413,7 +1413,7 @@ fn tuple_pattern_binding_flows_into_selected_leaf() {
 
 #[test]
 fn nested_pattern_binding_flows_into_selected_leaf() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module = lower(include_str!("fixtures/match_nested_binding.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
@@ -1429,7 +1429,7 @@ fn nested_pattern_binding_flows_into_selected_leaf() {
 
 #[test]
 fn nested_pattern_partition_selects_sibling_leaves() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module = lower(include_str!("fixtures/match_nested_partition.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
@@ -1446,7 +1446,7 @@ fn nested_pattern_partition_selects_sibling_leaves() {
 
 #[test]
 fn tuple_tag_partition_selects_matching_payloads() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module = lower(include_str!("fixtures/match_tuple_tag_partition.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
@@ -1462,7 +1462,7 @@ fn tuple_tag_partition_selects_matching_payloads() {
 
 #[test]
 fn tuple_arity_partition_selects_matching_shape() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module = lower(include_str!("fixtures/match_tuple_arity_partition.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
@@ -1479,7 +1479,7 @@ fn tuple_arity_partition_selects_matching_shape() {
 
 #[test]
 fn guard_partition_selects_refined_clause() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module = lower(include_str!("fixtures/match_guard_partition.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
@@ -1495,7 +1495,7 @@ fn guard_partition_selects_refined_clause() {
 
 #[test]
 fn map_pattern_binding_flows_into_selected_leaf() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module = lower(include_str!("fixtures/match_map_binding.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
@@ -1512,7 +1512,7 @@ fn map_pattern_binding_flows_into_selected_leaf() {
 #[test]
 fn matcher_dead_arms_are_observable_via_telemetry() {
     let module = lower(include_str!("fixtures/poly_named_ref_pattern.fz"));
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let report = infer_report_via_main(&mut t, &module);
 
     assert!(
@@ -1534,7 +1534,7 @@ fn corpus_folds_settle_myreduce_to_int() {
         ("fold_capture_closure", include_str!("fixtures/fold_capture_closure.fz")),
         ("fold_state_machine", include_str!("fixtures/fold_state_machine.fz")),
     ];
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let int = t.int();
     for (name, src) in corpus {
         let module = lower(src);
@@ -1548,7 +1548,7 @@ fn corpus_folds_settle_myreduce_to_int() {
 
 #[test]
 fn closure_apply_prepends_captures_as_leading_params() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let cap = t.int();
     let clo = t.closure_lit(ClosureTarget(7), vec![cap], 2);
     let a = t.int();
@@ -1560,7 +1560,7 @@ fn closure_apply_prepends_captures_as_leading_params() {
 
 #[test]
 fn captured_closure_is_carried_concretely() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let inner = t.closure_lit(ClosureTarget(9), vec![], 2);
     let outer = t.closure_lit(ClosureTarget(8), vec![inner], 2);
     let a = t.int();
@@ -1576,7 +1576,7 @@ fn captured_closure_is_carried_concretely() {
 
 #[test]
 fn non_closure_has_no_apply_contract() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let int = t.int();
     assert!(closure_apply_contract(&t, &int, &[]).is_none());
 }

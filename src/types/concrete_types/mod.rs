@@ -67,6 +67,7 @@ pub(crate) fn ty_display(t: &Ty) -> String {
     format!("{}", ty_descr(t))
 }
 
+#[cfg(test)]
 impl ConcreteTypes {
     pub(crate) fn display(&self, a: &Ty) -> String {
         <Self as RenderTypes>::display(self, a)

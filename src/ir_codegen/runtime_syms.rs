@@ -536,7 +536,9 @@ fn declare_receive_runtime<M: ClModule>(jmod: &mut M) -> Result<ReceiveRefs, Cod
     //   after_deadline_or_neg1 (i64), after_cont_bits (i64).
     // Returns YIELD sentinel (i64).
     let receive_park_matched_id = decl_import(jmod, "fz_receive_park_matched")?;
-    Ok(ReceiveRefs { receive_park_matched_id })
+    Ok(ReceiveRefs {
+        receive_park_matched_id,
+    })
 }
 
 struct HaltContRefs {

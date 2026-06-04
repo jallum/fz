@@ -711,12 +711,12 @@ fn apply_plan(module: &mut Module, site: ContinuationSite, plan: NormalizePlan) 
     dce_fn_with_telemetry("", cont_fn, &NullTelemetry);
 
     let term = &mut module.fns[site.caller_fn_idx].blocks[site.caller_block_idx].terminator;
-        match term {
-            Term::Call { continuation, .. } | Term::CallClosure { continuation, .. } => {
-                continuation.captured = plan.new_captured;
-            }
-            _ => unreachable!("captured site no longer points at a continuation term"),
+    match term {
+        Term::Call { continuation, .. } | Term::CallClosure { continuation, .. } => {
+            continuation.captured = plan.new_captured;
         }
+        _ => unreachable!("captured site no longer points at a continuation term"),
+    }
 }
 
 fn apply_shared_continuation_plan(module: &mut Module, site: SharedContinuationSite, plan: SharedContinuationPlan) {

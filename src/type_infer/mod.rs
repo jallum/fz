@@ -595,11 +595,7 @@ struct Solver<'m> {
 
 impl<'m> Solver<'m> {
     fn new(module: &'m Module) -> Self {
-        let dispatch_masks = module
-            .fns
-            .iter()
-            .map(|f| (f.id, f.dispatch_subject_slots()))
-            .collect();
+        let dispatch_masks = module.fns.iter().map(|f| (f.id, f.dispatch_subject_slots())).collect();
         let recursive_fns = module.recursive_fns();
         Self {
             module,
@@ -1072,7 +1068,12 @@ impl<'m> Solver<'m> {
     }
 
     fn activation_ids(&self) -> HashMap<ActivationKey, TypeInferActivationId> {
-        let input_tys = |key: &ActivationKey| self.activations.get(key).map(|a| info_tys(&a.inputs)).unwrap_or_default();
+        let input_tys = |key: &ActivationKey| {
+            self.activations
+                .get(key)
+                .map(|a| info_tys(&a.inputs))
+                .unwrap_or_default()
+        };
         let mut keys: Vec<_> = self.activations.keys().cloned().collect();
         keys.sort_by(|a, b| {
             let (a_tys, b_tys) = (input_tys(a), input_tys(b));
@@ -1089,7 +1090,12 @@ impl<'m> Solver<'m> {
 
     fn activation_edge_facts(&self) -> Vec<TypeInferActivationEdgeFact> {
         let activation_ids = self.activation_ids();
-        let input_tys = |key: &ActivationKey| self.activations.get(key).map(|a| info_tys(&a.inputs)).unwrap_or_default();
+        let input_tys = |key: &ActivationKey| {
+            self.activations
+                .get(key)
+                .map(|a| info_tys(&a.inputs))
+                .unwrap_or_default()
+        };
         let mut facts: Vec<_> = self
             .edges
             .iter()
@@ -1532,13 +1538,8 @@ impl<'m> Solver<'m> {
                     bound_inputs.extend(capture_inputs.clone());
                     if let Some(guard) = clause.guard {
                         let guard_callsite = CallsiteId::new(key.fn_id, &clause.ident, EmitSlot::Cont);
-                        let _ = self.call_target(
-                            t,
-                            key,
-                            guard_callsite,
-                            CallTarget::Direct(guard),
-                            bound_inputs.clone(),
-                        );
+                        let _ =
+                            self.call_target(t, key, guard_callsite, CallTarget::Direct(guard), bound_inputs.clone());
                     }
                     let body_callsite = CallsiteId::new(key.fn_id, &clause.ident, EmitSlot::Cont);
                     let body_ret =

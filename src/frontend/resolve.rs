@@ -2148,7 +2148,7 @@ mod tests {
     use crate::parser::Parser;
     use crate::parser::lexer::Lexer;
     use crate::type_expr::{build_module_type_env, parse_type_expr, resolve_spec_decl};
-    use crate::types::ConcreteTypes;
+    use crate::types::DefaultTypes;
 
     fn parse(src: &str) -> Program {
         let toks = Lexer::new(src).tokenize().expect("lex");
@@ -2156,7 +2156,7 @@ mod tests {
     }
 
     fn flatten(src: &str) -> Program {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         flatten_modules(&mut ct, parse(src)).expect("flatten")
     }
 
@@ -2442,7 +2442,7 @@ end
 
     #[test]
     fn import_unknown_module_errors() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -2463,7 +2463,7 @@ end
 
     #[test]
     fn alias_unknown_module_errors() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -2483,7 +2483,7 @@ end
 
     #[test]
     fn import_unknown_arity_errors() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -2506,7 +2506,7 @@ end
 
     #[test]
     fn import_except_unknown_arity_errors() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -2529,7 +2529,7 @@ end
 
     #[test]
     fn import_resolves_from_external_interface_table() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let math = ModuleName::from_segments(vec!["Math".to_string()]);
         let mut interfaces = InterfaceTable::new();
         interfaces.insert(
@@ -2577,7 +2577,7 @@ end
 
     #[test]
     fn import_resolves_from_runtime_library_interfaces_by_default() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let p = flatten_modules(
             &mut ct,
             parse(
@@ -2608,7 +2608,7 @@ end
 
     #[test]
     fn alias_resolves_from_runtime_library_interfaces_on_demand() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let p = flatten_modules(
             &mut ct,
             parse(
@@ -2694,7 +2694,7 @@ end
 
     #[test]
     fn import_non_exported_name_errors() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -2717,7 +2717,7 @@ end
 
     #[test]
     fn conflicting_imports_error() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -2819,7 +2819,7 @@ fn main(), do: I.value()
 
     #[test]
     fn duplicate_module_diag_has_primary_and_first_definition_spans() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -2870,7 +2870,7 @@ fn g(y), do: y
             module_interfaces: Default::default(),
             ..Program::default()
         };
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let err = flatten_modules(&mut ct, prog).unwrap_err();
         let d = err.to_diagnostic();
         assert_eq!(d.code, codes::RESOLVE_DUPLICATE_EXPORT);
@@ -2953,7 +2953,7 @@ end
             .unwrap();
         assert_eq!(keyword.params, vec!["t"]);
         // Build env and verify resolution end-to-end.
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let env = build_module_type_env(&mut ct, &m.attrs).unwrap();
         let int = ct.int();
         assert!(ct.is_equivalent(env.get("id").unwrap(), &int));
@@ -2980,7 +2980,7 @@ defmodule M do
 end
 "#,
         );
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let flat = flatten_modules(&mut ct, prog).expect("flatten");
         let env = flat.module_type_envs.get("M").expect("module env");
         let opts = env.get("opts").expect("opts alias");
@@ -3001,7 +3001,7 @@ defmodule Range do
 end
 "#,
         );
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let flat = flatten_modules(&mut ct, prog).expect("flatten");
         let range = ModuleName::from_segments(vec!["Range".to_string()]);
         let fields = flat.struct_field_types.get(&range).expect("Range field types");
@@ -3023,7 +3023,7 @@ defmodule Range do
 end
 "#,
         );
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let err = flatten_modules(&mut ct, prog).expect_err("expected schema mismatch");
         match err {
             ResolveError::TypeAliasError { msg, span } => {
@@ -3044,7 +3044,7 @@ defmodule M do
 end
 "#,
         );
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let flat = flatten_modules(&mut ct, prog).expect("flatten");
         let def = flat
             .items
@@ -3111,7 +3111,7 @@ end
         assert_eq!(spec.param_body_tokens.len(), 1);
         // Resolve and verify types.
         let env = ModuleTypeEnv::new();
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let resolved = resolve_spec_decl(&mut ct, spec, &env).unwrap();
         let int = ct.int();
         assert!(ct.is_equivalent(&resolved.params[0], &int));
@@ -3282,7 +3282,7 @@ end
                 _ => None,
             })
             .expect("@spec parsed");
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let env = build_module_type_env(&mut ct, &m.attrs).unwrap();
         let r = resolve_spec_decl(&mut ct, spec, &env);
         assert!(r.is_err(), "unknown type must error on resolve");
@@ -3329,7 +3329,7 @@ end
                 _ => None,
             })
             .expect("@spec parsed");
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let env = build_module_type_env(&mut ct, &m.attrs).unwrap();
         let resolved = resolve_spec_decl(&mut ct, spec, &env).unwrap();
         let int = ct.int();
@@ -3438,7 +3438,7 @@ end
             callee.span
         };
 
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let post = flatten_modules(&mut ct, pre).expect("flatten");
         let g = post
             .items
@@ -3503,7 +3503,7 @@ end
             callee.span
         };
 
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let post = flatten_modules(&mut ct, pre).expect("flatten");
         let u = post
             .items
@@ -3528,7 +3528,7 @@ end
 
     #[test]
     fn protocol_registry_records_declarations_impls_and_domain_types() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let p = flatten_modules(
             &mut ct,
             parse(
@@ -3582,7 +3582,7 @@ end
 
     #[test]
     fn protocol_domain_refines_concrete_element_parameter() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let p = flatten_modules(
             &mut ct,
             parse(
@@ -3604,7 +3604,7 @@ end
         .expect("flatten");
 
         let env = &p.module_type_envs["Consumer"];
-        let parse_dom = |ct: &mut ConcreteTypes, src: &str| {
+        let parse_dom = |ct: &mut DefaultTypes, src: &str| {
             let toks = Lexer::new(src).tokenize().expect("lex");
             let (ty, _) = parse_type_expr(ct, &toks, env).expect("parse");
             ty
@@ -3630,7 +3630,7 @@ end
 
     #[test]
     fn protocol_impl_must_cover_declared_callbacks() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -3654,7 +3654,7 @@ end
 
     #[test]
     fn duplicate_protocol_impls_are_rejected() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -3685,7 +3685,7 @@ end
 
     #[test]
     fn protocol_impl_wrong_arity_is_an_arity_mismatch_not_missing() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -3718,7 +3718,7 @@ end
 
     #[test]
     fn protocol_callback_validation_preserves_overload_sets() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let p = flatten_modules(
             &mut ct,
             parse(
@@ -3753,7 +3753,7 @@ end
 
     #[test]
     fn protocol_callback_validation_rejects_uncovered_impl_overload() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let err = flatten_modules(
             &mut ct,
             parse(

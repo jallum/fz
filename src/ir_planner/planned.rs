@@ -272,7 +272,6 @@ fn display_spec_ids(reachable_specs: &HashSet<u32>) -> Vec<String> {
     ids.into_iter().map(|sid| sid.to_string()).collect()
 }
 
-
 fn build_callable_entries(
     bodies: &[PlannedBody],
     spec_registry: &SpecRegistry,

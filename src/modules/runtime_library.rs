@@ -29,8 +29,6 @@ use crate::type_expr::{
     BrandInnerTypes, ModuleTypeEnv, OpaqueInnerTypes, build_module_type_env_for_with_base, builtin_brand_inners,
     builtin_opaque_inners, builtin_type_env,
 };
-#[cfg(test)]
-use crate::types::ConcreteTypes;
 use crate::types::{Ty, Types};
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
@@ -866,7 +864,7 @@ mod tests {
         assert_eq!(loaded_fzo.module, Some(utf8));
         assert_eq!(loaded_fzo.unit_payload.format, "fz-runtime-module-v1");
 
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let consumer = r#"
 defmodule User do
   import Utf8, only: [valid?: 1]

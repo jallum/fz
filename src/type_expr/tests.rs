@@ -10,7 +10,7 @@ use crate::specs::{
     ResolvedSpec, ResolvedSpecSet, StructuralCorrespondenceGroup, StructuralOccurrence, StructuralPathStep,
     spec_set_correspondence_groups,
 };
-use crate::types::{ConcreteTypes, Ty, TypeVarId, Types};
+use crate::types::{DefaultTypes, Ty, TypeVarId, Types};
 
 fn parse_one<T: Types<Ty = Ty>>(t: &mut T, src: &str) -> Result<T::Ty, TypeExprError> {
     parse_one_with(t, src, &ModuleTypeEnv::new())
@@ -38,7 +38,7 @@ fn spec_correspondence_groups(spec: &ResolvedSpec) -> Vec<StructuralCorresponden
 
 #[test]
 fn scalar_names_parse_to_corresponding_descrs() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let nil = ct.nil();
     let bool_ = ct.bool();
     let int = ct.int();
@@ -64,7 +64,7 @@ fn scalar_names_parse_to_corresponding_descrs() {
 
 #[test]
 fn runtime_builtin_names_parse_without_env_aliases() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
 
     let utf8 = parse_one(&mut ct, "utf8").unwrap();
     assert_eq!(ct.brand_singleton(&utf8).as_deref(), Some("utf8"));
@@ -78,7 +78,7 @@ fn runtime_builtin_names_parse_without_env_aliases() {
 
 #[test]
 fn atom_literal_parses_to_singleton() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let ok = ct.atom_lit("ok");
     let err = ct.atom_lit("error");
     let a = parse_one(&mut ct, ":ok").unwrap();
@@ -89,7 +89,7 @@ fn atom_literal_parses_to_singleton() {
 
 #[test]
 fn int_literal_parses_to_singleton() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let i42 = ct.int_lit(42);
     let i0 = ct.int_lit(0);
     let a = parse_one(&mut ct, "42").unwrap();
@@ -100,7 +100,7 @@ fn int_literal_parses_to_singleton() {
 
 #[test]
 fn float_literal_parses_to_singleton() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let expected = ct.float_lit(2.5);
     let actual = parse_one(&mut ct, "2.5").unwrap();
     assert!(ct.is_equivalent(&actual, &expected));
@@ -108,7 +108,7 @@ fn float_literal_parses_to_singleton() {
 
 #[test]
 fn list_of_integer() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let int = ct.int();
     let expected = ct.list(int);
     let actual = parse_one(&mut ct, "[integer]").unwrap();
@@ -117,7 +117,7 @@ fn list_of_integer() {
 
 #[test]
 fn empty_list_is_nil() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let nil = ct.nil();
     let actual = parse_one(&mut ct, "[]").unwrap();
     assert!(ct.is_equivalent(&actual, &nil));
@@ -125,7 +125,7 @@ fn empty_list_is_nil() {
 
 #[test]
 fn tuple_two_elements() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let int = ct.int();
     let atom = ct.atom();
     let expected = ct.tuple(&[int, atom]);
@@ -135,7 +135,7 @@ fn tuple_two_elements() {
 
 #[test]
 fn tuple_three_elements_with_literal() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let ok = ct.atom_lit("ok");
     let int = ct.int();
     let expected = ct.tuple(&[ok, int.clone(), int]);
@@ -145,7 +145,7 @@ fn tuple_three_elements_with_literal() {
 
 #[test]
 fn empty_tuple() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let expected = ct.tuple(&[]);
     let actual = parse_one(&mut ct, "{}").unwrap();
     assert!(ct.is_equivalent(&actual, &expected));
@@ -153,7 +153,7 @@ fn empty_tuple() {
 
 #[test]
 fn arrow_zero_arg() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let int = ct.int();
     let expected = ct.arrow(&[], int);
     let actual = parse_one(&mut ct, "() -> integer").unwrap();
@@ -162,7 +162,7 @@ fn arrow_zero_arg() {
 
 #[test]
 fn arrow_one_arg() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let int = ct.int();
     let arg = int.clone();
     let expected = ct.arrow(from_ref(&arg), int);
@@ -172,7 +172,7 @@ fn arrow_one_arg() {
 
 #[test]
 fn arrow_two_args() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let int = ct.int();
     let float = ct.float();
     let bin = ct.str_t();
@@ -183,7 +183,7 @@ fn arrow_two_args() {
 
 #[test]
 fn paren_grouping_one_element() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let int = ct.int();
     let actual = parse_one(&mut ct, "(integer)").unwrap();
     assert!(ct.is_equivalent(&actual, &int));
@@ -191,7 +191,7 @@ fn paren_grouping_one_element() {
 
 #[test]
 fn paren_grouping_with_union() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let int = ct.int();
     let float = ct.float();
     let expected = ct.union(int, float);
@@ -201,14 +201,14 @@ fn paren_grouping_with_union() {
 
 #[test]
 fn paren_multi_without_arrow_errors() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let r = parse_one(&mut ct, "(integer, float)");
     assert!(r.is_err(), "multi-element paren without `->` must error; got ok",);
 }
 
 #[test]
 fn union_two_axes() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let int = ct.int();
     let float = ct.float();
     let expected = ct.union(int, float);
@@ -218,7 +218,7 @@ fn union_two_axes() {
 
 #[test]
 fn union_three_axes_is_left_associative_but_equivalent() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let int = ct.int();
     let float = ct.float();
     let nil = ct.nil();
@@ -230,7 +230,7 @@ fn union_three_axes_is_left_associative_but_equivalent() {
 
 #[test]
 fn union_with_atom_literals() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let ok = ct.atom_lit("ok");
     let err = ct.atom_lit("error");
     let expected = ct.union(ok, err);
@@ -240,7 +240,7 @@ fn union_with_atom_literals() {
 
 #[test]
 fn list_of_union() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let int = ct.int();
     let float = ct.float();
     let u = ct.union(int, float);
@@ -251,7 +251,7 @@ fn list_of_union() {
 
 #[test]
 fn nested_tuple_inside_list() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let ok = ct.atom_lit("ok");
     let int = ct.int();
     let tup = ct.tuple(&[ok, int]);
@@ -262,7 +262,7 @@ fn nested_tuple_inside_list() {
 
 #[test]
 fn arrow_taking_arrow_argument() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let int = ct.int();
     let arg = int.clone();
     let f = ct.arrow(from_ref(&arg), int.clone());
@@ -274,7 +274,7 @@ fn arrow_taking_arrow_argument() {
 
 #[test]
 fn named_ref_resolves_via_env() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let int = ct.int();
     let mut env = ModuleTypeEnv::new();
     env.insert("id".to_string(), int.clone());
@@ -284,7 +284,7 @@ fn named_ref_resolves_via_env() {
 
 #[test]
 fn named_ref_used_in_arrow_via_env() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let int = ct.int();
     let mut env = ModuleTypeEnv::new();
     env.insert("id".to_string(), int.clone());
@@ -296,7 +296,7 @@ fn named_ref_used_in_arrow_via_env() {
 
 #[test]
 fn unknown_name_with_empty_env_errors() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let r = parse_one(&mut ct, "nonesuch");
     assert!(r.is_err());
     let e = r.unwrap_err();
@@ -306,7 +306,7 @@ fn unknown_name_with_empty_env_errors() {
 #[test]
 fn builtin_name_takes_precedence_over_alias() {
     // A user-defined alias must NOT shadow a builtin scalar name.
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let float = ct.float();
     let int = ct.int();
     let mut env = ModuleTypeEnv::new();
@@ -320,25 +320,25 @@ fn builtin_name_takes_precedence_over_alias() {
 
 #[test]
 fn malformed_unclosed_list_errors() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     assert!(parse_one(&mut ct, "[integer").is_err());
 }
 
 #[test]
 fn malformed_unclosed_tuple_errors() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     assert!(parse_one(&mut ct, "{integer, atom").is_err());
 }
 
 #[test]
 fn malformed_unclosed_paren_errors() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     assert!(parse_one(&mut ct, "(integer").is_err());
 }
 
 #[test]
 fn trailing_tokens_error() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let r = parse_one(&mut ct, "integer foo");
     assert!(r.is_err(), "trailing tokens must be rejected");
 }
@@ -346,7 +346,7 @@ fn trailing_tokens_error() {
 #[test]
 fn primary_position_rejects_bar() {
     // `| integer` is malformed — `|` is a binary operator.
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     assert!(parse_one(&mut ct, "| integer").is_err());
 }
 
@@ -356,7 +356,7 @@ fn struct_record_type_parses_field_types() {
         .tokenize()
         .expect("lex");
     let env = ModuleTypeEnv::new();
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let (record, ty, consumed) = parse_struct_record_type(&mut ct, &toks, &env).unwrap();
     assert_eq!(record.module.dotted(), "Range");
     assert_eq!(
@@ -393,7 +393,7 @@ fn type_alias_attr_with_params(name: &str, params: &[&str], body_src: &str) -> A
 }
 
 fn build_module_type_env_for_test(
-    t: &mut ConcreteTypes,
+    t: &mut DefaultTypes,
     attrs: &[Attribute],
     module_path: &str,
 ) -> Result<(ModuleTypeEnv, OpaqueInnerTypes, BrandInnerTypes), TypeExprError> {
@@ -403,7 +403,7 @@ fn build_module_type_env_for_test(
 #[test]
 fn build_env_resolves_simple_alias() {
     let attrs = vec![type_alias_attr("id", "integer")];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let int = ct.int();
     assert!(ct.is_equivalent(env.get("id").unwrap(), &int));
@@ -415,7 +415,7 @@ fn build_env_records_struct_field_types_from_type_alias() {
         "t",
         "%Range{first: integer, last: integer, step: integer}",
     )];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let alias_ty = env.get("t").expect("t alias");
     assert_eq!(ct.opaque_singleton(alias_ty).as_deref(), Some("impl-target::Range"));
@@ -429,7 +429,7 @@ fn build_env_records_struct_field_types_from_type_alias() {
 fn build_env_resolves_alias_of_alias_in_either_order() {
     // Declare in forward order: a refs b, b is plain.
     let attrs = vec![type_alias_attr("a", "b"), type_alias_attr("b", "integer")];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let int = ct.int();
     assert!(ct.is_equivalent(env.get("a").unwrap(), &int));
@@ -440,7 +440,7 @@ fn build_env_resolves_alias_of_alias_in_either_order() {
 fn build_env_resolves_composite_alias() {
     // pair := {id, id}; id := integer.
     let attrs = vec![type_alias_attr("pair", "{id, id}"), type_alias_attr("id", "integer")];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let int = ct.int();
     let expected = ct.tuple(&[int.clone(), int]);
@@ -450,7 +450,7 @@ fn build_env_resolves_composite_alias() {
 #[test]
 fn build_env_detects_simple_cycle() {
     let attrs = vec![type_alias_attr("a", "b"), type_alias_attr("b", "a")];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let err = build_module_type_env(&mut ct, &attrs).unwrap_err();
     assert!(err.msg.contains("cycle"), "expected cycle diag, got: {}", err.msg);
 }
@@ -462,7 +462,7 @@ fn build_env_detects_three_way_cycle() {
         type_alias_attr("b", "c"),
         type_alias_attr("c", "a"),
     ];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let err = build_module_type_env(&mut ct, &attrs).unwrap_err();
     assert!(err.msg.contains("cycle"), "expected cycle diag, got: {}", err.msg);
 }
@@ -470,7 +470,7 @@ fn build_env_detects_three_way_cycle() {
 #[test]
 fn build_env_rejects_unknown_reference() {
     let attrs = vec![type_alias_attr("foo", "nonesuch")];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let err = build_module_type_env(&mut ct, &attrs).unwrap_err();
     assert!(
         err.msg.contains("unknown type name"),
@@ -482,7 +482,7 @@ fn build_env_rejects_unknown_reference() {
 #[test]
 fn build_env_rejects_duplicate_alias() {
     let attrs = vec![type_alias_attr("id", "integer"), type_alias_attr("id", "float")];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let err = build_module_type_env(&mut ct, &attrs).unwrap_err();
     assert!(
         err.msg.contains("duplicate"),
@@ -498,7 +498,7 @@ fn build_env_ignores_non_type_alias_attributes() {
         type_alias_attr("id", "integer"),
         Attribute::Doc("a doc".to_string()),
     ];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     assert_eq!(env.len(), 1);
     let int = ct.int();
@@ -508,7 +508,7 @@ fn build_env_ignores_non_type_alias_attributes() {
 #[test]
 fn build_env_empty_for_module_without_aliases() {
     let attrs: Vec<Attribute> = vec![];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     assert!(env.is_empty());
 }
@@ -516,7 +516,7 @@ fn build_env_empty_for_module_without_aliases() {
 #[test]
 fn build_env_resolves_arrow_using_alias() {
     let attrs = vec![type_alias_attr("id", "integer"), type_alias_attr("idfn", "(id) -> id")];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let int = ct.int();
     let arg = int.clone();
@@ -527,7 +527,7 @@ fn build_env_resolves_arrow_using_alias() {
 #[test]
 fn build_env_parameterized_alias_substitutes_args() {
     let attrs = vec![type_alias_attr_with_params("pair", &["a", "b"], "{a, b}")];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let actual = parse_one_with(&mut ct, "pair(integer, atom)", &env).unwrap();
     let int = ct.int();
@@ -542,7 +542,7 @@ fn build_env_allows_same_alias_name_with_different_arities() {
         type_alias_attr("keyword", "[{atom, any}]"),
         type_alias_attr_with_params("keyword", &["t"], "[{atom, t}]"),
     ];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
 
     let mono = env.get("keyword").expect("keyword/0");
@@ -567,7 +567,7 @@ fn build_env_parameterized_aliases_compose() {
         type_alias_attr_with_params("result", &["ok", "err"], "{:ok, ok} | {:error, err}"),
         type_alias_attr_with_params("api_result", &["t"], "result(t, utf8)"),
     ];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let actual = parse_one_with(&mut ct, "api_result(integer)", &env).unwrap();
     let ok = ct.atom_lit("ok");
@@ -583,7 +583,7 @@ fn build_env_parameterized_aliases_compose() {
 #[test]
 fn parameterized_alias_application_checks_arity() {
     let attrs = vec![type_alias_attr_with_params("pair", &["a", "b"], "{a, b}")];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let err = parse_one_with(&mut ct, "pair(integer)", &env).unwrap_err();
     assert!(
@@ -596,7 +596,7 @@ fn parameterized_alias_application_checks_arity() {
 #[test]
 fn parameterized_alias_cycle_is_rejected() {
     let attrs = vec![type_alias_attr_with_params("loop", &["t"], "loop(t)")];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let err = build_module_type_env(&mut ct, &attrs).unwrap_err();
     assert!(err.msg.contains("cycle"), "expected cycle error, got: {}", err.msg);
 }
@@ -608,7 +608,7 @@ fn consumed_count_reports_correct_position() {
     // in `@spec name(T) :: R`).
     let toks = Lexer::new("integer foo").tokenize().unwrap();
     let env = ModuleTypeEnv::new();
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let int = ct.int();
     let (ty, consumed) = parse_type_expr(&mut ct, &toks, &env).unwrap();
     assert!(ct.is_equivalent(&ty, &int));
@@ -620,7 +620,7 @@ fn consumed_count_reports_correct_position() {
 #[test]
 fn build_env_opaque_alias_creates_nominal_type() {
     let attrs = vec![type_alias_attr("pid", "opaque integer")];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let pid = env.get("pid").unwrap();
     let expected = ct.opaque_of("pid");
@@ -634,7 +634,7 @@ fn build_env_opaque_alias_creates_nominal_type() {
 #[test]
 fn build_env_opaque_alias_is_disjoint_from_underlying() {
     let attrs = vec![type_alias_attr("pid", "opaque integer")];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let pid = env.get("pid").unwrap();
     let int = ct.int();
@@ -648,7 +648,7 @@ fn build_env_opaque_alias_is_disjoint_from_underlying() {
 fn resource_integer_parses_to_builtin_opaque_tag() {
     // `resource(T)` preserves the payload type now that constrained
     // polymorphic specs can return `resource(t)`.
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let d = parse_one(&mut ct, "resource(integer)").unwrap();
     let payload = ct
         .resource_payload_type(&d)
@@ -659,7 +659,7 @@ fn resource_integer_parses_to_builtin_opaque_tag() {
 
 #[test]
 fn resource_inner_type_is_validated() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let r = parse_one(&mut ct, "resource(nonesuch)");
     assert!(r.is_err(), "unknown inner type must error");
 }
@@ -667,7 +667,7 @@ fn resource_inner_type_is_validated() {
 #[test]
 fn constrained_polymorphic_spec_resolves_vars_and_bounds() {
     let toks = |src: &str| Lexer::new(src).tokenize().expect("lex");
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let spec = SpecDecl {
         name: "make_resource".to_string(),
         param_body_tokens: vec![TypeExprBody(toks("t")), TypeExprBody(toks("(t) -> nil"))],
@@ -683,7 +683,7 @@ fn constrained_polymorphic_spec_resolves_vars_and_bounds() {
 #[test]
 fn resolved_spec_retains_structural_shape_for_container_parametricity() {
     let toks = |src: &str| Lexer::new(src).tokenize().expect("lex");
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let mut env = ModuleTypeEnv::new();
     env.insert("Enumerable.t".to_string(), ct.any());
     env.insert_param_alias(
@@ -721,7 +721,7 @@ fn resolved_spec_retains_structural_shape_for_container_parametricity() {
 #[test]
 fn resolved_spec_retains_structural_shape_for_higher_order_parametricity() {
     let toks = |src: &str| Lexer::new(src).tokenize().expect("lex");
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let mut env = ModuleTypeEnv::new();
     env.insert("Enumerable.t".to_string(), ct.any());
     env.insert_param_alias(
@@ -766,7 +766,7 @@ fn resolved_spec_retains_structural_shape_for_higher_order_parametricity() {
 
 #[test]
 fn resolved_spec_reports_reduce_invariant_slot_correspondence() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let entry_var = ct.type_var(TypeVarId(0));
     let acc_var = ct.type_var(TypeVarId(1));
     let enumerable_param = ct.list(entry_var.clone());
@@ -818,7 +818,7 @@ fn resolved_spec_reports_reduce_invariant_slot_correspondence() {
 #[test]
 fn resolved_spec_reports_structural_container_correspondence() {
     let toks = |src: &str| Lexer::new(src).tokenize().expect("lex");
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let mut env = ModuleTypeEnv::new();
     env.insert("Enumerable.t".to_string(), ct.any());
     env.insert_param_alias(
@@ -856,7 +856,7 @@ fn resolved_spec_reports_structural_container_correspondence() {
 
 #[test]
 fn resolved_spec_reports_reduce_while_invariant_slot_correspondence() {
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let entry_var = ct.type_var(TypeVarId(0));
     let acc_var = ct.type_var(TypeVarId(1));
     let cont = ct.atom_lit("cont");
@@ -933,9 +933,9 @@ fn build_env_opaque_resource_alias_qualifies_with_module() {
     // Built under module "File", the alias should carry the
     // qualified tag `"File::t"`.
     let attrs = vec![type_alias_attr("t", "opaque resource(integer)")];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let (env, _o, _b) = build_module_type_env_for_test(&mut ct, &attrs, "File").unwrap();
-    let ct = ConcreteTypes;
+    let ct = crate::types::new();
     let t = env.get("t").expect("alias resolved");
     assert_eq!(ct.opaque_singleton(t).as_deref(), Some("File::t"));
 }
@@ -945,9 +945,9 @@ fn build_env_opaque_alias_unqualified_at_top_level() {
     // Top-level (no enclosing module) preserves the historical
     // unqualified tag — these opaques have no owner.
     let attrs = vec![type_alias_attr("pid", "opaque integer")];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
-    let ct = ConcreteTypes;
+    let ct = crate::types::new();
     let pid = env.get("pid").unwrap();
     assert_eq!(ct.opaque_singleton(pid).as_deref(), Some("pid"));
 }
@@ -956,7 +956,7 @@ fn build_env_opaque_alias_unqualified_at_top_level() {
 fn build_env_opaque_alias_rejects_bad_body() {
     // `opaque <body>` parses the body; an unknown name surfaces.
     let attrs = vec![type_alias_attr("t", "opaque nonesuch")];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let err = build_module_type_env_for_test(&mut ct, &attrs, "M").unwrap_err();
     assert!(
         err.msg.contains("unknown type name"),
@@ -971,7 +971,7 @@ fn build_env_two_opaque_aliases_are_distinct() {
         type_alias_attr("pid", "opaque integer"),
         type_alias_attr("timestamp", "opaque integer"),
     ];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let pid = env.get("pid").unwrap();
     let ts = env.get("timestamp").unwrap();
@@ -988,7 +988,7 @@ fn build_env_two_opaque_aliases_are_distinct() {
 #[test]
 fn build_env_refines_alias_creates_brand_descr() {
     let attrs = vec![type_alias_attr("utf8", "refines binary")];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let (env, _o, brand_inners) = build_module_type_env_for_test(&mut ct, &attrs, "").unwrap();
     let utf8 = env.get("utf8").unwrap();
     assert_eq!(
@@ -1009,9 +1009,9 @@ fn build_env_refines_alias_creates_brand_descr() {
 #[test]
 fn build_env_refines_alias_qualifies_with_module() {
     let attrs = vec![type_alias_attr("email", "refines binary")];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let (env, _o, brand_inners) = build_module_type_env_for_test(&mut ct, &attrs, "Email").unwrap();
-    let ct = ConcreteTypes;
+    let ct = crate::types::new();
     let email = env.get("email").unwrap();
     assert_eq!(ct.brand_singleton(email).as_deref(), Some("Email::email"));
     assert!(brand_inners.contains_key("Email::email"));
@@ -1020,7 +1020,7 @@ fn build_env_refines_alias_qualifies_with_module() {
 #[test]
 fn build_env_refines_alias_rejects_empty_body() {
     let attrs = vec![type_alias_attr("bad", "refines")];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let err = build_module_type_env_for_test(&mut ct, &attrs, "M").unwrap_err();
     assert!(
         err.msg.contains("requires an inner type"),
@@ -1032,7 +1032,7 @@ fn build_env_refines_alias_rejects_empty_body() {
 #[test]
 fn build_env_refines_alias_rejects_bad_inner() {
     let attrs = vec![type_alias_attr("bad", "refines nonesuch")];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let err = build_module_type_env_for_test(&mut ct, &attrs, "M").unwrap_err();
     assert!(
         err.msg.contains("unknown type name"),
@@ -1048,7 +1048,7 @@ fn refines_distinct_from_opaque_with_same_name() {
     // different axes, so they are lattice-disjoint.
     let m_attrs = vec![type_alias_attr("B", "refines integer")];
     let n_attrs = vec![type_alias_attr("B", "opaque integer")];
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let (m_env, _, _) = build_module_type_env_for_test(&mut ct, &m_attrs, "M").unwrap();
     let (n_env, _, _) = build_module_type_env_for_test(&mut ct, &n_attrs, "N").unwrap();
     let b_brand = m_env.get("B").unwrap();

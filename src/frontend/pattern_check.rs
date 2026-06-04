@@ -380,14 +380,13 @@ mod tests {
     use crate::frontend::resolve::flatten_modules;
     use crate::parser::Parser;
     use crate::parser::lexer::Lexer;
-    use crate::types::ConcreteTypes;
 
     fn parse(src: &str) -> Program {
         let mut sm = SourceMap::new();
         let fid = sm.add_file("test.fz", src);
         let toks = Lexer::with_file(src, fid).tokenize().unwrap();
         let prog = Parser::new(toks).parse_program().unwrap();
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         flatten_modules(&mut ct, prog).unwrap()
     }
 
@@ -398,7 +397,7 @@ mod tests {
              fn classify(0), do: :zero\n\
              fn main(), do: classify(7)",
         );
-        let diags = check_program(&mut ConcreteTypes, &prog, None, None);
+        let diags = check_program(&mut crate::types::new(), &prog, None, None);
         assert!(
             diags.iter().any(|d| d.code == codes::TYPE_UNREACHABLE_ARM),
             "expected unreachable-arm diag, got {:?}",
@@ -417,7 +416,7 @@ mod tests {
              end\n\
              fn main(), do: f(7)",
         );
-        let diags = check_program(&mut ConcreteTypes, &prog, None, None);
+        let diags = check_program(&mut crate::types::new(), &prog, None, None);
         assert!(diags.iter().any(|d| d.code == codes::TYPE_UNREACHABLE_ARM));
     }
 
@@ -428,7 +427,7 @@ mod tests {
              fn classify(_), do: :other\n\
              fn main(), do: classify(7)",
         );
-        let diags = check_program(&mut ConcreteTypes, &prog, None, None);
+        let diags = check_program(&mut crate::types::new(), &prog, None, None);
         assert!(
             diags.is_empty(),
             "should not warn when specific-then-wildcard: {:?}",
@@ -443,7 +442,7 @@ mod tests {
              fn classify(1), do: :one\n\
              fn main(), do: classify(7)",
         );
-        let diags = check_program(&mut ConcreteTypes, &prog, None, None);
+        let diags = check_program(&mut crate::types::new(), &prog, None, None);
         assert!(
             diags.iter().any(|d| d.code == codes::TYPE_NO_MATCHING_CLAUSE),
             "expected no-matching-clause diag, got {:?}",
@@ -462,7 +461,7 @@ mod tests {
              end\n\
              fn main(), do: f(7)",
         );
-        let diags = check_program(&mut ConcreteTypes, &prog, None, None);
+        let diags = check_program(&mut crate::types::new(), &prog, None, None);
         assert!(diags.iter().any(|d| d.code == codes::TYPE_NO_MATCHING_CLAUSE));
     }
 
@@ -473,7 +472,7 @@ mod tests {
              fn classify(_), do: :other\n\
              fn main(), do: classify(7)",
         );
-        let diags = check_program(&mut ConcreteTypes, &prog, None, None);
+        let diags = check_program(&mut crate::types::new(), &prog, None, None);
         assert!(!diags.iter().any(|d| d.code == codes::TYPE_NO_MATCHING_CLAUSE));
     }
 }

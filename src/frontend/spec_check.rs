@@ -172,7 +172,6 @@ mod tests {
     use crate::parser::Parser;
     use crate::parser::lexer::Lexer;
     use crate::telemetry::NullTelemetry;
-    use crate::types::ConcreteTypes;
 
     fn pipeline<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(t: &mut T, src: &str) -> (Program, Module, ModulePlan) {
         let toks = Lexer::new(src).tokenize().expect("lex");
@@ -185,7 +184,7 @@ mod tests {
 
     #[test]
     fn spec_matching_inferred_passes() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -204,7 +203,7 @@ fn main(), do: dbg(M.add1(41))
     fn spec_wider_than_inferred_passes_success_typing_style() {
         // Declared spec accepts `integer`; inferred is the narrower
         // `int_lit(41)`. int_lit(41) ⊆ integer, so this passes.
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -227,7 +226,7 @@ fn main(), do: dbg(M.add1(41))
     fn spec_disjoint_from_inferred_fails() {
         // Declared accepts `float`; inferred from callsite is int.
         // int ⊄ float, so this fails.
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -250,7 +249,7 @@ fn main(), do: dbg(M.add1(41))
 
     #[test]
     fn multi_spec_overload_arrows_cover_each_inferred_shape() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -276,7 +275,7 @@ end
 
     #[test]
     fn multi_spec_validation_preserves_param_result_correlation() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -302,7 +301,7 @@ end
 
     #[test]
     fn spec_resolves_against_module_type_env() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -324,7 +323,7 @@ fn main(), do: dbg(M.lookup(7))
 
     #[test]
     fn protocol_domain_spec_accepts_known_impl_target() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -353,7 +352,7 @@ fn main(), do: dbg(M.use([1]))
 
     #[test]
     fn protocol_domain_spec_rejects_disjoint_target_without_impl() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -379,7 +378,7 @@ fn main(), do: dbg(M.use(1))
 
     #[test]
     fn spec_with_unknown_alias_fails_at_validation() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -409,7 +408,7 @@ fn main(), do: dbg(M.one(0))
         // covers both scenarios via a fn that *does* keep its any-key
         // because it's also reachable via a closure/cont path with a
         // narrow capture but `any` slot 0.
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -432,7 +431,7 @@ fn main(), do: dbg(M.add1(41))
 
     #[test]
     fn fn_without_spec_is_not_validated() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -452,7 +451,7 @@ fn main(), do: dbg(M.double(7))
 
     #[test]
     fn spec_on_top_level_fn_uses_empty_env() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"

@@ -90,7 +90,7 @@ pub(crate) fn lower_fn<T: Types<Ty = Ty>>(
         let prev_origin = ctx.branch_origin;
         ctx.branch_origin = BranchOrigin::ClauseDispatch;
         for (pv, pat) in param_vars.iter().zip(&clause.params) {
-            lower_pattern_bind(ctx, *pv, pat, fail_block)?;
+            lower_pattern_bind(ctx, t, *pv, pat, fail_block)?;
             // Record the pattern's span on the param Var if not yet named
             // by the pattern walker (e.g. tuple-destructured params).
             ctx.name_var(*pv, "", pat.span);
@@ -99,14 +99,14 @@ pub(crate) fn lower_fn<T: Types<Ty = Ty>>(
         emit_param_type_guards(ctx, t, clause, &param_vars, fail_block)?;
         ctx.branch_origin = BranchOrigin::ClauseDispatch;
         if let Some(g) = &clause.guard {
-            let guard_var = lower_expr(ctx, g, false)?;
+            let guard_var = lower_expr(ctx, t, g, false)?;
             let body_b = ctx.cur_mut().block(vec![]);
             ctx.set_if_term(guard_var, body_b, fail_block);
             ctx.cur_block = Some(body_b);
             ctx.terminated = false;
         }
         ctx.branch_origin = prev_origin;
-        let result = lower_expr(ctx, &clause.body, /* is_tail */ true)?;
+        let result = lower_expr(ctx, t, &clause.body, /* is_tail */ true)?;
         if !ctx.terminated {
             ctx.set_term(Term::Return(result));
         }
@@ -129,7 +129,12 @@ pub(crate) fn bind_param_topname(ctx: &mut LowerCtx, pv: Var, pat: &Spanned<Patt
         ctx.bind(name, pv);
     }
 }
-pub(crate) fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Var, LowerError> {
+pub(crate) fn lower_expr<T: Types<Ty = Ty>>(
+    ctx: &mut LowerCtx,
+    t: &mut T,
+    e: &Spanned<Expr>,
+    is_tail: bool,
+) -> Result<Var, LowerError> {
     let sp = e.span;
     match &e.node {
         Expr::Int(n) => Ok(ctx.let_at(Prim::Const(Const::Int(*n)), sp)),
@@ -216,23 +221,23 @@ pub(crate) fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -
         }
 
         Expr::BinOp(op, a, b) => {
-            let va_raw = lower_expr(ctx, a, false)?;
+            let va_raw = lower_expr(ctx, t, a, false)?;
             let park_a = ctx.park(va_raw);
-            let vb = lower_expr(ctx, b, false)?;
+            let vb = lower_expr(ctx, t, b, false)?;
             let va = ctx.unpark(&park_a);
             ctx.unbind(&park_a);
             let irop = lower_binop(*op, sp)?;
             Ok(ctx.let_at(Prim::BinOp(irop, va, vb), sp))
         }
         Expr::UnOp(op, x) => {
-            let v = lower_expr(ctx, x, false)?;
+            let v = lower_expr(ctx, t, x, false)?;
             let irop = match op {
                 AstUnOp::Neg => UnOp::Neg,
                 AstUnOp::Not => UnOp::Not,
             };
             Ok(ctx.let_at(Prim::UnOp(irop, v), sp))
         }
-        Expr::Ascribe(inner, _) => lower_expr(ctx, inner, is_tail),
+        Expr::Ascribe(inner, _) => lower_expr(ctx, t, inner, is_tail),
 
         Expr::Block(exprs) => {
             if exprs.is_empty() {
@@ -244,7 +249,7 @@ pub(crate) fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -
             let mut result = Var(0);
             for (i, ex) in exprs.iter().enumerate() {
                 let tail = is_tail && i == last;
-                result = lower_expr(ctx, ex, tail)?;
+                result = lower_expr(ctx, t, ex, tail)?;
             }
             // Block scope ends: restore env so block-bound vars don't leak.
             // (Match expressions inside a block do bind into the surrounding
@@ -257,14 +262,14 @@ pub(crate) fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -
             Ok(result)
         }
 
-        Expr::If(cond, then_e, else_opt) => lower_if(ctx, cond, then_e, else_opt, is_tail, sp),
+        Expr::If(cond, then_e, else_opt) => lower_if(ctx, t, cond, then_e, else_opt, is_tail, sp),
 
         Expr::Match(pat, expr) => {
-            let v = lower_expr(ctx, expr, false)?;
+            let v = lower_expr(ctx, t, expr, false)?;
             let fail_block = ctx.cur_mut().block(vec![]);
             let prev_origin = ctx.branch_origin;
             ctx.branch_origin = BranchOrigin::PatternBind;
-            let res = lower_pattern_bind(ctx, v, pat, fail_block);
+            let res = lower_pattern_bind(ctx, t, v, pat, fail_block);
             ctx.branch_origin = prev_origin;
             res?;
             // After match, control is in current_block; result is the matched value.
@@ -279,9 +284,9 @@ pub(crate) fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -
         }
 
         Expr::List(elems, tail) => {
-            let parks = lower_seq(ctx, elems)?;
-            let tail_park = if let Some(t) = tail {
-                let v = lower_expr(ctx, t, false)?;
+            let parks = lower_seq(ctx, t, elems)?;
+            let tail_park = if let Some(tail_expr) = tail {
+                let v = lower_expr(ctx, t, tail_expr, false)?;
                 Some(ctx.park(v))
             } else {
                 None
@@ -297,18 +302,18 @@ pub(crate) fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -
             Ok(ctx.let_(Prim::MakeList(vs, tail_v)))
         }
         Expr::Tuple(elems) => {
-            let parks = lower_seq(ctx, elems)?;
+            let parks = lower_seq(ctx, t, elems)?;
             let vs: Vec<Var> = parks.iter().map(|n| ctx.unpark(n)).collect();
             for n in &parks {
                 ctx.unbind(n);
             }
             Ok(ctx.let_(Prim::MakeTuple(vs)))
         }
-        Expr::Struct { module, fields } => lower_struct(ctx, module, fields, sp),
+        Expr::Struct { module, fields } => lower_struct(ctx, t, module, fields, sp),
 
         Expr::Call(target, args) => {
             // Lower arg exprs first; park each so they survive subsequent splits.
-            let lowered_args = lower_call_args(ctx, args)?;
+            let lowered_args = lower_call_args(ctx, t, args)?;
             let arg_vars: Vec<Var> = lowered_args.iter().map(|arg| arg.var).collect();
             // Resolve callee.
             let callee_name = match &target.node {
@@ -383,9 +388,9 @@ pub(crate) fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -
         }
 
         Expr::ClosureCall(target, args) => {
-            let lowered_args = lower_call_args(ctx, args)?;
+            let lowered_args = lower_call_args(ctx, t, args)?;
             let arg_vars: Vec<Var> = lowered_args.iter().map(|arg| arg.var).collect();
-            let closure_var = lower_expr(ctx, target, false)?;
+            let closure_var = lower_expr(ctx, t, target, false)?;
             let closure_park = ctx.park(closure_var);
             let closure_var = ctx.unpark(&closure_park);
             if is_tail {
@@ -410,7 +415,7 @@ pub(crate) fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -
             // pattern-matrix lambda in fz-g58.15 (Arc 3); until then both paths
             // reject them identically (three-path parity).
             match lambda_direct_clause(clauses) {
-                Some(clause) => lower_lambda(ctx, &clause.params, &clause.body, sp),
+                Some(clause) => lower_lambda(ctx, t, &clause.params, &clause.body, sp),
                 None => Err(LowerError::Unsupported {
                     span: sp,
                     what: "multi-clause or guarded `fn` requires desugaring (fz-g58.15)".to_string(),
@@ -418,20 +423,20 @@ pub(crate) fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -
             }
         }
 
-        Expr::Case(Some(subject), clauses) => lower_case(ctx, subject, clauses, is_tail, sp),
+        Expr::Case(Some(subject), clauses) => lower_case(ctx, t, subject, clauses, is_tail, sp),
         Expr::Case(None, _) => Err(LowerError::Unsupported {
             span: sp,
             what: "headless case must appear on the right side of a pipe".into(),
         }),
-        Expr::Cond(arms) => lower_cond(ctx, arms, is_tail, sp),
-        Expr::With(bindings, body, else_clauses) => lower_with(ctx, bindings, body, else_clauses, is_tail, sp),
+        Expr::Cond(arms) => lower_cond(ctx, t, arms, is_tail, sp),
+        Expr::With(bindings, body, else_clauses) => lower_with(ctx, t, bindings, body, else_clauses, is_tail, sp),
         // fz-yxs — selective receive: lower into Term::ReceiveMatched with
         // per-clause body/guard fns and an optional after body fn.
-        Expr::Receive { clauses, after } => lower_receive(ctx, clauses, after.as_deref(), is_tail, sp),
-        Expr::Map(entries) => lower_map(ctx, entries),
-        Expr::MapUpdate(base, entries) => lower_map_update(ctx, base, entries),
-        Expr::Index(map, key) => lower_index(ctx, map, key),
-        Expr::Bitstring(fields) => lower_bitstring_expr(ctx, fields),
+        Expr::Receive { clauses, after } => lower_receive(ctx, t, clauses, after.as_deref(), is_tail, sp),
+        Expr::Map(entries) => lower_map(ctx, t, entries),
+        Expr::MapUpdate(base, entries) => lower_map_update(ctx, t, base, entries),
+        Expr::Index(map, key) => lower_index(ctx, t, map, key),
+        Expr::Bitstring(fields) => lower_bitstring_expr(ctx, t, fields),
         Expr::Quote(_) => Err(LowerError::PostExpansionNode {
             span: sp,
             what: "Quote".into(),
@@ -448,10 +453,14 @@ pub(crate) fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -
 /// Lower a sequence of subexpressions, parking each result in env so that any
 /// CPS-split triggered by a later element rebinds the earlier results into the
 /// continuation. Caller unparks/unbinds.
-pub(crate) fn lower_seq(ctx: &mut LowerCtx, exprs: &[Spanned<Expr>]) -> Result<Vec<String>, LowerError> {
+pub(crate) fn lower_seq<T: Types<Ty = Ty>>(
+    ctx: &mut LowerCtx,
+    t: &mut T,
+    exprs: &[Spanned<Expr>],
+) -> Result<Vec<String>, LowerError> {
     let mut parks = Vec::with_capacity(exprs.len());
     for e in exprs {
-        let v = lower_expr(ctx, e, false)?;
+        let v = lower_expr(ctx, t, e, false)?;
         parks.push(ctx.park(v));
     }
     Ok(parks)
@@ -462,7 +471,11 @@ struct LoweredCallArg {
     ascription: Option<TypeExprBody>,
 }
 
-fn lower_call_args(ctx: &mut LowerCtx, args: &[Spanned<Expr>]) -> Result<Vec<LoweredCallArg>, LowerError> {
+fn lower_call_args<T: Types<Ty = Ty>>(
+    ctx: &mut LowerCtx,
+    t: &mut T,
+    args: &[Spanned<Expr>],
+) -> Result<Vec<LoweredCallArg>, LowerError> {
     let mut parks = Vec::with_capacity(args.len());
     let mut ascriptions = Vec::with_capacity(args.len());
     for arg in args {
@@ -470,7 +483,7 @@ fn lower_call_args(ctx: &mut LowerCtx, args: &[Spanned<Expr>]) -> Result<Vec<Low
             Expr::Ascribe(inner, ty) => (inner.as_ref(), Some(ty.clone())),
             _ => (arg, None),
         };
-        let v = lower_expr(ctx, expr, false)?;
+        let v = lower_expr(ctx, t, expr, false)?;
         parks.push(ctx.park(v));
         ascriptions.push(ascription);
     }
@@ -614,8 +627,9 @@ pub(super) fn lower_binop(op: AstBinOp, span: Span) -> Result<BinOp, LowerError>
 /// Lower a pattern that matches `subject_var`. On match failure, jump to
 /// `fail_block`. After a successful match, the current block is "all matched
 /// so far"; `lower_pattern_bind` may split into new blocks via If terminators.
-pub(crate) fn lower_pattern_bind(
+pub(crate) fn lower_pattern_bind<T: Types<Ty = Ty>>(
     ctx: &mut LowerCtx,
+    t: &mut T,
     subject: Var,
     spat: &Spanned<Pattern>,
     fail_block: BlockId,
@@ -663,13 +677,13 @@ pub(crate) fn lower_pattern_bind(
         Pattern::As(name, inner) => {
             ctx.bind(name, subject);
             ctx.name_var(subject, name, pat_span);
-            lower_pattern_bind(ctx, subject, inner, fail_block)
+            lower_pattern_bind(ctx, t, subject, inner, fail_block)
         }
-        Pattern::Tuple(elems) => match_tuple(ctx, subject, elems, fail_block),
-        Pattern::List(elems, tail) => match_list(ctx, subject, elems, tail.as_deref(), fail_block),
-        Pattern::Map(entries) => match_map(ctx, subject, entries, fail_block),
-        Pattern::Struct { module, fields } => match_struct(ctx, subject, module, fields, fail_block),
-        Pattern::Bitstring(fields) => match_bitstring(ctx, subject, fields, fail_block),
+        Pattern::Tuple(elems) => match_tuple(ctx, t, subject, elems, fail_block),
+        Pattern::List(elems, tail) => match_list(ctx, t, subject, elems, tail.as_deref(), fail_block),
+        Pattern::Map(entries) => match_map(ctx, t, subject, entries, fail_block),
+        Pattern::Struct { module, fields } => match_struct(ctx, t, subject, module, fields, fail_block),
+        Pattern::Bitstring(fields) => match_bitstring(ctx, t, subject, fields, fail_block),
     }
 }
 
@@ -681,8 +695,9 @@ pub(crate) fn lower_pattern_bind(
 /// terminators along the way.
 ///
 /// Shared by `lower_pattern_bind` and list-cons lowering.
-pub(super) fn match_tuple(
+pub(super) fn match_tuple<T: Types<Ty = Ty>>(
     ctx: &mut LowerCtx,
+    t: &mut T,
     subject: Var,
     elems: &[Spanned<Pattern>],
     fail_block: BlockId,
@@ -691,20 +706,21 @@ pub(super) fn match_tuple(
     // non-tuple subjects (e.g. an atom flowing into `{:ok, x} <- :err`),
     // projection would read heap garbage without the type test gate.
     let n = elems.len();
-    let tuple_ty = concrete_any_tuple(n);
+    let tuple_ty = concrete_any_tuple(t, n);
     let test = ctx.let_(Prim::TypeTest(subject, Box::new(tuple_ty)));
     let project_b = ctx.cur_mut().block(vec![]);
     ctx.set_if_term(test, project_b, fail_block);
     ctx.cur_block = Some(project_b);
     for (i, elem_pat) in elems.iter().enumerate() {
         let fv = ctx.let_(Prim::TupleField(subject, i as u32));
-        lower_pattern_bind(ctx, fv, elem_pat, fail_block)?;
+        lower_pattern_bind(ctx, t, fv, elem_pat, fail_block)?;
     }
     Ok(())
 }
 
-pub(super) fn match_list(
+pub(super) fn match_list<T: Types<Ty = Ty>>(
     ctx: &mut LowerCtx,
+    t: &mut T,
     subject: Var,
     elems: &[Spanned<Pattern>],
     tail: Option<&Spanned<Pattern>>,
@@ -717,12 +733,12 @@ pub(super) fn match_list(
         ctx.set_if_term(iscons, cont_b, fail_block);
         ctx.cur_block = Some(cont_b);
         let h = ctx.let_(Prim::ListHead(cur));
-        let t = ctx.let_(Prim::ListTail(cur));
-        lower_pattern_bind(ctx, h, elem_pat, fail_block)?;
-        cur = t;
+        let tail_v = ctx.let_(Prim::ListTail(cur));
+        lower_pattern_bind(ctx, t, h, elem_pat, fail_block)?;
+        cur = tail_v;
     }
     match tail {
-        Some(tail_pat) => lower_pattern_bind(ctx, cur, tail_pat, fail_block),
+        Some(tail_pat) => lower_pattern_bind(ctx, t, cur, tail_pat, fail_block),
         None => {
             // Must end with nil.
             let isnil = ctx.let_(Prim::IsEmptyList(cur));
@@ -734,8 +750,9 @@ pub(super) fn match_list(
     }
 }
 
-pub(super) fn match_map(
+pub(super) fn match_map<T: Types<Ty = Ty>>(
     ctx: &mut LowerCtx,
+    t: &mut T,
     subject: Var,
     entries: &[(Spanned<Pattern>, Spanned<Pattern>)],
     fail_block: BlockId,
@@ -748,13 +765,14 @@ pub(super) fn match_map(
         let cont_b = ctx.cur_mut().block(vec![]);
         ctx.set_if_term(is_nil, fail_block, cont_b);
         ctx.cur_block = Some(cont_b);
-        lower_pattern_bind(ctx, got, val_pat, fail_block)?;
+        lower_pattern_bind(ctx, t, got, val_pat, fail_block)?;
     }
     Ok(())
 }
 
-pub(super) fn match_struct(
+pub(super) fn match_struct<T: Types<Ty = Ty>>(
     ctx: &mut LowerCtx,
+    t: &mut T,
     subject: Var,
     _module: &ModuleName,
     fields: &[(String, Spanned<Pattern>)],
@@ -763,13 +781,14 @@ pub(super) fn match_struct(
     for (field, val_pat) in fields {
         ctx.atoms.intern(field);
         let got = ctx.let_(Prim::StructField(subject, field.clone()));
-        lower_pattern_bind(ctx, got, val_pat, fail_block)?;
+        lower_pattern_bind(ctx, t, got, val_pat, fail_block)?;
     }
     Ok(())
 }
 
-pub(super) fn match_bitstring(
+pub(super) fn match_bitstring<T: Types<Ty = Ty>>(
     ctx: &mut LowerCtx,
+    t: &mut T,
     subject: Var,
     fields: &[AstBitField<Spanned<Pattern>>],
     fail_block: BlockId,
@@ -801,7 +820,7 @@ pub(super) fn match_bitstring(
         let next_reader = ctx.let_(Prim::TupleField(result, 2));
         // Park reader so any CPS-split inside the pattern keeps it.
         let r_park = ctx.park(next_reader);
-        lower_pattern_bind(ctx, extracted, &field.value, fail_block)?;
+        lower_pattern_bind(ctx, t, extracted, &field.value, fail_block)?;
         reader = ctx.unpark(&r_park);
         ctx.unbind(&r_park);
     }
@@ -878,13 +897,17 @@ pub(super) fn emit_eq_check(
 // Expression lowerings added in fz-ul4.11.17
 // ----------------------------------------------------------------------
 
-pub(super) fn lower_map(ctx: &mut LowerCtx, entries: &[(Spanned<Expr>, Spanned<Expr>)]) -> Result<Var, LowerError> {
+pub(super) fn lower_map<T: Types<Ty = Ty>>(
+    ctx: &mut LowerCtx,
+    t: &mut T,
+    entries: &[(Spanned<Expr>, Spanned<Expr>)],
+) -> Result<Var, LowerError> {
     let mut key_parks = Vec::with_capacity(entries.len());
     let mut val_parks = Vec::with_capacity(entries.len());
     for (k, v) in entries {
-        let kv = lower_expr(ctx, k, false)?;
+        let kv = lower_expr(ctx, t, k, false)?;
         key_parks.push(ctx.park(kv));
-        let vv = lower_expr(ctx, v, false)?;
+        let vv = lower_expr(ctx, t, v, false)?;
         val_parks.push(ctx.park(vv));
     }
     let pairs: Vec<(Var, Var)> = key_parks
@@ -901,19 +924,20 @@ pub(super) fn lower_map(ctx: &mut LowerCtx, entries: &[(Spanned<Expr>, Spanned<E
     Ok(ctx.let_(Prim::MakeMap(pairs)))
 }
 
-pub(super) fn lower_map_update(
+pub(super) fn lower_map_update<T: Types<Ty = Ty>>(
     ctx: &mut LowerCtx,
+    t: &mut T,
     base: &Spanned<Expr>,
     entries: &[(Spanned<Expr>, Spanned<Expr>)],
 ) -> Result<Var, LowerError> {
-    let bv = lower_expr(ctx, base, false)?;
+    let bv = lower_expr(ctx, t, base, false)?;
     let base_park = ctx.park(bv);
     let mut key_parks = Vec::with_capacity(entries.len());
     let mut val_parks = Vec::with_capacity(entries.len());
     for (k, v) in entries {
-        let kv = lower_expr(ctx, k, false)?;
+        let kv = lower_expr(ctx, t, k, false)?;
         key_parks.push(ctx.park(kv));
-        let vv = lower_expr(ctx, v, false)?;
+        let vv = lower_expr(ctx, t, v, false)?;
         val_parks.push(ctx.park(vv));
     }
     let base_v = ctx.unpark(&base_park);
@@ -932,17 +956,23 @@ pub(super) fn lower_map_update(
     Ok(ctx.let_(Prim::MapUpdate(base_v, pairs)))
 }
 
-pub(super) fn lower_index(ctx: &mut LowerCtx, m: &Spanned<Expr>, k: &Spanned<Expr>) -> Result<Var, LowerError> {
-    let mv = lower_expr(ctx, m, false)?;
+pub(super) fn lower_index<T: Types<Ty = Ty>>(
+    ctx: &mut LowerCtx,
+    t: &mut T,
+    m: &Spanned<Expr>,
+    k: &Spanned<Expr>,
+) -> Result<Var, LowerError> {
+    let mv = lower_expr(ctx, t, m, false)?;
     let m_park = ctx.park(mv);
-    let kv = lower_expr(ctx, k, false)?;
+    let kv = lower_expr(ctx, t, k, false)?;
     let m_resolved = ctx.unpark(&m_park);
     ctx.unbind(&m_park);
     Ok(ctx.let_(Prim::MapGet(m_resolved, kv)))
 }
 
-pub(super) fn lower_struct(
+pub(super) fn lower_struct<T: Types<Ty = Ty>>(
     ctx: &mut LowerCtx,
+    t: &mut T,
     module: &ModuleName,
     fields: &[(String, Spanned<Expr>)],
     span: Span,
@@ -961,7 +991,7 @@ pub(super) fn lower_struct(
     let mut lowered = Vec::with_capacity(order.len());
     for name in order {
         let value = if let Some(expr) = by_name.get(&name) {
-            lower_expr(ctx, expr, false)?
+            lower_expr(ctx, t, expr, false)?
         } else {
             ctx.let_(Prim::Const(Const::Nil))
         };
@@ -973,15 +1003,16 @@ pub(super) fn lower_struct(
     }))
 }
 
-pub(super) fn lower_bitstring_expr(
+pub(super) fn lower_bitstring_expr<T: Types<Ty = Ty>>(
     ctx: &mut LowerCtx,
+    t: &mut T,
     fields: &[AstBitField<Spanned<Expr>>],
 ) -> Result<Var, LowerError> {
     // Lower each field's value expression, parking results so any CPS-split in
     // a later field's value still rebinds earlier ones.
     let mut value_parks = Vec::with_capacity(fields.len());
     for f in fields {
-        let v = lower_expr(ctx, &f.value, false)?;
+        let v = lower_expr(ctx, t, &f.value, false)?;
         value_parks.push(ctx.park(v));
     }
     let mut ir_fields: Vec<BitFieldIr> = Vec::with_capacity(fields.len());
@@ -1000,8 +1031,9 @@ pub(super) fn lower_bitstring_expr(
     }
     Ok(ctx.let_(Prim::MakeBitstring(ir_fields)))
 }
-pub(super) fn lower_case(
+pub(super) fn lower_case<T: Types<Ty = Ty>>(
     ctx: &mut LowerCtx,
+    t: &mut T,
     subject: &Spanned<Expr>,
     clauses: &[MatchClause],
     is_tail: bool,
@@ -1031,7 +1063,7 @@ pub(super) fn lower_case(
             what: "case with no clauses".into(),
         });
     }
-    let sv = lower_expr(ctx, subject, false)?;
+    let sv = lower_expr(ctx, t, subject, false)?;
 
     let join_opt = if is_tail {
         None
@@ -1079,6 +1111,7 @@ pub(super) fn lower_case(
         let saved_env_ref = &saved_env;
         let saved_order_ref = &saved_order;
         let mut cb = |ctx: &mut LowerCtx,
+                      t: &mut T,
                       body_id: BodyId,
                       bindings: Vec<MatchedBinding>,
                       _preconds: Vec<(Var, Ty)>,
@@ -1093,7 +1126,7 @@ pub(super) fn lower_case(
                 ctx.bind(&binding.name, binding.var);
             }
             if let Some(g) = &guard {
-                let guard_var = lower_expr(ctx, g, false)?;
+                let guard_var = lower_expr(ctx, t, g, false)?;
                 let body_b = ctx.cur_mut().block(vec![]);
                 ctx.set_if_term(guard_var, body_b, fall_block);
                 ctx.cur_block = Some(body_b);
@@ -1136,7 +1169,7 @@ pub(super) fn lower_case(
             ctx.terminated = true;
             Ok(())
         };
-        let result = lower_pattern_matrix_to_current_fn(ctx, pattern_matrix, fail_block, &mut cb);
+        let result = lower_pattern_matrix_to_current_fn(ctx, t, pattern_matrix, fail_block, &mut cb);
         ctx.branch_origin = prev_origin;
         result?;
     }
@@ -1147,7 +1180,7 @@ pub(super) fn lower_case(
             continue;
         };
         let _ = switch_to_cont_fn(ctx, &cont, 0);
-        let result = lower_expr(ctx, &clause.body, arm_is_tail)?;
+        let result = lower_expr(ctx, t, &clause.body, arm_is_tail)?;
         finalize_arm(ctx, result, join_opt.as_ref());
     }
 
@@ -1160,8 +1193,9 @@ pub(super) fn lower_case(
     }
 }
 
-pub(super) fn lower_cond(
+pub(super) fn lower_cond<T: Types<Ty = Ty>>(
     ctx: &mut LowerCtx,
+    t: &mut T,
     arms: &[(Spanned<Expr>, Spanned<Expr>)],
     is_tail: bool,
     cond_span: Span,
@@ -1216,7 +1250,7 @@ pub(super) fn lower_cond(
     for (i, (test, body)) in arms.iter().enumerate() {
         let next_id = arm_conts.get(i + 1).map(|c| c.id).unwrap_or(fail_cont.id);
         let _ = switch_to_cont_fn(ctx, &arm_conts[i], 0);
-        let cv = lower_expr(ctx, test, false)?;
+        let cv = lower_expr(ctx, t, test, false)?;
 
         // body_b + fall_b in whatever fn ctx.cur is now (arm_conts[i] or
         // a CPS-split descendant if the test contained a non-tail call).
@@ -1244,7 +1278,7 @@ pub(super) fn lower_cond(
         ctx.cur_block = Some(body_b);
         ctx.terminated = false;
         let arm_is_tail = join_opt.is_none();
-        let result = lower_expr(ctx, body, arm_is_tail)?;
+        let result = lower_expr(ctx, t, body, arm_is_tail)?;
         finalize_arm(ctx, result, join_opt.as_ref());
     }
 
@@ -1263,8 +1297,9 @@ pub(super) fn lower_cond(
         Ok(Var(0))
     }
 }
-pub(super) fn lower_with(
+pub(super) fn lower_with<T: Types<Ty = Ty>>(
     ctx: &mut LowerCtx,
+    t: &mut T,
     bindings: &[WithBinding],
     body: &Spanned<Expr>,
     else_clauses: &[MatchClause],
@@ -1303,10 +1338,10 @@ pub(super) fn lower_with(
     for binding in bindings {
         match binding {
             WithBinding::Bare(e) => {
-                lower_expr(ctx, e, false)?;
+                lower_expr(ctx, t, e, false)?;
             }
             WithBinding::Match(pat, e) => {
-                let v = lower_expr(ctx, e, false)?;
+                let v = lower_expr(ctx, t, e, false)?;
                 // Park v so any CPS-split during pattern lowering rebinds it.
                 let v_park = ctx.park(v);
                 // Per-binding mismatch block — TailCalls with_fail_cont
@@ -1338,7 +1373,7 @@ pub(super) fn lower_with(
                 ctx.unbind(&v_park);
                 let prev_origin = ctx.branch_origin;
                 ctx.branch_origin = BranchOrigin::PatternBind;
-                let res = lower_pattern_bind(ctx, v_resolved, pat, mismatch_b);
+                let res = lower_pattern_bind(ctx, t, v_resolved, pat, mismatch_b);
                 ctx.branch_origin = prev_origin;
                 res?;
             }
@@ -1347,7 +1382,7 @@ pub(super) fn lower_with(
 
     // Main body lowered inline. Finalize via join_opt or Return.
     let arm_is_tail = join_opt.is_none();
-    let result = lower_expr(ctx, body, arm_is_tail)?;
+    let result = lower_expr(ctx, t, body, arm_is_tail)?;
     finalize_arm(ctx, result, join_opt.as_ref());
 
     // -- Build with_fail_cont. Receives (unmatched_value, ...captures).
@@ -1399,6 +1434,7 @@ pub(super) fn lower_with(
             let saved_fail_env_ref = &saved_fail_env;
             let saved_fail_order_ref = &saved_fail_order;
             let mut cb = |ctx: &mut LowerCtx,
+                          t: &mut T,
                           body_id: BodyId,
                           bindings: Vec<MatchedBinding>,
                           _preconds: Vec<(Var, Ty)>,
@@ -1413,7 +1449,7 @@ pub(super) fn lower_with(
                     ctx.bind(&binding.name, binding.var);
                 }
                 if let Some(g) = &guard {
-                    let guard_var = lower_expr(ctx, g, false)?;
+                    let guard_var = lower_expr(ctx, t, g, false)?;
                     let body_b = ctx.cur_mut().block(vec![]);
                     ctx.set_if_term(guard_var, body_b, fall_block);
                     ctx.cur_block = Some(body_b);
@@ -1456,7 +1492,7 @@ pub(super) fn lower_with(
                 ctx.terminated = true;
                 Ok(())
             };
-            let result = lower_pattern_matrix_to_current_fn(ctx, pattern_matrix, fail_block, &mut cb);
+            let result = lower_pattern_matrix_to_current_fn(ctx, t, pattern_matrix, fail_block, &mut cb);
             ctx.branch_origin = prev_origin;
             result?;
         }
@@ -1466,7 +1502,7 @@ pub(super) fn lower_with(
                 continue;
             };
             let _ = switch_to_cont_fn(ctx, &cont, 0);
-            let result = lower_expr(ctx, &clause.body, arm_is_tail)?;
+            let result = lower_expr(ctx, t, &clause.body, arm_is_tail)?;
             finalize_arm(ctx, result, join_opt.as_ref());
         }
     }

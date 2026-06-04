@@ -15,6 +15,7 @@ use crate::diag::{Diagnostic, Span, SpanOrigin, codes};
 use crate::exec::ast_value::{expr_to_value, value_to_expr};
 use crate::exec::eval::CompileTimeEvaluator;
 use crate::exec::value::Value;
+use crate::types::{RenderTypes, Ty, Types};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
@@ -149,14 +150,23 @@ impl Error for MacroError {}
 /// the program (so macros can call other macros and regular fns), then
 /// expands every non-macro fn body. Macro bodies themselves are left
 /// untouched — they're meta-code, not subject to expansion.
+#[cfg(test)]
 pub fn expand_program(prog: &mut Program) -> Result<(), Box<MacroError>> {
+    let mut t = crate::types::new();
+    expand_program_with_types(&mut t, prog)
+}
+
+pub fn expand_program_with_types<T>(t: &mut T, prog: &mut Program) -> Result<(), Box<MacroError>>
+where
+    T: Types<Ty = Ty> + RenderTypes,
+{
     // Always run the item-level pass first (it doesn't need the macros set
     // since collect_macros walks both Item::Fn and the resulting Item::Fn
     // post-splice). After items are spliced, run expression-level expansion.
     let macros = collect_macros(prog);
     let interp = CompileTimeEvaluator::new();
     interp
-        .load_program(prog)
+        .load_program_with_types(t, prog)
         .map_err(|e| Box::new(MacroError::LoadFailed { inner: e }))?;
 
     // Item-level expansion: replace Item::MacroCall with whatever items
@@ -1292,7 +1302,6 @@ mod tests {
     use crate::frontend::resolve::flatten_modules;
     use crate::parser::Parser;
     use crate::parser::lexer::Lexer;
-    use crate::types::ConcreteTypes;
 
     fn parse(src: &str) -> Program {
         let toks = Lexer::new(src).tokenize().expect("lex");
@@ -1303,7 +1312,7 @@ mod tests {
     /// return main's return value.
     fn run(src: &str) -> Value {
         let prog = parse(src);
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let mut prog = flatten_modules(&mut ct, prog).expect("flatten");
         expand_program(&mut prog).expect("expand");
         let interp = CompileTimeEvaluator::new();

@@ -241,7 +241,7 @@ mod tests {
         BinOp, CallsiteIdent, Const, Cont, ExternArg, ExternId, ExternTy, FnBuilder, FnId, ModuleBuilder, Prim, Term,
     };
     use crate::telemetry::{Capture, ConfiguredTelemetry, NullTelemetry, Value};
-    use crate::types::{ConcreteTypes, Types};
+    use crate::types::Types;
 
     /// Test 1: Dead Const removed; live Const (used by a Call arg) kept.
     ///
@@ -551,7 +551,7 @@ mod tests {
     ///   c ∈ all_used but c ∉ if_only_conds (dual-use)
     #[test]
     fn classify_var_uses_separates_pure_branch_from_dual_use() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let int_ty = Types::int(&mut ct);
         // --- pure-branch case ---
         let mut bm = FnBuilder::new(FnId(0), "pure");

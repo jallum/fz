@@ -623,7 +623,6 @@ pub(crate) type SpecKeySet = HashSet<SpecKey>;
 /// returned value that flows into the continuation.
 pub(crate) type IncomingParamCallableCapabilities = HashMap<BodyKey, Vec<Option<CallableCapability>>>;
 
-
 /// Termination tripwire. The proof above (see `plan_module`'s doc) shows the
 /// worklist terminates in O(|specs| · H · |edges|) pops. This bound is
 /// intentionally loose; a hit indicates a violated monotonicity, equivalence,

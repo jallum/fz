@@ -89,12 +89,12 @@ pub(crate) fn term_effects(term: &Term) -> EffectSummary {
 mod tests {
     use super::*;
     use crate::fz_ir::{CallsiteIdent, ExternArg, ExternDecl, ExternId, ExternTy, Var};
-    use crate::types::{ConcreteTypes, Types};
+    use crate::types::Types;
 
     fn module_with_extern(symbol: &str, ret: ExternTy) -> Module {
         let mut module = Module::new();
         module.extern_idx.insert(ExternId(0), 0);
-        let mut types = ConcreteTypes;
+        let mut types = crate::types::new();
         module.externs.push(ExternDecl {
             id: ExternId(0),
             fz_name: symbol.to_owned(),

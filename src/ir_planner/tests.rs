@@ -35,7 +35,7 @@ use crate::test_support::{
     linked_runtime_module, lower_frontend_module, runtime_graph_planner_activation_projection_signals,
     runtime_graph_reachable_materialized_body_signals,
 };
-use crate::types::{ClosureTypes, ConcreteTypes, KeySlot, Ty, TypeVarId, Types, display_key_slots, key_slots_from_tys};
+use crate::types::{ClosureTypes, DefaultTypes, KeySlot, Ty, TypeVarId, Types, display_key_slots, key_slots_from_tys};
 use std::collections::{HashMap, HashSet};
 use std::fs::read_to_string;
 use std::slice::from_ref;
@@ -69,7 +69,7 @@ fn module_plan_spec_ty<'a>(mt: &'a ModulePlan, fn_id: FnId, input_tys: &[Ty]) ->
     mt.specs.get(key)
 }
 
-fn lambda_any_key_specs(t: &mut ConcreteTypes, m: &Module, mt: &ModulePlan) -> Vec<SpecKey> {
+fn lambda_any_key_specs(t: &mut DefaultTypes, m: &Module, mt: &ModulePlan) -> Vec<SpecKey> {
     mt.specs
         .keys()
         .filter(|key| {
@@ -108,7 +108,7 @@ fn build_module(fns: Vec<FnIr>) -> Module {
 fn lower_src_for_plan(src: &str) -> Module {
     let toks = Lexer::new(src).tokenize().expect("lex");
     let prog = Parser::new(toks).parse_program().expect("parse");
-    lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower")
+    lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower")
 }
 
 fn count_if_terminators(f: &FnIr) -> usize {
@@ -210,7 +210,7 @@ fn test_callback_return_demand(demand: CallbackReturnDemand) -> ReturnDemand {
     }
 }
 
-fn extern_decl(t: &mut ConcreteTypes, id: ExternId, symbol: &str, ret: ExternTy) -> ExternDecl {
+fn extern_decl(t: &mut DefaultTypes, id: ExternId, symbol: &str, ret: ExternTy) -> ExternDecl {
     ExternDecl {
         id,
         fz_name: symbol.to_string(),
@@ -229,7 +229,7 @@ fn extern_decl(t: &mut ConcreteTypes, id: ExternId, symbol: &str, ret: ExternTy)
 
 /// fz-pky.2 — test helper. Returns "the most narrow registered
 /// spec for fn at index i, or an ad-hoc any-key view if unregistered."
-fn fn_view(t: &mut ConcreteTypes, m: &Module, mt: &ModulePlan, i: usize) -> SpecPlan {
+fn fn_view(t: &mut DefaultTypes, m: &Module, mt: &ModulePlan, i: usize) -> SpecPlan {
     let fid = m.fns[i].id;
     if let Some(ft) = mt.any_spec_for(fid) {
         return ft.clone();
@@ -240,7 +240,7 @@ fn fn_view(t: &mut ConcreteTypes, m: &Module, mt: &ModulePlan, i: usize) -> Spec
     type_fn(t, &m.fns[i], m, Some(&any_key))
 }
 
-fn assert_ty_subtype(t: &mut ConcreteTypes, ty: &Ty, expected: &Ty) {
+fn assert_ty_subtype(t: &mut DefaultTypes, ty: &Ty, expected: &Ty) {
     assert!(
         t.is_subtype(ty, expected),
         "expected subtype of {}, got {}",
@@ -249,11 +249,11 @@ fn assert_ty_subtype(t: &mut ConcreteTypes, ty: &Ty, expected: &Ty) {
     );
 }
 
-fn assert_ty_not_empty(t: &ConcreteTypes, ty: &Ty) {
+fn assert_ty_not_empty(t: &DefaultTypes, ty: &Ty) {
     assert!(!t.is_empty(ty), "unexpected empty type: {}", t.display(ty));
 }
 
-fn ty_for_var_in_fn(t: &mut ConcreteTypes, m: &Module, fn_index: usize, var: Var) -> Ty {
+fn ty_for_var_in_fn(t: &mut DefaultTypes, m: &Module, fn_index: usize, var: Var) -> Ty {
     let mt = plan_module(t, m, &NullTelemetry);
     fn_view(t, m, &mt, fn_index)
         .vars
@@ -262,14 +262,14 @@ fn ty_for_var_in_fn(t: &mut ConcreteTypes, m: &Module, fn_index: usize, var: Var
         .clone()
 }
 
-fn only_effect_summary(t: &mut ConcreteTypes, m: &Module, fid: FnId) -> EffectSummary {
+fn only_effect_summary(t: &mut DefaultTypes, m: &Module, fid: FnId) -> EffectSummary {
     let mt = plan_module(t, m, &NullTelemetry);
     *mt.fn_effects.get(&fid).expect("missing effect summary for fn")
 }
 
 #[test]
 fn effect_summary_tracks_allocation_without_observability() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mut b = FnBuilder::new(FnId(0), "main");
     let entry = b.block(vec![]);
     let one = b.let_(entry, Prim::Const(Const::Int(1)));
@@ -285,7 +285,7 @@ fn effect_summary_tracks_allocation_without_observability() {
 
 #[test]
 fn effect_summary_marks_extern_and_heap_stats_observer() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mut b = FnBuilder::new(FnId(0), "main");
     let entry = b.block(vec![]);
     let stats = b.let_(entry, Prim::Extern(CallsiteIdent::synthetic(), ExternId(0), vec![]));
@@ -306,7 +306,7 @@ fn effect_summary_marks_extern_and_heap_stats_observer() {
 
 #[test]
 fn effect_summary_propagates_observable_tail_calls() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mut helper = FnBuilder::new(FnId(1), "helper");
     let helper_entry = helper.block(vec![]);
     let nil = helper.let_(
@@ -345,7 +345,7 @@ fn const_int_typed_as_singleton() {
     let v = b.let_(entry, Prim::Const(Const::Int(42)));
     b.set_terminator(entry, Term::Halt(v));
     let m = build_module(vec![b.build()]);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mt = plan_module_quiet(&mut t, &m);
     let ty = fn_view(&mut t, &m, &mt, 0).vars.get(&v).unwrap().clone();
     assert_eq!(t.as_int_singleton(&ty), Some(42));
@@ -360,7 +360,7 @@ fn add1_body_is_int_top_when_param_is_any() {
     let sum = b.let_(entry, Prim::BinOp(BinOp::Add, x, one));
     b.set_terminator(entry, Term::Return(sum));
     let m = build_module(vec![b.build()]);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mt = plan_module_quiet(&mut t, &m);
     let sum_t = fn_view(&mut t, &m, &mt, 0).vars.get(&sum).unwrap().clone();
     let int = t.int();
@@ -379,7 +379,7 @@ fn make_list_of_ints() {
     let l = b.let_(entry, Prim::MakeList(vec![a, bv, cv], None));
     b.set_terminator(entry, Term::Return(l));
     let m = build_module(vec![b.build()]);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mt = plan_module_quiet(&mut t, &m);
     let lt = fn_view(&mut t, &m, &mt, 0).vars.get(&l).unwrap().clone();
     let elem = t.list_element_type(&lt);
@@ -398,7 +398,7 @@ fn list_literal_onto_empty_list_keeps_head_element_type() {
     b.set_terminator(entry, Term::Return(cons));
 
     let m = build_module(vec![b.build()]);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mt = plan_module_quiet(&mut t, &m);
     let cons_t = fn_view(&mut t, &m, &mt, 0).vars.get(&cons).unwrap().clone();
     let elem = t.list_element_type(&cons_t);
@@ -416,7 +416,7 @@ fn lowered_list_freeze_preserves_make_list_type_with_tail() {
     b.set_terminator(entry, Term::Return(list));
 
     let mut m = build_module(vec![b.build()]);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let tail_elem = t.atom_lit("tail_elem");
     let tail_ty = t.list(tail_elem.clone());
     let original_types = type_fn(&mut t, &m.fns[0], &m, Some(from_ref(&tail_ty)));
@@ -455,7 +455,7 @@ fn goto_joins_param_types_across_predecessors() {
     b.set_terminator(bb2, Term::Goto(bb3, vec![two]));
     b.set_terminator(bb3, Term::Return(joined));
     let m = build_module(vec![b.build()]);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mt = plan_module_quiet(&mut t, &m);
     let join_t = fn_view(&mut t, &m, &mt, 0).vars.get(&joined).unwrap().clone();
     let one = t.int_lit(1);
@@ -478,7 +478,7 @@ fn tuple_field_projects_elem_descr() {
     let f0 = b.let_(entry, Prim::TupleField(t, 0));
     b.set_terminator(entry, Term::Return(f0));
     let m = build_module(vec![b.build()]);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mt = plan_module_quiet(&mut t, &m);
     let f0_t = fn_view(&mut t, &m, &mt, 0).vars.get(&f0).unwrap().clone();
     assert_eq!(t.as_int_singleton(&f0_t), Some(1), "got {}", t.display(&f0_t));
@@ -494,7 +494,7 @@ fn list_head_yields_element_type() {
     let h = b.let_(entry, Prim::ListHead(l));
     b.set_terminator(entry, Term::Return(h));
     let m = build_module(vec![b.build()]);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mt = plan_module_quiet(&mut t, &m);
     let h_t = fn_view(&mut t, &m, &mt, 0).vars.get(&h).unwrap().clone();
     let int = t.int();
@@ -519,7 +519,7 @@ fn if_is_empty_list_narrows_v_to_empty_list_in_then_branch() {
     b.set_terminator(then_b, Term::Return(l));
     b.set_terminator(else_b, Term::Return(l));
     let m = build_module(vec![b.build()]);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mt = plan_module_quiet(&mut t, &m);
 
     // In then_b's entry env, l is narrowed to the explicit empty-list
@@ -561,7 +561,7 @@ fn if_is_list_cons_narrows_only_then_branch_to_non_empty_list() {
     b.set_terminator(then_b, Term::Return(value));
     b.set_terminator(else_b, Term::Return(value));
     let m = build_module(vec![b.build()]);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mt = plan_module_quiet(&mut t, &m);
     let ft = fn_view(&mut t, &m, &mt, 0);
 
@@ -599,7 +599,7 @@ fn if_eq_with_int_singleton_narrows_var_in_then_branch() {
     b.set_terminator(then_b, Term::Return(x));
     b.set_terminator(else_b, Term::Return(x));
     let m = build_module(vec![b.build()]);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mt = plan_module_quiet(&mut t, &m);
 
     let ft = fn_view(&mut t, &m, &mt, 0);
@@ -628,7 +628,7 @@ fn nested_tuple_projection() {
     let p00 = b.let_(entry, Prim::TupleField(p0, 0));
     b.set_terminator(entry, Term::Return(p00));
     let m = build_module(vec![b.build()]);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mt = plan_module_quiet(&mut t, &m);
     let p00_t = fn_view(&mut t, &m, &mt, 0).vars.get(&p00).unwrap().clone();
     assert_eq!(t.as_int_singleton(&p00_t), Some(7), "got {}", t.display(&p00_t));
@@ -647,7 +647,7 @@ fn lowered_tuple_freeze_preserves_make_tuple_type() {
     let mut lowered = original.clone();
     lower_tuple_destinations(&mut lowered);
 
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let before = ty_for_var_in_fn(&mut t, &original, 0, tuple);
     let after = ty_for_var_in_fn(&mut t, &lowered, 0, tuple);
     assert!(
@@ -670,19 +670,19 @@ fn lowered_tuple_fields_project_variable_operand_types() {
     b.set_terminator(entry, Term::Return(hi_field));
 
     let mut original = build_module(vec![b.build()]);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let int = t.int();
     let lo_ty = t.list(int.clone());
     let hi_ty = t.non_empty_list(int);
     let original_types = type_fn(
-        &mut ConcreteTypes,
+        &mut crate::types::new(),
         &original.fns[0],
         &original,
         Some(&[lo_ty.clone(), hi_ty.clone()]),
     );
     lower_tuple_destinations(&mut original);
     let lowered_types = type_fn(
-        &mut ConcreteTypes,
+        &mut crate::types::new(),
         &original.fns[0],
         &original,
         Some(&[lo_ty.clone(), hi_ty.clone()]),
@@ -738,7 +738,7 @@ fn malformed_tuple_token_reuse_falls_back_to_any() {
     b.set_terminator(entry, Term::Return(freeze));
     let m = build_module(vec![b.build()]);
 
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let ty = ty_for_var_in_fn(&mut t, &m, 0, freeze);
     let any = t.any();
     assert!(
@@ -772,10 +772,13 @@ fn list_is_nil_on_int_var_flags_true_branch_unreachable() {
     // never-reached fns carry no spec and are not diagnosed.)
     let mut mb = FnBuilder::new(FnId(1), "main");
     let mentry = mb.block(vec![]);
-    let cl = mb.let_(mentry, Prim::MakeClosure(CallsiteIdent::from_source(Span::DUMMY), FnId(0), vec![]));
+    let cl = mb.let_(
+        mentry,
+        Prim::MakeClosure(CallsiteIdent::from_source(Span::DUMMY), FnId(0), vec![]),
+    );
     mb.set_terminator(mentry, Term::Halt(cl));
     let m = build_module(vec![b.build(), mb.build()]);
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let t = plan_module(&mut ct, &m, &NullTelemetry);
     let diags = collect_diagnostics(&mut ct, &m, &t, &NullTelemetry);
     assert_eq!(diags.len(), 1, "expected one unreachable arm, got {:?}", diags);
@@ -790,7 +793,7 @@ fn happy_path_emits_no_warnings() {
     let v = b.let_(entry, Prim::Const(Const::Int(42)));
     b.set_terminator(entry, Term::Halt(v));
     let m = build_module(vec![b.build()]);
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let t = plan_module(&mut ct, &m, &NullTelemetry);
     let diags = collect_diagnostics(&mut ct, &m, &t, &NullTelemetry);
     assert!(diags.as_slice().is_empty(), "expected no warnings, got {:?}", diags);
@@ -829,10 +832,13 @@ fn eq_then_eq_dup_clause_flags_second_arm_unreachable() {
     // registered and analyzed (diagnostics run on reached specs only).
     let mut mb = FnBuilder::new(FnId(1), "main");
     let mentry = mb.block(vec![]);
-    let cl = mb.let_(mentry, Prim::MakeClosure(CallsiteIdent::from_source(Span::DUMMY), FnId(0), vec![]));
+    let cl = mb.let_(
+        mentry,
+        Prim::MakeClosure(CallsiteIdent::from_source(Span::DUMMY), FnId(0), vec![]),
+    );
     mb.set_terminator(mentry, Term::Halt(cl));
     let m = build_module(vec![b.build(), mb.build()]);
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let t = plan_module(&mut ct, &m, &NullTelemetry);
     let diags = collect_diagnostics(&mut ct, &m, &t, &NullTelemetry);
     // The dead-block id is mentioned in the diagnostic's notes (post-
@@ -859,7 +865,7 @@ fn map_get_with_singleton_key_returns_field_type() {
     let got = b.let_(entry, Prim::MapGet(mp, k));
     b.set_terminator(entry, Term::Return(got));
     let m = build_module(vec![b.build()]);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mt = plan_module_quiet(&mut t, &m);
     let got_t = fn_view(&mut t, &m, &mt, 0).vars.get(&got).unwrap().clone();
     // The map_field_lookup contributes int_lit(42); plus the implicit "may be absent"
@@ -889,7 +895,7 @@ fn lowered_make_map_preserves_static_field_type() {
     let mut lowered = original.clone();
     lower_map_destinations(&mut lowered);
 
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let before = ty_for_var_in_fn(&mut t, &original, 0, map);
     let after = ty_for_var_in_fn(&mut t, &lowered, 0, map);
     assert!(
@@ -923,7 +929,7 @@ fn lowered_map_update_preserves_static_refinement() {
     let mut lowered = original.clone();
     lower_map_destinations(&mut lowered);
 
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let before = ty_for_var_in_fn(&mut t, &original, 0, updated);
     let after = ty_for_var_in_fn(&mut t, &lowered, 0, updated);
     assert!(
@@ -946,7 +952,7 @@ fn lowered_make_map_dynamic_key_is_map_top() {
     let mut lowered = build_module(vec![b.build()]);
     lower_map_destinations(&mut lowered);
 
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let map_ty = ty_for_var_in_fn(&mut t, &lowered, 0, map);
     let top = t.map_top();
     assert!(
@@ -988,10 +994,13 @@ fn unreachable_arm_diagnostic_includes_type_vocabulary() {
     // registered and analyzed (diagnostics run on reached specs only).
     let mut mb = FnBuilder::new(FnId(1), "main");
     let mentry = mb.block(vec![]);
-    let cl = mb.let_(mentry, Prim::MakeClosure(CallsiteIdent::from_source(Span::DUMMY), FnId(0), vec![]));
+    let cl = mb.let_(
+        mentry,
+        Prim::MakeClosure(CallsiteIdent::from_source(Span::DUMMY), FnId(0), vec![]),
+    );
     mb.set_terminator(mentry, Term::Halt(cl));
     let m = build_module(vec![b.build(), mb.build()]);
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let t = plan_module(&mut ct, &m, &NullTelemetry);
     let diags = collect_diagnostics(&mut ct, &m, &t, &NullTelemetry);
     let d = diags.as_slice().iter().next().expect("at least one diagnostic");
@@ -1058,7 +1067,7 @@ fn entry_param_unions_across_multiple_callers() {
     );
 
     let m = build_module(vec![cb.build(), a.build(), bb.build()]);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mt = plan_module_quiet(&mut t, &m);
     let xt = fn_view(&mut t, &m, &mt, 0).vars.get(&x).unwrap().clone();
     // x should accept both int_lit(1) and the atom — the union.
@@ -1103,7 +1112,7 @@ fn closure_target_with_no_direct_callers_keeps_any_entry_params() {
     mb.set_terminator(mentry, Term::Halt(cl));
 
     let m = build_module(vec![wb.build(), mb.build()]);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mt = plan_module_quiet(&mut t, &m);
     let nt = fn_view(&mut t, &m, &mt, 0).vars.get(&n).unwrap().clone();
     let any = t.any();
@@ -1142,7 +1151,7 @@ fn closure_target_with_direct_caller_registers_only_typed_callsite_specs() {
     );
 
     let m = build_module(vec![wb.build(), mb.build()]);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mt = plan_module_quiet(&mut t, &m);
     // worker's narrow spec exists with n=int.
     let narrow_spec = module_plan_spec_ty(&mt, FnId(0), &[t.int_lit(42)])
@@ -1179,7 +1188,7 @@ fn reachable_specs_do_not_seed_uninvoked_closure_targets() {
     mb.set_terminator(mentry, Term::Halt(cl));
 
     let _m = build_module(vec![wb.build(), mb.build()]);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let any_key = key_tys(vec![t.any()]);
     let int_key = key_tys(vec![t.int()]);
     let main_key = key_tys(vec![]);
@@ -1229,7 +1238,7 @@ fn planned_program_materialization_reports_executable_body_folds() {
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&["fz", "planner"], cap.handler());
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module_plan = plan_module_quiet(&mut t, &m);
     let planned_program = materialize_program(&mut t, &m, &module_plan, &tel);
 
@@ -1312,7 +1321,7 @@ fn planner_specializes_pair_by_tuple_destructure_and_value_demand() {
                  dbg({a, b, pair(2)})\n\
                end\n";
     let m = lower_src_for_plan(src);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module_plan = plan_module_quiet(&mut t, &m);
     let planned_program = materialize_program(&mut t, &m, &module_plan, &NullTelemetry);
     let pair = m.fns.iter().find(|f| f.name == "pair").expect("pair fn");
@@ -1381,7 +1390,7 @@ fn fn_view_returns_narrowed_spec_for_direct_caller() {
     );
 
     let m = build_module(vec![a.build(), b.build()]);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mt = plan_module_quiet(&mut t, &m);
 
     assert_eq!(mt.specs.len(), 2);
@@ -1396,7 +1405,7 @@ fn fn_view_returns_narrowed_spec_for_direct_caller() {
 
 // ---- fz-ul4.29.12.1 helper tests ----
 
-fn plan_module_prechecked(t: &mut ConcreteTypes, module: &Module) -> (ModulePlan, Capture) {
+fn plan_module_prechecked(t: &mut DefaultTypes, module: &Module) -> (ModulePlan, Capture) {
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
@@ -1406,30 +1415,30 @@ fn plan_module_prechecked(t: &mut ConcreteTypes, module: &Module) -> (ModulePlan
     (plan, cap)
 }
 
-fn plan_module_quiet(t: &mut ConcreteTypes, module: &Module) -> ModulePlan {
+fn plan_module_quiet(t: &mut DefaultTypes, module: &Module) -> ModulePlan {
     let (plan, _cap) = plan_module_prechecked(t, module);
     plan
 }
 
 fn assert_module_plan_consistent(module: &Module) {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let (_plan, _cap) = plan_module_prechecked(&mut t, module);
 }
 
 fn assert_pipeline_consistent(src: &str) {
     let toks = Lexer::new(src).tokenize().expect("lex");
     let prog = Parser::new(toks).parse_program().expect("parse");
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let prog = flatten_modules(&mut t, prog).expect("flatten");
     let ir = lower_program(&mut t, &prog, &NullTelemetry).expect("lower");
     let (_plan, _cap) = plan_module_prechecked(&mut t, &ir);
 }
 
-fn pipeline(src: &str, tel: &dyn Telemetry) -> (ConcreteTypes, Module, ModulePlan) {
+fn pipeline(src: &str, tel: &dyn Telemetry) -> (DefaultTypes, Module, ModulePlan) {
     assert_pipeline_consistent(src);
     let toks = Lexer::new(src).tokenize().expect("lex");
     let prog = Parser::new(toks).parse_program().expect("parse");
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let prog = flatten_modules(&mut t, prog).expect("flatten");
     let ir = lower_program(&mut t, &prog, &NullTelemetry).expect("lower");
     let mt = plan_module(&mut t, &ir, tel);
@@ -1445,7 +1454,7 @@ fn pipeline(src: &str, tel: &dyn Telemetry) -> (ConcreteTypes, Module, ModulePla
 #[test]
 fn quicksort_partition_accumulators_converge_to_one_spec() {
     let module = linked_runtime_module(include_str!("../../fixtures/quicksort/input.fz"));
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mt = plan_module(&mut t, &module, &NullTelemetry);
     let partition_id = module.fn_by_name("partition").expect("quicksort defines partition").id;
     let partition_specs: Vec<&SpecKey> = mt.specs.keys().filter(|k| k.fn_id == partition_id).collect();
@@ -1483,7 +1492,7 @@ fn quicksort_partition_accumulators_converge_to_one_spec() {
 #[test]
 fn return_capabilities_classify_quicksort_fn_shapes() {
     let module = linked_runtime_module(include_str!("../../fixtures/quicksort/input.fz"));
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mt = plan_module(&mut t, &module, &NullTelemetry);
     let cap = |name: &str| {
         let id = module
@@ -1524,12 +1533,12 @@ fn frontend_module(src: &str) -> Module {
     lower_frontend_module(src)
 }
 
-fn frontend_plan(src: &str, tel: &dyn Telemetry) -> (ConcreteTypes, Module, ModulePlan) {
-    let mut check_t = ConcreteTypes;
+fn frontend_plan(src: &str, tel: &dyn Telemetry) -> (DefaultTypes, Module, ModulePlan) {
+    let mut check_t = crate::types::new();
     let check_module = frontend_module(src);
     let (_check_plan, _check_cap) = plan_module_prechecked(&mut check_t, &check_module);
 
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module = frontend_module(src);
     let plan = plan_module(&mut t, &module, tel);
     (t, module, plan)
@@ -1537,7 +1546,7 @@ fn frontend_plan(src: &str, tel: &dyn Telemetry) -> (ConcreteTypes, Module, Modu
 
 #[test]
 fn declared_reduce_while_return_uses_closure_return_witness() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let entry_var = t.type_var(TypeVarId(0));
     let acc_var = t.type_var(TypeVarId(1));
     let cont = t.atom_lit("cont");
@@ -1952,7 +1961,7 @@ fn compile_elides_named_ref_callable_fallback_when_calls_are_fully_resolved() {
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
 
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let _graph =
         linked_runtime_graph_with_telemetry(&mut t, include_str!("../type_infer/fixtures/poly_named_ref.fz"), &tel);
 
@@ -2829,7 +2838,7 @@ fn planner_projects_enum_reduce_runtime_graph_from_activation_facts() {
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
 
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module = linked_runtime_module(include_str!("../type_infer/fixtures/enum_reduce.fz"));
     assert_module_plan_consistent(&module);
     let _ = plan_module(&mut t, &module, &tel);
@@ -2903,7 +2912,7 @@ fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
 
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = linked_runtime_graph_with_telemetry(
         &mut t,
         include_str!("../type_infer/fixtures/enum_reduce_operator_ref.fz"),
@@ -3043,7 +3052,7 @@ fn planner_projects_enum_reduce_range_runtime_graph_from_activation_facts() {
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
 
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let module = linked_runtime_module(include_str!("../type_infer/fixtures/enum_reduce_range.fz"));
     assert_module_plan_consistent(&module);
     let _ = plan_module(&mut t, &module, &tel);
@@ -3159,7 +3168,7 @@ fn planner_projects_plain_spawn_child_through_callable_boundary() {
 #[test]
 fn runtime_graph_enum_take_indirect_calls_keep_callable_capabilities() {
     let src = "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = linked_runtime_graph(src);
     let planned_program = materialize_program(&mut t, &graph.module, &graph.module_plan, &NullTelemetry);
 
@@ -3196,7 +3205,7 @@ fn runtime_graph_enum_take_indirect_calls_keep_callable_capabilities() {
 #[test]
 fn runtime_graph_enum_take_callers_supply_callable_args_to_indirect_closure_specs() {
     let src = "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let graph = linked_runtime_graph(src);
     let planned_program = materialize_program(&mut t, &graph.module, &graph.module_plan, &NullTelemetry);
 
@@ -3363,7 +3372,7 @@ fn main(), do: dbg(sum([1, 2, 3, 4, 5]))
 
 #[test]
 fn cont_key_from_slot0_places_slot0_captures_and_padding() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let slot0 = t.int_lit(7);
     let captured_a = Var(10);
     let captured_b = Var(11);
@@ -3384,7 +3393,7 @@ fn cont_key_from_slot0_places_slot0_captures_and_padding() {
 
 #[test]
 fn cont_key_from_slot0_handles_zero_arity_continuation() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let any = t.any();
     let int = t.int();
     let key = cont_key_from_slot0(&any, 0, int, &[Var(1)], &HashMap::new());
@@ -3919,7 +3928,7 @@ fn callable_capability_opaque_for_multi_target_join() {
     main.set_terminator(join_b, Term::Return(join));
 
     let m = build_module(vec![main.build(), id_a.build(), id_b.build()]);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mt = plan_module_quiet(&mut t, &m);
     let main_ft = mt.any_spec_for(FnId(0)).expect("main spec exists");
 
@@ -3987,7 +3996,7 @@ fn fid(n: u32) -> FnId {
 fn resolve_closure_return_singleton_lookup_hits() {
     // closure_lit(F=7, []) with arg [int_lit(21)]; effective_returns has
     // (7, [int_lit(21)]) -> int. Helper returns Some(int).
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let closure = t.closure_lit(fid(7).into(), vec![], 1);
     let mut er: HashMap<BodyKey, Ty> = HashMap::new();
     let key = vec![t.int_lit(21)];
@@ -4002,7 +4011,7 @@ fn resolve_closure_return_singleton_lookup_hits() {
 fn resolve_closure_return_singleton_miss_returns_none() {
     // Singleton with no matching effective_returns entry → None (defer).
     let er: HashMap<BodyKey, Ty> = HashMap::new();
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let closure = t.closure_lit(fid(7).into(), vec![], 1);
     let arg_tys = [t.int_lit(21)];
     let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys);
@@ -4013,7 +4022,7 @@ fn resolve_closure_return_singleton_miss_returns_none() {
 fn resolve_closure_return_singleton_with_captures() {
     // closure_lit(F=8, [int_lit(10), int_lit(20)]) — captures + arg form
     // the full body key.
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let cap0 = t.int_lit(10);
     let cap1 = t.int_lit(20);
     let closure = t.closure_lit(fid(8).into(), vec![cap0, cap1], 1);
@@ -4031,7 +4040,7 @@ fn resolve_closure_return_plain_arrow_uses_sig_ret() {
     // Lit-free arrow: ret comes straight from sig.ret (matches
     // arrow_join_return).
     let er: HashMap<BodyKey, Ty> = HashMap::new();
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let any = t.any();
     let int = t.int();
     let closure = t.arrow(&[any], int);
@@ -4045,7 +4054,7 @@ fn resolve_closure_return_plain_arrow_uses_sig_ret() {
 fn resolve_closure_return_union_of_singletons_joins() {
     // Two clauses: lit(7,[]) returning int, lit(8,[]) returning atom.
     // JOIN = int | atom.
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let a = t.closure_lit(fid(7).into(), vec![], 1);
     let b = t.closure_lit(fid(8).into(), vec![], 1);
     let closure = t.union(a, b);
@@ -4068,7 +4077,7 @@ fn resolve_closure_return_union_one_miss_defers() {
     // Two clauses; one has a registered spec, the other doesn't. The
     // helper conservatively defers (returns None) so the planner's
     // fixpoint can re-try after the missing spec is registered.
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let a = t.closure_lit(fid(7).into(), vec![], 1);
     let b = t.closure_lit(fid(8).into(), vec![], 1);
     let closure = t.union(a, b);
@@ -4086,7 +4095,7 @@ fn resolve_closure_return_union_one_miss_defers() {
 fn resolve_closure_return_empty_funcs_is_any() {
     // Type with no funcs at all: arrow_join_return-style any default.
     let er: HashMap<BodyKey, Ty> = HashMap::new();
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let closure = t.none();
     let r = resolve_closure_return(&mut t, &closure, &er, &[]).unwrap();
     let any = t.any();
@@ -4097,7 +4106,7 @@ fn resolve_closure_return_empty_funcs_is_any() {
 fn resolve_closure_return_saturated_arrow_is_any() {
     // `any()` has funcs = [Conj::top()] — pos empty, no narrowing.
     let er: HashMap<BodyKey, Ty> = HashMap::new();
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let closure = t.any();
     let arg_tys = [t.int_lit(21)];
     let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys).unwrap();
@@ -4123,7 +4132,7 @@ fn narrow_for_cond_and_narrows_both_operands_in_then_branch() {
         Stmt::Let(cand, Prim::BinOp(BinOp::And, cx, cy)),
     ];
 
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mut env: HashMap<Var, Ty> = HashMap::new();
     let any_ty = t.any();
     let ok_ty = t.atom_lit("ok");
@@ -4184,7 +4193,7 @@ fn planner_publishes_dispatches_for_direct_call() {
     mb.add_fn(id_b.build());
     mb.add_fn(main_b.build());
     let m = mb.build();
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mt = plan_module_quiet(&mut t, &m);
 
     let cid = CallsiteId {
@@ -4226,7 +4235,7 @@ fn main(), do: Collectable.id([1])
 "#;
     let toks = Lexer::new(src).tokenize().expect("lex");
     let parsed = Parser::new(toks).parse_program().expect("parse");
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let resolved = flatten_modules(&mut t, parsed).expect("resolve");
     let ir = lower_program(&mut t, &resolved, &NullTelemetry).expect("lower");
     let mt = plan_module_quiet(&mut t, &ir);
@@ -4250,7 +4259,7 @@ fn main(), do: Collectable.id([1])
 
 #[test]
 fn planner_keeps_external_module_calls_at_provider_boundary() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let tel = NullTelemetry;
     let math = compile_source_with_types(
         &mut t,
@@ -4315,7 +4324,7 @@ fn planner_keeps_external_module_calls_at_provider_boundary() {
 
 #[test]
 fn planner_keeps_provider_protocol_calls_at_external_boundary() {
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let tel = NullTelemetry;
     let provider = compile_source_with_types(
         &mut t,
@@ -4392,7 +4401,7 @@ fn main(), do: User.run()
 #[test]
 fn planner_publishes_cont_dispatches_for_non_tail_calls_in_enum_take_drop_split() {
     let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let compiled = compile_source_with_types(
         &mut t,
         src.to_string(),
@@ -4428,7 +4437,7 @@ fn planner_publishes_cont_dispatches_for_non_tail_calls_in_enum_take_drop_split(
 #[test]
 fn declared_return_fact_handles_enum_count_on_range_in_runtime_graph() {
     let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let tel = NullTelemetry;
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
     let frontend = compile_source_with_providers(
@@ -4470,7 +4479,7 @@ fn main() do
   dbg(Enum.take(range, -2))
 end
 "#;
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let tel = NullTelemetry;
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
     let frontend = compile_source_with_providers(
@@ -4522,7 +4531,7 @@ end
 #[test]
 fn declared_return_fact_handles_enum_reduce_with_runtime_graph_reducer() {
     let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let tel = NullTelemetry;
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
     let frontend = compile_source_with_providers(
@@ -4579,7 +4588,7 @@ fn declared_return_fact_handles_enum_reduce_with_runtime_graph_reducer() {
 #[test]
 fn declared_return_fact_handles_take_positive_reduce_while_in_runtime_graph() {
     let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let tel = NullTelemetry;
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
     let frontend = compile_source_with_providers(
@@ -4744,7 +4753,7 @@ fn runtime_graph_reduce_helper_clause_carries_function_correspondence() {
     end";
     let toks = Lexer::new(src).tokenize().expect("lex");
     let prog = Parser::new(toks).parse_program().expect("parse");
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let prog = flatten_modules(&mut t, prog).expect("resolve");
     let module = lower_program(&mut t, &prog, &NullTelemetry).expect("lower");
     let matches = module
@@ -4810,7 +4819,7 @@ fn main(), do: P.to_thing([1])
 "#;
     let toks = Lexer::new(src).tokenize().expect("lex");
     let parsed = Parser::new(toks).parse_program().expect("parse");
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let err = flatten_modules(&mut t, parsed).expect_err("disjoint callback result spec must be rejected");
     let ResolveError::ProtocolError { msg, .. } = err else {
         panic!("expected ProtocolError, got {err:?}");
@@ -4841,16 +4850,16 @@ fn main(), do: P.to_thing([1])
 "#;
     let toks = Lexer::new(src).tokenize().expect("lex");
     let parsed = Parser::new(toks).parse_program().expect("parse");
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     flatten_modules(&mut t, parsed).expect("compatible callback spec must resolve");
 }
 
 // ---- fz-t1m.1.3 — no-implementation diagnostic at dispatch ----
 
-fn plan_protocol_src(src: &str) -> (ConcreteTypes, Module, ModulePlan) {
+fn plan_protocol_src(src: &str) -> (DefaultTypes, Module, ModulePlan) {
     let toks = Lexer::new(src).tokenize().expect("lex");
     let parsed = Parser::new(toks).parse_program().expect("parse");
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let resolved = flatten_modules(&mut t, parsed).expect("resolve");
     let ir = lower_program(&mut t, &resolved, &NullTelemetry).expect("lower");
     let mt = plan_module_quiet(&mut t, &ir);
@@ -5168,7 +5177,7 @@ fn struct_field_projects_declared_underlying_tuple_slot() {
         "Range".to_string(),
         vec!["first".to_string(), "last".to_string(), "step".to_string()],
     );
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let int = ct.int();
     let inner = ct.tuple(&[int.clone(), int.clone(), int]);
     m.opaque_inners.insert("impl-target::Range".to_string(), inner);
@@ -5213,7 +5222,7 @@ fn value_accessor_outside_declaring_module_emits_diagnostic() {
     m.atom_names = vec!["value".to_string()];
     // Record the inner type for the opaque "A::t" alias declared in
     // module A.
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     m.opaque_inners.insert("A::t".to_string(), ct.int());
 
     // Drive the planner under a narrow spec that pins `h` to A::t.
@@ -5292,7 +5301,7 @@ fn make_bitstring_types_as_str_t() {
     let bs = b.let_(entry, Prim::MakeBitstring(vec![]));
     b.set_terminator(entry, Term::Halt(bs));
     let m = build_module(vec![b.build()]);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mt = plan_module_quiet(&mut t, &m);
     let bs_t = fn_view(&mut t, &m, &mt, 0).vars.get(&bs).unwrap().clone();
     let str_t = t.str_t();
@@ -5318,7 +5327,7 @@ fn string_literal_lowers_to_utf8_branded_bitstring() {
     let src = r#"fn main(), do: "hi""#;
     let toks = Lexer::new(src).tokenize().expect("lex");
     let prog = Parser::new(toks).parse_program().expect("parse");
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let prog = flatten_modules(&mut ct, prog).expect("resolve");
     let m = lower_program(&mut ct, &prog, &NullTelemetry).expect("lower");
     let main = m.fn_by_name("main").expect("main");
@@ -5358,7 +5367,7 @@ fn brand_overlays_brand_tag_on_source_type() {
     let branded = b.let_(entry, Prim::Brand(bs, "utf8".to_string()));
     b.set_terminator(entry, Term::Halt(branded));
     let m = build_module(vec![b.build()]);
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let mt = plan_module(&mut ct, &m, &NullTelemetry);
     let ft = fn_view(&mut ct, &m, &mt, 0);
     let source_ty = ft.vars.get(&bs).unwrap().clone();
@@ -5388,7 +5397,7 @@ fn brand_does_not_change_underlying_runtime_shape() {
     let branded = b.let_(entry, Prim::Brand(bs, "ascii".to_string()));
     b.set_terminator(entry, Term::Halt(branded));
     let m = build_module(vec![b.build()]);
-    let mut ct = ConcreteTypes;
+    let mut ct = crate::types::new();
     let mt = plan_module(&mut ct, &m, &NullTelemetry);
     let ft = fn_view(&mut ct, &m, &mt, 0);
     let source_t = ft.vars.get(&bs).unwrap().clone();
@@ -5409,7 +5418,7 @@ fn const_bitstring_types_as_str_t() {
     let bs = b.let_(entry, Prim::ConstBitstring(vec![1, 2, 3], 24));
     b.set_terminator(entry, Term::Halt(bs));
     let m = build_module(vec![b.build()]);
-    let mut t = ConcreteTypes;
+    let mut t = crate::types::new();
     let mt = plan_module_quiet(&mut t, &m);
     let bs_t = fn_view(&mut t, &m, &mt, 0).vars.get(&bs).unwrap().clone();
     let str_t = t.str_t();

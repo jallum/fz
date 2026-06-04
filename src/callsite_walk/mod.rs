@@ -208,7 +208,7 @@ fn push_closure_call<'a, T: Types<Ty = Ty> + ClosureTypes>(
 mod tests {
     use super::*;
     use crate::fz_ir::{BlockId, CallsiteIdent, Cont, FnId, Term, Var};
-    use crate::types::{ClosureTypes, ConcreteTypes, Types};
+    use crate::types::{ClosureTypes, Types};
 
     fn empty_env() -> HashMap<Var, Ty> {
         HashMap::new()
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn empty_for_non_call_terms() {
-        let mut t = ConcreteTypes;
+        let mut t = crate::types::new();
         let env = empty_env();
         let fc = empty_fc();
         assert!(block_callsites(&mut t, &Term::Goto(BlockId(0), vec![]), &env, &fc).is_empty());
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn tail_call_yields_direct_only() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let t = Term::TailCall {
             ident: CallsiteIdent::synthetic(),
             callee: FnId(7),
@@ -253,7 +253,7 @@ mod tests {
 
     #[test]
     fn call_yields_direct_then_cont() {
-        let mut tct = ConcreteTypes;
+        let mut tct = crate::types::new();
         let t = Term::Call {
             ident: CallsiteIdent::synthetic(),
             callee: FnId(5),
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn tail_call_closure_unresolved_yields_nothing() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let term = Term::TailCallClosure {
             ident: CallsiteIdent::synthetic(),
             closure: Var(3),
@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn tail_call_closure_known_fns_yields_known() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let term = Term::TailCallClosure {
             ident: CallsiteIdent::synthetic(),
             closure: Var(3),
@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn tail_call_closure_closure_lit_yields_lit_callsite() {
-        let mut ct = ConcreteTypes;
+        let mut ct = crate::types::new();
         let term = Term::TailCallClosure {
             ident: CallsiteIdent::synthetic(),
             closure: Var(3),
@@ -337,7 +337,7 @@ mod tests {
 
     #[test]
     fn call_closure_yields_cont_when_closure_unresolved() {
-        let mut tct = ConcreteTypes;
+        let mut tct = crate::types::new();
         let t = Term::CallClosure {
             ident: CallsiteIdent::synthetic(),
             closure: Var(3),
@@ -353,5 +353,4 @@ mod tests {
         assert_eq!(cs.len(), 1);
         assert!(matches!(cs[0].slot, EmitSlot::Cont));
     }
-
 }

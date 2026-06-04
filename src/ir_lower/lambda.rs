@@ -2,11 +2,13 @@ use super::*;
 use crate::ast::{BitSize as AstBitSize, Expr, MatchClause, Pattern, Spanned, WithBinding};
 use crate::diag::Span;
 use crate::fz_ir::{Const, FnBuilder, FnCategory, Prim, Term, Var};
+use crate::types::{Ty, Types};
 use std::collections::HashSet;
 use std::mem;
 
-pub(crate) fn lower_lambda(
+pub(crate) fn lower_lambda<T: Types<Ty = Ty>>(
     ctx: &mut LowerCtx,
+    t: &mut T,
     params: &[Spanned<Pattern>],
     body: &Spanned<Expr>,
     span: Span,
@@ -63,9 +65,9 @@ pub(crate) fn lower_lambda(
         }
     }
     for (pv, pat) in lam_param_vars.iter().zip(params) {
-        lower_pattern_bind(ctx, *pv, pat, fail_block)?;
+        lower_pattern_bind(ctx, t, *pv, pat, fail_block)?;
     }
-    let result = lower_expr(ctx, body, true)?;
+    let result = lower_expr(ctx, t, body, true)?;
     if !ctx.terminated {
         ctx.set_term(Term::Return(result));
     }

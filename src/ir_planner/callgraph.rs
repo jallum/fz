@@ -43,7 +43,7 @@ mod tests {
 
     #[test]
     fn entry_seeds_main_with_any_inputs() {
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = crate::types::new();
         let mut main = FnBuilder::new(FnId(0), "main");
         let a = main.fresh_var();
         let b = main.fresh_var();
@@ -58,7 +58,7 @@ mod tests {
 
     #[test]
     fn entry_seeds_is_empty_without_main() {
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = crate::types::new();
         let m = finish(vec![fn_halting(0, "not_main")]);
         assert!(entry_seeds(&mut t, &m).is_empty());
     }
