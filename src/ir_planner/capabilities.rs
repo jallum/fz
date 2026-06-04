@@ -137,13 +137,9 @@ fn return_var_tuple_arity(b: &Block, ret: Var) -> Option<usize> {
         }
         return match prim {
             Prim::MakeTuple(elems) => Some(elems.len()),
-            Prim::DestFreeze { dest, .. } => b.stmts.iter().find_map(|Stmt::Let(v, p)| {
-                (*v == *dest)
-                    .then(|| match p {
-                        Prim::DestTupleBegin { arity, .. } => Some(*arity),
-                        _ => None,
-                    })
-                    .flatten()
+            Prim::DestFreeze { dest, .. } => b.stmts.iter().find_map(|Stmt::Let(v, p)| match p {
+                Prim::DestTupleBegin { arity, .. } if *v == *dest => Some(*arity),
+                _ => None,
             }),
             _ => None,
         };
