@@ -202,19 +202,22 @@ A ring of processes, each adding 1 and passing the value on:
 
 ```elixir
 fn relay(0, home) do
-  send(home, receive() + 1)
+  value = receive do x -> x end
+  send(home, value + 1)
 end
 
 fn relay(n, home) do
   next = spawn(fn() -> relay(n - 1, home))
-  send(next, receive() + 1)
+  value = receive do x -> x end
+  send(next, value + 1)
 end
 
 fn main() do
   home = self()
   head = spawn(fn() -> relay(4, home))
   send(head, 0)
-  dbg(receive())   # 5
+  got = receive do x -> x end
+  dbg(got)   # 5
 end
 ```
 
@@ -458,6 +461,7 @@ much as it can from it.
 source code
   -> parse
   -> resolve names and macros
+  -> resolve @spec contracts into overload sets
   -> lower to fz IR
   -> learn type facts
   -> simplify what can be simplified
@@ -465,6 +469,12 @@ source code
 ```
 
 One IR, four ways to run it. They must agree.
+
+The type stack is split by ownership. `src/types/` owns the set-theoretic
+lattice, `src/type_expr/` turns source type syntax into compiler facts,
+`src/specs/` owns spec matching and overload application, `src/type_infer/`
+learns activation facts from IR, and `src/ir_planner/` turns those facts into
+call edges, return shapes, and codegen capabilities.
 
 ### Looking inside the compiler
 
@@ -580,8 +590,9 @@ dump-budget mechanism — are explained in
 ## Repository map
 
 - `src/parser/`, `src/parser/lexer.rs`, `src/ast/` — read source code
-- `src/type_expr/`, `src/types/`, `src/ir_planner/` — types and
-  inference
+- `src/types/`, `src/type_expr/`, `src/specs/`, `src/type_infer/`,
+  `src/ir_planner/` — type algebra, type syntax, spec contracts, inference,
+  and planning
 - `src/fz_ir/mod.rs`, `src/ir_lower/`, `src/ir_reducer/mod.rs` — build and
   simplify fz IR
 - `src/ir_codegen*.rs` — Cranelift codegen for JIT and AOT

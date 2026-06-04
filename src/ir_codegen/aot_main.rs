@@ -10,6 +10,7 @@ use cranelift_codegen::ir::{
 };
 use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings::{self, Configurable};
+use cranelift_codegen::verifier::verify_function;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
@@ -21,16 +22,17 @@ use std::sync::Arc;
 /// `fz_aot_setup` → per-closure `fz_aot_register_static_closure` →
 /// `fz_aot_run_main`. Entry-body addresses (fz_entry_thunk,
 /// fz_main_trampoline, fz_halt_cont_body) are taken via Cranelift `func_addr`
-/// against the Local symbols emitted by compile_with_backend.
+/// against the Local symbols emitted by planned codegen.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
+pub(crate) fn emit_aot_c_main<M: ClModule>(
     jmod: &mut M,
     fbctx: &mut FunctionBuilderContext,
     c_main_id: FuncId,
     c_main_sig: &Signature,
     main_fz_func_id: FuncId,
+    main_halt_kind: u32,
     main_trampoline_id: FuncId,
-    halt_cont_body_ids: [FuncId; 3],
+    halt_cont_body_ids: [FuncId; 4],
     entry_thunk_id: FuncId,
     static_closure_targets: &[(u32, u32, FuncId, u32 /* halt_kind */)],
     atom_blob_data: Option<DataId>,
@@ -49,8 +51,6 @@ pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
     set_resume_id: FuncId,
     resume_id: FuncId,
 ) -> Result<(), CodegenError> {
-    use cranelift_frontend::FunctionBuilder;
-
     let mut ctx = jmod.make_context();
     ctx.func.signature = c_main_sig.clone();
     {
@@ -73,12 +73,13 @@ pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
         let hcb_strict_addr = fn_addr(jmod, halt_cont_body_ids[0], &mut b);
         let hcb_i64_addr = fn_addr(jmod, halt_cont_body_ids[1], &mut b);
         let hcb_f64_addr = fn_addr(jmod, halt_cont_body_ids[2], &mut b);
+        let hcb_atom_addr = fn_addr(jmod, halt_cont_body_ids[3], &mut b);
         let mt_addr = fn_addr(jmod, main_trampoline_id, &mut b);
         let et_addr = fn_addr(jmod, entry_thunk_id, &mut b);
         let main_fp = fn_addr(jmod, main_fz_func_id, &mut b);
 
         // proc = fz_aot_setup(atom_blob, atom_blob_len,
-        //                     hcb_strict, hcb_i64, hcb_f64,
+        //                     hcb_strict, hcb_i64, hcb_f64, hcb_atom,
         //                     entry_thunk_addr)
         let setup_fref = jmod.declare_func_in_func(setup_id, b.func);
         let setup_call = b.ins().call(
@@ -89,6 +90,7 @@ pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
                 hcb_strict_addr,
                 hcb_i64_addr,
                 hcb_f64_addr,
+                hcb_atom_addr,
                 et_addr,
             ],
         );
@@ -107,10 +109,8 @@ pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
             };
             let tuple_arities_len_v = b.ins().iconst(types::I32, tuple_arities_len as i64);
             let reg_tuples_fref = jmod.declare_func_in_func(reg_tuples_id, b.func);
-            b.ins().call(
-                reg_tuples_fref,
-                &[proc_v, tuple_arities_addr, tuple_arities_len_v],
-            );
+            b.ins()
+                .call(reg_tuples_fref, &[proc_v, tuple_arities_addr, tuple_arities_len_v]);
         }
         {
             let named_schemas_addr = match named_schemas_data {
@@ -122,10 +122,8 @@ pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
             };
             let named_schemas_len_v = b.ins().iconst(types::I32, named_schemas_len as i64);
             let reg_named_fref = jmod.declare_func_in_func(reg_named_schemas_id, b.func);
-            b.ins().call(
-                reg_named_fref,
-                &[proc_v, named_schemas_addr, named_schemas_len_v],
-            );
+            b.ins()
+                .call(reg_named_fref, &[proc_v, named_schemas_addr, named_schemas_len_v]);
         }
 
         for (cl_sid, fn_id, body_func_id, halt_kind) in static_closure_targets {
@@ -134,8 +132,7 @@ pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
             let body_addr = fn_addr(jmod, *body_func_id, &mut b);
             let hk_v = b.ins().iconst(types::I32, *halt_kind as i64);
             let reg_fref = jmod.declare_func_in_func(reg_id, b.func);
-            b.ins()
-                .call(reg_fref, &[proc_v, cl_sid_v, fn_id_v, body_addr, hk_v]);
+            b.ins().call(reg_fref, &[proc_v, cl_sid_v, fn_id_v, body_addr, hk_v]);
         }
 
         // Register the drain-dtor entry shim so the AOT run-queue loop
@@ -154,10 +151,13 @@ pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
             b.ins().call(set_resume_fref, &[proc_v, resume_addr_v]);
         }
 
-        // fz_aot_run_main(proc, main_fp, main_trampoline_addr): wraps main_fp
-        // in a synthetic inner closure (via fz_main_trampoline) + entry thunk.
+        // fz_aot_run_main(proc, main_fp, main_trampoline_addr, main_halt_kind):
+        // wraps main_fp in a synthetic inner closure (via fz_main_trampoline)
+        // + entry thunk. The halt kind must match the entry fn's computed
+        // halt seam so the root task picks the right halt continuation body.
         let run_fref = jmod.declare_func_in_func(run_id, b.func);
-        let run_call = b.ins().call(run_fref, &[proc_v, main_fp, mt_addr]);
+        let main_halt_kind_v = b.ins().iconst(types::I32, main_halt_kind as i64);
+        let run_call = b.ins().call(run_fref, &[proc_v, main_fp, mt_addr, main_halt_kind_v]);
         let result = b.inst_results(run_call)[0];
         b.ins().return_(&[result]);
 
@@ -165,8 +165,7 @@ pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
         b.finalize();
     }
     let flags = settings::Flags::new(settings::builder());
-    cranelift_codegen::verifier::verify_function(&ctx.func, &flags)
-        .map_err(|e| CodegenError::new(format!("verify C main: {}", e)))?;
+    verify_function(&ctx.func, &flags).map_err(|e| CodegenError::new(format!("verify C main: {}", e)))?;
     jmod.define_function(c_main_id, &mut ctx)
         .map_err(|e| CodegenError::new(format!("define C main: {}", e)))?;
     jmod.clear_context(&mut ctx);
@@ -195,7 +194,7 @@ pub(crate) struct BsConstSyms {
 ///
 /// The destructor relocation is to `shared_bin_destructor_noop`, declared
 /// as `Linkage::Import` so the linker resolves it to the runtime export.
-pub(crate) fn define_static_sharedbin<M: cranelift_module::Module>(
+pub(crate) fn define_static_sharedbin<M: ClModule>(
     jmod: &mut M,
     runtime: &RuntimeRefs,
     bytes_id: DataId,

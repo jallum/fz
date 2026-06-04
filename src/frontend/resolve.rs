@@ -24,13 +24,20 @@
 use crate::ast::*;
 use crate::diag::{Diagnostic, Span, codes};
 use crate::frontend::protocols::{
-    ImplTarget, ProtocolCallbackFact, ProtocolDecl, ProtocolImplFact, ProtocolImplKey,
-    ProtocolRegistry,
+    ImplTarget, PROTOCOL_ELEM_VAR, ProtocolCallbackFact, ProtocolDecl, ProtocolImplFact, ProtocolImplKey,
+    ProtocolRegistry, impl_target_type, impl_target_type_with_element, protocol_domain_tag,
 };
 use crate::modules::identity::{ExportKey, ModuleName, QualifiedName};
-use crate::modules::interface::ModuleInterface;
+use crate::modules::interface::{ModuleInterface, collect_from_program};
+use crate::modules::runtime_library::{interface, root_type_env};
+use crate::type_expr::{
+    ModuleTypeEnv, build_module_type_env_for_with_base, builtin_type_env, resolve_spec_decl_positions,
+};
+use crate::types::{Ty, Types};
 use std::collections::{BTreeMap, BTreeSet};
 use std::collections::{HashMap, HashSet};
+use std::error::Error;
+use std::fmt;
 use std::rc::Rc;
 
 /// Errors produced by `flatten_modules`. Each variant carries the source
@@ -114,7 +121,10 @@ impl ResolveError {
             ),
             Self::UnknownImport { export, span } => Diagnostic::error(
                 codes::RESOLVE_UNKNOWN_IMPORT,
-                format!("module `{}` does not export `{}/{}`", export.module, export.name, export.arity),
+                format!(
+                    "module `{}` does not export `{}/{}`",
+                    export.module, export.name, export.arity
+                ),
                 *span,
             ),
             Self::ConflictingImport {
@@ -133,12 +143,8 @@ impl ResolveError {
                 *second_span,
             )
             .with_secondary(*first_span, "first import here"),
-            Self::TypeAliasError { msg, span } => {
-                Diagnostic::error(codes::RESOLVE_TYPE_ALIAS, msg.clone(), *span)
-            }
-            Self::ProtocolError { msg, span } => {
-                Diagnostic::error(codes::RESOLVE_PROTOCOL, msg.clone(), *span)
-            }
+            Self::TypeAliasError { msg, span } => Diagnostic::error(codes::RESOLVE_TYPE_ALIAS, msg.clone(), *span),
+            Self::ProtocolError { msg, span } => Diagnostic::error(codes::RESOLVE_PROTOCOL, msg.clone(), *span),
             Self::DuplicateProtocolImpl {
                 protocol,
                 target,
@@ -146,10 +152,7 @@ impl ResolveError {
                 duplicate_span,
             } => Diagnostic::error(
                 codes::RESOLVE_PROTOCOL,
-                format!(
-                    "protocol `{}` already has an implementation for `{}`",
-                    protocol, target
-                ),
+                format!("protocol `{}` already has an implementation for `{}`", protocol, target),
                 *duplicate_span,
             )
             .with_secondary(*first_span, "first implementation here"),
@@ -157,39 +160,15 @@ impl ResolveError {
     }
 }
 
-impl std::fmt::Display for ResolveError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ResolveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_diagnostic().message)
     }
 }
 
-impl std::error::Error for ResolveError {}
+impl Error for ResolveError {}
 
-/// REPL helper: rewrite cross-module `Mod.fn(args)` calls in a single
-/// expression. No sibling-fn rewriting (the REPL has no enclosing
-/// module).
-#[allow(dead_code)]
-pub fn rewrite_expr_top_level(e: &mut Spanned<Expr>) {
-    let no_siblings: HashSet<String> = HashSet::new();
-    let mut intro: HashSet<String> = HashSet::new();
-    let no_paths: HashSet<String> = HashSet::new();
-    let no_aliases: HashMap<String, String> = HashMap::new();
-    let no_imports: ImportMap = HashMap::new();
-    rewrite_expr(
-        e,
-        "",
-        &no_siblings,
-        &mut intro,
-        &no_paths,
-        &no_aliases,
-        &no_imports,
-    );
-}
-
-pub fn flatten_modules<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    prog: Program,
-) -> Result<Program, ResolveError> {
+pub fn flatten_modules<T: Types<Ty = Ty>>(t: &mut T, prog: Program) -> Result<Program, ResolveError> {
     flatten_modules_with_options(t, prog, BTreeMap::new())
 }
 
@@ -264,14 +243,11 @@ fn build_module_info_fn(m: &ModuleDef) -> Option<FnDef> {
         param_annotations: vec![None],
         guard: None,
         body,
-        span: crate::diag::Span::DUMMY,
+        span: Span::DUMMY,
     };
 
     let clauses = vec![
-        clause(
-            Pattern::Atom("functions".to_string()),
-            pair_list(&functions),
-        ),
+        clause(Pattern::Atom("functions".to_string()), pair_list(&functions)),
         clause(Pattern::Atom("macros".to_string()), pair_list(&macros)),
         clause(
             Pattern::Atom("module".to_string()),
@@ -282,7 +258,7 @@ fn build_module_info_fn(m: &ModuleDef) -> Option<FnDef> {
 
     Some(FnDef {
         name: "__info__".to_string(),
-        name_span: crate::diag::Span::DUMMY,
+        name_span: Span::DUMMY,
         clauses,
         is_macro: false,
         is_private: false,
@@ -291,11 +267,11 @@ fn build_module_info_fn(m: &ModuleDef) -> Option<FnDef> {
         extern_ret_tokens: TypeExprBody(vec![]),
         variadic: false,
         attrs: vec![],
-        span: crate::diag::Span::DUMMY,
+        span: Span::DUMMY,
     })
 }
 
-pub fn flatten_modules_with_interface_table<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub fn flatten_modules_with_interface_table<T: Types<Ty = Ty>>(
     t: &mut T,
     prog: Program,
     interface_table: InterfaceTable,
@@ -303,7 +279,7 @@ pub fn flatten_modules_with_interface_table<T: crate::types::Types<Ty = crate::t
     flatten_modules_with_options(t, prog, interface_table)
 }
 
-fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn flatten_modules_with_options<T: Types<Ty = Ty>>(
     t: &mut T,
     prog: Program,
     mut interface_table: InterfaceTable,
@@ -311,7 +287,7 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
     let prog = inject_module_info(prog);
     collect_module_fns(&prog)?;
     let module_macros = collect_module_macros(&prog);
-    let module_interfaces = crate::modules::interface::collect_from_program(&prog);
+    let module_interfaces = collect_from_program(&prog);
     add_requested_runtime_interfaces(&prog, &module_interfaces, &mut interface_table);
     let external_module_interfaces = interface_table
         .iter()
@@ -329,12 +305,12 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
     // runtime primitive types plus root aliases from the always-loaded
     // prelude, so module specs and aliases can name standard aliases such as
     // keyword/0 and keyword/1.
-    let mut module_type_envs: HashMap<String, crate::type_expr::ModuleTypeEnv> = HashMap::new();
-    let root_types = crate::modules::runtime_library::root_type_env(t);
+    let mut module_type_envs: HashMap<String, ModuleTypeEnv> = HashMap::new();
+    let root_types = root_type_env(t);
     let root_type_env = root_types.env.clone();
     module_type_envs.insert(String::new(), root_type_env.clone());
-    let mut opaque_inners: HashMap<String, crate::types::Ty> = root_types.opaque_inners;
-    let mut brand_inners: HashMap<String, crate::types::Ty> = root_types.brand_inners;
+    let mut opaque_inners: HashMap<String, Ty> = root_types.opaque_inners;
+    let mut brand_inners: HashMap<String, Ty> = root_types.brand_inners;
     collect_module_type_envs(
         t,
         &prog,
@@ -344,11 +320,9 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
         &mut opaque_inners,
         &mut brand_inners,
     )?;
-    let protocol_registry =
-        collect_protocol_registry(t, &prog, &external_module_interfaces, &mut module_type_envs)?;
+    let protocol_registry = collect_protocol_registry(t, &prog, &external_module_interfaces, &mut module_type_envs)?;
     let mut structs = BTreeMap::new();
-    let (root_aliases, root_imports) =
-        collect_import_scope(&prog.items, &interface_table, &module_macros)?;
+    let (root_aliases, root_imports) = collect_import_scope(&prog.items, &interface_table, &module_macros)?;
     for item in &prog.items {
         match &**item {
             Item::Fn(def) => {
@@ -449,9 +423,9 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
 }
 
 fn collect_struct_field_types(
-    module_type_envs: &HashMap<String, crate::type_expr::ModuleTypeEnv>,
+    module_type_envs: &HashMap<String, ModuleTypeEnv>,
     structs: &BTreeMap<ModuleName, Vec<String>>,
-) -> Result<BTreeMap<ModuleName, Vec<(String, crate::types::Ty)>>, ResolveError> {
+) -> Result<BTreeMap<ModuleName, Vec<(String, Ty)>>, ResolveError> {
     let mut out = BTreeMap::new();
     for env in module_type_envs.values() {
         for (_alias, record) in env.struct_records() {
@@ -483,10 +457,7 @@ fn collect_struct_field_types(
             for field in schema {
                 if !seen.contains(field) {
                     return Err(ResolveError::TypeAliasError {
-                        msg: format!(
-                            "struct type for `{}` is missing field `{}`",
-                            record.module, field
-                        ),
+                        msg: format!("struct type for `{}` is missing field `{}`", record.module, field),
                         span: record.span,
                     });
                 }
@@ -523,7 +494,7 @@ fn add_requested_runtime_interfaces(
         if local_interfaces.contains_key(&module) || interface_table.contains_key(&module) {
             continue;
         }
-        if let Some(interface) = crate::modules::runtime_library::interface(&module) {
+        if let Some(interface) = interface(&module) {
             enqueue_runtime_interface_dependencies(&interface, &mut requested);
             interface_table.insert(module, interface);
         }
@@ -534,12 +505,10 @@ pub(crate) fn add_macro_requested_runtime_interfaces(prog: &mut Program) {
     let mut requested = Vec::new();
     collect_requested_external_modules(prog, &mut requested);
     while let Some(module) = requested.pop() {
-        if prog.module_interfaces.contains_key(&module)
-            || prog.external_module_interfaces.contains_key(&module)
-        {
+        if prog.module_interfaces.contains_key(&module) || prog.external_module_interfaces.contains_key(&module) {
             continue;
         }
-        if let Some(interface) = crate::modules::runtime_library::interface(&module) {
+        if let Some(interface) = interface(&module) {
             enqueue_runtime_interface_dependencies(&interface, &mut requested);
             prog.external_module_interfaces.insert(module, interface);
         }
@@ -659,10 +628,7 @@ fn collect_top_level_qualified_calls(expr: &Spanned<Expr>, out: &mut Vec<ModuleN
             collect_top_level_qualified_calls(left, out);
             collect_top_level_qualified_calls(right, out);
         }
-        Expr::UnOp(_, inner)
-        | Expr::Ascribe(inner, _)
-        | Expr::Quote(inner)
-        | Expr::Unquote(inner) => {
+        Expr::UnOp(_, inner) | Expr::Ascribe(inner, _) | Expr::Quote(inner) | Expr::Unquote(inner) => {
             collect_top_level_qualified_calls(inner, out);
         }
         Expr::If(cond, then_expr, else_expr) => {
@@ -726,13 +692,7 @@ fn collect_top_level_qualified_calls(expr: &Spanned<Expr>, out: &mut Vec<ModuleN
                 collect_top_level_qualified_calls(&after.body, out);
             }
         }
-        Expr::Var(_)
-        | Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Binary(_)
-        | Expr::Atom(_)
-        | Expr::Bool(_)
-        | Expr::Nil => {}
+        Expr::Var(_) | Expr::Int(_) | Expr::Float(_) | Expr::Binary(_) | Expr::Atom(_) | Expr::Bool(_) | Expr::Nil => {}
     }
 }
 
@@ -778,14 +738,14 @@ fn qualified_callee_module(callee: &Spanned<Expr>) -> Option<ModuleName> {
 /// (e.g. `"Mod::t"`) so cross-module collisions cannot happen except
 /// for the unqualified built-in `"resource"` tag, which carries no
 /// inner type at this layer.
-fn collect_module_type_envs<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn collect_module_type_envs<T: Types<Ty = Ty>>(
     t: &mut T,
     prog: &Program,
     parent: &str,
-    base_env: &crate::type_expr::ModuleTypeEnv,
-    out: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
-    o_inners: &mut HashMap<String, crate::types::Ty>,
-    b_inners: &mut HashMap<String, crate::types::Ty>,
+    base_env: &ModuleTypeEnv,
+    out: &mut HashMap<String, ModuleTypeEnv>,
+    o_inners: &mut HashMap<String, Ty>,
+    b_inners: &mut HashMap<String, Ty>,
 ) -> Result<(), ResolveError> {
     for item in &prog.items {
         if let Item::Module(m) = &**item {
@@ -795,26 +755,25 @@ fn collect_module_type_envs<T: crate::types::Types<Ty = crate::types::Ty>>(
     Ok(())
 }
 
-fn collect_module_type_envs_recursive<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn collect_module_type_envs_recursive<T: Types<Ty = Ty>>(
     t: &mut T,
     m: &ModuleDef,
     parent: &str,
-    base_env: &crate::type_expr::ModuleTypeEnv,
-    out: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
-    o_inners: &mut HashMap<String, crate::types::Ty>,
-    b_inners: &mut HashMap<String, crate::types::Ty>,
+    base_env: &ModuleTypeEnv,
+    out: &mut HashMap<String, ModuleTypeEnv>,
+    o_inners: &mut HashMap<String, Ty>,
+    b_inners: &mut HashMap<String, Ty>,
 ) -> Result<(), ResolveError> {
     let path = if parent.is_empty() {
         m.name.clone()
     } else {
         format!("{}.{}", parent, m.name)
     };
-    let (env, opaque_inners, brand_inners) =
-        crate::type_expr::build_module_type_env_for_with_base(t, &m.attrs, &path, base_env)
-            .map_err(|e| ResolveError::TypeAliasError {
-                msg: format!("module `{}`: {}", path, e.msg),
-                span: e.span,
-            })?;
+    let (env, opaque_inners, brand_inners) = build_module_type_env_for_with_base(t, &m.attrs, &path, base_env)
+        .map_err(|e| ResolveError::TypeAliasError {
+            msg: format!("module `{}`: {}", path, e.msg),
+            span: e.span,
+        })?;
     out.insert(path.clone(), env);
     o_inners.extend(opaque_inners);
     b_inners.extend(brand_inners);
@@ -850,11 +809,11 @@ fn collect_module_docs_recursive(m: &ModuleDef, parent: &str, out: &mut HashMap<
     }
 }
 
-fn collect_protocol_registry<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn collect_protocol_registry<T: Types<Ty = Ty>>(
     t: &mut T,
     prog: &Program,
     external_module_interfaces: &InterfaceTable,
-    module_type_envs: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
+    module_type_envs: &mut HashMap<String, ModuleTypeEnv>,
 ) -> Result<ProtocolRegistry, ResolveError> {
     let mut registry = ProtocolRegistry::default();
     collect_protocol_declarations(t, &prog.items, None, module_type_envs, &mut registry)?;
@@ -867,7 +826,7 @@ fn collect_protocol_registry<T: crate::types::Types<Ty = crate::types::Ty>>(
         // PROTOCOL_ELEM_VAR with `elem`, so a `List` target refines from
         // `list(any)` to `list(elem)`. The bare `Protocol.t` (arity 0) stays
         // the `element = any` domain above.
-        let element = t.type_var(crate::frontend::protocols::PROTOCOL_ELEM_VAR);
+        let element = t.type_var(PROTOCOL_ELEM_VAR);
         let template = protocol_domain_template(t, protocol, &registry, element);
         for env in module_type_envs.values_mut() {
             env.insert(format!("{}.t", protocol), ty.clone());
@@ -882,11 +841,7 @@ fn collect_protocol_registry<T: crate::types::Types<Ty = crate::types::Ty>>(
     Ok(registry)
 }
 
-fn protocol_domain_type<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    protocol: &ModuleName,
-    registry: &ProtocolRegistry,
-) -> crate::types::Ty {
+fn protocol_domain_type<T: Types<Ty = Ty>>(t: &mut T, protocol: &ModuleName, registry: &ProtocolRegistry) -> Ty {
     let any = t.any();
     protocol_domain_template(t, protocol, registry, any)
 }
@@ -895,33 +850,25 @@ fn protocol_domain_type<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// target's type — with `element` threaded into element-parametric targets.
 /// `protocol_domain_type` is the `element = any` case; the registration loop
 /// passes `PROTOCOL_ELEM_VAR` to build the refining template.
-fn protocol_domain_template<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn protocol_domain_template<T: Types<Ty = Ty>>(
     t: &mut T,
     protocol: &ModuleName,
     registry: &ProtocolRegistry,
-    element: crate::types::Ty,
-) -> crate::types::Ty {
-    let mut domain = t.opaque_of(&crate::frontend::protocols::protocol_domain_tag(protocol));
-    for fact in registry
-        .impls
-        .values()
-        .filter(|fact| fact.protocol == *protocol)
-    {
-        let target_ty = crate::frontend::protocols::impl_target_type_with_element(
-            t,
-            &fact.target,
-            element.clone(),
-        );
+    element: Ty,
+) -> Ty {
+    let mut domain = t.opaque_of(&protocol_domain_tag(protocol));
+    for fact in registry.impls.values().filter(|fact| fact.protocol == *protocol) {
+        let target_ty = impl_target_type_with_element(t, &fact.target, element.clone());
         domain = t.union(domain, target_ty);
     }
     domain
 }
 
-fn collect_protocol_declarations<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn collect_protocol_declarations<T: Types<Ty = Ty>>(
     t: &mut T,
     items: &[Rc<Item>],
     parent: Option<&ModuleName>,
-    module_type_envs: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
+    module_type_envs: &mut HashMap<String, ModuleTypeEnv>,
     registry: &mut ProtocolRegistry,
 ) -> Result<(), ResolveError> {
     for item in items {
@@ -929,11 +876,7 @@ fn collect_protocol_declarations<T: crate::types::Types<Ty = crate::types::Ty>>(
             Item::Protocol(protocol) => {
                 let name = qualify_protocol_name(parent, &protocol.name);
                 let decl = protocol_decl(t, &name, protocol, module_type_envs)?;
-                if registry
-                    .protocols
-                    .insert(name.clone(), decl.clone())
-                    .is_some()
-                {
+                if registry.protocols.insert(name.clone(), decl.clone()).is_some() {
                     return Err(ResolveError::ProtocolError {
                         msg: format!("protocol `{}` is defined more than once", name),
                         span: decl.span,
@@ -949,13 +892,7 @@ fn collect_protocol_declarations<T: crate::types::Types<Ty = crate::types::Ty>>(
                 } else {
                     ModuleName::from_segments(vec![module.name.clone()])
                 };
-                collect_protocol_declarations(
-                    t,
-                    &module.items,
-                    Some(&name),
-                    module_type_envs,
-                    registry,
-                )?;
+                collect_protocol_declarations(t, &module.items, Some(&name), module_type_envs, registry)?;
             }
             _ => {}
         }
@@ -972,13 +909,11 @@ fn collect_protocol_implementations(
     for item in items {
         match &**item {
             Item::ProtocolImpl(protocol_impl) => {
-                let protocol =
-                    resolve_impl_protocol_name(parent, &protocol_impl.protocol, registry);
+                let protocol = resolve_impl_protocol_name(parent, &protocol_impl.protocol, registry);
                 let target_module = qualify_module_child(parent, &protocol_impl.target.path);
                 let target = ImplTarget::module(target_module.clone());
                 let impl_module = protocol_impl_module(&protocol, &target_module);
-                let (callbacks, callback_specs) =
-                    protocol_impl_callbacks(&impl_module, protocol_impl)?;
+                let (callbacks, callback_specs) = protocol_impl_callbacks(&impl_module, protocol_impl)?;
                 let fact = ProtocolImplFact {
                     protocol: protocol.clone(),
                     target: target.clone(),
@@ -1011,21 +946,15 @@ fn collect_protocol_implementations(
     Ok(())
 }
 
-fn protocol_decl<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn protocol_decl<T: Types<Ty = Ty>>(
     t: &mut T,
     name: &ModuleName,
     protocol: &ProtocolDef,
-    module_type_envs: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
+    module_type_envs: &mut HashMap<String, ModuleTypeEnv>,
 ) -> Result<ProtocolDecl, ResolveError> {
-    let mut env = crate::type_expr::ModuleTypeEnv::new();
-    env.insert(
-        "t".to_string(),
-        t.opaque_of(&crate::frontend::protocols::protocol_domain_tag(name)),
-    );
-    env.insert(
-        format!("{}.t", name),
-        t.opaque_of(&crate::frontend::protocols::protocol_domain_tag(name)),
-    );
+    let mut env = ModuleTypeEnv::new();
+    env.insert("t".to_string(), t.opaque_of(&protocol_domain_tag(name)));
+    env.insert(format!("{}.t", name), t.opaque_of(&protocol_domain_tag(name)));
     module_type_envs.insert(name.dotted(), env);
 
     let mut seen = HashMap::new();
@@ -1052,7 +981,6 @@ fn protocol_decl<T: crate::types::Types<Ty = crate::types::Ty>>(
                     _ => None,
                 })
                 .collect(),
-            span: callback.span,
         });
     }
     callbacks.sort_by(|a, b| (&a.name, a.arity).cmp(&(&b.name, b.arity)));
@@ -1064,7 +992,7 @@ fn protocol_decl<T: crate::types::Types<Ty = crate::types::Ty>>(
 
 type ProtocolImplCallbacks = (
     BTreeMap<(String, usize), ExportKey>,
-    BTreeMap<(String, usize), Vec<crate::ast::SpecDecl>>,
+    BTreeMap<(String, usize), Vec<SpecDecl>>,
 );
 
 fn protocol_impl_callbacks(
@@ -1128,10 +1056,7 @@ fn validate_protocol_impls(registry: &ProtocolRegistry) -> Result<(), ResolveErr
             });
         };
         for callback in &protocol.callbacks {
-            if fact
-                .callbacks
-                .contains_key(&(callback.name.clone(), callback.arity))
-            {
+            if fact.callbacks.contains_key(&(callback.name.clone(), callback.arity)) {
                 continue;
             }
             // The protocol declares `name/arity` but the impl does not provide it
@@ -1148,12 +1073,7 @@ fn validate_protocol_impls(registry: &ProtocolRegistry) -> Result<(), ResolveErr
                 msg: match provided_arity {
                     Some(provided) => format!(
                         "implementation for protocol `{}` on `{}` implements callback `{}` at arity {} but the protocol declares `{}/{}`",
-                        fact.protocol,
-                        fact.target,
-                        callback.name,
-                        provided,
-                        callback.name,
-                        callback.arity
+                        fact.protocol, fact.target, callback.name, provided, callback.name, callback.arity
                     ),
                     None => format!(
                         "implementation for protocol `{}` on `{}` is missing callback `{}/{}`",
@@ -1167,11 +1087,7 @@ fn validate_protocol_impls(registry: &ProtocolRegistry) -> Result<(), ResolveErr
             // A name the protocol does not declare at all is unknown. A name the
             // protocol declares only at another arity is already reported above
             // as an arity mismatch, so it is not re-reported here.
-            if protocol
-                .callbacks
-                .iter()
-                .any(|callback| callback.name == *name)
-            {
+            if protocol.callbacks.iter().any(|callback| callback.name == *name) {
                 continue;
             }
             return Err(ResolveError::ProtocolError {
@@ -1193,10 +1109,10 @@ fn validate_protocol_impls(registry: &ProtocolRegistry) -> Result<(), ResolveErr
 /// set-theoretically disjoint (empty intersection), so free type variables and
 /// `any` never produce a false positive. Callbacks without a declared spec on
 /// either side are not checked.
-fn validate_protocol_callback_specs<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn validate_protocol_callback_specs<T: Types<Ty = Ty>>(
     t: &mut T,
     registry: &ProtocolRegistry,
-    module_type_envs: &HashMap<String, crate::type_expr::ModuleTypeEnv>,
+    module_type_envs: &HashMap<String, ModuleTypeEnv>,
 ) -> Result<(), ResolveError> {
     for fact in registry.impls.values() {
         if fact.callback_specs.is_empty() {
@@ -1205,11 +1121,11 @@ fn validate_protocol_callback_specs<T: crate::types::Types<Ty = crate::types::Ty
         let Some(protocol) = registry.protocols.get(&fact.protocol) else {
             continue;
         };
-        let target_ty = crate::frontend::protocols::impl_target_type(t, &fact.target);
+        let target_ty = impl_target_type(t, &fact.target);
         let mut proto_env = module_type_envs
             .get(&fact.protocol.dotted())
             .cloned()
-            .unwrap_or_else(|| crate::type_expr::builtin_type_env(t));
+            .unwrap_or_else(|| builtin_type_env(t));
         proto_env.insert("t".to_string(), target_ty.clone());
         proto_env.insert(format!("{}.t", fact.protocol), target_ty);
         for callback in &protocol.callbacks {
@@ -1225,13 +1141,11 @@ fn validate_protocol_callback_specs<T: crate::types::Types<Ty = crate::types::Ty
                 .get(&key)
                 .and_then(|export| module_type_envs.get(&export.module.dotted()))
                 .cloned()
-                .unwrap_or_else(|| crate::type_expr::builtin_type_env(t));
+                .unwrap_or_else(|| builtin_type_env(t));
             let incompatible = impl_specs.iter().find_map(|impl_spec| {
                 let mut first_incompatibility = None;
                 for proto_spec in &callback.specs {
-                    match protocol_spec_pair_incompatibility(
-                        t, proto_spec, &proto_env, impl_spec, &impl_env,
-                    ) {
+                    match protocol_spec_pair_incompatibility(t, proto_spec, &proto_env, impl_spec, &impl_env) {
                         None => return None,
                         Some(position) if first_incompatibility.is_none() => {
                             first_incompatibility = Some(position);
@@ -1255,19 +1169,17 @@ fn validate_protocol_callback_specs<T: crate::types::Types<Ty = crate::types::Ty
     Ok(())
 }
 
-fn protocol_spec_pair_incompatibility<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn protocol_spec_pair_incompatibility<T: Types<Ty = Ty>>(
     t: &mut T,
-    proto_spec: &crate::ast::SpecDecl,
-    proto_env: &crate::type_expr::ModuleTypeEnv,
-    impl_spec: &crate::ast::SpecDecl,
-    impl_env: &crate::type_expr::ModuleTypeEnv,
+    proto_spec: &SpecDecl,
+    proto_env: &ModuleTypeEnv,
+    impl_spec: &SpecDecl,
+    impl_env: &ModuleTypeEnv,
 ) -> Option<String> {
     // Per-position so a domain-applied position (`t(a)`) that does not
     // resolve yet does not mask the result and other params.
-    let (proto_params, proto_result) =
-        crate::type_expr::resolve_spec_decl_positions(t, proto_spec, proto_env);
-    let (impl_params, impl_result) =
-        crate::type_expr::resolve_spec_decl_positions(t, impl_spec, impl_env);
+    let (proto_params, proto_result) = resolve_spec_decl_positions(t, proto_spec, proto_env);
+    let (impl_params, impl_result) = resolve_spec_decl_positions(t, impl_spec, impl_env);
     if proto_params.len() != impl_params.len() {
         return None;
     }
@@ -1352,12 +1264,7 @@ fn collect_visible_module_paths(prog: &Program, interfaces: &InterfaceTable) -> 
     }
     out.extend(interfaces.keys().map(ModuleName::dotted));
     for interface in interfaces.values() {
-        out.extend(
-            interface
-                .protocols
-                .iter()
-                .map(|protocol| protocol.name.dotted()),
-        );
+        out.extend(interface.protocols.iter().map(|protocol| protocol.name.dotted()));
     }
     out
 }
@@ -1575,11 +1482,7 @@ fn collect_module_macros(prog: &Program) -> ModuleMacroExports {
     out
 }
 
-fn collect_module_macros_recursive(
-    m: &ModuleDef,
-    parent: Option<&ModuleName>,
-    out: &mut ModuleMacroExports,
-) {
+fn collect_module_macros_recursive(m: &ModuleDef, parent: Option<&ModuleName>, out: &mut ModuleMacroExports) {
     let path = if let Some(parent) = parent {
         parent.child(m.name.clone())
     } else {
@@ -1693,19 +1596,14 @@ fn flatten_module(
                     );
                 }
             }
-            Item::Module(_)
-            | Item::Struct(_)
-            | Item::Protocol(_)
-            | Item::ProtocolImpl(_)
-            | Item::MacroCall { .. } => {}
+            Item::Module(_) | Item::Struct(_) | Item::Protocol(_) | Item::ProtocolImpl(_) | Item::MacroCall { .. } => {}
         }
     }
 
     for item in &m.items {
         match &**item {
             Item::Fn(def) => {
-                let qualified_name =
-                    QualifiedName::in_module(module_name.clone(), def.name.clone()).dotted();
+                let qualified_name = QualifiedName::in_module(module_name.clone(), def.name.clone()).dotted();
                 let mut new_def = def.clone();
                 new_def.name = qualified_name;
                 for clause in &mut new_def.clauses {
@@ -1720,15 +1618,7 @@ fn flatten_module(
                         &imports,
                     );
                     if let Some(g) = &mut clause.guard {
-                        rewrite_expr(
-                            g,
-                            &module_path,
-                            &siblings,
-                            &mut intro,
-                            module_paths,
-                            &aliases,
-                            &imports,
-                        );
+                        rewrite_expr(g, &module_path, &siblings, &mut intro, module_paths, &aliases, &imports);
                     }
                 }
                 out.push(Rc::new(Item::Fn(new_def)));
@@ -1761,15 +1651,7 @@ fn flatten_module(
                 let mut new_args: Vec<Spanned<Expr>> = args.clone();
                 for a in &mut new_args {
                     let mut intro: HashSet<String> = HashSet::new();
-                    rewrite_expr(
-                        a,
-                        &module_path,
-                        &siblings,
-                        &mut intro,
-                        module_paths,
-                        &aliases,
-                        &imports,
-                    );
+                    rewrite_expr(a, &module_path, &siblings, &mut intro, module_paths, &aliases, &imports);
                 }
                 out.push(Rc::new(Item::MacroCall {
                     name: name.clone(),
@@ -1803,8 +1685,7 @@ fn flatten_protocol_impl(
     imports: &ImportMap,
     local_protocols: &HashSet<String>,
 ) -> Result<(), ResolveError> {
-    let protocol =
-        qualify_impl_protocol_name(parent_path, &protocol_impl.protocol, local_protocols);
+    let protocol = qualify_impl_protocol_name(parent_path, &protocol_impl.protocol, local_protocols);
     let target_module = qualify_module_child(parent_path, &protocol_impl.target.path);
     let impl_module = protocol_impl_module(&protocol, &target_module);
     let module_path = impl_module.dotted();
@@ -1818,8 +1699,7 @@ fn flatten_protocol_impl(
         .collect::<HashSet<_>>();
     for item in &protocol_impl.items {
         if let Item::Fn(def) = &**item {
-            let qualified_name =
-                QualifiedName::in_module(impl_module.clone(), def.name.clone()).dotted();
+            let qualified_name = QualifiedName::in_module(impl_module.clone(), def.name.clone()).dotted();
             let mut new_def = def.clone();
             new_def.name = qualified_name;
             for clause in &mut new_def.clauses {
@@ -1834,15 +1714,7 @@ fn flatten_protocol_impl(
                     imports,
                 );
                 if let Some(g) = &mut clause.guard {
-                    rewrite_expr(
-                        g,
-                        &module_path,
-                        &siblings,
-                        &mut intro,
-                        module_paths,
-                        aliases,
-                        imports,
-                    );
+                    rewrite_expr(g, &module_path, &siblings, &mut intro, module_paths, aliases, imports);
                 }
             }
             out.push(Rc::new(Item::Fn(new_def)));
@@ -1860,8 +1732,7 @@ fn qualify_impl_protocol_name(
         return name.clone();
     }
     if let Some(parent) = parent
-        && (name.last_segment() == parent.last_segment()
-            || local_protocols.contains(name.last_segment()))
+        && (name.last_segment() == parent.last_segment() || local_protocols.contains(name.last_segment()))
     {
         return qualify_protocol_name(Some(parent), name);
     }
@@ -1962,15 +1833,7 @@ fn rewrite_expr(
         }
         // fz-g58.2.6 — sibling/import rewriting recurses into the `&(...)`
         // body; `&N` is a leaf with no name to resolve.
-        Expr::Capture(body) => rewrite_expr(
-            body,
-            module_path,
-            siblings,
-            intro,
-            module_paths,
-            aliases,
-            imports,
-        ),
+        Expr::Capture(body) => rewrite_expr(body, module_path, siblings, intro, module_paths, aliases, imports),
         Expr::CaptureArg(_) => {}
         // fz-swt.5: `&name/arity` follows the same name-resolution rules
         // as a bare call target — sibling rewriting, then import
@@ -2010,84 +1873,28 @@ fn rewrite_expr(
             {
                 callee.node = Expr::Var(format!("{}.{}", target.module, n));
             }
-            rewrite_expr(
-                callee,
-                module_path,
-                siblings,
-                intro,
-                module_paths,
-                aliases,
-                imports,
-            );
+            rewrite_expr(callee, module_path, siblings, intro, module_paths, aliases, imports);
             for a in args {
-                rewrite_expr(
-                    a,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
+                rewrite_expr(a, module_path, siblings, intro, module_paths, aliases, imports);
             }
         }
         Expr::ClosureCall(callee, args) => {
-            rewrite_expr(
-                callee,
-                module_path,
-                siblings,
-                intro,
-                module_paths,
-                aliases,
-                imports,
-            );
+            rewrite_expr(callee, module_path, siblings, intro, module_paths, aliases, imports);
             for a in args {
-                rewrite_expr(
-                    a,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
+                rewrite_expr(a, module_path, siblings, intro, module_paths, aliases, imports);
             }
         }
         Expr::List(xs, tail) => {
             for x in xs {
-                rewrite_expr(
-                    x,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
+                rewrite_expr(x, module_path, siblings, intro, module_paths, aliases, imports);
             }
             if let Some(t) = tail {
-                rewrite_expr(
-                    t,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
+                rewrite_expr(t, module_path, siblings, intro, module_paths, aliases, imports);
             }
         }
         Expr::Tuple(xs) | Expr::Block(xs) => {
             for x in xs {
-                rewrite_expr(
-                    x,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
+                rewrite_expr(x, module_path, siblings, intro, module_paths, aliases, imports);
             }
         }
         Expr::Bitstring(fields) => {
@@ -2105,175 +1912,49 @@ fn rewrite_expr(
         }
         Expr::Map(pairs) => {
             for (k, v) in pairs {
-                rewrite_expr(
-                    k,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
-                rewrite_expr(
-                    v,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
+                rewrite_expr(k, module_path, siblings, intro, module_paths, aliases, imports);
+                rewrite_expr(v, module_path, siblings, intro, module_paths, aliases, imports);
             }
         }
         Expr::MapUpdate(m, pairs) => {
-            rewrite_expr(
-                m,
-                module_path,
-                siblings,
-                intro,
-                module_paths,
-                aliases,
-                imports,
-            );
+            rewrite_expr(m, module_path, siblings, intro, module_paths, aliases, imports);
             for (k, v) in pairs {
-                rewrite_expr(
-                    k,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
-                rewrite_expr(
-                    v,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
+                rewrite_expr(k, module_path, siblings, intro, module_paths, aliases, imports);
+                rewrite_expr(v, module_path, siblings, intro, module_paths, aliases, imports);
             }
         }
         Expr::Struct { fields, .. } => {
             for (_, v) in fields {
-                rewrite_expr(
-                    v,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
+                rewrite_expr(v, module_path, siblings, intro, module_paths, aliases, imports);
             }
         }
         Expr::Index(o, i) => {
-            rewrite_expr(
-                o,
-                module_path,
-                siblings,
-                intro,
-                module_paths,
-                aliases,
-                imports,
-            );
-            rewrite_expr(
-                i,
-                module_path,
-                siblings,
-                intro,
-                module_paths,
-                aliases,
-                imports,
-            );
+            rewrite_expr(o, module_path, siblings, intro, module_paths, aliases, imports);
+            rewrite_expr(i, module_path, siblings, intro, module_paths, aliases, imports);
         }
         Expr::BinOp(_, l, r) => {
-            rewrite_expr(
-                l,
-                module_path,
-                siblings,
-                intro,
-                module_paths,
-                aliases,
-                imports,
-            );
-            rewrite_expr(
-                r,
-                module_path,
-                siblings,
-                intro,
-                module_paths,
-                aliases,
-                imports,
-            );
+            rewrite_expr(l, module_path, siblings, intro, module_paths, aliases, imports);
+            rewrite_expr(r, module_path, siblings, intro, module_paths, aliases, imports);
         }
-        Expr::UnOp(_, x) | Expr::Ascribe(x, _) => rewrite_expr(
-            x,
-            module_path,
-            siblings,
-            intro,
-            module_paths,
-            aliases,
-            imports,
-        ),
+        Expr::UnOp(_, x) | Expr::Ascribe(x, _) => {
+            rewrite_expr(x, module_path, siblings, intro, module_paths, aliases, imports)
+        }
         Expr::If(c, t, els) => {
-            rewrite_expr(
-                c,
-                module_path,
-                siblings,
-                intro,
-                module_paths,
-                aliases,
-                imports,
-            );
-            rewrite_expr(
-                t,
-                module_path,
-                siblings,
-                intro,
-                module_paths,
-                aliases,
-                imports,
-            );
+            rewrite_expr(c, module_path, siblings, intro, module_paths, aliases, imports);
+            rewrite_expr(t, module_path, siblings, intro, module_paths, aliases, imports);
             if let Some(e) = els {
-                rewrite_expr(
-                    e,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
+                rewrite_expr(e, module_path, siblings, intro, module_paths, aliases, imports);
             }
         }
         Expr::Case(scr, arms) => {
             if let Some(scr) = scr {
-                rewrite_expr(
-                    scr,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
+                rewrite_expr(scr, module_path, siblings, intro, module_paths, aliases, imports);
             }
             for arm in arms {
                 let mut nested = intro.clone();
                 collect_pattern_vars(&arm.pattern.node, &mut nested);
                 if let Some(g) = &mut arm.guard {
-                    rewrite_expr(
-                        g,
-                        module_path,
-                        siblings,
-                        &mut nested,
-                        module_paths,
-                        aliases,
-                        imports,
-                    );
+                    rewrite_expr(g, module_path, siblings, &mut nested, module_paths, aliases, imports);
                 }
                 rewrite_expr(
                     &mut arm.body,
@@ -2288,24 +1969,8 @@ fn rewrite_expr(
         }
         Expr::Cond(pairs) => {
             for (c, b) in pairs {
-                rewrite_expr(
-                    c,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
-                rewrite_expr(
-                    b,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
+                rewrite_expr(c, module_path, siblings, intro, module_paths, aliases, imports);
+                rewrite_expr(b, module_path, siblings, intro, module_paths, aliases, imports);
             }
         }
         Expr::With(bindings, body, else_clauses) => {
@@ -2313,50 +1978,20 @@ fn rewrite_expr(
             for b in bindings {
                 match b {
                     WithBinding::Match(p, e) => {
-                        rewrite_expr(
-                            e,
-                            module_path,
-                            siblings,
-                            &mut nested,
-                            module_paths,
-                            aliases,
-                            imports,
-                        );
+                        rewrite_expr(e, module_path, siblings, &mut nested, module_paths, aliases, imports);
                         collect_pattern_vars(&p.node, &mut nested);
                     }
-                    WithBinding::Bare(e) => rewrite_expr(
-                        e,
-                        module_path,
-                        siblings,
-                        &mut nested,
-                        module_paths,
-                        aliases,
-                        imports,
-                    ),
+                    WithBinding::Bare(e) => {
+                        rewrite_expr(e, module_path, siblings, &mut nested, module_paths, aliases, imports)
+                    }
                 }
             }
-            rewrite_expr(
-                body,
-                module_path,
-                siblings,
-                &mut nested,
-                module_paths,
-                aliases,
-                imports,
-            );
+            rewrite_expr(body, module_path, siblings, &mut nested, module_paths, aliases, imports);
             for arm in else_clauses {
                 let mut a_intro = intro.clone();
                 collect_pattern_vars(&arm.pattern.node, &mut a_intro);
                 if let Some(g) = &mut arm.guard {
-                    rewrite_expr(
-                        g,
-                        module_path,
-                        siblings,
-                        &mut a_intro,
-                        module_paths,
-                        aliases,
-                        imports,
-                    );
+                    rewrite_expr(g, module_path, siblings, &mut a_intro, module_paths, aliases, imports);
                 }
                 rewrite_expr(
                     &mut arm.body,
@@ -2370,15 +2005,7 @@ fn rewrite_expr(
             }
         }
         Expr::Match(pat, rhs) => {
-            rewrite_expr(
-                rhs,
-                module_path,
-                siblings,
-                intro,
-                module_paths,
-                aliases,
-                imports,
-            );
+            rewrite_expr(rhs, module_path, siblings, intro, module_paths, aliases, imports);
             collect_pattern_vars(&pat.node, intro);
         }
         Expr::Lambda(clauses) => {
@@ -2409,24 +2036,8 @@ fn rewrite_expr(
                 );
             }
         }
-        Expr::Quote(inner) => rewrite_expr(
-            inner,
-            module_path,
-            siblings,
-            intro,
-            module_paths,
-            aliases,
-            imports,
-        ),
-        Expr::Unquote(inner) => rewrite_expr(
-            inner,
-            module_path,
-            siblings,
-            intro,
-            module_paths,
-            aliases,
-            imports,
-        ),
+        Expr::Quote(inner) => rewrite_expr(inner, module_path, siblings, intro, module_paths, aliases, imports),
+        Expr::Unquote(inner) => rewrite_expr(inner, module_path, siblings, intro, module_paths, aliases, imports),
         // fz-5vj — receive: each clause introduces pattern vars into a
         // nested scope (bound names from the pattern, including the names
         // shadowed by `^name` pins which are *not* binding sites — they
@@ -2437,15 +2048,7 @@ fn rewrite_expr(
                 let mut nested = intro.clone();
                 collect_pattern_vars(&arm.pattern.node, &mut nested);
                 if let Some(g) = &mut arm.guard {
-                    rewrite_expr(
-                        g,
-                        module_path,
-                        siblings,
-                        &mut nested,
-                        module_paths,
-                        aliases,
-                        imports,
-                    );
+                    rewrite_expr(g, module_path, siblings, &mut nested, module_paths, aliases, imports);
                 }
                 rewrite_expr(
                     &mut arm.body,
@@ -2478,12 +2081,7 @@ fn rewrite_expr(
                 );
             }
         }
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Binary(_)
-        | Expr::Atom(_)
-        | Expr::Bool(_)
-        | Expr::Nil => {}
+        Expr::Int(_) | Expr::Float(_) | Expr::Binary(_) | Expr::Atom(_) | Expr::Bool(_) | Expr::Nil => {}
     }
 }
 
@@ -2540,1678 +2138,9 @@ fn qualify_callee(
 }
 
 fn is_upper(s: &str) -> bool {
-    s.chars()
-        .next()
-        .map(|c| c.is_ascii_uppercase())
-        .unwrap_or(false)
+    s.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::parser::Parser;
-    use crate::parser::lexer::Lexer;
-    use crate::types::Types;
-
-    fn parse(src: &str) -> Program {
-        let toks = Lexer::new(src).tokenize().expect("lex");
-        Parser::new(toks).parse_program().expect("parse")
-    }
-
-    fn flatten(src: &str) -> Program {
-        let mut ct = crate::types::ConcreteTypes;
-        flatten_modules(&mut ct, parse(src)).expect("flatten")
-    }
-
-    fn fn_names(p: &Program) -> Vec<String> {
-        p.items
-            .iter()
-            .filter_map(|it| match &**it {
-                Item::Fn(d) => Some(d.name.clone()),
-                _ => None,
-            })
-            .collect()
-    }
-
-    fn callee_name(body: &Spanned<Expr>) -> &str {
-        match &body.node {
-            Expr::Call(callee, _) => match &callee.node {
-                Expr::Var(n) => n.as_str(),
-                other => panic!("expected Var callee, got {:?}", other),
-            },
-            other => panic!("expected Call, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn module_qualifies_fn_names() {
-        let p = flatten("defmodule M do; fn f(x), do: x + 1 end");
-        // Every module gains a synthesized `__info__/1`.
-        assert_eq!(fn_names(&p), vec!["M.f", "M.__info__"]);
-    }
-
-    #[test]
-    fn ungrouped_fns_keep_bare_names() {
-        let p = flatten("fn helper(x), do: x + 1");
-        assert_eq!(fn_names(&p), vec!["helper"]);
-    }
-
-    #[test]
-    fn sibling_call_in_module_rewrites() {
-        let p = flatten(
-            r#"
-defmodule M do
-  fn helper(x), do: x + 1
-  fn use_helper(x), do: helper(x)
-end
-"#,
-        );
-        let names = fn_names(&p);
-        assert!(names.contains(&"M.helper".to_string()));
-        assert!(names.contains(&"M.use_helper".to_string()));
-        let use_helper = p
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "M.use_helper" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(callee_name(&use_helper.clauses[0].body), "M.helper");
-    }
-
-    #[test]
-    fn cross_module_call_rewrites() {
-        let p = flatten(
-            r#"
-defmodule A do
-  fn ping(), do: 1
-end
-defmodule B do
-  fn caller(), do: A.ping()
-end
-"#,
-        );
-        let caller = p
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "B.caller" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(callee_name(&caller.clauses[0].body), "A.ping");
-    }
-
-    #[test]
-    fn local_param_does_not_qualify() {
-        let p = flatten(
-            r#"
-defmodule M do
-  fn helper(x), do: x
-  fn shadow(helper), do: helper
-end
-"#,
-        );
-        let shadow = p
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "M.shadow" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        match &shadow.clauses[0].body.node {
-            Expr::Var(n) => assert_eq!(n, "helper"),
-            other => panic!("expected Var('helper'), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn nested_module_qualifies_with_dotted_path() {
-        let p = flatten(
-            r#"
-defmodule A do
-  defmodule B do
-    fn f(x), do: x + 1
-  end
-end
-"#,
-        );
-        // Every module gains a synthesized `__info__/1` — including the
-        // namespace-only outer module `A`.
-        assert_eq!(fn_names(&p), vec!["A.B.f", "A.B.__info__", "A.__info__"]);
-    }
-
-    #[test]
-    fn nested_call_from_outside_rewrites() {
-        let p = flatten(
-            r#"
-defmodule A do
-  defmodule B do
-    fn f(x), do: x
-  end
-end
-fn main() do A.B.f(99) end
-"#,
-        );
-        let main_fn = p
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "main" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(callee_name(&main_fn.clauses[0].body), "A.B.f");
-    }
-
-    #[test]
-    fn alias_inside_module_resolves() {
-        let p = flatten(
-            r#"
-defmodule Long do
-  defmodule Path do
-    fn f(x), do: x
-  end
-end
-defmodule User do
-  alias Long.Path
-  fn caller(), do: Path.f(7)
-end
-"#,
-        );
-        let caller = p
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "User.caller" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(callee_name(&caller.clauses[0].body), "Long.Path.f");
-    }
-
-    #[test]
-    fn alias_with_as_renames() {
-        let p = flatten(
-            r#"
-defmodule Long do
-  defmodule Path do
-    fn f(x), do: x
-  end
-end
-defmodule User do
-  alias Long.Path, as: P
-  fn caller(), do: P.f(9)
-end
-"#,
-        );
-        let caller = p
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "User.caller" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(callee_name(&caller.clauses[0].body), "Long.Path.f");
-    }
-
-    #[test]
-    fn import_unfiltered_pulls_all_names() {
-        let p = flatten(
-            r#"
-defmodule Math do
-  fn add(x, y), do: x + y
-  fn mul(x, y), do: x * y
-end
-defmodule User do
-  import Math
-  fn run(x, y), do: add(x, y)
-end
-"#,
-        );
-        let run = p
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "User.run" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(callee_name(&run.clauses[0].body), "Math.add");
-    }
-
-    #[test]
-    fn import_only_filters_names() {
-        let p = flatten(
-            r#"
-defmodule Math do
-  fn add(x, y), do: x + y
-  fn mul(x, y), do: x * y
-end
-defmodule User do
-  import Math, only: [add: 2]
-  fn r1(x, y), do: add(x, y)
-  fn r2(x, y), do: mul(x, y)
-end
-"#,
-        );
-        let r1 = p
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "User.r1" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(callee_name(&r1.clauses[0].body), "Math.add");
-        let r2 = p
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "User.r2" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(callee_name(&r2.clauses[0].body), "mul");
-    }
-
-    #[test]
-    fn local_fn_shadows_import() {
-        let p = flatten(
-            r#"
-defmodule Math do
-  fn add(x, y), do: x + y
-end
-defmodule User do
-  import Math
-  fn add(x, y), do: x - y
-  fn use_local(), do: add(10, 4)
-end
-"#,
-        );
-        let use_local = p
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "User.use_local" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(callee_name(&use_local.clauses[0].body), "User.add");
-    }
-
-    #[test]
-    fn import_unknown_module_errors() {
-        let mut ct = crate::types::ConcreteTypes;
-        let err = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-defmodule User do
-  import Missing
-  fn run(), do: nil
-end
-"#,
-            ),
-        )
-        .unwrap_err();
-        let d = err.to_diagnostic();
-        assert_eq!(d.code, codes::RESOLVE_UNKNOWN_MODULE);
-        assert_eq!(d.message, "module `Missing` is not defined");
-        assert_ne!(d.primary.span, Span::DUMMY);
-    }
-
-    #[test]
-    fn alias_unknown_module_errors() {
-        let mut ct = crate::types::ConcreteTypes;
-        let err = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-defmodule User do
-  alias Missing.Path
-  fn run(), do: nil
-end
-"#,
-            ),
-        )
-        .unwrap_err();
-        let d = err.to_diagnostic();
-        assert_eq!(d.code, codes::RESOLVE_UNKNOWN_MODULE);
-        assert_eq!(d.message, "module `Missing.Path` is not defined");
-    }
-
-    #[test]
-    fn import_unknown_arity_errors() {
-        let mut ct = crate::types::ConcreteTypes;
-        let err = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-defmodule Math do
-  fn add(x, y), do: x + y
-end
-defmodule User do
-  import Math, only: [add: 1]
-  fn run(x), do: add(x)
-end
-"#,
-            ),
-        )
-        .unwrap_err();
-        let d = err.to_diagnostic();
-        assert_eq!(d.code, codes::RESOLVE_UNKNOWN_IMPORT);
-        assert_eq!(d.message, "module `Math` does not export `add/1`");
-    }
-
-    #[test]
-    fn import_except_unknown_arity_errors() {
-        let mut ct = crate::types::ConcreteTypes;
-        let err = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-defmodule Math do
-  fn add(x, y), do: x + y
-end
-defmodule User do
-  import Math, except: [add: 1]
-  fn run(x, y), do: add(x, y)
-end
-"#,
-            ),
-        )
-        .unwrap_err();
-        let d = err.to_diagnostic();
-        assert_eq!(d.code, codes::RESOLVE_UNKNOWN_IMPORT);
-        assert_eq!(d.message, "module `Math` does not export `add/1`");
-    }
-
-    #[test]
-    fn import_resolves_from_external_interface_table() {
-        let mut ct = crate::types::ConcreteTypes;
-        let math = ModuleName::from_segments(vec!["Math".to_string()]);
-        let mut interfaces = InterfaceTable::new();
-        interfaces.insert(
-            math.clone(),
-            ModuleInterface {
-                name: math,
-                abi_version: crate::modules::interface::FZ_INTERFACE_ABI_VERSION,
-                imports: Vec::new(),
-                exports: vec![crate::modules::interface::InterfaceFn {
-                    name: "add".to_string(),
-                    arity: 2,
-                    specs: Vec::new(),
-                    name_span: Span::DUMMY,
-                }],
-                types: Vec::new(),
-                protocols: Vec::new(),
-                protocol_impls: Vec::new(),
-                docs: None,
-                fingerprint_inputs: Vec::new(),
-            },
-        );
-        let p = flatten_modules_with_interface_table(
-            &mut ct,
-            parse(
-                r#"
-defmodule User do
-  import Math, only: [add: 2]
-  fn run(x, y), do: add(x, y)
-end
-"#,
-            ),
-            interfaces,
-        )
-        .expect("flatten");
-        let run = p
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "User.run" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(callee_name(&run.clauses[0].body), "Math.add");
-    }
-
-    #[test]
-    fn import_resolves_from_runtime_library_interfaces_by_default() {
-        let mut ct = crate::types::ConcreteTypes;
-        let p = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-defmodule User do
-  import Utf8, only: [valid?: 1]
-  fn run(bytes), do: valid?(bytes)
-end
-"#,
-            ),
-        )
-        .expect("flatten");
-
-        let run = p
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "User.run" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(callee_name(&run.clauses[0].body), "Utf8.valid?");
-        assert!(
-            !p.module_interfaces
-                .contains_key(&ModuleName::from_segments(vec!["Utf8".to_string()]))
-        );
-    }
-
-    #[test]
-    fn alias_resolves_from_runtime_library_interfaces_on_demand() {
-        let mut ct = crate::types::ConcreteTypes;
-        let p = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-defmodule User do
-  alias Utf8, as: U
-  fn run(bytes), do: U.valid?(bytes)
-end
-"#,
-            ),
-        )
-        .expect("flatten");
-
-        let run = p
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "User.run" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(callee_name(&run.clauses[0].body), "Utf8.valid?");
-        assert!(
-            p.external_module_interfaces
-                .contains_key(&ModuleName::from_segments(vec!["Utf8".to_string()]))
-        );
-        assert!(
-            !p.external_module_interfaces
-                .contains_key(&ModuleName::from_segments(vec!["Process".to_string()]))
-        );
-    }
-
-    #[test]
-    fn qualified_runtime_namespace_reference_requests_interface() {
-        let p = flatten(
-            r#"
-defmodule User do
-  fn run(bytes), do: Utf8.valid?(bytes)
-end
-"#,
-        );
-        let run = p
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "User.run" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        match &run.clauses[0].body.node {
-            Expr::Call(callee, _) => {
-                assert!(
-                    matches!(&callee.node, Expr::Var(name) if name == "Utf8.valid?"),
-                    "qualified runtime namespace reference must request and resolve the interface"
-                );
-            }
-            other => panic!("expected call, got {:?}", other),
-        }
-        assert!(
-            p.external_module_interfaces
-                .contains_key(&ModuleName::from_segments(vec!["Utf8".to_string()]))
-        );
-    }
-
-    #[test]
-    fn runtime_protocol_impl_requests_protocol_interface() {
-        let p = flatten(
-            r#"
-defmodule User do
-  fn run(), do: Range.new(1, 3, 1)
-end
-"#,
-        );
-        assert!(
-            p.external_module_interfaces
-                .contains_key(&ModuleName::from_segments(vec!["Range".to_string()]))
-        );
-        assert!(
-            p.external_module_interfaces
-                .contains_key(&ModuleName::from_segments(vec!["Enumerable".to_string()]))
-        );
-    }
-
-    #[test]
-    fn import_non_exported_name_errors() {
-        let mut ct = crate::types::ConcreteTypes;
-        let err = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-defmodule Math do
-  fn visible(), do: 1
-end
-defmodule User do
-  import Math, only: [hidden: 0]
-  fn run(), do: hidden()
-end
-"#,
-            ),
-        )
-        .unwrap_err();
-        let d = err.to_diagnostic();
-        assert_eq!(d.code, codes::RESOLVE_UNKNOWN_IMPORT);
-        assert_eq!(d.message, "module `Math` does not export `hidden/0`");
-    }
-
-    #[test]
-    fn conflicting_imports_error() {
-        let mut ct = crate::types::ConcreteTypes;
-        let err = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-defmodule A do
-  fn f(), do: 1
-end
-defmodule B do
-  fn f(), do: 2
-end
-defmodule User do
-  import A
-  import B
-  fn run(), do: f()
-end
-"#,
-            ),
-        )
-        .unwrap_err();
-        let d = err.to_diagnostic();
-        assert_eq!(d.code, codes::RESOLVE_CONFLICTING_IMPORT);
-        assert_eq!(
-            d.message,
-            "import `f/0` from module `B` conflicts with existing import from module `A`"
-        );
-        assert_eq!(d.secondaries.len(), 1);
-    }
-
-    #[test]
-    fn duplicate_same_module_import_is_idempotent() {
-        let p = flatten(
-            r#"
-defmodule Math do
-  fn add(x, y), do: x + y
-end
-defmodule User do
-  import Math, only: [add: 2]
-  import Math, only: [add: 2]
-  fn run(x, y), do: add(x, y)
-end
-"#,
-        );
-        let run = p
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "User.run" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(callee_name(&run.clauses[0].body), "Math.add");
-    }
-
-    #[test]
-    fn top_level_import_rewrites_top_level_functions() {
-        let p = flatten(
-            r#"
-defmodule Math do
-  fn add(x, y), do: x + y
-end
-import Math, only: [add: 2]
-fn main(), do: add(20, 22)
-"#,
-        );
-        let main = p
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "main" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(callee_name(&main.clauses[0].body), "Math.add");
-    }
-
-    #[test]
-    fn top_level_alias_rewrites_top_level_functions() {
-        let p = flatten(
-            r#"
-defmodule Outer do
-  defmodule Inner do
-    fn value(), do: 42
-  end
-end
-alias Outer.Inner, as: I
-fn main(), do: I.value()
-"#,
-        );
-        let main = p
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "main" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(callee_name(&main.clauses[0].body), "Outer.Inner.value");
-    }
-
-    #[test]
-    fn duplicate_module_diag_has_primary_and_first_definition_spans() {
-        let mut ct = crate::types::ConcreteTypes;
-        let err = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-defmodule M do
-  fn one(), do: 1
-end
-defmodule M do
-  fn two(), do: 2
-end
-"#,
-            ),
-        )
-        .unwrap_err();
-        let d = err.to_diagnostic();
-        assert_eq!(d.code, codes::RESOLVE_DUPLICATE_MODULE);
-        assert_ne!(d.primary.span, Span::DUMMY);
-        assert_eq!(d.secondaries.len(), 1);
-        assert_ne!(d.secondaries[0].span, Span::DUMMY);
-    }
-
-    #[test]
-    fn duplicate_export_diag_names_module_function_and_arity() {
-        let parsed = parse(
-            r#"
-fn f(x), do: x
-fn g(y), do: y
-"#,
-        );
-        let mut defs: Vec<FnDef> = parsed
-            .items
-            .iter()
-            .filter_map(|item| match &**item {
-                Item::Fn(def) => Some(def.clone()),
-                _ => None,
-            })
-            .collect();
-        defs[1].name = "f".to_string();
-        let module = ModuleDef {
-            name: "M".to_string(),
-            name_span: Span::DUMMY,
-            items: vec![
-                Rc::new(Item::Fn(defs[0].clone())),
-                Rc::new(Item::Fn(defs[1].clone())),
-            ],
-            attrs: Vec::new(),
-            span: Span::DUMMY,
-        };
-        let prog = Program {
-            items: vec![Rc::new(Item::Module(module))],
-            module_interfaces: Default::default(),
-            ..Program::default()
-        };
-        let mut ct = crate::types::ConcreteTypes;
-        let err = flatten_modules(&mut ct, prog).unwrap_err();
-        let d = err.to_diagnostic();
-        assert_eq!(d.code, codes::RESOLVE_DUPLICATE_EXPORT);
-        assert_eq!(d.message, "export `M.f/1` is defined more than once");
-        assert_ne!(d.primary.span, Span::DUMMY);
-        assert_eq!(d.secondaries.len(), 1);
-    }
-
-    #[test]
-    fn moduledoc_and_doc_parse() {
-        let prog = parse(
-            r#"
-defmodule Greeter do
-  @moduledoc "Greets people."
-
-  @doc "Says hi."
-  fn hi(name), do: name
-end
-"#,
-        );
-        let m = prog
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Module(m) => Some(m),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(m.moduledoc(), Some("Greets people."));
-        let hi = m
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "hi" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(hi.doc(), Some("Says hi."));
-    }
-
-    #[test]
-    fn type_alias_attribute_parses_with_module() {
-        // .31.3 — `@type` inside a defmodule attaches a TypeAlias to
-        // the module's attrs. The body tokens are captured for later
-        // resolution by `type_expr::build_module_type_env`.
-        let prog = parse(
-            r#"
-defmodule M do
-  @type id :: integer
-  @type pair :: {id, id}
-  @type keyword(t) :: [{atom, t}]
-  fn one(), do: 1
-end
-"#,
-        );
-        let m = prog
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Module(m) => Some(m),
-                _ => None,
-            })
-            .unwrap();
-        let aliases: Vec<&str> = m
-            .attrs
-            .iter()
-            .filter_map(|a| match a {
-                Attribute::TypeAlias(d) => Some(d.name.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(aliases, vec!["id", "pair", "keyword"]);
-        let keyword = m
-            .attrs
-            .iter()
-            .find_map(|a| match a {
-                Attribute::TypeAlias(d) if d.name == "keyword" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(keyword.params, vec!["t"]);
-        // Build env and verify resolution end-to-end.
-        let mut ct = crate::types::ConcreteTypes;
-        let env = crate::type_expr::build_module_type_env(&mut ct, &m.attrs).unwrap();
-        let int = ct.int();
-        assert!(ct.is_equivalent(env.get("id").unwrap(), &int));
-        let expected = ct.tuple(&[int.clone(), int]);
-        assert!(ct.is_equivalent(env.get("pair").unwrap(), &expected));
-        let keyword_int = crate::type_expr::parse_type_expr(
-            &mut ct,
-            &crate::parser::lexer::Lexer::new("keyword(integer)")
-                .tokenize()
-                .unwrap(),
-            &env,
-        )
-        .unwrap()
-        .0;
-        let atom = ct.atom();
-        let int = ct.int();
-        let pair = ct.tuple(&[atom, int]);
-        let expected_keyword = ct.list(pair);
-        assert!(ct.is_equivalent(&keyword_int, &expected_keyword));
-    }
-
-    #[test]
-    fn module_type_aliases_can_use_runtime_root_aliases() {
-        let prog = parse(
-            r#"
-defmodule M do
-  @type opts :: keyword(integer)
-  @spec run(opts) :: nil
-  fn run(_), do: nil
-end
-"#,
-        );
-        let mut ct = crate::types::ConcreteTypes;
-        let flat = flatten_modules(&mut ct, prog).expect("flatten");
-        let env = flat.module_type_envs.get("M").expect("module env");
-        let opts = env.get("opts").expect("opts alias");
-        let atom = ct.atom();
-        let int = ct.int();
-        let pair = ct.tuple(&[atom, int]);
-        let expected = ct.list(pair);
-        assert!(ct.is_equivalent(opts, &expected));
-    }
-
-    #[test]
-    fn struct_record_type_alias_populates_program_field_types() {
-        let prog = parse(
-            r#"
-defmodule Range do
-  defstruct [:first, :last, :step]
-  @type t :: %Range{first: integer, last: integer, step: integer}
-end
-"#,
-        );
-        let mut ct = crate::types::ConcreteTypes;
-        let flat = flatten_modules(&mut ct, prog).expect("flatten");
-        let range = ModuleName::from_segments(vec!["Range".to_string()]);
-        let fields = flat
-            .struct_field_types
-            .get(&range)
-            .expect("Range field types");
-        assert_eq!(
-            fields
-                .iter()
-                .map(|(name, _ty)| name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["first", "last", "step"]
-        );
-        let int = ct.int();
-        assert!(fields.iter().all(|(_name, ty)| ct.is_equivalent(ty, &int)));
-    }
-
-    #[test]
-    fn struct_record_type_alias_must_match_defstruct_schema() {
-        let prog = parse(
-            r#"
-defmodule Range do
-  defstruct [:first, :last, :step]
-  @type t :: %Range{first: integer, last: integer}
-end
-"#,
-        );
-        let mut ct = crate::types::ConcreteTypes;
-        let err = flatten_modules(&mut ct, prog).expect_err("expected schema mismatch");
-        match err {
-            ResolveError::TypeAliasError { msg, span } => {
-                assert!(msg.contains("missing field `step`"), "{msg}");
-                assert!(!span.is_dummy());
-            }
-            other => panic!("expected type alias error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn module_specs_can_use_runtime_root_aliases_without_local_types() {
-        let prog = parse(
-            r#"
-defmodule M do
-  @spec run(keyword(integer)) :: nil
-  fn run(_), do: nil
-end
-"#,
-        );
-        let mut ct = crate::types::ConcreteTypes;
-        let flat = flatten_modules(&mut ct, prog).expect("flatten");
-        let def = flat
-            .items
-            .iter()
-            .find_map(|item| match &**item {
-                Item::Fn(def) if def.name == "M.run" => Some(def),
-                _ => None,
-            })
-            .expect("M.run");
-        let spec = def
-            .attrs
-            .iter()
-            .find_map(|attr| match attr {
-                Attribute::Spec(spec) => Some(spec),
-                _ => None,
-            })
-            .expect("spec");
-        let env = flat.module_type_envs.get("M").expect("module env");
-        let resolved =
-            crate::type_expr::resolve_spec_decl(&mut ct, spec, env).expect("resolve spec");
-        let atom = ct.atom();
-        let int = ct.int();
-        let pair = ct.tuple(&[atom, int]);
-        let expected = ct.list(pair);
-        assert!(ct.is_equivalent(&resolved.params[0], &expected));
-    }
-
-    // ----- fz-ul4.31.4: @spec parser + AST attachment -----
-
-    #[test]
-    fn spec_attribute_parses_and_attaches_to_fn() {
-        let prog = parse(
-            r#"
-defmodule M do
-  @spec add1(integer) :: integer
-  fn add1(n), do: n + 1
-end
-"#,
-        );
-        let m = prog
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Module(m) => Some(m),
-                _ => None,
-            })
-            .unwrap();
-        let add1 = m
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "add1" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        let spec = add1
-            .attrs
-            .iter()
-            .find_map(|a| match a {
-                Attribute::Spec(s) => Some(s),
-                _ => None,
-            })
-            .expect("@spec attached to fn");
-        assert_eq!(spec.name, "add1");
-        assert_eq!(spec.param_body_tokens.len(), 1);
-        // Resolve and verify types.
-        let env = crate::type_expr::ModuleTypeEnv::new();
-        use crate::types::Types;
-        let mut ct = crate::types::ConcreteTypes;
-        let resolved = crate::type_expr::resolve_spec_decl(&mut ct, spec, &env).unwrap();
-        let int = ct.int();
-        assert!(ct.is_equivalent(&resolved.params[0], &int));
-        assert!(ct.is_equivalent(&resolved.result, &int));
-    }
-
-    #[test]
-    fn spec_zero_arity_parses() {
-        let prog = parse(
-            r#"
-defmodule M do
-  @spec one() :: integer
-  fn one(), do: 1
-end
-"#,
-        );
-        let m = prog
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Module(m) => Some(m),
-                _ => None,
-            })
-            .unwrap();
-        let one = m
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "one" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        let spec = one
-            .attrs
-            .iter()
-            .find_map(|a| match a {
-                Attribute::Spec(s) => Some(s),
-                _ => None,
-            })
-            .expect("@spec attached to zero-arity fn");
-        assert_eq!(spec.param_body_tokens.len(), 0);
-    }
-
-    #[test]
-    fn spec_arity_mismatch_errors_at_parse_time() {
-        let toks = crate::parser::lexer::Lexer::new(
-            "defmodule M do\n\
-              @spec add1(integer, integer) :: integer\n\
-              fn add1(n), do: n + 1\n\
-            end\n",
-        )
-        .tokenize()
-        .unwrap();
-        let r = Parser::new(toks).parse_program();
-        assert!(r.is_err(), "arity mismatch must error");
-        let msg = format!("{:?}", r.unwrap_err());
-        assert!(msg.contains("arity"), "expected arity diag, got: {}", msg);
-    }
-
-    #[test]
-    fn spec_name_mismatch_errors_at_parse_time() {
-        let toks = crate::parser::lexer::Lexer::new(
-            "defmodule M do\n\
-              @spec other(integer) :: integer\n\
-              fn add1(n), do: n + 1\n\
-            end\n",
-        )
-        .tokenize()
-        .unwrap();
-        let r = Parser::new(toks).parse_program();
-        assert!(r.is_err(), "name mismatch must error");
-        let msg = format!("{:?}", r.unwrap_err());
-        assert!(
-            msg.contains("doesn't match"),
-            "expected name-mismatch diag, got: {}",
-            msg
-        );
-    }
-
-    #[test]
-    fn spec_without_following_fn_errors() {
-        // @spec at the end of a module with no fn following it.
-        let toks = crate::parser::lexer::Lexer::new(
-            "defmodule M do\n\
-              @spec lonely(integer) :: integer\n\
-            end\n",
-        )
-        .tokenize()
-        .unwrap();
-        let r = Parser::new(toks).parse_program();
-        assert!(r.is_err(), "spec without fn must error");
-    }
-
-    #[test]
-    fn multiple_specs_on_one_fn_attach_in_order() {
-        let toks = crate::parser::lexer::Lexer::new(
-            "defmodule M do\n\
-              @spec add1(integer) :: integer\n\
-              @spec add1(float) :: float\n\
-              fn add1(n), do: n + 1\n\
-            end\n",
-        )
-        .tokenize()
-        .unwrap();
-        let prog = Parser::new(toks).parse_program().expect("parse");
-        let m = prog
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Module(m) => Some(m),
-                _ => None,
-            })
-            .unwrap();
-        let add1 = m
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "add1" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        let specs = add1
-            .attrs
-            .iter()
-            .filter_map(|a| match a {
-                Attribute::Spec(s) => Some(s),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(specs.len(), 2);
-        assert_eq!(specs[0].name, "add1");
-        assert_eq!(specs[1].name, "add1");
-        assert_eq!(specs[0].param_body_tokens.len(), 1);
-        assert_eq!(specs[1].param_body_tokens.len(), 1);
-    }
-
-    #[test]
-    fn spec_unknown_type_errors_at_resolve_time() {
-        let prog = parse(
-            r#"
-defmodule M do
-  @spec add1(unknown_thing) :: integer
-  fn add1(n), do: n + 1
-end
-"#,
-        );
-        let m = prog
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Module(m) => Some(m),
-                _ => None,
-            })
-            .unwrap();
-        let add1 = m
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "add1" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        let spec = add1
-            .attrs
-            .iter()
-            .find_map(|a| match a {
-                Attribute::Spec(s) => Some(s),
-                _ => None,
-            })
-            .expect("@spec parsed");
-        let mut ct = crate::types::ConcreteTypes;
-        let env = crate::type_expr::build_module_type_env(&mut ct, &m.attrs).unwrap();
-        let r = crate::type_expr::resolve_spec_decl(&mut ct, spec, &env);
-        assert!(r.is_err(), "unknown type must error on resolve");
-        let e = r.unwrap_err();
-        assert!(
-            e.msg.contains("unknown type name"),
-            "expected unknown-name diag, got: {}",
-            e.msg
-        );
-    }
-
-    #[test]
-    fn spec_resolves_against_module_type_env() {
-        let prog = parse(
-            r#"
-defmodule M do
-  @type id :: integer
-  @spec lookup(id) :: id
-  fn lookup(x), do: x
-end
-"#,
-        );
-        let m = prog
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Module(m) => Some(m),
-                _ => None,
-            })
-            .unwrap();
-        let lookup = m
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "lookup" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        let spec = lookup
-            .attrs
-            .iter()
-            .find_map(|a| match a {
-                Attribute::Spec(s) => Some(s),
-                _ => None,
-            })
-            .expect("@spec parsed");
-        use crate::types::Types;
-        let mut ct = crate::types::ConcreteTypes;
-        let env = crate::type_expr::build_module_type_env(&mut ct, &m.attrs).unwrap();
-        let resolved = crate::type_expr::resolve_spec_decl(&mut ct, spec, &env).unwrap();
-        let int = ct.int();
-        assert!(ct.is_equivalent(&resolved.params[0], &int));
-        assert!(ct.is_equivalent(&resolved.result, &int));
-    }
-
-    #[test]
-    fn type_alias_at_top_level_errors() {
-        let toks = crate::parser::lexer::Lexer::new("@type id :: integer\nfn main(), do: nil")
-            .tokenize()
-            .unwrap();
-        let r = Parser::new(toks).parse_program();
-        assert!(r.is_err(), "@type at top level must error; got {:?}", r);
-    }
-
-    #[test]
-    fn unknown_attribute_errors() {
-        let toks = crate::parser::lexer::Lexer::new("@bogus \"x\"\nfn main(), do: nil")
-            .tokenize()
-            .unwrap();
-        let r = Parser::new(toks).parse_program();
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn moduledoc_at_top_level_errors() {
-        let toks = crate::parser::lexer::Lexer::new("@moduledoc \"x\"\nfn main(), do: nil")
-            .tokenize()
-            .unwrap();
-        let r = Parser::new(toks).parse_program();
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn doc_survives_flatten() {
-        let p = flatten(
-            r#"
-defmodule M do
-  @doc "doubles"
-  fn d(x), do: x * 2
-end
-"#,
-        );
-        let d = p
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "M.d" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(d.doc(), Some("doubles"));
-    }
-
-    #[test]
-    fn outer_sibling_not_shadowed_by_inner_same_name() {
-        let p = flatten(
-            r#"
-defmodule A do
-  fn f(x), do: x
-  fn caller(x), do: f(x)
-  defmodule B do
-    fn f(x), do: x + 100
-  end
-end
-"#,
-        );
-        let names = fn_names(&p);
-        assert!(names.contains(&"A.f".to_string()));
-        assert!(names.contains(&"A.B.f".to_string()));
-        let caller = p
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "A.caller" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(callee_name(&caller.clauses[0].body), "A.f");
-    }
-
-    // ----- .20.3: span preservation through qualification -----
-
-    /// Sibling-fn rewriting (`f` → `M.f` inside module M) must NOT alter
-    /// the source span on the rewritten Var. The renamed reference still
-    /// occupies the same byte range in the user's source.
-    #[test]
-    fn sibling_rewrite_preserves_var_span() {
-        let src = "defmodule M do\n  fn f(x), do: x\n  fn g(x), do: f(x)\nend";
-        let pre = parse(src);
-
-        // Find the `f` inside `g`'s body BEFORE flattening.
-        let pre_span = {
-            let Item::Module(m) = &*pre.items[0] else {
-                panic!()
-            };
-            let Item::Fn(g) = &*m
-                .items
-                .iter()
-                .find_map(|it| match &**it {
-                    Item::Fn(d) if d.name == "g" => Some(it.clone()),
-                    _ => None,
-                })
-                .unwrap()
-            else {
-                panic!()
-            };
-            // body is Call(callee=Var("f"), [Var("x")])
-            let body = &g.clauses[0].body;
-            let Expr::Call(callee, _) = &body.node else {
-                panic!()
-            };
-            callee.span
-        };
-
-        let mut ct = crate::types::ConcreteTypes;
-        let post = flatten_modules(&mut ct, pre).expect("flatten");
-        let g = post
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "M.g" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        // The bare `f` has been rewritten to `M.f`; the callee span should
-        // still point at the original `f` token in source.
-        let Expr::Call(callee, _) = &g.clauses[0].body.node else {
-            panic!()
-        };
-        match &callee.node {
-            Expr::Var(n) => assert_eq!(n, "M.f"),
-            other => panic!("expected Var('M.f'), got {:?}", other),
-        }
-        assert_eq!(
-            callee.span, pre_span,
-            "callee span should be preserved through sibling rewrite"
-        );
-    }
-
-    /// Cross-module rewriting: `M.helper(x)` (parsed as `Index(Var(M),
-    /// Atom("helper"))`) becomes `Var("M.helper")`. The resulting Var's
-    /// span should still cover the original source `M.helper` region.
-    #[test]
-    fn cross_module_rewrite_preserves_call_span() {
-        let src = r#"
-defmodule M do
-  fn helper(x), do: x + 1
-end
-defmodule N do
-  fn use_it(), do: M.helper(7)
-end
-"#;
-        let pre = parse(src);
-        let pre_call_span = {
-            let n_mod = pre
-                .items
-                .iter()
-                .find_map(|it| match &**it {
-                    Item::Module(m) if m.name == "N" => Some(m.clone()),
-                    _ => None,
-                })
-                .unwrap();
-            let Item::Fn(u) = &*n_mod
-                .items
-                .iter()
-                .find_map(|it| match &**it {
-                    Item::Fn(d) if d.name == "use_it" => Some(it.clone()),
-                    _ => None,
-                })
-                .unwrap()
-            else {
-                panic!()
-            };
-            let Expr::Call(callee, _) = &u.clauses[0].body.node else {
-                panic!()
-            };
-            callee.span
-        };
-
-        let mut ct = crate::types::ConcreteTypes;
-        let post = flatten_modules(&mut ct, pre).expect("flatten");
-        let u = post
-            .items
-            .iter()
-            .find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "N.use_it" => Some(d),
-                _ => None,
-            })
-            .unwrap();
-        let Expr::Call(callee, _) = &u.clauses[0].body.node else {
-            panic!()
-        };
-        match &callee.node {
-            Expr::Var(n) => assert_eq!(n, "M.helper"),
-            other => panic!("expected Var('M.helper'), got {:?}", other),
-        }
-        assert_eq!(
-            callee.span, pre_call_span,
-            "callee span should be preserved through cross-module rewrite"
-        );
-    }
-
-    #[test]
-    fn protocol_registry_records_declarations_impls_and_domain_types() {
-        let mut ct = crate::types::ConcreteTypes;
-        let p = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-defprotocol Enumerable do
-  @spec reduce(t(a), acc, (a, acc) -> acc) :: acc
-  fn reduce(enumerable, acc, reducer)
-end
-
-defimpl Enumerable, for: List do
-  fn reduce(list, acc, reducer), do: acc
-end
-
-defmodule Consumer do
-  @spec use(Enumerable.t(integer)) :: integer
-  fn use(xs), do: 1
-end
-"#,
-            ),
-        )
-        .expect("flatten");
-
-        let enumerable = ModuleName::from_segments(vec!["Enumerable".to_string()]);
-        let list = ModuleName::from_segments(vec!["List".to_string()]);
-        let registry = &p.protocol_registry;
-        assert!(registry.protocols.contains_key(&enumerable));
-        let implementation = registry
-            .impls
-            .get(&ProtocolImplKey {
-                protocol: enumerable.clone(),
-                target: ImplTarget::module(list.clone()),
-            })
-            .expect("impl fact");
-        assert_eq!(
-            implementation.callbacks[&("reduce".to_string(), 3)],
-            ExportKey::new(enumerable.child("List".to_string()), "reduce", 3)
-        );
-        let protocol_ty = p.module_type_envs["Consumer"]
-            .get("Enumerable.t")
-            .expect("protocol domain type");
-        let any = ct.any();
-        assert!(
-            !ct.is_equivalent(protocol_ty, &any),
-            "Protocol.t must not resolve as any"
-        );
-        let list_any = ct.list(any.clone());
-        let int = ct.int();
-        assert!(ct.is_subtype(&list_any, protocol_ty));
-        assert!(ct.is_disjoint(&int, protocol_ty));
-    }
-
-    #[test]
-    fn protocol_domain_refines_concrete_element_parameter() {
-        let mut ct = crate::types::ConcreteTypes;
-        let p = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-defprotocol Enumerable do
-  fn reduce(enumerable, acc, reducer)
-end
-
-defimpl Enumerable, for: List do
-  fn reduce(list, acc, reducer), do: acc
-end
-
-defmodule Consumer do
-  fn use(xs), do: 1
-end
-"#,
-            ),
-        )
-        .expect("flatten");
-
-        let env = &p.module_type_envs["Consumer"];
-        let parse_dom = |ct: &mut crate::types::ConcreteTypes, src: &str| {
-            let toks = crate::parser::lexer::Lexer::new(src)
-                .tokenize()
-                .expect("lex");
-            let (ty, _) = crate::type_expr::parse_type_expr(ct, &toks, env).expect("parse");
-            ty
-        };
-        let refined = parse_dom(&mut ct, "Enumerable.t(integer)");
-        let bare = parse_dom(&mut ct, "Enumerable.t");
-
-        let int = ct.int();
-        let atom = ct.atom();
-        let list_int = ct.list(int);
-        let list_atom = ct.list(atom);
-
-        // The concrete element refines the List target to `list(integer)`.
-        assert!(ct.is_subtype(&list_int, &refined));
-        assert!(
-            !ct.is_subtype(&list_atom, &refined),
-            "a refined `Enumerable.t(integer)` must exclude `list(atom)`"
-        );
-        // The bare domain stays element-agnostic (`list(any)`), so it still
-        // admits `list(atom)` — proving the refinement genuinely narrows.
-        assert!(ct.is_subtype(&list_atom, &bare));
-    }
-
-    #[test]
-    fn protocol_impl_must_cover_declared_callbacks() {
-        let mut ct = crate::types::ConcreteTypes;
-        let err = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-defprotocol P do
-  fn each(x)
-end
-
-defimpl P, for: List do
-  fn other(x), do: x
-end
-"#,
-            ),
-        )
-        .expect_err("missing callback must fail");
-
-        let d = err.to_diagnostic();
-        assert_eq!(d.code, codes::RESOLVE_PROTOCOL);
-        assert!(d.message.contains("missing callback `each/1`"));
-    }
-
-    #[test]
-    fn duplicate_protocol_impls_are_rejected() {
-        let mut ct = crate::types::ConcreteTypes;
-        let err = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-defprotocol P do
-  fn each(x)
-end
-
-defimpl P, for: List do
-  fn each(x), do: x
-end
-
-defimpl P, for: List do
-  fn each(x), do: x
-end
-"#,
-            ),
-        )
-        .expect_err("duplicate impl must fail");
-
-        let d = err.to_diagnostic();
-        assert_eq!(d.code, codes::RESOLVE_PROTOCOL);
-        assert!(d.message.contains("already has an implementation"));
-        // Both the duplicate and the first implementation are pointed at.
-        assert_eq!(d.secondaries.len(), 1);
-        assert!(d.secondaries[0].label.contains("first implementation"));
-    }
-
-    #[test]
-    fn protocol_impl_wrong_arity_is_an_arity_mismatch_not_missing() {
-        let mut ct = crate::types::ConcreteTypes;
-        let err = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-defprotocol P do
-  fn each(x)
-end
-
-defimpl P, for: List do
-  fn each(x, extra), do: x
-end
-"#,
-            ),
-        )
-        .expect_err("arity mismatch must fail");
-
-        let d = err.to_diagnostic();
-        assert_eq!(d.code, codes::RESOLVE_PROTOCOL);
-        assert!(
-            d.message.contains("at arity 2") && d.message.contains("`each/1`"),
-            "expected arity-mismatch diagnostic naming both arities, got: {}",
-            d.message
-        );
-        assert!(
-            !d.message.contains("missing callback") && !d.message.contains("unknown callback"),
-            "arity mismatch must not degrade to missing/unknown, got: {}",
-            d.message
-        );
-    }
-
-    #[test]
-    fn protocol_callback_validation_preserves_overload_sets() {
-        let mut ct = crate::types::ConcreteTypes;
-        let p = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-defprotocol P do
-  @spec pick(integer) :: integer
-  @spec pick(float) :: float
-  fn pick(value)
-end
-
-defimpl P, for: List do
-  @spec pick(integer) :: integer
-  @spec pick(float) :: float
-  fn pick(value), do: value
-end
-"#,
-            ),
-        )
-        .expect("overload-compatible impl must pass");
-
-        let protocol = ModuleName::from_segments(vec!["P".to_string()]);
-        let callback = &p.protocol_registry.protocols[&protocol].callbacks[0];
-        assert_eq!(callback.specs.len(), 2);
-        let implementation = p
-            .protocol_registry
-            .impls
-            .values()
-            .find(|fact| fact.protocol == protocol)
-            .expect("impl fact");
-        assert_eq!(
-            implementation.callback_specs[&("pick".to_string(), 1)].len(),
-            2
-        );
-    }
-
-    #[test]
-    fn protocol_callback_validation_rejects_uncovered_impl_overload() {
-        let mut ct = crate::types::ConcreteTypes;
-        let err = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-defprotocol P do
-  @spec pick(integer) :: integer
-  fn pick(value)
-end
-
-defimpl P, for: List do
-  @spec pick(integer) :: integer
-  @spec pick(float) :: float
-  fn pick(value), do: value
-end
-"#,
-            ),
-        )
-        .expect_err("uncovered impl overload must fail");
-
-        let d = err.to_diagnostic();
-        assert_eq!(d.code, codes::RESOLVE_PROTOCOL);
-        assert!(
-            d.message
-                .contains("callback `pick/1` parameter 1 is incompatible")
-        );
-    }
-}
+#[path = "resolve_test.rs"]
+mod resolve_test;

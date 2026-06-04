@@ -1,17 +1,17 @@
 ---
 purpose: "fz-ul4.29.5 — closure dispatched via call_indirect through code pointer"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 5
-budget.codegen.instructions: 73
-budget.specs.count: 5
-budget.planner.worklist_pops: 9
-budget.planner.walk_calls: 9
-budget.planner.type_fn_calls: 5
+budget.codegen.functions: 7
+budget.codegen.instructions: 85
+budget.specs.count: 7
+budget.planner.worklist_pops: 7
+budget.planner.walk_calls: 7
+budget.planner.type_fn_calls: 7
 budget.planner.matcher_specs: 0
-budget.planner.vars: 24
-budget.planner.blocks: 5
+budget.planner.vars: 26
+budget.planner.blocks: 7
 budget.planner.stmts: 9
-budget.planner.dispatches: 3
+budget.planner.dispatches: 5
 ---
 
 # closure_typed_captures
@@ -33,6 +33,12 @@ is unused by main's flow but emitted for the any-key fallback.
 fz-cps.1.12: closure stubs deleted. The lambda body is invoked
 directly via Tail-CC `return_call_indirect` through cl+8 — no stub
 fn exists to assert about. Tracked by §8.3 acceptance test.
+
+fz-wgo.1.6: the source closure allocation still happens in `add_to`,
+but `main` now shows the caller continuation as a lazy stack descriptor
+instead of a heap-allocated closure. The acceptance test must assert
+that split directly rather than treating the caller continuation seam as
+the user closure allocation site.
 
 A closure capturing two ints + invoked. Under .29.5, the closure heap
 object stores code pointer at payload offset 8; MakeClosure computes its

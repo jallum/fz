@@ -56,6 +56,7 @@ pub(crate) fn runtime_import_sig(name: &str) -> Signature {
         "fz_halt_implicit_ref" => (&[I64, I64], &[]),
         "fz_halt_implicit_i64" => (&[I64, I64], &[]),
         "fz_halt_implicit_f64" => (&[I64, F64], &[]),
+        "fz_halt_implicit_atom" => (&[I64, I64], &[]),
         "fz_list_cons_any" => (&[I64, I64, I64], &[I64]),
         "fz_list_cons_int" => (&[I64, I64, I64], &[I64]),
         "fz_list_cons_float" => (&[I64, F64, I64], &[I64]),
@@ -124,11 +125,12 @@ pub(crate) fn runtime_import_sig(name: &str) -> Signature {
         "fz_closure_get_capture_ref" => (&[I64, I64], &[I64]),
         "fz_closure_get_capture_i64" => (&[I64, I64], &[I64]),
         "fz_closure_get_capture_f64" => (&[I64, I64], &[F64]),
+        "fz_closure_get_capture_atom" => (&[I64, I64], &[I64]),
         "fz_closure_set_capture_ref" => (&[I64, I64, I64, I64], &[]),
         "fz_closure_set_capture_i64" => (&[I64, I64, I64, I64], &[]),
         "fz_closure_set_capture_f64" => (&[I64, I64, I64, F64], &[]),
+        "fz_closure_set_capture_atom" => (&[I64, I64, I64, I64], &[]),
         "fz_get_static_closure" => (&[I64, I32], &[I64]),
-        "fz_receive_park" => (&[I64, I64], &[I64]),
         "fz_receive_park_matched" => (&[I64, I64, I64, I64, I64, I64, I64, I32, I64, I64], &[I64]),
         "fz_get_halt_cont" => (&[I64, I64, I32], &[I64]),
         "fz_yield_mid_flight_report" => (&[I64, I64, I32, I32], &[I64]),
@@ -139,10 +141,7 @@ pub(crate) fn runtime_import_sig(name: &str) -> Signature {
 }
 
 /// Declare a SystemV runtime FFI fn as an Import in `jmod`.
-fn decl_import<M: cranelift_module::Module>(
-    jmod: &mut M,
-    name: &str,
-) -> Result<FuncId, CodegenError> {
+fn decl_import<M: ClModule>(jmod: &mut M, name: &str) -> Result<FuncId, CodegenError> {
     let sig = runtime_import_sig(name);
     jmod.declare_function(name, Linkage::Import, &sig)
         .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))
@@ -154,9 +153,7 @@ fn decl_import<M: cranelift_module::Module>(
 /// Generic on `M: cranelift_module::Module` so JIT and AOT share one
 /// declaration site — the declarations don't care whether the underlying
 /// symbol resolves via JIT-installed Rust fn pointers or via a linker.
-pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<RuntimeRefs, CodegenError> {
+pub(crate) fn declare_runtime_symbols<M: ClModule>(jmod: &mut M) -> Result<RuntimeRefs, CodegenError> {
     let halt = declare_halt_runtime(jmod)?;
     let list = declare_list_runtime(jmod)?;
     let strct = declare_struct_runtime(jmod)?;
@@ -175,9 +172,11 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
         halt_implicit_ref_id: halt.halt_implicit_ref_id,
         halt_implicit_i64_id: halt.halt_implicit_i64_id,
         halt_implicit_f64_id: halt.halt_implicit_f64_id,
+        halt_implicit_atom_id: halt.halt_implicit_atom_id,
         halt_cont_body_strict_id: halt_cont.halt_cont_body_strict_id,
         halt_cont_body_i64_id: halt_cont.halt_cont_body_i64_id,
         halt_cont_body_f64_id: halt_cont.halt_cont_body_f64_id,
+        halt_cont_body_atom_id: halt_cont.halt_cont_body_atom_id,
         alloc_id,
         list_cons_any_id: list.list_cons_any_id,
         list_cons_int_id: list.list_cons_int_id,
@@ -246,10 +245,11 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
         closure_get_capture_ref_id: closure.closure_get_capture_ref_id,
         closure_get_capture_i64_id: closure.closure_get_capture_i64_id,
         closure_get_capture_f64_id: closure.closure_get_capture_f64_id,
+        closure_get_capture_atom_id: closure.closure_get_capture_atom_id,
         closure_set_capture_ref_id: closure.closure_set_capture_ref_id,
         closure_set_capture_i64_id: closure.closure_set_capture_i64_id,
         closure_set_capture_f64_id: closure.closure_set_capture_f64_id,
-        receive_park_id: receive.receive_park_id,
+        closure_set_capture_atom_id: closure.closure_set_capture_atom_id,
         receive_park_matched_id: receive.receive_park_matched_id,
         get_static_closure_id: closure.get_static_closure_id,
         get_halt_cont_id: halt_cont.get_halt_cont_id,
@@ -265,16 +265,16 @@ struct HaltRefs {
     halt_implicit_ref_id: FuncId,
     halt_implicit_i64_id: FuncId,
     halt_implicit_f64_id: FuncId,
+    halt_implicit_atom_id: FuncId,
 }
 
 /// Implicit-halt FFI entries (one per return repr).
-fn declare_halt_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<HaltRefs, CodegenError> {
+fn declare_halt_runtime<M: ClModule>(jmod: &mut M) -> Result<HaltRefs, CodegenError> {
     Ok(HaltRefs {
         halt_implicit_ref_id: decl_import(jmod, "fz_halt_implicit_ref")?,
         halt_implicit_i64_id: decl_import(jmod, "fz_halt_implicit_i64")?,
         halt_implicit_f64_id: decl_import(jmod, "fz_halt_implicit_f64")?,
+        halt_implicit_atom_id: decl_import(jmod, "fz_halt_implicit_atom")?,
     })
 }
 
@@ -293,9 +293,7 @@ struct ListRefs {
 }
 
 /// Cons-cell list FFI entries.
-fn declare_list_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<ListRefs, CodegenError> {
+fn declare_list_runtime<M: ClModule>(jmod: &mut M) -> Result<ListRefs, CodegenError> {
     Ok(ListRefs {
         list_cons_any_id: decl_import(jmod, "fz_list_cons_any")?,
         list_cons_int_id: decl_import(jmod, "fz_list_cons_int")?,
@@ -322,9 +320,7 @@ struct StructRefs {
 }
 
 /// Struct allocation and field accessor FFI entries.
-fn declare_struct_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<StructRefs, CodegenError> {
+fn declare_struct_runtime<M: ClModule>(jmod: &mut M) -> Result<StructRefs, CodegenError> {
     Ok(StructRefs {
         alloc_struct_id: decl_import(jmod, "fz_alloc_struct")?,
         struct_get_field_id: decl_import(jmod, "fz_struct_get_field_ref")?,
@@ -354,9 +350,7 @@ struct BitstringRefs {
 }
 
 /// Bitstring/binary builder + reader FFI entries.
-fn declare_bitstring_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<BitstringRefs, CodegenError> {
+fn declare_bitstring_runtime<M: ClModule>(jmod: &mut M) -> Result<BitstringRefs, CodegenError> {
     let bs_begin_id = decl_import(jmod, "fz_bs_begin")?;
     let bs_write_ref_id = decl_import(jmod, "fz_bs_write_field_ref")?;
     let bs_finalize_id = decl_import(jmod, "fz_bs_finalize")?;
@@ -372,10 +366,8 @@ fn declare_bitstring_runtime<M: cranelift_module::Module>(
     let binary_as_ptr_id = decl_import(jmod, "fz_binary_as_ptr")?;
     let binary_as_cstring_id = decl_import(jmod, "fz_binary_as_cstring")?;
     let extern_symbol_addr_id = decl_import(jmod, "fz_extern_symbol_addr")?;
-    let extern_var_i64_cstring_i64_i64_to_i64_id =
-        decl_import(jmod, "fz_call_var_i64_cstring_i64_i64_to_i64")?;
-    let extern_var_i64_cstring_i64_to_i64_id =
-        decl_import(jmod, "fz_call_var_i64_cstring_i64_to_i64")?;
+    let extern_var_i64_cstring_i64_i64_to_i64_id = decl_import(jmod, "fz_call_var_i64_cstring_i64_i64_to_i64")?;
+    let extern_var_i64_cstring_i64_to_i64_id = decl_import(jmod, "fz_call_var_i64_cstring_i64_to_i64")?;
     let bs_reader_init_ref_id = decl_import(jmod, "fz_bs_reader_init_ref")?;
     let bs_read_field_ref_id = decl_import(jmod, "fz_bs_read_field_ref")?;
     let bs_reader_done_ref_id = decl_import(jmod, "fz_bs_reader_done_ref")?;
@@ -410,7 +402,7 @@ struct MapRefs {
 }
 
 /// Map construction, mutation and lookup FFI entries.
-fn declare_map_runtime<M: cranelift_module::Module>(jmod: &mut M) -> Result<MapRefs, CodegenError> {
+fn declare_map_runtime<M: ClModule>(jmod: &mut M) -> Result<MapRefs, CodegenError> {
     Ok(MapRefs {
         map_dest_begin_id: decl_import(jmod, "fz_map_dest_begin")?,
         map_dest_begin_update_id: decl_import(jmod, "fz_map_dest_begin_update")?,
@@ -441,9 +433,7 @@ struct ValueRefs {
 }
 
 /// Tagged-value introspection: ref-load, type-of, unbox, box-for-Any, truthy.
-fn declare_value_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<ValueRefs, CodegenError> {
+fn declare_value_runtime<M: ClModule>(jmod: &mut M) -> Result<ValueRefs, CodegenError> {
     Ok(ValueRefs {
         ref_load_int_id: decl_import(jmod, "fz_ref_load_int")?,
         ref_load_float_id: decl_import(jmod, "fz_ref_load_float")?,
@@ -470,15 +460,10 @@ struct ArithRefs {
 /// Mixed-type arithmetic and value-equality slow-path helpers. Mixed-type
 /// arith/cmp slow paths are inlined in JIT. `fz_promote_f64` does the
 /// tag-aware Int|Float -> f64 conversion (panics on non-numeric).
-fn declare_arith_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<ArithRefs, CodegenError> {
+fn declare_arith_runtime<M: ClModule>(jmod: &mut M) -> Result<ArithRefs, CodegenError> {
     Ok(ArithRefs {
         promote_f64_id: decl_import(jmod, "fz_promote_f64")?,
-        dynamic_float_arith_unsupported_id: decl_import(
-            jmod,
-            "fz_dynamic_float_arith_unsupported",
-        )?,
+        dynamic_float_arith_unsupported_id: decl_import(jmod, "fz_dynamic_float_arith_unsupported")?,
         value_eq_ref_id: decl_import(jmod, "fz_value_eq_ref")?,
     })
 }
@@ -490,9 +475,7 @@ struct MatcherRefs {
 }
 
 /// Selective-receive matcher helpers (binary-literal compare + map-key lookup).
-fn declare_matcher_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<MatcherRefs, CodegenError> {
+fn declare_matcher_runtime<M: ClModule>(jmod: &mut M) -> Result<MatcherRefs, CodegenError> {
     // Receive matcher binary-literal comparison.
     let matcher_eq_bytes_id = decl_import(jmod, "fz_matcher_eq_bytes")?;
     // Receive matcher map-key lookup. Returns matcher miss sentinel on miss.
@@ -513,16 +496,16 @@ struct ClosureRefs {
     closure_get_capture_ref_id: FuncId,
     closure_get_capture_i64_id: FuncId,
     closure_get_capture_f64_id: FuncId,
+    closure_get_capture_atom_id: FuncId,
     closure_set_capture_ref_id: FuncId,
     closure_set_capture_i64_id: FuncId,
     closure_set_capture_f64_id: FuncId,
+    closure_set_capture_atom_id: FuncId,
     get_static_closure_id: FuncId,
 }
 
 /// Closure allocation, capture access, and static-singleton lookup.
-fn declare_closure_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<ClosureRefs, CodegenError> {
+fn declare_closure_runtime<M: ClModule>(jmod: &mut M) -> Result<ClosureRefs, CodegenError> {
     let alloc_closure_id = decl_import(jmod, "fz_alloc_closure")?;
     let closure_code_ref_id = decl_import(jmod, "fz_closure_code_ref")?;
     let closure_halt_kind_ref_id = decl_import(jmod, "fz_closure_halt_kind_ref")?;
@@ -530,9 +513,11 @@ fn declare_closure_runtime<M: cranelift_module::Module>(
     let closure_get_capture_ref_id = decl_import(jmod, "fz_closure_get_capture_ref")?;
     let closure_get_capture_i64_id = decl_import(jmod, "fz_closure_get_capture_i64")?;
     let closure_get_capture_f64_id = decl_import(jmod, "fz_closure_get_capture_f64")?;
+    let closure_get_capture_atom_id = decl_import(jmod, "fz_closure_get_capture_atom")?;
     let closure_set_capture_ref_id = decl_import(jmod, "fz_closure_set_capture_ref")?;
     let closure_set_capture_i64_id = decl_import(jmod, "fz_closure_set_capture_i64")?;
     let closure_set_capture_f64_id = decl_import(jmod, "fz_closure_set_capture_f64")?;
+    let closure_set_capture_atom_id = decl_import(jmod, "fz_closure_set_capture_atom")?;
     // Static zero-capture closure singleton lookup. Returns the per-Process
     // singleton pointer for the given cl_sid.
     let get_static_closure_id = decl_import(jmod, "fz_get_static_closure")?;
@@ -544,25 +529,21 @@ fn declare_closure_runtime<M: cranelift_module::Module>(
         closure_get_capture_ref_id,
         closure_get_capture_i64_id,
         closure_get_capture_f64_id,
+        closure_get_capture_atom_id,
         closure_set_capture_ref_id,
         closure_set_capture_i64_id,
         closure_set_capture_f64_id,
+        closure_set_capture_atom_id,
         get_static_closure_id,
     })
 }
 
 struct ReceiveRefs {
-    receive_park_id: FuncId,
     receive_park_matched_id: FuncId,
 }
 
-/// Selective-receive park FFI entries (accept-any and matched variants).
-fn declare_receive_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<ReceiveRefs, CodegenError> {
-    // Receive: parks an accept-any matcher record on the cont closure;
-    // returns YIELD sentinel.
-    let receive_park_id = decl_import(jmod, "fz_receive_park")?;
+/// Selective-receive park FFI entry.
+fn declare_receive_runtime<M: ClModule>(jmod: &mut M) -> Result<ReceiveRefs, CodegenError> {
     // Selective-receive park entry. Args:
     //   matcher_fn_bits (i64), pinned_ptr (i64), n_pinned (i64),
     //   clause_bodies_ptr (i64), n_clauses (i64),
@@ -571,7 +552,6 @@ fn declare_receive_runtime<M: cranelift_module::Module>(
     // Returns YIELD sentinel (i64).
     let receive_park_matched_id = decl_import(jmod, "fz_receive_park_matched")?;
     Ok(ReceiveRefs {
-        receive_park_id,
         receive_park_matched_id,
     })
 }
@@ -581,20 +561,19 @@ struct HaltContRefs {
     halt_cont_body_strict_id: FuncId,
     halt_cont_body_i64_id: FuncId,
     halt_cont_body_f64_id: FuncId,
+    halt_cont_body_atom_id: FuncId,
 }
 
-/// Halt-cont singleton lookup plus the three LOCAL Tail-CC body declarations.
-fn declare_halt_cont_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<HaltContRefs, CodegenError> {
-    // Halt-cont singleton lookup. `(addr, kind)`: kind selects among 3
-    // Process singletons (0=ValueRef, 1=RawInt, 2=RawF64). Lazily
+/// Halt-cont singleton lookup plus the four LOCAL Tail-CC body declarations.
+fn declare_halt_cont_runtime<M: ClModule>(jmod: &mut M) -> Result<HaltContRefs, CodegenError> {
+    // Halt-cont singleton lookup. `(addr, kind)`: kind selects among 4
+    // Process singletons (0=ValueRef, 1=RawInt, 2=RawF64, 3=RawAtom). Lazily
     // initialized using the supplied halt_cont_body addr (JIT pre-populates
     // at make_process time; AOT relies on lazy init at first call).
     let get_halt_cont_id = decl_import(jmod, "fz_get_halt_cont")?;
-    // Three fz_halt_cont_body variants, declared LOCAL (bodies emitted
+    // Four fz_halt_cont_body variants, declared LOCAL (bodies emitted
     // elsewhere). Strict: `(raw i64, kind i8, self i64) -> i64 tail`;
-    // RawInt: `(i64, self i64) -> i64 tail`; RawF64: `(f64, self i64) -> i64 tail`.
+    // RawInt/RawAtom: `(i64, self i64) -> i64 tail`; RawF64: `(f64, self i64) -> i64 tail`.
     let halt_cont_body_strict_id = {
         let mut sig = Signature::new(CallConv::Tail);
         sig.params.push(AbiParam::new(types::I64));
@@ -614,11 +593,13 @@ fn declare_halt_cont_runtime<M: cranelift_module::Module>(
     };
     let halt_cont_body_i64_id = declare_narrow_hcb("fz_halt_cont_body_i64", types::I64)?;
     let halt_cont_body_f64_id = declare_narrow_hcb("fz_halt_cont_body_f64", types::F64)?;
+    let halt_cont_body_atom_id = declare_narrow_hcb("fz_halt_cont_body_atom", types::I64)?;
     Ok(HaltContRefs {
         get_halt_cont_id,
         halt_cont_body_strict_id,
         halt_cont_body_i64_id,
         halt_cont_body_f64_id,
+        halt_cont_body_atom_id,
     })
 }
 
@@ -631,9 +612,7 @@ struct SchedulerRefs {
 }
 
 /// Scheduler-facing LOCAL entry shims and the mid-flight yield helper.
-fn declare_scheduler_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<SchedulerRefs, CodegenError> {
+fn declare_scheduler_runtime<M: ClModule>(jmod: &mut M) -> Result<SchedulerRefs, CodegenError> {
     let yield_mid_flight_report_id = decl_import(jmod, "fz_yield_mid_flight_report")?;
     let yield_slow_path_begin_id = decl_import(jmod, "fz_yield_slow_path_begin")?;
     // fz_entry_thunk: the uniform first-entry wrapper. A fresh task's
@@ -688,9 +667,11 @@ pub(crate) struct RuntimeRefs {
     pub(super) halt_implicit_ref_id: FuncId,
     pub(super) halt_implicit_i64_id: FuncId,
     pub(super) halt_implicit_f64_id: FuncId,
+    pub(super) halt_implicit_atom_id: FuncId,
     pub(super) halt_cont_body_strict_id: FuncId,
     pub(super) halt_cont_body_i64_id: FuncId,
     pub(super) halt_cont_body_f64_id: FuncId,
+    pub(super) halt_cont_body_atom_id: FuncId,
     pub(super) alloc_id: FuncId,
     pub(super) list_cons_any_id: FuncId,
     pub(super) list_cons_int_id: FuncId,
@@ -766,10 +747,11 @@ pub(crate) struct RuntimeRefs {
     pub(super) closure_get_capture_ref_id: FuncId,
     pub(super) closure_get_capture_i64_id: FuncId,
     pub(super) closure_get_capture_f64_id: FuncId,
+    pub(super) closure_get_capture_atom_id: FuncId,
     pub(super) closure_set_capture_ref_id: FuncId,
     pub(super) closure_set_capture_i64_id: FuncId,
     pub(super) closure_set_capture_f64_id: FuncId,
-    pub(super) receive_park_id: FuncId,
+    pub(super) closure_set_capture_atom_id: FuncId,
     /// fz_receive_park_matched FFI entry. Called from the
     /// Term::ReceiveMatched arm in compile_block_terminator.
     pub(super) receive_park_matched_id: FuncId,

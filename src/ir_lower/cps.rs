@@ -1,6 +1,9 @@
 use super::*;
 use crate::diag::Span;
-use crate::fz_ir::{Cont, FnBuilder, FnId, Term, Var};
+use crate::fz_ir::{
+    CallsiteIdent, Cont, ContinuationProvenance, ContinuationProvenanceKind, FnBuilder, FnCategory, FnId, Term, Var,
+};
+use crate::modules::identity::ExportKey;
 
 // -----------------------------------------------------------------------------
 // fz-duq.1: branching-construct join helpers
@@ -29,10 +32,9 @@ use crate::fz_ir::{Cont, FnBuilder, FnId, Term, Var};
 //                                the join fn for non-tail position, or
 //                                nothing if the arm self-terminated).
 //
-// Post-inline, these collapse: a one-call-site cont fn whose body is just
-// `Return(param)` gets inlined back by `inline_tail_calls_once`, so the
-// final CLIF for a non-CPS-splitting arm is the same as today's block-join
-// shape (often tighter — see fz-duq.2 acceptance).
+// These continuation fns are the lowering-time correctness shape. Later
+// phases may choose tighter planned bodies, but lowering must leave a coherent
+// CPS module without relying on a cleanup pass to repair it.
 
 /// Handle to a freshly minted continuation fn (per-arm body or post-construct
 /// join). The fn's builder is not yet created; the caller switches into it
@@ -48,7 +50,7 @@ pub(crate) struct ContFn {
     pub(super) outer_captured: Vec<(String, Var)>,
     pub(super) span: Span,
     /// fz-f88.5 — origin tag baked in at mint time.
-    pub(super) category: crate::fz_ir::FnCategory,
+    pub(super) category: FnCategory,
     pub(super) owner_module: String,
     pub(super) owned_cons_captures: Vec<OwnedConsCapture>,
 }
@@ -62,12 +64,7 @@ pub(crate) struct OwnedConsCapture {
 /// Mint a fresh continuation FnId, snapshot the outer env at this point,
 /// and record the span for diagnostics. The builder is created lazily by
 /// `switch_to_cont_fn`.
-pub(crate) fn mint_cont_fn(
-    ctx: &mut LowerCtx,
-    name: impl Into<String>,
-    span: Span,
-    category: crate::fz_ir::FnCategory,
-) -> ContFn {
+pub(crate) fn mint_cont_fn(ctx: &mut LowerCtx, name: impl Into<String>, span: Span, category: FnCategory) -> ContFn {
     let id = ctx.mb.fresh_fn_id();
     ctx.fn_spans.insert(id, span);
     let outer_captured = ctx.visible_locals();
@@ -83,10 +80,7 @@ pub(crate) fn mint_cont_fn(
     }
 }
 
-fn owned_cons_captures_for_visible_locals(
-    ctx: &LowerCtx,
-    visible: &[(String, Var)],
-) -> Vec<OwnedConsCapture> {
+fn owned_cons_captures_for_visible_locals(ctx: &LowerCtx, visible: &[(String, Var)]) -> Vec<OwnedConsCapture> {
     let Some(cur) = ctx.cur.as_ref() else {
         return Vec::new();
     };
@@ -181,7 +175,7 @@ fn start_cps_cont_fn(
     ctx.mb.add_fn(done);
 
     let mut kbuilder = FnBuilder::new(cont_id, name)
-        .with_category(crate::fz_ir::FnCategory::CpsCont)
+        .with_category(FnCategory::CpsCont)
         .with_owner_module(ctx.current_owner_module.clone());
     let result_param = kbuilder.fresh_var();
     let capture_params = capture_params_for(&mut kbuilder, &captured, &owned_cons);
@@ -193,8 +187,7 @@ fn start_cps_cont_fn(
     ctx.cur = Some(kbuilder);
     ctx.cur_fn_id = Some(cont_id);
     ctx.fn_spans.insert(cont_id, call_span);
-    ctx.var_meta
-        .insert((cont_id, result_param), (call_span, String::new()));
+    ctx.var_meta.insert((cont_id, result_param), (call_span, String::new()));
     add_capture_var_meta(ctx, cont_id, call_span, &capture_params);
     ctx.cur_block = Some(entry);
     rebind_captured_env(ctx, &captured, &capture_params);
@@ -208,17 +201,9 @@ fn start_cps_cont_fn(
 /// joined value the arms passed in). The env is rebound from
 /// `cont.outer_captured`'s names to the fresh captured-param Vars in the
 /// new fn.
-pub(crate) fn switch_to_cont_fn(
-    ctx: &mut LowerCtx,
-    cont: &ContFn,
-    extra_param_count: usize,
-) -> Vec<Var> {
+pub(crate) fn switch_to_cont_fn(ctx: &mut LowerCtx, cont: &ContFn, extra_param_count: usize) -> Vec<Var> {
     // Finalize current fn.
-    let done = ctx
-        .cur
-        .take()
-        .expect("switch_to_cont_fn: no current fn")
-        .build();
+    let done = ctx.cur.take().expect("switch_to_cont_fn: no current fn").build();
     ctx.mb.add_fn(done);
 
     // Build new fn.
@@ -227,14 +212,8 @@ pub(crate) fn switch_to_cont_fn(
         .with_owner_module(cont.owner_module.clone());
 
     // Entry params: extras (e.g. join_param) first, then captured renames.
-    let extras: Vec<Var> = (0..extra_param_count)
-        .map(|_| kbuilder.fresh_var())
-        .collect();
-    let capture_params = capture_params_for(
-        &mut kbuilder,
-        &cont.outer_captured,
-        &cont.owned_cons_captures,
-    );
+    let extras: Vec<Var> = (0..extra_param_count).map(|_| kbuilder.fresh_var()).collect();
+    let capture_params = capture_params_for(&mut kbuilder, &cont.outer_captured, &cont.owned_cons_captures);
     let mut entry_params = extras.clone();
     push_capture_entry_params(&mut entry_params, &capture_params);
     let entry = kbuilder.block(entry_params);
@@ -253,8 +232,7 @@ pub(crate) fn switch_to_cont_fn(
     // Var meta for extras + captured renames so diagnostics can attribute
     // them to the construct's span.
     for v in &extras {
-        ctx.var_meta
-            .insert((cont.id, *v), (cont.span, String::new()));
+        ctx.var_meta.insert((cont.id, *v), (cont.span, String::new()));
     }
     add_capture_var_meta(ctx, cont.id, cont.span, &capture_params);
 
@@ -280,25 +258,23 @@ pub(crate) fn finalize_arm(ctx: &mut LowerCtx, arm_value: Var, join: Option<&Con
         return;
     }
     if let Some(join) = join {
-        let mut tail_args =
-            Vec::with_capacity(1 + join.outer_captured.len() + join.owned_cons_captures.len());
+        let mut tail_args = Vec::with_capacity(1 + join.outer_captured.len() + join.owned_cons_captures.len());
         tail_args.push(arm_value);
         let captured: Vec<(String, Var)> = join
             .outer_captured
             .iter()
             .map(|(name, _outer_v)| {
-                let v = ctx.env.get(name).copied().unwrap_or_else(|| {
-                    panic!(
-                        "finalize_arm: captured name `{}` not in env at arm-end",
-                        name
-                    )
-                });
+                let v = ctx
+                    .env
+                    .get(name)
+                    .copied()
+                    .unwrap_or_else(|| panic!("finalize_arm: captured name `{}` not in env at arm-end", name));
                 (name.clone(), v)
             })
             .collect();
         tail_args.extend(capture_call_args(&captured, &join.owned_cons_captures));
         ctx.set_term(Term::TailCall {
-            ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
+            ident: CallsiteIdent::from_source(Span::DUMMY),
             callee: join.id,
             args: tail_args,
             is_back_edge: false,
@@ -318,13 +294,11 @@ pub(crate) fn cps_split_call_closure(
     let owned_cons_captures = owned_cons_captures_for_visible_locals(ctx, &captured);
     let captured_vars = capture_call_args(&captured, &owned_cons_captures);
     let cont_id = ctx.mb.fresh_fn_id();
-    let caller = ctx
-        .cur_fn_id
-        .expect("cps_split_call_closure: missing current fn id");
+    let caller = ctx.cur_fn_id.expect("cps_split_call_closure: missing current fn id");
 
     ctx.set_term_at(
         Term::CallClosure {
-            ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
+            ident: CallsiteIdent::from_source(Span::DUMMY),
             closure: closure_var,
             args: arg_vars.clone(),
             continuation: Cont {
@@ -336,11 +310,11 @@ pub(crate) fn cps_split_call_closure(
     );
     ctx.record_continuation_provenance(
         cont_id,
-        crate::fz_ir::ContinuationProvenance {
+        ContinuationProvenance {
             caller,
             captured: captured.iter().map(|(_, var)| *var).collect(),
             capture_param_offset: 1,
-            kind: crate::fz_ir::ContinuationProvenanceKind::ClosureCall {
+            kind: ContinuationProvenanceKind::ClosureCall {
                 closure: closure_var,
                 args: arg_vars.clone(),
             },
@@ -357,53 +331,6 @@ pub(crate) fn cps_split_call_closure(
     ))
 }
 
-/// fz-ul4.19.3: lower a source-level `receive()` into Term::Receive,
-/// mirroring cps_split_call's continuation-building. The continuation
-/// receives one arg (the message) plus captured Vars.
-///
-/// For tail position (the source `receive()` is the last expression in a
-/// fn), the cont synthesizes `Return(msg)` so the message becomes the
-/// fn's return value. Otherwise the cont becomes a normal continuation
-/// that's resumed with the message bound to a Var.
-pub(crate) fn cps_split_receive(
-    ctx: &mut LowerCtx,
-    call_span: Span,
-    is_tail: bool,
-) -> Result<Var, LowerError> {
-    let captured = ctx.visible_locals();
-    let owned_cons_captures = owned_cons_captures_for_visible_locals(ctx, &captured);
-    let captured_vars = capture_call_args(&captured, &owned_cons_captures);
-    let cont_id = ctx.mb.fresh_fn_id();
-
-    // Terminate current block with Term::Receive.
-    ctx.set_term_at(
-        Term::Receive {
-            ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
-            continuation: Cont {
-                fn_id: cont_id,
-                captured: captured_vars.clone(),
-            },
-        },
-        call_span,
-    );
-
-    let result_param = start_cps_cont_fn(
-        ctx,
-        cont_id,
-        format!("k_receive_{}", cont_id.0),
-        call_span,
-        captured,
-        owned_cons_captures,
-    );
-    if is_tail {
-        // Tail receive: synthesize `Return(msg)` immediately. The cont
-        // fn IS the post-receive fn for the parent; in tail position we
-        // just return the message.
-        ctx.set_term_at(Term::Return(result_param), call_span);
-        ctx.terminated = true;
-    }
-    Ok(result_param)
-}
 pub(crate) fn cps_split_call(
     ctx: &mut LowerCtx,
     callee: FnId,
@@ -414,14 +341,12 @@ pub(crate) fn cps_split_call(
     let owned_cons_captures = owned_cons_captures_for_visible_locals(ctx, &captured);
     let captured_vars = capture_call_args(&captured, &owned_cons_captures);
     let cont_id = ctx.mb.fresh_fn_id();
-    let caller = ctx
-        .cur_fn_id
-        .expect("cps_split_call: missing current fn id");
+    let caller = ctx.cur_fn_id.expect("cps_split_call: missing current fn id");
 
     // Terminate current block with the call.
     ctx.set_term_at(
         Term::Call {
-            ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
+            ident: CallsiteIdent::from_source(Span::DUMMY),
             callee,
             args: arg_vars.clone(),
             continuation: Cont {
@@ -433,11 +358,11 @@ pub(crate) fn cps_split_call(
     );
     ctx.record_continuation_provenance(
         cont_id,
-        crate::fz_ir::ContinuationProvenance {
+        ContinuationProvenance {
             caller,
             captured: captured.iter().map(|(_, var)| *var).collect(),
             capture_param_offset: 1,
-            kind: crate::fz_ir::ContinuationProvenanceKind::DirectCall {
+            kind: ContinuationProvenanceKind::DirectCall {
                 callee,
                 args: arg_vars.clone(),
             },
@@ -457,7 +382,7 @@ pub(crate) fn cps_split_call(
 pub(crate) fn cps_split_external_call(
     ctx: &mut LowerCtx,
     callee: FnId,
-    target: crate::modules::identity::ExportKey,
+    target: ExportKey,
     arg_vars: Vec<Var>,
     call_span: Span,
 ) -> Result<Var, LowerError> {
@@ -467,7 +392,7 @@ pub(crate) fn cps_split_external_call(
 
     ctx.set_external_direct_term_at(
         Term::Call {
-            ident: crate::fz_ir::CallsiteIdent::from_source(call_span),
+            ident: CallsiteIdent::from_source(call_span),
             callee,
             args: arg_vars,
             continuation: Cont {
@@ -483,7 +408,7 @@ pub(crate) fn cps_split_external_call(
     ctx.mb.add_fn(done);
 
     let mut kbuilder = FnBuilder::new(cont_id, format!("k_{}", cont_id.0))
-        .with_category(crate::fz_ir::FnCategory::CpsCont)
+        .with_category(FnCategory::CpsCont)
         .with_owner_module(ctx.current_owner_module.clone());
     let result_param = kbuilder.fresh_var();
     let cap_params: Vec<Var> = captured.iter().map(|_| kbuilder.fresh_var()).collect();

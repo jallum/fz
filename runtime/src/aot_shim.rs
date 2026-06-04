@@ -7,7 +7,7 @@
 //!                            entry_thunk_addr)`
 //!   2. for each static closure target:
 //!      `fz_aot_register_static_closure(proc, cl_sid, fn_id, code_addr)`
-//!   3. `exit = fz_aot_run_main(proc, main_fp, main_trampoline_addr)`
+//!   3. `exit = fz_aot_run_main(proc, main_fp, main_trampoline_addr, main_halt_kind)`
 //!   4. `return exit`
 //!
 //! `fz_entry_thunk`, `fz_main_trampoline`, `fz_resume`, `fz_halt_cont_body`,
@@ -20,18 +20,31 @@
 //!
 //! Concurrency: a cooperative run-queue scheduler (fz-sched.1/2). Spawned
 //! processes are enqueued and driven by `aot_run_queue_loop` in
-//! `fz_aot_run_main`. `fz_receive_park` parks a process (sets state =
-//! Blocked / Ready); `aot_send_hook` wakes Blocked receivers. This matches
-//! the JIT's `run_until_idle` semantics.
+//! `fz_aot_run_main`. `fz_receive_park_matched` parks a process (sets state =
+//! Blocked / Ready); `aot_send_hook` wakes blocked receivers through the
+//! selective-receive probe path. This matches the JIT's `run_until_idle`
+//! semantics.
 
+use crate::any_value::{AnyValue, AnyValueRef, ValueKind, closure_addr_from_tagged};
 use crate::exec_ctx::ExecCtx;
-use crate::heap::{Schema, SchemaRegistry};
-use crate::process::{Process, ProcessState};
+use crate::heap::{Heap, Schema, SchemaRegistry, deep_copy_any_value_ref};
+use crate::pinned_abi::{call1, call2};
+use crate::procbin::mso_drop_all_deferred;
+use crate::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
+use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
+use crate::sched::{
+    ProbeOutcome, ScanOutcome, fire_after_timer, initial_scan, mint_entry_thunk, mint_main_inner, probe_sender,
+};
 use crate::timer::TimerWheel;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+use std::process::abort;
+use std::ptr::{null, read_unaligned};
 use std::rc::Rc;
-use std::time::Duration;
+use std::slice::from_raw_parts;
+use std::str::from_utf8;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 // ----- AOT scheduler state -----
 
@@ -64,9 +77,9 @@ struct AotScheduler {
     /// task's entry thunk (spawn / main) on its heap; the scheduler resumes
     /// every task through the one `fz_resume` verb.
     entry_thunk: *const u8,
-    /// fz-ul4.27.22.3 — three halt_cont_body addrs retained so spawned
+    /// fz-ul4.27.22.3 — four halt_cont_body addrs retained so spawned
     /// children can initialize their own halt_cont_singletons.
-    halt_cont_bodies: [*const u8; 3],
+    halt_cont_bodies: [*const u8; 4],
     /// fz-sched.1 — cooperative run-queue. PIDs of processes ready to run.
     run_queue: VecDeque<u32>,
     /// fz-4mk.3b — SystemV `fz_drain_dtor_entry(closure, payload)` shim
@@ -127,14 +140,14 @@ fn parse_atom_blob(blob: *const u8) -> Vec<String> {
             len += 1;
             if len > 1_000_000 {
                 eprintln!("parse_atom_blob: name length exceeded sanity limit");
-                std::process::abort();
+                abort();
             }
         }
         if len == 0 {
             break;
         }
-        let bytes = unsafe { std::slice::from_raw_parts(cur, len) };
-        match std::str::from_utf8(bytes) {
+        let bytes = unsafe { from_raw_parts(cur, len) };
+        match from_utf8(bytes) {
             Ok(s) => out.push(s.to_string()),
             Err(_) => out.push(String::new()),
         }
@@ -147,13 +160,13 @@ fn parse_named_schema_blob(blob: *const u8, len: u32) -> Vec<(String, Vec<String
     if blob.is_null() || len == 0 {
         return Vec::new();
     }
-    let bytes = unsafe { std::slice::from_raw_parts(blob, len as usize) };
+    let bytes = unsafe { from_raw_parts(blob, len as usize) };
     let mut pos = 0usize;
     fn read_u32(bytes: &[u8], pos: &mut usize) -> u32 {
         let end = *pos + 4;
         if end > bytes.len() {
             eprintln!("parse_named_schema_blob: truncated u32");
-            std::process::abort();
+            abort();
         }
         let mut raw = [0u8; 4];
         raw.copy_from_slice(&bytes[*pos..end]);
@@ -165,12 +178,12 @@ fn parse_named_schema_blob(blob: *const u8, len: u32) -> Vec<(String, Vec<String
         let end = *pos + len;
         if end > bytes.len() {
             eprintln!("parse_named_schema_blob: truncated string");
-            std::process::abort();
+            abort();
         }
-        let s = std::str::from_utf8(&bytes[*pos..end])
+        let s = from_utf8(&bytes[*pos..end])
             .unwrap_or_else(|_| {
                 eprintln!("parse_named_schema_blob: invalid utf-8");
-                std::process::abort();
+                abort();
             })
             .to_string();
         *pos = end;
@@ -190,7 +203,7 @@ fn parse_named_schema_blob(blob: *const u8, len: u32) -> Vec<(String, Vec<String
     }
     if pos != bytes.len() {
         eprintln!("parse_named_schema_blob: trailing bytes");
-        std::process::abort();
+        abort();
     }
     out
 }
@@ -208,22 +221,20 @@ pub extern "C" fn fz_aot_setup(
     halt_cont_body_tagged: *const u8,
     halt_cont_body_i64: *const u8,
     halt_cont_body_f64: *const u8,
+    halt_cont_body_atom: *const u8,
     entry_thunk_addr: *const u8,
 ) -> *mut Process {
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
 
     // The AOT run's node-global atom table, seeded from the program's atom
     // blob and shared (Rc) by every spawned process.
-    let node = Rc::new(crate::process::Node::new(
-        parse_atom_blob(atom_blob),
-        Vec::new(),
-    ));
+    let node = Rc::new(Node::new(parse_atom_blob(atom_blob), Vec::new()));
     let proc_box = Box::new(Process::from_consts(
         node,
         schemas,
-        &crate::process::CompiledModuleConsts::empty(),
+        &CompiledModuleConsts::empty(),
         1,
-        crate::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
+        DEFAULT_REDUCTIONS_PER_QUANTUM,
     ));
 
     // Box and leak the scheduler so it outlives this call's stack frame and
@@ -244,10 +255,11 @@ pub extern "C" fn fz_aot_setup(
             halt_cont_body_tagged,
             halt_cont_body_i64,
             halt_cont_body_f64,
+            halt_cont_body_atom,
         ],
         run_queue: VecDeque::new(),
-        drain_dtor_entry: std::ptr::null(),
-        resume_addr: std::ptr::null(),
+        drain_dtor_entry: null(),
+        resume_addr: null(),
         timers: TimerWheel::new(),
         ctx: ExecCtx {
             spawn: Some(aot_spawn_hook),
@@ -266,11 +278,7 @@ pub extern "C" fn fz_aot_setup(
     // at dispatch. Both targets are stable — the box never moves.
     unsafe {
         (*sched).ctx.scheduler = sched as *mut ();
-        let proc_ptr = (*sched)
-            .tasks
-            .get_mut(&1)
-            .map(|b| b.as_mut() as *mut Process)
-            .unwrap();
+        let proc_ptr = (*sched).tasks.get_mut(&1).map(|b| b.as_mut() as *mut Process).unwrap();
         (*proc_ptr).ctx = &mut (*sched).ctx;
         proc_ptr
     }
@@ -288,33 +296,22 @@ extern "C" fn aot_make_resource_hook(
     payload_raw: u64,
     dtor_ref: u64,
 ) -> u64 {
-    let dtor_ref = crate::any_value::AnyValueRef::from_raw_word(dtor_ref)
-        .expect("fz_make_resource (AOT): dtor ref");
-    let dtor_closure =
-        crate::any_value::AnyValue::from_ref(dtor_ref).expect("fz_make_resource (AOT): dtor value");
+    let dtor_ref = AnyValueRef::from_raw_word(dtor_ref).expect("fz_make_resource (AOT): dtor ref");
+    let dtor_closure = AnyValue::from_ref(dtor_ref).expect("fz_make_resource (AOT): dtor value");
     let dtor_closure_bits = dtor_closure
         .heap_object_word()
         .expect("fz_make_resource (AOT): dtor arg is not a closure");
-    if crate::any_value::closure_addr_from_tagged(dtor_closure_bits).is_none() {
+    if closure_addr_from_tagged(dtor_closure_bits).is_none() {
         eprintln!("fz_make_resource (AOT): dtor arg is not a closure");
-        std::process::abort();
+        abort();
     }
-    assert!(
-        !process.is_null(),
-        "fz_make_resource (AOT): no current process"
-    );
+    assert!(!process.is_null(), "fz_make_resource (AOT): no current process");
     let heap = unsafe { &mut (*process).heap };
-    let handle = crate::resource::ResourceHandle::new(
-        payload_raw,
-        crate::resource::fz_resource_destructor_noop,
-    );
-    let stub = crate::resource::alloc_resource(heap, handle, dtor_closure);
-    crate::any_value::AnyValueRef::from_heap_object(
-        crate::any_value::ValueKind::RESOURCE,
-        stub.as_raw() as *const u8,
-    )
-    .expect("resource ref")
-    .raw_word()
+    let handle = ResourceHandle::new(payload_raw, fz_resource_destructor_noop);
+    let stub = alloc_resource(heap, handle, dtor_closure);
+    AnyValueRef::from_heap_object(ValueKind::RESOURCE, stub.as_raw() as *const u8)
+        .expect("resource ref")
+        .raw_word()
 }
 
 /// fz-ul4.38 — register the program's tuple schemas with the AOT process,
@@ -334,10 +331,7 @@ extern "C" fn aot_make_resource_hook(
 #[unsafe(no_mangle)]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_aot_register_tuple_schemas(proc: *mut Process, arities: *const u32, len: u32) {
-    assert!(
-        !proc.is_null(),
-        "fz_aot_register_tuple_schemas: null process"
-    );
+    assert!(!proc.is_null(), "fz_aot_register_tuple_schemas: null process");
     // Read the shim addrs off the scheduler before taking the &mut Process —
     // `sched_of` reads `proc.ctx`, which must not alias the live &mut below.
     let halt_cont_bodies = unsafe { (*sched_of(proc)).halt_cont_bodies };
@@ -353,8 +347,8 @@ pub extern "C" fn fz_aot_register_tuple_schemas(proc: *mut Process, arities: *co
         for i in 0..len {
             // Data section alignment isn't guaranteed on all platforms; read
             // unaligned so we don't trip the alignment check on aarch64-darwin.
-            let arity = unsafe { std::ptr::read_unaligned(arities.add(i as usize)) };
-            let id = reg.register(crate::heap::Schema::tuple_of_arity(arity as usize));
+            let arity = unsafe { read_unaligned(arities.add(i as usize)) };
+            let id = reg.register(Schema::tuple_of_arity(arity as usize));
             match arity {
                 1 => process.bs_tuple_arity1_schema = Some(id),
                 3 => process.bs_tuple_arity3_schema = Some(id),
@@ -374,10 +368,7 @@ pub extern "C" fn fz_aot_register_tuple_schemas(proc: *mut Process, arities: *co
 #[unsafe(no_mangle)]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_aot_register_named_schemas(proc: *mut Process, blob: *const u8, len: u32) {
-    assert!(
-        !proc.is_null(),
-        "fz_aot_register_named_schemas: null process"
-    );
+    assert!(!proc.is_null(), "fz_aot_register_named_schemas: null process");
     let process = unsafe { &mut *proc };
     let registry = process.heap.schemas_registry();
     let mut reg = registry.borrow_mut();
@@ -404,10 +395,7 @@ pub extern "C" fn fz_aot_register_static_closure(
     code_addr: *const u8,
     halt_kind: u32,
 ) {
-    assert!(
-        !proc.is_null(),
-        "fz_aot_register_static_closure: null process"
-    );
+    assert!(!proc.is_null(), "fz_aot_register_static_closure: null process");
     let process = unsafe { &mut *proc };
     process.init_static_closures(&[(cl_sid, fn_id, code_addr, halt_kind)]);
 }
@@ -435,18 +423,18 @@ extern "C" fn aot_spawn_hook(sender: *mut Process, scheduler: *mut (), closure_b
     let static_closures = parent.static_closures.clone();
     // Child shares the parent's node (the same atom table) by Rc clone — a
     // pointer copy, not a table copy.
-    let node = std::rc::Rc::clone(&parent.node);
+    let node = Rc::clone(&parent.node);
 
-    let consts = crate::process::CompiledModuleConsts {
+    let consts = CompiledModuleConsts {
         halt_cont_body_addrs,
-        ..crate::process::CompiledModuleConsts::empty()
+        ..CompiledModuleConsts::empty()
     };
     let mut child = Box::new(Process::from_consts(
         node,
         schemas,
         &consts,
         pid,
-        crate::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
+        DEFAULT_REDUCTIONS_PER_QUANTUM,
     ));
     // Inherit the parent's already-built static-closure singletons by copying
     // the pointers (they alias the parent's process-lifetime buffers).
@@ -454,14 +442,8 @@ extern "C" fn aot_spawn_hook(sender: *mut Process, scheduler: *mut (), closure_b
 
     // Deep-copy the closure into the child's heap.
     let mut forwarding = HashMap::new();
-    let closure_ref = crate::any_value::AnyValueRef::from_raw_word(closure_bits)
-        .expect("aot_spawn_hook: closure ref");
-    let copied = crate::heap::deep_copy_any_value_ref(
-        closure_ref,
-        &parent.heap,
-        &mut child.heap,
-        &mut forwarding,
-    );
+    let closure_ref = AnyValueRef::from_raw_word(closure_bits).expect("aot_spawn_hook: closure ref");
+    let copied = deep_copy_any_value_ref(closure_ref, &parent.heap, &mut child.heap, &mut forwarding);
     let copied_addr = copied
         .closure_addr()
         .expect("aot_spawn_hook: copied closure must be a closure");
@@ -469,7 +451,7 @@ extern "C" fn aot_spawn_hook(sender: *mut Process, scheduler: *mut (), closure_b
     // Wrap the copied closure in an entry thunk queued as `runnable`; the
     // run-queue loop resumes it via `fz_resume`. `parent`/`sender` are no
     // longer read past this point, so mutating `sched.tasks` is safe.
-    let thunk = crate::sched::mint_entry_thunk(&mut child.heap, entry_thunk_addr, copied_addr);
+    let thunk = mint_entry_thunk(&mut child.heap, entry_thunk_addr, copied_addr);
     child.set_runnable_closure(thunk);
     // Scaffolding is prepared before the child runs; reset so its alloc
     // telemetry measures only the child's execution.
@@ -494,24 +476,17 @@ extern "C" fn aot_spawn_opt_hook(
     aot_spawn_hook(sender, scheduler, closure_bits)
 }
 
-fn deep_copy_send_ref_for_aot(
-    sender: &Process,
-    receiver: &mut Process,
-    msg: crate::any_value::AnyValueRef,
-) -> crate::any_value::AnyValueRef {
+fn deep_copy_send_ref_for_aot(sender: &Process, receiver: &mut Process, msg: AnyValueRef) -> AnyValueRef {
     let mut forwarding = HashMap::new();
-    crate::heap::deep_copy_any_value_ref(msg, &sender.heap, &mut receiver.heap, &mut forwarding)
+    deep_copy_any_value_ref(msg, &sender.heap, &mut receiver.heap, &mut forwarding)
 }
 
-fn deep_copy_self_send_ref_for_aot(
-    sender: &mut Process,
-    msg: crate::any_value::AnyValueRef,
-) -> crate::any_value::AnyValueRef {
+fn deep_copy_self_send_ref_for_aot(sender: &mut Process, msg: AnyValueRef) -> AnyValueRef {
     let mut forwarding = HashMap::new();
-    let heap_ptr: *mut crate::heap::Heap = &mut sender.heap as *mut _;
-    let src_heap: &crate::heap::Heap = unsafe { &*heap_ptr };
-    let dst_heap: &mut crate::heap::Heap = unsafe { &mut *heap_ptr };
-    crate::heap::deep_copy_any_value_ref(msg, src_heap, dst_heap, &mut forwarding)
+    let heap_ptr: *mut Heap = &mut sender.heap as *mut _;
+    let src_heap: &Heap = unsafe { &*heap_ptr };
+    let dst_heap: &mut Heap = unsafe { &mut *heap_ptr };
+    deep_copy_any_value_ref(msg, src_heap, dst_heap, &mut forwarding)
 }
 
 /// fz-xx8.3 — schedule an after-clause timer on the AOT wheel. Returns the
@@ -530,24 +505,17 @@ extern "C" fn aot_timer_cancel_hook(scheduler: *mut (), timer_id: u64) {
 }
 
 /// Send hook (fz-sched.2). Pushes a message into the receiver's mailbox.
-/// If the receiver was Blocked on non-selective `receive()`, flips it to Ready
-/// and enqueues — matching the JIT's send_via_current_runtime semantics.
-/// Selective-receive arrivals route through `sched::probe_sender`.
-extern "C" fn aot_send_hook(
-    sender_ptr: *mut Process,
-    scheduler: *mut (),
-    receiver_pid: u32,
-    msg_ref_word: u64,
-) {
-    let msg =
-        crate::any_value::AnyValueRef::from_raw_word(msg_ref_word).expect("aot_send message ref");
+/// Selective-receive arrivals route through `sched::probe_sender`, which
+/// flips a matched blocked receiver to Ready and enqueues it.
+extern "C" fn aot_send_hook(sender_ptr: *mut Process, scheduler: *mut (), receiver_pid: u32, msg_ref_word: u64) {
+    let msg = AnyValueRef::from_raw_word(msg_ref_word).expect("aot_send message ref");
     assert!(!sender_ptr.is_null(), "aot_send_hook: no sender process");
     let sched = scheduler as *mut AotScheduler;
     let wake = {
         let tasks = unsafe { &mut (*sched).tasks };
         let Some(task) = tasks.get_mut(&receiver_pid) else {
             eprintln!("aot_send: no task with pid {}", receiver_pid);
-            std::process::abort();
+            abort();
         };
         let msg = if task.pid == unsafe { (*sender_ptr).pid } {
             deep_copy_self_send_ref_for_aot(task, msg)
@@ -556,10 +524,7 @@ extern "C" fn aot_send_hook(
             deep_copy_send_ref_for_aot(sender, task, msg)
         };
         if task.wait.is_some() {
-            matches!(
-                crate::sched::probe_sender(task, msg),
-                crate::sched::ProbeOutcome::Hit
-            )
+            matches!(probe_sender(task, msg), ProbeOutcome::Hit)
         } else {
             task.mailbox.push_back(msg);
             if task.state == ProcessState::Blocked {
@@ -579,7 +544,8 @@ extern "C" fn aot_send_hook(
 /// tear down AOT scheduler state. Returns 0 on clean completion.
 /// # Safety
 /// `proc`, `main_fp`, `main_trampoline_addr` must be valid pointers produced
-/// by AOT codegen and `fz_aot_setup`. Called only from the AOT-emitted
+/// by AOT codegen and `fz_aot_setup`; `main_halt_kind` must match the entry
+/// fn's computed halt seam kind. Called only from the AOT-emitted
 /// C `main`; clippy's `not_unsafe_ptr_arg_deref` is silenced because
 /// the C ABI signature is fixed.
 #[unsafe(no_mangle)]
@@ -588,6 +554,7 @@ pub extern "C" fn fz_aot_run_main(
     proc: *mut Process,
     main_fp: *const u8,
     main_trampoline_addr: *const u8,
+    main_halt_kind: u32,
 ) -> i32 {
     assert!(!proc.is_null(), "fz_aot_run_main: null process");
     assert!(!main_fp.is_null(), "fz_aot_run_main: null main_fp");
@@ -601,16 +568,12 @@ pub extern "C" fn fz_aot_run_main(
 
     // Make main a closure: a synthetic inner closure carrying the raw `(cont)`
     // main fp (via `fz_main_trampoline`), wrapped in an entry thunk queued as
-    // `runnable`. AOT main has always used the strict (kind 0) halt-cont. The
-    // scheduler resumes it through the one `fz_resume` verb, like any task.
+    // `runnable`. The scheduler resumes it through the one `fz_resume` verb,
+    // like any task; the inner closure carries the entry fn's halt_kind so the
+    // thunk picks the matching halt continuation body.
     let process = unsafe { &mut *proc };
-    let inner = crate::sched::mint_main_inner(
-        &mut process.heap,
-        main_trampoline_addr,
-        main_fp,
-        /* halt_kind = strict */ 0,
-    );
-    let thunk = crate::sched::mint_entry_thunk(&mut process.heap, entry_thunk_addr, inner);
+    let inner = mint_main_inner(&mut process.heap, main_trampoline_addr, main_fp, main_halt_kind as u16);
+    let thunk = mint_entry_thunk(&mut process.heap, entry_thunk_addr, inner);
     process.set_runnable_closure(thunk);
     // Scaffolding is prepared before main runs; reset so alloc telemetry
     // measures only main's execution.
@@ -664,24 +627,21 @@ struct ShimAddrs {
 }
 
 fn closure_ref_word(closure: *mut u8) -> u64 {
-    crate::any_value::AnyValueRef::from_heap_object(
-        crate::any_value::ValueKind::CLOSURE,
-        closure as *const u8,
-    )
-    .expect("scheduler closure ref")
-    .raw_word()
+    AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure as *const u8)
+        .expect("scheduler closure ref")
+        .raw_word()
 }
 
 /// Drain the AOT timer wheel and apply each expired entry to its task
 /// via `sched::fire_after_timer`. Tasks that fire get enqueued.
 fn drain_after_timers_aot(sched: *mut AotScheduler) {
-    let expired = unsafe { (*sched).timers.drain_expired(std::time::Instant::now()) };
+    let expired = unsafe { (*sched).timers.drain_expired(Instant::now()) };
     for entry in expired {
         let woke = unsafe {
             (*sched)
                 .tasks
                 .get_mut(&entry.pid)
-                .map(|task| crate::sched::fire_after_timer(task, entry.id))
+                .map(|task| fire_after_timer(task, entry.id))
                 .unwrap_or(false)
         };
         if woke {
@@ -703,10 +663,10 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
     }
     .unwrap_or_else(|| {
         eprintln!("aot_run_queue_loop: pid {} not in tasks", pid);
-        std::process::abort();
+        abort();
     });
 
-    // Mark Running so a clean halt (no fz_receive_park call) is
+    // Mark Running so a clean halt (no selective-receive park call) is
     // distinguishable from Blocked/Ready after dispatch.
     unsafe {
         (*proc_ptr).state = ProcessState::Running;
@@ -718,19 +678,18 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
 
     // fz-qw6 — selective-receive initial scan lifted to runtime::sched.
     let process = unsafe { &mut *proc_ptr };
-    match crate::sched::initial_scan(process) {
-        crate::sched::ScanOutcome::Hit => {
+    match initial_scan(process) {
+        ScanOutcome::Hit => {
             // Fall through to the resume below.
         }
-        crate::sched::ScanOutcome::Miss => {
+        ScanOutcome::Miss => {
             return;
         }
-        crate::sched::ScanOutcome::NotApplicable => {}
+        ScanOutcome::NotApplicable => {}
     }
 
     fn run_scheduler_closure(resume_addr: *const u8, process: *mut Process, closure: *mut u8) {
-        let _ =
-            unsafe { crate::pinned_abi::call1(resume_addr, process, closure_ref_word(closure)) };
+        let _ = unsafe { call1(resume_addr, process, closure_ref_word(closure)) };
     }
 
     // One re-entry verb: resume the task's `runnable` closure (a fresh entry
@@ -746,9 +705,7 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
         let process = unsafe { &mut *proc_ptr };
         if process.needs_boundary_gc() {
             let mut root = process.runnable_ptr();
-            process
-                .heap
-                .gc_process_roots(&mut root, &mut process.mailbox);
+            process.heap.gc_process_roots(&mut root, &mut process.mailbox);
             process.set_runnable_closure(root);
             process.quiet_quanta = 0;
         } else {
@@ -768,10 +725,9 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
         let drain_addr = unsafe { (*sched).drain_dtor_entry };
         if !drain_addr.is_null() {
             let process = unsafe { &mut *proc_ptr };
-            crate::procbin::mso_drop_all_deferred(&mut process.heap);
+            mso_drop_all_deferred(&mut process.heap);
             while let Some((closure, payload_ref)) = process.heap.pending_dtors.pop_front() {
-                let _ =
-                    unsafe { crate::pinned_abi::call2(drain_addr, proc_ptr, closure, payload_ref) };
+                let _ = unsafe { call2(drain_addr, proc_ptr, closure, payload_ref) };
             }
         }
     }
@@ -804,9 +760,9 @@ fn aot_run_queue_loop(sched: *mut AotScheduler) {
             let next = unsafe { (*sched).timers.next_deadline() };
             match next {
                 Some(deadline) => {
-                    let now = std::time::Instant::now();
+                    let now = Instant::now();
                     if deadline > now {
-                        std::thread::sleep(deadline - now);
+                        sleep(deadline - now);
                     }
                     continue;
                 }
@@ -818,181 +774,5 @@ fn aot_run_queue_loop(sched: *mut AotScheduler) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A bare scheduler for unit tests. The caller pushes tasks into
-    /// `tasks` and passes `sched_handle(&mut sched)` as the erased scheduler
-    /// handle the hooks re-narrow — the same handle `ExecCtx.scheduler`
-    /// carries in production.
-    fn test_scheduler() -> AotScheduler {
-        AotScheduler {
-            next_pid: 2,
-            tasks: HashMap::new(),
-            entry_thunk: std::ptr::null(),
-            halt_cont_bodies: [std::ptr::null(); 3],
-            run_queue: VecDeque::new(),
-            drain_dtor_entry: std::ptr::null(),
-            resume_addr: std::ptr::null(),
-            timers: TimerWheel::new(),
-            ctx: ExecCtx::empty(),
-        }
-    }
-
-    fn sched_handle(sched: &mut AotScheduler) -> *mut () {
-        sched as *mut AotScheduler as *mut ()
-    }
-
-    #[test]
-    fn parse_atom_blob_walks_until_double_nul() {
-        let blob = b"ok\0err\0\0";
-        let names = parse_atom_blob(blob.as_ptr());
-        assert_eq!(names, vec!["ok".to_string(), "err".to_string()]);
-    }
-
-    #[test]
-    fn parse_atom_blob_null_pointer_returns_empty() {
-        let names = parse_atom_blob(std::ptr::null());
-        assert!(names.is_empty());
-    }
-
-    #[test]
-    fn aot_send_deep_copies_message_into_receiver_heap() {
-        use crate::any_value::AnyValueRef;
-
-        let mut sched = test_scheduler();
-
-        let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
-        let mut sender = Box::new(Process::new(schemas.clone()));
-        sender.pid = 1;
-        let msg = sender
-            .heap
-            .alloc_list_cons_int(42, AnyValueRef::empty_list())
-            .expect("sender list ref");
-        let sender_addr = msg.list_addr().expect("sender list addr");
-
-        let mut receiver = Box::new(Process::new(schemas));
-        receiver.pid = 2;
-        receiver.state = ProcessState::Blocked;
-
-        sched.tasks.insert(1, sender);
-        sched.tasks.insert(2, receiver);
-        let sender_ptr = sched
-            .tasks
-            .get_mut(&1)
-            .map(|p| p.as_mut() as *mut Process)
-            .expect("sender task");
-
-        aot_send_hook(sender_ptr, sched_handle(&mut sched), 2, msg.raw_word());
-
-        let sender = sched.tasks.get(&1).expect("sender");
-        let receiver = sched.tasks.get(&2).expect("receiver");
-        let copied = receiver.mailbox.front().expect("receiver mailbox");
-        let copied_addr = copied.list_addr().expect("copied list addr");
-        assert_ne!(copied_addr, sender_addr);
-        assert!(sender.heap.contains_heap_addr(sender_addr));
-        assert!(receiver.heap.contains_heap_addr(copied_addr));
-    }
-
-    /// fz-xx8.3 — schedule→drain→wake flow on the AOT timer wheel.
-    /// Mirrors `src/runtime.rs::drain_expired_timers_wakes_after_cont`. We
-    /// can't drive aot_run_queue_loop directly (it would call into
-    /// codegen'd shim pointers we don't have), but we exercise every
-    /// pre-dispatch ingredient: schedule → expiry → mutate the task's
-    /// wait into a runnable_closure → run-queue enqueue. The
-    /// dispatch-via-resume-shim step is covered by the end-to-end fixture
-    /// run on a built binary.
-    #[test]
-    fn timer_drain_wakes_after_cont() {
-        use crate::park::ParkRecord;
-        use crate::process::{Process, ProcessState};
-
-        let mut sched = test_scheduler();
-
-        // Stand up a single task with a wait that has an
-        // after_timer_id. matcher_fn is unused on the drain path.
-        extern "C" fn never_match(
-            _process: *mut Process,
-            _msg: u64,
-            _pinned: *const crate::any_value::AnyValueRef,
-            _out: *mut crate::any_value::AnyValueRef,
-        ) -> u32 {
-            0
-        }
-        let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
-        let mut p = Box::new(Process::new(schemas));
-        p.pid = 7;
-        let timer_id = aot_timer_schedule_hook(sched_handle(&mut sched), p.pid, 1);
-        let after_cont_addr: usize = 0xCAFE_BABE;
-        p.wait = Some(Box::new(ParkRecord {
-            matcher_fn: never_match,
-            pinned: vec![],
-            clause_bodies: vec![],
-            clause_bound_counts: vec![],
-            bound_arity: 0,
-            after_deadline_ms: Some(1),
-            after_cont: after_cont_addr as *mut u8,
-            after_timer_id: Some(timer_id),
-        }));
-        p.state = ProcessState::Blocked;
-        sched.tasks.insert(7, p);
-
-        // Wait past the deadline, then run the same drain logic
-        // aot_run_queue_loop runs at the top of each iteration.
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        let expired = sched.timers.drain_expired(std::time::Instant::now());
-        assert_eq!(expired.len(), 1);
-        for entry in expired {
-            {
-                let task = sched.tasks.get_mut(&entry.pid).unwrap();
-                let park = task.wait.as_ref().unwrap();
-                assert_eq!(park.after_timer_id, Some(entry.id));
-                let after_cont = park.after_cont;
-                task.wait = None;
-                task.set_runnable_closure(after_cont);
-                task.state = ProcessState::Ready;
-            }
-            sched.run_queue.push_back(entry.pid);
-        }
-
-        let task = sched.tasks.get(&7).unwrap();
-        assert_eq!(task.state, ProcessState::Ready);
-        assert!(task.wait.is_none());
-        assert_eq!(task.runnable_ptr() as usize, after_cont_addr);
-        assert!(sched.run_queue.iter().any(|p| *p == 7));
-    }
-
-    /// fz-xx8.3 — `aot_timer_cancel_hook` retires a previously scheduled
-    /// timer so a sender-probe / initial-scan hit can prevent the after
-    /// from firing.
-    #[test]
-    fn timer_cancel_removes_pending_entry() {
-        let mut sched = test_scheduler();
-
-        let id = aot_timer_schedule_hook(sched_handle(&mut sched), 99, 10_000);
-        assert!(sched.timers.next_deadline().is_some());
-        aot_timer_cancel_hook(sched_handle(&mut sched), id);
-        assert!(sched.timers.next_deadline().is_none());
-    }
-
-    /// fz-xx8.1 — `fz_aot_set_resume_addr` records the shim address on the
-    /// scheduler reached through `proc.ctx.scheduler`. We can't drive a full
-    /// setup→run→teardown cycle from a unit test (it needs a real codegen'd
-    /// shim), so we wire one process at the scheduler and assert the setter
-    /// lands the address on it.
-    #[test]
-    fn set_resume_addr_records_on_scheduler() {
-        let mut sched = test_scheduler();
-        let sched_ptr: *mut AotScheduler = &mut sched;
-        sched.ctx.scheduler = sched_ptr as *mut ();
-
-        let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
-        let mut p = Box::new(Process::new(schemas));
-        p.pid = 1;
-        p.ctx = &mut sched.ctx;
-
-        let fake = 0xDEAD_BEEFusize as *const u8;
-        unsafe { fz_aot_set_resume_addr(p.as_mut(), fake) };
-        assert_eq!(sched.resume_addr, fake);
-    }
-}
+#[path = "aot_shim_test.rs"]
+mod aot_shim_test;

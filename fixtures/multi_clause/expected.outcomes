@@ -1,29 +1,30 @@
 outcomes for fixtures/multi_clause/input.fz
 
+classify[int] demand=value:
+  @0:0-25 Direct -> Static(fn_clause_0#186 [] demand=value)
+  @0:26-66 Direct -> Static(fn_clause_1#187 [] demand=value)
+  @0:67-96 Direct -> Static(fn_clause_2#188 [] demand=value)
+
+fact[int] demand=value:
+  @0:98-115 Direct -> Static(fn_clause_0#189 [] demand=value)
+  @0:116-147 Direct -> Static(fn_clause_1#190 [int] demand=value)
+
+fn_clause_1[int] demand=value:
+  @0:136-147 Cont -> Static(k_191#191 [int, int] demand=value)
+  @0:136-147 Direct -> Static(fact#184 [int] demand=value)
+
 main[] demand=value:
-  @0:168-179 Direct -> Folded(:zero)
-  @0:168-179 Direct -> Static(k_41#41 [:zero] demand=value)
+  @0:168-179 Cont -> Static(k_192#192 [:zero] demand=value)
+  @0:168-179 Direct -> Static(classify#183 [int] demand=value)
 
-k_41[:zero] demand=value:
-  @0:164-180 Cont -> Static(k_42#42 [:zero] demand=value)
-  @0:164-180 Direct -> Static(Kernel.dbg#1 [:zero] demand=value)
+k_192[:zero] demand=value:
+  @0:187-198 Cont -> Static(k_193#193 [:positive] demand=value)
+  @0:187-198 Direct -> Static(classify#183 [int] demand=value)
 
-k_42[:zero] demand=value:
-  @0:187-198 Direct -> Static(k_43#43 [:positive] demand=value)
+k_193[:positive] demand=value:
+  @0:206-218 Cont -> Static(k_194#194 [:negative] demand=value)
+  @0:206-218 Direct -> Static(classify#183 [int] demand=value)
 
-k_43[:positive] demand=value:
-  @0:183-199 Cont -> Static(k_44#44 [:positive] demand=value)
-  @0:183-199 Direct -> Static(Kernel.dbg#1 [:positive] demand=value)
-
-k_44[:positive] demand=value:
-  @0:206-218 Direct -> Static(k_45#45 [:negative] demand=value)
-
-k_45[:negative] demand=value:
-  @0:202-219 Cont -> Static(k_46#46 [:negative] demand=value)
-  @0:202-219 Direct -> Static(Kernel.dbg#1 [:negative] demand=value)
-
-k_46[:negative] demand=value:
-  @0:226-233 Direct -> Static(k_47#47 [int] demand=value)
-
-k_47[int] demand=value:
-  @0:222-234 Direct -> Static(Kernel.dbg#1 [int] demand=value)
+k_194[:negative] demand=value:
+  @0:226-233 Cont -> Static(k_195#195 [int] demand=value)
+  @0:226-233 Direct -> Static(fact#184 [int] demand=value)

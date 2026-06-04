@@ -1,0 +1,321 @@
+use super::*;
+use crate::ast::{BinOp as AstBinOp, Expr as AstExpr, Pattern as AstPattern, Spanned};
+use crate::diag::Span;
+use crate::exec::matcher::Matcher;
+use crate::fz_ir::{CallsiteIdent, FnId, ReceiveClause, Var};
+use crate::ir_codegen::backend::register_runtime_symbols;
+use crate::ir_codegen::runtime_syms::declare_runtime_symbols;
+use crate::pattern_matrix::{BodyId, PatternMatrix, Row, compile_pattern_matrix};
+use cranelift_codegen::settings::{self, Configurable};
+use cranelift_jit::{JITBuilder, JITModule};
+use cranelift_module::{Module as CraneliftModule, default_libcall_names};
+use fz_runtime::any_value::AnyValue;
+use fz_runtime::heap::{Schema, SchemaRegistry};
+use fz_runtime::ir_runtime::fz_box_int_for_any;
+use fz_runtime::process::Process;
+use std::cell::RefCell;
+use std::mem::{replace, transmute};
+use std::rc::Rc;
+
+fn make_jit() -> (JITModule, FunctionBuilderContext) {
+    let isa_builder = cranelift_native::builder().expect("native isa");
+    let mut flag_builder = settings::builder();
+    flag_builder.set("opt_level", "none").unwrap();
+    flag_builder.set("is_pic", "false").unwrap();
+    let isa = isa_builder
+        .finish(settings::Flags::new(flag_builder))
+        .expect("isa finish");
+    let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
+    // Production symbol registration — keep the test linker in lockstep with
+    // the real JIT so signatures can't drift (tests use production code).
+    register_runtime_symbols(&mut builder);
+    (JITModule::new(builder), FunctionBuilderContext::new())
+}
+
+type MatcherAbi = extern "C" fn(*mut Process, u64, *const AnyValueRef, *mut AnyValueRef) -> u32;
+
+/// Stand up a fresh process for a matcher test. The caller holds the box
+/// and threads `process.as_mut()` to the matcher fn (its 1st arg) and to
+/// `int_ref` — exactly as production threads the process. No ambient state.
+fn new_process() -> Box<Process> {
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    Box::new(Process::new(schemas))
+}
+
+/// Box a scalar onto `proc`'s heap via the production BIF — same call the
+/// compiled/interpreted any-boundary uses.
+fn int_ref(proc: *mut Process, value: i64) -> AnyValueRef {
+    let raw = fz_box_int_for_any(proc, value);
+    AnyValueRef::from_raw_word(raw).expect("int ref")
+}
+
+fn struct_ref(addr: *mut u8) -> AnyValueRef {
+    AnyValueRef::from_heap_object(ValueKind::STRUCT, addr.cast_const()).expect("struct ref")
+}
+
+fn empty_module() -> Module {
+    let mut m = Module::default();
+    m.atom_names.push("nil".into());
+    m.atom_names.push("true".into());
+    m.atom_names.push("false".into());
+    m
+}
+
+fn sp<T>(node: T) -> Spanned<T> {
+    Spanned::dummy(node)
+}
+
+fn clause_meta(bound_names: Vec<&str>) -> ReceiveClause {
+    ReceiveClause {
+        ident: CallsiteIdent::synthetic(),
+        bound_names: bound_names.into_iter().map(str::to_string).collect(),
+        guard: None,
+        body: FnId(0),
+        span: Span::DUMMY,
+    }
+}
+
+fn matcher_from_rows(rows: Vec<(AstPattern, Option<Spanned<AstExpr>>)>) -> Matcher {
+    let pattern_matrix = PatternMatrix {
+        subjects: vec![Var(0)],
+        rows: rows
+            .into_iter()
+            .enumerate()
+            .map(|(i, (pattern, guard))| Row {
+                patterns: vec![sp(pattern)],
+                preconditions: Vec::new(),
+                bindings: Vec::new(),
+                guard,
+                body_id: i as BodyId,
+            })
+            .collect(),
+    };
+    compile_pattern_matrix(pattern_matrix).expect("compile matcher")
+}
+
+fn finalize_and_get(mut jmod: JITModule, fid: FuncId) -> MatcherAbi {
+    jmod.finalize_definitions().expect("finalize");
+    let addr = jmod.get_finalized_function(fid);
+    Box::leak(Box::new(jmod));
+    unsafe { transmute(addr) }
+}
+
+fn build_matcher_fn(
+    jmod: &mut JITModule,
+    fbctx: &mut FunctionBuilderContext,
+    fz_module: &Module,
+    tuple_schemas: &HashMap<usize, u32>,
+    pinned: &[(String, Var)],
+    clauses: &[ReceiveClause],
+    matcher: &Matcher,
+    name: &str,
+) -> MatcherAbi {
+    let fid = declare_matcher(jmod, name).expect("declare matcher");
+    // Declare the runtime symbols from the production source so the matcher's
+    // helper signatures can never drift from the real pipeline (tests use
+    // production code). Mirrors the MatcherRuntimeHelpers wiring in driver.rs.
+    let runtime = declare_runtime_symbols(jmod).expect("declare runtime symbols");
+    emit_matcher_body_from_matcher(
+        jmod,
+        fbctx,
+        fid,
+        fz_module,
+        tuple_schemas,
+        pinned,
+        clauses,
+        matcher,
+        &MatcherRuntimeHelpers {
+            value_eq_typed_id: Some(runtime.value_eq_ref_id),
+            matcher_eq_bytes_id: Some(runtime.matcher_eq_bytes_id),
+            matcher_map_get_id: Some(runtime.matcher_map_get_id),
+            matcher_map_get_ref_id: Some(runtime.matcher_map_get_ref_id),
+            type_of_id: Some(runtime.type_of_id),
+            unbox_int_id: Some(runtime.unbox_int_id),
+            unbox_float_id: Some(runtime.unbox_float_id),
+            unbox_atom_id: Some(runtime.unbox_atom_id),
+            struct_schema_id_ref_id: Some(runtime.struct_schema_id_ref_id),
+            truthy_ref_id: Some(runtime.truthy_ref_id),
+            box_int_for_any_id: Some(runtime.box_int_for_any_id),
+            box_float_for_any_id: Some(runtime.box_float_for_any_id),
+            box_atom_for_any_id: Some(runtime.box_atom_for_any_id),
+            map_is_map_id: Some(runtime.map_is_map_id),
+            bs_reader_init_id: Some(runtime.bs_reader_init_ref_id),
+            bs_read_field_id: Some(runtime.bs_read_field_ref_id),
+            struct_get_field_id: Some(runtime.struct_get_field_id),
+            list_is_cons_id: Some(runtime.list_is_cons_id),
+            list_head_id: Some(runtime.list_head_fallback_id),
+            list_tail_id: Some(runtime.list_tail_fallback_id),
+        },
+    )
+    .expect("emit cached matcher");
+    finalize_and_get(replace(jmod, make_jit().0), fid)
+}
+
+#[test]
+fn cached_matcher_int_literal_hits_only_exact_tagged_value() {
+    let mut process = new_process();
+    let pp = process.as_mut() as *mut Process;
+    let (mut jmod, mut fbctx) = make_jit();
+    let m = empty_module();
+    let tuple_ids = HashMap::new();
+    let pinned = Vec::new();
+    let clauses = vec![clause_meta(vec![])];
+    let matcher = matcher_from_rows(vec![(AstPattern::Int(42), None)]);
+    let f = build_matcher_fn(
+        &mut jmod,
+        &mut fbctx,
+        &m,
+        &tuple_ids,
+        &pinned,
+        &clauses,
+        &matcher,
+        "cached_matcher_int_42",
+    );
+    let pin: [AnyValueRef; 0] = [];
+    let mut out: [AnyValueRef; 0] = [];
+    assert_eq!(f(pp, int_ref(pp, 42).raw_word(), pin.as_ptr(), out.as_mut_ptr()), 1);
+    assert_eq!(f(pp, int_ref(pp, 41).raw_word(), pin.as_ptr(), out.as_mut_ptr()), 0);
+}
+
+#[test]
+fn cached_matcher_var_writes_input_to_out_slot_zero() {
+    let mut process = new_process();
+    let pp = process.as_mut() as *mut Process;
+    let (mut jmod, mut fbctx) = make_jit();
+    let m = empty_module();
+    let tuple_ids = HashMap::new();
+    let pinned = Vec::new();
+    let clauses = vec![clause_meta(vec!["x"])];
+    let matcher = matcher_from_rows(vec![(AstPattern::Var("x".into()), None)]);
+    let f = build_matcher_fn(
+        &mut jmod,
+        &mut fbctx,
+        &m,
+        &tuple_ids,
+        &pinned,
+        &clauses,
+        &matcher,
+        "cached_matcher_var_x",
+    );
+    let pin: [AnyValueRef; 0] = [];
+    let mut out = [AnyValueRef::null()];
+    let msg = 7;
+    assert_eq!(f(pp, int_ref(pp, msg).raw_word(), pin.as_ptr(), out.as_mut_ptr()), 1);
+    assert_eq!(out[0].load_int().expect("out int"), msg);
+}
+
+#[test]
+fn cached_matcher_guard_falls_through_when_false() {
+    let mut process = new_process();
+    let pp = process.as_mut() as *mut Process;
+    let (mut jmod, mut fbctx) = make_jit();
+    let m = empty_module();
+    let tuple_ids = HashMap::new();
+    let pinned = Vec::new();
+    let clauses = vec![clause_meta(vec!["x"]), clause_meta(vec![])];
+    let guard = sp(AstExpr::BinOp(
+        AstBinOp::Gt,
+        Box::new(sp(AstExpr::Var("x".into()))),
+        Box::new(sp(AstExpr::Int(10))),
+    ));
+    let matcher = matcher_from_rows(vec![
+        (AstPattern::Var("x".into()), Some(guard)),
+        (AstPattern::Wildcard, None),
+    ]);
+    let f = build_matcher_fn(
+        &mut jmod,
+        &mut fbctx,
+        &m,
+        &tuple_ids,
+        &pinned,
+        &clauses,
+        &matcher,
+        "cached_matcher_guard_gt",
+    );
+    let pin: [AnyValueRef; 0] = [];
+    let mut out = [AnyValueRef::null()];
+    assert_eq!(f(pp, int_ref(pp, 11).raw_word(), pin.as_ptr(), out.as_mut_ptr()), 1);
+    assert_eq!(out[0].load_int().expect("out int"), 11);
+    assert_eq!(f(pp, int_ref(pp, 9).raw_word(), pin.as_ptr(), out.as_mut_ptr()), 2);
+}
+
+#[test]
+fn cached_matcher_guard_reads_pinned_capture() {
+    let mut process = new_process();
+    let pp = process.as_mut() as *mut Process;
+    let (mut jmod, mut fbctx) = make_jit();
+    let m = empty_module();
+    let tuple_ids = HashMap::new();
+    let pinned = vec![("limit".to_string(), Var(0))];
+    let clauses = vec![clause_meta(vec![]), clause_meta(vec![])];
+    let guard = sp(AstExpr::BinOp(
+        AstBinOp::Eq,
+        Box::new(sp(AstExpr::Var("limit".into()))),
+        Box::new(sp(AstExpr::Int(9))),
+    ));
+    let matcher = matcher_from_rows(vec![(AstPattern::Wildcard, Some(guard)), (AstPattern::Wildcard, None)]);
+    let f = build_matcher_fn(
+        &mut jmod,
+        &mut fbctx,
+        &m,
+        &tuple_ids,
+        &pinned,
+        &clauses,
+        &matcher,
+        "cached_matcher_guard_pinned",
+    );
+    let mut out: [AnyValueRef; 0] = [];
+    let pin_9 = [int_ref(pp, 9)];
+    let pin_8 = [int_ref(pp, 8)];
+    assert_eq!(f(pp, int_ref(pp, 0).raw_word(), pin_9.as_ptr(), out.as_mut_ptr()), 1);
+    assert_eq!(f(pp, int_ref(pp, 0).raw_word(), pin_8.as_ptr(), out.as_mut_ptr()), 2);
+}
+
+#[test]
+fn cached_matcher_tuple_with_atom_pinned_var_matches_arrived_message() {
+    let (mut jmod, mut fbctx) = make_jit();
+    let mut m = empty_module();
+    m.atom_names.push("reply".into());
+
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    let mut process = Box::new(Process::new(schemas));
+    let pp = process.as_mut() as *mut Process;
+    let tuple_schema_id = unsafe { &mut *pp }.heap.register_schema(Schema::tuple_of_arity(3));
+    let mut tuple_ids = HashMap::new();
+    tuple_ids.insert(3, tuple_schema_id);
+
+    let pinned = vec![("ref".to_string(), Var(0))];
+    let clauses = vec![clause_meta(vec!["v"])];
+    let pat = AstPattern::Tuple(vec![
+        sp(AstPattern::Atom("reply".into())),
+        sp(AstPattern::Pinned("ref".into())),
+        sp(AstPattern::Var("v".into())),
+    ]);
+    let matcher = matcher_from_rows(vec![(pat, None)]);
+    let f = build_matcher_fn(
+        &mut jmod,
+        &mut fbctx,
+        &m,
+        &tuple_ids,
+        &pinned,
+        &clauses,
+        &matcher,
+        "cached_matcher_tuple_reply",
+    );
+
+    let tuple_p = unsafe { &mut *pp }.heap.alloc_struct(tuple_schema_id);
+    let proc = unsafe { &mut *pp };
+    proc.heap.write_field_slot(tuple_p, 0, AnyValue::atom(3));
+    proc.heap.write_field_slot(tuple_p, 8, AnyValue::int(170));
+    proc.heap.write_field_slot(tuple_p, 16, AnyValue::int(23));
+
+    let pin = [int_ref(pp, 170)];
+    let mut out = [AnyValueRef::null()];
+    let val = struct_ref(tuple_p);
+    assert_eq!(f(pp, val.raw_word(), pin.as_ptr(), out.as_mut_ptr()), 1);
+    assert_eq!(out[0].load_int().expect("out int"), 23);
+
+    let pin_other = [int_ref(pp, 255)];
+    let mut out2 = [AnyValueRef::null()];
+    assert_eq!(f(pp, val.raw_word(), pin_other.as_ptr(), out2.as_mut_ptr()), 0);
+}

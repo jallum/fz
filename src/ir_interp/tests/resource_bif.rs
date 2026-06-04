@@ -1,5 +1,6 @@
-use crate::cli::test_runner;
-use crate::ir_interp::extern_call::{tests_support, tests_support_lock};
+use crate::cli::test_runner::run_str;
+use crate::ir_interp::extern_call::tests_support::{DTOR_FIRED, DTOR_LAST_PAYLOAD};
+use crate::ir_interp::extern_call::tests_support_lock;
 use std::sync::atomic::Ordering;
 
 /// fz-swt.7 acceptance — interp BIF round-trip.
@@ -12,11 +13,9 @@ use std::sync::atomic::Ordering;
 /// scope exit; MSO sweep invokes the dtor on the payload exactly once.
 #[test]
 fn make_resource_bif_round_trip() {
-    let _g = tests_support_lock()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    tests_support::DTOR_FIRED.store(0, Ordering::Relaxed);
-    tests_support::DTOR_LAST_PAYLOAD.store(0, Ordering::Relaxed);
+    let _g = tests_support_lock().lock().unwrap_or_else(|e| e.into_inner());
+    DTOR_FIRED.store(0, Ordering::Relaxed);
+    DTOR_LAST_PAYLOAD.store(0, Ordering::Relaxed);
 
     let src = r#"
 extern "C" fn _resource_test_dtor(integer) :: nil
@@ -26,10 +25,10 @@ fn test_make_resource() do
   assert(true)
 end
 "#;
-    test_runner::run_str(src).expect("test_runner run_str succeeded");
+    run_str(src).expect("test_runner run_str succeeded");
 
     assert_eq!(
-        tests_support::DTOR_FIRED.load(Ordering::Relaxed),
+        DTOR_FIRED.load(Ordering::Relaxed),
         1,
         "dtor must fire exactly once after process heap drop"
     );
@@ -38,7 +37,7 @@ end
     // unboxes the payload before the C fn sees it. So the C dtor
     // receives the unboxed int 42, not the external word bits.
     assert_eq!(
-        tests_support::DTOR_LAST_PAYLOAD.load(Ordering::Relaxed),
+        DTOR_LAST_PAYLOAD.load(Ordering::Relaxed),
         42,
         "dtor (called via fz dispatch + extern unboxing) receives the unboxed int payload"
     );
@@ -53,11 +52,9 @@ end
 /// payload), and not twice (we'd be double-freeing).
 #[test]
 fn aliasing_in_one_process_fires_dtor_once() {
-    let _g = tests_support_lock()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    tests_support::DTOR_FIRED.store(0, Ordering::Relaxed);
-    tests_support::DTOR_LAST_PAYLOAD.store(0, Ordering::Relaxed);
+    let _g = tests_support_lock().lock().unwrap_or_else(|e| e.into_inner());
+    DTOR_FIRED.store(0, Ordering::Relaxed);
+    DTOR_LAST_PAYLOAD.store(0, Ordering::Relaxed);
 
     let src = r#"
 extern "C" fn _resource_test_dtor(integer) :: nil
@@ -70,17 +67,17 @@ fn test_alias_once() do
   assert(true)
 end
 "#;
-    test_runner::run_str(src).expect("test_runner run_str succeeded");
+    run_str(src).expect("test_runner run_str succeeded");
 
     assert_eq!(
-        tests_support::DTOR_FIRED.load(Ordering::Relaxed),
+        DTOR_FIRED.load(Ordering::Relaxed),
         1,
         "aliasing three bindings must still produce exactly one dtor call",
     );
     // fz-4mk — dtor dispatches as fz code, extern unboxes (see
     // make_resource_bif_round_trip).
     assert_eq!(
-        tests_support::DTOR_LAST_PAYLOAD.load(Ordering::Relaxed),
+        DTOR_LAST_PAYLOAD.load(Ordering::Relaxed),
         7,
         "dtor receives the unboxed int payload",
     );
@@ -92,11 +89,9 @@ end
 /// when it contains more than one Resource stub.
 #[test]
 fn two_distinct_resources_each_fire_once() {
-    let _g = tests_support_lock()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    tests_support::DTOR_FIRED.store(0, Ordering::Relaxed);
-    tests_support::DTOR_LAST_PAYLOAD.store(0, Ordering::Relaxed);
+    let _g = tests_support_lock().lock().unwrap_or_else(|e| e.into_inner());
+    DTOR_FIRED.store(0, Ordering::Relaxed);
+    DTOR_LAST_PAYLOAD.store(0, Ordering::Relaxed);
 
     let src = r#"
 extern "C" fn _resource_test_dtor(integer) :: nil
@@ -107,10 +102,10 @@ fn test_two_resources() do
   assert(true)
 end
 "#;
-    test_runner::run_str(src).expect("test_runner run_str succeeded");
+    run_str(src).expect("test_runner run_str succeeded");
 
     assert_eq!(
-        tests_support::DTOR_FIRED.load(Ordering::Relaxed),
+        DTOR_FIRED.load(Ordering::Relaxed),
         2,
         "two distinct make_resource calls must each fire their dtor once",
     );
@@ -125,11 +120,9 @@ end
 /// after `.value` the interp must read back the raw `99` payload.
 #[test]
 fn value_accessor_round_trip_in_interp() {
-    let _g = tests_support_lock()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    tests_support::DTOR_FIRED.store(0, Ordering::Relaxed);
-    tests_support::DTOR_LAST_PAYLOAD.store(0, Ordering::Relaxed);
+    let _g = tests_support_lock().lock().unwrap_or_else(|e| e.into_inner());
+    DTOR_FIRED.store(0, Ordering::Relaxed);
+    DTOR_LAST_PAYLOAD.store(0, Ordering::Relaxed);
 
     // Note: test fns must live at top level (the test_runner only
     // discovers `test_*` fns by their FINAL segment). We therefore
@@ -164,17 +157,13 @@ fn test_value_round_trip() do
   assert(R.get_value(r) == 99)
 end
 "#;
-    crate::cli::test_runner::run_str(src).expect("test_runner run_str succeeded");
+    run_str(src).expect("test_runner run_str succeeded");
     // Verify the dtor fired exactly once with payload 99 once the process heap
     // dropped with its owning runtime.
-    assert_eq!(
-        tests_support::DTOR_FIRED.load(Ordering::Relaxed),
-        1,
-        "dtor fires once on heap drop",
-    );
+    assert_eq!(DTOR_FIRED.load(Ordering::Relaxed), 1, "dtor fires once on heap drop",);
     // fz-4mk — see make_resource_bif_round_trip; dtor sees unboxed.
     assert_eq!(
-        tests_support::DTOR_LAST_PAYLOAD.load(Ordering::Relaxed),
+        DTOR_LAST_PAYLOAD.load(Ordering::Relaxed),
         99,
         "dtor receives the unboxed int payload",
     );

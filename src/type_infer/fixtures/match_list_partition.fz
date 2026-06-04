@@ -1,0 +1,14 @@
+# Pattern-dispatch specialization over list shape. The same FnId is called at
+# exact empty-list and non-empty-list inputs; each activation should select the
+# matching decision-tree leaf.
+# Non-empty list literals carry `nonempty_list(T)`, so lowered `is_nil` and
+# `is_list_cons` tests can prune the matcher tree without re-running analysis.
+#
+# Expected: main() : {:empty, :cons}
+
+fn pick([]), do: :empty
+fn pick([_h | _t]), do: :cons
+
+fn main() do
+  {pick([]), pick([1])}
+end

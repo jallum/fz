@@ -1,18 +1,25 @@
 //! Shared codegen support constants, recording controls, and small scans.
 
 use super::*;
+use crate::ast::{BitType, Endian};
+use crate::fz_ir::Var;
+use crate::ir_planner::SpecPlan;
+use crate::types::{Ty, Types};
 use cranelift_codegen::ir::{self, InstBuilder};
 use cranelift_frontend::FunctionBuilder;
+use cranelift_module::Module;
+use fz_runtime::any_value::{FALSE_BITS as FALSE_BITS_RAW, TRUE_BITS as TRUE_BITS_RAW};
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 pub(crate) const HEADER_SIZE: i32 = 16;
 pub(crate) const SLOT_BYTES: i32 = 8;
 
-pub(crate) fn mark_retained_call_args_as_published<M: cranelift_module::Module>(
+pub(crate) fn mark_retained_call_args_as_published<M: Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
-    args: &[crate::fz_ir::Var],
-    captured: &[crate::fz_ir::Var],
+    args: &[Var],
+    captured: &[Var],
 ) {
     for arg in args {
         if !captured.contains(arg) {
@@ -32,11 +39,11 @@ pub(crate) enum ListTailBits {
     NonEmptyValueRef(ir::Value),
 }
 
-pub(crate) fn list_tail_bits_for_var<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub(crate) fn list_tail_bits_for_var<T: Types<Ty = Ty>>(
     t: &mut T,
-    fn_types: &crate::ir_planner::SpecPlan,
-    block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
-    tail_var: crate::fz_ir::Var,
+    fn_types: &SpecPlan,
+    block_env: Option<&HashMap<Var, Ty>>,
+    tail_var: Var,
     tail_bits: ir::Value,
 ) -> ListTailBits {
     if ty_is_empty_list_in_context(t, fn_types, tail_var, block_env) {
@@ -48,10 +55,10 @@ pub(crate) fn list_tail_bits_for_var<T: crate::types::Types<Ty = crate::types::T
     }
 }
 
-pub(crate) fn emit_owned_cons_reuse_or_alloc<M: cranelift_module::Module>(
+pub(crate) fn emit_owned_cons_reuse_or_alloc<M: Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
-    head: crate::fz_ir::Var,
+    head: Var,
     tail: ListTailBits,
 ) -> Option<ir::Value> {
     let source_cons = body.owned_cons_reuse_source(head)?;
@@ -61,22 +68,22 @@ pub(crate) fn emit_owned_cons_reuse_or_alloc<M: cranelift_module::Module>(
 }
 
 // Raw atom payloads used with side-band ATOM kind tags.
-pub(crate) const TRUE_BITS: i64 = fz_runtime::any_value::TRUE_BITS as i64;
-pub(crate) const FALSE_BITS: i64 = fz_runtime::any_value::FALSE_BITS as i64;
+pub(crate) const TRUE_BITS: i64 = TRUE_BITS_RAW as i64;
+pub(crate) const FALSE_BITS: i64 = FALSE_BITS_RAW as i64;
 thread_local! {
     /// Per-fn Cranelift IR display text captured between compile_fn and
     /// define_function (which consumes the context). Enable via
     /// `ir_text_record_enable()`.
-    pub static IR_TEXT_RECORD: std::cell::RefCell<Option<Vec<(String, String)>>> = const { std::cell::RefCell::new(None) };
+    pub static IR_TEXT_RECORD: RefCell<Option<Vec<(String, String)>>> = const { RefCell::new(None) };
     /// Per-fn machine-code disassembly captured when set_disasm is on.
     /// Enable with `asm_record_enable()`; drain with `asm_record_take()`.
-    pub static ASM_RECORD: std::cell::RefCell<Option<Vec<(String, String)>>> = const { std::cell::RefCell::new(None) };
+    pub static ASM_RECORD: RefCell<Option<Vec<(String, String)>>> = const { RefCell::new(None) };
     /// Per-fn Value -> IR Ty map populated at end-of-body and consumed by
     /// the IR_TEXT_RECORD assembly step to annotate `vN` definitions. Only
     /// values bound to fz Vars are recorded; pure Cranelift intermediates
     /// (iconst, ishl_imm, ...) stay unannotated.
-    pub static VALUE_DESCR_RECORD: std::cell::RefCell<Option<HashMap<u32, crate::types::Ty>>>
-        = const { std::cell::RefCell::new(None) };
+    pub static VALUE_DESCR_RECORD: RefCell<Option<HashMap<u32, Ty>>>
+        = const { RefCell::new(None) };
 }
 
 pub fn asm_record_enable() {
@@ -126,8 +133,7 @@ pub fn ir_text_record_take() -> Vec<(String, String)> {
 // `[false]` on failure. Tuple schema_ids for arities 1 and 3 are registered
 // at compile() time when any bitstring prim is present.
 
-pub(crate) fn encode_bit_type(t: crate::ast::BitType) -> u32 {
-    use crate::ast::BitType;
+pub(crate) fn encode_bit_type(t: BitType) -> u32 {
     match t {
         BitType::Integer => 0,
         BitType::Float => 1,
@@ -139,8 +145,7 @@ pub(crate) fn encode_bit_type(t: crate::ast::BitType) -> u32 {
     }
 }
 
-pub(crate) fn encode_endian(e: crate::ast::Endian) -> u32 {
-    use crate::ast::Endian;
+pub(crate) fn encode_endian(e: Endian) -> u32 {
     match e {
         Endian::Big => 0,
         Endian::Little => 1,
@@ -149,8 +154,7 @@ pub(crate) fn encode_endian(e: crate::ast::Endian) -> u32 {
 }
 
 /// Default unit per type. Mirrors `crate::ir_lower::resolved_unit_for`.
-pub(crate) fn default_unit_for(ty: crate::ast::BitType) -> u32 {
-    use crate::ast::BitType;
+pub(crate) fn default_unit_for(ty: BitType) -> u32 {
     match ty {
         BitType::Integer | BitType::Float | BitType::Bits => 1,
         BitType::Binary => 8,
@@ -168,29 +172,3 @@ pub(crate) fn default_unit_for(ty: crate::ast::BitType) -> u32 {
 // fadd/fsub/fmul/fdiv when the result can stay RawF64. Typed float-float
 // and typed int-int fast paths sit in front of the dispatch entirely.
 // Eq/Neq do NOT promote: `1 == 1.0` is false.
-
-#[cfg(test)]
-thread_local! {
-    pub(crate) static INLINE_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Disable the compile-time reducer for tests that exercise codegen
-    /// infrastructure (static_closure_targets, indirect closure paths,
-    /// etc.) whose triggering inputs the reducer would dissolve.
-    pub(crate) static REDUCER_DISABLED: std::cell::Cell<bool> =
-        const { std::cell::Cell::new(false) };
-}
-
-#[cfg(test)]
-pub(crate) fn with_inline_disabled<F: FnOnce() -> R, R>(f: F) -> R {
-    INLINE_DISABLED.with(|d| d.set(true));
-    let r = f();
-    INLINE_DISABLED.with(|d| d.set(false));
-    r
-}
-
-#[cfg(test)]
-pub(crate) fn with_reducer_disabled<F: FnOnce() -> R, R>(f: F) -> R {
-    REDUCER_DISABLED.with(|d| d.set(true));
-    let r = f();
-    REDUCER_DISABLED.with(|d| d.set(false));
-    r
-}

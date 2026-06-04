@@ -1,34 +1,56 @@
 # Modules, Interfaces, and Artifacts
 
-Use this when changing module resolution, interface emission, separate
-compilation artifacts, image linking, runtime-library modules, or LTO boundary
-erasure.
+A module is a unit of separate compilation. The subsystem behind
+`src/modules/mod.rs` answers four questions: who exists, what may others depend
+on, how does a dependent compile against a provider without that provider's
+implementation, and how do separately compiled units fuse into one runnable
+image.
 
-## Core Invariant
-
-Module correctness must not depend on loading dependency implementation bodies.
-
-The compiler boundary is:
+The shape of the answer is a layered boundary:
 
 ```text
-private implementation code -> inferred inside one module
-public module boundary      -> explicit interface facts
-normal dependent compile    -> consumes interface facts only
-LTO                         -> may load implementations and erase boundaries
+private implementation   inferred inside one module
+public module boundary    explicit interface facts (ModuleInterface)
+dependent compile         consumes interface facts only
+link                      copies provider IR in and resolves call edges
+LTO                       loads implementations and erases boundaries
 ```
 
-Whole-program analysis is an optimization mode, not the proof of correctness.
+A dependent compile is correct knowing only interface facts. Whole-program
+analysis (link, LTO) is an optimization layer on top of that proof, not the
+proof itself.
 
-## Identity Types
+The pieces that matter:
 
-Do not recover module facts by splitting display strings if typed facts are
-available.
+- `identity`: typed `ModuleName` / `ExportKey` — the link identity, separate
+  from any dotted display text.
+- `interface`: `ModuleInterface`, the public contract, and the strict-export
+  validator.
+- `artifact`: `FziArtifact` (`.fzi`) and `FzoArtifact` (`.fzo`) serde envelopes
+  with ABI and fingerprint checks.
+- `artifact_store`: `ModuleName` -> filesystem path policy and `.fzi`/`.fzo` IO.
+- `graph`: `ModuleGraphLoader`, which walks from root interfaces to the provider
+  artifacts a runnable image needs.
+- `pipeline`: provider-aware frontend, execution-graph preparation, and LTO.
+- `runtime_library`: built-in standard-library modules as separate-compilation
+  inputs.
 
-- `ModuleName` is the semantic module path. It is built from parsed path
-  segments and can render to dotted text at the edge.
-- `QualifiedName` is a possibly module-qualified function/type name. It bridges
-  the flattened IR spellings.
-- `ExportKey` is the link identity for a public function:
+Link-time fusion lives next door in `ir_codegen` (`link_ir_units`,
+`CompiledUnit`, `CompiledImage`).
+
+## Identity
+
+`modules::identity` holds the typed names. The frontend renders many names as
+dotted strings (`Math.add/2`) because the IR is string-shaped, but those
+strings are display spellings, not the identity.
+
+- `ModuleName` is a list of path segments (`segments: Vec<String>`). It is built
+  from parsed segments via `from_segments` / `child`; `dotted()` renders the
+  edge spelling.
+- `QualifiedName` is `{ module: Option<ModuleName>, name: String }` — a
+  possibly module-qualified function or type name that bridges flattened IR
+  spellings.
+- `ExportKey` is the link identity of a public function:
 
 ```text
 module: ModuleName
@@ -36,643 +58,471 @@ name:   String
 arity:  usize
 ```
 
-The display spelling `Math.add/2` is not the source of truth. The source of
-truth is `ExportKey { module: Math, name: add, arity: 2 }`.
+`Math.add/2` is what `ExportKey::fmt` prints; the key itself is
+`ExportKey { module: Math, name: "add", arity: 2 }`. Link and artifact code key
+on the typed value.
 
 ## Interface Emission
 
-`modules::interface::collect_from_program` runs while source-level module and
-protocol declarations still exist. It produces one `ModuleInterface` per
-module and one interface for each root `defprotocol` namespace.
+`modules::interface::collect_from_program` runs over the source-level AST while
+module and protocol declarations still exist. It returns one `ModuleInterface`
+per module, keyed by `ModuleName`, plus one for each root `defprotocol`
+namespace (a root protocol has no containing module but still publishes a
+first-class public namespace, so it gets a module-shaped interface keyed by the
+protocol name).
 
-`ModuleInterface` contains:
+`ModuleInterface` carries only contract data:
 
 - `name`: the `ModuleName`;
 - `abi_version`: `FZ_INTERFACE_ABI_VERSION`;
-- `imports`: declared module imports and their `only` / `except` filters;
-- `exports`: non-macro, non-extern, non-`fnp` public functions by name and
-  arity;
-- `types`: public module type aliases, opaques, and refines;
-- `protocols`: protocol declarations and callback surfaces owned by the
-  namespace. A root `defprotocol` has no containing module but still publishes
-  a first-class public namespace, so it gets a module-shaped interface keyed by
-  the protocol name;
-- `protocol_impls`: `(protocol, ImplTarget)` implementation facts and callback
-  exports;
-- `docs`: optional module docs;
-- `fingerprint_inputs`: deterministic semantic inputs for compatibility checks.
+- `imports`: declared imports with their `only` / `except` filters;
+- `exports`: `Vec<InterfaceFn>` — public functions by name, arity, and ordered
+  `@spec` overload set;
+- `types`: public `@type` aliases, opaques, and refines (`InterfaceTypeKind` is
+  `Alias` / `Opaque` / `Refines`);
+- `protocols`: protocol declarations and their callback surfaces;
+- `protocol_impls`: `(protocol, ImplTarget)` facts plus callback `ExportKey`s;
+- `docs`: optional `@moduledoc`;
+- `fingerprint_inputs`: deterministic semantic strings used for compatibility.
 
-Function bodies must never enter a `ModuleInterface`.
+A function reaches `exports` only when it is non-macro, non-private, has no
+`extern_abi`, and is not the implicit `__info__/1` reflection builtin. So a
+wrapper like `Utf8.valid?/1` is the export; the `extern "C"` primitive
+`fz_bitstring_valid_utf8/1` and any `fnp` helper are implementation contracts
+that stay out of the interface. Interface emission copies signatures, never
+bodies, which is why a dependent can typecheck `Protocol.t(...)` domain
+constraints and resolve imported calls without ever loading a provider body.
 
-Protocol facts are public contract data. Dependents need those facts to check
-`Protocol.t(...)` domain constraints without loading provider bodies, just as
-they use export facts to resolve imported calls.
+`fingerprint_inputs` is a stable list of strings (`abi=...`, `module=...`,
+`import=...`, `type=...`, `fn=name/arity:specs=[...]`, `protocol=...`,
+`protocol-impl=...`). `interface::fingerprint_digest` folds that list with FNV
+into a 16-hex-digit string. Both the human-readable inputs and the digest are
+the compatibility currency between separate compiles.
 
-Module-scoped `extern "C"` declarations and `fnp` declarations are
-implementation contracts. They are not exported from module interfaces. A
-wrapper function such as `Utf8.valid?/1` is the public export;
-`fz_bitstring_valid_utf8/1` and private helper functions are not.
+`validate_public_export_specs` enforces the library-boundary policy: every
+module export needs an explicit `@spec`, or it reports `INTERFACE_MISSING_SPEC`
+on the export's name span. Top-level non-module helpers are not interface
+exports and stay inferable; `fnp` helpers inside a module participate in
+same-module resolution and lowering but are omitted from `exports` and need no
+public spec.
+
+`render_interfaces` prints the human-readable contract dump used by
+`fz dump --emit interfaces`.
 
 ## Import Resolution
 
-`resolve::flatten_modules_with_interface_table` accepts an external
-`InterfaceTable` and also injects built-in runtime-library interfaces. Source
-modules from the current program are collected and inserted into that table.
-
-The resolver uses interfaces to answer:
+`resolve::flatten_modules_with_interface_table` takes an external
+`InterfaceTable`, injects the built-in runtime-library interfaces, and inserts
+the current program's own collected interfaces (which win for a module name
+they share). It uses interfaces to answer:
 
 ```text
 does module M exist?
-does module M export f/N?
-which module owns imported bare call f(args...)?
+does M export f/N?
+which module owns the bare imported call f(args...)?
 ```
 
-Important behavior:
+Resolution behavior:
 
-- `alias Missing` and `import Missing` are `RESOLVE_UNKNOWN_MODULE`.
+- `alias Missing` / `import Missing` -> `RESOLVE_UNKNOWN_MODULE`.
 - `import M, only: [f: N]` checks `M`'s interface exports.
-- conflicting imports of the same `name/arity` from different modules are
-  `RESOLVE_CONFLICTING_IMPORT`.
-- local sibling functions shadow imports.
-- bare imported calls rewrite to the qualified flattened spelling, e.g.
+- the same `name/arity` imported from two modules -> `RESOLVE_CONFLICTING_IMPORT`.
+- a local sibling function shadows an import.
+- a bare imported call rewrites to the qualified flattened spelling, e.g.
   `add(x, y)` becomes `Math.add(x, y)`.
 
-The flattened spelling is the IR rendering; boundary code keys on the typed
-`ModuleName` / `ExportKey` identity, not on the dotted text.
+The flattened dotted spelling is the IR rendering; boundary code keys on the
+typed `ModuleName` / `ExportKey`.
 
-## Strict Interfaces
+## Artifacts: `.fzi` and `.fzo`
 
-`modules::interface::validate_public_export_specs` enforces the library-boundary
-policy: every module export needs an explicit `@spec`.
+`modules::artifact` owns two serde envelopes. Each serializes as a one-line
+magic header (`fzi` / `fzo`) followed by pretty JSON. `decode` rejects a wrong
+header; the typed deserializer plus explicit ABI/fingerprint checks reject
+incompatible content. Every load failure is an `ArtifactFormatError` rendered as
+an `artifact/invalid` diagnostic.
 
-Use this for public library boundaries and LTO validation:
+### `.fzi` — the interface artifact
 
-```sh
-fz dump --emit interfaces --strict-interfaces file.fz
-```
-
-Top-level non-module helpers are not interface exports and remain inferable.
-Inside modules, `fnp name(...)` declares a private helper. It participates in
-normal same-module resolution and lowering, but it is omitted from
-`ModuleInterface` exports and does not require a public `@spec`.
-
-## Reachable Runtime Modules
-
-`modules::graph::ModuleGraphLoader` loads interfaces by public contract first:
-declared imports, provider roots, protocol declarations, and protocol
-implementation facts. A module that publishes a `defimpl` depends on the
-protocol namespace as a public fact, so the graph enqueues the protocol
-interface directly from `ModuleInterface.protocol_impls`.
-
-Runtime-library modules also ship source-backed `.fzo` payloads. Their
-interfaces still do not expose private helper calls, but the graph must load the
-runtime modules their implementation bodies call before materializing a linked
-image. `modules::runtime_library::implementation_dependencies` is the narrow
-exception: it scans checked-in runtime-library source for module references and
-is only consulted for runtime modules. Do not copy this behavior to user module
-interfaces; user implementation dependencies are represented by imports and
-provider roots.
-
-## Vocabulary
-
-Use these terms precisely:
-
-- Interface: the public module contract represented by `ModuleInterface`.
-  Interfaces contain module identity, imports, exported functions, public
-  specs, public type aliases, docs, ABI version, and fingerprint inputs. They
-  never contain function bodies.
-- Spec: an internal planner/type fact unless it is attached to a public module
-  export. `fz dump --emit specs` renders `ModulePlan`; it is not a module ABI.
-- `.fzi`: the serialized interface artifact. Dependents use it to resolve and
-  check imports without loading provider implementation bodies.
-- `.fzo`: the serialized implementation-unit envelope. A compiled module's
-  `.fzo` carries a structural IR unit (`fz-ir-unit-v1`): the serialized
-  `fz_ir::Module` plus the source files its spans reference. Each source file is
-  a `PortableSourceFile` with name, bytes, FNV content hash, and the provider's
-  `FileId`. Loading materializes the provider WITHOUT recompiling from source:
-  deserialize the `Module`, intern the shipped source files into the consumer
-  `SourceMap` (deduped by name + content hash), remap the `Module`'s `FileId`s
-  onto the interned ids, rebuild the derived indices the serde form drops, and
-  re-plan at load. The load-time plan is authoritative: it regenerates the
-  cross-module/protocol call facts the linker needs. Source identity is portable,
-  so a loaded provider's spans render real diagnostics against its own source. A
-  payload integrity digest (`implementation_fingerprint_digest`) over the
-  payload format and body is validated at load alongside the ABI and
-  interface-fingerprint checks. Runtime-library modules ship as a
-  `fz-runtime-module-v1` source payload and are materialized from source per
-  execution context; they are not relocatable IR units.
-- `CompiledUnit`: one module before image link. It owns module-local IR plus
-  the interface/import/export facts needed to prove link compatibility.
-- `CompiledImage`: one linked runnable image. It owns runtime-global executable
-  state and optional linked runtime metadata.
-- LTO: validated boundary erasure. LTO may load compatible implementations and
-  rewrite cross-module calls only after public interfaces have been validated.
-
-Dump commands follow the same split:
-
-- `fz dump --emit interfaces` renders public module contracts.
-- `fz dump --emit specs` renders internal inferred planner specializations.
-
-Do not treat either dump as a replacement for the other. Interface dumps answer
-"what may other modules depend on?" Spec dumps answer "what did this compiler
-run infer and plan internally?" Interface dumps include a stable
-fingerprint digest for compatibility checks and the human-readable
-fingerprint inputs for debugging.
-
-Telemetry keeps process facts out of product dumps:
-
-- `fz.module.interfaces_collected`
-- `fz.module.fzi_written`
-- `fz.module.fzi_loaded`
-- `fz.module.fzo_written`
-- `fz.module.fzo_loaded`
-- `fz.module.unit_materialized` (carries a `kind` of `ir-unit` or `source`)
-- `fz.module.graph_loaded`
-- `fz.link.succeeded`
-- `fz.link.failed`
-- `fz.lto.interfaces_validated`
-- `fz.lto.boundaries_erased`
-
-Use `fz dump --emit stats` to inspect these event counts. Keep
-`dump --emit interfaces` and `dump --emit specs` as product views: interfaces
-render public contracts, specs render planner state.
-
-## Package Boundary
-
-The module subsystem lives behind `src/modules/mod.rs`. Keep new module-boundary
-work inside this package unless it is a frontend, IR, or runtime concern.
-
-- `modules::identity`: typed module/export names.
-- `modules::interface`: public contracts, strict validation, and interface
-  rendering.
-- `modules::artifact`: `.fzi` / `.fzo` serde envelopes and ABI/fingerprint
-  validation.
-- `modules::artifact_store`: artifact path policy and filesystem IO.
-- `modules::graph`: reachable `.fzi` / `.fzo` graph loading.
-- `modules::pipeline`: provider-aware frontend checking, graph materialization,
-  LTO validation/erasure, and pipeline error ownership.
-- `modules::runtime_library`: built-in runtime-library source, interfaces, and
-  artifacts.
-
-## Artifact Store Paths
-
-`modules::artifact_store::ArtifactStore` owns the filesystem path policy for
-module artifacts. It maps typed `ModuleName` values to deterministic locations
-and provides `.fzi` / `.fzo` read/write helpers used by build and
-runtime-library tooling.
-
-The default build root is:
+`FziArtifact` is the public contract artifact and nothing else:
 
 ```text
-build/fz
+compiler_abi_version:         FZ_ARTIFACT_ABI_VERSION
+runtime_abi_version:          FZ_RUNTIME_ARTIFACT_ABI_VERSION
+interface_fingerprint_digest: hex digest of interface_fingerprint
+interface_fingerprint:        Vec<String>
+interface:                    ModuleInterface
 ```
 
-Artifact paths are:
+`InterfaceFn.specs` and protocol-callback specs are ordered overload sets;
+every `@spec` arrow appears in the fingerprint in source order, so a separate
+compile sees the same correlated arrows the source module did.
+
+`FziArtifact::deserialize` rejects: wrong/missing header; unsupported
+compiler / runtime / interface ABI; malformed JSON or typed fields; a
+fingerprint digest that does not match the recomputed digest; fingerprint
+inputs that disagree with `interface.fingerprint_inputs`; and (when the caller
+passes one) an expected fingerprint that does not match. Strict-export
+validation is separate from deserialization — an export can deserialize without
+a spec, but the emit path validates first.
+
+### `.fzo` — the implementation-unit envelope
+
+`FzoArtifact` carries an implementation, not a contract. The graph loader
+consumes it only after interface compatibility is established:
 
 ```text
-build/fz/interfaces/<module segments>/<last segment>.fzi
-build/fz/objects/<module segments>/<last segment>.fzo
+compiler_abi_version:           FZ_ARTIFACT_ABI_VERSION
+runtime_abi_version:            FZ_RUNTIME_ARTIFACT_ABI_VERSION
+module:                         Option<ModuleName>
+unit_payload:                   FzoUnitPayload { format, body }
+required_imports:               Vec<ExportKey>
+implementation_fingerprint:     Vec<String>
+implementation_fingerprint_digest: hex digest over the payload
+interface_fingerprint_digest:   hex digest of interface_fingerprint
+interface_fingerprint:          Vec<String>
 ```
 
-Examples:
+`required_imports` is derived from the unit's `external_call_edges`, so an
+imported module's `.fzo` can be emitted without machine-codegenning its
+unresolved external calls. The payload format is one of three constants:
+
+- `FZO_PAYLOAD_IR_UNIT_V1` (`fz-ir-unit-v1`) — a structural IR unit: the
+  serialized `fz_ir::Module` plus every `PortableSourceFile` its spans
+  reference (each with name, bytes, FNV content hash, and the provider's
+  `FileId`). `FzoArtifact::from_unit_ir` builds it; this is what `fz build`
+  emits.
+- `FZO_PAYLOAD_RUNTIME_MODULE_V1` (`fz-runtime-module-v1`) — built-in
+  runtime-library source text, materialized per execution context.
+- `FZO_PAYLOAD_SOURCE_UNIT_V1` (`fz-source-unit-v1`) — checked source text;
+  built by `from_unit_source` for tests.
+
+`implementation_fingerprint_digest` is recomputed at load via `payload_digest`
+(FNV over format tag + full body). It catches a payload that was swapped for a
+different-but-still-valid-JSON body while other fields stayed stale.
+
+Two reader gates split the payloads by how they are consumed:
+
+- `source_unit_text` returns the body for the two source-shaped formats
+  (`fz-source-unit-v1`, `fz-runtime-module-v1`) and rejects anything else, so
+  inspection-only payloads cannot masquerade as materializable source.
+- `ir_unit_payload` decodes a `fz-ir-unit-v1` body back into its `Module` +
+  `sources`, and rejects any other format.
+
+`FzoArtifact::deserialize` rejects: wrong/missing header; compiler/runtime ABI
+mismatch; empty payload format or body; an interface fingerprint digest or
+fingerprint mismatch; and a payload digest mismatch.
+
+### Store paths
+
+`modules::artifact_store::ArtifactStore` maps typed `ModuleName` values to
+deterministic paths under a root (`DEFAULT_ARTIFACT_ROOT` is `build/fz`):
 
 ```text
-Utf8        -> build/fz/interfaces/Utf8.fzi
-Utf8        -> build/fz/objects/Utf8.fzo
-Outer.Inner -> build/fz/interfaces/Outer/Inner.fzi
-Outer.Inner -> build/fz/objects/Outer/Inner.fzo
+build/fz/interfaces/<parent segments>/<last segment>.fzi
+build/fz/objects/<parent segments>/<last segment>.fzo
 ```
-
-Path construction consumes `ModuleName::segments()`. It must not recover
-module identity by splitting dotted display text. Segments must be
-filesystem-safe ASCII identifier fragments: letters, digits, or `_`. The path
-policy rejects `.`, `..`, separators, spaces, punctuation, and other hostile
-segments before artifact IO can touch the filesystem.
-
-Build emission:
-
-```sh
-fz build --emit-fzi --emit-fzo --artifact-root build/fz path/to/input.fz -o path/to/app
-```
-
-`--emit-fzi` writes one `.fzi` per module through `ArtifactStore` and applies
-strict public export-spec validation before writing. Loading uses
-`ArtifactStore::load_fzi_artifact` / `load_interface_table`, which deserialize
-`FziArtifact` without reading the provider source body. These store helpers
-take a `Telemetry` argument and emit `.fzi`/`.fzo` write/load process facts
-directly for stats dumps; there are no separate telemetry-only variants.
-`--emit-fzo` writes the checked module product as a pre-link source-unit
-envelope: it stores the checked source text as `fz-source-unit-v1`, records the
-root `CompiledUnit` identity/import/export facts, derives IR-level link
-metadata without machine-code compiling unresolved imports, and writes the
-result through `ArtifactStore::write_fzo_artifacts`. The object path comes from
-the same typed `ModuleName` policy.
-
-Reachable graph loading:
-
-- `modules::graph::ModuleGraphLoader` owns import traversal over artifact stores.
-- Inputs are the root checked `InterfaceTable` plus explicit provider-root
-  module names.
-- The loader queues imports from the roots, loads provider `.fzi` contracts,
-  recursively queues their imports, and only then loads `.fzo` objects for
-  reachable modules. Protocol implementation callback paths are export
-  namespaces inside the defining module's object, not separate artifact roots.
-  Protocol declarations already present in a loaded interface are local facts
-  too: a provider artifact for `Contracts` can own the nested protocol
-  `Contracts.Collectable`, so `Contracts.Collectable` must not be reloaded as a
-  sibling `.fzi`.
-- Runtime-library modules are checked through `modules::runtime_library::interface`
-  before the filesystem artifact store. If a runtime module is reachable, the
-  loader adds its built-in `.fzo` through `modules::runtime_library::artifact`.
-  Runtime modules do not require user `.fzi`/`.fzo` files and do not mask
-  missing user artifacts with unrelated names.
-- Loaded `.fzo` objects are validated against the `.fzi` fingerprint inputs
-  that made the module reachable. Unused artifacts under the artifact root are
-  never read.
-
-Run, build, and frontend-only dump commands can load provider artifacts from
-the same store:
-
-```sh
-fz dump --emit interfaces --interface Math --artifact-root build/fz consumer.fz
-fz run --interface Math --artifact-root build/fz consumer.fz
-fz build --interface Math --artifact-root build/fz consumer.fz -o consumer
-```
-
-`--interface` takes a module name and loads its `.fzi` into the resolver's
-external `InterfaceTable`. The current source file's own module interfaces are
-still collected locally and override external entries for the same module.
-This proves provider-source-free import validation. Calling an imported
-provider body in a runnable image is the graph/linker stage's job: `fz run` and
-`fz build` load reachable `.fzo` source-unit payloads through
-`ModuleGraphLoader`, materialize provider `CompiledUnit` inputs, link IR units,
-and reject missing or duplicate providers before execution/codegen.
-
-REPL policy:
-
-- Interactive `fz repl` is session-eager. It compiles against source already
-  entered into the REPL world plus built-in runtime-library interfaces.
-- `fz repl --script` has one whole-file root source, so script execution uses
-  the provider-free execution graph path and can materialize reachable built-in
-  runtime modules.
-- REPL commands do not accept `--interface`, `--provider`, or
-  `--artifact-root`, and they do not load user provider artifacts.
-- Artifact-backed imports belong to whole-file `fz run` / `fz build` commands,
-  where the root source and provider roots are explicit.
-
-Testing policy:
-
-- Use `.fzi` artifacts or `fz dump --emit interfaces` for public contract
-  assertions: imports, exports, specs, ABI versions, and fingerprint inputs.
-- Use `.fzo` round-trips and provider-source-free `run`/`build` fixtures for
-  implementation-unit and graph-loading behavior.
-- Keep raw IR dumps (`clif`, `bodies`, `outcomes`, and `specs`) for
-  compiler-internal debugging and planner assertions. They are not the module
-  ABI and should not be the oracle for separate-compilation compatibility.
-
-## `.fzi`: Interface Artifact
-
-`FziArtifact` is the public contract artifact. It contains only interface data
-and version/fingerprint metadata.
-
-`InterfaceFn.specs` and protocol callback `specs` are ordered overload sets.
-Every `@spec` arrow appears in the interface fingerprint, in source order, so
-separate compilation sees the same correlated arrows as the source module.
-
-Struct fields:
 
 ```text
-compiler_abi_version:   FZ_ARTIFACT_ABI_VERSION
-runtime_abi_version:    FZ_RUNTIME_ARTIFACT_ABI_VERSION
-interface_fingerprint_digest: stable hex digest of fingerprint inputs
-interface_fingerprint:  Vec<String>
-interface:              ModuleInterface
+Utf8        -> build/fz/interfaces/Utf8.fzi          / objects/Utf8.fzo
+Outer.Inner -> build/fz/interfaces/Outer/Inner.fzi   / objects/Outer/Inner.fzo
 ```
 
-Serialized shape:
+`path_for` consumes `ModuleName::segments()`; it never splits dotted text.
+`validate_path_segment` requires each segment to be non-empty, not `.` or `..`,
+and ASCII alphanumeric or `_`, so `.`, separators, spaces, and punctuation are
+rejected before any filesystem touch.
 
-```text
-fzi
-{
-  "compiler_abi_version": 1,
-  "runtime_abi_version": 1,
-  "interface_fingerprint_digest": "<hex>",
-  "interface_fingerprint": ["..."],
-  "interface": {
-    "name": {"segments": ["Module"]},
-    "abi_version": 1,
-    "imports": [],
-    "exports": [],
-    "types": [],
-    "docs": null,
-    "fingerprint_inputs": ["..."]
-  }
-}
-```
+The store owns the small IO helpers and emits process telemetry as it goes:
+`write_fzi_artifacts` (`fzi_written`), `write_fzo_artifacts` (`fzo_written`),
+`load_interface_table` (`fzi_loaded`), and `load_fzo_artifact` (`fzo_loaded`).
+`load_fzi_artifact` reads one `.fzi` without emitting an event; the graph loader
+calls it directly while walking the import tree.
 
-The first line is the artifact magic. The body is pretty JSON serialized from
-`FziArtifact` through serde. Strict-interface validation is separate from
-deserialization: an export can deserialize without a spec, but
-`--emit-fzi`/`--strict-interfaces` reject unspecified public exports before
-writing or dumping strict contracts.
+## Reachable Graph Loading
 
-Load-time rejection:
+`modules::graph::ModuleGraphLoader::load_reachable` starts from the root
+`InterfaceTable` plus explicit provider-root `ModuleName`s and produces a
+`ModuleGraph { interfaces, objects }`.
 
-- missing or wrong `fzi` header;
-- unsupported compiler/runtime/interface ABI;
-- malformed JSON or typed fields;
-- interface fingerprint digest mismatch;
-- interface fingerprint inputs mismatch;
-- expected fingerprint mismatch.
+It walks a worklist by public contract:
 
-All artifact load errors are `artifact/invalid` diagnostics.
+1. Queue each root's imports and the protocols of its `protocol_impls` (a
+   `defimpl` depends on the protocol namespace as a public fact).
+2. Pop a module. A runtime-library module is resolved through
+   `runtime_library::interface` before the filesystem store; a user module is
+   loaded as a provider `.fzi`. Either way its imports and protocol-impl
+   protocols are queued.
+3. After all interfaces are reachable, load one `.fzo` per reachable module:
+   runtime modules contribute their built-in `fz-runtime-module-v1` object, user
+   modules load their `.fzo` from the store. Each user `.fzo` is validated
+   against the `.fzi` fingerprint inputs that made the module reachable.
 
-## `.fzo`: Implementation Unit Artifact
+Two refinements:
 
-`FzoArtifact` is the implementation-unit envelope. It is intentionally not a
-public contract. The graph loader consumes it after interface compatibility is
-established. Today normal user `.fzo` files are source-unit envelopes: they
-record the compiled unit's identity, required imports, fingerprints, and a
-typed payload whose body is checked source text.
+- A protocol declaration already present in a loaded interface is a local fact.
+  If a provider artifact `Contracts` owns nested protocol `Contracts.Collectable`,
+  that protocol is not reloaded as a sibling `.fzi`. Protocol-impl callback
+  namespaces are export namespaces inside the defining module's object, not
+  separate artifact roots.
+- Runtime-library implementation bodies may call other runtime modules that the
+  interface does not advertise. `enqueue_runtime_implementation_imports` uses
+  `runtime_library::implementation_dependencies` to scan checked-in
+  runtime-library source for those references. This is consulted only for
+  runtime modules; user implementation dependencies are carried by imports and
+  provider roots.
 
-Struct fields:
+Unused artifacts under the root are never read, so a stray `.fzo` for an
+unreachable module cannot corrupt a build.
 
-```text
-compiler_abi_version:       FZ_ARTIFACT_ABI_VERSION
-runtime_abi_version:        FZ_RUNTIME_ARTIFACT_ABI_VERSION
-module:                     Option<ModuleName>
-unit_payload:               FzoUnitPayload
-required_imports:           Vec<ExportKey>
-implementation_fingerprint: Vec<String>
-interface_fingerprint_digest: stable hex digest of interface_fingerprint
-interface_fingerprint:      Vec<String>
-```
+## Execution Graph and Linking
 
-Payload fields:
+`modules::pipeline` turns a frontend result into a single linked IR module.
+`CompileMode` is `Normal` or `Lto`.
 
-```text
-format: fz-source-unit-v1 | fz-ir-text-v1 | fz-runtime-module-v1 | another versioned payload format
-body:   payload bytes represented as a JSON string
-```
+`checked_module_for_mode` runs the frontend, collects the program's own module
+interfaces (emitting `interfaces_collected`), and in `Lto` mode validates and
+erases boundaries before planning. It yields a `CheckedModule` carrying the
+module, its `ModulePlan`, its own interfaces, the external provider interfaces,
+the `SourceMap`, and diagnostics.
 
-Serialized shape:
+`prepare_execution_graph` -> `load_provider_units` does the provider work:
 
-```text
-fzo
-{
-  "compiler_abi_version": 1,
-  "runtime_abi_version": 1,
-  "module": {"segments": ["Module"]},
-  "unit_payload": {
-    "format": "fz-source-unit-v1",
-    "body": "defmodule Module ..."
-  },
-  "required_imports": [],
-  "implementation_fingerprint": ["..."],
-  "interface_fingerprint_digest": "<hex>",
-  "interface_fingerprint": ["..."]
-}
-```
+- Provider roots are the explicit `--interface`/`--provider` modules, the
+  prelude-required modules, and any non-core runtime module that appears in the
+  external interfaces.
+- `ModuleGraphLoader::load_reachable` returns the graph (emitting
+  `graph_loaded`).
+- Each reachable object becomes a `CompiledUnit`. A `fz-ir-unit-v1` object is
+  materialized structurally; any other (source-shaped) object is recompiled
+  through the frontend.
 
-The first line is the artifact magic. The body is pretty JSON serialized from
-`FzoArtifact` through serde. Artifact compatibility remains enforced by the
-typed deserializer and explicit ABI/fingerprint checks, not by ad hoc
-line-count parsing.
+`materialize_ir_unit` is the structural load — it makes a provider available
+without recompiling: decode the `Module` + `sources`, intern those source files
+into the consumer `SourceMap`, remap the module's `FileId`s onto the interned
+ids, `rebuild_indices` for the serde-dropped derived maps, and `plan_module` the
+loaded unit. That load-time plan regenerates the cross-module/protocol call
+facts the linker needs, and because source identity is portable, the provider's
+spans render real diagnostics against its own source after the merge. It emits
+`unit_materialized` with `kind: "ir-unit"`; the recompile branch emits the same
+event with `kind: "source"`.
 
-`.fzo` stores a typed implementation payload rather than final object bytes.
-`fz build --emit-fzo` stores the checked source text as
-`fz-source-unit-v1` and derives required imports from the pre-link
-`CompiledUnit` external-call edges; that lets imported modules emit their own
-`.fzo` without compiling unresolved external calls through machine codegen.
-`FzoArtifact::source_unit_text` is the materialization gate: it accepts
-`fz-source-unit-v1` user artifacts and `fz-runtime-module-v1` built-in runtime
-module artifacts. It rejects inspection-only payloads before graph loading can
-treat them as source units. `FzoArtifact::from_unit` derives an internal
-`fz-ir-text-v1` payload from `CompiledUnit::code.to_string()` for
-tests and inspection paths that need a deterministic unit dump, not a
-reloadable implementation source.
-Deserialization rejects empty payload format/body so a loaded `.fzo` cannot
-silently degrade back into a metadata-only artifact.
+With the units in hand, `link_execution_module` calls `link_ir_units` when there
+is more than one unit (otherwise it is the single unit's `code`). The pipeline
+then runs `plan_module` once over the linked module; that single authoritative
+plan is what downstream engines consume, so passes that change dispatch or
+reachability must not run between link and that plan.
 
-Load-time rejection:
+### `link_ir_units` — the one correctness gate
 
-- missing or wrong `fzo` header;
-- compiler/runtime ABI mismatch;
-- missing or empty unit payload format/body;
-- implemented-interface fingerprint digest mismatch;
-- implemented-interface fingerprint mismatch;
-- malformed JSON or typed fields.
+`ir_codegen::link_ir_units` fuses reachable `CompiledUnit` IR into one dense
+linked `Module`. `IrUnitLinker` copies each unit's fns, externs, external-call
+edges, protocol facts, specs, planner facts, and type facts, remapping `FnId`,
+`ExternId`, and atom ids as it goes; it builds an `ExportKey -> FnId` map from
+each unit's interface exports and protocol-impl callbacks; then it rewrites
+`ExternalCallEdge` placeholders to direct local `FnId`s.
 
-All errors are `artifact/invalid` diagnostics.
+The checks, and the `ImageLinkError` each produces:
 
-## Compiled Unit vs Linked Image
+1. A unit whose recorded `interface_fingerprint` disagrees with its interface ->
+   `InterfaceFingerprintMismatch`.
+2. Two providers for one `ExportKey` -> `DuplicateProvider`.
+3. A copied `ExternalCallEdge` with no provider -> `MissingImport`.
+4. A callsite that cannot be rewritten -> `UnresolvedExternalCalls`.
 
-Use the right term:
+(`ImageLinkError` also has a `RuntimeMetadata` variant for runtime-table link
+failures.)
 
-- `CompiledUnit`: one pre-link module. Owns module-local IR, interface facts,
-  import/export facts, diagnostics, and interface fingerprint.
-- `CompiledProgram`: one single-unit codegen result before image wrap. Owns the executable
-  `CompiledModule`, the `CompiledUnit`, and the matching `RuntimeUnitMetadata`.
-- `RuntimeUnitMetadata`: one unit's runtime-global contributions: atoms,
-  schemas, frame sizes, exported runtime symbols, imported refs, static
-  closure facts, halt kinds, and entrypoint requirements.
-- `CompiledImage`: linked runnable image. Owns runtime-global JIT state and
+`copy_planner_facts` carries provider plans forward on a best-effort basis: each
+unit's `module_plan` is remapped and merged into an internal `linked_plan` that
+only needs to cover the edges the linker rewrites. Because the pipeline plans
+the linked module again before codegen, a missing upstream planner fact is not a
+link error.
+
+`materialize_ir_unit`-backed providers and the consumer link, plan as one
+module, and run with no unresolved edges. Codegen rejects any edge that survives
+to it: `unresolved external module call `Dep.run/0``.
+
+### Compiled unit, program, image
+
+`ir_codegen` names the link stages:
+
+- `CompiledUnit` — one pre-link module: `code` (module-local IR), optional
+  `module_plan`, `exports`, `interface`, and `interface_fingerprint`.
+- `CompiledModule` — the JIT machine-code module (a `JITModule` plus per-fn
+  pointer table and schemas). It is the executable payload, not the
+  driver-facing product.
+- `CompiledProgram` — one single-unit codegen result before image wrap, with
+  `executable: CompiledModule`, `unit: CompiledUnit`, and
+  `runtime: RuntimeUnitMetadata`.
+- `CompiledImage` — a linked runnable image wrapping a `CompiledModule` and an
   optional `RuntimeImageMetadata`.
-- `CompiledModule`: machine-code module produced by codegen; `CompiledImage`
-  wraps it after module graph correctness has already been proven by
-  `link_ir_units`.
 
-`link_ir_units` is the boundary-resolution step for module graphs. It copies all
-reachable `CompiledUnit` IR bodies into one dense linked `Module`, remaps
-`FnId`, `ExternId`, atom ids, and planner facts, builds provider keys from
-implemented interfaces, and rewrites `ExternalCallEdge` placeholders to direct
-local calls before JIT codegen sees the module.
-
-The linker carries provider planner facts forward on a best-effort basis:
-`IrUnitLinker::copy_planner_facts` remaps each unit's `module_plan` into an
-internal `linked_plan` and resolves the external call edges it can. That
-internal plan only needs to cover the edges it rewrites; codegen re-plans the
-linked working module afterwards regardless, so missing upstream planner facts
-are not a link error.
-
-`CompiledProgram::link_image_with_telemetry` is the single-unit JIT run path. It
+`CompiledProgram::link_image_with_telemetry` is the single-unit JIT run path: it
 validates the unit through `link_ir_units`, links that unit's runtime metadata,
-and wraps the compiled machine-code module. Provider-backed run/build paths
-first call `modules::pipeline::prepare_execution_graph`, which materializes
-provider units and calls `link_ir_units`; codegen then re-plans the single
-linked IR module, which has no unresolved external edges.
-`CompiledImage::from_linked_with_telemetry` only wraps that
-already-linked machine-code module and emits link telemetry.
-`CompiledModule` remains the executable payload inside the image, not the
-driver-facing product.
+wraps the machine-code module, and emits `link.succeeded` / `link.failed`.
+Provider-backed runs link earlier through `prepare_execution_graph`, so
+`CompiledImage::from_linked_with_telemetry` only wraps an already-linked module
+and emits `link.succeeded`.
 
-## IR Link Checks
+### Runtime metadata linking
 
-`link_ir_units` is the only module graph correctness gate.
+`RuntimeUnitMetadata` is one unit's runtime-global contribution: `module`,
+`atoms`, `schemas`, `frame_sizes`, `exported_symbols`, `imported_refs`,
+`static_closures`, `halt_kinds`, and `entrypoints`.
+`RuntimeImageMetadata::link_units` deterministically merges those tables for
+runtime and debug metadata. It is not the import-correctness gate; it enforces
+its own table invariants:
 
-Checks:
-
-1. Each `CompiledUnit` with an interface still matches its recorded
-   `interface_fingerprint`.
-2. Every exported interface function contributes one provider key:
-
-```text
-ExportKey(module, export.name, export.arity)
-```
-
-3. Duplicate providers are rejected.
-4. Every copied `ExternalCallEdge` resolves to exactly one provider.
-5. All resolved external calls are rewritten to direct local `FnId`s before
-   codegen.
-
-Errors include:
-
-- `InterfaceFingerprintMismatch`
-- `UnresolvedExternalCalls`
-- `MissingImport`
-- `DuplicateProvider`
-
-## Runtime Metadata Linking
-
-`RuntimeImageMetadata::link_units` deterministically merges runtime-global
-tables for runtime/debug metadata. It is not the module import correctness
-gate.
-
-Rules:
-
-- duplicate `module` identities are rejected;
-- atoms are de-duplicated by string and sorted by `BTreeSet`;
+- duplicate `module` identities are rejected (`DuplicateModule`);
+- atoms are de-duplicated and sorted via `BTreeSet`;
 - schemas are de-duplicated by `schema_key`;
 - units are processed in stable module/input order;
 - frame ids are relocated by per-unit frame bases;
-- exported runtime symbols must be unique;
+- a duplicate exported runtime symbol is rejected (`DuplicateExport`);
 - imported refs are de-duplicated and sorted;
-- static closures are tagged with input index and sorted;
+- static closures are tagged with their input index and sorted;
 - entrypoint requirements are OR'd together;
 - per-input relocations are recorded in `RuntimeUnitRelocations`.
 
-`RuntimeImageMetadata::render_stable` is for deterministic tests/debugging.
+## LTO
 
-## External Calls and LTO
+LTO is validated boundary erasure. It consumes the same interface facts normal
+mode does, but only after validation, and it is never the correctness path —
+normal-mode linking already resolves every external edge.
 
-Imported module calls are represented by `ExternalCallEdge` in `fz_ir::Module`.
-The terminator still carries a placeholder `FnId` until link/LTO resolves the
-edge.
+The CLI LTO path:
 
-Normal module-graph linking resolves those edges through `link_ir_units` before
-codegen. LTO may then consume the same validated graph facts to erase optimizer
-boundaries, but LTO is not the correctness path.
+1. `checked_module_for_mode` collects interfaces from the frontend result.
+2. `LtoLinkedProgram::validate` runs `validate_public_export_specs` over the
+   interfaces and emits `lto.interfaces_validated`. A missing public spec stops
+   LTO here.
+3. `LtoLinkedProgram::erase_boundaries` builds `Module::interface_export_map`
+   (interface exports + protocol-impl callbacks -> loaded `FnId`s), calls
+   `Module::rewrite_external_calls_for_lto`, clears the module's `boundary_fns`
+   spec firewalls, and emits `lto.boundaries_erased`.
+4. The caller materializes and codegens the direct-call module through the
+   ordinary pipeline.
 
-Normal codegen rejects unresolved external calls:
+`LtoLinkedProgram` is private to `modules::pipeline`, so boundary erasure can
+only follow validation — the ordering is enforced in the type shape, not by each
+caller remembering it. Because erasure rewrites cross-module tail calls to
+direct calls and lets inlining run, a call that exists before LTO can vanish
+from `fz dump --emit bodies --lto`, which reads the same materialized reachable
+body set.
 
-```text
-unresolved external module call `Dep.run/0`
-```
-
-CLI LTO path:
-
-1. `modules::pipeline::checked_module_for_mode` runs the normal frontend
-   result through module interface collection;
-2. `modules::pipeline::LtoLinkedProgram::validate` validates public module
-   interfaces and emits
-   the `fz.lto.interfaces_validated` telemetry event;
-3. `modules::pipeline::LtoLinkedProgram::erase_boundaries` builds
-   `Module::interface_export_map` from interface exports to loaded
-   implementation `FnId`s;
-4. `erase_boundaries` calls `Module::rewrite_external_calls_for_lto`;
-5. `erase_boundaries` clears spec-boundary firewalls for loaded
-   implementations and emits `fz.lto.boundaries_erased`;
-6. the caller re-plans/reduces/codegens with direct calls.
-
-`LtoLinkedProgram` is intentionally private to `modules::pipeline` and is the
-only input to boundary erasure there. That keeps boundary erasure behind
-interface validation in the type shape instead of relying on each caller to
-remember the order.
-
-Mechanically, the pass:
-
-1. builds `Module::interface_export_map` from interface exports to loaded
-   implementation `FnId`s;
-2. calls `Module::rewrite_external_calls_for_lto`;
-3. clears spec-boundary firewalls for loaded implementations.
-
-This makes whole-program optimization explicit while keeping normal-mode
-correctness interface-based.
+`ExternalCallEdge { callsite: CallsiteId, target: ExportKey }` in
+`fz_ir::Module` is how an imported call is represented; its terminator carries a
+placeholder `FnId` until link or LTO resolves the edge.
 
 ## Runtime Library Modules
 
-`runtime_library` owns the built-in runtime source set and exposes built-in
-library module interfaces/artifacts.
+`runtime_library` owns the built-in standard-library source set and exposes each
+module as the same `.fzi`/`.fzo` facts a user library would provide. The runtime
+has two layers: primitive `extern "C"` contracts implemented by Rust/C symbols,
+and ordinary FZ modules built on top of them.
 
-Rules:
+`RUNTIME_MODULE_SOURCES` in `src/modules/runtime_library.rs` registers each
+module with a `RuntimeModuleRole`:
 
-- `src/modules/runtime_library/runtime.fz` is the always-loaded prelude root:
-  root imports from core prelude modules plus ordinary global type aliases such
-  as `keyword/0` and `keyword/1`. Runtime primitive types such as `pid`, `ref`,
-  and `utf8` are compiler-known built-ins, not source aliases in this file;
-- core prelude modules such as `Kernel` live in separate source files but are
-  flattened into the built-in prelude, keeping raw extern declarations
-  module-scoped while exposing imported names like `dbg/1`;
-- ordinary module and protocol bodies live in individual files such as
-  `src/modules/runtime_library/utf8.fz` and
-  `src/modules/runtime_library/process.fz`; `List`, `Map`, `Range`,
-  `Enumerable`, and `Enum` also live here and expose operator helpers, protocol
-  facts, and public enumeration wrappers. `Enumerable` is a root
-  `defprotocol`, so the public namespace is `Enumerable`; a nested protocol
-  such as `Foo.Enumerable` would publish under that fully qualified path. Enum
-  helpers remain ordinary FZ source with private `fnp` helpers for
-  implementation details such as `Enum.sort`'s merge sort;
-- every runtime-library module should carry a crisp `@moduledoc`, and every
-  public export should have the narrowest accurate `@spec`;
-- module-scoped externs are implementation details, not interface exports;
-- import, alias, and fully qualified namespace references request runtime
-  interfaces on demand through `modules::runtime_library::interface`;
-- after macro/desugar expansion, generated qualified runtime calls request
-  runtime interfaces the same way, so operator sugar can depend on `List`
-  without importing `List` into every program;
-- `modules::runtime_library::artifacts` creates deterministic `.fzi`/`.fzo`
-  envelopes for built-in runtime-library modules and root protocol namespaces;
-- reachable non-core runtime modules contribute `fz-runtime-module-v1` `.fzo`
-  objects to `ModuleGraphLoader`, while the core prelude is prepended during
-  lowering.
+- `CorePrelude` modules (`Kernel`, `Enumerable`, `Range`, `List`, `Map`) are
+  prepended during lowering via `core_prelude_module_sources`, so their names
+  are in scope without an explicit import.
+- `Library` modules (`Process`, `Enum`, `Utf8`) are requested on demand.
 
-To add a runtime-library module:
+`src/modules/runtime_library/runtime.fz` is the always-loaded prelude root: it
+imports selected functions from core prelude modules (so raw extern declarations
+stay module-scoped while names like `dbg/1` are exposed) and declares ordinary
+global type aliases such as `keyword/0` and `keyword/1`. Runtime primitive
+types such as `pid`, `ref`, and `utf8` are compiler-known built-ins, not aliases
+in this file.
 
-1. add `src/modules/runtime_library/<name>.fz`;
-2. put exactly one ordinary `defmodule Name do ... end` in that file, or one
-   root `defprotocol Name do ... end` when the runtime unit is a protocol
-   namespace;
-3. add that file to `RUNTIME_MODULE_SOURCES` in
-   `src/modules/runtime_library.rs`;
-4. add a module `@moduledoc` plus public `@spec` declarations for exported
-   functions;
-5. keep primitive `extern "C"` declarations module-scoped. If the module is a
-   core prelude module, expose selected functions through `runtime.fz` imports.
+Each module's body lives in its own file (`utf8.fz`, `process.fz`, `enum.fz`,
+...). `List`, `Map`, `Range`, `Enumerable`, and `Enum` carry the operator
+helpers, protocol facts, and public enumeration wrappers. `Enumerable` is a root
+`defprotocol`, so its public namespace is `Enumerable`; a nested `Foo.Enumerable`
+would publish under that qualified path. Implementation detail stays in private
+`fnp` helpers — `Enum.sort` is a merge sort over `sort_list` /
+`merge_sort_lists`, none of which appear in the interface.
 
-Generated artifacts still use the same module-name store as user artifacts:
-`.fzi` under `build/fz/interfaces/...` and `.fzo` under
-`build/fz/objects/...`. For example, `Utf8` maps to
-`build/fz/interfaces/Utf8.fzi` and `build/fz/objects/Utf8.fzo` regardless of
-the source file being `src/modules/runtime_library/utf8.fz`.
+How a runtime module enters a compile:
 
-Built-in runtime-library interfaces are requested defaults. A source module
-with the same name as a built-in module is collected from the current program
-and wins for that compile; artifact paths stay module-name based, so
-distributors should avoid shipping user and built-in artifacts with the same
-module identity in one root.
+- `runtime_library::interface` answers interface requests from imports, aliases,
+  and qualified references — including the qualified runtime calls macros emit,
+  so operator sugar can depend on `List` without every program importing it.
+- `runtime_library::artifacts` builds the deterministic `.fzi`/`.fzo` envelopes
+  for every built-in module and root protocol namespace; the objects are
+  `fz-runtime-module-v1` source payloads.
+- A reachable non-core runtime module contributes its `.fzo` to
+  `ModuleGraphLoader`; the core prelude is already prepended during lowering.
 
-Use this split when adding standard-library code: prefer ordinary FZ modules
-over growing the primitive runtime surface.
+Built-in interfaces are requested defaults. A user source module with the same
+name is collected from the current program and wins for that compile, while
+artifact paths stay module-name based — so a distributor avoids shipping a user
+and a built-in artifact under one module identity in one root.
 
-## Before Changing This Area
+To add a runtime-library module: add `src/modules/runtime_library/<name>.fz`
+holding exactly one `defmodule Name do ... end` (or one root
+`defprotocol Name do ... end`); register the file in `RUNTIME_MODULE_SOURCES`;
+give it an `@moduledoc` and a narrowest-accurate `@spec` on every public export;
+keep primitive `extern "C"` declarations module-scoped, exposing selected core
+functions through `runtime.fz` imports. Standard-library growth prefers ordinary
+FZ modules over a larger primitive runtime surface.
 
-Check at least these facts:
+## Dumps and Telemetry
 
-- interface dumps do not include function bodies;
-- strict interface validation still rejects missing public specs;
-- import resolution can use external interface tables;
-- codegen still rejects unresolved external module calls;
-- linked image metadata rejects missing/duplicate providers;
-- artifact round trips are deterministic and reject fingerprint mismatches;
-- runtime-library interfaces do not export primitive extern helpers;
-- LTO validates interfaces before boundary erasure.
+The product dumps follow the interface/implementation split:
+
+- `fz dump --emit interfaces` renders public module contracts (with the
+  fingerprint digest and inputs); `--strict-interfaces` rejects unspecified
+  public exports.
+- `fz dump --emit specs` renders the internal inferred `ModulePlan` — planner
+  state, not a module ABI.
+- `fz dump --emit bodies` renders reachable materialized user bodies from the
+  codegen-facing `PlannedProgram`, after local rewrites and reachability
+  pruning. `--lto` reads the post-erasure body set.
+
+Interface dumps answer "what may other modules depend on?"; spec and body dumps
+answer "what did this run infer and plan internally?". Raw IR dumps (`clif`,
+`bodies`, `outcomes`, `specs`) are compiler-internal, not the
+separate-compilation oracle.
+
+Process facts stay out of product dumps and ride telemetry instead, inspectable
+via `fz dump --emit stats`:
+
+```text
+fz.module.interfaces_collected
+fz.module.fzi_written / fzi_loaded / fzo_written / fzo_loaded
+fz.module.unit_materialized   (kind = ir-unit | source)
+fz.module.graph_loaded
+fz.link.succeeded / fz.link.failed
+fz.lto.interfaces_validated / fz.lto.boundaries_erased
+```
+
+## Command Surface
+
+`fz build --emit-fzi --emit-fzo --artifact-root build/fz in.fz -o app` writes
+artifacts: either emit flag first runs strict public export-spec validation;
+`--emit-fzi` writes one `.fzi` per module; `--emit-fzo` writes the root unit as a
+structural `fz-ir-unit-v1` object whose sources are the unit's referenced files.
+
+`fz run` and `fz build` accept `--interface <Module>` (alias `--provider`) and
+`--artifact-root <dir>`. `--interface` loads a provider's `.fzi` into the
+resolver's external `InterfaceTable`, which proves provider-source-free import
+validation; the current file's own interfaces still override external entries
+for a shared name. Running or building the provider's body is the graph/linker
+stage's job: those commands load reachable `.fzo` payloads through
+`ModuleGraphLoader`, materialize provider `CompiledUnit`s, link, and reject
+missing or duplicate providers before execution/codegen.
+
+`fz repl` is session-eager: it compiles against source already entered into the
+REPL world plus built-in runtime-library interfaces. `fz repl --script` has one
+whole-file root, so it takes the provider-free execution-graph path and can
+materialize reachable built-in runtime modules. REPL commands take no
+`--interface`, `--provider`, or `--artifact-root` and load no user provider
+artifacts; artifact-backed imports belong to whole-file `fz run` / `fz build`,
+where root source and provider roots are explicit.
+
+Tests follow the same split: assert public contracts with `.fzi` artifacts or
+`fz dump --emit interfaces`; assert implementation-unit and graph behavior with
+`.fzo` round-trips and provider-source-free `run`/`build` fixtures.

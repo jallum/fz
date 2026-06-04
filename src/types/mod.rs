@@ -1,47 +1,43 @@
 //! types.1 — stable type API over the concrete type implementation.
 //!
-//! Today every type-system consumer touches the concrete representation directly. To enable
-//! future representation changes (interning, BDDs, bounded polymorphism)
-//! without rippling through every consumer at once, this module installs
-//! the `Types` trait — a single object that owns every construction,
-//! query, and decision about types — and `Ty`, an opaque handle.
+//! Today most compiler data still stores the concrete `Ty` handle. The public
+//! boundary is the `Types` trait: a single object that owns every construction,
+//! query, and decision about types.
 //!
-//! Day-one is pure wrapping: `Ty(Arc<Descr>)`, and `ConcreteTypes`
-//! delegates each method to the current concrete implementation. Later passes thread
-//! `T: Types` to consumers and migrate the representation behind `Ty`.
+//! `new()` is the system-wide default factory. Use explicit implementation
+//! constructors only when a test or migration step is intentionally selecting a
+//! non-default implementation.
 //!
 //! Parent epic: fz-mm2 (inch-worm strategy — every sub-ticket points back
 //! so the plan survives compaction).
 
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::sync::Arc;
 
-pub use crate::concrete_types::ConcreteTypes;
-use crate::concrete_types::Descr;
+pub mod concrete_types;
+pub mod interned_types;
+
+pub use concrete_types::ConcreteTypes;
+pub(crate) use concrete_types::{Descr, ty_descr, ty_display};
+pub use interned_types::InternedConcreteTypes;
 
 mod closure;
 mod literal;
 mod map;
 mod poly;
 mod render;
-mod scheme;
 mod visibility;
 
-pub use closure::{CallableClause, ClosureLitInfo, ClosureTarget, ClosureTypes};
-pub use literal::{LiteralTypes, ScalarLiteral, TypeMatch};
+pub use closure::{CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, ClosureTypes};
+pub use literal::LiteralTypes;
 pub use map::MapKey;
-pub use scheme::{
-    SchemeInstantiation, SchemeMatch, instantiate_match as instantiate_scheme_match,
-    instantiate_match_with_slots as instantiate_scheme_match_with_slots,
-    instantiate_result as instantiate_scheme_result,
-};
 
 /// A borrowed view of a module's nominal environment: the brand- and
 /// opaque-tag inner-type maps. They are only ever consulted together — to
 /// discharge a tag to its runtime representation — so they travel as one
 /// value rather than two parallel parameters. `Module::nominals` /
-/// `SpecPlan::nominals` mint a view over the owned maps; `Nominals::empty` is
-/// the no-declarations case.
+/// `SpecPlan::nominals` mint a view over the owned maps.
 pub struct Nominals<'a, T = Ty> {
     pub brand_inners: &'a HashMap<String, T>,
     pub opaque_inners: &'a HashMap<String, T>,
@@ -57,10 +53,7 @@ impl<T> Clone for Nominals<'_, T> {
 impl<T> Copy for Nominals<'_, T> {}
 
 impl<'a, T> Nominals<'a, T> {
-    pub fn new(
-        brand_inners: &'a HashMap<String, T>,
-        opaque_inners: &'a HashMap<String, T>,
-    ) -> Self {
+    pub fn new(brand_inners: &'a HashMap<String, T>, opaque_inners: &'a HashMap<String, T>) -> Self {
         Self {
             brand_inners,
             opaque_inners,
@@ -68,24 +61,17 @@ impl<'a, T> Nominals<'a, T> {
     }
 }
 
-#[cfg(test)]
-impl Nominals<'static, Ty> {
-    /// The empty nominal environment — no brands or opaques in scope. Shared
-    /// so a tag-free fold need not own a map. Only tests construct one
-    /// directly; production threads `Module::nominals` / `SpecPlan::nominals`.
-    pub fn empty() -> Self {
-        static EMPTY: std::sync::LazyLock<HashMap<String, Ty>> =
-            std::sync::LazyLock::new(HashMap::new);
-        Self {
-            brand_inners: &EMPTY,
-            opaque_inners: &EMPTY,
-        }
-    }
-}
 pub use poly::TypeVarId;
 pub use render::RenderTypes;
 pub(crate) use visibility::check_brand_mint_visibility;
 pub use visibility::{OpaqueVisibilityError, VisibilityTypes};
+
+pub type DefaultTypes = ConcreteTypes;
+
+/// Construct the system-wide default type implementation.
+pub fn new() -> DefaultTypes {
+    ConcreteTypes
+}
 
 /// Opaque handle to a type. Inner representation is private and is
 /// expected to change (interned id, BDD root, ...) without consumer
@@ -97,27 +83,25 @@ pub struct Ty(pub(crate) Arc<Descr>);
 ///
 /// `Some(ty)` participates in key coverage. `None` is an arity-bearing,
 /// position-preserving hole; it is skipped by key coverage and is not `any`.
-pub type KeySlot = Option<Ty>;
+pub type KeySlot<T = Ty> = Option<T>;
 
-pub fn key_slots_from_tys(tys: impl IntoIterator<Item = Ty>) -> Vec<KeySlot> {
+pub fn key_slots_from_tys<T>(tys: impl IntoIterator<Item = T>) -> Vec<KeySlot<T>> {
     tys.into_iter().map(Some).collect()
 }
 
-pub fn key_slots_observed(key: &[KeySlot]) -> Vec<Ty> {
+pub fn key_slots_observed<T: Clone>(key: &[KeySlot<T>]) -> Vec<T> {
     key.iter().filter_map(Clone::clone).collect()
 }
 
-pub fn key_slot_var_count<T: Types<Ty = Ty>>(t: &T, key: &[KeySlot]) -> usize {
+pub fn key_slot_var_count<T: Types>(t: &T, key: &[KeySlot<T::Ty>]) -> usize {
     t.key_var_count(&key_slots_observed(key))
 }
 
-pub fn key_slots_to_tys<T: Types<Ty = Ty>>(t: &mut T, key: &[KeySlot]) -> Vec<Ty> {
-    key.iter()
-        .map(|slot| slot.clone().unwrap_or_else(|| t.any()))
-        .collect()
+pub fn key_slots_to_tys<T: Types>(t: &mut T, key: &[KeySlot<T::Ty>]) -> Vec<T::Ty> {
+    key.iter().map(|slot| slot.clone().unwrap_or_else(|| t.any())).collect()
 }
 
-pub fn display_key_slots<T: RenderTypes<Ty = Ty>>(t: &T, key: &[KeySlot]) -> String {
+pub fn display_key_slots<T: RenderTypes>(t: &T, key: &[KeySlot<T::Ty>]) -> String {
     let parts: Vec<String> = key
         .iter()
         .map(|slot| match slot {
@@ -139,7 +123,7 @@ pub type Sigma<T> = HashMap<TypeVarId, T>;
 /// memoization) populate state on construction calls and read it on
 /// queries.
 pub trait Types {
-    type Ty: Clone + Eq + std::hash::Hash;
+    type Ty: Clone + Eq + Hash;
 
     // ---- constructors --------------------------------------------------
 
@@ -150,7 +134,9 @@ pub trait Types {
     fn none(&mut self) -> Self::Ty;
     fn nil(&mut self) -> Self::Ty;
     fn bool(&mut self) -> Self::Ty;
-    fn bool_lit(&mut self, b: bool) -> Self::Ty;
+    fn bool_lit(&mut self, b: bool) -> Self::Ty {
+        self.atom_lit(if b { "true" } else { "false" })
+    }
     fn int(&mut self) -> Self::Ty;
     fn int_lit(&mut self, n: i64) -> Self::Ty;
     fn float(&mut self) -> Self::Ty;
@@ -158,7 +144,9 @@ pub trait Types {
     fn atom(&mut self) -> Self::Ty;
     fn atom_lit(&mut self, name: &str) -> Self::Ty;
     fn type_var(&mut self, id: TypeVarId) -> Self::Ty;
-    fn cpointer(&mut self) -> Self::Ty;
+    fn cpointer(&mut self) -> Self::Ty {
+        self.opaque_of("cpointer")
+    }
     fn resource(&mut self, payload: Self::Ty) -> Self::Ty;
     fn arrow(&mut self, args: &[Self::Ty], ret: Self::Ty) -> Self::Ty;
     fn tuple(&mut self, elems: &[Self::Ty]) -> Self::Ty;
@@ -212,6 +200,10 @@ pub trait Types {
     /// `any`.
     fn tuple_projections(&mut self, a: &Self::Ty, arity: usize) -> Vec<Self::Ty>;
 
+    /// Project field `index` across the feasible tuple clauses of `a`.
+    /// Returns `none` when no possible tuple value has that field.
+    fn tuple_field_type(&mut self, a: &Self::Ty, index: usize) -> Self::Ty;
+
     /// The widest arity present in `a`'s tuple-axis clauses, or 0 if
     /// `a` has no tuple axis.
     fn max_tuple_arity(&self, a: &Self::Ty) -> usize;
@@ -225,18 +217,19 @@ pub trait Types {
     fn map_field_lookup(&mut self, a: &Self::Ty, key: &MapKey) -> Option<Self::Ty>;
 
     /// Literal keys mentioned by `a`'s positive map clauses. This is an
-    /// introspection hook for structural scheme matching; callers still
-    /// use `map_field_lookup` to obtain the set-theoretic field type.
+    /// introspection hook for `src/specs` matching; callers still use
+    /// `map_field_lookup` to obtain the set-theoretic field type.
     fn map_known_keys(&self, a: &Self::Ty) -> Vec<MapKey>;
 
     /// fz-rh5.6 — transform `a` for use as a recursive-call spec key.
     /// The planner owns the policy for when this is applied; the type
     /// implementation owns the concrete widening transform.
     fn widen_for_recursive_spec_key(&mut self, a: &Self::Ty) -> Self::Ty;
-    /// Structural widening for proven fixed-point slots. Prefer recursive
-    /// shape-preserving widening; fall back to ordinary union when the two
-    /// values do not share a mergeable outer shape.
-    fn structurally_widen(&mut self, a: &Self::Ty, b: &Self::Ty) -> Self::Ty;
+
+    /// Canonicalize named type-variable ids up to alpha-equivalence while
+    /// preserving their equality structure. Used when public specialization
+    /// keys should not fork on fresh-id accidents alone.
+    fn alpha_normalize_vars(&mut self, a: &Self::Ty) -> Self::Ty;
 
     /// Binary least-upper-bound in the **refinement lattice** — the
     /// finite-height widening join the specialization worklist uses to settle a
@@ -245,10 +238,16 @@ pub trait Types {
     /// collapses literal axes to their base recursively, so a slot ascends only
     /// a bounded chain — `int_lit(1) ⊔ int_lit(2) = int`, and structurally
     /// `[] ⊔ nonempty_list(a) = list(a)`. Loop-invariant slots are their own LUB.
-    // The specialization worklist (the only production caller) lands in
-    // fz-g58.65.4; until then this is exercised only by unit tests.
-    #[allow(dead_code)]
     fn refine_widen(&mut self, a: &Self::Ty, b: &Self::Ty) -> Self::Ty;
+
+    /// The activation-identity class of `a` for non-dispatch-slot convergence
+    /// in type inference. Two values share an activation only when their
+    /// classes match; same-class slots then join via `refine_widen` in the
+    /// stored inputs. All pure list shapes share one class (so an
+    /// accumulator's emptiness/element type does not fork recursive
+    /// activations — the balloon), while disjoint families (`int` vs a tagged
+    /// tuple) keep distinct classes so their behaviour stays observable.
+    fn convergence_class(&mut self, a: &Self::Ty) -> Self::Ty;
 
     // ---- lattice ops ---------------------------------------------------
 
@@ -261,6 +260,7 @@ pub trait Types {
     // ---- predicates ----------------------------------------------------
 
     fn is_empty(&self, a: &Self::Ty) -> bool;
+    #[cfg(test)]
     fn is_top(&self, a: &Self::Ty) -> bool;
     fn is_subtype(&self, a: &Self::Ty, b: &Self::Ty) -> bool;
     /// Brand-AWARE disjointness — the typing/dispatch/boundary question.
@@ -271,37 +271,24 @@ pub trait Types {
     /// no two runtime values of `a`/`b` can ever be equal / match. The ONLY
     /// disjointness that may authorize folding `==`/`!=` or pruning a pattern
     /// arm. Tags are discharged through `nominals`.
-    fn is_value_disjoint(
-        &self,
-        a: &Self::Ty,
-        b: &Self::Ty,
-        nominals: Nominals<'_, Self::Ty>,
-    ) -> bool;
+    fn is_value_disjoint(&self, a: &Self::Ty, b: &Self::Ty, nominals: Nominals<'_, Self::Ty>) -> bool;
     /// True iff `a`/`b` are brand-AWARE disjoint yet NOT value-disjoint: they
     /// differ only by a brand/opaque the runtime erases. This is exactly the
     /// set of comparisons the old brand-aware fold broke; consumers emit a
     /// telemetry signal on it.
-    fn differs_only_nominally(
-        &self,
-        a: &Self::Ty,
-        b: &Self::Ty,
-        nominals: Nominals<'_, Self::Ty>,
-    ) -> bool {
+    fn differs_only_nominally(&self, a: &Self::Ty, b: &Self::Ty, nominals: Nominals<'_, Self::Ty>) -> bool {
         self.is_disjoint(a, b) && !self.is_value_disjoint(a, b, nominals)
     }
-    fn is_equivalent(&self, a: &Self::Ty, b: &Self::Ty) -> bool;
+    fn is_equivalent(&self, a: &Self::Ty, b: &Self::Ty) -> bool {
+        a == b || (self.is_subtype(a, b) && self.is_subtype(b, a))
+    }
 
     /// Count top-level named type vars across a spec key. Used by
     /// most-specific-wins dispatch ordering: fewer vars = more concrete.
     fn key_var_count(&self, key: &[Self::Ty]) -> usize;
 
     /// Query-key subsumption with positional type-var binding for spec lookup.
-    fn key_subsumes_with(
-        &self,
-        query: &Self::Ty,
-        key: &Self::Ty,
-        sigma: &mut Sigma<Self::Ty>,
-    ) -> bool;
+    fn key_subsumes_with(&self, query: &Self::Ty, key: &Self::Ty, sigma: &mut Sigma<Self::Ty>) -> bool;
 
     /// True iff `lhs` is strictly more specific than `rhs` positionwise:
     /// every element of `lhs` is a subtype of the corresponding element
@@ -312,10 +299,7 @@ pub trait Types {
                 .iter()
                 .zip(rhs.iter())
                 .fold((true, false), |(all_le, any_strict), (l, r)| {
-                    (
-                        all_le && self.is_subtype(l, r),
-                        any_strict || !self.is_subtype(r, l),
-                    )
+                    (all_le && self.is_subtype(l, r), any_strict || !self.is_subtype(r, l))
                 })
                 == (true, true)
     }
@@ -361,30 +345,23 @@ pub trait Types {
     fn as_atom_singleton(&self, a: &Self::Ty) -> Option<String>;
 
     /// If `a` is a literal tuple, return its elements in order.
+    #[cfg(test)]
     fn tuple_lit_elems(&self, a: &Self::Ty) -> Option<Vec<Self::Ty>>;
 
     /// If `a` is a singleton literal suitable as a map key, return it.
     fn as_map_key(&self, a: &Self::Ty) -> Option<MapKey> {
-        self.as_atom_singleton(a)
-            .map(MapKey::Atom)
-            .or_else(|| self.as_int_singleton(a).map(MapKey::Int))
+        self.as_int_singleton(a)
+            .map(MapKey::Int)
+            .or_else(|| self.as_atom_singleton(a).map(MapKey::Atom))
     }
 
     /// Join the return side of a callable type.
     fn arrow_join_return(&mut self, a: &Self::Ty) -> Self::Ty;
 
-    /// Exact match for the empty-list literal.
-    fn is_empty_list_lit(&self, a: &Self::Ty) -> bool;
-
     // ---- substitution --------------------------------------------------
 
     fn instantiate(&mut self, a: &Self::Ty, sigma: &Sigma<Self::Ty>) -> Self::Ty;
-    fn collect_instantiation_subst(
-        &mut self,
-        pattern: &Self::Ty,
-        witness: &Self::Ty,
-        sigma: &mut Sigma<Self::Ty>,
-    );
+    fn collect_instantiation_subst(&mut self, pattern: &Self::Ty, witness: &Self::Ty, sigma: &mut Sigma<Self::Ty>);
 
     // ---- adoption-ease predicates -------------------------------------
 
@@ -402,17 +379,12 @@ pub trait Types {
     /// True iff `a` mentions any free type variable.
     /// Used by the planner to decide whether substitution is required.
     fn has_vars(&self, a: &Self::Ty) -> bool;
-
-    /// True iff `a` is a conservative structural-decrease step from `p`
-    /// for same-callee reducer recursion. Concrete implementations may
-    /// use representation-specific size metrics; callers should not need
-    /// to reason about those metrics directly.
-    fn is_strictly_smaller(&self, a: &Self::Ty, p: &Self::Ty) -> bool;
 }
 
 #[cfg(test)]
 mod conformance_tests {
     use super::*;
+    use std::slice;
 
     macro_rules! key_helper_conformance_tests {
         ($mod_name:ident, $ctor:expr) => {
@@ -456,20 +428,39 @@ mod conformance_tests {
                     let mut t = $ctor;
                     let int = t.int();
                     let int_lit = t.int_lit(7);
-                    assert!(t.key_is_strictly_more_specific(
-                        std::slice::from_ref(&int_lit),
-                        std::slice::from_ref(&int)
-                    ));
-                    assert!(!t.key_is_strictly_more_specific(
-                        std::slice::from_ref(&int),
-                        std::slice::from_ref(&int_lit)
-                    ));
+                    assert!(t.key_is_strictly_more_specific(slice::from_ref(&int_lit), slice::from_ref(&int)));
+                    assert!(!t.key_is_strictly_more_specific(slice::from_ref(&int), slice::from_ref(&int_lit)));
+                }
+
+                #[test]
+                fn default_bool_lit_uses_reserved_atom_literals() {
+                    let mut t = $ctor;
+                    let true_lit = t.bool_lit(true);
+                    let false_lit = t.bool_lit(false);
+                    assert_eq!(t.as_atom_singleton(&true_lit).as_deref(), Some("true"));
+                    assert_eq!(t.as_atom_singleton(&false_lit).as_deref(), Some("false"));
+                }
+
+                #[test]
+                fn default_cpointer_is_builtin_opaque() {
+                    let mut t = $ctor;
+                    let ptr = t.cpointer();
+                    assert_eq!(t.opaque_singleton(&ptr).as_deref(), Some("cpointer"));
+                }
+
+                #[test]
+                fn default_is_equivalent_recognizes_mutual_subtypes() {
+                    let mut t = $ctor;
+                    let true_lit = t.bool_lit(true);
+                    let false_lit = t.bool_lit(false);
+                    let bool_union = t.union(true_lit, false_lit);
+                    let bool_t = t.bool();
+                    assert!(t.is_equivalent(&bool_union, &bool_t));
                 }
             }
         };
     }
 
-    key_helper_conformance_tests!(concrete_types, ConcreteTypes);
     macro_rules! seam_helper_conformance_tests {
         ($mod_name:ident, $ctor:expr) => {
             mod $mod_name {
@@ -567,22 +558,505 @@ mod conformance_tests {
                 }
 
                 #[test]
-                fn is_strictly_smaller_recognizes_toward_zero_ints() {
+                fn alpha_normalize_vars_collapses_alpha_equivalent_callable_shapes() {
                     let mut t = $ctor;
-                    let three = t.int_lit(3);
-                    let two = t.int_lit(2);
-                    let minus_three = t.int_lit(-3);
-                    let minus_two = t.int_lit(-2);
-                    assert!(t.is_strictly_smaller(&two, &three));
-                    assert!(t.is_strictly_smaller(&minus_two, &minus_three));
-                    assert!(!t.is_strictly_smaller(&three, &two));
-                    assert!(!t.is_strictly_smaller(&minus_three, &minus_two));
+                    let lhs_a = t.type_var(TypeVarId(10));
+                    let lhs_b = t.type_var(TypeVarId(11));
+                    let lhs_ret = t.type_var(TypeVarId(12));
+                    let lhs = t.arrow(
+                        &[lhs_a.clone(), lhs_b, lhs_a],
+                        lhs_ret,
+                    );
+                    let rhs_a = t.type_var(TypeVarId(30));
+                    let rhs_b = t.type_var(TypeVarId(31));
+                    let rhs_ret = t.type_var(TypeVarId(32));
+                    let rhs = t.arrow(
+                        &[rhs_a.clone(), rhs_b, rhs_a],
+                        rhs_ret,
+                    );
+
+                    let lhs = t.alpha_normalize_vars(&lhs);
+                    let rhs = t.alpha_normalize_vars(&rhs);
+                    assert!(
+                        t.is_equivalent(&lhs, &rhs),
+                        "alpha-equivalent callable shapes should normalize to the same type: lhs={} rhs={}",
+                        t.display(&lhs),
+                        t.display(&rhs)
+                    );
+                }
+
+                #[test]
+                fn alpha_normalize_vars_preserves_shared_var_structure() {
+                    let mut t = $ctor;
+                    let repeated_var = t.type_var(TypeVarId(10));
+                    let repeated = t.arrow(
+                        &[repeated_var.clone(), repeated_var.clone()],
+                        repeated_var,
+                    );
+                    let distinct_a = t.type_var(TypeVarId(20));
+                    let distinct_b = t.type_var(TypeVarId(21));
+                    let distinct = t.arrow(
+                        &[distinct_a.clone(), distinct_b],
+                        distinct_a,
+                    );
+
+                    let repeated = t.alpha_normalize_vars(&repeated);
+                    let distinct = t.alpha_normalize_vars(&distinct);
+                    assert!(
+                        !t.is_equivalent(&repeated, &distinct),
+                        "alpha-normalization must preserve equality structure: repeated={} distinct={}",
+                        t.display(&repeated),
+                        t.display(&distinct)
+                    );
                 }
             }
         };
     }
 
-    seam_helper_conformance_tests!(concrete_types_helpers, ConcreteTypes);
+    macro_rules! semantic_helper_conformance_tests {
+        ($mod_name:ident, $ctor:expr) => {
+            mod $mod_name {
+                use super::*;
+
+                fn sigma_of<T>(bindings: impl IntoIterator<Item = (u32, T)>) -> Sigma<T> {
+                    bindings.into_iter().map(|(id, ty)| (TypeVarId(id), ty)).collect()
+                }
+
+                #[test]
+                fn arrow_join_return_union_of_clauses() {
+                    let mut t = $ctor;
+                    let int_arg = t.int();
+                    let int_ret = t.int();
+                    let int_arrow = t.arrow(&[int_arg], int_ret);
+                    let str_arg = t.str_t();
+                    let bool_ret = t.bool();
+                    let bool_arrow = t.arrow(&[str_arg], bool_ret.clone());
+                    let callable = t.union(int_arrow, bool_arrow);
+                    let got = t.arrow_join_return(&callable);
+                    let int = t.int();
+                    let want = t.union(int, bool_ret);
+                    assert!(t.is_equivalent(&got, &want));
+                }
+
+                #[test]
+                fn arrow_join_return_top_is_any() {
+                    let mut t = $ctor;
+                    let any = t.any();
+                    let got = t.arrow_join_return(&any);
+                    assert!(t.is_top(&got));
+                }
+
+                #[test]
+                fn arrow_join_return_empty_is_any() {
+                    let mut t = $ctor;
+                    let int = t.int();
+                    let got = t.arrow_join_return(&int);
+                    assert!(t.is_top(&got));
+                }
+
+                #[test]
+                fn differs_only_nominally_holds_for_brand_vs_unbranded() {
+                    let mut t = $ctor;
+                    let str_inner = t.str_t();
+                    let mut brand_inners = HashMap::new();
+                    brand_inners.insert("utf8".to_string(), str_inner);
+                    let opaque_inners = HashMap::new();
+                    let utf8 = t.brand_of("utf8");
+                    let plain = t.str_t();
+                    assert!(t.differs_only_nominally(&utf8, &plain, Nominals::new(&brand_inners, &opaque_inners)));
+                }
+
+                #[test]
+                fn has_vars_distinguishes_concrete_from_polymorphic() {
+                    let mut t = $ctor;
+                    let int = t.int();
+                    let any = t.any();
+                    let var = t.type_var(TypeVarId(0));
+                    assert!(!t.has_vars(&int));
+                    assert!(!t.has_vars(&any));
+                    assert!(t.has_vars(&var));
+                }
+
+                #[test]
+                fn instantiate_replaces_top_level_var() {
+                    let mut t = $ctor;
+                    let pattern = t.type_var(TypeVarId(0));
+                    let int = t.int();
+                    let sigma = sigma_of([(0, int.clone())]);
+                    let result = t.instantiate(&pattern, &sigma);
+                    assert!(t.is_equivalent(&result, &int));
+                }
+
+                #[test]
+                fn instantiate_is_identity_when_no_vars_match() {
+                    let mut t = $ctor;
+                    let pattern = t.type_var(TypeVarId(0));
+                    let int = t.int();
+                    let sigma = sigma_of([(1, int)]);
+                    let result = t.instantiate(&pattern, &sigma);
+                    assert!(t.is_equivalent(&result, &pattern));
+                }
+
+                #[test]
+                fn instantiate_walks_into_lists() {
+                    let mut t = $ctor;
+                    let var = t.type_var(TypeVarId(0));
+                    let list_of_var = t.list(var);
+                    let int = t.int();
+                    let sigma = sigma_of([(0, int.clone())]);
+                    let result = t.instantiate(&list_of_var, &sigma);
+                    let list_of_int = t.list(int);
+                    assert!(t.is_equivalent(&result, &list_of_int));
+                }
+
+                #[test]
+                fn instantiate_walks_into_tuples() {
+                    let mut t = $ctor;
+                    let alpha = t.type_var(TypeVarId(0));
+                    let beta = t.type_var(TypeVarId(1));
+                    let tuple = t.tuple(&[alpha, beta]);
+                    let int = t.int();
+                    let str_t = t.str_t();
+                    let sigma = sigma_of([(0, int.clone()), (1, str_t.clone())]);
+                    let result = t.instantiate(&tuple, &sigma);
+                    let expected = t.tuple(&[int, str_t]);
+                    assert!(t.is_equivalent(&result, &expected));
+                }
+
+                #[test]
+                fn instantiate_walks_into_arrow_args_and_ret() {
+                    let mut t = $ctor;
+                    let alpha = t.type_var(TypeVarId(0));
+                    let beta = t.type_var(TypeVarId(1));
+                    let arrow = t.arrow(&[alpha], beta);
+                    let int = t.int();
+                    let bool_t = t.bool();
+                    let sigma = sigma_of([(0, int.clone()), (1, bool_t.clone())]);
+                    let result = t.instantiate(&arrow, &sigma);
+                    let expected = t.arrow(&[int], bool_t);
+                    assert!(t.is_equivalent(&result, &expected));
+                }
+
+                #[test]
+                fn collect_subst_binds_top_level_var_to_witness() {
+                    let mut t = $ctor;
+                    let pattern = t.type_var(TypeVarId(0));
+                    let witness = t.int();
+                    let mut sigma = HashMap::new();
+                    t.collect_instantiation_subst(&pattern, &witness, &mut sigma);
+                    assert_eq!(sigma.len(), 1);
+                    assert!(t.is_equivalent(&sigma[&TypeVarId(0)], &witness));
+                }
+
+                #[test]
+                fn collect_subst_is_noop_on_concrete_pattern() {
+                    let mut t = $ctor;
+                    let pattern = t.int();
+                    let witness = t.int();
+                    let mut sigma = HashMap::new();
+                    t.collect_instantiation_subst(&pattern, &witness, &mut sigma);
+                    assert!(sigma.is_empty());
+                }
+
+                #[test]
+                fn collect_subst_then_instantiate_is_identity_on_concrete_args() {
+                    let mut t = $ctor;
+                    let pat_arg = t.type_var(TypeVarId(0));
+                    let pat_ret = t.type_var(TypeVarId(0));
+                    let witness = t.int();
+                    let mut sigma = HashMap::new();
+                    t.collect_instantiation_subst(&pat_arg, &witness, &mut sigma);
+                    let resolved_ret = t.instantiate(&pat_ret, &sigma);
+                    assert!(t.is_equivalent(&resolved_ret, &witness));
+                }
+
+                #[test]
+                fn collect_subst_distinct_vars_bind_independently() {
+                    let mut t = $ctor;
+                    let alpha = t.type_var(TypeVarId(0));
+                    let beta = t.type_var(TypeVarId(1));
+                    let int = t.int();
+                    let bool_t = t.bool();
+                    let mut sigma = HashMap::new();
+                    t.collect_instantiation_subst(&alpha, &int, &mut sigma);
+                    t.collect_instantiation_subst(&beta, &bool_t, &mut sigma);
+                    assert_eq!(sigma.len(), 2);
+                    assert!(t.is_equivalent(&sigma[&TypeVarId(0)], &int));
+                    assert!(t.is_equivalent(&sigma[&TypeVarId(1)], &bool_t));
+                }
+
+                #[test]
+                fn tuple_field_projection_skips_impossible_mixed_arity_conjunctions() {
+                    let mut t = $ctor;
+                    let done_tuple = {
+                        let tag = t.atom_lit("done");
+                        let payload = t.int();
+                        t.tuple(&[tag, payload])
+                    };
+                    let halted_tuple = {
+                        let tag = t.atom_lit("halted");
+                        let payload = t.int();
+                        t.tuple(&[tag, payload])
+                    };
+                    let suspended_tuple = {
+                        let tag = t.atom_lit("suspended");
+                        let payload = t.int();
+                        let continuation = t.int();
+                        t.tuple(&[tag, payload, continuation])
+                    };
+                    let outcomes = {
+                        let two = t.union(done_tuple, halted_tuple);
+                        t.union(two, suspended_tuple)
+                    };
+                    let two_tuple = {
+                        let a = t.any();
+                        let b = t.any();
+                        t.tuple(&[a, b])
+                    };
+                    let narrowed = t.intersect(outcomes, two_tuple);
+                    let first = t.tuple_field_type(&narrowed, 0);
+                    let expected = {
+                        let done = t.atom_lit("done");
+                        let halted = t.atom_lit("halted");
+                        t.union(done, halted)
+                    };
+                    assert!(
+                        t.is_equivalent(&first, &expected),
+                        "projecting a 2-tuple narrowing must ignore impossible 3-tuple conjunctions, got {}",
+                        t.display(&first)
+                    );
+                }
+
+                #[test]
+                fn refine_widen_collapses_int_literals_to_int() {
+                    let mut t = $ctor;
+                    let one = t.int_lit(1);
+                    let two = t.int_lit(2);
+                    let int = t.int();
+                    let w_lits = t.refine_widen(&one, &two);
+                    let w_lit_base = t.refine_widen(&one, &int);
+                    let w_base = t.refine_widen(&int, &int);
+                    assert!(t.is_equivalent(&w_lits, &int));
+                    assert!(t.is_equivalent(&w_lit_base, &int));
+                    assert!(t.is_equivalent(&w_base, &int));
+                }
+
+                #[test]
+                fn refine_widen_collapses_float_literals_to_float() {
+                    let mut t = $ctor;
+                    let a = t.float_lit(1.0);
+                    let b = t.float_lit(2.0);
+                    let float = t.float();
+                    let w = t.refine_widen(&a, &b);
+                    assert!(t.is_equivalent(&w, &float));
+                }
+
+                #[test]
+                fn refine_widen_recurses_into_list_elements() {
+                    let mut t = $ctor;
+                    let one = t.int_lit(1);
+                    let two = t.int_lit(2);
+                    let int = t.int();
+                    let l1 = t.list(one);
+                    let l2 = t.list(two);
+                    let lint = t.list(int);
+                    let w = t.refine_widen(&l1, &l2);
+                    assert!(t.is_equivalent(&w, &lint));
+                }
+
+                #[test]
+                fn refine_widen_merges_empty_and_non_empty_list_shapes() {
+                    let mut t = $ctor;
+                    let int = t.int();
+                    let empty = t.empty_list();
+                    let non_empty = t.non_empty_list(int.clone());
+                    let expected = t.list(int);
+                    let widened = t.refine_widen(&empty, &non_empty);
+                    assert!(t.is_equivalent(&widened, &expected));
+                }
+
+                #[test]
+                fn convergence_class_unifies_all_list_shapes_but_separates_other_families() {
+                    let mut t = $ctor;
+                    let int = t.int();
+                    let empty = t.empty_list();
+                    let nonempty = t.non_empty_list(int.clone());
+                    let list = t.list(int.clone());
+                    let empty_class = t.convergence_class(&empty);
+                    let nonempty_class = t.convergence_class(&nonempty);
+                    let list_class = t.convergence_class(&list);
+                    assert!(t.is_equivalent(&empty_class, &nonempty_class));
+                    assert!(t.is_equivalent(&nonempty_class, &list_class));
+
+                    let tagged = t.tuple(&[int.clone(), int.clone()]);
+                    let tagged_class = t.convergence_class(&tagged);
+                    assert!(!t.is_equivalent(&tagged_class, &list_class));
+
+                    let int_class = t.convergence_class(&int);
+                    assert!(!t.is_equivalent(&int_class, &list_class));
+                }
+
+                #[test]
+                fn refine_widen_recurses_into_tuple_fields() {
+                    let mut t = $ctor;
+                    let empty = t.empty_list();
+                    let int = t.int();
+                    let non_empty = t.non_empty_list(int.clone());
+                    let two = t.int_lit(2);
+                    let one = t.int_lit(1);
+                    let lhs = t.tuple(&[empty, two]);
+                    let rhs = t.tuple(&[non_empty, one]);
+                    let list_int = t.list(int.clone());
+                    let expected = t.tuple(&[list_int, int]);
+                    let widened = t.refine_widen(&lhs, &rhs);
+                    assert!(t.is_equivalent(&widened, &expected));
+                }
+
+                #[test]
+                fn refine_widen_recurses_into_resource_payloads() {
+                    let mut t = $ctor;
+                    let one = t.int_lit(1);
+                    let two = t.int_lit(2);
+                    let int = t.int();
+                    let lhs = t.resource(one);
+                    let rhs = t.resource(two);
+                    let expected = t.resource(int);
+                    let widened = t.refine_widen(&lhs, &rhs);
+                    assert!(t.is_equivalent(&widened, &expected));
+                }
+
+                #[test]
+                fn refine_widen_recurses_into_arrow_returns_and_unions_args() {
+                    let mut t = $ctor;
+                    let int = t.int();
+                    let float = t.float();
+                    let empty = t.empty_list();
+                    let one = t.int_lit(1);
+                    let lhs_ret = t.tuple(&[empty, one]);
+                    let lhs = t.arrow(slice::from_ref(&int), lhs_ret);
+                    let non_empty = t.non_empty_list(int.clone());
+                    let two = t.int_lit(2);
+                    let rhs_ret = t.tuple(&[non_empty, two]);
+                    let rhs = t.arrow(slice::from_ref(&float), rhs_ret);
+                    let union = t.union(int.clone(), float);
+                    let list_int = t.list(int.clone());
+                    let ret = t.tuple(&[list_int, int]);
+                    let expected = t.arrow(&[union], ret);
+                    let widened = t.refine_widen(&lhs, &rhs);
+                    assert!(t.is_equivalent(&widened, &expected));
+                }
+
+                #[test]
+                fn refine_widen_recurses_into_map_fields() {
+                    let mut t = $ctor;
+                    let key = MapKey::Atom("value".to_string());
+                    let int = t.int();
+                    let empty = t.empty_list();
+                    let one = t.int_lit(1);
+                    let lhs_value = t.tuple(&[empty, one]);
+                    let lhs = t.map(&[(key.clone(), lhs_value)]);
+                    let non_empty = t.non_empty_list(int.clone());
+                    let two = t.int_lit(2);
+                    let rhs_value = t.tuple(&[non_empty, two]);
+                    let rhs = t.map(&[(key.clone(), rhs_value)]);
+                    let list_int = t.list(int.clone());
+                    let expected_value = t.tuple(&[list_int, int]);
+                    let expected = t.map(&[(key, expected_value)]);
+                    let widened = t.refine_widen(&lhs, &rhs);
+                    assert!(t.is_equivalent(&widened, &expected));
+                }
+
+                #[test]
+                fn refine_widen_falls_back_to_union_for_incompatible_fields_monotonically() {
+                    let mut t = $ctor;
+                    let int = t.int();
+                    let empty = t.empty_list();
+                    let tuple = t.tuple(&[empty.clone(), int.clone()]);
+                    let prev = t.union(int, tuple.clone());
+                    let observed = tuple;
+                    let widened = t.refine_widen(&prev, &observed);
+                    assert!(t.is_subtype(&prev, &widened));
+                    assert!(t.is_subtype(&observed, &widened));
+                }
+
+                #[test]
+                fn refine_widen_keeps_int_and_float_apart_no_number_rung() {
+                    let mut t = $ctor;
+                    let i = t.int_lit(1);
+                    let f = t.float_lit(2.0);
+                    let int = t.int();
+                    let float = t.float();
+                    let union = t.union(int, float);
+                    let any = t.any();
+                    let widened = t.refine_widen(&i, &f);
+                    assert!(t.is_equivalent(&widened, &union));
+                    assert!(!t.is_equivalent(&widened, &any));
+                }
+
+                #[test]
+                fn refine_widen_any_absorbs() {
+                    let mut t = $ctor;
+                    let int = t.int();
+                    let any = t.any();
+                    let w = t.refine_widen(&int, &any);
+                    assert!(t.is_equivalent(&w, &any));
+                }
+            }
+        };
+    }
+
+    macro_rules! closure_helper_conformance_tests {
+        ($mod_name:ident, $ctor:expr) => {
+            mod $mod_name {
+                use super::*;
+
+                #[test]
+                fn erase_closure_identity_preserves_callable_surface_shape() {
+                    let mut t = $ctor;
+                    let capture = t.int_lit(10);
+                    let lit = t.closure_lit(ClosureTarget(3), vec![capture], 2);
+                    let erased = t.erase_closure_identity(&lit);
+                    assert!(t.closure_lit_parts(&erased).is_none());
+                    let clauses = t
+                        .callable_clauses(&erased)
+                        .expect("erased closure should remain callable");
+                    assert_eq!(clauses.len(), 1);
+                    assert_eq!(clauses[0].args.len(), 2);
+                    assert!(clauses[0].closure.is_none());
+                }
+            }
+        };
+    }
+
+    /// Register implementation-agnostic `Types` conformance tests.
+    ///
+    /// Each complete implementation gets one invocation here. Behavior that
+    /// can be expressed through public `Types` hooks belongs in these suites;
+    /// representation assertions stay in the implementation's own tests.
+    macro_rules! impl_types_conformance_tests {
+        ($key_mod:ident, $shape_mod:ident, $semantic_mod:ident, $closure_mod:ident, $ctor:expr) => {
+            key_helper_conformance_tests!($key_mod, $ctor);
+            seam_helper_conformance_tests!($shape_mod, $ctor);
+            semantic_helper_conformance_tests!($semantic_mod, $ctor);
+            closure_helper_conformance_tests!($closure_mod, $ctor);
+        };
+    }
+
+    impl_types_conformance_tests!(
+        concrete_types,
+        concrete_types_helpers,
+        concrete_types_semantics,
+        concrete_types_closure,
+        ConcreteTypes
+    );
+
+    impl_types_conformance_tests!(
+        interned_types,
+        interned_types_helpers,
+        interned_types_semantics,
+        interned_types_closure,
+        InternedConcreteTypes::new()
+    );
 }
 
 // ----------------------------------------------------------------------
@@ -595,6 +1069,7 @@ mod conformance_tests {
 #[cfg(test)]
 mod smoke {
     use super::*;
+    use std::slice;
 
     pub(super) fn smoke_primitives_distinct<T: Types>(t: &mut T) {
         let i = t.int();
@@ -678,7 +1153,7 @@ mod smoke {
         let i = t.int();
         let wide = t.arrow(&[any], i.clone());
         let arg = i.clone();
-        let narrow = t.arrow(std::slice::from_ref(&arg), i);
+        let narrow = t.arrow(slice::from_ref(&arg), i);
         assert!(t.is_subtype(&wide, &narrow));
     }
 
@@ -798,4 +1273,5 @@ mod smoke {
     }
 
     impl_smoke_suite!(concrete, ConcreteTypes);
+    impl_smoke_suite!(interned, InternedConcreteTypes::new());
 }

@@ -1,17 +1,17 @@
 ---
 purpose: "fz-ht5 — make_ref() returns a distinct opaque ref on every call"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 1
-budget.codegen.instructions: 20
-budget.specs.count: 1
-budget.planner.worklist_pops: 1
-budget.planner.walk_calls: 1
-budget.planner.type_fn_calls: 1
+budget.codegen.functions: 8
+budget.codegen.instructions: 71
+budget.specs.count: 8
+budget.planner.worklist_pops: 8
+budget.planner.walk_calls: 8
+budget.planner.type_fn_calls: 8
 budget.planner.matcher_specs: 0
-budget.planner.vars: 12
-budget.planner.blocks: 3
-budget.planner.stmts: 6
-budget.planner.dispatches: 0
+budget.planner.vars: 15
+budget.planner.blocks: 10
+budget.planner.stmts: 5
+budget.planner.dispatches: 8
 ---
 
 # make_ref_distinct

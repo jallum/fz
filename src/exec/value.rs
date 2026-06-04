@@ -1,7 +1,9 @@
 use crate::ast::{FnClause, Pattern};
+use crate::exec::bitstr::match_bitstring;
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
+use std::str::from_utf8;
 
 #[derive(Clone)]
 pub enum Value {
@@ -38,15 +40,10 @@ pub struct FzMap {
 
 impl FzMap {
     pub fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-        }
+        Self { entries: Vec::new() }
     }
     pub fn get(&self, key: &Value) -> Option<&Value> {
-        self.entries
-            .iter()
-            .find(|(k, _)| value_eq(k, key))
-            .map(|(_, v)| v)
+        self.entries.iter().find(|(k, _)| value_eq(k, key)).map(|(_, v)| v)
     }
     pub fn put(&self, key: Value, val: Value) -> Self {
         let mut entries = self.entries.clone();
@@ -88,8 +85,7 @@ pub struct Builtin {
 /// Builtins receive a callback to apply higher-order functions back into the interpreter.
 /// This avoids needing the interpreter as a thread-local while still letting `vec_map`
 /// etc. invoke user closures.
-pub type BuiltinFn =
-    fn(&[Value], &dyn Fn(&Value, Vec<Value>) -> Result<Value, String>) -> Result<Value, String>;
+pub type BuiltinFn = fn(&[Value], &dyn Fn(&Value, Vec<Value>) -> Result<Value, String>) -> Result<Value, String>;
 
 /// Environments are linked frames; lookups walk the chain.
 /// Cheap to clone (Rc), cheap to extend (push a new frame).
@@ -161,7 +157,7 @@ impl fmt::Display for Value {
             Value::Atom(a) => write!(f, ":{}", a),
             Value::Binary(bytes) => {
                 if is_printable_utf8(bytes) {
-                    let s = std::str::from_utf8(bytes).expect("checked by is_printable_utf8");
+                    let s = from_utf8(bytes).expect("checked by is_printable_utf8");
                     write!(f, "{:?}", s)
                 } else {
                     write!(f, "<<")?;
@@ -233,7 +229,7 @@ impl fmt::Display for Value {
 }
 
 fn is_printable_utf8(bytes: &[u8]) -> bool {
-    std::str::from_utf8(bytes)
+    from_utf8(bytes)
         .map(|s| s.chars().all(|c| !c.is_control()))
         .unwrap_or(false)
 }
@@ -264,12 +260,8 @@ pub fn value_eq(a: &Value, b: &Value) -> bool {
         (Binary(x), Binary(y)) => x.as_ref() == y.as_ref(),
         (Ref(x), Ref(y)) => x == y,
         (Nil, Nil) => true,
-        (List(x), List(y)) => {
-            x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| value_eq(a, b))
-        }
-        (Tuple(x), Tuple(y)) => {
-            x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| value_eq(a, b))
-        }
+        (List(x), List(y)) => x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| value_eq(a, b)),
+        (Tuple(x), Tuple(y)) => x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| value_eq(a, b)),
         (Map(x), Map(y)) => {
             x.entries.len() == y.entries.len()
                 && x.entries
@@ -297,11 +289,7 @@ pub fn match_pattern(pat: &Pattern, v: &Value, env: &Env) -> bool {
         (Pattern::Bool(a), Value::Bool(b)) => a == b,
         (Pattern::Nil, Value::Nil) => true,
         (Pattern::Tuple(ps), Value::Tuple(xs)) => {
-            ps.len() == xs.len()
-                && ps
-                    .iter()
-                    .zip(xs.iter())
-                    .all(|(p, v)| match_pattern(&p.node, v, env))
+            ps.len() == xs.len() && ps.iter().zip(xs.iter()).all(|(p, v)| match_pattern(&p.node, v, env))
         }
         (Pattern::List(heads, tail), Value::List(xs)) => {
             if let Some(tail_pat) = tail {
@@ -319,17 +307,14 @@ pub fn match_pattern(pat: &Pattern, v: &Value, env: &Env) -> bool {
                 if heads.len() != xs.len() {
                     return false;
                 }
-                heads
-                    .iter()
-                    .zip(xs.iter())
-                    .all(|(p, v)| match_pattern(&p.node, v, env))
+                heads.iter().zip(xs.iter()).all(|(p, v)| match_pattern(&p.node, v, env))
             }
         }
         (Pattern::As(name, inner), v) => {
             env.bind(name, v.clone());
             match_pattern(&inner.node, v, env)
         }
-        (Pattern::Bitstring(fields), v) => crate::exec::bitstr::match_bitstring(fields, v, env),
+        (Pattern::Bitstring(fields), v) => match_bitstring(fields, v, env),
         (Pattern::Map(pairs), Value::Map(m)) => {
             for (kp, vp) in pairs {
                 let key = match pattern_to_value(&kp.node) {
@@ -350,18 +335,5 @@ pub fn match_pattern(pat: &Pattern, v: &Value, env: &Env) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn binary_display_keeps_textual_utf8_quoted() {
-        let value = Value::Binary(Rc::from(&b"hello"[..]));
-        assert_eq!(format!("{}", value), "\"hello\"");
-    }
-
-    #[test]
-    fn binary_display_uses_byte_list_for_control_bytes() {
-        let value = Value::Binary(Rc::from(&[1_u8, 2, 65][..]));
-        assert_eq!(format!("{}", value), "<<1, 2, 65>>");
-    }
-}
+#[path = "value_test.rs"]
+mod value_test;

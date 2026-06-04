@@ -8,9 +8,7 @@ pub struct ExternTable {
 
 impl ExternTable {
     pub fn new() -> Self {
-        Self {
-            map: HashMap::new(),
-        }
+        Self { map: HashMap::new() }
     }
     pub(crate) fn insert(&mut self, name: String, id: ExternId) {
         self.map.insert(name, id);

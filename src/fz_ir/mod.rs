@@ -19,16 +19,24 @@
 
 use crate::ast::{BitType, Endian};
 use crate::diag::{FileId, Span};
+use crate::exec::matcher::{Matcher, SubjectRef};
+use crate::frontend::protocols::ProtocolRegistry;
 use crate::modules::identity::{ExportKey, ModuleName};
+use crate::modules::interface::ModuleInterface;
+use crate::specs::{ResolvedSpecSet, StructuralCorrespondenceGroup};
+use crate::types::{KeySlot, Nominals, Ty, ty_display};
 use fz_runtime::heap::Schema;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::error::Error;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::mem::take;
 use std::rc::Rc;
+use std::sync::Arc;
 
-/// fz-kgk — intrinsic identity for a callsite (call-shape terminator
-/// or `Prim::MakeClosure` stmt).
+/// fz-kgk — intrinsic identity for a callsite (call-shape terminator,
+/// `Prim::MakeClosure`, or `Prim::Extern` stmt).
 ///
 /// Carries the source `Span` for diagnostics. Identity is **pointer
 /// equality on the inner `Rc`**: two `CallsiteIdent` values are equal iff
@@ -41,12 +49,6 @@ use std::rc::Rc;
 /// - `clone()` — preserves identity. Cloning a `Term` shares the
 ///   ident; "same callsite, different position." Used by fuse / dce
 ///   / fold / per-spec body cloning.
-/// - `fork_inlined(parent, into_fn)` — `ir_inline` clones a `Term`
-///   into a *new caller's* body. The cloned callsite is genuinely
-///   distinct; same span, fresh `Rc` → new identity.
-/// - `synthesize_from_return(call_parent, span)` — `ir_inline` rewrites
-///   a callee's `Return(v)` into `TailCall(K, [v, ...captures])` while
-///   splicing. The new TailCall is a *new* callsite.
 /// - `synthetic()` — test-only. `FnBuilder` mints these so tests don't
 ///   thread spans manually.
 ///
@@ -83,16 +85,6 @@ impl CallsiteIdent {
     #[cfg(test)]
     pub fn synthetic() -> Self {
         Self(Rc::new(CallsiteIdentInner { span: Span::DUMMY }))
-    }
-
-    pub fn fork_inlined(parent: &Self, _into_fn: FnId) -> Self {
-        Self(Rc::new(CallsiteIdentInner {
-            span: parent.0.span,
-        }))
-    }
-
-    pub fn synthesize_from_return(_call_parent: &Self, span: Span) -> Self {
-        Self(Rc::new(CallsiteIdentInner { span }))
     }
 
     pub fn span(&self) -> Span {
@@ -146,8 +138,8 @@ pub struct BlockId(pub u32);
 pub enum EmitSlot {
     /// `Term::Call` / `Term::TailCall` callee.
     Direct,
-    /// The continuation of `Term::Call` / `Term::CallClosure` /
-    /// `Term::Receive` — i.e., (cont.fn_id, [slot0, captures...]).
+    /// The continuation of `Term::Call` / `Term::CallClosure` — i.e.,
+    /// (cont.fn_id, [slot0, captures...]).
     Cont,
     /// fz-try.11: `Term::CallClosure` / `Term::TailCallClosure` callsite.
     /// Purely structural — identifies *where* in the IR the closure
@@ -157,17 +149,17 @@ pub enum EmitSlot {
     /// ("where") while the planner's dispatch target shapes the variation
     /// ("what").
     ClosureCall,
-    /// `Prim::MakeClosure` stmt. Per fz-kgk, the per-stmt index is no
-    /// longer needed — the `CallsiteIdent` on the Prim disambiguates
-    /// multiple MakeClosures in the same block.
-    MakeClosure,
+    /// A known local closure value crosses an external/provider boundary that
+    /// may call it later. This is not an in-IR dispatch site, but it is a
+    /// real reachability obligation for the closure target body.
+    CallableBoundary,
 }
 
 /// fz-kgk — the identity of one callsite in the module.
 ///
 /// `(caller, ident, slot)` uniquely names a place that can produce a
 /// callee target. `ident` is the intrinsic identity carried on the
-/// `Term` (or `Prim::MakeClosure`); see [`CallsiteIdent`] for the
+/// `Term` (or callsite-bearing `Prim`); see [`CallsiteIdent`] for the
 /// fork-vs-inherit rules.
 ///
 /// Previously keyed by `(caller, block, slot)` where slot's MakeClosure
@@ -208,17 +200,13 @@ impl fmt::Display for ExternalLinkError {
                 write!(f, "missing external call target `{}`", target)
             }
             Self::MissingCallsite(callsite) => {
-                write!(
-                    f,
-                    "missing external callsite for caller {}",
-                    callsite.caller
-                )
+                write!(f, "missing external callsite for caller {}", callsite.caller)
             }
         }
     }
 }
 
-impl std::error::Error for ExternalLinkError {}
+impl Error for ExternalLinkError {}
 
 impl CallsiteId {
     pub fn new(caller: FnId, ident: &CallsiteIdent, slot: EmitSlot) -> Self {
@@ -227,65 +215,6 @@ impl CallsiteId {
             ident: ident.clone(),
             slot,
         }
-    }
-}
-
-/// fz-9pr.16 — why the reducer left a callsite alone. Threaded through
-/// every None-returning branch of `try_reduce_call` / `walk_block` so
-/// `fz dump --emit outcomes` can answer "why didn't X fold?" without
-/// a debugger.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StalledReason {
-    /// At least one argument type was not a literal — the reducer
-    /// can only fold under fully-concrete literal arg types. Specifically: the
-    /// arg is genuine `Any` (widening fixpoint, missing-info default,
-    /// etc.). Vars are surfaced as `UnresolvedTypeVar` instead.
-    OpaqueArg,
-    /// fz-try.10 — at least one argument type is a parametric type
-    /// variable. Distinct
-    /// from `OpaqueArg`: an unresolved type variable is a *parametric*
-    /// claim ("specialize me at a call site"), not a *widening* one
-    /// ("we don't know"). Surfaced separately so outcome rows can
-    /// distinguish "this fold needs a concrete witness" from "this fold
-    /// needs better type info."
-    UnresolvedTypeVar,
-    /// Per-top-level-callsite unroll budget hit before the recursive
-    /// walk could find a literal return.
-    BudgetExhausted,
-    /// Callee body contains a non-reducible prim (Extern, MakeMap,
-    /// MapUpdate, MakeBitstring, BitReader*, AllocStruct).
-    NonReduciblePrim,
-    /// Callee is in `module.boundary_fns` and the body isn't trivially
-    /// inlinable — `@spec`'d fns are reduction firewalls.
-    BoundaryFn,
-    /// `Term::(Tail)CallClosure`, but the closure operand's type
-    /// doesn't carry a `closure_lit` — no statically-known target.
-    NoClosureLitTarget,
-    /// Same-callee recursive call without provable structural
-    /// argument decrease — would risk non-termination if walked.
-    StructuralDecrease,
-    /// Callee body shape rejects the walk: `Term::Halt`, `Term::Receive`,
-    /// pathological Goto depth, parameter-arity mismatch, or a Return
-    /// of a non-scalar-literal type (tuple / list / closure_lit return).
-    CalleeBodyShape,
-    /// Catch-all for paths not yet classified. Should be rare; expand
-    /// the enum rather than reach for this.
-    Other,
-}
-
-impl std::fmt::Display for StalledReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            StalledReason::OpaqueArg => "OpaqueArg",
-            StalledReason::UnresolvedTypeVar => "UnresolvedTypeVar",
-            StalledReason::BudgetExhausted => "BudgetExhausted",
-            StalledReason::NonReduciblePrim => "NonReduciblePrim",
-            StalledReason::BoundaryFn => "BoundaryFn",
-            StalledReason::NoClosureLitTarget => "NoClosureLitTarget",
-            StalledReason::StructuralDecrease => "StructuralDecrease",
-            StalledReason::CalleeBodyShape => "CalleeBodyShape",
-            StalledReason::Other => "Other",
-        })
     }
 }
 
@@ -386,7 +315,7 @@ pub struct ExternDecl {
     /// Semantic return type for the type system. Used by ir_planner to give
     /// `Prim::Extern` calls their declared return type instead of `any`.
     /// Defaults to the `any` Ty when no return type is declared.
-    pub ret_descr: crate::types::Ty,
+    pub ret_descr: Ty,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -427,7 +356,7 @@ pub enum Prim {
     Const(Const),
     BinOp(BinOp, Var, Var),
     UnOp(UnOp, Var),
-    Extern(ExternId, Vec<ExternArg>),
+    Extern(CallsiteIdent, ExternId, Vec<ExternArg>),
     ListHead(Var),
     ListTail(Var),
     IsEmptyList(Var),
@@ -491,8 +420,11 @@ pub enum Prim {
         list: Var,
         token: InitTokenId,
     },
-    /// Allocate a closure: a struct holding the IR fn id of the lambda body
-    /// plus the captured environment locals.
+    /// Build a thin function reference: callable code identity with no
+    /// environment payload.
+    MakeFnRef(CallsiteIdent, FnId),
+    /// Allocate a closure: callable code identity plus the captured
+    /// environment locals.
     MakeClosure(CallsiteIdent, FnId, Vec<Var>),
     /// Build a map from (key, value) pairs in insertion order.
     MakeMap(Vec<(Var, Var)>),
@@ -530,11 +462,9 @@ pub enum Prim {
     IsMatcherMapMiss(Var),
     /// Build a bitstring from a sequence of fields.
     MakeBitstring(Vec<BitFieldIr>),
-    /// fz-cty.8 — constant-folded byte-payload bitstring. Carries the
-    /// materialised bytes and bit length; codegen interns the payload as a
-    /// module-private data symbol and emits a single allocation call. Produced
-    /// only by `ir_const_bs::fold_module`; lowered identically to a
-    /// `MakeBitstring` of byte fields at runtime.
+    /// fz-cty.8 — byte-payload bitstring with materialised bytes and bit
+    /// length. Codegen interns the payload as a module-private data symbol and
+    /// emits a single allocation call.
     ConstBitstring(Vec<u8>, u64),
     /// Initialize a bit-reader from a binary/bitstring value. Returns an
     /// opaque reader value. Pattern-matching of bitstrings uses this plus
@@ -563,7 +493,7 @@ pub enum Prim {
     /// tag check. For opaque types, the check is resolved to a constant by
     /// the planner (opaque types have no runtime tag) — the branch is then
     /// eliminated by DCE.
-    TypeTest(Var, Box<crate::types::Ty>),
+    TypeTest(Var, Box<Ty>),
 
     /// fz-axu.4 (K3) — brand-mint. Tags the source value with the
     /// nominal brand `name` (resolved against `Module.brand_inners` to
@@ -577,6 +507,126 @@ pub enum Prim {
     /// Not user-visible in v1. The L3 desugaring pass inserts these
     /// for literal `"…"` → utf8 mint sites.
     Brand(Var, String),
+}
+
+impl Prim {
+    /// Insert every `Var` this prim reads into `used`. The single exhaustive
+    /// source of truth for prim operand vars — backward slices (dispatch-mask
+    /// analysis) and liveness (`ir_dce`) both rely on it, so the compiler-
+    /// enforced exhaustive match guarantees no operand is ever silently missed.
+    pub fn collect_used_vars(&self, used: &mut HashSet<Var>) {
+        match self {
+            Prim::Const(_) | Prim::MakeFnRef(_, _) | Prim::DestTupleBegin { .. } | Prim::DestListBegin { .. } => {}
+            Prim::ConstBitstring(_, _) => {}
+            Prim::BinOp(_, a, b) => {
+                used.insert(*a);
+                used.insert(*b);
+            }
+            Prim::UnOp(_, a) | Prim::ListHead(a) | Prim::ListTail(a) | Prim::IsEmptyList(a) | Prim::IsListCons(a) => {
+                used.insert(*a);
+            }
+            Prim::Extern(_, _, args) => {
+                for arg in args {
+                    used.insert(arg.var);
+                }
+            }
+            Prim::MakeTuple(args) => {
+                for v in args {
+                    used.insert(*v);
+                }
+            }
+            Prim::MakeStruct { fields, .. } => {
+                for (_, v) in fields {
+                    used.insert(*v);
+                }
+            }
+            Prim::DestTupleSet { dest, value, .. } => {
+                used.insert(*dest);
+                used.insert(*value);
+            }
+            Prim::DestFreeze { dest, .. } => {
+                used.insert(*dest);
+            }
+            Prim::DestListCons { head, tail, .. } => {
+                used.insert(*head);
+                if let Some(tail) = tail {
+                    used.insert(*tail);
+                }
+            }
+            Prim::DestListFreeze { list, .. } => {
+                used.insert(*list);
+            }
+            Prim::TupleField(a, _) | Prim::StructField(a, _) => {
+                used.insert(*a);
+            }
+            Prim::MakeList(els, tail) => {
+                for v in els {
+                    used.insert(*v);
+                }
+                if let Some(t) = tail {
+                    used.insert(*t);
+                }
+            }
+            Prim::MakeClosure(_, _, caps) => {
+                for v in caps {
+                    used.insert(*v);
+                }
+            }
+            Prim::MakeMap(entries) => {
+                for (k, v) in entries {
+                    used.insert(*k);
+                    used.insert(*v);
+                }
+            }
+            Prim::MapUpdate(base, entries) => {
+                used.insert(*base);
+                for (k, v) in entries {
+                    used.insert(*k);
+                    used.insert(*v);
+                }
+            }
+            Prim::DestMapBegin { base, .. } => {
+                if let Some(base) = base {
+                    used.insert(*base);
+                }
+            }
+            Prim::DestMapPut { map, key, value, .. } => {
+                used.insert(*map);
+                used.insert(*key);
+                used.insert(*value);
+            }
+            Prim::DestMapFreeze { map, .. } => {
+                used.insert(*map);
+            }
+            Prim::MapGet(a, b) | Prim::MatcherMapGet(a, b) => {
+                used.insert(*a);
+                used.insert(*b);
+            }
+            Prim::IsMatcherMapMiss(v) => {
+                used.insert(*v);
+            }
+            Prim::MakeBitstring(fields) => {
+                for f in fields {
+                    used.insert(f.value);
+                    if let Some(BitSizeIr::Var(sv)) = &f.size {
+                        used.insert(*sv);
+                    }
+                }
+            }
+            Prim::BitReaderInit(a) | Prim::BitReaderDone(a) => {
+                used.insert(*a);
+            }
+            Prim::BitReadField { reader, size, .. } => {
+                used.insert(*reader);
+                if let Some(BitSizeIr::Var(sv)) = size {
+                    used.insert(*sv);
+                }
+            }
+            Prim::TypeTest(v, _) | Prim::Brand(v, _) => {
+                used.insert(*v);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -619,14 +669,13 @@ pub enum DeadBranch {
 /// - The unreachable-arm diagnostic (`collect_diagnostics`) fires only on
 ///   `User` — a synthesized check the planner proves dead is not noise the
 ///   programmer caused.
-/// - The dead-branch fold (`ir_branch_fold`, fz-fyq.4) acts on any origin
-///   once the planner publishes the branch as dead.
+/// - Planned-body materialization may fold any-origin dead branches once the
+///   planner publishes the branch as dead for that specialization.
 ///
-/// On the term itself, not in a side-table: `ir_inline::splice_callee_into_caller`
-/// renumbers BlockIds when splicing, so a `(FnId, BlockId)`-keyed side-table
-/// loses every callee origin at inline time. The post-type chain in
-/// `ir_codegen::compile` runs `inline_single_use_conts`, so inlining is the
-/// happy path. Survival is structural when the data lives on the term.
+/// On the term itself, not in a side-table: transformations that clone,
+/// remove, or renumber blocks must carry branch origin with the branch, so
+/// survival is structural instead of depending on stale `(FnId, BlockId)`
+/// metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BranchOrigin {
     /// Hand-written conditional in source: `if`, `case`, `with`, fn guards.
@@ -680,21 +729,6 @@ pub enum Term {
     },
     Return(Var),
     Halt(Var),
-    /// fz-ul4.19.3: receive next mailbox message; fire continuation with it
-    /// when one is available. If the mailbox is empty at the point of
-    /// Receive, the running task suspends (state = Blocked); the scheduler
-    /// resumes the task when a `send` delivers a message. On resume the
-    /// trampoline re-enters this same Term — fz_receive_attempt re-checks
-    /// the mailbox, now finds the message, and fires the continuation.
-    ///
-    /// The continuation receives one argument (the message) followed by
-    /// the captured Vars — exactly like Term::Call's continuation. No
-    /// `callee` field because receive has no source-language callee; it's
-    /// a scheduler-mediated rendezvous point.
-    Receive {
-        ident: CallsiteIdent,
-        continuation: Cont,
-    },
     /// fz-yxs — selective `receive do … after … end` (see
     /// `docs/receive-matched.md §7`). The cached Matcher is the executable
     /// route. Clause bodies receive bound pattern vars (source order)
@@ -709,7 +743,7 @@ pub enum Term {
         ident: CallsiteIdent,
         clauses: Vec<ReceiveClause>,
         /// Cached AST-free matcher for interpreter and native receive probes.
-        matcher: std::sync::Arc<crate::exec::matcher::Matcher>,
+        matcher: Arc<Matcher>,
         after: Option<ReceiveAfter>,
         /// Outer-scope vars referenced by `^name` patterns across all
         /// clauses, paired with their source names so backends can
@@ -722,17 +756,9 @@ pub enum Term {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ContinuationProvenanceKind {
-    DirectCall {
-        callee: FnId,
-        args: Vec<Var>,
-    },
-    ClosureCall {
-        closure: Var,
-        args: Vec<Var>,
-    },
-    MatcherBody {
-        bindings: Vec<(Var, crate::exec::matcher::SubjectRef)>,
-    },
+    DirectCall { callee: FnId, args: Vec<Var> },
+    ClosureCall { closure: Var, args: Vec<Var> },
+    MatcherBody { bindings: Vec<(Var, SubjectRef)> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -746,6 +772,10 @@ pub struct ContinuationProvenance {
 /// fz-yxs — one arm of a `Term::ReceiveMatched`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReceiveClause {
+    /// Intrinsic identity for this clause outcome site. Planner discovery,
+    /// reachability, and codegen use this instead of reconstructing a fresh
+    /// ident from `span`.
+    pub ident: CallsiteIdent,
     /// Names of the pattern's bound vars in source order. The body
     /// and guard fns take these as their first `bound_names.len()`
     /// parameters; the rest of their params are the captures.
@@ -763,6 +793,8 @@ pub struct ReceiveClause {
 /// fz-yxs — optional `after timeout -> body` tail clause.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReceiveAfter {
+    /// Intrinsic identity for this after-outcome site.
+    pub ident: CallsiteIdent,
     /// Timeout value, computed into a Var before the ReceiveMatched
     /// term. Interpreted at runtime as milliseconds, or the atom
     /// `:infinity` for "no timer".
@@ -809,7 +841,6 @@ impl Term {
             | Term::TailCall { ident, .. }
             | Term::CallClosure { ident, .. }
             | Term::TailCallClosure { ident, .. }
-            | Term::Receive { ident, .. }
             | Term::ReceiveMatched { ident, .. } => Some(ident),
             _ => None,
         }
@@ -833,7 +864,6 @@ impl Term {
             | Term::TailCall { ident, .. }
             | Term::CallClosure { ident, .. }
             | Term::TailCallClosure { ident, .. }
-            | Term::Receive { ident, .. }
             | Term::ReceiveMatched { ident, .. } => *ident = new_ident,
             _ => {}
         }
@@ -841,31 +871,38 @@ impl Term {
 }
 
 impl Prim {
-    /// fz-kgk — convenience constructor for the only Prim variant
-    /// that is a callsite.
+    /// fz-kgk — convenience constructor for callsite-bearing prims.
+    pub fn make_fn_ref(span: Span, fn_id: FnId) -> Self {
+        Prim::MakeFnRef(CallsiteIdent::from_source(span), fn_id)
+    }
+
     pub fn make_closure(span: Span, fn_id: FnId, captured: Vec<Var>) -> Self {
         Prim::MakeClosure(CallsiteIdent::from_source(span), fn_id, captured)
     }
 
-    /// fz-rrh — overwrite the `CallsiteIdent` on a `MakeClosure` prim
+    pub fn extern_call(span: Span, extern_id: ExternId, args: Vec<ExternArg>) -> Self {
+        Prim::Extern(CallsiteIdent::from_source(span), extern_id, args)
+    }
+
+    /// fz-rrh — overwrite the `CallsiteIdent` on a callsite-bearing prim
     /// with a fresh one keyed by `span`. No-op for other prims and
     /// for DUMMY spans. Mirror of `Term::set_source_span`.
     pub fn set_source_span(&mut self, span: Span) {
         if span.is_dummy() {
             return;
         }
-        if let Prim::MakeClosure(ident, _, _) = self {
-            *ident = CallsiteIdent::from_source(span);
+        match self {
+            Prim::MakeFnRef(ident, _) | Prim::MakeClosure(ident, _, _) | Prim::Extern(ident, _, _) => {
+                *ident = CallsiteIdent::from_source(span);
+            }
+            _ => {}
         }
     }
 }
 
 pub(crate) fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
     match prim {
-        Prim::Const(_)
-        | Prim::DestTupleBegin { .. }
-        | Prim::DestListBegin { .. }
-        | Prim::ConstBitstring(_, _) => {}
+        Prim::Const(_) | Prim::DestTupleBegin { .. } | Prim::DestListBegin { .. } | Prim::ConstBitstring(_, _) => {}
         Prim::BinOp(_, a, b) | Prim::MapGet(a, b) | Prim::MatcherMapGet(a, b) => {
             visit(*a);
             visit(*b);
@@ -882,7 +919,7 @@ pub(crate) fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
         | Prim::BitReaderDone(v)
         | Prim::Brand(v, _)
         | Prim::TypeTest(v, _) => visit(*v),
-        Prim::Extern(_, args) => {
+        Prim::Extern(_, _, args) => {
             for arg in args {
                 visit(arg.var);
             }
@@ -914,9 +951,7 @@ pub(crate) fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
                 visit(*base);
             }
         }
-        Prim::DestMapPut {
-            map, key, value, ..
-        } => {
+        Prim::DestMapPut { map, key, value, .. } => {
             visit(*map);
             visit(*key);
             visit(*value);
@@ -930,6 +965,7 @@ pub(crate) fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
                 visit(*tail);
             }
         }
+        Prim::MakeFnRef(_, _) => {}
         Prim::MakeClosure(_, _, caps) => {
             for v in caps {
                 visit(*v);
@@ -965,12 +1001,6 @@ pub(crate) fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
     }
 }
 
-pub(crate) fn prim_uses_var(prim: &Prim, needle: Var) -> bool {
-    let mut found = false;
-    visit_prim_vars(prim, |v| found |= v == needle);
-    found
-}
-
 pub(crate) fn visit_term_vars(term: &Term, mut visit: impl FnMut(Var)) {
     match term {
         Term::Goto(_, args) | Term::TailCall { args, .. } | Term::TailCallClosure { args, .. } => {
@@ -979,20 +1009,10 @@ pub(crate) fn visit_term_vars(term: &Term, mut visit: impl FnMut(Var)) {
             }
         }
         Term::If { cond, .. } | Term::Return(cond) | Term::Halt(cond) => visit(*cond),
-        Term::Call {
-            args, continuation, ..
-        }
-        | Term::CallClosure {
-            args, continuation, ..
-        } => {
+        Term::Call { args, continuation, .. } | Term::CallClosure { args, continuation, .. } => {
             for v in args {
                 visit(*v);
             }
-            for v in &continuation.captured {
-                visit(*v);
-            }
-        }
-        Term::Receive { continuation, .. } => {
             for v in &continuation.captured {
                 visit(*v);
             }
@@ -1014,12 +1034,6 @@ pub(crate) fn visit_term_vars(term: &Term, mut visit: impl FnMut(Var)) {
             }
         }
     }
-}
-
-pub(crate) fn term_uses_var(term: &Term, needle: Var) -> bool {
-    let mut found = false;
-    visit_term_vars(term, |v| found |= v == needle);
-    found
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1047,7 +1061,7 @@ pub enum FnCategory {
     MultiClauseCont,
     /// `lambda_N` — top-level body of a lifted closure.
     LambdaLift,
-    /// CPS continuation: `k_N` or `k_receive_N`.
+    /// CPS continuation: `k_N`.
     CpsCont,
     /// Internal matcher router. These fns are compiler-owned
     /// dispatch thunks: they test subjects, then tail-call leaf/fail
@@ -1087,7 +1101,7 @@ pub struct FnIr {
 }
 
 impl FnIr {
-    pub fn semantic_key(&self, input_tys: Vec<crate::types::Ty>) -> Vec<crate::types::KeySlot> {
+    pub fn semantic_key(&self, input_tys: Vec<Ty>) -> Vec<KeySlot> {
         let entry_params = &self.block(self.entry).params;
         input_tys
             .into_iter()
@@ -1123,18 +1137,69 @@ impl FnIr {
 
     pub fn dedup_physical_facts(&mut self) {
         let mut entry_seen = HashSet::new();
-        self.physical_entry_params
-            .retain(|param| entry_seen.insert(*param));
+        self.physical_entry_params.retain(|param| entry_seen.insert(*param));
         let mut capability_seen = HashSet::new();
-        self.physical_capabilities
-            .retain(|fact| capability_seen.insert(*fact));
+        self.physical_capabilities.retain(|fact| capability_seen.insert(*fact));
     }
 
     pub fn block(&self, id: BlockId) -> &Block {
-        self.blocks
+        self.blocks.iter().find(|b| b.id == id).expect("unknown block")
+    }
+
+    /// Per entry-param slot: `true` iff that param can influence which code
+    /// this body runs — i.e. it reaches, through the body's value graph,
+    /// either the condition of a `Term::If` (which branch) or the invoked
+    /// value of a closure call (which callable identity, hence which body).
+    /// These "dispatch subjects" must stay type-precise; the complement carries
+    /// data the body neither branches on nor invokes, so distinct activations
+    /// that agree on every dispatch subject are behaviourally identical up to
+    /// those slots and may be joined.
+    ///
+    /// Sound by construction: the only intra-body binding edges are
+    /// `Stmt::Let` (def reads its prim's operands) and `Term::Goto` (a target
+    /// block param reads the matching call arg). A backward closure over both,
+    /// seeded from every branch condition and every invoked-closure operand,
+    /// reaches every entry param a control decision can depend on — never
+    /// fewer. Entry params not reached are safe to widen: widening them cannot
+    /// flip a branch or redirect a call in this body.
+    pub fn dispatch_subject_slots(&self) -> Vec<bool> {
+        let mut def_uses: HashMap<Var, Vec<Var>> = HashMap::new();
+        let mut param_sources: HashMap<Var, Vec<Var>> = HashMap::new();
+        let mut work: Vec<Var> = Vec::new();
+        for block in &self.blocks {
+            for Stmt::Let(v, prim) in &block.stmts {
+                let mut uses = HashSet::new();
+                prim.collect_used_vars(&mut uses);
+                def_uses.entry(*v).or_default().extend(uses);
+            }
+            match &block.terminator {
+                Term::If { cond, .. } => work.push(*cond),
+                Term::CallClosure { closure, .. } | Term::TailCallClosure { closure, .. } => work.push(*closure),
+                Term::Goto(target, args) => {
+                    for (param, arg) in self.block(*target).params.iter().zip(args) {
+                        param_sources.entry(*param).or_default().push(*arg);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut reached: HashSet<Var> = HashSet::new();
+        while let Some(v) = work.pop() {
+            if !reached.insert(v) {
+                continue;
+            }
+            if let Some(uses) = def_uses.get(&v) {
+                work.extend(uses.iter().copied());
+            }
+            if let Some(srcs) = param_sources.get(&v) {
+                work.extend(srcs.iter().copied());
+            }
+        }
+        self.block(self.entry)
+            .params
             .iter()
-            .find(|b| b.id == id)
-            .expect("unknown block")
+            .map(|param| reached.contains(param))
+            .collect()
     }
 }
 
@@ -1161,9 +1226,7 @@ pub enum PhysicalCapability {
 impl PhysicalCapability {
     pub fn map_vars(self, mut map: impl FnMut(Var) -> Var) -> Self {
         match self {
-            PhysicalCapability::OwnedConsReuse { head } => {
-                PhysicalCapability::OwnedConsReuse { head: map(head) }
-            }
+            PhysicalCapability::OwnedConsReuse { head } => PhysicalCapability::OwnedConsReuse { head: map(head) },
         }
     }
 }
@@ -1190,9 +1253,7 @@ mod tuple_keyed_map {
         D: Deserializer<'de>,
         V: Deserialize<'de>,
     {
-        Ok(Vec::<((FnId, BlockId), V)>::deserialize(d)?
-            .into_iter()
-            .collect())
+        Ok(Vec::<((FnId, BlockId), V)>::deserialize(d)?.into_iter().collect())
     }
 }
 
@@ -1270,17 +1331,11 @@ impl SourceInfo {
     }
 
     pub fn var_span_of(&self, v: Var) -> Span {
-        self.var_span
-            .get(v.0 as usize)
-            .copied()
-            .unwrap_or(Span::DUMMY)
+        self.var_span.get(v.0 as usize).copied().unwrap_or(Span::DUMMY)
     }
 
     pub fn fn_span_of(&self, f: FnId) -> Span {
-        self.fn_span
-            .get(f.0 as usize)
-            .copied()
-            .unwrap_or(Span::DUMMY)
+        self.fn_span.get(f.0 as usize).copied().unwrap_or(Span::DUMMY)
     }
 }
 
@@ -1316,7 +1371,7 @@ pub struct Module {
     pub external_call_edges: Vec<ExternalCallEdge>,
     #[serde(with = "fn_keyed_map")]
     pub protocol_call_targets: HashMap<FnId, ProtocolCallTarget>,
-    pub protocol_registry: crate::frontend::protocols::ProtocolRegistry,
+    pub protocol_registry: ProtocolRegistry,
     /// fz-jg5.12 (RED.9) — Fns marked as reduction boundaries. Populated
     /// by ir_lower from `@spec` declarations. The reducer treats these as
     /// firewalls: a declared spec is the user's signed contract that the
@@ -1331,31 +1386,96 @@ pub struct Module {
     /// `T` instead of falling back to the generic map-lookup result.
     /// Populated by `ir_lower::lower_program_full` from the resolved
     /// `Program.opaque_inners`.
-    pub opaque_inners: HashMap<String, crate::types::Ty>,
+    pub opaque_inners: HashMap<String, Ty>,
     /// fz-axu.2 (K1) — Inner-type map for `refines` brand declarations,
     /// parallel to `opaque_inners`. Keyed by the qualified brand tag
     /// (as stored on the brand type token); value is the parsed body
     /// `T` following the `refines` keyword. Populated by
     /// `ir_lower::lower_program_full` from the resolved
     /// `Program.brand_inners`.
-    pub brand_inners: HashMap<String, crate::types::Ty>,
-    pub struct_schemas: std::collections::BTreeMap<String, Vec<String>>,
+    pub brand_inners: HashMap<String, Ty>,
+    pub struct_schemas: BTreeMap<String, Vec<String>>,
     /// Resolved declared `@spec` overload sets keyed by IR function id. Used by
     /// call typing for source-level polymorphic contracts.
     #[serde(with = "fn_keyed_map")]
-    pub declared_specs: HashMap<FnId, crate::type_expr::ResolvedSpecSet>,
+    pub declared_specs: HashMap<FnId, ResolvedSpecSet>,
     /// Function correspondence keyed by IR function id. Declared source
     /// functions contribute structural groups directly from `@spec`; CPS
     /// continuations contribute synthesized groups from lowering provenance.
     #[serde(with = "fn_keyed_map")]
-    pub function_correspondence:
-        HashMap<FnId, Vec<crate::type_expr::StructuralCorrespondenceGroup>>,
+    pub function_correspondence: HashMap<FnId, Vec<StructuralCorrespondenceGroup>>,
     /// Continuation provenance keyed by synthesized continuation FnId. This is
     /// the durable IR-owned record of how lowering split a non-tail call or
     /// matcher body, from which planner-facing correspondence can be derived
     /// and re-derived after result-flow rewrites.
     #[serde(with = "fn_keyed_map")]
     pub continuation_provenance: HashMap<FnId, ContinuationProvenance>,
+}
+
+/// Tarjan strongly-connected components over a fn call graph. Returns SCCs in
+/// reverse-topological order (leaves first). Stable node iteration keeps the
+/// numbering deterministic across runs.
+fn tarjan_scc(graph: &HashMap<FnId, HashSet<FnId>>) -> Vec<Vec<FnId>> {
+    struct State<'a> {
+        graph: &'a HashMap<FnId, HashSet<FnId>>,
+        index_of: HashMap<FnId, u32>,
+        lowlink: HashMap<FnId, u32>,
+        on_stack: HashSet<FnId>,
+        stack: Vec<FnId>,
+        next_idx: u32,
+        sccs: Vec<Vec<FnId>>,
+    }
+    fn strong(s: &mut State, v: FnId) {
+        s.index_of.insert(v, s.next_idx);
+        s.lowlink.insert(v, s.next_idx);
+        s.next_idx += 1;
+        s.stack.push(v);
+        s.on_stack.insert(v);
+        if let Some(succs) = s.graph.get(&v) {
+            let succs: Vec<FnId> = succs.iter().copied().collect();
+            for w in succs {
+                if !s.index_of.contains_key(&w) {
+                    strong(s, w);
+                    let wl = *s.lowlink.get(&w).unwrap();
+                    let vl = *s.lowlink.get(&v).unwrap();
+                    s.lowlink.insert(v, vl.min(wl));
+                } else if s.on_stack.contains(&w) {
+                    let wi = *s.index_of.get(&w).unwrap();
+                    let vl = *s.lowlink.get(&v).unwrap();
+                    s.lowlink.insert(v, vl.min(wi));
+                }
+            }
+        }
+        if s.index_of.get(&v) == s.lowlink.get(&v) {
+            let mut comp = Vec::new();
+            loop {
+                let w = s.stack.pop().unwrap();
+                s.on_stack.remove(&w);
+                comp.push(w);
+                if w == v {
+                    break;
+                }
+            }
+            s.sccs.push(comp);
+        }
+    }
+    let mut s = State {
+        graph,
+        index_of: HashMap::new(),
+        lowlink: HashMap::new(),
+        on_stack: HashSet::new(),
+        stack: Vec::new(),
+        next_idx: 0,
+        sccs: Vec::new(),
+    };
+    let mut nodes: Vec<FnId> = graph.keys().copied().collect();
+    nodes.sort_by_key(|f| f.0);
+    for v in nodes {
+        if !s.index_of.contains_key(&v) {
+            strong(&mut s, v);
+        }
+    }
+    s.sccs
 }
 
 impl Module {
@@ -1368,21 +1488,6 @@ impl Module {
         &self.module_path
     }
 
-    /// Remove fn-keyed metadata for any `FnId` no longer present in `fns`.
-    /// IR rewrites that delete functions must keep these side tables in sync
-    /// or later planning/codegen will observe stale facts about dead bodies.
-    pub fn prune_dead_fn_metadata(&mut self) {
-        let live: std::collections::HashSet<FnId> = self.fns.iter().map(|f| f.id).collect();
-        self.protocol_call_targets
-            .retain(|fid, _| live.contains(fid));
-        self.boundary_fns.retain(|fid| live.contains(fid));
-        self.declared_specs.retain(|fid, _| live.contains(fid));
-        self.function_correspondence
-            .retain(|fid, _| live.contains(fid));
-        self.continuation_provenance
-            .retain(|fid, _| live.contains(fid));
-    }
-
     /// Repopulate the derived `fn_idx` / `extern_idx` lookup tables from `fns`
     /// and `externs`. Both indices are `#[serde(skip)]`, so a deserialized
     /// `Module` arrives with them empty; call this to make `fn_by_id` /
@@ -1390,18 +1495,8 @@ impl Module {
     /// (FnId → position in `fns`) and `extern_by_id`'s (ExternId → position
     /// in `externs`).
     pub fn rebuild_indices(&mut self) {
-        self.fn_idx = self
-            .fns
-            .iter()
-            .enumerate()
-            .map(|(idx, f)| (f.id, idx))
-            .collect();
-        self.extern_idx = self
-            .externs
-            .iter()
-            .enumerate()
-            .map(|(idx, e)| (e.id, idx))
-            .collect();
+        self.fn_idx = self.fns.iter().enumerate().map(|(idx, f)| (f.id, idx)).collect();
+        self.extern_idx = self.externs.iter().enumerate().map(|(idx, e)| (e.id, idx)).collect();
     }
 
     /// Rewrite the `file` of every `Span` reachable from this module through
@@ -1491,8 +1586,8 @@ impl Module {
     /// Every distinct, non-`NONE` `FileId` referenced by the module's spans.
     /// `DUMMY`/`FileId::NONE` spans are excluded. This is the source-file set a
     /// portable IR unit must carry so a later loader can relocate the module.
-    pub fn referenced_files(&self) -> std::collections::BTreeSet<FileId> {
-        let mut files = std::collections::BTreeSet::new();
+    pub fn referenced_files(&self) -> BTreeSet<FileId> {
+        let mut files = BTreeSet::new();
         self.visit_spans(&mut |span| {
             if span.file != FileId::NONE {
                 files.insert(span.file);
@@ -1503,8 +1598,8 @@ impl Module {
 
     /// A borrowed view of this module's brand/opaque inner-type maps, for the
     /// brand-blind value-equality decisions (`is_value_disjoint`).
-    pub fn nominals(&self) -> crate::types::Nominals<'_> {
-        crate::types::Nominals::new(&self.brand_inners, &self.opaque_inners)
+    pub fn nominals(&self) -> Nominals<'_> {
+        Nominals::new(&self.brand_inners, &self.opaque_inners)
     }
 
     pub fn extern_by_id(&self, eid: ExternId) -> &ExternDecl {
@@ -1519,11 +1614,81 @@ impl Module {
         self.fns.iter().find(|f| f.name == name)
     }
 
+    /// The set of fns that participate in recursion: every fn in a
+    /// strongly-connected component larger than one, plus self-recursive
+    /// singletons. The recursion call graph deliberately excludes the
+    /// callee->continuation edge — a non-tail call's continuation belongs to
+    /// the caller's control flow, not the callee's body, so including it would
+    /// make plain sequential chains look recursive.
+    ///
+    /// One source of truth for "recursive fn": the planner widens recursive
+    /// spec keys by this set, and type inference converges recursive
+    /// activations' non-dispatch slots by it — the two must agree.
+    pub fn recursive_fns(&self) -> HashSet<FnId> {
+        let graph = self.recursion_call_graph();
+        let mut recursive: HashSet<FnId> = HashSet::new();
+        for scc in tarjan_scc(&graph) {
+            if scc.len() > 1 {
+                recursive.extend(scc);
+            } else if let Some(fid) = scc.first()
+                && graph.get(fid).is_some_and(|succs| succs.contains(fid))
+            {
+                recursive.insert(*fid);
+            }
+        }
+        recursive
+    }
+
+    fn recursion_call_graph(&self) -> HashMap<FnId, HashSet<FnId>> {
+        let mut graph: HashMap<FnId, HashSet<FnId>> = HashMap::new();
+        for f in &self.fns {
+            let edges = graph.entry(f.id).or_default();
+            for block in &f.blocks {
+                for Stmt::Let(_, prim) in &block.stmts {
+                    if let Prim::MakeFnRef(_, target) | Prim::MakeClosure(_, target, _) = prim {
+                        edges.insert(*target);
+                    }
+                }
+                match &block.terminator {
+                    Term::Call {
+                        callee, continuation, ..
+                    } => {
+                        edges.insert(*callee);
+                        edges.insert(continuation.fn_id);
+                    }
+                    Term::TailCall { callee, .. } => {
+                        edges.insert(*callee);
+                    }
+                    Term::CallClosure { continuation, .. } => {
+                        edges.insert(continuation.fn_id);
+                    }
+                    Term::ReceiveMatched { clauses, after, .. } => {
+                        for clause in clauses {
+                            edges.insert(clause.body);
+                            if let Some(guard) = clause.guard {
+                                edges.insert(guard);
+                            }
+                        }
+                        if let Some(after) = after {
+                            edges.insert(after.body);
+                        }
+                    }
+                    Term::Goto(..)
+                    | Term::If { .. }
+                    | Term::TailCallClosure { .. }
+                    | Term::Return(_)
+                    | Term::Halt(_) => {}
+                }
+            }
+        }
+        graph
+    }
+
     pub fn rewrite_external_calls_for_lto(
         &mut self,
         exports: &BTreeMap<ExportKey, FnId>,
     ) -> Result<usize, ExternalLinkError> {
-        let edges = std::mem::take(&mut self.external_call_edges);
+        let edges = take(&mut self.external_call_edges);
         let mut rewritten = 0;
         for edge in edges {
             let Some(target) = exports.get(&edge.target).copied() else {
@@ -1541,7 +1706,7 @@ impl Module {
 
     pub fn interface_export_map(
         &self,
-        interfaces: &BTreeMap<ModuleName, crate::modules::interface::ModuleInterface>,
+        interfaces: &BTreeMap<ModuleName, ModuleInterface>,
     ) -> BTreeMap<ExportKey, FnId> {
         let mut out = BTreeMap::new();
         for (module, interface) in interfaces {
@@ -1552,10 +1717,7 @@ impl Module {
                     .iter()
                     .find(|f| f.name == name && f.block(f.entry).params.len() == export.arity)
                 {
-                    out.insert(
-                        ExportKey::new(module.clone(), export.name.clone(), export.arity),
-                        f.id,
-                    );
+                    out.insert(ExportKey::new(module.clone(), export.name.clone(), export.arity), f.id);
                 }
             }
             for protocol_impl in &interface.protocol_impls {
@@ -1582,21 +1744,12 @@ fn rewrite_external_callsite(m: &mut Module, callsite: &CallsiteId, target: FnId
     let Some(target_idx) = m.fn_idx.get(&target).copied() else {
         return false;
     };
-    let target_arity = m.fns[target_idx]
-        .block(m.fns[target_idx].entry)
-        .params
-        .len();
+    let target_arity = m.fns[target_idx].block(m.fns[target_idx].entry).params.len();
     for block in &mut m.fns[fn_idx].blocks {
         match &mut block.terminator {
             Term::Call {
-                ident,
-                callee,
-                args,
-                ..
-            } if callsite.slot == EmitSlot::Direct
-                && *ident == callsite.ident
-                && args.len() == target_arity =>
-            {
+                ident, callee, args, ..
+            } if callsite.slot == EmitSlot::Direct && *ident == callsite.ident && args.len() == target_arity => {
                 if *callee == target {
                     return false;
                 }
@@ -1604,14 +1757,8 @@ fn rewrite_external_callsite(m: &mut Module, callsite: &CallsiteId, target: FnId
                 return true;
             }
             Term::TailCall {
-                ident,
-                callee,
-                args,
-                ..
-            } if callsite.slot == EmitSlot::Direct
-                && *ident == callsite.ident
-                && args.len() == target_arity =>
-            {
+                ident, callee, args, ..
+            } if callsite.slot == EmitSlot::Direct && *ident == callsite.ident && args.len() == target_arity => {
                 if *callee == target {
                     return false;
                 }
@@ -1624,11 +1771,7 @@ fn rewrite_external_callsite(m: &mut Module, callsite: &CallsiteId, target: FnId
     false
 }
 
-pub(crate) fn rewrite_external_callsite_for_link(
-    m: &mut Module,
-    callsite: &CallsiteId,
-    target: FnId,
-) -> bool {
+pub(crate) fn rewrite_external_callsite_for_link(m: &mut Module, callsite: &CallsiteId, target: FnId) -> bool {
     rewrite_external_callsite(m, callsite, target)
 }
 
@@ -1650,17 +1793,19 @@ fn remap_ident(ident: &mut CallsiteIdent, remap: &HashMap<FileId, FileId>) {
     *ident = CallsiteIdent::from_source(span);
 }
 
-/// Remap any span carried by a `Prim`. Only `MakeClosure` carries one; the
+/// Remap any span carried by a `Prim`. `MakeFnRef`, `MakeClosure`, and `Extern`
+/// carry one; the
 /// `match` is exhaustive so a future span-carrying Prim variant fails to
 /// compile rather than being silently skipped.
 fn remap_prim_span(prim: &mut Prim, remap: &HashMap<FileId, FileId>) {
     match prim {
-        Prim::MakeClosure(ident, _, _) => remap_ident(ident, remap),
+        Prim::MakeFnRef(ident, _) | Prim::MakeClosure(ident, _, _) | Prim::Extern(ident, _, _) => {
+            remap_ident(ident, remap)
+        }
         // Span-free prims: explicit no-op arms keep the match exhaustive.
         Prim::Const(_)
         | Prim::BinOp(_, _, _)
         | Prim::UnOp(_, _)
-        | Prim::Extern(_, _)
         | Prim::ListHead(_)
         | Prim::ListTail(_)
         | Prim::IsEmptyList(_)
@@ -1703,8 +1848,7 @@ fn remap_term_span(term: &mut Term, remap: &HashMap<FileId, FileId>) {
         Term::Call { ident, .. }
         | Term::TailCall { ident, .. }
         | Term::CallClosure { ident, .. }
-        | Term::TailCallClosure { ident, .. }
-        | Term::Receive { ident, .. } => remap_ident(ident, remap),
+        | Term::TailCallClosure { ident, .. } => remap_ident(ident, remap),
         Term::ReceiveMatched {
             ident,
             clauses,
@@ -1714,12 +1858,14 @@ fn remap_term_span(term: &mut Term, remap: &HashMap<FileId, FileId>) {
         } => {
             remap_ident(ident, remap);
             for clause in clauses {
+                remap_ident(&mut clause.ident, remap);
                 remap_span(&mut clause.span, remap);
             }
             if let Some(after) = after {
+                remap_ident(&mut after.ident, remap);
                 remap_span(&mut after.span, remap);
             }
-            std::sync::Arc::make_mut(matcher).remap_file_ids(remap);
+            Arc::make_mut(matcher).remap_file_ids(remap);
         }
         // Span-free terminators: explicit no-op arms keep the match exhaustive.
         Term::Goto(_, _) | Term::If { .. } | Term::Return(_) | Term::Halt(_) => {}
@@ -1727,16 +1873,16 @@ fn remap_term_span(term: &mut Term, remap: &HashMap<FileId, FileId>) {
 }
 
 /// Read-only twin of `remap_prim_span`: visits any span carried by a `Prim`.
-/// Only `MakeClosure` carries one; the `match` is exhaustive so a future
-/// span-carrying Prim variant fails to compile rather than being skipped.
+/// `MakeFnRef`, `MakeClosure`, and `Extern` carry one; the `match` is
+/// exhaustive so a future span-carrying Prim variant fails to compile rather
+/// than being skipped.
 fn visit_prim_span(prim: &Prim, f: &mut impl FnMut(Span)) {
     match prim {
-        Prim::MakeClosure(ident, _, _) => f(ident.span()),
+        Prim::MakeFnRef(ident, _) | Prim::MakeClosure(ident, _, _) | Prim::Extern(ident, _, _) => f(ident.span()),
         // Span-free prims: explicit no-op arms keep the match exhaustive.
         Prim::Const(_)
         | Prim::BinOp(_, _, _)
         | Prim::UnOp(_, _)
-        | Prim::Extern(_, _)
         | Prim::ListHead(_)
         | Prim::ListTail(_)
         | Prim::IsEmptyList(_)
@@ -1779,8 +1925,7 @@ fn visit_term_span(term: &Term, f: &mut impl FnMut(Span)) {
         Term::Call { ident, .. }
         | Term::TailCall { ident, .. }
         | Term::CallClosure { ident, .. }
-        | Term::TailCallClosure { ident, .. }
-        | Term::Receive { ident, .. } => f(ident.span()),
+        | Term::TailCallClosure { ident, .. } => f(ident.span()),
         Term::ReceiveMatched {
             ident,
             clauses,
@@ -1790,9 +1935,11 @@ fn visit_term_span(term: &Term, f: &mut impl FnMut(Span)) {
         } => {
             f(ident.span());
             for clause in clauses {
+                f(clause.ident.span());
                 f(clause.span);
             }
             if let Some(after) = after {
+                f(after.ident.span());
                 f(after.span);
             }
             matcher.visit_spans(f);
@@ -1816,7 +1963,7 @@ pub struct FnBuilder {
     entry: Option<BlockId>,
     category: FnCategory,
     owner_module: String,
-    ignored_params: std::collections::HashSet<Var>,
+    ignored_params: HashSet<Var>,
     physical_entry_params: Vec<Var>,
     physical_capabilities: Vec<PhysicalCapabilityFact>,
 }
@@ -1832,7 +1979,7 @@ impl FnBuilder {
             entry: None,
             category: FnCategory::User,
             owner_module: String::new(),
-            ignored_params: std::collections::HashSet::new(),
+            ignored_params: HashSet::new(),
             physical_entry_params: Vec::new(),
             physical_capabilities: Vec::new(),
         }
@@ -1879,9 +2026,11 @@ impl FnBuilder {
         if self.is_entry_param(source_cons) {
             self.record_physical_entry_param(source_cons);
         }
-        if let Some(fact) = self.physical_capabilities.iter_mut().find(|fact| {
-            matches!(fact.capability, PhysicalCapability::OwnedConsReuse { head: h } if h == head)
-        }) {
+        if let Some(fact) = self
+            .physical_capabilities
+            .iter_mut()
+            .find(|fact| matches!(fact.capability, PhysicalCapability::OwnedConsReuse { head: h } if h == head))
+        {
             fact.source = source_cons;
             return;
         }
@@ -1927,10 +2076,7 @@ impl FnBuilder {
     }
 
     fn block_mut(&mut self, id: BlockId) -> &mut Block {
-        self.blocks
-            .iter_mut()
-            .find(|b| b.id == id)
-            .expect("unknown block")
+        self.blocks.iter_mut().find(|b| b.id == id).expect("unknown block")
     }
 
     /// Append `let v = prim` to the given block; returns the bound var.
@@ -1950,12 +2096,7 @@ impl FnBuilder {
             .blocks
             .iter()
             .find(|b| b.id == entry)
-            .map(|b| {
-                b.params
-                    .iter()
-                    .map(|p| self.ignored_params.contains(p))
-                    .collect()
-            })
+            .map(|b| b.params.iter().map(|p| self.ignored_params.contains(p)).collect())
             .unwrap_or_default();
         let mut f = FnIr {
             id: self.id,
@@ -2039,7 +2180,7 @@ impl ModuleBuilder {
             extern_idx: HashMap::new(),
             external_call_edges: self.external_call_edges,
             protocol_call_targets: self.protocol_call_targets,
-            protocol_registry: crate::frontend::protocols::ProtocolRegistry::default(),
+            protocol_registry: ProtocolRegistry::default(),
             boundary_fns: HashSet::new(),
             opaque_inners: HashMap::new(),
             brand_inners: HashMap::new(),
@@ -2128,10 +2269,7 @@ impl fmt::Display for UnOp {
 }
 
 fn fmt_var_list(vars: &[Var]) -> String {
-    vars.iter()
-        .map(|v| v.to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
+    vars.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ")
 }
 
 fn fmt_extern_arg_list(args: &[ExternArg]) -> String {
@@ -2151,7 +2289,7 @@ impl fmt::Display for Prim {
             Prim::Const(c) => write!(f, "const({})", c),
             Prim::BinOp(op, a, b) => write!(f, "{} {} {}", a, op, b),
             Prim::UnOp(op, a) => write!(f, "{} {}", op, a),
-            Prim::Extern(e, args) => {
+            Prim::Extern(_, e, args) => {
                 write!(f, "extern#{}([{}])", e.0, fmt_extern_arg_list(args))
             }
             Prim::ListHead(l) => write!(f, "head({})", l),
@@ -2200,15 +2338,12 @@ impl fmt::Display for Prim {
                     "dest_list_cons({}, head={}, tail={}, next={})",
                     token, head, tail, next
                 ),
-                None => write!(
-                    f,
-                    "dest_list_cons({}, head={}, tail=[], next={})",
-                    token, head, next
-                ),
+                None => write!(f, "dest_list_cons({}, head={}, tail=[], next={})", token, head, next),
             },
             Prim::DestListFreeze { list, token } => {
                 write!(f, "dest_list_freeze({}, {})", list, token)
             }
+            Prim::MakeFnRef(_ident, fid) => write!(f, "fn_ref({})", fid),
             Prim::MakeClosure(_ident, fid, captured) => {
                 write!(f, "closure({}, captured=[{}])", fid, fmt_var_list(captured))
             }
@@ -2229,11 +2364,7 @@ impl fmt::Display for Prim {
                 write!(f, "map_update({}, {{{}}})", base, s)
             }
             Prim::DestMapBegin { token, base, extra } => match base {
-                Some(base) => write!(
-                    f,
-                    "dest_map_begin(token={}, base={}, extra={})",
-                    token, base, extra
-                ),
+                Some(base) => write!(f, "dest_map_begin(token={}, base={}, extra={})", token, base, extra),
                 None => write!(f, "dest_map_begin(token={}, extra={})", token, extra),
             },
             Prim::DestMapPut {
@@ -2255,23 +2386,13 @@ impl fmt::Display for Prim {
                 write!(f, "bitstring([{}])", fields.len())
             }
             Prim::ConstBitstring(bytes, bit_len) => {
-                write!(
-                    f,
-                    "const_bitstring(byte_len={}, bit_len={})",
-                    bytes.len(),
-                    bit_len
-                )
+                write!(f, "const_bitstring(byte_len={}, bit_len={})", bytes.len(), bit_len)
             }
             Prim::BitReaderInit(v) => write!(f, "bit_reader_init({})", v),
             Prim::BitReadField { reader, .. } => write!(f, "bit_read_field({})", reader),
             Prim::BitReaderDone(v) => write!(f, "bit_reader_done({})", v),
             Prim::TypeTest(v, d) => {
-                write!(
-                    f,
-                    "type_test({}, {})",
-                    v,
-                    crate::concrete_types::ty_display(d)
-                )
+                write!(f, "type_test({}, {})", v, ty_display(d))
             }
             Prim::Brand(v, name) => write!(f, "brand({}, {})", v, name),
         }
@@ -2280,12 +2401,7 @@ impl fmt::Display for Prim {
 
 impl fmt::Display for Cont {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "cont({}, captured=[{}])",
-            self.fn_id,
-            fmt_var_list(&self.captured)
-        )
+        write!(f, "cont({}, captured=[{}])", self.fn_id, fmt_var_list(&self.captured))
     }
 }
 
@@ -2294,23 +2410,14 @@ impl fmt::Display for Term {
         match self {
             Term::Goto(b, args) => write!(f, "goto {}({})", b, fmt_var_list(args)),
             Term::If {
-                cond,
-                then_b,
-                else_b,
-                ..
+                cond, then_b, else_b, ..
             } => write!(f, "if {} then {} else {}", cond, then_b, else_b),
             Term::Call {
                 callee,
                 args,
                 continuation,
                 ..
-            } => write!(
-                f,
-                "call {}([{}]) -> {}",
-                callee,
-                fmt_var_list(args),
-                continuation
-            ),
+            } => write!(f, "call {}([{}]) -> {}", callee, fmt_var_list(args), continuation),
             Term::TailCall { callee, args, .. } => {
                 write!(f, "tail_call {}([{}])", callee, fmt_var_list(args))
             }
@@ -2331,7 +2438,6 @@ impl fmt::Display for Term {
             }
             Term::Return(v) => write!(f, "return {}", v),
             Term::Halt(v) => write!(f, "halt {}", v),
-            Term::Receive { continuation, .. } => write!(f, "receive -> {}", continuation),
             Term::ReceiveMatched {
                 clauses,
                 after,
@@ -2339,10 +2445,7 @@ impl fmt::Display for Term {
                 captures,
                 ..
             } => {
-                let pin_strs: Vec<String> = pinned
-                    .iter()
-                    .map(|(n, v)| format!("^{}={}", n, v))
-                    .collect();
+                let pin_strs: Vec<String> = pinned.iter().map(|(n, v)| format!("^{}={}", n, v)).collect();
                 write!(
                     f,
                     "receive_matched [{} clauses] pinned=[{}] caps=[{}]",
@@ -2381,11 +2484,7 @@ impl fmt::Display for FnIr {
         if !self.physical_entry_params.is_empty() {
             let mut params = self.physical_entry_params.clone();
             params.sort_by_key(|param| param.0);
-            writeln!(
-                f,
-                "  semantic_params=[{}]",
-                fmt_var_list(&self.semantic_entry_params())
-            )?;
+            writeln!(f, "  semantic_params=[{}]", fmt_var_list(&self.semantic_entry_params()))?;
             for param in params {
                 writeln!(f, "  physical_param {}", param)?;
             }
@@ -2431,696 +2530,4 @@ impl fmt::Display for Module {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::diag::FileId;
-
-    /// fz-t1m.3.1.1 — a compiled `Module` round-trips losslessly through
-    /// serde_json. Builds a non-trivial module (two fns, a Call term, an If, a
-    /// MakeTuple, a MakeClosure, and an atom Const) carrying *real* spans, then
-    /// asserts the canonical `serde_json::Value` is identical before and after
-    /// a deserialize round-trip. Finally rebuilds the skipped indices and proves
-    /// `fn_by_id` reconstructs.
-    #[test]
-    fn module_serde_roundtrips() {
-        let file = FileId(7);
-        let span = |start, end| Span::new(file, start, end);
-
-        // callee: fn pair(x) = { :ok, x }  — exercises MakeTuple + atom Const
-        let mut callee = FnBuilder::new(FnId(0), "pair");
-        let cx = callee.fresh_var();
-        let centry = callee.block(vec![cx]);
-        let ok = callee.let_(centry, Prim::Const(Const::Atom(3)));
-        let tup = callee.let_(centry, Prim::MakeTuple(vec![ok, cx]));
-        callee.set_terminator(centry, Term::Return(tup));
-
-        // caller: fn go(p) = if p then <call pair> else <closure over p>
-        // — exercises If (real span), Call (real span ident), MakeClosure.
-        let mut caller = FnBuilder::new(FnId(1), "go");
-        let p = caller.fresh_var();
-        let entry = caller.block(vec![p]);
-        let then_b = caller.block(vec![]);
-        let else_b = caller.block(vec![]);
-        caller.set_terminator(
-            entry,
-            Term::If {
-                cond: p,
-                then_b,
-                else_b,
-                origin: BranchOrigin::User,
-            },
-        );
-        // then: call pair(p) -> return its result
-        let k = caller.block(vec![Var(99)]);
-        caller.set_terminator(
-            then_b,
-            Term::Call {
-                ident: CallsiteIdent::from_source(span(10, 20)),
-                callee: FnId(0),
-                args: vec![p],
-                continuation: Cont {
-                    fn_id: FnId(2),
-                    captured: vec![],
-                },
-            },
-        );
-        caller.set_terminator(k, Term::Return(Var(99)));
-        // else: build a closure capturing p, then return it
-        let clos = caller.let_(else_b, Prim::make_closure(span(30, 40), FnId(0), vec![p]));
-        caller.set_terminator(else_b, Term::Return(clos));
-
-        let mut mb = ModuleBuilder::new();
-        mb.add_fn(callee.build());
-        mb.add_fn(caller.build());
-        let mut m = mb.build();
-        m.atom_names = vec!["a0".into(), "a1".into(), "a2".into(), "ok".into()];
-        // Populate the tuple-keyed span side-tables to exercise their
-        // sequence-based serialization.
-        m.source
-            .stmt_spans
-            .insert((FnId(1), BlockId(2)), vec![span(30, 40)]);
-        m.source.term_span.insert((FnId(1), BlockId(0)), span(0, 5));
-
-        // Canonical, order-independent round-trip (serde_json::Value sorts
-        // object keys), so equality is structural, not textual.
-        let v1 = serde_json::to_value(&m).unwrap();
-        let back: Module = serde_json::from_value(v1.clone()).unwrap();
-        let v2 = serde_json::to_value(&back).unwrap();
-        assert_eq!(v1, v2);
-
-        // Spans survive: the Call ident's span is load-bearing identity.
-        let back_caller = back.fns.iter().find(|f| f.name == "go").unwrap();
-        match &back_caller.block(BlockId(1)).terminator {
-            Term::Call { ident, .. } => assert_eq!(ident.span(), span(10, 20)),
-            other => panic!("expected Call, got {:?}", other),
-        }
-
-        // The skipped indices reconstruct.
-        let mut back = back;
-        back.rebuild_indices();
-        assert_eq!(back.fn_by_id(FnId(0)).name, "pair");
-        assert_eq!(back.fn_by_id(FnId(1)).name, "go");
-    }
-
-    /// fz-t1m.3.1.6 — `Module::remap_file_ids` rewrites the `file` of every
-    /// span reachable from the module. Builds a module populating EVERY span
-    /// site, places one span in an unmapped file and one DUMMY span, applies
-    /// `{FileId(7) -> FileId(3)}`, and asserts every FileId(7) span (including
-    /// the receive matcher's) became FileId(3) while FileId(9) and DUMMY are
-    /// untouched.
-    #[test]
-    fn remap_file_ids_rewrites_every_span_site() {
-        use crate::exec::matcher::{Matcher, MatcherInput, MatcherLeaf, MatcherNode, NodeId};
-        use std::sync::Arc;
-
-        let f7 = FileId(7);
-        let f9 = FileId(9);
-        let s7 = |start, end| Span::new(f7, start, end);
-
-        // One fn carrying a MakeClosure (Prim span), a Term::Call (ident span),
-        // and a Term::ReceiveMatched whose matcher carries non-DUMMY spans.
-        let mut b = FnBuilder::new(FnId(0), "host");
-        let p = b.fresh_var();
-        let entry = b.block(vec![p]);
-        let call_b = b.block(vec![]);
-        let recv_b = b.block(vec![]);
-        let k = b.block(vec![Var(99)]);
-
-        // entry: MakeClosure (Prim span at f7) then Goto call_b.
-        let _clos = b.let_(entry, Prim::make_closure(s7(30, 40), FnId(0), vec![p]));
-        b.set_terminator(entry, Term::Goto(call_b, vec![]));
-
-        // call_b: Term::Call with a non-DUMMY ident span at f7.
-        b.set_terminator(
-            call_b,
-            Term::Call {
-                ident: CallsiteIdent::from_source(s7(10, 20)),
-                callee: FnId(0),
-                args: vec![p],
-                continuation: Cont {
-                    fn_id: FnId(0),
-                    captured: vec![],
-                },
-            },
-        );
-
-        // recv_b: Term::ReceiveMatched with clause/after spans + a matcher
-        // whose input and leaf spans live in f7.
-        let matcher = {
-            let mut m = Matcher::new(
-                vec![MatcherInput {
-                    var: Some(p),
-                    span: s7(50, 51),
-                }],
-                MatcherNode::Leaf(MatcherLeaf {
-                    body_id: 0,
-                    bindings: Vec::new(),
-                    span: s7(52, 53),
-                }),
-            );
-            // A second node parked in an unmapped file proves non-f7 spans
-            // are left alone inside the matcher too.
-            m.push_node(MatcherNode::Fail {
-                span: Span::new(f9, 54, 55),
-            });
-            m
-        };
-        b.set_terminator(
-            recv_b,
-            Term::ReceiveMatched {
-                ident: CallsiteIdent::from_source(s7(60, 61)),
-                clauses: vec![ReceiveClause {
-                    bound_names: vec![],
-                    guard: None,
-                    body: FnId(0),
-                    span: s7(62, 63),
-                }],
-                matcher: Arc::new(matcher),
-                after: Some(ReceiveAfter {
-                    timeout: p,
-                    body: FnId(0),
-                    span: s7(64, 65),
-                }),
-                pinned: vec![],
-                captures: vec![],
-            },
-        );
-        b.set_terminator(k, Term::Return(Var(99)));
-
-        let mut mb = ModuleBuilder::new();
-        mb.add_fn(b.build());
-        let mut m = mb.build();
-
-        // SourceInfo side-tables: var_span, fn_span, stmt_spans, term_span.
-        // Slot 0 = f7, slot 1 = f9 (unmapped), slot 2 = DUMMY.
-        m.source.var_span = vec![s7(0, 1), Span::new(f9, 2, 3), Span::DUMMY];
-        m.source.fn_span = vec![s7(4, 5)];
-        m.source
-            .stmt_spans
-            .insert((FnId(0), BlockId(0)), vec![s7(6, 7)]);
-        m.source.term_span.insert((FnId(0), BlockId(1)), s7(8, 9));
-
-        // external_call_edge whose callsite ident span is non-DUMMY (f7).
-        let export = ExportKey::new(
-            crate::modules::identity::ModuleName::from_segments(vec!["A".to_string()]),
-            "f",
-            0,
-        );
-        m.external_call_edges.push(ExternalCallEdge {
-            callsite: CallsiteId::new(
-                FnId(0),
-                &CallsiteIdent::from_source(s7(70, 71)),
-                EmitSlot::Direct,
-            ),
-            target: export,
-        });
-
-        let remap: HashMap<FileId, FileId> = [(FileId(7), FileId(3))].into_iter().collect();
-        m.remap_file_ids(&remap);
-
-        let f3 = FileId(3);
-        // SourceInfo: f7 -> f3; f9 and DUMMY unchanged.
-        assert_eq!(m.source.var_span[0].file, f3, "var_span f7");
-        assert_eq!(m.source.var_span[1].file, f9, "var_span f9 untouched");
-        assert!(m.source.var_span[2].is_dummy(), "var_span DUMMY untouched");
-        assert_eq!(m.source.fn_span[0].file, f3, "fn_span f7");
-        assert_eq!(
-            m.source.stmt_spans[&(FnId(0), BlockId(0))][0].file,
-            f3,
-            "stmt_span f7"
-        );
-        assert_eq!(
-            m.source.term_span[&(FnId(0), BlockId(1))].file,
-            f3,
-            "term_span f7"
-        );
-
-        // Per-fn spans.
-        let host = m.fn_by_name("host").unwrap();
-        match host.block(BlockId(0)).stmts.first() {
-            Some(Stmt::Let(_, Prim::MakeClosure(ident, ..))) => {
-                assert_eq!(ident.span().file, f3, "MakeClosure ident f7")
-            }
-            other => panic!("expected MakeClosure, got {:?}", other),
-        }
-        match &host.block(BlockId(1)).terminator {
-            Term::Call { ident, .. } => assert_eq!(ident.span().file, f3, "Call ident f7"),
-            other => panic!("expected Call, got {:?}", other),
-        }
-        match &host.block(BlockId(2)).terminator {
-            Term::ReceiveMatched {
-                ident,
-                clauses,
-                matcher,
-                after,
-                ..
-            } => {
-                assert_eq!(ident.span().file, f3, "Receive ident f7");
-                assert_eq!(clauses[0].span.file, f3, "ReceiveClause f7");
-                assert_eq!(after.as_ref().unwrap().span.file, f3, "ReceiveAfter f7");
-                assert_eq!(matcher.inputs[0].span.file, f3, "matcher input f7");
-                match matcher.node(matcher.root) {
-                    Some(MatcherNode::Leaf(leaf)) => {
-                        assert_eq!(leaf.span.file, f3, "matcher leaf f7")
-                    }
-                    other => panic!("expected leaf root, got {:?}", other),
-                }
-                match matcher.node(NodeId(1)) {
-                    Some(MatcherNode::Fail { span }) => {
-                        assert_eq!(span.file, f9, "matcher f9 node untouched")
-                    }
-                    other => panic!("expected fail node, got {:?}", other),
-                }
-            }
-            other => panic!("expected ReceiveMatched, got {:?}", other),
-        }
-
-        // external_call_edge ident span.
-        assert_eq!(
-            m.external_call_edges[0].callsite.ident.span().file,
-            f3,
-            "external edge ident f7"
-        );
-    }
-
-    /// fz-t1m.3.1.2 — `Module::referenced_files` is the read-only twin of
-    /// `remap_file_ids`: it collects every non-`NONE` `FileId` its spans touch.
-    /// Populates spans at FileId(7) and FileId(9) plus a DUMMY span and asserts
-    /// exactly {FileId(7), FileId(9)} comes back — DUMMY excluded.
-    #[test]
-    fn referenced_files_collects_non_dummy_file_ids() {
-        let f7 = FileId(7);
-        let f9 = FileId(9);
-
-        // A trivial fn so the module is well-formed; its body carries no spans.
-        let mut b = FnBuilder::new(FnId(0), "host");
-        let x = b.fresh_var();
-        let entry = b.block(vec![x]);
-        b.set_terminator(entry, Term::Return(x));
-        let mut mb = ModuleBuilder::new();
-        mb.add_fn(b.build());
-        let mut m = mb.build();
-
-        // SourceInfo spans across two files plus a DUMMY that must be excluded.
-        m.source.var_span = vec![Span::new(f7, 0, 1), Span::new(f9, 2, 3), Span::DUMMY];
-
-        let files = m.referenced_files();
-        assert_eq!(
-            files,
-            [f7, f9]
-                .into_iter()
-                .collect::<std::collections::BTreeSet<_>>(),
-            "referenced_files returns exactly the non-DUMMY files"
-        );
-    }
-
-    /// fn identity(x) = x
-    fn build_identity() -> FnIr {
-        let mut b = FnBuilder::new(FnId(0), "identity");
-        let x = b.fresh_var();
-        let entry = b.block(vec![x]);
-        b.set_terminator(entry, Term::Return(x));
-        b.build()
-    }
-
-    /// fn add1(x) = x + 1
-    fn build_add1() -> FnIr {
-        let mut b = FnBuilder::new(FnId(1), "add1");
-        let x = b.fresh_var();
-        let entry = b.block(vec![x]);
-        let one = b.let_(entry, Prim::Const(Const::Int(1)));
-        let sum = b.let_(entry, Prim::BinOp(BinOp::Add, x, one));
-        b.set_terminator(entry, Term::Return(sum));
-        b.build()
-    }
-
-    /// fn iszero(x) = if x == 0 then true else false
-    fn build_iszero() -> FnIr {
-        let mut b = FnBuilder::new(FnId(2), "iszero");
-        let x = b.fresh_var();
-        let entry = b.block(vec![x]);
-        let zero = b.let_(entry, Prim::Const(Const::Int(0)));
-        let cond = b.let_(entry, Prim::BinOp(BinOp::Eq, x, zero));
-        let then_b = b.block(vec![]);
-        let else_b = b.block(vec![]);
-        b.set_terminator(entry, Term::if_user(cond, then_b, else_b));
-        let t = b.let_(then_b, Prim::Const(Const::True));
-        b.set_terminator(then_b, Term::Return(t));
-        let fl = b.let_(else_b, Prim::Const(Const::False));
-        b.set_terminator(else_b, Term::Return(fl));
-        b.build()
-    }
-
-    #[test]
-    fn build_identity_fn_has_one_block_and_returns_param() {
-        let fn_ir = build_identity();
-        assert_eq!(fn_ir.name, "identity");
-        assert_eq!(fn_ir.blocks.len(), 1);
-        assert_eq!(fn_ir.entry, BlockId(0));
-        let entry = fn_ir.block(BlockId(0));
-        assert_eq!(entry.params.len(), 1);
-        assert!(entry.stmts.is_empty());
-        match entry.terminator {
-            Term::Return(v) => assert_eq!(v, Var(0)),
-            _ => panic!("expected Return"),
-        }
-    }
-
-    #[test]
-    fn fresh_vars_are_unique() {
-        let mut b = FnBuilder::new(FnId(0), "f");
-        let a = b.fresh_var();
-        let c = b.fresh_var();
-        assert_ne!(a, c);
-    }
-
-    #[test]
-    fn physical_entry_params_are_not_semantic_key_inputs() {
-        use crate::types::Types;
-
-        let mut b = FnBuilder::new(FnId(0), "with_physical");
-        let head = b.fresh_var();
-        let source = b.fresh_var();
-        let value = b.fresh_var();
-        let entry = b.block(vec![source, value]);
-        b.record_owned_cons_reuse_capability(head, source);
-        b.set_terminator(entry, Term::Return(value));
-        let fn_ir = b.build();
-
-        assert_eq!(fn_ir.physical_entry_params, vec![source]);
-        assert_eq!(
-            fn_ir.physical_capabilities,
-            vec![PhysicalCapabilityFact {
-                source,
-                capability: PhysicalCapability::OwnedConsReuse { head },
-            }]
-        );
-        assert_eq!(fn_ir.semantic_entry_params(), vec![value]);
-
-        let mut t = crate::types::ConcreteTypes;
-        let key = fn_ir.semantic_key(vec![t.any(), t.int()]);
-        assert!(key[0].is_none());
-        assert!(key[1].is_some());
-    }
-
-    #[test]
-    fn build_add1_has_two_lets_and_returns_sum() {
-        let fn_ir = build_add1();
-        let entry = fn_ir.block(fn_ir.entry);
-        assert_eq!(entry.stmts.len(), 2);
-        match &entry.stmts[0] {
-            Stmt::Let(_, Prim::Const(Const::Int(1))) => {}
-            other => panic!("expected let _ = const(1), got {:?}", other),
-        }
-        match &entry.stmts[1] {
-            Stmt::Let(_, Prim::BinOp(BinOp::Add, _, _)) => {}
-            other => panic!("expected let _ = add, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn build_iszero_has_three_blocks_with_if_then_else() {
-        let fn_ir = build_iszero();
-        assert_eq!(fn_ir.blocks.len(), 3);
-        let entry = fn_ir.block(fn_ir.entry);
-        match entry.terminator {
-            Term::If { then_b, else_b, .. } => {
-                assert_ne!(then_b, else_b);
-                assert_eq!(then_b, BlockId(1));
-                assert_eq!(else_b, BlockId(2));
-            }
-            _ => panic!("expected If terminator"),
-        }
-    }
-
-    #[test]
-    fn module_holds_multiple_fns_and_lookup_by_name() {
-        let mut mb = ModuleBuilder::new();
-        mb.add_fn(build_identity());
-        mb.add_fn(build_add1());
-        let m = mb.build();
-        assert_eq!(m.fns.len(), 2);
-        assert!(m.fn_by_name("identity").is_some());
-        assert!(m.fn_by_name("add1").is_some());
-        assert!(m.fn_by_name("missing").is_none());
-        assert_eq!(m.fn_by_id(FnId(0)).name, "identity");
-        assert_eq!(m.fn_by_id(FnId(1)).name, "add1");
-    }
-
-    #[test]
-    fn lto_rewrites_external_call_edge_to_direct_fn_id() {
-        let ident = CallsiteIdent::synthetic();
-        let mut caller = FnBuilder::new(FnId(0), "caller");
-        let entry = caller.block(vec![]);
-        caller.set_terminator(
-            entry,
-            Term::TailCall {
-                ident: ident.clone(),
-                callee: FnId(999),
-                args: Vec::new(),
-                is_back_edge: false,
-            },
-        );
-        let mut target = FnBuilder::new(FnId(1), "A.f");
-        let target_entry = target.block(vec![]);
-        target.set_terminator(target_entry, Term::Halt(Var(0)));
-        let mut mb = ModuleBuilder::new();
-        mb.add_fn(caller.build());
-        mb.add_fn(target.build());
-        let mut module = mb.build();
-        let export = ExportKey::new(
-            crate::modules::identity::ModuleName::from_segments(vec!["A".to_string()]),
-            "f",
-            0,
-        );
-        module.external_call_edges.push(ExternalCallEdge {
-            callsite: CallsiteId::new(FnId(0), &ident, EmitSlot::Direct),
-            target: export.clone(),
-        });
-        let exports = [(export, FnId(1))].into_iter().collect();
-
-        assert_eq!(module.rewrite_external_calls_for_lto(&exports), Ok(1));
-        assert!(module.external_call_edges.is_empty());
-        match &module.fn_by_id(FnId(0)).block(BlockId(0)).terminator {
-            Term::TailCall { callee, .. } => assert_eq!(*callee, FnId(1)),
-            other => panic!("expected TailCall, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn lto_reports_missing_external_call_target() {
-        let ident = CallsiteIdent::synthetic();
-        let mut caller = FnBuilder::new(FnId(0), "caller");
-        let entry = caller.block(vec![]);
-        caller.set_terminator(
-            entry,
-            Term::TailCall {
-                ident: ident.clone(),
-                callee: FnId(999),
-                args: Vec::new(),
-                is_back_edge: false,
-            },
-        );
-        let mut mb = ModuleBuilder::new();
-        mb.add_fn(caller.build());
-        let mut module = mb.build();
-        let export = ExportKey::new(
-            crate::modules::identity::ModuleName::from_segments(vec!["Missing".to_string()]),
-            "f",
-            0,
-        );
-        module.external_call_edges.push(ExternalCallEdge {
-            callsite: CallsiteId::new(FnId(0), &ident, EmitSlot::Direct),
-            target: export.clone(),
-        });
-        let exports = BTreeMap::new();
-
-        assert_eq!(
-            module.rewrite_external_calls_for_lto(&exports),
-            Err(ExternalLinkError::MissingTarget(export))
-        );
-        assert!(!module.external_call_edges.is_empty());
-    }
-
-    #[test]
-    fn lto_export_map_comes_from_validated_interfaces() {
-        let mut target = FnBuilder::new(FnId(7), "Math.add");
-        let target_entry = target.block(vec![Var(0), Var(1)]);
-        target.set_terminator(target_entry, Term::Halt(Var(0)));
-        let mut mb = ModuleBuilder::new();
-        mb.add_fn(target.build());
-        let module = mb.build();
-
-        let math = crate::modules::identity::ModuleName::from_segments(vec!["Math".to_string()]);
-        let mut interfaces = BTreeMap::new();
-        interfaces.insert(
-            math.clone(),
-            crate::modules::interface::ModuleInterface {
-                name: math.clone(),
-                abi_version: crate::modules::interface::FZ_INTERFACE_ABI_VERSION,
-                imports: Vec::new(),
-                exports: vec![crate::modules::interface::InterfaceFn {
-                    name: "add".to_string(),
-                    arity: 2,
-                    specs: vec![crate::modules::interface::InterfaceSpec {
-                        params: vec![
-                            "Ident(\"integer\")".to_string(),
-                            "Ident(\"integer\")".to_string(),
-                        ],
-                        result: "Ident(\"integer\")".to_string(),
-                    }],
-                    name_span: Span::DUMMY,
-                }],
-                types: Vec::new(),
-                protocols: Vec::new(),
-                protocol_impls: Vec::new(),
-                docs: None,
-                fingerprint_inputs: Vec::new(),
-            },
-        );
-
-        let key = ExportKey::new(math, "add", 2);
-        assert_eq!(
-            module.interface_export_map(&interfaces).get(&key),
-            Some(&FnId(7))
-        );
-    }
-
-    #[test]
-    fn module_holds_schemas() {
-        use fz_runtime::heap::{FieldDescriptor, FieldKind};
-        let mut mb = ModuleBuilder::new();
-        let id = mb.add_schema(Schema {
-            name: "Frame_identity".into(),
-            size: 16,
-            fields: vec![FieldDescriptor {
-                offset: 0,
-                kind: FieldKind::AnyValue,
-                name: None,
-            }],
-        });
-        assert_eq!(id, 0);
-        let m = mb.build();
-        assert_eq!(m.schemas.len(), 1);
-        assert_eq!(m.schemas[0].name, "Frame_identity");
-    }
-
-    #[test]
-    fn pretty_print_identity() {
-        let fn_ir = build_identity();
-        let s = format!("{}", fn_ir);
-        assert!(s.contains("fn0 identity"));
-        assert!(s.contains("entry=bb0"));
-        assert!(s.contains("bb0(v0):"));
-        assert!(s.contains("return v0"));
-    }
-
-    #[test]
-    fn pretty_print_add1() {
-        let fn_ir = build_add1();
-        let s = format!("{}", fn_ir);
-        assert!(s.contains("let v1 = const(1)"));
-        assert!(s.contains("let v2 = v0 + v1"));
-        assert!(s.contains("return v2"));
-    }
-
-    #[test]
-    fn pretty_print_iszero_branches() {
-        let fn_ir = build_iszero();
-        let s = format!("{}", fn_ir);
-        assert!(s.contains("if v2 then bb1 else bb2"));
-        assert!(s.contains("return"));
-    }
-
-    #[test]
-    fn pretty_print_module() {
-        let mut mb = ModuleBuilder::new();
-        mb.add_fn(build_identity());
-        mb.add_fn(build_add1());
-        let m = mb.build();
-        let s = format!("{}", m);
-        assert!(s.starts_with("module"));
-        assert!(s.contains("identity"));
-        assert!(s.contains("add1"));
-    }
-
-    #[test]
-    fn term_call_with_continuation_round_trips() {
-        let mut b = FnBuilder::new(FnId(3), "caller");
-        let x = b.fresh_var();
-        let entry = b.block(vec![x]);
-        b.set_terminator(
-            entry,
-            Term::Call {
-                ident: CallsiteIdent::synthetic(),
-                callee: FnId(0),
-                args: vec![x],
-                continuation: Cont {
-                    fn_id: FnId(7),
-                    captured: vec![x],
-                },
-            },
-        );
-        let fn_ir = b.build();
-        let s = format!("{}", fn_ir);
-        assert!(s.contains("call fn0([v0]) -> cont(fn7, captured=[v0])"));
-    }
-
-    #[test]
-    fn term_tail_call() {
-        let mut b = FnBuilder::new(FnId(4), "tc");
-        let x = b.fresh_var();
-        let entry = b.block(vec![x]);
-        b.set_terminator(
-            entry,
-            Term::TailCall {
-                ident: CallsiteIdent::synthetic(),
-                callee: FnId(0),
-                args: vec![x],
-                is_back_edge: false,
-            },
-        );
-        let fn_ir = b.build();
-        let s = format!("{}", fn_ir);
-        assert!(s.contains("tail_call fn0([v0])"));
-    }
-
-    #[test]
-    fn term_halt_pretty_prints() {
-        let mut b = FnBuilder::new(FnId(5), "top");
-        let entry = b.block(vec![]);
-        let v = b.let_(entry, Prim::Const(Const::Int(42)));
-        b.set_terminator(entry, Term::Halt(v));
-        let s = format!("{}", b.build());
-        assert!(s.contains("halt v0"));
-    }
-
-    #[test]
-    fn list_prims_pretty_print() {
-        let mut b = FnBuilder::new(FnId(6), "lst");
-        let entry = b.block(vec![]);
-        let one = b.let_(entry, Prim::Const(Const::Int(1)));
-        let l = b.let_(entry, Prim::MakeList(vec![one], None));
-        let h = b.let_(entry, Prim::ListHead(l));
-        let _t = b.let_(entry, Prim::ListTail(l));
-        let _z = b.let_(entry, Prim::IsEmptyList(l));
-        b.set_terminator(entry, Term::Return(h));
-        let s = format!("{}", b.build());
-        assert!(s.contains("list([v0])"));
-        assert!(s.contains("head(v1)"));
-        assert!(s.contains("tail(v1)"));
-        assert!(s.contains("is_nil(v1)"));
-    }
-
-    #[test]
-    fn goto_with_args_pretty_prints() {
-        let mut b = FnBuilder::new(FnId(8), "g");
-        let x = b.fresh_var();
-        let entry = b.block(vec![x]);
-        let next = b.block(vec![Var(99)]);
-        b.set_terminator(entry, Term::Goto(next, vec![x]));
-        b.set_terminator(next, Term::Return(Var(99)));
-        let s = format!("{}", b.build());
-        assert!(s.contains("goto bb1(v0)"));
-    }
-}
+mod fz_ir_test;

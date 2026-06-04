@@ -23,9 +23,22 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::exec::runtime::{ExitRecord, output_hook_thunk};
 use crate::fz_ir::{FnId, Module};
-use fz_runtime::heap::SchemaRegistry;
-use fz_runtime::process::Process;
+use crate::ir_extern_marshal::resolve_module_types;
+#[cfg(test)]
+use crate::ir_planner::plan_module;
+use crate::ir_planner::{ModulePlan, fn_types::SpecKey};
+#[cfg(test)]
+use crate::telemetry::NullTelemetry;
+use crate::telemetry::Telemetry;
+use crate::types::{ClosureTypes, RenderTypes, Ty, Types};
+use fz_runtime::any_value::{ValueKind, closure_addr_from_tagged};
+use fz_runtime::exec_ctx::ExecCtx;
+use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema, SchemaRegistry};
+use fz_runtime::procbin::mso_drop_all_deferred;
+use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
+use fz_runtime::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
 
 mod binop;
 mod extern_call;
@@ -36,14 +49,14 @@ mod scheduler;
 mod value;
 
 #[cfg(test)]
-mod tests;
+mod ir_interp_test;
 
 use binop::*;
 use extern_call::*;
 #[cfg(test)]
 pub(crate) use extern_call::{
-    tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset,
-    tests_support_lock, tests_support_test_dtor_addr,
+    tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
+    tests_support_test_dtor_addr,
 };
 use matcher_exec::*;
 use prim::*;
@@ -54,11 +67,18 @@ use value::*;
 
 use std::collections::VecDeque;
 
-/// Per-task resume state: fn to call, captures (no message), and after-chain.
-type ResumeEntry = (FnId, Vec<AnyValue>, Vec<(FnId, Vec<AnyValue>)>);
+#[derive(Clone)]
+pub(super) struct InterpContinuation {
+    pub(super) fn_id: FnId,
+    pub(super) args: Vec<AnyValue>,
+    pub(super) selected_spec: Option<SpecKey>,
+}
+
+/// Per-task resume state: fn to call, args, selected spec, and after-chain.
+type ResumeEntry = (FnId, Vec<AnyValue>, Option<SpecKey>, Vec<InterpContinuation>);
 
 /// fz-yxs/fz-2v3 — value type for selective-receive park records.
-type InterpParked = (ParkRecord, Vec<(FnId, Vec<AnyValue>)>);
+type InterpParked = (ParkRecord, Vec<InterpContinuation>);
 
 /// Immutable IR interpreter code generation.
 ///
@@ -69,13 +89,40 @@ type InterpParked = (ParkRecord, Vec<(FnId, Vec<AnyValue>)>);
 #[derive(Clone)]
 pub(crate) struct CodeImage {
     module: Rc<Module>,
+    module_plan: Rc<ModulePlan>,
 }
 
 impl CodeImage {
-    fn new(module: &Module) -> Self {
-        Self {
-            module: Rc::new(module.clone()),
+    fn planned<T>(t: &mut T, module: &Module, module_plan: ModulePlan) -> Result<Self, String>
+    where
+        T: Types<Ty = Ty> + RenderTypes,
+    {
+        Self::from_plan(t, module, module_plan)
+    }
+
+    #[cfg(test)]
+    fn from_module(module: &Module) -> Result<Self, String> {
+        let mut t = crate::types::new();
+        let module_plan = plan_module(&mut t, module, &NullTelemetry);
+        Self::from_plan(&mut t, module, module_plan)
+    }
+
+    fn from_plan<T>(t: &mut T, module: &Module, mut module_plan: ModulePlan) -> Result<Self, String>
+    where
+        T: Types<Ty = Ty> + RenderTypes,
+    {
+        let diagnostics = resolve_module_types(t, module, &mut module_plan);
+        if let Some(diagnostic) = diagnostics.into_iter().next() {
+            return Err(diagnostic.message);
         }
+        Ok(Self {
+            module: Rc::new(module.clone()),
+            module_plan: Rc::new(module_plan),
+        })
+    }
+
+    fn module_plan(&self) -> &ModulePlan {
+        &self.module_plan
     }
 
     fn module(&self) -> &Module {
@@ -99,7 +146,7 @@ pub(crate) struct IrInterpRuntime {
     parked: HashMap<u32, InterpParked>,
     /// Node-global state (the atom table) shared by every task in this
     /// interpreter instance, seeded from the program module's atoms.
-    node: Rc<fz_runtime::process::Node>,
+    node: Rc<Node>,
     /// The process executing in the current quantum. Set per-quantum in
     /// `drive_until_idle`; read by BIF call sites that allocate or touch the
     /// running process's heap/mailbox. Per-instance — replaces reads of the
@@ -119,7 +166,7 @@ impl IrInterpRuntime {
             run_queue: VecDeque::new(),
             resume: HashMap::new(),
             parked: HashMap::new(),
-            node: Rc::new(fz_runtime::process::Node::empty()),
+            node: Rc::new(Node::empty()),
             current_proc: std::ptr::null_mut(),
         }
     }
@@ -137,27 +184,22 @@ impl IrInterpRuntime {
         let mut runtime = Self::fresh();
         // Seed the interpreter's shared node from the program module's atoms;
         // every task clones this Rc.
-        runtime.node = Rc::new(fz_runtime::process::Node::new(
-            module.atom_names.clone(),
-            Vec::new(),
-        ));
+        runtime.node = Rc::new(Node::new(module.atom_names.clone(), Vec::new()));
         let user_schemas = runtime.schemas();
-        let (bs_tuple_arity1_schema, bs_tuple_arity3_schema) =
-            runtime.register_bitstring_tuple_schemas();
-        let consts = fz_runtime::process::CompiledModuleConsts {
+        let (bs_tuple_arity1_schema, bs_tuple_arity3_schema) = runtime.register_bitstring_tuple_schemas();
+        let consts = CompiledModuleConsts {
             bs_tuple_arity1_schema: Some(bs_tuple_arity1_schema),
             bs_tuple_arity3_schema: Some(bs_tuple_arity3_schema),
-            ..fz_runtime::process::CompiledModuleConsts::empty()
+            ..CompiledModuleConsts::empty()
         };
         let process = Box::new(Process::from_consts(
             Rc::clone(&runtime.node),
             user_schemas,
             &consts,
             1,
-            fz_runtime::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
+            DEFAULT_REDUCTIONS_PER_QUANTUM,
         ));
         runtime.insert_task(1, process);
-        runtime.set_task_code_image(1, Rc::new(CodeImage::new(module)));
         runtime
     }
 
@@ -169,8 +211,8 @@ impl IrInterpRuntime {
         let (arity1, arity3) = {
             let mut reg = self.schemas.borrow_mut();
             (
-                reg.register(fz_runtime::heap::Schema::tuple_of_arity(1)),
-                reg.register(fz_runtime::heap::Schema::tuple_of_arity(3)),
+                reg.register(Schema::tuple_of_arity(1)),
+                reg.register(Schema::tuple_of_arity(3)),
             )
         };
         self.tuple_schema_ids.insert(1, arity1);
@@ -182,7 +224,6 @@ impl IrInterpRuntime {
         if let Some(&id) = self.tuple_schema_ids.get(&arity) {
             return id;
         }
-        use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
         let schema = Schema {
             name: format!("Tuple{}", arity),
             size: (arity * 8) as u32,
@@ -233,12 +274,32 @@ impl IrInterpRuntime {
         self.tasks.get_mut(&pid).map(|p| p.as_mut() as *mut Process)
     }
 
-    fn set_process_state(&mut self, pid: u32, state: fz_runtime::process::ProcessState) {
+    fn set_process_state(&mut self, pid: u32, state: ProcessState) {
         if let Some(process) = self.tasks.get_mut(&pid) {
             process.state = state;
         }
     }
 
+    pub(crate) fn enqueue_entry_with_plan<T>(
+        &mut self,
+        t: &mut T,
+        module: &Module,
+        module_plan: ModulePlan,
+        pid: u32,
+        fn_id: FnId,
+        args: Vec<AnyValue>,
+    ) -> Result<(), String>
+    where
+        T: Types<Ty = Ty> + RenderTypes,
+    {
+        if !self.tasks.contains_key(&pid) {
+            return Err(format!("enqueue_entry: unknown pid {}", pid));
+        }
+        self.set_task_code_image(pid, Rc::new(CodeImage::planned(t, module, module_plan)?));
+        self.enqueue_entry_with_image(pid, fn_id, args)
+    }
+
+    #[cfg(test)]
     pub(crate) fn enqueue_entry(
         &mut self,
         module: &Module,
@@ -249,21 +310,30 @@ impl IrInterpRuntime {
         if !self.tasks.contains_key(&pid) {
             return Err(format!("enqueue_entry: unknown pid {}", pid));
         }
-        self.set_task_code_image(pid, Rc::new(CodeImage::new(module)));
-        self.resume.insert(pid, (fn_id, args, vec![]));
+        self.set_task_code_image(pid, Rc::new(CodeImage::from_module(module)?));
+        self.enqueue_entry_with_image(pid, fn_id, args)
+    }
+
+    fn enqueue_entry_with_image(&mut self, pid: u32, fn_id: FnId, args: Vec<AnyValue>) -> Result<(), String> {
+        if !self.tasks.contains_key(&pid) {
+            return Err(format!("enqueue_entry: unknown pid {}", pid));
+        }
+        self.resume.insert(pid, (fn_id, args, None, vec![]));
         self.run_queue.push_back(pid);
-        self.set_process_state(pid, fz_runtime::process::ProcessState::Ready);
+        self.set_process_state(pid, ProcessState::Ready);
         Ok(())
     }
 
-    pub(crate) fn drive_until_idle(
+    pub(crate) fn drive_until_idle<T>(
         &mut self,
-        tel: &dyn crate::telemetry::Telemetry,
+        t: &mut T,
+        tel: &dyn Telemetry,
         keepalive_pid: Option<u32>,
-    ) -> Result<Vec<(u32, AnyValue)>, String> {
-        use fz_runtime::process::ProcessState;
+    ) -> Result<Vec<(u32, AnyValue)>, String>
+    where
+        T: Types<Ty = Ty> + ClosureTypes + RenderTypes,
+    {
         let mut completions = Vec::new();
-        let mut t = crate::types::ConcreteTypes;
         // Route fz output (dbg/print) to telemetry for the duration of the
         // drive — same seam the compiled scheduler uses, so dbg observability
         // is engine-uniform.
@@ -275,13 +345,13 @@ impl IrInterpRuntime {
         // this stack frame, which outlives every quantum; each task's
         // `Process.ctx` points here and BIFs dispatch output/make_resource
         // through it.
-        let mut exec_ctx = fz_runtime::exec_ctx::ExecCtx {
+        let mut exec_ctx = ExecCtx {
             scheduler: self as *mut Self as *mut (),
-            tel: (&tel) as *const &dyn crate::telemetry::Telemetry as *const (),
+            tel: (&tel) as *const &dyn Telemetry as *const (),
             // dbg/print routes to telemetry through the same thunk the compiled
             // engine uses; the rest of the BIF callbacks are interpreter-internal.
-            output: Some(crate::exec::runtime::output_hook_thunk),
-            ..fz_runtime::exec_ctx::ExecCtx::empty()
+            output: Some(output_hook_thunk),
+            ..ExecCtx::empty()
         };
 
         'sched: while let Some(pid) = self.pop_runnable() {
@@ -289,13 +359,11 @@ impl IrInterpRuntime {
                 .task_code_image(pid)
                 .ok_or_else(|| format!("pid {} has no interpreter code image", pid))?;
             let module = image.module();
-            let (fn_id, args, mut after) = self
-                .take_resume(pid)
-                .expect("pid in run_queue with no resume entry");
-            let proc_ptr = self
-                .process_ptr(pid)
-                .expect("pid in run_queue with no process entry");
-            exec_ctx.module = module as *const crate::fz_ir::Module as *const ();
+            let module_types = image.module_plan();
+            let (fn_id, args, selected_spec, mut after) =
+                self.take_resume(pid).expect("pid in run_queue with no resume entry");
+            let proc_ptr = self.process_ptr(pid).expect("pid in run_queue with no process entry");
+            exec_ctx.module = module as *const Module as *const ();
             unsafe {
                 (*proc_ptr).state = ProcessState::Running;
                 (*proc_ptr).reset_reduction_budget();
@@ -304,15 +372,24 @@ impl IrInterpRuntime {
                 debug_assert!(!(*proc_ptr).ctx.is_null(), "interp ctx installed");
             };
             self.current_proc = proc_ptr;
-            let mut step = run_fn(self, &mut t, module, tel, fn_id, args);
+            let mut step = run_fn_typed(self, t, module, tel, module_types, fn_id, args, selected_spec);
             loop {
                 match step {
                     Ok(InterpStep::Done(val)) => {
-                        if let Some((next_fn, next_caps)) = after.first().cloned() {
+                        if let Some(next) = after.first().cloned() {
                             after.remove(0);
                             let mut next_args = vec![val];
-                            next_args.extend(next_caps);
-                            step = run_fn(self, &mut t, module, tel, next_fn, next_args);
+                            next_args.extend(next.args);
+                            step = run_fn_typed(
+                                self,
+                                t,
+                                module,
+                                tel,
+                                module_types,
+                                next.fn_id,
+                                next_args,
+                                next.selected_spec,
+                            );
                             continue;
                         }
 
@@ -323,20 +400,37 @@ impl IrInterpRuntime {
                         }
 
                         unsafe {
-                            fz_runtime::procbin::mso_drop_all_deferred(&mut (*proc_ptr).heap);
+                            mso_drop_all_deferred(&mut (*proc_ptr).heap);
                         }
-                        if let Err(e) = drain_pending_dtors_interp(self, &mut t, module, tel) {
-                            tel.event(
-                                &["fz", "runtime", "dtor_drain_failed"],
-                                crate::metadata! { error: e },
-                            );
+                        if let Err(e) = drain_pending_dtors_interp(self, t, module, tel, module_types) {
+                            tel.event(&["fz", "runtime", "dtor_drain_failed"], crate::metadata! { error: e });
                         }
                         // Parity with the compiled engine: record the result on
                         // the Process and emit the same process_exited event
                         // through the single shared emit site.
                         unsafe {
-                            (*proc_ptr).halt_value = value_to_halt(val);
-                            crate::exec::runtime::ExitRecord::emit(tel, pid, &*proc_ptr);
+                            (*proc_ptr).halt_value = value_to_halt(proc_ptr, val);
+                            ExitRecord::emit(tel, pid, &*proc_ptr);
+                        }
+                        self.set_process_state(pid, ProcessState::Exited);
+                        continue 'sched;
+                    }
+                    Ok(InterpStep::Halt(val)) => {
+                        completions.push((pid, val));
+                        if keepalive_pid == Some(pid) {
+                            self.set_process_state(pid, ProcessState::Ready);
+                            continue 'sched;
+                        }
+
+                        unsafe {
+                            mso_drop_all_deferred(&mut (*proc_ptr).heap);
+                        }
+                        if let Err(e) = drain_pending_dtors_interp(self, t, module, tel, module_types) {
+                            tel.event(&["fz", "runtime", "dtor_drain_failed"], crate::metadata! { error: e });
+                        }
+                        unsafe {
+                            (*proc_ptr).halt_value = value_to_halt(proc_ptr, val);
+                            ExitRecord::emit(tel, pid, &*proc_ptr);
                         }
                         self.set_process_state(pid, ProcessState::Exited);
                         continue 'sched;
@@ -344,6 +438,7 @@ impl IrInterpRuntime {
                     Ok(InterpStep::Yielded {
                         resume_fn,
                         mut resume_args,
+                        resume_spec,
                         after: mut new_after,
                         remaining_reductions,
                         reason,
@@ -351,18 +446,12 @@ impl IrInterpRuntime {
                         new_after.extend(after);
                         let process = unsafe { &mut *proc_ptr };
                         process.finish_yield_report(remaining_reductions, reason);
-                        process.boundary_maintenance(|p| {
-                            gc_interp_scheduler_roots(p, &mut resume_args, &mut new_after)
-                        })?;
+                        process
+                            .boundary_maintenance(|p| gc_interp_scheduler_roots(p, &mut resume_args, &mut new_after))?;
                         self.set_process_state(pid, ProcessState::Ready);
-                        self.resume.insert(pid, (resume_fn, resume_args, new_after));
+                        self.resume
+                            .insert(pid, (resume_fn, resume_args, resume_spec, new_after));
                         self.run_queue.push_back(pid);
-                        continue 'sched;
-                    }
-                    Ok(InterpStep::Blocked(resume_fn, cap_vals, mut new_after)) => {
-                        new_after.extend(after);
-                        self.set_process_state(pid, ProcessState::Blocked);
-                        self.resume.insert(pid, (resume_fn, cap_vals, new_after));
                         continue 'sched;
                     }
                     Ok(InterpStep::BlockedMatched(park, mut new_after)) => {
@@ -383,7 +472,7 @@ impl IrInterpRuntime {
 
     #[cfg(test)]
     pub(crate) fn task(&self, pid: u32) -> Option<&Process> {
-        self.tasks.get(&pid).map(Box::as_ref)
+        self.process_ref(pid)
     }
 
     #[cfg(test)]
@@ -391,19 +480,18 @@ impl IrInterpRuntime {
         self.tasks.get_mut(&pid).map(Box::as_mut)
     }
 
-    pub(crate) fn read_tuple_fields(
-        &self,
-        pid: u32,
-        value: AnyValue,
-        arity: usize,
-    ) -> Result<Vec<AnyValue>, String> {
+    fn process_ref(&self, pid: u32) -> Option<&Process> {
+        self.tasks.get(&pid).map(Box::as_ref)
+    }
+
+    pub(crate) fn read_tuple_fields(&self, pid: u32, value: AnyValue, arity: usize) -> Result<Vec<AnyValue>, String> {
         let AnyValue::Ref(value_ref) = value else {
             return Err(format!(
                 "expected tuple ref, got {}",
                 value.render(std::ptr::null_mut())
             ));
         };
-        if value_ref.tag() != fz_runtime::any_value::ValueKind::STRUCT {
+        if value_ref.tag() != ValueKind::STRUCT {
             return Err(format!("expected tuple struct, got {:?}", value));
         }
         let addr = value_ref
@@ -431,16 +519,16 @@ impl IrInterpRuntime {
 fn gc_interp_scheduler_roots(
     process: &mut Process,
     resume_args: &mut [AnyValue],
-    after: &mut [(FnId, Vec<AnyValue>)],
+    after: &mut [InterpContinuation],
 ) -> Result<(), String> {
     let resume_len = resume_args.len();
     let mut roots: Vec<fz_runtime::any_value::AnyValue> = Vec::new();
     for value in resume_args.iter() {
-        roots.push(value.value()?);
+        roots.push(value.value(process as *mut Process)?);
     }
-    for (_, caps) in after.iter() {
-        for value in caps {
-            roots.push(value.value()?);
+    for cont in after.iter() {
+        for value in &cont.args {
+            roots.push(value.value(process as *mut Process)?);
         }
     }
 
@@ -452,8 +540,8 @@ fn gc_interp_scheduler_roots(
         *slot = interp_value_from_slot(*root);
     }
     let mut idx = resume_len;
-    for (_, caps) in after.iter_mut() {
-        for value in caps {
+    for cont in after.iter_mut() {
+        for value in &mut cont.args {
             *value = interp_value_from_slot(roots[idx]);
             idx += 1;
         }
@@ -466,30 +554,57 @@ fn gc_interp_scheduler_roots(
 /// Drives a cooperative run-queue loop: main starts at pid=1, spawned tasks
 /// are enqueued and run one quantum at a time in FIFO order. Tasks that block
 /// on receive park until a send wakes them. Loop exits when the queue is empty.
-pub fn run_main(tel: &dyn crate::telemetry::Telemetry, module: &Module) -> Result<i64, String> {
-    run_main_inner(tel, module).map(|(halt, _runtime)| halt)
+#[cfg(test)]
+pub fn run_main(tel: &dyn Telemetry, module: &Module) -> Result<i64, String> {
+    let mut t = crate::types::new();
+    let module_plan = plan_module(&mut t, module, &NullTelemetry);
+    run_main_with_plan(&mut t, tel, module, module_plan).map(|(halt, _runtime)| halt)
+}
+
+pub(crate) fn run_main_with_plan<T>(
+    t: &mut T,
+    tel: &dyn Telemetry,
+    module: &Module,
+    module_plan: ModulePlan,
+) -> Result<(i64, IrInterpRuntime), String>
+where
+    T: Types<Ty = Ty> + ClosureTypes + RenderTypes,
+{
+    run_main_inner(t, tel, module, module_plan)
 }
 
 #[cfg(test)]
-pub(crate) fn run_main_with_runtime(
-    tel: &dyn crate::telemetry::Telemetry,
-    module: &Module,
-) -> Result<(i64, IrInterpRuntime), String> {
-    run_main_inner(tel, module)
+pub(crate) fn run_main_with_runtime(tel: &dyn Telemetry, module: &Module) -> Result<(i64, IrInterpRuntime), String> {
+    let mut t = crate::types::new();
+    let module_plan = plan_module(&mut t, module, &NullTelemetry);
+    run_main_inner(&mut t, tel, module, module_plan)
 }
 
-fn run_main_inner(
-    tel: &dyn crate::telemetry::Telemetry,
+fn run_main_inner<T>(
+    t: &mut T,
+    tel: &dyn Telemetry,
     module: &Module,
-) -> Result<(i64, IrInterpRuntime), String> {
+    module_plan: ModulePlan,
+) -> Result<(i64, IrInterpRuntime), String>
+where
+    T: Types<Ty = Ty> + ClosureTypes + RenderTypes,
+{
     let main_id = module.fn_by_name("main").ok_or("no `main/0` fn found")?.id;
     let mut runtime = IrInterpRuntime::fresh_with_root(module);
-    runtime.enqueue_entry(module, 1, main_id, vec![])?;
-    let completions = runtime.drive_until_idle(tel, None)?;
+    runtime.set_task_code_image(1, Rc::new(CodeImage::planned(t, module, module_plan)?));
+    runtime.enqueue_entry_with_image(1, main_id, vec![])?;
+    let completions = runtime.drive_until_idle(t, tel, None)?;
     let halt_val = completions
         .iter()
         .rev()
-        .find_map(|(pid, value)| (*pid == 1).then_some(value_to_halt(*value)))
+        .find_map(|(pid, value)| {
+            (*pid == 1).then(|| {
+                runtime
+                    .process_ref(*pid)
+                    .map(|task| value_to_halt(task as *const Process as *mut Process, *value))
+            })
+        })
+        .flatten()
         .unwrap_or(0);
     Ok((halt_val, runtime))
 }
@@ -500,62 +615,65 @@ fn run_main_inner(
 ///
 /// Returns Ok(()) if the test completes without an assertion failure;
 /// returns Err(msg) on any interp/runtime/assertion error.
-pub fn run_test_fn(
-    tel: &dyn crate::telemetry::Telemetry,
+pub fn run_test_fn<T>(
+    t: &mut T,
+    tel: &dyn Telemetry,
     module: &Module,
+    module_plan: &ModulePlan,
     fn_id: FnId,
-) -> Result<(), String> {
+) -> Result<(), String>
+where
+    T: Types<Ty = Ty> + ClosureTypes + RenderTypes,
+{
     let mut runtime = IrInterpRuntime::fresh();
-    runtime.node = Rc::new(fz_runtime::process::Node::new(
-        module.atom_names.clone(),
-        Vec::new(),
-    ));
+    runtime.node = Rc::new(Node::new(module.atom_names.clone(), Vec::new()));
     let user_schemas = runtime.schemas();
-    let consts = fz_runtime::process::CompiledModuleConsts::empty();
+    let consts = CompiledModuleConsts::empty();
     let task = Box::new(Process::from_consts(
         Rc::clone(&runtime.node),
         user_schemas,
         &consts,
         1,
-        fz_runtime::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
+        DEFAULT_REDUCTIONS_PER_QUANTUM,
     ));
     runtime.insert_task(1, task);
     let task_ptr = runtime.process_ptr(1).expect("run_test_fn installed pid 1");
     runtime.current_proc = task_ptr;
     unsafe { (*task_ptr).heap.set_owner(task_ptr) };
-    let mut t = crate::types::ConcreteTypes;
-    let result = run_fn(&mut runtime, &mut t, module, tel, fn_id, Vec::new());
+    let mut module_plan = module_plan.clone();
+    let diagnostics = resolve_module_types(t, module, &mut module_plan);
+    if let Some(diagnostic) = diagnostics.into_iter().next() {
+        return Err(diagnostic.message);
+    }
+    let result = run_fn_typed(&mut runtime, t, module, tel, &module_plan, fn_id, Vec::new(), None);
     // fz-4mk — shutdown drain mirrors run_main's exit path: enqueue every
     // surviving resource's dtor and dispatch each as a real fz call. The dtor
     // helpers reach this task through `runtime.current_proc` (set above).
     unsafe {
-        fz_runtime::procbin::mso_drop_all_deferred(&mut (*task_ptr).heap);
+        mso_drop_all_deferred(&mut (*task_ptr).heap);
     }
-    if let Err(e) = drain_pending_dtors_interp(&mut runtime, &mut t, module, tel) {
-        tel.event(
-            &["fz", "runtime", "dtor_drain_failed"],
-            crate::metadata! { error: e },
-        );
+    if let Err(e) = drain_pending_dtors_interp(&mut runtime, t, module, tel, &module_plan) {
+        tel.event(&["fz", "runtime", "dtor_drain_failed"], crate::metadata! { error: e });
     }
     match result {
         Ok(InterpStep::Done(_)) => Ok(()),
-        Ok(InterpStep::Yielded { .. }) => {
-            Err("test fn yielded outside scheduler drive".to_string())
-        }
-        Ok(InterpStep::Blocked(..)) | Ok(InterpStep::BlockedMatched(..)) => {
-            Err("test fn blocked on receive with empty mailbox".to_string())
+        Ok(InterpStep::Halt(value)) => Err(format!("test fn halted with {}", value.render(task_ptr))),
+        Ok(InterpStep::Yielded { .. }) => Err("test fn yielded outside scheduler drive".to_string()),
+        Ok(InterpStep::BlockedMatched(..)) => {
+            Err("test fn blocked on selective receive with empty mailbox".to_string())
         }
         Err(e) => Err(e),
     }
 }
 
-fn value_to_halt(v: AnyValue) -> i64 {
+fn value_to_halt(proc: *mut Process, v: AnyValue) -> i64 {
     match v {
         AnyValue::Null => 0,
         AnyValue::Int(i) => i,
         AnyValue::Float(f) => f.to_bits() as i64,
         AnyValue::Atom(v) => v as i64,
         AnyValue::EmptyList => 0,
+        AnyValue::FnRef(_) => v.value(proc).expect("materialize fn ref halt value").raw() as i64,
         AnyValue::Ref(v) => v.raw_word() as i64,
     }
 }
@@ -573,20 +691,16 @@ pub(crate) fn make_resource_in_current_process(
     payload: i64,
     dtor_closure: fz_runtime::any_value::AnyValue,
 ) -> Result<fz_runtime::any_value::AnyValue, String> {
-    use fz_runtime::any_value::ValueKind;
     if dtor_closure.kind() != ValueKind::CLOSURE {
         return Err("make_resource: dtor arg is not a closure".to_string());
     }
     dtor_closure
         .heap_object_word()
-        .and_then(fz_runtime::any_value::closure_addr_from_tagged)
+        .and_then(closure_addr_from_tagged)
         .ok_or_else(|| "make_resource: dtor arg is not a closure".to_string())?;
-    let handle = fz_runtime::resource::ResourceHandle::new(
-        payload as u64,
-        fz_runtime::resource::fz_resource_destructor_noop,
-    );
+    let handle = ResourceHandle::new(payload as u64, fz_resource_destructor_noop);
     let heap = &mut unsafe { &mut *proc }.heap;
-    let stub = fz_runtime::resource::alloc_resource(heap, handle, dtor_closure);
+    let stub = alloc_resource(heap, handle, dtor_closure);
     Ok(fz_runtime::any_value::AnyValue::heap_ptr(
         stub.as_raw(),
         ValueKind::RESOURCE,

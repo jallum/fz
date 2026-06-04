@@ -1,17 +1,17 @@
 ---
 purpose: "fz-swt.13 / fz-4mk — File module wraps an fd in a resource; the dtor closes the fd at task-exit drain (interp/JIT/AOT parity)."
 paths: [interp, jit, aot, repl]
-budget.codegen.functions: 2
-budget.codegen.instructions: 29
-budget.specs.count: 2
-budget.planner.worklist_pops: 2
-budget.planner.walk_calls: 2
-budget.planner.type_fn_calls: 2
+budget.codegen.functions: 6
+budget.codegen.instructions: 65
+budget.specs.count: 6
+budget.planner.worklist_pops: 6
+budget.planner.walk_calls: 6
+budget.planner.type_fn_calls: 6
 budget.planner.matcher_specs: 0
-budget.planner.vars: 24
-budget.planner.blocks: 2
-budget.planner.stmts: 13
-budget.planner.dispatches: 0
+budget.planner.vars: 30
+budget.planner.blocks: 6
+budget.planner.stmts: 16
+budget.planner.dispatches: 4
 ---
 
 # file_resource_lifecycle

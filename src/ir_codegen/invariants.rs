@@ -8,7 +8,12 @@
 //! again after the final post-typer pass; every (FnId, CallShape) count
 //! in the post snapshot must be ≤ its pre snapshot count.
 
-use crate::fz_ir::{CallsiteId, EmitSlot, FnId, Module, Term};
+use crate::fz_ir::{CallsiteId, EmitSlot, FnId, FnIr, Module, Term};
+use crate::ir_planner::SpecPlan;
+use crate::ir_planner::fn_types::SpecKey;
+use crate::ir_planner::inventory::{body_callsite_inventory, plan_call_edge_inventory};
+use crate::telemetry::Telemetry;
+use crate::{measurements, metadata};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -17,7 +22,6 @@ pub enum CallShape {
     TailCall,
     CallClosure,
     TailCallClosure,
-    Receive,
 }
 
 fn shape_of(t: &Term) -> Option<CallShape> {
@@ -26,7 +30,6 @@ fn shape_of(t: &Term) -> Option<CallShape> {
         Term::TailCall { .. } => Some(CallShape::TailCall),
         Term::CallClosure { .. } => Some(CallShape::CallClosure),
         Term::TailCallClosure { .. } => Some(CallShape::TailCallClosure),
-        Term::Receive { .. } => Some(CallShape::Receive),
         _ => None,
     }
 }
@@ -74,17 +77,20 @@ pub fn assert_no_new_call_shapes(m: &Module, pre: &CallShapeSnapshot) {
 }
 
 pub fn emit_and_assert_spec_dispatch_coverage(
-    tel: &dyn crate::telemetry::Telemetry,
-    f: &crate::fz_ir::FnIr,
-    ft: &crate::ir_planner::SpecPlan,
+    tel: &dyn Telemetry,
+    f: &FnIr,
+    ft: &SpecPlan,
     sid: u32,
-    spec_key: &crate::ir_planner::fn_types::SpecKey,
+    spec_key: &SpecKey,
 ) {
     let mut closure_call_dispatch_count = 0_u64;
-    let (body_counts, body_callsites) = crate::ir_planner::inventory::body_callsite_inventory(f);
-    let plan_call_edges = crate::ir_planner::inventory::plan_call_edge_inventory(ft, f.id);
+    let (body_counts, body_callsites) = body_callsite_inventory(f);
+    let plan_call_edges = plan_call_edge_inventory(ft, f.id);
 
     for blk in &f.blocks {
+        if !ft.reachable_blocks.contains(&blk.id) {
+            continue;
+        }
         let (ident, expected_slots, kind) = match &blk.terminator {
             Term::Call { ident, .. } => (ident, &[EmitSlot::Direct, EmitSlot::Cont][..], "call"),
             Term::CallClosure { ident, .. } => {
@@ -94,7 +100,6 @@ pub fn emit_and_assert_spec_dispatch_coverage(
                 }
                 (ident, &[EmitSlot::Cont][..], "call_closure")
             }
-            Term::Receive { ident, .. } => (ident, &[EmitSlot::Cont][..], "receive"),
             _ => continue,
         };
 
@@ -111,14 +116,14 @@ pub fn emit_and_assert_spec_dispatch_coverage(
                 .collect::<Vec<_>>();
             let available_call_edges = ft
                 .call_edges
-                .keys()
-                .map(|candidate| format!("{:?}", candidate))
+                .iter()
+                .map(|(candidate, edge)| format!("{:?} -> {:?}", candidate, edge.target))
                 .collect::<Vec<_>>();
             let span = ident.span();
             tel.execute(
                 &["fz", "codegen", "dispatch_missing"],
-                &crate::measurements! {},
-                &crate::metadata! {
+                &measurements! {},
+                &metadata! {
                     spec_id: sid as u64,
                     body_fn_id: f.id.0 as u64,
                     body_name: f.name.clone(),
@@ -127,29 +132,28 @@ pub fn emit_and_assert_spec_dispatch_coverage(
                     slot: format!("{:?}", slot),
                     callsite_span_start: span.start as u64,
                     callsite_span_end: span.end as u64,
-                    available_slots: available_slots,
-                    available_call_edges: available_call_edges,
+                    available_slots: available_slots.clone(),
+                    available_call_edges: available_call_edges.clone(),
                 },
             );
             panic!(
-                "spec {} body {} missing {:?} dispatch for {:?}",
-                sid, f.name, slot, cid
+                "spec {} body {} missing {:?} dispatch for {:?}; available slots: {:?}; call edges: {:?}",
+                sid, f.name, slot, cid, available_slots, available_call_edges
             );
         }
     }
 
     tel.execute(
         &["fz", "codegen", "spec_pair_inventory"],
-        &crate::measurements! {
+        &measurements! {
             non_tail_call_count: body_counts.non_tail_call_count,
             non_tail_closure_call_count: body_counts.non_tail_closure_call_count,
             tail_call_count: body_counts.tail_call_count,
             tail_closure_call_count: body_counts.tail_closure_call_count,
             closure_call_dispatch_count: closure_call_dispatch_count,
-            receive_count: body_counts.receive_count,
             call_edge_count: ft.call_edges.len() as u64,
         },
-        &crate::metadata! {
+        &metadata! {
             spec_id: sid as u64,
             spec_key: format!("{:?}", spec_key),
             body_fn_id: f.id.0 as u64,

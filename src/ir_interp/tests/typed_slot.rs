@@ -1,42 +1,83 @@
+use crate::exec::runtime::DbgCapture;
+use crate::frontend::compile_source;
 use crate::ir_interp::*;
+use crate::ir_lower::lower_program;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
+use crate::telemetry::NullTelemetry;
+use crate::telemetry::bus::ConfiguredTelemetry;
+use crate::test_support::linked_runtime_graph_with_telemetry;
+use fz_runtime::any_value::ListCons;
 use fz_runtime::any_value::ValueKind;
+use std::ptr::null_mut;
 
 use crate::fz_ir::Module;
 
 fn lower_src(src: &str) -> Module {
     let toks = Lexer::new(src).tokenize().expect("lex");
     let prog = Parser::new(toks).parse_program().expect("parse");
-    crate::ir_lower::lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower")
+    lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower")
 }
 
 fn run(src: &str) -> i64 {
     let m = lower_src(src);
-    run_main(&crate::telemetry::NullTelemetry, &m).expect("interp run")
+    run_main(&NullTelemetry, &m).expect("interp run")
 }
 
 fn run_checked(src: &str) -> i64 {
-    let frontend = crate::frontend::compile_source(src.to_string(), "interp-test.fz".to_string())
+    let frontend = compile_source(src.to_string(), "interp-test.fz".to_string())
         .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
-    run_main(&crate::telemetry::NullTelemetry, &frontend.module).expect("interp run")
+    run_main(&NullTelemetry, &frontend.module).expect("interp run")
+}
+
+fn run_runtime_graph(src: &str) -> i64 {
+    let mut t = crate::types::new();
+    let graph = linked_runtime_graph_with_telemetry(&mut t, src, &NullTelemetry);
+    let (halt, _) = run_main_with_plan(&mut t, &NullTelemetry, &graph.module, graph.module_plan).expect("interp run");
+    halt
+}
+
+fn capture_runtime_graph(src: &str) -> String {
+    let mut t = crate::types::new();
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+    let graph = linked_runtime_graph_with_telemetry(&mut t, src, &tel);
+    run_main_with_plan(&mut t, &tel, &graph.module, graph.module_plan).expect("interp run");
+    dbg.lines().join("\n")
 }
 
 fn capture(src: &str) -> String {
     let m = lower_src(src);
-    let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
-    let dbg = crate::exec::runtime::DbgCapture::new();
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
     run_main(&tel, &m).expect("interp run");
     dbg.lines().join("\n")
 }
 
+fn checked_halt_and_closure_allocs(src: &str) -> (i64, u64) {
+    let frontend = compile_source(src.to_string(), "interp-test.fz".to_string())
+        .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
+    let (halt, runtime) = run_main_with_runtime(&NullTelemetry, &frontend.module).expect("interp run");
+    let task = runtime.task(1).expect("main task remains registered");
+    let closure_allocs = task.heap.alloc_stats_snapshot().closure.allocs;
+    (halt, closure_allocs)
+}
+
+fn checked_halt_and_capture(src: &str) -> (i64, String, Module) {
+    let frontend = compile_source(src.to_string(), "interp-test.fz".to_string())
+        .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+    let (halt, _runtime) = run_main_with_runtime(&tel, &frontend.module).expect("interp run");
+    (halt, dbg.lines().join("\n"), frontend.module)
+}
+
 #[test]
 fn interp_typed_int_arithmetic_full_i64() {
-    assert_eq!(
-        run("fn main(), do: 4611686018427387904 + 7"),
-        4611686018427387911
-    );
+    assert_eq!(run("fn main(), do: 4611686018427387904 + 7"), 4611686018427387911);
 }
 
 #[test]
@@ -70,6 +111,207 @@ fn interp_render_raw_float_in_container() {
 }
 
 #[test]
+fn interp_named_fn_ref_does_not_allocate_closure_object() {
+    let (halt, closure_allocs) = checked_halt_and_closure_allocs(
+        r#"
+        fn id(x), do: x
+        fn apply(f, x), do: f.(x)
+        fn main() do
+          f = &id/1
+          r = apply(f, 41)
+          r
+        end
+    "#,
+    );
+    assert_eq!(halt, 41);
+    assert_eq!(
+        closure_allocs, 0,
+        "thin named fn refs should not allocate closure objects in interp"
+    );
+}
+
+#[test]
+fn interp_zero_capture_lambda_does_not_allocate_closure_object() {
+    let (halt, closure_allocs) = checked_halt_and_closure_allocs(
+        r#"
+        fn apply(f, x), do: f.(x)
+        fn main() do
+          f = fn (x) -> x end
+          r = apply(f, 41)
+          r
+        end
+    "#,
+    );
+    assert_eq!(halt, 41);
+    assert_eq!(
+        closure_allocs, 0,
+        "zero-capture lambdas lower to thin fn refs and should not allocate closure objects in interp",
+    );
+}
+
+#[test]
+fn interp_captured_lambda_still_allocates_closure_object() {
+    let (halt, closure_allocs) = checked_halt_and_closure_allocs(
+        r#"
+        fn apply(f, x), do: f.(x)
+        fn main() do
+          k = 7
+          f = fn (x) -> x + k end
+          r = apply(f, 1)
+          r
+        end
+    "#,
+    );
+    assert_eq!(halt, 8);
+    assert_eq!(closure_allocs, 1, "captured lambdas remain heap closures in interp",);
+}
+
+#[test]
+fn interp_checked_joined_thin_fn_refs_remain_callable_locally() {
+    assert_eq!(
+        run_checked(
+            r#"
+fn add_a(x, acc), do: acc + x
+fn add_b(x, acc), do: acc + x
+
+fn main() do
+  reducer = case 0 == 0 do
+    true -> add_a
+    _ -> add_b
+  end
+  reducer.(1, 0)
+end
+"#,
+        ),
+        1
+    );
+}
+
+#[test]
+fn interp_runtime_graph_enum_reduce_wrapper_runs() {
+    assert_eq!(
+        run_runtime_graph(
+            r#"
+fn main() do
+  Enum.reduce([1, 2, 3], 0, fn (x, acc) -> acc + x end)
+end
+"#,
+        ),
+        6
+    );
+}
+
+#[test]
+fn interp_runtime_graph_preserves_planned_continuation_specs_after_non_tail_calls() {
+    let got = capture_runtime_graph(
+        r#"
+fn main() do
+  xs = [1, 2, 3, 4, 5]
+  range = 1..5
+
+  dbg(Enum.take(xs, 3))
+  dbg(Enum.take(xs, 0))
+  dbg(Enum.take(xs, 9))
+  dbg(Enum.take(xs, -2))
+  dbg(Enum.take(range, -2))
+end
+"#,
+    );
+    assert_eq!(
+        got, "[1, 2, 3]\n[]\n[1, 2, 3, 4, 5]\n[4, 5]\n[4, 5]",
+        "interpreter continuations must retain their planner-selected specs across chained non-tail calls",
+    );
+}
+
+#[test]
+fn interp_runtime_graph_joined_thin_fn_refs_remain_callable_across_enum_reduce() {
+    assert_eq!(
+        run_runtime_graph(
+            r#"
+fn add_a(x, acc), do: acc + x
+fn add_b(x, acc), do: acc + x
+
+fn main() do
+  xs = [1, 2, 3]
+  stats0 = Process.heap_alloc_stats()
+  reducer = case stats0[:allocs] == 0 do
+    true -> add_a
+    _ -> add_b
+  end
+  Enum.reduce(xs, 0, reducer)
+end
+"#,
+        ),
+        6
+    );
+}
+
+#[test]
+fn frontend_only_checked_interp_surfaces_unlinked_process_heap_alloc_stats_halt() {
+    let (halt, got, module) = checked_halt_and_capture(
+        r#"
+fn main() do
+  stats = Process.heap_alloc_stats()
+  dbg(stats[:allocs])
+  dbg(stats[:closure_allocs])
+end
+"#,
+    );
+    let expected = module
+        .atom_names
+        .iter()
+        .position(|name| name == "external_module_unlinked")
+        .expect("frontend-only module interns external_module_unlinked") as i64;
+    assert_eq!(halt, expected);
+    assert_eq!(got, "");
+}
+
+#[test]
+fn interp_runtime_graph_heap_alloc_stats_exposes_closure_allocs_key() {
+    let got = capture_runtime_graph(
+        r#"
+fn add(x, acc), do: acc + x
+
+fn main() do
+  stats0 = Process.heap_alloc_stats()
+  dbg(stats0[:closure_allocs])
+  f = fn (x) -> x + 1 end
+  r = f.(41)
+  stats1 = Process.heap_alloc_stats()
+  dbg(stats1[:closure_allocs])
+  s = add(1, 0)
+  dbg(Process.heap_alloc_stats()[:closure_allocs])
+end
+"#,
+    );
+    assert_eq!(
+        got, "0\n0\n0",
+        "linked runtime graph should expose :closure_allocs as a stable atom-keyed map entry",
+    );
+}
+
+#[test]
+fn interp_runtime_graph_heap_alloc_stats_reports_captured_closure_allocs() {
+    let got = capture_runtime_graph(
+        r#"
+fn main() do
+  stats0 = Process.heap_alloc_stats()
+  dbg(stats0[:closure_allocs])
+  k = 7
+  f = fn (x) -> x + k end
+  r = f.(1)
+  stats1 = Process.heap_alloc_stats()
+  dbg(stats1[:closure_allocs])
+end
+"#,
+    );
+    assert_eq!(
+        got, "0\n1",
+        "linked runtime graph should report captured closure heap allocations via Process.heap_alloc_stats()",
+    );
+}
+
+#[test]
 fn interp_equality_float_in_container() {
     assert_eq!(run("fn main(), do: [1.5] == [1.5]"), 1);
 }
@@ -99,15 +341,14 @@ fn interp_deep_copy_float_in_container_preserves_raw_slot() {
         end
     "#,
     );
-    let (_, runtime) =
-        run_main_with_runtime(&crate::telemetry::NullTelemetry, &m).expect("interp run");
+    let (_, runtime) = run_main_with_runtime(&NullTelemetry, &m).expect("interp run");
 
     let task = runtime.task(1).expect("main task remains registered");
     let any_ref = task.mailbox.front().expect("self-send remains queued");
     assert_eq!(any_ref.tag(), ValueKind::LIST);
     let list = any_ref.list_addr().expect("mailbox keeps tagged list ref");
-    let head = unsafe { (*(list as *const fz_runtime::any_value::ListCons)).head_value() };
-    assert_eq!(head.kind(), fz_runtime::any_value::ValueKind::FLOAT);
+    let head = unsafe { (*(list as *const ListCons)).head_value() };
+    assert_eq!(head.kind(), ValueKind::FLOAT);
     assert_eq!(f64::from_bits(head.raw()), 2.5);
 }
 
@@ -121,19 +362,20 @@ fn persistent_runtime_drives_entries_without_resetting_mailbox() {
         end
 
         fn second() do
-          receive()
+          receive do
+            x -> x
+          end
         end
     "#,
     );
     let first = m.fn_by_name("first").expect("first fn").id;
     let second = m.fn_by_name("second").expect("second fn").id;
+    let mut t = crate::types::new();
     let mut runtime = IrInterpRuntime::fresh_with_root(&m);
 
-    runtime
-        .enqueue_entry(&m, 1, first, vec![])
-        .expect("enqueue first");
+    runtime.enqueue_entry(&m, 1, first, vec![]).expect("enqueue first");
     let first_done = runtime
-        .drive_until_idle(&crate::telemetry::NullTelemetry, Some(1))
+        .drive_until_idle(&mut t, &NullTelemetry, Some(1))
         .expect("drive first");
     assert_eq!(first_done.len(), 1);
     assert_eq!(
@@ -142,16 +384,11 @@ fn persistent_runtime_drives_entries_without_resetting_mailbox() {
         "first drive leaves self-sent message in persistent mailbox",
     );
 
-    runtime
-        .enqueue_entry(&m, 1, second, vec![])
-        .expect("enqueue second");
+    runtime.enqueue_entry(&m, 1, second, vec![]).expect("enqueue second");
     let second_done = runtime
-        .drive_until_idle(&crate::telemetry::NullTelemetry, Some(1))
+        .drive_until_idle(&mut t, &NullTelemetry, Some(1))
         .expect("drive second");
-    assert_eq!(
-        second_done.last().and_then(|(_, value)| value.as_i64()),
-        Some(41),
-    );
+    assert_eq!(second_done.last().and_then(|(_, value)| value.as_i64()), Some(41),);
     assert_eq!(
         runtime.task(1).expect("root task").mailbox.len(),
         0,
@@ -175,13 +412,14 @@ fn interp_reductions_yield_allocation_light_loops() {
           me = self()
           spawn(fn () -> child(me) end)
           count(5000, 0)
-          receive()
+          receive do
+            x -> x
+          end
         end
     "#,
     );
 
-    let (halt, runtime) =
-        run_main_with_runtime(&crate::telemetry::NullTelemetry, &m).expect("interp run");
+    let (halt, runtime) = run_main_with_runtime(&NullTelemetry, &m).expect("interp run");
 
     assert_eq!(halt, 99);
     let main = runtime.task(1).expect("main task remains registered");
@@ -196,14 +434,8 @@ fn interp_reductions_yield_allocation_light_loops() {
     );
     assert_eq!(main.allocation_pressure_yields, 0);
     assert_eq!(child.allocation_pressure_yields, 0);
-    assert_eq!(
-        main.interpreter_yields, 0,
-        "test should be allocation-light"
-    );
-    assert_eq!(
-        child.interpreter_yields, 0,
-        "test should be allocation-light"
-    );
+    assert_eq!(main.interpreter_yields, 0, "test should be allocation-light");
+    assert_eq!(child.interpreter_yields, 0, "test should be allocation-light");
 }
 
 #[test]
@@ -216,17 +448,13 @@ fn interp_quiet_quanta_moves_only_at_scheduler_boundaries() {
     "#,
     );
     let main = m.fn_by_name("main").expect("main").id;
+    let mut t = crate::types::new();
     let mut runtime = IrInterpRuntime::fresh_with_root(&m);
-    runtime
-        .enqueue_entry(&m, 1, main, vec![])
-        .expect("enqueue main");
-    runtime
-        .task_mut(1)
-        .expect("main task")
-        .reductions_per_quantum = 100;
+    runtime.enqueue_entry(&m, 1, main, vec![]).expect("enqueue main");
+    runtime.task_mut(1).expect("main task").reductions_per_quantum = 100;
 
     let completions = runtime
-        .drive_until_idle(&crate::telemetry::NullTelemetry, None)
+        .drive_until_idle(&mut t, &NullTelemetry, None)
         .expect("drive interp");
     let halt = completions
         .iter()
@@ -254,18 +482,17 @@ fn interp_allocation_pressure_yields_before_budget_exhaustion() {
     "#,
     );
     let main = m.fn_by_name("main").expect("main").id;
+    let mut t = crate::types::new();
     let mut runtime = IrInterpRuntime::fresh_with_root(&m);
-    runtime
-        .enqueue_entry(&m, 1, main, vec![])
-        .expect("enqueue main");
+    runtime.enqueue_entry(&m, 1, main, vec![]).expect("enqueue main");
     {
         let task = runtime.task_mut(1).expect("main task");
         task.reductions_per_quantum = 1000;
-        task.heap.allocation_watermark = std::ptr::null_mut();
+        task.heap.allocation_watermark = null_mut();
     }
 
     let completions = runtime
-        .drive_until_idle(&crate::telemetry::NullTelemetry, None)
+        .drive_until_idle(&mut t, &NullTelemetry, None)
         .expect("drive interp");
     let halt = completions
         .iter()
@@ -309,7 +536,9 @@ fn interp_typed_int_send_receive_boundary() {
         run(r#"
             fn main() do
               send(self(), 4611686018427387904)
-              receive()
+              receive do
+                x -> x
+              end
             end
             "#,),
         4611686018427387904
@@ -389,7 +618,9 @@ fn interp_typed_int_sender_wakes_blocked_receiver() {
             fn main() do
               me = self()
               spawn(fn () -> child(me) end)
-              receive()
+              receive do
+                x -> x
+              end
             end
         "#),
         4611686018427387904

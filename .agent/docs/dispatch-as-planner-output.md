@@ -1,308 +1,278 @@
 # Dispatch As Planner Output
 
-The compiler treats dispatch decisions as typed facts produced by the planner.
-Codegen consumes those facts; it does not re-derive them from names, source
-spans, or best-effort local type reconstruction.
+Dispatch is a planner fact. `ir_planner` decides which target each call site
+runs, how that edge returns, what code a callable value names, which blocks are
+live, and which bodies are executable. Codegen consumes those facts and lowers
+them mechanically; it does not re-derive dispatch from names, source spans,
+closure captures, or local type reconstruction.
 
-Source calls, closure calls, continuation hops, recursive back edges, and
-scheduler suspension have different runtime shapes, but the planner models them
-all as state transitions over facts it already records — call-edge targets,
-return-context plans, and callable capabilities. Passes read those facts rather
-than reconstructing control shape from closure frames or capture order.
+One rule covers every call shape — source calls, closure calls, continuation
+hops, recursive back edges, protocol callbacks, and provider boundaries: the
+planner publishes the typed fact; the downstream pass reads it.
 
-Destination planning is the main application of this rule. See
-[`destination-passing.md`](destination-passing.md) for the
-container construction model, `ReturnDemand` composition, and return-context
-plans.
+This doc is the dispatch contract. See
+[`single-authoritative-plan.md`](single-authoritative-plan.md) for the pipeline
+rule that codegen consumes the plan it is handed, and
+[`destination-passing.md`](destination-passing.md) for init-token destination
+construction.
 
-Protocol dispatch uses the same rule. See [`protocols.md`](protocols.md) for
-the protocol-domain type contract, implementation target identity, dispatch
-outcomes, and the requirement that link/load stages preserve planner facts
-instead of reconstructing them with a second planning pass.
+## The Pieces
 
-The corollary is that there is exactly one such plan. See
-[`single-authoritative-plan.md`](single-authoritative-plan.md) for why
-`compile_with_backend_impl` derives the authoritative plan once (no second plan
-to reconcile, no telemetry-silenced re-derivation), how the pre-plan transforms
-read a capability slice instead of a full plan, and why destination lowering
-needs no re-plan.
+`ir_planner::plan_module` produces a `ModulePlan`. `materialize_program` then
+projects it into a `PlannedProgram` for codegen.
 
-## Planner Vocabulary
+- `SpecPlan` (`fn_types.rs`) is one specialization's local plan. It owns Var
+  types (`vars`), block-entry environments (`block_envs`), callable
+  capabilities (`callable_capabilities`), selected call edges (`call_edges`),
+  reachable blocks (`reachable_blocks`), per-spec dead branches
+  (`dead_branches`), closure-entry obligations (`callable_entry_targets`), and
+  per-call extern marshal classes (`extern_marshals`).
+- `ModulePlan` (`fn_types.rs`) owns the specialization map (`specs`), the
+  reachable spec-key set (`reachable_specs`), effective returns
+  (`effective_returns`), per-body spec roles (`spec_roles`), the any-key index
+  (`any_key_specs`), per-family precedence (`spec_precedence`), per-fn effect
+  summaries (`fn_effects`), module-level dead branches (`dead_branches`), and
+  per-fn return-shape capabilities (`return_capabilities`).
+- `PlannedProgram` (`planned.rs`) is the codegen-facing projection over the
+  settled `Module`. It owns stable `SpecId` registration (`spec_registry`,
+  `spec_keys`), one `PlannedBody` per registered spec slot (each carrying its
+  materialized `SpecPlan`), the callable-entry table, and the finished
+  `reachable_specs` set.
 
-The phase that produces these facts is `ir_planner::plan_module`. Its products
-are deliberately broader than type maps:
+The planner consumes `type_infer`'s solved value flow and activation returns; it
+does not run a second return-type engine. Names stay narrow where the code is
+literally type inference (`type_fn`, `Ty`, `vars`, block environments,
+narrowing); a plan is more than its types, so planner names match that broader
+scope.
 
-- `SpecPlan` is one specialization's plan. It owns Var and block-env types,
-  callable capabilities, dispatch choices (`call_edges`, which carry the
-  return-use and return-context facts), reachable blocks, dead-branch facts, and
-  extern-marshal facts.
-- `ModulePlan` is one module's plan. It owns the specialization plans, effective
-  returns, any-key indexes, precedence, effect summaries, cross-spec dead
-  branches, and (under `cfg(test)`) closure handles.
+## SpecKey And BodyKey
 
-Local type-inference vocabulary stays narrow where the code is literally type
-inference: `type_fn`, `Ty`, `vars`, block environments, and the narrowing and
-concrete-type helpers keep their type-specific names. A plan is more than the
-types it carries; the planner names match that scope.
+`SpecKey` is the planner entry key: `fn_id + input + ReturnDemand`. `BodyKey`
+drops the demand: `fn_id + input`.
 
-## Authoritative Facts
+- `effective_returns`, `spec_roles`, and `spec_precedence` are keyed by
+  `BodyKey`: a semantic return payload, a reachability justification, and a
+  selection precedence are all properties of the `(fn_id, input)` family, not
+  of an edge's delivery shape.
+- `specs` and `reachable_specs` are keyed by `SpecKey`.
 
-`SpecPlan.call_edges` is keyed by `CallsiteId`: `(caller FnId, intrinsic
-CallsiteIdent, EmitSlot)`. The value is a `CallEdgePlan`, which names the
-selected target capability plus the return-use and return-context facts for that
-edge.
+`ReturnDemand` selects an edge's delivery ABI; it does not create a different
+value payload. Because demand is part of `SpecKey`, each `SpecKey` registers its
+own `SpecId` and gets its own `PlannedBody`: a `tuple_fields` reach and a
+`value` reach of one helper are distinct native bodies, exactly like distinct
+type specializations. `materialize_program` does not merge them — merging would
+force one return ABI onto callers that asked for the other. In the current
+corpus a single `BodyKey` is never reached under two different demands, so the
+many-`SpecKey`-to-one-`BodyKey` fan-in does not occur; the `BodyKey`-keyed maps
+collapse to one entry per spec.
 
-Local direct, closure, and continuation call edges target a `SpecKey`, which
-names the callee function, its semantic input key, and its `ReturnDemand`.
-Provider-boundary and protocol targets ride the same `CallEdgePlan` shape.
+## Activation Projection
 
-Imported module calls use that provider-boundary shape. Before link, the
-IR carries an `ExternalCallEdge` and the call edge names the target `ExportKey`
-plus the public input and demand selected upstream. `link_ir_units`
-remaps unit-local facts into linked ids and resolves the provider-boundary
-target to the local `SpecKey` while `Module::rewrite_external_calls_for_lto`
-rewrites the terminator.
+`plan_module` reads `type_infer` activation facts as production data and projects
+them into planner-visible semantic returns. `ActivationReturnFacts`
+(`worklist.rs`) keeps two layers:
 
-The synthetic `__external__.*` stub is only a lowering anchor. If a callsite has
-an `ExternalCallEdge`, planner discovery records a provider-boundary
-`CallEdgeTarget::External`; it must not plan through the stub body or read the
-stub's `external_module_unlinked` halt as a real return. Non-tail external
-calls still get an ordinary local `Cont` edge. The continuation's slot-0 type
-comes from the callee's public `@spec` when available, otherwise from `any`,
-because an unknown provider result is a complete boundary fact, not a pending
-local return.
+- witness activations, keyed by `TypeInferActivationId` (`witness_returns`,
+  `witness_public_keys`, observed edges and dead arms per witness) — used for
+  callsite-local slot-0 precision, dead-arm proof, and the edge inventory;
+- semantic return buckets, keyed by `BodyKey` (`bucket_returns`) — the
+  executable contract handed to interpreter and codegen.
 
-Each call edge may also record the typed return-use fact for its result hole and
-the executable plan for return-use facts that need lowering. The current
-concrete plans lower ListTail contexts. They can also name the already-proved
-empty-tail continuation target used to preserve material value semantics without
-a backend sibling probe.
+`type_infer` keeps unresolved facts as `Pending`/`Unknown`; the planner turns
+those into `any` only at this boundary, and only for specs that stay reachable
+(`projected_return_for_key`). Unresolved facts are also tracked as overlap
+guards (`unsettled_buckets`, keyed by `FnId`). An exact unresolved bucket can be
+projected for its own key, but a different known fact is not projected for a
+requested key while any unresolved bucket for the same `FnId` overlaps that
+domain (`request_overlaps_unsettled`). The guard is key-sensitive: an unsettled
+`f(nonempty_list(int))` blocks a broad `f(list(int))` result but leaves disjoint
+facts for the same function alone.
 
-This is per caller spec. The same syntactic callsite can dispatch to different
-targets in different caller specializations, so a module-global callsite table
-is not precise enough.
+`fz.planner.planned` reports the handoff with `type_kernel: "activation"` plus
+`activation_return_*` counts (facts, keys, complete/unresolved/invalid entries,
+known/unresolved/no-return states, projected returns, projection gaps) and the
+`activation_return_projection_gaps` metadata list.
 
-That same precision applies to return-context plans: plan operands are typed
-facts for one caller specialization, not backend observations about continuation
-capture order.
+`fz.planner.activation_projection` reports one fact per visible spec, keyed by
+`BodyKey` (rendered into the `spec_key` field). It names the spec role,
+projection kind (`exact`, `union`, `declared_callable_entry`,
+`unsettled_overlap`, `uncovered`), projected return state, final effective
+return, covered witness inventory, activation-derived call edges, and
+activation-derived dead arms. A projection gap is a reachable spec kept alive
+for another contract reason without compatible activation coverage; zero gaps is
+the consistency signal.
 
-`EmitSlot` separates the facts produced by one call-shaped terminator:
+## Call Edges
+
+`SpecPlan.call_edges` maps a `CallsiteId` to a `CallEdgePlan`. A `CallsiteId`
+(`fz_ir`) is `caller FnId + CallsiteIdent + EmitSlot`. The same syntactic call
+site can dispatch to different targets in different caller specializations, so a
+module-global callsite table is not precise enough — the caller's `SpecKey` is
+part of the proof.
+
+`EmitSlot` separates the facts one call-shaped terminator produces:
 
 - `Direct` names the direct callee body.
 - `Cont` names the continuation body.
-- `ClosureCall` names a closure-call callsite. It is purely structural — it
-  identifies where the closure dispatch happens, while the call edge's target
-  shapes what runs, whether that comes from a known callable capability or a
-  closure literal clause.
-- `MakeClosure` names the body spec made reachable by constructing a closure
-  value.
+- `ClosureCall` names a closure-call dispatch site.
+- `CallableBoundary` names a known local closure value crossing an external or
+  provider boundary that may invoke it later.
+
+A `CallEdgePlan` carries a `CallEdgeTarget` and an optional `ReturnContract`.
+The target is `Local(SpecKey)` for an in-module body or
+`External { target: ExportKey, input, demand }` for a provider boundary.
+
+`Cont` edges come from the same map. When the activation kernel observed the
+callee input for a callsite, `continuation_key` uses that full callee input
+vector as the continuation key before falling back to reconstructing it from
+slot 0 plus captures. The observed key refines the input types — it keeps
+reducer protocol state such as `{:cont | :halt, ...}` in the continuation ABI
+instead of widening slot 0 to a generic type variable. The slot-0 callable
+capability still comes from the producing call's result knowledge when that
+carries a more precise `KnownFn`/`KnownClosure` fact than the key's first type.
+
+Provider and protocol edges ride the same shape. Before link, an imported edge
+is `External`, naming an `ExportKey` plus public input and demand. The synthetic
+`__external__.*` body that `ir_lower` emits is only a lowering anchor, not a real
+body to plan through. `Module::rewrite_external_calls_for_lto` resolves each
+`ExternalCallEdge` to a local `FnId` and rewrites the call site in the IR; the
+re-planned module then specs it into a `Local` edge.
+
+Stmt-level extern boundaries are intrinsic IR call sites: `Prim::Extern` carries
+its own `CallsiteIdent`, so lowering, type inference, planner discovery, and body
+materialization all name the same boundary. Matching spans, ordinals, or the
+`external_call_edges` side list would be a lossy fallback.
+
+## Return Contracts
+
+A local call edge may carry a `ReturnContract { target: SpecKey, strategy:
+ReturnStrategy }`. The target's demand and the strategy's demand must agree
+(`ReturnContract::new` asserts it). The strategies are:
+
+- `Value`: ordinary material return.
+- `TupleFields(N)`: tuple field delivery to a destructuring continuation.
+- `ForwardedDemand(demand)`: a tail-call edge forwards the caller's existing
+  demand down the chain.
+
+Ordinary direct calls, tail calls, and continuation hops select `Value`.
+`TupleFields` is an explicit ABI capability for callback-style edges and
+continuation delivery, granted by `return_context.rs` only when the producer
+returns an `N`-tuple on every path (`ReturnCapability::returns_tuple_of_arity`)
+and the continuation projects exactly those `N` fields
+(`destructures_slot0_into_arity`); it does not rewrite ordinary function
+parameters. The delivery axis is `Value` vs `TupleFields` — there is no
+list-tail delivery in the data model.
+
+Native return-lane facts follow planned call edges, not raw `FnId` guesses.
+`ir_codegen::abi_facts` derives which fns return a boxed `ValueRef` by walking
+reachable bodies and their resolved direct, continuation, and tail-call edges,
+so a helper clause boxes a scalar at the boundary that actually returns it into
+an enclosing continuation.
 
 ## Callable Capabilities
 
-`SpecPlan.callable_capabilities` carries callable identity as value-capability
-data:
+`SpecPlan.callable_capabilities` records callable identity as value-capability
+data, separate from the runtime object built to represent it:
 
 ```text
 CallableCapability =
   KnownFn(fn_id)
-  KnownClosure { fn_id, captures }
+  KnownClosure { fn_id, captures, capture_capabilities }
   OpaqueCallable
 ```
 
-The names describe what the compiler knows about a value, not which runtime
-object must be built:
-
-- `KnownFn` is a direct code identity with no runtime closure state. It can come
-  from a zero-capture closure literal, but the useful fact is "this value can be
-  called as this function," not "this value is a closure." The module inliner
-  uses this: direct callsites to a `KnownFn` target can inline even when a
-  zero-state closure value for the same function also exists elsewhere.
-- `KnownClosure` is a direct code identity plus captured runtime state. It
-  supports direct call edges, but the captures are real state and stay a
-  representation barrier; the inliner keeps these targets callable as closure
-  entries.
+- `KnownFn` is a direct code identity with no runtime closure state.
+- `KnownClosure` is a direct code identity plus captured runtime state
+  (`captures` types and the per-capture `capture_capabilities`).
 - `OpaqueCallable` is a callable boundary whose concrete target is not a single
-  known function in this plan — for example, control flow that joins several
-  zero-capture function values. It keeps the indirect-call shape and the
-  conservative materialization rules, and is not collapsed to one static
-  identity.
+  known function in this plan.
 
-Call-edge facts consume callable capabilities alongside the return contract: the
-target says what code may run, and the return contract pairs that exact target
-with the executable strategy that makes the caller's result context legal. The
-same fact gates continuation representation; see the callable-capability gate in
-[`lazy-continuation-materialization.md`](lazy-continuation-materialization.md).
+Lowering is the source of the distinction. `ir_lower` emits `Prim::MakeFnRef`
+for named function values and zero-capture lambdas, and `Prim::MakeClosure` only
+for env-carrying lambdas (`lambda.rs` branches on `captured_vars.is_empty()`).
+Codegen enforces the same split: lowering a `MakeClosure` with zero captures
+panics, because a thin callable is a `MakeFnRef`. A call-edge fact pairs the
+target (what code may run) with the return contract (how that edge returns);
+the same capabilities gate lazy continuation representation
+([`lazy-continuation-materialization.md`](lazy-continuation-materialization.md)).
 
-Known-target closure rewriting is an all-spec consensus rule over these same
-facts. A threaded callable parameter can be rewritten to a direct zero-capture
-function only when every specialization of the enclosing function that has a
-callable fact agrees on the same `KnownFn`. `KnownClosure` and
-`OpaqueCallable` are not absence of evidence; they are positive evidence that
-runtime callable state may exist, so they poison the consensus. Ignoring those
-facts makes the first zero-capture reducer that reaches a higher-order function
-globally replace later captured reducers, which is unsound.
+## Protocol Dispatch
 
-## Return Demand Is A Variant Capability
+Protocol implementation selection is planner-owned. From receiver type facts and
+visible implementation domains the planner builds a `ProtocolDispatch::Local`
+(static-direct), `ProtocolDispatch::External` (provider boundary), or diagnostic
+edge.
 
-`SpecKey.demand` is part of the dispatch target. That means return-demand
-destination planning uses the same mechanism as ordinary variant selection:
-the planner selects a compile-time capability, then codegen emits the ABI and
-body for exactly that capability.
+A finite-union receiver domain is rewritten before execution
+(`rewrite_closed_union_protocol_dispatch`) into a `TypeTest`/`If` cascade with a
+direct-call arm per visible local implementation. `narrow` intersects the
+receiver with each arm's target type, so when the authoritative plan re-types the
+rewritten module each arm's ordinary direct call specs to the right impl. A
+closed union needs no fallthrough; an open or erased receiver keeps the protocol
+stub as the final `else`, so a value matching no impl halts with
+`:protocol_dispatch_unplanned`. Codegen lowers each `TypeTest` by schema id for
+named structs and by value kind for kinded containers such as lists and maps; no
+runtime lookup table is emitted.
 
-The executable call-edge fact is `ReturnContract`: it contains the selected
-local target `SpecKey` including demand and a `ReturnStrategy`. Ordinary value
-returns use `ReturnStrategy::Value`; tuple-field returns use
-`ReturnStrategy::TupleFields(N)`; list-tail returns carry the matching
-`ReturnContextPlan` inside `ReturnStrategy::ListTail` or
-`ReturnStrategy::TupleFieldsListTail`, except for tail calls that forward the
-caller's demanded ABI directly with `ReturnStrategy::ForwardedDemand`. The
-strategy's demand must match the target demand. A demand without the matching
-strategy is an unknown/incomplete plan, not a usable fact.
+Protocol callback call sites lower to ordinary call-shaped IR with a protocol
+stub callee. The stub is a stable callsite anchor; frontend checking and linking
+rewrite it from planner facts.
 
-Native codegen lowers from the contract payload. It does not rediscover
-list-tail lanes from captures or treat tuple-field return demand as an entry
-parameter rewrite for ordinary functions. Tuple-field entry expansion is only
-for continuation functions that receive a producer's tuple fields directly; a
-plain function with `ReturnDemand::TupleFields(N)` keeps its normal entry
-parameters and only changes how its return is delivered.
+## Codegen Boundary
 
-`ReturnDemand` has two axes:
+Codegen lowers the `PlannedProgram` mechanically by reading planner facts:
 
-- delivery: `Value` or `TupleFields(N)`;
-- context: `None` or `ListTail(tail_ty)`.
+- For a direct or continuation call site, codegen reads the selected edge from
+  the current caller's `SpecPlan.call_edges`.
+- When materialization erased a known zero-capture `CallClosure`, the executable
+  body already holds the cloned direct producer and continuation control flow,
+  and codegen reads the remapped `call_edges` attached to that `PlannedBody`
+  rather than the raw callable value.
+- For `Prim::MakeFnRef`/`Prim::MakeClosure`, codegen selects one of the planned
+  callable-entry targets for the closure value and reports the choice through
+  `fz.codegen.callable_entry_selected`.
+- For a return contract, codegen lowers the contract payload it was handed.
+- For a registered executable spec, `PlannedProgram::executable_body` resolves
+  it to a `PlannedBody`.
+- For block liveness, codegen reads `SpecPlan.reachable_blocks`.
 
-Rendered capabilities are:
+Re-walking in codegen would miss per-spec facts, choose a body the spec registry
+did not register, or diverge from activation-return projection and continuation
+ABI selection; a missing fact is a planner bug.
 
-- `Value`: ordinary material return.
-- `TupleFields(N)`: tuple field delivery to a continuation.
-- `ListTail(tail_ty)`: hidden list-tail destination parameter.
-- tuple field delivery plus ListTail context: tuple field delivery with a
-  carried list-tail destination for product contexts, rendered as
-  `tuple_fields(N, list_tail(tail_ty))`.
+`materialize_program` prunes each body's `call_edges` to its surviving/remapped
+call sites (`materialized_call_edges`). `CallableBoundary` is the only call-edge
+fact a terminator slot does not produce, so `materialized_call_edges` keeps it
+unconditionally and `materialized_orphan_call_edges` exempts it from the orphan
+check. Selective-receive (`ReceiveMatched`) outcome `Cont` edges are
+terminator-derived: `materialized_callsite_ids` adds each clause's and the
+after-clause's `Cont` callsite to the live set, so they survive as ordinary
+materialized callsites, not orphans.
 
-This delivery capability is not the same fact as the chain's terminal halt
-kind. `ReturnDemand` answers "how does this result cross the immediate seam?"
-while declared/effective return payloads answer "what values can eventually
-emerge if the chain halts?" A `Value`-demanded native spec therefore delivers a
-boxed value ref even when its reachable payload set is a singleton int or
-float. The halt side may still use a narrower kind when the reachable return
-chain proves one.
+Executable reachability belongs to `PlannedProgram`. `materialized_reachable_specs`
+recomputes it from entry seeds by following surviving call edges and live
+callable constructions, then retains `Activation`/`CallableEntry` demand
+siblings only for body keys that remain reachable — it does not copy
+`ModulePlan::reachable_specs` blindly. Known direct-call, tail-direct-call,
+closure-call, and tail-closure-call erasure is materializer work too.
 
-Choosing a function variant, choosing a tuple-return ABI, and choosing a
-return-context body are the same kind of decision: a typed callsite capability
-selected before codegen.
-Protocol implementation selection is the same kind of decision: the planner
-selects a static-direct (`ProtocolDispatch::Local`), provider-boundary
-(`ProtocolDispatch::External`), or diagnostic edge from receiver type facts and
-visible implementation-domain facts. Finite-union receiver domains are rewritten
-before execution into `TypeTest` / `If` cascades with direct-call arms for each
-visible local implementation; named source structs are tested by schema id, and
-kinded containers such as lists and maps are tested by value kind. Open or
-erased receiver domains keep a final protocol-stub fallthrough for any residual
-non-implementing shape; no runtime lookup table is emitted.
+## Tests
 
-Protocol callback callsites lower to ordinary call-shaped IR with a protocol
-stub callee. The stub is not the semantic target. It is a stable callsite
-anchor that lets the planner publish a `CallEdgePlan` to the selected local
-implementation or to a provider-boundary `ExportKey`; linking then remaps that
-edge and rewrites the callsite when the provider body becomes available.
-Single-unit frontend checking performs the same rewrite for local planned
-targets before interpreter or native execution, using the planner fact rather
-than rediscovering the protocol target in a backend.
+Semantic reachability and erasure are proven at the planner/materializer layer
+on telemetry, before any codegen inspection:
 
-There are two frontend rewrite cases:
+- `fz.planner.planned` / `fz.planner.activation_projection` — activation handoff
+  and per-spec projection; zero projection gaps is the consistency signal.
+- `fz.planner.materialized` / `fz.planner.body_materialized` — executable bodies;
+  `post_plan_reachability_growth_count == 0` and
+  `materialized_reachability_missing_body_count == 0` hold,
+  `post_plan_reachability_pruned_count` measures pruned specs, and
+  `direct_call_inline_count` / `continuation_inline_count` / `fused_block_count`
+  measure erasure.
+- `fz.codegen.callable_entry_selected` — the closure-entry target codegen chose.
 
-- Static-single: every reachable caller specialization that mentions the same
-  physical `CallsiteId` selects the same local target. The frontend can rewrite
-  that shared IR callsite to the agreed target.
-- Switch-union: specializations of the same physical callsite select different
-  local protocol targets. The frontend must leave the protocol stub in place so
-  closed-union protocol dispatch can rewrite it into a `TypeTest` / `If`
-  cascade with one direct-call arm per implementation.
-
-The agreement check is required because a physical callsite is shared by all
-monomorphized specs of its caller. Rewriting it per spec would make the last
-planned target win globally, collapsing a polymorphic protocol call such as
-`Enum.count/1` onto one implementation and erasing the switch-dispatch anchor.
-
-The crucial invariant: demand follows a specific return edge/result hole, not
-the whole caller spec. A caller spec may contain multiple calls, and each call
-can feed a different use. Codegen must therefore consume the `CallsiteId` facts
-the planner produced instead of reusing the caller spec's demand as a blanket
-property.
-
-Effective returns are a worklist fixpoint. Missing downstream return facts are
-pending, not a definite `none`; readers are indexed so they run again when the
-callee's return appears, widens, or completes. Once a provisional return exists,
-the planner may use it to build continuation keys and return joins. That is what
-lets recursive SCCs widen monotonically instead of waiting for themselves to be
-"complete" before contributing to the fixpoint.
-
-## Why Not Re-Walk In Codegen
-
-Post-planner passes may move, fold, or delete blocks. They must not invent new
-call shapes after the planner commits to specs. `CallsiteIdent` survives legal
-moves, and `SpecPlan.call_edges` remains the precise mapping from each
-surviving call shape to its selected capability.
-
-Re-walking in codegen is wrong for three reasons:
-
-- it can miss per-spec facts, because one caller spec's block environment is not
-  another caller spec's block environment;
-- it can choose a body that the `SpecRegistry` did not register;
-- it can silently diverge from effective-return propagation and continuation
-  ABI selection.
-
-The invariant is simple: if codegen sees a direct or continuation callsite, the
-current caller's `SpecPlan.call_edges` must contain the selected local
-`SpecKey`. Missing entries are compiler bugs. If codegen lowers return-demand
-behavior, the corresponding return-use or return-context plan must also come
-from that call edge. Backend closure captures and CLIF parameter shapes are
-implementation details, not proof sources, and codegen must not construct
-alternate demanded `SpecKey`s.
-
-Native lowering also consumes `SpecPlan.reachable_blocks`. A native spec emits
-only blocks reachable for that spec; an `If` whose other successor is
-spec-unreachable lowers as a direct jump to the live successor. This is still
-planner output, not a backend guess: the same branch narrowing that publishes
-reachable blocks is responsible for preserving non-list values on predicates
-such as `not IsEmptyList(x)`.
-
-For provider-boundary rewrites, the linked callsite must still be the same
-call: same caller, same callsite identity, and same target arity. The arity
-check keeps source-span collisions from rewriting a matcher branch or recursive
-tail call to an unrelated imported function.
-
-## Return-Demand Boundaries
-
-ReturnDemand capabilities are semantics-preserving only under the proof that
-created them.
-
-`TupleFields` is local product decomposition: the callee returns fields instead
-of allocating a tuple struct, and the continuation receives those fields in the
-same order.
-
-The proof is local to that callee-to-continuation edge. A continuation compiled
-to receive tuple fields may still tail-call another function using its captured
-outer continuation; that outgoing tail call must not inherit the tuple-field
-input shape unless a separate proof selected it for that edge.
-
-`ListTail` is typed context passing. It can reorder pure recursive list work
-only when the context proof does not cross observable operations. The effect
-legality gates reject extern calls, scheduler-visible operations, receives,
-closure calls, and allocation-stat readers such as
-`Process.heap_alloc_stats()`.
-
-Value-context ListTail lowering uses the same rule. When a material value can
-be built by using an empty hidden list tail, the planner records that target in a
-return-context plan. Codegen consumes the plan; it does not search for a
-demanded sibling.
-
-For quicksort, the selected capabilities make the typed context equivalent to:
-
-```text
-qsort_into(xs, tail)
-```
-
-The result remains an immutable list. The compiler imports the defunctionalized
-context idea from FP2/TRMReC; it does not import destructive update.
+Gate the contract with `cargo test --lib ir_planner`, `cargo test --lib
+ir_codegen`, `cargo test --lib
+frontend_to_codegen_pipeline_reports_planner_phase_events`, `cargo test --lib
+planned_program_materialization_reports_executable_body_folds`, and `cargo test
+--test fixture_matrix`.

@@ -1,0 +1,14 @@
+# Pattern-dispatch binding flow over tuple shape. The tuple leaf returns the
+# bound payload, while the atom leaf returns its own singleton.
+# Lowered `type_test` and `tuple_field` proof narrow `{:ok, int}` to the tuple
+# leaf and project the payload without letting atom or impossible-arity arms
+# contribute.
+#
+# Expected: main() : {int, :error}
+
+fn pick({:ok, x}), do: x
+fn pick(:error), do: :error
+
+fn main() do
+  {pick({:ok, 1}), pick(:error)}
+end

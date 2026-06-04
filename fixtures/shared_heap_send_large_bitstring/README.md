@@ -1,17 +1,17 @@
 ---
 purpose: "fz-cty.6 — sending a >64-byte bitstring via spawn-and-send rounds through ProcBin/SharedBin under JIT and AOT"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 5
-budget.codegen.instructions: 50
-budget.specs.count: 4
-budget.planner.worklist_pops: 7
-budget.planner.walk_calls: 7
-budget.planner.type_fn_calls: 4
+budget.codegen.functions: 9
+budget.codegen.instructions: 776
+budget.specs.count: 8
+budget.planner.worklist_pops: 8
+budget.planner.walk_calls: 8
+budget.planner.type_fn_calls: 8
 budget.planner.matcher_specs: 0
-budget.planner.vars: 86
-budget.planner.blocks: 4
+budget.planner.vars: 90
+budget.planner.blocks: 8
 budget.planner.stmts: 76
-budget.planner.dispatches: 1
+budget.planner.dispatches: 7
 ---
 
 # shared_heap_send_large_bitstring

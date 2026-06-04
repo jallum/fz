@@ -176,17 +176,13 @@ fn value_to_expr_inner(v: &Value) -> Result<Expr, String> {
         Value::Binary(s) => Ok(Expr::Binary(s.to_vec())),
 
         Value::List(xs) => {
-            let exprs = xs
-                .iter()
-                .map(value_to_expr)
-                .collect::<Result<Vec<_>, _>>()?;
+            let exprs = xs.iter().map(value_to_expr).collect::<Result<Vec<_>, _>>()?;
             Ok(Expr::List(exprs, None))
         }
 
-        Value::Tuple(elems) if elems.len() == 2 => Ok(Expr::Tuple(vec![
-            value_to_expr(&elems[0])?,
-            value_to_expr(&elems[1])?,
-        ])),
+        Value::Tuple(elems) if elems.len() == 2 => {
+            Ok(Expr::Tuple(vec![value_to_expr(&elems[0])?, value_to_expr(&elems[1])?]))
+        }
 
         Value::Tuple(elems) if elems.len() == 3 => decode_ast_node(&elems[0], &elems[2]),
 
@@ -210,11 +206,7 @@ fn atom(s: &str) -> Value {
 
 fn ast_node(name: &str, _meta: &[(String, Value)], args_or_ctx: Option<Value>) -> Value {
     let args = args_or_ctx.unwrap_or(atom(USER_CTX));
-    Value::Tuple(Rc::new(vec![
-        atom(name),
-        Value::Map(Rc::new(FzMap::new())),
-        args,
-    ]))
+    Value::Tuple(Rc::new(vec![atom(name), Value::Map(Rc::new(FzMap::new())), args]))
 }
 
 fn kv(key: &str, val: Value) -> Value {
@@ -248,17 +240,11 @@ fn decode_ast_node(head: &Value, tail: &Value) -> Result<Expr, String> {
 
     match name {
         "{}" => {
-            let elems = args
-                .iter()
-                .map(value_to_expr)
-                .collect::<Result<Vec<_>, _>>()?;
+            let elems = args.iter().map(value_to_expr).collect::<Result<Vec<_>, _>>()?;
             Ok(Expr::Tuple(elems))
         }
         "__block__" => {
-            let exprs = args
-                .iter()
-                .map(value_to_expr)
-                .collect::<Result<Vec<_>, _>>()?;
+            let exprs = args.iter().map(value_to_expr).collect::<Result<Vec<_>, _>>()?;
             Ok(Expr::Block(exprs))
         }
         "if" => {
@@ -293,10 +279,7 @@ fn decode_ast_node(head: &Value, tail: &Value) -> Result<Expr, String> {
             if let Some(u) = unop_from_atom(name, args.len()) {
                 return Ok(Expr::UnOp(u, Box::new(value_to_expr(&args[0])?)));
             }
-            let arg_exprs = args
-                .iter()
-                .map(value_to_expr)
-                .collect::<Result<Vec<_>, _>>()?;
+            let arg_exprs = args.iter().map(value_to_expr).collect::<Result<Vec<_>, _>>()?;
             Ok(Expr::Call(
                 Box::new(Spanned::dummy(Expr::Var(name.to_string()))),
                 arg_exprs,
@@ -429,260 +412,5 @@ impl Value {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::parser::Parser;
-    use crate::parser::lexer::Lexer;
-
-    fn parse_expr(src: &str) -> Spanned<Expr> {
-        let wrapped = format!("fn _t() do {} end", src);
-        let toks = Lexer::new(&wrapped).tokenize().unwrap();
-        let prog = Parser::new(toks).parse_program().unwrap();
-        match &*prog.items[0] {
-            Item::Fn(d) => match &d.clauses[0].body.node {
-                Expr::Block(xs) => xs[0].clone(),
-                _ => d.clauses[0].body.clone(),
-            },
-            Item::Module(_)
-            | Item::Struct(_)
-            | Item::Protocol(_)
-            | Item::ProtocolImpl(_)
-            | Item::Alias { .. }
-            | Item::Import { .. }
-            | Item::MacroCall { .. } => {
-                panic!("test fixture should be a fn")
-            }
-        }
-    }
-
-    fn round_trip(src: &str) {
-        let e = parse_expr(src);
-        let v1 = expr_to_value(&e).expect("reify");
-        let e2 = value_to_expr(&v1).expect("decode");
-        let v2 = expr_to_value(&e2).expect("reify²");
-        assert!(
-            value_struct_eq(&v1, &v2),
-            "round-trip mismatch for {:?}:\n  v1 = {:?}\n  v2 = {:?}",
-            src,
-            debug_value(&v1),
-            debug_value(&v2)
-        );
-    }
-
-    fn value_struct_eq(a: &Value, b: &Value) -> bool {
-        use Value::*;
-        match (a, b) {
-            (Int(x), Int(y)) => x == y,
-            (Float(x), Float(y)) => x.to_bits() == y.to_bits(),
-            (Bool(x), Bool(y)) => x == y,
-            (Atom(x), Atom(y)) => **x == **y,
-            (Binary(x), Binary(y)) => **x == **y,
-            (Nil, Nil) => true,
-            (List(x), List(y)) => {
-                x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| value_struct_eq(a, b))
-            }
-            (Tuple(x), Tuple(y)) => {
-                x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| value_struct_eq(a, b))
-            }
-            (Map(x), Map(y)) => {
-                x.entries.len() == y.entries.len()
-                    && x.entries
-                        .iter()
-                        .zip(y.entries.iter())
-                        .all(|((k1, v1), (k2, v2))| {
-                            value_struct_eq(k1, k2) && value_struct_eq(v1, v2)
-                        })
-            }
-            _ => false,
-        }
-    }
-
-    fn debug_value(v: &Value) -> String {
-        format!("{}", v)
-    }
-
-    #[test]
-    fn literal_int() {
-        round_trip("42");
-    }
-    #[test]
-    fn literal_float() {
-        round_trip("3.14");
-    }
-    #[test]
-    fn literal_bool() {
-        round_trip("true");
-    }
-    #[test]
-    fn literal_nil() {
-        round_trip("nil");
-    }
-    #[test]
-    fn literal_atom() {
-        round_trip(":ok");
-    }
-    #[test]
-    fn literal_binary() {
-        round_trip("\"hello\"");
-    }
-    #[test]
-    fn var() {
-        round_trip("x");
-    }
-    #[test]
-    fn list() {
-        round_trip("[1, 2, 3]");
-    }
-    #[test]
-    fn tuple_2() {
-        round_trip("{1, 2}");
-    }
-    #[test]
-    fn tuple_3() {
-        round_trip("{1, 2, 3}");
-    }
-    #[test]
-    fn binop_add() {
-        round_trip("1 + 2");
-    }
-    #[test]
-    fn binop_eq() {
-        round_trip("a == b");
-    }
-
-    // fz-g58.2.2 — the Elixir-aligned operators have AST representations that
-    // round-trip through the quoted-atom reflection used by macros/quote.
-    #[test]
-    fn binop_atom_round_trips_elixir_operators() {
-        for op in [
-            BinOp::ListConcat,
-            BinOp::ListSubtract,
-            BinOp::BinConcat,
-            BinOp::Range,
-            BinOp::RangeStep,
-            BinOp::In,
-            BinOp::NotIn,
-        ] {
-            let atom = binop_atom(op);
-            assert_eq!(
-                binop_from_atom(atom),
-                Some(op),
-                "binop_atom/binop_from_atom must round-trip for {:?} (atom {:?})",
-                op,
-                atom
-            );
-        }
-    }
-    #[test]
-    fn unop_not() {
-        let e = Spanned::dummy(Expr::UnOp(
-            UnOp::Not,
-            Box::new(Spanned::dummy(Expr::Bool(true))),
-        ));
-        let v = expr_to_value(&e).unwrap();
-        let e2 = value_to_expr(&v).unwrap();
-        assert!(matches!(e2.node, Expr::UnOp(UnOp::Not, _)));
-    }
-    #[test]
-    fn call() {
-        round_trip("foo(1, 2)");
-    }
-    #[test]
-    fn nested_call() {
-        round_trip("foo(bar(x), 2 + 3)");
-    }
-    #[test]
-    fn block() {
-        let e = Spanned::dummy(Expr::Block(vec![
-            Spanned::dummy(Expr::Match(
-                Spanned::dummy(Pattern::Var("x".into())),
-                Box::new(Spanned::dummy(Expr::Int(1))),
-            )),
-            Spanned::dummy(Expr::BinOp(
-                BinOp::Add,
-                Box::new(Spanned::dummy(Expr::Var("x".into()))),
-                Box::new(Spanned::dummy(Expr::Int(2))),
-            )),
-        ]));
-        let v = expr_to_value(&e).unwrap();
-        let e2 = value_to_expr(&v).unwrap();
-        assert!(value_struct_eq(&v, &expr_to_value(&e2).unwrap()));
-    }
-    #[test]
-    fn if_with_else() {
-        round_trip("if true, do: 1, else: 2");
-    }
-    #[test]
-    fn match_var() {
-        round_trip("x = 42");
-    }
-    #[test]
-    fn unop_neg() {
-        let e = Spanned::dummy(Expr::UnOp(
-            UnOp::Neg,
-            Box::new(Spanned::dummy(Expr::Int(5))),
-        ));
-        let v = expr_to_value(&e).unwrap();
-        let e2 = value_to_expr(&v).unwrap();
-        assert!(matches!(e2.node, Expr::UnOp(UnOp::Neg, _)));
-    }
-
-    #[test]
-    fn unsupported_expr_errors_cleanly() {
-        let e = Spanned::dummy(Expr::Lambda(vec![crate::ast::LambdaClause {
-            params: vec![],
-            guard: None,
-            body: Spanned::dummy(Expr::Int(0)),
-            span: crate::diag::Span::DUMMY,
-        }]));
-        assert!(expr_to_value(&e).is_err());
-    }
-
-    #[test]
-    fn shape_of_var_is_3_tuple() {
-        let e = parse_expr("foo");
-        let v = expr_to_value(&e).unwrap();
-        let Value::Tuple(t) = &v else {
-            panic!("expected tuple, got {:?}", debug_value(&v))
-        };
-        assert_eq!(t.len(), 3);
-        assert!(matches!(&t[0], Value::Atom(s) if &**s == "foo"));
-        assert!(matches!(&t[1], Value::Map(_)));
-        assert!(matches!(&t[2], Value::Atom(s) if &**s == USER_CTX));
-    }
-
-    #[test]
-    fn shape_of_binop_is_3_tuple_with_args_list() {
-        let e = parse_expr("1 + 2");
-        let v = expr_to_value(&e).unwrap();
-        let Value::Tuple(t) = &v else {
-            panic!("expected tuple")
-        };
-        assert_eq!(t.len(), 3);
-        assert!(matches!(&t[0], Value::Atom(s) if &**s == "+"));
-        let Value::List(args) = &t[2] else {
-            panic!("expected list args")
-        };
-        assert_eq!(args.len(), 2);
-    }
-
-    #[test]
-    fn three_tuple_literal_is_wrapped() {
-        let e = parse_expr("{1, 2, 3}");
-        let v = expr_to_value(&e).unwrap();
-        let Value::Tuple(t) = &v else { panic!() };
-        assert_eq!(t.len(), 3);
-        assert!(matches!(&t[0], Value::Atom(s) if &**s == "{}"));
-    }
-
-    #[test]
-    fn decoded_nodes_carry_dummy_span() {
-        let e = parse_expr("foo(1)");
-        let v = expr_to_value(&e).unwrap();
-        let e2 = value_to_expr(&v).unwrap();
-        assert!(
-            e2.span.is_dummy(),
-            "value_to_expr must produce DUMMY-spanned nodes"
-        );
-    }
-}
+#[path = "ast_value_test.rs"]
+mod ast_value_test;

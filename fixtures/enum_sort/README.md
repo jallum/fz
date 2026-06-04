@@ -1,5 +1,5 @@
 ---
-purpose: "runtime-library Enum.sort (merge sort) allocation contract across four paths; pins JIT/AOT parity and the merge-step continuation-closure floor"
+purpose: "runtime-library Enum.sort (merge sort) allocation contract across four paths; pins JIT/AOT parity and default-sorter closure erasure"
 paths: [jit, interp, aot, repl]
 ---
 
@@ -37,8 +37,8 @@ Native floor:
 
 The interpreter and REPL legs are direct-IR baselines: they do not run native
 `ReturnDemand` / owned-cons-reuse lowering, so they allocate more cons cells
-(`154`) and only the single comparator closure. They share the same growable
-heap, so they take the same `2` allocation-pressure yields.
+(`154`), ten protocol/control structs, and three small closures. They share
+the same growable heap and each reports one allocation-pressure yield.
 
 ## The default sorter is erased from native frames
 

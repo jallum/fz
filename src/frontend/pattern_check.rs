@@ -9,26 +9,25 @@
 //! lower_program; both pure analysis, both non-fatal, both feed the
 //! driver's render-and-exit logic.
 
-use crate::ast::{
-    Expr, FnClause, FnDef, Item, MatchClause, Pattern, Program, Spanned, WithBinding,
-};
-use crate::diag::{Diagnostic, codes};
+use crate::ast::{Expr, FnClause, FnDef, Item, MatchClause, Pattern, Program, Spanned, WithBinding};
+use crate::diag::{Diagnostic, Span, codes};
 use crate::fz_ir::Var;
 use crate::pattern_matrix::{
     BodyId, PatternMatrix, Row, SubjectDomain, find_unreachable_rows, is_inexhaustive_with_domains,
 };
+use crate::types::Types;
 use std::collections::{HashMap, HashSet};
 
 /// Walk `prog` and return one `Diagnostic` per unreachable clause and
 /// per inexhaustive match. Empty when everything checks.
 ///
-/// `survivors` is the set of `(name, arity)` pairs for fns whose body
-/// is actually emitted by codegen — i.e. survives the reducer. Pattern
-/// concerns inside a fully-dissolved fn are dead-code questions: the
-/// `:function_clause` halt the inexhaustive warning worries about can
-/// only fire from a body that exists at runtime. Pass `None` to warn
-/// for every fn (used by unit tests that don't run the reducer).
-pub fn check_program<T: crate::types::Types>(
+/// `survivors` is the set of `(name, arity)` pairs for fns whose body remains
+/// semantically reachable in the executable `ModulePlan`. Pattern concerns
+/// inside an unreachable fn are dead-code questions: the `:function_clause`
+/// halt the inexhaustive warning worries about can only fire from a body that
+/// still exists at runtime. Pass `None` to warn for every fn (used by unit
+/// tests that don't build a plan).
+pub fn check_program<T: Types>(
     _t: &mut T,
     prog: &Program,
     survivors: Option<&HashSet<(String, usize)>>,
@@ -67,11 +66,7 @@ fn check_fn_def(fn_def: &FnDef, domains: Option<&[SubjectDomain]>, diags: &mut V
 /// are the clauses' parameter lists. Inexhaustive matches halt with
 /// `:function_clause` at runtime — surfacing as a warning gives an
 /// early signal.
-fn check_fn_clauses(
-    fn_def: &FnDef,
-    domains: Option<&[SubjectDomain]>,
-    diags: &mut Vec<Diagnostic>,
-) {
+fn check_fn_clauses(fn_def: &FnDef, domains: Option<&[SubjectDomain]>, diags: &mut Vec<Diagnostic>) {
     let arity = fn_def.clauses[0].params.len();
     let subjects: Vec<Var> = (0..arity as u32).map(Var).collect();
     let rows: Vec<Row> = fn_def
@@ -88,43 +83,36 @@ fn check_fn_clauses(
         .collect();
     let pattern_matrix = PatternMatrix { subjects, rows };
 
-    for dead_id in find_unreachable_rows(&pattern_matrix) {
-        let dead = &fn_def.clauses[dead_id as usize];
-        diags.push(unreachable_clause_diag(
-            dead,
-            &fn_def.clauses[..dead_id as usize],
-            "fn",
-        ));
-    }
-
-    // Skip exhaustiveness for fns with @spec preconditions or clause
-    // guards — those decline first-match-wins coverage without invalidating
-    // the source code. Future ticket: factor guards into the PatternMatrix
-    // analysis. Multi-clause fns without guards/preconditions: every
-    // multi-clause head needs a wildcard catch-all or a complete cover,
-    // else `:function_clause` halt at runtime.
+    // Type-ascribed params (`x :: integer`) and clause guards add match
+    // constraints the PatternMatrix does not model — it sees an ascribed or
+    // guarded param as a plain binding (catch-all). Its first-match coverage
+    // verdict is therefore unsound when either is present: a later clause can be
+    // reachable for inputs the ascribed/guarded clause rejects (e.g.
+    // `check(x :: integer)` then `check(x)` — the second catches non-integers).
+    // Both reachability and exhaustiveness reporting are gated on neither being
+    // present. Modeling the constraints in the matrix is future work (fz-ldj).
     let any_guard = fn_def.clauses.iter().any(|c| c.guard.is_some());
     let any_annot = fn_def
         .clauses
         .iter()
         .any(|c| c.param_annotations.iter().any(|a| a.is_some()));
+    if any_guard || any_annot {
+        return;
+    }
+
+    for dead_id in find_unreachable_rows(&pattern_matrix) {
+        let dead = &fn_def.clauses[dead_id as usize];
+        diags.push(unreachable_clause_diag(dead, &fn_def.clauses[..dead_id as usize], "fn"));
+    }
+
     let domain_slice = domains.unwrap_or(&[]);
-    if !any_guard && !any_annot && is_inexhaustive_with_domains(&pattern_matrix, domain_slice) {
+    if is_inexhaustive_with_domains(&pattern_matrix, domain_slice) {
         let last = fn_def.clauses.last().unwrap();
-        diags.push(inexhaustive_diag(
-            fn_def,
-            last.span,
-            "fn",
-            "function_clause",
-        ));
+        diags.push(inexhaustive_diag(fn_def, last.span, "fn", "function_clause"));
     }
 }
 
-fn check_case_clauses(
-    case_span: crate::diag::Span,
-    clauses: &[MatchClause],
-    diags: &mut Vec<Diagnostic>,
-) {
+fn check_case_clauses(case_span: Span, clauses: &[MatchClause], diags: &mut Vec<Diagnostic>) {
     if clauses.is_empty() {
         return;
     }
@@ -157,11 +145,7 @@ fn check_case_clauses(
     }
 }
 
-fn check_with_else(
-    with_span: crate::diag::Span,
-    else_clauses: &[MatchClause],
-    diags: &mut Vec<Diagnostic>,
-) {
+fn check_with_else(with_span: Span, else_clauses: &[MatchClause], diags: &mut Vec<Diagnostic>) {
     // Empty else is fine — `with` without else halts on first mismatch.
     if else_clauses.is_empty() {
         return;
@@ -330,18 +314,12 @@ fn unreachable_clause_diag(dead: &FnClause, earlier: &[FnClause], construct: &st
         d = d.with_secondary(catcher.span, "this clause already catches every input");
         d = d.with_help("remove this clause, or reorder so the more specific pattern comes first");
     } else {
-        d = d.with_note(
-            "earlier clauses' patterns together cover every value this clause could match",
-        );
+        d = d.with_note("earlier clauses' patterns together cover every value this clause could match");
     }
     d
 }
 
-fn unreachable_clause_diag_match(
-    dead: &MatchClause,
-    earlier: &[MatchClause],
-    construct: &str,
-) -> Diagnostic {
+fn unreachable_clause_diag_match(dead: &MatchClause, earlier: &[MatchClause], construct: &str) -> Diagnostic {
     let mut d = Diagnostic::warning(
         codes::TYPE_UNREACHABLE_ARM,
         format!("this {} clause is unreachable", construct),
@@ -356,19 +334,12 @@ fn unreachable_clause_diag_match(
         d = d.with_secondary(catcher.span, "this clause already catches every input");
         d = d.with_help("remove this clause, or reorder so the more specific pattern comes first");
     } else {
-        d = d.with_note(
-            "earlier clauses' patterns together cover every value this clause could match",
-        );
+        d = d.with_note("earlier clauses' patterns together cover every value this clause could match");
     }
     d
 }
 
-fn inexhaustive_diag(
-    fn_def: &FnDef,
-    primary: crate::diag::Span,
-    construct: &str,
-    halt_atom: &str,
-) -> Diagnostic {
+fn inexhaustive_diag(fn_def: &FnDef, primary: Span, construct: &str, halt_atom: &str) -> Diagnostic {
     let _ = fn_def;
     Diagnostic::warning(
         codes::TYPE_NO_MATCHING_CLAUSE,
@@ -383,11 +354,7 @@ fn inexhaustive_diag(
     .with_help("add a wildcard clause `_ -> ...` to cover any remaining input")
 }
 
-fn inexhaustive_diag_at(
-    primary: crate::diag::Span,
-    construct: &str,
-    halt_atom: &str,
-) -> Diagnostic {
+fn inexhaustive_diag_at(primary: Span, construct: &str, halt_atom: &str) -> Diagnostic {
     Diagnostic::warning(
         codes::TYPE_NO_MATCHING_CLAUSE,
         format!("`{}` clauses don't cover every input", construct),
@@ -413,114 +380,5 @@ fn is_wildlike_pat(p: &Pattern) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::parser::Parser;
-
-    fn parse(src: &str) -> Program {
-        let mut sm = crate::diag::SourceMap::new();
-        let fid = sm.add_file("test.fz", src);
-        let toks = crate::parser::lexer::Lexer::with_file(src, fid)
-            .tokenize()
-            .unwrap();
-        let prog = Parser::new(toks).parse_program().unwrap();
-        let mut ct = crate::types::ConcreteTypes;
-        crate::frontend::resolve::flatten_modules(&mut ct, prog).unwrap()
-    }
-
-    #[test]
-    fn detects_unreachable_after_wildcard_in_multi_clause_fn() {
-        let prog = parse(
-            "fn classify(_), do: :any\n\
-             fn classify(0), do: :zero\n\
-             fn main(), do: classify(7)",
-        );
-        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None, None);
-        assert!(
-            diags.iter().any(|d| d.code == codes::TYPE_UNREACHABLE_ARM),
-            "expected unreachable-arm diag, got {:?}",
-            diags.iter().map(|d| d.code).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn detects_unreachable_after_wildcard_in_case() {
-        let prog = parse(
-            "fn f(v) do\n\
-               case v do\n\
-                 _ -> :any\n\
-                 0 -> :zero\n\
-               end\n\
-             end\n\
-             fn main(), do: f(7)",
-        );
-        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None, None);
-        assert!(diags.iter().any(|d| d.code == codes::TYPE_UNREACHABLE_ARM));
-    }
-
-    #[test]
-    fn no_warning_when_specific_then_wildcard() {
-        let prog = parse(
-            "fn classify(0), do: :zero\n\
-             fn classify(_), do: :other\n\
-             fn main(), do: classify(7)",
-        );
-        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None, None);
-        assert!(
-            diags.is_empty(),
-            "should not warn when specific-then-wildcard: {:?}",
-            diags.iter().map(|d| d.message.clone()).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn detects_inexhaustive_multi_clause_fn() {
-        let prog = parse(
-            "fn classify(0), do: :zero\n\
-             fn classify(1), do: :one\n\
-             fn main(), do: classify(7)",
-        );
-        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None, None);
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.code == codes::TYPE_NO_MATCHING_CLAUSE),
-            "expected no-matching-clause diag, got {:?}",
-            diags.iter().map(|d| d.code).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn detects_inexhaustive_case() {
-        let prog = parse(
-            "fn f(v) do\n\
-               case v do\n\
-                 0 -> :zero\n\
-                 1 -> :one\n\
-               end\n\
-             end\n\
-             fn main(), do: f(7)",
-        );
-        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None, None);
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.code == codes::TYPE_NO_MATCHING_CLAUSE)
-        );
-    }
-
-    #[test]
-    fn no_inexhaustive_with_wildcard() {
-        let prog = parse(
-            "fn classify(0), do: :zero\n\
-             fn classify(_), do: :other\n\
-             fn main(), do: classify(7)",
-        );
-        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None, None);
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code == codes::TYPE_NO_MATCHING_CLAUSE)
-        );
-    }
-}
+#[path = "pattern_check_test.rs"]
+mod pattern_check_test;

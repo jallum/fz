@@ -1,0 +1,13 @@
+# Nested pattern-dispatch binding flow. The tuple leaf narrows the payload to a
+# non-empty list and returns the bound head.
+# The proof composes: first project the tuple payload, then narrow that payload
+# to a non-empty list so `head(payload)` flows `int` into the leaf.
+#
+# Expected: main() : {int, :error}
+
+fn pick({:ok, [h | _t]}), do: h
+fn pick(:error), do: :error
+
+fn main() do
+  {pick({:ok, [1]}), pick(:error)}
+end

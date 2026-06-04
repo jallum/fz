@@ -1,5 +1,0 @@
-# Enum.reduce over a Range receiver dispatches Enumerable to the Range impl
-# (a different target type than List). Expected: int ; settles.
-fn main() do
-  dbg(Enum.reduce(1..3, 0, fn (x, a) -> x + a end))
-end

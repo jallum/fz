@@ -1,4 +1,7 @@
 use super::*;
+use crate::ast::TypeExprBody;
+use crate::diag::{Diagnostic, codes::PARSE_AMBIGUOUS_NO_PARENS_KEYWORD};
+use std::mem::discriminant;
 
 /// Binding power for unary prefixes (`-`, `!`, `not`). Above every infix level
 /// (Mul tops out at 110/111) so unary binds tightest, matching Elixir's
@@ -20,10 +23,7 @@ impl Parser {
         let e = self.parse_expr()?;
         self.skip_newlines();
         if !matches!(self.peek(), Tok::Eof) {
-            return self.err(format!(
-                "trailing tokens after expression: {:?}",
-                self.peek()
-            ));
+            return self.err(format!("trailing tokens after expression: {:?}", self.peek()));
         }
         Ok(e)
     }
@@ -44,14 +44,14 @@ impl Parser {
             Tok::LtEq => (50, 51, BinOp::LtEq),
             Tok::Gt => (50, 51, BinOp::Gt),
             Tok::GtEq => (50, 51, BinOp::GtEq),
-            Tok::Pipe => (60, 61, BinOp::Pipe), // |>  Elixir 160
-            Tok::In => (70, 71, BinOp::In),     // in  Elixir 170
-            Tok::SlashSlash => (81, 80, BinOp::RangeStep), // //  Elixir 190, right
-            Tok::PlusPlus => (91, 90, BinOp::ListConcat), // ++  Elixir 200, right
+            Tok::Pipe => (60, 61, BinOp::Pipe),               // |>  Elixir 160
+            Tok::In => (70, 71, BinOp::In),                   // in  Elixir 170
+            Tok::SlashSlash => (81, 80, BinOp::RangeStep),    // //  Elixir 190, right
+            Tok::PlusPlus => (91, 90, BinOp::ListConcat),     // ++  Elixir 200, right
             Tok::MinusMinus => (91, 90, BinOp::ListSubtract), // --
-            Tok::Concat => (91, 90, BinOp::BinConcat), // <>
-            Tok::DotDot => (91, 90, BinOp::Range), // ..  Elixir 200, right
-            Tok::Plus => (100, 101, BinOp::Add), // Elixir 210
+            Tok::Concat => (91, 90, BinOp::BinConcat),        // <>
+            Tok::DotDot => (91, 90, BinOp::Range),            // ..  Elixir 200, right
+            Tok::Plus => (100, 101, BinOp::Add),              // Elixir 210
             Tok::Minus => (100, 101, BinOp::Sub),
             Tok::Star => (110, 111, BinOp::Mul), // Elixir 220
             Tok::Slash => (110, 111, BinOp::Div),
@@ -64,9 +64,7 @@ impl Parser {
         let start = self.cur_span();
         let mut lhs = self.parse_prefix()?;
         loop {
-            if matches!(self.peek(), Tok::Newline)
-                && Self::starts_expr_continuation(self.peek_after_newlines())
-            {
+            if matches!(self.peek(), Tok::Newline) && Self::starts_expr_continuation(self.peek_after_newlines()) {
                 self.skip_newline_tokens();
             }
             match self.peek() {
@@ -115,10 +113,7 @@ impl Parser {
                     let span = start.merge(key_span);
                     // m.k desugars to m[:k] (atom-keyed Index)
                     lhs = Spanned::new(
-                        Expr::Index(
-                            Box::new(lhs),
-                            Box::new(Spanned::new(Expr::Atom(name), key_span)),
-                        ),
+                        Expr::Index(Box::new(lhs), Box::new(Spanned::new(Expr::Atom(name), key_span))),
                         span,
                     );
                     continue;
@@ -156,10 +151,7 @@ impl Parser {
                 self.skip_newline_tokens();
                 let rhs = self.parse_bp(rbp)?;
                 let span = start.merge(self.prev_span());
-                lhs = Spanned::new(
-                    Expr::BinOp(BinOp::NotIn, Box::new(lhs), Box::new(rhs)),
-                    span,
-                );
+                lhs = Spanned::new(Expr::BinOp(BinOp::NotIn, Box::new(lhs), Box::new(rhs)), span);
                 continue;
             }
             // No-parens call: a callable head followed by a space-separated
@@ -177,10 +169,7 @@ impl Parser {
             // Bare `do … end` after a callable head with no positional args:
             // `foo do … end` is `foo([do: …])`, matching Elixir. Suppressed in
             // cond positions, where the block belongs to the surrounding form.
-            if Self::expr_is_callable_head(&lhs.node)
-                && !self.suppress_trailing_do
-                && matches!(self.peek(), Tok::Do)
-            {
+            if Self::expr_is_callable_head(&lhs.node) && !self.suppress_trailing_do && matches!(self.peek(), Tok::Do) {
                 let mut call_args = CallArgs {
                     args: Vec::new(),
                     keyword_arg_index: None,
@@ -329,8 +318,7 @@ impl Parser {
             self.skip_newlines();
             self.saw_no_parens_call = false;
             let value = self.with_comma_bound(|p| p.parse_expr())?;
-            let value_is_no_parens_call =
-                self.saw_no_parens_call && matches!(value.node, Expr::Call(_, _));
+            let value_is_no_parens_call = self.saw_no_parens_call && matches!(value.node, Expr::Call(_, _));
             entries.push(Self::keyword_pair_expr(key, value));
 
             let continues = self.at(&Tok::Comma) && matches!(self.peek_at(1), Tok::KwKey(_));
@@ -343,8 +331,8 @@ impl Parser {
             if continues && value_is_no_parens_call {
                 let span = key_span.merge(self.prev_span());
                 self.warn(
-                    crate::diag::Diagnostic::warning(
-                        crate::diag::codes::PARSE_AMBIGUOUS_NO_PARENS_KEYWORD,
+                    Diagnostic::warning(
+                        PARSE_AMBIGUOUS_NO_PARENS_KEYWORD,
                         "no-parens call as a keyword value before another keyword \
                          is ambiguous; add parentheses around the call's arguments",
                         span,
@@ -399,15 +387,12 @@ impl Parser {
                 // a Var whose name matches the extern's fz_name in the
                 // module's externs table. Require token adjacency so
                 // `arg :: type` remains available for call-arg ascription.
-                if matches!(self.peek(), Tok::ColonColon)
-                    && self.prev_span().end == self.cur_span().start
-                {
+                if matches!(self.peek(), Tok::ColonColon) && self.prev_span().end == self.cur_span().start {
                     self.bump();
                     match self.bump() {
                         Tok::Ident(s) => Expr::Var(format!("{}::{}", n, s)),
                         other => {
-                            return self
-                                .err(format!("expected name after `{}::`, got {:?}", n, other));
+                            return self.err(format!("expected name after `{}::`, got {:?}", n, other));
                         }
                     }
                 } else {
@@ -439,10 +424,7 @@ impl Parser {
             //   `&(...)`    — capture expression over `&N` placeholders
             //   `&name/n`   — explicit function reference (fz-swt.5)
             // The first two desugar to a `Lambda` in fz-g58.15 (Arc 3).
-            Tok::Amp
-                if matches!(self.peek_at(1), Tok::Int(n) if *n >= 1)
-                    && !self.space_before_at(1) =>
-            {
+            Tok::Amp if matches!(self.peek_at(1), Tok::Int(n) if *n >= 1) && !self.space_before_at(1) => {
                 self.bump(); // &
                 let Tok::Int(n) = self.bump() else {
                     unreachable!("guarded by the match arm");
@@ -464,37 +446,27 @@ impl Parser {
             // lookup the same way Call does.
             Tok::Amp => {
                 self.bump();
-                let mut name = match self.bump() {
-                    Tok::Ident(n) | Tok::Upper(n) => n,
-                    other => {
-                        return self.err(format!("expected name after `&`, got {:?}", other));
-                    }
-                };
+                let (mut name, slash_consumed) = self.parse_fn_ref_name_part("`&`")?;
                 // Either a dotted name (`&Mod.Sub.fun/n`) or a library-
                 // prefixed extern (`&libc::close/1`). Both join into a
                 // single string that matches the entry in `ctx.fns` or
                 // `ctx.externs` respectively.
-                loop {
+                let mut slash_consumed = slash_consumed;
+                while !slash_consumed {
                     let sep = match self.peek() {
                         Tok::Dot => ".",
                         Tok::ColonColon => "::",
                         _ => break,
                     };
                     self.bump();
-                    match self.bump() {
-                        Tok::Ident(n) | Tok::Upper(n) => {
-                            name.push_str(sep);
-                            name.push_str(&n);
-                        }
-                        other => {
-                            return self.err(format!(
-                                "expected name after `{}` in `&...`, got {:?}",
-                                sep, other
-                            ));
-                        }
-                    }
+                    let (part, part_slash_consumed) = self.parse_fn_ref_name_part(&format!("`{}` in `&...`", sep))?;
+                    name.push_str(sep);
+                    name.push_str(&part);
+                    slash_consumed = part_slash_consumed;
                 }
-                self.expect(&Tok::Slash, "`/` after name in `&name/arity`")?;
+                if !slash_consumed {
+                    self.expect(&Tok::Slash, "`/` after name in `&name/arity`")?;
+                }
                 let arity = match self.bump() {
                     Tok::Int(n) if n >= 0 => n as usize,
                     other => {
@@ -556,17 +528,13 @@ impl Parser {
             Tok::Case => return self.parse_case(),
             Tok::Cond => return self.parse_cond(),
             Tok::With => return self.parse_with(),
-            // fz-5vj — contextual: `receive do …` parses the new form;
-            // `receive(...)` keeps working as a zero-arg function call
-            // by emitting Expr::Var("receive") and letting postfix do
-            // the call (lowering at src/ir_lower.rs:1111 still recognises
-            // the name). fz-recv.A2 removes the bare-call form.
+            // fz-5vj — `receive` is only the selective form.
             Tok::Receive => {
                 self.bump();
                 if matches!(self.peek(), Tok::Do) {
                     return self.parse_receive_do(start);
                 }
-                Expr::Var("receive".to_string())
+                return self.err("plain `receive()` has been removed; use `receive do ... end`");
             }
             Tok::Do => {
                 self.bump();
@@ -591,7 +559,7 @@ impl Parser {
     pub(super) fn parse_expr_list(&mut self, terminator: &Tok) -> PR<Vec<Spanned<Expr>>> {
         let mut out = Vec::new();
         self.skip_newlines();
-        if std::mem::discriminant(self.peek()) == std::mem::discriminant(terminator) {
+        if discriminant(self.peek()) == discriminant(terminator) {
             return Ok(out);
         }
         loop {
@@ -603,6 +571,19 @@ impl Parser {
             self.skip_newlines();
         }
         Ok(out)
+    }
+
+    fn parse_fn_ref_name_part(&mut self, context: &str) -> PR<(String, bool)> {
+        match self.bump() {
+            Tok::Ident(n) | Tok::Upper(n) => Ok((n, false)),
+            // `&//2` and `&Kernel.//2` are the division operator `/` followed
+            // by the arity separator `/`; the lexer sees that pair as `//`.
+            Tok::SlashSlash => Ok(("/".to_string(), true)),
+            other => match operator_token_name(&other) {
+                Some(op) => Ok((op.to_string(), false)),
+                None => self.err(format!("expected name after {}, got {:?}", context, other)),
+            },
+        }
     }
 
     fn parse_call_args(&mut self) -> PR<CallArgs> {
@@ -653,10 +634,7 @@ impl Parser {
                     return self.err("expected type expression after call argument `::`");
                 }
                 let span = expr.span.merge(self.prev_span());
-                Spanned::new(
-                    Expr::Ascribe(Box::new(expr), crate::ast::TypeExprBody(ty_tokens)),
-                    span,
-                )
+                Spanned::new(Expr::Ascribe(Box::new(expr), TypeExprBody(ty_tokens)), span)
             } else {
                 expr
             };
@@ -693,10 +671,7 @@ impl Parser {
         loop {
             let (key, value) = self.parse_keyword_pair()?;
             out.push(Self::keyword_pair_expr(key, value));
-            if !self.continue_keyword_entries(
-                terminator,
-                "positional expression cannot follow keyword entries",
-            )? {
+            if !self.continue_keyword_entries(terminator, "positional expression cannot follow keyword entries")? {
                 break;
             }
         }
@@ -723,9 +698,7 @@ impl Parser {
         }
         let span = entry.span;
         call_args.keyword_arg_index = Some(call_args.args.len());
-        call_args
-            .args
-            .push(Spanned::new(Expr::List(vec![entry], None), span));
+        call_args.args.push(Spanned::new(Expr::List(vec![entry], None), span));
     }
 
     fn keyword_pair_expr(key: Spanned<Expr>, value: Spanned<Expr>) -> Spanned<Expr> {
@@ -738,10 +711,7 @@ impl Parser {
         let mut exprs = Vec::new();
         loop {
             self.skip_newlines();
-            if stops
-                .iter()
-                .any(|s| std::mem::discriminant(self.peek()) == std::mem::discriminant(s))
-            {
+            if stops.iter().any(|s| discriminant(self.peek()) == discriminant(s)) {
                 break;
             }
             if matches!(self.peek(), Tok::Eof) {
@@ -750,19 +720,13 @@ impl Parser {
             // Each block statement is a fresh statement context.
             exprs.push(self.with_comma_unbound(|p| p.parse_expr())?);
             if !matches!(self.peek(), Tok::Newline | Tok::Semi) {
-                if stops
-                    .iter()
-                    .any(|s| std::mem::discriminant(self.peek()) == std::mem::discriminant(s))
-                {
+                if stops.iter().any(|s| discriminant(self.peek()) == discriminant(s)) {
                     break;
                 }
                 if matches!(self.peek(), Tok::Eof) {
                     break;
                 }
-                return self.err(format!(
-                    "expected newline between expressions, got {:?}",
-                    self.peek()
-                ));
+                return self.err(format!("expected newline between expressions, got {:?}", self.peek()));
             }
         }
         if exprs.len() == 1 {
@@ -775,9 +739,7 @@ impl Parser {
     pub(super) fn parse_quote(&mut self) -> PR<Spanned<Expr>> {
         let start = self.cur_span();
         self.expect(&Tok::Quote, "`quote`")?;
-        if matches!(self.peek(), Tok::Comma)
-            && matches!(self.peek_at(1), Tok::KwKey(s) if s == "do")
-        {
+        if matches!(self.peek(), Tok::Comma) && matches!(self.peek_at(1), Tok::KwKey(s) if s == "do") {
             self.bump();
             self.bump();
             let e = self.parse_expr()?;
@@ -792,10 +754,7 @@ impl Parser {
         self.skip_newlines();
         let body = self.parse_block_until(&[Tok::End])?;
         self.expect(&Tok::End, "`end`")?;
-        Ok(Spanned::new(
-            Expr::Quote(Box::new(body)),
-            self.finish(start),
-        ))
+        Ok(Spanned::new(Expr::Quote(Box::new(body)), self.finish(start)))
     }
 
     pub(super) fn parse_unquote(&mut self) -> PR<Spanned<Expr>> {
@@ -813,15 +772,11 @@ impl Parser {
         let start = self.cur_span();
         self.expect(&Tok::If, "`if`")?;
         let cond = self.with_no_trailing_do(|p| p.parse_expr())?;
-        if matches!(self.peek(), Tok::Comma)
-            && matches!(self.peek_at(1), Tok::KwKey(s) if s == "do")
-        {
+        if matches!(self.peek(), Tok::Comma) && matches!(self.peek_at(1), Tok::KwKey(s) if s == "do") {
             self.bump();
             self.bump();
             let then = self.parse_expr()?;
-            let els = if matches!(self.peek(), Tok::Comma)
-                && matches!(self.peek_at(1), Tok::KwKey(s) if s == "else")
-            {
+            let els = if matches!(self.peek(), Tok::Comma) && matches!(self.peek_at(1), Tok::KwKey(s) if s == "else") {
                 self.bump();
                 self.bump();
                 Some(Box::new(self.parse_expr()?))
@@ -933,10 +888,7 @@ impl Parser {
             None
         };
         self.expect(&Tok::End, "`end`")?;
-        Ok(Spanned::new(
-            Expr::Receive { clauses, after },
-            self.finish(start),
-        ))
+        Ok(Spanned::new(Expr::Receive { clauses, after }, self.finish(start)))
     }
 
     /// `cond do <test> -> <body>; ...; end` — parsed as `Expr::Cond` whose
@@ -1072,9 +1024,7 @@ impl Parser {
             // `, do:` shorthand terminates the binding list. Without this
             // lookahead the loop greedily eats the comma and then fails to
             // parse `do:` as a binding head.
-            if matches!(self.peek(), Tok::Comma)
-                && !matches!(self.peek_at(1), Tok::KwKey(s) if s == "do")
-            {
+            if matches!(self.peek(), Tok::Comma) && !matches!(self.peek_at(1), Tok::KwKey(s) if s == "do") {
                 self.bump();
                 continue;
             }
@@ -1082,9 +1032,7 @@ impl Parser {
         }
         let body;
         let mut else_clauses: Vec<MatchClause> = Vec::new();
-        if matches!(self.peek(), Tok::Comma)
-            && matches!(self.peek_at(1), Tok::KwKey(s) if s == "do")
-        {
+        if matches!(self.peek(), Tok::Comma) && matches!(self.peek_at(1), Tok::KwKey(s) if s == "do") {
             self.bump();
             self.bump();
             body = self.parse_expr()?;
@@ -1158,10 +1106,7 @@ impl Parser {
         }
         self.skip_newlines();
         self.expect(&Tok::RBrace, "`}`")?;
-        Ok(Spanned::new(
-            Expr::MapUpdate(Box::new(base), pairs),
-            self.finish(start),
-        ))
+        Ok(Spanned::new(Expr::MapUpdate(Box::new(base), pairs), self.finish(start)))
     }
 
     pub(super) fn parse_struct_expr(&mut self) -> PR<Spanned<Expr>> {
@@ -1192,18 +1137,13 @@ impl Parser {
             }
         }
         self.expect(&Tok::RBrace, "`}`")?;
-        Ok(Spanned::new(
-            Expr::Struct { module, fields },
-            self.finish(start),
-        ))
+        Ok(Spanned::new(Expr::Struct { module, fields }, self.finish(start)))
     }
 
     fn parse_map_first_segment(&mut self) -> PR<MapHead> {
         if let Tok::KwKey(_) = self.peek() {
             let key_span = self.cur_span();
-            let Tok::KwKey(name) = self.bump() else {
-                unreachable!()
-            };
+            let Tok::KwKey(name) = self.bump() else { unreachable!() };
             let v = self.with_comma_bound(|p| p.parse_expr())?;
             return Ok(MapHead::Pair(Spanned::new(Expr::Atom(name), key_span), v));
         }
@@ -1216,32 +1156,21 @@ impl Parser {
             let v = self.with_comma_bound(|p| p.parse_expr())?;
             return Ok(MapHead::Pair(first, v));
         }
-        self.err(format!(
-            "expected `=>` or `|` in map literal, got {:?}",
-            self.peek()
-        ))
+        self.err(format!("expected `=>` or `|` in map literal, got {:?}", self.peek()))
     }
 
-    pub(super) fn parse_map_pairs_into(
-        &mut self,
-        pairs: &mut Vec<(Spanned<Expr>, Spanned<Expr>)>,
-    ) -> PR<()> {
+    pub(super) fn parse_map_pairs_into(&mut self, pairs: &mut Vec<(Spanned<Expr>, Spanned<Expr>)>) -> PR<()> {
         loop {
             self.skip_newlines();
             if let Tok::KwKey(_) = self.peek() {
                 let key_span = self.cur_span();
-                let Tok::KwKey(name) = self.bump() else {
-                    unreachable!()
-                };
+                let Tok::KwKey(name) = self.bump() else { unreachable!() };
                 let v = self.with_comma_bound(|p| p.parse_expr())?;
                 pairs.push((Spanned::new(Expr::Atom(name), key_span), v));
             } else {
                 let k = self.with_comma_bound(|p| p.parse_expr())?;
                 if !self.eat(&Tok::FatArrow) {
-                    return self.err(format!(
-                        "expected `=>` after map key, got {:?}",
-                        self.peek()
-                    ));
+                    return self.err(format!("expected `=>` after map key, got {:?}", self.peek()));
                 }
                 let v = self.with_comma_bound(|p| p.parse_expr())?;
                 pairs.push((k, v));
@@ -1326,9 +1255,7 @@ fn expr_to_pattern(e: &Spanned<Expr>) -> PR<Spanned<Pattern>> {
         ),
         Expr::List(xs, tail) => Pattern::List(
             xs.iter().map(expr_to_pattern).collect::<PR<_>>()?,
-            tail.as_deref()
-                .map(|e| expr_to_pattern(e).map(Box::new))
-                .transpose()?,
+            tail.as_deref().map(|e| expr_to_pattern(e).map(Box::new)).transpose()?,
         ),
         _ => {
             return Err(ParseError::syntax(

@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use fz_runtime::any_value::{FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID};
+
 /// Atom interner: maps atom names to stable u32 ids.
 /// Per-CompiledModule atom table built during AST → IR lowering.
 ///
@@ -33,16 +35,14 @@ impl AtomTable {
     /// User-source atoms (and runtime-reserved ones like
     /// `match_error` / `function_clause`) get ids ≥ 3.
     pub fn new() -> Self {
-        let mut t = Self {
-            map: HashMap::new(),
-        };
+        let mut t = Self { map: HashMap::new() };
         // Order matters: nil=0, true=1, false=2.
         let nil = t.intern("nil");
         let tr = t.intern("true");
         let fa = t.intern("false");
-        debug_assert_eq!(nil, fz_runtime::any_value::NIL_ATOM_ID);
-        debug_assert_eq!(tr, fz_runtime::any_value::TRUE_ATOM_ID);
-        debug_assert_eq!(fa, fz_runtime::any_value::FALSE_ATOM_ID);
+        debug_assert_eq!(nil, NIL_ATOM_ID);
+        debug_assert_eq!(tr, TRUE_ATOM_ID);
+        debug_assert_eq!(fa, FALSE_ATOM_ID);
         t
     }
 

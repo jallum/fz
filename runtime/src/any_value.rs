@@ -5,6 +5,7 @@
 //! module does not expose a reusable `{value, kind}` carrier.
 
 use std::alloc::{Layout, alloc};
+use std::mem;
 use std::ptr;
 
 pub const TAG_BITS: u64 = 4;
@@ -80,10 +81,8 @@ impl ValueKind {
 
     pub const fn new(tag: u8) -> Option<Self> {
         match tag as u64 {
-            TAG_NULL | TAG_LIST | TAG_MAP | TAG_STRUCT | TAG_CLOSURE | TAG_BITSTRING
-            | TAG_PROCBIN | TAG_RESOURCE | TAG_KIND_INT | TAG_KIND_FLOAT | TAG_KIND_ATOM => {
-                Some(Self(tag))
-            }
+            TAG_NULL | TAG_LIST | TAG_MAP | TAG_STRUCT | TAG_CLOSURE | TAG_BITSTRING | TAG_PROCBIN | TAG_RESOURCE
+            | TAG_KIND_INT | TAG_KIND_FLOAT | TAG_KIND_ATOM => Some(Self(tag)),
             _ => None,
         }
     }
@@ -112,10 +111,7 @@ impl ValueKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnyValueRefError {
     UnknownTag(u8),
-    ExpectedTag {
-        expected: ValueKind,
-        found: ValueKind,
-    },
+    ExpectedTag { expected: ValueKind, found: ValueKind },
     ExpectedScalarTag(ValueKind),
     ExpectedHeapObjectTag(ValueKind),
     NullAddress(ValueKind),
@@ -125,6 +121,19 @@ pub enum AnyValueRefError {
 pub enum TaggedRefArch {
     Arm64Tbi,
     X86_64Canonical57,
+}
+
+impl TaggedRefArch {
+    pub const fn current() -> Self {
+        #[cfg(target_arch = "aarch64")]
+        {
+            Self::Arm64Tbi
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            Self::X86_64Canonical57
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,14 +151,7 @@ impl AnyValueRefPacking {
     }
 
     pub const fn current() -> Self {
-        #[cfg(target_arch = "aarch64")]
-        {
-            Self::for_arch(TaggedRefArch::Arm64Tbi)
-        }
-        #[cfg(target_arch = "x86_64")]
-        {
-            Self::for_arch(TaggedRefArch::X86_64Canonical57)
-        }
+        Self::for_arch(TaggedRefArch::current())
     }
 
     const fn new(tag_shift: u8) -> Self {
@@ -274,19 +276,17 @@ impl AnyValueRef {
 
     pub fn load_int(self) -> Result<i64, AnyValueRefError> {
         self.expect_tag(ValueKind::INT)?;
-        Ok(unsafe { std::ptr::read(self.cleared_addr() as *const i64) })
+        Ok(unsafe { ptr::read(self.cleared_addr() as *const i64) })
     }
 
     pub fn load_float(self) -> Result<f64, AnyValueRefError> {
         self.expect_tag(ValueKind::FLOAT)?;
-        Ok(f64::from_bits(unsafe {
-            std::ptr::read(self.cleared_addr() as *const u64)
-        }))
+        Ok(f64::from_bits(unsafe { ptr::read(self.cleared_addr() as *const u64) }))
     }
 
     pub fn load_atom(self) -> Result<u64, AnyValueRefError> {
         self.expect_tag(ValueKind::ATOM)?;
-        Ok(unsafe { std::ptr::read(self.cleared_addr() as *const u64) })
+        Ok(unsafe { ptr::read(self.cleared_addr() as *const u64) })
     }
 
     pub fn heap_addr(self, expected: ValueKind) -> Result<*mut u8, AnyValueRefError> {
@@ -346,10 +346,7 @@ mod any_value_ref_tests {
 
     #[test]
     fn packing_strategy_uses_platform_specific_tag_shift() {
-        assert_eq!(
-            AnyValueRefPacking::for_arch(TaggedRefArch::Arm64Tbi).tag_shift(),
-            56
-        );
+        assert_eq!(AnyValueRefPacking::for_arch(TaggedRefArch::Arm64Tbi).tag_shift(), 56);
         assert_eq!(
             AnyValueRefPacking::for_arch(TaggedRefArch::X86_64Canonical57).tag_shift(),
             57
@@ -383,10 +380,7 @@ mod any_value_ref_tests {
         let value = packing.pack(ValueKind::ATOM, 0x1000);
 
         assert_eq!(packing.tag(value), Ok(ValueKind::ATOM));
-        assert_eq!(
-            value.raw_word() >> packing.tag_shift(),
-            ValueKind::ATOM.tag() as u64
-        );
+        assert_eq!(value.raw_word() >> packing.tag_shift(), ValueKind::ATOM.tag() as u64);
         assert_eq!(
             AnyValueRef::from_raw_word(8_u64 << packing.tag_shift()),
             Err(AnyValueRefError::UnknownTag(8))
@@ -400,14 +394,13 @@ mod any_value_ref_tests {
         assert_eq!(empty.tag(), ValueKind::LIST);
         assert!(empty.is_empty_list());
         assert!(!empty.is_heap_root());
-        assert_eq!(empty.list_addr(), Ok(std::ptr::null_mut()));
+        assert_eq!(empty.list_addr(), Ok(ptr::null_mut()));
         assert_eq!(
-            AnyValueRef::from_heap_object(ValueKind::LIST, std::ptr::null())
-                .expect("empty list ref"),
+            AnyValueRef::from_heap_object(ValueKind::LIST, ptr::null()).expect("empty list ref"),
             empty
         );
         assert_eq!(
-            AnyValueRef::from_heap_object(ValueKind::MAP, std::ptr::null()),
+            AnyValueRef::from_heap_object(ValueKind::MAP, ptr::null()),
             Err(AnyValueRefError::NullAddress(ValueKind::MAP))
         );
     }
@@ -429,10 +422,8 @@ mod any_value_ref_tests {
         let atom_slot = 99u64;
 
         let int_ref = AnyValueRef::from_scalar_slot(ValueKind::INT, &int_slot).expect("int ref");
-        let float_ref =
-            AnyValueRef::from_scalar_slot(ValueKind::FLOAT, &float_slot).expect("float ref");
-        let atom_ref =
-            AnyValueRef::from_scalar_slot(ValueKind::ATOM, &atom_slot).expect("atom ref");
+        let float_ref = AnyValueRef::from_scalar_slot(ValueKind::FLOAT, &float_slot).expect("float ref");
+        let atom_ref = AnyValueRef::from_scalar_slot(ValueKind::ATOM, &atom_slot).expect("atom ref");
 
         assert_eq!(int_ref.load_int(), Ok(-42));
         assert_eq!(float_ref.load_float(), Ok(3.5));
@@ -464,16 +455,14 @@ mod any_value_ref_tests {
         let mut heap = Heap::new(4096, schemas.clone());
         let schema_id = heap.register_schema(Schema::tuple_of_arity(1));
 
-        let list_bits =
-            heap.alloc_list_cons_slot(AnyValue::int(1), crate::any_value::EMPTY_LIST_BITS);
-        let list_addr = crate::any_value::list_addr_from_tagged(list_bits).expect("list addr");
+        let list_bits = heap.alloc_list_cons_slot(AnyValue::int(1), EMPTY_LIST_BITS);
+        let list_addr = list_addr_from_tagged(list_bits).expect("list addr");
         let map_bits = heap.alloc_map_slots(&[(AnyValue::atom(3), AnyValue::int(4))]);
-        let map_addr = crate::any_value::map_addr_from_tagged(map_bits).expect("map addr");
+        let map_addr = map_addr_from_tagged(map_bits).expect("map addr");
         let struct_addr = heap.alloc_struct(schema_id);
         let bitstring_addr = heap.alloc_bitstring(&[0xAA], 8);
         let closure_bits = heap.alloc_closure(schema_id, 0, 0, 0xfeed, &[]);
-        let closure_addr =
-            crate::any_value::closure_addr_from_tagged(closure_bits).expect("closure addr");
+        let closure_addr = closure_addr_from_tagged(closure_bits).expect("closure addr");
         let procbin_addr = heap.alloc_bitstring(&[0u8; 65], 65 * 8);
         let resource_addr = alloc_resource(
             &mut heap,
@@ -525,22 +514,14 @@ mod any_value_ref_tests {
             Ok(resource_addr)
         );
 
-        let packed = AnyValueRef::from_heap_object(ValueKind::BITSTRING, bitstring_addr)
-            .expect("bitstring ref");
+        let packed = AnyValueRef::from_heap_object(ValueKind::BITSTRING, bitstring_addr).expect("bitstring ref");
         assert_eq!(
-            heap_object_word(
-                packed.bitstring_addr().expect("bitstring addr"),
-                ValueKind::BITSTRING
-            ),
+            heap_object_word(packed.bitstring_addr().expect("bitstring addr"), ValueKind::BITSTRING),
             heap_object_word(bitstring_addr, ValueKind::BITSTRING)
         );
-        let packed =
-            AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr).expect("closure ref");
+        let packed = AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr).expect("closure ref");
         assert_eq!(
-            heap_object_word(
-                packed.closure_addr().expect("closure addr"),
-                ValueKind::CLOSURE
-            ),
+            heap_object_word(packed.closure_addr().expect("closure addr"), ValueKind::CLOSURE),
             heap_object_word(closure_addr, ValueKind::CLOSURE)
         );
     }
@@ -548,8 +529,7 @@ mod any_value_ref_tests {
     #[test]
     fn bad_heap_projection_reports_expected_and_found_tags() {
         let mut bytes = [0u8; 16];
-        let map_ref =
-            AnyValueRef::from_heap_object(ValueKind::MAP, bytes.as_mut_ptr()).expect("map ref");
+        let map_ref = AnyValueRef::from_heap_object(ValueKind::MAP, bytes.as_mut_ptr()).expect("map ref");
 
         assert!(map_ref.is_heap_root());
         assert_eq!(
@@ -573,7 +553,7 @@ pub enum AnyValue {
     Int(i64),
     Float(u64),
     Atom(u32),
-    HeapRef(crate::any_value::AnyValueRef),
+    HeapRef(AnyValueRef),
 }
 
 impl AnyValue {
@@ -613,22 +593,18 @@ impl AnyValue {
         if !kind.is_heap() {
             panic!("heap_ptr requires a heap ValueKind");
         }
-        Self::HeapRef(
-            crate::any_value::AnyValueRef::from_heap_object(kind, addr).expect("heap value ref"),
-        )
+        Self::HeapRef(AnyValueRef::from_heap_object(kind, addr).expect("heap value ref"))
     }
 
-    pub fn from_ref(
-        value: crate::any_value::AnyValueRef,
-    ) -> Result<Self, crate::any_value::AnyValueRefError> {
+    pub fn from_ref(value: AnyValueRef) -> Result<Self, AnyValueRefError> {
         if value.is_empty_list() {
             return Ok(Self::EmptyList);
         }
         Ok(match value.tag() {
-            crate::any_value::ValueKind::NULL => Self::Null,
-            crate::any_value::ValueKind::INT => Self::Int(value.load_int()?),
-            crate::any_value::ValueKind::FLOAT => Self::Float(value.load_float()?.to_bits()),
-            crate::any_value::ValueKind::ATOM => Self::Atom(value.load_atom()? as u32),
+            ValueKind::NULL => Self::Null,
+            ValueKind::INT => Self::Int(value.load_int()?),
+            ValueKind::FLOAT => Self::Float(value.load_float()?.to_bits()),
+            ValueKind::ATOM => Self::Atom(value.load_atom()? as u32),
             tag if tag.is_heap() => Self::HeapRef(value),
             _ => unreachable!("AnyValueRef tag set is exhaustive"),
         })
@@ -689,10 +665,10 @@ impl AnyValue {
             .then(|| heap_object_word(self.raw() as *const u8, self.kind()))
     }
 
-    pub fn ref_word(self) -> crate::any_value::AnyValueRef {
+    pub fn ref_word(self) -> AnyValueRef {
         match self {
-            Self::Null => crate::any_value::AnyValueRef::null(),
-            Self::EmptyList => crate::any_value::AnyValueRef::empty_list(),
+            Self::Null => AnyValueRef::null(),
+            Self::EmptyList => AnyValueRef::empty_list(),
             Self::HeapRef(value) => value,
             Self::Int(_) | Self::Float(_) | Self::Atom(_) => {
                 panic!("scalar AnyValue needs object-local storage before it can become a ref")
@@ -719,11 +695,7 @@ pub fn closure_flags_pack(captured_count: u16, halt_kind: u16) -> u16 {
         "closure captured count {} exceeds 14-bit capacity",
         captured_count
     );
-    debug_assert!(
-        halt_kind <= 0b11,
-        "closure halt_kind {} out of range",
-        halt_kind
-    );
+    debug_assert!(halt_kind <= 0b11, "closure halt_kind {} out of range", halt_kind);
     (captured_count & CLOSURE_FLAGS_CAPTURED_MASK) | (halt_kind << CLOSURE_FLAGS_HALT_KIND_SHIFT)
 }
 
@@ -758,7 +730,7 @@ pub fn closure_addr_from_tagged(bits: u64) -> Option<*mut u8> {
 /// `addr` must point to the start of an initialized strict Closure object.
 #[inline]
 pub unsafe fn closure_schema_id(addr: *const u8) -> u32 {
-    unsafe { std::ptr::read(addr as *const u32) }
+    unsafe { ptr::read(addr as *const u32) }
 }
 
 /// # Safety
@@ -766,7 +738,7 @@ pub unsafe fn closure_schema_id(addr: *const u8) -> u32 {
 /// `addr` must point to the start of an initialized strict Closure object.
 #[inline]
 pub unsafe fn closure_flags(addr: *const u8) -> u16 {
-    unsafe { std::ptr::read(addr.add(4) as *const u32) as u16 }
+    unsafe { ptr::read(addr.add(4) as *const u32) as u16 }
 }
 
 /// # Safety
@@ -790,7 +762,7 @@ pub unsafe fn closure_halt_kind(addr: *const u8) -> u16 {
 /// `addr` must point to the start of an initialized strict Closure object.
 #[inline]
 pub unsafe fn closure_fn_ptr(addr: *const u8) -> u64 {
-    unsafe { std::ptr::read(addr.add(8) as *const u64) }
+    unsafe { ptr::read(addr.add(8) as *const u64) }
 }
 
 /// # Safety
@@ -818,8 +790,8 @@ pub unsafe fn closure_capture_kind_slot(addr: *const u8, idx: usize) -> *mut u8 
 /// `idx` must be in-bounds for its captured-count prefix.
 #[inline]
 pub unsafe fn closure_capture_raw_kind(addr: *const u8, idx: usize) -> (u64, ValueKind) {
-    let kind_tag = unsafe { std::ptr::read(closure_capture_kind_slot(addr, idx)) };
-    let raw = unsafe { std::ptr::read(closure_capture_raw_slot(addr, idx)) };
+    let kind_tag = unsafe { ptr::read(closure_capture_kind_slot(addr, idx)) };
+    let raw = unsafe { ptr::read(closure_capture_raw_slot(addr, idx)) };
     let kind = ValueKind::new(kind_tag).expect("closure capture kind");
     (raw, kind)
 }
@@ -832,8 +804,8 @@ pub unsafe fn closure_capture_raw_kind(addr: *const u8, idx: usize) -> (u64, Val
 pub unsafe fn closure_capture_set_raw_kind(addr: *const u8, idx: usize, raw: u64, kind: ValueKind) {
     let raw = if kind.is_heap() { raw & !TAG_MASK } else { raw };
     unsafe {
-        std::ptr::write(closure_capture_raw_slot(addr, idx), raw);
-        std::ptr::write(closure_capture_kind_slot(addr, idx), kind.tag());
+        ptr::write(closure_capture_raw_slot(addr, idx), raw);
+        ptr::write(closure_capture_kind_slot(addr, idx), kind.tag());
     }
 }
 
@@ -865,10 +837,10 @@ pub unsafe fn closure_capture_ref_word(addr: *const u8, idx: usize) -> u64 {
     let raw_slot = unsafe { closure_capture_raw_slot(addr, idx) };
     let (raw, kind) = unsafe { closure_capture_raw_kind(addr, idx) };
     match kind {
-        ValueKind::NULL => crate::any_value::AnyValueRef::null().raw_word(),
-        ValueKind::LIST if raw == 0 => crate::any_value::AnyValueRef::empty_list().raw_word(),
+        ValueKind::NULL => AnyValueRef::null().raw_word(),
+        ValueKind::LIST if raw == 0 => AnyValueRef::empty_list().raw_word(),
         ValueKind::INT | ValueKind::FLOAT | ValueKind::ATOM => {
-            crate::any_value::AnyValueRef::from_scalar_slot(kind, raw_slot as *const u64)
+            AnyValueRef::from_scalar_slot(kind, raw_slot as *const u64)
                 .expect("closure scalar capture ref")
                 .raw_word()
         }
@@ -883,8 +855,7 @@ pub unsafe fn closure_capture_ref_word(addr: *const u8, idx: usize) -> u64 {
 /// `idx` must be in-bounds for its captured-count prefix.
 #[inline]
 pub unsafe fn closure_capture_set_ref_word(addr: *const u8, idx: usize, value: u64) {
-    let value =
-        crate::any_value::AnyValueRef::from_raw_word(value).expect("closure capture ref word");
+    let value = AnyValueRef::from_raw_word(value).expect("closure capture ref word");
     let any = AnyValue::from_ref(value).expect("closure capture ref value");
     unsafe { closure_capture_set(addr, idx, any) };
 }
@@ -894,17 +865,12 @@ pub unsafe fn closure_capture_set_ref_word(addr: *const u8, idx: usize, value: u
 /// Both closure addresses must be initialized strict Closure objects, and both
 /// capture indexes must be in-bounds.
 #[inline]
-pub unsafe fn closure_capture_copy(
-    src_addr: *const u8,
-    src_idx: usize,
-    dst_addr: *const u8,
-    dst_idx: usize,
-) {
-    let raw = unsafe { std::ptr::read(closure_capture_raw_slot(src_addr, src_idx)) };
-    let kind = unsafe { std::ptr::read(closure_capture_kind_slot(src_addr, src_idx)) };
+pub unsafe fn closure_capture_copy(src_addr: *const u8, src_idx: usize, dst_addr: *const u8, dst_idx: usize) {
+    let raw = unsafe { ptr::read(closure_capture_raw_slot(src_addr, src_idx)) };
+    let kind = unsafe { ptr::read(closure_capture_kind_slot(src_addr, src_idx)) };
     unsafe {
-        std::ptr::write(closure_capture_raw_slot(dst_addr, dst_idx), raw);
-        std::ptr::write(closure_capture_kind_slot(dst_addr, dst_idx), kind);
+        ptr::write(closure_capture_raw_slot(dst_addr, dst_idx), raw);
+        ptr::write(closure_capture_kind_slot(dst_addr, dst_idx), kind);
     }
 }
 
@@ -925,10 +891,7 @@ pub fn heap_addr_from_tagged(bits: u64) -> Option<*mut u8> {
 
 #[inline]
 pub(crate) fn heap_object_word(addr: *const u8, kind: ValueKind) -> u64 {
-    assert!(
-        kind.is_heap(),
-        "object-local heap words require a heap kind"
-    );
+    assert!(kind.is_heap(), "object-local heap words require a heap kind");
     let raw = addr as u64;
     debug_assert_eq!(raw & TAG_MASK, 0);
     raw | kind.tag() as u64
@@ -941,7 +904,7 @@ pub(crate) fn heap_object_word(addr: *const u8, kind: ValueKind) -> u64 {
 /// metadata while moving reachable from-space objects.
 #[inline]
 pub fn is_forwarded(addr: *const u8) -> Option<*const u8> {
-    let marker = unsafe { std::ptr::read(addr as *const u64) };
+    let marker = unsafe { ptr::read(addr as *const u64) };
     if marker & TAG_MASK == TAG_FWD {
         Some((marker & !TAG_MASK) as *const u8)
     } else {
@@ -955,10 +918,7 @@ pub fn object_size(ptr_with_tag: u64) -> usize {
     })
 }
 
-pub fn object_size_with_struct_payload(
-    ptr_with_tag: u64,
-    mut struct_payload_size: impl FnMut(u32) -> usize,
-) -> usize {
+pub fn object_size_with_struct_payload(ptr_with_tag: u64, mut struct_payload_size: impl FnMut(u32) -> usize) -> usize {
     let kind = ptr_with_tag & TAG_MASK;
     let addr = (ptr_with_tag & !TAG_MASK) as *const u8;
     unsafe {
@@ -981,14 +941,11 @@ unsafe fn size_of_list(_addr: *const u8) -> usize {
 }
 
 unsafe fn size_of_map(addr: *const u8) -> usize {
-    let count = unsafe { std::ptr::read(addr as *const u64) as usize };
+    let count = unsafe { ptr::read(addr as *const u64) as usize };
     map_size_for_count(count)
 }
 
-unsafe fn size_of_struct(
-    addr: *const u8,
-    struct_payload_size: &mut impl FnMut(u32) -> usize,
-) -> usize {
+unsafe fn size_of_struct(addr: *const u8, struct_payload_size: &mut impl FnMut(u32) -> usize) -> usize {
     let schema_id = unsafe { struct_schema_id(addr) };
     struct_size_for_payload(struct_payload_size(schema_id))
 }
@@ -1046,8 +1003,8 @@ pub struct ListCons {
 }
 
 const _: () = {
-    assert!(std::mem::size_of::<ListCons>() == 16);
-    assert!(std::mem::align_of::<ListCons>() == 8);
+    assert!(mem::size_of::<ListCons>() == 16);
+    assert!(mem::align_of::<ListCons>() == 8);
 };
 
 const LIST_LINK_KIND_SHIFT: u8 = AnyValueRefPacking::current().tag_shift();
@@ -1062,10 +1019,7 @@ pub struct ListLink(u64);
 
 impl ListLink {
     pub fn new(tail_bits: u64, head_kind: ValueKind) -> Self {
-        Self(
-            list_tail_addr_from_bits(tail_bits)
-                | ((head_kind.tag() as u64) << LIST_LINK_KIND_SHIFT),
-        )
+        Self(list_tail_addr_from_bits(tail_bits) | ((head_kind.tag() as u64) << LIST_LINK_KIND_SHIFT))
     }
 
     pub fn from_raw(raw: u64) -> Self {
@@ -1087,11 +1041,7 @@ impl ListLink {
 
     pub fn tail_bits(self) -> u64 {
         let addr = self.tail_addr();
-        if addr == 0 {
-            EMPTY_LIST
-        } else {
-            addr | TAG_LIST
-        }
+        if addr == 0 { EMPTY_LIST } else { addr | TAG_LIST }
     }
 
     pub fn aliased(self) -> bool {
@@ -1231,7 +1181,7 @@ pub fn struct_addr_from_tagged(bits: u64) -> Option<*mut u8> {
 /// `addr` must point to the start of an initialized strict Struct object.
 #[inline]
 pub unsafe fn struct_schema_id(addr: *const u8) -> u32 {
-    unsafe { std::ptr::read(addr as *const u32) }
+    unsafe { ptr::read(addr as *const u32) }
 }
 
 /// # Safety
@@ -1239,7 +1189,7 @@ pub unsafe fn struct_schema_id(addr: *const u8) -> u32 {
 /// `addr` must point to the start of an initialized strict Struct object.
 #[inline]
 pub unsafe fn struct_flags(addr: *const u8) -> u32 {
-    unsafe { std::ptr::read(addr.add(4) as *const u32) }
+    unsafe { ptr::read(addr.add(4) as *const u32) }
 }
 
 /// # Safety
@@ -1279,7 +1229,7 @@ pub fn bitstring_addr_from_tagged(bits: u64) -> Option<*mut u8> {
 /// `addr` must point to the start of an initialized strict inline Bitstring.
 #[inline]
 pub unsafe fn bitstring_bit_len(addr: *const u8) -> u64 {
-    unsafe { std::ptr::read(addr as *const u64) }
+    unsafe { ptr::read(addr as *const u64) }
 }
 
 /// # Safety
@@ -1312,7 +1262,7 @@ pub fn resource_addr_from_tagged(bits: u64) -> Option<*mut u8> {
 ///
 /// `addr` must point to the start of an initialized strict Map object.
 pub unsafe fn map_count(addr: *const u8) -> usize {
-    unsafe { std::ptr::read(addr as *const u64) as usize }
+    unsafe { ptr::read(addr as *const u64) as usize }
 }
 
 #[inline]
@@ -1361,19 +1311,16 @@ pub fn map_value_kind(tag_byte: u8) -> ValueKind {
 ///
 /// `addr` must point to the start of an initialized strict Map object, and
 /// `index` must be in bounds for that map's entry count.
-pub unsafe fn map_entry_raw_kinds(
-    addr: *const u8,
-    index: usize,
-) -> (u64, ValueKind, u64, ValueKind) {
+pub unsafe fn map_entry_raw_kinds(addr: *const u8, index: usize) -> (u64, ValueKind, u64, ValueKind) {
     let count = unsafe { map_count(addr) };
     assert!(index < count, "map entry index out of bounds");
-    let tag = unsafe { std::ptr::read(map_tag_ptr(addr).add(index)) };
+    let tag = unsafe { ptr::read(map_tag_ptr(addr).add(index)) };
     let keys = unsafe { map_keys_ptr(addr, count) };
     let values = unsafe { map_values_ptr(addr, count) };
     (
-        unsafe { std::ptr::read(keys.add(index)) },
+        unsafe { ptr::read(keys.add(index)) },
         map_key_kind(tag),
-        unsafe { std::ptr::read(values.add(index)) },
+        unsafe { ptr::read(values.add(index)) },
         map_value_kind(tag),
     )
 }
@@ -1399,388 +1346,8 @@ pub fn alloc_list_cons_raw_kind(head_raw: u64, head_kind: ValueKind, tail_bits: 
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn list_cons_size_is_16() {
-        assert_eq!(std::mem::size_of::<ListCons>(), 16);
-    }
-
-    #[test]
-    fn list_cons_layout() {
-        let bits = alloc_list_cons_raw_kind(7, ValueKind::INT, EMPTY_LIST);
-        let p = list_addr_from_tagged(bits).expect("tagged list ptr");
-        unsafe {
-            let cons = &*(p as *mut ListCons);
-            assert_eq!(cons.head_kind(), ValueKind::INT);
-            assert_eq!(cons.head as i64, 7);
-            assert_eq!(cons.tail_bits(), EMPTY_LIST);
-            assert_eq!(cons.link & TAG_MASK, 0);
-            assert_eq!(
-                (cons.link & LIST_LINK_KIND_MASK) >> LIST_LINK_KIND_SHIFT,
-                TAG_KIND_INT
-            );
-            assert!(!cons.aliased());
-        }
-    }
-
-    #[test]
-    fn list_cons_chain() {
-        // [1, 2, 3]
-        let l3 = alloc_list_cons_raw_kind(3, ValueKind::INT, EMPTY_LIST);
-        let l2 = alloc_list_cons_raw_kind(2, ValueKind::INT, l3);
-        let l1 = alloc_list_cons_raw_kind(1, ValueKind::INT, l2);
-        unsafe {
-            let c1 = &*(list_addr_from_tagged(l1).unwrap() as *mut ListCons);
-            assert_eq!(c1.head_value(), AnyValue::int(1));
-            let c2 = &*(list_addr_from_tagged(c1.tail_bits()).unwrap() as *mut ListCons);
-            assert_eq!(c2.head_value(), AnyValue::int(2));
-            let c3 = &*(list_addr_from_tagged(c2.tail_bits()).unwrap() as *mut ListCons);
-            assert_eq!(c3.head_value(), AnyValue::int(3));
-            assert_eq!(c3.tail_bits(), EMPTY_LIST);
-        }
-    }
-
-    #[test]
-    fn alloc_struct_zeros_payload_and_sets_prefix() {
-        let p = alloc_struct(7, 24);
-        unsafe {
-            assert_eq!(struct_schema_id(p), 7);
-            assert_eq!(struct_flags(p), 0);
-            assert_eq!(struct_size_for_payload(24), 32);
-            let payload = p.add(8);
-            for i in 0..24 {
-                assert_eq!(*payload.add(i), 0);
-            }
-        }
-    }
-
-    #[test]
-    fn pointer_alignment_satisfies_tag_zero_low_bits() {
-        let p = alloc_struct(0, 0);
-        assert_eq!((p as u64) & TAG_MASK, 0);
-    }
-
-    #[test]
-    fn tag_constants_all_distinct() {
-        let tags = [
-            TAG_NULL,
-            TAG_LIST,
-            TAG_MAP,
-            TAG_STRUCT,
-            TAG_CLOSURE,
-            TAG_BITSTRING,
-            TAG_PROCBIN,
-            TAG_RESOURCE,
-            TAG_FWD,
-            TAG_KIND_INT,
-            TAG_KIND_FLOAT,
-            TAG_KIND_ATOM,
-        ];
-        for (i, a) in tags.iter().enumerate() {
-            for b in tags.iter().skip(i + 1) {
-                assert_ne!(a, b);
-            }
-        }
-    }
-
-    #[test]
-    fn tag_constants_fit_in_4_bits() {
-        for tag in [
-            TAG_NULL,
-            TAG_LIST,
-            TAG_MAP,
-            TAG_STRUCT,
-            TAG_CLOSURE,
-            TAG_BITSTRING,
-            TAG_PROCBIN,
-            TAG_RESOURCE,
-            TAG_FWD,
-            TAG_KIND_INT,
-            TAG_KIND_FLOAT,
-            TAG_KIND_ATOM,
-        ] {
-            assert!(tag <= TAG_MASK);
-        }
-    }
-
-    #[test]
-    fn kind_round_trip() {
-        let addr = 0x1000_u64;
-        for tag in [
-            TAG_LIST,
-            TAG_MAP,
-            TAG_STRUCT,
-            TAG_CLOSURE,
-            TAG_BITSTRING,
-            TAG_PROCBIN,
-            TAG_RESOURCE,
-        ] {
-            let tagged = addr | tag;
-            assert_eq!(tagged & TAG_MASK, tag);
-            assert_eq!(tagged & !TAG_MASK, addr);
-        }
-    }
-
-    #[test]
-    fn strict_heap_kind_comes_from_pointer_low_bits() {
-        let addr = 0x1000 as *const u8;
-        for (kind, tag) in [
-            (ValueKind::LIST, TAG_LIST),
-            (ValueKind::MAP, TAG_MAP),
-            (ValueKind::STRUCT, TAG_STRUCT),
-            (ValueKind::CLOSURE, TAG_CLOSURE),
-            (ValueKind::BITSTRING, TAG_BITSTRING),
-            (ValueKind::PROCBIN, TAG_PROCBIN),
-            (ValueKind::RESOURCE, TAG_RESOURCE),
-        ] {
-            let bits = heap_object_word(addr, kind);
-
-            assert_eq!(bits, 0x1000 | tag);
-            assert_eq!(heap_kind_from_tagged(bits), Some(kind));
-            assert_eq!(heap_addr_from_tagged(bits), Some(0x1000 as *mut u8));
-        }
-    }
-
-    #[test]
-    fn value_kind_rejects_non_value_tags() {
-        assert_eq!(ValueKind::new(TAG_FWD as u8), None);
-        assert_eq!(ValueKind::new(9), None);
-        assert_eq!(ValueKind::new(10), None);
-        assert_eq!(ValueKind::new(11), None);
-        assert_eq!(ValueKind::new(12), None);
-    }
-
-    #[test]
-    fn any_value_constructors_use_canonical_value_kind_tags() {
-        let null = AnyValue::null();
-        assert_eq!(null.raw(), 0);
-        assert_eq!(null.kind(), ValueKind::NULL);
-
-        let int = AnyValue::int(-12);
-        assert_eq!(int.raw() as i64, -12);
-        assert_eq!(int.kind(), ValueKind::INT);
-
-        let atom = AnyValue::atom(42);
-        assert_eq!(atom.raw(), 42);
-        assert_eq!(atom.kind(), ValueKind::ATOM);
-
-        let float = AnyValue::float(3.5);
-        assert_eq!(f64::from_bits(float.raw()), 3.5);
-        assert_eq!(float.kind(), ValueKind::FLOAT);
-
-        let heap = AnyValue::heap_ptr(0x1000 as *mut u8, ValueKind::MAP);
-        assert_eq!(heap.raw(), 0x1000);
-        assert_eq!(heap.kind(), ValueKind::MAP);
-        assert_eq!(heap.heap_object_word(), Some(0x1000 | TAG_MAP));
-    }
-
-    #[test]
-    fn any_value_round_trip_without_packed_scalar_tags() {
-        let values = [
-            AnyValue::int(-12),
-            AnyValue::atom(42),
-            AnyValue::null(),
-            AnyValue::bool_atom(true),
-            AnyValue::bool_atom(false),
-            AnyValue::empty_list(),
-        ];
-
-        for value in values {
-            let decoded =
-                AnyValue::decode_parts(value.raw(), value.kind().tag()).expect("value slot parts");
-            assert_eq!(decoded, value);
-        }
-
-        assert_eq!(AnyValue::int(7).raw(), 7);
-        assert_eq!(AnyValue::atom(TRUE_ATOM_ID).raw(), TRUE_ATOM_ID as u64);
-        assert_eq!(AnyValue::nil_atom().raw(), NIL_ATOM_ID as u64);
-        assert_eq!(AnyValue::bool_atom(true).raw(), TRUE_ATOM_ID as u64);
-        assert_eq!(AnyValue::bool_atom(false).raw(), FALSE_ATOM_ID as u64);
-        assert_eq!(AnyValue::empty_list().raw(), 0);
-    }
-
-    #[test]
-    fn any_value_decode_parts_uses_low_kind_nibble() {
-        let decoded = AnyValue::decode_parts(0, TAG_MASK as u8 + 1).expect("masked kind byte");
-        assert_eq!(decoded, AnyValue::null());
-    }
-
-    #[test]
-    fn any_value_decodes_side_band_parts_without_packed_tags() {
-        let looks_like_packed_int = 0x11;
-        let decoded = AnyValue::decode_parts(looks_like_packed_int, ValueKind::LIST.tag())
-            .expect("strict side-band decode");
-
-        assert_eq!(decoded.raw(), looks_like_packed_int);
-        assert_eq!(decoded.kind(), ValueKind::LIST);
-    }
-
-    #[test]
-    fn any_value_decodes_tagged_heap_bits_from_low_four_bits() {
-        let decoded = AnyValue::decode_tagged_heap_bits(0x2000 | TAG_RESOURCE).expect("heap bits");
-
-        assert_eq!(decoded.raw(), 0x2000);
-        assert_eq!(decoded.kind(), ValueKind::RESOURCE);
-        assert_eq!(decoded.heap_addr(), Some(0x2000 as *mut u8));
-    }
-
-    #[test]
-    fn list_cons_stores_canonical_head_kind_in_link_high_bits() {
-        let cons = ListCons::new(2.5f64.to_bits(), ValueKind::FLOAT, EMPTY_LIST);
-
-        assert_eq!(cons.head, 2.5f64.to_bits());
-        assert_eq!(cons.head_kind(), ValueKind::FLOAT);
-        assert_eq!(cons.head_value(), AnyValue::float(2.5));
-        assert_eq!(cons.tail_bits(), EMPTY_LIST);
-        assert_eq!(cons.link & TAG_MASK, 0);
-        assert_eq!(
-            (cons.link & LIST_LINK_KIND_MASK) >> LIST_LINK_KIND_SHIFT,
-            TAG_KIND_FLOAT
-        );
-    }
-
-    #[test]
-    fn list_link_keeps_alias_bit_in_high_metadata() {
-        let tail = alloc_list_cons_raw_kind(3, ValueKind::INT, EMPTY_LIST);
-        let mut cons = ListCons::new(7, ValueKind::INT, tail);
-
-        assert_eq!(cons.tail_bits(), tail);
-        assert!(!cons.aliased());
-
-        cons.mark_aliased();
-
-        assert!(cons.aliased());
-        assert_eq!(cons.head_kind(), ValueKind::INT);
-        assert_eq!(cons.tail_bits(), tail);
-        assert_ne!(cons.link & LIST_LINK_ALIAS_MASK, 0);
-        assert_eq!(cons.link & TAG_MASK, 0);
-    }
-
-    #[test]
-    fn list_link_tail_rewrite_preserves_high_metadata() {
-        let old_tail = alloc_list_cons_raw_kind(1, ValueKind::INT, EMPTY_LIST);
-        let new_tail = alloc_list_cons_raw_kind(2, ValueKind::INT, EMPTY_LIST);
-        let mut cons = ListCons::new(7, ValueKind::ATOM, old_tail);
-        cons.mark_aliased();
-
-        cons.set_tail_bits(new_tail);
-
-        assert_eq!(cons.head_kind(), ValueKind::ATOM);
-        assert!(cons.aliased());
-        assert_eq!(cons.tail_bits(), new_tail);
-    }
-
-    #[test]
-    fn forwarding_marker_distinguishable() {
-        for heap_tag in [
-            TAG_LIST,
-            TAG_MAP,
-            TAG_STRUCT,
-            TAG_CLOSURE,
-            TAG_BITSTRING,
-            TAG_PROCBIN,
-            TAG_RESOURCE,
-        ] {
-            assert_ne!(TAG_FWD, heap_tag);
-        }
-    }
-
-    #[test]
-    fn forward_marker_distinguishable_from_pointers() {
-        let addr = 0x1000_u64;
-        let marker = addr | TAG_FWD;
-        for heap_tag in [
-            TAG_LIST,
-            TAG_MAP,
-            TAG_STRUCT,
-            TAG_CLOSURE,
-            TAG_BITSTRING,
-            TAG_PROCBIN,
-            TAG_RESOURCE,
-        ] {
-            assert_ne!(marker, addr | heap_tag);
-        }
-    }
-
-    #[test]
-    fn is_forwarded_detects_marker() {
-        let mut words = [0_u64; 2];
-        let to_space = 0x2000_u64;
-        words[0] = (to_space & !TAG_MASK) | TAG_FWD;
-
-        let found = is_forwarded(words.as_ptr() as *const u8);
-
-        assert_eq!(found, Some(to_space as *const u8));
-    }
-
-    #[test]
-    fn object_size_returns_list_size() {
-        let ptr_with_tag = 0x1000_u64 | TAG_LIST;
-        assert_eq!(object_size(ptr_with_tag), 16);
-    }
-
-    #[test]
-    fn object_size_dispatches_from_pointer_tag_and_object_local_metadata() {
-        #[repr(align(16))]
-        struct AlignedWords([u64; 8]);
-
-        let mut words = AlignedWords([0; 8]);
-        let addr = words.0.as_mut_ptr() as *mut u8;
-        let write_word0 = |value| unsafe {
-            std::ptr::write(addr as *mut u64, value);
-        };
-
-        write_word0(3);
-        assert_eq!(
-            object_size(heap_object_word(addr, ValueKind::MAP)),
-            map_size_for_count(3)
-        );
-
-        write_word0(7);
-        assert_eq!(
-            object_size_with_struct_payload(heap_object_word(addr, ValueKind::STRUCT), |schema| {
-                assert_eq!(schema, 7);
-                24
-            }),
-            struct_size_for_payload(24)
-        );
-
-        write_word0((closure_flags_pack(2, 0) as u64) << 32);
-        assert_eq!(
-            object_size(heap_object_word(addr, ValueKind::CLOSURE)),
-            closure_size_for_count(2)
-        );
-
-        write_word0(17);
-        assert_eq!(
-            object_size(heap_object_word(addr, ValueKind::BITSTRING)),
-            bitstring_size_for_bit_len(17)
-        );
-        assert_eq!(object_size(heap_object_word(addr, ValueKind::PROCBIN)), 16);
-        assert_eq!(object_size(heap_object_word(addr, ValueKind::RESOURCE)), 48);
-    }
-
-    #[test]
-    fn immediate_tags_not_used_for_pointers() {
-        let p = alloc_struct(0, 0) as u64;
-        assert_eq!(p & TAG_MASK, TAG_NULL);
-        assert_ne!(p & TAG_MASK, TAG_KIND_INT);
-        assert_ne!(p & TAG_MASK, TAG_KIND_FLOAT);
-        assert_ne!(p & TAG_MASK, TAG_KIND_ATOM);
-    }
-
-    #[test]
-    fn any_value_recognizes_explicit_list_typed_pointer() {
-        let addr = 0x1000 as *mut u8;
-        let tv = AnyValue::heap_ptr(addr, ValueKind::LIST);
-
-        assert_eq!(tv.kind(), ValueKind::LIST);
-        assert_eq!(tv.heap_addr(), Some(addr));
-        assert_eq!(tv.heap_object_word(), Some(0x1000 | TAG_LIST));
-    }
-}
+#[path = "any_value_test.rs"]
+mod any_value_test;
 
 /// Debug rendering of AnyValues. Lifted out of ir_codegen.rs by
 /// fz-ul4.23.4.3 so that any execution path (JIT, future interp/AOT) can
@@ -1790,8 +1357,17 @@ mod tests {
 /// nullable `*mut Process`) so two schedulers can render concurrently
 /// without an ambient thread-local.
 pub mod debug {
-    use super::{ListCons, ValueKind};
+    use super::{
+        AnyValue, AnyValueRef, EMPTY_LIST, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind,
+        bitstring_addr_from_tagged, closure_addr_from_tagged, closure_flags, closure_schema_id, list_addr_from_tagged,
+        map_addr_from_tagged, map_count, map_entry_raw_kinds, procbin_addr_from_tagged, struct_addr_from_tagged,
+        struct_schema_id,
+    };
+    use crate::heap::{FieldKind, Schema};
+    use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
     use crate::process::Process;
+    use std::slice;
+    use std::str;
 
     /// Render an atom id as `:name` if `proc` has a name for it; fall back
     /// to `:atom_N` otherwise. `proc` is nullable — render may be called
@@ -1801,9 +1377,9 @@ pub mod debug {
     /// ambient `CURRENT_PROCESS`.
     fn render_atom(proc: *mut Process, id: u32) -> String {
         match id {
-            super::NIL_ATOM_ID => return "nil".to_string(),
-            super::TRUE_ATOM_ID => return "true".to_string(),
-            super::FALSE_ATOM_ID => return "false".to_string(),
+            NIL_ATOM_ID => return "nil".to_string(),
+            TRUE_ATOM_ID => return "true".to_string(),
+            FALSE_ATOM_ID => return "false".to_string(),
             _ => {}
         }
         if proc.is_null() {
@@ -1817,7 +1393,7 @@ pub mod debug {
     }
 
     fn is_proc_heap_list(proc: *mut Process, bits: u64) -> bool {
-        let Some(p) = super::list_addr_from_tagged(bits) else {
+        let Some(p) = list_addr_from_tagged(bits) else {
             return false;
         };
         if p.is_null() {
@@ -1827,7 +1403,7 @@ pub mod debug {
     }
 
     fn is_proc_heap_map(proc: *mut Process, bits: u64) -> bool {
-        let Some(p) = super::map_addr_from_tagged(bits) else {
+        let Some(p) = map_addr_from_tagged(bits) else {
             return false;
         };
         if p.is_null() {
@@ -1843,19 +1419,19 @@ pub mod debug {
         if is_proc_heap_map(proc, bits) {
             return render_map(proc, bits);
         }
-        if super::closure_addr_from_tagged(bits).is_some() {
+        if closure_addr_from_tagged(bits).is_some() {
             return render_closure(bits);
         }
-        if super::struct_addr_from_tagged(bits).is_some() {
+        if struct_addr_from_tagged(bits).is_some() {
             return render_struct(proc, bits);
         }
-        if super::bitstring_addr_from_tagged(bits).is_some() {
+        if bitstring_addr_from_tagged(bits).is_some() {
             return render_bitstring(bits);
         }
-        if super::procbin_addr_from_tagged(bits).is_some() {
+        if procbin_addr_from_tagged(bits).is_some() {
             return render_bitstring(bits);
         }
-        if bits == super::EMPTY_LIST {
+        if bits == EMPTY_LIST {
             "[]".into()
         } else {
             format!("#ptr<{:#x}>", bits)
@@ -1867,13 +1443,13 @@ pub mod debug {
     /// field count. Each value field renders inline; non-value fields
     /// are elided (no callers emit them yet).
     fn render_struct(proc: *mut Process, bits: u64) -> String {
-        let p = super::struct_addr_from_tagged(bits).expect("struct bits");
-        let schema_id = unsafe { super::struct_schema_id(p) };
+        let p = struct_addr_from_tagged(bits).expect("struct bits");
+        let schema_id = unsafe { struct_schema_id(p) };
         let heap = &unsafe { &*proc }.heap;
         {
             let reg = heap.schemas_registry();
             let registry = reg.borrow();
-            if registry.get(schema_id).name.as_str() == crate::heap::Schema::RANGE_NAME {
+            if registry.get(schema_id).name.as_str() == Schema::RANGE_NAME {
                 return render_range(proc, bits);
             }
         }
@@ -1884,7 +1460,7 @@ pub mod debug {
             schema
                 .fields
                 .iter()
-                .filter(|f| matches!(f.kind, crate::heap::FieldKind::AnyValue))
+                .filter(|f| matches!(f.kind, FieldKind::AnyValue))
                 .map(|f| f.offset)
                 .collect()
         };
@@ -1896,15 +1472,12 @@ pub mod debug {
     }
 
     fn render_range(proc: *mut Process, bits: u64) -> String {
-        let range_ref = super::AnyValueRef::from_heap_object(
+        let range_ref = AnyValueRef::from_heap_object(
             ValueKind::STRUCT,
-            super::struct_addr_from_tagged(bits).expect("range struct bits"),
+            struct_addr_from_tagged(bits).expect("range struct bits"),
         )
         .expect("range ref");
-        let (first, last, step) = unsafe { &*proc }
-            .heap
-            .range_fields(range_ref)
-            .expect("range fields");
+        let (first, last, step) = unsafe { &*proc }.heap.range_fields(range_ref).expect("range fields");
         if step == 1 {
             format!("{}..{}", first, last)
         } else {
@@ -1914,23 +1487,19 @@ pub mod debug {
 
     /// Render a heap Map as `%{k => v, ...}` in canonical sorted order.
     fn render_map(proc: *mut Process, bits: u64) -> String {
-        let p = super::map_addr_from_tagged(bits).unwrap();
-        let count = unsafe { super::map_count(p) };
+        let p = map_addr_from_tagged(bits).unwrap();
+        let count = unsafe { map_count(p) };
         let mut parts: Vec<String> = Vec::with_capacity(count);
         for i in 0..count {
-            let (kr, kk, vr, vk) = unsafe { super::map_entry_raw_kinds(p, i) };
-            let k = super::AnyValue::decode_parts(kr, kk.tag()).expect("map key");
-            let v = super::AnyValue::decode_parts(vr, vk.tag()).expect("map value");
-            parts.push(format!(
-                "{} => {}",
-                render_value(proc, k),
-                render_value(proc, v)
-            ));
+            let (kr, kk, vr, vk) = unsafe { map_entry_raw_kinds(p, i) };
+            let k = AnyValue::decode_parts(kr, kk.tag()).expect("map key");
+            let v = AnyValue::decode_parts(vr, vk.tag()).expect("map value");
+            parts.push(format!("{} => {}", render_value(proc, k), render_value(proc, v)));
         }
         format!("%{{{}}}", parts.join(", "))
     }
 
-    pub fn render_value(proc: *mut Process, value: super::AnyValue) -> String {
+    pub fn render_value(proc: *mut Process, value: AnyValue) -> String {
         match value.kind() {
             ValueKind::INT => (value.raw() as i64).to_string(),
             ValueKind::FLOAT => render_float(f64::from_bits(value.raw())),
@@ -1951,15 +1520,15 @@ pub mod debug {
     }
 
     fn render_bitstring(bits: u64) -> String {
-        let p = if super::procbin_addr_from_tagged(bits).is_some() {
+        let p = if procbin_addr_from_tagged(bits).is_some() {
             bits as *mut u8
         } else {
-            super::bitstring_addr_from_tagged(bits).unwrap()
+            bitstring_addr_from_tagged(bits).unwrap()
         };
-        let bit_len = unsafe { crate::procbin::bitstring_bit_len(p) } as usize;
+        let bit_len = unsafe { bitstring_bit_len(p) } as usize;
         let total_bytes = bit_len.div_ceil(8);
-        let byte_ptr = unsafe { crate::procbin::bitstring_byte_ptr(p) };
-        let bytes = unsafe { std::slice::from_raw_parts(byte_ptr, total_bytes) };
+        let byte_ptr = unsafe { bitstring_byte_ptr(p) };
+        let bytes = unsafe { slice::from_raw_parts(byte_ptr, total_bytes) };
         let full_bytes = bit_len / 8;
         let trailing_bits = bit_len % 8;
 
@@ -1971,7 +1540,7 @@ pub mod debug {
         // payload-driven so AOT and JIT agree without sharing type
         // info at runtime.
         if trailing_bits == 0
-            && let Ok(s) = std::str::from_utf8(&bytes[..full_bytes])
+            && let Ok(s) = str::from_utf8(&bytes[..full_bytes])
             && is_printable_utf8(s)
         {
             return format!("\"{}\"", escape_for_display(s));
@@ -2017,9 +1586,9 @@ pub mod debug {
     }
 
     fn render_closure(bits: u64) -> String {
-        let p = super::closure_addr_from_tagged(bits).unwrap();
-        let schema_id = unsafe { super::closure_schema_id(p) };
-        let flags = unsafe { super::closure_flags(p) };
+        let p = closure_addr_from_tagged(bits).unwrap();
+        let schema_id = unsafe { closure_schema_id(p) };
+        let flags = unsafe { closure_flags(p) };
         format!("#fn<{}/{}>", schema_id, flags)
     }
 
@@ -2028,10 +1597,10 @@ pub mod debug {
         let mut cur_bits = bits;
         let mut tail_render: Option<String> = None;
         loop {
-            if cur_bits == super::EMPTY_LIST {
+            if cur_bits == EMPTY_LIST {
                 break;
             }
-            let cp = match super::list_addr_from_tagged(cur_bits) {
+            let cp = match list_addr_from_tagged(cur_bits) {
                 Some(p) => p,
                 None => {
                     tail_render = Some(render(proc, cur_bits));

@@ -1,17 +1,17 @@
 ---
 purpose: "receive with utf8 binary literals — locks SwitchKind::Binary three-path parity"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 20
-budget.codegen.instructions: 490
-budget.specs.count: 17
-budget.planner.worklist_pops: 42
-budget.planner.walk_calls: 42
-budget.planner.type_fn_calls: 17
+budget.codegen.functions: 29
+budget.codegen.instructions: 547
+budget.specs.count: 26
+budget.planner.worklist_pops: 26
+budget.planner.walk_calls: 26
+budget.planner.type_fn_calls: 26
 budget.planner.matcher_specs: 0
-budget.planner.vars: 62
-budget.planner.blocks: 17
-budget.planner.stmts: 24
-budget.planner.dispatches: 7
+budget.planner.vars: 67
+budget.planner.blocks: 26
+budget.planner.stmts: 21
+budget.planner.dispatches: 36
 ---
 
 # receive_binary_pattern

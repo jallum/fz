@@ -9,6 +9,8 @@
 
 use std::cell::{Cell, RefCell};
 
+use crate::measurements;
+
 use super::event::{Measurements, Metadata};
 use super::handler::{Event, EventKind, Handler, HandlerId};
 use super::sink::Telemetry;
@@ -119,14 +121,7 @@ impl Default for ConfiguredTelemetry {
 impl Telemetry for ConfiguredTelemetry {
     fn execute(&self, name: &[&'static str], measurements: &Measurements, metadata: &Metadata) {
         let (span_id, parent_span_id) = self.current_span_ids();
-        self.dispatch(
-            name,
-            EventKind::Event,
-            measurements,
-            metadata,
-            span_id,
-            parent_span_id,
-        );
+        self.dispatch(name, EventKind::Event, measurements, metadata, span_id, parent_span_id);
     }
 
     fn span_start(&self, name: &[&'static str], metadata: &Metadata) -> u64 {
@@ -165,7 +160,7 @@ impl ConfiguredTelemetry {
             let pos = s.iter().rposition(|&x| x == span_id);
             pos.and_then(|i| (i > 0).then(|| s[i - 1])).unwrap_or(0)
         };
-        let m = crate::measurements! { elapsed_ns: elapsed_ns };
+        let m = measurements! { elapsed_ns: elapsed_ns };
         self.dispatch(name, kind, &m, &Metadata::new(), span_id, parent_id);
         // Pop after dispatch so within-handler peeks at the stack still
         // see the span as "open." Bind the position first so the
@@ -178,182 +173,5 @@ impl ConfiguredTelemetry {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::telemetry::capture::Capture;
-    use crate::telemetry::sink::TelemetryExt;
-    use crate::telemetry::value::Value;
-    use crate::{measurements, metadata};
-
-    #[test]
-    fn attach_returns_increasing_ids() {
-        let t = ConfiguredTelemetry::new();
-        let a = t.attach(&[], Box::new(NoopHandler));
-        let b = t.attach(&["fz"], Box::new(NoopHandler));
-        assert_ne!(a, b);
-        assert_eq!(t.handler_count(), 2);
-    }
-
-    #[test]
-    fn detach_removes_a_handler() {
-        let t = ConfiguredTelemetry::new();
-        let a = t.attach(&[], Box::new(NoopHandler));
-        let b = t.attach(&[], Box::new(NoopHandler));
-        assert_eq!(t.handler_count(), 2);
-        assert!(t.detach(a));
-        assert_eq!(t.handler_count(), 1);
-        assert!(!t.detach(a), "detaching twice returns false");
-        assert!(t.detach(b));
-        assert_eq!(t.handler_count(), 0);
-    }
-
-    #[test]
-    fn empty_prefix_matches_every_event() {
-        let t = ConfiguredTelemetry::new();
-        let cap = Capture::new();
-        t.attach(&[], cap.handler());
-        t.emit(&["fz", "a"]);
-        t.emit(&["other"]);
-        assert_eq!(cap.len(), 2);
-    }
-
-    #[test]
-    fn prefix_filters_non_matching_events() {
-        let t = ConfiguredTelemetry::new();
-        let cap = Capture::new();
-        t.attach(&["fz", "lex"], cap.handler());
-        t.emit(&["fz", "lex", "tokens_built"]);
-        t.emit(&["fz", "parse", "ast"]);
-        t.emit(&["other"]);
-        let evs = cap.events();
-        assert_eq!(evs.len(), 1);
-        assert_eq!(evs[0].name, vec!["fz", "lex", "tokens_built"]);
-    }
-
-    #[test]
-    fn multiple_handlers_fan_out_independently() {
-        let t = ConfiguredTelemetry::new();
-        let all = Capture::new();
-        let only_lex = Capture::new();
-        t.attach(&[], all.handler());
-        t.attach(&["fz", "lex"], only_lex.handler());
-        t.emit(&["fz", "lex", "x"]);
-        t.emit(&["fz", "parse", "y"]);
-        assert_eq!(all.len(), 2);
-        assert_eq!(only_lex.len(), 1);
-    }
-
-    #[test]
-    fn span_lifecycle_emits_synthetic_events() {
-        let t = ConfiguredTelemetry::new();
-        let cap = Capture::new();
-        t.attach(&[], cap.handler());
-        {
-            let _s = t.span(&["fz", "lex", "pass"], metadata! { fn_name: "main" });
-            t.execute(
-                &["fz", "lex", "tokens_built"],
-                &measurements! { count: 17u64 },
-                &Metadata::new(),
-            );
-        }
-        let evs = cap.events();
-        // Expected: span.start, then user event, then span.stop.
-        assert_eq!(evs.len(), 3);
-        assert!(matches!(evs[0].kind, EventKind::SpanStart));
-        assert!(matches!(evs[1].kind, EventKind::Event));
-        assert!(matches!(evs[2].kind, EventKind::SpanStop));
-    }
-
-    #[test]
-    fn events_during_span_inherit_span_id() {
-        let t = ConfiguredTelemetry::new();
-        let cap = Capture::new();
-        t.attach(&[], cap.handler());
-        {
-            let _s = t.span(&["fz", "outer"], Metadata::new());
-            t.emit(&["fz", "user", "event"]);
-        }
-        let evs = cap.events();
-        // outer.start, user.event, outer.stop
-        let outer_id = evs[0].span_id;
-        assert!(outer_id > 0);
-        assert_eq!(evs[1].kind, EventKind::Event);
-        assert_eq!(evs[1].span_id, outer_id);
-        assert_eq!(evs[1].parent_span_id, 0);
-    }
-
-    #[test]
-    fn nested_spans_set_parent_span_id() {
-        let t = ConfiguredTelemetry::new();
-        let cap = Capture::new();
-        t.attach(&[], cap.handler());
-        {
-            let _outer = t.span(&["fz", "outer"], Metadata::new());
-            {
-                let _inner = t.span(&["fz", "outer", "inner"], Metadata::new());
-                t.emit(&["fz", "u"]);
-            }
-        }
-        let evs = cap.events();
-        // outer.start (id=1, parent=0)
-        // inner.start (id=2, parent=1)
-        // user event (id=2, parent=1)
-        // inner.stop  (id=2, parent=1)
-        // outer.stop  (id=1, parent=0)
-        assert_eq!(evs.len(), 5);
-        assert_eq!(evs[0].span_id, 1);
-        assert_eq!(evs[0].parent_span_id, 0);
-        assert_eq!(evs[1].span_id, 2);
-        assert_eq!(evs[1].parent_span_id, 1);
-        assert_eq!(evs[2].kind, EventKind::Event);
-        assert_eq!(evs[2].span_id, 2);
-        assert_eq!(evs[2].parent_span_id, 1);
-        assert_eq!(evs[3].kind, EventKind::SpanStop);
-        assert_eq!(evs[3].span_id, 2);
-        assert_eq!(evs[4].kind, EventKind::SpanStop);
-        assert_eq!(evs[4].span_id, 1);
-        assert_eq!(evs[4].parent_span_id, 0);
-    }
-
-    #[test]
-    fn span_stop_event_carries_elapsed_ns() {
-        let t = ConfiguredTelemetry::new();
-        let cap = Capture::new();
-        t.attach(&[], cap.handler());
-        {
-            let _s = t.span(&["fz", "x"], Metadata::new());
-            std::thread::sleep(std::time::Duration::from_micros(50));
-        }
-        let evs = cap.events();
-        let stop = evs
-            .iter()
-            .find(|ev| ev.kind == EventKind::SpanStop)
-            .expect("expected SpanStop event");
-        let ns = match stop.measurements.get("elapsed_ns") {
-            Some(Value::U64(n)) => *n,
-            other => panic!("expected elapsed_ns U64, got {:?}", other),
-        };
-        assert!(ns > 0);
-    }
-
-    #[test]
-    fn panic_inside_span_emits_exception_event() {
-        let t = ConfiguredTelemetry::new();
-        let cap = Capture::new();
-        t.attach(&[], cap.handler());
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _s = t.span(&["fz", "boom"], Metadata::new());
-            panic!("planned");
-        }));
-        assert!(r.is_err());
-        let evs = cap.events();
-        assert_eq!(evs.len(), 2);
-        assert_eq!(evs[0].kind, EventKind::SpanStart);
-        assert_eq!(evs[1].kind, EventKind::SpanException);
-    }
-
-    struct NoopHandler;
-    impl Handler for NoopHandler {
-        fn handle(&self, _: &Event<'_, '_, '_>) {}
-    }
-}
+#[path = "bus_test.rs"]
+mod bus_test;

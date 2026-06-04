@@ -8,6 +8,8 @@ use crate::modules::artifact::FzoArtifact;
 use crate::modules::artifact_store::{ArtifactStore, ArtifactStoreError};
 use crate::modules::identity::ModuleName;
 use crate::modules::interface::ModuleInterface;
+use crate::modules::runtime_library;
+use crate::telemetry::Telemetry;
 use std::collections::{BTreeSet, VecDeque};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,7 +30,7 @@ impl ModuleGraphLoader {
 
     pub fn load_reachable<'a>(
         &self,
-        tel: &dyn crate::telemetry::Telemetry,
+        tel: &dyn Telemetry,
         root_interfaces: &InterfaceTable,
         provider_roots: impl IntoIterator<Item = &'a ModuleName>,
     ) -> Result<ModuleGraph, ArtifactStoreError> {
@@ -49,7 +51,7 @@ impl ModuleGraphLoader {
             if interfaces.contains_key(&module) {
                 continue;
             }
-            if let Some(interface) = crate::modules::runtime_library::interface(&module) {
+            if let Some(interface) = runtime_library::interface(&module) {
                 interfaces.insert(module, interface.clone());
                 enqueue_imports(&mut queue, &interface);
                 enqueue_protocol_impl_protocols(&mut queue, &interface);
@@ -69,7 +71,7 @@ impl ModuleGraphLoader {
 
         let mut objects = Vec::new();
         for module in runtime_modules {
-            let Some(artifact) = crate::modules::runtime_library::artifact(&module) else {
+            let Some(artifact) = runtime_library::artifact(&module) else {
                 continue;
             };
             objects.push(artifact.fzo);
@@ -81,10 +83,7 @@ impl ModuleGraphLoader {
             objects.push(self.store.load_fzo_artifact(tel, &module, expected)?);
         }
 
-        Ok(ModuleGraph {
-            interfaces,
-            objects,
-        })
+        Ok(ModuleGraph { interfaces, objects })
     }
 }
 
@@ -107,11 +106,8 @@ fn enqueue_protocol_impl_protocols(queue: &mut VecDeque<ModuleName>, interface: 
     }
 }
 
-fn enqueue_runtime_implementation_imports(
-    queue: &mut VecDeque<ModuleName>,
-    interface: &ModuleInterface,
-) {
-    for module in crate::modules::runtime_library::implementation_dependencies(&interface.name) {
+fn enqueue_runtime_implementation_imports(queue: &mut VecDeque<ModuleName>, interface: &ModuleInterface) {
+    for module in runtime_library::implementation_dependencies(&interface.name) {
         queue.push_back(module);
     }
 }
@@ -129,7 +125,7 @@ fn enqueue_runtime_protocol_impls(
         .iter()
         .map(|protocol| protocol.name.clone())
         .collect::<Vec<_>>();
-    for (module, candidate) in crate::modules::runtime_library::interfaces() {
+    for (module, candidate) in runtime_library::interfaces() {
         if loaded.contains_key(&module) {
             continue;
         }
@@ -144,253 +140,5 @@ fn enqueue_runtime_protocol_impls(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::diag::Span;
-    use crate::modules::artifact::FzoArtifact;
-    use crate::modules::artifact_store::ArtifactStore;
-    use crate::modules::identity::ModuleName;
-    use crate::modules::interface::{
-        FZ_INTERFACE_ABI_VERSION, InterfaceFn, InterfaceImport, ModuleInterface,
-    };
-
-    fn module(name: &str) -> ModuleName {
-        ModuleName::from_segments(vec![name.to_string()])
-    }
-
-    fn interface(name: &str, imports: Vec<&str>, exports: Vec<(&str, usize)>) -> ModuleInterface {
-        let module_name = module(name);
-        let import_facts = imports
-            .into_iter()
-            .map(|name| InterfaceImport {
-                module: module(name),
-                only: Vec::new(),
-                except: Vec::new(),
-            })
-            .collect::<Vec<_>>();
-        let export_facts = exports
-            .into_iter()
-            .map(|(name, arity)| InterfaceFn {
-                name: name.to_string(),
-                arity,
-                specs: Vec::new(),
-                name_span: Span::DUMMY,
-            })
-            .collect::<Vec<_>>();
-        let fingerprint_inputs = export_facts
-            .iter()
-            .map(|export| format!("export:{module_name}.{}:{}", export.name, export.arity))
-            .collect();
-        ModuleInterface {
-            name: module_name,
-            abi_version: FZ_INTERFACE_ABI_VERSION,
-            imports: import_facts,
-            exports: export_facts,
-            types: Vec::new(),
-            protocols: Vec::new(),
-            protocol_impls: Vec::new(),
-            docs: None,
-            fingerprint_inputs,
-        }
-    }
-
-    fn fzo(interface: &ModuleInterface, source: &str) -> FzoArtifact {
-        let unit = crate::ir_codegen::CompiledUnit::from_ir_module(
-            crate::fz_ir::Module::new(),
-            Some(interface.clone()),
-            crate::diag::Diagnostics::new(),
-        );
-        FzoArtifact::from_unit_source(&unit, source, Vec::new())
-    }
-
-    #[test]
-    fn graph_loader_loads_only_reachable_user_artifacts() {
-        let root =
-            std::env::temp_dir().join(format!("fz-module-graph-{}-reachable", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let store = ArtifactStore::new(&root);
-
-        let app = interface("App", vec!["Math"], vec![("main", 0)]);
-        let math = interface("Math", Vec::new(), vec![("add", 2)]);
-        let extra = interface("Extra", Vec::new(), vec![("unused", 0)]);
-        let mut artifacts = InterfaceTable::new();
-        artifacts.insert(math.name.clone(), math.clone());
-        artifacts.insert(extra.name.clone(), extra.clone());
-        store
-            .write_fzi_artifacts(&crate::telemetry::NullTelemetry, &artifacts)
-            .unwrap();
-        store
-            .write_fzo_artifacts(
-                &crate::telemetry::NullTelemetry,
-                [&fzo(
-                    &math,
-                    "defmodule Math do\n  fn add(x, y), do: x + y\nend\n",
-                )],
-            )
-            .unwrap();
-        let extra_path = store.object_path(&extra.name).unwrap();
-        if let Some(parent) = extra_path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
-        }
-        std::fs::write(&extra_path, "not a valid fzo").unwrap();
-
-        let mut roots = InterfaceTable::new();
-        roots.insert(app.name.clone(), app);
-        let graph = ModuleGraphLoader::new(store)
-            .load_reachable(&crate::telemetry::NullTelemetry, &roots, [])
-            .expect("load graph");
-
-        assert!(graph.interfaces.contains_key(&module("App")));
-        assert!(graph.interfaces.contains_key(&module("Math")));
-        assert!(!graph.interfaces.contains_key(&module("Extra")));
-        assert_eq!(graph.objects.len(), 1);
-        assert_eq!(graph.objects[0].module, Some(module("Math")));
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn graph_loader_keeps_protocol_impl_callback_namespaces_inside_owner_artifact() {
-        let root = std::env::temp_dir().join(format!(
-            "fz-module-graph-{}-protocol-impl",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        let store = ArtifactStore::new(&root);
-
-        let mut app = interface("App", Vec::new(), vec![("main", 0)]);
-        app.protocol_impls
-            .push(crate::frontend::protocols::InterfaceProtocolImpl {
-                protocol: module("Enumerable"),
-                target: crate::frontend::protocols::ImplTarget::module(module("List")),
-                callbacks: vec![crate::modules::identity::ExportKey::new(
-                    module("EnumerableList"),
-                    "reduce",
-                    3,
-                )],
-            });
-        let mut roots = InterfaceTable::new();
-        roots.insert(app.name.clone(), app);
-        let graph = ModuleGraphLoader::new(store)
-            .load_reachable(&crate::telemetry::NullTelemetry, &roots, [])
-            .expect("load graph");
-
-        assert!(!graph.interfaces.contains_key(&module("EnumerableList")));
-        assert!(
-            !graph
-                .objects
-                .iter()
-                .any(|object| object.module == Some(module("EnumerableList"))),
-            "callback namespace must not be loaded as its own object"
-        );
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn graph_loader_rejects_fzo_interface_fingerprint_mismatch() {
-        let root = std::env::temp_dir().join(format!(
-            "fz-module-graph-{}-fingerprint",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        let store = ArtifactStore::new(&root);
-
-        let app = interface("App", vec!["Math"], vec![("main", 0)]);
-        let math_fzi = interface("Math", Vec::new(), vec![("add", 2)]);
-        let math_fzo = interface("Math", Vec::new(), vec![("sub", 2)]);
-        let mut artifacts = InterfaceTable::new();
-        artifacts.insert(math_fzi.name.clone(), math_fzi.clone());
-        store
-            .write_fzi_artifacts(&crate::telemetry::NullTelemetry, &artifacts)
-            .unwrap();
-        store
-            .write_fzo_artifacts(
-                &crate::telemetry::NullTelemetry,
-                [&fzo(
-                    &math_fzo,
-                    "defmodule Math do\n  fn sub(x, y), do: x - y\nend\n",
-                )],
-            )
-            .unwrap();
-
-        let mut roots = InterfaceTable::new();
-        roots.insert(app.name.clone(), app);
-        let err = ModuleGraphLoader::new(store)
-            .load_reachable(&crate::telemetry::NullTelemetry, &roots, [])
-            .unwrap_err();
-
-        assert!(err.to_string().contains("fingerprint"));
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn graph_loader_uses_runtime_interfaces_without_user_artifacts() {
-        let store = ArtifactStore::new(
-            std::env::temp_dir().join(format!("fz-module-graph-{}-runtime", std::process::id())),
-        );
-        let app = interface("App", vec!["Utf8"], vec![("main", 0)]);
-        let mut roots = InterfaceTable::new();
-        roots.insert(app.name.clone(), app);
-
-        let graph = ModuleGraphLoader::new(store)
-            .load_reachable(&crate::telemetry::NullTelemetry, &roots, [])
-            .expect("load graph");
-
-        assert!(graph.interfaces.contains_key(&module("Utf8")));
-        assert_eq!(graph.objects.len(), 1);
-        assert_eq!(graph.objects[0].module, Some(module("Utf8")));
-        assert_eq!(graph.objects[0].unit_payload.format, "fz-runtime-module-v1");
-        assert!(
-            graph.objects[0]
-                .source_unit_text(&crate::telemetry::NullTelemetry)
-                .expect("runtime fzo source")
-                .contains("defmodule Utf8")
-        );
-    }
-
-    #[test]
-    fn graph_loader_follows_runtime_implementation_dependencies() {
-        let store = ArtifactStore::new(std::env::temp_dir().join(format!(
-            "fz-module-graph-{}-runtime-impl-deps",
-            std::process::id()
-        )));
-        let app = interface("App", vec!["Enum"], vec![("main", 0)]);
-        let mut roots = InterfaceTable::new();
-        roots.insert(app.name.clone(), app);
-
-        let graph = ModuleGraphLoader::new(store)
-            .load_reachable(&crate::telemetry::NullTelemetry, &roots, [])
-            .expect("load graph");
-
-        assert!(graph.interfaces.contains_key(&module("Enum")));
-        assert!(graph.interfaces.contains_key(&module("Enumerable")));
-        assert!(graph.interfaces.contains_key(&module("List")));
-        assert!(graph.interfaces.contains_key(&module("Range")));
-        assert!(graph.interfaces.contains_key(&module("Map")));
-    }
-
-    #[test]
-    fn graph_loader_follows_protocol_impl_protocol_dependency() {
-        let store = ArtifactStore::new(std::env::temp_dir().join(format!(
-            "fz-module-graph-{}-protocol-impl-protocol",
-            std::process::id()
-        )));
-        let mut app = interface("App", Vec::new(), vec![("main", 0)]);
-        app.protocol_impls
-            .push(crate::frontend::protocols::InterfaceProtocolImpl {
-                protocol: module("Enumerable"),
-                target: crate::frontend::protocols::ImplTarget::module(module("Range")),
-                callbacks: Vec::new(),
-            });
-        let mut roots = InterfaceTable::new();
-        roots.insert(app.name.clone(), app);
-
-        let graph = ModuleGraphLoader::new(store)
-            .load_reachable(&crate::telemetry::NullTelemetry, &roots, [])
-            .expect("load graph");
-
-        assert!(graph.interfaces.contains_key(&module("Enumerable")));
-    }
-}
+#[path = "graph_test.rs"]
+mod graph_test;

@@ -1,10 +1,25 @@
 use std::collections::HashMap;
 
 use super::*;
-use crate::fz_ir::{FnId, Module, Stmt, Term, Var};
-use crate::types::Types;
+use crate::exec::matcher::Matcher;
+use crate::fz_ir::{CallsiteId, EmitSlot, FnId, Module, Stmt, Term, Var};
+use crate::ir_extern_marshal::resolve_fn_types;
+use crate::ir_planner::fn_types::SpecKey;
+use crate::ir_planner::type_fn::type_fn;
+use crate::ir_planner::{ModulePlan, SpecPlan};
+use crate::measurements;
+use crate::metadata;
+use crate::telemetry::{Metadata, Telemetry};
+use crate::types::{ClosureTypes, RenderTypes, Ty, Types};
 use fz_runtime::any_value::AnyValueRef;
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind};
+use fz_runtime::process::YIELD_REASON_REDUCTIONS;
+
+fn continuation_target(fn_types: &SpecPlan, fn_id: FnId, ident: &crate::fz_ir::CallsiteIdent) -> Option<SpecKey> {
+    fn_types
+        .local_call_target(&CallsiteId::new(fn_id, ident, EmitSlot::Cont))
+        .cloned()
+}
 
 /// fz-yxs/fz-2v3 — try matching the message against each clause's
 /// pattern + guard in order; first match wins. Returns the matched
@@ -13,13 +28,13 @@ use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind};
 ///
 /// Receive probes execute the cached AST-free Matcher lowered at the
 /// receive site; misses return None without compiling or walking AST.
-pub(super) fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
+pub(super) fn try_match_clauses<T: Types<Ty = Ty>>(
     runtime: &mut IrInterpRuntime,
     _t: &mut T,
     module: &Module,
-    tel: &dyn crate::telemetry::Telemetry,
+    tel: &dyn Telemetry,
     clauses: &[MatchedClause],
-    matcher: &crate::exec::matcher::Matcher,
+    matcher: &Matcher,
     msg: AnyValue,
     pinned: &HashMap<String, AnyValue>,
     _captures: &[AnyValue],
@@ -28,10 +43,10 @@ pub(super) fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
     let Some((body_id, binds)) = matched else {
         tel.execute(
             &["fz", "interp", "receive", "probe_miss"],
-            &crate::measurements! {
+            &measurements! {
                 clause_count: clauses.len() as u64
             },
-            &crate::telemetry::Metadata::new(),
+            &Metadata::new(),
         );
         return Ok(None);
     };
@@ -52,71 +67,66 @@ pub(super) fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
     }
     tel.execute(
         &["fz", "interp", "receive", "probe_hit"],
-        &crate::measurements! {
+        &measurements! {
             clause_idx: i as u64,
             bound_count: bound_vals.len() as u64,
             clause_count: clauses.len() as u64
         },
-        &crate::telemetry::Metadata::new(),
+        &Metadata::new(),
     );
-    debug_assert!(
-        c.guard.is_none(),
-        "receive guards execute inside the cached Matcher"
-    );
+    debug_assert!(c.guard.is_none(), "receive guards execute inside the cached Matcher");
     Ok(Some((i, bound_vals)))
 }
 
 /// Run an fz fn. Tail calls reuse this stack frame (O(1) Rust stack).
-/// Returns Done(val) on Halt/Return or Blocked(fn_id, cap_vals) when a
-/// Term::Receive fires on an empty mailbox.
-pub(super) fn run_fn<
-    T: Types<Ty = crate::types::Ty> + crate::types::ClosureTypes + crate::types::RenderTypes,
->(
+/// Returns Done/Halt/Yielded/BlockedMatched for interpreter execution.
+pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     runtime: &mut IrInterpRuntime,
     t: &mut T,
     module: &Module,
-    tel: &dyn crate::telemetry::Telemetry,
-    fn_id: FnId,
-    args: Vec<AnyValue>,
-) -> Result<InterpStep, String> {
-    let mut module_types =
-        crate::ir_planner::plan_module(t, module, &crate::telemetry::NullTelemetry);
-    let diagnostics = crate::ir_extern_marshal::resolve_module_types(t, module, &mut module_types);
-    if let Some(diagnostic) = diagnostics.into_iter().next() {
-        return Err(diagnostic.message);
-    }
-    run_fn_typed(runtime, t, module, tel, &module_types, fn_id, args)
-}
-
-fn run_fn_typed<
-    T: Types<Ty = crate::types::Ty> + crate::types::ClosureTypes + crate::types::RenderTypes,
->(
-    runtime: &mut IrInterpRuntime,
-    t: &mut T,
-    module: &Module,
-    tel: &dyn crate::telemetry::Telemetry,
-    module_types: &crate::ir_planner::ModulePlan,
+    tel: &dyn Telemetry,
+    module_types: &ModulePlan,
     mut fn_id: FnId,
     mut args: Vec<AnyValue>,
+    mut selected_spec: Option<SpecKey>,
 ) -> Result<InterpStep, String> {
+    fn resolve_spec_plan<'a, T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
+        t: &mut T,
+        module: &'a Module,
+        module_types: &'a ModulePlan,
+        fn_id: FnId,
+        selected: Option<&SpecKey>,
+        fallback: &'a mut Option<SpecPlan>,
+    ) -> Result<&'a SpecPlan, String> {
+        if let Some(key) = selected
+            && let Some(fn_types) = module_types.specs.get(key)
+        {
+            return Ok(fn_types);
+        }
+        if let Some(fn_types) = module_types.any_spec_for(fn_id) {
+            return Ok(fn_types);
+        }
+        let fn_ir = module.fn_by_id(fn_id);
+        let mut inferred = type_fn(t, fn_ir, module, None);
+        let diagnostics = resolve_fn_types(t, module, fn_id, &mut inferred);
+        if let Some(diagnostic) = diagnostics.into_iter().next() {
+            return Err(diagnostic.message);
+        }
+        *fallback = Some(inferred);
+        Ok(fallback.as_ref().expect("fallback spec inserted"))
+    }
+
     'tail: loop {
         let fn_ir = module.fn_by_id(fn_id);
-        let mut fallback_fn_types;
-        let fn_types = if let Some(fn_types) = module_types.any_spec_for(fn_id) {
-            fn_types
-        } else {
-            fallback_fn_types = crate::ir_planner::type_fn::type_fn(t, fn_ir, module, None);
-            let diagnostics = crate::ir_extern_marshal::resolve_fn_types(
-                t,
-                module,
-                fn_id,
-                &mut fallback_fn_types,
-            );
-            if let Some(diagnostic) = diagnostics.into_iter().next() {
-                return Err(diagnostic.message);
-            }
-            &fallback_fn_types
-        };
+        let mut fallback_fn_types = None;
+        let fn_types = resolve_spec_plan(
+            t,
+            module,
+            module_types,
+            fn_id,
+            selected_spec.as_ref(),
+            &mut fallback_fn_types,
+        )?;
         let mut env: HashMap<Var, AnyValue> = HashMap::new();
         let entry = fn_ir.block(fn_ir.entry);
         if entry.params.len() != args.len() {
@@ -134,17 +144,12 @@ fn run_fn_typed<
         loop {
             let blk = fn_ir.block(cur);
             for (stmt_idx, Stmt::Let(v, prim)) in blk.stmts.iter().enumerate() {
-                let val = eval_prim(
-                    runtime, t, module, tel, fn_types, blk.id, stmt_idx, prim, &env,
-                )?;
+                let val = eval_prim(runtime, t, module, tel, fn_types, blk.id, stmt_idx, prim, &env)?;
                 env.insert(*v, val);
             }
             match &blk.terminator {
                 Term::Goto(b, gargs) => {
-                    let vals: Vec<AnyValue> = gargs
-                        .iter()
-                        .map(|v| env_get(&env, *v))
-                        .collect::<Result<_, _>>()?;
+                    let vals: Vec<AnyValue> = gargs.iter().map(|v| env_get(&env, *v)).collect::<Result<_, _>>()?;
                     let next = fn_ir.block(*b);
                     for (p, val) in next.params.iter().zip(vals) {
                         env.insert(*p, val);
@@ -152,51 +157,67 @@ fn run_fn_typed<
                     cur = *b;
                 }
                 Term::If {
-                    cond,
-                    then_b,
-                    else_b,
-                    ..
+                    cond, then_b, else_b, ..
                 } => {
                     let cv = env_get(&env, *cond)?;
                     cur = if is_truthy(cv) { *then_b } else { *else_b };
                 }
                 Term::Call {
-                    ident: _,
+                    ident,
                     callee,
                     args: call_args,
                     continuation,
                 } => {
+                    let selected_target = fn_types
+                        .local_call_target(&CallsiteId::new(fn_id, ident, EmitSlot::Direct))
+                        .cloned();
                     let arg_vals = collect(&env, call_args)?;
                     let outer_cap_vals = collect(&env, &continuation.captured)?;
-                    match run_fn_typed(runtime, t, module, tel, module_types, *callee, arg_vals)? {
+                    let cont_target = continuation_target(fn_types, fn_id, ident);
+                    match run_fn_typed(
+                        runtime,
+                        t,
+                        module,
+                        tel,
+                        module_types,
+                        selected_target.as_ref().map_or(*callee, |target| target.fn_id),
+                        arg_vals,
+                        selected_target.clone(),
+                    )? {
                         InterpStep::Done(val) => {
                             let mut cont_args = vec![val];
                             cont_args.extend(outer_cap_vals);
                             fn_id = continuation.fn_id;
                             args = cont_args;
+                            selected_spec = cont_target;
                             continue 'tail;
                         }
-                        InterpStep::Blocked(rf, cv, mut inner_after) => {
-                            // Append our continuation to the chain so the
-                            // scheduler calls it after the blocked task resumes.
-                            inner_after.push((continuation.fn_id, outer_cap_vals));
-                            return Ok(InterpStep::Blocked(rf, cv, inner_after));
-                        }
+                        InterpStep::Halt(val) => return Ok(InterpStep::Halt(val)),
                         InterpStep::BlockedMatched(park, mut inner_after) => {
-                            inner_after.push((continuation.fn_id, outer_cap_vals));
+                            inner_after.push(InterpContinuation {
+                                fn_id: continuation.fn_id,
+                                args: outer_cap_vals,
+                                selected_spec: cont_target,
+                            });
                             return Ok(InterpStep::BlockedMatched(park, inner_after));
                         }
                         InterpStep::Yielded {
                             resume_fn,
                             resume_args,
+                            resume_spec,
                             mut after,
                             remaining_reductions,
                             reason,
                         } => {
-                            after.push((continuation.fn_id, outer_cap_vals));
+                            after.push(InterpContinuation {
+                                fn_id: continuation.fn_id,
+                                args: outer_cap_vals,
+                                selected_spec: cont_target,
+                            });
                             return Ok(InterpStep::Yielded {
                                 resume_fn,
                                 resume_args,
+                                resume_spec,
                                 after,
                                 remaining_reductions,
                                 reason,
@@ -205,11 +226,14 @@ fn run_fn_typed<
                     }
                 }
                 Term::TailCall {
-                    ident: _,
+                    ident,
                     callee,
                     args: call_args,
                     is_back_edge,
                 } => {
+                    let selected_target = fn_types
+                        .local_call_target(&CallsiteId::new(fn_id, ident, EmitSlot::Direct))
+                        .cloned();
                     let arg_vals = collect(&env, call_args)?;
                     // fz-02r.6 — interpreter back-edge cooperative GC.
                     // The interpreter runs synchronously, so a pressured
@@ -228,55 +252,88 @@ fn run_fn_typed<
                         // by the scheduler-boundary `finish_yield_report`.
                         if budget_exhausted {
                             return Ok(InterpStep::Yielded {
-                                resume_fn: *callee,
+                                resume_fn: selected_target.as_ref().map_or(*callee, |target| target.fn_id),
                                 resume_args: arg_vals,
+                                resume_spec: selected_target.clone(),
                                 after: vec![],
                                 remaining_reductions,
-                                reason: fz_runtime::process::YIELD_REASON_REDUCTIONS,
+                                reason: YIELD_REASON_REDUCTIONS,
                             });
                         }
                     }
-                    fn_id = *callee;
+                    fn_id = selected_target.as_ref().map_or(*callee, |target| target.fn_id);
                     args = arg_vals;
+                    selected_spec = selected_target;
                     continue 'tail;
                 }
                 Term::CallClosure {
-                    ident: _,
+                    ident,
                     closure,
                     args: call_args,
                     continuation,
                 } => {
                     let cl = env_get(&env, *closure)?;
-                    let (lam_fn, mut clos_args) = unpack_closure(cl.value()?)?;
+                    let (lam_fn, mut clos_args) = unpack_callable(cl, runtime.cur_proc())?;
                     clos_args.extend(collect(&env, call_args)?);
+                    // A closure call dispatches on the runtime closure value:
+                    // `lam_fn` is ground truth. The planner's per-site target is a
+                    // sound spec hint only when it specializes *this* lambda. A
+                    // shared/polymorphic site — e.g. inside a runtime higher-order
+                    // fn reached with different closures (reduce/2 delegates to
+                    // reduce/3) — can carry a target for a different lambda; running
+                    // it would invoke the wrong body with the wrong arity. Native
+                    // sidesteps this by indirect-dispatching the precompiled body;
+                    // mirror that here by keeping the target only when it matches.
+                    let selected_target = fn_types
+                        .local_call_target(&CallsiteId::new(fn_id, ident, EmitSlot::ClosureCall))
+                        .filter(|target| target.fn_id == lam_fn)
+                        .cloned();
                     let outer_cap_vals = collect(&env, &continuation.captured)?;
-                    match run_fn_typed(runtime, t, module, tel, module_types, lam_fn, clos_args)? {
+                    let cont_target = continuation_target(fn_types, fn_id, ident);
+                    match run_fn_typed(
+                        runtime,
+                        t,
+                        module,
+                        tel,
+                        module_types,
+                        lam_fn,
+                        clos_args,
+                        selected_target.clone(),
+                    )? {
                         InterpStep::Done(val) => {
                             let mut cont_args = vec![val];
                             cont_args.extend(outer_cap_vals);
                             fn_id = continuation.fn_id;
                             args = cont_args;
+                            selected_spec = cont_target;
                             continue 'tail;
                         }
-                        InterpStep::Blocked(rf, cv, mut inner_after) => {
-                            inner_after.push((continuation.fn_id, outer_cap_vals));
-                            return Ok(InterpStep::Blocked(rf, cv, inner_after));
-                        }
+                        InterpStep::Halt(val) => return Ok(InterpStep::Halt(val)),
                         InterpStep::BlockedMatched(park, mut inner_after) => {
-                            inner_after.push((continuation.fn_id, outer_cap_vals));
+                            inner_after.push(InterpContinuation {
+                                fn_id: continuation.fn_id,
+                                args: outer_cap_vals,
+                                selected_spec: cont_target,
+                            });
                             return Ok(InterpStep::BlockedMatched(park, inner_after));
                         }
                         InterpStep::Yielded {
                             resume_fn,
                             resume_args,
+                            resume_spec,
                             mut after,
                             remaining_reductions,
                             reason,
                         } => {
-                            after.push((continuation.fn_id, outer_cap_vals));
+                            after.push(InterpContinuation {
+                                fn_id: continuation.fn_id,
+                                args: outer_cap_vals,
+                                selected_spec: cont_target,
+                            });
                             return Ok(InterpStep::Yielded {
                                 resume_fn,
                                 resume_args,
+                                resume_spec,
                                 after,
                                 remaining_reductions,
                                 reason,
@@ -285,38 +342,27 @@ fn run_fn_typed<
                     }
                 }
                 Term::TailCallClosure {
-                    ident: _,
+                    ident,
                     closure,
                     args: call_args,
                 } => {
                     let cl = env_get(&env, *closure)?;
-                    let (lam_fn, mut clos_args) = unpack_closure(cl.value()?)?;
+                    let (lam_fn, mut clos_args) = unpack_callable(cl, runtime.cur_proc())?;
                     clos_args.extend(collect(&env, call_args)?);
+                    // Dispatch on the runtime closure value; keep the planner's
+                    // target only when it specializes this same lambda (see the
+                    // CallClosure arm above for why).
+                    let selected_target = fn_types
+                        .local_call_target(&CallsiteId::new(fn_id, ident, EmitSlot::ClosureCall))
+                        .filter(|target| target.fn_id == lam_fn)
+                        .cloned();
                     fn_id = lam_fn;
                     args = clos_args;
+                    selected_spec = selected_target;
                     continue 'tail;
                 }
                 Term::Return(v) => return Ok(InterpStep::Done(env_get(&env, *v)?)),
-                Term::Halt(v) => return Ok(InterpStep::Done(env_get(&env, *v)?)),
-                Term::Receive {
-                    continuation,
-                    ident: _,
-                } => {
-                    let cap_vals = collect(&env, &continuation.captured)?;
-                    match unsafe { &mut *runtime.cur_proc() }.mailbox.pop_front() {
-                        Some(msg) => {
-                            let msg = AnyValue::from_any_value_ref(msg)?;
-                            let mut cont_args = vec![msg];
-                            cont_args.extend(cap_vals);
-                            fn_id = continuation.fn_id;
-                            args = cont_args;
-                            continue 'tail;
-                        }
-                        None => {
-                            return Ok(InterpStep::Blocked(continuation.fn_id, cap_vals, vec![]));
-                        }
-                    }
-                }
+                Term::Halt(v) => return Ok(InterpStep::Halt(env_get(&env, *v)?)),
                 // fz-yxs/fz-2v3 — selective receive. Walk the mailbox
                 // head-to-tail trying each clause in order; first match
                 // wins. On miss, return BlockedMatched so the scheduler
@@ -376,6 +422,7 @@ fn run_fn_typed<
                         new_args.extend(capture_vals);
                         fn_id = body;
                         args = new_args;
+                        selected_spec = None;
                         continue 'tail;
                     }
 
@@ -388,6 +435,7 @@ fn run_fn_typed<
                         if timeout_val.as_i64() == Some(0) {
                             fn_id = a.body;
                             args = capture_vals;
+                            selected_spec = None;
                             continue 'tail;
                         }
                     }
@@ -410,9 +458,7 @@ pub(super) fn collect(env: &HashMap<Var, AnyValue>, vars: &[Var]) -> Result<Vec<
 }
 
 pub(super) fn env_get(env: &HashMap<Var, AnyValue>, v: Var) -> Result<AnyValue, String> {
-    env.get(&v)
-        .copied()
-        .ok_or_else(|| format!("unbound Var({})", v.0))
+    env.get(&v).copied().ok_or_else(|| format!("unbound Var({})", v.0))
 }
 
 pub(super) fn is_truthy(v: AnyValue) -> bool {
@@ -428,13 +474,12 @@ pub(super) fn is_truthy(v: AnyValue) -> bool {
 ///
 /// Pre-conditions: `runtime.cur_proc()` owns the heap holding the
 /// queue. Closures in the queue point into that heap.
-pub(super) fn drain_pending_dtors_interp<
-    T: Types<Ty = crate::types::Ty> + crate::types::ClosureTypes + crate::types::RenderTypes,
->(
+pub(super) fn drain_pending_dtors_interp<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     runtime: &mut IrInterpRuntime,
     t: &mut T,
     module: &Module,
-    tel: &dyn crate::telemetry::Telemetry,
+    tel: &dyn Telemetry,
+    module_types: &ModulePlan,
 ) -> Result<(), String> {
     loop {
         let entry = {
@@ -444,9 +489,8 @@ pub(super) fn drain_pending_dtors_interp<
         let Some((closure_bits, payload_ref)) = entry else {
             break;
         };
-        let closure_ref = AnyValueRef::from_raw_word(closure_bits).map_err(|err| {
-            format!("fz-4mk drain: invalid dtor closure ref {closure_bits:#x}: {err:?}")
-        })?;
+        let closure_ref = AnyValueRef::from_raw_word(closure_bits)
+            .map_err(|err| format!("fz-4mk drain: invalid dtor closure ref {closure_bits:#x}: {err:?}"))?;
         let closure = RuntimeAnyValue::heap_ptr(
             closure_ref
                 .closure_addr()
@@ -456,24 +500,22 @@ pub(super) fn drain_pending_dtors_interp<
         let (fn_id, captured) = match unpack_closure(closure) {
             Ok(x) => x,
             Err(e) => {
-                tel.event(
-                    &["fz", "runtime", "bad_dtor_closure"],
-                    crate::metadata! { error: e },
-                );
+                tel.event(&["fz", "runtime", "bad_dtor_closure"], metadata! { error: e });
                 continue;
             }
         };
         let mut args = captured;
-        args.push(interp_value_from_ref_word(
-            payload_ref,
-            "fz-4mk drain payload",
-        )?);
-        match run_fn(runtime, t, module, tel, fn_id, args)? {
+        args.push(interp_value_from_ref_word(payload_ref, "fz-4mk drain payload")?);
+        match run_fn_typed(runtime, t, module, tel, module_types, fn_id, args, None)? {
             InterpStep::Done(_) => {}
-            InterpStep::Yielded { .. }
-            | InterpStep::Blocked(_, _, _)
-            | InterpStep::BlockedMatched(_, _) => {
-                return Err("fz-4mk drain: dtor blocked on receive (unsupported in v1)".into());
+            InterpStep::Halt(value) => {
+                return Err(format!(
+                    "fz-4mk drain: dtor halted with {}",
+                    value.render(runtime.cur_proc())
+                ));
+            }
+            InterpStep::Yielded { .. } | InterpStep::BlockedMatched(_, _) => {
+                return Err("fz-4mk drain: dtor blocked on selective receive (unsupported in v1)".into());
             }
         }
     }

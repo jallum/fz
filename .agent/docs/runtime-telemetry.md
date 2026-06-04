@@ -7,55 +7,83 @@ tests observe a run without reaching into a `Process`. It is the runtime side of
 the same idea as compile-time [`telemetry`](telemetry.md): the system writes down
 facts it already holds, and a sink that is listening reads them.
 
-`Runtime::with_telemetry` attaches the sink. Both execution engines — the
-compiled `Runtime` and the interpreter `IrInterpRuntime` — emit the same events,
-so a test behaves identically across interpreter, JIT, and AOT.
+`Runtime::with_telemetry` attaches the sink to the compiled scheduler;
+`IrInterpRuntime` carries one through its run. Both engines route through the
+same emit sites, so a test behaves identically across interpreter, JIT, and AOT.
+
+Two events matter:
+
+- `fz.runtime.process_exited` — one per task exit, carrying its halt value and
+  heap stats.
+- `fz.runtime.dbg` — one per `dbg`/print line.
 
 ## `fz.runtime.process_exited`
 
-Emitted once per task exit, through the single `ExitRecord::emit` site shared by
-both engines:
+`ExitRecord::emit` (in `exec/runtime.rs`) is the single emit site, shared by both
+engines: the compiled scheduler calls it as a task leaves `run_until_idle`, and
+`IrInterpRuntime` calls it at its own halt sites. The event carries both a scalar
+projection and the live `&Process`:
 
 ```text
-event:        fz.runtime.process_exited
-measurements: halt_value, live_count, bytes_used   (durable; built by ExitRecord::project)
-metadata:     pid, process = opaque(&Process)       (live during dispatch only)
+event:        fz.runtime.process_exited       (an `execute`: measurements + metadata)
+measurements: halt_value, live_count, bytes_used
+metadata:     pid, process = opaque(&Process)
 ```
 
-It carries **both** a measurement projection and the live `&Process`, and the
-split is deliberate:
+`ExitRecord` is the projection: `{ pid, halt_value: i64, live_count: usize,
+bytes_used: usize }`. `ExitRecord::project` builds it by reading `process.halt_value`,
+`process.heap.live_count()`, and `process.heap.bytes_used()` — the single place that
+reads `Process` internals for this event. `emit` projects, then publishes the
+scalars as measurements and the live `&Process` as opaque metadata beside `pid`.
 
-- The **measurements** are the durable, stable contract. `durable_owned()` keeps
-  them, so they survive into stored events (`Capture`, JSONL). `ExitRecord::project`
-  is the single place that reads `Process` internals for the event.
+The split is deliberate, and it decides what a handler may read:
+
+- The **measurements** are the durable, stable contract — plain numbers. They are
+  the part that survives into a stored event.
 - The **opaque `&Process`** is the escape hatch for a synchronous handler that
-  needs a field the projection omits. `durable_owned()` drops opaque values, so
-  it is valid only during dispatch — never read it from a stored event.
+  needs a field the projection omits; it `downcast_ref`s the metadata back to a
+  `&Process` during dispatch. An opaque value never survives into a stored event:
+  the `Capture` handler drops it when it owns the event (`durable_owned` keeps
+  every value except opaque references — `to_owned_durable` returns `None` only
+  for `Value::Opaque`, so numbers, bools, strings, string-seqs, and byte blobs
+  all survive), and `JsonlBackend` skips it when it serializes. So the `&Process`
+  is valid only during dispatch — never read it from a stored event.
 
 ## `fz.runtime.dbg`
 
 `dbg`/print output is routed onto the bus too. `emit_print_line` (the shared
-render seam) writes production stdout and forwards each line through the running
-process's `ExecCtx.output` hook to the sink on `ExecCtx.tel` — the per-task
-dispatch table the scheduler installs, not a thread-global. So dbg output is
-observable as events on both engines, and each scheduler's output stays on its
-own sink:
+render seam in the runtime crate) writes production stdout with `println!`, then
+forwards each rendered line through the running process's `ExecCtx.output` hook,
+handing it the sink on `ExecCtx.tel`. Both are per-task fields on the `ExecCtx`
+the scheduler installs, not thread-globals — so each scheduler's dbg output stays
+on its own sink. The hook (`output_hook_thunk`) emits the line as an event:
 
 ```text
-event:    fz.runtime.dbg
+event:    fz.runtime.dbg     (an `event`: metadata only)
 metadata: line
 ```
 
+Both engines install the same `output_hook_thunk` on `ExecCtx.output`, so dbg
+output is observable as events on the interpreter, JIT, and AOT alike.
+
 ## Observing In Tests
 
-There is one run path — the production scheduler — and the test convenience
-`CompiledModule::run(fn_id)` is a thin `spawn` + `run_until_idle` over it that
-reads its result from `process_exited`, not from `task.halt_value`. Tests do not
-construct a caller-owned `Process` or read a print buffer; they observe:
+There is one run path — the production scheduler — and tests watch it through the
+two events instead of poking task internals. They never construct a caller-owned
+`Process` or read a print buffer; they attach handlers and read what was emitted:
 
-- `ProcessExitCapture` → a typed `ExitRecord` (result + heap stats).
-- `DbgCapture` → the `fz.runtime.dbg` line stream.
+- `ProcessExitCapture` reconstructs a typed `ExitRecord` (result + heap stats)
+  from each `process_exited` event's measurements, queryable by `last()` or
+  `by_pid(pid)`.
+- `DbgCapture` records the `fz.runtime.dbg` line stream, read back with `lines()`.
 
-`observe(compiled, entry)` (codegen tests) bundles both. `capture_main` (output)
-and `run_capturing` (result + heap) are built on it; `run_main` reaches the same
-`process_exited` seam through `CompiledModule::run`.
+`observe(compiled, entry)` (codegen tests) attaches both, spawns `entry`, drains
+`run_until_idle`, and returns the root task's `ExitRecord` plus the dbg lines. The
+result/output/heap helpers build on it: `run_main` reads `observe(...).exit.halt_value`,
+`capture_main` reads `observe(...).output`, and `run_capturing` returns
+`(exit.halt_value, exit.live_count)`.
+
+`CompiledModule::run(fn_id)` is a sibling convenience: a thin `spawn` +
+`run_until_idle` that attaches a `ProcessExitCapture` and returns the root pid's
+`halt_value` from its `process_exited` record. Both seams read the result from the
+event, not from `task.halt_value`.

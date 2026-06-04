@@ -1,0 +1,9 @@
+warning[type/no-matching-clause]: `fn` clauses don't cover every input
+  --> fixtures/ast_eval/input.fz:3:1
+   |
+ 3 | fn eval({:mul, a, b}), do: eval(a) * eval(b)
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
+   |
+   = note: an input matched by no clause halts with `:function_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+

@@ -1,7 +1,23 @@
 #![allow(unused_imports)]
 
+#[cfg(debug_assertions)]
+use super::invariants::{assert_no_new_call_shapes, emit_and_assert_spec_dispatch_coverage, snapshot_call_shapes};
+use super::receive::{MatcherRuntimeHelpers, declare_matcher, emit_matcher_body_from_matcher};
 use super::*;
-use crate::fz_ir::{BinOp, Const, FnId, Module, Prim, Stmt, Term, UnOp};
+use crate::fz_ir::{
+    BinOp, BlockId, CallsiteId, CallsiteIdent, Const, EmitSlot, FnId, Module, Prim, SpecId, Stmt, Term, UnOp,
+};
+use crate::ir_dest::{lower_destinations, verify_module};
+use crate::ir_extern_marshal::resolve_module_types;
+use crate::ir_planner::fn_types::SpecKey;
+use crate::ir_planner::planned::{CallableEntryPlan, PlannedProgram};
+use crate::ir_planner::{ModulePlan, SpecPlan, collect_diagnostics, materialize_program};
+use crate::telemetry::value::opaque;
+use crate::telemetry::{Telemetry, TelemetryExt as _, next_compile_nonce};
+use crate::types::{
+    ClosureTarget, ClosureTypes, LiteralTypes, RenderTypes, Ty, Types, VisibilityTypes, key_slots_from_tys,
+    key_slots_to_tys, ty_descr,
+};
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
     self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
@@ -13,228 +29,10 @@ use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
-use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
-use std::collections::HashMap;
-
-fn prepare_codegen_body(module: &Module, fn_idx: usize) -> crate::fz_ir::FnIr {
-    module.fns[fn_idx].clone()
-}
-
-fn push_reachable_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    spec_registry: &crate::frontend::spec_registry::SpecRegistry,
-    reached: &mut std::collections::HashSet<u32>,
-    worklist: &mut Vec<u32>,
-    fid: FnId,
-    key: Vec<crate::types::Ty>,
-) {
-    let key =
-        crate::ir_planner::fn_types::SpecKey::value(fid, crate::types::key_slots_from_tys(key));
-    if let Some(next) = spec_registry.resolve_spec_key(t, &key)
-        && reached.insert(next.0)
-    {
-        worklist.push(next.0);
-    }
-}
-
-fn push_dispatch_target<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    spec_registry: &crate::frontend::spec_registry::SpecRegistry,
-    reached: &mut std::collections::HashSet<u32>,
-    worklist: &mut Vec<u32>,
-    caller: FnId,
-    ident: &crate::fz_ir::CallsiteIdent,
-    slot: crate::fz_ir::EmitSlot,
-    ft: &crate::ir_planner::SpecPlan,
-) {
-    let cid = crate::fz_ir::CallsiteId {
-        caller,
-        ident: ident.clone(),
-        slot,
-    };
-    let Some(target) = ft.local_call_target(&cid) else {
-        return;
-    };
-    if let Some(next) = spec_registry.resolve_spec_key(t, target)
-        && reached.insert(next.0)
-    {
-        worklist.push(next.0);
-    }
-}
-
-fn augment_reachable_for_codegen_bodies<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
-    t: &mut T,
-    module: &Module,
-    spec_registry: &crate::frontend::spec_registry::SpecRegistry,
-    module_plan: &crate::ir_planner::ModulePlan,
-    codegen_bodies: &[Option<crate::fz_ir::FnIr>],
-    reached: &mut std::collections::HashSet<u32>,
-) {
-    let spec_keys: Vec<_> = spec_registry.iter().map(|(_, key)| key.clone()).collect();
-    let ft_of = |sid: u32| -> Option<&crate::ir_planner::SpecPlan> {
-        let key = spec_keys.get(sid as usize)?;
-        module_plan.specs.get(key)
-    };
-
-    let mut worklist: Vec<u32> = reached.iter().copied().collect();
-    while let Some(sid) = worklist.pop() {
-        let Some(body) = codegen_bodies.get(sid as usize).and_then(Option::as_ref) else {
-            continue;
-        };
-        let Some(ft) = ft_of(sid) else { continue };
-
-        for blk in &body.blocks {
-            if !ft.reachable_blocks.contains(&blk.id) {
-                continue;
-            }
-            let env = crate::ir_planner::reachable::env_at_terminator(t, ft, blk, module);
-            let any_ty = t.any();
-            let arg_tys = |args: &[crate::fz_ir::Var]| -> Vec<crate::types::Ty> {
-                args.iter()
-                    .map(|av| env.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
-                    .collect()
-            };
-            let pad_to_arity = |callee: FnId, mut tys: Vec<crate::types::Ty>| {
-                if let Some(&j) = module.fn_idx.get(&callee) {
-                    let np = module.fns[j].block(module.fns[j].entry).params.len();
-                    while tys.len() < np {
-                        tys.push(any_ty.clone());
-                    }
-                    tys.truncate(np);
-                }
-                tys
-            };
-            match &blk.terminator {
-                Term::Call {
-                    ident,
-                    callee,
-                    args,
-                    continuation,
-                    ..
-                } => {
-                    push_dispatch_target(
-                        t,
-                        spec_registry,
-                        reached,
-                        &mut worklist,
-                        body.id,
-                        ident,
-                        crate::fz_ir::EmitSlot::Direct,
-                        ft,
-                    );
-                    push_dispatch_target(
-                        t,
-                        spec_registry,
-                        reached,
-                        &mut worklist,
-                        body.id,
-                        ident,
-                        crate::fz_ir::EmitSlot::Cont,
-                        ft,
-                    );
-                    let _ = (callee, args, continuation);
-                }
-                Term::TailCall {
-                    ident,
-                    callee,
-                    args,
-                    ..
-                } => {
-                    push_dispatch_target(
-                        t,
-                        spec_registry,
-                        reached,
-                        &mut worklist,
-                        body.id,
-                        ident,
-                        crate::fz_ir::EmitSlot::Direct,
-                        ft,
-                    );
-                    let _ = (callee, args);
-                }
-                Term::CallClosure {
-                    ident,
-                    closure,
-                    args,
-                    continuation,
-                    ..
-                } => {
-                    if let Some(target) = ft.known_fn(closure) {
-                        push_reachable_spec(
-                            t,
-                            spec_registry,
-                            reached,
-                            &mut worklist,
-                            target,
-                            pad_to_arity(target, arg_tys(args)),
-                        );
-                    }
-                    push_dispatch_target(
-                        t,
-                        spec_registry,
-                        reached,
-                        &mut worklist,
-                        body.id,
-                        ident,
-                        crate::fz_ir::EmitSlot::Cont,
-                        ft,
-                    );
-                    let _ = continuation;
-                }
-                Term::TailCallClosure { closure, args, .. } => {
-                    if let Some(target) = ft.known_fn(closure) {
-                        push_reachable_spec(
-                            t,
-                            spec_registry,
-                            reached,
-                            &mut worklist,
-                            target,
-                            pad_to_arity(target, arg_tys(args)),
-                        );
-                    }
-                }
-                Term::Receive {
-                    continuation,
-                    ident,
-                    ..
-                } => {
-                    push_dispatch_target(
-                        t,
-                        spec_registry,
-                        reached,
-                        &mut worklist,
-                        body.id,
-                        ident,
-                        crate::fz_ir::EmitSlot::Cont,
-                        ft,
-                    );
-                    let _ = continuation;
-                }
-                Term::ReceiveMatched { clauses, after, .. } => {
-                    for c in clauses {
-                        let key =
-                            crate::fz_ir::receive_outcome_spec_key(&any_ty, c.bound_names.len());
-                        push_reachable_spec(t, spec_registry, reached, &mut worklist, c.body, key);
-                        if let Some(g) = c.guard {
-                            let key = crate::fz_ir::receive_outcome_spec_key(
-                                &any_ty,
-                                c.bound_names.len(),
-                            );
-                            push_reachable_spec(t, spec_registry, reached, &mut worklist, g, key);
-                        }
-                    }
-                    if let Some(a) = after {
-                        let key = crate::fz_ir::receive_outcome_spec_key(&any_ty, 0);
-                        push_reachable_spec(t, spec_registry, reached, &mut worklist, a.body, key);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-}
+use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema, SchemaRegistry};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::rc::Rc;
 
 /// Walk every fn body collecting tuple arities used by MakeTuple /
 /// DestTupleBegin / TypeTest descrs, detecting any bitstring prim, then
@@ -248,14 +46,9 @@ fn augment_reachable_for_codegen_bodies<
 /// ids match what codegen baked in.
 fn collect_tuple_arities_and_register_schemas(
     module: &Module,
-    user_schemas: &std::cell::RefCell<fz_runtime::heap::SchemaRegistry>,
-) -> (
-    std::collections::BTreeSet<usize>,
-    HashMap<usize, u32>,
-    Option<u32>,
-    Option<u32>,
-) {
-    let mut tuple_arities: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    user_schemas: &RefCell<SchemaRegistry>,
+) -> (BTreeSet<usize>, HashMap<usize, u32>, Option<u32>, Option<u32>) {
+    let mut tuple_arities: BTreeSet<usize> = BTreeSet::new();
     let mut has_bs_prim = false;
     for f in &module.fns {
         for blk in &f.blocks {
@@ -275,9 +68,7 @@ fn collect_tuple_arities_and_register_schemas(
                         has_bs_prim = true;
                     }
                     Prim::TypeTest(_, descr) => {
-                        for arity in
-                            crate::concrete_types::ty_descr(descr).type_test_tuple_arities()
-                        {
+                        for arity in ty_descr(descr).type_test_tuple_arities() {
                             tuple_arities.insert(arity);
                         }
                     }
@@ -314,379 +105,26 @@ fn collect_tuple_arities_and_register_schemas(
     )
 }
 
-/// The set of fns used as continuations. A cont fn has sig
-/// `(result:i64, self:i64) tail` per docs/cps-in-clif.md §2.1 —
-/// no host_ctx, no trailing cont param. Its body projects captures
-/// from `self`, and its "next k" is one of those captures.
-///
-/// Clause body / guard / after fns of Term::ReceiveMatched are also
-/// included: they get dispatched via cont stub into their Tail-CC entry,
-/// so they must wear the cont-fn sig shape. The companion
-/// `cont_extras_count` map sets receive outcome bodies to `(self) tail`;
-/// bound values and captures live inside the outcome closure env.
-fn collect_cont_fns(module: &Module) -> std::collections::HashSet<crate::fz_ir::FnId> {
-    let mut s = std::collections::HashSet::new();
-    for f in &module.fns {
-        for b in &f.blocks {
-            match &b.terminator {
-                Term::Call { continuation, .. }
-                | Term::CallClosure { continuation, .. }
-                | Term::Receive {
-                    continuation,
-                    ident: _,
-                } => {
-                    s.insert(continuation.fn_id);
-                }
-                Term::ReceiveMatched { clauses, after, .. } => {
-                    for c in clauses {
-                        s.insert(c.body);
-                        if let Some(g) = c.guard {
-                            s.insert(g);
-                        }
-                    }
-                    if let Some(a) = after {
-                        s.insert(a.body);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    s
-}
-
-/// Set of fns appearing as a MakeClosure target and their capture counts.
-/// Per docs/cps-in-clif.md §2.1 these get sig
-/// `(args..., self:i64, cont:i64) tail` and their body projects captures
-/// from `self`. Disjoint from cont_fns by construction.
-///
-/// Closure-target sig is universal: every MakeClosure target gets
-/// `(args..., self, cont) tail` regardless of whether it is also
-/// direct-called. Direct callers load a per-Process static singleton and
-/// pass it as `self`. See docs/cps-in-clif.md §8.2.
-///
-/// Invariant: a closure-target fn that is also direct-called must have
-/// zero captures — direct callers have no captures to bind.
-fn collect_closure_targets(
-    module: &Module,
-) -> (
-    std::collections::HashSet<crate::fz_ir::FnId>,
-    std::collections::HashMap<crate::fz_ir::FnId, usize>,
-) {
-    let mut targets = std::collections::HashSet::new();
-    let mut counts: std::collections::HashMap<crate::fz_ir::FnId, usize> =
-        std::collections::HashMap::new();
-    let mut direct_called = std::collections::HashSet::new();
-    for f in &module.fns {
-        for b in &f.blocks {
-            match &b.terminator {
-                Term::Call { callee, .. } | Term::TailCall { callee, .. } => {
-                    direct_called.insert(*callee);
-                }
-                _ => {}
-            }
-            for stmt in &b.stmts {
-                let Stmt::Let(_, prim) = stmt;
-                if let Prim::MakeClosure(_, fid, captured) = prim {
-                    targets.insert(*fid);
-                    let n = captured.len();
-                    if let Some(prev) = counts.get(fid) {
-                        debug_assert_eq!(
-                            *prev, n,
-                            "MakeClosure n_captures mismatch for fn {}: \
-                             {} vs {}",
-                            fid.0, prev, n
-                        );
-                    }
-                    counts.insert(*fid, n);
-                }
-            }
-        }
-    }
-    for fid in &targets {
-        if direct_called.contains(fid) {
-            debug_assert_eq!(
-                counts[fid], 0,
-                "fn {} is both direct-called and a non-zero-cap \
-                 closure target — direct callers can't supply captures",
-                fid.0,
-            );
-        }
-    }
-    (targets, counts)
-}
-
-/// Per-FnId set: fns invoked from any fz IR site (as a direct callee,
-/// a continuation, or a closure target). A fn NOT in this set has no
-/// fz IR caller and can only enter via the trampoline entry (which
-/// writes null into the frame's slot 0). For such a fn, cont_ptr is
-/// statically null at runtime; emit_return can specialize to a
-/// halt-only path, skipping the runtime
-/// `load v0+16; icmp eq 0; brif` dispatch entirely.
-///
-/// The contained fns are exactly the "never specializable as halt-only"
-/// set.
-fn collect_cont_target_fns(module: &Module) -> std::collections::HashSet<crate::fz_ir::FnId> {
-    let mut cont_target_fns: std::collections::HashSet<crate::fz_ir::FnId> =
-        std::collections::HashSet::new();
-    for f in &module.fns {
-        for blk in &f.blocks {
-            match &blk.terminator {
-                Term::Call {
-                    ident: _,
-                    callee,
-                    continuation,
-                    ..
-                } => {
-                    cont_target_fns.insert(*callee);
-                    cont_target_fns.insert(continuation.fn_id);
-                }
-                Term::TailCall { callee, .. } => {
-                    cont_target_fns.insert(*callee);
-                }
-                Term::CallClosure { continuation, .. } | Term::Receive { continuation, .. } => {
-                    cont_target_fns.insert(continuation.fn_id);
-                }
-                _ => {}
-            }
-            for stmt in &blk.stmts {
-                let Stmt::Let(_, prim) = stmt;
-                if let Prim::MakeClosure(_, fid, _) = prim {
-                    cont_target_fns.insert(*fid);
-                }
-            }
-        }
-    }
-    cont_target_fns
-}
-
-/// Scheduler-resumed continuations receive only their closure `self`.
-/// Message values, pattern binds, and captures live in the closure env,
-/// so their Tail-CC sig has zero typed extras before `self`.
-fn collect_cont_extras_count(module: &Module) -> HashMap<crate::fz_ir::FnId, usize> {
-    let mut cont_extras_count: HashMap<crate::fz_ir::FnId, usize> = HashMap::new();
-    for f in &module.fns {
-        for blk in &f.blocks {
-            match &blk.terminator {
-                Term::Receive { continuation, .. } => {
-                    cont_extras_count.insert(continuation.fn_id, 0);
-                }
-                Term::ReceiveMatched { clauses, after, .. } => {
-                    for c in clauses {
-                        cont_extras_count.insert(c.body, 0);
-                        if let Some(g) = c.guard {
-                            cont_extras_count.insert(g, 0);
-                        }
-                    }
-                    if let Some(a) = after {
-                        cont_extras_count.insert(a.body, 0);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    cont_extras_count
-}
-
-/// Single combined fixed point over `natively_callable`. Each iter
-/// re-enforces every invariant so cascading removals don't leave an
-/// inconsistent set:
-///   (a) Term::Call's callee + cont both native.
-///   (b) Term::TailCall's callee native.
-///   (c) Cont validity: if f is used as cont in some Term::Call, the
-///       caller's callee at that site must be native (so the site
-///       picks the native-chain branch).
-fn shrink_natively_callable(
-    module: &Module,
-    natively_callable: &mut std::collections::HashSet<crate::fz_ir::FnId>,
-) {
-    loop {
-        let mut to_remove: Vec<crate::fz_ir::FnId> = Vec::new();
-        // (a) and (b): body invariants.
-        for f in module.fns.iter() {
-            if !natively_callable.contains(&f.id) {
-                continue;
-            }
-            let body_ok = f.blocks.iter().all(|b| match &b.terminator {
-                Term::Return(_) | Term::Halt(_) | Term::Goto(_, _) | Term::If { .. } => true,
-                Term::Call {
-                    ident: _,
-                    callee,
-                    continuation,
-                    ..
-                } => {
-                    natively_callable.contains(callee)
-                        && natively_callable.contains(&continuation.fn_id)
-                }
-                Term::TailCall { callee, .. } => natively_callable.contains(callee),
-                // Closure-call terminators admitted; bodies are Tail-CC
-                // with closure-target sig. Cont (if any) must also be
-                // native so the cont-return chain is unbroken.
-                Term::CallClosure { continuation, .. } => {
-                    natively_callable.contains(&continuation.fn_id)
-                }
-                Term::TailCallClosure { .. } => true,
-                Term::Receive {
-                    continuation,
-                    ident: _,
-                } => natively_callable.contains(&continuation.fn_id),
-                // ReceiveMatched is native iff every body / guard / after
-                // fn is native. Cont-stub seam bridges the Tail-CC body
-                // into the SystemV scheduler resume path so the
-                // enclosing fn's ABI is unconstrained.
-                Term::ReceiveMatched { clauses, after, .. } => {
-                    let body_ok = clauses.iter().all(|c| {
-                        natively_callable.contains(&c.body)
-                            && c.guard.is_none_or(|g| natively_callable.contains(&g))
-                    });
-                    let after_ok = after
-                        .as_ref()
-                        .is_none_or(|a| natively_callable.contains(&a.body));
-                    body_ok && after_ok
-                }
-            });
-            if !body_ok {
-                to_remove.push(f.id);
-            }
-        }
-        // (c) Cont validity: the caller's callee at every cont reach
-        // site must be native.
-        for f in &module.fns {
-            if !natively_callable.contains(&f.id) {
-                continue;
-            }
-            if to_remove.contains(&f.id) {
-                continue;
-            }
-            let mut cont_unsafe = false;
-            'outer: for caller in module.fns.iter() {
-                for b in &caller.blocks {
-                    let Term::Call {
-                        ident: _,
-                        callee,
-                        continuation,
-                        ..
-                    } = &b.terminator
-                    else {
-                        continue;
-                    };
-                    if continuation.fn_id != f.id {
-                        continue;
-                    }
-                    if !natively_callable.contains(callee) {
-                        cont_unsafe = true;
-                        break 'outer;
-                    }
-                }
-            }
-            if cont_unsafe {
-                to_remove.push(f.id);
-            }
-        }
-        if to_remove.is_empty() {
-            break;
-        }
-        for id in to_remove {
-            natively_callable.remove(&id);
-        }
-    }
-}
-
-/// Collect typed closure shapes keyed by the lambda's resolved narrow
-/// SpecId. Each `Prim::MakeClosure` site is inspected per *caller*
-/// spec (so closures built in different caller specializations with
-/// different capture types produce distinct lambda SpecIds → distinct
-/// stubs). The key fed to `spec_registry.resolve` is
-/// `[capture_descrs..., any, ...]` — padded to the lambda's full
-/// arity. The typer registers a narrow spec for every MakeClosure's
-/// capture-type tuple, so exact-match resolve succeeds; the any-key
-/// remains a subsumption backstop. Value = capture count
-/// (== `captured.len()`); needed to split entry params into
-/// `[captures..., args...]` at stub declaration / invocation.
-fn build_closure_shapes(
-    module: &Module,
-    spec_count: usize,
-    spec_fnidx: &[Option<usize>],
-    spec_fn_types: &[Option<&crate::ir_planner::SpecPlan>],
-    spec_registry: &SpecRegistry,
-) -> std::collections::BTreeMap<u32, usize> {
-    let mut closure_shapes: std::collections::BTreeMap<u32, usize> =
-        std::collections::BTreeMap::new();
-    for sid in 0..spec_count {
-        let Some(idx) = spec_fnidx[sid] else {
-            continue;
-        };
-        let f = &module.fns[idx];
-        let Some(_) = spec_fn_types[sid] else {
-            continue;
-        };
-        for blk in &f.blocks {
-            for stmt in blk.stmts.iter() {
-                let Stmt::Let(_, prim) = stmt;
-                if let Prim::MakeClosure(_ident, lam_fn_id, captured) = prim {
-                    // The lambda body is the any-key body spec
-                    // (SpecId.0 == FnId.0 via register_any_key_at).
-                    // MakeClosure is construction, not dispatch — look
-                    // up the body directly. When the any-key was
-                    // dropped, fall back to any registered narrow spec
-                    // for this FnId; if none, the closure value has no
-                    // live call target (every invocation got inlined to
-                    // direct Call) — skip; the null-stub path in
-                    // MakeClosure prim codegen handles allocation.
-                    let cl_sid = if spec_fnidx
-                        .get(lam_fn_id.0 as usize)
-                        .copied()
-                        .flatten()
-                        .is_some()
-                    {
-                        Some(lam_fn_id.0)
-                    } else {
-                        spec_registry
-                            .iter()
-                            .find(|(s, key)| {
-                                key.fn_id == *lam_fn_id && spec_fnidx[s.0 as usize].is_some()
-                            })
-                            .map(|(s, _)| s.0)
-                    };
-                    let Some(cl_sid) = cl_sid else {
-                        continue;
-                    };
-                    closure_shapes.insert(cl_sid, captured.len());
-                }
-            }
-        }
-    }
-    closure_shapes
-}
-
 /// Build per-SpecId frame schemas, refining entry-param kinds from each
 /// spec's SpecPlan. The any-key SpecId for FnId K lands at index K
 /// (invariant) so any code path that uses fn_id.0 as a schema_id
 /// continues to hit the right schema. Sentinel SpecIds (missing-FnId
 /// slots) get a zero-field placeholder schema; they're never reached at
 /// runtime.
-fn build_per_spec_schemas<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    module: &Module,
-    spec_count: usize,
-    spec_fnidx: &[Option<usize>],
-    spec_fn_types: &[Option<&crate::ir_planner::SpecPlan>],
-) -> Vec<Schema> {
+fn build_per_spec_schemas<T: Types<Ty = Ty>>(t: &mut T, planned_program: &PlannedProgram) -> Vec<Schema> {
+    let spec_count = planned_program.spec_count();
+    let spec_fnidx = planned_program.spec_fn_indices();
     let mut schemas: Vec<Schema> = Vec::with_capacity(spec_count);
-    for sid in 0..spec_count {
-        let Some(idx) = spec_fnidx[sid] else {
+    for (sid, fn_index) in spec_fnidx.iter().enumerate().take(spec_count) {
+        if fn_index.is_none() {
             schemas.push(build_frame_schema("__sentinel", &[]));
             continue;
         };
-        let f = &module.fns[idx];
-        let ft = spec_fn_types[sid].expect("non-sentinel spec must have SpecPlan");
+        let planned = planned_program.executable_body(SpecId(sid as u32));
+        let f = &planned.body;
+        let ft = &planned.spec_plan;
         let entry_block = f.block(f.entry);
-        let mut kinds: Vec<FieldKind> = entry_block
-            .params
-            .iter()
-            .map(|_| FieldKind::AnyValue)
-            .collect();
+        let mut kinds: Vec<FieldKind> = entry_block.params.iter().map(|_| FieldKind::AnyValue).collect();
         let any = t.any();
         for (j, p) in entry_block.params.iter().enumerate() {
             match ArgRepr::from_ty(t, &ft.vars.get(p).cloned().unwrap_or_else(|| any.clone())) {
@@ -700,27 +138,21 @@ fn build_per_spec_schemas<T: crate::types::Types<Ty = crate::types::Ty>>(
     schemas
 }
 
-/// Per-spec return ABI type comes first from an instantiated declared spec
-/// when the function has one, then from the typer's LFP
-/// (`module_plan.effective_returns`). The LFP walk filters by
-/// `reachable_blocks` AND propagates through every exit terminator
-/// including `Term::Call` / `Term::CallClosure` / `Term::Receive`
-/// with a continuation; the cont side (`cont_slot0_descr`) already
-/// reads declared returns before consulting the same map. Mirroring that
-/// precedence here means the producer ABI and the cont's slot-0 ABI agree
-/// by construction.
+/// Per-spec return ABI type comes from the planner's finished
+/// `module_plan.effective_returns`. Planner projection is total for
+/// executable specs, including callable-entry declared contracts. Codegen does
+/// not instantiate declared specs as a fallback.
 ///
-/// Halt-only specs converge to `none()` in the LFP; substitute
-/// `any` so `ArgRepr::from_descr` doesn't pick RawF64 (none is a
-/// subtype of every set, including float). The value never reaches
-/// anyone for a halt-only spec, but the ABI must still be valid.
-fn derive_return_tys<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+/// Halt-only specs project to `none()`; substitute `any` so
+/// `ArgRepr::from_descr` doesn't pick RawF64 (none is a subtype of every set,
+/// including float). The value never reaches anyone for a halt-only spec, but
+/// the ABI must still be valid.
+fn derive_return_tys<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
-    module: &crate::fz_ir::Module,
-    spec_keys: &[crate::ir_planner::fn_types::SpecKey],
+    spec_keys: &[SpecKey],
     spec_fnidx: &[Option<usize>],
-    module_plan: &crate::ir_planner::ModulePlan,
-) -> Vec<crate::types::Ty> {
+    module_plan: &ModulePlan,
+) -> Vec<Ty> {
     let any = t.any();
     let none = t.none();
     spec_keys
@@ -730,80 +162,44 @@ fn derive_return_tys<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
             if spec_fnidx[sid].is_none() {
                 return any.clone();
             }
-            if let Some(ret) = declared_return_for_spec_key(t, module, key, module_plan) {
-                return ret;
-            }
             let ret = module_plan
                 .effective_returns
-                .get(key)
+                .get(&key.body_key())
                 .cloned()
-                .unwrap_or_else(|| any.clone());
-            if t.is_subtype(&ret, &none) {
-                any.clone()
-            } else {
-                ret
-            }
+                .unwrap_or_else(|| panic!("planned spec {:?} missing effective return", key));
+            if t.is_subtype(&ret, &none) { any.clone() } else { ret }
         })
         .collect()
-}
-
-fn declared_return_for_spec_key<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
-    t: &mut T,
-    module: &crate::fz_ir::Module,
-    key: &crate::ir_planner::fn_types::SpecKey,
-    module_plan: &crate::ir_planner::ModulePlan,
-) -> Option<crate::types::Ty> {
-    let arg_tys = crate::types::key_slots_to_tys(t, &key.input);
-    let owner = &module.fn_by_id(key.fn_id).owner_module;
-    let recursive_fns = std::collections::HashSet::new();
-    let fact = crate::ir_planner::spec_witness::declared_return_fact(
-        t,
-        module,
-        &recursive_fns,
-        &crate::ir_planner::fn_types::FixedPointSlotSummaries::new(),
-        key.fn_id,
-        key.fn_id,
-        &arg_tys,
-        &module_plan.effective_returns,
-        None,
-    )?;
-    fact.complete
-        .then(|| t.mint_owned_resource_aliases(fact.ty, owner, &module.opaque_inners))
 }
 
 /// Per-spec entry-param ArgReprs. Drives `build_fn_signature`
 /// (AbiParam types) and call-site coerce (raw int / raw f64 vs one-word
 /// ValueRef). Sentinel slots get empty params; they're never declared.
 ///
-/// CAPTURE slots [0..n_caps) keep their per-spec narrow reprs. ARG slots
-/// honor build_param_reprs' typed output: closure_lit-typed MakeClosure
-/// combined with direct return_call dispatch means every closure-call
-/// site resolves to a single body spec whose ABI the caller targets
-/// exactly. Any concrete `SpecKey` input is authoritative for that entry
-/// slot's ABI; the entry var may still be generic while the selected spec
-/// is already concrete.
+/// CAPTURE slots [0..n_caps) keep their per-spec narrow reprs. Ordinary
+/// direct-entry arg slots honor the selected `SpecKey`'s typed input.
 ///
-/// The indirect fallback path in TailCallClosure still assumes
-/// all-ValueRef at the seam, so closures used polymorphically (union of
-/// closure_lits, opaque arrow) still go through the ValueRef path
-/// correctly: the body's narrow ABI on the direct path is compatible
-/// because each direct callsite coerces explicitly.
-fn derive_param_reprs<T: crate::types::Types<Ty = crate::types::Ty>>(
+/// Callable entries are different: closures store a public callable-entry
+/// code pointer, and that ABI is always the generic ValueRef seam. So for
+/// closure-target bodies we force ARG slots [n_caps..] to ValueRef here and
+/// let the separately-emitted callable-entry wrapper decode into the direct
+/// typed body entry when needed. That keeps one semantic body while making
+/// the executable contract explicit: direct typed calls stay narrow, indirect
+/// closure calls never guess.
+fn derive_param_reprs<T: Types<Ty = Ty>>(
     t: &mut T,
-    module: &Module,
-    spec_count: usize,
-    spec_fnidx: &[Option<usize>],
-    spec_fn_types: &[Option<&crate::ir_planner::SpecPlan>],
-    spec_keys: &[crate::ir_planner::fn_types::SpecKey],
-    cont_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
+    planned_program: &PlannedProgram,
+    cont_fns: &HashSet<FnId>,
 ) -> Vec<Vec<ArgRepr>> {
+    let spec_count = planned_program.spec_count();
+    let spec_fnidx = planned_program.spec_fn_indices();
+    let spec_keys = planned_program.spec_keys();
     (0..spec_count)
         .map(|sid| match spec_fnidx[sid] {
-            Some(idx) => {
-                let f = &module.fns[idx];
-                let ft = spec_fn_types[sid].expect("non-sentinel spec must have SpecPlan");
+            Some(_) => {
+                let planned = planned_program.executable_body(SpecId(sid as u32));
+                let f = &planned.body;
+                let ft = &planned.spec_plan;
                 if spec_keys[sid].input.iter().all(Option::is_none) {
                     build_param_reprs(t, f, ft)
                 } else {
@@ -830,38 +226,39 @@ fn derive_param_reprs<T: crate::types::Types<Ty = crate::types::Ty>>(
 ///
 /// Propagation: spec's terminator chains into another spec that's
 /// already tagged. Per-spec analysis uses each block's terminator under
-/// this spec's env (spec_fn_types[sid]).
-fn compute_tagged_return_specs<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+/// the materialized body's env (`PlannedBody.spec_plan`).
+fn compute_tagged_return_specs<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
-    spec_fnidx: &[Option<usize>],
-    spec_fn_types: &[Option<&crate::ir_planner::SpecPlan>],
-    spec_registry: &SpecRegistry,
-    closure_target_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
-) -> std::collections::HashSet<u32> {
-    let mut set: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    return_tys: &[Ty],
+    planned_program: &PlannedProgram,
+    closure_capture_counts: &HashMap<FnId, usize>,
+) -> HashSet<u32> {
+    let mut set: HashSet<u32> = HashSet::new();
+    let spec_fnidx = planned_program.spec_fn_indices();
+    let spec_registry = planned_program.spec_registry();
     let any_ty = t.any();
+    for (sid, ty) in return_tys.iter().enumerate() {
+        if ArgRepr::from_ty(t, ty) == ArgRepr::ValueRef {
+            set.insert(sid as u32);
+        }
+    }
     // Seed: spec has an unresolved TailCallClosure.
     for (sid, &entry) in spec_fnidx.iter().enumerate() {
-        let Some(idx) = entry else {
+        if entry.is_none() {
             continue;
         };
-        let f = &module.fns[idx];
-        for b in &f.blocks {
+        let planned = planned_program.executable_body(SpecId(sid as u32));
+        let f = &planned.body;
+        let ft = &planned.spec_plan;
+        for b in f.blocks.iter().filter(|b| ft.reachable_blocks.contains(&b.id)) {
             if let Term::TailCallClosure {
                 closure,
                 args,
                 ident: _,
             } = &b.terminator
-                && spec_fn_types
-                    .get(sid)
-                    .and_then(|o| *o)
-                    .and_then(|ft| {
-                        resolve_tcc_body(t, closure, args, ft, module, spec_registry)
-                            .map(|(_, s)| s)
-                    })
+                && resolve_tcc_body(t, closure, args, ft, module, spec_registry)
+                    .map(|(_, s)| s)
                     .is_none()
             {
                 set.insert(sid as u32);
@@ -871,11 +268,11 @@ fn compute_tagged_return_specs<
     }
     // Also seed: spec's body is a closure-target body.
     for (sid, &entry) in spec_fnidx.iter().enumerate() {
-        let Some(idx) = entry else {
+        if entry.is_none() {
             continue;
         };
-        let fid = module.fns[idx].id;
-        if closure_target_fns.contains(&fid) {
+        let fid = planned_program.executable_body(SpecId(sid as u32)).fn_id;
+        if closure_capture_counts.contains_key(&fid) {
             set.insert(sid as u32);
         }
     }
@@ -883,55 +280,99 @@ fn compute_tagged_return_specs<
     loop {
         let mut changed = false;
         for (sid, &entry) in spec_fnidx.iter().enumerate() {
-            if set.contains(&(sid as u32)) {
-                continue;
-            }
-            let Some(idx) = entry else {
+            if entry.is_none() {
                 continue;
             };
-            let f = &module.fns[idx];
-            let propagates = f.blocks.iter().any(|b| match &b.terminator {
-                Term::TailCall { callee, args, .. } => {
-                    let csid = (|| {
-                        let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
-                        let arg_tys: Vec<crate::types::Ty> = args
-                            .iter()
-                            .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
-                            .collect();
-                        let key = crate::ir_planner::fn_types::SpecKey::value(
-                            *callee,
-                            crate::types::key_slots_from_tys(arg_tys),
-                        );
-                        spec_registry.resolve_spec_key(t, &key).map(|s| s.0)
-                    })()
-                    .unwrap_or(callee.0);
-                    set.contains(&csid)
-                }
-                Term::TailCallClosure {
-                    closure,
-                    args,
-                    ident: _,
-                } => {
-                    let body_sid = spec_fn_types.get(sid).and_then(|o| *o).and_then(|ft| {
-                        resolve_tcc_body(t, closure, args, ft, module, spec_registry)
-                            .map(|(_, s)| s)
+            let planned = planned_program.executable_body(SpecId(sid as u32));
+            let f = &planned.body;
+            let ft = &planned.spec_plan;
+            if !set.contains(&(sid as u32)) {
+                let propagates = f
+                    .blocks
+                    .iter()
+                    .filter(|b| ft.reachable_blocks.contains(&b.id))
+                    .any(|b| match &b.terminator {
+                        Term::TailCall {
+                            ident, callee, args, ..
+                        } => {
+                            let csid = (|| {
+                                if let Some(sid) =
+                                    resolved_local_call_sid(t, spec_registry, ft, f.id, ident, EmitSlot::Direct)
+                                {
+                                    return Some(sid);
+                                }
+                                let arg_tys: Vec<Ty> = args
+                                    .iter()
+                                    .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
+                                    .collect();
+                                let key = SpecKey::value(*callee, key_slots_from_tys(arg_tys));
+                                spec_registry.resolve_spec_key(t, &key).map(|s| s.0)
+                            })()
+                            .unwrap_or(callee.0);
+                            set.contains(&csid)
+                        }
+                        Term::TailCallClosure {
+                            closure,
+                            args,
+                            ident: _,
+                        } => {
+                            let body_sid =
+                                resolve_tcc_body(t, closure, args, ft, module, spec_registry).map(|(_, s)| s);
+                            match body_sid {
+                                Some(body_sid) => set.contains(&body_sid),
+                                None => true,
+                            }
+                        }
+                        Term::Call { ident, .. } | Term::CallClosure { ident, .. } => {
+                            resolved_local_call_sid(t, spec_registry, ft, f.id, ident, EmitSlot::Cont)
+                                .is_some_and(|cont_sid| set.contains(&cont_sid))
+                        }
+                        _ => false,
                     });
-                    match body_sid {
-                        Some(body_sid) => set.contains(&body_sid),
-                        None => true,
+                if propagates {
+                    set.insert(sid as u32);
+                    changed = true;
+                }
+            }
+            if set.contains(&(sid as u32)) {
+                for b in f.blocks.iter().filter(|b| ft.reachable_blocks.contains(&b.id)) {
+                    match &b.terminator {
+                        Term::TailCall {
+                            ident, callee, args, ..
+                        } => {
+                            let csid = (|| {
+                                if let Some(sid) =
+                                    resolved_local_call_sid(t, spec_registry, ft, f.id, ident, EmitSlot::Direct)
+                                {
+                                    return Some(sid);
+                                }
+                                let arg_tys: Vec<Ty> = args
+                                    .iter()
+                                    .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
+                                    .collect();
+                                let key = SpecKey::value(*callee, key_slots_from_tys(arg_tys));
+                                spec_registry.resolve_spec_key(t, &key).map(|s| s.0)
+                            })()
+                            .unwrap_or(callee.0);
+                            if set.insert(csid) {
+                                changed = true;
+                            }
+                        }
+                        Term::TailCallClosure {
+                            closure,
+                            args,
+                            ident: _,
+                        } => {
+                            if let Some(body_sid) =
+                                resolve_tcc_body(t, closure, args, ft, module, spec_registry).map(|(_, s)| s)
+                                && set.insert(body_sid)
+                            {
+                                changed = true;
+                            }
+                        }
+                        _ => {}
                     }
                 }
-                Term::Call { continuation, .. }
-                | Term::CallClosure { continuation, .. }
-                | Term::Receive {
-                    continuation,
-                    ident: _,
-                } => set.contains(&continuation.fn_id.0),
-                _ => false,
-            });
-            if propagates {
-                set.insert(sid as u32);
-                changed = true;
             }
         }
         if !changed {
@@ -941,57 +382,59 @@ fn compute_tagged_return_specs<
     set
 }
 
-/// Cont specs whose producer delivers one boxed value lane must accept
+/// Cont specs whose producer delivers a `ValueRef` lane must accept
 /// `ValueRef` at slot 0. Producers that deliver tuple fields do not use
 /// that slot-0 seam at all.
 ///
 /// Reads the producer→cont call-edge facts from `SpecPlan.call_edges`
-/// rather than recovering them from payload typing. The direct edge's
-/// selected `SpecKey.demand` already says whether the producer delivers
-/// a boxed value or tuple fields.
-fn compute_tagged_slot0_cont_specs<T: crate::types::Types<Ty = crate::types::Ty>>(
+/// rather than recovering them from payload typing. The direct edge selects
+/// both the producer spec (for representation) and the return shape.
+fn compute_tagged_slot0_cont_specs<T: Types<Ty = Ty>>(
     t: &mut T,
-    module: &Module,
-    spec_count: usize,
-    spec_fnidx: &[Option<usize>],
-    spec_fn_types: &[Option<&crate::ir_planner::SpecPlan>],
-    spec_registry: &SpecRegistry,
-) -> std::collections::HashSet<u32> {
-    let mut tagged_slot0_cont_specs: std::collections::HashSet<u32> =
-        std::collections::HashSet::new();
-    for sid_caller in 0..spec_count {
-        let Some(caller_idx) = spec_fnidx[sid_caller] else {
+    planned_program: &PlannedProgram,
+    return_reprs: &[ArgRepr],
+) -> HashSet<u32> {
+    let mut tagged_slot0_cont_specs: HashSet<u32> = HashSet::new();
+    let spec_count = planned_program.spec_count();
+    let spec_fnidx = planned_program.spec_fn_indices();
+    let spec_registry = planned_program.spec_registry();
+    for (sid_caller, fn_index) in spec_fnidx.iter().enumerate().take(spec_count) {
+        if fn_index.is_none() {
             continue;
         };
-        let caller = &module.fns[caller_idx];
-        let Some(caller_ft) = spec_fn_types[sid_caller] else {
-            continue;
-        };
+        let planned = planned_program.executable_body(SpecId(sid_caller as u32));
+        let caller = &planned.body;
+        let caller_ft = &planned.spec_plan;
         for blk in &caller.blocks {
             let Some(term_ident) = blk.terminator.ident() else {
                 continue;
             };
             let produces_tagged_slot0 = match &blk.terminator {
                 Term::Call { .. } => {
-                    let cid = crate::fz_ir::CallsiteId {
+                    let cid = CallsiteId {
                         caller: caller.id,
                         ident: term_ident.clone(),
-                        slot: crate::fz_ir::EmitSlot::Direct,
+                        slot: EmitSlot::Direct,
                     };
-                    caller_ft
-                        .local_call_target(&cid)
-                        .is_some_and(|key| DemandAbi::new(key).delivered_value_repr().is_some())
+                    caller_ft.local_call_target(&cid).is_some_and(|key| {
+                        if !DemandAbi::new(key).delivers_value_lane() {
+                            return false;
+                        }
+                        spec_registry
+                            .resolve_spec_key(t, key)
+                            .is_some_and(|sid| return_reprs[sid.0 as usize] == ArgRepr::ValueRef)
+                    })
                 }
-                Term::CallClosure { .. } | Term::Receive { .. } => true,
+                Term::CallClosure { .. } => true,
                 _ => false,
             };
             if !produces_tagged_slot0 {
                 continue;
             }
-            let cid = crate::fz_ir::CallsiteId {
+            let cid = CallsiteId {
                 caller: caller.id,
                 ident: term_ident.clone(),
-                slot: crate::fz_ir::EmitSlot::Cont,
+                slot: EmitSlot::Cont,
             };
             if let Some(cont_key) = caller_ft.local_call_target(&cid)
                 && let Some(sid) = spec_registry.resolve_spec_key(t, cont_key)
@@ -1001,6 +444,20 @@ fn compute_tagged_slot0_cont_specs<T: crate::types::Types<Ty = crate::types::Ty>
         }
     }
     tagged_slot0_cont_specs
+}
+
+fn resolved_local_call_sid<T: Types<Ty = Ty>>(
+    t: &mut T,
+    spec_registry: &SpecRegistry,
+    caller_ft: &SpecPlan,
+    caller: FnId,
+    ident: &CallsiteIdent,
+    slot: EmitSlot,
+) -> Option<u32> {
+    caller_ft
+        .local_call_target(&CallsiteId::new(caller, ident, slot))
+        .and_then(|key| spec_registry.resolve_spec_key(t, key))
+        .map(|sid| sid.0)
 }
 
 /// Per-spec chain analysis: for each registered spec, walk its exit
@@ -1013,46 +470,47 @@ fn compute_tagged_slot0_cont_specs<T: crate::types::Types<Ty = crate::types::Ty>
 /// so halt_kind selection (fz_entry_thunk, halt-cont singletons) picks
 /// the right kind. Indirect closure dispatch uses the all-ValueRef seam
 /// ABI, so anything returning through it is ValueRef.
-fn compute_halt_reprs<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn compute_halt_reprs<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
-    spec_count: usize,
-    spec_fnidx: &[Option<usize>],
-    spec_fn_types: &[Option<&crate::ir_planner::SpecPlan>],
-    spec_registry: &SpecRegistry,
+    planned_program: &PlannedProgram,
     return_reprs: &[ArgRepr],
 ) -> Vec<ArgRepr> {
     let join = |a: ArgRepr, b: ArgRepr| -> ArgRepr { if a == b { a } else { ArgRepr::ValueRef } };
+    let spec_count = planned_program.spec_count();
+    let spec_fnidx = planned_program.spec_fn_indices();
+    let spec_registry = planned_program.spec_registry();
     let mut chain: Vec<Option<ArgRepr>> = vec![None; spec_count];
     let any_ty = t.any();
     for _ in 0..(spec_count * 4 + 16) {
         let mut changed = false;
         for sid in 0..spec_count {
-            let Some(idx) = spec_fnidx[sid] else {
+            if spec_fnidx[sid].is_none() {
                 continue;
             };
-            let f = &module.fns[idx];
+            let planned = planned_program.executable_body(SpecId(sid as u32));
+            let f = &planned.body;
+            let ft = &planned.spec_plan;
             let mut contributions: Vec<ArgRepr> = Vec::new();
-            for blk in &f.blocks {
+            for blk in f.blocks.iter().filter(|blk| ft.reachable_blocks.contains(&blk.id)) {
                 match &blk.terminator {
                     Term::Return(_) => {
                         contributions.push(return_reprs[sid]);
                     }
-                    Term::TailCall { callee, args, .. } => {
+                    Term::TailCall {
+                        ident, callee, args, ..
+                    } => {
                         let csid = (|| {
-                            let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
-                            let arg_tys: Vec<crate::types::Ty> = args
+                            if let Some(sid) =
+                                resolved_local_call_sid(t, spec_registry, ft, f.id, ident, EmitSlot::Direct)
+                            {
+                                return Some(sid);
+                            }
+                            let arg_tys: Vec<Ty> = args
                                 .iter()
-                                .map(|av| {
-                                    ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone())
-                                })
+                                .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
                                 .collect();
-                            let key = crate::ir_planner::fn_types::SpecKey::value(
-                                *callee,
-                                crate::types::key_slots_from_tys(arg_tys),
-                            );
+                            let key = SpecKey::value(*callee, key_slots_from_tys(arg_tys));
                             spec_registry.resolve_spec_key(t, &key).map(|s| s.0)
                         })()
                         .unwrap_or(callee.0);
@@ -1060,14 +518,11 @@ fn compute_halt_reprs<
                             contributions.push(c);
                         }
                     }
-                    Term::Call { continuation, .. }
-                    | Term::CallClosure { continuation, .. }
-                    | Term::Receive {
-                        continuation,
-                        ident: _,
-                    } => {
-                        let cont_sid = continuation.fn_id.0;
-                        if let Some(c) = chain.get(cont_sid as usize).and_then(|o| *o) {
+                    Term::Call { ident, .. } | Term::CallClosure { ident, .. } => {
+                        if let Some(cont_sid) =
+                            resolved_local_call_sid(t, spec_registry, ft, f.id, ident, EmitSlot::Cont)
+                            && let Some(c) = chain.get(cont_sid as usize).and_then(|o| *o)
+                        {
                             contributions.push(c);
                         }
                     }
@@ -1077,10 +532,7 @@ fn compute_halt_reprs<
                         ident: _,
                     } => {
                         let resolved_body =
-                            spec_fn_types.get(sid).and_then(|o| *o).and_then(|ft| {
-                                resolve_tcc_body(t, closure, args, ft, module, spec_registry)
-                                    .map(|(_, s)| s)
-                            });
+                            resolve_tcc_body(t, closure, args, ft, module, spec_registry).map(|(_, s)| s);
                         match resolved_body {
                             Some(body_sid) => {
                                 if let Some(c) = chain.get(body_sid as usize).and_then(|o| *o) {
@@ -1108,10 +560,7 @@ fn compute_halt_reprs<
             break;
         }
     }
-    chain
-        .into_iter()
-        .map(|o| o.unwrap_or(ArgRepr::ValueRef))
-        .collect()
+    chain.into_iter().map(|o| o.unwrap_or(ArgRepr::ValueRef)).collect()
 }
 
 /// Per-fn halt-kind: looked up via the fn's any-key spec sid for the
@@ -1138,29 +587,28 @@ fn build_fn_sigs(
     module: &Module,
     spec_count: usize,
     spec_fnidx: &[Option<usize>],
-    spec_keys: &[crate::ir_planner::fn_types::SpecKey],
+    spec_keys: &[SpecKey],
     param_reprs: &[Vec<ArgRepr>],
-    natively_callable: &std::collections::HashSet<crate::fz_ir::FnId>,
-    cont_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
-    closure_n_captures: &std::collections::HashMap<crate::fz_ir::FnId, usize>,
-    cont_extras_count: &HashMap<crate::fz_ir::FnId, usize>,
+    native_abi_fns: &HashSet<FnId>,
+    cont_fns: &HashSet<FnId>,
+    closure_capture_counts: &HashMap<FnId, usize>,
+    cont_extras_count: &HashMap<FnId, usize>,
 ) -> Vec<Signature> {
     (0..spec_count)
         .map(|sid| match spec_fnidx[sid] {
             Some(idx) => {
                 let f = &module.fns[idx];
-                let is_native = natively_callable.contains(&f.id);
+                let is_native = native_abi_fns.contains(&f.id);
                 let demand_abi = DemandAbi::new(&spec_keys[sid]);
                 build_fn_signature(
                     &param_reprs[sid],
                     is_native,
                     cont_fns.contains(&f.id),
                     if is_native {
-                        closure_n_captures.get(&f.id).copied()
+                        closure_capture_counts.get(&f.id).copied()
                     } else {
                         None
                     },
-                    demand_abi.has_list_tail_native_param(is_native, cont_fns.contains(&f.id)),
                     demand_abi
                         .tuple_field_arity()
                         .or_else(|| cont_extras_count.get(&f.id).copied()),
@@ -1187,150 +635,140 @@ fn build_fn_sigs(
 /// Pack halt_kind so fz_entry_thunk can pick the matching halt-cont
 /// singleton at task launch.
 fn collect_static_closure_targets(
-    closure_shapes: &std::collections::BTreeMap<u32, usize>,
-    spec_keys: &[crate::ir_planner::fn_types::SpecKey],
+    callable_entries: &BTreeMap<u32, CallableEntryPlan>,
+    reachable_specs: &HashSet<u32>,
+    spec_keys: &[SpecKey],
     fn_ids: &HashMap<u32, FuncId>,
+    callable_entry_fn_ids: &HashMap<u32, FuncId>,
     return_reprs: &[ArgRepr],
+    closure_capture_counts: &HashMap<FnId, usize>,
 ) -> Vec<(u32, u32, FuncId, u32)> {
-    closure_shapes
-        .iter()
-        .filter(|(_, n_caps)| **n_caps == 0)
-        .map(|(cl_sid, _)| {
-            let fn_id = spec_keys[*cl_sid as usize].fn_id;
+    let mut targets = BTreeMap::new();
+    for (cl_sid, _entry) in callable_entries.iter().filter(|(_, entry)| entry.capture_count == 0) {
+        let fn_id = spec_keys[*cl_sid as usize].fn_id;
+        let body_fid = *callable_entry_fn_ids
+            .get(cl_sid)
+            .expect("zero-cap closure spec must have a callable-entry FuncId");
+        let halt_kind = return_reprs[*cl_sid as usize].halt_kind();
+        targets.insert(*cl_sid, (fn_id.0, body_fid, halt_kind));
+    }
+
+    for (sid, spec_key) in spec_keys.iter().enumerate() {
+        let sid = sid as u32;
+        if !reachable_specs.contains(&sid) {
+            continue;
+        }
+        if closure_capture_counts.get(&spec_key.fn_id) != Some(&0) {
+            continue;
+        }
+        targets.entry(sid).or_insert_with(|| {
             let body_fid = *fn_ids
-                .get(cl_sid)
-                .expect("zero-cap closure spec must have a body FuncId");
-            let halt_kind = return_reprs[*cl_sid as usize].halt_kind();
-            (*cl_sid, fn_id.0, body_fid, halt_kind)
-        })
+                .get(&sid)
+                .expect("zero-cap closure-shaped spec must have a direct body FuncId");
+            let halt_kind = return_reprs[sid as usize].halt_kind();
+            (spec_key.fn_id.0, body_fid, halt_kind)
+        });
+    }
+
+    targets
+        .into_iter()
+        .map(|(sid, (fn_id, body_fid, halt_kind))| (sid, fn_id, body_fid, halt_kind))
         .collect()
 }
 
-/// Build the SpecRegistry.
-///
-/// Register any-keys first, in FnId.0 order — this preserves the
-/// invariant `any-key SpecId.0 == FnId.0` so closure / Spawn / Receive
-/// paths (and any other "use any-key" path) can keep using fn_id.0
-/// directly as a schema_id / Cranelift func key. Narrow specs from
-/// `module_plan.specs` get SpecIds ≥ n_fns appended afterwards in a
-/// deterministic order (FnId.0, then descr-tuple bytes) so CLIF emission
-/// is reproducible across runs.
-fn build_spec_registry<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    module: &Module,
-    module_plan: &crate::ir_planner::ModulePlan,
-) -> SpecRegistry {
-    let mut spec_registry = SpecRegistry::new();
-    let mut fns_by_fnid: Vec<&crate::fz_ir::FnIr> = module.fns.iter().collect();
-    fns_by_fnid.sort_by_key(|f| f.id.0);
-    for f in &fns_by_fnid {
-        let n_params = f.block(f.entry).params.len();
-        let any_ty = t.any();
-        let any_key = f.semantic_key(vec![any_ty; n_params]);
-        // Skip registering F's any-key when the typer dropped it (every
-        // callsite of F has typed coverage). The next registration via
-        // `register_any_key_at` pads slot F.0 with a sentinel
-        // automatically, preserving the `SpecId.0 == FnId.0` invariant
-        // for the surviving any-keys.
-        let spec_key = crate::ir_planner::fn_types::SpecKey::value(f.id, any_key.clone());
-        if !module_plan.specs.contains_key(&spec_key) {
-            continue;
-        }
-        let precedence = *module_plan.spec_precedence.get(&spec_key).unwrap_or(&0);
-        let sid = spec_registry.register_any_key_at_with_precedence(t, f.id, any_key, precedence);
-        debug_assert_eq!(sid.0, f.id.0);
+fn build_callable_entry_signature(arg_count: usize) -> Signature {
+    let mut sig = Signature::new(CallConv::Tail);
+    for _ in 0..arg_count {
+        sig.params.push(AbiParam::new(types::I64));
     }
-    let any_ty = t.any();
-    let mut narrow_keys: Vec<crate::ir_planner::fn_types::SpecKey> = module_plan
-        .specs
-        .keys()
-        .filter(|spec_key| {
-            let Some(f) = module.fns.iter().find(|f| f.id == spec_key.fn_id) else {
-                return true;
-            };
-            let n_params = f.block(f.entry).params.len();
-            let any_key = f.semantic_key(vec![any_ty.clone(); n_params]);
-            // Filter the any-keys (already registered).
-            !(spec_key.demand.is_value() && spec_key.input == any_key)
-        })
-        .cloned()
-        .collect();
-    narrow_keys.sort_by(|a, b| {
-        a.fn_id
-            .0
-            .cmp(&b.fn_id.0)
-            .then_with(|| format!("{:?}", a.input).cmp(&format!("{:?}", b.input)))
-            .then_with(|| format!("{:?}", a.demand).cmp(&format!("{:?}", b.demand)))
-    });
-    for spec_key in narrow_keys {
-        let precedence = *module_plan.spec_precedence.get(&spec_key).unwrap_or(&0);
-        spec_registry.register_spec_key_with_precedence(t, spec_key, precedence);
-    }
-    spec_registry
+    sig.params.push(AbiParam::new(types::I64)); // self
+    sig.params.push(AbiParam::new(types::I64)); // cont
+    sig.returns.push(AbiParam::new(types::I64));
+    sig
 }
 
-/// Build the per-SpecId index tables: `spec_keys` mirrors registry order;
-/// `spec_fnidx` maps SpecId.0 → module.fns index (None when the SpecId
-/// is a sentinel slot for a missing FnId.0 — cps_split sparsity,
-/// pre-existing sentinel padding, or a dropped any-key); `spec_fn_types`
-/// borrows the matching SpecPlan from `module_plan.specs` for every
-/// non-sentinel slot. Codegen skips compilation for sentinel slots; no
-/// consumer can index into them because `resolve` only returns SpecIds
-/// with a real registration.
-fn build_spec_index_tables<'a>(
-    module: &Module,
-    spec_registry: &SpecRegistry,
-    module_plan: &'a crate::ir_planner::ModulePlan,
-) -> (
-    Vec<crate::ir_planner::fn_types::SpecKey>,
-    Vec<Option<usize>>,
-    Vec<Option<&'a crate::ir_planner::SpecPlan>>,
-) {
-    let spec_keys: Vec<crate::ir_planner::fn_types::SpecKey> =
-        spec_registry.iter().map(|(_, key)| key.clone()).collect();
-    let mut idx_of: HashMap<FnId, usize> = HashMap::new();
-    for (i, f) in module.fns.iter().enumerate() {
-        idx_of.insert(f.id, i);
+fn declare_callable_entry_fns<M: cranelift_module::Module>(
+    m: &mut M,
+    callable_entries: &BTreeMap<u32, CallableEntryPlan>,
+    param_reprs: &[Vec<ArgRepr>],
+    spec_keys: &[SpecKey],
+) -> Result<HashMap<u32, FuncId>, CodegenError> {
+    let mut callable_entry_fn_ids = HashMap::new();
+    for (&body_sid, entry) in callable_entries {
+        let arg_count = param_reprs[body_sid as usize].len().saturating_sub(entry.capture_count);
+        let sig = build_callable_entry_signature(arg_count);
+        let name = format!(
+            "fz_callable_entry_{}_s{}",
+            spec_keys[body_sid as usize].fn_id.0, body_sid
+        );
+        let func_id = m
+            .declare_function(&name, Linkage::Local, &sig)
+            .map_err(|e| CodegenError::new(format!("declare {name}: {e}")))?;
+        callable_entry_fn_ids.insert(body_sid, func_id);
     }
-    let spec_fnidx: Vec<Option<usize>> = spec_keys
-        .iter()
-        .map(|key| {
-            if !module_plan.specs.contains_key(key) {
-                return None;
-            }
-            idx_of.get(&key.fn_id).copied()
-        })
-        .collect();
-    let spec_fn_types: Vec<Option<&crate::ir_planner::SpecPlan>> = spec_keys
-        .iter()
-        .enumerate()
-        .map(|(sid, key)| {
-            spec_fnidx[sid]?;
-            module_plan.specs.get(key)
-        })
-        .collect();
-    (spec_keys, spec_fnidx, spec_fn_types)
+    Ok(callable_entry_fn_ids)
 }
 
-/// Build the per-SpecId codegen bodies. Non-sentinel specs get the
-/// authoritative post-plan module body; sentinel slots get `None`.
-fn prepare_codegen_bodies(
-    module: &Module,
-    spec_count: usize,
-    spec_fnidx: &[Option<usize>],
-    spec_fn_types: &[Option<&crate::ir_planner::SpecPlan>],
-) -> Vec<Option<crate::fz_ir::FnIr>> {
-    let mut codegen_bodies: Vec<Option<crate::fz_ir::FnIr>> = Vec::with_capacity(spec_count);
-    for sid in 0..spec_count {
-        match (spec_fnidx[sid], spec_fn_types[sid]) {
-            (Some(idx), Some(ft)) => {
-                let _ = ft;
-                codegen_bodies.push(Some(prepare_codegen_body(module, idx)));
+fn emit_callable_entry_bodies<M: cranelift_module::Module>(
+    m: &mut M,
+    fbctx: &mut FunctionBuilderContext,
+    runtime: &RuntimeRefs,
+    fn_ids: &HashMap<u32, FuncId>,
+    callable_entry_fn_ids: &HashMap<u32, FuncId>,
+    callable_entries: &BTreeMap<u32, CallableEntryPlan>,
+    param_reprs: &[Vec<ArgRepr>],
+    spec_keys: &[SpecKey],
+    tel: &dyn Telemetry,
+    module_path: &str,
+) -> Result<(), CodegenError> {
+    for (&body_sid, entry) in callable_entries {
+        let body_func_id = *fn_ids
+            .get(&body_sid)
+            .ok_or_else(|| CodegenError::new(format!("missing direct body FuncId for spec {body_sid}")))?;
+        let callable_entry_id = *callable_entry_fn_ids
+            .get(&body_sid)
+            .ok_or_else(|| CodegenError::new(format!("missing callable-entry FuncId for spec {body_sid}")))?;
+        let reprs = &param_reprs[body_sid as usize];
+        let arg_reprs = &reprs[entry.capture_count..];
+        let spec_key = &spec_keys[body_sid as usize];
+        let sig = build_callable_entry_signature(arg_reprs.len());
+        let entry_name = format!("callable_entry_s{body_sid}");
+        tel.execute(
+            &["fz", "codegen", "callable_entry_lowered"],
+            &crate::measurements! {
+                spec_id: body_sid as u64,
+                arg_count: arg_reprs.len() as u64,
+                capture_count: entry.capture_count as u64,
+            },
+            &crate::metadata! {
+                module_path: module_path.to_owned(),
+                fn_name: entry_name.clone(),
+                body_spec_key: format!("{spec_key:?}"),
+            },
+        );
+        emit_fn_body(m, fbctx, sig, callable_entry_id, |m, b| {
+            let entry_block = b.create_block();
+            b.append_block_params_for_function_params(entry_block);
+            b.switch_to_block(entry_block);
+            b.seal_block(entry_block);
+            let params = b.block_params(entry_block).to_vec();
+            let self_value = params[arg_reprs.len()];
+            let cont_value = params[arg_reprs.len() + 1];
+            let mut shim_cache = CodegenCache::default();
+            let mut cg = CodegenFn::for_runtime_shim(runtime, b, m, &mut shim_cache);
+            let body_fref = cg.func_ref(body_func_id);
+            let mut direct_args: Vec<ir::Value> = Vec::with_capacity(arg_reprs.len() + 2);
+            for (idx, repr) in arg_reprs.iter().copied().enumerate() {
+                let binding = CodegenValue::AnyRef(params[idx]);
+                cg.push_binding_as_abi_arg(&mut direct_args, binding, repr);
             }
-            _ => codegen_bodies.push(None),
-        }
+            direct_args.push(self_value);
+            direct_args.push(cont_value);
+            cg.b.ins().return_call(body_fref, &direct_args);
+        })
+        .map_err(|e| CodegenError::new(format!("define {entry_name}: {e}")))?;
     }
-    codegen_bodies
+    Ok(())
 }
 
 /// Force slot 0 of every cont spec in `tagged_slot0_cont_specs` to
@@ -1338,7 +776,7 @@ fn prepare_codegen_bodies(
 /// sig at the seam.
 fn refine_param_reprs_for_tagging(
     param_reprs: Vec<Vec<ArgRepr>>,
-    tagged_slot0_cont_specs: &std::collections::HashSet<u32>,
+    tagged_slot0_cont_specs: &HashSet<u32>,
 ) -> Vec<Vec<ArgRepr>> {
     param_reprs
         .into_iter()
@@ -1350,6 +788,53 @@ fn refine_param_reprs_for_tagging(
             reprs
         })
         .collect()
+}
+
+fn emit_codegen_abi_contracts(
+    module: &Module,
+    spec_count: usize,
+    spec_fnidx: &[Option<usize>],
+    reachable_specs: &HashSet<u32>,
+    spec_keys: &[SpecKey],
+    param_reprs: &[Vec<ArgRepr>],
+    return_reprs: &[ArgRepr],
+    native_fns: &HashSet<FnId>,
+    cont_fns: &HashSet<FnId>,
+    closure_capture_counts: &HashMap<FnId, usize>,
+    tel: &dyn Telemetry,
+) {
+    for sid in 0..spec_count {
+        if !reachable_specs.contains(&(sid as u32)) {
+            continue;
+        }
+        let Some(fn_idx) = spec_fnidx[sid] else {
+            continue;
+        };
+        let f = &module.fns[fn_idx];
+        let param_repr_names = param_reprs[sid]
+            .iter()
+            .map(|repr| repr.as_str().to_string())
+            .collect::<Vec<_>>();
+        tel.execute(
+            &["fz", "codegen", "abi_contract"],
+            &crate::measurements! {
+                spec_id: sid as u64,
+                fn_id: f.id.0 as u64,
+                param_count: param_repr_names.len() as u64,
+                capture_count: closure_capture_counts.get(&f.id).copied().unwrap_or(0) as u64,
+            },
+            &crate::metadata! {
+                module_path: module.module_path().to_owned(),
+                fn_name: f.name.clone(),
+                spec_key: format!("{:?}", spec_keys[sid]),
+                param_reprs: param_repr_names,
+                return_repr: return_reprs[sid].as_str(),
+                is_native: native_fns.contains(&f.id),
+                is_cont_fn: cont_fns.contains(&f.id),
+                is_closure_target: closure_capture_counts.contains_key(&f.id),
+            },
+        );
+    }
 }
 
 /// Derive per-spec return ArgRepr from `return_tys`, then force ValueRef
@@ -1365,10 +850,10 @@ fn refine_param_reprs_for_tagging(
 /// `tagged_return_specs` is the precise grain; specs whose
 /// `TailCallClosure` resolves via closure_lit keep their narrow return
 /// repr.
-fn build_return_reprs<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn build_return_reprs<T: Types<Ty = Ty>>(
     t: &mut T,
-    return_tys: &[crate::types::Ty],
-    tagged_return_specs: &std::collections::HashSet<u32>,
+    return_tys: &[Ty],
+    tagged_return_specs: &HashSet<u32>,
 ) -> Vec<ArgRepr> {
     return_tys
         .iter()
@@ -1395,7 +880,7 @@ fn build_return_reprs<T: crate::types::Types<Ty = crate::types::Ty>>(
 fn emit_main_trampoline<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
-    runtime: &super::runtime_syms::RuntimeRefs,
+    runtime: &RuntimeRefs,
 ) -> Result<(), CodegenError> {
     let mut sig = Signature::new(CallConv::Tail);
     sig.params.push(AbiParam::new(types::I64));
@@ -1433,7 +918,7 @@ fn emit_main_trampoline<M: cranelift_module::Module>(
 fn emit_drain_dtor_entry<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
-    runtime: &super::runtime_syms::RuntimeRefs,
+    runtime: &RuntimeRefs,
 ) -> Result<(), CodegenError> {
     let mut sig = Signature::new(CallConv::SystemV);
     sig.params.push(AbiParam::new(types::I64));
@@ -1490,7 +975,7 @@ fn emit_drain_dtor_entry<M: cranelift_module::Module>(
 fn emit_entry_thunk<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
-    runtime: &super::runtime_syms::RuntimeRefs,
+    runtime: &RuntimeRefs,
 ) -> Result<(), CodegenError> {
     let mut sig = Signature::new(CallConv::Tail);
     sig.params.push(AbiParam::new(types::I64));
@@ -1507,17 +992,21 @@ fn emit_entry_thunk<M: cranelift_module::Module>(
         let zero_idx = cg.b.ins().iconst(types::I64, 0);
         let closure = cg.closure_capture_ref(self_cl, zero_idx);
         let kind = cg.closure_halt_kind_ref(closure);
-        // Select halt_cont_body_addr by kind. Branchless via three
+        // Select halt_cont_body_addr by kind. Branchless via four
         // func_addrs + a tiny dispatch — keeps the thunk a leaf.
         let a_strict = cg.func_addr(runtime.halt_cont_body_strict_id);
         let a_i64 = cg.func_addr(runtime.halt_cont_body_i64_id);
         let a_f64 = cg.func_addr(runtime.halt_cont_body_f64_id);
+        let a_atom = cg.func_addr(runtime.halt_cont_body_atom_id);
         let one = cg.b.ins().iconst(types::I32, 1);
         let two = cg.b.ins().iconst(types::I32, 2);
+        let three = cg.b.ins().iconst(types::I32, 3);
         let is_i64 = cg.b.ins().icmp(IntCC::Equal, kind, one);
         let is_f64 = cg.b.ins().icmp(IntCC::Equal, kind, two);
+        let is_atom = cg.b.ins().icmp(IntCC::Equal, kind, three);
         let pick_i64_or_tagged = cg.b.ins().select(is_i64, a_i64, a_strict);
-        let hcb_addr = cg.b.ins().select(is_f64, a_f64, pick_i64_or_tagged);
+        let pick_f64 = cg.b.ins().select(is_f64, a_f64, pick_i64_or_tagged);
+        let hcb_addr = cg.b.ins().select(is_atom, a_atom, pick_f64);
         let halt_cl = cg.get_halt_cont(hcb_addr, kind);
         // Read inner closure body addr through the runtime ABI and invoke as
         // closure-target sig `(self, cont) tail` (zero user args).
@@ -1534,13 +1023,13 @@ fn emit_entry_thunk<M: cranelift_module::Module>(
     .map_err(|e| CodegenError::new(format!("define fz_entry_thunk: {}", e)))
 }
 
-/// Emit three fz_halt_cont_body fns, one per repr. Generic ValueRef
-/// bodies receive `(value_ref, self)`; RawInt / RawF64 variants stay
+/// Emit four fz_halt_cont_body fns, one per repr. Generic ValueRef
+/// bodies receive `(value_ref, self)`; RawInt / RawF64 / RawAtom variants stay
 /// narrow as `(value, self)`.
 fn emit_halt_cont_bodies<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
-    runtime: &super::runtime_syms::RuntimeRefs,
+    runtime: &RuntimeRefs,
 ) -> Result<(), CodegenError> {
     let mut sig = Signature::new(CallConv::Tail);
     push_repr_param(&mut sig, ArgRepr::ValueRef);
@@ -1560,15 +1049,12 @@ fn emit_halt_cont_bodies<M: cranelift_module::Module>(
     })
     .map_err(|e| CodegenError::new(format!("define halt_cont_body: {}", e)))?;
     for (body_id, val_ty, halt_impl_id) in [
+        (runtime.halt_cont_body_i64_id, types::I64, runtime.halt_implicit_i64_id),
+        (runtime.halt_cont_body_f64_id, types::F64, runtime.halt_implicit_f64_id),
         (
-            runtime.halt_cont_body_i64_id,
+            runtime.halt_cont_body_atom_id,
             types::I64,
-            runtime.halt_implicit_i64_id,
-        ),
-        (
-            runtime.halt_cont_body_f64_id,
-            types::F64,
-            runtime.halt_implicit_f64_id,
+            runtime.halt_implicit_atom_id,
         ),
     ] {
         let mut sig = Signature::new(CallConv::Tail);
@@ -1601,7 +1087,7 @@ fn emit_halt_cont_bodies<M: cranelift_module::Module>(
 fn emit_resume<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
-    runtime: &super::runtime_syms::RuntimeRefs,
+    runtime: &RuntimeRefs,
 ) -> Result<FuncId, CodegenError> {
     let mut sig = Signature::new(CallConv::SystemV);
     sig.params.push(AbiParam::new(types::I64)); // cont
@@ -1661,16 +1147,16 @@ fn declare_spec_fns<M: cranelift_module::Module>(
 /// park-site terminator arm can take a `func_addr` of an as-yet-unemitted
 /// symbol; the body is emitted in a post-fn-loop pass.
 type MatcherFnIds = HashMap<(u32, u32), FuncId>;
-type ReceiveMatchedSites = Vec<(crate::fz_ir::FnId, crate::fz_ir::BlockId)>;
+type ReceiveMatchedSites = Vec<(FnId, BlockId)>;
 type MidFlightContFnIds = HashMap<(u32, Vec<MidFlightArgShape>), FuncId>;
 
 fn declare_matcher_fns<M: cranelift_module::Module>(
     m: &mut M,
     module: &Module,
-    tel: &dyn crate::telemetry::Telemetry,
+    tel: &dyn Telemetry,
 ) -> Result<(MatcherFnIds, ReceiveMatchedSites), CodegenError> {
     let mut matcher_fn_ids: HashMap<(u32, u32), FuncId> = HashMap::new();
-    let mut receive_matched_sites: Vec<(crate::fz_ir::FnId, crate::fz_ir::BlockId)> = Vec::new();
+    let mut receive_matched_sites: Vec<(FnId, BlockId)> = Vec::new();
     for f in &module.fns {
         for blk in &f.blocks {
             let Term::ReceiveMatched {
@@ -1685,7 +1171,7 @@ fn declare_matcher_fns<M: cranelift_module::Module>(
                 continue;
             };
             let name = format!("fz_matcher_fn_{}_b{}", f.id.0, blk.id.0);
-            let m_id = super::receive::declare_matcher(m, &name)?;
+            let m_id = declare_matcher(m, &name)?;
             matcher_fn_ids.insert((f.id.0, blk.id.0), m_id);
             receive_matched_sites.push((f.id, blk.id));
             tel.execute(
@@ -1704,7 +1190,7 @@ fn declare_matcher_fns<M: cranelift_module::Module>(
                 &crate::metadata! {
                     module_path: module.module_path().to_owned(),
                     fn_name: f.name.clone(),
-                    matcher: crate::telemetry::value::opaque(matcher),
+                    matcher: opaque(matcher),
                 },
             );
         }
@@ -1723,11 +1209,11 @@ fn emit_matcher_bodies<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
     module: &Module,
-    runtime: &super::runtime_syms::RuntimeRefs,
+    runtime: &RuntimeRefs,
     tuple_schema_ids: &HashMap<usize, u32>,
     matcher_fn_ids: &HashMap<(u32, u32), FuncId>,
-    receive_matched_sites: &[(crate::fz_ir::FnId, crate::fz_ir::BlockId)],
-    tel: &dyn crate::telemetry::Telemetry,
+    receive_matched_sites: &[(FnId, BlockId)],
+    tel: &dyn Telemetry,
 ) -> Result<(), CodegenError> {
     for (fn_id, blk_id) in receive_matched_sites {
         let f = module.fn_by_id(*fn_id);
@@ -1744,8 +1230,6 @@ fn emit_matcher_bodies<M: cranelift_module::Module>(
         let m_id = matcher_fn_ids[&(fn_id.0, blk_id.0)];
         let display_name = format!("fz_matcher_fn_{}_b{}", fn_id.0, blk_id.0);
         let (block_count, instruction_count) = {
-            use crate::telemetry::TelemetryExt as _;
-
             let _span = tel.span(
                 &["fz", "codegen", "lower_function"],
                 crate::metadata! {
@@ -1756,7 +1240,7 @@ fn emit_matcher_bodies<M: cranelift_module::Module>(
                     block_id: blk_id.0 as u64,
                 },
             );
-            super::receive::emit_matcher_body_from_matcher(
+            emit_matcher_body_from_matcher(
                 m,
                 fbctx,
                 m_id,
@@ -1765,7 +1249,7 @@ fn emit_matcher_bodies<M: cranelift_module::Module>(
                 pinned.as_slice(),
                 clauses.as_slice(),
                 matcher,
-                &super::receive::MatcherRuntimeHelpers {
+                &MatcherRuntimeHelpers {
                     value_eq_typed_id: Some(runtime.value_eq_ref_id),
                     matcher_eq_bytes_id: Some(runtime.matcher_eq_bytes_id),
                     matcher_map_get_id: Some(runtime.matcher_map_get_id),
@@ -1806,7 +1290,7 @@ fn emit_matcher_bodies<M: cranelift_module::Module>(
                 body_kind: "receive_matcher",
                 module_path: module.module_path().to_owned(),
                 fn_name: display_name,
-                matcher: crate::telemetry::value::opaque(matcher),
+                matcher: opaque(matcher),
             },
         );
     }
@@ -1820,16 +1304,16 @@ fn emit_matcher_bodies<M: cranelift_module::Module>(
 fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
-    runtime: &super::runtime_syms::RuntimeRefs,
+    runtime: &RuntimeRefs,
     fn_ids: &HashMap<u32, FuncId>,
     mid_flight_cont_fn_ids: &HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
     mid_flight_cont_tail_fn_ids: &HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
 ) -> Result<(), CodegenError> {
     for ((callee_sid, arg_shapes), stub_id) in mid_flight_cont_fn_ids.clone() {
         let key = (callee_sid, arg_shapes.clone());
-        let tail_id = *mid_flight_cont_tail_fn_ids.get(&key).ok_or_else(|| {
-            CodegenError::new(format!("missing mid-flight continuation tail {callee_sid}"))
-        })?;
+        let tail_id = *mid_flight_cont_tail_fn_ids
+            .get(&key)
+            .ok_or_else(|| CodegenError::new(format!("missing mid-flight continuation tail {callee_sid}")))?;
         let callee_fid = *fn_ids
             .get(&callee_sid)
             .ok_or_else(|| CodegenError::new(format!("missing callee FuncId {callee_sid}")))?;
@@ -1860,8 +1344,7 @@ fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
             b.switch_to_block(entry);
             b.seal_block(entry);
             let self_bits = b.block_params(entry)[0];
-            let mut args =
-                Vec::with_capacity(arg_shapes.iter().map(MidFlightArgShape::abi_arity).sum());
+            let mut args = Vec::with_capacity(arg_shapes.iter().map(MidFlightArgShape::abi_arity).sum());
             let mut shim_cache = CodegenCache::default();
             let mut cg = CodegenFn::for_runtime_shim(runtime, b, m, &mut shim_cache);
             for (i, arg_shape) in arg_shapes.iter().enumerate() {
@@ -1889,23 +1372,19 @@ fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
 /// arguments before tail-calling the callee. Returns the two FuncId maps
 /// consumed by the body-emission pass.
 #[allow(clippy::too_many_arguments)]
-fn declare_mid_flight_conts<
-    T: crate::types::Types<Ty = crate::types::Ty>,
-    M: cranelift_module::Module,
->(
+fn declare_mid_flight_conts<T: Types<Ty = Ty>, M: cranelift_module::Module>(
     t: &mut T,
     m: &mut M,
     module: &Module,
-    module_plan: &crate::ir_planner::ModulePlan,
+    module_plan: &ModulePlan,
     spec_registry: &SpecRegistry,
     spec_fnidx: &[Option<usize>],
     param_reprs: &[Vec<ArgRepr>],
-    natively_callable: &std::collections::HashSet<crate::fz_ir::FnId>,
-    closure_n_captures: &std::collections::HashMap<crate::fz_ir::FnId, usize>,
+    native_abi_fns: &HashSet<FnId>,
+    closure_capture_counts: &HashMap<FnId, usize>,
 ) -> Result<(MidFlightContFnIds, MidFlightContFnIds), CodegenError> {
     let mut mid_flight_cont_fn_ids: HashMap<(u32, Vec<MidFlightArgShape>), FuncId> = HashMap::new();
-    let mut mid_flight_cont_tail_fn_ids: HashMap<(u32, Vec<MidFlightArgShape>), FuncId> =
-        HashMap::new();
+    let mut mid_flight_cont_tail_fn_ids: HashMap<(u32, Vec<MidFlightArgShape>), FuncId> = HashMap::new();
     for (caller_sid, caller_key) in spec_registry.iter() {
         let Some(caller_idx) = spec_fnidx[caller_sid.0 as usize] else {
             continue;
@@ -1915,9 +1394,9 @@ fn declare_mid_flight_conts<
         };
         let f = &module.fns[caller_idx];
         for blk in &f.blocks {
-            if let crate::fz_ir::Term::TailCall {
+            if let Term::TailCall {
                 ident,
-                callee,
+                callee: _,
                 args,
                 is_back_edge: true,
                 ..
@@ -1926,17 +1405,17 @@ fn declare_mid_flight_conts<
                 if !fn_types.reachable_blocks.contains(&blk.id) {
                     continue;
                 };
-                if !natively_callable.contains(callee) {
-                    continue;
-                }
-                let cid = crate::fz_ir::CallsiteId {
+                let cid = CallsiteId {
                     caller: caller_key.fn_id,
                     ident: ident.clone(),
-                    slot: crate::fz_ir::EmitSlot::Direct,
+                    slot: EmitSlot::Direct,
                 };
                 let Some(target) = fn_types.local_call_target(&cid) else {
                     continue;
                 };
+                if !native_abi_fns.contains(&target.fn_id) {
+                    continue;
+                }
                 let Some(callee_sid) = spec_registry.resolve_spec_key(t, target) else {
                     continue;
                 };
@@ -1947,7 +1426,7 @@ fn declare_mid_flight_conts<
                     .copied()
                     .map(MidFlightArgShape::Value)
                     .collect();
-                if closure_n_captures.contains_key(callee) {
+                if closure_capture_counts.contains_key(&target.fn_id) {
                     arg_shapes.push(MidFlightArgShape::HeapRef);
                 }
                 arg_shapes.push(MidFlightArgShape::HeapRef);
@@ -1955,11 +1434,7 @@ fn declare_mid_flight_conts<
                 if mid_flight_cont_fn_ids.contains_key(&key) {
                     continue;
                 }
-                let cont_name = format!(
-                    "fz_mid_flight_cont_fn_{}_{}",
-                    callee_sid,
-                    mid_flight_cont_fn_ids.len()
-                );
+                let cont_name = format!("fz_mid_flight_cont_fn_{}_{}", callee_sid, mid_flight_cont_fn_ids.len());
                 let mut cont_sig = Signature::new(CallConv::SystemV);
                 cont_sig.params.push(AbiParam::new(types::I64));
                 cont_sig.returns.push(AbiParam::new(types::I64));
@@ -1981,34 +1456,42 @@ fn declare_mid_flight_conts<
     Ok((mid_flight_cont_fn_ids, mid_flight_cont_tail_fn_ids))
 }
 
-pub(crate) fn compile_with_backend_impl<
+pub(crate) fn compile_with_backend_preplanned<
     B: Backend,
-    T: crate::types::Types<Ty = crate::types::Ty>
-        + crate::types::ClosureTypes
-        + crate::types::LiteralTypes
-        + crate::types::RenderTypes
-        + crate::types::VisibilityTypes,
+    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
 >(
     t: &mut T,
     module: &Module,
-    mut backend: B,
-    tel: &dyn crate::telemetry::Telemetry,
+    module_plan: &ModulePlan,
+    backend: B,
+    tel: &dyn Telemetry,
 ) -> Result<B::Output, CodegenError> {
-    use crate::telemetry::TelemetryExt as _;
+    compile_with_backend_preplanned_impl(t, module.clone(), module_plan.clone(), backend, tel)
+}
 
-    if let Some(edge) = module.external_call_edges.first() {
+fn compile_with_backend_preplanned_impl<
+    B: Backend,
+    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
+>(
+    t: &mut T,
+    mut working: Module,
+    mut module_plan: ModulePlan,
+    mut backend: B,
+    tel: &dyn Telemetry,
+) -> Result<B::Output, CodegenError> {
+    if let Some(edge) = working.external_call_edges.first() {
         return Err(CodegenError::new(format!(
             "unresolved external module call `{}`",
             edge.target
         )));
     }
 
-    let compile_nonce = crate::telemetry::next_compile_nonce();
+    let compile_nonce = next_compile_nonce();
     let _compile_span = tel.span(
         &["fz", "compile"],
         crate::metadata! {
             compile_nonce: compile_nonce,
-            module_path: module.module_path().to_owned(),
+            module_path: working.module_path().to_owned(),
         },
     );
 
@@ -2021,300 +1504,118 @@ pub(crate) fn compile_with_backend_impl<
     emit_entry_thunk(backend.module_mut(), &mut fbctx, &runtime)?;
     emit_halt_cont_bodies(backend.module_mut(), &mut fbctx, &runtime)?;
 
-    // Register a heap Schema for every tuple arity used by MakeTuple, so the
-    // GC tracer can walk fields and so codegen can iconst the schema_id.
-    // Also detect any bitstring prim so we can pre-register arity-1 / arity-3
-    // schemas used by the reader / result tuples even if no MakeTuple uses
-    // those arities directly.
-    //
-    // BTreeSet so iteration order is deterministic. Schema ids are assigned
-    // by registration order; the AOT runtime registers in the same sorted
-    // order so its ids match what codegen baked into the CLIF.
-    let user_schemas = std::rc::Rc::new(std::cell::RefCell::new(
-        fz_runtime::heap::SchemaRegistry::new(),
-    ));
+    let user_schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
     user_schemas.borrow_mut().closure_env(0);
     let (tuple_arities, tuple_schema_ids, bs_tuple_arity1_schema, bs_tuple_arity3_schema) =
-        collect_tuple_arities_and_register_schemas(module, &user_schemas);
+        collect_tuple_arities_and_register_schemas(&working, &user_schemas);
     let named_schema_ids = {
         let mut ids = HashMap::new();
         let mut reg = user_schemas.borrow_mut();
-        for (name, fields) in &module.struct_schemas {
-            let id = reg.register(fz_runtime::heap::Schema::named_struct(
-                name.clone(),
-                fields.clone(),
-            ));
+        for (name, fields) in &working.struct_schemas {
+            let id = reg.register(Schema::named_struct(name.clone(), fields.clone()));
             ids.insert(name.clone(), id);
         }
         ids
     };
 
-    // frame_sizes is computed after `schemas` is built (post-spec_registry).
-
-    // Run the typer ahead of codegen so per-fn Var->type info is
-    // available during lowering.
-    let mut working = module.clone();
-    // Lower known-target CallClosure / TailCallClosure to direct
-    // Call / TailCall, then erase any module-constant zero-capture closure
-    // that now survives only as a threaded value (its entry-param slots,
-    // matching call args, continuation captures, and the dead MakeClosure).
-    // After this, the final plan_module sees direct dispatch where the
-    // closure-stub used to live, and the erased lambda is no longer a
-    // closure-target — so the inliner below splices it and the lazy-cont
-    // gate sees a closure-free frame.
-    //
-    // Both transforms read only callable capabilities + per-fn effects — never
-    // effective returns, call edges, or dead branches — so this derives a
-    // capability-only plan, not a full specializing one. It is interprocedural
-    // over the linked working module (so provider-library entry params carry
-    // KnownFn capabilities the shallow pretyped `_pre_types` cannot see) but
-    // skips the return-type fixpoint, and emits no `planner.planned` event. The
-    // authoritative plan is derived once, below, after these transforms settle —
-    // there is no longer a second specializing plan here (fz-hfc.3 / inv1).
-    let capabilities = crate::ir_planner::plan_callable_capabilities(t, &working);
-    crate::ir_planner::rewrite_known_target_closures(t, &mut working, &capabilities);
-    #[cfg(not(test))]
-    crate::ir_inline::inline_module_with_plan(&mut working, &capabilities);
-    #[cfg(test)]
-    if !INLINE_DISABLED.with(|d| d.get()) {
-        crate::ir_inline::inline_module_with_plan(&mut working, &capabilities);
-    }
-    crate::ir_fuse::fuse_blocks_with_telemetry(&mut working, tel);
-    // Compile-time reducer pass. Folds calls whose return is statically
-    // known; reduces If-on-bool-literal to Goto. Runs after
-    // ir_inline + ir_fuse so it sees a cleaner call graph.
-    // See docs/bodies-are-boundaries.md.
-    //
-    // Reducer returns a ReducerLog consumed by the dump pipeline, not
-    // by codegen; codegen drives reduction only for its rewriting effect.
-    #[cfg(not(test))]
-    let _ = crate::ir_reducer::reduce_module_with_telemetry(t, &mut working, tel);
-    #[cfg(test)]
-    if !REDUCER_DISABLED.with(|d| d.get()) {
-        let _ = crate::ir_reducer::reduce_module_with_telemetry(t, &mut working, tel);
-    }
-    // Single-use cont collapse runs pre-planner, alongside the other
-    // call-shape mutations (`fuse_blocks`, `reduce_module`). The
-    // `debug_assert_unique_conts` check at the end of `ir_lower`
-    // guarantees this pass sees each continuation fn exactly once, so it
-    // can be applied before the planner commits to specs. See
-    // `.agent/docs/dispatch-as-planner-output.md` (Worry 1).
-    crate::ir_inline::inline_single_use_conts(&mut working);
-    // Honour `:: never`: cut dead tails after diverging calls (e.g. inlined
-    // `assert`'s `panic` branch) so the single authoritative plan below — and
-    // the codegen that reads it — never see a reachable ⊥-typed tail.
-    crate::ir_diverge::truncate_diverging_blocks(module.module_path(), &mut working, tel);
-    let shaping_plan = crate::ir_planner::plan_module_with_role(t, &working, tel, "shaping");
-    // Fold one-sided-dead Ifs to Gotos and singleton prims before the
-    // authoritative plan. These rewrites change block topology, so codegen's
-    // dispatch facts must be produced from the settled body, not remapped after
-    // the fact.
-    crate::ir_branch_fold::fold_module_with_telemetry(&mut working, &shaping_plan, tel);
-    crate::ir_fold::fold_module(&mut working, &shaping_plan);
-    // Fold byte-literal MakeBitstring into ConstBitstring before DCE so
-    // the per-byte Const(Int) operand stmts go dead in the same pass.
-    crate::ir_const_bs::fold_module(&mut working);
-    crate::ir_dce::dce_module_with_telemetry(&mut working, tel);
-    // Sweep IR fns unreachable from main after inlining.
-    crate::ir_dce::dce_module_level(&mut working);
-    let mut module_plan = crate::ir_planner::plan_module(t, &working, tel);
-    // Snapshot per-fn call-shape multisets after the authoritative planner
-    // commits to specs. Later codegen-local rewrites may consume call shapes
-    // but must not invent new ones.
     #[cfg(debug_assertions)]
-    let call_shapes_pre = super::invariants::snapshot_call_shapes(&working);
-    // Destination lowering desugars MakeTuple/MakeList/MakeMap/MapUpdate into
-    // token-linear Dest* sequences. It is intra-block, adds no blocks and no
-    // call edges, and preserves every original construction *result* var —
-    // already typed by the authoritative plan above. Its only new SSA names are
-    // dest holders and init tokens, which codegen lowers from runtime value
-    // bindings, never from plan types. So the authoritative plan stays valid for
-    // everything codegen reads after lowering: no post-destination re-plan, and
-    // no reconciliation of a second plan against the first (fz-hfc.4 / inv1).
-    crate::ir_dest::lower_destinations(&mut working);
-    crate::ir_dest::verify_module(&working).map_err(|errors| {
+    let call_shapes_pre = snapshot_call_shapes(&working);
+    lower_destinations(&mut working);
+    verify_module(&working).map_err(|errors| {
         CodegenError::new(format!(
             "destination-passing IR invariant failed:\n{}",
-            errors
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("\n")
+            errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n")
         ))
     })?;
     #[cfg(debug_assertions)]
-    super::invariants::assert_no_new_call_shapes(&working, &call_shapes_pre);
-    let diagnostics = crate::ir_extern_marshal::resolve_module_types(t, &working, &mut module_plan);
+    assert_no_new_call_shapes(&working, &call_shapes_pre);
+    let diagnostics = resolve_module_types(t, &working, &mut module_plan);
     if let Some(diagnostic) = diagnostics.into_iter().next() {
         return Err(CodegenError::new(diagnostic.message).with_span(diagnostic.primary.span));
     }
     let module = &working;
 
-    let spec_registry = build_spec_registry(t, module, &module_plan);
-    let spec_count = spec_registry.len();
-    let (spec_keys, spec_fnidx, spec_fn_types) =
-        build_spec_index_tables(module, &spec_registry, &module_plan);
+    let planned_program = materialize_program(t, module, &module_plan, tel);
+    let spec_registry = planned_program.spec_registry();
+    let spec_count = planned_program.spec_count();
+    let spec_keys = planned_program.spec_keys();
+    let spec_fnidx = planned_program.spec_fn_indices();
+    let abi_facts = AbiFacts::derive(module, &planned_program);
+    let reachable = planned_program.reachable_specs();
 
-    let closure_shapes = build_closure_shapes(
-        module,
-        spec_count,
-        &spec_fnidx,
-        &spec_fn_types,
-        &spec_registry,
-    );
+    let callable_entries = planned_program.callable_entries();
 
-    // Parking + native-callability analyses. Consumed at declare-time
-    // below for per-fn sigs and at compile_fn / emit_call for ABI
-    // bifurcation.
-    let parking_reachable = crate::parking::parking_reachable(module);
-    let mut natively_callable = crate::parking::natively_callable(module, &parking_reachable);
+    let schemas = build_per_spec_schemas(t, &planned_program);
+    let frame_sizes: Vec<u32> = schemas.iter().map(|s| s.allocation_payload_size() as u32).collect();
+    let return_tys = derive_return_tys(t, spec_keys, spec_fnidx, &module_plan);
 
-    let cont_fns = collect_cont_fns(module);
-    let _ = &cont_fns; // consumed by sig builder + entry harness below.
-
-    // Set of fns appearing as a MakeClosure target. Per
-    // docs/cps-in-clif.md §2.1 these get sig `(args..., self:i64, cont:i64)
-    // tail` and their body projects captures from `self`. Disjoint
-    // from cont_fns by construction (conts are anonymous continuations
-    // synthesized by the lowerer; MakeClosure targets are user lambdas
-    // or top-level fns passed as values). If overlap occurs in some
-    // future fz-IR, cont-fn shape wins (Receive parking would otherwise
-    // misread the result slot).
-    let (closure_target_fns, closure_n_captures) = collect_closure_targets(module);
-    let _ = (&closure_target_fns, &closure_n_captures);
-    shrink_natively_callable(module, &mut natively_callable);
-
-    let cont_target_fns = collect_cont_target_fns(module);
-
-    let schemas = build_per_spec_schemas(t, module, spec_count, &spec_fnidx, &spec_fn_types);
-
-    // Per-spec frame sizes (consumed by `fz_alloc_frame_dyn` and the AOT
-    // frame-size dispatch fn). Indexed by SpecId.0.
-    let frame_sizes: Vec<u32> = schemas
-        .iter()
-        .map(|s| s.allocation_payload_size() as u32)
-        .collect();
-
-    let return_tys = derive_return_tys(t, module, &spec_keys, &spec_fnidx, &module_plan);
-
-    let param_reprs = derive_param_reprs(
-        t,
-        module,
-        spec_count,
-        &spec_fnidx,
-        &spec_fn_types,
-        &spec_keys,
-        &cont_fns,
-    );
-    let _ = &closure_n_captures;
+    let param_reprs = derive_param_reprs(t, &planned_program, &abi_facts.cont_fns);
     let tagged_return_specs = compute_tagged_return_specs(
         t,
         module,
-        &spec_fnidx,
-        &spec_fn_types,
-        &spec_registry,
-        &closure_target_fns,
+        &return_tys,
+        &planned_program,
+        &abi_facts.closure_capture_counts,
     );
-    let tagged_slot0_cont_specs = compute_tagged_slot0_cont_specs(
-        t,
+    let return_reprs = build_return_reprs(t, &return_tys, &tagged_return_specs);
+    let tagged_slot0_cont_specs = compute_tagged_slot0_cont_specs(t, &planned_program, &return_reprs);
+    let param_reprs = refine_param_reprs_for_tagging(param_reprs, &tagged_slot0_cont_specs);
+
+    emit_codegen_abi_contracts(
         module,
         spec_count,
-        &spec_fnidx,
-        &spec_fn_types,
-        &spec_registry,
+        spec_fnidx,
+        reachable,
+        spec_keys,
+        &param_reprs,
+        &return_reprs,
+        &abi_facts.native_fns,
+        &abi_facts.cont_fns,
+        &abi_facts.closure_capture_counts,
+        tel,
     );
-    let param_reprs = refine_param_reprs_for_tagging(param_reprs, &tagged_slot0_cont_specs);
-    let return_reprs = build_return_reprs(t, &return_tys, &tagged_return_specs);
-
-    let cont_extras_count = collect_cont_extras_count(module);
 
     let fn_sigs = build_fn_sigs(
         module,
         spec_count,
-        &spec_fnidx,
-        &spec_keys,
+        spec_fnidx,
+        spec_keys,
         &param_reprs,
-        &natively_callable,
-        &cont_fns,
-        &closure_n_captures,
-        &cont_extras_count,
+        &abi_facts.native_fns,
+        &abi_facts.cont_fns,
+        &abi_facts.closure_capture_counts,
+        &abi_facts.cont_extras_count,
     );
 
     let linkage = backend.fn_linkage();
-    let fn_ids = declare_spec_fns(
-        backend.module_mut(),
-        linkage,
-        spec_count,
-        &spec_fnidx,
-        &fn_sigs,
-    )?;
+    let fn_ids = declare_spec_fns(backend.module_mut(), linkage, spec_count, spec_fnidx, &fn_sigs)?;
+    let callable_entry_fn_ids =
+        declare_callable_entry_fns(backend.module_mut(), callable_entries, &param_reprs, spec_keys)?;
 
     let (mid_flight_cont_fn_ids, mid_flight_cont_tail_fn_ids) = declare_mid_flight_conts(
         t,
         backend.module_mut(),
         module,
         &module_plan,
-        &spec_registry,
-        &spec_fnidx,
+        spec_registry,
+        spec_fnidx,
         &param_reprs,
-        &natively_callable,
-        &closure_n_captures,
+        &abi_facts.native_fns,
+        &abi_facts.closure_capture_counts,
     )?;
 
-    // Per-module ConstBitstring symbol cache. Same byte payload across
-    // the whole module shares one set of symbols:
-    //   * `bytes_id`: the raw payload (Local, read-only).
-    //   * `sharedbin_id`: present only for above-threshold payloads — a
-    //     40-byte static SharedBin in `.data` with refcount=1 anchor, plus
-    //     two relocations (bytes_ptr and the noop destructor). Below-
-    //     threshold payloads have `None` here and continue to flow through
-    //     `fz_alloc_bitstring_const` for inline / runtime-decided storage.
-    let bs_const_data: std::cell::RefCell<HashMap<Vec<u8>, BsConstSyms>> =
-        std::cell::RefCell::new(HashMap::new());
-
-    let codegen_bodies = prepare_codegen_bodies(module, spec_count, &spec_fnidx, &spec_fn_types);
-
-    // Set of SpecIds reachable from main + closure-dispatched fns.
-    // Specs not in this set get a trap-stub body instead of full
-    // codegen. Closure-target specs (those in `closure_shapes`) are seeded
-    // explicitly because runtime closure dispatch through code pointers isn't
-    // visible to the IR-body BFS. See ir_planner::reachable_specs.
-    let mut reachable: std::collections::HashSet<u32> = crate::ir_planner::reachable_specs(
-        t,
-        module,
-        &spec_registry,
-        &module_plan,
-        closure_shapes.keys().copied(),
-    );
-    // Per-spec folding can turn a reachable `Call + Cont` into a direct
-    // `TailCall` to the continuation spec. Augment from the exact folded
-    // bodies codegen will emit so dead-spec pruning cannot leave a trap stub
-    // behind a generated direct edge.
-    augment_reachable_for_codegen_bodies(
-        t,
-        module,
-        &spec_registry,
-        &module_plan,
-        &codegen_bodies,
-        &mut reachable,
-    );
-
-    let (matcher_fn_ids, receive_matched_sites) =
-        declare_matcher_fns(backend.module_mut(), module, tel)?;
+    let bs_const_data: RefCell<HashMap<Vec<u8>, BsConstSyms>> = RefCell::new(HashMap::new());
+    let (matcher_fn_ids, receive_matched_sites) = declare_matcher_fns(backend.module_mut(), module, tel)?;
     let verifier_isa = host_isa();
 
     for sid in 0..spec_count {
-        let Some(_idx) = spec_fnidx[sid] else {
+        let Some(fn_idx) = spec_fnidx[sid] else {
             continue;
         };
         let func_id = *fn_ids.get(&(sid as u32)).unwrap();
         let mut ctx = backend.module_mut().make_context();
         ctx.func.signature = fn_sigs[sid].clone();
 
-        // Unreached spec: emit a trap stub so the symbol exists (other
-        // emitted code may name it via fz_fn_{sid}) but the body is a
-        // single unreachable trap. Skip the @spec header annotation,
-        // verifier, and any further per-spec analysis.
         if !reachable.contains(&(sid as u32)) {
             use cranelift_codegen::ir::TrapCode;
             use cranelift_frontend::FunctionBuilder;
@@ -2334,73 +1635,59 @@ pub(crate) fn compile_with_backend_impl<
             backend.module_mut().clear_context(&mut ctx);
             continue;
         }
-        let ft = spec_fn_types[sid].expect("non-sentinel spec must have SpecPlan");
-        // Per-spec fold + DCE + fuse: dead arms (TypeTests whose subject
-        // is provably inside/outside the test descr in THIS spec's env)
-        // collapse before codegen. The pre-codegen `fold_module` already
-        // folds the any-key case; this is the multi-spec case it bails on.
-        // Reuses the precomputed body used by codegen reachability so the
-        // emitted body and trap-stub pruning derive from the same call
-        // graph.
-        let f = codegen_bodies[sid]
-            .as_ref()
-            .expect("reachable real spec must have a prepared body");
+        let planned_body = planned_program.executable_body(SpecId(sid as u32));
+        let ft = &planned_body.spec_plan;
+        let f = &planned_body.body;
+        debug_assert_eq!(planned_body.spec_id.0, sid as u32);
+        debug_assert_eq!(planned_body.fn_idx, fn_idx);
+        debug_assert_eq!(planned_body.fn_id, f.id);
+        debug_assert_eq!(&planned_body.spec_key, &spec_keys[sid]);
 
         let want_asm = ASM_RECORD.with(|c| c.borrow().is_some());
         if want_asm {
             ctx.set_disasm(true);
         }
         #[cfg(debug_assertions)]
-        crate::ir_codegen::invariants::emit_and_assert_spec_dispatch_coverage(
-            tel,
-            f,
-            ft,
-            sid as u32,
-            &spec_keys[sid],
-        );
-        // Any-key SpecId.0 == FnId.0 (invariant); use the bare fn name so
-        // tests / `fz dump --emit clif` can refer to functions by source
-        // name. Narrow specs append `_s{sid}` to keep names distinct.
-        let display_name = if (sid as u32) == f.id.0 {
+        emit_and_assert_spec_dispatch_coverage(tel, f, ft, planned_body.spec_id.0, &planned_body.spec_key);
+        let display_name = if planned_body.spec_id.0 == planned_body.fn_id.0 {
             f.name.clone()
         } else {
-            format!("{}_s{}", f.name, sid)
+            format!("{}_s{}", f.name, planned_body.spec_id.0)
         };
         let cg_env = CodegenEnv {
             telemetry: tel,
             runtime: &runtime,
             module,
             fn_types: ft,
-            active_spec_id: sid as u32,
-            active_body_fn_id: f.id,
+            active_spec_id: planned_body.spec_id.0,
+            active_body_fn_id: planned_body.fn_id,
             active_body_name: &display_name,
-            spec_registry: &spec_registry,
+            spec_registry,
             fn_ids: &fn_ids,
+            callable_entry_fn_ids: &callable_entry_fn_ids,
             mid_flight_cont_tail_fn_ids: &mid_flight_cont_tail_fn_ids,
             tuple_schema_ids: &tuple_schema_ids,
             named_schema_ids: &named_schema_ids,
             bs_const_data: &bs_const_data,
             param_reprs: &param_reprs,
             return_reprs: &return_reprs,
-            spec_keys: &spec_keys,
-            natively_callable: &natively_callable,
-            cont_target_fns: &cont_target_fns,
-            cont_fns: &cont_fns,
-            closure_n_captures: &closure_n_captures,
-            cont_extras_count: &cont_extras_count,
+            spec_keys,
+            native_abi_fns: &abi_facts.native_fns,
+            cont_target_fns: &abi_facts.cont_target_fns,
+            cont_fns: &abi_facts.cont_fns,
+            closure_capture_counts: &abi_facts.closure_capture_counts,
+            cont_extras_count: &abi_facts.cont_extras_count,
             matcher_fn_ids: &matcher_fn_ids,
         };
         {
-            use crate::telemetry::TelemetryExt as _;
-
             let _span = tel.span(
                 &["fz", "codegen", "lower_function"],
                 crate::metadata! {
                     body_kind: "fz_spec",
                     module_path: module.module_path().to_owned(),
                     fn_name: display_name.clone(),
-                    fn_id: f.id.0 as u64,
-                    spec_id: sid as u64,
+                    fn_id: planned_body.fn_id.0 as u64,
+                    spec_id: planned_body.spec_id.0 as u64,
                 },
             );
             compile_fn(
@@ -2411,15 +1698,15 @@ pub(crate) fn compile_with_backend_impl<
                 &cg_env,
                 &schemas,
                 f,
-                sid as u32,
+                planned_body.spec_id.0,
                 &module.source,
             )?;
             let (block_count, instruction_count) = cranelift_body_stats(&ctx.func);
             tel.execute(
                 &["fz", "codegen", "function_lowered"],
                 &crate::measurements! {
-                    fn_id: f.id.0 as u64,
-                    spec_id: sid as u64,
+                    fn_id: planned_body.fn_id.0 as u64,
+                    spec_id: planned_body.spec_id.0 as u64,
                     block_count: block_count as u64,
                     instruction_count: instruction_count as u64,
                     fz_block_count: f.blocks.len() as u64,
@@ -2431,15 +1718,8 @@ pub(crate) fn compile_with_backend_impl<
                 },
             );
         }
-        // Annotate raw CLIF with IR types + ArgReprs so
-        // `fz dump --emit clif` shows what the typer decided, not just
-        // what was lowered.
         IR_TEXT_RECORD.with(|c| {
             if let Some(v) = c.borrow_mut().as_mut() {
-                // Pin func.name to the real FuncId so the banner
-                // `function u0:N(...)` carries the same id space as
-                // body refs; cranelift_module's define_function does
-                // this assignment anyway, we just need it before display().
                 ctx.func.name = ir::UserFuncName::user(0, func_id.as_u32());
                 let raw = ctx.func.display().to_string();
                 let key_tys = codegen_key_to_tys(t, &spec_keys[sid].input);
@@ -2468,23 +1748,19 @@ pub(crate) fn compile_with_backend_impl<
             }
         });
         let fn_span = module.source.fn_span_of(f.id);
-        cranelift_codegen::verifier::verify_function(&ctx.func, verifier_isa.as_ref()).map_err(
-            |e| {
-                CodegenError::new(format!(
-                    "verify {}:\n{}\n--- IR ---\n{}",
-                    display_name,
-                    e,
-                    ctx.func.display()
-                ))
-                .with_span(fn_span)
-            },
-        )?;
+        cranelift_codegen::verifier::verify_function(&ctx.func, verifier_isa.as_ref()).map_err(|e| {
+            CodegenError::new(format!(
+                "verify {}:\n{}\n--- IR ---\n{}",
+                display_name,
+                e,
+                ctx.func.display()
+            ))
+            .with_span(fn_span)
+        })?;
         backend
             .module_mut()
             .define_function(func_id, &mut ctx)
-            .map_err(|e| {
-                CodegenError::new(format!("define {}: {}", display_name, e)).with_span(fn_span)
-            })?;
+            .map_err(|e| CodegenError::new(format!("define {}: {}", display_name, e)).with_span(fn_span))?;
         if want_asm
             && let Some(cc) = ctx.compiled_code()
             && let Some(vcode) = cc.vcode.as_ref()
@@ -2511,19 +1787,18 @@ pub(crate) fn compile_with_backend_impl<
 
     let main_fn_id = module.fn_by_name("main").map(|f| f.id);
 
-    let static_closure_targets =
-        collect_static_closure_targets(&closure_shapes, &spec_keys, &fn_ids, &return_reprs);
-
-    let diagnostics = crate::ir_planner::collect_diagnostics(t, module, &module_plan, tel);
-    let halt_reprs = compute_halt_reprs(
-        t,
-        module,
-        spec_count,
-        &spec_fnidx,
-        &spec_fn_types,
-        &spec_registry,
+    let static_closure_targets = collect_static_closure_targets(
+        callable_entries,
+        reachable,
+        spec_keys,
+        &fn_ids,
+        &callable_entry_fn_ids,
         &return_reprs,
+        &abi_facts.closure_capture_counts,
     );
+
+    let diagnostics = collect_diagnostics(t, module, &module_plan, tel);
+    let halt_reprs = compute_halt_reprs(t, module, &planned_program, &return_reprs);
     let fn_halt_kinds = derive_fn_halt_kinds(module, &halt_reprs);
     emit_mid_flight_cont_bodies(
         backend.module_mut(),
@@ -2532,6 +1807,18 @@ pub(crate) fn compile_with_backend_impl<
         &fn_ids,
         &mid_flight_cont_fn_ids,
         &mid_flight_cont_tail_fn_ids,
+    )?;
+    emit_callable_entry_bodies(
+        backend.module_mut(),
+        &mut fbctx,
+        &runtime,
+        &fn_ids,
+        &callable_entry_fn_ids,
+        callable_entries,
+        &param_reprs,
+        spec_keys,
+        tel,
+        module.module_path(),
     )?;
     let resume_id = emit_resume(backend.module_mut(), &mut fbctx, &runtime)?;
 
@@ -2558,15 +1845,12 @@ pub(crate) fn compile_with_backend_impl<
             runtime.halt_cont_body_strict_id,
             runtime.halt_cont_body_i64_id,
             runtime.halt_cont_body_f64_id,
+            runtime.halt_cont_body_atom_id,
         ],
         fn_halt_kinds,
         resume_id,
     };
 
-    // Backend-specific metadata carriers (no-op for JIT; dispatch + main
-    // shim + atom blob for AOT) emit before finalize so any data /
-    // function declarations land in the same Module that finalize hands
-    // off.
     backend.emit_metadata_carriers(&mut fbctx, &metadata)?;
     backend.finalize(metadata)
 }

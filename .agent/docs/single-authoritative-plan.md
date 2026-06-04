@@ -1,109 +1,214 @@
 # Single Authoritative Plan
 
-`compile_with_backend_impl` (`src/ir_codegen/driver.rs`) derives the
-specializing plan codegen consumes on IR whose control-flow shape is already
-settled. Codegen reads that plan's facts; it does not re-derive them or
-reconcile a second codegen plan against the first.
+Codegen consumes a `ModulePlan`; it never runs the planner. The frontend and the
+module pipeline produce the one authoritative plan for the module shape they hand
+downstream, and `compile_planned` / `compile_aot_planned` lower that planned
+module mechanically.
 
-This is the pipeline-level form of the rule in
+This is the pipeline-level form of the contract in
 [`dispatch-as-planner-output.md`](dispatch-as-planner-output.md): dispatch is
-planner output, and there is exactly one plan that owns it.
+planner output, so downstream passes read selected call targets, reachable
+blocks, callable capabilities, and return contracts off the plan instead of
+rediscovering them.
 
-## Pieces
+## The Pieces
 
-- **`plan_module`** produces the authoritative `ModulePlan`. Every call emits a
-  `planner.planned` telemetry event tagged `role: "authoritative"`. A pretyped
-  single-module program runs two: the frontend plan and this codegen plan.
-- **Frontend protocol rewrites** apply only static-single protocol callsites:
-  the same physical `CallsiteId` must select the same local target in every
-  reachable caller specialization. Conflicting protocol targets are left as
-  protocol stubs until closed-union switch dispatch rewrites them into
-  `TypeTest` / `If` cascades. This preserves one shared IR body while still
-  honoring per-spec protocol facts.
-- **The shaping plan** is a `ModulePlan` tagged `role: "shaping"` used only to
-  drive pre-authoritative CFG simplification (`branch_fold` and `fold`). Its
-  facts are discarded before codegen facts are published.
-- **`plan_callable_capabilities`** produces a `CapabilityPlan` — each discovered
-  spec's `callable_capabilities` plus the per-FnId `fn_effects`, and nothing
-  else (no types, call edges, returns, dead branches, or precedence). It emits
-  no `planner.planned` event, and the type carries no codegen facts, so it
-  cannot stand in for a `ModulePlan`.
-- **`discover_specs`** is the shared worklist core: it discovers every reachable
-  spec from the entry seeds and runs the effective-return fixpoint. Both
-  `plan_module` and `plan_callable_capabilities` build on it.
+- **`plan_module`** (`ir_planner/worklist.rs`) produces the authoritative
+  `ModulePlan` for a settled module and emits `fz.planner.planned` with
+  `role: "authoritative"`. The frontend runs it once on the lowered module, and
+  `prepare_execution_graph` runs it again on the linked module, so normal source
+  execution publishes exactly two authoritative `planned` events.
+- **`PreparedExecutionGraph`** (`modules/pipeline.rs`) is the source/runtime
+  handoff. It carries the linked `Module` and the `ModulePlan` for that exact
+  module. The interpreter and codegen both consume this pair.
+- **`compile_planned` / `compile_aot_planned`** (`ir_codegen/mod.rs`) take the
+  `ModulePlan` from the caller. The codegen driver performs local,
+  invariant-preserving lowering (destination lowering), but it does not change
+  call shapes and does not run a second planner pass.
+- **`materialize_program`** (`ir_planner/planned.rs`) consumes the supplied
+  `ModulePlan` and the settled module to build a `PlannedProgram`: stable
+  `SpecId` registration, per-slot plan lookup, executable `PlannedBody` values
+  keyed by both `SpecKey` and semantic `BodyKey`, the callable-entry table, and
+  the finished `reachable_specs` set.
+- **`AbiFacts`** (`ir_codegen/abi_facts.rs`) derives function-level ABI facts
+  from the `PlannedProgram`, not raw syntax. It owns the native-fn set
+  (`native_fns`), the continuation-fn set (`cont_fns`), the set of fns ever
+  named as a call target (`cont_target_fns`), and per-fn closure capture counts
+  (`closure_capture_counts`), all read from reachable planned bodies and their
+  resolved call edges.
 
 ## Pipeline
 
-```
-frontend plan                      # plan_module, authoritative
-  → plan_callable_capabilities      # capability slice; no telemetry event
-  → rewrite_known_target_closures   # devirtualize known closure calls
-  → inline_module_with_plan         # then fuse, reduce, single-use-cont
-plan_module(role: "shaping")         # CFG simplification facts only
-  → branch_fold, fold, const_bs, dce
-plan_module                         # THE authoritative codegen plan
-  → lower_destinations              # maintains no plan facts
-resolve_module_types → codegen      # consumes the one plan
-```
-
-The shaping plan exists because branch folding and ordinary folding consume
-planner facts but change block topology. Those changes must happen before the
-authoritative codegen plan is built; otherwise `SpecPlan.reachable_blocks` and
-`SpecPlan.call_edges` would describe an older body. It still uses the caller's
-telemetry handle: production code does not construct `NullTelemetry` to hide
-compiler work.
-
-## The pre-plan transforms read a capability slice
-
-`rewrite_known_target_closures` and `inline_module_with_plan` run before the
-authoritative plan, because they reshape the call graph it specializes over.
-They read only a capability slice:
-
-- **rewrite** reads each spec's `callable_capabilities`, merged to a per-fn
-  consensus: a `CallClosure`/`TailCallClosure` whose callee var holds the same
-  `KnownFn` in every spec becomes a direct `Call`/`TailCall`.
-- **inline** reads `fn_effects` and the `KnownClosure` subset of
-  `callable_capabilities` (stateful closures it must not inline away).
-
-So they take a `CapabilityPlan`, not a `ModulePlan`.
-
-Capability precision depends on the return-type fixpoint: a var's callable
-capability narrows as its type narrows under return refinement, and the
-consensus `KnownFn` that licenses devirtualization holds only when returns are
-sharp. So `plan_callable_capabilities` runs the full `discover_specs` worklist
-and keeps the capability slice rather than approximating with a cheaper
-fixpoint-free pass. What it drops relative to a `ModulePlan` is the module-level
-finalization (dead-branch consensus, precedence, the any-key index) and the
-telemetry event — facts these transforms do not read. The pass is
-interprocedural over the linked working module, which the frontend's per-entry
-`_pre_types` is not: `_pre_types` cannot see linked-provider bodies, so a
-provider entry param's `KnownFn` capability is visible only here.
-
-## Destination lowering maintains no plan facts
-
-`ir_dest::lower_destinations` desugars `MakeTuple`/`MakeList`/`MakeMap`/
-`MapUpdate` into token-linear `Dest*` sequences. It is intra-block, adds no
-blocks, and adds no `Call`/`TailCall` edges. It preserves the original
-construction *result* var, which the authoritative plan already typed; its only
-new SSA names are dest holders and init tokens.
-
-```
-{a, b}                       # MakeTuple, result var r : {A, B}
-  DestTupleBegin → holder h  # h and tokens: fresh, untyped in the plan
-  DestTupleSet h, 0, a
-  DestTupleSet h, 1, b
-  DestFreeze h → r           # r keeps its plan type
+```text
+source frontend / provider linking
+  -> plan_module                  # authoritative plan for this module
+  -> PreparedExecutionGraph       # module + exact plan
+  -> compile_planned
+       -> lower_destinations      # local invariant-preserving transform
+       -> resolve_module_types    # validates/attaches marshal facts on lowered IR
+       -> materialize_program     # executable projection from ModulePlan
+       -> AbiFacts::derive
+       -> codegen                 # mechanical CLIF lowering
 ```
 
-Codegen lowers the `Dest*` prims from runtime value bindings, reading plan types
-only for the original element/key/value vars (`a`, `b`), never the holders. So
-the authoritative plan stays valid for everything codegen reads after lowering,
-and no post-destination re-plan is needed.
+LTO mode is the one place that mutates module boundaries on purpose. It erases
+the boundaries, runs `plan_module` on the erased module, and hands that fresh
+module/plan pair downstream. The pre-erasure plan is discarded.
 
-## Gate this model with
+## What Each Stage Owns And Preserves
 
-- `cargo test plan_module_called_once_for_shaping_once_for_codegen_in_pipeline --lib`
-- `cargo test frontend_to_codegen_pipeline_reports_planner_phase_events --lib`
-- `cargo test --test fixture_matrix` — four-path legs plus the dump budgets,
-  whose planner metrics key on the `role: "authoritative"` event
-- `cargo test --bin fz closure_call_rewritten_to_direct_call rewrite_erases_threaded_constant_closure`
+`compile_planned` runs the plan-preserving transforms before it lowers, so the
+plan it materializes still describes the IR codegen emits.
+
+- **`lower_destinations`** adds destination holders and init tokens. It keeps the
+  original result vars and adds no call edges, so reachability and dispatch are
+  unchanged. A debug check (`assert_no_new_call_shapes`) holds it to that
+  contract.
+- **`resolve_module_types`** validates the lowered module and records per-call
+  extern marshal facts on each `SpecPlan` (`extern_marshals`); an ascription
+  mismatch surfaces as a codegen diagnostic. It does not select dispatch.
+- **`materialize_program`** folds and rewrites bodies using facts already in the
+  `ModulePlan`. It may erase a proven known call and fuse blocks, then recompute
+  reachability over the rewritten graph — but it discovers no new semantic
+  reachability.
+
+Two source-lowering choices keep work out of the plan entirely, so the
+authoritative plan never has to carry it:
+
+- A direct `dbg(x)` lowers to the `fz_dbg_value(any)` extern effect and returns
+  `x` (`ir_lower/expr.rs`), so the plan holds no `Kernel.dbg/1` call edge for
+  direct calls.
+- Fully static tuple/struct literals can lower to read-only schema-shaped data
+  symbols in native codegen (`try_static_struct_literal`). This is a storage
+  choice for construction the lowered IR already makes explicit; it adds no call
+  edges and no destination facts and leaves the `ModulePlan` untouched.
+
+The observable contract for the whole pipeline: `compile_planned` emits no
+`fz.planner.planned` event. The gating test attaches to that event and asserts
+codegen adds none beyond the two the frontend and linker already published.
+(`materialize_program` still emits its own `fz.planner.body_materialized` and
+`fz.planner.materialized` events — those report the projection, not a replan.)
+
+## Materializing The Planned Program
+
+`PlannedProgram` is the handoff between planner/fold and codegen. It preserves
+the registry invariant that an any-key `SpecId.0 == FnId.0`, reserving slots
+where needed, and exposes executable bodies as `PlannedBody` values that carry
+both the exact `SpecKey` and its semantic `BodyKey`. Lowering a reachable
+registered executable spec always finds its body by construction
+(`executable_body`).
+
+`ReturnDemand` is part of `SpecKey` identity and selects an edge's delivery ABI
+(`ReturnDelivery::Value` or `TupleFields(n)`); it is not a distinct return
+payload. `BodyKey` drops the demand, so demand siblings share `BodyKey`-level
+return facts yet stay separate materialized bodies — merging them would force one
+return ABI onto callers that asked for the other.
+
+`AbiFacts::derive` reads dispatch off the planned call edges on those bodies.
+Continuation and direct-call `SpecId`s come from `SpecPlan.call_edges`; return
+representations then propagate through continuation chains and resolved tail-call
+edges. Codegen resolves a target through that edge, never by assuming a raw
+`FnId` maps to the executable spec it wants. ABI-contract telemetry covers only
+reachable executable specs, not the sentinel slots kept to hold a stable
+`SpecId`.
+
+### Inlining known calls
+
+While materializing a body, `inline_single_entry_direct_calls` may erase a
+proven local direct call, tail direct call, known zero-capture closure call, or
+known zero-capture tail closure call. The callee's effects must be inline-safe
+(no allocation, observable effect, allocation-stat read, scheduler visibility,
+halt, or opaque call) per `direct_callee_is_inline_safe`.
+
+- A **non-tail call** clones the selected producer return graph and the selected
+  continuation graph into the caller, so it requires both call edges in the
+  caller `SpecPlan`. Producer `Return` becomes a `Goto` into the cloned
+  continuation entry.
+- A **tail call** clones only the selected producer return graph and rewrites
+  producer `Return` edges to the caller's `Return`.
+
+Cloned call edges are remapped from the moved fn's `FnId` onto the materialized
+caller (`add_remapped_call_edges`). A continuation that carries physical
+params/capabilities moves only when it is a statement-free transport graph
+(`continuation_graph_can_move_into_caller`).
+
+### Fusing and retyping
+
+After a rewrite, `fuse_single_predecessor_goto_blocks` folds a `Goto` into a
+closed single-predecessor target; if the target's params are read by successor
+blocks, the block stays in place. Whenever materialization removes blocks, the
+body is retyped (`retype_materialized_body`) so `PlannedBody.spec_plan` matches
+the executable body.
+
+### Reachability over the rewritten graph
+
+`materialized_reachable_specs` reseeds from entry specs, follows surviving
+materialized call edges and live callable constructions, and re-adds
+activation/callable-entry role siblings only for body keys that stay reachable.
+
+### Telemetry and the consistency harness
+
+Each body emits `fz.planner.body_materialized` (including `spec_id`, `fn_id`,
+`fold/inline/fuse counts`, and `orphan_call_edge_count`). The aggregate
+`fz.planner.materialized` reports spec slots, executable body count, sentinel
+slots, fold/rewrite counts, reachable specs, `post_plan_reachability_growth_count`,
+`post_plan_reachability_pruned_count`, `materialized_reachability_missing_body_count`,
+and `make_closure_callable_gap_count`.
+
+`authoritative_planner_consistency_issues` reads those events and requires every
+materialized body to report zero orphan call edges (after accounting for
+callable-boundary and selective-receive `Cont` outcomes), zero make-closure
+callable gaps, zero post-plan reachability growth, and zero missing bodies.
+Pruning is allowed and only measured: a rewrite that erases edges may shrink
+reachability.
+
+## Callable Entries And Static Singletons
+
+A semantic body spec and its public callable entry are distinct executable
+things:
+
+- the **planned body** is the direct typed entry for a reachable semantic
+  `BodyKey`;
+- the **callable entry** is the generic closure-call entry for that body, with a
+  `(args..., self, cont)` Tail-CC signature.
+
+Closure values store callable entries for indirect calls. Direct calls may target
+typed planned bodies when the planner selected that exact local target. Codegen
+lowers `Prim::MakeFnRef` through the callable-entry contract directly;
+`Prim::MakeClosure` is the env-carrying path and errors at codegen if it reaches
+with zero captures.
+
+Callable-entry selection is site-specific. `PlannedProgram` keeps the
+callable-entry targets the planner proved (`callable_entry_targets`), and codegen
+lowers each `MakeFnRef` / env-carrying `MakeClosure` through the matching target
+for that statement's typed environment (`select_callable_entry_target`). The
+selected entry is observable through `fz.codegen.callable_entry_selected`.
+
+Static closure singletons are keyed by the spec slot (`cl_sid`) codegen passes to
+`fz_get_static_closure`. `collect_static_closure_targets` populates that table
+with every zero-capture callable entry plus every zero-capture closure-shaped
+reachable spec used as a direct native `self` argument — a zero-capture singleton
+ignores `self`, so one singleton serves any direct-call site for that fn.
+Zero-capture callable-entry ids are therefore a subset of static-singleton ids; a
+capturing callable entry (`capture_count > 0`) is not a static singleton, because
+its env must be built per construction.
+
+## Tiny Walkthrough
+
+```text
+fn main(), do: dbg(42)
+  frontend: lower + plan_module        -> authoritative "planned" event #1
+  prepare_execution_graph: plan_module -> authoritative "planned" event #2
+  compile_planned(module, plan):
+    lower_destinations / resolve_module_types   # plan-preserving
+    materialize_program(plan)                   # body_materialized + materialized
+    AbiFacts::derive(plan)                       # ABI off planned edges
+    codegen                                      # CLIF; no "planned" event
+```
+
+## Gate This Model With
+
+- `cargo test --lib ir_codegen::tests::codegen_pipeline_reports_only_one_authoritative_plan -- --nocapture`
+- `cargo test --lib ir_codegen::tests::frontend_to_codegen_pipeline_reports_planner_phase_events -- --nocapture`
+- `cargo test --lib ir_codegen::tests::tail_call_closure_reuses_frame_via_count_loop -- --nocapture`
+- `cargo test --test fixture_matrix`

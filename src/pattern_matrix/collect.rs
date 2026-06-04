@@ -1,19 +1,22 @@
+use std::collections::{BTreeSet, HashMap};
+
 use crate::ast::{Expr, Pattern, Spanned};
+use crate::exec::matcher::{InputId, MatcherBinding, PinnedId};
 
 use super::pattern_ops::append_pattern_ops;
 use super::{PatternMatrix, PatternMatrixCompileError, SubjectRef};
 
 pub fn collect_matcher_pattern_bindings(
     patterns: &[Spanned<Pattern>],
-    pinned_by_name: &std::collections::HashMap<String, crate::exec::matcher::PinnedId>,
-) -> Result<Vec<crate::exec::matcher::MatcherBinding>, PatternMatrixCompileError> {
+    pinned_by_name: &HashMap<String, PinnedId>,
+) -> Result<Vec<MatcherBinding>, PatternMatrixCompileError> {
     let mut tests = Vec::new();
     let mut bindings = Vec::new();
     let mut prepared_keys = Vec::new();
     for (index, pattern) in patterns.iter().enumerate() {
         append_pattern_ops(
             &pattern.node,
-            crate::exec::matcher::SubjectRef::Input(crate::exec::matcher::InputId(index as u32)),
+            crate::exec::matcher::SubjectRef::Input(InputId(index as u32)),
             pinned_by_name,
             &mut prepared_keys,
             &mut tests,
@@ -26,7 +29,7 @@ pub fn collect_matcher_pattern_bindings(
 pub(crate) fn collect_pinned_names(pattern_matrix: &PatternMatrix) -> Vec<String> {
     let mut out = Vec::new();
     for row in &pattern_matrix.rows {
-        let mut bound = std::collections::BTreeSet::new();
+        let mut bound = BTreeSet::new();
         for pattern in &row.patterns {
             collect_pinned_names_in_pattern(&pattern.node, &mut out);
             collect_bound_names_in_pattern(&pattern.node, &mut bound);
@@ -38,10 +41,7 @@ pub(crate) fn collect_pinned_names(pattern_matrix: &PatternMatrix) -> Vec<String
     out
 }
 
-pub(crate) fn collect_bound_names_in_pattern(
-    pattern: &Pattern,
-    out: &mut std::collections::BTreeSet<String>,
-) {
+pub(crate) fn collect_bound_names_in_pattern(pattern: &Pattern, out: &mut BTreeSet<String>) {
     match pattern {
         Pattern::Var(name) | Pattern::As(name, _) => {
             out.insert(name.clone());
@@ -84,11 +84,7 @@ pub(crate) fn collect_bound_names_in_pattern(
     }
 }
 
-pub(crate) fn collect_guard_capture_names(
-    expr: &Expr,
-    bound: &std::collections::BTreeSet<String>,
-    out: &mut Vec<String>,
-) {
+pub(crate) fn collect_guard_capture_names(expr: &Expr, bound: &BTreeSet<String>, out: &mut Vec<String>) {
     use crate::ast::Expr;
     match expr {
         Expr::Var(name) if !bound.contains(name) && !out.contains(name) => out.push(name.clone()),

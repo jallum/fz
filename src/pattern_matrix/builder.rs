@@ -1,51 +1,45 @@
 use crate::ast::{Pattern, Spanned};
-use crate::exec::matcher::{SwitchKey, SwitchKind};
+use crate::diag::Span;
+use crate::exec::matcher::{
+    GuardExpr, InputId, MatcherBinding, MatcherConst, MatcherLeaf, MatcherNode, NodeId, PinnedId, SwitchKey, SwitchKind,
+};
 use crate::fz_ir::Var;
+use std::collections::{BTreeMap, HashMap};
 
 use super::collect::collect_var_bindings;
 use super::guard::{guard_to_matcher_node, preconditions_to_matcher_nodes};
 use super::pattern_ops::{
-    append_pattern_ops, find_unspecializable_row, is_wildlike, peel_to_inner_with_bind,
-    pick_kind_for_column, pick_specialization_column, push_matcher_node,
-    record_removed_column_bindings, row_can_reject, subject_to_matcher_ref,
+    append_pattern_ops, find_unspecializable_row, is_wildlike, peel_to_inner_with_bind, pick_kind_for_column,
+    pick_specialization_column, push_matcher_node, record_removed_column_bindings, row_can_reject,
+    subject_to_matcher_ref,
 };
 use super::{CompilePatternMatrix, PatternMatrixCompileError, Row, SubjectRef};
 
 pub(crate) struct MatcherBuilder<'a, F>
 where
-    F: FnMut(
-        &str,
-        usize,
-        Vec<crate::exec::matcher::GuardExpr>,
-    ) -> Result<Option<crate::exec::matcher::GuardExpr>, PatternMatrixCompileError>,
+    F: FnMut(&str, usize, Vec<GuardExpr>) -> Result<Option<GuardExpr>, PatternMatrixCompileError>,
 {
-    pub(crate) input_by_var: std::collections::HashMap<Var, crate::exec::matcher::InputId>,
-    pub(crate) pinned_by_name: std::collections::HashMap<String, crate::exec::matcher::PinnedId>,
-    pub(crate) nodes: Vec<crate::exec::matcher::MatcherNode>,
-    pub(crate) prepared_keys: Vec<crate::exec::matcher::MatcherConst>,
+    pub(crate) input_by_var: HashMap<Var, InputId>,
+    pub(crate) pinned_by_name: HashMap<String, PinnedId>,
+    pub(crate) nodes: Vec<MatcherNode>,
+    pub(crate) prepared_keys: Vec<MatcherConst>,
     pub(crate) guard_call_resolver: &'a mut F,
 }
 
 impl<F> MatcherBuilder<'_, F>
 where
-    F: FnMut(
-        &str,
-        usize,
-        Vec<crate::exec::matcher::GuardExpr>,
-    ) -> Result<Option<crate::exec::matcher::GuardExpr>, PatternMatrixCompileError>,
+    F: FnMut(&str, usize, Vec<GuardExpr>) -> Result<Option<GuardExpr>, PatternMatrixCompileError>,
 {
-    fn push(&mut self, node: crate::exec::matcher::MatcherNode) -> crate::exec::matcher::NodeId {
+    fn push(&mut self, node: MatcherNode) -> NodeId {
         push_matcher_node(&mut self.nodes, node)
     }
 
     pub(crate) fn compile_inner(
         &mut self,
         pattern_matrix: CompilePatternMatrix,
-    ) -> Result<crate::exec::matcher::NodeId, PatternMatrixCompileError> {
+    ) -> Result<NodeId, PatternMatrixCompileError> {
         if pattern_matrix.rows.is_empty() {
-            return Ok(self.push(crate::exec::matcher::MatcherNode::Fail {
-                span: crate::diag::Span::DUMMY,
-            }));
+            return Ok(self.push(MatcherNode::Fail { span: Span::DUMMY }));
         }
         if pattern_matrix.subjects.is_empty() {
             return self.leaf_or_rejecting_chain(pattern_matrix.rows, vec![]);
@@ -90,7 +84,7 @@ where
         &mut self,
         mut rows: Vec<Row>,
         subjects: Vec<SubjectRef>,
-    ) -> Result<crate::exec::matcher::NodeId, PatternMatrixCompileError> {
+    ) -> Result<NodeId, PatternMatrixCompileError> {
         let row = rows.remove(0);
         let reject = if row_can_reject(&row) {
             Some(self.compile_inner(CompilePatternMatrix {
@@ -107,27 +101,25 @@ where
         &mut self,
         row: Row,
         subjects: &[SubjectRef],
-        on_reject: Option<crate::exec::matcher::NodeId>,
-    ) -> Result<crate::exec::matcher::NodeId, PatternMatrixCompileError> {
+        on_reject: Option<NodeId>,
+    ) -> Result<NodeId, PatternMatrixCompileError> {
         let mut bindings = row.bindings.clone();
         bindings.extend(collect_var_bindings(&row.patterns, subjects));
         let matcher_bindings = bindings
             .iter()
             .map(|(name, subject)| {
-                Ok(crate::exec::matcher::MatcherBinding {
+                Ok(MatcherBinding {
                     name: name.clone(),
                     source: subject_to_matcher_ref(subject, &self.input_by_var)?,
-                    span: crate::diag::Span::DUMMY,
+                    span: Span::DUMMY,
                 })
             })
             .collect::<Result<Vec<_>, PatternMatrixCompileError>>()?;
-        let leaf = self.push(crate::exec::matcher::MatcherNode::Leaf(
-            crate::exec::matcher::MatcherLeaf {
-                body_id: row.body_id,
-                bindings: matcher_bindings.clone(),
-                span: crate::diag::Span::DUMMY,
-            },
-        ));
+        let leaf = self.push(MatcherNode::Leaf(MatcherLeaf {
+            body_id: row.body_id,
+            bindings: matcher_bindings.clone(),
+            span: Span::DUMMY,
+        }));
         let guarded = guard_to_matcher_node(
             row.guard.as_ref(),
             &matcher_bindings,
@@ -151,8 +143,8 @@ where
         &mut self,
         subjects: &[SubjectRef],
         row: &Row,
-        on_fail: crate::exec::matcher::NodeId,
-    ) -> Result<crate::exec::matcher::NodeId, PatternMatrixCompileError> {
+        on_fail: NodeId,
+    ) -> Result<NodeId, PatternMatrixCompileError> {
         let mut tests = Vec::new();
         let mut bindings = Vec::new();
         for (pattern, subject) in row.patterns.iter().zip(subjects.iter()) {
@@ -166,13 +158,11 @@ where
                 &mut bindings,
             )?;
         }
-        let leaf = self.push(crate::exec::matcher::MatcherNode::Leaf(
-            crate::exec::matcher::MatcherLeaf {
-                body_id: row.body_id,
-                bindings: bindings.clone(),
-                span: crate::diag::Span::DUMMY,
-            },
-        ));
+        let leaf = self.push(MatcherNode::Leaf(MatcherLeaf {
+            body_id: row.body_id,
+            bindings: bindings.clone(),
+            span: Span::DUMMY,
+        }));
         let guarded = guard_to_matcher_node(
             row.guard.as_ref(),
             &bindings,
@@ -191,11 +181,11 @@ where
             &mut self.nodes,
         )?;
         for test in tests.into_iter().rev() {
-            current = self.push(crate::exec::matcher::MatcherNode::Test {
+            current = self.push(MatcherNode::Test {
                 test,
                 on_true: current,
                 on_false: on_fail,
-                span: crate::diag::Span::DUMMY,
+                span: Span::DUMMY,
             });
         }
         Ok(current)
@@ -205,7 +195,7 @@ where
         &mut self,
         pattern_matrix: CompilePatternMatrix,
         col: usize,
-    ) -> Result<crate::exec::matcher::NodeId, PatternMatrixCompileError> {
+    ) -> Result<NodeId, PatternMatrixCompileError> {
         let subject = pattern_matrix.subjects[col].clone();
         let kind = pick_kind_for_column(&pattern_matrix, col);
         match kind {
@@ -224,16 +214,16 @@ where
         &mut self,
         subject: SubjectRef,
         kind: SwitchKind,
-        cases: Vec<(SwitchKey, crate::exec::matcher::NodeId)>,
-        default: crate::exec::matcher::NodeId,
-    ) -> Result<crate::exec::matcher::NodeId, PatternMatrixCompileError> {
+        cases: Vec<(SwitchKey, NodeId)>,
+        default: NodeId,
+    ) -> Result<NodeId, PatternMatrixCompileError> {
         let subject = subject_to_matcher_ref(&subject, &self.input_by_var)?;
-        Ok(self.push(crate::exec::matcher::MatcherNode::Switch {
+        Ok(self.push(MatcherNode::Switch {
             subject,
             kind,
             cases,
             default,
-            span: crate::diag::Span::DUMMY,
+            span: Span::DUMMY,
         }))
     }
 
@@ -242,8 +232,7 @@ where
         pattern_matrix: CompilePatternMatrix,
         col: usize,
         subject: SubjectRef,
-    ) -> Result<crate::exec::matcher::NodeId, PatternMatrixCompileError> {
-        use std::collections::BTreeMap;
+    ) -> Result<NodeId, PatternMatrixCompileError> {
         let mut by_arity: BTreeMap<u32, Vec<Row>> = BTreeMap::new();
         let mut default_rows: Vec<Row> = Vec::new();
         let mut other_rows: Vec<Row> = Vec::new();
@@ -267,16 +256,14 @@ where
             }
         }
 
-        let mut cases: Vec<(SwitchKey, crate::exec::matcher::NodeId)> = Vec::new();
+        let mut cases: Vec<(SwitchKey, NodeId)> = Vec::new();
         for (arity, rows) in by_arity {
             let mut all_rows = rows;
             for d in &default_rows {
                 let mut dr = d.clone();
                 record_removed_column_bindings(&mut dr, col, &subject);
                 let span = dr.patterns[col].span;
-                let wilds: Vec<Spanned<Pattern>> = (0..arity)
-                    .map(|_| Spanned::new(Pattern::Wildcard, span))
-                    .collect();
+                let wilds: Vec<Spanned<Pattern>> = (0..arity).map(|_| Spanned::new(Pattern::Wildcard, span)).collect();
                 dr.patterns.splice(col..=col, wilds);
                 all_rows.push(dr);
             }
@@ -298,9 +285,7 @@ where
         }
 
         let default = if default_rows.is_empty() && other_rows.is_empty() {
-            self.push(crate::exec::matcher::MatcherNode::Fail {
-                span: crate::diag::Span::DUMMY,
-            })
+            self.push(MatcherNode::Fail { span: Span::DUMMY })
         } else if other_rows.is_empty() {
             let mut new_subjects = pattern_matrix.subjects.clone();
             new_subjects.remove(col);
@@ -333,17 +318,11 @@ where
         pattern_matrix: CompilePatternMatrix,
         col: usize,
         subject: SubjectRef,
-    ) -> Result<crate::exec::matcher::NodeId, PatternMatrixCompileError> {
-        self.specialize_literal(
-            pattern_matrix,
-            col,
-            subject,
-            SwitchKind::Atom,
-            |p| match p {
-                Pattern::Atom(s) => Some(SwitchKey::AtomName(s.clone())),
-                _ => None,
-            },
-        )
+    ) -> Result<NodeId, PatternMatrixCompileError> {
+        self.specialize_literal(pattern_matrix, col, subject, SwitchKind::Atom, |p| match p {
+            Pattern::Atom(s) => Some(SwitchKey::AtomName(s.clone())),
+            _ => None,
+        })
     }
 
     fn specialize_int(
@@ -351,7 +330,7 @@ where
         pattern_matrix: CompilePatternMatrix,
         col: usize,
         subject: SubjectRef,
-    ) -> Result<crate::exec::matcher::NodeId, PatternMatrixCompileError> {
+    ) -> Result<NodeId, PatternMatrixCompileError> {
         self.specialize_literal(pattern_matrix, col, subject, SwitchKind::Int, |p| match p {
             Pattern::Int(n) => Some(SwitchKey::Int(*n)),
             _ => None,
@@ -363,17 +342,11 @@ where
         pattern_matrix: CompilePatternMatrix,
         col: usize,
         subject: SubjectRef,
-    ) -> Result<crate::exec::matcher::NodeId, PatternMatrixCompileError> {
-        self.specialize_literal(
-            pattern_matrix,
-            col,
-            subject,
-            SwitchKind::Float,
-            |p| match p {
-                Pattern::Float(n) => Some(SwitchKey::FloatBits(n.to_bits())),
-                _ => None,
-            },
-        )
+    ) -> Result<NodeId, PatternMatrixCompileError> {
+        self.specialize_literal(pattern_matrix, col, subject, SwitchKind::Float, |p| match p {
+            Pattern::Float(n) => Some(SwitchKey::FloatBits(n.to_bits())),
+            _ => None,
+        })
     }
 
     fn specialize_bool(
@@ -381,17 +354,11 @@ where
         pattern_matrix: CompilePatternMatrix,
         col: usize,
         subject: SubjectRef,
-    ) -> Result<crate::exec::matcher::NodeId, PatternMatrixCompileError> {
-        self.specialize_literal(
-            pattern_matrix,
-            col,
-            subject,
-            SwitchKind::Bool,
-            |p| match p {
-                Pattern::Bool(b) => Some(SwitchKey::Bool(*b)),
-                _ => None,
-            },
-        )
+    ) -> Result<NodeId, PatternMatrixCompileError> {
+        self.specialize_literal(pattern_matrix, col, subject, SwitchKind::Bool, |p| match p {
+            Pattern::Bool(b) => Some(SwitchKey::Bool(*b)),
+            _ => None,
+        })
     }
 
     fn specialize_nil(
@@ -399,7 +366,7 @@ where
         pattern_matrix: CompilePatternMatrix,
         col: usize,
         subject: SubjectRef,
-    ) -> Result<crate::exec::matcher::NodeId, PatternMatrixCompileError> {
+    ) -> Result<NodeId, PatternMatrixCompileError> {
         self.specialize_literal(pattern_matrix, col, subject, SwitchKind::Nil, |p| match p {
             Pattern::Nil => Some(SwitchKey::Nil),
             _ => None,
@@ -411,17 +378,11 @@ where
         pattern_matrix: CompilePatternMatrix,
         col: usize,
         subject: SubjectRef,
-    ) -> Result<crate::exec::matcher::NodeId, PatternMatrixCompileError> {
-        self.specialize_literal(
-            pattern_matrix,
-            col,
-            subject,
-            SwitchKind::Binary,
-            |p| match p {
-                Pattern::Binary(bytes) => Some(SwitchKey::Utf8Binary(bytes.clone())),
-                _ => None,
-            },
-        )
+    ) -> Result<NodeId, PatternMatrixCompileError> {
+        self.specialize_literal(pattern_matrix, col, subject, SwitchKind::Binary, |p| match p {
+            Pattern::Binary(bytes) => Some(SwitchKey::Utf8Binary(bytes.clone())),
+            _ => None,
+        })
     }
 
     fn specialize_listcons(
@@ -429,8 +390,7 @@ where
         pattern_matrix: CompilePatternMatrix,
         col: usize,
         subject: SubjectRef,
-    ) -> Result<crate::exec::matcher::NodeId, PatternMatrixCompileError> {
-        use std::collections::BTreeMap;
+    ) -> Result<NodeId, PatternMatrixCompileError> {
         let mut by_key: BTreeMap<SwitchKey, Vec<Row>> = BTreeMap::new();
         let mut default_rows: Vec<Row> = Vec::new();
 
@@ -459,15 +419,12 @@ where
                         record_removed_column_bindings(&mut r, col, &subject);
                         let head = elems[0].clone();
                         let tail_pattern = if elems.len() == 1 {
-                            tail.as_deref().cloned().unwrap_or_else(|| {
-                                Spanned::new(Pattern::List(vec![], None), head.span)
-                            })
+                            tail.as_deref()
+                                .cloned()
+                                .unwrap_or_else(|| Spanned::new(Pattern::List(vec![], None), head.span))
                         } else {
                             Spanned::new(
-                                Pattern::List(
-                                    elems[1..].to_vec(),
-                                    tail.as_ref().map(|p| Box::new((**p).clone())),
-                                ),
+                                Pattern::List(elems[1..].to_vec(), tail.as_ref().map(|p| Box::new((**p).clone()))),
                                 head.span,
                             )
                         };
@@ -480,7 +437,7 @@ where
             }
         }
 
-        let mut cases: Vec<(SwitchKey, crate::exec::matcher::NodeId)> = Vec::new();
+        let mut cases: Vec<(SwitchKey, NodeId)> = Vec::new();
         for (key, mut rows) in by_key {
             for d in &default_rows {
                 let mut dr = d.clone();
@@ -548,11 +505,10 @@ where
         subject: SubjectRef,
         kind: SwitchKind,
         key_for: G,
-    ) -> Result<crate::exec::matcher::NodeId, PatternMatrixCompileError>
+    ) -> Result<NodeId, PatternMatrixCompileError>
     where
         G: Fn(&Pattern) -> Option<SwitchKey>,
     {
-        use std::collections::BTreeMap;
         let mut by_key: BTreeMap<SwitchKey, Vec<Row>> = BTreeMap::new();
         let mut default_rows: Vec<Row> = Vec::new();
         let mut other_rows: Vec<Row> = Vec::new();
@@ -574,7 +530,7 @@ where
             }
         }
 
-        let mut cases: Vec<(SwitchKey, crate::exec::matcher::NodeId)> = Vec::new();
+        let mut cases: Vec<(SwitchKey, NodeId)> = Vec::new();
         for (key, mut rows) in by_key {
             for d in &default_rows {
                 let mut dr = d.clone();

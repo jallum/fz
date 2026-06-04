@@ -1,286 +1,47 @@
 # Destination Planning
 
-Destination planning is the compiler decision that answers: where should this
-value be built or delivered? Destination passing is one lowering technique for
-that decision, used when an unpublished construction location or call context
-has to be threaded through IR or an ABI.
+Destination planning answers one question: where may a value be built before it
+is published as ordinary immutable data? The compiler knows where a value is
+going before it builds the value, so a tuple/list/map literal can construct
+directly into its target storage and freeze once, without changing language
+semantics.
 
-A destination is an unpublished construction location; an init token is the
-erased linear IR identity that proves which write/freeze operation may happen
-next. Once a destination is frozen, the result is ordinary immutable data and
-no later IR primitive may mutate it.
+The pieces that matter:
 
-## Big Idea
+- **destination primitives in `fz_ir::Prim`** — explicit IR for building a
+  tuple, list, or map through a linear init-token chain.
+- **`ir_dest`** — lowers ordinary `MakeTuple`/`MakeList`/`MakeMap`/`MapUpdate`
+  into those primitives, and verifies token/destination coherence.
+- **planner typing** (`ir_planner::type_fn`) — folds the primitives with erased
+  token facts to publish a precise value type at each freeze.
+- **codegen** — lowers the verified primitives mechanically (typed struct
+  setters, list-cons BIFs, map-dest helpers), with a static-struct fast path.
 
-The compiler should know where a value is going before it builds the value.
-When the destination is typed, construction can happen directly in that context
-without changing language semantics:
+A **destination** is an unpublished construction location. An **init token** is
+the erased linear IR identity that proves which write/freeze may happen next.
+Once a destination is frozen, the result is ordinary immutable data; no later
+primitive may mutate it.
 
-- a tuple result can be delivered as fields instead of as a temporary tuple
-  that the caller immediately projects;
-- a list prefix can be built in front of a known tail instead of built and then
-  appended;
-- a map literal or update can collect writes in unpublished storage and freeze
-  once.
+Ownership of proof is the simplifying rule: IR carries construction intent, the
+planner types it through token facts, the verifier checks token coherence, and
+codegen lowers the facts. Backend shape recognition is never the proof.
 
-The simplifying rule is ownership of proof: the planner plans destinations and
-dispatch choices, the IR carries explicit construction intent, and codegen
-lowers those facts mechanically. Backend shape recognition is not proof.
+Two adjacent mechanisms are not destination planning and own different state:
 
-There are two destination-planning families:
+- **return delivery** (`ir_planner::fn_types::ReturnContract`) describes how a
+  call edge returns; it creates no construction storage. See
+  [`dispatch-as-planner-output.md`](dispatch-as-planner-output.md).
+- **physical capabilities** such as owned-cons reuse are object-local
+  permissions on private runtime objects, carried separately from semantic
+  values.
 
-- init-token destinations in `fz_ir::Prim`, used for local tuple/list/map
-  construction;
-- return-demand destinations in `ir_planner::fn_types::ReturnDemand`, used when
-  the planner proves that a call result can be delivered into a typed context
-  without first materializing the ordinary return value.
-
-Both families keep the same ownership rule: the compiler proves a private,
-unpublished construction context, codegen lowers that context, and the
-published result remains immutable.
-
-Init tokens are not runtime values. They are compile-time facts attached to
-`InitTokenId`, in the same broad family as:
-
-- `Var -> Ty` facts in `SpecPlan.vars` and block environments.
-- `CallsiteId -> CallEdgePlan` facts in `SpecPlan.call_edges`.
-- `BlockId -> reachable/dead-branch` facts in `SpecPlan.reachable_blocks` and
-  `SpecPlan.dead_branches`.
-- `ReturnContract` facts on call edges, whose target `SpecKey.demand` selects
-  the callee variant and whose strategy describes the executable return
-  delivery.
-
-The token fact is local to `ir_planner::type_fn`; it is not persisted in
-`SpecPlan` because codegen needs only the final value type of ordinary vars.
-
-For the broader dispatch rule that made this cleanup possible, see
-[`dispatch-as-planner-output.md`](dispatch-as-planner-output.md).
-
-## Return Demand
-
-`SpecKey` includes a `ReturnDemand`. This is a typed compile-time capability,
-not a runtime side channel. The planner chooses demanded variants while walking
-specific callsites; codegen must implement the selected capability and must not
-invent a different variant by guessing from function names.
-
-`ReturnDemand` is a two-axis capability — delivery (`Value` or `TupleFields(N)`)
-crossed with context (`None` or `ListTail(tail_ty)`). The capability catalog and
-the dispatch-selection rule are canonical in
-[`dispatch-as-planner-output`](dispatch-as-planner-output.md); this doc
-covers what each capability does to construction.
-
-That demand answers one compiler question only: how the callee must deliver its
-result to the immediate continuation. It does not answer the separate question
-"what payload values can flow to halt if this chain finishes?" The payload set
-comes from declared/effective returns; halt-kind selection joins that payload
-chain separately. Using declared/effective return types as if they were the
-delivery ABI is a modelling bug: a singleton payload like `1` still rides the
-ordinary `Value` delivery seam as a boxed value ref.
-
-The central invariant is that demand follows a specific return edge/result
-hole, not the whole caller spec. A caller spec can contain more than one call,
-and different calls in that spec can have different return uses. The durable
-facts are:
-
-- `SpecPlan.call_edges`, keyed by `CallsiteId`, records the typed return-use
-  fact and any executable return-context plan for each call edge.
-  The return-context plans are present when a return-use fact needs lowering.
-  The current concrete plans are ListTail plans: direct continuation delivery,
-  nested cons-then-direct ListTail calls, tuple-field/list-tail continuation
-  bridges, tail calls that forward a destination, and value-context
-  continuations that use an empty hidden tail.
-
-The caller `SpecKey` on a return-context plan is part of the proof. The same
-syntactic callsite can be visited under multiple return contexts, so plan
-operands must come from the current caller specialization rather than from a
-callsite-only table or backend continuation capture order.
-
-Return-context proof helpers live in `ir_planner::return_context`; the discovery
-walker in `ir_planner::walk` should only call those helpers and record the
-resulting facts. Keep new list-tail or tuple-field analyses in that helper
-module unless they truly change traversal or worklist ownership.
-
-Rendered forms and what each builds:
-
-- `Value` is the ordinary material return.
-- `TupleFields(N)` means a tuple result is delivered to the continuation as
-  `N` Tail-CC values. This removes the tuple struct allocation for shapes such
-  as `partition(...) -> {lo, hi}` when the continuation immediately projects
-  the fields.
-- `ListTail(tail_ty)` means the native callee receives a hidden physical list
-  tail destination. Returning `[]` delivers that destination directly; returning
-  a list literal builds its cons cells in front of the destination.
-- `TupleFields(N)` delivery can compose with `ListTail(tail_ty)` context: the
-  continuation receives tuple fields and also carries an appended hidden
-  list-tail capture. This is rendered as
-  `tuple_fields(N, list_tail(tail_ty))`.
-
-`TupleFields(N)` is an input-delivery capability for the continuation that
-immediately consumes the callee result. It does not leak through that
-continuation into tail calls made with a captured outer continuation: at that
-boundary the tuple-field proof has ended, so tail-call planning collapses the
-tuple-field portion back to material `Value` delivery while preserving any
-independently-proven `ListTail` context.
-
-ListTail is the first typed return-context instance. For the source shape:
-
-```text
-append(qsort(lo), [pivot | qsort(hi)])
-```
-
-the demanded native path executes the equivalent context:
-
-```text
-hi_tail = qsort_into(hi, outer_tail)
-pivot_tail = [pivot | hi_tail]
-qsort_into(lo, pivot_tail)
-```
-
-This follows the FP2/TRMReC idea of making the evaluation context explicit and
-defunctionalized, but it does not use destructive in-place mutation. Every cons
-cell is still allocated as an immutable BEAM-style list cell on the owning
-process heap; destination planning only chooses the tail that the new cells point
-at.
-
-Plain source-level structural code remains ordinary source code. The
-`fixtures/append` fixture pins:
-
-```text
-append([1, 2, 3], [4, 5])
-```
-
-as a source `append/2` function, not an append BIF. Its native value path
-allocates five cons cells: exactly the two input list literals. The copied
-prefix is removed by owned-cons reuse rather than by a special append helper.
-That fixture is an allocation baseline for library algorithms;
-`fixtures/quicksort` is the return-context baseline that proves ListTail
-context planning removes append-shaped rebuilding around recursive calls.
-
-Return-context motion is legal only when the planner can prove that moving work
-does not cross an observable barrier. The current gates reject contexts that
-contain extern calls, scheduler-visible operations, receives, closure calls,
-allocation-stats readers such as `Process.heap_alloc_stats()`, or halt.
-Allocation by itself is not source-observable, but
-allocation becomes observable in the presence of allocation-stat reads.
-
-The pinned evidence is `fixtures/quicksort`: native JIT/AOT output keeps
-`list_cons_allocs = 11`, `list_cons_bytes = 176`, `struct_allocs = 0`, and
-headline `heap_bytes = 176`.
-
-`fixtures/enum_sort` is the constant-callable return-demand baseline. The
-default comparator is a zero-capture closure created inside the runtime library,
-then threaded through `sort_list`, `fn_clause_2`, and `merge_sort_lists` under
-both ordinary value demand and `ListTail` demand. Callable identity is
-demand-independent: when the value is `KnownFn(F)` in every specialization and
-the validation pass proves every occurrence is pure pass-through,
-constant-closure elimination removes that dead parameter from the return-demand
-specs as well, so the sorter never stays in a continuation frame to trip the
-lazy-continuation materialization gate.
-
-The native JIT/AOT evidence for `enum_sort` keeps `list_cons_allocs = 22`,
-`closure_allocs = 0`, `scalar_box_allocs = 0`, and headline `heap_bytes = 352`.
-Its static CLIF gate asserts that `sort_list`/`fn_clause_2`/`merge_sort_lists`
-carry no constant-sorter signature (`&fn43[]`) and heap-allocate no
-sorter-carrying continuations.
-
-## Physical Capabilities
-
-Some facts the planner records are not about source values at all: they are
-object-local permissions on private runtime objects — chiefly owned-cons reuse.
-A physical capability must not affect semantic specialization. `src/ir_effects/mod.rs`
-classifies operation effects — whether an operation allocates, observes
-allocation, is externally observable, reaches the scheduler, or halts — and
-planner return-context barriers and capability validation read that classifier
-rather than carrying their own publication rules. Lowering records the
-capability, effect classification validates it, DCE and capture normalization
-(`ir_dce`, `ir_capture_norm`) preserve or drop it, and codegen lowers what
-remains. The model is never repaired in codegen.
-
-Owned-cons reuse eliminates the copied prefix. Multi-clause list destructuring
-records a physical capability from a projected head back to the original source
-cons cell. The source slot is not a source value and is not modeled as an
-ignored semantic parameter. The spec dump exposes the capability:
-
-```text
-physical_capabilities:
-  owned_cons_source param=Var(C) head=Var(H)
-```
-
-The physical parameter is not part of semantic specialization (`_` in the spec
-key), but it gives native codegen the object-local capability needed to turn
-`[h | new_tail]` into a reuse attempt for `C`. Native lowering consumes the
-fact through one helper for `MakeList`, `DestListCons`, and `cons_then_direct`
-ListTail return plans. That helper emits `fz_list_reuse_or_cons_tail_ref`.
-The runtime alias bit remains the cell-local guard: if `C` is still unaliased,
-the helper relinks it in place; if `C` was marked aliased, the helper allocates
-a fresh cons with the same head and the requested tail. An aliased reuse
-attempt is therefore an allocation miss, not a user-visible panic.
-
-A source cons becomes ineligible for an owned reuse capability, or has its alias
-bit set before reuse, when it is published outside the single owned rewrite path.
-The publication barriers include closure and lazy-continuation capture that can
-escape the current native activation, insertion into another heap container,
-receive/scheduler-visible same-heap handoff, a non-tail call whose continuation
-retains the same argument, halt, and allocation-stat reads that make allocation
-timing observable.
-Allocation alone is still not source-observable; crossing an observer is the
-barrier.
-
-Extern calls are not alias-publication boundaries for their arguments. An
-extern that wants to retain a value after returning must copy it.
-
-Send is different from same-heap publication. The runtime deep-copies messages
-for cross-process send and self-send, so the sender's current-process cons
-cells do not become aliased merely because they were sent. The destination
-message graph is fresh in its heap; copied list cells must have clear alias
-bits even if the source cells were already marked aliased.
-
-### Layers and capability plumbing
-
-The model layers cleanly: **semantic values** carry program meaning;
-**physical capabilities** carry object-local permissions such as owned-cons
-reuse; **effect facts** say when an operation allocates, observes allocation, is
-externally observable, reaches the scheduler, or halts; and
-codegen consumes validated facts mechanically. `src/ir_effects/mod.rs` owns
-operation effect classification, so planner return-context barriers and
-capability validation read one classifier rather than re-deriving publication
-rules.
-
-The capability rides the existing IR machinery rather than a bespoke lane:
-
-- `src/fz_ir/mod.rs` exposes `physical_capabilities` as the destination for
-  object-local capabilities, `physical_entry_params` for entry slots that carry
-  physical facts (not semantic source values), and `ignored_entry_params` only for
-  source wildcard holes.
-- `src/ir_lower/cps.rs` transports `owned_cons_captures` through ordinary
-  continuation-capture machinery; owned-cons source slots are physical
-  params, not ignored semantic params.
-- `src/ir_dce/mod.rs` owns capability liveness — live heads keep their source-cons
-  params; dead heads drop the capability.
-- `src/ir_capture_norm/mod.rs` rewrites capture shapes and relies on DCE to preserve or
-  drop capability payloads.
-- `src/ir_codegen/support.rs` lowers the surviving fact through
-  `emit_owned_cons_reuse_or_alloc`.
-
-The standalone reuse-pruning pass and duplicate owned-cons capability lane have
-been removed: codegen reads reusable source objects straight from
-`physical_capabilities`, and semantic specialization ignores only the entry params
-listed in `physical_entry_params`.
-
-### Pinned signal
-
-These native allocation floors stay green; a regression means the capability was
-dropped on the floor (numbers verified against the fixture budgets):
-
-```text
-quicksort native:             list_cons_allocs = 11,  closure_allocs = 0
-enum_list_allocations native: list_cons_allocs = 5,   closure_allocs = 1
-enum_reduce_suspend native:                           closure_allocs = 1
-```
+[`single-authoritative-plan.md`](single-authoritative-plan.md) covers the
+one-plan pipeline rule that destination lowering plugs into.
 
 ## IR Vocabulary
 
-`fz_ir::Prim` owns the destination operations:
+`fz_ir::Prim` owns the destination operations. Each `Stmt::Let` binds either a
+destination handle, a dead unit marker, a fresh cons, or the published value.
 
 - `DestTupleBegin { token, arity }` allocates an unpublished tuple destination
   and defines the first token.
@@ -291,32 +52,35 @@ enum_reduce_suspend native:                           closure_allocs = 1
 - `DestListBegin { token }` defines the first token for a destination-built
   list chain.
 - `DestListCons { token, head, tail, next }` consumes one token, constructs one
-  cons cell from `head` and a known tail, and defines the next token.
-  `tail = None` means the empty-list sentinel.
+  cons cell from `head` and a known `tail` (`tail: None` is the empty-list
+  sentinel), and defines the next token.
 - `DestListFreeze { list, token }` consumes the final list token and publishes
   the built list.
 - `DestMapBegin { token, base, extra }` allocates an unpublished map
-  destination. `base` seeds it from an existing immutable map for update-shaped
-  construction; `extra` is the number of additional key/value writes.
+  destination; `base` seeds it from an existing map, `extra` is the entry count.
 - `DestMapPut { map, token, key, value, next }` consumes one token, sets one
-  key/value pair in the unpublished map destination, and defines the next
-  token.
+  key/value pair, and defines the next token.
 - `DestMapFreeze { map, token }` consumes the final map token, canonicalizes
-  the map ordering/deduplication, and publishes the immutable map value.
+  ordering and deduplicates keys, and publishes the immutable map.
 
 ## Lowering
 
-`ir_dest::lower_tuple_destinations` rewrites each surviving `MakeTuple` to:
+`ir_dest::lower_destinations` runs all three rewrites. Each rewrites a surviving
+construction prim into a begin / set-or-cons / freeze chain over fresh vars and
+fresh tokens.
+
+`lower_tuple_destinations` rewrites each `MakeTuple`:
 
 ```text
 dest = DestTupleBegin(tok0, arity=N)
-_    = DestTupleSet(dest, tok0, field=0, value=v0, next=tok1)
+_    = DestTupleSet(dest, tok0, index=0, value=v0, next=tok1)
 ...
 out  = DestFreeze(dest, tokN)
 ```
 
-`ir_dest::lower_list_destinations` rewrites each surviving non-empty
-`MakeList` from right to left:
+`lower_list_destinations` rewrites each non-empty `MakeList` from right to left,
+so each cons sees its already-built tail; empty-list literals stay the
+empty-list sentinel:
 
 ```text
 _  = DestListBegin(tok0)
@@ -325,10 +89,8 @@ c0 = DestListCons(tok1, head=a, tail=c1, next=tok2)
 xs = DestListFreeze(c0, tok2)
 ```
 
-Empty-list literals remain the empty-list sentinel.
-
-`ir_dest::lower_map_destinations` rewrites each surviving `MakeMap` or
-`MapUpdate` to:
+`lower_map_destinations` rewrites each `MakeMap` and `MapUpdate` (the update's
+`base` becomes `DestMapBegin`'s `base`):
 
 ```text
 m0  = DestMapBegin(tok0, base=base_or_none, extra=N)
@@ -337,122 +99,263 @@ _   = DestMapPut(m0, tok0, key=k0, value=v0, next=tok1)
 out = DestMapFreeze(m0, tokN)
 ```
 
-Runtime freeze preserves duplicate-key last-write-wins semantics while keeping
-the published map canonical.
+Lowering runs inside the codegen driver, after the planner has selected the
+executable body, so init-token ownership stays local to the lowered body handed
+to codegen. The driver re-runs the planner's type resolution and
+`materialize_program` on the already-lowered module.
 
 ## Verification
 
-`ir_dest::verify_module` owns structural correctness:
+`ir_dest::verify_module` owns structural correctness over the lowered IR and
+runs in the codegen driver right after lowering.
+
+Token coherence is checked for tuple, list, and map chains alike:
 
 - token definitions are unique;
 - each token is consumed at most once;
-- tuple fields are in bounds and written at most once;
-- tuple freeze requires every field to be initialized;
-- tuple destinations are not written after freeze.
+- a token is consumed only after it is defined.
 
-Tuple verifier transitions are factored through shared helpers in
-`src/ir_dest.rs`; the planner uses those same transition helpers with `Ty`
-payloads so verifier and planner do not drift.
+Tuple destinations carry additional shape checks:
+
+- fields are in bounds and written at most once;
+- freeze requires every field to be initialized;
+- a frozen destination is not written again;
+- every begun destination is eventually frozen.
+
+The tuple-state transitions (`define_init_token`, `consume_init_token`,
+`begin_tuple_dest`, `set_tuple_dest_field`, `freeze_tuple_dest`) live in
+`src/ir_dest/mod.rs` and are generic over a field payload. The verifier
+instantiates them with `()`; the planner instantiates the same helpers with `Ty`
+payloads, so verifier and typer cannot drift on what a legal chain looks like.
 
 ## Typing
 
-`ir_planner::type_fn` folds destination statements with erased token facts before
-falling back to ordinary `type_prim` handling.
+`ir_planner::type_fn` types a function through a fixpoint; the per-statement
+helper `type_let_with_init_facts` folds destination primitives with erased token
+facts and falls back to `type_prim` for everything else. The token facts (init
+tokens, tuple-dest states, per-token list and map value types) are local to that
+fold — they are not stored in `SpecPlan`, because downstream consumers need only
+the final value type of ordinary vars.
 
-Tuple token facts carry initialized field slots. `DestFreeze` publishes
-`Types::tuple(fields)` from the complete token fact, not from the opaque
-destination handle type. This is what prevents tuple DP from turning
-`partition(...) -> {lo, hi}` into `any`.
+What each freeze publishes:
 
-List token facts carry the current list value type. `DestListCons` still binds
-the cons var to the precise non-empty list type, and `DestListFreeze` publishes
-the token fact with a value-type fallback for malformed IR.
+- **Tuple.** The tuple-dest state accumulates each field's `Ty`. `DestFreeze`
+  publishes `tuple(fields)` from the complete state, not from the opaque
+  destination handle type.
+- **List.** A per-token fact carries the current list value type. `DestListCons`
+  unions the head type with the tail's element type and binds the cons var to a
+  precise non-empty list type; `DestListFreeze` publishes the token fact, with a
+  fall back to the handle's type for malformed IR.
+- **Map.** A per-token fact carries the current map value type. `DestMapBegin`
+  seeds it from `base` or `map(&[])`. `DestMapPut` refines a static key with
+  `var_as_map_key` + `refine_map_field`; a dynamic key widens to `map_top()`.
+  `DestMapFreeze` publishes the token fact.
 
-Map token facts carry the current map value type. `DestMapBegin` seeds the fact
-from `base` or `Types::map(&[])`; `DestMapPut` refines static keys with
-`var_as_map_key` and `Types::refine_map_field`; dynamic keys widen to
-`map_top()`. `DestMapFreeze` publishes the token fact.
+Malformed destination IR does not panic the planner: each fold checks its token
+transitions and falls back conservatively, leaving diagnostics to the verifier.
+Verified codegen never sees malformed IR. `type_prim` also has conservative
+destination arms (handle/element lookups) used when destinations are typed
+without the token-fact context.
 
-Malformed destination IR should not panic the planner. Verified codegen should
-not see malformed IR, but the planner falls back conservatively (`any`, `nil`, or
-the visible value type) and leaves diagnostics to the verifier.
+## Return Delivery Boundary
 
-## Runtime And GC
+`SpecKey` is `{ fn_id, input, demand }`. The semantic body identity is
+`BodyKey` (`fn_id` + `input`); `demand` (a `ReturnDemand`) selects the return
+ABI, not a different value payload. Demand is part of the spec identity, so the
+same `BodyKey` reached with two different demands — a `tuple_fields` reach and a
+`value` reach of one helper — materializes as two distinct native bodies, like
+two type specializations. `materialize_program` lowers one body per spec and
+does not merge demand siblings, because merging would force one return ABI onto
+callers that asked for the other.
 
-`ir_codegen` lowers tuple field writes through typed struct setters when local
-representation facts prove raw int, float, or atom lanes. List destinations
-lower to typed list-cons BIFs. Map destinations lower through
-`fz_map_dest_begin`, `fz_map_dest_put_*`, and `fz_map_dest_freeze`; these helper
-names are destination operations, not a separate language-level construction
-model.
+The executable call-edge fact is `ReturnContract { target: SpecKey, strategy:
+ReturnStrategy }`. The strategies are:
+
+- `Value` — ordinary material return;
+- `TupleFields(N)` — the producer returns the `N` fields of an `N`-tuple in
+  registers, skipping the struct box;
+- `ForwardedDemand(demand)` — a tail-call edge forwards the caller's demand.
+
+`ReturnDemand` itself carries `delivery: ReturnDelivery`, and `ReturnDelivery`
+has exactly two shapes: `Value` and `TupleFields(usize)`. There is no list-tail
+delivery shape. Recursive list construction needs none: the CPS→native lowering
+builds the list *forward* with an O(1) continuation (tail-recursion-modulo-cons)
+for every list builder, and owned-cons reuse recycles input cells for same-head
+builders.
+
+Codegen lowers only planner-authored contracts. It does not create alternate
+spec bodies, probe for them, or infer destination arguments from continuation
+captures.
+
+### How `TupleFields` is granted
+
+`TupleFields(N)` is legal when a destructuring continuation projects exactly the
+`N` fields of its result and the producer returns an `N`-tuple on every path.
+Both halves are cached per-fn in `ReturnCapability`:
+
+- `returns_tuple_of_arity: Option<usize>` — every return path delivers a tuple
+  of one arity (a `MakeTuple` or a frozen destination tuple), conjunctive across
+  `Return`s and tail-call targets;
+- `destructures_slot0_into_arity: Option<usize>` — the fn is a continuation
+  whose slot-0 input is consumed purely by projecting all `N` fields, never used
+  whole.
+
+`capabilities::compute_return_capabilities` computes the whole
+`ReturnCapabilities` (`HashMap<FnId, ReturnCapability>`) once over the static
+call graph as greatest fixpoints (start optimistic, retract on a conflicting
+path), and stores it on `ModulePlan`. The grant in `return_context.rs` reads it
+in O(1) per call edge and never re-walks bodies. The shape is forwarded through
+tail-recursive producers, so it survives the whole chain — quicksort's
+`partition` and its clause helpers all deliver `tuple_fields(2)`, erasing the
+`{lo, hi}` struct box.
+
+## Physical Capabilities
+
+Some planner facts are not source values: they are object-local permissions on
+private runtime objects. The only one is owned-cons reuse.
+
+The model layers cleanly so a physical fact never perturbs semantic
+specialization:
+
+- **semantic values** carry program meaning;
+- **physical capabilities** carry object-local permissions (owned-cons reuse);
+- **effect facts** (`EffectSummary`) say when an operation allocates, observes
+  allocation, is externally observable, reaches the scheduler, halts, or reaches
+  an opaque call. `ir_planner::effects::prim_effects` in `src/ir_planner/effects.rs`
+  is the single operation effect classification, so capability validation and
+  planner barriers read one source rather than a parallel publication rule or a
+  standalone reuse-pruning pass and duplicate owned-cons capability lane.
+
+`PhysicalCapability::OwnedConsReuse { head }` lets native codegen turn
+`[h | new_tail]` into a reuse attempt for a source cons it owns, eliminating a
+copied prefix. The capability is stored as a `PhysicalCapabilityFact { source,
+capability }` on `FnIr::physical_capabilities`; the source slot rides an entry
+parameter listed in `FnIr::physical_entry_params`. The planner spec dump renders
+it as:
+
+```text
+physical_capabilities:
+  owned_cons_source param=Var(C) head=Var(H)
+```
+
+The source slot is not a semantic parameter. `semantic_key` skips both
+`physical_entry_params` and `ignored_entry_params` (the latter are source `_`
+wildcard holes), so specialization keys ignore the physical slot by
+construction.
+
+The capability rides existing IR machinery:
+
+- `src/fz_ir/mod.rs` exposes `physical_capabilities`, `physical_entry_params`,
+  and `ignored_entry_params`, plus the builder/query helpers
+  (`record_owned_cons_reuse_capability`, `owned_cons_reuse_source_for_head`).
+- `src/ir_lower/cps.rs` transports `owned_cons_captures` through ordinary
+  continuation-capture machinery; the source slots become physical
+  params, not ignored semantic params.
+- `src/ir_dce/mod.rs` owns liveness: live heads keep their source-cons param; a
+  dead head drops the capability and its orphaned physical param.
+- `src/ir_capture_norm/mod.rs` rewrites capture shapes and relies on DCE to
+  preserve or drop the payload.
+- `src/ir_codegen/support.rs` lowers the surviving fact through
+  `emit_owned_cons_reuse_or_alloc`; codegen consumes validated facts and reads
+  the reusable source straight from `physical_capabilities`.
+
+### Runtime guard
+
+The runtime alias bit is the cell-local guard, checked at the reuse attempt by
+`Heap::reuse_or_alloc_list_cons_tail`:
+
+- if the source cons `C` is unaliased, `relink_tail_if_unaliased` rewrites its
+  tail in place and returns the same cell;
+- if `C` is aliased, the runtime takes the fallback path and allocates a fresh cons
+  with the same head and the requested tail.
+
+An aliased reuse attempt is an allocation miss, not a panic.
+
+Same-heap publication of a source cons sets the alias bit before reuse, by
+walking the cons chain and marking each cell aliased
+(`Heap::mark_published_ref_aliased`). Codegen emits this mark wherever a value
+is published into long-lived heap state: a tuple field store, a closure or
+continuation capture, or a map `put_ref`. Two boundaries are deliberately *not*
+publications:
+
+- **send.** The runtime deep-copies messages for cross-process and self-send, so
+  the sender's current-process cells do not become aliased merely by being sent.
+- **extern calls.** Extern arguments are not aliased; an extern that retains a
+  value after returning must copy it.
+
+## Codegen And Runtime
+
+Codegen lowers each destination primitive directly.
+
+- **Tuple field writes** go through typed struct setters — `struct_set_field`
+  picks the int, float, or atom setter when the value's representation proves a
+  raw lane, else the ref setter (which publishes first).
+- **List destinations** lower to typed list-cons BIFs;
+  `emit_owned_cons_reuse_or_alloc` routes a head with a reuse capability through
+  `fz_list_reuse_or_cons_tail_ref`.
+- **Map destinations** lower through `fz_map_dest_begin`, `fz_map_dest_put_*`,
+  and `fz_map_dest_freeze`. These are destination operations, not a separate
+  language-level construction model. Freeze keeps duplicate-key last-write-wins
+  while publishing a canonical (sorted, deduped) map.
+
+The interpreter executes destination primitives directly when handed
+already-lowered IR (`DestTupleBegin` allocates a struct, `DestTupleSet` writes a
+slot, `DestFreeze` returns the struct, and the list/map prims build through the
+same runtime helpers). It does not run the destination-lowering pass itself —
+only the codegen driver does. So `fz interp` and the scripted REPL fixture legs
+are direct-IR baselines.
+
+### Static aggregate storage
+
+For a tuple whose fields are all known statically, codegen avoids the heap
+entirely. `DestTupleBegin` records a `PendingStaticTupleDest` instead of
+allocating. While walking the `DestTupleSet` chain:
+
+- a compile-time scalar or read-only static-struct field is recorded into the
+  pending slot;
+- the first dynamic field forces materialization: codegen allocates the heap
+  struct, replays the recorded static fields through the struct setters, and
+  continues on the heap path.
+
+At `DestFreeze`, a still-pending destination emits one schema-valid static
+struct data symbol and returns a `ValueKind::STRUCT` ref to it; a materialized
+one returns the heap struct. This is a storage representation choice for
+already-proven construction. It infers no new construction permission and does
+not rewrite the plan.
+
+### GC
 
 All destination storage lives in the process-private heap. GC safety comes from
-ordinary roots: if a destination-built value is live across a call, receive, or
-yield, it must be in normal frame/closure continuation state. Init tokens are
-compile-time proof only; they are not scheduler state, closure captures, or
-heap words.
+ordinary roots: a destination-built value live across a call, receive, or yield
+must be in normal frame, closure, or continuation state. Init tokens are
+compile-time proof only — never scheduler state, closure captures, or heap
+words.
 
-Native continuations may be represented by stack-backed lazy descriptors while
-execution stays synchronous. That does not change destination ownership:
-destination facts still come from the planner, and a descriptor is materialized
-into a normal closure before it can become scheduler-visible or heap-captured.
-See
+Native continuations may be stack-backed lazy descriptors while execution stays
+synchronous; this does not change destination ownership. A descriptor is
+materialized into a normal closure before it can become scheduler-visible or
+heap-captured. See
 [`lazy-continuation-materialization.md`](lazy-continuation-materialization.md).
 
-## Policy
+## Policy And Pinned Signal
 
-Destination semantics live in the IR, not only in codegen. Construction intent
-is visible in IR, verified, and typed through erased token facts. The native
-JIT/AOT paths run `ir_dest::lower_destinations` before codegen. The `fz interp`
-and scripted REPL fixture legs are direct-IR baselines: they execute destination
-primitives when handed already-lowered IR, but the CLI interpreter does not run
-the destination-lowering pass itself.
+Destination semantics live in IR, not only in codegen: construction intent is
+visible, verified, and typed before any backend sees it. Native JIT/AOT paths
+run `ir_dest::lower_destinations` before codegen; the interpreter runs already
+lowered IR. Codegen never manufactures destination or demand facts. A new
+destination shape must be exposed in the data model, validated by the planner
+consistency harness, and observed through telemetry before codegen consumes it.
 
-ReturnDemand is planner output, not a backend heuristic. The executable call
-edge fact is `ReturnContract`: it pairs the target `SpecKey` with the return
-strategy that makes that demand legal. `SpecKey.demand` is the variant selector
-inside that contract, not a standalone backend instruction. Codegen lowers only
-planner-authored contracts; it does not create a new demand variant, probe
-demanded sibling specs, or infer demand from backend closure/capture shapes.
-Concretely:
+Allocation floors pin that the optimizations hold; a regression means a
+capability was dropped. The native (JIT/AOT) `expected` fixtures pin:
 
-- `ReturnDemand` is two-axis (`delivery` × `context`). Tuple-field delivery with
-  a ListTail context is one value of that pair, built by the
-  `tuple_fields_list_tail` constructor — there is no separate
-  `TupleFieldsListTail` variant.
-- `src/ir_codegen` does not mutate dispatch keys (`key.demand = …`); the planner
-  authors demand.
-- `src/ir_codegen/terminator.rs` constructs no demanded sibling `SpecKey`s and
-  reads ListTail context from the planner's `ReturnContract` payload rather
-  than by indexing `continuation.captured[…]`.
+```text
+quicksort:             list_cons_allocs = 11,  closure_allocs = 0  (176 bytes)
+enum_list_allocations: list_cons_allocs = 5,   closure_allocs = 1
+enum_reduce_suspend:                            closure_allocs = 1
+```
 
-Continuation functions carry two demand facts. Their `SpecKey.demand` tells the
-producer how to deliver the continuation input payload. Their own `Return`
-terminator sends a new result to the outer continuation captured in `self`, so
-native codegen uses the outer return shape there. A reducer continuation may
-receive `{:cont, acc}` as `tuple_fields(2)`, but when it returns
-`{:halted, acc}` to the caller of `reduce`, that return is a normal value unless
-the outer caller requested a list-tail destination. Reusing input delivery for
-that outer return shifts the ABI lanes.
-
-Destination lowering runs after the optimizer passes, which keeps init-token
-ownership local to executable IR. Lowering before the optimizer would force
-every inliner and rewriter to remap init tokens correctly.
-
-Pre-DP fact merging stays precise: it preserves each constructor's narrower
-pre-lowering type per var through the lowered IR's token facts. Broadly merging
-same-function facts instead would attach facts to specs that DCE does not emit.
-
-## Proof Gates
-
-Use these gates when touching destination planning:
-
-- `cargo test ir_dest`
-- `cargo test ir_planner`
-- `cargo test tuple`
-- `cargo test list`
-- `cargo test map`
-- `cargo test --test fixture_matrix quicksort`
-- `cargo test --test fixture_matrix append`
-- `cargo test --test fixture_matrix dump_budgets`
-- `cargo clippy --workspace --all-targets -- -D warnings`
+Quicksort reaches its floor with eleven input conses and zero struct or closure
+allocations — `tuple_fields(2)` erases the partition struct box, and forward
+list-build plus owned-cons reuse keep cons allocation minimal — with no
+list-tail delivery anywhere.

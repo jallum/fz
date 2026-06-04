@@ -26,11 +26,16 @@ pub mod scheduler_hooks;
 pub mod sync;
 pub mod timer;
 
+use crate::process::Process;
+use any_value::debug::render_value;
+use any_value::{AnyValue, AnyValueRef};
+use std::process::abort;
+
 // ---------------------------------------------------------------------------
 // C-ABI builtins called from compiled fz code
 // ---------------------------------------------------------------------------
 
-pub(crate) fn emit_print_line(process: *mut crate::process::Process, s: String) {
+pub(crate) fn emit_print_line(process: *mut Process, s: String) {
     println!("{}", s);
     // Beyond production stdout, forward the line to the running task's telemetry
     // sink as an observation channel. The sink + callback live on the task's
@@ -50,14 +55,11 @@ pub(crate) fn emit_print_line(process: *mut crate::process::Process, s: String) 
 /// Aborts with the fz value rendered to stderr.
 #[unsafe(no_mangle)]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn fz_panic(process: *mut crate::process::Process, msg_ref: u64) -> ! {
-    let value = any_value::AnyValueRef::from_raw_word(msg_ref)
+pub extern "C" fn fz_panic(process: *mut Process, msg_ref: u64) -> ! {
+    let value = AnyValueRef::from_raw_word(msg_ref)
         .ok()
-        .and_then(|value| any_value::AnyValue::from_ref(value).ok())
-        .unwrap_or(any_value::AnyValue::null());
-    eprintln!(
-        "fz panic: {}",
-        any_value::debug::render_value(process, value)
-    );
-    std::process::abort();
+        .and_then(|value| AnyValue::from_ref(value).ok())
+        .unwrap_or(AnyValue::null());
+    eprintln!("fz panic: {}", render_value(process, value));
+    abort();
 }

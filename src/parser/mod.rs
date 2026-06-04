@@ -2,13 +2,17 @@ pub(crate) mod lexer;
 
 use self::lexer::{Tok, Token};
 use crate::ast::*;
-use crate::diag::Span;
+use crate::diag::{Diagnostic, Span, codes::PARSE_EXPECTED_TOKEN};
+use crate::telemetry::{Metadata, Telemetry, value::opaque};
+use std::collections::HashMap;
+use std::fmt::{self, Display, Formatter};
+use std::mem::discriminant;
 use std::rc::Rc;
 
 fn flush_fn_groups(
     items: &mut Vec<Rc<Item>>,
     order: &mut Vec<(String, usize)>,
-    groups: &mut std::collections::HashMap<(String, usize), FnDef>,
+    groups: &mut HashMap<(String, usize), FnDef>,
 ) {
     for key in order.drain(..) {
         if let Some(def) = groups.remove(&key) {
@@ -30,8 +34,8 @@ pub enum ParseErrorKind {
     Incomplete,
 }
 
-impl std::fmt::Display for ParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for ParseError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         // Plain-text fallback. The .20.6 renderer is the proper rendering
         // path; `to_diagnostic` is what the driver calls.
         write!(f, "parse error: {}", self.msg)
@@ -63,12 +67,8 @@ impl ParseError {
     /// every parse error to `parse/expected-token`; later passes can
     /// refine to specific codes (duplicate-doc, unknown-attribute, …)
     /// at each call site once `self.err(..)` learns to pick codes.
-    pub fn to_diagnostic(&self) -> crate::diag::Diagnostic {
-        crate::diag::Diagnostic::error(
-            crate::diag::codes::PARSE_EXPECTED_TOKEN,
-            self.msg.clone(),
-            self.span,
-        )
+    pub fn to_diagnostic(&self) -> Diagnostic {
+        Diagnostic::error(PARSE_EXPECTED_TOKEN, self.msg.clone(), self.span)
     }
 }
 
@@ -99,7 +99,7 @@ pub struct Parser {
     /// fz-g58.2.3b — non-fatal diagnostics gathered during the parse. Emitted
     /// to telemetry by `parse_program_with_telemetry`; dropped on the plain
     /// `parse_program` path (warnings are observability, not control flow).
-    warnings: Vec<crate::diag::Diagnostic>,
+    warnings: Vec<Diagnostic>,
 }
 
 type PR<T> = Result<T, ParseError>;
@@ -109,6 +109,24 @@ const ITEMS_BUILT_NAME: &[&str] = &["fz", "parser", "items_built"];
 /// Diagnostic events under the `[fz, diag]` prefix are rendered by the
 /// telemetry `DiagRenderer`; `warning` is the severity leaf.
 const DIAG_WARNING_NAME: &[&str] = &["fz", "diag", "warning"];
+
+/// Canonical name for operator-headed functions and specs.
+fn operator_token_name(t: &Tok) -> Option<&'static str> {
+    Some(match t {
+        Tok::Plus => "+",
+        Tok::Minus => "-",
+        Tok::Star => "*",
+        Tok::Slash => "/",
+        Tok::Percent => "%",
+        Tok::EqEq => "==",
+        Tok::NotEq => "!=",
+        Tok::Lt => "<",
+        Tok::LtEq => "<=",
+        Tok::Gt => ">",
+        Tok::GtEq => ">=",
+        _ => return None,
+    })
+}
 
 impl Parser {
     pub fn new(toks: Vec<Token>) -> Self {
@@ -124,7 +142,7 @@ impl Parser {
 
     /// Record a non-fatal diagnostic. Surfaced via telemetry on the
     /// `parse_program_with_telemetry` path; otherwise collected and dropped.
-    fn warn(&mut self, diag: crate::diag::Diagnostic) {
+    fn warn(&mut self, diag: Diagnostic) {
         self.warnings.push(diag);
     }
 
@@ -162,10 +180,7 @@ impl Parser {
     /// Whether trivia immediately precedes the token at `pos + off` (so the
     /// parser can read inter-token spacing for no-parens / dual-op decisions).
     fn space_before_at(&self, off: usize) -> bool {
-        self.toks
-            .get(self.pos + off)
-            .map(|t| t.space_before)
-            .unwrap_or(false)
+        self.toks.get(self.pos + off).map(|t| t.space_before).unwrap_or(false)
     }
 
     // --- token helpers ---
@@ -174,10 +189,7 @@ impl Parser {
         &self.toks[self.pos].tok
     }
     fn peek_at(&self, off: usize) -> &Tok {
-        self.toks
-            .get(self.pos + off)
-            .map(|t| &t.tok)
-            .unwrap_or(&Tok::Eof)
+        self.toks.get(self.pos + off).map(|t| &t.tok).unwrap_or(&Tok::Eof)
     }
     fn cur_span(&self) -> Span {
         self.toks[self.pos].span
@@ -218,7 +230,7 @@ impl Parser {
         }
     }
     fn at(&self, t: &Tok) -> bool {
-        std::mem::discriminant(self.peek()) == std::mem::discriminant(t)
+        discriminant(self.peek()) == discriminant(t)
     }
     fn bump_keyword_key(&mut self) -> PR<Spanned<String>> {
         let span = self.cur_span();
@@ -297,24 +309,18 @@ impl Parser {
         })
     }
 
-    pub fn parse_program_with_telemetry(
-        &mut self,
-        tel: &dyn crate::telemetry::Telemetry,
-    ) -> PR<Program> {
+    pub fn parse_program_with_telemetry(&mut self, tel: &dyn Telemetry) -> PR<Program> {
         use crate::telemetry::TelemetryExt;
 
-        let _span = tel.span(PARSE_PASS_NAME, crate::telemetry::Metadata::new());
+        let _span = tel.span(PARSE_PASS_NAME, Metadata::new());
         let prog = self.parse_program()?;
         tel.execute(
             ITEMS_BUILT_NAME,
             &crate::measurements! { count: prog.items.len() },
-            &crate::telemetry::Metadata::new(),
+            &Metadata::new(),
         );
         for diag in self.warnings.drain(..) {
-            tel.event(
-                DIAG_WARNING_NAME,
-                crate::metadata! { diagnostic: crate::telemetry::value::opaque(&diag) },
-            );
+            tel.event(DIAG_WARNING_NAME, crate::metadata! { diagnostic: opaque(&diag) });
         }
         Ok(prog)
     }
@@ -322,7 +328,7 @@ impl Parser {
     /// Like `parse_program` but allows top-level `@type` declarations
     /// (and returns them separately). Used for the built-in runtime.fz
     /// prelude, which is not wrapped in a `defmodule`.
-    pub fn parse_prelude(&mut self) -> PR<(Vec<Rc<Item>>, Vec<crate::ast::Attribute>)> {
+    pub fn parse_prelude(&mut self) -> PR<(Vec<Rc<Item>>, Vec<Attribute>)> {
         let (items, attrs) = self.parse_items_until(&[Tok::Eof])?;
         Ok((items, attrs))
     }
@@ -333,4 +339,4 @@ mod items;
 mod patterns;
 
 #[cfg(test)]
-mod tests;
+mod parser_test;

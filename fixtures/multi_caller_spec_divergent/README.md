@@ -1,17 +1,17 @@
 ---
 purpose: "fz-uwq.4 regression — divergent dispatch across two caller specs of the same higher-order fn"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 1
-budget.codegen.instructions: 10
-budget.specs.count: 3
-budget.planner.worklist_pops: 3
-budget.planner.walk_calls: 3
-budget.planner.type_fn_calls: 3
+budget.codegen.functions: 6
+budget.codegen.instructions: 67
+budget.specs.count: 6
+budget.planner.worklist_pops: 8
+budget.planner.walk_calls: 8
+budget.planner.type_fn_calls: 8
 budget.planner.matcher_specs: 0
-budget.planner.vars: 17
-budget.planner.blocks: 3
-budget.planner.stmts: 10
-budget.planner.dispatches: 0
+budget.planner.vars: 18
+budget.planner.blocks: 6
+budget.planner.stmts: 8
+budget.planner.dispatches: 4
 ---
 
 # multi_caller_spec_divergent

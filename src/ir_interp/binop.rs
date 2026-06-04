@@ -1,6 +1,9 @@
 use super::*;
 use crate::fz_ir::{BinOp, Const, FnId, UnOp};
-use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind};
+use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind, closure_captured_count, closure_fn_ptr};
+use fz_runtime::ir_runtime::{fz_closure_get_capture_ref, fz_value_eq_ref};
+use fz_runtime::process::Process;
+use std::ptr::null_mut;
 
 pub(super) fn const_to_interp(c: &Const) -> AnyValue {
     match c {
@@ -13,12 +16,7 @@ pub(super) fn const_to_interp(c: &Const) -> AnyValue {
     }
 }
 
-pub(super) fn eval_binop(
-    proc: *mut fz_runtime::process::Process,
-    op: BinOp,
-    a: AnyValue,
-    b: AnyValue,
-) -> Result<AnyValue, String> {
+pub(super) fn eval_binop(proc: *mut Process, op: BinOp, a: AnyValue, b: AnyValue) -> Result<AnyValue, String> {
     macro_rules! int_arith {
         ($op:tt) => {
             match (a.as_i64(), b.as_i64()) {
@@ -60,34 +58,22 @@ pub(super) fn eval_unop(op: UnOp, a: AnyValue) -> Result<AnyValue, String> {
         UnOp::Neg => match a {
             AnyValue::Int(value) => Ok(AnyValue::Int(-value)),
             AnyValue::Float(value) => Ok(AnyValue::Float(-value)),
-            _ => Err(format!("`-` on {}", a.render(std::ptr::null_mut()))),
+            _ => Err(format!("`-` on {}", a.render(null_mut()))),
         },
         UnOp::Not => Ok(interp_bool_value(!is_truthy(a))),
     }
 }
 
-pub(super) fn interp_value_eq(
-    proc: *mut fz_runtime::process::Process,
-    a: AnyValue,
-    b: AnyValue,
-) -> Result<bool, String> {
+pub(super) fn interp_value_eq(proc: *mut Process, a: AnyValue, b: AnyValue) -> Result<bool, String> {
     match (a, b) {
         (AnyValue::Null, AnyValue::Null) => Ok(true),
         (AnyValue::Int(a), AnyValue::Int(b)) => Ok(a == b),
-        (AnyValue::Int(_), AnyValue::Float(_)) | (AnyValue::Float(_), AnyValue::Int(_)) => {
-            Ok(false)
-        }
+        (AnyValue::Int(_), AnyValue::Float(_)) | (AnyValue::Float(_), AnyValue::Int(_)) => Ok(false),
         (AnyValue::Float(a), AnyValue::Float(b)) => Ok(a == b),
         (AnyValue::Atom(a), AnyValue::Atom(b)) => Ok(a == b),
         (AnyValue::EmptyList, AnyValue::EmptyList) => Ok(true),
-        (AnyValue::Ref(a), AnyValue::Ref(b)) => {
-            Ok(fz_runtime::ir_runtime::fz_value_eq_ref(proc, a.raw_word(), b.raw_word()) != 0)
-        }
-        (a, b) => Ok(fz_runtime::ir_runtime::fz_value_eq_ref(
-            proc,
-            a.as_ref_word(proc)?,
-            b.as_ref_word(proc)?,
-        ) != 0),
+        (AnyValue::Ref(a), AnyValue::Ref(b)) => Ok(fz_value_eq_ref(proc, a.raw_word(), b.raw_word()) != 0),
+        (a, b) => Ok(fz_value_eq_ref(proc, a.as_ref_word(proc)?, b.as_ref_word(proc)?) != 0),
     }
 }
 
@@ -98,14 +84,21 @@ pub(super) fn unpack_closure(v: RuntimeAnyValue) -> Result<(FnId, Vec<AnyValue>)
         .then(|| v.heap_addr())
         .flatten()
         .ok_or_else(|| format!("call_closure on non-closure value: {:?}", v))?;
-    let fn_id = FnId(unsafe { fz_runtime::any_value::closure_fn_ptr(p) } as u32);
-    let cap_count = unsafe { fz_runtime::any_value::closure_captured_count(p) };
+    let fn_id = FnId(unsafe { closure_fn_ptr(p) } as u32);
+    let cap_count = unsafe { closure_captured_count(p) };
     let closure_ref = v.ref_word().raw_word();
     let captured: Vec<AnyValue> = (0..cap_count)
         .map(|i| {
-            let value = fz_runtime::ir_runtime::fz_closure_get_capture_ref(closure_ref, i as u64);
+            let value = fz_closure_get_capture_ref(closure_ref, i as u64);
             interp_value_from_ref_word(value, "call_closure capture")
         })
         .collect::<Result<_, _>>()?;
     Ok((fn_id, captured))
+}
+
+pub(super) fn unpack_callable(v: AnyValue, proc: *mut Process) -> Result<(FnId, Vec<AnyValue>), String> {
+    match v {
+        AnyValue::FnRef(fn_id) => Ok((fn_id, Vec::new())),
+        other => unpack_closure(other.value(proc)?),
+    }
 }

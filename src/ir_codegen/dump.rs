@@ -3,7 +3,10 @@
 #![allow(unused_imports)]
 
 use super::*;
-use crate::fz_ir::{BinOp, Const, FnId, Module, Prim, Stmt, Term, UnOp};
+use crate::fz_ir::{BinOp, Const, FnId, FnIr, Module, Prim, Stmt, Term, UnOp};
+use crate::ir_planner::SpecPlan;
+use crate::ir_planner::fn_types::{ReturnDemand, display_return_demand};
+use crate::types::{RenderTypes, Ty, Types, ty_display};
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
     self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
@@ -14,7 +17,7 @@ use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
+use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule, ModuleDeclarations};
 use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -32,15 +35,13 @@ pub(crate) fn cranelift_body_stats(func: &ir::Function) -> (usize, usize) {
 /// Build the per-fn header block that precedes annotated CLIF: typer's
 /// param/return types alongside codegen's ArgReprs. Disagreement between
 /// the two reveals where seam coercion lands.
-pub(crate) fn build_typer_header<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes,
->(
+pub(crate) fn build_typer_header<T: Types<Ty = Ty> + RenderTypes>(
     t: &mut T,
-    f: &crate::fz_ir::FnIr,
-    ft: &crate::ir_planner::SpecPlan,
-    spec_key: &[crate::types::Ty],
-    demand: &crate::ir_planner::fn_types::ReturnDemand,
-    effective_return: &crate::types::Ty,
+    f: &FnIr,
+    ft: &SpecPlan,
+    spec_key: &[Ty],
+    demand: &ReturnDemand,
+    effective_return: &Ty,
     param_reprs: &[ArgRepr],
     return_repr: ArgRepr,
 ) -> String {
@@ -48,15 +49,11 @@ pub(crate) fn build_typer_header<
     let entry_params = &f.block(f.entry).params;
     let typer_params: Vec<String> = entry_params
         .iter()
-        .map(|v| {
-            ft.vars
-                .get(v)
-                .map_or_else(|| "?".to_string(), |d| t.display(d))
-        })
+        .map(|v| ft.vars.get(v).map_or_else(|| "?".to_string(), |d| t.display(d)))
         .collect();
     // `@spec` reports the same effective return that drives `@abi` and
     // the cont's slot-0 keying (`module_plan.effective_returns`).
-    // Halt-only specs converge to `none` in the LFP; render those as `_`.
+    // Halt-only specs project to `none`; render those as `_`.
     let none = t.none();
     let return_str = if t.is_subtype(effective_return, &none) {
         "_".to_string()
@@ -68,13 +65,11 @@ pub(crate) fn build_typer_header<
             ArgRepr::ValueRef => "ValueRef",
             ArgRepr::RawInt => "RawInt",
             ArgRepr::RawF64 => "RawF64",
+            ArgRepr::RawAtom => "RawAtom",
             ArgRepr::Condition => "Condition",
         }
     };
-    let codegen_params: Vec<String> = param_reprs
-        .iter()
-        .map(|r| codegen_repr(r).to_string())
-        .collect();
+    let codegen_params: Vec<String> = param_reprs.iter().map(|r| codegen_repr(r).to_string()).collect();
     let key_params: Vec<String> = spec_key.iter().map(|key| t.display(key)).collect();
     let mut out = String::new();
     let _ = writeln!(
@@ -85,11 +80,7 @@ pub(crate) fn build_typer_header<
         return_str
     );
     let _ = writeln!(out, ";   @key    [{}]", key_params.join(", "));
-    let _ = writeln!(
-        out,
-        ";   @demand {}",
-        crate::ir_planner::fn_types::display_return_demand(&*t, demand)
-    );
+    let _ = writeln!(out, ";   @demand {}", display_return_demand(&*t, demand));
     let _ = writeln!(
         out,
         ";   @abi    ({}) -> {}",
@@ -113,7 +104,7 @@ pub(crate) fn build_typer_header<
 /// each block-param with its type inline.
 pub(crate) fn annotate_clif_dump(
     raw: &str,
-    value_tys: &HashMap<u32, crate::types::Ty>,
+    value_tys: &HashMap<u32, Ty>,
     func_names: &HashMap<u32, String>,
     header: &str,
 ) -> String {
@@ -139,13 +130,7 @@ pub(crate) fn annotate_clif_dump(
             && rest.split_once(' ').map(|x| x.1.starts_with('=')).unwrap_or(false)
             && let Some(ty) = value_tys.get(&id)
         {
-            let _ = writeln!(
-                out,
-                "{}    ;; v{} :: {}",
-                resolved.trim_end(),
-                id,
-                crate::concrete_types::ty_display(ty)
-            );
+            let _ = writeln!(out, "{}    ;; v{} :: {}", resolved.trim_end(), id, ty_display(ty));
             continue;
         }
         let _ = writeln!(out, "{}", resolved);
@@ -156,9 +141,7 @@ pub(crate) fn annotate_clif_dump(
 // Snapshot every declared function's linkage name keyed by FuncId. Used
 // by the CLIF dumper to swap `u0:N` numeric refs for `@<name>` symbolic
 // refs that survive additions of unrelated runtime helpers.
-pub(crate) fn snapshot_func_names(
-    decls: &cranelift_module::ModuleDeclarations,
-) -> HashMap<u32, String> {
+pub(crate) fn snapshot_func_names(decls: &ModuleDeclarations) -> HashMap<u32, String> {
     decls
         .get_functions()
         .map(|(id, d)| (id.as_u32(), d.linkage_name(id).into_owned()))
@@ -209,10 +192,7 @@ pub(crate) fn resolve_user_func_refs(line: &str, func_names: &HashMap<u32, Strin
 /// Inline-annotate the `(vN: ty, ...)` portion of a block header with the
 /// IR type of each param. Skips params whose value-id is absent from
 /// `value_tys`.
-pub(crate) fn annotate_block_header(
-    line: &str,
-    value_tys: &HashMap<u32, crate::types::Ty>,
-) -> String {
+pub(crate) fn annotate_block_header(line: &str, value_tys: &HashMap<u32, Ty>) -> String {
     // Append a trailing `; vN :: ty, vM :: ty` comment AFTER the
     // existing line, leaving the original CLIF text intact.
     let Some(open) = line.find('(') else {
@@ -233,11 +213,7 @@ pub(crate) fn annotate_block_header(
             && let Ok(id) = id_str.trim().parse::<u32>()
             && let Some(ty) = value_tys.get(&id)
         {
-            notes.push(format!(
-                "v{} :: {}",
-                id,
-                crate::concrete_types::ty_display(ty)
-            ));
+            notes.push(format!("v{} :: {}", id, ty_display(ty)));
         }
     }
     if notes.is_empty() {

@@ -8,9 +8,10 @@
 //! so `handle` is a single code path with no match arm.
 
 use std::cell::RefCell;
-use std::io::Write;
+use std::io::{Write, stderr};
 use std::rc::Rc;
 
+use crate::diag::Diagnostic;
 use crate::diag::render::Renderer as DiagRenderImpl;
 use crate::diag::source_map::SourceMap;
 use crate::diag::style::ColorMode;
@@ -29,18 +30,14 @@ impl DiagRenderer {
     pub fn new_stderr(sm: Rc<RefCell<SourceMap>>) -> Self {
         Self {
             sm,
-            writer: RefCell::new(Box::new(std::io::stderr())),
+            writer: RefCell::new(Box::new(stderr())),
             color: ColorMode::Auto,
         }
     }
 
     /// Render to an arbitrary writer with the given color mode.
     /// Tests usually pass a `Vec<u8>` and `ColorMode::Never`.
-    pub fn new_to_writer<W: Write + 'static>(
-        sm: Rc<RefCell<SourceMap>>,
-        w: W,
-        color: ColorMode,
-    ) -> Self {
+    pub fn new_to_writer<W: Write + 'static>(sm: Rc<RefCell<SourceMap>>, w: W, color: ColorMode) -> Self {
         Self {
             sm,
             writer: RefCell::new(Box::new(w)),
@@ -54,7 +51,7 @@ impl Handler for DiagRenderer {
         let Some(d) = ev
             .metadata
             .get("diagnostic")
-            .and_then(|v| v.downcast_ref::<crate::diag::Diagnostic>())
+            .and_then(|v| v.downcast_ref::<Diagnostic>())
         else {
             return;
         };
@@ -75,118 +72,5 @@ impl Handler for DiagRenderer {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::diag::diagnostic::{DiagCode, Diagnostic, Diagnostics};
-    use crate::diag::render::Renderer;
-    use crate::diag::span::Span;
-    use crate::metadata;
-    use crate::telemetry::bus::ConfiguredTelemetry;
-    use crate::telemetry::sink::Telemetry;
-
-    fn fixture() -> (Rc<RefCell<SourceMap>>, crate::diag::span::FileId) {
-        let mut sm = SourceMap::new();
-        let fid = sm.add_file("test.fz", "fn main(), do: :ok\n");
-        (Rc::new(RefCell::new(sm)), fid)
-    }
-
-    #[test]
-    fn renders_warning_identically_to_render_to_string() {
-        let (sm, fid) = fixture();
-        let (buf, w) = crate::telemetry::capture::vec_writer();
-        let t = ConfiguredTelemetry::new();
-        t.attach(
-            &["fz", "diag"],
-            Box::new(DiagRenderer::new_to_writer(sm.clone(), w, ColorMode::Never)),
-        );
-
-        let d = Diagnostic::warning(
-            DiagCode("test/warning"),
-            "test warning",
-            Span::new(fid, 0, 2),
-        )
-        .with_label("here");
-        t.event(
-            &["fz", "diag", "warning"],
-            metadata! { diagnostic: crate::telemetry::value::opaque(&d) },
-        );
-
-        let actual = String::from_utf8(buf.borrow().clone()).unwrap();
-        let expected = render_diagnostics_to_string(&sm.borrow(), &Diagnostics::from_one(d));
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn renders_error_identically_to_render_to_string() {
-        let (sm, fid) = fixture();
-        let (buf, w) = crate::telemetry::capture::vec_writer();
-        let t = ConfiguredTelemetry::new();
-        t.attach(
-            &["fz", "diag"],
-            Box::new(DiagRenderer::new_to_writer(sm.clone(), w, ColorMode::Never)),
-        );
-
-        let d = Diagnostic::error(DiagCode("test/error"), "test error", Span::new(fid, 3, 7))
-            .with_note("first note")
-            .with_help("did you mean foo?");
-        t.event(
-            &["fz", "diag", "error"],
-            metadata! { diagnostic: crate::telemetry::value::opaque(&d) },
-        );
-
-        let actual = String::from_utf8(buf.borrow().clone()).unwrap();
-        let expected = render_diagnostics_to_string(&sm.borrow(), &Diagnostics::from_one(d));
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn ignores_events_without_diagnostic_metadata() {
-        let (sm, _fid) = fixture();
-        let (buf, w) = crate::telemetry::capture::vec_writer();
-        let t = ConfiguredTelemetry::new();
-        t.attach(
-            &["fz"],
-            Box::new(DiagRenderer::new_to_writer(sm, w, ColorMode::Never)),
-        );
-        t.emit(&["fz", "lex", "tokens_built"]);
-        assert!(buf.borrow().is_empty());
-    }
-
-    #[test]
-    fn multiple_diagnostics_concatenate_in_order() {
-        let (sm, fid) = fixture();
-        let (buf, w) = crate::telemetry::capture::vec_writer();
-        let t = ConfiguredTelemetry::new();
-        t.attach(
-            &["fz", "diag"],
-            Box::new(DiagRenderer::new_to_writer(sm.clone(), w, ColorMode::Never)),
-        );
-
-        let d1 = Diagnostic::warning(DiagCode("a/1"), "first", Span::new(fid, 0, 1));
-        let d2 = Diagnostic::error(DiagCode("a/2"), "second", Span::new(fid, 2, 3));
-        t.event(
-            &["fz", "diag", "warning"],
-            metadata! { diagnostic: crate::telemetry::value::opaque(&d1) },
-        );
-        t.event(
-            &["fz", "diag", "error"],
-            metadata! { diagnostic: crate::telemetry::value::opaque(&d2) },
-        );
-
-        let mut ds = Diagnostics::new();
-        ds.push(d1);
-        ds.push(d2);
-        let expected = render_diagnostics_to_string(&sm.borrow(), &ds);
-        let actual = String::from_utf8(buf.borrow().clone()).unwrap();
-        assert_eq!(actual, expected);
-    }
-
-    fn render_diagnostics_to_string(sm: &SourceMap, diags: &Diagnostics) -> String {
-        let renderer = Renderer::new(sm).with_color_disabled();
-        let mut out = Vec::new();
-        for diag in diags.as_slice() {
-            renderer.emit(diag, &mut out).unwrap();
-        }
-        String::from_utf8(out).unwrap()
-    }
-}
+#[path = "diag_render_test.rs"]
+mod diag_render_test;

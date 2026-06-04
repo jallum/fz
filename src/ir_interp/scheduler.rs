@@ -1,8 +1,16 @@
 use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use fz_runtime::heap::{Heap, deep_copy_any_value_ref};
+use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, ProcessState};
 
 use super::*;
+use crate::exec::matcher::Matcher;
 use crate::fz_ir::{FnId, Module};
-use crate::types::Types;
+use crate::ir_planner::fn_types::SpecKey;
+use crate::telemetry::Telemetry;
+use crate::types::{Ty, Types};
 
 // ===== Interp-internal scheduler (fz-ul4.23.5.8 / fz-sched.3) =====
 //
@@ -13,40 +21,33 @@ use crate::types::Types;
 //
 // Scheduling model (fz-sched.3): cooperative run-queue, BEAM-correct.
 // Builtin::Spawn enqueues the child and returns immediately; the parent
-// continues its own quantum. Term::Receive parks the task (InterpStep::Blocked)
-// if the mailbox is empty; the scheduler records the resume state and moves on.
-// interp_send flips a Blocked receiver to Ready, prepends the message to its
-// resume args, and re-enqueues it. run_main drives the loop until the queue
-// is empty.
-//
-// Limitation: Blocked propagates as an error through non-tail call sites
-// (Term::Call / Term::CallClosure). In practice all fixture receive sites are
-// in tail position inside spawned fns, so this doesn't matter yet.
+// continues its own quantum. Selective receive parks the task
+// (InterpStep::BlockedMatched) if no mailbox message matches; the scheduler
+// records the park record and moves on. `interp_send` probes a parked receiver
+// inline and wakes it on the first matcher hit. `run_main` drives the loop
+// until the queue is empty.
 
-/// Returned by run_fn to signal either completion or a receive-park.
+/// Returned by run_fn to signal either completion or a selective-receive park.
 pub(super) enum InterpStep {
     Done(AnyValue),
+    Halt(AnyValue),
     /// Task yielded cooperatively at a scheduler-safe back edge. The next
     /// quantum resumes by calling `resume_fn(args...)`, then drains `after`
     /// continuations exactly like a receive resume.
     Yielded {
         resume_fn: FnId,
         resume_args: Vec<AnyValue>,
-        after: Vec<(FnId, Vec<AnyValue>)>,
+        resume_spec: Option<SpecKey>,
+        after: Vec<InterpContinuation>,
         remaining_reductions: i32,
         reason: u8,
     },
-    /// Task parked on receive. `resume_fn(msg, cap_vals...)` is called when
-    /// the message arrives. `after` is a chain of (fn_id, caps) continuations
-    /// to call in order with each successive return value — built up when
-    /// Blocked propagates through Term::Call frames.
-    Blocked(FnId, Vec<AnyValue>, Vec<(FnId, Vec<AnyValue>)>),
     /// fz-yxs/fz-2v3 — task parked on a selective `receive do … end`. The
     /// park record snapshots every clause's pattern + body / guard FnId
     /// plus the pinned ^name and capture AnyValues from the receive site
     /// so that `interp_send` can probe new messages without recreating
     /// any of that state.
-    BlockedMatched(ParkRecord, Vec<(FnId, Vec<AnyValue>)>),
+    BlockedMatched(ParkRecord, Vec<InterpContinuation>),
 }
 
 /// fz-yxs/fz-2v3 — interp park record for a selective receive.
@@ -58,7 +59,7 @@ pub(super) enum InterpStep {
 #[derive(Clone)]
 pub(super) struct ParkRecord {
     pub(super) clauses: Vec<MatchedClause>,
-    pub(super) matcher: std::sync::Arc<crate::exec::matcher::Matcher>,
+    pub(super) matcher: Arc<Matcher>,
     pub(super) pinned: HashMap<String, AnyValue>,
     pub(super) captures: Vec<AnyValue>,
 }
@@ -77,16 +78,15 @@ impl IrInterpRuntime {
         pid
     }
 
-    pub(super) fn send<T: Types<Ty = crate::types::Ty>>(
+    pub(super) fn send<T: Types<Ty = Ty>>(
         &mut self,
         t: &mut T,
         module: &Module,
-        tel: &dyn crate::telemetry::Telemetry,
+        tel: &dyn Telemetry,
         receiver_pid: u32,
         msg: AnyValue,
     ) -> Result<(), String> {
-        use fz_runtime::process::ProcessState;
-        let sender_heap = &unsafe { &*self.cur_proc() }.heap as *const fz_runtime::heap::Heap;
+        let sender_heap = &unsafe { &*self.cur_proc() }.heap as *const Heap;
         // fz-yxs/fz-2v3 — sender-side probe for selective receive. If the
         // receiver is parked on a Term::ReceiveMatched, run the parked
         // matcher inline against the new message; on a hit, set up the
@@ -110,7 +110,7 @@ impl IrInterpRuntime {
                     let body = park.clauses[idx].body;
                     let mut args = bound_vals;
                     args.extend(park.captures.iter().copied());
-                    self.resume.insert(receiver_pid, (body, args, after_chain));
+                    self.resume.insert(receiver_pid, (body, args, None, after_chain));
                     self.set_process_state(receiver_pid, ProcessState::Ready);
                     self.run_queue.push_back(receiver_pid);
                     return Ok(());
@@ -120,13 +120,9 @@ impl IrInterpRuntime {
                     self.parked.insert(receiver_pid, (park, after_chain));
                     let msg_ref = msg.as_any_value_ref(self.cur_proc())?;
                     if let Some(task) = self.tasks.get_mut(&receiver_pid) {
-                        let mut forwarding = std::collections::HashMap::new();
-                        let copied = fz_runtime::heap::deep_copy_any_value_ref(
-                            msg_ref,
-                            unsafe { &*sender_heap },
-                            &mut task.heap,
-                            &mut forwarding,
-                        );
+                        let mut forwarding = HashMap::new();
+                        let copied =
+                            deep_copy_any_value_ref(msg_ref, unsafe { &*sender_heap }, &mut task.heap, &mut forwarding);
                         task.mailbox.push_back(copied);
                     } else {
                         tel.event(
@@ -148,16 +144,10 @@ impl IrInterpRuntime {
             return Ok(());
         };
 
-        let mut forwarding = std::collections::HashMap::new();
-        let copied = fz_runtime::heap::deep_copy_any_value_ref(
-            msg_ref,
-            unsafe { &*sender_heap },
-            &mut task.heap,
-            &mut forwarding,
-        );
+        let mut forwarding = HashMap::new();
+        let copied = deep_copy_any_value_ref(msg_ref, unsafe { &*sender_heap }, &mut task.heap, &mut forwarding);
         if task.state == ProcessState::Blocked {
-            let copied_msg =
-                AnyValue::from_any_value_ref(copied).expect("copied interpreter message ref");
+            let copied_msg = AnyValue::from_any_value_ref(copied).expect("copied interpreter message ref");
             if let Some(entry) = self.resume.get_mut(&receiver_pid) {
                 entry.1.insert(0, copied_msg);
             }
@@ -171,35 +161,31 @@ impl IrInterpRuntime {
 
     /// Spawn a new task: enqueue it and return its pid immediately.
     /// The child runs in a later scheduler quantum, not in the parent's.
-    pub(crate) fn spawn(
-        &mut self,
-        module: &Module,
-        fn_id: FnId,
-        args: Vec<AnyValue>,
-    ) -> Result<u32, String> {
-        use fz_runtime::process::ProcessState;
+    pub(crate) fn spawn(&mut self, _module: &Module, fn_id: FnId, args: Vec<AnyValue>) -> Result<u32, String> {
         let pid = self.next_pid();
         let user_schemas = self.schemas();
         // Child shares the interpreter's node (same atom table) by Rc clone.
-        let node = std::rc::Rc::clone(&self.node);
-        let consts = fz_runtime::process::CompiledModuleConsts::empty();
+        let node = Rc::clone(&self.node);
+        let consts = CompiledModuleConsts::empty();
         let mut child = Box::new(Process::from_consts(
             node,
             user_schemas,
             &consts,
             pid,
-            fz_runtime::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
+            DEFAULT_REDUCTIONS_PER_QUANTUM,
         ));
         // Per-spawn scheduler state: enqueued ready to run in a later quantum.
         child.state = ProcessState::Ready;
         self.insert_task(pid, child);
         let parent_ptr = self.current_proc;
-        let image = (!parent_ptr.is_null())
+        let Some(image) = (!parent_ptr.is_null())
             .then(|| unsafe { (*parent_ptr).pid })
             .and_then(|parent_pid| self.task_code_image(parent_pid))
-            .unwrap_or_else(|| std::rc::Rc::new(CodeImage::new(module)));
+        else {
+            return Err("spawn: current process has no interpreter code image".to_string());
+        };
         self.set_task_code_image(pid, image);
-        self.enqueue_resume(pid, (fn_id, args, vec![]));
+        self.enqueue_resume(pid, (fn_id, args, None, vec![]));
         Ok(pid)
     }
 }

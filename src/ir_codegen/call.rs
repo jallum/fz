@@ -18,6 +18,9 @@ pub(crate) fn emit_halt_for_binding<M: cranelift_module::Module>(
         ArgRepr::RawF64 => {
             body.halt_implicit(ArgRepr::RawF64, binding.value());
         }
+        ArgRepr::RawAtom => {
+            body.halt_implicit(ArgRepr::RawAtom, binding.value());
+        }
         ArgRepr::ValueRef | ArgRepr::Condition => {
             let value_ref = body.any_ref_for_var(var_env, var);
             body.halt_implicit(ArgRepr::ValueRef, value_ref);
@@ -36,6 +39,9 @@ pub(crate) fn emit_halt_from_codegen_value<M: cranelift_module::Module>(
         CodegenValue::RawF64(value) => {
             body.halt_implicit(ArgRepr::RawF64, value);
         }
+        CodegenValue::RawAtom(value) => {
+            body.halt_implicit(ArgRepr::RawAtom, value);
+        }
         value => {
             let value_ref = body.value_as_any_ref(value);
             body.halt_implicit(ArgRepr::ValueRef, value_ref);
@@ -47,9 +53,9 @@ pub(crate) fn emit_halt_from_codegen_value<M: cranelift_module::Module>(
 /// Otherwise write `val` to cont_frame[24] (continuation's "result" slot —
 /// always entry param 0) and return cont_ptr.
 ///
-/// `frame_ptr` is `Option` because native fns don't have a frame; the
-/// natively_callable invariant guarantees this helper is never reached
-/// from a native fn body. Unwrapping with `.expect()` turns any future
+/// `frame_ptr` is `Option` because native-tier fns don't have a frame; the
+/// planned ABI facts guarantee this helper is never reached from a native fn
+/// body. Unwrapping with `.expect()` turns any future
 /// invariant break into a loud panic at codegen time rather than a
 /// silent load-from-zero.
 pub(crate) fn emit_return<M: cranelift_module::Module>(
@@ -57,8 +63,7 @@ pub(crate) fn emit_return<M: cranelift_module::Module>(
     frame_ptr: Option<ir::Value>,
     value: CodegenValue,
 ) {
-    let frame_ptr = frame_ptr
-        .expect("emit_return reached from native-fn body — natively_callable invariant violated");
+    let frame_ptr = frame_ptr.expect("emit_return reached from native-fn body — planned ABI invariant violated");
     let cont_ptr = body
         .b
         .ins()
@@ -71,9 +76,7 @@ pub(crate) fn emit_return<M: cranelift_module::Module>(
     let halt_blk = body.b.create_block();
     let invoke_blk = body.b.create_block();
     let no_args: Vec<BlockArg> = Vec::new();
-    body.b
-        .ins()
-        .brif(is_null, halt_blk, &no_args, invoke_blk, &no_args);
+    body.b.ins().brif(is_null, halt_blk, &no_args, invoke_blk, &no_args);
 
     // halt: record the strict value and return null (reusing `zero`).
     body.b.switch_to_block(halt_blk);
@@ -115,8 +118,7 @@ pub(crate) fn emit_call<M: cranelift_module::Module>(
     args: &[CodegenValue],
     cont: Option<(u32, &[CodegenValue])>,
 ) {
-    let frame_ptr = frame_ptr
-        .expect("emit_call reached from native-fn body — natively_callable invariant violated");
+    let frame_ptr = frame_ptr.expect("emit_call reached from native-fn body — planned ABI invariant violated");
     // Read my cont_ptr from current frame[16] — this becomes the cont frame's cont_ptr.
     let my_cont = body
         .b
@@ -173,9 +175,7 @@ pub(crate) fn emit_tail_call<M: cranelift_module::Module>(
     callee_id: u32,
     args: &[CodegenValue],
 ) {
-    let frame_ptr = frame_ptr.expect(
-        "emit_tail_call reached from native-fn body — natively_callable invariant violated",
-    );
+    let frame_ptr = frame_ptr.expect("emit_tail_call reached from native-fn body — planned ABI invariant violated");
     let callee_schema = &schemas[callee_id as usize];
 
     if self_id == callee_id {

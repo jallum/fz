@@ -39,11 +39,13 @@ pub enum ImpureError {
     Term(ImpureTerm),
 }
 
+use crate::fz_ir::{Prim, Stmt, Term};
+
 /// True iff `p` is in the pure-codegen subset. See module-level comment
 /// for the rationale; see `docs/receive-matched.md §2.3` for the design
 /// constraint this enforces.
-pub fn prim_is_pure(p: &crate::fz_ir::Prim) -> Result<(), ImpureKind> {
-    use crate::fz_ir::Prim::*;
+pub fn prim_is_pure(p: &Prim) -> Result<(), ImpureKind> {
+    use Prim::*;
     match p {
         Const(_)
         | BinOp(_, _, _)
@@ -61,6 +63,7 @@ pub fn prim_is_pure(p: &crate::fz_ir::Prim) -> Result<(), ImpureKind> {
         | BitReadField { .. }
         | BitReaderDone(_)
         | TypeTest(_, _)
+        | MakeFnRef(_, _)
         | Brand(_, _) => Ok(()),
 
         MakeTuple(_) => Err(ImpureKind::Allocates("MakeTuple")),
@@ -81,13 +84,12 @@ pub fn prim_is_pure(p: &crate::fz_ir::Prim) -> Result<(), ImpureKind> {
         MakeBitstring(_) => Err(ImpureKind::Allocates("MakeBitstring")),
         ConstBitstring(_, _) => Err(ImpureKind::Allocates("ConstBitstring")),
 
-        Extern(_, _) => Err(ImpureKind::Extern),
+        Extern(..) => Err(ImpureKind::Extern),
     }
 }
 
 /// Walk every Let-bound Prim in `stmts`; first offender wins.
-pub fn check_pure_codegen(stmts: &[crate::fz_ir::Stmt]) -> Result<(), ImpureError> {
-    use crate::fz_ir::Stmt;
+pub fn check_pure_codegen(stmts: &[Stmt]) -> Result<(), ImpureError> {
     for (i, s) in stmts.iter().enumerate() {
         let Stmt::Let(_, p) = s;
         prim_is_pure(p).map_err(|kind| ImpureError::Stmt { index: i, kind })?;
@@ -96,14 +98,14 @@ pub fn check_pure_codegen(stmts: &[crate::fz_ir::Stmt]) -> Result<(), ImpureErro
 }
 
 /// Only Goto / If / Return are allowed in matcher / guard lowering.
-pub fn check_pure_term(term: &crate::fz_ir::Term) -> Result<(), ImpureError> {
-    use crate::fz_ir::Term::*;
+pub fn check_pure_term(term: &Term) -> Result<(), ImpureError> {
+    use Term::*;
     match term {
         Goto(_, _) | If { .. } | Return(_) => Ok(()),
         Call { .. } | TailCall { .. } | CallClosure { .. } | TailCallClosure { .. } => {
             Err(ImpureError::Term(ImpureTerm::Call))
         }
-        Receive { .. } | ReceiveMatched { .. } => Err(ImpureError::Term(ImpureTerm::Receive)),
+        ReceiveMatched { .. } => Err(ImpureError::Term(ImpureTerm::Receive)),
         Halt(_) => Err(ImpureError::Term(ImpureTerm::Halt)),
     }
 }
@@ -111,7 +113,13 @@ pub fn check_pure_term(term: &crate::fz_ir::Term) -> Result<(), ImpureError> {
 #[cfg(test)]
 mod purity_tests {
     use super::*;
-    use crate::fz_ir::{BinOp, BlockId, BranchOrigin, Const, ExternId, Prim, Stmt, Term, Var};
+    use crate::diag::Span;
+    use crate::diag::codes::TYPE_IMPURE_MATCHER;
+    use crate::fz_ir::{
+        BinOp, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, ExternId, FnBuilder, FnCategory, FnId, Module, Prim,
+        Stmt, Term, Var,
+    };
+    use crate::ir_planner::diagnostics::check_matcher_purity;
     use crate::types::Types;
 
     fn v(n: u32) -> Var {
@@ -153,7 +161,7 @@ mod purity_tests {
 
     #[test]
     fn pure_type_test_accepted() {
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = crate::types::new();
         let stmts = vec![s(Prim::TypeTest(v(1), Box::new(t.int())))];
         assert!(check_pure_codegen(&stmts).is_ok());
     }
@@ -217,7 +225,7 @@ mod purity_tests {
     #[test]
     fn extern_rejected_even_if_harmless() {
         assert!(matches!(
-            check_pure_codegen(&[s(Prim::Extern(ExternId(0), vec![]))]),
+            check_pure_codegen(&[s(Prim::Extern(CallsiteIdent::synthetic(), ExternId(0), vec![],))]),
             Err(ImpureError::Stmt {
                 kind: ImpureKind::Extern,
                 ..
@@ -262,8 +270,7 @@ mod purity_tests {
         ));
     }
 
-    fn build_module_with_matcher(extra_let: Option<Prim>, term: Term) -> crate::fz_ir::Module {
-        use crate::fz_ir::{FnBuilder, FnCategory, FnId, Module};
+    fn build_module_with_matcher(extra_let: Option<Prim>, term: Term) -> Module {
         let mut m = Module::default();
         let fid = FnId(100);
         let mut b = FnBuilder::new(fid, "match_x").with_category(FnCategory::Matcher);
@@ -281,33 +288,29 @@ mod purity_tests {
 
     #[test]
     fn matcher_purity_accepts_pure_router() {
-        let module =
-            build_module_with_matcher(Some(Prim::Const(Const::Int(0))), Term::Return(v(0)));
-        let diags = crate::ir_planner::check_matcher_purity(&module);
-        assert!(
-            diags.is_empty(),
-            "pure matcher should produce no diags: {:?}",
-            diags
-        );
+        let module = build_module_with_matcher(Some(Prim::Const(Const::Int(0))), Term::Return(v(0)));
+        let diags = check_matcher_purity(&module);
+        assert!(diags.is_empty(), "pure matcher should produce no diags: {:?}", diags);
     }
 
     #[test]
     fn matcher_purity_rejects_extern_stmt() {
-        let module =
-            build_module_with_matcher(Some(Prim::Extern(ExternId(0), vec![])), Term::Return(v(0)));
-        let diags = crate::ir_planner::check_matcher_purity(&module);
+        let module = build_module_with_matcher(
+            Some(Prim::Extern(CallsiteIdent::synthetic(), ExternId(0), vec![])),
+            Term::Return(v(0)),
+        );
+        let diags = check_matcher_purity(&module);
         assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].code, crate::diag::codes::TYPE_IMPURE_MATCHER);
+        assert_eq!(diags[0].code, TYPE_IMPURE_MATCHER);
         assert!(diags[0].message.contains("extern"));
     }
 
     #[test]
     fn matcher_purity_rejects_call_terminator() {
-        use crate::fz_ir::{CallsiteIdent, Cont, FnId};
         let module = build_module_with_matcher(
             None,
             Term::Call {
-                ident: CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: CallsiteIdent::from_source(Span::DUMMY),
                 callee: FnId(99),
                 args: vec![v(0)],
                 continuation: Cont {
@@ -316,24 +319,23 @@ mod purity_tests {
                 },
             },
         );
-        let diags = crate::ir_planner::check_matcher_purity(&module);
+        let diags = check_matcher_purity(&module);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("Call"));
     }
 
     #[test]
     fn matcher_purity_allows_tailcall() {
-        use crate::fz_ir::{CallsiteIdent, FnId};
         let module = build_module_with_matcher(
             None,
             Term::TailCall {
-                ident: CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: CallsiteIdent::from_source(Span::DUMMY),
                 callee: FnId(99),
                 args: vec![v(0)],
                 is_back_edge: false,
             },
         );
-        let diags = crate::ir_planner::check_matcher_purity(&module);
+        let diags = check_matcher_purity(&module);
         assert!(
             diags.is_empty(),
             "matcher with TailCall terminator should be pure: {:?}",

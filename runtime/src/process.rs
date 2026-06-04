@@ -9,7 +9,16 @@
 //! ambient current-process and two schedulers can be live at once (fz-vdt).
 
 use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
-use std::ptr::NonNull;
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
+use std::ptr::{NonNull, null, null_mut, write};
+use std::rc::Rc;
+
+use crate::any_value::{AnyValueRef, TAG_MASK, closure_flags_pack, closure_size_for_count};
+use crate::bitstr::BitWriter;
+use crate::exec_ctx::ExecCtx;
+use crate::heap::{Heap, SIZE_TABLE, SchemaRegistry};
+use crate::park::ParkRecord;
 
 pub const DEFAULT_REDUCTIONS_PER_QUANTUM: i32 = 4000;
 pub const YIELD_REASON_REDUCTIONS: u8 = 1 << 0;
@@ -23,13 +32,12 @@ pub struct AlignedClosureStorage {
 
 impl AlignedClosureStorage {
     pub fn zeroed() -> Self {
-        let layout = Layout::from_size_align(crate::any_value::closure_size_for_count(0), 16)
-            .expect("zero-capture closure layout");
+        let layout = Layout::from_size_align(closure_size_for_count(0), 16).expect("zero-capture closure layout");
         let ptr = unsafe { alloc_zeroed(layout) };
         let Some(ptr) = NonNull::new(ptr) else {
             handle_alloc_error(layout);
         };
-        debug_assert_eq!(ptr.as_ptr() as u64 & crate::any_value::TAG_MASK, 0);
+        debug_assert_eq!(ptr.as_ptr() as u64 & TAG_MASK, 0);
         Self { ptr, layout }
     }
 
@@ -56,7 +64,7 @@ impl Drop for AlignedClosureStorage {
 /// invariant, .19.1). FFI fns do not yield, so TLS is stable within any FFI
 /// call.
 pub struct Process {
-    pub heap: crate::heap::Heap,
+    pub heap: Heap,
     /// Execution-context dispatch table for this task: scheduler services,
     /// telemetry sink, and IR module, reached explicitly by BIFs instead of
     /// through thread-local singletons. Set by the owning scheduler (JIT
@@ -65,9 +73,9 @@ pub struct Process {
     /// installs one. The spawn/send/make_resource/timer/output BIFs dispatch
     /// through it — this is what replaced the `CURRENT_PROCESS`-era thread-local
     /// singletons (removed in `fz-vdt`), so two schedulers can be live at once.
-    pub ctx: *mut crate::exec_ctx::ExecCtx,
+    pub ctx: *mut ExecCtx,
     pub halt_value: i64,
-    pub bs_builder: Option<crate::bitstr::BitWriter>,
+    pub bs_builder: Option<BitWriter>,
     // fz-ul4.29.5: closure_builder / closure_args fields removed. Closure
     // construction is inlined at codegen; capture storage is schema-backed,
     // and invocation is a direct call_indirect through the closure code ptr.
@@ -76,7 +84,7 @@ pub struct Process {
     /// process, so spawn is a pointer copy, not a table copy. The atom table is
     /// shared and append-only across the context's processes — runtime atom
     /// interning is visible to every process, like the BEAM's node-global table.
-    pub node: std::rc::Rc<Node>,
+    pub node: Rc<Node>,
     pub bs_tuple_arity1_schema: Option<u32>,
     pub bs_tuple_arity3_schema: Option<u32>,
     // fz-ul4.19.1 scheduler-level fields. Populated when a Process is
@@ -88,11 +96,10 @@ pub struct Process {
     /// this in a local; on yield/halt boundaries the Runtime swaps state
     /// here. v1 only writes this on halt (next_frame = null).
     pub next_frame: *mut u8,
-    pub mailbox: std::collections::VecDeque<crate::any_value::AnyValueRef>,
-    /// Receive-wait snapshot: the process is blocked in `receive`. Plain
-    /// `receive()` installs an accept-any matcher; selective receive installs
-    /// its compiled matcher. Either way, a hit clears `wait` and moves the
-    /// outcome continuation into `runnable` for the scheduler to resume.
+    pub mailbox: VecDeque<AnyValueRef>,
+    /// Receive-wait snapshot: the process is blocked in selective `receive`.
+    /// A matcher hit clears `wait` and moves the outcome continuation into
+    /// `runnable` for the scheduler to resume.
     pub wait: Option<Box<WaitState>>,
     /// The one re-entry verb: a `(self)`-callable closure the scheduler
     /// resumes via the single `fz_resume` shim. It is either a continuation
@@ -102,13 +109,13 @@ pub struct Process {
     /// on first resume). `None` means no work is queued.
     pub runnable: Option<ClosureRef>,
     /// fz-ul4.27.22.3 — per-Process halt-cont singletons indexed by
-    /// repr kind (0=ValueRef, 1=RawInt, 2=RawF64). Each slot holds a
+    /// repr kind (0=ValueRef, 1=RawInt, 2=RawF64, 3=RawAtom). Each slot holds a
     /// 24-byte closure whose +8 slot points at the matching
     /// `fz_halt_cont_body_<kind>` Cranelift body. Lazily allocated by
     /// `fz_get_halt_cont(addr, kind)` per kind, or pre-populated by
     /// `init_halt_cont_singletons` at make_process. Pointers alias
     /// aligned buffers in `static_closure_bufs`.
-    pub halt_cont_singletons: [*mut u8; 3],
+    pub halt_cont_singletons: [*mut u8; 4],
     /// fz-cps.1.7 — per-Process static zero-capture closure singletons.
     /// Indexed by lambda spec id (cl_sid). Null entries indicate "no
     /// singleton registered for this cl_sid." Each non-null entry points
@@ -195,7 +202,7 @@ pub enum ProcessState {
 /// The receive-wait snapshot a parked process carries. This is the
 /// scheduler-facing name for the receive-matching record; the matcher,
 /// pinned values, clause bodies, and after-timer continuation all live on it.
-pub type WaitState = crate::park::ParkRecord;
+pub type WaitState = ParkRecord;
 
 /// A non-null pointer to a `(self)`-callable closure the scheduler can resume
 /// through the `fz_resume` shim. Construction rejects null, so a
@@ -225,20 +232,13 @@ impl ClosureRef {
 /// BEAM shape (index array + interning hash table), scaled to one node.
 pub struct AtomTable {
     by_id: Vec<String>,
-    by_name: std::collections::HashMap<String, u32>,
+    by_name: HashMap<String, u32>,
 }
 
 impl AtomTable {
     pub fn new(names: Vec<String>) -> Self {
-        let by_name = names
-            .iter()
-            .enumerate()
-            .map(|(i, n)| (n.clone(), i as u32))
-            .collect();
-        Self {
-            by_id: names,
-            by_name,
-        }
+        let by_name = names.iter().enumerate().map(|(i, n)| (n.clone(), i as u32)).collect();
+        Self { by_id: names, by_name }
     }
 
     /// Return the atom's id, allocating a fresh one (the next dense index) if
@@ -263,11 +263,7 @@ impl AtomTable {
     /// atom set.
     pub fn reset_from(&mut self, names: &[String]) {
         self.by_id = names.to_vec();
-        self.by_name = names
-            .iter()
-            .enumerate()
-            .map(|(i, n)| (n.clone(), i as u32))
-            .collect();
+        self.by_name = names.iter().enumerate().map(|(i, n)| (n.clone(), i as u32)).collect();
     }
 }
 
@@ -284,7 +280,7 @@ pub struct Node {
     /// the BEAM's node-global atom table, scaled to one execution context.
     /// Reached through `intern_atom` / `atom_name` / `reset_atoms`, never
     /// directly, so the interior mutability stays an implementation detail.
-    atoms: std::cell::RefCell<AtomTable>,
+    atoms: RefCell<AtomTable>,
     /// Per-fn frame sizes, indexed by `FnId.0`. Read-only after construction
     /// (the JIT `fz_alloc_frame_dyn` reads it via `frame_size`); empty under
     /// the interpreter and AOT, which do not use compiled frame tables.
@@ -294,7 +290,7 @@ pub struct Node {
 impl Node {
     pub fn new(atoms: Vec<String>, frame_sizes: Vec<u32>) -> Self {
         Self {
-            atoms: std::cell::RefCell::new(AtomTable::new(atoms)),
+            atoms: RefCell::new(AtomTable::new(atoms)),
             frame_sizes,
         }
     }
@@ -342,7 +338,7 @@ pub struct CompiledModuleConsts {
         *const u8, /* code_ptr */
         u32,       /* halt_kind */
     )>,
-    pub halt_cont_body_addrs: [*const u8; 3],
+    pub halt_cont_body_addrs: [*const u8; 4],
 }
 
 impl CompiledModuleConsts {
@@ -353,7 +349,7 @@ impl CompiledModuleConsts {
             bs_tuple_arity1_schema: None,
             bs_tuple_arity3_schema: None,
             static_closure_targets: Vec::new(),
-            halt_cont_body_addrs: [std::ptr::null(); 3],
+            halt_cont_body_addrs: [null(); 4],
         }
     }
 }
@@ -364,8 +360,8 @@ impl Process {
     /// and halt-cont singleton tables. Per-spawn scheduler state (run state,
     /// mailbox, pending entries) stays at defaults for the spawner to set.
     pub fn from_consts(
-        node: std::rc::Rc<Node>,
-        schemas: std::rc::Rc<std::cell::RefCell<crate::heap::SchemaRegistry>>,
+        node: Rc<Node>,
+        schemas: Rc<RefCell<SchemaRegistry>>,
         consts: &CompiledModuleConsts,
         pid: PidId,
         reductions_per_quantum: i32,
@@ -375,8 +371,8 @@ impl Process {
             // promotes to a higher size_class on first GC if the working
             // set demands it; shrink hysteresis (§6.5 / fz-siu.11) brings
             // it back down for short-lived spikes.
-            heap: crate::heap::Heap::new(crate::heap::SIZE_TABLE[0], schemas),
-            ctx: std::ptr::null_mut(),
+            heap: Heap::new(SIZE_TABLE[0], schemas),
+            ctx: null_mut(),
             halt_value: 0,
             bs_builder: None,
             node,
@@ -384,11 +380,11 @@ impl Process {
             bs_tuple_arity3_schema: consts.bs_tuple_arity3_schema,
             pid,
             state: ProcessState::New,
-            next_frame: std::ptr::null_mut(),
-            mailbox: std::collections::VecDeque::new(),
+            next_frame: null_mut(),
+            mailbox: VecDeque::new(),
             wait: None,
             runnable: None,
-            halt_cont_singletons: [std::ptr::null_mut(); 3],
+            halt_cont_singletons: [null_mut(); 4],
             static_closures: Vec::new(),
             static_closure_bufs: Vec::new(),
             quiet_quanta: 0,
@@ -424,9 +420,9 @@ impl Process {
         p
     }
 
-    pub fn new(schemas: std::rc::Rc<std::cell::RefCell<crate::heap::SchemaRegistry>>) -> Self {
+    pub fn new(schemas: Rc<RefCell<SchemaRegistry>>) -> Self {
         Self::from_consts(
-            std::rc::Rc::new(Node::empty()),
+            Rc::new(Node::empty()),
             schemas,
             &CompiledModuleConsts::empty(),
             0,
@@ -453,7 +449,7 @@ impl Process {
         // Size table by max cl_sid encountered.
         let max = targets.iter().map(|(s, _, _, _)| *s).max().unwrap_or(0) as usize;
         if self.static_closures.len() < max + 1 {
-            self.static_closures.resize(max + 1, std::ptr::null_mut());
+            self.static_closures.resize(max + 1, null_mut());
         }
         let closure_schema = self.heap.closure_schema_id(0);
         for (cl_sid, fn_id, code_ptr, halt_kind) in targets {
@@ -461,12 +457,9 @@ impl Process {
             let base = buf.as_ptr();
             unsafe {
                 let _ = fn_id;
-                std::ptr::write(base as *mut u32, closure_schema);
-                std::ptr::write(
-                    base.add(4) as *mut u32,
-                    crate::any_value::closure_flags_pack(0, *halt_kind as u16) as u32,
-                );
-                std::ptr::write(base.add(8) as *mut u64, *code_ptr as u64);
+                write(base as *mut u32, closure_schema);
+                write(base.add(4) as *mut u32, closure_flags_pack(0, *halt_kind as u16) as u32);
+                write(base.add(8) as *mut u64, *code_ptr as u64);
             }
             self.static_closures[*cl_sid as usize] = base;
             self.static_closure_bufs.push(buf);
@@ -474,11 +467,11 @@ impl Process {
     }
 
     /// fz-ul4.27.22.3 — pre-allocate halt-cont singletons for each kind
-    /// (0=ValueRef, 1=RawInt, 2=RawF64). Non-null `body_addrs[k]` seeds
+    /// (0=ValueRef, 1=RawInt, 2=RawF64, 3=RawAtom). Non-null `body_addrs[k]` seeds
     /// the corresponding slot; null entries leave the slot null
     /// (lazily filled by `fz_get_halt_cont` on first use). Called once
     /// per Process by `make_process`.
-    pub fn init_halt_cont_singletons(&mut self, body_addrs: [*const u8; 3]) {
+    pub fn init_halt_cont_singletons(&mut self, body_addrs: [*const u8; 4]) {
         let closure_schema = self.heap.closure_schema_id(0);
         for (slot, addr) in body_addrs.iter().enumerate() {
             if addr.is_null() {
@@ -487,9 +480,9 @@ impl Process {
             let mut buf = AlignedClosureStorage::zeroed();
             let base = buf.as_ptr();
             unsafe {
-                std::ptr::write(base as *mut u32, closure_schema);
-                std::ptr::write(base.add(4) as *mut u32, 0);
-                std::ptr::write(base.add(8) as *mut u64, *addr as u64);
+                write(base as *mut u32, closure_schema);
+                write(base.add(4) as *mut u32, closure_flags_pack(0, slot as u16) as u32);
+                write(base.add(8) as *mut u64, *addr as u64);
             }
             self.halt_cont_singletons[slot] = base;
             self.static_closure_bufs.push(buf);
@@ -509,9 +502,7 @@ impl Process {
 
     /// The queued runnable closure pointer, if any, without clearing it.
     pub fn runnable_ptr(&self) -> *mut u8 {
-        self.runnable
-            .map(ClosureRef::as_ptr)
-            .unwrap_or(std::ptr::null_mut())
+        self.runnable.map(ClosureRef::as_ptr).unwrap_or(null_mut())
     }
 
     pub fn reset_reduction_budget(&mut self) {
@@ -530,8 +521,8 @@ impl Process {
         // whole phantom quantum. In that case bank only the work done *since*
         // expiry — the cost of the back edge that finally observed the zeroed
         // budget and yielded; otherwise derive burned the normal way.
-        let already_banked = (self.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE)
-            == YIELD_REASON_ALLOCATION_PRESSURE;
+        let already_banked =
+            (self.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE) == YIELD_REASON_ALLOCATION_PRESSURE;
         let burned = if already_banked {
             (-i64::from(remaining_reductions)).max(0)
         } else {
@@ -547,8 +538,8 @@ impl Process {
         // that finally yields reports only REDUCTIONS while the
         // ALLOCATION_PRESSURE bit is already standing on `yield_reasons`.
         self.yield_reasons |= reason;
-        let allocation_pressure = (self.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE)
-            == YIELD_REASON_ALLOCATION_PRESSURE;
+        let allocation_pressure =
+            (self.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE) == YIELD_REASON_ALLOCATION_PRESSURE;
         if allocation_pressure {
             self.allocation_pressure_yields = self.allocation_pressure_yields.saturating_add(1);
         } else if (self.yield_reasons & YIELD_REASON_REDUCTIONS) == YIELD_REASON_REDUCTIONS {
@@ -564,11 +555,10 @@ impl Process {
     /// `finish_yield_report` cannot misread the zeroed budget as a full
     /// quantum of work. See `finish_yield_report`.
     pub fn expire_budget(&mut self, reason: u8) {
-        let first_pressure = reason == YIELD_REASON_ALLOCATION_PRESSURE
-            && (self.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE) == 0;
+        let first_pressure =
+            reason == YIELD_REASON_ALLOCATION_PRESSURE && (self.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE) == 0;
         if first_pressure {
-            let burned =
-                i64::from(self.reductions_per_quantum) - i64::from(self.reductions_remaining);
+            let burned = i64::from(self.reductions_per_quantum) - i64::from(self.reductions_remaining);
             if burned > 0 {
                 self.reductions_executed = self.reductions_executed.saturating_add(burned as u64);
             }
@@ -587,10 +577,7 @@ impl Process {
     /// resume args + after-conts) and reset the quiet-quanta shrink counter,
     /// otherwise advance it. Either way, clear the transient pressure and
     /// yield-reason signals so the next quantum starts clean.
-    pub fn boundary_maintenance<E>(
-        &mut self,
-        gc_roots: impl FnOnce(&mut Self) -> Result<(), E>,
-    ) -> Result<(), E> {
+    pub fn boundary_maintenance<E>(&mut self, gc_roots: impl FnOnce(&mut Self) -> Result<(), E>) -> Result<(), E> {
         if self.needs_boundary_gc() {
             gc_roots(self)?;
             self.quiet_quanta = 0;
@@ -604,8 +591,7 @@ impl Process {
 
     pub fn needs_boundary_gc(&self) -> bool {
         self.heap.should_gc()
-            || (self.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE)
-                == YIELD_REASON_ALLOCATION_PRESSURE
+            || (self.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE) == YIELD_REASON_ALLOCATION_PRESSURE
     }
 
     pub fn begin_yield_continuation_allocation(&mut self, margin_before: usize) {
@@ -622,14 +608,10 @@ impl Process {
         } else {
             sampled_margin_before
         };
-        let bytes = margin_before
-            .saturating_sub(margin_after)
-            .max(observed_bytes);
+        let bytes = margin_before.saturating_sub(margin_after).max(observed_bytes);
         self.max_yield_continuation_bytes = self.max_yield_continuation_bytes.max(bytes);
-        self.min_yield_continuation_margin_before_bytes = min_nonzero(
-            self.min_yield_continuation_margin_before_bytes,
-            margin_before,
-        );
+        self.min_yield_continuation_margin_before_bytes =
+            min_nonzero(self.min_yield_continuation_margin_before_bytes, margin_before);
         self.min_yield_continuation_margin_after_bytes =
             min_nonzero(self.min_yield_continuation_margin_after_bytes, margin_after);
     }
@@ -652,98 +634,5 @@ fn min_nonzero(current: u64, candidate: u64) -> u64 {
 // This is what lets two schedulers be live at once on one thread.
 
 #[cfg(test)]
-mod tests {
-    use super::{Process, YIELD_REASON_ALLOCATION_PRESSURE, YIELD_REASON_REDUCTIONS};
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
-    #[test]
-    fn aligned_closure_storage_is_taggable() {
-        for _ in 0..128 {
-            let mut buf = super::AlignedClosureStorage::zeroed();
-            assert_eq!(buf.as_ptr() as u64 & crate::any_value::TAG_MASK, 0);
-        }
-    }
-
-    #[test]
-    fn reduction_budget_resets_and_spends() {
-        let schemas = Rc::new(RefCell::new(crate::heap::SchemaRegistry::new()));
-        let mut process = Process::new(schemas);
-        process.reductions_per_quantum = 3;
-        process.reset_reduction_budget();
-
-        assert_eq!(process.reductions_remaining, 3);
-        process.finish_yield_report(-1, YIELD_REASON_REDUCTIONS);
-        assert_eq!(process.reductions_remaining, -1);
-        assert_eq!(process.reductions_executed, 4);
-        assert_eq!(process.reduction_yields, 1);
-        assert_eq!(process.allocation_pressure_yields, 0);
-        assert_eq!(
-            process.yield_reasons & YIELD_REASON_REDUCTIONS,
-            YIELD_REASON_REDUCTIONS
-        );
-    }
-
-    #[test]
-    fn allocation_pressure_banks_only_genuine_reductions() {
-        let schemas = Rc::new(RefCell::new(crate::heap::SchemaRegistry::new()));
-        let mut process = Process::new(schemas);
-        process.reductions_per_quantum = 4000;
-        process.reset_reduction_budget();
-
-        // Real work: back edges spent the budget down to 3950 (50 burned).
-        process.reductions_remaining = 3950;
-
-        // Allocation crosses the watermark mid-quantum and force-expires the
-        // budget. The 50 genuinely-burned reductions are banked now, while
-        // `reductions_remaining` is still truthful; the budget is then zeroed
-        // to trip the next back edge.
-        process.expire_budget(YIELD_REASON_ALLOCATION_PRESSURE);
-        assert_eq!(process.reductions_remaining, 0);
-        assert_eq!(process.reductions_executed, 50);
-
-        // A second crossing in the same quantum must not double-count.
-        process.expire_budget(YIELD_REASON_ALLOCATION_PRESSURE);
-        assert_eq!(process.reductions_executed, 50);
-
-        // The back edge that observes the zeroed budget yields, reporting a
-        // slightly-negative remaining (its own cost). finish_yield_report
-        // banks only that post-expiry work — NOT a re-credited full quantum.
-        process.finish_yield_report(-1, YIELD_REASON_REDUCTIONS);
-        assert_eq!(process.reductions_executed, 51);
-        assert_eq!(process.allocation_pressure_yields, 1);
-        assert_eq!(process.reduction_yields, 0);
-    }
-
-    #[test]
-    fn reset_reduction_budget_clears_yield_reasons() {
-        let schemas = Rc::new(RefCell::new(crate::heap::SchemaRegistry::new()));
-        let mut process = Process::new(schemas);
-        process.reductions_per_quantum = 5;
-        process.reductions_remaining = 0;
-        process.yield_reasons = YIELD_REASON_ALLOCATION_PRESSURE | YIELD_REASON_REDUCTIONS;
-
-        process.reset_reduction_budget();
-
-        assert_eq!(process.reductions_remaining, 5);
-        assert_eq!(process.yield_reasons, 0);
-    }
-
-    #[test]
-    fn allocation_pressure_yields_are_counted_by_cause() {
-        let schemas = Rc::new(RefCell::new(crate::heap::SchemaRegistry::new()));
-        let mut process = Process::new(schemas);
-
-        process.finish_yield_report(
-            9,
-            YIELD_REASON_REDUCTIONS | YIELD_REASON_ALLOCATION_PRESSURE,
-        );
-
-        assert_eq!(process.reduction_yields, 0);
-        assert_eq!(process.allocation_pressure_yields, 1);
-        assert_eq!(
-            process.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE,
-            YIELD_REASON_ALLOCATION_PRESSURE
-        );
-    }
-}
+#[path = "process_test.rs"]
+mod process_test;

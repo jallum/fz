@@ -1,10 +1,11 @@
 use super::*;
+use std::mem::discriminant;
 
 impl Parser {
     pub(super) fn parse_pattern_list(&mut self, terminator: &Tok) -> PR<Vec<Spanned<Pattern>>> {
         let mut out = Vec::new();
         self.skip_newlines();
-        if std::mem::discriminant(self.peek()) == std::mem::discriminant(terminator) {
+        if discriminant(self.peek()) == discriminant(terminator) {
             return Ok(out);
         }
         loop {
@@ -25,10 +26,7 @@ impl Parser {
             if let Pattern::Var(n) = p.node {
                 self.bump();
                 let inner = self.parse_pattern()?;
-                return Ok(Spanned::new(
-                    Pattern::As(n, Box::new(inner)),
-                    self.finish(start),
-                ));
+                return Ok(Spanned::new(Pattern::As(n, Box::new(inner)), self.finish(start)));
             }
             return Ok(p);
         }
@@ -48,10 +46,7 @@ impl Parser {
                 match self.bump() {
                     Tok::Ident(n) => Pattern::Pinned(n),
                     other => {
-                        return self.err(format!(
-                            "expected identifier after `^` in pattern, got {:?}",
-                            other
-                        ));
+                        return self.err(format!("expected identifier after `^` in pattern, got {:?}", other));
                     }
                 }
             }
@@ -162,9 +157,7 @@ impl Parser {
                     loop {
                         let key = if let Tok::KwKey(_) = self.peek() {
                             let key_span = self.cur_span();
-                            let Tok::KwKey(name) = self.bump() else {
-                                unreachable!()
-                            };
+                            let Tok::KwKey(name) = self.bump() else { unreachable!() };
                             Spanned::new(Pattern::Atom(name), key_span)
                         } else {
                             let k = self.parse_pattern_atom()?;
@@ -194,8 +187,7 @@ impl Parser {
                         let field = match self.bump() {
                             Tok::KwKey(name) | Tok::Ident(name) | Tok::Atom(name) => name,
                             other => {
-                                return self
-                                    .err(format!("expected struct field name, got {:?}", other));
+                                return self.err(format!("expected struct field name, got {:?}", other));
                             }
                         };
                         if !matches!(self.toks[self.pos - 1].tok, Tok::KwKey(_)) {
@@ -223,10 +215,7 @@ impl Parser {
         loop {
             let (key, value) = self.parse_keyword_pattern_pair()?;
             out.push(Self::keyword_pattern_pair(key, value));
-            if !self.continue_keyword_entries(
-                terminator,
-                "positional pattern cannot follow keyword entries",
-            )? {
+            if !self.continue_keyword_entries(terminator, "positional pattern cannot follow keyword entries")? {
                 break;
             }
         }

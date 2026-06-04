@@ -6,6 +6,6 @@ fn main() do
     _ -> :other
   end
 
-  dbg(add(20, 22))
-  dbg({classify(0), classify(2), classify(-1)})
+  dbg(add.(20, 22))
+  dbg({classify.(0), classify.(2), classify.(-1)})
 end

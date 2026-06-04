@@ -1,20 +1,26 @@
 // ----- fz-yxs/fz-2v3 — selective receive interp tests -----
 
+use crate::exec::runtime::DbgCapture;
 use crate::fz_ir::Module;
 use crate::ir_interp::{AnyValue, IrInterpRuntime, run_main};
+use crate::ir_lower::lower_program;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
+use crate::pattern_matrix::{compile_count, reset_compile_count};
+use crate::telemetry::NullTelemetry;
+use crate::telemetry::bus::ConfiguredTelemetry;
+use std::fs::read_to_string;
 
 fn lower_src(src: &str) -> Module {
     let toks = Lexer::new(src).tokenize().expect("lex");
     let prog = Parser::new(toks).parse_program().expect("parse");
-    crate::ir_lower::lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower")
+    lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower")
 }
 
 fn run_and_capture(src: &str) -> Result<String, String> {
     let m = lower_src(src);
-    let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
-    let dbg = crate::exec::runtime::DbgCapture::new();
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
     run_main(&tel, &m)?;
     Ok(dbg.lines().join("\n"))
@@ -71,7 +77,9 @@ fn persistent_plain_receive_resumes_after_later_drive_send() {
     let m = lower_src(
         r#"
         fn wait_plain() do
-          receive()
+          receive do
+            x -> x
+          end
         end
 
         fn send_plain(pid) do
@@ -81,21 +89,18 @@ fn persistent_plain_receive_resumes_after_later_drive_send() {
     );
     let wait = m.fn_by_name("wait_plain").expect("wait_plain").id;
     let send = m.fn_by_name("send_plain").expect("send_plain").id;
+    let mut t = crate::types::new();
     let mut runtime = IrInterpRuntime::fresh_with_root(&m);
 
-    runtime
-        .enqueue_entry(&m, 1, wait, vec![])
-        .expect("enqueue wait");
+    runtime.enqueue_entry(&m, 1, wait, vec![]).expect("enqueue wait");
     let first = runtime
-        .drive_until_idle(&crate::telemetry::NullTelemetry, Some(1))
+        .drive_until_idle(&mut t, &NullTelemetry, Some(1))
         .expect("drive blocked wait");
     assert!(first.is_empty(), "blocked receive must not complete");
 
-    runtime
-        .spawn(&m, send, vec![AnyValue::Int(1)])
-        .expect("spawn sender");
+    runtime.spawn(&m, send, vec![AnyValue::Int(1)]).expect("spawn sender");
     let second = runtime
-        .drive_until_idle(&crate::telemetry::NullTelemetry, Some(1))
+        .drive_until_idle(&mut t, &NullTelemetry, Some(1))
         .expect("drive sender");
     assert_eq!(drive_completion_i64(&second, 1), Some(77));
 }
@@ -105,7 +110,9 @@ fn spawned_child_resumes_with_original_code_image_after_root_advances() {
     let first_image = lower_src(
         r#"
         fn child(parent) do
-          msg = receive()
+          msg = receive do
+            x -> x
+          end
           send(parent, msg)
         end
 
@@ -122,29 +129,23 @@ fn spawned_child_resumes_with_original_code_image_after_root_advances() {
         end
 
         fn receive_reply() do
-          receive()
+          receive do
+            x -> x
+          end
         end
     "#,
     );
-    let start_child = first_image
-        .fn_by_name("start_child")
-        .expect("start_child")
-        .id;
-    let send_to_child = second_image
-        .fn_by_name("send_to_child")
-        .expect("send_to_child")
-        .id;
-    let receive_reply = second_image
-        .fn_by_name("receive_reply")
-        .expect("receive_reply")
-        .id;
+    let start_child = first_image.fn_by_name("start_child").expect("start_child").id;
+    let send_to_child = second_image.fn_by_name("send_to_child").expect("send_to_child").id;
+    let receive_reply = second_image.fn_by_name("receive_reply").expect("receive_reply").id;
+    let mut t = crate::types::new();
     let mut runtime = IrInterpRuntime::fresh_with_root(&first_image);
 
     runtime
         .enqueue_entry(&first_image, 1, start_child, vec![])
         .expect("enqueue start_child");
     let child_started = runtime
-        .drive_until_idle(&crate::telemetry::NullTelemetry, Some(1))
+        .drive_until_idle(&mut t, &NullTelemetry, Some(1))
         .expect("drive start_child");
     assert_eq!(drive_completion_i64(&child_started, 1), Some(2));
 
@@ -152,14 +153,14 @@ fn spawned_child_resumes_with_original_code_image_after_root_advances() {
         .enqueue_entry(&second_image, 1, send_to_child, vec![AnyValue::Int(2)])
         .expect("enqueue send_to_child");
     runtime
-        .drive_until_idle(&crate::telemetry::NullTelemetry, Some(1))
+        .drive_until_idle(&mut t, &NullTelemetry, Some(1))
         .expect("drive send_to_child");
 
     runtime
         .enqueue_entry(&second_image, 1, receive_reply, vec![])
         .expect("enqueue receive_reply");
     let reply = runtime
-        .drive_until_idle(&crate::telemetry::NullTelemetry, Some(1))
+        .drive_until_idle(&mut t, &NullTelemetry, Some(1))
         .expect("drive receive_reply");
     assert_eq!(drive_completion_i64(&reply, 1), Some(99));
 }
@@ -181,24 +182,20 @@ fn persistent_selective_receive_resumes_after_later_drive_send() {
     );
     let wait = m.fn_by_name("wait_selective").expect("wait_selective").id;
     let send = m.fn_by_name("send_selective").expect("send_selective").id;
+    let mut t = crate::types::new();
     let mut runtime = IrInterpRuntime::fresh_with_root(&m);
 
-    runtime
-        .enqueue_entry(&m, 1, wait, vec![])
-        .expect("enqueue wait");
+    runtime.enqueue_entry(&m, 1, wait, vec![]).expect("enqueue wait");
     let first = runtime
-        .drive_until_idle(&crate::telemetry::NullTelemetry, Some(1))
+        .drive_until_idle(&mut t, &NullTelemetry, Some(1))
         .expect("drive blocked selective wait");
-    assert!(
-        first.is_empty(),
-        "blocked selective receive must not complete"
-    );
+    assert!(first.is_empty(), "blocked selective receive must not complete");
 
     runtime
         .spawn(&m, send, vec![AnyValue::Int(1)])
         .expect("spawn selective sender");
     let second = runtime
-        .drive_until_idle(&crate::telemetry::NullTelemetry, Some(1))
+        .drive_until_idle(&mut t, &NullTelemetry, Some(1))
         .expect("drive selective sender");
     assert_eq!(drive_completion_i64(&second, 1), Some(88));
 }
@@ -261,9 +258,9 @@ fn receive_reuses_lowered_matcher_during_interp_probes() {
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&["fz", "interp", "receive"], cap.handler());
-    let dbg = crate::exec::runtime::DbgCapture::new();
+    let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
-    crate::pattern_matrix::reset_compile_count();
+    reset_compile_count();
     run_main(&tel, &m).expect("interp run");
     let out = dbg.lines().join("\n");
     assert!(out.contains("2"), "expected 2, got: {}", out);
@@ -284,7 +281,7 @@ fn receive_reuses_lowered_matcher_during_interp_probes() {
         Some(TelemetryValue::U64(1))
     ));
     assert_eq!(
-        crate::pattern_matrix::compile_count(),
+        compile_count(),
         0,
         "interp receive probes must reuse the lowered Matcher instead of recompiling per message"
     );
@@ -304,8 +301,8 @@ fn receive_map_probe_uses_matcher_without_ast_pattern_walk() {
         end
     "#;
     let m = lower_src(src);
-    let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
-    let dbg = crate::exec::runtime::DbgCapture::new();
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
     run_main(&tel, &m).expect("interp run");
     let out = dbg.lines().join("\n");
@@ -327,8 +324,8 @@ fn receive_map_pattern_matches_present_nil_value() {
         end
     "#;
     let m = lower_src(src);
-    let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
-    let dbg = crate::exec::runtime::DbgCapture::new();
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
     run_main(&tel, &m).expect("interp run");
     let out = dbg.lines().join("\n");
@@ -340,8 +337,7 @@ fn receive_map_pattern_matches_present_nil_value() {
 /// scan hit in a single trace. See docs/receive-matched-stress-test.html.
 #[test]
 fn fixture_receive_selective_refs() {
-    let src =
-        std::fs::read_to_string("fixtures/receive_selective_refs/input.fz").expect("read fixture");
+    let src = read_to_string("fixtures/receive_selective_refs/input.fz").expect("read fixture");
     let out = run_and_capture(&src).expect("interp run");
     assert!(out.contains("3"), "expected 3, got: {}", out);
 }

@@ -1,303 +1,290 @@
 # Any Values
 
-## Model
+## The Idea
 
-A fz value is one of: integer, float, atom, list, map, tuple/struct, resource,
-binary. Some are tiny scalar payloads with no spare bits to steal. Others live
-on the heap and are addressed by pointer.
-
-The unifying idea is one opaque runtime word:
+Every fz value — integer, float, atom, list, map, tuple/struct, closure,
+bitstring, ProcBin, resource — is handled at runtime boundaries as one opaque
+word:
 
 ```text
-AnyValueRef = one opaque word that says "here is a value"
+AnyValueRef = one word that says "here is a value"
 ```
 
-The word carries a tag (what kind) and an address (where to find the payload).
-Scalar refs point at scalar payloads. Heap refs point at heap objects. A heap
-reference is not a separate idea — it is the heap-object subset of
-`AnyValueRef`.
+The word carries a 4-bit tag (what kind) and an address (where the payload is).
+Scalar refs point at a scalar payload word; heap refs point at a heap object. A
+heap reference is not a separate idea — it is the heap-object subset of
+`AnyValueRef`. The interpreter, REPL, JIT, and AOT paths all pass values through
+this one shape, so spawn, receive, matching, and heap reads behave the same on
+every path.
 
 ```text
-Int ref      -> points at an i64
-Float ref    -> points at an f64
-Atom ref     -> points at an atom id
-Map ref      -> points at a map object
-List ref     -> points at a list cell
-Struct ref   -> points at a tuple/struct object
-Resource ref -> points at a resource object
-Binary ref   -> points at a binary object
+Int ref      -> i64 payload word        Map ref      -> map object
+Float ref    -> f64 payload word        List ref     -> cons cell
+Atom ref     -> atom-id payload word     Struct ref   -> tuple/struct object
+                                        Closure ref  -> closure object
+                                        Bitstring/ProcBin ref -> binary object
+                                        Resource ref -> resource object
 ```
 
-The interpreter, REPL, JIT, and AOT paths all pass values through this single
-shape.
+`AnyValueRef` (`runtime/src/any_value.rs`) is `#[repr(transparent)]` over a `u64`
+and is opaque: callers do not pack, unpack, or dereference it by hand. The type
+owns packing, projection, and the platform difference behind the word.
 
-## Major Pieces
+## The Pieces And What They Own
 
-The **public ref API** is the only way callers handle a value. `AnyValueRef`
-is opaque. Callers do not inspect or construct it by hand:
+- **`AnyValueRef`**: the public word. Owns packing/unpacking and projection.
+  `tag()` returns a `ValueKind`; `load_int`/`load_float`/`load_atom` read scalar
+  payloads; `list_addr`/`map_addr`/`struct_addr`/… project heap refs to a
+  cleared address (each checks the tag and errors on mismatch).
+- **`ValueKind`**: the tag, one byte. `is_heap()` (List..Resource) and
+  `is_scalar()` (Int/Float/Atom) classify it.
+- **`AnyValue`**: the by-value enum a host caller decodes a ref into —
+  `Null`, `EmptyList`, `Int(i64)`, `Float(u64)`, `Atom(u32)`, `HeapRef(AnyValueRef)`.
+  A scalar `AnyValue` has no address; `ref_word()` panics on a scalar because a
+  scalar needs object-local storage before it can become a ref.
+- **Container object-local metadata**: each heap object stores payload words
+  plus its own kind bytes (see Container Storage). This is *not* a reusable
+  `{value, kind}` carrier — there is no public value model other than the ref.
+- **The `fz_*` runtime ABI** (`runtime/src/ir_runtime.rs`): the C entry points
+  generated code calls to read, build, and project values.
+
+## The Public Ref ABI
+
+Generated code handles values only through these entry points. A few examples:
 
 ```text
-fz_ref_tag(value_ref)
-fz_ref_load_int(value_ref)
-fz_ref_load_float(value_ref)
-fz_ref_load_atom(value_ref)
-fz_binary_concat(process, left_ref, right_ref)
-fz_map_get_ref(map_ref, key_ref)
-fz_map_count(map_ref)
-fz_map_entry_key(map_ref, index)
-fz_map_entry_value(map_ref, index)
-fz_list_head_ref(list_ref)
+fz_ref_tag(ref)                      -> tag byte
+fz_ref_load_int / _float / _atom(ref)
+fz_map_get_ref(process, map, key)    -> ref
+fz_map_count(map) / fz_map_entry_key(map, i) / fz_map_entry_value(map, i)
+fz_list_head_ref(list) / fz_list_tail_ref(list)
+fz_struct_get_field_ref(process, struct, field_offset)
+fz_binary_concat(process, left, right)
 ```
 
-**Dynamic reads return refs.** Heap reads do not return copied value parts. If
-a map already stores the value, `fz_map_get_ref` returns a ref to that stored
-value:
+**Dynamic reads return refs into existing storage, not copies.**
+`fz_map_get_ref`, `fz_map_entry_key`/`_value`, `fz_list_head_ref`, and
+`fz_struct_get_field_ref` build a ref over the slot already living in the
+container. For a scalar slot the returned ref points straight at that payload
+word (`any_value_ref_from_storage`); for a heap slot it carries the slot's
+heap pointer. `Enumerable.Map` (`src/modules/runtime_library/map.fz`) is plain
+fz source that declares `fz_map_count`, `fz_map_entry_key`, `fz_map_entry_value`
+as externs and folds over the map's canonical sorted entries; the tuple/list it
+builds copies those values into fresh containers before publishing them.
+
+`fz_binary_concat` validates byte-aligned binary inputs, copies their bytes into
+the caller process heap through `Heap::alloc_bitstring`, and tags the result
+`ProcBin` past `SHARED_BIN_THRESHOLD_BYTES` (64) or `Bitstring` below it — so
+large results land on the shared-binary path on their own.
+
+**Typed fast reads** are fused helpers for callers the typer already proved the
+shape of. They project then load, and `.expect()` the projection, so they panic
+on a mismatched ref rather than inventing a second value model:
 
 ```text
-fz_map_get_ref(map, key)             -> AnyValueRef
-fz_map_entry_key(map, index)         -> AnyValueRef
-fz_map_entry_value(map, index)       -> AnyValueRef
-fz_list_head_ref(list)               -> AnyValueRef
-fz_struct_get_field_ref(tuple, fld)  -> AnyValueRef
+fz_map_get_int(map, key)   -> i64
+fz_map_get_float(map, key) -> f64
+fz_map_get_atom(map, key)  -> atom id
 ```
 
-`Enumerable.Map` walks the runtime's canonical sorted entry storage with
-`fz_map_count`, `fz_map_entry_key`, and `fz_map_entry_value` from source-level
-fz code. The entry helpers return refs into immutable map storage; tuple/list
-construction copies those values into new containers before publishing them.
-
-`fz_binary_concat` validates byte-aligned binary inputs, copies their payload
-bytes into the caller process heap, and returns a binary ref. Allocation still
-flows through `Heap::alloc_bitstring`, so large results automatically use the
-ProcBin/shared-binary path.
-
-**Typed fast paths** are fused helpers for callers that already know the type.
-They panic on mismatch; they do not create a second value model:
+**Typed writes** hand a known scalar straight into a container's compact
+object-local layout, with no detour through a built scalar ref:
 
 ```text
-fz_map_get_int(map_ref, key_ref)   -> i64
-fz_map_get_float(map_ref, key_ref) -> f64
-fz_map_get_atom(map_ref, key_ref)  -> atom id
+fz_map_put_int(process, map, key, value_i64)
+fz_list_cons_int(process, head_i64, tail)
 ```
 
-**Typed writes** let the caller hand a known scalar straight into the
-container's compact local layout, with no detour through a built `Int` ref:
+The `*_put_ref` / `*_cons_ref` paths are for already-dynamic refs. They call
+`reject_scalar_ref_write` and panic on a scalar ref, so a scalar always travels
+the typed-write path and the representation stays honest.
+
+### Walkthrough: read a value out of a map
+
+A map holds `:answer => 42`. The 42 lives in the map's value storage. The read
+hands back a ref over that slot:
 
 ```text
-fz_map_put_int(map_ref, key_ref, value_i64)
-fz_list_cons_int(value_i64, tail_ref)
-```
-
-`*_put_ref` / `*_cons_ref` paths are for already-dynamic refs and reject
-scalar refs, to keep the representation honest.
-
-## Walkthrough
-
-A map contains `:answer => 42`. The integer payload lives in the heap. `fz_map_get_ref`
-returns a ref to it:
-
-```text
-let value_ref = fz_map_get_ref(map_ref, atom_answer_ref)
-
-value_ref tag     = Int
-value_ref address = address of the stored i64 payload
-
+value_ref = fz_map_get_ref(map_ref, atom_answer_ref)
+  value_ref.tag()      = Int
+  value_ref points at  the stored i64 slot
 fz_ref_load_int(value_ref) -> 42
 ```
 
-If the map contains another map at `:child`, the returned ref is already a map
-ref — no extra two-part result is needed:
+If the map holds another map at `:child`, the same call returns a `Map` ref
+directly — no two-part `{address, kind}` result is needed:
 
 ```text
-let child_ref = fz_map_get_ref(parent_map_ref, atom_child_ref)
-
-child_ref tag     = Map
-child_ref address = address of child map object
+child_ref = fz_map_get_ref(parent_map_ref, atom_child_ref)
+  child_ref.tag() = Map  ->  child map object
 ```
 
-## Generated Code ABI
+## Generated-Code Value Lanes
 
-Generated code has three value lanes:
+Generated code keeps a value in the narrowest representation the typer can
+prove. The codegen-side enum is `CodegenValue` (`src/ir_codegen/value.rs`); the
+ABI-side enum threaded through call signatures is `ArgRepr`
+(`src/ir_codegen/repr.rs`). The lanes:
 
 ```text
-ValueRef  // one i64 AnyValueRef word
-RawInt    // proven integer fast lane
-RawF64    // proven float fast lane
+ValueRef  // one AnyValueRef word; the only `any`-shaped lane
+RawInt    // proven i64
+RawF64    // proven f64
+RawAtom   // proven atom id
+Condition // raw i1 from a comparison/type-test whose result is only branched on
 ```
 
-`ValueRef` is always one word. Typed lanes avoid boxing while the type is
-known. Boxing happens only at unavoidable `any` boundaries:
+`ArgRepr::from_ty` picks the lane: float -> `RawF64`, integer -> `RawInt`,
+atom-subtype -> `RawAtom`, else `ValueRef`. `CodegenValue` adds `AnyRef` (an
+`any` ref value) and `Known { payload, kind }` (a compile-time-constant scalar);
+both report `ArgRepr::ValueRef`. Every lane has `abi_arity() == 1`: a value is
+always one machine word across a call boundary, never split into payload + kind.
+
+Boxing happens only where a typed lane meets an `any` boundary.
+`CodegenFn::coerce_binding_to` is the one seam:
 
 ```text
-send(pid, 42)
-  box 42 because send takes any
-  store ValueRef(Int) in the mailbox
+RawInt   -> ValueRef : box_int_for_any
+RawF64   -> ValueRef : box_float_for_any
+RawAtom  -> ValueRef : box_atom_for_any
+Condition-> ValueRef : select true/false atom, then box
+ValueRef -> RawInt/RawF64/RawAtom : unbox via the ref API
+matching lanes : pass through
 ```
 
-Every generated-code representation seam must coerce through the runtime value
-model. A `ValueRef` flowing into a `RawInt` or `RawF64` slot is unboxed with the
-ref API; a raw scalar flowing into a `ValueRef` slot is boxed; matching raw lanes
-pass through unchanged. This applies equally to call arguments, continuation
-arguments, and typed frame slots. Copying the bits of a `ValueRef(Int)` into a
-`RawInt` slot is never valid: the word is a ref, not the integer payload.
+So `send(pid, 42)`, where `send` takes `any`, boxes 42 because it crosses into
+`any`, then passes one `ValueRef(Int)` word. Copying the bits of a
+`ValueRef(Int)` straight into a `RawInt` slot is never valid: that word is a ref,
+not the integer payload. The same coercion rule covers call arguments,
+continuation arguments, and typed frame slots.
 
 ## Tags And Platform Packing
 
-The tag values are semantic and platform-independent:
+`ValueKind` tags are semantic and platform-independent (`runtime/src/any_value.rs`):
 
 ```text
-0 = Null
-1 = List
-2 = Map
-3 = Struct
-4 = Closure
-5 = Bitstring
-6 = ProcBin
-7 = Resource
-13 = Int
-14 = Float
-15 = Atom
+0  Null        4  Closure       7  Resource      14 Float
+1  List        5  Bitstring     13 Int           15 Atom
+2  Map          6  ProcBin
+3  Struct
 ```
 
-The empty list is `List` with a null address. The runtime keeps an
-object-storage `EMPTY_LIST` tail sentinel, but that sentinel is not the public
-tagged-pointer representation.
+`8` (`TAG_FWD`) is the Cheney forwarding marker, not a value; `9`–`12` are
+unused; `ValueKind::new` rejects all of them. The empty list is `List` with a
+null address (`AnyValueRef::empty_list`). Object storage also uses an
+`EMPTY_LIST` tail sentinel (`0x8`, an address inside the OS-reserved unmapped
+page 0, distinct from `nil`), but that sentinel is internal list-tail
+plumbing, not the public tagged-pointer form of `[]`.
 
-The bits used to store the tag are platform-specific:
+The *bits* that hold the tag are per-arch, owned by `AnyValueRefPacking`:
 
 ```text
-arm64/TBI:        tagged = address | (tag << 56)
-x86_64 canonical: tagged = address | (tag << 57)
+arm64 (TBI):          tagged = address | (tag << 56)
+x86_64 (canonical):   tagged = address | (tag << 57)
 ```
 
-Callers never see that difference. The API owns packing, unpacking, and
-clearing. `fz_ref_tag(value_ref)` returns the same tag value on every
-platform.
+`fz_ref_tag` returns the same semantic tag on both, so callers never see the
+difference.
 
-The portable rule:
-
-```text
-Never dereference an AnyValueRef directly.
-Always go through the AnyValueRef API.
-```
+Compiler-emitted pointer refs follow the same split, in
+`src/ir_codegen/closure.rs` and `src/ir_codegen/fn_ctx.rs`. On arm64/TBI a fresh
+stack/heap pointer is tagged by OR-ing the top-byte tag word directly, with no
+address-mask clear. On x86_64 canonical refs the high bits are cleared with
+`ishl_imm` then `ushr_imm` before OR-ing the tag word. Keeping codegen on
+`AnyValueRefPacking` rather than a hardcoded mask is what keeps
+`fz dump --emit clif` aligned with the runtime packing model.
 
 ## Container Storage
 
-Containers appear to store `AnyValueRef`s. That is a logical API rule, not a
-physical storage mandate. Containers may use tighter object-local layouts. The
-projection API is what makes those container fields appear as `AnyValueRef`
-when dynamic code reads them.
+Containers *appear* to store `AnyValueRef`s when dynamic code reads them, but
+that is a projection rule, not the physical layout. Each object holds payload
+words plus its own packed kind metadata, and the ref API reconstructs a ref on
+read:
 
 ```text
-List cons:
-  head payload word
-  link word with high alias/head-kind metadata and local next pointer bits
-
-Map:
-  key/value payload words
-  packed local key/value kind metadata
-
-Closure:
-  raw code pointer
-  capture payload words
-  local capture kind metadata
+List cons (16 bytes): head payload word
+                      link word = tail address + head-kind nibble + alias bit
+Map:                  count, one packed key/value kind byte per entry,
+                      then key payload words, then value payload words
+Closure:              schema id + flags (captured count + halt kind),
+                      code pointer, capture payload words, capture kind bytes
 ```
 
-The list link alias bit is a conservative cell-local reuse guard. Runtime
-helpers may mark a cons aliased. Internal primitive checks may reject an
-aliased cell, but codegen-facing reuse helpers must be total for valid inputs:
-if the source cons is still unaliased they may relink it in place; if it is
-aliased they must use fallback allocation for a fresh cons with the same head
-and the requested tail. GC preserves the bit inside a process heap. Deep copy
-creates fresh cells in the destination heap, so copied list cells start
-unaliased even when the source cell was marked aliased.
+The list link's **alias bit** is a conservative cell-local reuse guard. A cons
+is the single owner of its tail link until it is *published*; publication turns
+later destructive rewrites of that cell into a fresh allocation fallback. The
+bit is set (or a reuse capability simply not recorded) when a cell escapes the
+single owned rewrite path: stored in another heap object, captured in a closure
+or scheduler-visible continuation, or carried across a barrier where allocation
+timing becomes observable. Native call lowering
+(`mark_retained_call_args_as_published`) marks an argument the caller both passes
+to a callee and keeps in the continuation, which is what stops `xs |> reverse();
+xs |> map()` from letting the first call rewrite the list the continuation still
+reads.
 
-The alias bit is set, or a physical reuse capability is not recorded, when a cons cell is
-published outside the single owned rewrite path. A publication includes storing
-the cell in another heap object, capturing it in a closure or scheduler-visible
-continuation, or crossing a barrier where allocation timing becomes observable.
-Native call lowering also marks an argument when the caller passes it to a
-callee and keeps the same value in the continuation; that protects examples
-like `xs |> reverse(); xs |> map()` from letting the first call rewrite the
-list that the continuation will later traverse.
-Passing a value to an extern does not publish it: an extern that wants to retain
-a value beyond the call must copy it. Cross-process
-send and self-send are copy boundaries, not alias boundaries: the sender's
-current-process cells need not be marked, and the receiver/mailbox copy is a
-fresh unaliased graph. The bit is intentionally one-way inside a heap: once a
-cell has been published there, later local code may still read it, but
-destructive reuse must fall back to allocation.
+Reuse helpers stay total for valid inputs: an unaliased source cons may be
+relinked in place; an aliased one takes the fallback path and allocates a fresh cons
+with the same head and the requested tail (`reuse_or_alloc_list_cons_tail`).
+Passing a value to an extern
+does not publish it (an extern that retains a value past the call must copy it).
+Cross-process send and self-send are copy boundaries, not alias boundaries: the
+sender's current cells need not be marked, because the receiver gets a fresh
+unaliased graph. The bit is one-way within a heap — later local code may still
+read a published cell, but destructive reuse falls back to allocation.
 
-Public refs are public refs. Object-local metadata is object-local metadata.
+## GC: Roots, Edges, And Lifetime
 
-## GC Rule
+The process heap is a moving Cheney collector (`runtime/src/heap/gc/`). An
+`AnyValueRef` can point into it, so a bare ref is a *temporary*: it must not
+survive an allocation, a yield, a GC, or any runtime call that may allocate or
+yield, unless it has been stored in a traced root.
 
-An `AnyValueRef` can point into the moving process heap. It is a temporary
-reference. It must not cross:
-
-- allocation
-- yield
-- GC
-- arbitrary runtime calls that may allocate or yield
-
-unless it has been stored in a traced root form.
-
-Only heap-object refs are followed as heap edges:
+GC copies each reachable object as a whole unit, then follows only the payload
+slots whose object-local kind byte says `is_heap()`
+(`cheney_trace_list`/`_map`/`_struct`/`_closure`/`_resource`):
 
 ```text
-Map, List, Struct, Closure, Bitstring, ProcBin, Resource
+copy:   every reachable object moves as a unit
+follow: only heap-shaped payload words become child roots
 ```
 
-Scalar refs point at scalar payloads inside some heap/container object. They
-are copied when they sit in durable root slots, but they are not followed as
-child pointers.
-
-GC copies reachable objects as whole objects. It only follows child pointers
-when object-local metadata says a payload word is heap-shaped.
-
-```text
-copy bytes:   every reachable object moves or survives as a unit
-follow edges: only heap-shaped payload slots become child roots
-```
-
-Scalar payloads can look like addresses; that does not make them pointers. The
-layout tag/kind is the authority.
+Heap-object refs (`Map, List, Struct, Closure, Bitstring, ProcBin, Resource`)
+are followed as edges. A scalar ref points at a payload word, not a child object;
+a scalar payload can *look* like an address, but the kind byte is the authority,
+so scalars are never chased. When a scalar ref sits in a durable root slot, GC
+copies its boxed payload (`copy_scalar_box_to_space`, a small `ScalarBox` heap
+object) and rewrites the root to the copy — copied, not followed.
 
 ## Persistent Roots
 
-Anything that survives scheduler or GC boundaries needs a traced root shape.
-That includes mailboxes, parked receive pins, matcher outputs, and scheduler
-handoff values. The implementation uses `AnyValueRef` for that.
+Anything that outlives a scheduler or GC boundary is held as `AnyValueRef`,
+because the ref is self-describing — a scalar ref has no children, a heap ref is
+scanned by object layout, and sentinels have no children. The process mailbox is
+`VecDeque<AnyValueRef>` (`runtime/src/process.rs`); a parked receive
+(`runtime/src/park.rs`) keeps its pinned snapshot, per-clause matcher outputs,
+and bound values as `Vec<AnyValueRef>`. Map construction has no process-root
+builder — a map is a fold of immutable put operations.
 
-Every dynamic stored value is self-describing. Scalar refs point at boxed
-scalar payloads and have no children. Heap-object refs point at heap objects
-and are scanned by object layout. Sentinels have no children.
+## Policy: one value model, copy on cross-process send
 
-Mailboxes, parked receive matchers, pinned receive snapshots, and matcher
-outputs use `AnyValueRef`. Map construction has no process-root builder; it is a
-fold of immutable put operations.
+There is exactly one dynamic value model. Mailbox, matcher, interpreter, and
+codegen paths all carry `AnyValueRef`; no path keeps a parallel `{raw, kind}`
+carrier, and any raw-payload-plus-kind storage is visibly inside a heap layout.
+That single model is why a value built on one execution path reads correctly on
+another.
 
-## What This Model Keeps Out
-
-These are normal-path bugs, not alternate models:
+`send` is an `any` boundary. The caller boxes a known scalar only to send it as
+`any`, then calls `fz_send_ref(pid, msg_ref)`. The runtime
+(`src/exec/runtime.rs send_via`) copies the value into the receiver's world
+rather than sharing heap pointers across processes:
 
 ```text
-generic generated values as raw, kind
-ArgRepr::ValueRef with ABI arity 2
-helper APIs that return generic values as parts
-normal-path pack ValueRef, call helper, unpack ValueRef
-ValueSlot as a public/compiler/interpreter value model
+self-send:                deep-copy the message into the same heap, push to own mailbox
+cross-process, parked:    run the receiver's matcher on the sender's ref;
+                          on a hit, deep-copy the matched bound values into the
+                          receiver heap and wake it; on a miss, deep-copy the
+                          whole message into the receiver mailbox
+cross-process, not waiting: deep-copy the whole message into the receiver mailbox
 ```
 
-If code needs raw payload plus kind, it must be visibly inside a heap layout.
-There is one dynamic value model — not separate ones for mailbox, matcher,
-interpreter, or codegen paths.
-
-`send` is an `any` boundary. The caller boxes a known scalar only when it
-must be sent as `any`, then calls `fz_send_ref(pid, msg_ref)`. The runtime
-either hands that ref to the waiting matcher or deep-copies the ref into the
-receiver heap before enqueueing it. There is no special scalar side path
-inside send.
-
-Architecture-specific pointer tricks stay hidden behind the API. There are no
-parallel value wrappers that are 95% the same — that last 5% is where bugs live.
+There is no scalar side path inside send.

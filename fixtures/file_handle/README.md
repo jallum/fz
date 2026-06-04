@@ -1,17 +1,17 @@
 ---
 purpose: "FileHandle = fd + dtor, exercising cstring/binary/integer marshal classes against real libc with an observable resource lifecycle"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 2
-budget.codegen.instructions: 37
-budget.specs.count: 2
-budget.planner.worklist_pops: 2
-budget.planner.walk_calls: 2
-budget.planner.type_fn_calls: 2
+budget.codegen.functions: 6
+budget.codegen.instructions: 74
+budget.specs.count: 6
+budget.planner.worklist_pops: 6
+budget.planner.walk_calls: 6
+budget.planner.type_fn_calls: 6
 budget.planner.matcher_specs: 0
-budget.planner.vars: 30
-budget.planner.blocks: 2
-budget.planner.stmts: 17
-budget.planner.dispatches: 0
+budget.planner.vars: 35
+budget.planner.blocks: 6
+budget.planner.stmts: 20
+budget.planner.dispatches: 4
 ---
 
 # file_handle

@@ -1,0 +1,9 @@
+warning[type/no-matching-clause]: `fn` clauses don't cover every input
+  --> fixtures/tree/input.fz:2:1
+   |
+ 2 | fn inc_tree({:node, left, value, right}), do: {:node, inc_tree(left), value + 1, inc_tree(right)}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
+   |
+   = note: an input matched by no clause halts with `:function_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+

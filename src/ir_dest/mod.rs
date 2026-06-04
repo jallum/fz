@@ -5,11 +5,10 @@
 //! verifier keeps that contract explicit before any backend learns how to
 //! lower destination primitives.
 
-use crate::fz_ir::{
-    BlockId, FnId, FnIr, InitTokenId, Module, Prim, Stmt, Var, visit_prim_vars, visit_term_vars,
-};
+use crate::fz_ir::{BlockId, FnId, FnIr, InitTokenId, Module, Prim, Stmt, Var, visit_prim_vars, visit_term_vars};
 use std::collections::HashMap;
 use std::fmt;
+use std::mem::take;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DestVerifyError {
@@ -34,11 +33,7 @@ pub enum DestVerifyErrorKind {
 
 impl fmt::Display for DestVerifyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} {} stmt#{}: {}",
-            self.fn_id, self.block, self.stmt_idx, self.kind
-        )
+        write!(f, "{} {} stmt#{}: {}", self.fn_id, self.block, self.stmt_idx, self.kind)
     }
 }
 
@@ -55,11 +50,7 @@ impl fmt::Display for DestVerifyErrorKind {
                 write!(f, "destination token {} is used more than once", token)
             }
             DestVerifyErrorKind::DuplicateFieldWrite { dest, index } => {
-                write!(
-                    f,
-                    "destination {} field {} is initialized twice",
-                    dest, index
-                )
+                write!(f, "destination {} field {} is initialized twice", dest, index)
             }
             DestVerifyErrorKind::FieldOutOfBounds { dest, index, arity } => write!(
                 f,
@@ -140,11 +131,7 @@ pub(crate) fn consume_init_token(
     }
 }
 
-pub(crate) fn begin_tuple_dest<Field>(
-    dests: &mut HashMap<Var, TupleDestState<Field>>,
-    dest: Var,
-    arity: usize,
-) {
+pub(crate) fn begin_tuple_dest<Field>(dests: &mut HashMap<Var, TupleDestState<Field>>, dest: Var, arity: usize) {
     dests.insert(
         dest,
         TupleDestState {
@@ -218,7 +205,7 @@ pub fn verify_module(module: &Module) -> Result<(), Vec<DestVerifyError>> {
 
         for block in &f.blocks {
             for (stmt_idx, stmt) in block.stmts.iter().enumerate() {
-                let crate::fz_ir::Stmt::Let(dest_var, prim) = stmt;
+                let Stmt::Let(dest_var, prim) = stmt;
                 let loc = |kind| DestVerifyError {
                     fn_id: f.id,
                     block: block.id,
@@ -253,9 +240,7 @@ pub fn verify_module(module: &Module) -> Result<(), Vec<DestVerifyError>> {
                             errors.push(loc(tuple_error_kind(err)));
                         }
                     }
-                    Prim::DestListBegin { token } => {
-                        define_token(&mut tokens, *token, &mut errors, loc)
-                    }
+                    Prim::DestListBegin { token } => define_token(&mut tokens, *token, &mut errors, loc),
                     Prim::DestListCons { token, next, .. } => {
                         consume_token(&mut tokens, *token, &mut errors, loc);
                         if tokens.insert(*next, TokenState::Available).is_some() {
@@ -265,9 +250,7 @@ pub fn verify_module(module: &Module) -> Result<(), Vec<DestVerifyError>> {
                     Prim::DestListFreeze { token, .. } => {
                         consume_token(&mut tokens, *token, &mut errors, loc);
                     }
-                    Prim::DestMapBegin { token, .. } => {
-                        define_token(&mut tokens, *token, &mut errors, loc)
-                    }
+                    Prim::DestMapBegin { token, .. } => define_token(&mut tokens, *token, &mut errors, loc),
                     Prim::DestMapPut { token, next, .. } => {
                         consume_token(&mut tokens, *token, &mut errors, loc);
                         define_token(&mut tokens, *next, &mut errors, loc);
@@ -293,11 +276,7 @@ pub fn verify_module(module: &Module) -> Result<(), Vec<DestVerifyError>> {
         }
     }
 
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors)
-    }
+    if errors.is_empty() { Ok(()) } else { Err(errors) }
 }
 
 fn token_error_kind(err: DestTokenTransitionError) -> DestVerifyErrorKind {
@@ -305,9 +284,7 @@ fn token_error_kind(err: DestTokenTransitionError) -> DestVerifyErrorKind {
         DestTokenTransitionError::DuplicateTokenDefinition(token) => {
             DestVerifyErrorKind::DuplicateTokenDefinition(token)
         }
-        DestTokenTransitionError::UndefinedTokenUse(token) => {
-            DestVerifyErrorKind::UndefinedTokenUse(token)
-        }
+        DestTokenTransitionError::UndefinedTokenUse(token) => DestVerifyErrorKind::UndefinedTokenUse(token),
         DestTokenTransitionError::TokenReuse(token) => DestVerifyErrorKind::TokenReuse(token),
     }
 }
@@ -323,12 +300,8 @@ fn tuple_error_kind(err: TupleDestTransitionError) -> DestVerifyErrorKind {
         TupleDestTransitionError::FreezeIncomplete { dest, missing } => {
             DestVerifyErrorKind::FreezeIncomplete { dest, missing }
         }
-        TupleDestTransitionError::FreezeUnknownDest(dest) => {
-            DestVerifyErrorKind::FreezeUnknownDest(dest)
-        }
-        TupleDestTransitionError::FrozenDestWrite(dest) => {
-            DestVerifyErrorKind::FrozenDestWrite(dest)
-        }
+        TupleDestTransitionError::FreezeUnknownDest(dest) => DestVerifyErrorKind::FreezeUnknownDest(dest),
+        TupleDestTransitionError::FrozenDestWrite(dest) => DestVerifyErrorKind::FrozenDestWrite(dest),
     }
 }
 
@@ -379,19 +352,12 @@ fn lower_map_destinations_in_fn(f: &mut FnIr) {
     let mut next_var = next_var_id(f);
     let mut next_token = next_token_id(f);
     for block in &mut f.blocks {
-        let old_stmts = std::mem::take(&mut block.stmts);
+        let old_stmts = take(&mut block.stmts);
         let mut new_stmts = Vec::with_capacity(old_stmts.len());
         for stmt in old_stmts {
             match stmt {
                 Stmt::Let(result, Prim::MakeMap(entries)) => {
-                    lower_map_destination(
-                        &mut new_stmts,
-                        result,
-                        None,
-                        entries,
-                        &mut next_var,
-                        &mut next_token,
-                    );
+                    lower_map_destination(&mut new_stmts, result, None, entries, &mut next_var, &mut next_token);
                 }
                 Stmt::Let(result, Prim::MapUpdate(base, entries)) => {
                     lower_map_destination(
@@ -450,7 +416,7 @@ fn lower_list_destinations_in_fn(f: &mut FnIr, lowered: &mut Vec<ListDestLowerin
     let mut next_var = next_var_id(f);
     let mut next_token = next_token_id(f);
     for block in &mut f.blocks {
-        let old_stmts = std::mem::take(&mut block.stmts);
+        let old_stmts = take(&mut block.stmts);
         let mut new_stmts = Vec::with_capacity(old_stmts.len());
         for stmt in old_stmts {
             match stmt {
@@ -495,7 +461,7 @@ fn lower_tuple_destinations_in_fn(f: &mut FnIr, lowered: &mut Vec<TupleDestLower
     let mut next_var = next_var_id(f);
     let mut next_token = next_token_id(f);
     for block in &mut f.blocks {
-        let old_stmts = std::mem::take(&mut block.stmts);
+        let old_stmts = take(&mut block.stmts);
         let mut new_stmts = Vec::with_capacity(old_stmts.len());
         for stmt in old_stmts {
             match stmt {
@@ -627,188 +593,4 @@ fn consume_token(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::fz_ir::{Const, FnBuilder, FnId, ModuleBuilder, Prim, Term};
-
-    fn module_with(stmts: impl IntoIterator<Item = Prim>) -> Module {
-        let mut b = FnBuilder::new(FnId(0), "dp_test");
-        let entry = b.block(vec![]);
-        let mut last = None;
-        for prim in stmts {
-            last = Some(b.let_(entry, prim));
-        }
-        b.set_terminator(entry, Term::Halt(last.unwrap_or(Var(0))));
-        let mut mb = ModuleBuilder::new();
-        mb.add_fn(b.build());
-        mb.build()
-    }
-
-    fn const_i(value: i64) -> Prim {
-        Prim::Const(Const::Int(value))
-    }
-
-    #[test]
-    fn lowers_make_tuple_to_destination_skeleton() {
-        let mut b = FnBuilder::new(FnId(0), "tuple_dp");
-        let entry = b.block(vec![]);
-        let a = b.let_(entry, const_i(1));
-        let b_value = b.let_(entry, const_i(2));
-        let tuple = b.let_(entry, Prim::MakeTuple(vec![a, b_value]));
-        b.set_terminator(entry, Term::Halt(tuple));
-        let mut mb = ModuleBuilder::new();
-        mb.add_fn(b.build());
-        let mut m = mb.build();
-
-        lower_tuple_destinations(&mut m);
-        verify_module(&m).expect("lowered tuple DP must verify");
-        let body = m.to_string();
-        assert!(body.contains("dest_tuple_begin(arity=2, token=tok0)"));
-        assert!(body.contains("dest_tuple_set(v3, tok0, field=0, value=v0, next=tok1)"));
-        assert!(body.contains("dest_tuple_set(v3, tok1, field=1, value=v1, next=tok2)"));
-        assert!(body.contains("let v2 = dest_freeze(v3, tok2)"));
-    }
-
-    #[test]
-    fn lowers_make_list_to_destination_cons_chain() {
-        let mut b = FnBuilder::new(FnId(0), "list_dp");
-        let entry = b.block(vec![]);
-        let a = b.let_(entry, const_i(1));
-        let b_value = b.let_(entry, const_i(2));
-        let list = b.let_(entry, Prim::MakeList(vec![a, b_value], None));
-        b.set_terminator(entry, Term::Halt(list));
-        let mut mb = ModuleBuilder::new();
-        mb.add_fn(b.build());
-        let mut m = mb.build();
-
-        lower_list_destinations(&mut m);
-        verify_module(&m).expect("lowered list DP must verify");
-        let body = m.to_string();
-        assert!(body.contains("dest_list_begin(token=tok0)"));
-        assert!(body.contains("dest_list_cons(tok0, head=v1, tail=[], next=tok1)"));
-        assert!(body.contains("dest_list_cons(tok1, head=v0, tail=v4, next=tok2)"));
-        assert!(body.contains("let v2 = dest_list_freeze(v5, tok2)"));
-    }
-
-    #[test]
-    fn accepts_legal_tuple_skeleton() {
-        let m = module_with([
-            Prim::DestTupleBegin {
-                token: InitTokenId(0),
-                arity: 2,
-            },
-            const_i(10),
-            Prim::DestTupleSet {
-                dest: Var(0),
-                token: InitTokenId(0),
-                index: 0,
-                value: Var(1),
-                next: InitTokenId(1),
-            },
-            const_i(20),
-            Prim::DestTupleSet {
-                dest: Var(0),
-                token: InitTokenId(1),
-                index: 1,
-                value: Var(3),
-                next: InitTokenId(2),
-            },
-            Prim::DestFreeze {
-                dest: Var(0),
-                token: InitTokenId(2),
-            },
-        ]);
-        assert_eq!(verify_module(&m), Ok(()));
-    }
-
-    #[test]
-    fn rejects_duplicate_field_write() {
-        let m = module_with([
-            Prim::DestTupleBegin {
-                token: InitTokenId(0),
-                arity: 1,
-            },
-            const_i(10),
-            Prim::DestTupleSet {
-                dest: Var(0),
-                token: InitTokenId(0),
-                index: 0,
-                value: Var(1),
-                next: InitTokenId(1),
-            },
-            Prim::DestTupleSet {
-                dest: Var(0),
-                token: InitTokenId(1),
-                index: 0,
-                value: Var(1),
-                next: InitTokenId(2),
-            },
-            Prim::DestFreeze {
-                dest: Var(0),
-                token: InitTokenId(2),
-            },
-        ]);
-        let errs = verify_module(&m).expect_err("duplicate field write should fail");
-        assert!(errs.iter().any(|e| matches!(
-            e.kind,
-            DestVerifyErrorKind::DuplicateFieldWrite {
-                dest: Var(0),
-                index: 0
-            }
-        )));
-    }
-
-    #[test]
-    fn rejects_missing_field_before_freeze() {
-        let m = module_with([
-            Prim::DestTupleBegin {
-                token: InitTokenId(0),
-                arity: 2,
-            },
-            const_i(10),
-            Prim::DestTupleSet {
-                dest: Var(0),
-                token: InitTokenId(0),
-                index: 0,
-                value: Var(1),
-                next: InitTokenId(1),
-            },
-            Prim::DestFreeze {
-                dest: Var(0),
-                token: InitTokenId(1),
-            },
-        ]);
-        let errs = verify_module(&m).expect_err("incomplete freeze should fail");
-        assert!(errs.iter().any(|e| matches!(
-            &e.kind,
-            DestVerifyErrorKind::FreezeIncomplete { dest: Var(0), missing } if missing == &vec![1]
-        )));
-    }
-
-    #[test]
-    fn rejects_token_reuse() {
-        let m = module_with([
-            Prim::DestTupleBegin {
-                token: InitTokenId(0),
-                arity: 1,
-            },
-            const_i(10),
-            Prim::DestTupleSet {
-                dest: Var(0),
-                token: InitTokenId(0),
-                index: 0,
-                value: Var(1),
-                next: InitTokenId(1),
-            },
-            Prim::DestFreeze {
-                dest: Var(0),
-                token: InitTokenId(0),
-            },
-        ]);
-        let errs = verify_module(&m).expect_err("token reuse should fail");
-        assert!(
-            errs.iter()
-                .any(|e| matches!(e.kind, DestVerifyErrorKind::TokenReuse(InitTokenId(0))))
-        );
-    }
-}
+mod ir_dest_test;

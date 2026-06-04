@@ -3,6 +3,8 @@
 use super::ref_io::value_ref_sort_payload;
 use crate::any_value::AnyValueRef;
 use crate::any_value::{AnyValue, ValueKind};
+use crate::procbin::bitstring_like_eq;
+use std::cmp::Ordering;
 
 pub(super) fn same_value_ref(a: AnyValueRef, b: AnyValueRef) -> bool {
     if matches!(a.tag(), ValueKind::BITSTRING | ValueKind::PROCBIN)
@@ -10,9 +12,7 @@ pub(super) fn same_value_ref(a: AnyValueRef, b: AnyValueRef) -> bool {
     {
         let a_bits = a.heap_object_word().expect("bitstring lhs");
         let b_bits = b.heap_object_word().expect("bitstring rhs");
-        return unsafe {
-            crate::procbin::bitstring_like_eq(a_bits as *const u8, b_bits as *const u8)
-        };
+        return unsafe { bitstring_like_eq(a_bits as *const u8, b_bits as *const u8) };
     }
     a.tag() == b.tag() && value_ref_sort_payload(a) == value_ref_sort_payload(b)
 }
@@ -23,12 +23,12 @@ pub(super) fn same_any_value(a: AnyValue, b: AnyValue) -> bool {
     {
         let ap = a.heap_object_word().expect("bitstring lhs") as *const u8;
         let bp = b.heap_object_word().expect("bitstring rhs") as *const u8;
-        return unsafe { crate::procbin::bitstring_like_eq(ap, bp) };
+        return unsafe { bitstring_like_eq(ap, bp) };
     }
     a.kind() == b.kind() && a.raw() == b.raw()
 }
 
-pub(super) fn map_key_cmp_any(a: AnyValue, b: AnyValue) -> std::cmp::Ordering {
+pub(super) fn map_key_cmp_any(a: AnyValue, b: AnyValue) -> Ordering {
     map_key_category_any(a)
         .cmp(&map_key_category_any(b))
         .then_with(|| a.kind().tag().cmp(&b.kind().tag()))
@@ -62,15 +62,13 @@ pub(super) fn map_key_category_ref(value: AnyValueRef) -> u8 {
     }
 }
 
-pub(super) fn map_key_cmp_refs(a: AnyValueRef, b: AnyValueRef) -> std::cmp::Ordering {
+pub(super) fn map_key_cmp_refs(a: AnyValueRef, b: AnyValueRef) -> Ordering {
     map_key_category_ref(a)
         .cmp(&map_key_category_ref(b))
         .then_with(|| (a.tag().tag()).cmp(&b.tag().tag()))
         .then_with(|| {
             if a.tag() == ValueKind::INT {
-                a.load_int()
-                    .expect("int key")
-                    .cmp(&b.load_int().expect("int key"))
+                a.load_int().expect("int key").cmp(&b.load_int().expect("int key"))
             } else {
                 value_ref_sort_payload(a).cmp(&value_ref_sort_payload(b))
             }

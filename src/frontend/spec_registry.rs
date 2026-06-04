@@ -1,7 +1,10 @@
 use crate::fz_ir::{FnId, SpecId};
 use crate::ir_planner::fn_types::{ReturnDemand, SpecKey};
-use crate::types::{KeySlot, Ty, TypeVarId, key_slot_var_count};
+use crate::types::{KeySlot, Ty, TypeVarId, Types, key_slot_var_count};
 use std::collections::HashMap;
+
+#[cfg(test)]
+use crate::types::key_slots_from_tys;
 
 #[derive(Clone)]
 struct SpecEntry {
@@ -48,7 +51,7 @@ pub(crate) fn best_covering_candidate<'a, T, Id>(
     candidates: impl IntoIterator<Item = BestCoverCandidate<'a, Id>>,
 ) -> Option<Id>
 where
-    T: crate::types::Types<Ty = crate::types::Ty>,
+    T: Types<Ty = Ty>,
     Id: Copy + Eq,
 {
     let arity = query.len();
@@ -59,13 +62,10 @@ where
                 return false;
             }
             let mut sigma: HashMap<TypeVarId, Ty> = HashMap::new();
-            query
-                .iter()
-                .zip(candidate.key.iter())
-                .all(|(q, k)| match k {
-                    None => true,
-                    Some(k) => t.key_subsumes_with(q, k, &mut sigma),
-                })
+            query.iter().zip(candidate.key.iter()).all(|(q, k)| match k {
+                None => true,
+                Some(k) => t.key_subsumes_with(q, k, &mut sigma),
+            })
         })
         .collect();
     if covers.is_empty() {
@@ -79,10 +79,9 @@ where
     covers.retain(|candidate| candidate.key_var_count == min_var_count);
     covers.sort_by_key(|candidate| candidate.precedence);
     for candidate in &covers {
-        let strictly_subsumed_by_other = covers.iter().any(|other| {
-            other.id != candidate.id
-                && key_slots_strictly_more_specific(t, other.key, candidate.key)
-        });
+        let strictly_subsumed_by_other = covers
+            .iter()
+            .any(|other| other.id != candidate.id && key_slots_strictly_more_specific(t, other.key, candidate.key));
         if !strictly_subsumed_by_other {
             return Some(candidate.id);
         }
@@ -92,7 +91,7 @@ where
 
 fn key_slots_strictly_more_specific<T>(t: &T, a: &[KeySlot], b: &[KeySlot]) -> bool
 where
-    T: crate::types::Types<Ty = crate::types::Ty>,
+    T: Types<Ty = Ty>,
 {
     if a.len() != b.len() {
         return false;
@@ -165,12 +164,7 @@ impl SpecRegistry {
             .unwrap_or(0)
     }
 
-    fn register_entry_with_precedence(
-        &mut self,
-        t: &impl crate::types::Types<Ty = crate::types::Ty>,
-        key: SpecKey,
-        precedence: u32,
-    ) -> SpecId {
+    fn register_entry_with_precedence(&mut self, t: &impl Types<Ty = Ty>, key: SpecKey, precedence: u32) -> SpecId {
         let id = SpecId(self.entries.len() as u32);
         let key_var_count = key_slot_var_count(t, &key.input);
         self.entries.push(SpecEntry {
@@ -189,19 +183,14 @@ impl SpecRegistry {
     /// already registered, returns the existing SpecId without
     /// duplicating.
     #[cfg(test)]
-    pub fn register<K: Into<KeySlot>>(
-        &mut self,
-        t: &impl crate::types::Types<Ty = crate::types::Ty>,
-        fn_id: FnId,
-        input_tys: Vec<K>,
-    ) -> SpecId {
+    pub fn register<K: Into<KeySlot>>(&mut self, t: &impl Types<Ty = Ty>, fn_id: FnId, input_tys: Vec<K>) -> SpecId {
         let precedence = self.next_precedence(fn_id);
         self.register_with_precedence(t, fn_id, input_tys, precedence)
     }
 
     pub fn register_spec_key_with_precedence(
         &mut self,
-        t: &impl crate::types::Types<Ty = crate::types::Ty>,
+        t: &impl Types<Ty = Ty>,
         key: SpecKey,
         precedence: u32,
     ) -> SpecId {
@@ -214,7 +203,7 @@ impl SpecRegistry {
     #[cfg(test)]
     pub fn register_with_precedence<K: Into<KeySlot>>(
         &mut self,
-        t: &impl crate::types::Types<Ty = crate::types::Ty>,
+        t: &impl Types<Ty = Ty>,
         fn_id: FnId,
         input_tys: Vec<K>,
         precedence: u32,
@@ -232,7 +221,7 @@ impl SpecRegistry {
     /// register any-keys in FnId.0 order.
     pub fn register_any_key_at_with_precedence<K: Into<KeySlot>>(
         &mut self,
-        t: &impl crate::types::Types<Ty = crate::types::Ty>,
+        t: &impl Types<Ty = Ty>,
         fn_id: FnId,
         input_tys: Vec<K>,
         precedence: u32,
@@ -244,7 +233,7 @@ impl SpecRegistry {
 
     pub fn register_spec_key_at_with_precedence(
         &mut self,
-        t: &impl crate::types::Types<Ty = crate::types::Ty>,
+        t: &impl Types<Ty = Ty>,
         key: SpecKey,
         precedence: u32,
     ) -> SpecId {
@@ -288,21 +277,12 @@ impl SpecRegistry {
     /// Best-match specialization quality (planner registering tight-enough
     /// specs at every callsite) is a separate concern — different ticket.
     #[cfg(test)]
-    pub fn resolve(
-        &self,
-        t: &impl crate::types::Types<Ty = crate::types::Ty>,
-        fn_id: FnId,
-        input_tys: &[Ty],
-    ) -> Option<SpecId> {
-        let input_key = crate::types::key_slots_from_tys(input_tys.iter().cloned());
+    pub fn resolve(&self, t: &impl Types<Ty = Ty>, fn_id: FnId, input_tys: &[Ty]) -> Option<SpecId> {
+        let input_key = key_slots_from_tys(input_tys.iter().cloned());
         self.resolve_spec_key(t, &SpecKey::value(fn_id, input_key))
     }
 
-    pub fn resolve_spec_key(
-        &self,
-        t: &impl crate::types::Types<Ty = crate::types::Ty>,
-        key: &SpecKey,
-    ) -> Option<SpecId> {
+    pub fn resolve_spec_key(&self, t: &impl Types<Ty = Ty>, key: &SpecKey) -> Option<SpecId> {
         // Fast path: exact match via per-family lookup.
         if let Some(id) = self.exact_match_spec_key(key) {
             return Some(id);
@@ -354,9 +334,7 @@ fn fully_typed_key(input_key: &[KeySlot]) -> Option<Vec<Ty>> {
 impl SpecRegistry {
     /// Look up a fn's any-key SpecId. Test-only helper.
     pub fn any_key(&self, fn_id: FnId, n_params: usize) -> SpecId {
-        use crate::types::Types;
-
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = crate::types::new();
         let key: Vec<KeySlot> = (0..n_params).map(|_| Some(t.any())).collect();
         self.exact_match(fn_id, key.as_slice())
             .expect("any-key spec must always be registered for every fn")
@@ -378,7 +356,7 @@ mod var_subsumption_tests {
 
     #[test]
     fn return_demand_participates_in_spec_identity() {
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = crate::types::new();
         let mut reg = SpecRegistry::new();
         let key = vec![Some(t.int())];
         let value = SpecKey::value(fid(7), key.clone());
@@ -391,17 +369,14 @@ mod var_subsumption_tests {
         let value_sid = reg.register_spec_key_with_precedence(&t, value.clone(), 0);
         let fields_sid = reg.register_spec_key_with_precedence(&t, fields.clone(), 0);
 
-        assert_ne!(
-            value_sid, fields_sid,
-            "return demand is part of SpecKey identity"
-        );
+        assert_ne!(value_sid, fields_sid, "return demand is part of SpecKey identity");
         assert_eq!(reg.resolve_spec_key(&t, &value), Some(value_sid));
         assert_eq!(reg.resolve_spec_key(&t, &fields), Some(fields_sid));
     }
 
     #[test]
     fn concrete_query_matches_var_key_with_binding() {
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = crate::types::new();
         let mut reg = SpecRegistry::new();
         let alpha = t.type_var(TypeVarId(0));
         let sid = reg.register(&t, fid(7), vec![alpha]);
@@ -412,7 +387,7 @@ mod var_subsumption_tests {
 
     #[test]
     fn var_query_matches_same_var_key() {
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = crate::types::new();
         let mut reg = SpecRegistry::new();
         let alpha = t.type_var(TypeVarId(0));
         let sid = reg.register(&t, fid(7), vec![alpha]);
@@ -424,7 +399,7 @@ mod var_subsumption_tests {
 
     #[test]
     fn var_query_matches_different_var_key_via_binding() {
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = crate::types::new();
         let mut reg = SpecRegistry::new();
         let alpha = t.type_var(TypeVarId(0));
         let sid = reg.register(&t, fid(7), vec![alpha]);
@@ -437,7 +412,7 @@ mod var_subsumption_tests {
 
     #[test]
     fn var_query_does_not_match_concrete_key() {
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = crate::types::new();
         let mut reg = SpecRegistry::new();
         let int = t.int();
         let _ = reg.register(&t, fid(7), vec![int]);
@@ -452,7 +427,7 @@ mod var_subsumption_tests {
     fn most_specific_wins_concrete_over_var() {
         // Both a concrete-keyed spec and a var-keyed spec cover an `int`
         // query. Dispatch must pick the concrete (most specific).
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = crate::types::new();
         let mut reg = SpecRegistry::new();
         let alpha = t.type_var(TypeVarId(0));
         let var_sid = reg.register(&t, fid(7), vec![alpha]);
@@ -467,7 +442,7 @@ mod var_subsumption_tests {
     #[test]
     fn positionally_inconsistent_binding_fails() {
         // Key: (α, α). Query: (int, str). Single α can't bind both → no cover.
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = crate::types::new();
         let mut reg = SpecRegistry::new();
         let alpha = t.type_var(TypeVarId(0));
         let _ = reg.register(&t, fid(7), vec![alpha.clone(), alpha]);
@@ -481,7 +456,7 @@ mod var_subsumption_tests {
     #[test]
     fn positionally_consistent_binding_succeeds() {
         // Key: (α, α). Query: (int, int). Single α binds to int consistently.
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = crate::types::new();
         let mut reg = SpecRegistry::new();
         let alpha = t.type_var(TypeVarId(0));
         let sid = reg.register(&t, fid(7), vec![alpha.clone(), alpha]);
@@ -495,7 +470,7 @@ mod var_subsumption_tests {
     fn any_query_still_does_not_match_concrete_key() {
         // Pre-fz-try.8 invariant preserved: a saturated `any` query never
         // covers a concrete key (would be unsafe — body assumes narrow inputs).
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = crate::types::new();
         let mut reg = SpecRegistry::new();
         let int = t.int();
         let _ = reg.register(&t, fid(7), vec![int]);
@@ -507,16 +482,11 @@ mod var_subsumption_tests {
 
     #[test]
     fn hole_slot_preserves_arity_and_skips_coverage_coordinate() {
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = crate::types::new();
         let mut reg = SpecRegistry::new();
         let int = t.int();
         let str_t = t.str_t();
-        let sid = reg.register_with_precedence(
-            &t,
-            fid(7),
-            vec![Some(int.clone()), None, Some(str_t.clone())],
-            0,
-        );
+        let sid = reg.register_with_precedence(&t, fid(7), vec![Some(int.clone()), None, Some(str_t.clone())], 0);
 
         let atom_x = t.atom_lit("x");
         assert_eq!(

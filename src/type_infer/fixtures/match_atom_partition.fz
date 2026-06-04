@@ -1,0 +1,13 @@
+# Pattern-dispatch specialization. The same FnId is called at two concrete
+# atom inputs; each activation should select the matching decision-tree leaf.
+# Atom returns isolate matcher leaf selection from the separate finite-height
+# rule that widens distinct integer literals to `int`.
+#
+# Expected: main() : {:one, :two}
+
+fn pick(:left), do: :one
+fn pick(:right), do: :two
+
+fn main() do
+  {pick(:left), pick(:right)}
+end

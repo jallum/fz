@@ -1,12 +1,18 @@
+use std::env::temp_dir;
+use std::fs::{metadata, remove_file};
+use std::process::id;
+
 use crate::fz_ir::Module;
 use crate::ir_interp::run_main;
+use crate::ir_lower::lower_program;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
+use crate::telemetry::NullTelemetry;
 
 fn lower_src(src: &str) -> Module {
     let toks = Lexer::new(src).tokenize().expect("lex");
     let prog = Parser::new(toks).parse_program().expect("parse");
-    crate::ir_lower::lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower")
+    lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower")
 }
 
 #[cfg(unix)]
@@ -30,11 +36,7 @@ fn variadic_open_interp_creates_file_with_mode_bits() {
         .duration_since(UNIX_EPOCH)
         .expect("system time")
         .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "fz-interp-variadic-open-{}-{}",
-        std::process::id(),
-        unique
-    ));
+    let path = temp_dir().join(format!("fz-interp-variadic-open-{}-{}", id(), unique));
     let path_text = path.to_string_lossy();
     assert!(
         CString::new(path_text.as_bytes()).is_ok(),
@@ -59,14 +61,10 @@ end
     );
 
     let module = lower_src(&src);
-    let fd = run_main(&crate::telemetry::NullTelemetry, &module).expect("interp run");
+    let fd = run_main(&NullTelemetry, &module).expect("interp run");
     assert!(fd >= 0, "open failed with fd {}", fd);
-    let mode = std::fs::metadata(&path)
-        .expect("created file metadata")
-        .permissions()
-        .mode()
-        & 0o777;
-    let _ = std::fs::remove_file(&path);
+    let mode = metadata(&path).expect("created file metadata").permissions().mode() & 0o777;
+    let _ = remove_file(&path);
     assert_eq!(mode, (requested as u32) & !(umask as u32) & 0o777);
 }
 
@@ -78,8 +76,7 @@ extern "C" fn libc::printf(fmt :: cstring, ...) :: integer
 fn main() do libc::printf("%f", 1.5) end
 "#,
     );
-    let err = run_main(&crate::telemetry::NullTelemetry, &module)
-        .expect_err("unsupported variadic shape should fail interp");
+    let err = run_main(&NullTelemetry, &module).expect_err("unsupported variadic shape should fail interp");
     assert!(err.contains("unsupported variadic extern shape"));
     assert!(err.contains("F64"));
 }

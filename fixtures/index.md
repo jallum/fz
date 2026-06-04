@@ -8,6 +8,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `actor_ring/` | N-hop actor ring with self()-capture + spawn-with-captures + multi-clause CPS-split-in-body; closes fz-g8v by exercising the fz-qbg.2 multi-clause body cont-fn path end-to-end | jit, interp, aot, repl |
 | `add1/` | smallest JIT round-trip — fn def + call + print | jit, interp, aot, repl |
 | `alias/` | nested-module path aliasing — `alias Long.Path` and `alias Long.Path, as: LP` | jit, interp, aot, repl |
+| `aot_main_float_halt_kind/` | AOT root main launch uses the entry fn's halt kind, so a float-returning main halts cleanly | aot |
 | `append/` | source-level append allocation baseline proves ordinary list append needs no append BIF | jit, interp, aot, repl |
 | `assert_abort_message/` | a failed assert aborts with the caller's message on every path (expect-failure medium) | jit, interp, aot, repl |
 | `ast_eval/` | tagged-tuple AST evaluator — first fixture to exercise multi-clause tuple-pattern dispatch end-to-end | jit, interp, aot, repl |
@@ -33,7 +34,8 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `enum_oracle_smoke/` | Enum.sort/1 matches Elixir; expected.txt is owned by the oracle.exs twin | jit, interp, aot, repl |
 | `enum_predicate_search/` | Enum predicate and search functions match Elixir and halt as soon as the answer is known | jit, interp, aot, repl |
 | `enum_reduce_suspend/` | Enumerable.reduce/3 suspend returns a real resumable closure at the runtime-value boundary | jit, interp, aot, repl |
-| `enum_sort/` | runtime-library Enum.sort (merge sort) allocation contract across four paths; pins JIT/AOT parity and the merge-step continuation-closure floor | jit, interp, aot, repl |
+| `enum_sort/` | runtime-library Enum.sort (merge sort) allocation contract across four paths; pins JIT/AOT parity and default-sorter closure erasure | jit, interp, aot, repl |
+| `enum_take_drop_split/` | Enum take/drop/split functions match Elixir, including negative counts and predicate stop points | jit, interp, aot, repl |
 | `enum_tier0/` | Enum tier-0 functions return Elixir-style public values across List, Range, and Map | jit, interp, aot, repl |
 | `enumerable_switch_dispatch/` | Enumerable protocol switch dispatch covers List, Range, and Map receivers | jit, interp, aot, repl |
 | `fib_tailrec/` | fibonacci via two-accumulator tail recursion — three-clause dispatch + tail-call forwarding under load | jit, interp, aot, repl |

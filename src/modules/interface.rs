@@ -5,17 +5,15 @@
 //! validation consume them as public module contracts.
 
 use crate::ast::{
-    Attribute, FnDef, ModuleDef, Program, ProtocolDef, ProtocolImplDef, SpecDecl, TypeAliasDecl,
-    TypeExprBody,
+    Attribute, FnDef, Item, ModuleDef, Program, ProtocolDef, ProtocolImplDef, SpecDecl, TypeAliasDecl, TypeExprBody,
 };
 use crate::diag::{Diagnostic, Span, codes};
-use crate::frontend::protocols::{
-    ImplTarget, InterfaceProtocol, InterfaceProtocolCallback, InterfaceProtocolImpl,
-};
-use crate::modules::identity::ModuleName;
+use crate::frontend::protocols::{ImplTarget, InterfaceProtocol, InterfaceProtocolCallback, InterfaceProtocolImpl};
+use crate::modules::identity::{ExportKey, ModuleName};
 use crate::parser::lexer::Tok;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 pub const FZ_INTERFACE_ABI_VERSION: u32 = 1;
 
@@ -88,8 +86,8 @@ pub fn collect_from_program(prog: &Program) -> BTreeMap<ModuleName, ModuleInterf
     let mut out = BTreeMap::new();
     for item in &prog.items {
         match &**item {
-            crate::ast::Item::Module(m) => collect_module(m, None, &mut out),
-            crate::ast::Item::Protocol(protocol) => collect_protocol_unit(protocol, &mut out),
+            Item::Module(m) => collect_module(m, None, &mut out),
+            Item::Protocol(protocol) => collect_protocol_unit(protocol, &mut out),
             _ => {}
         }
     }
@@ -116,11 +114,7 @@ fn collect_protocol_unit(protocol: &ProtocolDef, out: &mut BTreeMap<ModuleName, 
     );
 }
 
-fn collect_module(
-    module: &ModuleDef,
-    parent: Option<&ModuleName>,
-    out: &mut BTreeMap<ModuleName, ModuleInterface>,
-) {
+fn collect_module(module: &ModuleDef, parent: Option<&ModuleName>, out: &mut BTreeMap<ModuleName, ModuleInterface>) {
     let name = if let Some(parent) = parent {
         parent.child(module.name.clone())
     } else {
@@ -131,9 +125,7 @@ fn collect_module(
         .items
         .iter()
         .filter_map(|item| match &**item {
-            crate::ast::Item::Import {
-                path, only, except, ..
-            } => Some(InterfaceImport {
+            Item::Import { path, only, except, .. } => Some(InterfaceImport {
                 module: path.clone(),
                 only: import_filter(only.as_deref()),
                 except: import_filter(except.as_deref()),
@@ -151,12 +143,7 @@ fn collect_module(
             // export: it is callable as `M.__info__` within a program
             // but is excluded from the module interface, so it is not imported,
             // not artifact-exported, and not subject to strict @spec validation.
-            crate::ast::Item::Fn(def)
-                if !def.is_macro
-                    && !def.is_private
-                    && def.extern_abi.is_none()
-                    && def.name != "__info__" =>
-            {
+            Item::Fn(def) if !def.is_macro && !def.is_private && def.extern_abi.is_none() && def.name != "__info__" => {
                 Some(interface_fn(def))
             }
             _ => None,
@@ -178,7 +165,7 @@ fn collect_module(
         .items
         .iter()
         .filter_map(|item| match &**item {
-            crate::ast::Item::Protocol(protocol) => Some(interface_protocol(protocol, Some(&name))),
+            Item::Protocol(protocol) => Some(interface_protocol(protocol, Some(&name))),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -188,17 +175,13 @@ fn collect_module(
         .items
         .iter()
         .filter_map(|item| match &**item {
-            crate::ast::Item::ProtocolImpl(protocol_impl) => Some(interface_protocol_impl(
-                protocol_impl,
-                Some(&name),
-                &module.items,
-            )),
+            Item::ProtocolImpl(protocol_impl) => {
+                Some(interface_protocol_impl(protocol_impl, Some(&name), &module.items))
+            }
             _ => None,
         })
         .collect::<Vec<_>>();
-    protocol_impls.sort_by(|a, b| {
-        (&a.protocol, &a.target, &a.callbacks).cmp(&(&b.protocol, &b.target, &b.callbacks))
-    });
+    protocol_impls.sort_by(|a, b| (&a.protocol, &a.target, &a.callbacks).cmp(&(&b.protocol, &b.target, &b.callbacks)));
 
     let docs = module.moduledoc().map(ToOwned::to_owned);
     let fingerprint_inputs = fingerprint_inputs(
@@ -226,7 +209,7 @@ fn collect_module(
     );
 
     for item in &module.items {
-        if let crate::ast::Item::Module(inner) = &**item {
+        if let Item::Module(inner) = &**item {
             collect_module(inner, Some(&name), out);
         }
     }
@@ -267,11 +250,7 @@ fn interface_specs(attrs: &[Attribute]) -> Vec<InterfaceSpec> {
 
 fn interface_spec(spec: &SpecDecl) -> InterfaceSpec {
     InterfaceSpec {
-        params: spec
-            .param_body_tokens
-            .iter()
-            .map(render_type_body)
-            .collect(),
+        params: spec.param_body_tokens.iter().map(render_type_body).collect(),
         result: render_type_body(&spec.result_body_tokens),
     }
 }
@@ -294,7 +273,7 @@ fn interface_protocol(protocol: &ProtocolDef, parent: Option<&ModuleName>) -> In
 fn interface_protocol_impl(
     protocol_impl: &ProtocolImplDef,
     parent: Option<&ModuleName>,
-    siblings: &[std::rc::Rc<crate::ast::Item>],
+    siblings: &[Rc<Item>],
 ) -> InterfaceProtocolImpl {
     let protocol = interface_impl_protocol_name(parent, &protocol_impl.protocol, siblings);
     let target = qualify_module_child(parent, &protocol_impl.target.path);
@@ -303,7 +282,7 @@ fn interface_protocol_impl(
         .items
         .iter()
         .filter_map(|item| match &**item {
-            crate::ast::Item::Fn(def) => Some(crate::modules::identity::ExportKey::new(
+            Item::Fn(def) => Some(ExportKey::new(
                 impl_module.clone(),
                 def.name.clone(),
                 def.clauses.first().map(|c| c.params.len()).unwrap_or(0),
@@ -318,11 +297,7 @@ fn interface_protocol_impl(
     }
 }
 
-fn interface_impl_protocol_name(
-    parent: Option<&ModuleName>,
-    name: &ModuleName,
-    siblings: &[std::rc::Rc<crate::ast::Item>],
-) -> ModuleName {
+fn interface_impl_protocol_name(parent: Option<&ModuleName>, name: &ModuleName, siblings: &[Rc<Item>]) -> ModuleName {
     if name.segments().len() != 1 {
         return name.clone();
     }
@@ -330,7 +305,7 @@ fn interface_impl_protocol_name(
         let has_local_protocol = siblings.iter().any(|item| {
             matches!(
                 &**item,
-                crate::ast::Item::Protocol(protocol)
+                Item::Protocol(protocol)
                     if protocol.name.segments().len() == 1
                         && protocol.name.last_segment() == name.last_segment()
             )
@@ -411,10 +386,7 @@ fn fingerprint_inputs(
     protocol_impls: &[InterfaceProtocolImpl],
     docs: Option<&str>,
 ) -> Vec<String> {
-    let mut inputs = vec![
-        format!("abi={}", FZ_INTERFACE_ABI_VERSION),
-        format!("module={}", name),
-    ];
+    let mut inputs = vec![format!("abi={}", FZ_INTERFACE_ABI_VERSION), format!("module={}", name)];
     if let Some(docs) = docs {
         inputs.push(format!("moduledoc={}", docs));
     }
@@ -451,10 +423,7 @@ fn fingerprint_inputs(
             })
             .collect::<Vec<_>>()
             .join(",");
-        inputs.push(format!(
-            "protocol={}:callbacks=[{}]",
-            protocol.name, callbacks
-        ));
+        inputs.push(format!("protocol={}:callbacks=[{}]", protocol.name, callbacks));
     }
     for protocol_impl in protocol_impls {
         let callbacks = protocol_impl
@@ -508,10 +477,7 @@ fn render_import_filter(fns: &[InterfaceImportFn]) -> String {
 pub fn render_interfaces(interfaces: &BTreeMap<ModuleName, ModuleInterface>) -> String {
     let mut out = String::new();
     for interface in interfaces.values() {
-        out.push_str(&format!(
-            "interface {} abi={}\n",
-            interface.name, interface.abi_version
-        ));
+        out.push_str(&format!("interface {} abi={}\n", interface.name, interface.abi_version));
         if let Some(docs) = &interface.docs {
             out.push_str(&format!("  moduledoc {:?}\n", docs));
         }
@@ -540,11 +506,7 @@ pub fn render_interfaces(interfaces: &BTreeMap<ModuleName, ModuleInterface>) -> 
             for export in &interface.exports {
                 out.push_str(&format!("    {}/{}", export.name, export.arity));
                 for spec in &export.specs {
-                    out.push_str(&format!(
-                        " :: ({}) -> {}",
-                        spec.params.join(", "),
-                        spec.result
-                    ));
+                    out.push_str(&format!(" :: ({}) -> {}", spec.params.join(", "), spec.result));
                 }
                 out.push('\n');
             }
@@ -556,11 +518,7 @@ pub fn render_interfaces(interfaces: &BTreeMap<ModuleName, ModuleInterface>) -> 
                 for callback in &protocol.callbacks {
                     out.push_str(&format!("      {}/{}", callback.name, callback.arity));
                     for spec in &callback.specs {
-                        out.push_str(&format!(
-                            " :: ({}) -> {}",
-                            spec.params.join(", "),
-                            spec.result
-                        ));
+                        out.push_str(&format!(" :: ({}) -> {}", spec.params.join(", "), spec.result));
                     }
                     out.push('\n');
                 }
@@ -591,9 +549,7 @@ pub fn render_interfaces(interfaces: &BTreeMap<ModuleName, ModuleInterface>) -> 
     out
 }
 
-pub fn validate_public_export_specs(
-    interfaces: &BTreeMap<ModuleName, ModuleInterface>,
-) -> Vec<Diagnostic> {
+pub fn validate_public_export_specs(interfaces: &BTreeMap<ModuleName, ModuleInterface>) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     for interface in interfaces.values() {
         for export in &interface.exports {
@@ -616,406 +572,5 @@ pub fn validate_public_export_specs(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::parser::Parser;
-    use crate::parser::lexer::Lexer;
-
-    fn interfaces(src: &str) -> BTreeMap<ModuleName, ModuleInterface> {
-        let toks = Lexer::new(src).tokenize().expect("lex");
-        let prog = Parser::new(toks).parse_program().expect("parse");
-        collect_from_program(&prog)
-    }
-
-    fn module(name: &[&str]) -> ModuleName {
-        ModuleName::from_segments(name.iter().map(|s| (*s).to_string()).collect())
-    }
-
-    #[test]
-    fn emits_exports_for_modules_and_nested_modules() {
-        let interfaces = interfaces(
-            r#"
-defmodule Outer do
-  fn f(x), do: x
-  defmodule Inner do
-    fn g(), do: 1
-  end
-end
-"#,
-        );
-
-        let outer = &interfaces[&module(&["Outer"])];
-        assert_eq!(outer.exports[0].name, "f");
-        assert_eq!(outer.exports[0].arity, 1);
-
-        let inner = &interfaces[&module(&["Outer", "Inner"])];
-        assert_eq!(inner.exports[0].name, "g");
-        assert_eq!(inner.exports[0].arity, 0);
-    }
-
-    #[test]
-    fn private_fns_are_not_interface_exports() {
-        let interfaces = interfaces(
-            r#"
-defmodule M do
-  fn public(x), do: helper(x)
-  fnp helper(x), do: x + 1
-end
-"#,
-        );
-
-        let m = &interfaces[&module(&["M"])];
-        let exports = m
-            .exports
-            .iter()
-            .map(|export| format!("{}/{}", export.name, export.arity))
-            .collect::<Vec<_>>();
-        assert_eq!(exports, vec!["public/1"]);
-    }
-
-    #[test]
-    fn emits_specs_types_opaque_refines_and_docs() {
-        let interfaces = interfaces(
-            r#"
-defmodule Account do
-  @moduledoc "Accounts."
-  @type Id :: opaque int
-  @type Positive :: refines int
-  @type Pair :: {int, int}
-  @spec get(Id) :: Pair
-  fn get(id), do: {id, id}
-end
-"#,
-        );
-
-        let account = &interfaces[&module(&["Account"])];
-        assert_eq!(account.docs.as_deref(), Some("Accounts."));
-        assert_eq!(
-            account
-                .types
-                .iter()
-                .map(|ty| (&ty.name, ty.kind))
-                .collect::<Vec<_>>(),
-            vec![
-                (&"Id".to_string(), InterfaceTypeKind::Opaque),
-                (&"Pair".to_string(), InterfaceTypeKind::Alias),
-                (&"Positive".to_string(), InterfaceTypeKind::Refines),
-            ]
-        );
-        assert_eq!(account.exports[0].name, "get");
-        assert_eq!(
-            account.exports[0].specs,
-            vec![InterfaceSpec {
-                params: vec!["Upper(\"Id\")".to_string()],
-                result: "Upper(\"Pair\")".to_string(),
-            }]
-        );
-    }
-
-    #[test]
-    fn emits_protocol_contract_facts() {
-        let interfaces = interfaces(
-            r#"
-defmodule Contracts do
-  defprotocol Enumerable do
-    @spec reduce(t(a), acc, (a, acc) -> acc) :: acc
-    fn reduce(enumerable, acc, reducer)
-  end
-
-  defimpl Enumerable, for: List do
-    fn reduce(list, acc, reducer), do: acc
-  end
-end
-"#,
-        );
-
-        let contracts = &interfaces[&module(&["Contracts"])];
-        assert_eq!(
-            contracts.protocols[0].name,
-            module(&["Contracts", "Enumerable"])
-        );
-        assert_eq!(contracts.protocols[0].callbacks[0].name, "reduce");
-        assert_eq!(
-            contracts.protocol_impls[0].protocol,
-            module(&["Contracts", "Enumerable"])
-        );
-        assert!(
-            contracts
-                .fingerprint_inputs
-                .iter()
-                .any(|input| input.starts_with("protocol=Contracts.Enumerable"))
-        );
-        let rendered = render_interfaces(&interfaces);
-        assert!(rendered.contains("protocols"));
-        assert!(rendered.contains("Contracts.Enumerable for Contracts.List"));
-    }
-
-    #[test]
-    fn interface_exports_preserve_multiple_specs_in_order() {
-        let interfaces = interfaces(
-            r#"
-defmodule Enum do
-  @spec with_index(t(a), integer) :: [{a, integer}]
-  @spec with_index(t(a), (a, integer) -> b) :: [b]
-  fn with_index(enumerable, offset_or_fun), do: enumerable
-end
-"#,
-        );
-
-        let enum_interface = &interfaces[&module(&["Enum"])];
-        assert_eq!(enum_interface.exports[0].specs.len(), 2);
-        assert_eq!(
-            enum_interface.exports[0]
-                .specs
-                .iter()
-                .map(|spec| spec.result.as_str())
-                .collect::<Vec<_>>(),
-            vec![
-                "LBrack LBrace Ident(\"a\") Comma Ident(\"integer\") RBrace RBrack",
-                "LBrack Ident(\"b\") RBrack"
-            ]
-        );
-        assert!(enum_interface.fingerprint_inputs.iter().any(|input| {
-            input.contains("with_index/2:specs=[")
-                && input
-                    .contains("LBrack LBrace Ident(\"a\") Comma Ident(\"integer\") RBrace RBrack")
-                && input.contains("LBrack Ident(\"b\") RBrack")
-        }));
-    }
-
-    #[test]
-    fn protocol_callbacks_preserve_multiple_specs_in_order() {
-        let interfaces = interfaces(
-            r#"
-defprotocol P do
-  @spec pick(integer) :: integer
-  @spec pick(float) :: float
-  fn pick(value)
-end
-"#,
-        );
-
-        let p = &interfaces[&module(&["P"])];
-        let callback = &p.protocols[0].callbacks[0];
-        assert_eq!(callback.specs.len(), 2);
-        assert_eq!(
-            callback
-                .specs
-                .iter()
-                .map(|spec| spec.result.as_str())
-                .collect::<Vec<_>>(),
-            vec!["Ident(\"integer\")", "Ident(\"float\")"]
-        );
-        assert!(p.fingerprint_inputs.iter().any(|input| {
-            input.contains("pick/1:specs=[")
-                && input.contains("Ident(\"integer\")")
-                && input.contains("Ident(\"float\")")
-        }));
-    }
-
-    #[test]
-    fn emits_root_protocol_as_own_public_namespace() {
-        let interfaces = interfaces(
-            r#"
-defprotocol Enumerable do
-  @spec reduce(t(a), acc, (a, acc) -> acc) :: acc
-  fn reduce(enumerable, acc, reducer)
-end
-"#,
-        );
-
-        let enumerable = &interfaces[&module(&["Enumerable"])];
-        assert_eq!(enumerable.name, module(&["Enumerable"]));
-        assert_eq!(enumerable.exports, Vec::<InterfaceFn>::new());
-        assert_eq!(enumerable.protocols[0].name, module(&["Enumerable"]));
-        assert_eq!(enumerable.protocols[0].callbacks[0].name, "reduce");
-        assert!(!interfaces.contains_key(&module(&["Enumerable", "Enumerable"])));
-        assert!(
-            enumerable
-                .fingerprint_inputs
-                .iter()
-                .any(|input| input.starts_with("protocol=Enumerable"))
-        );
-    }
-
-    #[test]
-    fn aliases_and_imports_do_not_add_exports() {
-        let interfaces = interfaces(
-            r#"
-defmodule Math do
-  fn add(x, y), do: x + y
-end
-defmodule User do
-  alias Math, as: M
-  import Math, only: [add: 2]
-  fn calc(x, y), do: M.add(x, y)
-end
-"#,
-        );
-        assert_eq!(
-            interfaces[&module(&["User"])]
-                .imports
-                .iter()
-                .map(|import| format!("{}:{}", import.module, render_import_filter(&import.only)))
-                .collect::<Vec<_>>(),
-            vec!["Math:add/2"]
-        );
-        assert_eq!(
-            interfaces[&module(&["User"])]
-                .exports
-                .iter()
-                .map(|f| f.name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["calc"]
-        );
-    }
-
-    #[test]
-    fn extern_declarations_are_implementation_contracts_not_public_exports() {
-        let interfaces = interfaces(
-            r#"
-defmodule Utf8 do
-  extern "C" fn fz_bitstring_valid_utf8(any) :: integer
-
-  @spec valid?(any) :: bool
-  fn valid?(bytes), do: fz_bitstring_valid_utf8(bytes) == 1
-end
-"#,
-        );
-
-        assert_eq!(
-            interfaces[&module(&["Utf8"])]
-                .exports
-                .iter()
-                .map(|f| format!("{}/{}", f.name, f.arity))
-                .collect::<Vec<_>>(),
-            vec!["valid?/1"]
-        );
-    }
-
-    #[test]
-    fn render_interfaces_excludes_function_bodies() {
-        let interfaces = interfaces(
-            r#"
-defmodule M do
-  @spec f(integer) :: integer
-  fn f(x), do: x + 100
-end
-"#,
-        );
-        let rendered = render_interfaces(&interfaces);
-        assert!(rendered.contains("interface M abi=1"));
-        assert!(rendered.contains("f/1 :: (Ident(\"integer\")) -> Ident(\"integer\")"));
-        assert!(
-            !rendered.contains("100"),
-            "body leaked into interface:\n{rendered}"
-        );
-    }
-
-    #[test]
-    fn strict_validation_requires_specs_for_module_exports() {
-        let interfaces = interfaces(
-            r#"
-fn helper(x), do: x
-
-defmodule Public do
-  fn missing(x), do: helper(x)
-end
-"#,
-        );
-        let diags = validate_public_export_specs(&interfaces);
-        assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].code, crate::diag::codes::INTERFACE_MISSING_SPEC);
-        assert!(diags[0].message.contains("Public`.`missing/1"));
-        assert_ne!(diags[0].primary.span, Span::DUMMY);
-    }
-
-    #[test]
-    fn strict_validation_ignores_private_fns() {
-        let interfaces = interfaces(
-            r#"
-defmodule Public do
-  @spec visible(integer) :: integer
-  fn visible(x), do: helper(x)
-
-  fnp helper(x), do: x
-end
-"#,
-        );
-
-        assert!(validate_public_export_specs(&interfaces).is_empty());
-    }
-
-    #[test]
-    fn strict_validation_accepts_matching_specs_and_overloads() {
-        let name = module(&["Public"]);
-        let mut interfaces = BTreeMap::new();
-        interfaces.insert(
-            name.clone(),
-            ModuleInterface {
-                name,
-                abi_version: FZ_INTERFACE_ABI_VERSION,
-                imports: Vec::new(),
-                exports: vec![
-                    InterfaceFn {
-                        name: "f".to_string(),
-                        arity: 0,
-                        specs: vec![InterfaceSpec {
-                            params: Vec::new(),
-                            result: "Ident(\"integer\")".to_string(),
-                        }],
-                        name_span: Span::DUMMY,
-                    },
-                    InterfaceFn {
-                        name: "f".to_string(),
-                        arity: 1,
-                        specs: vec![InterfaceSpec {
-                            params: vec!["Ident(\"integer\")".to_string()],
-                            result: "Ident(\"integer\")".to_string(),
-                        }],
-                        name_span: Span::DUMMY,
-                    },
-                ],
-                types: Vec::new(),
-                protocols: Vec::new(),
-                protocol_impls: Vec::new(),
-                docs: None,
-                fingerprint_inputs: Vec::new(),
-            },
-        );
-        assert!(validate_public_export_specs(&interfaces).is_empty());
-    }
-
-    #[test]
-    fn fingerprint_inputs_are_deterministic() {
-        let interfaces = interfaces(
-            r#"
-defmodule M do
-  @type T :: int
-  @spec b(T) :: T
-  fn b(x), do: x
-  fn a(), do: 1
-end
-"#,
-        );
-        let first = interfaces[&module(&["M"])].fingerprint_inputs.clone();
-        let second = interfaces[&module(&["M"])].fingerprint_inputs.clone();
-        assert_eq!(first, second);
-        assert_eq!(first[0], "abi=1");
-        assert_eq!(first[1], "module=M");
-        assert!(first[2].starts_with("type=T:Alias:"));
-        assert!(first[3].starts_with("fn=a/0:"));
-        assert!(first[4].starts_with("fn=b/1:"));
-    }
-
-    #[test]
-    fn fingerprint_digest_is_stable() {
-        let a = vec!["module=M".to_string(), "fn=f/1:integer".to_string()];
-        let b = vec!["module=M".to_string(), "fn=f/1:integer".to_string()];
-        let c = vec!["module=M".to_string(), "fn=g/1:integer".to_string()];
-
-        assert_eq!(fingerprint_digest(&a), fingerprint_digest(&b));
-        assert_ne!(fingerprint_digest(&a), fingerprint_digest(&c));
-        assert_eq!(fingerprint_digest(&a).len(), 16);
-    }
-}
+#[path = "interface_test.rs"]
+mod interface_test;

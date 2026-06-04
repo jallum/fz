@@ -1,0 +1,28 @@
+# INTENTIONALLY ILL-TYPED — kept as the acceptance fixture for `Known(none)`
+# diagnostics in the type-specialization engine.
+#
+# An `Enum.reduce/3` reducer must return the *bare* new accumulator. This one
+# returns a tagged `{:cont, acc + entry}` instead — that is the contract of the
+# `Enumerable.reduce` *protocol* reducer / `Enum.reduce_while`, NOT `Enum.reduce`.
+# So `acc` becomes `{:cont, int}`, and the next iteration evaluates
+# `{:cont, int} + entry`; `Kernel.+/2` has no clause for `(tuple, integer)`.
+#
+# At runtime this raises `ArithmeticError`. The engine *should* catch it
+# statically and emit a located diagnostic, e.g.:
+#   `+` is not defined for `({:cont, integer}, integer)` at Main.reducer/2.
+#
+# Target status: pinned in type_infer. The linked runtime graph emits a
+# `type/invalid-operator` telemetry diagnostic at Main.broken_reducer/2 instead
+# of falling back to Unknown/any. The well-typed counterpart is
+# enum_reduce_named_ref_ok.fz.
+
+defmodule Main do
+  fn broken_reducer(entry, acc) do
+    {:cont, acc + entry}
+  end
+end
+
+fn main() do
+  Enum.reduce([1, 2, 3], 0, &Main.broken_reducer/2)
+  |> dbg()
+end
