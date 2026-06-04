@@ -767,7 +767,14 @@ fn list_is_nil_on_int_var_flags_true_branch_unreachable() {
     b.set_terminator(entry, Term::if_user(c, then_b, else_b));
     b.set_terminator(then_b, Term::Halt(five));
     b.set_terminator(else_b, Term::Halt(five));
-    let m = build_module(vec![b.build()]);
+    // Reach `f` by packing it into a closure in `main`; the planner registers
+    // its all-`any` entry spec, which is what diagnostics now analyze. (Pruned,
+    // never-reached fns carry no spec and are not diagnosed.)
+    let mut mb = FnBuilder::new(FnId(1), "main");
+    let mentry = mb.block(vec![]);
+    let cl = mb.let_(mentry, Prim::MakeClosure(CallsiteIdent::from_source(Span::DUMMY), FnId(0), vec![]));
+    mb.set_terminator(mentry, Term::Halt(cl));
+    let m = build_module(vec![b.build(), mb.build()]);
     let mut ct = ConcreteTypes;
     let t = plan_module(&mut ct, &m, &NullTelemetry);
     let diags = collect_diagnostics(&mut ct, &m, &t, &NullTelemetry);
@@ -818,7 +825,13 @@ fn eq_then_eq_dup_clause_flags_second_arm_unreachable() {
     b.set_terminator(dead_b, Term::Halt(x));
     b.set_terminator(fallback, Term::Halt(x));
 
-    let m = build_module(vec![b.build()]);
+    // Reach `f` via a closure pack in `main` so its all-`any` entry spec is
+    // registered and analyzed (diagnostics run on reached specs only).
+    let mut mb = FnBuilder::new(FnId(1), "main");
+    let mentry = mb.block(vec![]);
+    let cl = mb.let_(mentry, Prim::MakeClosure(CallsiteIdent::from_source(Span::DUMMY), FnId(0), vec![]));
+    mb.set_terminator(mentry, Term::Halt(cl));
+    let m = build_module(vec![b.build(), mb.build()]);
     let mut ct = ConcreteTypes;
     let t = plan_module(&mut ct, &m, &NullTelemetry);
     let diags = collect_diagnostics(&mut ct, &m, &t, &NullTelemetry);
@@ -971,7 +984,13 @@ fn unreachable_arm_diagnostic_includes_type_vocabulary() {
     b.set_terminator(dead_b, Term::Halt(x));
     b.set_terminator(fallback, Term::Halt(x));
 
-    let m = build_module(vec![b.build()]);
+    // Reach `f` via a closure pack in `main` so its all-`any` entry spec is
+    // registered and analyzed (diagnostics run on reached specs only).
+    let mut mb = FnBuilder::new(FnId(1), "main");
+    let mentry = mb.block(vec![]);
+    let cl = mb.let_(mentry, Prim::MakeClosure(CallsiteIdent::from_source(Span::DUMMY), FnId(0), vec![]));
+    mb.set_terminator(mentry, Term::Halt(cl));
+    let m = build_module(vec![b.build(), mb.build()]);
     let mut ct = ConcreteTypes;
     let t = plan_module(&mut ct, &m, &NullTelemetry);
     let diags = collect_diagnostics(&mut ct, &m, &t, &NullTelemetry);

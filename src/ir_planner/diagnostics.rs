@@ -1,9 +1,8 @@
 use super::expr_types::var_as_map_key;
-use super::fn_types::{ModulePlan, SpecKey, SpecPlan, spec_key_for_fn};
+use super::fn_types::{ModulePlan, SpecKey, SpecPlan};
 use super::narrow::{find_emptied_var, narrow_for_if};
 use super::prim::type_prim;
 use super::purity::{ImpureError, ImpureKind, ImpureTerm, check_pure_codegen, check_pure_term};
-use super::type_fn::type_fn;
 use crate::diag::{Diagnostic, Diagnostics, Span, codes};
 use crate::frontend::protocols::{impl_target_type, protocol_domain_tag};
 use crate::fz_ir::{
@@ -177,6 +176,11 @@ pub fn collect_diagnostics<T: Types<Ty = Ty> + ClosureTypes + RenderTypes + Visi
     tel: &dyn Telemetry,
 ) -> Diagnostics {
     let mut out = Diagnostics::new();
+    // Diagnostics describe the program that actually runs: we report only on the
+    // specializations the planner reached and typed. Functions it pruned as
+    // unreachable (unused prelude, dead clause/branch scaffolding) carry no
+    // planned spec and are not analyzed — typing them under all-`any` inputs just
+    // to surface warnings about code that can never execute is not worth its cost.
     collect_unreachable_arm_diagnostics(t, module, types, &mut out);
     collect_stmt_type_diagnostics(t, module, types, &mut out, tel);
     collect_protocol_no_impl_diagnostics(t, module, types, &mut out);
@@ -193,8 +197,7 @@ fn collect_unreachable_arm_diagnostics<T: Types<Ty = Ty> + ClosureTypes + Render
     types: &ModulePlan,
     out: &mut Diagnostics,
 ) {
-    let mut specs_by_fn = value_specs_by_fn(types);
-    let adhoc_specs = add_adhoc_specs_for_unregistered_fns(t, module, &mut specs_by_fn);
+    let specs_by_fn = value_specs_by_fn(types);
     for f in sorted_fns(module) {
         let Some(keys) = specs_by_fn.get(&f.id) else {
             continue;
@@ -230,7 +233,7 @@ fn collect_unreachable_arm_diagnostics<T: Types<Ty = Ty> + ClosureTypes + Render
             let mut dead_then: Vec<(Var, T::Ty, T::Ty)> = Vec::new();
             let mut dead_else: Vec<(Var, T::Ty, T::Ty)> = Vec::new();
             for key in keys {
-                let ft = spec_for_diag(types, &adhoc_specs, f.id, key);
+                let ft = spec_for_diag(types, f.id, key);
                 let env = env_after_block_stmts(t, module, ft, b);
                 let (then_env, else_env) = narrow_for_if(t, &env, cond, &b.stmts);
                 if let Some(d) = find_emptied_var(t, &env, &then_env) {
@@ -262,12 +265,11 @@ fn collect_stmt_type_diagnostics<T: Types<Ty = Ty> + ClosureTypes + RenderTypes 
     tel: &dyn Telemetry,
 ) {
     for f in module.fns.iter() {
-        let ft_owned = fallback_any_spec(t, module, types, f);
-        let ft = ft_owned.as_ref().unwrap_or_else(|| {
-            types
-                .any_spec_for(f.id)
-                .expect("fallback exists when no registered spec exists")
-        });
+        // Reachable fns only: an unreached fn has no planned spec and is not
+        // analyzed (see `collect_diagnostics`).
+        let Some(ft) = types.any_spec_for(f.id) else {
+            continue;
+        };
         for b in sorted_blocks(f) {
             let mut env: HashMap<Var, Ty> = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
             let spans = module.source.stmt_spans.get(&(f.id, b.id));
@@ -469,57 +471,11 @@ fn value_specs_by_fn(types: &ModulePlan) -> HashMap<FnId, Vec<Vec<KeySlot>>> {
     specs_by_fn
 }
 
-fn add_adhoc_specs_for_unregistered_fns<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    module: &Module,
-    specs_by_fn: &mut HashMap<FnId, Vec<Vec<KeySlot>>>,
-) -> HashMap<FnId, SpecPlan> {
-    let mut adhoc_specs = HashMap::new();
-    for f in &module.fns {
-        if specs_by_fn.contains_key(&f.id) {
-            continue;
-        }
-        let any_key_ty = any_key_for_fn(t, f);
-        let ft = type_fn(t, f, module, Some(&any_key_ty));
-        adhoc_specs.insert(f.id, ft);
-        specs_by_fn
-            .entry(f.id)
-            .or_default()
-            .push(spec_key_for_fn(f, any_key_ty).input);
-    }
-    adhoc_specs
-}
-
-fn fallback_any_spec<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    module: &Module,
-    types: &ModulePlan,
-    f: &FnIr,
-) -> Option<SpecPlan> {
-    if types.any_spec_for(f.id).is_some() {
-        return None;
-    }
-    let any_key = any_key_for_fn(t, f);
-    Some(type_fn(t, f, module, Some(&any_key)))
-}
-
-fn any_key_for_fn<T: Types<Ty = Ty>>(t: &mut T, f: &FnIr) -> Vec<Ty> {
-    let n_params = f.block(f.entry).params.len();
-    let any = t.any();
-    t.repeat(any, n_params)
-}
-
-fn spec_for_diag<'a>(
-    types: &'a ModulePlan,
-    adhoc_specs: &'a HashMap<FnId, SpecPlan>,
-    fn_id: FnId,
-    key: &[KeySlot],
-) -> &'a SpecPlan {
+fn spec_for_diag<'a>(types: &'a ModulePlan, fn_id: FnId, key: &[KeySlot]) -> &'a SpecPlan {
     types
         .specs
         .get(&SpecKey::value(fn_id, key.to_vec()))
-        .or_else(|| adhoc_specs.get(&fn_id))
-        .expect("diagnostic spec key must have a registered or ad-hoc plan")
+        .expect("value spec key drawn from value_specs_by_fn must resolve")
 }
 
 pub(crate) fn env_after_block_stmts<T: Types<Ty = Ty> + ClosureTypes>(
