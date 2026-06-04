@@ -375,6 +375,7 @@ pub trait Types {
 #[cfg(test)]
 mod conformance_tests {
     use super::*;
+    use std::slice;
 
     macro_rules! key_helper_conformance_tests {
         ($mod_name:ident, $ctor:expr) => {
@@ -418,12 +419,8 @@ mod conformance_tests {
                     let mut t = $ctor;
                     let int = t.int();
                     let int_lit = t.int_lit(7);
-                    assert!(
-                        t.key_is_strictly_more_specific(std::slice::from_ref(&int_lit), std::slice::from_ref(&int))
-                    );
-                    assert!(
-                        !t.key_is_strictly_more_specific(std::slice::from_ref(&int), std::slice::from_ref(&int_lit))
-                    );
+                    assert!(t.key_is_strictly_more_specific(slice::from_ref(&int_lit), slice::from_ref(&int)));
+                    assert!(!t.key_is_strictly_more_specific(slice::from_ref(&int), slice::from_ref(&int_lit)));
                 }
 
                 #[test]
@@ -927,11 +924,11 @@ mod conformance_tests {
                     let empty = t.empty_list();
                     let one = t.int_lit(1);
                     let lhs_ret = t.tuple(&[empty, one]);
-                    let lhs = t.arrow(std::slice::from_ref(&int), lhs_ret);
+                    let lhs = t.arrow(slice::from_ref(&int), lhs_ret);
                     let non_empty = t.non_empty_list(int.clone());
                     let two = t.int_lit(2);
                     let rhs_ret = t.tuple(&[non_empty, two]);
-                    let rhs = t.arrow(std::slice::from_ref(&float), rhs_ret);
+                    let rhs = t.arrow(slice::from_ref(&float), rhs_ret);
                     let union = t.union(int.clone(), float);
                     let list_int = t.list(int.clone());
                     let ret = t.tuple(&[list_int, int]);
@@ -1055,7 +1052,7 @@ mod conformance_tests {
 #[cfg(test)]
 mod smoke {
     use super::*;
-    use std::slice::from_ref;
+    use std::slice;
 
     pub(super) fn smoke_primitives_distinct<T: Types>(t: &mut T) {
         let i = t.int();
@@ -1139,7 +1136,7 @@ mod smoke {
         let i = t.int();
         let wide = t.arrow(&[any], i.clone());
         let arg = i.clone();
-        let narrow = t.arrow(from_ref(&arg), i);
+        let narrow = t.arrow(slice::from_ref(&arg), i);
         assert!(t.is_subtype(&wide, &narrow));
     }
 
