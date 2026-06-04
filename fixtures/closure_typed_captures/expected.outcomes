@@ -10,6 +10,3 @@ main[] demand=value:
 k_187[(α0) -> α1] demand=value:
   @0:92-118 Cont -> Static(k_188#188 [int] demand=value)
   @0:92-118 Direct -> Static(apply1#184 [(α0) -> α1, int] demand=value)
-
-k_188[int] demand=value:
-  @0:88-119 Direct -> Static(Kernel.dbg#1 [int] demand=value)

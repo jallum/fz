@@ -357,6 +357,11 @@ pub extern "C" fn fz_halt_implicit_f64(process: *mut Process, val: f64) {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn fz_halt_implicit_atom(process: *mut Process, atom_id: u64) {
+    (unsafe { &mut *process }).halt_value = atom_id as i64;
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_halt_implicit_ref(process: *mut Process, ref_word: u64) {
     (unsafe { &mut *process }).halt_value =
         halt_value_from_slot(any_value_from_ref_word(ref_word, "fz_halt_implicit_ref"));
@@ -647,8 +652,8 @@ pub extern "C" fn fz_closure_halt_kind_ref(closure_ref_word: u64) -> u32 {
 /// exactly (`gc_traces_closure_captured_via_jit`).
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_get_halt_cont(process: *mut Process, halt_cont_body_addr: u64, kind: u32) -> u64 {
-    // fz-ul4.27.22.3 — `kind` selects which of three per-Process halt-cont
-    // singletons to return (0=ValueRef, 1=RawInt, 2=RawF64). Each holds a
+    // fz-ul4.27.22.3 — `kind` selects which of four per-Process halt-cont
+    // singletons to return (0=ValueRef, 1=RawInt, 2=RawF64, 3=RawAtom). Each holds a
     // body whose Tail-CC sig matches its repr. Producer's Term::Return
     // uses sig (return_repr, i64); the code pointer at +8 must agree.
     let p = unsafe { &mut *process };
@@ -1708,6 +1713,19 @@ pub extern "C" fn fz_closure_get_capture_f64(closure_ref_word: u64, index: u64) 
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn fz_closure_get_capture_atom(closure_ref_word: u64, index: u64) -> i64 {
+    if is_lazy_cont_ref(closure_ref_word) {
+        return unsafe { lazy_cont_capture_raw(closure_ref_word, index as usize) as i64 };
+    }
+    let value = any_value_ref_from_word(closure_ref_word, "fz_closure_get_capture_atom");
+    let addr = value.closure_addr().expect("fz_closure_get_capture_atom closure");
+    match unsafe { closure_capture_value(addr, index as usize) } {
+        AnyValue::Atom(value) => value as i64,
+        other => panic!("fz_closure_get_capture_atom expected atom, got {:?}", other),
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_closure_set_capture_ref(
     process: *mut Process,
     closure_ref_word: u64,
@@ -1744,6 +1762,17 @@ pub extern "C" fn fz_closure_set_capture_f64(process: *mut Process, closure_ref_
     };
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_closure_set_capture_atom(process: *mut Process, closure_ref_word: u64, index: u64, value: u64) {
+    let closure = any_value_ref_from_word(closure_ref_word, "fz_closure_set_capture_atom closure");
+    let addr = closure.closure_addr().expect("fz_closure_set_capture_atom closure");
+    unsafe {
+        (&mut *process)
+            .heap
+            .write_closure_capture_value(addr, index as usize, AnyValue::Atom(value as u32))
+    };
+}
+
 const LAZY_CONT_CODE_OFF: usize = 0;
 const LAZY_CONT_SID_OFF: usize = 8;
 const LAZY_CONT_COUNT_OFF: usize = 16;
@@ -1751,6 +1780,7 @@ const LAZY_CONT_RAW_OFF: usize = 32;
 const LAZY_CONT_KIND_REF: u8 = 0;
 const LAZY_CONT_KIND_I64: u8 = 1;
 const LAZY_CONT_KIND_F64: u8 = 2;
+const LAZY_CONT_KIND_ATOM: u8 = 3;
 
 #[inline]
 fn is_lazy_cont_ref(word: u64) -> bool {
@@ -1823,6 +1853,11 @@ pub extern "C" fn fz_materialize_cont(process: *mut Process, cont_word: u64) -> 
                 (&mut *process)
                     .heap
                     .write_closure_capture_value(addr, i, AnyValue::Float(raw))
+            },
+            LAZY_CONT_KIND_ATOM => unsafe {
+                (&mut *process)
+                    .heap
+                    .write_closure_capture_value(addr, i, AnyValue::Atom(raw as u32))
             },
             _ => panic!("fz_materialize_cont: unknown lazy capture kind {}", kind),
         }

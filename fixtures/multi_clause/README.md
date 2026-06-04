@@ -1,15 +1,15 @@
 ---
 purpose: "multi-clause dispatch with a guard clause (`when n > 0`), plus recursive `fact`"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 4
-budget.codegen.instructions: 22
-budget.specs.count: 4
-budget.planner.worklist_pops: 9
-budget.planner.walk_calls: 9
-budget.planner.type_fn_calls: 4
+budget.codegen.functions: 13
+budget.codegen.instructions: 132
+budget.specs.count: 13
+budget.planner.worklist_pops: 13
+budget.planner.walk_calls: 13
+budget.planner.type_fn_calls: 13
 budget.planner.matcher_specs: 0
-budget.planner.vars: 42
-budget.planner.blocks: 9
-budget.planner.stmts: 23
-budget.planner.dispatches: 3
+budget.planner.vars: 34
+budget.planner.blocks: 21
+budget.planner.stmts: 22
+budget.planner.dispatches: 15
 ---

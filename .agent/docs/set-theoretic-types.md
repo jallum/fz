@@ -348,4 +348,4 @@ Gate this model with:
 - `cargo test ir_lower::tests::dead_binop_diagnostic_observable_via_telemetry`
 - `cargo test --test fixture_matrix bsx_nested_eq` (and `bsx_nested_match`,
   `bsx_guard_eq`) — `==`, case-match, and guard agree across jit/interp/aot/repl
-- `cargo test --test fixture_matrix bsx_brand_blind_eq_emits_telemetry`
+- `cargo test --lib brand_blind_equality_emits_telemetry_without_dead_binop_warning`

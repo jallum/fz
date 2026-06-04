@@ -235,6 +235,15 @@ Codegen lowers the `PlannedProgram` mechanically.
 
 - If codegen sees a direct or continuation callsite, the current caller's
   `SpecPlan.call_edges` must contain the selected edge.
+- If materialization erased a known zero-capture `CallClosure`, the executable
+  body already contains the cloned direct producer and continuation control
+  flow. Codegen consumes the remapped `SpecPlan.call_edges` attached to that
+  `PlannedBody`; it must not rediscover the closure target from the raw
+  callable value.
+- Materialized `SpecPlan.call_edges` are pruned to surviving/remapped body
+  callsites. `CallableBoundary` edges and selective-receive outcome `Cont`
+  edges are representation/reachability obligations rather than ordinary
+  terminator slots, so the orphan-edge check classifies them separately.
 - If codegen lowers `Prim::MakeFnRef` or `Prim::MakeClosure`, the current
   statement site must select one of the planned callable-entry targets for
   that closure value. The selected entry is reported through
@@ -254,6 +263,9 @@ selection.
 Executable spec reachability belongs to `PlannedProgram`. Tests that prove a
 spec is semantically reachable live with planner/materializer coverage and
 observe `fz.planner.materialized` or `fz.planner.body_materialized` telemetry.
+Known direct-call and closure-call erasure is also materializer coverage:
+tests observe `direct_call_inline_count`, `continuation_inline_count`, and
+`fused_block_count` before inspecting codegen output.
 Codegen tests assert mechanical lowering effects for bodies the planned program
 already selected.
 

@@ -196,6 +196,7 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
         let id = match repr {
             ArgRepr::RawInt => self.runtime.halt_implicit_i64_id,
             ArgRepr::RawF64 => self.runtime.halt_implicit_f64_id,
+            ArgRepr::RawAtom => self.runtime.halt_implicit_atom_id,
             ArgRepr::ValueRef => self.runtime.halt_implicit_ref_id,
             ArgRepr::Condition => unreachable!("condition halt values must be materialized"),
         };
@@ -262,6 +263,11 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
         self.call1(id, &[closure_ref, index])
     }
 
+    pub(crate) fn closure_capture_atom(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
+        let id = self.runtime.closure_get_capture_atom_id;
+        self.call1(id, &[closure_ref, index])
+    }
+
     pub(crate) fn closure_capture_ref(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
         let id = self.runtime.closure_get_capture_ref_id;
         self.call1(id, &[closure_ref, index])
@@ -289,6 +295,11 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
 
     pub(crate) fn set_closure_capture_f64(&mut self, closure_ref: ir::Value, index: ir::Value, value: ir::Value) {
         let id = self.runtime.closure_set_capture_f64_id;
+        self.call_p(id, &[closure_ref, index, value]);
+    }
+
+    pub(crate) fn set_closure_capture_atom(&mut self, closure_ref: ir::Value, index: ir::Value, value: ir::Value) {
+        let id = self.runtime.closure_set_capture_atom_id;
         self.call_p(id, &[closure_ref, index, value]);
     }
 
@@ -327,6 +338,12 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
         match value {
             CodegenValue::Condition(flag) => flag,
             CodegenValue::RawInt(_) | CodegenValue::RawF64(_) => b.ins().iconst(types::I8, 1),
+            CodegenValue::RawAtom(payload) => {
+                let is_false = b.ins().icmp_imm(IntCC::Equal, payload, FALSE_ATOM_ID as i64);
+                let is_nil = b.ins().icmp_imm(IntCC::Equal, payload, NIL_ATOM_ID as i64);
+                let falsey = b.ins().bor(is_false, is_nil);
+                b.ins().bxor_imm(falsey, 1)
+            }
             CodegenValue::Known {
                 kind: ValueKind::NULL, ..
             } => b.ins().iconst(types::I8, 0),
@@ -352,6 +369,7 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
         match value {
             CodegenValue::RawInt(_) => b.ins().iconst(types::I8, ValueKind::INT.tag() as i64),
             CodegenValue::RawF64(_) => b.ins().iconst(types::I8, ValueKind::FLOAT.tag() as i64),
+            CodegenValue::RawAtom(_) => b.ins().iconst(types::I8, ValueKind::ATOM.tag() as i64),
             CodegenValue::Condition(_) => b.ins().iconst(types::I8, ValueKind::ATOM.tag() as i64),
             CodegenValue::Known { payload, kind } => known_kind_ref_tag(b, payload, kind),
             CodegenValue::AnyRef(_) => unreachable!("handled above"),
@@ -402,6 +420,7 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
                 }
                 b.ins().iconst(types::I8, 0)
             }
+            CodegenValue::RawAtom(payload) => b.ins().icmp_imm(IntCC::Equal, payload, atom_id as i64),
             CodegenValue::RawInt(_) | CodegenValue::RawF64(_) => b.ins().iconst(types::I8, 0),
             CodegenValue::Known {
                 payload,
@@ -495,7 +514,14 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
                 let float = self.b.ins().bitcast(types::F64, MemFlags::new(), payload);
                 self.b.ins().fcvt_to_sint(types::I64, float)
             }
-            (CodegenValue::Known { .. }, ArgRepr::RawInt | ArgRepr::RawF64) => {
+            (
+                CodegenValue::Known {
+                    payload,
+                    kind: ValueKind::ATOM,
+                },
+                ArgRepr::RawAtom,
+            ) => payload,
+            (CodegenValue::Known { .. }, ArgRepr::RawInt | ArgRepr::RawF64 | ArgRepr::RawAtom) => {
                 panic!("known scalar kind does not match requested raw ABI repr")
             }
             (CodegenValue::Known { .. }, ArgRepr::Condition) => {
@@ -504,11 +530,13 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
             (CodegenValue::AnyRef(value), ArgRepr::ValueRef) => value,
             (CodegenValue::AnyRef(value), ArgRepr::RawInt) => self.unbox_int(value),
             (CodegenValue::AnyRef(value), ArgRepr::RawF64) => self.unbox_float(value),
+            (CodegenValue::AnyRef(value), ArgRepr::RawAtom) => self.unbox_atom(value),
             (CodegenValue::AnyRef(_), ArgRepr::Condition) => {
                 unreachable!("condition is never a callee ABI target")
             }
             (CodegenValue::RawInt(value), ArgRepr::ValueRef) => self.box_int_for_any(value),
             (CodegenValue::RawF64(value), ArgRepr::ValueRef) => self.box_float_for_any(value),
+            (CodegenValue::RawAtom(value), ArgRepr::ValueRef) => self.box_atom_for_any(value),
             (CodegenValue::Condition(value), ArgRepr::ValueRef) => {
                 let atom = {
                     let b = &mut *self.b;
@@ -518,6 +546,7 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
                 };
                 self.box_atom_for_any(atom)
             }
+            (CodegenValue::Condition(value), ArgRepr::RawAtom) => bool_to_fz(self.b, self.cache, value),
             (binding, to) => {
                 if binding.repr() == to {
                     binding.value()
@@ -535,16 +564,25 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
         match (from, to) {
             (ArgRepr::ValueRef, ArgRepr::RawInt) => self.unbox_int(val),
             (ArgRepr::ValueRef, ArgRepr::RawF64) => self.unbox_float(val),
+            (ArgRepr::ValueRef, ArgRepr::RawAtom) => self.unbox_atom(val),
             (ArgRepr::RawInt, ArgRepr::ValueRef) => self.box_int_for_any(val),
             (ArgRepr::RawF64, ArgRepr::ValueRef) => self.box_float_for_any(val),
+            (ArgRepr::RawAtom, ArgRepr::ValueRef) => self.box_atom_for_any(val),
             (ArgRepr::RawInt, ArgRepr::RawF64) => self.b.ins().fcvt_from_sint(types::F64, val),
             (ArgRepr::RawF64, ArgRepr::RawInt) => self.b.ins().fcvt_to_sint(types::I64, val),
+            (ArgRepr::RawAtom, ArgRepr::RawInt)
+            | (ArgRepr::RawAtom, ArgRepr::RawF64)
+            | (ArgRepr::RawInt, ArgRepr::RawAtom)
+            | (ArgRepr::RawF64, ArgRepr::RawAtom) => {
+                panic!("cannot coerce atom and numeric raw ABI reprs")
+            }
             (ArgRepr::Condition, _) | (_, ArgRepr::Condition) => {
                 unreachable!("Condition vars are never coerced")
             }
             (ArgRepr::ValueRef, ArgRepr::ValueRef)
             | (ArgRepr::RawInt, ArgRepr::RawInt)
-            | (ArgRepr::RawF64, ArgRepr::RawF64) => {
+            | (ArgRepr::RawF64, ArgRepr::RawF64)
+            | (ArgRepr::RawAtom, ArgRepr::RawAtom) => {
                 unreachable!("same-repr coerce: handled by early return")
             }
         }
@@ -586,6 +624,11 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
         self.closure_capture_f64(closure_ref, index)
     }
 
+    pub(crate) fn closure_capture_atom_at(&mut self, closure_ref: ir::Value, idx: usize) -> ir::Value {
+        let index = self.index_const(idx);
+        self.closure_capture_atom(closure_ref, index)
+    }
+
     pub(crate) fn closure_capture_ref_at(&mut self, closure_ref: ir::Value, idx: usize) -> ir::Value {
         let index = self.index_const(idx);
         self.closure_capture_ref(closure_ref, index)
@@ -600,6 +643,7 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
         match repr {
             ArgRepr::RawInt => CodegenValue::from_abi_value(self.closure_capture_i64_at(closure_ref, idx), repr),
             ArgRepr::RawF64 => CodegenValue::from_abi_value(self.closure_capture_f64_at(closure_ref, idx), repr),
+            ArgRepr::RawAtom => CodegenValue::from_abi_value(self.closure_capture_atom_at(closure_ref, idx), repr),
             ArgRepr::ValueRef => CodegenValue::any_ref(self.closure_capture_ref_at(closure_ref, idx)),
             ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
         }
@@ -625,6 +669,11 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
         self.set_closure_capture_f64(closure_ref, index, value);
     }
 
+    pub(crate) fn store_closure_capture_atom(&mut self, closure_ref: ir::Value, idx: usize, value: ir::Value) {
+        let index = self.index_const(idx);
+        self.set_closure_capture_atom(closure_ref, index, value);
+    }
+
     /// Materialize a value as an ABI `AnyValueRef` word. Cache-bearing:
     /// the `Condition` lane interns its `bool_to_fz` atom.
     pub(crate) fn value_as_any_ref(&mut self, value: CodegenValue) -> ir::Value {
@@ -632,6 +681,7 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
             CodegenValue::AnyRef(value) => value,
             CodegenValue::RawInt(value) => self.box_int_for_any(value),
             CodegenValue::RawF64(value) => self.box_float_for_any(value),
+            CodegenValue::RawAtom(value) => self.box_atom_for_any(value),
             CodegenValue::Condition(value) => {
                 let atom = bool_to_fz(self.b, self.cache, value);
                 self.box_atom_for_any(atom)
@@ -659,6 +709,7 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
     pub(crate) fn tagged_var(&mut self, var_env: &HashMap<u32, CodegenValue>, var: u32) -> ir::Value {
         match *var_env.get(&var).expect("unbound var") {
             CodegenValue::RawF64(value) => self.box_float_for_any(value),
+            CodegenValue::RawAtom(value) => self.box_atom_for_any(value),
             CodegenValue::RawInt(value) => {
                 let raw = if let Some(&n) = self.cache.raw_int_consts.get(&var) {
                     cached_iconst(self.b, self.cache, n)
@@ -678,6 +729,7 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
 
     pub(crate) fn value_raw_atom(&mut self, value: CodegenValue) -> ir::Value {
         match value {
+            CodegenValue::RawAtom(raw) => raw,
             CodegenValue::Condition(flag) => bool_to_fz(self.b, self.cache, flag),
             CodegenValue::Known {
                 payload,
@@ -793,6 +845,7 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
                         ArgRepr::ValueRef => value,
                         ArgRepr::RawInt => self.box_int_for_any(value),
                         ArgRepr::RawF64 => self.box_float_for_any(value),
+                        ArgRepr::RawAtom => self.box_atom_for_any(value),
                         ArgRepr::Condition => {
                             let atom = bool_to_fz(self.b, self.cache, value);
                             self.box_atom_for_any(atom)
@@ -826,6 +879,7 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
             let value_ref = match binding {
                 CodegenValue::RawInt(value) => self.box_int_for_any(value),
                 CodegenValue::RawF64(value) => self.box_float_for_any(value),
+                CodegenValue::RawAtom(value) => self.box_atom_for_any(value),
                 CodegenValue::Condition(value) => {
                     let atom = bool_to_fz(self.b, self.cache, value);
                     self.box_atom_for_any(atom)
@@ -854,6 +908,9 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
             }
             CodegenValue::RawF64(raw) => {
                 self.struct_set_field_float(struct_bits, offset, raw);
+            }
+            CodegenValue::RawAtom(raw) => {
+                self.struct_set_field_atom(struct_bits, offset, raw);
             }
             CodegenValue::Known {
                 payload,

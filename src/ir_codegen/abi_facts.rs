@@ -19,7 +19,7 @@ pub(super) struct AbiFacts {
 }
 
 impl AbiFacts {
-    pub(super) fn derive(module: &Module, planned_program: &PlannedProgram<'_>) -> Self {
+    pub(super) fn derive(module: &Module, planned_program: &PlannedProgram) -> Self {
         let mut direct_callees: HashSet<FnId> = HashSet::new();
         let mut cont_fns: HashSet<FnId> = HashSet::new();
         let mut cont_target_fns: HashSet<FnId> = HashSet::new();
@@ -44,8 +44,7 @@ impl AbiFacts {
         for &sid in planned_program.reachable_specs() {
             let spec_id = SpecId(sid);
             let planned = planned_program.executable_body(spec_id);
-            let plan =
-                planned_program.spec_plans()[sid as usize].expect("reachable executable spec must have a SpecPlan");
+            let plan = &planned.spec_plan;
             for block in &planned.body.blocks {
                 if !plan.reachable_blocks.contains(&block.id) {
                     continue;
@@ -132,8 +131,7 @@ impl AbiFacts {
             for &sid in planned_program.reachable_specs() {
                 let spec_id = SpecId(sid);
                 let planned = planned_program.executable_body(spec_id);
-                let plan =
-                    planned_program.spec_plans()[sid as usize].expect("reachable executable spec must have a SpecPlan");
+                let plan = &planned.spec_plan;
                 if !native_fns.contains(&planned.fn_id) {
                     continue;
                 }
@@ -214,8 +212,7 @@ impl AbiFacts {
                 if !native_fns.contains(&planned.fn_id) {
                     continue;
                 }
-                let plan =
-                    planned_program.spec_plans()[sid as usize].expect("reachable executable spec must have a SpecPlan");
+                let plan = &planned.spec_plan;
                 for block in &planned.body.blocks {
                     if !plan.reachable_blocks.contains(&block.id) {
                         continue;

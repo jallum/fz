@@ -109,13 +109,13 @@ pub struct Process {
     /// on first resume). `None` means no work is queued.
     pub runnable: Option<ClosureRef>,
     /// fz-ul4.27.22.3 — per-Process halt-cont singletons indexed by
-    /// repr kind (0=ValueRef, 1=RawInt, 2=RawF64). Each slot holds a
+    /// repr kind (0=ValueRef, 1=RawInt, 2=RawF64, 3=RawAtom). Each slot holds a
     /// 24-byte closure whose +8 slot points at the matching
     /// `fz_halt_cont_body_<kind>` Cranelift body. Lazily allocated by
     /// `fz_get_halt_cont(addr, kind)` per kind, or pre-populated by
     /// `init_halt_cont_singletons` at make_process. Pointers alias
     /// aligned buffers in `static_closure_bufs`.
-    pub halt_cont_singletons: [*mut u8; 3],
+    pub halt_cont_singletons: [*mut u8; 4],
     /// fz-cps.1.7 — per-Process static zero-capture closure singletons.
     /// Indexed by lambda spec id (cl_sid). Null entries indicate "no
     /// singleton registered for this cl_sid." Each non-null entry points
@@ -338,7 +338,7 @@ pub struct CompiledModuleConsts {
         *const u8, /* code_ptr */
         u32,       /* halt_kind */
     )>,
-    pub halt_cont_body_addrs: [*const u8; 3],
+    pub halt_cont_body_addrs: [*const u8; 4],
 }
 
 impl CompiledModuleConsts {
@@ -349,7 +349,7 @@ impl CompiledModuleConsts {
             bs_tuple_arity1_schema: None,
             bs_tuple_arity3_schema: None,
             static_closure_targets: Vec::new(),
-            halt_cont_body_addrs: [null(); 3],
+            halt_cont_body_addrs: [null(); 4],
         }
     }
 }
@@ -384,7 +384,7 @@ impl Process {
             mailbox: VecDeque::new(),
             wait: None,
             runnable: None,
-            halt_cont_singletons: [null_mut(); 3],
+            halt_cont_singletons: [null_mut(); 4],
             static_closures: Vec::new(),
             static_closure_bufs: Vec::new(),
             quiet_quanta: 0,
@@ -467,11 +467,11 @@ impl Process {
     }
 
     /// fz-ul4.27.22.3 — pre-allocate halt-cont singletons for each kind
-    /// (0=ValueRef, 1=RawInt, 2=RawF64). Non-null `body_addrs[k]` seeds
+    /// (0=ValueRef, 1=RawInt, 2=RawF64, 3=RawAtom). Non-null `body_addrs[k]` seeds
     /// the corresponding slot; null entries leave the slot null
     /// (lazily filled by `fz_get_halt_cont` on first use). Called once
     /// per Process by `make_process`.
-    pub fn init_halt_cont_singletons(&mut self, body_addrs: [*const u8; 3]) {
+    pub fn init_halt_cont_singletons(&mut self, body_addrs: [*const u8; 4]) {
         let closure_schema = self.heap.closure_schema_id(0);
         for (slot, addr) in body_addrs.iter().enumerate() {
             if addr.is_null() {
@@ -481,7 +481,7 @@ impl Process {
             let base = buf.as_ptr();
             unsafe {
                 write(base as *mut u32, closure_schema);
-                write(base.add(4) as *mut u32, 0);
+                write(base.add(4) as *mut u32, closure_flags_pack(0, slot as u16) as u32);
                 write(base.add(8) as *mut u64, *addr as u64);
             }
             self.halt_cont_singletons[slot] = base;

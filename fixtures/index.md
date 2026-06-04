@@ -34,7 +34,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `enum_oracle_smoke/` | Enum.sort/1 matches Elixir; expected.txt is owned by the oracle.exs twin | jit, interp, aot, repl |
 | `enum_predicate_search/` | Enum predicate and search functions match Elixir and halt as soon as the answer is known | jit, interp, aot, repl |
 | `enum_reduce_suspend/` | Enumerable.reduce/3 suspend returns a real resumable closure at the runtime-value boundary | jit, interp, aot, repl |
-| `enum_sort/` | runtime-library Enum.sort (merge sort) allocation contract across four paths; pins JIT/AOT parity and the merge-step continuation-closure floor | jit, interp, aot, repl |
+| `enum_sort/` | runtime-library Enum.sort (merge sort) allocation contract across four paths; pins JIT/AOT parity and default-sorter closure erasure | jit, interp, aot, repl |
 | `enum_take_drop_split/` | Enum take/drop/split functions match Elixir, including negative counts and predicate stop points | jit, interp, aot, repl |
 | `enum_tier0/` | Enum tier-0 functions return Elixir-style public values across List, Range, and Map | jit, interp, aot, repl |
 | `enumerable_switch_dispatch/` | Enumerable protocol switch dispatch covers List, Range, and Map receivers | jit, interp, aot, repl |

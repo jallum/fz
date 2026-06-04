@@ -2,13 +2,13 @@
 purpose: "pin fz-s9y semantics — `nil` and `[]` print as distinct strings"
 paths: [jit, aot, interp, repl]
 budget.codegen.functions: 1
-budget.codegen.instructions: 14
+budget.codegen.instructions: 15
 budget.specs.count: 1
 budget.planner.worklist_pops: 1
 budget.planner.walk_calls: 1
 budget.planner.type_fn_calls: 1
 budget.planner.matcher_specs: 0
-budget.planner.vars: 13
+budget.planner.vars: 10
 budget.planner.blocks: 1
 budget.planner.stmts: 9
 budget.planner.dispatches: 0

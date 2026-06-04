@@ -52,20 +52,9 @@ main[] demand=value:
   @0:136-152 Direct -> Static(eval#183 [{:num, int}] demand=value)
 
 k_192[int] demand=value:
-  @0:132-153 Cont -> Static(k_193#193 [any] demand=value)
-  @0:132-153 Direct -> Static(Kernel.dbg#1 [int] demand=value)
-
-k_193[any] demand=value:
-  @0:160-213 Cont -> Static(k_194#194 [int] demand=value)
+  @0:160-213 Cont -> Static(k_193#193 [int] demand=value)
   @0:160-213 Direct -> Static(eval#183 [{:add, {:num, int}, {:mul, {:num, int}, {:num, int}}}] demand=value)
 
-k_194[int] demand=value:
-  @0:156-214 Cont -> Static(k_195#195 [any] demand=value)
-  @0:156-214 Direct -> Static(Kernel.dbg#1 [int] demand=value)
-
-k_195[any] demand=value:
-  @0:221-293 Cont -> Static(k_196#196 [int] demand=value)
+k_193[int] demand=value:
+  @0:221-293 Cont -> Static(k_194#194 [int] demand=value)
   @0:221-293 Direct -> Static(eval#183 [{:mul, {:add, {:num, int}, {:num, int}}, {:add, {:num, int}, {:num, int}}}] demand=value)
-
-k_196[int] demand=value:
-  @0:217-294 Direct -> Static(Kernel.dbg#1 [int] demand=value)

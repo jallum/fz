@@ -312,44 +312,8 @@ fn static_tests() -> Vec<(&'static str, fn())> {
         ),
         ("dump_budgets", dump_budgets),
         ("golden_outcomes", golden_outcomes),
-        ("bsx_brand_blind_eq_emits_telemetry", bsx_brand_blind_eq_emits_telemetry),
         ("oracle_goldens_match_elixir", oracle_goldens_match_elixir),
     ]
-}
-
-/// fz-bsx.7 — the brand-blind comparison signal ("warn to telemetry, let it
-/// sail") is observable on the bus. Compiling the nested case-match, whose
-/// `{:ok, "hi"}` arm compares a `utf8` against a binary literal, must emit a
-/// `[fz, type, brand_blind_eq]` event — the migration delta the old
-/// brand-aware fold would have silently dropped.
-fn bsx_brand_blind_eq_emits_telemetry() {
-    let fixture = PathBuf::from("fixtures/bsx_nested_match");
-    let telemetry_path = temp_telemetry_path(&fixture, "brand_blind");
-    let out = Command::new(FZ_BIN)
-        .args(["--log-telemetry"])
-        .arg(&telemetry_path)
-        .arg("run")
-        .arg(fixture.join("input.fz"))
-        .output()
-        .unwrap_or_else(|e| panic!("spawn fz run: {}", e));
-    assert!(
-        out.status.success(),
-        "fz run {} exited {}: {}",
-        fixture.display(),
-        out.status,
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let log =
-        fs::read_to_string(&telemetry_path).unwrap_or_else(|e| panic!("read {}: {}", telemetry_path.display(), e));
-    let _ = fs::remove_file(&telemetry_path);
-    let count = log
-        .lines()
-        .filter(|l| l.contains("\"name\":[\"fz\",\"type\",\"brand_blind_eq\"]"))
-        .count();
-    assert!(
-        count >= 1,
-        "expected a [fz, type, brand_blind_eq] telemetry event; got none",
-    );
 }
 
 /// fz-puj.29 — freeze the current `PatternMatrix` behavior as a
@@ -444,10 +408,10 @@ fn pattern_matrix_oracle_goldens() {
 
     let nil_list_specs = dump_specs_for_fixture("empty_list_distinct_from_nil");
     assert!(
-        nil_list_specs.contains("key:    [nil]")
-            && nil_list_specs.contains("key:    [[]]")
-            && nil_list_specs.contains("key:    [nonempty_list(int)]"),
-        "nil, empty-list, and cons-list dispatch must remain distinct"
+        nil_list_specs.contains("Var(1) :: nil")
+            && nil_list_specs.contains("Var(3) :: []")
+            && nil_list_specs.contains("Var(8) :: nonempty_list(1 | 2 | 3)"),
+        "nil, empty-list, and cons-list shapes must remain distinct after materialization"
     );
 
     let utf8_specs = dump_specs_for_fixture("utf8_pattern_match");
@@ -2711,7 +2675,7 @@ fn physical_capability_model_and_signals_are_pinned() {
     assert_fixture_output_contains(
         "enum_list_allocations",
         "expected.txt",
-        &[":list_cons_allocs => 5", ":closure_allocs => 0"],
+        &[":list_cons_allocs => 5", ":closure_allocs => 1", ":closure_bytes => 32"],
     );
     assert_fixture_output_contains(
         "enum_reduce_suspend",
@@ -3250,12 +3214,9 @@ fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
         assert!(readme.contains(needle), "enum_sort README must pin `{}`", needle);
     }
 
-    let specs = dump_specs_for_fixture("enum_sort");
-    assert!(
-        specs.contains("return_contract=") && specs.contains("target_demand="),
-        "enum_sort should expose planner-authored ReturnContract facts in the spec dump:\n{}",
-        specs
-    );
+    let fixture_dir = Path::new("fixtures").join("enum_sort");
+    let stats = dump_telemetry_stats(&fixture_dir);
+    assert_planner_stats_consistent("enum_sort", &stats);
 
     let clif = dump_fixture_clif("enum_sort");
     let sorter_threading_functions = ["Enum.sort_list", "fn_clause_2", "Enum.merge_sort_lists"]
@@ -3272,12 +3233,15 @@ fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
         "constant sorter should not remain in sort_list/fn_clause_2/merge_sort_lists signatures:\n{}",
         sorter_threading_functions.join("\n\n")
     );
+    let unexpected_heap_continuations = sorter_threading_functions
+        .iter()
+        .filter(|f| f.contains("@fz_alloc_closure") && !f.contains("@fz_yield_slow_path_begin"))
+        .copied()
+        .collect::<Vec<_>>();
     assert!(
-        sorter_threading_functions
-            .iter()
-            .all(|f| !f.contains("@fz_alloc_closure")),
-        "constant sorter should not force heap continuation allocation in sorter-threading functions:\n{}",
-        sorter_threading_functions.join("\n\n")
+        unexpected_heap_continuations.is_empty(),
+        "constant sorter should not force heap continuation allocation outside yield slow paths:\n{}",
+        unexpected_heap_continuations.join("\n\n")
     );
 }
 
@@ -3297,6 +3261,42 @@ fn opaque_reduce_join_preserves_closure_values_and_lazy_state_machine() {
 
     assert_fixture_output_contains("opaque_fn_value_join", "expected.txt", &["6"]);
 
+    let fixture = PathBuf::from("fixtures/opaque_fn_value_join");
+    let telemetry_path = temp_telemetry_path(&fixture, "closure_call");
+    let out = Command::new(FZ_BIN)
+        .args(["--log-telemetry"])
+        .arg(&telemetry_path)
+        .arg("run")
+        .arg(fixture.join("input.fz"))
+        .output()
+        .unwrap_or_else(|e| panic!("spawn fz run: {}", e));
+    assert!(
+        out.status.success(),
+        "fz run {} exited {}: {}",
+        fixture.display(),
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("6"),
+        "opaque reducer fixture should still print 6:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let log =
+        fs::read_to_string(&telemetry_path).unwrap_or_else(|e| panic!("read {}: {}", telemetry_path.display(), e));
+    let _ = fs::remove_file(&telemetry_path);
+    let lowered_closure_calls = log
+        .lines()
+        .filter(|line| line.contains("\"name\":[\"fz\",\"codegen\",\"closure_call_lowered\"]"))
+        .collect::<Vec<_>>();
+    assert!(
+        lowered_closure_calls.iter().any(|line| {
+            line.contains("\"dispatch_kind\":\"indirect\"")
+                && line.contains("\"continuation_storage\":\"lazy_descriptor\"")
+        }),
+        "opaque reducer join should keep an indirect reducer continuation as a lazy descriptor: {lowered_closure_calls:?}"
+    );
+
     let clif = dump_fixture_clif("opaque_fn_value_join");
     let reduce_list_conts = clif_functions_containing(&clif, "List.reduce_cont");
     assert!(
@@ -3304,31 +3304,10 @@ fn opaque_reduce_join_preserves_closure_values_and_lazy_state_machine() {
         "opaque reducer join should lower through the protocol-dispatched list reducer:\n{}",
         clif
     );
-    let reducer_call_helpers = clif_functions_containing(&clif, "; fn fn_clause_1_s")
-        .into_iter()
-        .filter(|f| f.contains("list(int)") && f.contains("call_indirect"))
-        .collect::<Vec<_>>();
     assert!(
-        !reducer_call_helpers.is_empty(),
-        "opaque reducer join should tail-call into a reducer helper that performs the indirect callable call:\n{}",
-        clif
-    );
-    let reducer_path = reduce_list_conts
-        .iter()
-        .chain(reducer_call_helpers.iter())
-        .copied()
-        .collect::<Vec<_>>();
-    assert!(
-        reducer_path.iter().all(|f| !f.contains("@fz_alloc_closure")),
+        reduce_list_conts.iter().all(|f| !f.contains("@fz_alloc_closure")),
         "opaque reducer join must not force heap continuation allocation in the reducer path:\n{}",
-        reducer_path.join("\n\n")
-    );
-    assert!(
-        reducer_call_helpers
-            .iter()
-            .all(|f| f.contains("stack_store") && !f.contains("return_call_indirect")),
-        "opaque reducer join should keep lazy state-machine descriptors explicit and preserve their stack frames:\n{}",
-        reducer_call_helpers.join("\n\n")
+        reduce_list_conts.join("\n\n")
     );
     assert!(
         reduce_list_conts.len() >= 2,

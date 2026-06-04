@@ -13,20 +13,13 @@ k_189[(α0) -> α1] demand=value:
   @0:98-128 Direct -> Static(apply#184 [(α0) -> α1, int] demand=value)
 
 k_190[int] demand=value:
-  @0:94-129 Cont -> Static(k_191#191 [any] demand=value)
-  @0:94-129 Direct -> Static(Kernel.dbg#1 [int] demand=value)
-
-k_191[any] demand=value:
-  @0:148-155 Cont -> Static(k_192#192 [(α0) -> α1] demand=value)
+  @0:148-155 Cont -> Static(k_191#191 [(α0) -> α1] demand=value)
   @0:148-155 Direct -> Static(add3#183 [int] demand=value)
 
-k_192[(α0) -> α1] demand=value:
-  @0:142-159 Cont -> Static(k_193#193 [(α0) -> α1] demand=value)
+k_191[(α0) -> α1] demand=value:
+  @0:142-159 Cont -> Static(k_192#192 [(α0) -> α1] demand=value)
   @0:142-159 Direct -> Static(apply#184 [(α0) -> α1, int] demand=value)
 
-k_193[(α0) -> α1] demand=value:
-  @0:136-163 Cont -> Static(k_194#194 [int] demand=value)
+k_192[(α0) -> α1] demand=value:
+  @0:136-163 Cont -> Static(k_193#193 [int] demand=value)
   @0:136-163 Direct -> Static(apply#184 [(α0) -> α1, int] demand=value)
-
-k_194[int] demand=value:
-  @0:132-164 Direct -> Static(Kernel.dbg#1 [int] demand=value)

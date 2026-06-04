@@ -118,6 +118,13 @@ fn count_if_terminators(f: &FnIr) -> usize {
         .count()
 }
 
+fn count_call_closure_terminators(f: &FnIr) -> usize {
+    f.blocks
+        .iter()
+        .filter(|block| matches!(block.terminator, Term::CallClosure { .. }))
+        .count()
+}
+
 fn count_fold_candidate_prims(f: &FnIr) -> usize {
     f.blocks
         .iter()
@@ -1230,6 +1237,105 @@ fn reachable_specs_do_not_seed_uninvoked_closure_targets() {
 }
 
 #[test]
+fn known_closure_call_with_branch_continuation_materializes_without_erased_callclosure() {
+    let src = "fn choose(f, a, b) do\n\
+                 if f.(a, b) do\n\
+                   a\n\
+                 else\n\
+                   b\n\
+                 end\n\
+               end\n\
+               fn main(), do: choose(fn (x, y) -> x <= y end, 1, 2)\n";
+    let m = lower_src_for_plan(src);
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&["fz", "planner"], cap.handler());
+    let mut t = crate::types::new();
+    let module_plan = plan_module(&mut t, &m, &tel);
+    let planned_program = materialize_program(&mut t, &m, &module_plan, &tel);
+    assert_authoritative_planner_consistent(&cap);
+
+    let materialized = cap
+        .find(&["fz", "planner", "body_materialized"])
+        .into_iter()
+        .find(|ev| {
+            matches!(ev.metadata.get("fn_name"), Some(Value::Str(name)) if name == "choose")
+                && matches!(
+                    ev.measurements.get("direct_call_inline_count"),
+                    Some(Value::U64(n)) if *n == 1
+                )
+                && matches!(
+                    ev.measurements.get("continuation_inline_count"),
+                    Some(Value::U64(n)) if *n == 1
+                )
+        })
+        .expect("choose materialization should report one producer+continuation inline");
+    let spec_id = match materialized.measurements.get("spec_id") {
+        Some(Value::U64(n)) => *n as u32,
+        other => panic!("spec_id missing or wrong type: {other:?}"),
+    };
+    let body = planned_program.executable_body(SpecId(spec_id));
+    assert_eq!(
+        count_call_closure_terminators(&body.body),
+        0,
+        "materialized choose body must consume the known closure call instead of keeping the erased CallClosure seam"
+    );
+    assert!(
+        count_if_terminators(&body.body) > 0,
+        "the branch continuation should survive as direct control flow in the caller"
+    );
+}
+
+#[test]
+fn direct_call_materialization_fuses_cloned_return_continuation_block() {
+    let m = lower_src_for_plan(include_str!("../../fixtures/add1/input.fz"));
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&["fz", "planner"], cap.handler());
+    let mut t = crate::types::new();
+    let module_plan = plan_module(&mut t, &m, &tel);
+    let planned_program = materialize_program(&mut t, &m, &module_plan, &tel);
+    assert_authoritative_planner_consistent(&cap);
+
+    let materialized = cap
+        .find(&["fz", "planner", "body_materialized"])
+        .into_iter()
+        .find(|ev| {
+            matches!(ev.metadata.get("fn_name"), Some(Value::Str(name)) if name == "main")
+                && matches!(
+                    ev.measurements.get("direct_call_inline_count"),
+                    Some(Value::U64(n)) if *n == 1
+                )
+                && matches!(
+                    ev.measurements.get("continuation_inline_count"),
+                    Some(Value::U64(n)) if *n == 1
+                )
+                && matches!(
+                    ev.measurements.get("fused_block_count"),
+                    Some(Value::U64(n)) if *n > 0
+                )
+        })
+        .expect("main materialization should report direct+continuation inline and block fusion");
+    let spec_id = match materialized.measurements.get("spec_id") {
+        Some(Value::U64(n)) => *n as u32,
+        other => panic!("spec_id missing or wrong type: {other:?}"),
+    };
+    let body = planned_program.executable_body(SpecId(spec_id));
+    assert_eq!(
+        body.body.blocks.len(),
+        1,
+        "the cloned continuation should be fused back into main's entry block"
+    );
+    assert!(
+        body.body.blocks[0]
+            .stmts
+            .iter()
+            .any(|Stmt::Let(_, prim)| matches!(prim, Prim::Const(Const::Int(42)))),
+        "the fused body should keep the singleton-folded add1 result"
+    );
+}
+
+#[test]
 fn planned_program_materialization_reports_executable_body_folds() {
     let src = "fn check(x :: integer) do :is_int end\n\
                fn check(x) do :other end\n\
@@ -1310,6 +1416,39 @@ fn planned_program_materialization_reports_executable_body_folds() {
     assert!(
         count_fold_candidate_prims(&planned_body.body) < count_fold_candidate_prims(original_body),
         "planned body should not retain every singleton-foldable prim from the source-shaped body"
+    );
+}
+
+#[test]
+fn repr_seam_closure_predicate_registers_captured_wrapper_callable_entry() {
+    let src = include_str!("../../fixtures/repr_seam_closure_predicate/input.fz");
+    let mut t = crate::types::new();
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&["fz", "planner"], cap.handler());
+    let graph = linked_runtime_graph_with_telemetry(&mut t, src, &tel);
+
+    let planned_program = materialize_program(&mut t, &graph.module, &graph.module_plan, &tel);
+
+    assert_authoritative_planner_consistent(&cap);
+
+    let wrapper = graph
+        .module
+        .fn_by_name("lambda_200")
+        .expect("fixture should lower the captured predicate reducer as lambda_200");
+    let wrapper_entries = planned_program
+        .callable_entries()
+        .iter()
+        .filter_map(|(sid, entry)| {
+            let key = planned_program.spec_keys().get(*sid as usize)?;
+            (key.fn_id == wrapper.id).then(|| (*sid, entry.capture_count, key.clone()))
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        wrapper_entries.iter().any(|(_, capture_count, key)| *capture_count == 1
+            && key.input.len() == wrapper.block(wrapper.entry).params.len()),
+        "materialization must register the one-capture reducer wrapper callable entry; got {wrapper_entries:?}"
     );
 }
 
@@ -5372,6 +5511,47 @@ fn brand_overlays_brand_tag_on_source_type() {
         ct.is_subtype(&str_t, &source_ty),
         "brand-preserved structural type must still subsume str_t(); got {}",
         ct.display(&source_ty),
+    );
+}
+
+#[test]
+fn brand_blind_equality_emits_telemetry_without_dead_binop_warning() {
+    let mut b = FnBuilder::new(FnId(0), "main");
+    let branded = b.fresh_var();
+    let bytes = b.fresh_var();
+    let entry = b.block(vec![branded, bytes]);
+    let eq = b.let_(entry, Prim::BinOp(BinOp::Eq, branded, bytes));
+    b.set_terminator(entry, Term::Return(eq));
+
+    let mut ct = crate::types::new();
+    let mut m = build_module(vec![b.build()]);
+    m.brand_inners.insert("utf8".to_string(), ct.str_t());
+    let pure_brand = ct.brand_of("utf8");
+    let binary = ct.str_t();
+    let key = SpecKey::value(FnId(0), key_tys(vec![pure_brand.clone(), binary.clone()]));
+    let ft = type_fn(&mut ct, m.fn_by_id(FnId(0)), &m, Some(&[pure_brand, binary]));
+    let mut mt = plan_module(&mut ct, &m, &NullTelemetry);
+    mt.specs.retain(|spec_key, _| spec_key.fn_id != FnId(0));
+    mt.reachable_specs.retain(|spec_key| spec_key.fn_id != FnId(0));
+    mt.any_key_specs.remove(&FnId(0));
+    mt.spec_precedence.retain(|body_key, _| body_key.fn_id != FnId(0));
+    mt.spec_precedence.insert(key.body_key(), 0);
+    mt.reachable_specs.insert(key.clone());
+    mt.specs.insert(key, ft);
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&["fz", "type", "brand_blind_eq"], cap.handler());
+    let diags = collect_diagnostics(&mut ct, &m, &mt, &tel);
+
+    assert!(
+        diags.as_slice().iter().all(|d| d.code != codes::TYPE_DEAD_BINOP),
+        "brand-vs-underlying equality must not become a dead-binop warning: {:?}",
+        diags.as_slice(),
+    );
+    assert!(
+        cap.count(&["fz", "type", "brand_blind_eq"]) >= 1,
+        "brand-vs-underlying equality should emit the brand-blind comparison telemetry event",
     );
 }
 

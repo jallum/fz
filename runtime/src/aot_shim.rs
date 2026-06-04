@@ -77,9 +77,9 @@ struct AotScheduler {
     /// task's entry thunk (spawn / main) on its heap; the scheduler resumes
     /// every task through the one `fz_resume` verb.
     entry_thunk: *const u8,
-    /// fz-ul4.27.22.3 — three halt_cont_body addrs retained so spawned
+    /// fz-ul4.27.22.3 — four halt_cont_body addrs retained so spawned
     /// children can initialize their own halt_cont_singletons.
-    halt_cont_bodies: [*const u8; 3],
+    halt_cont_bodies: [*const u8; 4],
     /// fz-sched.1 — cooperative run-queue. PIDs of processes ready to run.
     run_queue: VecDeque<u32>,
     /// fz-4mk.3b — SystemV `fz_drain_dtor_entry(closure, payload)` shim
@@ -221,6 +221,7 @@ pub extern "C" fn fz_aot_setup(
     halt_cont_body_tagged: *const u8,
     halt_cont_body_i64: *const u8,
     halt_cont_body_f64: *const u8,
+    halt_cont_body_atom: *const u8,
     entry_thunk_addr: *const u8,
 ) -> *mut Process {
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
@@ -250,7 +251,12 @@ pub extern "C" fn fz_aot_setup(
         next_pid: 2,
         tasks,
         entry_thunk: entry_thunk_addr,
-        halt_cont_bodies: [halt_cont_body_tagged, halt_cont_body_i64, halt_cont_body_f64],
+        halt_cont_bodies: [
+            halt_cont_body_tagged,
+            halt_cont_body_i64,
+            halt_cont_body_f64,
+            halt_cont_body_atom,
+        ],
         run_queue: VecDeque::new(),
         drain_dtor_entry: null(),
         resume_addr: null(),
@@ -780,7 +786,7 @@ mod tests {
             next_pid: 2,
             tasks: HashMap::new(),
             entry_thunk: null(),
-            halt_cont_bodies: [null(); 3],
+            halt_cont_bodies: [null(); 4],
             run_queue: VecDeque::new(),
             drain_dtor_entry: null(),
             resume_addr: null(),

@@ -18,6 +18,9 @@ pub(crate) fn emit_halt_for_binding<M: cranelift_module::Module>(
         ArgRepr::RawF64 => {
             body.halt_implicit(ArgRepr::RawF64, binding.value());
         }
+        ArgRepr::RawAtom => {
+            body.halt_implicit(ArgRepr::RawAtom, binding.value());
+        }
         ArgRepr::ValueRef | ArgRepr::Condition => {
             let value_ref = body.any_ref_for_var(var_env, var);
             body.halt_implicit(ArgRepr::ValueRef, value_ref);
@@ -35,6 +38,9 @@ pub(crate) fn emit_halt_from_codegen_value<M: cranelift_module::Module>(
         }
         CodegenValue::RawF64(value) => {
             body.halt_implicit(ArgRepr::RawF64, value);
+        }
+        CodegenValue::RawAtom(value) => {
+            body.halt_implicit(ArgRepr::RawAtom, value);
         }
         value => {
             let value_ref = body.value_as_any_ref(value);

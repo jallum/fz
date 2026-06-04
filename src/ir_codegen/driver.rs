@@ -10,7 +10,7 @@ use crate::fz_ir::{
 use crate::ir_dest::{lower_destinations, verify_module};
 use crate::ir_extern_marshal::resolve_module_types;
 use crate::ir_planner::fn_types::SpecKey;
-use crate::ir_planner::planned::CallableEntryPlan;
+use crate::ir_planner::planned::{CallableEntryPlan, PlannedProgram};
 use crate::ir_planner::{ModulePlan, SpecPlan, collect_diagnostics, materialize_program};
 use crate::telemetry::value::opaque;
 use crate::telemetry::{Telemetry, TelemetryExt as _, next_compile_nonce};
@@ -111,21 +111,18 @@ fn collect_tuple_arities_and_register_schemas(
 /// continues to hit the right schema. Sentinel SpecIds (missing-FnId
 /// slots) get a zero-field placeholder schema; they're never reached at
 /// runtime.
-fn build_per_spec_schemas<T: Types<Ty = Ty>>(
-    t: &mut T,
-    module: &Module,
-    spec_count: usize,
-    spec_fnidx: &[Option<usize>],
-    spec_fn_types: &[Option<&SpecPlan>],
-) -> Vec<Schema> {
+fn build_per_spec_schemas<T: Types<Ty = Ty>>(t: &mut T, planned_program: &PlannedProgram) -> Vec<Schema> {
+    let spec_count = planned_program.spec_count();
+    let spec_fnidx = planned_program.spec_fn_indices();
     let mut schemas: Vec<Schema> = Vec::with_capacity(spec_count);
     for sid in 0..spec_count {
-        let Some(idx) = spec_fnidx[sid] else {
+        if spec_fnidx[sid].is_none() {
             schemas.push(build_frame_schema("__sentinel", &[]));
             continue;
         };
-        let f = &module.fns[idx];
-        let ft = spec_fn_types[sid].expect("non-sentinel spec must have SpecPlan");
+        let planned = planned_program.executable_body(SpecId(sid as u32));
+        let f = &planned.body;
+        let ft = &planned.spec_plan;
         let entry_block = f.block(f.entry);
         let mut kinds: Vec<FieldKind> = entry_block.params.iter().map(|_| FieldKind::AnyValue).collect();
         let any = t.any();
@@ -191,18 +188,18 @@ fn derive_return_tys<T: Types<Ty = Ty> + ClosureTypes>(
 /// closure calls never guess.
 fn derive_param_reprs<T: Types<Ty = Ty>>(
     t: &mut T,
-    module: &Module,
-    spec_count: usize,
-    spec_fnidx: &[Option<usize>],
-    spec_fn_types: &[Option<&SpecPlan>],
-    spec_keys: &[SpecKey],
+    planned_program: &PlannedProgram,
     cont_fns: &HashSet<FnId>,
 ) -> Vec<Vec<ArgRepr>> {
+    let spec_count = planned_program.spec_count();
+    let spec_fnidx = planned_program.spec_fn_indices();
+    let spec_keys = planned_program.spec_keys();
     (0..spec_count)
         .map(|sid| match spec_fnidx[sid] {
-            Some(idx) => {
-                let f = &module.fns[idx];
-                let ft = spec_fn_types[sid].expect("non-sentinel spec must have SpecPlan");
+            Some(_) => {
+                let planned = planned_program.executable_body(SpecId(sid as u32));
+                let f = &planned.body;
+                let ft = &planned.spec_plan;
                 if spec_keys[sid].input.iter().all(Option::is_none) {
                     build_param_reprs(t, f, ft)
                 } else {
@@ -229,17 +226,17 @@ fn derive_param_reprs<T: Types<Ty = Ty>>(
 ///
 /// Propagation: spec's terminator chains into another spec that's
 /// already tagged. Per-spec analysis uses each block's terminator under
-/// this spec's env (spec_fn_types[sid]).
+/// the materialized body's env (`PlannedBody.spec_plan`).
 fn compute_tagged_return_specs<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
     return_tys: &[Ty],
-    spec_fnidx: &[Option<usize>],
-    spec_fn_types: &[Option<&SpecPlan>],
-    spec_registry: &SpecRegistry,
+    planned_program: &PlannedProgram,
     closure_capture_counts: &HashMap<FnId, usize>,
 ) -> HashSet<u32> {
     let mut set: HashSet<u32> = HashSet::new();
+    let spec_fnidx = planned_program.spec_fn_indices();
+    let spec_registry = planned_program.spec_registry();
     let any_ty = t.any();
     for (sid, ty) in return_tys.iter().enumerate() {
         if ArgRepr::from_ty(t, ty) == ArgRepr::ValueRef {
@@ -248,13 +245,12 @@ fn compute_tagged_return_specs<T: Types<Ty = Ty> + ClosureTypes>(
     }
     // Seed: spec has an unresolved TailCallClosure.
     for (sid, &entry) in spec_fnidx.iter().enumerate() {
-        let Some(idx) = entry else {
+        if entry.is_none() {
             continue;
         };
-        let f = &module.fns[idx];
-        let Some(ft) = spec_fn_types.get(sid).and_then(|o| *o) else {
-            continue;
-        };
+        let planned = planned_program.executable_body(SpecId(sid as u32));
+        let f = &planned.body;
+        let ft = &planned.spec_plan;
         for b in f.blocks.iter().filter(|b| ft.reachable_blocks.contains(&b.id)) {
             if let Term::TailCallClosure {
                 closure,
@@ -272,10 +268,10 @@ fn compute_tagged_return_specs<T: Types<Ty = Ty> + ClosureTypes>(
     }
     // Also seed: spec's body is a closure-target body.
     for (sid, &entry) in spec_fnidx.iter().enumerate() {
-        let Some(idx) = entry else {
+        if entry.is_none() {
             continue;
         };
-        let fid = module.fns[idx].id;
+        let fid = planned_program.executable_body(SpecId(sid as u32)).fn_id;
         if closure_capture_counts.contains_key(&fid) {
             set.insert(sid as u32);
         }
@@ -284,13 +280,12 @@ fn compute_tagged_return_specs<T: Types<Ty = Ty> + ClosureTypes>(
     loop {
         let mut changed = false;
         for (sid, &entry) in spec_fnidx.iter().enumerate() {
-            let Some(idx) = entry else {
+            if entry.is_none() {
                 continue;
             };
-            let f = &module.fns[idx];
-            let Some(ft) = spec_fn_types.get(sid).and_then(|o| *o) else {
-                continue;
-            };
+            let planned = planned_program.executable_body(SpecId(sid as u32));
+            let f = &planned.body;
+            let ft = &planned.spec_plan;
             if !set.contains(&(sid as u32)) {
                 let propagates = f
                     .blocks
@@ -321,9 +316,8 @@ fn compute_tagged_return_specs<T: Types<Ty = Ty> + ClosureTypes>(
                             args,
                             ident: _,
                         } => {
-                            let body_sid = spec_fn_types.get(sid).and_then(|o| *o).and_then(|ft| {
-                                resolve_tcc_body(t, closure, args, ft, module, spec_registry).map(|(_, s)| s)
-                            });
+                            let body_sid =
+                                resolve_tcc_body(t, closure, args, ft, module, spec_registry).map(|(_, s)| s);
                             match body_sid {
                                 Some(body_sid) => set.contains(&body_sid),
                                 None => true,
@@ -397,22 +391,20 @@ fn compute_tagged_return_specs<T: Types<Ty = Ty> + ClosureTypes>(
 /// both the producer spec (for representation) and the return shape.
 fn compute_tagged_slot0_cont_specs<T: Types<Ty = Ty>>(
     t: &mut T,
-    module: &Module,
-    spec_count: usize,
-    spec_fnidx: &[Option<usize>],
-    spec_fn_types: &[Option<&SpecPlan>],
-    spec_registry: &SpecRegistry,
+    planned_program: &PlannedProgram,
     return_reprs: &[ArgRepr],
 ) -> HashSet<u32> {
     let mut tagged_slot0_cont_specs: HashSet<u32> = HashSet::new();
+    let spec_count = planned_program.spec_count();
+    let spec_fnidx = planned_program.spec_fn_indices();
+    let spec_registry = planned_program.spec_registry();
     for sid_caller in 0..spec_count {
-        let Some(caller_idx) = spec_fnidx[sid_caller] else {
+        if spec_fnidx[sid_caller].is_none() {
             continue;
         };
-        let caller = &module.fns[caller_idx];
-        let Some(caller_ft) = spec_fn_types[sid_caller] else {
-            continue;
-        };
+        let planned = planned_program.executable_body(SpecId(sid_caller as u32));
+        let caller = &planned.body;
+        let caller_ft = &planned.spec_plan;
         for blk in &caller.blocks {
             let Some(term_ident) = blk.terminator.ident() else {
                 continue;
@@ -481,25 +473,24 @@ fn resolved_local_call_sid<T: Types<Ty = Ty>>(
 fn compute_halt_reprs<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
-    spec_count: usize,
-    spec_fnidx: &[Option<usize>],
-    spec_fn_types: &[Option<&SpecPlan>],
-    spec_registry: &SpecRegistry,
+    planned_program: &PlannedProgram,
     return_reprs: &[ArgRepr],
 ) -> Vec<ArgRepr> {
     let join = |a: ArgRepr, b: ArgRepr| -> ArgRepr { if a == b { a } else { ArgRepr::ValueRef } };
+    let spec_count = planned_program.spec_count();
+    let spec_fnidx = planned_program.spec_fn_indices();
+    let spec_registry = planned_program.spec_registry();
     let mut chain: Vec<Option<ArgRepr>> = vec![None; spec_count];
     let any_ty = t.any();
     for _ in 0..(spec_count * 4 + 16) {
         let mut changed = false;
         for sid in 0..spec_count {
-            let Some(idx) = spec_fnidx[sid] else {
+            if spec_fnidx[sid].is_none() {
                 continue;
             };
-            let f = &module.fns[idx];
-            let Some(ft) = spec_fn_types.get(sid).and_then(|o| *o) else {
-                continue;
-            };
+            let planned = planned_program.executable_body(SpecId(sid as u32));
+            let f = &planned.body;
+            let ft = &planned.spec_plan;
             let mut contributions: Vec<ArgRepr> = Vec::new();
             for blk in f.blocks.iter().filter(|blk| ft.reachable_blocks.contains(&blk.id)) {
                 match &blk.terminator {
@@ -997,17 +988,21 @@ fn emit_entry_thunk<M: cranelift_module::Module>(
         let zero_idx = cg.b.ins().iconst(types::I64, 0);
         let closure = cg.closure_capture_ref(self_cl, zero_idx);
         let kind = cg.closure_halt_kind_ref(closure);
-        // Select halt_cont_body_addr by kind. Branchless via three
+        // Select halt_cont_body_addr by kind. Branchless via four
         // func_addrs + a tiny dispatch — keeps the thunk a leaf.
         let a_strict = cg.func_addr(runtime.halt_cont_body_strict_id);
         let a_i64 = cg.func_addr(runtime.halt_cont_body_i64_id);
         let a_f64 = cg.func_addr(runtime.halt_cont_body_f64_id);
+        let a_atom = cg.func_addr(runtime.halt_cont_body_atom_id);
         let one = cg.b.ins().iconst(types::I32, 1);
         let two = cg.b.ins().iconst(types::I32, 2);
+        let three = cg.b.ins().iconst(types::I32, 3);
         let is_i64 = cg.b.ins().icmp(IntCC::Equal, kind, one);
         let is_f64 = cg.b.ins().icmp(IntCC::Equal, kind, two);
+        let is_atom = cg.b.ins().icmp(IntCC::Equal, kind, three);
         let pick_i64_or_tagged = cg.b.ins().select(is_i64, a_i64, a_strict);
-        let hcb_addr = cg.b.ins().select(is_f64, a_f64, pick_i64_or_tagged);
+        let pick_f64 = cg.b.ins().select(is_f64, a_f64, pick_i64_or_tagged);
+        let hcb_addr = cg.b.ins().select(is_atom, a_atom, pick_f64);
         let halt_cl = cg.get_halt_cont(hcb_addr, kind);
         // Read inner closure body addr through the runtime ABI and invoke as
         // closure-target sig `(self, cont) tail` (zero user args).
@@ -1024,8 +1019,8 @@ fn emit_entry_thunk<M: cranelift_module::Module>(
     .map_err(|e| CodegenError::new(format!("define fz_entry_thunk: {}", e)))
 }
 
-/// Emit three fz_halt_cont_body fns, one per repr. Generic ValueRef
-/// bodies receive `(value_ref, self)`; RawInt / RawF64 variants stay
+/// Emit four fz_halt_cont_body fns, one per repr. Generic ValueRef
+/// bodies receive `(value_ref, self)`; RawInt / RawF64 / RawAtom variants stay
 /// narrow as `(value, self)`.
 fn emit_halt_cont_bodies<M: cranelift_module::Module>(
     m: &mut M,
@@ -1052,6 +1047,11 @@ fn emit_halt_cont_bodies<M: cranelift_module::Module>(
     for (body_id, val_ty, halt_impl_id) in [
         (runtime.halt_cont_body_i64_id, types::I64, runtime.halt_implicit_i64_id),
         (runtime.halt_cont_body_f64_id, types::F64, runtime.halt_implicit_f64_id),
+        (
+            runtime.halt_cont_body_atom_id,
+            types::I64,
+            runtime.halt_implicit_atom_id,
+        ),
     ] {
         let mut sig = Signature::new(CallConv::Tail);
         sig.params.push(AbiParam::new(val_ty));
@@ -1536,43 +1536,24 @@ fn compile_with_backend_preplanned_impl<
     let spec_count = planned_program.spec_count();
     let spec_keys = planned_program.spec_keys();
     let spec_fnidx = planned_program.spec_fn_indices();
-    let spec_fn_types = planned_program.spec_plans();
     let abi_facts = AbiFacts::derive(module, &planned_program);
 
     let callable_entries = planned_program.callable_entries();
 
-    let schemas = build_per_spec_schemas(t, module, spec_count, &spec_fnidx, &spec_fn_types);
+    let schemas = build_per_spec_schemas(t, &planned_program);
     let frame_sizes: Vec<u32> = schemas.iter().map(|s| s.allocation_payload_size() as u32).collect();
     let return_tys = derive_return_tys(t, &spec_keys, &spec_fnidx, &module_plan);
 
-    let param_reprs = derive_param_reprs(
-        t,
-        module,
-        spec_count,
-        &spec_fnidx,
-        &spec_fn_types,
-        &spec_keys,
-        &abi_facts.cont_fns,
-    );
+    let param_reprs = derive_param_reprs(t, &planned_program, &abi_facts.cont_fns);
     let tagged_return_specs = compute_tagged_return_specs(
         t,
         module,
         &return_tys,
-        &spec_fnidx,
-        &spec_fn_types,
-        spec_registry,
+        &planned_program,
         &abi_facts.closure_capture_counts,
     );
     let return_reprs = build_return_reprs(t, &return_tys, &tagged_return_specs);
-    let tagged_slot0_cont_specs = compute_tagged_slot0_cont_specs(
-        t,
-        module,
-        spec_count,
-        &spec_fnidx,
-        &spec_fn_types,
-        spec_registry,
-        &return_reprs,
-    );
+    let tagged_slot0_cont_specs = compute_tagged_slot0_cont_specs(t, &planned_program, &return_reprs);
     let param_reprs = refine_param_reprs_for_tagging(param_reprs, &tagged_slot0_cont_specs);
 
     emit_codegen_abi_contracts(
@@ -1650,8 +1631,8 @@ fn compile_with_backend_preplanned_impl<
             backend.module_mut().clear_context(&mut ctx);
             continue;
         }
-        let ft = spec_fn_types[sid].expect("non-sentinel spec must have SpecPlan");
         let planned_body = planned_program.executable_body(SpecId(sid as u32));
+        let ft = &planned_body.spec_plan;
         let f = &planned_body.body;
         debug_assert_eq!(planned_body.spec_id.0, sid as u32);
         debug_assert_eq!(planned_body.fn_idx, fn_idx);
@@ -1813,15 +1794,7 @@ fn compile_with_backend_preplanned_impl<
     );
 
     let diagnostics = collect_diagnostics(t, module, &module_plan, tel);
-    let halt_reprs = compute_halt_reprs(
-        t,
-        module,
-        spec_count,
-        &spec_fnidx,
-        &spec_fn_types,
-        &spec_registry,
-        &return_reprs,
-    );
+    let halt_reprs = compute_halt_reprs(t, module, &planned_program, &return_reprs);
     let fn_halt_kinds = derive_fn_halt_kinds(module, &halt_reprs);
     emit_mid_flight_cont_bodies(
         backend.module_mut(),
@@ -1868,6 +1841,7 @@ fn compile_with_backend_preplanned_impl<
             runtime.halt_cont_body_strict_id,
             runtime.halt_cont_body_i64_id,
             runtime.halt_cont_body_f64_id,
+            runtime.halt_cont_body_atom_id,
         ],
         fn_halt_kinds,
         resume_id,

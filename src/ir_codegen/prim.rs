@@ -78,6 +78,11 @@ fn value_raw_kind_parts<M: cranelift_module::Module>(
             payload: raw,
             kind: ValueKind::INT,
         } => Some((raw, ValueKind::INT)),
+        CodegenValue::RawAtom(raw)
+        | CodegenValue::Known {
+            payload: raw,
+            kind: ValueKind::ATOM,
+        } => Some((raw, ValueKind::ATOM)),
         CodegenValue::RawF64(raw) => {
             let bits = body.b.ins().bitcast(types::I64, MemFlags::new(), raw);
             Some((bits, ValueKind::FLOAT))
@@ -86,10 +91,6 @@ fn value_raw_kind_parts<M: cranelift_module::Module>(
             payload,
             kind: ValueKind::FLOAT,
         } => Some((payload, ValueKind::FLOAT)),
-        CodegenValue::Known {
-            payload,
-            kind: ValueKind::ATOM,
-        } => Some((payload, ValueKind::ATOM)),
         CodegenValue::Known { payload, kind } if kind.is_heap() || kind == ValueKind::LIST => Some((payload, kind)),
         _ => None,
     }
@@ -178,7 +179,7 @@ pub(crate) fn emit_list_cons_bif<M: cranelift_module::Module>(
             CodegenValue::Known {
                 kind: ValueKind::ATOM,
                 ..
-            }
+            } | CodegenValue::RawAtom(_)
         ) =>
         {
             (
@@ -843,6 +844,7 @@ fn lower_out_for_codegen_value(value: CodegenValue) -> LowerOut {
         CodegenValue::Known { .. } => LowerOut::Strict(value),
         CodegenValue::RawInt(v) => LowerOut::RawI64(v),
         CodegenValue::RawF64(v) => LowerOut::RawF64(v),
+        CodegenValue::RawAtom(_) => LowerOut::Strict(value),
         CodegenValue::Condition(v) => LowerOut::Condition(v),
     }
 }
@@ -1010,7 +1012,7 @@ fn emit_variadic_extern_call<M: cranelift_module::Module>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty>>(
+pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
@@ -2142,7 +2144,7 @@ fn emit_callable_entry_selected(
     );
 }
 
-fn resolve_callable_entry_sid<T: Types<Ty = Ty>>(
+fn resolve_callable_entry_sid<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     env: &CodegenEnv<'_>,
     mk_ident: &CallsiteIdent,
@@ -2185,7 +2187,7 @@ fn resolve_callable_entry_sid<T: Types<Ty = Ty>>(
 /// Lower a `Prim::MakeFnRef`. Thin callable values carry no env, so codegen
 /// materializes the planned callable-entry singleton directly instead of
 /// routing through closure allocation.
-pub(crate) fn lower_make_fn_ref<M: cranelift_module::Module, T: Types<Ty = Ty>>(
+pub(crate) fn lower_make_fn_ref<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
@@ -2217,7 +2219,7 @@ pub(crate) fn lower_make_fn_ref<M: cranelift_module::Module, T: Types<Ty = Ty>>(
 /// Lower a `Prim::MakeClosure`. Env-carrying closures allocate a closure
 /// object, store the callable-entry code pointer, then write captures through
 /// the runtime's schema-backed accessor.
-pub(crate) fn lower_make_closure<M: cranelift_module::Module, T: Types<Ty = Ty>>(
+pub(crate) fn lower_make_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,

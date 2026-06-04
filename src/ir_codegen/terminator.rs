@@ -6,7 +6,7 @@ use crate::fz_ir::{
     receive_outcome_spec_key,
 };
 use crate::ir_planner::SpecPlan;
-use crate::ir_planner::fn_types::{ReturnDemand, SpecKey};
+use crate::ir_planner::fn_types::{CallableCapability, ReturnDemand, SpecKey};
 use crate::types::{ClosureTypes, Ty, Types, key_slots_from_tys};
 use crate::{measurements, metadata};
 use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature, condcodes::IntCC, types};
@@ -696,10 +696,10 @@ fn emit_native_call_with_cont<M: cranelift_module::Module, T: Types<Ty = Ty> + C
         native_args.push(fetch_static_closure(body.jmod, body.b, runtime, callee_sid));
     }
     let cont_is_native = spec_is_native(env, cont_sid);
-    let cont_captures_callable = continuation.captured.iter().any(|cv| {
-        let ty = block_env.and_then(|env| env.get(cv)).or_else(|| fn_types.vars.get(cv));
-        ty.is_some_and(|ty| t.callable_clauses(ty).is_some())
-    });
+    let cont_captures_callable = continuation
+        .captured
+        .iter()
+        .any(|cv| capture_forces_heap_continuation(t, fn_types, block_env, cv));
     let cont_can_use_lazy_descriptor = !closure_capture_counts.contains_key(&callee_fn_id) && !cont_captures_callable;
     let continuation_plan = if cont_is_native {
         let payload = ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, &continuation.captured);
@@ -877,7 +877,15 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     let mut native_args = Vec::with_capacity(callee_param_reprs.iter().map(ArgRepr::abi_arity).sum());
     let mut mid_flight_arg_shapes: Vec<MidFlightArgShape> = Vec::with_capacity(callee_param_reprs.len() + 2);
     for (i, av) in args.iter().enumerate() {
-        let binding = *var_env.get(&av.0).expect("unbound call arg");
+        let binding = *var_env.get(&av.0).unwrap_or_else(|| {
+            panic!(
+                "unbound call arg {:?}; callee_sid={}; args={:?}; bound={:?}",
+                av,
+                callee_sid,
+                args,
+                var_env.keys().copied().collect::<Vec<_>>()
+            )
+        });
         let to = callee_param_reprs[i];
         body.push_binding_as_abi_arg(&mut native_args, binding, to);
         mid_flight_arg_shapes.push(MidFlightArgShape::Value(to));
@@ -1063,6 +1071,22 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
 
     body.b.switch_to_block(proceed_blk);
     body.b.seal_block(proceed_blk);
+}
+
+fn capture_forces_heap_continuation<T: Types<Ty = Ty> + ClosureTypes>(
+    t: &mut T,
+    fn_types: &SpecPlan,
+    block_env: Option<&HashMap<Var, Ty>>,
+    cv: &Var,
+) -> bool {
+    let ty = block_env.and_then(|env| env.get(cv)).or_else(|| fn_types.vars.get(cv));
+    if !ty.is_some_and(|ty| t.callable_clauses(ty).is_some()) {
+        return false;
+    }
+    !matches!(
+        fn_types.callable_capabilities.get(cv),
+        Some(CallableCapability::KnownFn(_))
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

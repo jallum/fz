@@ -8,6 +8,7 @@ use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, 
 use super::*;
 use crate::exec::matcher::Matcher;
 use crate::fz_ir::{FnId, Module};
+use crate::ir_planner::fn_types::SpecKey;
 use crate::telemetry::Telemetry;
 use crate::types::{Ty, Types};
 
@@ -36,7 +37,8 @@ pub(super) enum InterpStep {
     Yielded {
         resume_fn: FnId,
         resume_args: Vec<AnyValue>,
-        after: Vec<(FnId, Vec<AnyValue>)>,
+        resume_spec: Option<SpecKey>,
+        after: Vec<InterpContinuation>,
         remaining_reductions: i32,
         reason: u8,
     },
@@ -45,7 +47,7 @@ pub(super) enum InterpStep {
     /// plus the pinned ^name and capture AnyValues from the receive site
     /// so that `interp_send` can probe new messages without recreating
     /// any of that state.
-    BlockedMatched(ParkRecord, Vec<(FnId, Vec<AnyValue>)>),
+    BlockedMatched(ParkRecord, Vec<InterpContinuation>),
 }
 
 /// fz-yxs/fz-2v3 — interp park record for a selective receive.
@@ -108,7 +110,7 @@ impl IrInterpRuntime {
                     let body = park.clauses[idx].body;
                     let mut args = bound_vals;
                     args.extend(park.captures.iter().copied());
-                    self.resume.insert(receiver_pid, (body, args, after_chain));
+                    self.resume.insert(receiver_pid, (body, args, None, after_chain));
                     self.set_process_state(receiver_pid, ProcessState::Ready);
                     self.run_queue.push_back(receiver_pid);
                     return Ok(());
@@ -183,7 +185,7 @@ impl IrInterpRuntime {
             return Err("spawn: current process has no interpreter code image".to_string());
         };
         self.set_task_code_image(pid, image);
-        self.enqueue_resume(pid, (fn_id, args, vec![]));
+        self.enqueue_resume(pid, (fn_id, args, None, vec![]));
         Ok(pid)
     }
 }

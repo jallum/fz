@@ -202,6 +202,28 @@ end
 }
 
 #[test]
+fn interp_runtime_graph_preserves_planned_continuation_specs_after_non_tail_calls() {
+    let got = capture_runtime_graph(
+        r#"
+fn main() do
+  xs = [1, 2, 3, 4, 5]
+  range = 1..5
+
+  dbg(Enum.take(xs, 3))
+  dbg(Enum.take(xs, 0))
+  dbg(Enum.take(xs, 9))
+  dbg(Enum.take(xs, -2))
+  dbg(Enum.take(range, -2))
+end
+"#,
+    );
+    assert_eq!(
+        got, "[1, 2, 3]\n[]\n[1, 2, 3, 4, 5]\n[4, 5]\n[4, 5]",
+        "interpreter continuations must retain their planner-selected specs across chained non-tail calls",
+    );
+}
+
+#[test]
 fn interp_runtime_graph_joined_thin_fn_refs_remain_callable_across_enum_reduce() {
     assert_eq!(
         run_runtime_graph(

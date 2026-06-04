@@ -56,6 +56,7 @@ pub(crate) fn runtime_import_sig(name: &str) -> Signature {
         "fz_halt_implicit_ref" => (&[I64, I64], &[]),
         "fz_halt_implicit_i64" => (&[I64, I64], &[]),
         "fz_halt_implicit_f64" => (&[I64, F64], &[]),
+        "fz_halt_implicit_atom" => (&[I64, I64], &[]),
         "fz_list_cons_any" => (&[I64, I64, I64], &[I64]),
         "fz_list_cons_int" => (&[I64, I64, I64], &[I64]),
         "fz_list_cons_float" => (&[I64, F64, I64], &[I64]),
@@ -124,9 +125,11 @@ pub(crate) fn runtime_import_sig(name: &str) -> Signature {
         "fz_closure_get_capture_ref" => (&[I64, I64], &[I64]),
         "fz_closure_get_capture_i64" => (&[I64, I64], &[I64]),
         "fz_closure_get_capture_f64" => (&[I64, I64], &[F64]),
+        "fz_closure_get_capture_atom" => (&[I64, I64], &[I64]),
         "fz_closure_set_capture_ref" => (&[I64, I64, I64, I64], &[]),
         "fz_closure_set_capture_i64" => (&[I64, I64, I64, I64], &[]),
         "fz_closure_set_capture_f64" => (&[I64, I64, I64, F64], &[]),
+        "fz_closure_set_capture_atom" => (&[I64, I64, I64, I64], &[]),
         "fz_get_static_closure" => (&[I64, I32], &[I64]),
         "fz_receive_park_matched" => (&[I64, I64, I64, I64, I64, I64, I64, I32, I64, I64], &[I64]),
         "fz_get_halt_cont" => (&[I64, I64, I32], &[I64]),
@@ -169,9 +172,11 @@ pub(crate) fn declare_runtime_symbols<M: ClModule>(jmod: &mut M) -> Result<Runti
         halt_implicit_ref_id: halt.halt_implicit_ref_id,
         halt_implicit_i64_id: halt.halt_implicit_i64_id,
         halt_implicit_f64_id: halt.halt_implicit_f64_id,
+        halt_implicit_atom_id: halt.halt_implicit_atom_id,
         halt_cont_body_strict_id: halt_cont.halt_cont_body_strict_id,
         halt_cont_body_i64_id: halt_cont.halt_cont_body_i64_id,
         halt_cont_body_f64_id: halt_cont.halt_cont_body_f64_id,
+        halt_cont_body_atom_id: halt_cont.halt_cont_body_atom_id,
         alloc_id,
         list_cons_any_id: list.list_cons_any_id,
         list_cons_int_id: list.list_cons_int_id,
@@ -240,9 +245,11 @@ pub(crate) fn declare_runtime_symbols<M: ClModule>(jmod: &mut M) -> Result<Runti
         closure_get_capture_ref_id: closure.closure_get_capture_ref_id,
         closure_get_capture_i64_id: closure.closure_get_capture_i64_id,
         closure_get_capture_f64_id: closure.closure_get_capture_f64_id,
+        closure_get_capture_atom_id: closure.closure_get_capture_atom_id,
         closure_set_capture_ref_id: closure.closure_set_capture_ref_id,
         closure_set_capture_i64_id: closure.closure_set_capture_i64_id,
         closure_set_capture_f64_id: closure.closure_set_capture_f64_id,
+        closure_set_capture_atom_id: closure.closure_set_capture_atom_id,
         receive_park_matched_id: receive.receive_park_matched_id,
         get_static_closure_id: closure.get_static_closure_id,
         get_halt_cont_id: halt_cont.get_halt_cont_id,
@@ -258,6 +265,7 @@ struct HaltRefs {
     halt_implicit_ref_id: FuncId,
     halt_implicit_i64_id: FuncId,
     halt_implicit_f64_id: FuncId,
+    halt_implicit_atom_id: FuncId,
 }
 
 /// Implicit-halt FFI entries (one per return repr).
@@ -266,6 +274,7 @@ fn declare_halt_runtime<M: ClModule>(jmod: &mut M) -> Result<HaltRefs, CodegenEr
         halt_implicit_ref_id: decl_import(jmod, "fz_halt_implicit_ref")?,
         halt_implicit_i64_id: decl_import(jmod, "fz_halt_implicit_i64")?,
         halt_implicit_f64_id: decl_import(jmod, "fz_halt_implicit_f64")?,
+        halt_implicit_atom_id: decl_import(jmod, "fz_halt_implicit_atom")?,
     })
 }
 
@@ -487,9 +496,11 @@ struct ClosureRefs {
     closure_get_capture_ref_id: FuncId,
     closure_get_capture_i64_id: FuncId,
     closure_get_capture_f64_id: FuncId,
+    closure_get_capture_atom_id: FuncId,
     closure_set_capture_ref_id: FuncId,
     closure_set_capture_i64_id: FuncId,
     closure_set_capture_f64_id: FuncId,
+    closure_set_capture_atom_id: FuncId,
     get_static_closure_id: FuncId,
 }
 
@@ -502,9 +513,11 @@ fn declare_closure_runtime<M: ClModule>(jmod: &mut M) -> Result<ClosureRefs, Cod
     let closure_get_capture_ref_id = decl_import(jmod, "fz_closure_get_capture_ref")?;
     let closure_get_capture_i64_id = decl_import(jmod, "fz_closure_get_capture_i64")?;
     let closure_get_capture_f64_id = decl_import(jmod, "fz_closure_get_capture_f64")?;
+    let closure_get_capture_atom_id = decl_import(jmod, "fz_closure_get_capture_atom")?;
     let closure_set_capture_ref_id = decl_import(jmod, "fz_closure_set_capture_ref")?;
     let closure_set_capture_i64_id = decl_import(jmod, "fz_closure_set_capture_i64")?;
     let closure_set_capture_f64_id = decl_import(jmod, "fz_closure_set_capture_f64")?;
+    let closure_set_capture_atom_id = decl_import(jmod, "fz_closure_set_capture_atom")?;
     // Static zero-capture closure singleton lookup. Returns the per-Process
     // singleton pointer for the given cl_sid.
     let get_static_closure_id = decl_import(jmod, "fz_get_static_closure")?;
@@ -516,9 +529,11 @@ fn declare_closure_runtime<M: ClModule>(jmod: &mut M) -> Result<ClosureRefs, Cod
         closure_get_capture_ref_id,
         closure_get_capture_i64_id,
         closure_get_capture_f64_id,
+        closure_get_capture_atom_id,
         closure_set_capture_ref_id,
         closure_set_capture_i64_id,
         closure_set_capture_f64_id,
+        closure_set_capture_atom_id,
         get_static_closure_id,
     })
 }
@@ -546,18 +561,19 @@ struct HaltContRefs {
     halt_cont_body_strict_id: FuncId,
     halt_cont_body_i64_id: FuncId,
     halt_cont_body_f64_id: FuncId,
+    halt_cont_body_atom_id: FuncId,
 }
 
-/// Halt-cont singleton lookup plus the three LOCAL Tail-CC body declarations.
+/// Halt-cont singleton lookup plus the four LOCAL Tail-CC body declarations.
 fn declare_halt_cont_runtime<M: ClModule>(jmod: &mut M) -> Result<HaltContRefs, CodegenError> {
-    // Halt-cont singleton lookup. `(addr, kind)`: kind selects among 3
-    // Process singletons (0=ValueRef, 1=RawInt, 2=RawF64). Lazily
+    // Halt-cont singleton lookup. `(addr, kind)`: kind selects among 4
+    // Process singletons (0=ValueRef, 1=RawInt, 2=RawF64, 3=RawAtom). Lazily
     // initialized using the supplied halt_cont_body addr (JIT pre-populates
     // at make_process time; AOT relies on lazy init at first call).
     let get_halt_cont_id = decl_import(jmod, "fz_get_halt_cont")?;
-    // Three fz_halt_cont_body variants, declared LOCAL (bodies emitted
+    // Four fz_halt_cont_body variants, declared LOCAL (bodies emitted
     // elsewhere). Strict: `(raw i64, kind i8, self i64) -> i64 tail`;
-    // RawInt: `(i64, self i64) -> i64 tail`; RawF64: `(f64, self i64) -> i64 tail`.
+    // RawInt/RawAtom: `(i64, self i64) -> i64 tail`; RawF64: `(f64, self i64) -> i64 tail`.
     let halt_cont_body_strict_id = {
         let mut sig = Signature::new(CallConv::Tail);
         sig.params.push(AbiParam::new(types::I64));
@@ -577,11 +593,13 @@ fn declare_halt_cont_runtime<M: ClModule>(jmod: &mut M) -> Result<HaltContRefs, 
     };
     let halt_cont_body_i64_id = declare_narrow_hcb("fz_halt_cont_body_i64", types::I64)?;
     let halt_cont_body_f64_id = declare_narrow_hcb("fz_halt_cont_body_f64", types::F64)?;
+    let halt_cont_body_atom_id = declare_narrow_hcb("fz_halt_cont_body_atom", types::I64)?;
     Ok(HaltContRefs {
         get_halt_cont_id,
         halt_cont_body_strict_id,
         halt_cont_body_i64_id,
         halt_cont_body_f64_id,
+        halt_cont_body_atom_id,
     })
 }
 
@@ -649,9 +667,11 @@ pub(crate) struct RuntimeRefs {
     pub(super) halt_implicit_ref_id: FuncId,
     pub(super) halt_implicit_i64_id: FuncId,
     pub(super) halt_implicit_f64_id: FuncId,
+    pub(super) halt_implicit_atom_id: FuncId,
     pub(super) halt_cont_body_strict_id: FuncId,
     pub(super) halt_cont_body_i64_id: FuncId,
     pub(super) halt_cont_body_f64_id: FuncId,
+    pub(super) halt_cont_body_atom_id: FuncId,
     pub(super) alloc_id: FuncId,
     pub(super) list_cons_any_id: FuncId,
     pub(super) list_cons_int_id: FuncId,
@@ -727,9 +747,11 @@ pub(crate) struct RuntimeRefs {
     pub(super) closure_get_capture_ref_id: FuncId,
     pub(super) closure_get_capture_i64_id: FuncId,
     pub(super) closure_get_capture_f64_id: FuncId,
+    pub(super) closure_get_capture_atom_id: FuncId,
     pub(super) closure_set_capture_ref_id: FuncId,
     pub(super) closure_set_capture_i64_id: FuncId,
     pub(super) closure_set_capture_f64_id: FuncId,
+    pub(super) closure_set_capture_atom_id: FuncId,
     /// fz_receive_park_matched FFI entry. Called from the
     /// Term::ReceiveMatched arm in compile_block_terminator.
     pub(super) receive_park_matched_id: FuncId,

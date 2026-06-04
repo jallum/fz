@@ -8,7 +8,7 @@ budget.planner.worklist_pops: 1
 budget.planner.walk_calls: 1
 budget.planner.type_fn_calls: 1
 budget.planner.matcher_specs: 0
-budget.planner.vars: 6
+budget.planner.vars: 5
 budget.planner.blocks: 1
 budget.planner.stmts: 4
 budget.planner.dispatches: 0

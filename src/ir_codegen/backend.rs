@@ -4,7 +4,7 @@ use super::*;
 use crate::diag::Diagnostics;
 use crate::fz_ir::{BinOp, Const, FnId, Module, Prim, Stmt, Term, UnOp, Var};
 use crate::ir_planner::SpecPlan;
-use crate::ir_planner::fn_types::SpecKey;
+use crate::ir_planner::fn_types::{CallableCapability, SpecKey};
 use crate::types::{ClosureLitInfo, ClosureTypes, Ty, Types, key_slots_from_tys};
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
@@ -104,6 +104,7 @@ pub(crate) fn register_runtime_symbols(builder: &mut JITBuilder) {
     builder.symbol("fz_halt_implicit_ref", ir_runtime::fz_halt_implicit_ref as *const u8);
     builder.symbol("fz_halt_implicit_i64", ir_runtime::fz_halt_implicit_i64 as *const u8);
     builder.symbol("fz_halt_implicit_f64", ir_runtime::fz_halt_implicit_f64 as *const u8);
+    builder.symbol("fz_halt_implicit_atom", ir_runtime::fz_halt_implicit_atom as *const u8);
     builder.symbol("fz_alloc_frame", ir_runtime::fz_alloc_frame as *const u8);
     builder.symbol("fz_list_cons_ref", ir_runtime::fz_list_cons_ref as *const u8);
     builder.symbol("fz_list_cons_any", ir_runtime::fz_list_cons_any as *const u8);
@@ -256,6 +257,10 @@ pub(crate) fn register_runtime_symbols(builder: &mut JITBuilder) {
         ir_runtime::fz_closure_get_capture_f64 as *const u8,
     );
     builder.symbol(
+        "fz_closure_get_capture_atom",
+        ir_runtime::fz_closure_get_capture_atom as *const u8,
+    );
+    builder.symbol(
         "fz_closure_set_capture_ref",
         ir_runtime::fz_closure_set_capture_ref as *const u8,
     );
@@ -266,6 +271,10 @@ pub(crate) fn register_runtime_symbols(builder: &mut JITBuilder) {
     builder.symbol(
         "fz_closure_set_capture_f64",
         ir_runtime::fz_closure_set_capture_f64 as *const u8,
+    );
+    builder.symbol(
+        "fz_closure_set_capture_atom",
+        ir_runtime::fz_closure_set_capture_atom as *const u8,
     );
     builder.symbol("fz_spawn_ref", ir_runtime::fz_spawn_ref as *const u8);
     builder.symbol("fz_spawn_opt_ref", ir_runtime::fz_spawn_opt_ref as *const u8);
@@ -362,6 +371,7 @@ impl Backend for JitBackend {
             jmod.get_finalized_function(meta.halt_cont_body_ids[0]),
             jmod.get_finalized_function(meta.halt_cont_body_ids[1]),
             jmod.get_finalized_function(meta.halt_cont_body_ids[2]),
+            jmod.get_finalized_function(meta.halt_cont_body_ids[3]),
         ];
         let resume_addr = jmod.get_finalized_function(meta.resume_id);
         // Build the module's shared node once; every Process clones the Rc.
@@ -435,10 +445,18 @@ impl Backend for AotBackend {
         // (fz_entry_thunk / fz_main_trampoline / fz_halt_cont_body) emitted by
         // planned codegen. Three fz-runtime FFI fns handle Process
         // setup, static-closure registration, and run-main+teardown.
-        // Setup takes the three halt_cont_body addrs (ValueRef, RawInt,
-        // RawF64) in slots 2-4.
+        // Setup takes the four halt_cont_body addrs (ValueRef, RawInt,
+        // RawF64, RawAtom) in slots 2-5.
         let setup_sig = sig1(
-            &[types::I64, types::I32, types::I64, types::I64, types::I64, types::I64],
+            &[
+                types::I64,
+                types::I32,
+                types::I64,
+                types::I64,
+                types::I64,
+                types::I64,
+                types::I64,
+            ],
             &[types::I64],
         );
         let setup_id = self
@@ -663,8 +681,17 @@ pub(crate) fn resolve_tcc_body<T: Types<Ty = Ty> + ClosureTypes>(
     module: &Module,
     spec_registry: &SpecRegistry,
 ) -> Option<(FnId, u32)> {
-    let ClosureLitInfo { target, captures, .. } = t.closure_lit_parts(ft.vars.get(closure)?)?;
-    let fn_id = FnId::from(target);
+    let (fn_id, captures) = if let Some(ClosureLitInfo { target, captures, .. }) =
+        ft.vars.get(closure).and_then(|ty| t.closure_lit_parts(ty))
+    {
+        (FnId::from(target), captures)
+    } else {
+        match ft.callable_capabilities.get(closure)? {
+            CallableCapability::KnownFn(fn_id) => (*fn_id, Vec::new()),
+            CallableCapability::KnownClosure { fn_id, captures, .. } => (*fn_id, captures.clone()),
+            CallableCapability::OpaqueCallable => return None,
+        }
+    };
     let body_fn = module.fn_by_id(fn_id);
     let np = body_fn.block(body_fn.entry).params.len();
     let any = t.any();

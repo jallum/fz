@@ -62,6 +62,7 @@ pub(crate) enum ClosureCapture {
     RefWord(ir::Value),
     RawInt(ir::Value),
     RawF64(ir::Value),
+    RawAtom(ir::Value),
 }
 
 pub(crate) fn closure_capture_for_var<M: Module>(
@@ -79,11 +80,13 @@ pub(crate) fn closure_capture_for_var<M: Module>(
             ClosureCapture::RawInt(raw)
         }
         CodegenValue::RawF64(value) => ClosureCapture::RawF64(value),
+        CodegenValue::RawAtom(value) => ClosureCapture::RawAtom(value),
         CodegenValue::Known { payload, kind } if kind == ValueKind::INT => ClosureCapture::RawInt(payload),
         CodegenValue::Known { payload, kind } if kind == ValueKind::FLOAT => {
             let raw = body.b.ins().bitcast(types::F64, MemFlags::new(), payload);
             ClosureCapture::RawF64(raw)
         }
+        CodegenValue::Known { payload, kind } if kind == ValueKind::ATOM => ClosureCapture::RawAtom(payload),
         _ => {
             let value_ref = body.tagged_var(var_env, v);
             ClosureCapture::RefWord(value_ref)
@@ -101,6 +104,7 @@ pub(crate) fn closure_capture_for_var_as<M: Module>(
     match repr {
         ArgRepr::RawInt => ClosureCapture::RawInt(body.coerce_binding_to(binding, repr)),
         ArgRepr::RawF64 => ClosureCapture::RawF64(body.coerce_binding_to(binding, repr)),
+        ArgRepr::RawAtom => ClosureCapture::RawAtom(body.coerce_binding_to(binding, repr)),
         ArgRepr::ValueRef => ClosureCapture::RefWord(body.tagged_var(var_env, v)),
         ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
     }
@@ -179,6 +183,7 @@ pub(crate) enum CodegenValue {
     Known { payload: ir::Value, kind: ValueKind },
     RawInt(ir::Value),
     RawF64(ir::Value),
+    RawAtom(ir::Value),
     Condition(ir::Value),
 }
 
@@ -188,6 +193,7 @@ impl CodegenValue {
             ArgRepr::ValueRef => Self::AnyRef(value),
             ArgRepr::RawInt => Self::RawInt(value),
             ArgRepr::RawF64 => Self::RawF64(value),
+            ArgRepr::RawAtom => Self::RawAtom(value),
             ArgRepr::Condition => Self::Condition(value),
         }
     }
@@ -205,6 +211,7 @@ impl CodegenValue {
             Self::AnyRef(value)
             | Self::RawInt(value)
             | Self::RawF64(value)
+            | Self::RawAtom(value)
             | Self::Condition(value)
             | Self::Known { payload: value, .. } => value,
         }
@@ -215,6 +222,7 @@ impl CodegenValue {
             Self::AnyRef(_) | Self::Known { .. } => ArgRepr::ValueRef,
             Self::RawInt(_) => ArgRepr::RawInt,
             Self::RawF64(_) => ArgRepr::RawF64,
+            Self::RawAtom(_) => ArgRepr::RawAtom,
             Self::Condition(_) => ArgRepr::Condition,
         }
     }
@@ -239,6 +247,7 @@ pub(crate) fn as_known_numeric_f64(
     match vb.repr() {
         ArgRepr::RawF64 => vb.value(),
         ArgRepr::RawInt => b.ins().fcvt_from_sint(types::F64, vb.value()),
+        ArgRepr::RawAtom => panic!("atom is not numeric"),
         ArgRepr::ValueRef => panic!("tagged numeric-to-f64 conversion has been retired"),
         ArgRepr::Condition => unreachable!("condition is not numeric"),
     }

@@ -13,28 +13,13 @@ main[] demand=value:
   @0:108-120 Direct -> Static(fib#183 [int, int, int] demand=value)
 
 k_188[int] demand=value:
-  @0:104-121 Cont -> Static(k_189#189 [any] demand=value)
-  @0:104-121 Direct -> Static(Kernel.dbg#1 [int] demand=value)
-
-k_189[any] demand=value:
-  @0:128-140 Cont -> Static(k_190#190 [int] demand=value)
+  @0:128-140 Cont -> Static(k_189#189 [int] demand=value)
   @0:128-140 Direct -> Static(fib#183 [int, int, int] demand=value)
 
-k_190[int] demand=value:
-  @0:124-141 Cont -> Static(k_191#191 [any] demand=value)
-  @0:124-141 Direct -> Static(Kernel.dbg#1 [int] demand=value)
-
-k_191[any] demand=value:
-  @0:148-161 Cont -> Static(k_192#192 [int] demand=value)
+k_189[int] demand=value:
+  @0:148-161 Cont -> Static(k_190#190 [int] demand=value)
   @0:148-161 Direct -> Static(fib#183 [int, int, int] demand=value)
 
-k_192[int] demand=value:
-  @0:144-162 Cont -> Static(k_193#193 [any] demand=value)
-  @0:144-162 Direct -> Static(Kernel.dbg#1 [int] demand=value)
-
-k_193[any] demand=value:
-  @0:169-182 Cont -> Static(k_194#194 [int] demand=value)
+k_190[int] demand=value:
+  @0:169-182 Cont -> Static(k_191#191 [int] demand=value)
   @0:169-182 Direct -> Static(fib#183 [int, int, int] demand=value)
-
-k_194[int] demand=value:
-  @0:165-183 Direct -> Static(Kernel.dbg#1 [int] demand=value)

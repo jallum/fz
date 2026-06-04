@@ -15,6 +15,12 @@ use fz_runtime::any_value::AnyValueRef;
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind};
 use fz_runtime::process::YIELD_REASON_REDUCTIONS;
 
+fn continuation_target(fn_types: &SpecPlan, fn_id: FnId, ident: &crate::fz_ir::CallsiteIdent) -> Option<SpecKey> {
+    fn_types
+        .local_call_target(&CallsiteId::new(fn_id, ident, EmitSlot::Cont))
+        .cloned()
+}
+
 /// fz-yxs/fz-2v3 — try matching the message against each clause's
 /// pattern + guard in order; first match wins. Returns the matched
 /// clause index plus the bindings list (in source order, aligned with
@@ -167,6 +173,7 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                         .cloned();
                     let arg_vals = collect(&env, call_args)?;
                     let outer_cap_vals = collect(&env, &continuation.captured)?;
+                    let cont_target = continuation_target(fn_types, fn_id, ident);
                     match run_fn_typed(
                         runtime,
                         t,
@@ -182,25 +189,35 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                             cont_args.extend(outer_cap_vals);
                             fn_id = continuation.fn_id;
                             args = cont_args;
-                            selected_spec = None;
+                            selected_spec = cont_target;
                             continue 'tail;
                         }
                         InterpStep::Halt(val) => return Ok(InterpStep::Halt(val)),
                         InterpStep::BlockedMatched(park, mut inner_after) => {
-                            inner_after.push((continuation.fn_id, outer_cap_vals));
+                            inner_after.push(InterpContinuation {
+                                fn_id: continuation.fn_id,
+                                args: outer_cap_vals,
+                                selected_spec: cont_target,
+                            });
                             return Ok(InterpStep::BlockedMatched(park, inner_after));
                         }
                         InterpStep::Yielded {
                             resume_fn,
                             resume_args,
+                            resume_spec,
                             mut after,
                             remaining_reductions,
                             reason,
                         } => {
-                            after.push((continuation.fn_id, outer_cap_vals));
+                            after.push(InterpContinuation {
+                                fn_id: continuation.fn_id,
+                                args: outer_cap_vals,
+                                selected_spec: cont_target,
+                            });
                             return Ok(InterpStep::Yielded {
                                 resume_fn,
                                 resume_args,
+                                resume_spec,
                                 after,
                                 remaining_reductions,
                                 reason,
@@ -237,6 +254,7 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                             return Ok(InterpStep::Yielded {
                                 resume_fn: selected_target.as_ref().map_or(*callee, |target| target.fn_id),
                                 resume_args: arg_vals,
+                                resume_spec: selected_target.clone(),
                                 after: vec![],
                                 remaining_reductions,
                                 reason: YIELD_REASON_REDUCTIONS,
@@ -271,6 +289,7 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                         .filter(|target| target.fn_id == lam_fn)
                         .cloned();
                     let outer_cap_vals = collect(&env, &continuation.captured)?;
+                    let cont_target = continuation_target(fn_types, fn_id, ident);
                     match run_fn_typed(
                         runtime,
                         t,
@@ -286,25 +305,35 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                             cont_args.extend(outer_cap_vals);
                             fn_id = continuation.fn_id;
                             args = cont_args;
-                            selected_spec = None;
+                            selected_spec = cont_target;
                             continue 'tail;
                         }
                         InterpStep::Halt(val) => return Ok(InterpStep::Halt(val)),
                         InterpStep::BlockedMatched(park, mut inner_after) => {
-                            inner_after.push((continuation.fn_id, outer_cap_vals));
+                            inner_after.push(InterpContinuation {
+                                fn_id: continuation.fn_id,
+                                args: outer_cap_vals,
+                                selected_spec: cont_target,
+                            });
                             return Ok(InterpStep::BlockedMatched(park, inner_after));
                         }
                         InterpStep::Yielded {
                             resume_fn,
                             resume_args,
+                            resume_spec,
                             mut after,
                             remaining_reductions,
                             reason,
                         } => {
-                            after.push((continuation.fn_id, outer_cap_vals));
+                            after.push(InterpContinuation {
+                                fn_id: continuation.fn_id,
+                                args: outer_cap_vals,
+                                selected_spec: cont_target,
+                            });
                             return Ok(InterpStep::Yielded {
                                 resume_fn,
                                 resume_args,
+                                resume_spec,
                                 after,
                                 remaining_reductions,
                                 reason,

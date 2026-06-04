@@ -1104,11 +1104,12 @@ pub struct CompiledModule {
     /// `process.heap.pending_dtors` at task-exit; dispatches the dtor
     /// closure with payload + a fresh Strict halt-cont.
     pub(crate) drain_dtor_entry_addr: *const u8,
-    /// Finalized addresses of the three `fz_halt_cont_body_{tagged,i64,f64}`
-    /// Tail-CC fns, indexed by repr kind (0=ValueRef, 1=RawInt, 2=RawF64).
+    /// Finalized addresses of the four `fz_halt_cont_body_{tagged,i64,f64,atom}`
+    /// Tail-CC fns, indexed by repr kind (0=ValueRef, 1=RawInt, 2=RawF64,
+    /// 3=RawAtom).
     /// Null slots (unused reprs in this program) are populated lazily by
     /// `fz_get_halt_cont` at first use.
-    pub(crate) halt_cont_body_addrs: [*const u8; 3],
+    pub(crate) halt_cont_body_addrs: [*const u8; 4],
     /// Per-FnId halt-cont singleton kind (the entry fn's any-key return
     /// repr). `Runtime::spawn` stamps this kind onto a main-style entry's
     /// synthetic inner closure so `fz_entry_thunk` resolves the matching
@@ -1355,10 +1356,11 @@ pub struct CompiledMetadata {
     pub entry_thunk_id: FuncId,
     pub main_trampoline_id: FuncId,
     pub drain_dtor_entry_id: FuncId,
-    /// Three `fz_halt_cont_body` fns indexed by repr kind (0=ValueRef,
-    /// 1=RawInt, 2=RawF64). Sigs: (ValueRef|i64|f64, i64) -> i64 tail.
+    /// Four `fz_halt_cont_body` fns indexed by repr kind (0=ValueRef,
+    /// 1=RawInt, 2=RawF64, 3=RawAtom). Sigs:
+    /// (ValueRef|i64|f64|atom-id, i64) -> i64 tail.
     /// Bodies call the matching `halt_implicit_*` and return 0.
-    pub halt_cont_body_ids: [FuncId; 3],
+    pub halt_cont_body_ids: [FuncId; 4],
     /// Per-FnId halt-cont singleton kind (the entry fn's any-key return
     /// repr). The Rust scheduler picks the matching halt_cont_singletons
     /// slot when dispatching via `fz_main_entry`.

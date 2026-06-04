@@ -26,9 +26,9 @@ use std::rc::Rc;
 use crate::exec::runtime::{ExitRecord, output_hook_thunk};
 use crate::fz_ir::{FnId, Module};
 use crate::ir_extern_marshal::resolve_module_types;
-use crate::ir_planner::ModulePlan;
 #[cfg(test)]
 use crate::ir_planner::plan_module;
+use crate::ir_planner::{ModulePlan, fn_types::SpecKey};
 #[cfg(test)]
 use crate::telemetry::NullTelemetry;
 use crate::telemetry::Telemetry;
@@ -67,11 +67,18 @@ use value::*;
 
 use std::collections::VecDeque;
 
-/// Per-task resume state: fn to call, captures (no message), and after-chain.
-type ResumeEntry = (FnId, Vec<AnyValue>, Vec<(FnId, Vec<AnyValue>)>);
+#[derive(Clone)]
+pub(super) struct InterpContinuation {
+    pub(super) fn_id: FnId,
+    pub(super) args: Vec<AnyValue>,
+    pub(super) selected_spec: Option<SpecKey>,
+}
+
+/// Per-task resume state: fn to call, args, selected spec, and after-chain.
+type ResumeEntry = (FnId, Vec<AnyValue>, Option<SpecKey>, Vec<InterpContinuation>);
 
 /// fz-yxs/fz-2v3 — value type for selective-receive park records.
-type InterpParked = (ParkRecord, Vec<(FnId, Vec<AnyValue>)>);
+type InterpParked = (ParkRecord, Vec<InterpContinuation>);
 
 /// Immutable IR interpreter code generation.
 ///
@@ -311,7 +318,7 @@ impl IrInterpRuntime {
         if !self.tasks.contains_key(&pid) {
             return Err(format!("enqueue_entry: unknown pid {}", pid));
         }
-        self.resume.insert(pid, (fn_id, args, vec![]));
+        self.resume.insert(pid, (fn_id, args, None, vec![]));
         self.run_queue.push_back(pid);
         self.set_process_state(pid, ProcessState::Ready);
         Ok(())
@@ -353,7 +360,8 @@ impl IrInterpRuntime {
                 .ok_or_else(|| format!("pid {} has no interpreter code image", pid))?;
             let module = image.module();
             let module_types = image.module_plan();
-            let (fn_id, args, mut after) = self.take_resume(pid).expect("pid in run_queue with no resume entry");
+            let (fn_id, args, selected_spec, mut after) =
+                self.take_resume(pid).expect("pid in run_queue with no resume entry");
             let proc_ptr = self.process_ptr(pid).expect("pid in run_queue with no process entry");
             exec_ctx.module = module as *const Module as *const ();
             unsafe {
@@ -364,15 +372,24 @@ impl IrInterpRuntime {
                 debug_assert!(!(*proc_ptr).ctx.is_null(), "interp ctx installed");
             };
             self.current_proc = proc_ptr;
-            let mut step = run_fn_typed(self, t, module, tel, module_types, fn_id, args, None);
+            let mut step = run_fn_typed(self, t, module, tel, module_types, fn_id, args, selected_spec);
             loop {
                 match step {
                     Ok(InterpStep::Done(val)) => {
-                        if let Some((next_fn, next_caps)) = after.first().cloned() {
+                        if let Some(next) = after.first().cloned() {
                             after.remove(0);
                             let mut next_args = vec![val];
-                            next_args.extend(next_caps);
-                            step = run_fn_typed(self, t, module, tel, module_types, next_fn, next_args, None);
+                            next_args.extend(next.args);
+                            step = run_fn_typed(
+                                self,
+                                t,
+                                module,
+                                tel,
+                                module_types,
+                                next.fn_id,
+                                next_args,
+                                next.selected_spec,
+                            );
                             continue;
                         }
 
@@ -421,6 +438,7 @@ impl IrInterpRuntime {
                     Ok(InterpStep::Yielded {
                         resume_fn,
                         mut resume_args,
+                        resume_spec,
                         after: mut new_after,
                         remaining_reductions,
                         reason,
@@ -431,7 +449,8 @@ impl IrInterpRuntime {
                         process
                             .boundary_maintenance(|p| gc_interp_scheduler_roots(p, &mut resume_args, &mut new_after))?;
                         self.set_process_state(pid, ProcessState::Ready);
-                        self.resume.insert(pid, (resume_fn, resume_args, new_after));
+                        self.resume
+                            .insert(pid, (resume_fn, resume_args, resume_spec, new_after));
                         self.run_queue.push_back(pid);
                         continue 'sched;
                     }
@@ -500,15 +519,15 @@ impl IrInterpRuntime {
 fn gc_interp_scheduler_roots(
     process: &mut Process,
     resume_args: &mut [AnyValue],
-    after: &mut [(FnId, Vec<AnyValue>)],
+    after: &mut [InterpContinuation],
 ) -> Result<(), String> {
     let resume_len = resume_args.len();
     let mut roots: Vec<fz_runtime::any_value::AnyValue> = Vec::new();
     for value in resume_args.iter() {
         roots.push(value.value(process as *mut Process)?);
     }
-    for (_, caps) in after.iter() {
-        for value in caps {
+    for cont in after.iter() {
+        for value in &cont.args {
             roots.push(value.value(process as *mut Process)?);
         }
     }
@@ -521,8 +540,8 @@ fn gc_interp_scheduler_roots(
         *slot = interp_value_from_slot(*root);
     }
     let mut idx = resume_len;
-    for (_, caps) in after.iter_mut() {
-        for value in caps {
+    for cont in after.iter_mut() {
+        for value in &mut cont.args {
             *value = interp_value_from_slot(roots[idx]);
             idx += 1;
         }

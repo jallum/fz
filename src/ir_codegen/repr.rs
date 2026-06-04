@@ -26,10 +26,12 @@ use std::sync::Arc;
 /// `ValueRef` is the generic strict-parts ABI: raw payload plus side-band
 /// kind. Heap pointers preserve their strict low-4 object tag when they
 /// must cross a one-word runtime helper seam. `RawInt` is an unshifted
-/// int payload as i64; `RawF64` is a raw f64.
+/// int payload as i64; `RawF64` is a raw f64; `RawAtom` is an atom-id
+/// payload as i64.
 ///
 /// Per-spec param/return reprs are derived from `ir_planner`'s types:
-/// float-only -> `RawF64`, int-only -> `RawInt`, else `ValueRef`.
+/// float-only -> `RawF64`, int-only -> `RawInt`, atom-only -> `RawAtom`,
+/// else `ValueRef`.
 /// `build_fn_signature` picks the AbiParam type from the repr; `compile_fn`
 /// populates `raw_*_vars` to match; call sites coerce at the seam.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -37,6 +39,7 @@ pub(crate) enum ArgRepr {
     ValueRef,
     RawInt,
     RawF64,
+    RawAtom,
     /// Raw i1 from a comparison or TypeTest whose var is in `if_only_conds`
     /// — the tagged form is never materialised unless tagged_get is called,
     /// which emits bool_to_fz lazily at the use site.
@@ -49,6 +52,7 @@ impl ArgRepr {
             ArgRepr::ValueRef => "ValueRef",
             ArgRepr::RawInt => "RawInt",
             ArgRepr::RawF64 => "RawF64",
+            ArgRepr::RawAtom => "RawAtom",
             ArgRepr::Condition => "Condition",
         }
     }
@@ -59,7 +63,12 @@ impl ArgRepr {
         } else if t.is_integer(d) {
             ArgRepr::RawInt
         } else {
-            ArgRepr::ValueRef
+            let atom = t.atom();
+            if t.is_subtype(d, &atom) {
+                ArgRepr::RawAtom
+            } else {
+                ArgRepr::ValueRef
+            }
         }
     }
 
@@ -69,7 +78,7 @@ impl ArgRepr {
     // remain in the generic ValueRef word across block params.
     pub(crate) fn for_block_param_ty<T: Types<Ty = Ty>>(t: &mut T, d: &Ty) -> ArgRepr {
         match Self::from_ty(t, d) {
-            ArgRepr::RawInt => ArgRepr::RawInt,
+            r @ (ArgRepr::RawInt | ArgRepr::RawAtom) => r,
             _ => ArgRepr::ValueRef,
         }
     }
@@ -83,16 +92,17 @@ impl ArgRepr {
 
     pub(crate) fn abi_arity(&self) -> usize {
         match self {
-            ArgRepr::ValueRef | ArgRepr::RawInt | ArgRepr::RawF64 | ArgRepr::Condition => 1,
+            ArgRepr::ValueRef | ArgRepr::RawInt | ArgRepr::RawF64 | ArgRepr::RawAtom | ArgRepr::Condition => 1,
         }
     }
 
-    /// Halt-cont singleton kind. 0=ValueRef, 1=RawInt, 2=RawF64.
+    /// Halt-cont singleton kind. 0=ValueRef, 1=RawInt, 2=RawF64, 3=RawAtom.
     pub(crate) fn halt_kind(&self) -> u32 {
         match self {
             ArgRepr::ValueRef => 0,
             ArgRepr::RawInt => 1,
             ArgRepr::RawF64 => 2,
+            ArgRepr::RawAtom => 3,
             ArgRepr::Condition => unreachable!("Condition vars never reach halt-cont"),
         }
     }
@@ -143,6 +153,9 @@ impl MidFlightArgShape {
             }
             MidFlightArgShape::Value(ArgRepr::RawInt) => {
                 out.push(body.value_raw_int(value));
+            }
+            MidFlightArgShape::Value(ArgRepr::RawAtom) => {
+                out.push(body.value_raw_atom(value));
             }
             MidFlightArgShape::Value(ArgRepr::ValueRef) => out.push(value.value()),
             MidFlightArgShape::Value(ArgRepr::Condition) => {

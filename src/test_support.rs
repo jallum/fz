@@ -358,6 +358,41 @@ pub(crate) fn authoritative_planner_consistency_issues(cap: &Capture) -> Vec<Str
     );
     let mut issues = gap_keys.to_vec();
 
+    for body in cap
+        .find(&["fz", "planner", "body_materialized"])
+        .into_iter()
+        .filter(|ev| {
+            matches!(
+                ev.metadata.get("role"),
+                Some(Value::Str(role)) if role == "authoritative"
+            )
+        })
+    {
+        let orphan_count = match body.measurements.get("orphan_call_edge_count") {
+            Some(Value::U64(n)) => *n as usize,
+            other => panic!("orphan_call_edge_count missing or wrong type: {other:?}"),
+        };
+        let orphan_edges = match body.metadata.get("orphan_call_edges") {
+            Some(Value::StrSeq(edges)) => edges.clone(),
+            other => panic!("orphan_call_edges missing or wrong type: {other:?}"),
+        };
+        assert_eq!(
+            orphan_edges.len(),
+            orphan_count,
+            "orphan call-edge telemetry must identify every counted edge"
+        );
+        if orphan_count != 0 {
+            let body_name = match body.metadata.get("fn_name") {
+                Some(Value::Str(name)) => name.to_string(),
+                _ => "<unknown>".to_string(),
+            };
+            issues.push(format!(
+                "materialized body {body_name} carried orphan call edges: {:?}",
+                orphan_edges
+            ));
+        }
+    }
+
     if let Some(materialized) = cap
         .find(&["fz", "planner", "materialized"])
         .into_iter()

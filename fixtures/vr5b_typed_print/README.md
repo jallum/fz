@@ -1,17 +1,17 @@
 ---
 purpose: VR.5b — dbg boxes across the any extern ABI and narrows by spec on return
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 1
-budget.codegen.instructions: 12
-budget.specs.count: 1
-budget.planner.worklist_pops: 1
-budget.planner.walk_calls: 1
-budget.planner.type_fn_calls: 1
+budget.codegen.functions: 4
+budget.codegen.instructions: 31
+budget.specs.count: 4
+budget.planner.worklist_pops: 4
+budget.planner.walk_calls: 4
+budget.planner.type_fn_calls: 4
 budget.planner.matcher_specs: 0
-budget.planner.vars: 11
-budget.planner.blocks: 1
+budget.planner.vars: 10
+budget.planner.blocks: 4
 budget.planner.stmts: 6
-budget.planner.dispatches: 0
+budget.planner.dispatches: 3
 ---
 
 # vr5b_typed_print

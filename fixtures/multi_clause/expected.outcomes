@@ -18,28 +18,13 @@ main[] demand=value:
   @0:168-179 Direct -> Static(classify#183 [int] demand=value)
 
 k_192[:zero] demand=value:
-  @0:164-180 Cont -> Static(k_193#193 [any] demand=value)
-  @0:164-180 Direct -> Static(Kernel.dbg#1 [:zero] demand=value)
-
-k_193[any] demand=value:
-  @0:187-198 Cont -> Static(k_194#194 [:positive] demand=value)
+  @0:187-198 Cont -> Static(k_193#193 [:positive] demand=value)
   @0:187-198 Direct -> Static(classify#183 [int] demand=value)
 
-k_194[:positive] demand=value:
-  @0:183-199 Cont -> Static(k_195#195 [any] demand=value)
-  @0:183-199 Direct -> Static(Kernel.dbg#1 [:positive] demand=value)
-
-k_195[any] demand=value:
-  @0:206-218 Cont -> Static(k_196#196 [:negative] demand=value)
+k_193[:positive] demand=value:
+  @0:206-218 Cont -> Static(k_194#194 [:negative] demand=value)
   @0:206-218 Direct -> Static(classify#183 [int] demand=value)
 
-k_196[:negative] demand=value:
-  @0:202-219 Cont -> Static(k_197#197 [any] demand=value)
-  @0:202-219 Direct -> Static(Kernel.dbg#1 [:negative] demand=value)
-
-k_197[any] demand=value:
-  @0:226-233 Cont -> Static(k_198#198 [int] demand=value)
+k_194[:negative] demand=value:
+  @0:226-233 Cont -> Static(k_195#195 [int] demand=value)
   @0:226-233 Direct -> Static(fact#184 [int] demand=value)
-
-k_198[int] demand=value:
-  @0:222-234 Direct -> Static(Kernel.dbg#1 [int] demand=value)

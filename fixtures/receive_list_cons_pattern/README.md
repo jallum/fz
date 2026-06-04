@@ -1,17 +1,17 @@
 ---
 purpose: "receive with list cons / empty list / atom default — locks ListCons three-path parity"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 20
-budget.codegen.instructions: 534
-budget.specs.count: 17
-budget.planner.worklist_pops: 42
-budget.planner.walk_calls: 42
-budget.planner.type_fn_calls: 17
+budget.codegen.functions: 29
+budget.codegen.instructions: 565
+budget.specs.count: 26
+budget.planner.worklist_pops: 26
+budget.planner.walk_calls: 26
+budget.planner.type_fn_calls: 26
 budget.planner.matcher_specs: 0
-budget.planner.vars: 68
-budget.planner.blocks: 17
-budget.planner.stmts: 27
-budget.planner.dispatches: 7
+budget.planner.vars: 70
+budget.planner.blocks: 26
+budget.planner.stmts: 23
+budget.planner.dispatches: 36
 ---
 
 # receive_list_cons_pattern

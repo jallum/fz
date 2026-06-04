@@ -35,6 +35,7 @@ pub(crate) fn halt_cont_body_id_for(runtime: &RuntimeRefs, repr: ArgRepr) -> Fun
         ArgRepr::ValueRef => runtime.halt_cont_body_strict_id,
         ArgRepr::RawInt => runtime.halt_cont_body_i64_id,
         ArgRepr::RawF64 => runtime.halt_cont_body_f64_id,
+        ArgRepr::RawAtom => runtime.halt_cont_body_atom_id,
         ArgRepr::Condition => unreachable!("Condition vars never reach halt-cont"),
     }
 }
@@ -139,6 +140,9 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
         ClosureCapture::RawF64(raw) => {
             body.store_closure_capture_f64(cl_ptr, idx, raw);
         }
+        ClosureCapture::RawAtom(raw) => {
+            body.store_closure_capture_atom(cl_ptr, idx, raw);
+        }
     });
     cl_ptr
 }
@@ -163,6 +167,7 @@ const LAZY_CONT_HEADER_BYTES: usize = 32;
 const LAZY_CONT_KIND_REF: i64 = 0;
 const LAZY_CONT_KIND_I64: i64 = 1;
 const LAZY_CONT_KIND_F64: i64 = 2;
+const LAZY_CONT_KIND_ATOM: i64 = 3;
 
 pub(crate) fn build_lazy_cont_descriptor<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
@@ -202,6 +207,9 @@ pub(crate) fn build_lazy_cont_descriptor<M: cranelift_module::Module>(
         ClosureCapture::RawF64(value) => {
             let raw = body.b.ins().bitcast(types::I64, MemFlags::new(), value);
             store_lazy_capture(body.b, slot, raw_base, kind_base, idx, raw, LAZY_CONT_KIND_F64);
+        }
+        ClosureCapture::RawAtom(value) => {
+            store_lazy_capture(body.b, slot, raw_base, kind_base, idx, value, LAZY_CONT_KIND_ATOM);
         }
     });
     let ptr = body.b.ins().stack_addr(types::I64, slot, 0);

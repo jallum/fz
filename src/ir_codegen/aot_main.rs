@@ -32,7 +32,7 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
     main_fz_func_id: FuncId,
     main_halt_kind: u32,
     main_trampoline_id: FuncId,
-    halt_cont_body_ids: [FuncId; 3],
+    halt_cont_body_ids: [FuncId; 4],
     entry_thunk_id: FuncId,
     static_closure_targets: &[(u32, u32, FuncId, u32 /* halt_kind */)],
     atom_blob_data: Option<DataId>,
@@ -73,12 +73,13 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
         let hcb_strict_addr = fn_addr(jmod, halt_cont_body_ids[0], &mut b);
         let hcb_i64_addr = fn_addr(jmod, halt_cont_body_ids[1], &mut b);
         let hcb_f64_addr = fn_addr(jmod, halt_cont_body_ids[2], &mut b);
+        let hcb_atom_addr = fn_addr(jmod, halt_cont_body_ids[3], &mut b);
         let mt_addr = fn_addr(jmod, main_trampoline_id, &mut b);
         let et_addr = fn_addr(jmod, entry_thunk_id, &mut b);
         let main_fp = fn_addr(jmod, main_fz_func_id, &mut b);
 
         // proc = fz_aot_setup(atom_blob, atom_blob_len,
-        //                     hcb_strict, hcb_i64, hcb_f64,
+        //                     hcb_strict, hcb_i64, hcb_f64, hcb_atom,
         //                     entry_thunk_addr)
         let setup_fref = jmod.declare_func_in_func(setup_id, b.func);
         let setup_call = b.ins().call(
@@ -89,6 +90,7 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
                 hcb_strict_addr,
                 hcb_i64_addr,
                 hcb_f64_addr,
+                hcb_atom_addr,
                 et_addr,
             ],
         );

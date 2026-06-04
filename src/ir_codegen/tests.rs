@@ -576,6 +576,59 @@ fn runtime_enum_tier0_fixture_runs_native() {
 }
 
 #[test]
+fn enum_count_predicate_branch_helpers_keep_value_ref_return_lane() {
+    let src = r#"
+fn main() do
+  dbg(Enum.count([1, 2, 3, 4], fn (x) -> x > 2 end))
+end
+"#;
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+    let mut t = crate::types::new();
+    let graph = runtime_graph_with_tel(&mut t, src, &tel);
+    let entry = graph.module.fn_by_name("main").unwrap().id;
+    let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile planned");
+
+    let got = observe(&compiled, entry).output;
+    assert_eq!(got, vec!["2"]);
+    assert_authoritative_planner_consistent(&cap);
+
+    let branch_helper_contracts = cap
+        .find(&["fz", "codegen", "abi_contract"])
+        .into_iter()
+        .filter_map(|event| {
+            let fn_name = match event.metadata.get("fn_name") {
+                Some(Value::Str(name)) if *name == "if_then" || *name == "if_else" => name.to_string(),
+                _ => return None,
+            };
+            let param_reprs = match event.metadata.get("param_reprs") {
+                Some(Value::StrSeq(reprs)) => reprs,
+                other => panic!("abi_contract missing branch helper param_reprs: {other:?}"),
+            };
+            if param_reprs.len() != 1 || param_reprs[0] != "RawInt" {
+                return None;
+            }
+            let return_repr = match event.metadata.get("return_repr") {
+                Some(Value::Str(repr)) => repr.to_string(),
+                other => panic!("abi_contract missing branch helper return_repr: {other:?}"),
+            };
+            Some((fn_name, return_repr))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !branch_helper_contracts.is_empty(),
+        "test premise: Enum.count predicate wrapper should lower RawInt branch helpers"
+    );
+    assert!(
+        branch_helper_contracts
+            .iter()
+            .all(|(_, return_repr)| return_repr == "ValueRef"),
+        "branch helpers tail-called by a ValueRef closure wrapper must keep tagged returns: {branch_helper_contracts:?}"
+    );
+}
+
+#[test]
 fn enum_find_closure_allocation_selects_site_specific_callable_entry() {
     let src = include_str!("../../fixtures/enum_predicate_search/input.fz");
     let mut t = crate::types::new();
@@ -783,17 +836,14 @@ fn opaque_reducer_join_uses_lazy_continuation_for_indirect_closure_call() {
     let got = observe(&compiled, entry).output;
     assert_eq!(got, vec!["6"]);
 
-    let reducer_calls = cap
+    let closure_calls = cap
         .find(&["fz", "codegen", "closure_call_lowered"])
         .into_iter()
-        .filter_map(|event| {
+        .map(|event| {
             let body_name = match event.metadata.get("body_name") {
                 Some(Value::Str(name)) => name,
                 other => panic!("closure_call_lowered missing body_name: {other:?}"),
             };
-            if !body_name.starts_with("fn_clause_1_s") {
-                return None;
-            }
             let dispatch_kind = match event.metadata.get("dispatch_kind") {
                 Some(Value::Str(kind)) => kind.to_string(),
                 other => panic!("closure_call_lowered missing dispatch_kind: {other:?}"),
@@ -802,14 +852,14 @@ fn opaque_reducer_join_uses_lazy_continuation_for_indirect_closure_call() {
                 Some(Value::Str(storage)) => storage.to_string(),
                 other => panic!("closure_call_lowered missing continuation_storage: {other:?}"),
             };
-            Some((body_name.to_string(), dispatch_kind, continuation_storage))
+            (body_name.to_string(), dispatch_kind, continuation_storage)
         })
         .collect::<Vec<_>>();
     assert!(
-        reducer_calls.iter().any(|(_, dispatch_kind, continuation_storage)| {
+        closure_calls.iter().any(|(_, dispatch_kind, continuation_storage)| {
             dispatch_kind == "indirect" && continuation_storage == "lazy_descriptor"
         }),
-        "opaque reducer join should keep the indirect reducer continuation as a lazy descriptor: {reducer_calls:?}"
+        "opaque reducer join should keep an indirect reducer continuation as a lazy descriptor: {closure_calls:?}"
     );
 }
 
@@ -876,10 +926,12 @@ end
         })
         .collect::<Vec<_>>();
     assert!(
-        closure_calls.iter().any(|(_, _, dispatch_kind, closure_binding_repr)| {
-            dispatch_kind == "indirect" && closure_binding_repr == "ValueRef"
-        }),
-        "Enumerable.reduce should still lower its reducer through the indirect callable seam: {closure_calls:?}"
+        closure_calls
+            .iter()
+            .any(|(_, call_kind, dispatch_kind, closure_binding_repr)| {
+                call_kind == "call_closure" && dispatch_kind == "direct" && closure_binding_repr == "ValueRef"
+            }),
+        "known Enumerable.reduce reducer should lower as a direct closure call while retaining tagged closure binding: {closure_calls:?}"
     );
     let callable_entries = cap
         .find(&["fz", "codegen", "callable_entry_lowered"])

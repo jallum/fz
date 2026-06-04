@@ -66,6 +66,17 @@ codegen.
   for the lowered module; it does not own dispatch.
 - Planned body materialization may fold a body using facts already present in
   the `ModulePlan`; it must not discover new semantic reachability.
+- Planned body materialization may erase a proven local direct call or known
+  zero-capture closure call by cloning the selected producer return graph and
+  selected continuation graph into the caller. This rewrite is allowed only
+  when the caller `SpecPlan` already has both call edges and the direct callee
+  has inline-safe effect facts. Continuation call edges are remapped from the
+  continuation `FnId` to the materialized caller; physical-bearing
+  continuations are moved only when they are statement-free transport graphs.
+- Materialized block fusion is limited to closed single-predecessor `Goto`
+  targets: if a target block's params are used by successor blocks, the block
+  stays in place. When materialization removes blocks, the materialized body is
+  retyped so `PlannedBody.spec_plan` matches the executable body.
 - Native codegen may choose a different storage representation for values whose
   construction is already explicit and verified in the lowered IR. Fully static
   tuple/struct literals can become read-only schema-shaped data symbols, but
@@ -93,10 +104,15 @@ target by assuming a raw `FnId` maps to the executable spec it wants.
 Per-spec folds run while materializing the planned program, not ad hoc inside
 the Cranelift lowering loop. Each body emits
 `fz.planner.body_materialized`, including its `spec_id`, `fn_id`,
-`folded_prim_count`, and `folded_branch_count`. The aggregate event
+`folded_prim_count`, `folded_branch_count`, `direct_call_inline_count`,
+`continuation_inline_count`, `fused_block_count`, and
+`orphan_call_edge_count`. The shared consistency harness requires every
+materialized body to report zero orphan call edges after accounting for
+callable-boundary and selective-receive outcome facts. The aggregate event
 `fz.planner.materialized` reports spec slots, executable body count, sentinel
-slots, fold counts, reachable specs, and `post_plan_reachability_growth_count`.
-The consistency harness requires post-plan reachability growth to stay `0`.
+slots, fold/rewrite counts, reachable specs, and
+`post_plan_reachability_growth_count`. The consistency harness requires
+post-plan reachability growth to stay `0`.
 
 ## Callable Entries And Static Singletons
 

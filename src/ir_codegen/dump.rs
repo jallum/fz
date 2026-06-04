@@ -65,6 +65,7 @@ pub(crate) fn build_typer_header<T: Types<Ty = Ty> + RenderTypes>(
             ArgRepr::ValueRef => "ValueRef",
             ArgRepr::RawInt => "RawInt",
             ArgRepr::RawF64 => "RawF64",
+            ArgRepr::RawAtom => "RawAtom",
             ArgRepr::Condition => "Condition",
         }
     };
