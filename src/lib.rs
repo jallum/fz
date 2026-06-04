@@ -1,3 +1,4 @@
+mod aot_link;
 mod ast;
 mod callsite_walk;
 mod compiler;
@@ -58,8 +59,7 @@ use modules::pipeline::{
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::env::current_exe;
-use std::fs::{self, read_dir, read_to_string, remove_file};
+use std::fs::{self, read_to_string, remove_file};
 use std::io::{IsTerminal, Read, stdin};
 use std::path::{Path, PathBuf};
 use std::process::{Command, exit};
@@ -244,6 +244,9 @@ impl Handler for ConsoleBuildHandler {
             }
             n if n == ["fz", "build", "fzi_failed"] => {
                 eprintln!("fz build: failed to write .fzi artifacts: {}", s("error"));
+            }
+            n if n == ["fz", "build", "runtime_archive_failed"] => {
+                eprintln!("fz build: runtime archive: {}", s("error"));
             }
             // linking / linked are silent at default verbosity — the
             // build subcommand has historically been silent on success.
@@ -445,37 +448,27 @@ fn run_build(tel: &ConfiguredTelemetry, args: &[String]) {
         exit(1);
     });
 
-    // Locate libfz_runtime.a. Prefer the deps/ artifact — it is rebuilt
-    // in lockstep with the rlib on every `cargo build` and is always
-    // fresh. The top-level target/<profile>/libfz_runtime.a is only
-    // updated when the runtime crate is built as the primary target, so
-    // it can lag behind when fz is the primary crate (fz-ul4.33).
-    let exe = current_exe().unwrap_or_else(|_| PathBuf::from("fz"));
-    let target_dir = exe
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("target/debug"));
-    let deps_dir = target_dir.join("deps");
-    let runtime_a = read_dir(&deps_dir)
-        .ok()
-        .and_then(|rd| {
-            rd.filter_map(|e| e.ok())
-                .filter(|e| {
-                    let n = e.file_name();
-                    let s = n.to_string_lossy();
-                    s.starts_with("libfz_runtime-") && s.ends_with(".a")
-                })
-                .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
-                .map(|e| e.path())
-        })
-        .unwrap_or_else(|| target_dir.join("libfz_runtime.a"));
+    let runtime_archive = aot_link::resolve_runtime_archive().unwrap_or_else(|e| {
+        tel.event(
+            &["fz", "build", "runtime_archive_failed"],
+            metadata! { error: e.to_string() },
+        );
+        exit(1);
+    });
 
     let mut cc = Command::new("cc");
-    cc.arg("-o").arg(&out_path).arg(&obj_temp).arg(&runtime_a);
+    cc.arg("-o").arg(&out_path).arg(&obj_temp).arg(&runtime_archive.path);
     if cfg!(target_os = "macos") {
         cc.arg("-Wl,-undefined,dynamic_lookup");
     }
-    tel.event(&["fz", "build", "linking"], metadata! { output: out_path.clone() });
+    tel.event(
+        &["fz", "build", "linking"],
+        metadata! {
+            output: out_path.clone(),
+            runtime_archive: runtime_archive.path.display().to_string(),
+            runtime_archive_source: runtime_archive.source.as_str(),
+        },
+    );
     let status = cc.status().unwrap_or_else(|e| {
         tel.event(&["fz", "build", "cc_failed"], metadata! { error: e.to_string() });
         exit(1);

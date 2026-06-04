@@ -41,13 +41,10 @@ jobs:
           tool: cargo-llvm-cov,cargo-audit
       - run: cargo audit
       - run: cargo test --workspace --doc
-      - run: cargo test -p fz --test aot_variadic_open --test cli_help --test fixture_matrix --test modules_artifacts
       - run: |
           cargo llvm-cov \
             --all-features \
             --workspace \
-            --lib \
-            --bin fz \
             --fail-under-lines "$(cat .coverage-threshold)" \
             --json --summary-only \
             --output-path coverage.json

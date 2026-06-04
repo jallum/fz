@@ -167,11 +167,16 @@ Make sure it works.
 
 ## CI Coverage
 
-CI runs `cargo test --workspace` as the correctness gate; that run includes the
-`fixture_matrix` integration-test target and all fixture paths. The following
-`cargo llvm-cov` step is a Rust coverage measurement pass, not another fixture
-correctness pass. Keep its target list explicit (`--workspace --lib --bin fz
---test aot_variadic_open`) so it does not run `fixture_matrix` by Cargo default.
+CI runs stable doctests once with `cargo test --workspace --doc`, then runs Rust
+unit and integration correctness tests under one `cargo llvm-cov --all-features
+--workspace` pass. Do not add a preceding broad `cargo test --workspace` run:
+it repeats the same unit and integration tests, and any fixture or AOT failure
+would fail in both places. `cargo llvm-cov --doctests` is not the replacement on
+the stable toolchain, so doctests stay in the separate `cargo test --workspace
+--doc` step. `fz build` isolates generated AOT executables from
+coverage-instrumented test artifacts by selecting a clean `fz-runtime` staticlib
+through `src/aot_link.rs`, so the full workspace coverage pass can include
+`fixture_matrix` and `aot_variadic_open` directly.
 
 ## Final Check
 

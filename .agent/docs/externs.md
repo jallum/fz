@@ -99,8 +99,13 @@ must treat zero as lookup failure, not as a callable function pointer.
 
 JIT, AOT, and `ir_interp` all select dispatchers from the same resolved marshal
 shapes. AOT reaches the same exported runtime symbols through the staticlib link
-path. Unsupported shapes must return a compiler/interpreter error that includes
-the concrete fixed/variadic `ExternTy` list.
+path. `src/aot_link.rs` owns runtime archive selection for `fz build`: ordinary
+compiler builds use the sibling `libfz_runtime*.a`, while coverage-instrumented
+test builds use a clean isolated `target/fz-aot-clean-runtime` archive so
+generated AOT executables do not inherit LLVM profile-runtime symbols. Link
+telemetry records `runtime_archive` and `runtime_archive_source` on
+`fz.build.linking`. Unsupported shapes must return a compiler/interpreter error
+that includes the concrete fixed/variadic `ExternTy` list.
 
 ## Resource Typing
 
