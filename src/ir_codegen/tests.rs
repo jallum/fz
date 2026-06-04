@@ -2526,7 +2526,7 @@ fn dbg_returns_the_value_it_prints() {
 }
 
 #[test]
-fn dbg_uses_any_extern_abi_and_spec_return_coercion() {
+fn dbg_direct_intrinsic_uses_any_extern_abi_without_result_coercion() {
     let src = "fn main(), do: dbg(40) + 2";
     let dbg_ir = compiled_ir_body_containing(src, "@fz_dbg_value");
     assert!(
@@ -2539,11 +2539,10 @@ fn dbg_uses_any_extern_abi_and_spec_return_coercion() {
         "dbg should call the generic any extern:\n{}",
         dbg_ir
     );
-    let caller_ir = compiled_ir_body_containing(src, "@fz_unbox_int");
     assert!(
-        caller_ir.contains("@fz_unbox_int"),
-        "dbg(t) :: t should unbox the any extern result when t is integer:\n{}",
-        caller_ir
+        !dbg_ir.contains("@fz_unbox_int"),
+        "direct dbg returns the original typed value, so it must not unbox the extern's any result:\n{}",
+        dbg_ir
     );
     assert!(
         !dbg_ir.contains("fz_print_"),

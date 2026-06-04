@@ -57,6 +57,9 @@ codegen.
 - A transform that changes call shapes or reachability must either happen
   before the authoritative plan or maintain the existing plan facts by
   construction. Replanning after the transform is not an acceptable repair.
+- Direct `dbg(x)` lowering is in the first category: source lowering emits the
+  `fz_dbg_value(any)` extern effect and returns `x`, so the authoritative plan
+  never contains a `Kernel.dbg/1` call edge for direct calls.
 - Destination lowering may add destination holders and init tokens, but it must
   preserve the original result vars and must not add call edges.
 - `resolve_module_types` may validate and attach local marshal/coercion facts

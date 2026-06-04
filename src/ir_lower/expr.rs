@@ -7,7 +7,8 @@ use crate::ast::{
 use crate::diag::Span;
 use crate::fz_ir::{
     BinOp, BitFieldIr, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, ContinuationProvenance,
-    ContinuationProvenanceKind, ExternArg, ExternTy, FnBuilder, FnCategory, Prim, Term, UnOp, Var,
+    ContinuationProvenanceKind, ExternArg, ExternDecl, ExternId, ExternTy, FnBuilder, FnCategory, Prim, Term, UnOp,
+    Var,
 };
 use crate::modules::identity::ModuleName;
 use crate::parser::lexer::Tok;
@@ -332,6 +333,9 @@ pub(crate) fn lower_expr<T: Types<Ty = Ty>>(
             } else {
                 callee_name
             };
+            if local_callee.is_none() && callee_name == "Kernel.dbg" && arity == 1 {
+                return Ok(lower_kernel_dbg_intrinsic(ctx, t, arg_vars[0], sp));
+            }
             // Extern (runtime.fz / user-declared `extern "C" fn`)?
             if let Some(eid) = ctx.externs.lookup(&callee_name) {
                 let decl = ctx
@@ -968,6 +972,37 @@ pub(super) fn lower_index<T: Types<Ty = Ty>>(
     let m_resolved = ctx.unpark(&m_park);
     ctx.unbind(&m_park);
     Ok(ctx.let_(Prim::MapGet(m_resolved, kv)))
+}
+
+fn lower_kernel_dbg_intrinsic<T: Types<Ty = Ty>>(ctx: &mut LowerCtx, t: &mut T, value: Var, sp: Span) -> Var {
+    let eid = ensure_kernel_dbg_extern(ctx, t);
+    let _ = ctx.let_at(
+        Prim::extern_call(sp, eid, vec![ExternArg::fixed(value, ExternTy::Any)]),
+        sp,
+    );
+    value
+}
+
+fn ensure_kernel_dbg_extern<T: Types<Ty = Ty>>(ctx: &mut LowerCtx, t: &mut T) -> ExternId {
+    if let Some(eid) = ctx.externs.lookup("Kernel.fz_dbg_value") {
+        return eid;
+    }
+    if let Some(eid) = ctx.externs.lookup("fz_dbg_value") {
+        return eid;
+    }
+    let eid = ExternId(ctx.next_extern);
+    ctx.next_extern += 1;
+    ctx.extern_decls.push(ExternDecl {
+        id: eid,
+        fz_name: "fz_dbg_value".to_string(),
+        symbol: "fz_dbg_value".to_string(),
+        params: vec![ExternTy::Any],
+        variadic: false,
+        ret: ExternTy::Any,
+        ret_descr: t.any(),
+    });
+    ctx.externs.insert("fz_dbg_value".to_string(), eid);
+    eid
 }
 
 pub(super) fn lower_struct<T: Types<Ty = Ty>>(

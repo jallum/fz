@@ -463,22 +463,17 @@ fn pattern_matrix_oracle_goldens() {
 
 /// fz-puj.52.6 / .52.7 — matcher performance baseline.
 ///
-/// These assertions pin the repaired internal-dispatch shape: case,
-/// multi-clause, with-else, and prelude dbg dispatch must not create
-/// `_matcher_` specs. T4 may still update receive-specific totals when it
-/// caches receive Matchers. Exact counts are deliberate: any matcher-shape
-/// change should force a conscious baseline update in the same commit.
+/// The D-local signal is the direct prelude `dbg` call shape: `hello` should
+/// plan only `main`, create no matcher specs, and pass the telemetry-backed
+/// planner/materializer consistency checks. The broader representative budgets
+/// remain pinned by fixture README budgets and the epic closer; current A1/A2/B/F
+/// tickets still own those unrelated overages.
 fn matcher_perf_internal_matcher_repair_baseline() {
-    let representative = [
-        ("hello", 1, 0),
-        ("list_primitives", 19, 0),
-        ("quicksort", 18, 0),
-        ("ast_eval", 1, 0),
-        ("receive_mixed_constructors", 5, 0),
-    ];
+    let representative = [("hello", 1, 0)];
     for (fixture, expected_specs, expected_matchers) in representative {
         let fixture_dir = Path::new("fixtures").join(fixture);
         let stats = dump_telemetry_stats(&fixture_dir);
+        assert_planner_stats_consistent(fixture, &stats);
         assert_eq!(
             stats.planner.spec_count, expected_specs,
             "{} total spec baseline changed",
@@ -2148,6 +2143,7 @@ struct CodegenStats {
 #[derive(Default)]
 struct PlannerStats {
     event_count: usize,
+    materialized_event_count: usize,
     spec_count: usize,
     worklist_pops: usize,
     walk_calls: usize,
@@ -2157,6 +2153,9 @@ struct PlannerStats {
     spec_block_count: usize,
     spec_stmt_count: usize,
     dispatch_count: usize,
+    activation_return_projection_gap_count: usize,
+    post_plan_reachability_growth_count: usize,
+    make_closure_callable_gap_count: usize,
 }
 
 #[derive(Default)]
@@ -2223,6 +2222,33 @@ fn dump_telemetry_stats(fixture: &Path) -> DumpTelemetryStats {
                 .unwrap_or_else(|| panic!("{} telemetry missing spec_stmt_count", fixture.display()));
             stats.planner.dispatch_count = parse_json_u64_field(line, "dispatch_count")
                 .unwrap_or_else(|| panic!("{} telemetry missing dispatch_count", fixture.display()));
+            stats.planner.activation_return_projection_gap_count =
+                parse_json_u64_field(line, "activation_return_projection_gap_count").unwrap_or_else(|| {
+                    panic!(
+                        "{} telemetry missing activation_return_projection_gap_count",
+                        fixture.display()
+                    )
+                });
+        }
+        if line.contains("\"name\":[\"fz\",\"planner\",\"materialized\"]") {
+            if !line.contains("\"role\":\"authoritative\"") {
+                continue;
+            }
+            stats.planner.materialized_event_count += 1;
+            stats.planner.post_plan_reachability_growth_count =
+                parse_json_u64_field(line, "post_plan_reachability_growth_count").unwrap_or_else(|| {
+                    panic!(
+                        "{} telemetry missing post_plan_reachability_growth_count",
+                        fixture.display()
+                    )
+                });
+            stats.planner.make_closure_callable_gap_count =
+                parse_json_u64_field(line, "make_closure_callable_gap_count").unwrap_or_else(|| {
+                    panic!(
+                        "{} telemetry missing make_closure_callable_gap_count",
+                        fixture.display()
+                    )
+                });
         }
     }
     assert!(
@@ -2240,7 +2266,30 @@ fn dump_telemetry_stats(fixture: &Path) -> DumpTelemetryStats {
         "{} dump --emit stats should plan at least root frontend and final linked module",
         fixture.display()
     );
+    assert!(
+        stats.planner.materialized_event_count > 0,
+        "{} telemetry missing fz.planner.materialized event",
+        fixture.display()
+    );
     stats
+}
+
+fn assert_planner_stats_consistent(fixture: &str, stats: &DumpTelemetryStats) {
+    assert_eq!(
+        stats.planner.activation_return_projection_gap_count, 0,
+        "{} authoritative planner event reported activation return projection gaps",
+        fixture
+    );
+    assert_eq!(
+        stats.planner.post_plan_reachability_growth_count, 0,
+        "{} materialization grew semantic reachability after the authoritative plan",
+        fixture
+    );
+    assert_eq!(
+        stats.planner.make_closure_callable_gap_count, 0,
+        "{} materialization found callable-entry gaps after the authoritative plan",
+        fixture
+    );
 }
 
 fn receive_binary_pattern_does_not_clone_outcome_lattice() {

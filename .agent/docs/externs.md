@@ -47,18 +47,26 @@ use raw scalar ABI values.
 
 Declared Fz specs describe what a wrapper promises to its callers. Codegen uses
 the declared spec result, instantiated for each registered specialization, when
-choosing that function's return ABI. This keeps wrappers like:
+choosing that function's return ABI. This keeps ordinary wrappers like:
 
 ```fz
 @spec dbg(t) :: t when t: any
 fn dbg(x), do: fz_dbg_value(x)
 ```
 
-correct without a dbg-specific fast path. The body calls
-`fz_dbg_value(any) :: any`, so the argument is boxed and the extern result is a
-boxed `AnyValueRef`. At the wrapper's `Term::Return`, the instantiated
-`dbg(integer) :: integer` ABI makes the normal `CodegenValue` coercion unbox
-the `AnyRef` result with `fz_unbox_int`.
+correct when the wrapper is reached as a named callable (for example
+`&dbg/1`). The body calls `fz_dbg_value(any) :: any`, so the argument is boxed
+and the extern result is a boxed `AnyValueRef`. At the wrapper's `Term::Return`,
+the instantiated `dbg(integer) :: integer` ABI makes the normal `CodegenValue`
+coercion unbox the `AnyRef` result with `fz_unbox_int`.
+
+Direct source calls to `dbg(x)` are a deliberate exception at lowering time.
+They lower to a side-effecting `Prim::Extern(fz_dbg_value, x :: any)` and the
+expression result is the original `x` var. That preserves `dbg(t) :: t` by
+construction while avoiding a polymorphic `Kernel.dbg/1` call edge and the
+trivial continuation specs that edge used to create. Function references still
+target the runtime-library wrapper because a callable value needs a stable
+`FnId`.
 
 Do not infer value identity from a repeated type variable. `fn f(t) :: t` means
 "same type", not "same value". Boundary correctness should come from marshal

@@ -2314,22 +2314,56 @@ end
         );
     }
 
-    /// `dbg(x)` routes through the runtime.fz prelude import to the
-    /// core-prelude `Kernel.dbg/1` implementation instead of exposing raw
-    /// externs from the root prelude.
+    /// A direct `dbg(x)` call is an identity expression with a side-effecting
+    /// `fz_dbg_value(any)` extern. It must not create a call edge to the
+    /// polymorphic runtime-library wrapper, or the planner specializes the
+    /// wrapper and its trivial continuations once per concrete argument type.
     #[test]
-    fn print_call_routes_through_runtime_fz_wrapper() {
+    fn dbg_call_lowers_to_identity_extern_intrinsic() {
         let m = lower_src("fn p(), do: dbg(1)");
-        let print = m
+        let p = m.fn_by_name("p").expect("p fn missing");
+        let entry = p.block(p.entry);
+        let (extern_dest, eid, args) = entry
+            .stmts
+            .iter()
+            .find_map(|stmt| match stmt {
+                Stmt::Let(dest, Prim::Extern(_, eid, args)) => Some((*dest, *eid, args.as_slice())),
+                _ => None,
+            })
+            .expect("direct dbg call should lower to a Prim::Extern");
+        let decl = m.extern_by_id(eid);
+
+        assert_eq!(decl.fz_name, "Kernel.fz_dbg_value");
+        assert_eq!(decl.symbol, "fz_dbg_value");
+        assert_eq!(decl.params, vec![ExternTy::Any]);
+        assert_eq!(decl.ret, ExternTy::Any);
+        assert_eq!(args.len(), 1);
+        assert_eq!(args[0].marshal, ExternMarshal::Fixed(ExternTy::Any));
+        let Term::Return(returned) = entry.terminator else {
+            panic!("expected p to return dbg's input value, got {:?}", entry.terminator);
+        };
+        assert_eq!(returned, args[0].var);
+        assert_ne!(
+            extern_dest, returned,
+            "direct dbg returns the source value, not the extern's any result"
+        );
+    }
+
+    /// Function references still target the runtime-library wrapper, because a
+    /// named callable needs a stable `FnId`; only direct source calls are
+    /// intrinsic-lowered.
+    #[test]
+    fn dbg_function_reference_routes_through_runtime_fz_wrapper() {
+        let m = lower_src("fn p(), do: &dbg/1");
+        let dbg = m
             .fns
             .iter()
             .find(|f| f.name == "Kernel.dbg" && f.block(f.entry).params.len() == 1)
             .expect("Kernel.dbg/1 prelude fn missing");
         let p = m.fn_by_name("p").expect("p fn missing");
-        let Term::TailCall { callee, .. } = p.block(p.entry).terminator else {
-            panic!("expected p to tail-call print/1");
-        };
-        assert_eq!(callee, print.id);
+        let fn_id = first_make_fn_ref(p);
+
+        assert_eq!(fn_id, dbg.id);
     }
 
     /// `spawn(x)` routes through the runtime.fz prelude import to
