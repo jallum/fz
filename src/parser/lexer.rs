@@ -47,6 +47,8 @@ pub enum Tok {
     Type,
     In,  // membership operator: `x in xs`
     Not, // boolean negation and `not in`
+    And, // boolean conjunction: `a and b`
+    Or,  // boolean disjunction: `a or b`
     // fz-5vj — selective `receive do … after … end` syntax. Plain
     // `receive()` has been removed; `receive` is a reserved keyword.
     Receive,
@@ -91,9 +93,6 @@ pub enum Tok {
     Star,
     Slash,
     Percent,
-    Bang,
-    AndAnd,
-    OrOr,
     At,  // @ — for module attributes (@doc, @moduledoc)
     Amp, // & — for explicit function references (`&name/arity`, fz-swt.5)
 
@@ -384,6 +383,8 @@ impl<'a> Lexer<'a> {
             "type" => Tok::Type,
             "in" => Tok::In,
             "not" => Tok::Not,
+            "and" => Tok::And,
+            "or" => Tok::Or,
             "true" => Tok::True,
             "false" => Tok::False,
             "nil" => Tok::Nil,
@@ -549,11 +550,7 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     Tok::Pipe
                 }
-                Some(b'|') => {
-                    self.bump();
-                    self.bump();
-                    Tok::OrOr
-                }
+                Some(b'|') => return Err(self.err("`||` is not an operator; use `or`".to_string())),
                 _ => {
                     self.bump();
                     Tok::Bar
@@ -564,11 +561,7 @@ impl<'a> Lexer<'a> {
                 Tok::Caret
             }
             b'&' => match self.peek(1) {
-                Some(b'&') => {
-                    self.bump();
-                    self.bump();
-                    Tok::AndAnd
-                }
+                Some(b'&') => return Err(self.err("`&&` is not an operator; use `and`".to_string())),
                 // fz-swt.5: bare `&` introduces an explicit fn-ref (`&name/arity`).
                 _ => {
                     self.bump();
@@ -597,10 +590,7 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     Tok::NotEq
                 }
-                _ => {
-                    self.bump();
-                    Tok::Bang
-                }
+                _ => return Err(self.err("`!` is not an operator; use `not`".to_string())),
             },
             b'+' => match self.peek(1) {
                 Some(b'+') => {
