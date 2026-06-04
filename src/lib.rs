@@ -3,6 +3,7 @@ mod ast;
 mod callsite_walk;
 mod compiler;
 mod diag;
+mod dispatch_matrix;
 mod frontend;
 mod fz_ir;
 mod ir_capture_norm;
