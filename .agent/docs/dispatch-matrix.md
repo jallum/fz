@@ -24,6 +24,15 @@ into a deterministic graph and returns `DispatchCompileStats` so tests can asser
 shape signals such as test count, fallback count, and shared-prefix tests without
 depending on formatted graph dumps.
 
+`compile_dispatch_matrix_with_type_order` handles `Order::Specificity` for
+type-region arms. It uses `Types` operations only: pairwise relations are
+`Equal`, more-specific, less-specific, disjoint, or ambiguous overlap; ordering
+puts strict subtypes before supertypes while orthogonal arms keep deterministic
+identity order. Equal-overlap handling is producer-policy driven: a producer can
+classify equal regions with different outcomes as duplicate coverage or as an
+ambiguity. `analyze_type_coverage` computes covered and residual receiver
+domains, distinguishing closed coverage from open residuals.
+
 ## Vocabulary Boundary
 
 DispatchMatrix has three layers that must stay separate:

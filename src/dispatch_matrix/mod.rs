@@ -5,7 +5,7 @@
 //! production callers.
 #![allow(dead_code)]
 
-use crate::types::Ty;
+use crate::types::{Ty, Types};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -367,6 +367,8 @@ pub(crate) enum DispatchCompileError {
     UnknownArm(ArmId),
     SpecificityOrderRequiresTypeAnalysis,
     InvalidGraph(DispatchGraphError),
+    NonTypeArmInSpecificityOrder(ArmId),
+    TypeOrderDiagnostics(Vec<TypeRegionDiagnostic>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -421,6 +423,24 @@ pub(crate) fn compile_dispatch_matrix(
     options: DispatchCompileOptions,
 ) -> Result<CompiledDispatchGraph, DispatchCompileError> {
     let ordered_arms = ordered_arms(matrix)?;
+    compile_ordered_arms(matrix, ordered_arms, options)
+}
+
+pub(crate) fn compile_dispatch_matrix_with_type_order<T: Types<Ty = Ty>>(
+    t: &mut T,
+    matrix: &DispatchMatrix,
+    options: DispatchCompileOptions,
+    equal_policy: EqualTypeRegionPolicy,
+) -> Result<CompiledDispatchGraph, DispatchCompileError> {
+    let ordered_arms = ordered_arms_with_type_order(t, matrix, equal_policy)?;
+    compile_ordered_arms(matrix, ordered_arms, options)
+}
+
+fn compile_ordered_arms(
+    matrix: &DispatchMatrix,
+    ordered_arms: Vec<&DispatchArm>,
+    options: DispatchCompileOptions,
+) -> Result<CompiledDispatchGraph, DispatchCompileError> {
     let mut stats = DispatchCompileStats {
         arms: ordered_arms.len(),
         ..DispatchCompileStats::default()
@@ -479,6 +499,214 @@ fn ordered_arms(matrix: &DispatchMatrix) -> Result<Vec<&DispatchArm>, DispatchCo
         }
         Order::Specificity => Err(DispatchCompileError::SpecificityOrderRequiresTypeAnalysis),
     }
+}
+
+fn ordered_arms_with_type_order<'a, T: Types<Ty = Ty>>(
+    t: &mut T,
+    matrix: &'a DispatchMatrix,
+    equal_policy: EqualTypeRegionPolicy,
+) -> Result<Vec<&'a DispatchArm>, DispatchCompileError> {
+    match &matrix.order {
+        Order::Specificity => {
+            let type_arms = type_region_arms_from_matrix(matrix)?;
+            let analysis = analyze_type_region_arms(t, &type_arms, equal_policy);
+            let blocking = analysis
+                .diagnostics
+                .iter()
+                .filter(|diag| {
+                    matches!(
+                        diag.kind,
+                        TypeRegionDiagnosticKind::AmbiguousEqualRegions | TypeRegionDiagnosticKind::AmbiguousOverlap
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if !blocking.is_empty() {
+                return Err(DispatchCompileError::TypeOrderDiagnostics(blocking));
+            }
+            analysis
+                .ordered_arms
+                .iter()
+                .map(|&id| matrix.arm(id).ok_or(DispatchCompileError::UnknownArm(id)))
+                .collect()
+        }
+        _ => ordered_arms(matrix),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TypeRegionRelation {
+    Equal,
+    LeftMoreSpecific,
+    RightMoreSpecific,
+    Disjoint,
+    OverlapAmbiguous,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EqualTypeRegionPolicy {
+    DuplicateCoverage,
+    Ambiguous,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TypeRegionDiagnosticKind {
+    DuplicateCoverage,
+    AmbiguousEqualRegions,
+    AmbiguousOverlap,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TypeRegionDiagnostic {
+    pub(crate) kind: TypeRegionDiagnosticKind,
+    pub(crate) left: ArmId,
+    pub(crate) right: ArmId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TypeRegionPair {
+    pub(crate) left: ArmId,
+    pub(crate) right: ArmId,
+    pub(crate) relation: TypeRegionRelation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TypeRegionArm {
+    pub(crate) arm: ArmId,
+    pub(crate) subject: SubjectId,
+    pub(crate) ty: Ty,
+    pub(crate) outcome: OutcomeId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TypeRegionAnalysis {
+    pub(crate) ordered_arms: Vec<ArmId>,
+    pub(crate) pairs: Vec<TypeRegionPair>,
+    pub(crate) diagnostics: Vec<TypeRegionDiagnostic>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TypeCoverageStatus {
+    Closed,
+    Open,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TypeCoverage {
+    pub(crate) domain: Ty,
+    pub(crate) covered: Ty,
+    pub(crate) residual: Ty,
+    pub(crate) status: TypeCoverageStatus,
+}
+
+pub(crate) fn type_region_relation<T: Types<Ty = Ty>>(t: &T, left: &Ty, right: &Ty) -> TypeRegionRelation {
+    if t.is_equivalent(left, right) {
+        TypeRegionRelation::Equal
+    } else if t.is_disjoint(left, right) {
+        TypeRegionRelation::Disjoint
+    } else if t.is_subtype(left, right) {
+        TypeRegionRelation::LeftMoreSpecific
+    } else if t.is_subtype(right, left) {
+        TypeRegionRelation::RightMoreSpecific
+    } else {
+        TypeRegionRelation::OverlapAmbiguous
+    }
+}
+
+pub(crate) fn analyze_type_region_arms<T: Types<Ty = Ty>>(
+    t: &mut T,
+    arms: &[TypeRegionArm],
+    equal_policy: EqualTypeRegionPolicy,
+) -> TypeRegionAnalysis {
+    let mut pairs = Vec::new();
+    let mut diagnostics = Vec::new();
+    for i in 0..arms.len() {
+        for j in (i + 1)..arms.len() {
+            let relation = type_region_relation(t, &arms[i].ty, &arms[j].ty);
+            pairs.push(TypeRegionPair {
+                left: arms[i].arm,
+                right: arms[j].arm,
+                relation,
+            });
+            match relation {
+                TypeRegionRelation::Equal if arms[i].outcome != arms[j].outcome => {
+                    let kind = match equal_policy {
+                        EqualTypeRegionPolicy::DuplicateCoverage => TypeRegionDiagnosticKind::DuplicateCoverage,
+                        EqualTypeRegionPolicy::Ambiguous => TypeRegionDiagnosticKind::AmbiguousEqualRegions,
+                    };
+                    diagnostics.push(TypeRegionDiagnostic {
+                        kind,
+                        left: arms[i].arm,
+                        right: arms[j].arm,
+                    });
+                }
+                TypeRegionRelation::OverlapAmbiguous => diagnostics.push(TypeRegionDiagnostic {
+                    kind: TypeRegionDiagnosticKind::AmbiguousOverlap,
+                    left: arms[i].arm,
+                    right: arms[j].arm,
+                }),
+                _ => {}
+            }
+        }
+    }
+
+    let mut ordered = arms.to_vec();
+    ordered.sort_by(|left, right| match type_region_relation(t, &left.ty, &right.ty) {
+        TypeRegionRelation::LeftMoreSpecific => std::cmp::Ordering::Less,
+        TypeRegionRelation::RightMoreSpecific => std::cmp::Ordering::Greater,
+        _ => left.arm.cmp(&right.arm),
+    });
+
+    TypeRegionAnalysis {
+        ordered_arms: ordered.into_iter().map(|arm| arm.arm).collect(),
+        pairs,
+        diagnostics,
+    }
+}
+
+pub(crate) fn analyze_type_coverage<T: Types<Ty = Ty>>(t: &mut T, domain: Ty, arms: &[TypeRegionArm]) -> TypeCoverage {
+    let mut covered = t.none();
+    for arm in arms {
+        let overlap = t.intersect(domain.clone(), arm.ty.clone());
+        covered = t.union(covered, overlap);
+    }
+    let residual = t.difference(domain.clone(), covered.clone());
+    let status = if t.is_empty(&residual) {
+        TypeCoverageStatus::Closed
+    } else {
+        TypeCoverageStatus::Open
+    };
+    TypeCoverage {
+        domain,
+        covered,
+        residual,
+        status,
+    }
+}
+
+fn type_region_arms_from_matrix(matrix: &DispatchMatrix) -> Result<Vec<TypeRegionArm>, DispatchCompileError> {
+    matrix
+        .arms
+        .iter()
+        .map(|arm| {
+            let Some(question) = arm
+                .questions
+                .iter()
+                .find(|question| matches!(question.predicate.region, Region::Type(_)))
+            else {
+                return Err(DispatchCompileError::NonTypeArmInSpecificityOrder(arm.id));
+            };
+            let Region::Type(ty) = &question.predicate.region else {
+                unreachable!("question was filtered to type regions")
+            };
+            Ok(TypeRegionArm {
+                arm: arm.id,
+                subject: question.predicate.subject,
+                ty: ty.clone(),
+                outcome: arm.outcome,
+            })
+        })
+        .collect()
 }
 
 fn compile_arm_sequence(

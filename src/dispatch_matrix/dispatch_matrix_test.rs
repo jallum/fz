@@ -1,5 +1,5 @@
 use super::*;
-use crate::types::Types;
+use crate::types::{Ty, Types};
 use std::collections::BTreeMap;
 
 #[test]
@@ -500,6 +500,180 @@ fn compile_places_projection_only_on_proven_edge() {
             ..
         }) if *subject == value
     ));
+}
+
+fn type_arm(arm: u32, ty: Ty, outcome: u32) -> TypeRegionArm {
+    TypeRegionArm {
+        arm: ArmId(arm),
+        subject: SubjectId(0),
+        ty,
+        outcome: OutcomeId(outcome),
+    }
+}
+
+#[test]
+fn type_region_relation_classifies_scalars_lists_maps_range_like_any_and_empty_overlap() {
+    let mut types = crate::types::new();
+    let int = types.int();
+    let float = types.float();
+    let any = types.any();
+    let list_int = types.list(int.clone());
+    let list_any = types.list(any.clone());
+    let map = types.map_top();
+    let range = types.opaque_of("impl-target::Range");
+
+    assert_eq!(
+        type_region_relation(&types, &int, &any),
+        TypeRegionRelation::LeftMoreSpecific
+    );
+    assert_eq!(
+        type_region_relation(&types, &any, &int),
+        TypeRegionRelation::RightMoreSpecific
+    );
+    assert_eq!(type_region_relation(&types, &int, &float), TypeRegionRelation::Disjoint);
+    assert_eq!(
+        type_region_relation(&types, &list_int, &list_any),
+        TypeRegionRelation::LeftMoreSpecific
+    );
+    assert_eq!(
+        type_region_relation(&types, &map, &any),
+        TypeRegionRelation::LeftMoreSpecific
+    );
+    assert_eq!(
+        type_region_relation(&types, &range, &any),
+        TypeRegionRelation::LeftMoreSpecific
+    );
+    assert_eq!(type_region_relation(&types, &range, &int), TypeRegionRelation::Disjoint);
+}
+
+#[test]
+fn type_region_analysis_sorts_more_specific_before_less_specific() {
+    let mut types = crate::types::new();
+    let any = types.any();
+    let int = types.int();
+    let list_any = types.list(any.clone());
+    let arms = vec![type_arm(0, any, 0), type_arm(1, int, 1), type_arm(2, list_any, 2)];
+
+    let analysis = analyze_type_region_arms(&mut types, &arms, EqualTypeRegionPolicy::DuplicateCoverage);
+
+    assert_eq!(analysis.ordered_arms, vec![ArmId(1), ArmId(2), ArmId(0)]);
+    assert!(analysis.diagnostics.is_empty());
+}
+
+#[test]
+fn type_region_analysis_reports_equal_regions_by_policy() {
+    let mut types = crate::types::new();
+    let int = types.int();
+    let duplicate_arms = vec![type_arm(0, int.clone(), 0), type_arm(1, int, 1)];
+
+    let duplicate = analyze_type_region_arms(&mut types, &duplicate_arms, EqualTypeRegionPolicy::DuplicateCoverage);
+    let ambiguous = analyze_type_region_arms(&mut types, &duplicate_arms, EqualTypeRegionPolicy::Ambiguous);
+
+    assert_eq!(
+        duplicate.diagnostics,
+        vec![TypeRegionDiagnostic {
+            kind: TypeRegionDiagnosticKind::DuplicateCoverage,
+            left: ArmId(0),
+            right: ArmId(1),
+        }]
+    );
+    assert_eq!(
+        ambiguous.diagnostics,
+        vec![TypeRegionDiagnostic {
+            kind: TypeRegionDiagnosticKind::AmbiguousEqualRegions,
+            left: ArmId(0),
+            right: ArmId(1),
+        }]
+    );
+}
+
+#[test]
+fn type_region_analysis_recognizes_orthogonal_and_ambiguous_overlaps() {
+    let mut types = crate::types::new();
+    let int = types.int();
+    let float = types.float();
+    let list_int = types.list(int.clone());
+    let list_float = types.list(float.clone());
+    let orthogonal = vec![type_arm(0, int, 0), type_arm(1, float, 1)];
+    let ambiguous_overlap = vec![type_arm(2, list_int, 2), type_arm(3, list_float, 3)];
+
+    let orthogonal_analysis =
+        analyze_type_region_arms(&mut types, &orthogonal, EqualTypeRegionPolicy::DuplicateCoverage);
+    let ambiguous_analysis =
+        analyze_type_region_arms(&mut types, &ambiguous_overlap, EqualTypeRegionPolicy::DuplicateCoverage);
+
+    assert_eq!(
+        orthogonal_analysis.pairs[0].relation,
+        TypeRegionRelation::Disjoint,
+        "disjoint arms are orthogonal and need no priority"
+    );
+    assert!(orthogonal_analysis.diagnostics.is_empty());
+    assert_eq!(
+        ambiguous_analysis.diagnostics,
+        vec![TypeRegionDiagnostic {
+            kind: TypeRegionDiagnosticKind::AmbiguousOverlap,
+            left: ArmId(2),
+            right: ArmId(3),
+        }]
+    );
+}
+
+#[test]
+fn type_coverage_distinguishes_closed_union_from_open_residual() {
+    let mut types = crate::types::new();
+    let int = types.int();
+    let any = types.any();
+    let list_any = types.list(any.clone());
+    let domain = types.union(int.clone(), list_any.clone());
+    let arms = vec![type_arm(0, int, 0), type_arm(1, list_any, 1)];
+
+    let closed = analyze_type_coverage(&mut types, domain, &arms);
+    let open = analyze_type_coverage(&mut types, any, &arms);
+
+    assert_eq!(closed.status, TypeCoverageStatus::Closed);
+    assert!(types.is_empty(&closed.residual));
+    assert_eq!(open.status, TypeCoverageStatus::Open);
+    assert!(!types.is_empty(&open.residual));
+}
+
+#[test]
+fn compile_specificity_order_uses_type_analysis() {
+    let mut types = crate::types::new();
+    let any = types.any();
+    let int = types.int();
+    let mut builder = DispatchMatrixBuilder::new(Order::Specificity);
+    let subject = builder.add_input_subject();
+    let broad = builder.add_outcome(OutcomeMultiplicity::Unique);
+    let narrow = builder.add_outcome(OutcomeMultiplicity::Unique);
+
+    builder
+        .add_arm_questions(
+            vec![RegionQuestion::type_region(subject, any)],
+            EdgeEvidence::empty(),
+            broad,
+        )
+        .expect("broad arm");
+    builder
+        .add_arm_questions(
+            vec![RegionQuestion::type_region(subject, int.clone())],
+            EdgeEvidence::empty(),
+            narrow,
+        )
+        .expect("narrow arm");
+    let matrix = builder.build().expect("matrix");
+
+    let compiled = compile_dispatch_matrix_with_type_order(
+        &mut types,
+        &matrix,
+        DispatchCompileOptions::closed(),
+        EqualTypeRegionPolicy::DuplicateCoverage,
+    )
+    .expect("specificity compile");
+    let Some(DispatchNode::Test { predicate, .. }) = compiled.graph.node(compiled.graph.root) else {
+        panic!("expected type test root");
+    };
+
+    assert_eq!(predicate.region, Region::Type(int));
 }
 
 #[test]
