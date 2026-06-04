@@ -75,17 +75,49 @@ captures.
 Current executable return strategies are:
 
 - `Value`: ordinary material return;
-- `TupleFields(N)`: tuple-field delivery to a continuation;
+- `TupleFields(N)`: tuple-field delivery — the producer returns the `N` fields
+  of an `N`-tuple in registers, skipping the struct box;
 - `ForwardedDemand(demand)`: a tail-call edge forwards the caller's demand.
 
-The ordinary planner path for direct calls, tail calls, and continuation hops
-selects `Value`. `TupleFields(N)` remains an explicit ABI capability for
-callback-style edges and continuation delivery. There is no list-tail
-return-delivery axis in the data model.
+`TupleFields(N)` is granted when a destructuring continuation projects exactly
+the `N` fields of its result and the producer returns an `N`-tuple on every
+path. Both are cached per-fn `ReturnCapabilities` (`returns_tuple_of_arity`,
+`destructures_slot0_into_arity`), computed once over the static call graph by
+`ir_planner::capabilities::compute_return_capabilities` and read in O(1) at each
+call edge — no per-callsite body re-walk. The shape is forwarded through
+tail-recursive producers so it survives the whole chain (quicksort's
+`partition` and its clause helpers all deliver `tuple_fields(2)`, erasing the
+`{lo, hi}` struct box).
 
-If destination-style return delivery is reintroduced, it must be represented as
-explicit planner output with telemetry and consistency checks. Codegen must
-receive concrete instructions, not derive them from backend shape.
+`ReturnDemand` is part of the spec identity and drives the return ABI, so demand
+siblings — the same `BodyKey` reached with different demand, e.g. a
+`tuple_fields` and a `value` reach of one helper — materialize as distinct
+native bodies, exactly like distinct type specializations. `materialize_program`
+lowers one body per spec; it does not merge demand siblings, because merging
+would force one return ABI onto callers that asked for the other.
+
+### No list-tail return-delivery axis (measured redundant)
+
+There is deliberately no list-tail / destination-passing axis in the return
+demand model. It was prototyped once (the retired return-context machinery) and
+measured redundant: the CPS→native lowering already builds a recursive list
+*forward* with an O(1) continuation — tail-recursion-modulo-cons — for every
+list builder, and owned-cons reuse (`PhysicalCapability::OwnedConsReuse`)
+recycles input cons cells for same-head builders. Together they reach the
+minimum with no extra ABI:
+
+- quicksort hits its 176-byte target (11 input conses, zero structs/closures)
+  with no list-tail demand anywhere;
+- a same-head builder (`filter`) and a different-head builder (`map`, where
+  owned-cons reuse cannot apply) both hold `max_yield_continuation_bytes` flat
+  at 96 from N=6000 to N=12000 — O(1) continuation regardless of depth or head.
+
+A planner-authored ListTail demand plus a hidden-destination ABI would add
+surface for zero allocation or stack benefit. If a future case genuinely needs
+it, it must come with a fixture that *measures the missing optimization* (e.g.
+bounded stack on a builder the forward-build does not already cover), expressed
+as explicit planner output with telemetry — codegen must receive concrete
+instructions, never derive them from backend shape.
 
 ## IR Vocabulary
 
