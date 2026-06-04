@@ -74,25 +74,25 @@ pub struct Ty(pub(crate) Arc<Descr>);
 ///
 /// `Some(ty)` participates in key coverage. `None` is an arity-bearing,
 /// position-preserving hole; it is skipped by key coverage and is not `any`.
-pub type KeySlot = Option<Ty>;
+pub type KeySlot<T = Ty> = Option<T>;
 
-pub fn key_slots_from_tys(tys: impl IntoIterator<Item = Ty>) -> Vec<KeySlot> {
+pub fn key_slots_from_tys<T>(tys: impl IntoIterator<Item = T>) -> Vec<KeySlot<T>> {
     tys.into_iter().map(Some).collect()
 }
 
-pub fn key_slots_observed(key: &[KeySlot]) -> Vec<Ty> {
+pub fn key_slots_observed<T: Clone>(key: &[KeySlot<T>]) -> Vec<T> {
     key.iter().filter_map(Clone::clone).collect()
 }
 
-pub fn key_slot_var_count<T: Types<Ty = Ty>>(t: &T, key: &[KeySlot]) -> usize {
+pub fn key_slot_var_count<T: Types>(t: &T, key: &[KeySlot<T::Ty>]) -> usize {
     t.key_var_count(&key_slots_observed(key))
 }
 
-pub fn key_slots_to_tys<T: Types<Ty = Ty>>(t: &mut T, key: &[KeySlot]) -> Vec<Ty> {
+pub fn key_slots_to_tys<T: Types>(t: &mut T, key: &[KeySlot<T::Ty>]) -> Vec<T::Ty> {
     key.iter().map(|slot| slot.clone().unwrap_or_else(|| t.any())).collect()
 }
 
-pub fn display_key_slots<T: RenderTypes<Ty = Ty>>(t: &T, key: &[KeySlot]) -> String {
+pub fn display_key_slots<T: RenderTypes>(t: &T, key: &[KeySlot<T::Ty>]) -> String {
     let parts: Vec<String> = key
         .iter()
         .map(|slot| match slot {
