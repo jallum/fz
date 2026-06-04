@@ -18,6 +18,7 @@ use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
+use fz_runtime::any_value::AnyValue;
 use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -60,11 +61,31 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) matcher_fn_ids: &'a HashMap<(u32, u32), FuncId>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum StaticLiteralField {
+    Scalar(AnyValue),
+    Struct(DataId),
+}
+
+#[derive(Clone)]
+pub(crate) struct PendingStaticTupleDest {
+    pub(super) schema_id: u32,
+    pub(super) fields: Vec<Option<StaticLiteralField>>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct StaticStructRef {
+    pub(super) data_id: DataId,
+}
+
 /// Per-function mutable state threaded through `lower_prim` and
 /// `emit_terminator`. Holds orthogonal caches and per-spec delivery plans:
 ///
 /// - `const_cache`: per-block constant deduplication (avoids redundant iconst).
 /// - `raw_int_consts`: raw i64 value for RawInt vars (drives box-int const fold).
+/// - `static_scalar_consts` / `static_struct_refs`: compile-time literal facts
+///   for immutable aggregate literals whose storage may be emitted as static
+///   data instead of heap construction.
 /// - `extern_funcs`: FuncRef deduplicated per extern symbol per function.
 /// - `used_vars`: all var IDs that appear as operands anywhere in the function;
 ///   unit-return extern results whose dest ID is absent skip the nil iconst.
@@ -78,6 +99,19 @@ pub(crate) struct CodegenCache {
     pub(super) const_cache: HashMap<(ir::Block, i64), ir::Value>,
     /// Raw (unboxed) i64 values for integer constants keyed by Var ID.
     pub(super) raw_int_consts: HashMap<u32, i64>,
+    /// Canonical scalar values for source constants keyed by Var ID. These
+    /// facts are compile-time data only; dynamic `Known` values are excluded.
+    pub(super) static_scalar_consts: HashMap<u32, AnyValue>,
+    /// Read-only static struct symbols produced for fully literal aggregate
+    /// vars. A later literal aggregate can embed them by data relocation.
+    pub(super) static_struct_refs: HashMap<u32, StaticStructRef>,
+    /// Per-function counter for unique static struct data symbols.
+    pub(super) static_struct_count: usize,
+    /// Tuple destinations being considered for static read-only storage.
+    pub(super) pending_static_tuple_dests: HashMap<u32, PendingStaticTupleDest>,
+    /// Tuple destinations that fell back to ordinary heap storage after a
+    /// dynamic field appeared.
+    pub(super) materialized_tuple_dests: HashMap<u32, ir::Value>,
     /// FuncRef for each extern, deduplicated per function.
     pub(super) extern_funcs: HashMap<ExternId, ir::FuncRef>,
     /// Var IDs referenced anywhere in the function's IR. Unit-return

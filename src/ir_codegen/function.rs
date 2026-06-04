@@ -202,6 +202,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             if !matches!(out, LowerOut::DeadUnit) {
                 let binding = match out {
                     LowerOut::StrictConst(value) => {
+                        body.cache.static_scalar_consts.insert(v.0, value);
                         let raw = body.b.ins().iconst(types::I64, value.raw() as i64);
                         CodegenValue::known(raw, value.kind())
                     }

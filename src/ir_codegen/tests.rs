@@ -1552,26 +1552,49 @@ fn print_mixed_type_tuple() {
 }
 
 #[test]
-fn tuple_literal_initializes_scalar_fields_without_boxing() {
+fn static_tuple_literal_uses_read_only_storage_without_boxing() {
     let ir = compile_and_grab_ir("fn main(), do: dbg({1, 2.5, :ok})", "main");
     assert!(
-        ir.contains("@fz_struct_set_field_int"),
-        "integer tuple field should use typed destination setter:\n{}",
+        ir.contains("symbol_value") && ir.contains("0x0300_0000_0000_0000"),
+        "fully static tuple literal should lower to a static struct ref:\n{}",
         ir
     );
     assert!(
-        ir.contains("@fz_struct_set_field_float"),
-        "float tuple field should use typed destination setter:\n{}",
-        ir
-    );
-    assert!(
-        ir.contains("@fz_struct_set_field_atom"),
-        "atom tuple field should use typed destination setter:\n{}",
+        !ir.contains("@fz_alloc_struct") && !ir.contains("@fz_struct_set_field_"),
+        "fully static tuple literal should not allocate or initialize heap storage:\n{}",
         ir
     );
     assert!(
         !ir.contains("@fz_box_int_for_any") && !ir.contains("@fz_box_float_for_any"),
-        "numeric tuple fields should not allocate boxes before initialization:\n{}",
+        "static numeric tuple fields should not allocate boxes before initialization:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn dynamic_tuple_literal_initializes_scalar_fields_without_boxing() {
+    let ir = compiled_ir_body_containing(
+        "fn id(x), do: x\nfn main(), do: dbg({1, id(2.5), :ok})",
+        "@fz_struct_set_field_float",
+    );
+    assert!(
+        ir.contains("@fz_struct_set_field_int"),
+        "dynamic integer tuple field should use typed destination setter:\n{}",
+        ir
+    );
+    assert!(
+        ir.contains("@fz_struct_set_field_float"),
+        "dynamic float tuple field should use typed destination setter:\n{}",
+        ir
+    );
+    assert!(
+        ir.contains("@fz_struct_set_field_atom"),
+        "dynamic atom tuple field should use typed destination setter:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("@fz_box_int_for_any") && !ir.contains("@fz_box_float_for_any"),
+        "dynamic numeric tuple fields should not allocate boxes before initialization:\n{}",
         ir
     );
 }

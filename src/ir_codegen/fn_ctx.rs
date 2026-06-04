@@ -11,7 +11,9 @@ use crate::fz_ir::Var;
 use cranelift_codegen::ir::{self, BlockArg, InstBuilder, MemFlags, condcodes::IntCC, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{FuncId, Linkage, Module};
-use fz_runtime::any_value::{AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind};
+use fz_runtime::any_value::{
+    AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID, TaggedRefArch, ValueKind,
+};
 use fz_runtime::heap::{FieldKind, Schema};
 use std::collections::HashMap;
 
@@ -636,6 +638,20 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
             }
             CodegenValue::Known { payload, kind } => self.box_known_non_heap(payload, kind),
         }
+    }
+
+    pub(crate) fn heap_ref_word_from_addr(&mut self, ptr: ir::Value, kind: ValueKind) -> ir::Value {
+        assert!(kind.is_heap(), "heap_ref_word_from_addr requires a heap kind");
+        let ptr_payload = match TaggedRefArch::current() {
+            TaggedRefArch::Arm64Tbi => ptr,
+            TaggedRefArch::X86_64Canonical57 => {
+                let clear_shift = i64::from(64 - AnyValueRefPacking::current().tag_shift());
+                let shifted = self.b.ins().ishl_imm(ptr, clear_shift);
+                self.b.ins().ushr_imm(shifted, clear_shift)
+            }
+        };
+        let tag_word = ((kind.tag() as u64) << AnyValueRefPacking::current().tag_shift()) as i64;
+        self.b.ins().bor_imm(ptr_payload, tag_word)
     }
 
     /// Materialize the var's binding as an ABI `AnyValueRef`, reusing a

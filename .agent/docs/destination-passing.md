@@ -320,6 +320,20 @@ scripted REPL fixture legs are direct-IR baselines: they execute destination
 primitives when handed already-lowered IR, but the CLI interpreter does not run
 the destination-lowering pass itself.
 
+### Static aggregate storage
+
+Native codegen may delay a verified tuple destination while walking its
+`DestTupleSet` token chain. If every field is a compile-time scalar or another
+read-only static struct, `DestFreeze` emits one schema-valid static struct data
+symbol and returns a normal `ValueKind::STRUCT` ref to it. If any field is
+dynamic, codegen allocates the ordinary heap tuple immediately, replays any
+recorded static fields through the existing struct setters, and continues on
+the heap path.
+
+This is a storage representation choice for already-proven construction. It is
+not a destination-planning rule, does not infer new construction permission, and
+does not rewrite the authoritative plan.
+
 Codegen never manufactures destination or demand facts. If a future optimizer
 needs a new destination shape, the data model must expose it before codegen,
 the planner consistency harness must validate it, and tests should observe the

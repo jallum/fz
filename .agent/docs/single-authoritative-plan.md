@@ -63,6 +63,11 @@ codegen.
   for the lowered module; it does not own dispatch.
 - Planned body materialization may fold a body using facts already present in
   the `ModulePlan`; it must not discover new semantic reachability.
+- Native codegen may choose a different storage representation for values whose
+  construction is already explicit and verified in the lowered IR. Fully static
+  tuple/struct literals can become read-only schema-shaped data symbols, but
+  that does not add call edges, create destination facts, or change the supplied
+  `ModulePlan`.
 
 ## Planned Program Materialization
 

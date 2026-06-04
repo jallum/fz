@@ -13,8 +13,8 @@ use cranelift_codegen::ir::{
     types,
 };
 use cranelift_frontend::FunctionBuilder;
-use cranelift_module::{DataDescription, FuncId, Linkage};
-use fz_runtime::any_value::{AnyValue, FALSE_ATOM_ID, TRUE_ATOM_ID, ValueKind};
+use cranelift_module::{DataDescription, DataId, FuncId, Linkage};
+use fz_runtime::any_value::{AnyValue, FALSE_ATOM_ID, TRUE_ATOM_ID, ValueKind, struct_size_for_payload};
 use fz_runtime::heap::{FieldKind, SHARED_BIN_THRESHOLD_BYTES};
 use fz_runtime::ir_runtime::fz_bs_field_spec;
 use std::collections::HashMap;
@@ -197,6 +197,186 @@ pub(crate) fn emit_list_cons_bif<M: cranelift_module::Module>(
     body.list_cons_with(func_id, &args)
 }
 
+fn static_literal_field_for_var(
+    cache: &CodegenCache,
+    var_env: &HashMap<u32, CodegenValue>,
+    var: Var,
+) -> Option<StaticLiteralField> {
+    if !var_env.contains_key(&var.0) {
+        return None;
+    }
+    if let Some(value) = cache.static_scalar_consts.get(&var.0) {
+        return match value {
+            AnyValue::HeapRef(_) => None,
+            value => Some(StaticLiteralField::Scalar(*value)),
+        };
+    }
+    cache
+        .static_struct_refs
+        .get(&var.0)
+        .map(|static_ref| StaticLiteralField::Struct(static_ref.data_id))
+}
+
+fn try_static_struct_literal<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    env: &CodegenEnv<'_>,
+    var_env: &HashMap<u32, CodegenValue>,
+    dest_var: Var,
+    schema_id: u32,
+    fields: &[Var],
+) -> Result<Option<ir::Value>, CodegenError> {
+    let Some(static_fields) = fields
+        .iter()
+        .map(|field| static_literal_field_for_var(body.cache, var_env, *field))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Ok(None);
+    };
+
+    let data_id = define_static_struct_literal(body, env, dest_var, schema_id, &static_fields)?;
+    Ok(Some(static_struct_ref_word(body, dest_var, data_id)))
+}
+
+fn define_static_struct_literal<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    env: &CodegenEnv<'_>,
+    dest_var: Var,
+    schema_id: u32,
+    fields: &[StaticLiteralField],
+) -> Result<DataId, CodegenError> {
+    let raw_bytes = fields.len() * SLOT_BYTES as usize;
+    let kind_bytes = (fields.len() + 7) & !7;
+    let payload_size = raw_bytes + kind_bytes;
+    let total_size = struct_size_for_payload(payload_size);
+    let mut buf = vec![0u8; total_size];
+    buf[0..4].copy_from_slice(&schema_id.to_le_bytes());
+    buf[4..8].copy_from_slice(&0u32.to_le_bytes());
+
+    let mut child_relocs = Vec::new();
+    let raw_base = 8;
+    let kind_base = raw_base + raw_bytes;
+    for (idx, field) in fields.iter().enumerate() {
+        let raw_offset = raw_base + idx * SLOT_BYTES as usize;
+        let kind_offset = kind_base + idx;
+        match *field {
+            StaticLiteralField::Scalar(value) => {
+                buf[raw_offset..raw_offset + SLOT_BYTES as usize].copy_from_slice(&value.raw().to_le_bytes());
+                buf[kind_offset] = value.kind().tag();
+            }
+            StaticLiteralField::Struct(data_id) => {
+                child_relocs.push((raw_offset, data_id));
+                buf[kind_offset] = ValueKind::STRUCT.tag();
+            }
+        }
+    }
+
+    let idx = body.cache.static_struct_count;
+    body.cache.static_struct_count += 1;
+    let name = format!(
+        ".fz_static_struct_{}_{}_{}_{}",
+        env.active_body_fn_id.0, env.active_spec_id, dest_var.0, idx
+    );
+    let data_id = body
+        .jmod
+        .declare_data(&name, Linkage::Local, /*writable=*/ false, false)
+        .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
+    let mut desc = DataDescription::new();
+    desc.define(buf.into_boxed_slice());
+    desc.set_align(16);
+    for (offset, child_id) in child_relocs {
+        let child_gv = body.jmod.declare_data_in_data(child_id, &mut desc);
+        desc.write_data_addr(offset as u32, child_gv, 0);
+    }
+    body.jmod
+        .define_data(data_id, &desc)
+        .map_err(|e| CodegenError::new(format!("define {}: {}", name, e)))?;
+    Ok(data_id)
+}
+
+fn static_struct_ref_word<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    dest_var: Var,
+    data_id: DataId,
+) -> ir::Value {
+    let gv = body.jmod.declare_data_in_func(data_id, body.b.func);
+    let addr = body.b.ins().symbol_value(types::I64, gv);
+    let ref_word = body.heap_ref_word_from_addr(addr, ValueKind::STRUCT);
+    body.cache
+        .static_struct_refs
+        .insert(dest_var.0, StaticStructRef { data_id });
+    ref_word
+}
+
+fn alloc_struct_for_schema<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    runtime: &RuntimeRefs,
+    schema_id: u32,
+) -> ir::Value {
+    let fref = body.jmod.declare_func_in_func(runtime.alloc_struct_id, body.b.func);
+    let sid = body.b.ins().iconst(types::I32, schema_id as i64);
+    let process = body.process_arg();
+    let inst = body.b.ins().call(fref, &[process, sid]);
+    body.b.inst_results(inst)[0]
+}
+
+fn codegen_value_for_static_literal_field<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    field: StaticLiteralField,
+) -> CodegenValue {
+    match field {
+        StaticLiteralField::Scalar(value) => {
+            let raw = body.b.ins().iconst(types::I64, value.raw() as i64);
+            CodegenValue::known(raw, value.kind())
+        }
+        StaticLiteralField::Struct(data_id) => {
+            let gv = body.jmod.declare_data_in_func(data_id, body.b.func);
+            let addr = body.b.ins().symbol_value(types::I64, gv);
+            let ref_word = body.heap_ref_word_from_addr(addr, ValueKind::STRUCT);
+            CodegenValue::any_ref(ref_word)
+        }
+    }
+}
+
+fn emit_static_literal_field_store<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    struct_bits: ir::Value,
+    field_idx: usize,
+    field: StaticLiteralField,
+) {
+    let value = codegen_value_for_static_literal_field(body, field);
+    body.struct_set_field(struct_bits, field_idx, value);
+}
+
+fn materialize_pending_tuple_dest<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    runtime: &RuntimeRefs,
+    pending: &PendingStaticTupleDest,
+) -> ir::Value {
+    let struct_bits = alloc_struct_for_schema(body, runtime, pending.schema_id);
+    for (idx, field) in pending.fields.iter().copied().enumerate() {
+        if let Some(field) = field {
+            emit_static_literal_field_store(body, struct_bits, idx, field);
+        }
+    }
+    struct_bits
+}
+
+fn freeze_pending_tuple_dest<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    env: &CodegenEnv<'_>,
+    dest_var: Var,
+    pending: PendingStaticTupleDest,
+) -> Result<ir::Value, CodegenError> {
+    let Some(fields) = pending.fields.into_iter().collect::<Option<Vec<_>>>() else {
+        return Err(CodegenError::new(format!(
+            "tuple destination {:?} reached freeze with unset static fields",
+            dest_var
+        )));
+    };
+    let data_id = define_static_struct_literal(body, env, dest_var, pending.schema_id, &fields)?;
+    Ok(static_struct_ref_word(body, dest_var, data_id))
+}
+
 /// Lower collection-typed Prim variants (List, Tuple, AllocStruct, Bitstring,
 /// Map, Vec) to a tagged `ir::Value`. Called by `lower_prim` for these arms.
 pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = Ty>>(
@@ -205,6 +385,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     prim: &Prim,
+    dest_var: Var,
     block_id: BlockId,
     block_env: Option<&HashMap<Var, Ty>>,
 ) -> Result<LowerOut, CodegenError> {
@@ -264,11 +445,10 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                     arity
                 ))
             })?;
-            let fref = body.jmod.declare_func_in_func(runtime.alloc_struct_id, body.b.func);
-            let sid = body.b.ins().iconst(types::I32, schema_id as i64);
-            let process = body.process_arg();
-            let inst = body.b.ins().call(fref, &[process, sid]);
-            let p = body.b.inst_results(inst)[0];
+            if let Some(static_ref) = try_static_struct_literal(body, env, var_env, dest_var, schema_id, elems)? {
+                return Ok(LowerOut::ValueRefWord(static_ref));
+            }
+            let p = alloc_struct_for_schema(body, runtime, schema_id);
             for (i, e) in elems.iter().enumerate() {
                 let value = binding_for_var(var_env, e.0);
                 body.struct_set_field(p, i, value);
@@ -282,11 +462,11 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                     module
                 ))
             })?;
-            let fref = body.jmod.declare_func_in_func(runtime.alloc_struct_id, body.b.func);
-            let sid = body.b.ins().iconst(types::I32, schema_id as i64);
-            let process = body.process_arg();
-            let inst = body.b.ins().call(fref, &[process, sid]);
-            let p = body.b.inst_results(inst)[0];
+            let field_vars = fields.iter().map(|(_, field_var)| *field_var).collect::<Vec<_>>();
+            if let Some(static_ref) = try_static_struct_literal(body, env, var_env, dest_var, schema_id, &field_vars)? {
+                return Ok(LowerOut::ValueRefWord(static_ref));
+            }
+            let p = alloc_struct_for_schema(body, runtime, schema_id);
             for (i, (_, field_var)) in fields.iter().enumerate() {
                 let value = binding_for_var(var_env, field_var.0);
                 body.struct_set_field(p, i, value);
@@ -300,19 +480,62 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                     arity
                 ))
             })?;
-            let fref = body.jmod.declare_func_in_func(runtime.alloc_struct_id, body.b.func);
-            let sid = body.b.ins().iconst(types::I32, schema_id as i64);
-            let process = body.process_arg();
-            let inst = body.b.ins().call(fref, &[process, sid]);
-            LowerOut::ValueRef(body.b.inst_results(inst)[0])
+            body.cache.pending_static_tuple_dests.insert(
+                dest_var.0,
+                PendingStaticTupleDest {
+                    schema_id,
+                    fields: vec![None; *arity],
+                },
+            );
+            LowerOut::DeadUnit
         }
         Prim::DestTupleSet { dest, index, value, .. } => {
+            if let Some(&dest_bits) = body.cache.materialized_tuple_dests.get(&dest.0) {
+                let field_value = binding_for_var(var_env, value.0);
+                body.struct_set_field(dest_bits, *index as usize, field_value);
+                return Ok(LowerOut::DeadUnit);
+            }
+            if body.cache.pending_static_tuple_dests.contains_key(&dest.0) {
+                if let Some(field) = static_literal_field_for_var(body.cache, var_env, *value) {
+                    let pending = body
+                        .cache
+                        .pending_static_tuple_dests
+                        .get_mut(&dest.0)
+                        .expect("pending tuple dest disappeared");
+                    let arity = pending.fields.len();
+                    let slot = pending.fields.get_mut(*index as usize).ok_or_else(|| {
+                        CodegenError::new(format!(
+                            "tuple destination {:?} set field {} beyond arity {}",
+                            dest, index, arity
+                        ))
+                    })?;
+                    *slot = Some(field);
+                    return Ok(LowerOut::DeadUnit);
+                }
+                let pending = body
+                    .cache
+                    .pending_static_tuple_dests
+                    .remove(&dest.0)
+                    .expect("pending tuple dest disappeared");
+                let dest_bits = materialize_pending_tuple_dest(body, runtime, &pending);
+                body.cache.materialized_tuple_dests.insert(dest.0, dest_bits);
+                let field_value = binding_for_var(var_env, value.0);
+                body.struct_set_field(dest_bits, *index as usize, field_value);
+                return Ok(LowerOut::DeadUnit);
+            }
             let dest_bits = body.any_ref_for_var(var_env, dest.0);
             let field_value = binding_for_var(var_env, value.0);
             body.struct_set_field(dest_bits, *index as usize, field_value);
             LowerOut::DeadUnit
         }
         Prim::DestFreeze { dest, .. } => {
+            if let Some(dest_bits) = body.cache.materialized_tuple_dests.remove(&dest.0) {
+                return Ok(LowerOut::ValueRefWord(dest_bits));
+            }
+            if let Some(pending) = body.cache.pending_static_tuple_dests.remove(&dest.0) {
+                let dest_bits = freeze_pending_tuple_dest(body, env, dest_var, pending)?;
+                return Ok(LowerOut::ValueRefWord(dest_bits));
+            }
             let dest_bits = body.any_ref_for_var(var_env, dest.0);
             LowerOut::ValueRef(dest_bits)
         }
@@ -827,6 +1050,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty>>(
             // int-arithmetic / RawInt-slot consumer would decode via
             // `as_raw_i64`.
             Const::Int(n) => {
+                body.cache.static_scalar_consts.insert(dest_var.0, AnyValue::int(*n));
                 if ty_is_int(t, fn_types, dest_var) {
                     body.cache.raw_int_consts.insert(dest_var.0, *n);
                     return Ok(LowerOut::RawI64(body.b.ins().iconst(types::I64, *n)));
@@ -838,6 +1062,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty>>(
             Const::Nil => Ok(LowerOut::StrictConst(AnyValue::nil_atom())),
             Const::Atom(id) => Ok(LowerOut::StrictConst(AnyValue::atom(*id))),
             Const::Float(f) => {
+                body.cache.static_scalar_consts.insert(dest_var.0, AnyValue::float(*f));
                 if ty_is_float(t, fn_types, dest_var) {
                     return Ok(LowerOut::RawF64(body.b.ins().f64const(*f)));
                 }
@@ -1044,7 +1269,9 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty>>(
         | Prim::DestMapFreeze { .. }
         | Prim::MapGet(..)
         | Prim::MatcherMapGet(..)
-        | Prim::IsMatcherMapMiss(..) => lower_collection_prim(body, t, env, var_env, prim, block_id, block_env),
+        | Prim::IsMatcherMapMiss(..) => {
+            lower_collection_prim(body, t, env, var_env, prim, dest_var, block_id, block_env)
+        }
         Prim::MakeFnRef(mk_ident, fn_id) => lower_make_fn_ref(
             body,
             runtime,
