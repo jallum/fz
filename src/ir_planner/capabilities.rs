@@ -21,7 +21,6 @@ use std::collections::{HashMap, HashSet};
 /// already-cached motion-safety barrier per fn.
 pub(crate) fn compute_return_capabilities(m: &Module, fn_effects: &FnEffects) -> ReturnCapabilities {
     let tuple_arity = compute_tuple_arity(m);
-    let list_tail = compute_can_return_list_tail(m);
     m.fns
         .iter()
         .map(|f| {
@@ -34,7 +33,6 @@ pub(crate) fn compute_return_capabilities(m: &Module, fn_effects: &FnEffects) ->
                 f.id,
                 ReturnCapability {
                     returns_tuple_of_arity: tuple_arity.get(&f.id).copied().flatten(),
-                    can_return_list_tail: list_tail.get(&f.id).copied().unwrap_or(false),
                     blocks_motion,
                     destructures_slot0_into_arity: destructures_slot0_into_arity(f),
                 },
@@ -146,74 +144,6 @@ fn return_var_tuple_arity(b: &Block, ret: Var) -> Option<usize> {
         };
     }
     None
-}
-
-fn compute_can_return_list_tail(m: &Module) -> HashMap<crate::fz_ir::FnId, bool> {
-    let mut state: HashMap<_, _> = m.fns.iter().map(|f| (f.id, true)).collect();
-    loop {
-        let mut changed = false;
-        for f in &m.fns {
-            let next = list_tail_step(f, &state);
-            if state[&f.id] != next {
-                state.insert(f.id, next);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    state
-}
-
-fn list_tail_step(f: &FnIr, state: &HashMap<crate::fz_ir::FnId, bool>) -> bool {
-    let mut saw_exit = false;
-    for b in &f.blocks {
-        match &b.terminator {
-            Term::Return(v) => {
-                saw_exit = true;
-                if !return_var_is_list_material(f, b, *v) {
-                    return false;
-                }
-            }
-            Term::TailCall { callee, .. } => {
-                saw_exit = true;
-                if !state.get(callee).copied().unwrap_or(false) {
-                    return false;
-                }
-            }
-            // The returned list is built by the continuation, so follow it.
-            Term::Call { continuation, .. } => {
-                saw_exit = true;
-                if !state.get(&continuation.fn_id).copied().unwrap_or(false) {
-                    return false;
-                }
-            }
-            Term::Goto(_, _) | Term::If { .. } | Term::Halt(_) => {}
-            // Opaque calls / receive: no statically known list-material return.
-            _ => return false,
-        }
-    }
-    saw_exit
-}
-
-/// True if `ret` is delivered as freshly-built list material: an entry param
-/// forwarded straight through, a `MakeList`, a frozen destination list, or a
-/// `ListTail` projection.
-fn return_var_is_list_material(f: &FnIr, b: &Block, ret: Var) -> bool {
-    if f.block(f.entry).params.contains(&ret) {
-        return true;
-    }
-    for Stmt::Let(dst, prim) in b.stmts.iter().rev() {
-        if *dst != ret {
-            continue;
-        }
-        return matches!(
-            prim,
-            Prim::MakeList(_, _) | Prim::DestListFreeze { .. } | Prim::ListTail(_)
-        );
-    }
-    false
 }
 
 /// The continuation-side dual of `returns_tuple_of_arity`: `Some(n)` when `f`'s

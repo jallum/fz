@@ -594,10 +594,6 @@ pub struct ReturnCapability {
     /// the fn's `Return`s and tail-call targets), so a destructuring caller may
     /// demand the fields directly and skip the struct box.
     pub returns_tuple_of_arity: Option<usize>,
-    /// Every return is a freshly-built list (cons spine, `[]`, or a forwarded
-    /// list), so a cons/append context may hand the fn a destination tail for
-    /// its final cell — the owned-cons-reuse / TRMC-shaped delivery.
-    pub can_return_list_tail: bool,
     /// The fn (or its call graph) reaches an observable barrier, so relocating
     /// an allocation across it is unsafe; list-tail motion is refused here.
     /// Cached from the fn's `EffectSummary::blocks_return_context_motion`.

@@ -1483,12 +1483,12 @@ fn quicksort_partition_accumulators_converge_to_one_spec() {
     );
 }
 
-/// fz-qwf.1 — the cached per-fn return capabilities classify the quicksort
-/// helpers by the *shape* a caller could demand, computed once over the static
-/// call graph (through the CPS clause helpers), not per call site. partition
-/// returns a 2-tuple on every clause path, so a destructuring caller may demand
-/// the fields; qsort and append return freshly-built lists, so a cons/append
-/// context may hand them a destination tail; main returns neither.
+/// fz-qwf.1 (fz-yt4: trimmed to the live tuple-arity axis) — the cached per-fn
+/// return capabilities classify the quicksort helpers by the *shape* a caller
+/// could demand, computed once over the static call graph (through the CPS
+/// clause helpers), not per call site. partition returns a 2-tuple on every
+/// clause path, so a destructuring caller may demand the fields directly; qsort
+/// returns a list and main returns neither, so neither offers a tuple.
 #[test]
 fn return_capabilities_classify_quicksort_fn_shapes() {
     let module = linked_runtime_module(include_str!("../../fixtures/quicksort/input.fz"));
@@ -1509,16 +1509,6 @@ fn return_capabilities_classify_quicksort_fn_shapes() {
         Some(2),
         "partition delivers a 2-tuple on every clause path"
     );
-    assert!(
-        !cap("partition").can_return_list_tail,
-        "partition returns a tuple, not list material"
-    );
-
-    assert!(cap("qsort").can_return_list_tail, "qsort returns a freshly-built list");
-    assert!(
-        cap("append").can_return_list_tail,
-        "append returns a freshly-built list"
-    );
     assert_eq!(
         cap("qsort").returns_tuple_of_arity,
         None,
@@ -1526,7 +1516,6 @@ fn return_capabilities_classify_quicksort_fn_shapes() {
     );
 
     assert_eq!(cap("main").returns_tuple_of_arity, None, "main returns neither a tuple");
-    assert!(!cap("main").can_return_list_tail, "main returns neither list material");
 }
 
 fn frontend_module(src: &str) -> Module {
