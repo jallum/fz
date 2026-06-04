@@ -613,10 +613,7 @@ mod conformance_tests {
                 use super::*;
 
                 fn sigma_of<T>(bindings: impl IntoIterator<Item = (u32, T)>) -> Sigma<T> {
-                    bindings
-                        .into_iter()
-                        .map(|(id, ty)| (TypeVarId(id), ty))
-                        .collect()
+                    bindings.into_iter().map(|(id, ty)| (TypeVarId(id), ty)).collect()
                 }
 
                 #[test]
@@ -930,11 +927,11 @@ mod conformance_tests {
                     let empty = t.empty_list();
                     let one = t.int_lit(1);
                     let lhs_ret = t.tuple(&[empty, one]);
-                    let lhs = t.arrow(&[int.clone()], lhs_ret);
+                    let lhs = t.arrow(std::slice::from_ref(&int), lhs_ret);
                     let non_empty = t.non_empty_list(int.clone());
                     let two = t.int_lit(2);
                     let rhs_ret = t.tuple(&[non_empty, two]);
-                    let rhs = t.arrow(&[float.clone()], rhs_ret);
+                    let rhs = t.arrow(std::slice::from_ref(&float), rhs_ret);
                     let union = t.union(int.clone(), float);
                     let list_int = t.list(int.clone());
                     let ret = t.tuple(&[list_int, int]);
