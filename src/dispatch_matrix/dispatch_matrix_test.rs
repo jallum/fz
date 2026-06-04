@@ -1,4 +1,5 @@
 use super::*;
+use crate::types::Types;
 
 #[test]
 fn builder_mints_stable_subject_and_arm_ids() {
@@ -48,7 +49,10 @@ fn unique_outcome_cannot_be_routed_from_multiple_arms() {
 
     builder
         .add_arm(
-            vec![RegionPredicate::new(subject, Region::Const(DispatchConst::Nil))],
+            vec![RegionPredicate::new(
+                subject,
+                Region::Equal(ComparisonValue::Const(DispatchConst::Nil)),
+            )],
             EdgeEvidence::empty(),
             unique,
         )
@@ -56,7 +60,10 @@ fn unique_outcome_cannot_be_routed_from_multiple_arms() {
 
     let err = builder
         .add_arm(
-            vec![RegionPredicate::new(subject, Region::Any)],
+            vec![RegionPredicate::new(
+                subject,
+                Region::Equal(ComparisonValue::Const(DispatchConst::Nil)),
+            )],
             EdgeEvidence::empty(),
             unique,
         )
@@ -99,6 +106,141 @@ fn edge_evidence_keeps_proofs_and_projections_branch_local() {
             kind: ProjectionKind::ListHead,
         }) if source == list
     ));
+}
+
+#[test]
+fn map_key_presence_question_produces_value_or_absent_evidence() {
+    let map = SubjectId(0);
+    let value = SubjectId(1);
+    let key = DispatchConst::AtomName("id".to_string());
+
+    let question = RegionQuestion::map_key_present(map, key.clone(), value);
+
+    assert_eq!(
+        question.predicate,
+        RegionPredicate::new(map, Region::MapKeyPresent { key: key.clone() })
+    );
+    assert_eq!(
+        question.match_evidence.proofs,
+        vec![Proof {
+            predicate: question.predicate.clone(),
+            sense: ProofSense::Holds,
+        }]
+    );
+    assert_eq!(
+        question.match_evidence.projections,
+        vec![EdgeProjection {
+            source: map,
+            kind: ProjectionKind::MapValue { key },
+            result: value,
+        }]
+    );
+    assert_eq!(
+        question.miss_evidence,
+        EdgeEvidence::from_proof(question.predicate.clone(), ProofSense::DoesNotHold)
+    );
+}
+
+#[test]
+fn present_nil_map_value_is_value_equality_after_presence() {
+    let map = SubjectId(0);
+    let value = SubjectId(1);
+    let presence = RegionQuestion::map_key_present(map, DispatchConst::Int(7), value);
+    let nil_value = RegionQuestion::equality(value, ComparisonValue::Const(DispatchConst::Nil));
+
+    assert!(matches!(
+        presence.predicate.region,
+        Region::MapKeyPresent {
+            key: DispatchConst::Int(7)
+        }
+    ));
+    assert_eq!(
+        nil_value.predicate,
+        RegionPredicate::new(value, Region::Equal(ComparisonValue::Const(DispatchConst::Nil)))
+    );
+}
+
+#[test]
+fn map_miss_is_not_source_level_vocabulary() {
+    let dispatch_matrix_source = include_str!("mod.rs");
+    assert!(!dispatch_matrix_source.contains("IsMatcherMapMiss"));
+}
+
+#[test]
+fn list_shape_questions_preserve_empty_cons_and_non_list_distinctions() {
+    let list = SubjectId(0);
+    let head = SubjectId(1);
+    let tail = SubjectId(2);
+
+    let empty = RegionQuestion::list_empty(list);
+    let cons = RegionQuestion::list_cons(list, head, tail);
+
+    assert_eq!(
+        empty.match_evidence,
+        EdgeEvidence::from_proof(empty.predicate.clone(), ProofSense::Holds)
+    );
+    assert_eq!(
+        empty.miss_evidence,
+        EdgeEvidence::from_proof(empty.predicate.clone(), ProofSense::DoesNotHold)
+    );
+    assert_eq!(
+        cons.match_evidence.projections,
+        vec![
+            EdgeProjection {
+                source: list,
+                kind: ProjectionKind::ListHead,
+                result: head,
+            },
+            EdgeProjection {
+                source: list,
+                kind: ProjectionKind::ListTail,
+                result: tail,
+            },
+        ]
+    );
+    assert_eq!(
+        cons.miss_evidence,
+        EdgeEvidence::from_proof(cons.predicate.clone(), ProofSense::DoesNotHold)
+    );
+}
+
+#[test]
+fn type_shape_and_equality_questions_share_graph_branch_shape() {
+    let subject = SubjectId(0);
+    let on_match = GraphNodeId(1);
+    let on_miss = GraphNodeId(2);
+    let mut types = crate::types::new();
+
+    let questions = vec![
+        RegionQuestion::type_region(subject, types.int()),
+        RegionQuestion::list_empty(subject),
+        RegionQuestion::equality(subject, ComparisonValue::Const(DispatchConst::Int(42))),
+        RegionQuestion::equality(subject, ComparisonValue::Pinned(PinnedValueId(0))),
+    ];
+
+    for question in questions {
+        let predicate = question.predicate.clone();
+        let node = question.into_test_node(on_match, on_miss);
+        let DispatchNode::Test {
+            predicate: node_predicate,
+            on_match: match_edge,
+            on_miss: miss_edge,
+        } = node
+        else {
+            panic!("region question should lower to one graph branch");
+        };
+        assert_eq!(node_predicate, predicate);
+        assert_eq!(match_edge.target, on_match);
+        assert_eq!(miss_edge.target, on_miss);
+        assert_eq!(
+            match_edge.evidence,
+            EdgeEvidence::from_proof(predicate.clone(), ProofSense::Holds)
+        );
+        assert_eq!(
+            miss_edge.evidence,
+            EdgeEvidence::from_proof(predicate, ProofSense::DoesNotHold)
+        );
+    }
 }
 
 #[test]

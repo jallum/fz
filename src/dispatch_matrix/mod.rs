@@ -23,6 +23,9 @@ pub(crate) struct GraphNodeId(pub(crate) u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct GuardId(pub(crate) u32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) struct PinnedValueId(pub(crate) u32);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DispatchMatrix {
     pub(crate) subjects: Vec<Subject>,
@@ -97,13 +100,19 @@ pub(crate) enum Region {
     Any,
     Never,
     Type(Ty),
-    Const(DispatchConst),
+    Equal(ComparisonValue),
     TupleArity(u32),
     List(ListRegion),
     MapKind,
     MapKeyPresent { key: DispatchConst },
     Bitstring(BitstringShape),
     Guard(GuardId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum ComparisonValue {
+    Const(DispatchConst),
+    Pinned(PinnedValueId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -187,6 +196,18 @@ impl EdgeEvidence {
     pub(crate) fn empty() -> Self {
         Self::default()
     }
+
+    pub(crate) fn from_proof(predicate: RegionPredicate, sense: ProofSense) -> Self {
+        Self {
+            proofs: vec![Proof { predicate, sense }],
+            projections: Vec::new(),
+        }
+    }
+
+    pub(crate) fn with_projection(mut self, projection: EdgeProjection) -> Self {
+        self.projections.push(projection);
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,6 +227,83 @@ pub(crate) struct EdgeProjection {
     pub(crate) source: SubjectId,
     pub(crate) kind: ProjectionKind,
     pub(crate) result: SubjectId,
+}
+
+/// One normalized branch question over one subject.
+///
+/// This is the DispatchMatrix-level vocabulary. It names the semantic region
+/// being tested and the evidence each branch produces. Existing backend
+/// primitives are lowering choices for these questions, not additional semantic
+/// variants in this model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RegionQuestion {
+    pub(crate) predicate: RegionPredicate,
+    pub(crate) match_evidence: EdgeEvidence,
+    pub(crate) miss_evidence: EdgeEvidence,
+}
+
+impl RegionQuestion {
+    pub(crate) fn new(predicate: RegionPredicate) -> Self {
+        Self {
+            match_evidence: EdgeEvidence::from_proof(predicate.clone(), ProofSense::Holds),
+            miss_evidence: EdgeEvidence::from_proof(predicate.clone(), ProofSense::DoesNotHold),
+            predicate,
+        }
+    }
+
+    pub(crate) fn type_region(subject: SubjectId, ty: Ty) -> Self {
+        Self::new(RegionPredicate::new(subject, Region::Type(ty)))
+    }
+
+    pub(crate) fn equality(subject: SubjectId, value: ComparisonValue) -> Self {
+        Self::new(RegionPredicate::new(subject, Region::Equal(value)))
+    }
+
+    pub(crate) fn list_empty(subject: SubjectId) -> Self {
+        Self::new(RegionPredicate::new(subject, Region::List(ListRegion::Empty)))
+    }
+
+    pub(crate) fn list_cons(subject: SubjectId, head: SubjectId, tail: SubjectId) -> Self {
+        let predicate = RegionPredicate::new(subject, Region::List(ListRegion::Cons));
+        Self {
+            match_evidence: EdgeEvidence::from_proof(predicate.clone(), ProofSense::Holds)
+                .with_projection(EdgeProjection {
+                    source: subject,
+                    kind: ProjectionKind::ListHead,
+                    result: head,
+                })
+                .with_projection(EdgeProjection {
+                    source: subject,
+                    kind: ProjectionKind::ListTail,
+                    result: tail,
+                }),
+            miss_evidence: EdgeEvidence::from_proof(predicate.clone(), ProofSense::DoesNotHold),
+            predicate,
+        }
+    }
+
+    pub(crate) fn map_key_present(subject: SubjectId, key: DispatchConst, value: SubjectId) -> Self {
+        let predicate = RegionPredicate::new(subject, Region::MapKeyPresent { key: key.clone() });
+        Self {
+            match_evidence: EdgeEvidence::from_proof(predicate.clone(), ProofSense::Holds).with_projection(
+                EdgeProjection {
+                    source: subject,
+                    kind: ProjectionKind::MapValue { key },
+                    result: value,
+                },
+            ),
+            miss_evidence: EdgeEvidence::from_proof(predicate.clone(), ProofSense::DoesNotHold),
+            predicate,
+        }
+    }
+
+    pub(crate) fn into_test_node(self, on_match: GraphNodeId, on_miss: GraphNodeId) -> DispatchNode {
+        DispatchNode::Test {
+            predicate: self.predicate,
+            on_match: DispatchEdge::with_evidence(on_match, self.match_evidence),
+            on_miss: DispatchEdge::with_evidence(on_miss, self.miss_evidence),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
