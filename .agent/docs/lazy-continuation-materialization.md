@@ -2,185 +2,206 @@
 
 ## Model
 
-A continuation has two separate meanings:
+A continuation carries two ideas that the runtime keeps apart:
 
-- control: the compiler-known code pointer plus typed captures needed to run
-  the next step;
-- scheduler root: a heap closure the process can park, move through GC, and
-  resume later.
+- control: the compiler-known code pointer plus the typed captures the next step
+  needs to run;
+- scheduler root: a heap closure a process can park, drag through GC, and resume
+  later.
 
-A continuation body is a join point with captures. It becomes a heap closure
-only when it escapes: returning, storing, sending, parking, or capturing it into
-an escaping closure forces materialization. A local join that immediately
-computes the next loop state does not. Materialization is therefore a
-representation choice, not a semantic fact.
+Most native calls only need the first. They run synchronously and never cross a
+scheduler boundary, so codegen represents the continuation as a stack-backed
+*lazy descriptor* instead of allocating a heap closure. The descriptor holds the
+same code pointer and captures the next step would read from a closure, but lives
+in a Cranelift stack slot owned by the producing frame. Materialization — turning
+the descriptor into an ordinary heap closure — happens only when the continuation
+escapes: returning it, storing it in heap data, sending it, parking it at a
+scheduler boundary, or capturing it into another escaping closure. So a
+continuation's representation is a codegen choice; whether it is a join point or
+a scheduler root is the semantic fact.
 
-Most native calls only need the first meaning. They run synchronously and do
-not cross a scheduler boundary. In that case codegen uses a stack-backed lazy
-continuation descriptor instead of allocating a heap closure.
+The pieces that own each decision:
 
-```text
-call append(xs, ys, lazy_cont)
-  append may read lazy_cont like a closure
-  no scheduler boundary happens
-  no closure is allocated
-```
-
-If execution reaches a real yield edge, the lazy descriptor is materialized into
-an ordinary closure before the scheduler sees it:
-
-```text
-if reductions_remaining <= 0:
-  k = materialize(lazy_cont)
-  yield_mid_flight(k)
-```
-
-That keeps scheduler and GC machinery simple: parked runnable work is still a
-normal typed closure.
-
-This applies to higher-order calls too. If `Term::CallClosure` resolves to one
-known native closure body, codegen calls that target directly. If the callable
-value is opaque but native execution still owns the synchronous closure-call
-edge, codegen reads the closure code pointer and uses `call_indirect`. In both
-cases the reducer body receives a closure-shaped `self` word for its
-continuation, but that word can be a stack-backed lazy descriptor instead of a
-heap closure.
+- `build_lazy_cont_descriptor` (`src/ir_codegen/closure.rs`) emits the stack-slot
+  descriptor and returns a tagged word standing in for it.
+- `build_cont_closure` (same file) emits the heap closure, and materializes any
+  lazy captures on the way in so nothing lazy ends up on the heap.
+- `ContinuationPlan` (`src/ir_codegen/terminator.rs`) chooses between the two per
+  call site and emits the right call shape.
+- `fz_materialize_cont` and the closure accessors (`runtime/src/ir_runtime.rs`)
+  read both forms and convert a descriptor into a closure on demand.
 
 ## Runtime Shape
 
-Lazy descriptors are not `AnyValueRef`s. They use the invalid high-bit
-`TAG_FWD` ref tag as a compiler-private marker, with the address payload
-pointing at an explicit Cranelift stack slot.
+A lazy descriptor is not an `AnyValueRef`. Its word is a stack address tagged
+with `TAG_FWD` (`runtime/src/any_value.rs:30`), the Cheney forwarding tag.
+`emit_tagged_pointer_ref_word` (`src/ir_codegen/closure.rs:219`) shifts that tag
+into the high tag field by `tag_shift` (56 on arm64/TBI, 57 on x86-64 canonical),
+where `ValueKind::new` rejects it — so the word can never be mistaken for a real
+value ref. `is_lazy_cont_ref` (`runtime/src/ir_runtime.rs:1786`) detects the
+marker by shifting the same field back out and comparing to `TAG_FWD`.
 
-The descriptor stores:
+The stack slot has a fixed 32-byte header (`LAZY_CONT_HEADER_BYTES`) followed by
+two parallel arrays:
 
-- code pointer;
-- continuation spec id;
-- capture count;
-- raw capture words;
-- one kind byte per capture (`ref`, `i64`, `f64`).
+- offset 0: code pointer;
+- offset 8: continuation spec id;
+- offset 16: capture count;
+- offset 32: one raw 8-byte word per capture;
+- after the raw words: one kind byte per capture — `ref`, `i64`, `f64`, or
+  `atom` (`LAZY_CONT_KIND_*`, `src/ir_codegen/closure.rs:167`,
+  `runtime/src/ir_runtime.rs:1780`).
 
-The ordinary closure accessors understand both forms:
+Capture 0 is always the descriptor's own outer continuation; user captures
+follow, exactly the slot order a heap cont closure uses (`build_cont_closure`
+reserves env field 0 for `outer_cont` the same way).
+
+The closure accessors understand both forms. Each checks `is_lazy_cont_ref`
+first; on a descriptor it reads straight from the stack slot, otherwise it
+follows the heap closure:
 
 - `fz_closure_code_ref`;
 - `fz_closure_get_capture_ref`;
 - `fz_closure_get_capture_i64`;
-- `fz_closure_get_capture_f64`.
+- `fz_closure_get_capture_f64`;
+- `fz_closure_get_capture_atom`.
 
-This is deliberate. Continuation bodies do not need a second ABI. They receive
-their `self` word and ask the runtime for captures exactly as before.
+Because the accessors are dual, a continuation body needs no second ABI. It
+receives its `self` word — descriptor or closure — and asks the runtime for
+captures the same way either way.
 
-Capture storage is derived from the continuation entry ABI, not from the
-producer's current SSA representation. If the target continuation will read a
-capture with `fz_closure_get_capture_i64`, the lazy descriptor stores an `i64`
-slot even when the producer currently holds that value as an `AnyValueRef`. This
-keeps stack descriptors and materialized heap closures observationally identical
-at the closure accessor boundary.
+Capture storage follows the *target continuation's entry ABI*, not the
+producer's SSA shape. `ContinuationPayload::from_capture_vars`
+(`src/ir_codegen/terminator.rs:163`) reads the cont spec's `param_reprs` and
+`closure_capture_for_var_as` (`src/ir_codegen/value.rs:97`) coerces each captured
+var to that repr. If the next step reads a capture with
+`fz_closure_get_capture_i64`, the descriptor stores a raw `i64` slot even when
+the producer holds an `AnyValueRef`. That keeps stack descriptors and
+materialized heap closures observationally identical at the accessor boundary.
 
-## Heap Escape Rule
+## Choosing The Representation
 
-A lazy descriptor may not be written into heap data. Heap closure captures are
-GC-visible `AnyValueRef` slots; a stack descriptor is neither a value nor a GC
-root.
+`ContinuationPlan` is `LazyNativeDescriptor` or `HeapClosure`. The continuation
+must be native (`spec_is_native`) and emitted from a native body for a lazy
+descriptor to be possible at all; a uniform-ABI body always builds a heap
+closure. On top of that:
 
-When `build_cont_closure` stores an outer continuation or a ref capture, it
-first calls `fz_materialize_cont`. Ordinary refs pass through unchanged. Lazy
-descriptors become heap closures recursively, so anything that escapes into a
-heap closure is scheduler-safe.
+- For a direct `Term::Call` / `Term::TailCall` the gate is
+  `cont_can_use_lazy_descriptor = !closure_capture_counts.contains_key(callee)
+  && !cont_captures_callable` (`src/ir_codegen/terminator.rs:703`). A callee that
+  expects a real closure `self`, or a continuation that captures a callable value
+  the runtime cannot resolve to a thin `KnownFn`, forces a heap closure.
+- For `Term::CallClosure` / `Term::TailCallClosure` the gate is just
+  `is_native && cont_is_native` (`src/ir_codegen/terminator.rs:1140`). The
+  conservative callable-capture rule is unnecessary here: the closure call passes
+  its hidden continuation only as the callee's continuation argument, never into
+  user data, and the dual accessors plus `fz_materialize_cont` handle a
+  descriptor wherever that argument flows.
 
-## Stack Lifetime Rule
+`closure_call_lowered` telemetry (`src/ir_codegen/terminator.rs:1148`) records
+`continuation_storage` as `lazy_descriptor` or `heap_closure` for each lowered
+closure call, alongside `dispatch_kind` (`direct` for a resolved closure-lit
+body, `indirect` for the code-pointer seam).
 
-The frame that owns a lazy descriptor must remain live while the callee may use
-that descriptor. Therefore a call that passes a freshly built lazy descriptor
-uses normal `call` plus `return`, not `return_call`.
+`cont_captures_callable` is decided by `capture_forces_heap_continuation`
+(`src/ir_codegen/terminator.rs:1076`): a capture forces a heap continuation when
+it is callable-typed (`callable_clauses` is `Some`) and its
+`SpecPlan.callable_capabilities` entry is anything other than `KnownFn`. The
+three capabilities differ in runtime state: `KnownFn(FnId)` is a thin function
+ref with no closure word, so it does not push caller continuations onto the heap;
+`KnownClosure { .. }` and `OpaqueCallable` carry runtime callable state and must
+stay closure-shaped values when threaded through user data
+(`src/ir_planner/fn_types.rs:76`).
 
-Bad:
+## Heap Escape: Materialize On The Way In
+
+A descriptor may not be written into heap data: heap closure captures are
+GC-visible `AnyValueRef` slots, and a stack descriptor is neither a value nor a
+GC root. `build_cont_closure` enforces this. Before storing its outer
+continuation or any ref capture, it calls `fz_materialize_cont`
+(`src/ir_codegen/closure.rs:130`,`:134`). Ordinary refs pass through unchanged;
+a descriptor is rebuilt as a heap closure, and `fz_materialize_cont` recurses on
+each `ref` capture (`runtime/src/ir_runtime.rs:1832`), so a tree of nested lazy
+continuations becomes fully scheduler-safe before any of it can escape.
+
+The scheduler boundary is the other escape. `emit_back_edge_yield_check`
+(`src/ir_codegen/terminator.rs:997`) spends one reduction on every native loop
+back-edge; when reductions hit zero it builds a real heap closure for the parked
+work and runs the threaded continuation root through `materialize_cont`
+(`src/ir_codegen/terminator.rs:1057`) before handing it to
+`fz_yield_mid_flight_report`. Parked runnable work the scheduler sees is always a
+normal typed closure.
+
+## Stack Lifetime: Pass With call, Not return_call
+
+The frame that owns a descriptor must stay live while the callee may read it. So
+a call passing a freshly built descriptor uses `call` (or `call_indirect`)
+followed by `return`, never `return_call`/`return_call_indirect`: a tail call
+would pop the very frame that owns the stack slot. The same call shape used for a
+heap-closure continuation is a tail call, because a heap closure outlives the
+frame.
+
+`emit_call`/`emit_tail_call` select on `uses_lazy_cont`
+(`src/ir_codegen/terminator.rs:750`); the closure-call paths select on
+`can_use_lazy_cont` (`src/ir_codegen/terminator.rs:1175`,`:1210`). When a body
+that captures the continuation as a heap closure tail-calls, the descriptor never
+existed, so the tail call is safe.
+
+## Relationship To Destination Planning
+
+This is a representation choice layered on top of facts the planner already owns.
+The planner fixes call-edge semantics through `SpecPlan.call_edges` and the
+return contract, and local container construction stays explicit destination IR.
+Lazy continuation materialization changes none of that: for a compiler-known
+native continuation it only decides whether the agreed typed captures ride a
+stack slot or a heap closure until a boundary forces the closure.
+
+## Walkthrough
+
+A native body finishes work and hands control to its compiler-known native
+continuation `k`, then a synchronous native callee:
 
 ```text
-descriptor = stack_descriptor(...)
-return_call callee(args, descriptor)
-```
-
-The tail call can remove the stack frame that owns `descriptor`.
-
-Good:
-
-```text
-descriptor = stack_descriptor(...)
-result = call callee(args, descriptor)
+k = stack_descriptor(code_ptr, cont_sid, captures...)   # TAG_FWD word
+result = call callee(args, k)        # call, not return_call: our frame owns k
 return result
 ```
 
-## Destination Planning Boundary
-
-Lazy continuation materialization is not destination planning. The planner owns
-call-edge semantics through `SpecPlan.call_edges` and `ReturnContract`; local
-destination construction remains explicit IR.
-
-The lazy descriptor is a representation choice after those facts are known:
-for a compiler-known native continuation, codegen can carry the same typed
-capture facts on the stack until a scheduler boundary forces heap materializa-
-tion.
-
-## Callable Capability Gate
-
-Callable-typed caller state is not a lazy-descriptor barrier by itself. The
-barrier is escape: writing the continuation into heap data, returning it,
-parking it, or otherwise making it scheduler-visible requires materialization.
-`SpecPlan.callable_capabilities` still matters for dispatch and direct-call
-selection:
-
-- `KnownFn` has no runtime closure state and does not, by itself, force caller
-  continuations onto the heap.
-- `KnownClosure` and `OpaqueCallable` carry or may carry runtime callable state,
-  so they must remain closure-shaped values when threaded through user data.
-
-Direct native calls still use a conservative capture gate: a callable-typed
-continuation capture forces a heap continuation unless the callee path has a
-more precise closure-call contract. `Term::CallClosure` has that contract. Its
-hidden continuation is passed only as the callee's continuation argument, and
-the closure accessors plus `fz_materialize_cont` understand lazy descriptors
-and recursively materialize nested lazy captures before any scheduler-visible
-escape. Native closure calls that pass a fresh lazy descriptor therefore use
-`call` / `call_indirect` plus `return`, not `return_call` /
-`return_call_indirect`, so the descriptor owner's stack frame stays live.
-
-## Proof Gates
-
-Use these gates when touching lazy continuation materialization:
-
-- `cargo test --test fixture_matrix quicksort`
-- `cargo test --test fixture_matrix enum_list_allocations`
-- `cargo test --test fixture_matrix enum_reduce_suspend`
-- `cargo test --test fixture_matrix append`
-- `cargo test --test fixture_matrix reverse`
-- `cargo test --test fixture_matrix filter`
-
-Quicksort's native JIT/AOT fixture pins the core signal:
+If `callee` parks at a scheduler boundary, the yield path turns `k` into a heap
+closure first:
 
 ```text
-closure_allocs = 0
-closure_bytes = 0
-list_cons_bytes = 176
-heap_bytes = 176
+reductions_remaining == 0:
+  heap_k = materialize(k)            # stack slot -> GC-visible closure
+  yield mid-flight with heap_k
 ```
 
-`enum_list_allocations` pins the runtime-library list-consumer floor for known
-native higher-order calls:
+If `k` instead escapes into another continuation closure, `build_cont_closure`
+materializes it as it stores the capture, so the heap never holds a `TAG_FWD`
+word.
 
-```text
-list_cons_allocs = 5
-list_cons_bytes = 80
-closure_allocs = 1
-closure_bytes = 32
-```
+## Tests
 
-Its native CLIF gate also checks that public `Enum.reduce/3` does not reintroduce
-list shortcut helpers: the known list receiver must statically dispatch to
-`Enumerable.List.reduce/3`, then to local `List.reduce_cont/3`. That pins the
-intended model boundary: protocol dispatch selects the implementation once, and
-real suspend functions remain source-visible closure values.
+The fixture matrix pins the model. Each gate states a contract:
 
-`enum_reduce_suspend` is the paired negative gate. A returned suspend function
-is a source-visible value, not an internal continuation edge, so native JIT/AOT
-must still allocate one real heap closure there.
+- `quicksort` — native JIT/AOT allocates zero continuation closures on a purely
+  list-building recursion: `closure_allocs = 0`, `closure_bytes = 0`,
+  `list_cons_bytes = 176`, total `bytes = 176`.
+- `enum_list_allocations` — the runtime-library list-consumer floor for
+  compiler-known native higher-order calls: `list_cons_allocs = 5`,
+  `list_cons_bytes = 80`, `closure_allocs = 1`, `closure_bytes = 32`. Its native
+  CLIF gate also checks that the known list receiver statically dispatches to
+  `Enumerable.List.reduce/3` (no `call_indirect`), which delegates to local
+  `List.reduce_cont/3` (kept in `return_call` tail form). That is the model
+  boundary: protocol dispatch selects the implementation once, and a real
+  user-supplied reducer stays a source-visible closure value.
+- `enum_reduce_suspend` — the paired negative gate. A returned suspend function
+  is a source-visible value, not an internal continuation edge, so native
+  JIT/AOT allocates one real heap closure (`closure_allocs = 1`).
+- `append`, `reverse`, `filter` — list-building native paths that must keep
+  continuation closures off the heap.
+
+A `closure_call_lowered` telemetry assertion (the `opaque_fn_value_join` path)
+proves an indirect reducer continuation stays a `lazy_descriptor` while its
+reducer call lowers through the protocol-dispatched list reducer without forcing
+heap continuation allocation.

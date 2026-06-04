@@ -19,13 +19,18 @@ Good agent docs are:
 - current
 - easy to scan
 
-They are not research logs. Research is staging: use it to learn, then promote
-the durable model into a doc and delete the stale notes.
+They are not research logs, tactical planning areas for tickets, dumping grounds 
+for factoids, or lists of DO's and DON'Ts. 
+
+Research is staging, do it elsewhere and then use it to learn, then promote the 
+durable model into a the doc and delete the stale notes.
 
 ## Voice
 
-Write in the present tense about the system as it is right now. The doc
-describes how the subsystem behaves, not how it got here or where it is going.
+Write in the present tense about the system as it is right now. The doc must
+describes _how_ and _why_ the subsystem works, _what_ it's for and where it 
+fits in the bigger picture -- not how it got here or where it is going -- in 
+an approachable, eli5 style (without _saying_ it).
 
 - State facts, not plans. If something is not built yet, it does not belong in
   the doc. There are no roadmaps, "removal targets", "future work", or "this
@@ -39,11 +44,10 @@ describes how the subsystem behaves, not how it got here or where it is going.
 - Keep the data structures honest: name the variants and fields that actually
   exist in the code, not a richer shape you wish existed.
 
-## Start With The Model
+## Start With A Summary Of The Idea
 
 Say what the subsystem is for and name the few pieces that matter. A reader
-should be able to draw the box-and-arrow sketch in their head before they see a
-list of cautions.
+should be able to draw the box-and-arrow sketch in their head.
 
 Good:
 
@@ -122,12 +126,13 @@ or make the right edit.
 
 Keep:
 
+- an introductory summary
 - plain subsystem explanation
-- major components and ownership
+- explanations of major components
+- outlines of important algorithms and data structures
 - dataflow through the components
 - policy choices and invariants
-- tiny walkthroughs
-- proof gates
+- tiny walkthroughs, examples
 
 Use sparingly:
 
@@ -143,40 +148,6 @@ Cut:
 - repeated examples
 - implementation details that are easy to rediscover
 - motivation already captured by the model
-
-## Proof Gates
-
-End with the concrete checks that prove the model still holds. Prefer named
-tests, fixture legs, telemetry assertions, manual smoke checks, or exact
-commands over broad advice.
-
-Good:
-
-```text
-Gate this model with:
-- cargo test repl::tests::composer_accepts_complete_multiline_expression_chunks_from_editor
-- cargo test --test fixture_matrix repl
-- manual terminal smoke for Ctrl-C, Ctrl-D, history, and multiline entry
-```
-
-Weak:
-
-```text
-Make sure it works.
-```
-
-## CI Coverage
-
-CI runs stable doctests once with `cargo test --workspace --doc`, then runs Rust
-unit and integration correctness tests under one `cargo llvm-cov --all-features
---workspace` pass. Do not add a preceding broad `cargo test --workspace` run:
-it repeats the same unit and integration tests, and any fixture or AOT failure
-would fail in both places. `cargo llvm-cov --doctests` is not the replacement on
-the stable toolchain, so doctests stay in the separate `cargo test --workspace
---doc` step. `fz build` isolates generated AOT executables from
-coverage-instrumented test artifacts by selecting a clean `fz-runtime` staticlib
-through `src/aot_link.rs`, so the full workspace coverage pass can include
-`fixture_matrix` and `aot_variadic_open` directly.
 
 ## Final Check
 

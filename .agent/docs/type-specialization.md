@@ -1,6 +1,6 @@
 # Type Specialization
 
-Use this before touching `src/type_infer`, the colocated fixture corpus in
+Read this before touching `src/type_infer`, its colocated fixture corpus in
 `src/type_infer/fixtures`, or planner work that consumes inferred call/return
 facts.
 
@@ -16,85 +16,107 @@ activation    = one inferred instance of that FnId at an identity class
 return fact   = activation-local Info cell
 ```
 
-`FnId` is body identity. It is the target used by direct calls, closure bodies,
-continuations, and protocol implementation bodies. It is not the inference
-instance. The same `FnId` can have separate activations for `id(1)` and
-`id(:ok)` without joining those callers into one monomorphic function cell.
+`FnId` is body/callable identity: the target used by direct calls, closure
+bodies, continuations, and protocol implementation bodies. It is not the
+inference instance. The same `FnId` can hold separate activations for `id(1)`
+and `id(:ok)` without joining those callers into one monomorphic cell.
+
+CPS lowering is what keeps this clean. Recursion, continuations, and closure
+application are each a *separate* `FnIr`, reached through call-shape terminators
+(`Term::Call`, `Term::TailCall`, `Term::CallClosure`, `Term::TailCallClosure`,
+`Term::ReceiveMatched`). A body walk only ever touches its own blocks (a finite
+intra-fn graph via `Term::Goto`/`Term::If`) and makes call requests at its
+edges. Every inter-fn edge, including every loop back-edge, flows through the
+activation table, never through the walk, so the recursion fixpoint lives
+entirely in the worklist. The walk's own block-revisit guard returns `Pending`,
+because an unfinished intra-fn loop has produced no fact yet.
+
+The engine lives in `src/type_infer/mod.rs`, with model fixtures in
+`src/type_infer/fixtures`, exercised by `cargo test --lib type_infer`. It owns
+activation-based type flow; the planner owns executable plan facts and codegen
+ABI shape and reads inference facts as input.
 
 ### Activation identity and convergence
 
-An activation is keyed by its `FnId` plus a per-slot **identity class**, not by
-the raw input tuple. For each entry-param slot the class is either:
+An activation is keyed by its `FnId` plus a per-slot **identity class**
+(`ActivationKey { fn_id, class_inputs }`), not by the raw input tuple. For each
+entry-param slot the class is either:
 
 - the exact input value, for a **dispatch subject** — a slot that can change
   which clause/branch the body selects or which callable it invokes; or
 - the slot's `convergence_class` otherwise (a non-dispatch slot).
 
-`FnIr::dispatch_subject_slots` computes the dispatch mask: a backward slice from
-every `Term::If` condition and every invoked-closure operand to the entry params,
-over the only intra-body binding edges (`Stmt::Let` operands and `Term::Goto`
-args). It is sound by construction — it reaches every entry param a control
-decision can depend on, never fewer.
+`FnIr::dispatch_subject_slots` computes the dispatch mask: a backward slice to
+the entry params from every `Term::If` condition and every closure operand of
+`Term::CallClosure`/`Term::TailCallClosure`, over the intra-body binding edges
+(`Stmt::Let` operand uses and `Term::Goto` argument-to-param edges). It reaches
+every entry param a control decision can depend on, never fewer.
 
-Convergence applies **only to recursive fns** (`Module::recursive_fns`, the same
-recursion notion the planner uses for recursive-key widening). For a recursive
-fn, two calls that agree on every dispatch subject and on the *family* of each
-non-dispatch slot share one activation; the exact non-dispatch types are then
-recovered by joining the stored inputs through `refine_widen`
-(`[] ⊔ nonempty_list(int) = list(int)`). `convergence_class` folds all pure list
-shapes into one class, so an accumulator's emptiness×element cartesian product
-stops forking activations — that product is the over-specialization balloon
-(see `quicksort`'s `partition/4`). Cross-family non-dispatch differences (`int`
-vs a tagged tuple `{:cont, int}`) keep distinct classes, so a shape-changing
-accumulator and its type errors stay observable; the input-join is idempotent so
-joining a callable slot with itself never erases its closure-literal identity.
-Non-recursive fns are never converged: their distinct call sites are genuine
-per-callsite polymorphism. The planner consumes the converged activations
-directly — its `canonical_public_key` maps each narrow spec request onto the
-single converged bucket, so no separate planner-side widening is needed.
+Convergence applies **only to recursive fns** (`Module::recursive_fns`, the
+SCC-based recursion notion the planner shares for recursive-key widening).
+`Solver::is_dispatch_slot` returns `true` for every slot of a non-recursive fn,
+and for a recursive fn returns the mask (defaulting to precise for unknown fns
+and out-of-range slots), so convergence is a strict opt-in earned by both
+recursion and a proven mask. For a recursive fn, two calls that agree on every
+dispatch subject and on the *family* of each non-dispatch slot share one
+activation; the exact non-dispatch types are recovered by joining the stored
+inputs through `refine_widen` (`[] ⊔ nonempty_list(int) = list(int)`).
+`Types::convergence_class` folds every pure list shape into one class and is the
+identity otherwise, so an accumulator's emptiness×element cartesian product
+stops forking activations — that product is the over-specialization balloon (see
+`quicksort`'s `partition/4`). A cross-family non-dispatch difference (`int` vs a
+tagged tuple `{:cont, int}`) keeps distinct classes, so a shape-changing
+accumulator and its type errors stay observable. The input-join is idempotent —
+equal slots stay byte-identical rather than passing through `refine_widen`,
+which reconstructs a bare arrow and would erase a callable slot's
+closure-literal identity. Non-recursive fns are never converged: their distinct
+call sites are genuine per-callsite polymorphism. The planner consumes the
+converged activations directly — `canonical_public_key` maps each narrow spec
+request onto the single covering bucket, so no separate planner-side widening is
+needed.
 
 Parameters do not own types and do not default to `any`. An activation supplies
-the input facts. A return cell starts as `Pending` and moves upward only when the
+the input facts. A return cell starts `Pending` and moves upward only when the
 body produces information. A declared `@spec` is a backstop for bodies the
-engine cannot infer and the authoritative type source for declared
-opaque/builtin seams, including operator-headed kernel functions.
+engine cannot infer and the authoritative source for declared opaque/builtin
+seams, including operator-headed kernel functions.
 
-The engine is implemented in `src/type_infer/mod.rs`, with model fixtures in
-`src/type_infer/fixtures`, and is exercised by `cargo test --lib type_infer`.
-Production planning still owns executable plan facts and codegen ABI shape while
-this engine owns activation-based type flow.
+### Crate-visible API
 
-The crate-visible API is intentionally small:
+The API is small. Activation ids are the production handoff identity: they name
+one solved activation within an outcome without exposing the private proof
+lattice.
 
-- `infer_from_entry` runs the reachable activation graph from an entry point and
-  returns `TypeInferOutcome { status, activations, edges, dead_arms }` while
-  also emitting telemetry.
-- `TypeInferStatus` is the coarse API result: `Complete`, `Unresolved`, or
-  `Invalid`.
-- `TypeInferActivationFact` is the production data boundary for reached cells:
-  an opaque per-outcome activation id, `FnId`, canonical input `Ty`s, and
-  `TypeInferReturnState`.
+- `infer_from_entry` runs the reachable activation graph from an entry point,
+  returns `TypeInferOutcome { status, activations, edges, dead_arms }`, and
+  emits telemetry.
+- `TypeInferStatus` is the coarse result: `Complete`, `Unresolved`, or
+  `Invalid` (`Invalid` whenever a diagnostic fired; `Unresolved` whenever any
+  reached activation return is `Pending` or `Unknown`).
+- `TypeInferActivationFact` is the data boundary for reached cells: an opaque
+  per-outcome `TypeInferActivationId`, `FnId`, the activation's joined input
+  `Ty`s (full arity), and a `TypeInferReturnState`.
 - `TypeInferActivationEdgeFact` connects solved caller/callee activations and
   carries the structural `CallsiteId` plus callsite span metadata the planner
   uses to line solved edges up with its own dispatch slots.
 - `TypeInferDeadArmFact` records matcher arms proved dead for a specific solved
-  activation. Dead-arm telemetry is not just `FnId`/block level.
-- `TypeInferReturnState` mirrors the settled boundary state:
-  `Pending`, `Unknown`, `NoReturn`, or `Known(Ty)`. It is not the solver
-  lattice; private `Info` remains the refinement cell.
-  Matcher proof stays private and is erased at this boundary.
+  activation, keyed by activation id — not merely by `FnId`/block.
+- `TypeInferReturnState` mirrors the settled boundary state: `Pending`,
+  `Unknown`, `NoReturn`, or `Known(Ty)`. It is not the solver lattice; private
+  `Info` owns refinement, and matcher proof is erased at this boundary.
 
-Production consumers read structured facts from the outcome. They must not
-scrape telemetry to build planner state. Telemetry remains the shared observable
-surface for tests and operators. The engine emits:
+Production consumers read these structured facts; telemetry is the shared
+observable surface for tests and operators, not a place to rebuild planner
+state. The engine emits:
 
-- `fz.type_infer.activation` for every reached activation, including function
-  identity, the opaque activation id, return state, rendered return type, and
-  in-process `Ty` data when known.
+- `fz.type_infer.activation` for every reached activation: function identity,
+  the opaque activation id, return state, rendered return type, and in-process
+  `Ty` data when known.
 - `fz.type_infer.activation_edge` for every solved activation-to-activation
-  edge, including caller/callee activation ids and callsite slot/span details.
+  edge: caller/callee activation ids and callsite slot/span details.
 - `fz.type_infer.fn_return` for each reached function, joining known activation
-  returns through `Types` and reporting whether any activation is unsettled.
+  returns through `Types::union` and reporting whether any activation is
+  unsettled.
 - `fz.type_infer.diagnostic` for located type errors.
 - `fz.type_infer.dead_arm` for matcher arms proved inaccessible, keyed by the
   activation id that proved the branch dead.
@@ -111,40 +133,44 @@ Info = Pending
      | NoReturn
      | Known(ValueFact)
 
-ValueFact = {
-  ty: Ty,
-  proof: ValueProof,
-}
+ValueFact = { ty: Ty, proof: ValueProof }
 ```
 
-The states are intentionally separate:
+The states are deliberately separate:
 
-- `Pending` means a dependency has not produced its first fact.
+- `Pending` means a dependency has not produced its first fact (worklist
+  latency).
 - `Unknown` means a live value exists, but this engine cannot prove its type.
 - `NoReturn` means a path contributes no value to the current continuation.
-- `Known(ValueFact)` means the engine has a visible `Ty` plus optional proof.
+- `Known(ValueFact)` means a visible `Ty` plus optional proof.
 - `Known(none)` is a proved contradiction: the value set is empty.
-- `Known(any)` is a real top fact. It is not a placeholder for missing proof.
+- `Known(any)` is a real top fact, not a placeholder for missing proof.
 
 `Pending`, `Unknown`, and `NoReturn` are inference states, not public value
-types. A settled edge that still has `Pending` or `Unknown` must be consumed
-explicitly by a boundary decision. It may diagnose unsupported required
-knowledge or erase a still-live dynamic value to `any`; it must not silently
-turn uncertainty into `none`.
+types. The reason they cannot collapse: conflating `Unknown` with `none` lets a
+not-yet-computed continuation argument project to a field type and poison the
+fixpoint. Projecting `Unknown` stays `Unknown` (we still know nothing);
+projecting `Known(none)` stays `Known(none)` (a field of an uninhabited value
+is itself uninhabited).
 
-The planner boundary uses this rule when projecting activation facts onto
+A settled edge that still carries `Pending` or `Unknown` is consumed explicitly
+by a boundary decision: it may diagnose unsupported required knowledge or erase
+a still-live dynamic value to `any`. The solver itself never uses `any` as the
+placeholder for "not proven yet."
+
+The planner boundary applies this when projecting activation facts onto
 reachable executable entries. Semantic return truth and materialized executable
-bodies are keyed by `BodyKey` (`FnId + semantic input`), while `SpecKey`
-remains the planner entry key (`BodyKey + ReturnDemand`). `ReturnDemand` may
-describe an edge ABI, but it is not a distinct semantic return and does not
-create another body. If the planner key is polymorphic, compatibility is tested
-by instantiating the requested shape against the concrete activation witness
-through `Types`; inference facts are not rewritten into planner keys.
+bodies are keyed by `BodyKey` (`FnId + input` slots); `SpecKey` adds the
+planner-entry `ReturnDemand` (`BodyKey + ReturnDemand`). `ReturnDemand`
+describes an edge ABI (`Value` or `TupleFields(arity)`); it is not a distinct
+semantic return and does not create another body. For a polymorphic planner
+key, compatibility is tested by instantiating the requested shape against the
+concrete activation witness through `Types`; inference facts are not rewritten
+into planner keys.
 
 ## Joins
 
-The engine uses the same shape for activation-cell updates and control-flow
-branch joins:
+Activation-cell updates and control-flow branch joins use one shape:
 
 ```text
 join(Pending, x)         = x
@@ -153,17 +179,18 @@ join(NoReturn, x)        = x
 join(Known(a), Known(b)) = Known(a.widen(b))
 ```
 
-`Known(a).widen(Known(b))` calls `Types::refine_widen` for the visible type and
-keeps proof only when both sides carry the same proof. This gives the worklist a
-finite ascending chain while preserving exact proof only where it is still valid.
-When both sides share one pure product outer shape, `refine_widen` performs the
-structural convergence there too: tuple fields, list emptiness/element slots,
-resource payloads, arrow returns, and map fields collapse recursively inside
-`Types`. There is no second structural-widen primitive.
+`ValueFact::widen` calls `Types::refine_widen` for the visible type and keeps
+proof only when both sides carry the same proof. This gives the worklist a
+finite ascending chain while preserving exact proof only where it is still
+valid. When both sides share one pure product outer shape, `refine_widen`
+performs the structural convergence there too: tuple fields, list
+emptiness/element slots, resource payloads, arrow returns, and map fields
+collapse recursively inside `Types`. There is one widen primitive; there is no
+second structural-widen entry point.
 
-`Unknown` is sticky because a live unknown arm is still live. `NoReturn` is
-neutral because a non-returning path contributes no value. `Pending` is neutral
-because it is worklist latency.
+`Unknown` is sticky because a live unknown arm is still live. `NoReturn` and
+`Pending` are neutral because a non-returning path and a not-yet-produced
+dependency each contribute no value.
 
 ## Proof
 
@@ -182,19 +209,21 @@ ValueProof = Unproven
 
 `ty` answers ordinary type questions through `Types`. `proof` lets the pattern
 matcher and guard reducer prove branch selection after lowering has turned
-patterns into tests and projections.
+patterns into tests and projections. A join keeps proof only when both sides
+prove the same fact (`ValueProof::join`).
 
 Tuple, map, and struct construction preserve proof per field. Each field starts
-`Unproven` until that field has its own evidence. A tuple with one proven field
-is not a proven aggregate; projection carries only the selected field's proof.
+`Unproven` until that field has its own evidence; a tuple with one proven field
+is not a proven aggregate, and projection carries only the selected field's
+proof.
 
-Maps use key-wise proof. A complete static-key map can prove a matcher miss for
-an absent key. The private `MatcherMapHit` and `MatcherMapMiss` states feed the
-lowered map matcher; ordinary map field typing still belongs to `Types`.
+Maps use key-wise proof. A `complete` static-key map can prove a matcher miss
+for an absent key. The `MatcherMapHit`/`MatcherMapMiss` states feed the lowered
+map matcher; ordinary map field typing belongs to `Types`.
 
-Structs use the existing schema and opaque implementation-target type for their
-visible type. `StructFields` only records field proof keyed by schema field
-name, so protocol dispatch and nominal checks still flow through `Types`.
+Structs take their visible type from the schema's opaque implementation-target
+type. `StructFields` records field proof keyed by schema field name, so
+protocol dispatch and nominal checks flow through `Types`.
 
 ## Call Targets
 
@@ -206,57 +235,63 @@ CallTarget::Direct(FnId)
   -> ActivationRequest { fn_id, inputs: args }
 
 CallTarget::Closure { value, env }
-  -> read closure literal type
+  -> read closure literal type (closure_lit_parts)
   -> ActivationRequest { fn_id: closure target, inputs: captures ++ args }
 ```
 
-Direct calls include protocol-dispatch stubs. For a protocol stub, the receiver
-must be `Known`; the engine selects the single implementation whose target type
-contains the receiver type and then activates that implementation callback.
-`Pending` waits for another worklist pass, `Unknown` remains unknown, and
-`NoReturn` contributes no call.
+Direct calls include protocol-dispatch stubs (`Module::protocol_call_targets`).
+For a stub the receiver must be `Known`; the engine selects the single
+implementation whose target type the receiver is a subtype of (mirroring
+`ir_planner::walk::protocol_dispatch_key`) and activates that callback. A
+`Pending` receiver waits for another worklist pass, an `Unknown` receiver stays
+`Unknown`, and a `NoReturn`/absent receiver contributes no call.
 
 A closure's capture types are inference inputs because lowering puts captures in
-leading body parameters. The callable surface is still only the explicit
-parameters. Capture types are used to infer the closure body and are erased from
-the callable ABI after this phase.
+the body's leading parameters. The callable surface stays only the explicit
+parameters; capture types infer the closure body and are erased from the
+callable ABI past this phase. A known value that cannot resolve to a single
+closure target stays `Unknown`, not `any` — `any` is earned by a boundary, not
+asserted by the solver.
 
-`ActivationRequestSet` is explicit even though current resolved targets are singleton.
-That is the model slot for overloaded callable specs, union closure targets, and
-polymorphic named references: one call site can select one or more requests, and
-their returns join through the ordinary cell join.
+`ActivationRequestSet` holds a `Vec<ActivationRequest>` with a `singleton`
+constructor. Every resolver yields one request, and `apply_requests` joins the
+returns of whatever requests a site selects through the ordinary cell join, so
+union closure targets and overloaded callable specs are a data-model extension
+rather than another call path.
+
+Extern arguments and selective-receive bodies seed activations through the same
+machinery: an `Prim::Extern` argument that is callable is activated at an
+`EmitSlot::CallableBoundary` callsite, and each `Term::ReceiveMatched`
+guard/body/after fn is activated with opaque (`any`) message bindings followed
+by the captured locals, their returns joined.
 
 ## Specs
 
 Declared specs are arrow sets. `declared_spec_result` instantiates each arrow
 against the activation's known input types and unions the results of matching
-arrows. It is used when body inference returns `Unknown`, which keeps inferable
-bodies from being blunted by broader declarations. Arithmetic `Prim::BinOp`
-uses the same declared-spec path by looking up the corresponding
-operator-headed `Kernel` function.
+arrows (`apply_spec_set`). It runs when body inference returns `Unknown`, which
+keeps inferable bodies from being blunted by broader declarations. Arithmetic
+`Prim::BinOp` reaches the same path by looking up the corresponding
+operator-headed `Kernel.<op>/2` function (`operator_spec_result`).
 
 That lookup is a real data-model dependency. Any transform that leaves an
-arithmetic `Prim::BinOp` in a module must also preserve the matching
-`Kernel.<op>/2` function and its declared specs. Removing that function while
-keeping the primitive makes the post-transform module incoherent for
-activation inference.
+arithmetic `Prim::BinOp` in a module must also keep the matching `Kernel.<op>/2`
+function and its declared specs. Removing the function while keeping the
+primitive makes the post-transform module incoherent for activation inference.
 
-Spec application distinguishes three cases:
+`SpecApplicationOutcome` has three cases, and `declared_spec_result` maps them
+onto cells:
 
-- A matching arrow yields a known result fact.
-- An underconstrained arrow yields `Unknown`, because the solver lacks enough
-  evidence to instantiate the scheme.
-- Known inputs that still contain free type variables also yield `Unknown` when
-  no arrow can be proven, because the solver has not proven an empty value set.
-- Known inputs that are disjoint from every arrow yield `Known(none)`, because
+- `Known` → a known result fact (the union of matching-arrow returns).
+- `Underconstrained` → `Unknown`: the solver lacks evidence to instantiate the
+  scheme, or known inputs still carry free type variables and no arrow is
+  proven.
+- `NoMatch` with free-variable inputs → `Unknown` (no empty value set proven).
+- `NoMatch` with fully concrete inputs disjoint from every arrow → `Known(none)`:
   the declared callable cannot accept that activation.
-- Known but overly broad inputs that intersect one or more arrows yield the
-  union of those arrows' successful return types. Runtime values outside the
-  successful arrows are a separate non-returning/error path, not part of the
-  successful return.
 
-Inputs that are still `Pending`, `Unknown`, or `NoReturn` preserve that solver
-state. They are not coerced to `any` to make a spec match.
+Inputs that are `Pending`, `Unknown`, or `NoReturn` preserve that solver state;
+they are not coerced to `any` to make a spec match.
 
 Scheme variables are allowed inside declared specs and callable arrows. Concrete
 activation facts and codegen-driving facts may not publish free variables; they
@@ -264,19 +299,19 @@ must be known concrete types, boundary-erased dynamic values, or diagnostics.
 
 ## Operators
 
-Operators are strict declared-signature applications. The runtime kernel
-declares arithmetic operators as ordinary public operator-headed functions, so
-`&Kernel.+/2` and the prelude-imported `&+/2` resolve to the same callable
-surface. Each operator has one primitive body and four concrete arrows:
+The runtime kernel declares each arithmetic operator as an ordinary public
+operator-headed function (`fn left + right` in `kernel.fz`) with four concrete
+`@spec` arrows, so operator application is just a declared-signature spec edge:
 
 ```text
-(int,   int)   -> int
-(int,   float) -> float
-(float, int)   -> float
-(float, float) -> float
+(integer, integer) -> integer
+(integer, float)   -> float
+(float,   integer) -> float
+(float,   float)   -> float
 ```
 
-Application follows the same solver states as any spec edge:
+`+`, `-`, `*`, `/`, and `%` each carry this surface. Application follows the
+same solver states as any spec edge:
 
 ```text
 Pending operand       -> Pending
@@ -287,19 +322,21 @@ no matching arrow     -> Known(none)
 underconstrained spec -> Unknown
 ```
 
-The engine does not collapse `int | float` to a hidden `number` rung, does not
-carry an internal numeric operator table, and does not treat `any` as numeric
-evidence. `any` can be an explicit top type at the boundary. Because it
-intersects the integer/float arrows, an `any` operand contributes the union of
-successful numeric returns while non-numeric runtime values leave through the
-operator's non-returning error path. When a value-required operator proves
-`Known(none)`, telemetry reports `fz.type_infer.diagnostic` with code
-`type/invalid-operator` and the activation path stops at that statement.
+The engine does not collapse `integer | float` to a hidden `number` rung, carry
+an internal numeric operator table, or treat `any` as numeric evidence. `any`
+can be an explicit top type at the boundary; because it intersects the
+integer/float arrows it contributes the union of successful numeric returns,
+while non-numeric runtime values leave through the operator's non-returning
+error path. When a value-required operator proves `Known(none)`,
+`record_value_required_none` records a diagnostic, `fz.type_infer.diagnostic`
+reports code `type/invalid-operator`, and the activation path stops at that
+statement.
 
 ## Pattern Matcher
 
 The matcher consumes `Info` and proof, not private solver state. Lowered
-predicate facts refine environments for the true and false arms:
+predicate facts (`PredicateFact`) refine environments for the true and false
+arms:
 
 ```text
 Eq / Neq
@@ -308,33 +345,39 @@ IsMatcherMapMiss
 TypeTest
 ```
 
-If refinement proves an arm impossible, that arm contributes `NoReturn` and
-emits `fz.type_infer.dead_arm`. Returning siblings still determine the branch
-result. If every reachable arm is non-returning, the function boundary can
-settle to `none`.
+`narrow_predicate` builds the per-arm environment; `predicate_truth` may decide
+an arm statically. If refinement proves an arm impossible, that arm contributes
+`NoReturn` and emits `fz.type_infer.dead_arm`. Returning siblings still
+determine the branch result. If every reachable arm is non-returning, the
+function boundary settles to `none`.
 
-The normal call-site spec is the shape the top of the matcher decision tree can
-process. A singleton or structural proof can select one leaf. A live union may
-select multiple leaves and join their returns. A catch-all arm can be source-total
-and still dead for a particular activation.
+A singleton or structural proof can select one matcher leaf; a live union can
+select several and join their returns. A catch-all arm can be source-total and
+still dead for a particular activation.
 
 ## Worklist
 
 `Solver` owns:
 
-- `activations`: activation keys mapped to current `Activation { inputs, ret }`.
-- `deps`: callee activations mapped to callers that read their return.
+- `activations`: `ActivationKey` → current `Activation { inputs, ret }`.
+- `deps`: callee activation → callers that read its return.
 - `edges`: solved caller/callee activation edges keyed by structural callsite.
-- `queue` and `queued`: activations scheduled for another body walk.
-- `diagnostics` and `diagnostic_sites`: located type errors emitted through
-  telemetry after the fixpoint.
-- `dead_arms` and `dead_arm_sites`: matcher proof telemetry facts.
+- `queue`/`queued`: activations scheduled for another body walk.
+- `diagnostics`/`diagnostic_sites`: located type errors emitted after the
+  fixpoint.
+- `dead_arms`/`dead_arm_sites`: matcher-proof telemetry facts.
+- `dispatch_masks`: per-`FnId` dispatch-subject mask (`make_key` keeps masked
+  slots precise and folds the rest into the joined `Activation.inputs`).
+- `recursive_fns`: the fns convergence applies to.
 
 Applying an activation request records the caller dependency, creates the callee
-activation if needed, and returns the callee's current return estimate. When a
-callee return ascends, its readers are scheduled again.
+activation if new (or folds the call's non-dispatch inputs into the existing one
+via `join_inputs`), and returns the callee's current return estimate (`Pending`
+for a callee not yet processed). A widened input re-enqueues the callee — the
+same monotone re-evaluation the return fixpoint relies on. When a callee return
+ascends, its readers are re-enqueued.
 
-The worklist terminates because every moving piece is monotone and finite height:
+Termination holds because every moving piece is monotone and finite height:
 
 - Return cells only ascend from `Pending` into `Known` facts or to `Unknown`.
 - Visible types widen through `Types::refine_widen`.
@@ -359,8 +402,7 @@ union input creates one activation whose input can reach both matcher leaves.
 The matcher joins `1` and `2`, then `refine_widen` returns visible type `int`.
 
 Separate calls `f.(:left)` and `f.(:right)` are separate activations of the same
-`FnId`; they do not force the function body to become one global monomorphic
-cell.
+`FnId`; they do not force the body into one global monomorphic cell.
 
 ## Proof Gates
 
@@ -371,6 +413,6 @@ Gate this model with:
 - `cargo test --lib matcher_dead_arms_are_observable_via_telemetry`
 - `cargo test --lib fixpoint_leaves_no_reached_fn_unknown`
 
-When a change crosses into production planning, add a production-pipeline test
+A change that crosses into production planning earns a production-pipeline test
 that lowers or links through the public API and asserts observable telemetry or
 executable return facts, not private solver internals.

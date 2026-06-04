@@ -19,7 +19,10 @@ predict behavior.
 
 ## Shape
 
-The existing guides usually follow this arc:
+Every guide opens with an `<h1>` and a one-line `<p class="subtitle">` that
+says, in plain words, what the page teaches.
+
+The reference-style guides then follow this arc:
 
 1. Give the friendly idea.
 2. Show the smallest useful syntax.
@@ -28,7 +31,10 @@ The existing guides usually follow this arc:
 5. Give a complete fixture-style example.
 6. End with footguns and the contract.
 
-Use a table of contents. Keep section titles plain and numbered.
+These guides carry a numbered `<ul class="toc">` of links to their sections,
+and the `<h2>` section titles are plain and numbered to match. A narrative essay
+guide skips the table of contents and uses unnumbered headings instead; that is
+the exception, not the default.
 
 Good:
 
@@ -102,16 +108,23 @@ what the user should understand.
 
 ## Callouts
 
-Use callouts for mental models, contracts, and warnings.
+`guides/style.css` defines the callout shapes. Each color carries a meaning:
 
-Patterns already used:
+- `<div class="aside">` — blue left-border block for a mental model or a
+  behind-the-scenes explanation. This is the workhorse, the most-used callout.
+  Most open with plain prose; some open with a bold lead-in such as
+  `<strong>Mental model:</strong>`.
+- `<div class="box yellow">` — footgun. Opens with the hazard in bold, e.g.
+  `<strong>Externs are an unsafe surface.</strong>`.
+- `<div class="box green">` — contract or reassuring invariant.
+- `<div class="box blue">` — the boxed blue variant: a full bordered box
+  (rather than a left-border aside) for an important note, a constraint or
+  contract that wants box framing, or a labeled set of related items.
 
-- blue aside: mental model or behind-the-scenes explanation
-- yellow box: footgun
-- green box: contract or reassuring invariant
+`style.css` also defines `.box.red`; no guide uses it.
 
-Do not use callouts as decoration. They should make the main lesson easier to
-remember.
+A callout earns its place by making the main lesson easier to remember, not by
+decorating the page.
 
 ## Contract
 

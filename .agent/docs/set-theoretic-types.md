@@ -19,96 +19,82 @@ Everything reduces to deciding emptiness: `is_subtype(a, b)` asks whether
 empty.
 
 The model is represented by each `Types` implementation's private carrier.
-`ConcreteTypes` uses `src/types/concrete_types/descr.rs::Descr`; a `Descr` is a union
-across independent **axes**, one per runtime kind, held in DNF:
+`ConcreteTypes` uses `src/types/concrete_types/descr.rs::Descr`; a `Descr` is a
+union across independent **axes**, one per runtime kind, held in DNF:
 
 ```text
-basic      bitset of binary / ... base kinds
-atoms      finite-or-cofinite set of atom names   (:ok, :error, …)
+basic      a 1-bit bitset: the single bit is `binary` (str is this bit)
+atoms      finite-or-cofinite set of atom names   (:ok, :error, nil, true, …)
 ints       finite-or-cofinite set of i64
-floats     finite-or-cofinite set of f64
+floats     finite-or-cofinite set of f64 bit-patterns
 opaques    finite-or-cofinite set of opaque-type names   (nominal)
 brands     finite-or-cofinite set of brand names         (nominal)
-vars       type variables
+vars       finite-or-cofinite set of type-variable ids
 tuples     DNF of tuple shapes (nested Descr per element)
-lists      DNF of list shapes  (nested elem Descr)
+lists      DNF of list shapes  (nested elem Descr, empty/non-empty flag)
+resources  DNF of resource shapes (nested payload Descr)
+funcs      DNF of arrow shapes (arg Descrs + ret Descr, optional closure lit)
 maps       DNF of map shapes   (nested value Descrs)
-funcs      DNF of arrow shapes
-resources  DNF of resource shapes
 ```
 
-A value belongs to a descriptor if it belongs to the axis for its kind. `any()`
-is every axis at top, `none()` every axis at bottom, and `is_empty` holds when
-every axis is empty (structural clauses checked recursively).
+`nil`, `true`, and `false` live on the `atoms` axis, not on `basic`
+(`bool_lit` is `atom_lit("true")` / `atom_lit("false")`). `str` is exactly the
+`binary` basic bit. A value belongs to a descriptor if it belongs to the axis
+for its kind. `any()` is every axis at top, `none()` every axis at bottom, and
+`is_empty` holds when every axis is empty (structural clauses checked
+recursively, with a coinductive memo for recursive shapes).
 
 ## Implementation Boundary
 
-Consumers should ask type questions through `Types`, not by inspecting a
-descriptor. `Types::Ty` is an associated type and may vary by implementation.
-`ConcreteTypes` uses `Ty(Arc<concrete_types::Descr>)`; `InternedConcreteTypes`
-uses `InternedTy(u32)` handles backed by an interner owned by the
+Consumers ask type questions through `Types`, not by inspecting a descriptor.
+`Types::Ty` is an associated type and varies by implementation. `ConcreteTypes`
+uses `Ty(Arc<concrete_types::Descr>)`; `InternedConcreteTypes` uses
+`InternedTy(u32)` handles backed by an interner owned by the
 `InternedConcreteTypes` instance.
 
-The interned implementation intentionally duplicates the concrete kernel under
+The interned implementation duplicates the concrete kernel under
 `src/types/interned_types/` instead of importing
 `types::concrete_types::Descr`. Its own `Descr` is `pub(super)` and structural
-children store already-interned `InternedTy` handles. There is no global/static
-interner: every handle is allocated by, and meaningful only with, the owning
-`InternedConcreteTypes` value. Raw-handle serde is deliberately absent because
-serializing an interned id without its arena would be a misleading wire format.
+children store already-interned `InternedTy` handles. Each instance owns its
+`TypeInterner` plus a `HashMap<Descr, InternedTy>` dedup index; there is no
+global/static interner, so every handle is meaningful only with the owning
+`InternedConcreteTypes` value. `InternedTy` carries no serde derive: a raw id
+without its arena is a meaningless wire value, so it is never serialized.
 
 `Types` is the abstraction boundary for construction, projection,
-substitution, nominal disjointness, widening, and equivalence.
+substitution, nominal disjointness, widening, and equivalence. Behavior lives
+in the highest layer that can express it without knowing the representation:
 
-Put behavior in the highest layer that can express it without knowing the
-representation:
-
-- `Types` default methods are for pure composition over existing trait hooks,
-  such as `bool_lit`, `cpointer`, `as_map_key`, `is_equivalent`, and
-  `differs_only_nominally`.
+- `Types` default methods compose existing trait hooks: `bool_lit`,
+  `cpointer`, `as_map_key`, `is_equivalent`, `differs_only_nominally`.
 - A `Types` implementation supplies representation primitives: constructors,
   lattice operations, shape projections, subtype/disjointness decisions, and
   widening/classification hooks whose answers depend on its internal model.
-- `ConcreteTypes`/`Descr` tests are for representation mechanics only: DNF
-  normalization, axis views, exact rendering, literal tag preservation, and
-  other facts a future non-`Descr` implementation should not be forced to
-  expose.
+- `ConcreteTypes`/`Descr` tests cover representation mechanics only: DNF
+  normalization, axis views, exact rendering, literal-tag preservation.
 
-Shared behavior is tested from `src/types/mod.rs`. A complete implementation
-registers with `impl_types_conformance_tests!`, which expands the key,
-shape/seam, semantic, and closure-surface suites. When adding a new public
-`Types` behavior, add the implementation-agnostic test there first; keep a
-concrete test only when the assertion mentions `Descr`, DNF clauses,
-components, or another concrete representation detail.
+Shared behavior is tested from `src/types/mod.rs`. An implementation registers
+with `impl_types_conformance_tests!`, which expands the key, shape/seam,
+semantic, and closure-surface suites; `impl_smoke_suite!` adds the lattice-law
+smoke set. Implementation-agnostic assertions go in those suites; a concrete
+test is kept only when the assertion mentions `Descr`, DNF clauses, components,
+or another representation detail.
 
-Production code creates the system default implementation through the compiler
-owner: `Compiler::new()` calls `types::new()` once, stores `DefaultTypes`, and
-threads `&mut DefaultTypes` through frontend expansion/checking, lowering,
-planning, interpretation, and codegen. Do not allocate `Types` instances
-ad-hoc in production code. Interned `Ty` handles are meaningful only with their
-owning implementation value, so composing handles created by different owners
-would be invalid by construction.
-
-`types::new()` is the public factory for selecting the process default
-implementation; tests may still create isolated instances intentionally.
-Switching production inference/planning to an alternate implementation is a
-separate migration after the current concrete `types::Ty` storage boundary:
-genericize IR/compiler data that stores type handles, decide how
-module/artifact serialization carries any implementation-owned arena, and then
-replace the default factory at the compiler edge.
+Production code holds one default implementation through the compiler owner:
+`Compiler::new()` calls `types::new()` once, stores `DefaultTypes`
+(`= ConcreteTypes`), and threads `&mut DefaultTypes` through frontend
+expansion/checking, lowering, planning, interpretation, and codegen.
+`types::new()` is the factory for the process default; tests may create
+isolated instances. Interned `Ty` handles are meaningful only with their owning
+implementation value, so composing handles created by different owners is
+invalid by construction.
 
 ## Schemes Vs Concrete Facts
 
-Free type variables are meaningful only inside a **type scheme**. A scheme is a
-parametric promise such as:
-
-```text
-forall a b. (a, b) -> {a, b}
-```
-
-At a callsite, the scheme is instantiated by collecting a substitution from
-declared parameter patterns and the caller's witness types, then applying that
-substitution to the result pattern:
+Free type variables are meaningful only inside a **type scheme** — a parametric
+promise such as `forall a b. (a, b) -> {a, b}`. At a callsite, the scheme is
+instantiated by collecting a substitution from declared parameter patterns and
+the caller's witness types, then applying it to the result pattern:
 
 ```text
 params  : [a, b]
@@ -117,9 +103,12 @@ sigma   : a := 1, b := :ok
 result  : {a, b}[sigma] = {1, :ok}
 ```
 
-Witness collection is structural when the declared parameter shape and the
-caller witness shape are compatible. A variable can be determined by a nested
-position, not only by a top-level parameter:
+Witness collection is structural and walks only shapes that preserve
+correlation clearly enough to bind variables: tuples positionally, list
+elements, resource payloads, callable arrows (args and ret), and map fields
+where keys align (`collect_structural_subst` in `src/specs/match.rs`). A
+variable can be determined by a nested position, not only a top-level
+parameter:
 
 ```text
 param   : (a, b) -> {:cont, b} | {:halt, b}
@@ -130,42 +119,30 @@ sigma   : a := integer
 ```
 
 This is the load-bearing case for higher-order functions such as
-`Enum.reduce_while/3`: the accumulator type variable is witnessed by both the
-initial accumulator and the reducer's possible continuation/halt payloads. If
-scheme instantiation only looks at top-level parameters, it can publish a
-partial fact such as `b := {:not_found, 0}` and native code will compile the
-wrong return path.
+`Enum.reduce_while/3`: the accumulator variable is witnessed by the initial
+accumulator and by the reducer's `{:cont, b}` / `{:halt, b}` continuation/halt
+payloads. Binding only from top-level parameters would publish a partial fact
+such as `b := {:not_found, 0}`, and native code would compile the wrong return
+path.
 
-Structural witness collection must still be conservative. It walks only shapes
-that preserve correlation clearly enough to bind variables: tuples
-positionally, list elements, resource payloads, map fields where keys align,
-and callable arrows through their argument and result shapes. Ambiguous,
-negated, or unsupported shapes leave the result underconstrained or invalid;
-they must not be treated as known executable facts.
-
-The matcher keeps "witness evidence" separate from ordinary runtime projection
-types:
+The matcher keeps "witness evidence" (`Witness`) separate from ordinary runtime
+projection:
 
 ```text
-Known       this position produced usable substitution evidence
-Unknown     this position produced no evidence; keep walking other positions
-Invalid     this position is incompatible with the declared shape
+Known     this position produced usable substitution evidence
+Unknown   this position produced no evidence; keep walking other positions
+Invalid   this position is incompatible with the declared shape
 ```
 
-That distinction matters because some runtime projection helpers deliberately
-return top as a safe fallback. `ListHead(non_list)` can type as `any` for code
-generation, but a non-list witness for `list(a)` is not proof that `a := any`.
-Likewise, callback parameter positions are checked for compatibility but do not
-bind result variables: they are contravariant demand, not positive evidence.
-For `Enum.reduce_while/3`, the accumulator result is witnessed by the initial
-accumulator and by reducer `{:cont, b}` / `{:halt, b}` payloads, not by the
-reducer's accepted accumulator argument type.
+The distinction matters because some runtime projection helpers return top as a
+safe fallback. `ListHead(non_list)` can type as `any` for codegen, but a
+non-list witness for `list(a)` is not proof that `a := any` — `has_list_shape`
+gates the evidence so the fallback is not mistaken for it. Callback parameter
+positions are checked for compatibility but do not bind result variables: they
+are contravariant demand, not positive evidence.
 
-This is the same operation for `@spec foo(a, b) :: {a, b}` and for callable
-arrow clauses like `fn (a, b), do: {a, b}`. The matching policy lives in
-`src/specs/match.rs`; production callers use the narrow crate-facing
-`specs::instantiate_match` API or the higher-level `specs::apply_spec_set`
-helper, which reports:
+The same matching serves `@spec foo(a, b) :: {a, b}` and callable arrow clauses
+like `fn (a, b), do: {a, b}`. `instantiate_match` returns a `SchemeInstantiation`:
 
 ```text
 Known(T)             all result variables were determined by witnesses
@@ -173,31 +150,26 @@ Underconstrained(T)  variables remain after substitution
 Invalid              arity or constraint/subtype checks failed
 ```
 
-The boundary rule is load-bearing:
+`apply_spec_set` is the higher-level helper over a clause set; it returns a
+`SpecApplicationOutcome` of `Known` / `Underconstrained` / `NoMatch`. An
+`Underconstrained` outcome still contains variables; it is not a complete return
+fact and stays paired with its underconstrained status until a caller supplies
+more evidence or erases unresolved positions at an explicit boundary.
 
-```text
-Schemes may contain free variables.
-Complete executable/codegen facts may not.
-```
+`NoMatch` is different from underconstrained: the call arguments are proved
+disjoint from every declared arrow. A caller may turn that into `none()` or a
+diagnostic for an unreachable arm. A proof *gap* (underconstrained) is not
+`none()`.
 
-`specs::apply_spec_set` may return an underconstrained partial result that still
-contains variables. That is not a complete return fact and must stay paired with
-its pending/underconstrained status until a caller either supplies more evidence
-or erases unresolved positions at an explicit boundary.
-
-`NoMatch` is different from underconstrained proof. It means the call arguments
-are proved disjoint from every declared arrow. A caller may turn that into
-`none()` or a diagnostic for an unreachable/dead arm. A caller must not use
-`none()` for a proof gap.
-
-A `Ty` with free variables is not executable knowledge. It can live in a
-declared spec, arrow clause, or underconstrained-instantiation result, but it
-must not be published as a known return fact or ABI-driving spec key. Callsite
-shape is structural: a reachable `Term::Call` contributes its direct edge and
-its continuation edge independently of how precise the return type currently
-is. If the return value is still pending, the planner keeps the continuation
-edge with an opaque slot and lets the worklist refine it; it does not encode
-"unknown" as `none()` or erase the edge.
+The boundary rule is load-bearing: a scheme may contain free variables; a
+complete executable/codegen fact may not. A `Ty` with free variables can live
+in a declared spec, arrow clause, or underconstrained result, but it is never
+published as a known return fact or ABI-driving spec key. Callsite shape is
+structural and independent of return precision: a reachable `Term::Call`
+contributes its direct edge and its continuation edge regardless of how precise
+the return type is. When the return is still pending, the planner keeps the
+continuation edge with an opaque slot and lets the worklist refine it rather
+than encoding "unknown" as `none()` or dropping the edge.
 
 ## Brands And Opaques
 
@@ -205,30 +177,36 @@ edge with an opaque slot and lets the worklist refine it; it does not encode
 representations. A brand `B` is declared `@type B :: refines U`; the module
 records `brand_inners[B] = U`. `utf8` is the canonical brand: `utf8 <: binary`,
 while a plain `binary` is not a `utf8` — the refinement means something
-precisely because the unbranded type excludes it.
+precisely because the unbranded type excludes it. An opaque `T` declared
+`@type T :: opaque U` records `opaque_inners[T] = U`, but unlike a brand an
+opaque is *not* a subtype of its inner: two distinct opaque names are
+lattice-disjoint.
 
-There are two construction forms:
+Two construction forms put a brand into the lattice:
 
-- `brand_of("utf8")` is the pure nominal tag. It sets `brands = {utf8}` and
-  leaves every structural axis — including `basic` — empty. The representation
-  fact lives in `brand_inners`, and `is_subtype_under` can discharge the tag
-  through that map.
-- `mint_brand(inner, "utf8")` overlays the brand tag onto the already-known
-  structural `inner`. The resulting type carries both the nominal tag and the
-  structural axes, which is useful at mint sites before later runtime erasure.
+- `brand_of("utf8")` is the pure nominal tag: `brands = {utf8}`, every
+  structural axis (including `basic`) empty. The representation lives in
+  `brand_inners`, and `Descr::is_subtype_under` discharges the tag through that
+  map to recognise `brand(name) ⊆ inner`.
+- `mint_brand(inner, "utf8")` overlays the brand tag onto an already-known
+  structural `inner` (it clones `inner` and sets `brands = {utf8}`). The result
+  carries both the nominal tag and the structural axes.
 
 ```text
-brand_of("utf8")     : { brands = {utf8} }          (basic empty)
+brand_of("utf8")     : { brands = {utf8} }          (all structural axes empty)
 mint_brand(binary)   : { brands = {utf8}, basic = binary }
 plain binary         : { basic  = binary }
 brand_inners[utf8]   = { basic  = binary }          (the representation)
 ```
 
-Brands carry no runtime witness. There is no brand `ValueKind`
-(see [any-value](any-value.md) — the kinds are Bitstring/ProcBin/Struct/…).
-The `ir_brand_erase` pass rewrites every `Prim::Brand(src, _)` to a
-pass-through before codegen, and `fz_value_eq` compares structure and bytes. A
-`utf8` value is therefore indistinguishable from the binary it wraps.
+Brands carry no runtime witness. There is no brand `ValueKind` (see
+[any-value](any-value.md) — the kinds are Bitstring/ProcBin/Struct/…). The
+`brand_erase` pass (`src/ir_lower/brand_erase.rs`, entry `erase_brands`) runs in
+lowering after brand-aware checks and before the lowered `Module` leaves
+`ir_lower`: it drops every `Stmt::Let(dest, Prim::Brand(src, _))` and rewrites
+references to `dest` as `src` (chains collapse transitively). The runtime
+equality `fz_value_eq_ref` compares structure and bytes. A `utf8` value is
+therefore indistinguishable from the binary it wraps.
 
 ## Two Models: Typing Vs Runtime
 
@@ -244,12 +222,19 @@ RUNTIME question   "can these two values be equal? can this pattern match?"
                       bytes. is_value_disjoint uses the brand-erased lattice.
 ```
 
-`is_value_disjoint(a, b)` is `is_disjoint(erase_nominal(a), erase_nominal(b))`.
-`Descr::erase_nominal` discharges every brand and opaque tag to its inner
-representation (`brand_inners` / `opaque_inners`), recursing through
-tuples/lists/maps — a brand nested inside a tuple is discharged too. It is the
-type-level twin of `ir_brand_erase`: both express the single fact that the
-runtime has no brand/opaque witness. A new nominal axis must be erased in both.
+`is_value_disjoint(a, b)` erases nominal tags from both operands and asks
+whether the results intersect emptily — set-equal to
+`is_disjoint(erase_nominal(a), erase_nominal(b))`. `Descr::erase_nominal`
+discharges every brand and opaque tag to its inner representation
+(`brand_inners` / `opaque_inners`) and recurses through every structural input
+position — tuple elements, list element, resource payload, arrow args/ret, map
+values — so a brand nested inside a tuple is discharged too. A tag is *replaced*
+by its inner (a pure tag has empty structural axes, so merely clearing it would
+collapse to `none`). An unknown tag or a cofinite ("any brand") axis
+over-approximates to `any()`, so the erased set is never too small and
+`is_value_disjoint` never folds a comparison unsoundly. `erase_nominal` is the
+type-level twin of `brand_erase`: both express the single fact that the runtime
+has no brand/opaque witness, so a new nominal axis is erased in both.
 
 ```text
 erase_nominal(utf8)            = binary           (tag -> brand_inners[utf8])
@@ -258,9 +243,6 @@ is_value_disjoint(utf8, binary)        = false    (overlap -> == runs)
 is_value_disjoint(utf8, int)           = true     (a binary is never an int)
 is_value_disjoint(:ok, :error)         = true     (distinct atom singletons)
 ```
-
-A minted brand is never a singleton, so it never reaches the both-literal arm
-of the equality fold; only the disjoint arm consults the erased model.
 
 ## Struct Field Type Declarations
 
@@ -272,80 +254,90 @@ defstruct [:first, :last, :step]              # field order
 ```
 
 The record type expression is resolved during module type-env construction and
-stored as `Program.struct_field_types`, keyed by the struct module name. Resolve
-checks the record fields against the `defstruct` schema: the declared record
+stored as `Program.struct_field_types`
+(`BTreeMap<ModuleName, Vec<(String, Ty)>>`), keyed by the struct module name.
+Resolve checks the record against the `defstruct` schema: the declared record
 must name every schema field exactly once and may not name fields outside the
 schema. It is not guessed from constructor expressions, because constructors are
 use sites and may omit fields or carry narrower literals.
 
 Lowering consumes the validated facts by registering an opaque inner type for
-the struct implementation target:
+the struct implementation target (`struct_opaque_inners` in
+`src/ir_lower/mod.rs`):
 
 ```text
 impl-target::Range -> {integer, integer, integer}
 ```
 
-The key is the same nominal tag used for protocol implementation dispatch; the
+The key is the same nominal tag used for protocol-implementation dispatch; the
 value is a tuple whose slots are in `defstruct` order. A struct value is
 therefore modeled as a nominal opaque tag over a structural field tuple:
 `opaque(impl-target::Range) ∩ {first_type, last_type, step_type}`. Field
 projection reads the tuple slot selected by the schema when the receiver is a
-known singleton struct tag. Unknown or ambiguous receivers remain `any`; the
-planner does not invent field facts without the nominal tag plus registered
-underlying tuple. The tag keeps `Range` distinct from any other three-integer
-tuple.
+known singleton struct tag; unknown or ambiguous receivers remain `any`. The
+planner does not invent field facts without the nominal tag plus its registered
+underlying tuple, and the tag keeps `Range` distinct from any other
+three-integer tuple.
 
 ## Which Predicate, Where
 
 ```text
-codegen == lowering       descrs_value_disjoint     (is_value_disjoint)   value
+codegen == / !=           descrs_value_disjoint  -> is_value_disjoint     value
 pattern-literal matching  lowers to codegen equality                      value
 guard == (when ...)       lowers to codegen equality                      value
 dead-binop lint           !kinds_overlap && is_value_disjoint             value
 parameter / arg checks    is_disjoint / is_subtype                        typing
 FFI extern marshalling    is_disjoint                                     typing
-x is T  (fold_type_test)  is_disjoint / is_subtype                        typing
+runtime type test (T)     Prim::TypeTest, is_disjoint / is_subtype        typing
 ```
 
 There is one runtime-equality relation, `is_value_disjoint`, and every value
-site consults it. Codegen reaches it through `descrs_value_disjoint` when
-lowering `==`/`!=`; pattern-literal matching and guard equality lower to that
-same codegen path. A value-equality or matchability site uses this, not the
-brand-aware `is_disjoint`.
+site consults it. Codegen reaches it through `descrs_value_disjoint`
+(`src/ir_codegen/type_pred.rs`) when lowering `==` / `!=`; pattern-literal
+matching and guard equality lower to that same codegen path. The planner's
+literal `compare_result` fold only collapses int/float singletons to
+`true`/`false`, so a minted brand (its `basic` axis is `binary`, never an
+int/float singleton) is never folded there; the only brand-sensitive fold is
+the value-disjoint arm, which already consults the erased model.
 
-A runtime type test (`x is T`) asks the typing question, so it uses the
-brand-aware lattice: `x is utf8` distinguishes a branded value from a bare
+A runtime type test (`x is T`, lowered to `Prim::TypeTest`, and the parameter
+guards emitted by `emit_param_type_guards`) asks the typing question, so it uses
+the brand-aware lattice: `x is utf8` distinguishes a branded value from a bare
 binary.
 
-`kinds_overlap` is a deliberately coarse "same kind class?" check used only by
-the dead-binop lint. It lets the lint flag genuinely cross-kind comparisons
-(`x == :ok` when `x: int`) while staying quiet on within-axis literal-disjoint
-pairs (`:ok == :error`). Pairing it with `is_value_disjoint` also keeps it
-quiet on a brand against its underlying type, which share a kind once erased.
+`kinds_overlap` is a deliberately coarse "share a populated axis?" check used
+only by the dead-binop lint. It lets the lint flag genuinely cross-kind
+comparisons (`x == :ok` when `x: int`) while staying quiet on within-axis
+literal-disjoint pairs (`:ok == :error`, which share the `atoms` axis). Pairing
+it with `is_value_disjoint` also keeps it quiet on a brand against its
+underlying type, which share a kind once erased.
 
-When a comparison is brand-aware-disjoint but not value-disjoint —
-`differs_only_nominally`, i.e. it looks disjoint only because of an erased
-brand — the lint stays silent and emits a `[fz, type, brand_blind_eq]`
-telemetry event. The comparison runs; the signal records that brands were the
-only thing separating the operand types.
+When a comparison is brand-aware-disjoint but not value-disjoint
+(`differs_only_nominally`, i.e. it looks disjoint only because of an erased
+brand), the lint stays silent and the planner emits a `[fz, type,
+brand_blind_eq]` telemetry event. The comparison runs; the signal records that
+brands were the only thing separating the operand types.
 
 ## Proof Gates
 
-Gate this model with:
+```text
+cargo test --lib types::conformance_tests
+    implementation-agnostic Types semantics, defaults, seams, closure surface
 
-- `cargo test --lib types::conformance_tests` — implementation-agnostic
-  `Types` semantics, defaults, seams, and closure-surface behavior
-- `cargo test --lib types::interned_types::` — interned handle representation tests
-  plus the registered interned conformance subset
-- `cargo test --lib types::concrete_types::tests::` — concrete `Descr`/DNF/component
-  representation mechanics
-- `cargo test --no-run` — compile all test targets and catch controlled
-  warnings without running fixture baselines
-- `cargo test --lib` — full library regression suite
-- `cargo test types::concrete_types::tests::value_disjoint_soundness_table`
-- `cargo test types::concrete_types::tests::value_disjoint_nested_in_tuple_is_false`
-- `cargo test reducer::tests::fold_runtime_eq_is_brand_blind`
-- `cargo test ir_lower::tests::dead_binop_diagnostic_observable_via_telemetry`
-- `cargo test --test fixture_matrix bsx_nested_eq` (and `bsx_nested_match`,
-  `bsx_guard_eq`) — `==`, case-match, and guard agree across jit/interp/aot/repl
-- `cargo test --lib brand_blind_equality_emits_telemetry_without_dead_binop_warning`
+cargo test --lib types::interned_types::
+    interned handle representation tests (interned_types_test)
+
+cargo test --lib types::concrete_types::concrete_types_test::
+    concrete Descr / DNF / component representation mechanics
+
+cargo test --lib
+    full library regression suite
+
+cargo test value_disjoint_soundness_table
+cargo test value_disjoint_nested_in_tuple_is_false
+cargo test dead_binop_diagnostic_observable_via_telemetry
+cargo test brand_blind_equality_emits_telemetry_without_dead_binop_warning
+
+cargo test --test fixture_matrix bsx_nested_eq   (and bsx_nested_match,
+    bsx_guard_eq) — ==, case-match, and guard agree across jit/interp/aot/repl
+```

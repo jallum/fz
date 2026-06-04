@@ -1,136 +1,188 @@
 # Parser Syntax Model
 
-Use this when changing surface syntax in `src/parser`.
+`src/parser` turns tokens into the `ast::Expr` / `ast::Item` tree. Its job is to
+mirror Elixir's surface syntax while keeping the tree ordinary: keyword lists are
+plain lists of two-tuples, do-blocks are sugar for a trailing `do:` keyword entry,
+and the Elixir-flavored operators (`++`, `<>`, `..`, captures, multi-clause `fn`)
+are syntax the **frontend desugar pass** (`src/frontend/macros.rs`) rewrites into
+calls and lambdas before IR lowering. The parser introduces no keyword-list node
+and no runtime keyword type — that policy is what lets the rest of the compiler
+stay simple.
+
+Three files carry the work:
+
+- `items.rs` — top-level and module-body items: `fn`/`fnp`/`defmacro` clauses,
+  `defmodule`/`defstruct`/`defprotocol`/`defimpl`, `alias`/`import`, `extern`,
+  and `@`-attributes (`@doc`, `@moduledoc`, `@type`, `@spec`).
+- `expressions.rs` — the Pratt expression parser (`parse_bp`), call forms,
+  keyword lists, do-block sugar, lambdas, captures.
+- `patterns.rs` — patterns (shared by `case`, lambda heads, `=`, list/map/struct
+  literals).
+
+`mod.rs` owns the `Parser` state, the token helpers, and the program entry points.
+
+## Parser State
+
+`Parser` threads three context flags that surrounding constructs set and inner
+parses read:
+
+- `suppress_trailing_do` — when true, `parse_bp` does not attach a trailing
+  `do … end` to a call. The cond-position forms (`if`/`case`/`cond`/`with`
+  scrutinees and `when` guards) set it via `with_no_trailing_do`, so
+  `if pred(h) do … end` parses `pred(h)` as the condition and leaves the block
+  to `if`.
+- `comma_bound` — true while parsing one element of a comma-delimited container
+  (list, tuple, map, bitstring, paren call args). A no-parens call recognized in
+  that state takes a single argument and leaves the comma to the container.
+  `with_comma_bound` / `with_comma_unbound` flip it; blocks, lambda bodies, and
+  parenthesized groupings reset it to false.
+- `saw_no_parens_call` — set by the no-parens-call site, read by the keyword-list
+  parser. The AST does not record parens-vs-no-parens (`bar x` and `bar(x)` are
+  the same `Call`), so this transient flag carries that distinction to the
+  ambiguity check.
+
+Non-fatal diagnostics collect in `warnings` and surface through
+`parse_program_with_telemetry`, which emits each one as a `[fz, diag, warning]`
+event. The plain `parse_program` path drops them.
 
 ## Function Items
 
-`fn` declares a public function when it appears inside a module. Public module
-functions enter the module interface and must carry public specs when strict
-interface validation is enabled.
+`fn` declares a function; `fnp` declares a module-private one. Both parse the
+same clause shape through `parse_fn_clause` and accumulate into one `FnDef` per
+name/arity (`items.rs` groups clauses by `(name, arity)`). The only difference is
+`FnDef.is_private`: `fn` sets it false, `fnp` sets it true. A name/arity that
+mixes `fn` and `fnp` clauses (or `fn` and `defmacro`) is a parse error — the
+group's flag must be consistent.
 
-`fnp` declares a private function. It parses to the same function body shape as
-`fn`, can be called by sibling functions in the same module, and is omitted
-from public module interfaces. Do not mix `fn` and `fnp` clauses for the same
-name/arity.
+A module's interface export is an `Item::Fn` that is not a macro, not private,
+not `extern`, and not the implicit `__info__/1` builtin
+(`src/modules/interface.rs`). So `fn` inside a `defmodule` enters the interface
+and, under strict interface validation, must carry an `@spec`
+(`public export … requires an explicit @spec`); `fnp` stays callable from its
+own module but is omitted from the interface and skips that check.
+
+A function head is normally `name(params)`. An operator in head position selects
+the infix form: `fn left + right` declares the function named `+` with two
+params. The same operator-head rule applies to `@spec` (`@spec integer + integer
+:: integer`).
 
 ## Keyword Lists
 
-`Tok::KwKey(name)` is the lexer token for `name:`. The parser treats it as
-syntax only in positions that can consume keyword entries:
+`Tok::KwKey(name)` is the lexer token for `name:`. The parser consumes keyword
+entries only where they can appear:
 
 - list literals: `[a: 1, b: 2]`
 - call arguments: `f(x, a: 1, b: 2)`
-- call-postfix block sugar: `f(x) do ... end`
+- call-postfix block sugar: `f(x) do … end`
 - list patterns: `[do: body]`
 
-The AST representation is deliberately ordinary data:
+A keyword entry is ordinary data — a two-element tuple of the key atom and the
+value, collected into a plain list. `Expr::List` carries `(elements, tail)`, and
+keyword lists never use the cons tail:
 
 ```text
 [a: 1, b: 2]
-=> Expr::List([
-     Expr::Tuple([Expr::Atom("a"), Expr::Int(1)]),
-     Expr::Tuple([Expr::Atom("b"), Expr::Int(2)])
-   ])
+=> Expr::List(
+     [ Expr::Tuple([Expr::Atom("a"), Expr::Int(1)]),
+       Expr::Tuple([Expr::Atom("b"), Expr::Int(2)]) ],
+     None,
+   )
 ```
 
 Calls collect trailing keyword entries into one final list argument. A trailing
-`do ... end` block appends a `do:` pair to that same final list, so
-`f(x, timeout: 10) do 42 end` has the call shape:
+`do … end` block appends a `do:` pair to that same final list (`attach_trailing_do`
+extends the collapsed keyword argument, or makes one), so
+`f(x, timeout: 10) do 42 end` has the call shape `f(x, [timeout: 10, do: 42])`.
+A bare `do … end` on a block-positional literal stays separate: `f [a: 1] do … end`
+keeps `[a: 1]` positional and adds a distinct `[do: …]`, matching Elixir.
 
-```text
-f(x, [timeout: 10, do: 42])
-```
+This matches Elixir's user-facing model without adding a keyword-list AST node or
+runtime type.
 
-This matches Elixir's user-facing model without adding a keyword-list AST node
-or runtime type.
-
-Named calls and anonymous-function calls are different syntax forms:
-
-```text
-count(1)     => named call
-count.(1)    => anonymous-function call
-```
-
-The parser and AST keep them separate. A bare call never falls back to "call a
-local value with the same name". If the source means "call the value currently
-bound to `count`", it must write `count.(...)`.
-
-The type surface follows the same rule. The runtime prelude defines ordinary
-aliases:
+The `keyword` type is an ordinary alias in the runtime prelude
+(`src/modules/runtime_library/runtime.fz`):
 
 ```text
 @type keyword() :: [{atom, any}]
 @type keyword(t) :: [{atom, t}]
 ```
 
+## Named vs Anonymous Calls
+
+A named call and an anonymous-function call are different syntax forms with
+different AST nodes:
+
+```text
+count(1)     => Expr::Call(target, args)
+count.(1)    => Expr::ClosureCall(target, args)
+```
+
+The ordinary `.` postfix keeps its field/index meaning (`m.k` lowers to an
+atom-keyed `Expr::Index`); only `.(...)` is the closure-call operator. A bare
+`count(1)` resolves by name; to call the value bound to `count`, source must
+write `count.(…)`. Keeping the forms distinct means the resolver never has to
+guess between "named function" and "local value of the same name".
+
 ## Record Type Expressions
 
-`@type` bodies can declare field types for a struct schema with record syntax:
+`@type` bodies can give field types for a struct schema with record syntax:
 
 ```text
 @type t :: %Range{first: integer, last: integer, step: integer}
 ```
 
-The parser keeps the body as type-expression tokens, then `type_expr` resolves
-it during module type-env construction. The resolved fact is keyed by the
-struct module (`Range`) and the field names; field order still comes from the
-matching `defstruct` declaration. This gives later typing passes one schema
-fact to consume instead of reparsing aliases or inferring field types from
-constructor sites.
+The parser stores the body as raw type-expression tokens; `type_expr`
+(`parse_struct_record_type`, building a `StructRecordType`) resolves them during
+module type-env construction. `collect_struct_field_types`
+(`src/frontend/resolve.rs`) then validates the record against the struct's
+`defstruct` schema as a set — every record field must exist on the struct, and
+every struct field must be present — and stores the result keyed by struct
+module. The stored field order is the order written in the record type. This
+gives later typing passes one schema fact to consume instead of reparsing
+aliases or inferring field types from constructor sites.
 
 ## No-Parens Calls
 
-A call may omit its parentheses: `double 21`, `Enum.map xs, f`. The parser
-recognizes one when a **callable head** (a bare name or a module-qualified
-path, i.e. `Expr::Var` or the `Expr::Index` that `Mod.fun` lowers to) is
-followed by a token that **starts an argument** — separated from the head by
-spacing, and a value token rather than an operator, container close, or block
-keyword. `(` and `[` are excluded: the postfix loop owns them as paren-call and
-index. `+`/`-` count only when unary-positioned (space before the operator,
-none before its operand), so `foo -1` is the argument `-1` while `foo - 1` is
-subtraction.
+A call may omit its parentheses: `double 21`, `Enum.map xs, f`. `parse_bp`
+recognizes one when a **callable head** — a bare name or a module-qualified path,
+i.e. `Expr::Var` or the `Expr::Index` that `Mod.fun` lowers to — is followed by a
+token that **starts an argument**: separated from the head by spacing, and a
+value token rather than an operator, container close, or block keyword. `(` and
+`[` are excluded — the postfix loop owns them as paren-call and index. `+`/`-`
+count only when unary-positioned (space before the operator, none before its
+operand), so `foo -1` is the argument `-1` while `foo - 1` is subtraction.
 
 Arguments are full expressions, so a nested no-parens call owns its own commas:
-`f g a, b` is `f(g(a, b))`. Comma greediness depends on position:
+`f g a, b` is `f(g(a, b))`. Comma greediness depends on the `comma_bound` flag:
 
 - At statement/operand position, arguments are comma-separated greedily.
-- Inside a comma-delimited container (list, tuple, map, bitstring, paren call
-  args), a no-parens call takes a single argument and leaves the comma to the
-  container: `[foo a, b]` is `[foo(a), b]`. This is the `comma_bound` flag;
-  blocks, lambda bodies, and parenthesized groupings reset it.
+- Inside a comma-delimited container, a no-parens call takes a single argument
+  and leaves the comma to the container: `[foo a, b]` is `[foo(a), b]`.
 
-Keyword entries follow the same collapse rule as paren'd calls. Trailing
-`key: value` pairs become one final keyword-list argument, and a keyword key in
-head position makes the whole argument list a lone keyword list:
+Keyword entries collapse the same way as in paren'd calls. Trailing `key: value`
+pairs become one final keyword-list argument, and a keyword key in head position
+makes the whole argument list a lone keyword list:
 
 ```text
 foo a, b: 1, c: 2   =>  foo(a, [b: 1, c: 2])
 foo b: 1            =>  foo([b: 1])
 ```
 
-When a no-parens call is itself a keyword value and another keyword entry
-follows it, the parse is ambiguous — `b: bar x, c: 2` could fold `c: 2` into
-`bar` or leave it in the outer list. fz keeps the trailing keyword in the outer
-list (`bar(x)` plus `c: 2`); Elixir folds it into the inner call. The parser
-emits a `parse/ambiguous-no-parens-keyword` warning diagnostic to telemetry
-(under `[fz, diag, warning]`) so the divergence is observable and the source
-can be disambiguated with explicit parentheses.
+### Policy: no-parens keyword as a keyword value
 
-Anonymous-function calls use the same postfix `.(...)` form as Elixir:
-
-```text
-fun.(x)
-some_fun.()
-```
-
-They parse to `Expr::ClosureCall(target, args)`. The ordinary `.` field/index
-postfix keeps its existing meaning for `m.k`; only `.(...)` is the closure-call
-operator.
+When a no-parens call is itself a keyword value and another keyword entry follows
+it, the parse is ambiguous — `b: bar x, c: 2` could fold `c: 2` into `bar` or
+leave it in the outer list. fz keeps the trailing keyword in the outer list
+(`bar(x)` plus `c: 2`); Elixir folds it into the inner call. The choice is fixed
+and observable: the parser emits a `parse/ambiguous-no-parens-keyword`
+(`PARSE_AMBIGUOUS_NO_PARENS_KEYWORD`) warning to telemetry under
+`[fz, diag, warning]`, so the divergence shows up and the source can be
+disambiguated with explicit parentheses.
 
 ## Anonymous Functions
 
-`fn` introduces an anonymous function as a non-empty list of clauses, mirroring
-Elixir, and is terminated by `end`:
+`fn` introduces an anonymous function as a non-empty list of clauses, terminated
+by `end`:
 
 ```text
 fn x -> x + 1 end
@@ -141,17 +193,15 @@ fn x when x > 0 -> x
    _ -> 0 end
 ```
 
-The `end` is required — without a terminator a multi-clause body has no
-boundary. Clause structure matches `case` (a pattern list, an optional `when`
-guard, `->`, then a body), so the two parsers stay in lockstep. The AST is
-`Expr::Lambda(Vec<LambdaClause>)`, each `LambdaClause` carrying `params`, an
+The `end` is required — a multi-clause body has no boundary without it. Clause
+structure matches `case` (a pattern list, an optional `when` guard, `->`, a
+body), so `parse_lambda` and `parse_case` stay in lockstep. The AST is
+`Expr::Lambda(Vec<LambdaClause>)`; each `LambdaClause` carries `params`, an
 optional `guard`, a `body`, and its span.
 
-The macro/desugar pass rewrites guarded or multi-clause anonymous functions
-into a direct lambda whose body is a `case` over synthetic parameters. That
-keeps the runtime shape ordinary: the interpreter and IR lowering still execute
-only a direct lambda, and the `case` body reuses the existing PatternMatrix
-dispatch path.
+`lambda_direct_clause` names the one shape the interpreter and IR lowering run
+directly: exactly one clause with no guard. Every other shape is desugared first
+(below), so both execution paths agree on what is runnable.
 
 ## Captures
 
@@ -165,26 +215,33 @@ dispatch path.
 &Kernel.+/2   => Expr::FnRef { name: "Kernel.+", arity: 2 }
 ```
 
-`&N` requires the integer to be adjacent (no space) so `&1` is a placeholder
-while `& 1` is not. `&(...)` parses its body as a fresh operand context, so the
-body's own `&N` placeholders and nested calls come along. The function-reference
-form accepts ordinary names, dotted names, `lib::extern` names, and
-operator-headed functions. Division is spelled `&//2` or `&Kernel.//2` because
-the operator `/` is followed by the arity separator `/`.
+`&N` requires the integer adjacent (no space) so `&1` is a placeholder while
+`& 1` is not. `&(...)` parses its body as a fresh operand context, so the body's
+own `&N` placeholders and nested calls come along. The function-reference form
+accepts ordinary names, dotted names, `lib::extern` names, and operator-headed
+functions. Division is spelled `&//2` or `&Kernel.//2`: the operator `/` followed
+by the arity separator `/` lexes as `//`, which `parse_fn_ref_name_part` reads as
+the operator name `/` plus a consumed slash.
 
-`CaptureArg` and `Capture` have no runtime meaning on their own. The
-macro/desugar pass rewrites `&(... &N ...)` into an ordinary `Lambda` with
-synthetic parameters `1..N`, and rewrites placeholder leaves such as `&1` into
-the same one-argument identity-lambda shape. The interpreter and IR lowering
-still reject raw `Capture` / `CaptureArg` nodes if they ever survive desugaring.
+The unparenthesized capture-of-call form `&Mod.fun(&1, &2)` is not parsed: after
+`&name` the parser requires `/arity`.
 
-The unparenthesized capture-of-call form (`&Mod.fun(&1, &2)`) is NOT parsed:
-after `&name` the parser requires `/arity`. That form is out of scope for 2.6.
+## Desugaring (frontend macros pass)
 
-## Operator Desugaring
+`Expr::Capture` and `Expr::CaptureArg` have no runtime meaning on their own; the
+interpreter (`src/exec/eval.rs`) and IR lowering (`src/ir_lower/expr.rs`) reject
+them if they survive. `src/frontend/macros.rs` rewrites them, and the
+Elixir-flavored operators, before lowering:
 
-The macro/desugar pass rewrites the Elixir-aligned runtime operators before IR
-lowering:
+- `&(… &N …)` becomes a `Lambda` whose params are `__fz_capture_arg_1..N` (N is
+  the highest placeholder in the body) and whose body is the capture body with
+  each `&N` replaced by the matching param.
+- a bare `&N` becomes an N-parameter lambda returning its Nth parameter, so `&1`
+  is the identity lambda.
+- a guarded or multi-clause `Lambda` becomes a single direct lambda whose body is
+  a `case` over synthetic params (`__fz_lambda_arg_i`), reusing the existing
+  pattern-matrix dispatch. The clause patterns become the `case` clauses.
+- the operators rewrite to ordinary calls:
 
 ```text
 a ++ b       => List.concat(a, b)
@@ -195,31 +252,29 @@ a..b//step   => Range.new(a, b, step)
 ```
 
 The `List` helpers are ordinary source functions in
-`src/modules/runtime_library/list.fz`; `<>` is the only one backed by a primitive
-runtime BIF because it must allocate a binary. Range construction remains the
-source `defstruct` path.
+`src/modules/runtime_library/list.fz`. `<>` is the one backed by a primitive: an
+`extern "C"` `Kernel.fz_binary_concat` (`runtime/src/ir_runtime.rs`), because it
+must allocate a binary. Range construction runs through the source `defstruct`
+path (`Range.new` builds a `%Range{}`).
 
 ## Boundaries
 
-Special forms such as `if`, `with`, and `quote` still own their dedicated
-`do:` parsing paths. Ordinary call keyword parsing should not reinterpret those
-forms before their special parsers see them.
+Special forms (`if`, `with`, `quote`, …) own their own `do:` parsing paths.
+Ordinary call keyword parsing runs inside those forms only after their special
+parsers have set `suppress_trailing_do`, so a call's trailing-do sugar never
+swallows a block the surrounding form expects.
 
-Keyword entries are trailing. Once a call or list literal starts parsing
-keyword entries, another positional expression is a syntax error.
+Keyword entries are trailing. Once a call or list literal starts parsing keyword
+entries, a following positional expression is a syntax error.
 
-## Proof Gates
+## Where it's proven
 
-Gate changes here with:
-
-- `cargo test parser::tests::do_block_sugar_tests`
-- `cargo test parser::tests::no_parens_call_tests`
-- `cargo test parser::tests::no_parens_keyword_ambiguity_tests`
-- `cargo test parser::tests::lambda_tests`
-- `cargo test parser::tests::capture_tests`
-- `cargo test anonymous_function_calls_require_dot_parens --lib`
-- `cargo test bare_named_calls_do_not_dispatch_to_local_values --lib`
-- `cargo test private_fns_are_not_interface_exports`
-- `cargo test --test fixture_matrix keyword_lists`
-- `cargo test --test fixture_matrix no_parens_keyword`
-- `cargo test test_runner::tests`
+Parser behavior lives in `src/parser/parser_test.rs`, organized by feature into
+submodules: `do_block_sugar_tests`, `no_parens_call_tests`,
+`no_parens_keyword_ambiguity_tests`, `lambda_tests`, `capture_tests`. The
+named-vs-anonymous call rule and bare-call resolution are covered in
+`src/exec/eval.rs` tests; the `fnp` interface rule in
+`src/modules/interface_test.rs`. End-to-end behavior across the four execution
+paths runs through the fixture corpus (`fixtures/keyword_lists`,
+`no_parens_call`, `no_parens_do`, `no_parens_keyword`) under
+`tests/fixture_matrix.rs`.
