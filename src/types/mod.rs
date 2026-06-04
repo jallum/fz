@@ -19,6 +19,8 @@ use std::sync::Arc;
 
 pub use crate::concrete_types::ConcreteTypes;
 use crate::concrete_types::Descr;
+#[cfg(test)]
+use crate::interned_types::InternedConcreteTypes;
 
 mod closure;
 mod literal;
@@ -1040,6 +1042,14 @@ mod conformance_tests {
         concrete_types_closure,
         ConcreteTypes
     );
+
+    impl_types_conformance_tests!(
+        interned_types,
+        interned_types_helpers,
+        interned_types_semantics,
+        interned_types_closure,
+        InternedConcreteTypes::new()
+    );
 }
 
 // ----------------------------------------------------------------------
@@ -1256,4 +1266,5 @@ mod smoke {
     }
 
     impl_smoke_suite!(concrete, ConcreteTypes);
+    impl_smoke_suite!(interned, InternedConcreteTypes::new());
 }

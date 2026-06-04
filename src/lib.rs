@@ -9,6 +9,7 @@ mod ir_codegen;
 mod ir_dest;
 mod ir_extern_marshal;
 mod ir_interp;
+pub mod interned_types;
 // ir_liveness removed (fz-ul4.11.31 subsumes .11.30): frame schemas are
 // uniformly `[cont_ptr, ...entry_params]` with every Var slot as an opaque value ref;
 // Cranelift handles temporary spills. The richer per-call liveness was
