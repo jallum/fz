@@ -32,12 +32,20 @@ Blocked          = waiting for something that may later produce that closure
 Exited           = no closure remains; `halt_value` is final
 ```
 
-That gives one re-entry rule and one GC rule. Every resume is `runnable()`, run
-through the single `fz_resume` shim. The runnable closure is the primary GC root:
-if a process can resume after a scheduler boundary, its live continuation state
-is reachable from that closure. The boundary's GC (`gc_process_roots`) copies the
-closure, copies everything it reaches, rewrites the root pointer in place to the
-to-space copy, and the scheduler resumes the moved closure.
+That gives one re-entry rule and one GC rule. In the JIT and AOT schedulers every
+resume is `runnable()`, run through the single `fz_resume` shim. The runnable
+closure is the primary GC root: if a process can resume after a scheduler
+boundary, its live continuation state is reachable from that closure. The
+boundary's GC (`gc_process_roots`) copies the closure, copies everything it
+reaches, rewrites the root pointer in place to the to-space copy, and the
+scheduler resumes the moved closure.
+
+The interpreter is a parallel scheduler with the same shape but its own state. It
+keeps re-entry as a `ResumeEntry` tuple (`FnId`, args, `SpecKey`,
+`Vec<InterpContinuation>`) in a `resume` HashMap, driven by `pop_runnable` /
+`take_resume`, and uses its own `ParkRecord` (`src/ir_interp/scheduler.rs`); it
+never touches `Process.runnable` or `fz_resume`. The runnable/`fz_resume` model
+below is the compiled-path model.
 
 ## fz_resume: the one verb
 
@@ -204,8 +212,9 @@ The roots the boundary GC traces are exactly the `runnable` closure and the
 
 - `cargo test --test fixture_matrix enum_reduce_suspend` — a runtime-value suspend
   (`Enumerable.reduce` returning `{:suspended, acc, fn () -> … end}`) stays a real
-  heap closure across interpreter, JIT, AOT, and REPL, pinning its allocation
-  profile (`closure_allocs = 1`).
+  heap closure across all four paths, never optimized away. Native JIT/AOT pin
+  `closure_allocs = 1` (`closure_bytes = 48`, `scalar_box_allocs = 1`); interpreter
+  and REPL pin `closure_allocs = 2`.
 - `cargo test --test fixture_matrix receive_selective_refs` — selective receive
   with `^`-pinned matchers and an `after` timeout resumes through the closure entry
   across all four paths.

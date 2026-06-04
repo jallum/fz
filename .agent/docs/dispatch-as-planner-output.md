@@ -241,10 +241,13 @@ did not register, or diverge from activation-return projection and continuation
 ABI selection; a missing fact is a planner bug.
 
 `materialize_program` prunes each body's `call_edges` to its surviving/remapped
-call sites (`materialized_call_edges`). `CallableBoundary` edges and
-selective-receive (`ReceiveMatched`) outcome `Cont` edges are representation and
-reachability obligations rather than ordinary terminator slots, so
-`materialized_orphan_call_edges` classifies them separately.
+call sites (`materialized_call_edges`). `CallableBoundary` is the only call-edge
+fact a terminator slot does not produce, so `materialized_call_edges` keeps it
+unconditionally and `materialized_orphan_call_edges` exempts it from the orphan
+check. Selective-receive (`ReceiveMatched`) outcome `Cont` edges are
+terminator-derived: `materialized_callsite_ids` adds each clause's and the
+after-clause's `Cont` callsite to the live set, so they survive as ordinary
+materialized callsites, not orphans.
 
 Executable reachability belongs to `PlannedProgram`. `materialized_reachable_specs`
 recomputes it from entry seeds by following surviving call edges and live

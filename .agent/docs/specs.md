@@ -112,8 +112,11 @@ except for the result types a production caller names.
 `type_expr::resolve_spec_decls` is the construction seam from source syntax to
 `ResolvedSpecSet`. After construction, callers use `crate::specs` operations.
 
-The matcher and applicator are generic over the `ClosureTypes` trait, so the
-same code runs over both the concrete and interned type representations.
+The matcher (`match.rs`) is generic over the `ClosureTypes` trait's associated
+`Ty`, so the same scheme-instantiation code runs over both the concrete and
+interned representations. Application, selection, and coverage (`apply.rs`,
+`select.rs`, `validate.rs`) are pinned to the concrete `Ty`
+(`ClosureTypes<Ty = Ty>`).
 
 ## Scheme Matching
 

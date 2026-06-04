@@ -262,8 +262,9 @@ rather than another call path.
 Extern arguments and selective-receive bodies seed activations through the same
 machinery: an `Prim::Extern` argument that is callable is activated at an
 `EmitSlot::CallableBoundary` callsite, and each `Term::ReceiveMatched`
-guard/body/after fn is activated with opaque (`any`) message bindings followed
-by the captured locals, their returns joined.
+guard/body fn is activated with opaque (`any`) message bindings followed by the
+captured locals. The after fn binds no message, so it is activated with the
+captured locals only. All of these returns are joined.
 
 ## Specs
 

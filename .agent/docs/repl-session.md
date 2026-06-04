@@ -181,10 +181,16 @@ macro bodies       -> expanded by ReplWorld before fn load
 user runtime code  -> lowered IR on ReplRuntime
 ```
 
-The compile-time evaluator stores closures, docs, and spec text only — it has no
-spawn, send, receive, mailbox, or scheduler semantics. Interactive execution
-lives on `IrInterpRuntime` instead, which keeps interactive code on the same
-runtime path as ordinary programs.
+The `CompileTimeEvaluator` holds the source world the REPL queries: `globals`
+(fn closures carrying their `@doc`/`@spec` text), `module_docs` (qualified path →
+`@moduledoc`), and the macro tables (`macro_names`, `macro_def_spans`). It also
+owns a single-threaded `EvalRuntime` with per-pid `mailboxes` and `send`/`spawn`/
+`receive` over them, but no scheduler: an empty `receive` with no `after` errors
+("receive would block on an empty mailbox") instead of parking the process. That
+missing park/resume is the reason interactive code lives on `IrInterpRuntime`
+instead — any expression that relies on `spawn`/`receive` to suspend and resume
+needs the real scheduler, which keeps interactive code on the same runtime path
+as ordinary programs.
 
 Help queries are world work. `lookup_doc` reads the evaluator's globals and
 moduledocs: it tries fns first (so `?M.add` finds the closure and renders its

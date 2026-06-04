@@ -44,9 +44,10 @@ The split is deliberate, and it decides what a handler may read:
   needs a field the projection omits; it `downcast_ref`s the metadata back to a
   `&Process` during dispatch. An opaque value never survives into a stored event:
   the `Capture` handler drops it when it owns the event (`durable_owned` keeps
-  only numbers and strings), and `JsonlBackend` skips it when it serializes. So
-  the `&Process` is valid only during dispatch — never read it from a stored
-  event.
+  every value except opaque references — `to_owned_durable` returns `None` only
+  for `Value::Opaque`, so numbers, bools, strings, string-seqs, and byte blobs
+  all survive), and `JsonlBackend` skips it when it serializes. So the `&Process`
+  is valid only during dispatch — never read it from a stored event.
 
 ## `fz.runtime.dbg`
 

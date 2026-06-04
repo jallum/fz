@@ -189,7 +189,9 @@ Static closure singletons are keyed by the spec slot (`cl_sid`) codegen passes t
 with every zero-capture callable entry plus every zero-capture closure-shaped
 reachable spec used as a direct native `self` argument — a zero-capture singleton
 ignores `self`, so one singleton serves any direct-call site for that fn.
-Callable-entry ids are therefore a subset of static-singleton ids.
+Zero-capture callable-entry ids are therefore a subset of static-singleton ids; a
+capturing callable entry (`capture_count > 0`) is not a static singleton, because
+its env must be built per construction.
 
 ## Tiny Walkthrough
 

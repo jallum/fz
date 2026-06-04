@@ -9,12 +9,13 @@ machinery as tuples and other `defstruct` types. The pieces that matter:
   `Enumerable` implementation.
 - **Schema** (`runtime/src/heap/schema.rs`): the named `Range` struct layout
   (`first`, `last`, `step`), shared by interpreter, JIT, and AOT.
-- **Constructor path**: `%Range{...}` and the `..` / `..//` operators desugar
-  to `Range.new/3`, which lowers to `Prim::MakeStruct`.
+- **Constructor path**: the `..` / `..//` operators desugar to `Range.new/3`;
+  `Range.new/3` and a direct `%Range{...}` literal both lower through
+  `lower_struct` to `Prim::MakeStruct`.
 - **Field read**: `range.first` rides ordinary struct dot-access — no
   Range-specific accessors.
 - **Renderer** (`runtime/src/any_value::debug`): prints Elixir-style range
-  literals for inspect/`dbg`.
+  literals for `dbg`.
 
 ## Source surface
 

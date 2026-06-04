@@ -11,8 +11,8 @@ mailboxes are byte-compatible with the JIT/AOT path.
 decides whether that runtime is fresh for one entry or held across many:
 
 ```text
-one-shot command -> fresh IrInterpRuntime -> enqueue entry -> drive -> drop
-REPL session     -> persistent runtime    -> enqueue chunk -> drive -> keep
+fz interp    -> run_main_with_plan -> fresh runtime -> run main/0 -> drop
+REPL session -> persistent runtime  -> enqueue_entry_with_plan -> drive -> keep
 ```
 
 The pieces a reader needs to sketch the box-and-arrow:
@@ -43,10 +43,19 @@ The pieces a reader needs to sketch the box-and-arrow:
 - `current_proc` — a raw `*mut Process` pointing at the process running this
   quantum (see "Running process is threaded, not ambient").
 
-`run_main` and `run_test_fn` are one-shot wrappers: they build a fresh runtime,
-seed the root process, run a single entry, and drop the runtime. Code that needs
+`run_main_with_plan` is the production one-shot wrapper behind `fz interp`: it
+takes a module and the plan the caller already prepared, builds a fresh runtime
+with the root process seeded (`fresh_with_root`), installs the plan as pid 1's
+image, runs `main/0` to completion, and returns the halt value paired with the
+runtime. `run_test_fn` is the `fz test` per-test wrapper: it builds a fresh
+runtime, gives the test its own heap and mailbox, and runs one test fn so state
+cannot leak between tests in a module. (`run_main` is a
+`#[cfg(test)]` convenience that plans the module and then calls
+`run_main_with_plan`, keeping only the halt value.)
+
+A one-shot wrapper drops its runtime when the entry finishes. Code that needs
 mailboxes, heaps, blocked processes, resources, or spawned children to survive
-past one entry must keep the `IrInterpRuntime` value and drive it again.
+past one entry keeps the returned `IrInterpRuntime` value and drives it again.
 
 ## Code Images
 

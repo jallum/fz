@@ -44,9 +44,12 @@ anything else, because first-match priority is encoded in that order.
   becomes `ListHead` and `ListTail` columns. Merged constructor-and-default rows
   are re-sorted by `body_id` so priority survives.
 
-`SubjectRef` (in the matrix and the matcher) is the path to a value:
-`Input`, `TupleField`, `ListHead`, `ListTail`, `MapValue`, `BitstringField`.
-A subject names *where* a value lives without yet computing it.
+A `SubjectRef` is the path to a value: it names *where* a value lives without
+yet computing it. The matrix and the matcher carry distinct `SubjectRef` types.
+The matrix's is rooted at a `Var` (`TupleField`/`ListHead`/`ListTail` reach into
+it). Compilation rewrites it (`subject_to_matcher_ref`) into the matcher's, which
+is rooted at `Input` and adds `MapValue` and `BitstringField` for the paths that
+map and bitstring tests produce.
 
 Some patterns have no constructor switch: `Map`, `Bitstring`, and `Pinned`.
 `find_unspecializable_row` pulls such a row out and lowers it through the

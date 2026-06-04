@@ -141,9 +141,13 @@ A fixture pins its claim in the most direct medium for what it tests.
 3. **Memory-floor stats** — `Process.heap_alloc_stats()` + a per-path golden.
    Allocation counts are cross-run and path-variant: native reuses cons cells,
    interp/repl are direct-IR baselines, and jit equals aot. No single in-program
-   assertion expresses a cross-run relationship, so these stay golden. Because
-   jit and aot share `expected.txt` (neither ships a per-path override), the
-   matrix enforces jit == aot by construction.
+   assertion expresses a cross-run relationship, so these stay golden. The
+   matrix has no cross-leg check — each leg resolves its own golden per-path-first
+   (`expected.<path>.txt` else `expected.txt`) and matches that. So where native
+   parity is expected (`enum_sort`, `process_heap_stats`, `quicksort`) jit and aot
+   each ship their own `expected.jit.txt` / `expected.aot.txt`; the two are kept
+   byte-identical so jit == aot, but that equality is a property of the maintained
+   files, not something the harness enforces.
 4. **Compiler-shape budget** — `budget.*` frontmatter (see Dump budgets).
 5. **Expect-failure** — `expect: abort` / `expect: diagnostic`. The only medium
    that pins what the language must *refuse*: the program must abort (run-time)
@@ -152,7 +156,7 @@ A fixture pins its claim in the most direct medium for what it tests.
 
 ## Dump budgets
 
-`budget.*` frontmatter pins compiler shape across two namespaces:
+`budget.*` frontmatter pins compiler shape across three namespaces:
 `budget.codegen.*` (lowered function and instruction counts), `budget.specs.count`,
 and `budget.planner.*` (planner work counters — worklist pops, walk/type-fn
 calls, matcher specs, spec var/block/stmt counts, dispatches). The static

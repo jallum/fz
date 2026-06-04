@@ -142,9 +142,12 @@ Enum.reduce([1, 2, 3], 0, fn x, acc -> acc + x end)
 
 ## Ownership And Contracts
 
-- `Enumerable.reduce/3` owns the tagged protocol state; it is the only layer that
-  speaks `{:cont|:halt|:suspend, acc}` in and `{:done|:halted|:suspended, ...}`
-  out.
+- `Enumerable.reduce/3` is the protocol seam that hands back the result tags
+  `{:done|:halted|:suspended, ...}`. The input tags `{:cont|:halt|:suspend, acc}`
+  are spoken across the protocol surface: `Enum.reduce/2,3` wrap a plain
+  accumulator into `{:cont, acc}`, and `Enum.reduce_while/3` passes a user reducer
+  that returns `{:cont, acc}` / `{:halt, acc}` straight through. `List.reduce/3`
+  and `List.reduce_step/3` consume those input tags and emit the result tags.
 - `List.reduce_cont/3` owns the cons walk and stays a recursive tail call
   (lowers to `return_call`); `List.reduce_step/3` owns reducer-output dispatch.
 - `Enum.reduce/2,3` owns the value↔tag adaptation (the `{:cont, ...}` wrapper and

@@ -64,7 +64,8 @@ dispatch          reset_reduction_budget():
 
 back edge         reductions_remaining -= 1
                   if reductions_remaining <= 0:
-                    materialize the zero-arg continuation closure
+                    compiled: materialize the zero-arg continuation closure
+                    interpreter: forward resume_fn + resume_args
                     yield, reporting REDUCTIONS
 
 allocation        bump_top += size
@@ -81,9 +82,14 @@ boundary          if needs_boundary_gc():   # should_gc flag OR ALLOCATION_PRESS
 ```
 
 The mechanism is one thing — budget exhaustion — and the *cause* stays
-observable through the yield-reason bits and the split cumulative counters. Both
-engines materialize the same zero-arg continuation closure on exhaustion; see
-[`scheduler-zero-arg-closures.md`](scheduler-zero-arg-closures.md).
+observable through the yield-reason bits and the split cumulative counters. The
+two engines hand control back differently. Compiled code (JIT and AOT)
+materializes a zero-arg continuation closure on exhaustion and leaves it in
+`runnable` (see
+[`scheduler-zero-arg-closures.md`](scheduler-zero-arg-closures.md)). The
+interpreter runs synchronously: it forwards the next iteration's `resume_fn` and
+`resume_args` to the scheduler and gathers GC roots over those args and the
+after-continuations, never building a closure.
 
 ## Allocation watermark and the continuation reserve
 
@@ -155,7 +161,8 @@ count(5000, 0) with reductions_per_quantum = 4000:
 
   each recursion is a back edge: reductions_remaining -= 1
   after 4000 back edges reductions_remaining hits 0
-    -> build the zero-arg continuation capturing (n, acc)
+    -> compiled: build the zero-arg continuation capturing (n, acc)
+       interpreter: forward resume_fn + resume_args (n, acc)
     -> yield reporting REDUCTIONS
   boundary: no allocation pressure, should_gc unset
     -> quiet_quanta += 1, reason bits cleared
@@ -172,8 +179,11 @@ edge sees the zeroed budget and yields, and the boundary GCs because the
 ## Parity
 
 The model is identical in the interpreter, JIT, and AOT: the same `Process`
-fields, the same watermark, the same `needs_boundary_gc` decision, and the same
-zero-arg continuation. Pure fz code yields automatically. Reduction-budget tests
+fields, the same watermark, and the same `needs_boundary_gc` decision. The resume
+carrier differs — a zero-arg continuation closure in compiled code, forwarded
+`resume_fn` + `resume_args` in the interpreter — but the boundary sees the same
+budget accounting and roots the live continuation state either way. Pure fz code
+yields automatically. Reduction-budget tests
 on each engine pin this: the interpreter and JIT
 allocation-light-loop tests assert `reduction_yields > 0` with
 `allocation_pressure_yields == 0`, the allocation-pressure tests assert the
