@@ -1,0 +1,18 @@
+warning[type/no-matching-clause]: `case` clauses don't cover every input
+  --> fixtures/case_tuple_pattern_sequential/input.fz:2:3
+   |
+ 2 |   case v do
+   |   ^^^^^^^^^ matched values may fall through here
+   |
+   = note: an input matched by no clause halts with `:case_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+
+warning[type/no-matching-clause]: `with else` clauses don't cover every input
+  --> fixtures/case_tuple_pattern_sequential/input.fz:9:3
+   |
+ 9 |   with {:ok, x} <- v do x else :err -> 0 end
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ matched values may fall through here
+   |
+   = note: an input matched by no clause halts with `:with_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+

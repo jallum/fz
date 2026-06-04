@@ -1,0 +1,26 @@
+warning[type/unreachable-arm]: this fn clause is unreachable
+  --> fixtures/wildcard_then_specific/input.fz:2:1
+   |
+ 2 | fn catch(0), do: :zero
+   | ^^^^^^^^^^^^^^^^^^^^^^ never matches — an earlier clause covers every input that reaches here
+   |
+  --> fixtures/wildcard_then_specific/input.fz:1:1
+   |
+ 1 | fn catch(_), do: :anything
+   | -------------------------- this clause already catches every input
+   |
+   = help: remove this clause, or reorder so the more specific pattern comes first
+
+warning[type/unreachable-arm]: this case clause is unreachable
+  --> fixtures/wildcard_then_specific/input.fz:7:5
+   |
+ 7 |     0 -> :zero
+   |     ^^^^^^^^^^ never matches — an earlier clause covers every input that reaches here
+   |
+  --> fixtures/wildcard_then_specific/input.fz:6:5
+   |
+ 6 |     _ -> :anything
+   |     -------------- this clause already catches every input
+   |
+   = help: remove this clause, or reorder so the more specific pattern comes first
+

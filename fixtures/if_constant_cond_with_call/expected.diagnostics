@@ -1,0 +1,11 @@
+warning[type/unreachable-arm]: the then branch is never reachable
+  --> <generated>
+   = in fn `main`
+  --> fixtures/if_constant_cond_with_call/input.fz:4:6
+   |
+ 4 |   if 1 == 0 do
+   |      ------ this value bound here
+   |
+   = note: this value here has type `false`
+   = note: narrowing for this branch would need `none`, but that intersection is uninhabited (unreachable arm at bb2)
+
