@@ -1,4 +1,5 @@
 use super::callgraph::entry_seeds;
+use super::capabilities::compute_return_capabilities;
 use super::closures::literal_closure_return_keys;
 use super::diagnostics::{compute_dead_branches, module_plan_stats};
 use super::effects::{prim_effects, term_effects};
@@ -1014,6 +1015,7 @@ fn plan_module_with_role<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     let activation_return_telemetry = out.activation_return_telemetry;
     let activation_return_projection_gaps = out.activation_return_projection_gaps;
     let activation_projection_facts = out.activation_projection_facts;
+    let return_capabilities = compute_return_capabilities(m, &out.fn_effects);
     let spec_roles = out.spec_roles;
 
     let mut mt = ModulePlan {
@@ -1025,6 +1027,7 @@ fn plan_module_with_role<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
         spec_precedence,
         fn_effects: out.fn_effects,
         dead_branches: HashMap::new(),
+        return_capabilities,
     };
     mt.dead_branches = compute_dead_branches(t, m, &mt);
     {

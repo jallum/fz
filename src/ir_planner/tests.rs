@@ -1202,6 +1202,7 @@ fn reachable_specs_do_not_seed_uninvoked_closure_targets() {
         spec_precedence: HashMap::new(),
         fn_effects: HashMap::new(),
         dead_branches: HashMap::new(),
+        return_capabilities: HashMap::new(),
     };
 
     let reachable = reachable_spec_ids(&mut t, &reg, &mt);
@@ -1456,6 +1457,52 @@ fn quicksort_partition_accumulators_converge_to_one_spec() {
         "hi accumulator converged to the same list type: {:?}",
         key.input
     );
+}
+
+/// fz-qwf.1 — the cached per-fn return capabilities classify the quicksort
+/// helpers by the *shape* a caller could demand, computed once over the static
+/// call graph (through the CPS clause helpers), not per call site. partition
+/// returns a 2-tuple on every clause path, so a destructuring caller may demand
+/// the fields; qsort and append return freshly-built lists, so a cons/append
+/// context may hand them a destination tail; main returns neither.
+#[test]
+fn return_capabilities_classify_quicksort_fn_shapes() {
+    let module = linked_runtime_module(include_str!("../../fixtures/quicksort/input.fz"));
+    let mut t = ConcreteTypes;
+    let mt = plan_module(&mut t, &module, &NullTelemetry);
+    let cap = |name: &str| {
+        let id = module
+            .fn_by_name(name)
+            .unwrap_or_else(|| panic!("quicksort defines {name}"))
+            .id;
+        *mt.return_capabilities
+            .get(&id)
+            .unwrap_or_else(|| panic!("no return capability for {name}"))
+    };
+
+    assert_eq!(
+        cap("partition").returns_tuple_of_arity,
+        Some(2),
+        "partition delivers a 2-tuple on every clause path"
+    );
+    assert!(
+        !cap("partition").can_return_list_tail,
+        "partition returns a tuple, not list material"
+    );
+
+    assert!(cap("qsort").can_return_list_tail, "qsort returns a freshly-built list");
+    assert!(
+        cap("append").can_return_list_tail,
+        "append returns a freshly-built list"
+    );
+    assert_eq!(
+        cap("qsort").returns_tuple_of_arity,
+        None,
+        "qsort returns a list, not a tuple"
+    );
+
+    assert_eq!(cap("main").returns_tuple_of_arity, None, "main returns neither a tuple");
+    assert!(!cap("main").can_return_list_tail, "main returns neither list material");
 }
 
 fn frontend_module(src: &str) -> Module {

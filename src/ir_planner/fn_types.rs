@@ -250,6 +250,10 @@ pub struct ModulePlan {
     /// `any` key; narrower per-spec branch facts live on
     /// `SpecPlan::dead_branches` and are consumed only on planned bodies.
     pub dead_branches: HashMap<(FnId, BlockId), DeadBranch>,
+    /// Per-FnId return-shape capabilities, computed once over the static call
+    /// graph by `capabilities::compute_return_capabilities`. The return-demand
+    /// grant reads these instead of re-walking bodies per call site.
+    pub return_capabilities: ReturnCapabilities,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -283,6 +287,16 @@ impl EffectSummary {
         self.halts |= other.halts;
         self.calls_opaque |= other.calls_opaque;
         *self != before
+    }
+
+    /// A barrier to relocating an allocation between building a cons cell and
+    /// filling its tail. List-tail return delivery moves the moment a cons is
+    /// linked relative to whatever sits in the build/fill window, so any
+    /// externally observable effect, an allocation-stats read, a scheduler
+    /// interaction, a halt, or an opaque call (whose effects are not locally
+    /// visible) makes that motion unsafe. Allocation by itself is not a barrier.
+    pub fn blocks_return_context_motion(&self) -> bool {
+        self.observable || self.reads_allocation_stats || self.scheduler_visible || self.halts || self.calls_opaque
     }
 }
 
@@ -569,6 +583,29 @@ pub(crate) fn display_return_strategy<T: RenderTypes + Types<Ty = Ty>>(t: &T, st
 /// demand. Consumed by the destination-planning barrier and exposed on
 /// `ModulePlan` for downstream passes.
 pub type FnEffects = HashMap<FnId, EffectSummary>;
+
+/// Per-FnId return-shape capabilities: cached structural facts that the
+/// return-demand grant reads in O(1) instead of re-walking bodies per call
+/// site. Computed once over the static call graph by
+/// `capabilities::compute_return_capabilities` and stored on `ModulePlan`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReturnCapability {
+    /// `Some(n)` when every return delivers an `n`-tuple construction (across
+    /// the fn's `Return`s and tail-call targets), so a destructuring caller may
+    /// demand the fields directly and skip the struct box.
+    pub returns_tuple_of_arity: Option<usize>,
+    /// Every return is a freshly-built list (cons spine, `[]`, or a forwarded
+    /// list), so a cons/append context may hand the fn a destination tail for
+    /// its final cell — the owned-cons-reuse / TRMC-shaped delivery.
+    pub can_return_list_tail: bool,
+    /// The fn (or its call graph) reaches an observable barrier, so relocating
+    /// an allocation across it is unsafe; list-tail motion is refused here.
+    /// Cached from the fn's `EffectSummary::blocks_return_context_motion`.
+    pub blocks_motion: bool,
+}
+
+/// Per-FnId return capabilities, keyed like `FnEffects`.
+pub type ReturnCapabilities = HashMap<FnId, ReturnCapability>;
 
 /// Worklist-internal aliases for repeated index shapes.
 pub(crate) type SpecKeySet = HashSet<SpecKey>;

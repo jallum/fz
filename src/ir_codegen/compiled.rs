@@ -493,6 +493,7 @@ fn merge_module_plan(out: &mut Option<ModulePlan>, incoming: ModulePlan) {
             existing.spec_precedence.extend(incoming.spec_precedence);
             existing.fn_effects.extend(incoming.fn_effects);
             existing.dead_branches.extend(incoming.dead_branches);
+            existing.return_capabilities.extend(incoming.return_capabilities);
         }
         None => *out = Some(incoming),
     }
@@ -539,6 +540,11 @@ fn remap_module_plan(plan: &ModulePlan, fn_map: &BTreeMap<FnId, FnId>) -> Module
             .dead_branches
             .iter()
             .filter_map(|((fid, block), dead)| fn_map.get(fid).map(|new| ((*new, *block), *dead)))
+            .collect(),
+        return_capabilities: plan
+            .return_capabilities
+            .iter()
+            .filter_map(|(fid, cap)| fn_map.get(fid).map(|new| (*new, *cap)))
             .collect(),
     }
 }

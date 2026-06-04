@@ -42,6 +42,7 @@
 //! planner has failed to put the fact in the model.
 
 pub(crate) mod callgraph;
+pub(crate) mod capabilities;
 pub mod closures;
 pub mod diagnostics;
 pub(crate) mod effects;
