@@ -254,12 +254,22 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                     args: call_args,
                     continuation,
                 } => {
-                    let selected_target = fn_types
-                        .local_call_target(&CallsiteId::new(fn_id, ident, EmitSlot::ClosureCall))
-                        .cloned();
                     let cl = env_get(&env, *closure)?;
                     let (lam_fn, mut clos_args) = unpack_callable(cl, runtime.cur_proc())?;
                     clos_args.extend(collect(&env, call_args)?);
+                    // A closure call dispatches on the runtime closure value:
+                    // `lam_fn` is ground truth. The planner's per-site target is a
+                    // sound spec hint only when it specializes *this* lambda. A
+                    // shared/polymorphic site — e.g. inside a runtime higher-order
+                    // fn reached with different closures (reduce/2 delegates to
+                    // reduce/3) — can carry a target for a different lambda; running
+                    // it would invoke the wrong body with the wrong arity. Native
+                    // sidesteps this by indirect-dispatching the precompiled body;
+                    // mirror that here by keeping the target only when it matches.
+                    let selected_target = fn_types
+                        .local_call_target(&CallsiteId::new(fn_id, ident, EmitSlot::ClosureCall))
+                        .filter(|target| target.fn_id == lam_fn)
+                        .cloned();
                     let outer_cap_vals = collect(&env, &continuation.captured)?;
                     match run_fn_typed(
                         runtime,
@@ -267,7 +277,7 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                         module,
                         tel,
                         module_types,
-                        selected_target.as_ref().map_or(lam_fn, |target| target.fn_id),
+                        lam_fn,
                         clos_args,
                         selected_target.clone(),
                     )? {
@@ -307,13 +317,17 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                     closure,
                     args: call_args,
                 } => {
-                    let selected_target = fn_types
-                        .local_call_target(&CallsiteId::new(fn_id, ident, EmitSlot::ClosureCall))
-                        .cloned();
                     let cl = env_get(&env, *closure)?;
                     let (lam_fn, mut clos_args) = unpack_callable(cl, runtime.cur_proc())?;
                     clos_args.extend(collect(&env, call_args)?);
-                    fn_id = selected_target.as_ref().map_or(lam_fn, |target| target.fn_id);
+                    // Dispatch on the runtime closure value; keep the planner's
+                    // target only when it specializes this same lambda (see the
+                    // CallClosure arm above for why).
+                    let selected_target = fn_types
+                        .local_call_target(&CallsiteId::new(fn_id, ident, EmitSlot::ClosureCall))
+                        .filter(|target| target.fn_id == lam_fn)
+                        .cloned();
+                    fn_id = lam_fn;
                     args = clos_args;
                     selected_spec = selected_target;
                     continue 'tail;
