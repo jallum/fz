@@ -223,11 +223,14 @@ diagnostics to the verifier.
 Some planner facts are not source values. They are object-local permissions on
 private runtime objects, chiefly owned-cons reuse.
 
-A physical capability must not affect semantic specialization.
-`src/ir_planner/effects.rs` classifies operation effects: whether an operation
-allocates, observes allocation, is externally observable, reaches the scheduler,
-or halts. Capability validation reads that classifier rather than carrying a
-parallel publication rule.
+A physical capability must not affect semantic specialization. The model layers
+cleanly: **semantic values** carry program meaning; **physical capabilities**
+carry object-local permissions such as owned-cons reuse; **effect facts** say
+when an operation allocates, observes allocation, is externally observable,
+reaches the scheduler, or halts; and codegen consumes validated facts
+mechanically. `src/ir_planner/effects.rs` owns operation effect classification,
+so capability validation and planner barriers read one classifier rather than
+carrying a parallel publication rule.
 
 Owned-cons reuse eliminates copied prefixes when the compiler has a source-cons
 capability for a projected head. The source slot is not a source value and is
@@ -246,14 +249,25 @@ a reuse attempt for `C`. The runtime alias bit remains the cell-local guard: if
 aliased, the helper allocates a fresh cons with the same head and requested
 tail. An aliased reuse attempt is an allocation miss, not a user-visible panic.
 
+Same-heap publication of a source cons — closure or lazy-continuation capture
+that escapes the activation, insertion into another heap container, a
+receive/scheduler-visible handoff, or an allocation-stat read that makes timing
+observable — sets the alias bit before reuse. Send is different: the runtime
+deep-copies messages for cross-process send and self-send, so the sender's
+current-process cons cells do not become aliased merely because they were sent.
+Extern calls are not alias-publication boundaries for their arguments; an extern
+that retains a value after returning must copy it.
+
 The capability rides existing IR machinery:
 
 - `src/fz_ir/mod.rs` exposes `physical_capabilities` for object-local facts,
   `physical_entry_params` for entry slots that carry physical facts, and
   `ignored_entry_params` only for source wildcard holes.
 - `src/ir_lower/cps.rs` transports `owned_cons_captures` through ordinary
-  continuation-capture machinery.
-- `src/ir_dce/mod.rs` owns capability liveness.
+  continuation-capture machinery; owned-cons source slots are physical
+  params, not ignored semantic params.
+- `src/ir_dce/mod.rs` owns capability liveness: live heads keep their source-cons
+  params; dead heads drop the capability.
 - `src/ir_capture_norm/mod.rs` rewrites capture shapes and relies on DCE to
   preserve or drop capability payloads.
 - `src/ir_codegen/support.rs` lowers the surviving fact through
@@ -263,6 +277,17 @@ The standalone reuse-pruning pass and duplicate owned-cons capability lane have
 been removed. Codegen reads reusable source objects straight from
 `physical_capabilities`, and semantic specialization ignores only the entry
 params listed in `physical_entry_params`.
+
+### Pinned signal
+
+These native allocation floors stay green; a regression means the capability was
+dropped on the floor:
+
+```text
+quicksort native:             list_cons_allocs = 11,  closure_allocs = 0
+enum_list_allocations native: list_cons_allocs = 5,   closure_allocs = 0
+enum_reduce_suspend native:                           closure_allocs = 1
+```
 
 ## Runtime And GC
 
