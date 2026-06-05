@@ -22,14 +22,16 @@
 //! diagnostic source for "this call resolves to …".
 
 use crate::ast::*;
-use crate::compiler::{Compiler, CompilerWorld, ModuleId, ModuleOrigin, VisibleCallableAliasOrigin};
+use crate::compiler::{
+    Compiler, CompilerWorld, ModuleContractOrigin, ModuleId, VisibleCallableAliasOrigin, VisibleModuleBindingOrigin,
+};
 use crate::diag::{Diagnostic, Span, codes};
 use crate::frontend::protocols::{
     ImplTarget, PROTOCOL_ELEM_VAR, ProtocolCallbackFact, ProtocolDecl, ProtocolImplFact, ProtocolImplKey,
-    ProtocolRegistry, impl_target_type, impl_target_type_with_element, protocol_domain_tag,
+    extend_protocol_facts_from_interfaces, impl_target_type, impl_target_type_with_element, protocol_domain_tag,
 };
 use crate::modules::identity::{ExportKey, Mfa, ModuleName, QualifiedName};
-use crate::modules::interface::{ModuleInterface, collect_from_program};
+use crate::modules::interface::ModuleInterface;
 use crate::modules::runtime_library::{interface, root_type_env};
 use crate::telemetry::Telemetry;
 use crate::type_expr::{
@@ -171,6 +173,20 @@ impl fmt::Display for ResolveError {
 
 impl Error for ResolveError {}
 
+#[derive(Clone, Debug)]
+pub(crate) struct ModuleContractRequest {
+    pub(crate) requester_module: String,
+    pub(crate) target_module: ModuleName,
+    pub(crate) cause: &'static str,
+    pub(crate) span: Span,
+}
+
+pub(crate) enum ResolveDemandResult {
+    Finished(Program),
+    Demands(Vec<ModuleContractRequest>),
+    Fatal(Diagnostic),
+}
+
 pub fn flatten_modules<T: Types<Ty = Ty>>(t: &mut T, prog: Program) -> Result<Program, ResolveError> {
     let mut compiler = Compiler::new();
     resolve_program_eagerly(
@@ -191,14 +207,67 @@ pub fn resolve_program_eagerly<T: Types<Ty = Ty>>(
     interface_table: InterfaceTable,
     tel: &dyn Telemetry,
 ) -> Result<Program, ResolveError> {
+    compiler
+        .resolve_program_from_demands(t, root_source, prog, interface_table, tel)
+        .map_err(|diagnostic| ResolveError::ProtocolError {
+            msg: diagnostic.message,
+            span: diagnostic.primary.span,
+        })
+}
+
+pub(crate) fn resolve_program_once<T: Types<Ty = Ty>>(
+    t: &mut T,
+    compiler: &mut CompilerWorld,
+    root_source: Option<ModuleId>,
+    prog: Program,
+    module_interfaces: InterfaceTable,
+    external_module_interfaces: InterfaceTable,
+    tel: &dyn Telemetry,
+) -> ResolveDemandResult {
     let prog = inject_module_info(prog);
-    collect_module_fns(&prog)?;
-    let module_macros = collect_module_macros(compiler, root_source, &prog, tel)?;
-    let (module_interfaces, external_module_interfaces) =
-        preload_module_contracts(compiler, root_source, &prog, interface_table, tel)?;
+    register_declared_module_entities(compiler, &prog.items, None, tel);
+    if let Err(err) = collect_module_fns(&prog) {
+        return ResolveDemandResult::Fatal(err.to_diagnostic());
+    }
+    let module_macros = match collect_module_macros(compiler, root_source, &prog, tel) {
+        Ok(macros) => macros,
+        Err(err) => return ResolveDemandResult::Fatal(err.to_diagnostic()),
+    };
+    let module_requests = requested_module_references(&prog);
+    let missing_contracts = module_requests
+        .iter()
+        .filter_map(|request| {
+            note_contract_request(&request, tel);
+            if module_interfaces.contains_key(&request.target_module)
+                || external_module_interfaces.contains_key(&request.target_module)
+                || compiler.module_contract_for_name(&request.target_module).is_some()
+            {
+                let origin = compiler
+                    .module_contract_for_name(&request.target_module)
+                    .map(|contract| contract.origin.clone());
+                note_contract_ready(&request, origin.as_ref(), tel);
+                return None;
+            }
+            if request.cause == "qualified_reference" {
+                return None;
+            }
+            Some(request.clone())
+        })
+        .collect::<Vec<_>>();
+    if !missing_contracts.is_empty() {
+        return ResolveDemandResult::Demands(missing_contracts);
+    }
+    let compiler_visible_interfaces = module_requests
+        .iter()
+        .filter_map(|request| {
+            compiler
+                .module_contract_for_name(&request.target_module)
+                .map(|contract| (request.target_module.clone(), contract.interface.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut all_interfaces = module_interfaces.clone();
     all_interfaces.extend(external_module_interfaces.clone());
-    let module_paths = collect_visible_module_paths(&prog, &module_interfaces, &external_module_interfaces);
+    all_interfaces.extend(compiler_visible_interfaces);
     let mut out: Vec<Rc<Item>> = Vec::new();
     let mut module_docs: HashMap<String, String> = HashMap::new();
     collect_module_docs(&prog, &mut module_docs);
@@ -212,7 +281,7 @@ pub fn resolve_program_eagerly<T: Types<Ty = Ty>>(
     module_type_envs.insert(String::new(), root_type_env.clone());
     let mut opaque_inners: HashMap<String, Ty> = root_types.opaque_inners;
     let mut brand_inners: HashMap<String, Ty> = root_types.brand_inners;
-    collect_module_type_envs(
+    if let Err(err) = collect_module_type_envs(
         t,
         &prog,
         "",
@@ -220,14 +289,31 @@ pub fn resolve_program_eagerly<T: Types<Ty = Ty>>(
         &mut module_type_envs,
         &mut opaque_inners,
         &mut brand_inners,
-    )?;
-    let protocol_registry = collect_protocol_registry(t, &prog, &external_module_interfaces, &mut module_type_envs)?;
-    compiler.record_protocol_facts(&protocol_registry);
-    let mut structs = BTreeMap::new();
-    let (root_aliases, root_imports) = collect_import_scope(&prog.items, &all_interfaces, &module_macros)?;
-    if let Some(root_id) = root_source {
-        record_imported_visible_callables(compiler, root_id, &root_imports, &all_interfaces);
+    ) {
+        return ResolveDemandResult::Fatal(err.to_diagnostic());
     }
+    let (protocol_decls, protocol_impls) =
+        match collect_protocol_facts(compiler, t, &prog, &external_module_interfaces, &mut module_type_envs) {
+            Ok(facts) => facts,
+            Err(err) => return ResolveDemandResult::Fatal(err.to_diagnostic()),
+        };
+    compiler.record_protocol_facts(&protocol_decls, &protocol_impls);
+    let mut structs = BTreeMap::new();
+    let (_root_aliases, root_imports) = match collect_import_scope(&prog.items, &all_interfaces, &module_macros) {
+        Ok(scope) => scope,
+        Err(err) => return ResolveDemandResult::Fatal(err.to_diagnostic()),
+    };
+    let root_namespace_id = root_source.unwrap_or_else(|| compiler.register_anonymous_root_module("resolve-root", tel));
+    if let Err(diagnostic) = compiler.attach_primitive_prelude_namespace(root_namespace_id, tel) {
+        return ResolveDemandResult::Fatal(diagnostic);
+    }
+    record_imported_visible_callables(compiler, root_namespace_id, &root_imports, &all_interfaces, tel);
+    if let Err(err) =
+        record_visible_module_bindings(compiler, root_namespace_id, None, &prog.items, &all_interfaces, tel)
+    {
+        return ResolveDemandResult::Fatal(err.to_diagnostic());
+    }
+    compiler.note_namespace_ready(root_namespace_id, tel);
     for item in &prog.items {
         match &**item {
             Item::Fn(def) => {
@@ -236,38 +322,43 @@ pub fn resolve_program_eagerly<T: Types<Ty = Ty>>(
                 for clause in &mut new_def.clauses {
                     let mut intro = pattern_intro(&clause.params);
                     rewrite_expr(
+                        compiler,
+                        Some(root_namespace_id),
                         &mut clause.body,
                         "",
                         &no_siblings,
                         &mut intro,
-                        &module_paths,
-                        &root_aliases,
                         &root_imports,
                     );
                     if let Some(g) = &mut clause.guard {
                         rewrite_expr(
+                            compiler,
+                            Some(root_namespace_id),
                             g,
                             "",
                             &no_siblings,
                             &mut intro,
-                            &module_paths,
-                            &root_aliases,
                             &root_imports,
                         );
                     }
                 }
                 out.push(Rc::new(Item::Fn(new_def)));
             }
-            Item::Module(m) => flatten_module(
-                compiler,
-                m,
-                None,
-                &mut out,
-                &mut structs,
-                &module_paths,
-                &all_interfaces,
-                &module_macros,
-            )?,
+            Item::Module(m) => {
+                if let Err(err) = flatten_module(
+                    compiler,
+                    m,
+                    None,
+                    root_namespace_id,
+                    &mut out,
+                    &mut structs,
+                    &all_interfaces,
+                    &module_macros,
+                    tel,
+                ) {
+                    return ResolveDemandResult::Fatal(err.to_diagnostic());
+                }
+            }
             Item::Struct(s) => {
                 structs.insert(s.module.clone(), s.fields.clone());
             }
@@ -284,12 +375,12 @@ pub fn resolve_program_eagerly<T: Types<Ty = Ty>>(
                 for a in &mut new_args {
                     let mut intro: HashSet<String> = HashSet::new();
                     rewrite_expr(
+                        compiler,
+                        Some(root_namespace_id),
                         a,
                         "",
                         &no_siblings,
                         &mut intro,
-                        &module_paths,
-                        &root_aliases,
                         &root_imports,
                     );
                 }
@@ -302,19 +393,26 @@ pub fn resolve_program_eagerly<T: Types<Ty = Ty>>(
                 }));
             }
             Item::Protocol(_) => {}
-            Item::ProtocolImpl(protocol_impl) => flatten_protocol_impl(
-                protocol_impl,
-                None,
-                &mut out,
-                &module_paths,
-                &root_aliases,
-                &root_imports,
-                &HashSet::new(),
-            )?,
+            Item::ProtocolImpl(protocol_impl) => {
+                if let Err(err) = flatten_protocol_impl(
+                    compiler,
+                    protocol_impl,
+                    None,
+                    Some(root_namespace_id),
+                    &mut out,
+                    &root_imports,
+                    &HashSet::new(),
+                ) {
+                    return ResolveDemandResult::Fatal(err.to_diagnostic());
+                }
+            }
         }
     }
-    let struct_field_types = collect_struct_field_types(&module_type_envs, &structs)?;
-    Ok(Program {
+    let struct_field_types = match collect_struct_field_types(&module_type_envs, &structs) {
+        Ok(field_types) => field_types,
+        Err(err) => return ResolveDemandResult::Fatal(err.to_diagnostic()),
+    };
+    ResolveDemandResult::Finished(Program {
         items: out,
         module_interfaces,
         external_module_interfaces,
@@ -501,92 +599,6 @@ fn collect_struct_field_types(
     Ok(out)
 }
 
-#[derive(Clone, Debug)]
-struct ModuleContractRequest {
-    requester_module: String,
-    target_module: ModuleName,
-    cause: &'static str,
-    span: Span,
-}
-
-fn preload_module_contracts(
-    compiler: &mut CompilerWorld,
-    root_source: Option<ModuleId>,
-    prog: &Program,
-    external_interfaces: InterfaceTable,
-    tel: &dyn Telemetry,
-) -> Result<(InterfaceTable, InterfaceTable), ResolveError> {
-    let local_interfaces = match root_source {
-        Some(root_source) => compiler
-            .ensure_source_module_interfaces(root_source, tel)
-            .expect("source-backed interface collection must succeed"),
-        None => collect_from_program(prog),
-    };
-    let mut external_interfaces = external_interfaces;
-    let mut requested = Vec::new();
-    collect_requested_module_references(prog, &mut requested);
-    for request in requested {
-        match require_module_contract(compiler, &local_interfaces, &mut external_interfaces, &request, tel) {
-            Ok(()) => {}
-            Err(ResolveError::UnknownModule { .. }) if request.cause == "qualified_reference" => {}
-            Err(err) => return Err(err),
-        }
-    }
-    Ok((local_interfaces, external_interfaces))
-}
-
-fn require_module_contract(
-    compiler: &mut CompilerWorld,
-    local_interfaces: &InterfaceTable,
-    external_interfaces: &mut InterfaceTable,
-    request: &ModuleContractRequest,
-    tel: &dyn Telemetry,
-) -> Result<(), ResolveError> {
-    note_contract_request(request, tel);
-    if local_interfaces.contains_key(&request.target_module) {
-        note_contract_ready(
-            request,
-            compiler
-                .module_id_for_name(&request.target_module)
-                .map(|module_id| compiler.module(module_id).origin),
-            tel,
-        );
-        return Ok(());
-    }
-    if external_interfaces.contains_key(&request.target_module) {
-        note_contract_ready(
-            request,
-            compiler
-                .module_id_for_name(&request.target_module)
-                .map(|module_id| compiler.module(module_id).origin),
-            tel,
-        );
-        return Ok(());
-    }
-    let Some(interface) =
-        interface(compiler, &request.target_module, tel).expect("runtime interface lookup must succeed")
-    else {
-        return Err(ResolveError::UnknownModule {
-            module: request.target_module.clone(),
-            span: request.span,
-        });
-    };
-    note_contract_ready(
-        request,
-        compiler
-            .module_id_for_name(&request.target_module)
-            .map(|module_id| compiler.module(module_id).origin),
-        tel,
-    );
-    external_interfaces.insert(request.target_module.clone(), interface.clone());
-    let mut deps = Vec::new();
-    enqueue_runtime_interface_dependency_requests(&interface, &request.target_module.dotted(), &mut deps);
-    for dependency in deps {
-        require_module_contract(compiler, local_interfaces, external_interfaces, &dependency, tel)?;
-    }
-    Ok(())
-}
-
 fn note_contract_request(request: &ModuleContractRequest, tel: &dyn Telemetry) {
     tel.execute(
         &["fz", "resolve", "module_contract_requested"],
@@ -602,7 +614,7 @@ fn note_contract_request(request: &ModuleContractRequest, tel: &dyn Telemetry) {
     );
 }
 
-fn note_contract_ready(request: &ModuleContractRequest, origin: Option<ModuleOrigin>, tel: &dyn Telemetry) {
+fn note_contract_ready(request: &ModuleContractRequest, origin: Option<&ModuleContractOrigin>, tel: &dyn Telemetry) {
     tel.execute(
         &["fz", "resolve", "module_contract_ready"],
         &measurements! {
@@ -697,6 +709,12 @@ fn collect_requested_module_references(prog: &Program, out: &mut Vec<ModuleContr
             _ => {}
         }
     }
+}
+
+fn requested_module_references(prog: &Program) -> Vec<ModuleContractRequest> {
+    let mut out = Vec::new();
+    collect_requested_module_references(prog, &mut out);
+    out
 }
 
 fn collect_requested_module_references_recursive(
@@ -1026,25 +1044,44 @@ fn collect_module_docs_recursive(m: &ModuleDef, parent: &str, out: &mut HashMap<
     }
 }
 
-fn collect_protocol_registry<T: Types<Ty = Ty>>(
+type ProtocolDeclMap = BTreeMap<ModuleName, ProtocolDecl>;
+type ProtocolImplMap = BTreeMap<ProtocolImplKey, ProtocolImplFact>;
+
+fn collect_protocol_facts<T: Types<Ty = Ty>>(
+    compiler: &CompilerWorld,
     t: &mut T,
     prog: &Program,
     external_module_interfaces: &InterfaceTable,
     module_type_envs: &mut HashMap<String, ModuleTypeEnv>,
-) -> Result<ProtocolRegistry, ResolveError> {
-    let mut registry = ProtocolRegistry::default();
-    collect_protocol_declarations(t, &prog.items, None, module_type_envs, &mut registry)?;
-    collect_protocol_implementations(&prog.items, None, &mut registry)?;
-    registry.extend_interfaces(external_module_interfaces);
-    validate_protocol_impls(&registry)?;
-    for protocol in registry.protocols.keys() {
-        let ty = protocol_domain_type(t, protocol, &registry);
+) -> Result<(ProtocolDeclMap, ProtocolImplMap), ResolveError> {
+    let mut protocol_decls = BTreeMap::new();
+    let mut protocol_impls = BTreeMap::new();
+    collect_protocol_declarations(t, &prog.items, None, module_type_envs, &mut protocol_decls)?;
+    let mut available_protocol_decls = compiler.protocol_decls().clone();
+    available_protocol_decls.extend(protocol_decls.clone());
+
+    collect_protocol_implementations(&prog.items, None, &available_protocol_decls, &mut protocol_impls)?;
+
+    let mut interface_protocol_decls = BTreeMap::new();
+    let mut interface_protocol_impls = BTreeMap::new();
+    extend_protocol_facts_from_interfaces(
+        &mut interface_protocol_decls,
+        &mut interface_protocol_impls,
+        external_module_interfaces,
+    );
+    available_protocol_decls.extend(interface_protocol_decls);
+    let mut available_protocol_impls = interface_protocol_impls;
+    available_protocol_impls.extend(protocol_impls.clone());
+
+    validate_protocol_impls(&available_protocol_decls, &available_protocol_impls)?;
+    for protocol in available_protocol_decls.keys() {
+        let ty = protocol_domain_type(t, protocol, &available_protocol_impls);
         // Element-refining template: `Protocol.t(elem)` instantiates
         // PROTOCOL_ELEM_VAR with `elem`, so a `List` target refines from
         // `list(any)` to `list(elem)`. The bare `Protocol.t` (arity 0) stays
         // the `element = any` domain above.
         let element = t.type_var(PROTOCOL_ELEM_VAR);
-        let template = protocol_domain_template(t, protocol, &registry, element);
+        let template = protocol_domain_template(t, protocol, &protocol_impls, element);
         for env in module_type_envs.values_mut() {
             env.insert(format!("{}.t", protocol), ty.clone());
             env.insert_protocol_domain(format!("{}.t", protocol), template.clone());
@@ -1054,13 +1091,18 @@ fn collect_protocol_registry<T: Types<Ty = Ty>>(
             env.insert_protocol_domain("t".to_string(), template);
         }
     }
-    validate_protocol_callback_specs(t, &registry, module_type_envs)?;
-    Ok(registry)
+    validate_protocol_callback_specs(
+        t,
+        &available_protocol_decls,
+        &available_protocol_impls,
+        module_type_envs,
+    )?;
+    Ok((protocol_decls, protocol_impls))
 }
 
-fn protocol_domain_type<T: Types<Ty = Ty>>(t: &mut T, protocol: &ModuleName, registry: &ProtocolRegistry) -> Ty {
+fn protocol_domain_type<T: Types<Ty = Ty>>(t: &mut T, protocol: &ModuleName, protocol_impls: &ProtocolImplMap) -> Ty {
     let any = t.any();
-    protocol_domain_template(t, protocol, registry, any)
+    protocol_domain_template(t, protocol, protocol_impls, any)
 }
 
 /// The protocol's domain — its domain tag unioned with each implementing
@@ -1070,11 +1112,11 @@ fn protocol_domain_type<T: Types<Ty = Ty>>(t: &mut T, protocol: &ModuleName, reg
 fn protocol_domain_template<T: Types<Ty = Ty>>(
     t: &mut T,
     protocol: &ModuleName,
-    registry: &ProtocolRegistry,
+    protocol_impls: &ProtocolImplMap,
     element: Ty,
 ) -> Ty {
     let mut domain = t.opaque_of(&protocol_domain_tag(protocol));
-    for fact in registry.impls.values().filter(|fact| fact.protocol == *protocol) {
+    for fact in protocol_impls.values().filter(|fact| fact.protocol == *protocol) {
         let target_ty = impl_target_type_with_element(t, &fact.target, element.clone());
         domain = t.union(domain, target_ty);
     }
@@ -1086,14 +1128,14 @@ fn collect_protocol_declarations<T: Types<Ty = Ty>>(
     items: &[Rc<Item>],
     parent: Option<&ModuleName>,
     module_type_envs: &mut HashMap<String, ModuleTypeEnv>,
-    registry: &mut ProtocolRegistry,
+    protocol_decls: &mut ProtocolDeclMap,
 ) -> Result<(), ResolveError> {
     for item in items {
         match &**item {
             Item::Protocol(protocol) => {
                 let name = qualify_protocol_name(parent, &protocol.name);
                 let decl = protocol_decl(t, &name, protocol, module_type_envs)?;
-                if registry.protocols.insert(name.clone(), decl.clone()).is_some() {
+                if protocol_decls.insert(name.clone(), decl.clone()).is_some() {
                     return Err(ResolveError::ProtocolError {
                         msg: format!("protocol `{}` is defined more than once", name),
                         span: decl.span,
@@ -1109,7 +1151,7 @@ fn collect_protocol_declarations<T: Types<Ty = Ty>>(
                 } else {
                     ModuleName::from_segments(vec![module.name.clone()])
                 };
-                collect_protocol_declarations(t, &module.items, Some(&name), module_type_envs, registry)?;
+                collect_protocol_declarations(t, &module.items, Some(&name), module_type_envs, protocol_decls)?;
             }
             _ => {}
         }
@@ -1121,12 +1163,13 @@ fn collect_protocol_declarations<T: Types<Ty = Ty>>(
 fn collect_protocol_implementations(
     items: &[Rc<Item>],
     parent: Option<&ModuleName>,
-    registry: &mut ProtocolRegistry,
+    protocol_decls: &ProtocolDeclMap,
+    protocol_impls: &mut ProtocolImplMap,
 ) -> Result<(), ResolveError> {
     for item in items {
         match &**item {
             Item::ProtocolImpl(protocol_impl) => {
-                let protocol = resolve_impl_protocol_name(parent, &protocol_impl.protocol, registry);
+                let protocol = resolve_impl_protocol_name(parent, &protocol_impl.protocol, protocol_decls);
                 let target_module = qualify_module_child(parent, &protocol_impl.target.path);
                 let target = ImplTarget::module(target_module.clone());
                 let impl_module = protocol_impl_module(&protocol, &target_module);
@@ -1139,7 +1182,7 @@ fn collect_protocol_implementations(
                     span: protocol_impl.span,
                 };
                 let key = ProtocolImplKey { protocol, target };
-                if let Some(existing) = registry.impls.get(&key) {
+                if let Some(existing) = protocol_impls.get(&key) {
                     return Err(ResolveError::DuplicateProtocolImpl {
                         protocol: key.protocol.clone(),
                         target: key.target.clone(),
@@ -1147,7 +1190,7 @@ fn collect_protocol_implementations(
                         duplicate_span: protocol_impl.span,
                     });
                 }
-                registry.impls.insert(key, fact);
+                protocol_impls.insert(key, fact);
             }
             Item::Module(module) => {
                 let name = if let Some(parent) = parent {
@@ -1155,7 +1198,7 @@ fn collect_protocol_implementations(
                 } else {
                     ModuleName::from_segments(vec![module.name.clone()])
                 };
-                collect_protocol_implementations(&module.items, Some(&name), registry)?;
+                collect_protocol_implementations(&module.items, Some(&name), protocol_decls, protocol_impls)?;
             }
             _ => {}
         }
@@ -1261,9 +1304,12 @@ fn protocol_impl_callbacks(
     Ok((callbacks, callback_specs))
 }
 
-fn validate_protocol_impls(registry: &ProtocolRegistry) -> Result<(), ResolveError> {
-    for fact in registry.impls.values() {
-        let Some(protocol) = registry.protocols.get(&fact.protocol) else {
+fn validate_protocol_impls(
+    protocol_decls: &ProtocolDeclMap,
+    protocol_impls: &ProtocolImplMap,
+) -> Result<(), ResolveError> {
+    for fact in protocol_impls.values() {
+        let Some(protocol) = protocol_decls.get(&fact.protocol) else {
             return Err(ResolveError::ProtocolError {
                 msg: format!(
                     "protocol implementation references unknown protocol `{}`",
@@ -1328,14 +1374,15 @@ fn validate_protocol_impls(registry: &ProtocolRegistry) -> Result<(), ResolveErr
 /// either side are not checked.
 fn validate_protocol_callback_specs<T: Types<Ty = Ty>>(
     t: &mut T,
-    registry: &ProtocolRegistry,
+    protocol_decls: &ProtocolDeclMap,
+    protocol_impls: &ProtocolImplMap,
     module_type_envs: &HashMap<String, ModuleTypeEnv>,
 ) -> Result<(), ResolveError> {
-    for fact in registry.impls.values() {
+    for fact in protocol_impls.values() {
         if fact.callback_specs.is_empty() {
             continue;
         }
-        let Some(protocol) = registry.protocols.get(&fact.protocol) else {
+        let Some(protocol) = protocol_decls.get(&fact.protocol) else {
             continue;
         };
         let target_ty = impl_target_type(t, &fact.target);
@@ -1432,7 +1479,7 @@ fn qualify_module_child(parent: Option<&ModuleName>, name: &ModuleName) -> Modul
 fn resolve_impl_protocol_name(
     parent: Option<&ModuleName>,
     name: &ModuleName,
-    registry: &ProtocolRegistry,
+    protocol_decls: &ProtocolDeclMap,
 ) -> ModuleName {
     if name.segments().len() != 1 {
         return name.clone();
@@ -1443,7 +1490,7 @@ fn resolve_impl_protocol_name(
         } else {
             parent.child(name.last_segment().to_string())
         };
-        if registry.protocols.contains_key(&nested) {
+        if protocol_decls.contains_key(&nested) {
             return nested;
         }
     }
@@ -1465,57 +1512,6 @@ fn qualify_protocol_name(parent: Option<&ModuleName>, name: &ModuleName) -> Modu
         }
     } else {
         name.clone()
-    }
-}
-
-fn collect_visible_module_paths(
-    prog: &Program,
-    local_interfaces: &InterfaceTable,
-    external_interfaces: &InterfaceTable,
-) -> HashSet<String> {
-    let mut out = HashSet::new();
-    for item in &prog.items {
-        match &**item {
-            Item::Module(m) => collect_paths_recursive(m, "", &mut out),
-            Item::Protocol(protocol) => {
-                out.insert(protocol.name.dotted());
-            }
-            _ => {}
-        }
-    }
-    out.extend(local_interfaces.keys().map(ModuleName::dotted));
-    out.extend(external_interfaces.keys().map(ModuleName::dotted));
-    for interface in local_interfaces.values().chain(external_interfaces.values()) {
-        out.extend(interface.protocols.iter().map(|protocol| protocol.name.dotted()));
-    }
-    out
-}
-
-fn collect_paths_recursive(m: &ModuleDef, parent: &str, out: &mut HashSet<String>) {
-    let path = if parent.is_empty() {
-        m.name.clone()
-    } else {
-        format!("{}.{}", parent, m.name)
-    };
-    out.insert(path.clone());
-    for item in &m.items {
-        match &**item {
-            Item::Module(inner) => collect_paths_recursive(inner, &path, out),
-            Item::Protocol(protocol) => {
-                out.insert(parent_qualified_module_name(&path, &protocol.name).dotted());
-            }
-            _ => {}
-        }
-    }
-}
-
-fn parent_qualified_module_name(parent: &str, name: &ModuleName) -> ModuleName {
-    if parent.is_empty() || name.segments().len() != 1 {
-        name.clone()
-    } else {
-        ModuleName::parse_dotted(parent)
-            .expect("resolver parent paths are valid module names")
-            .child(name.last_segment().to_string())
     }
 }
 
@@ -1694,6 +1690,25 @@ fn collect_module_fns_recursive(
     Ok(())
 }
 
+fn register_declared_module_entities(
+    compiler: &mut CompilerWorld,
+    items: &[Rc<Item>],
+    parent: Option<&ModuleName>,
+    tel: &dyn Telemetry,
+) {
+    for item in items {
+        if let Item::Module(module) = item.as_ref() {
+            let module_name = if let Some(parent) = parent {
+                parent.child(module.name.clone())
+            } else {
+                ModuleName::from_segments(vec![module.name.clone()])
+            };
+            compiler.reference_named_module(module_name.clone(), tel);
+            register_declared_module_entities(compiler, &module.items, Some(&module_name), tel);
+        }
+    }
+}
+
 fn collect_module_macros(
     compiler: &mut CompilerWorld,
     root_source: Option<ModuleId>,
@@ -1740,11 +1755,12 @@ fn flatten_module(
     compiler: &mut CompilerWorld,
     m: &ModuleDef,
     parent_path: Option<&ModuleName>,
+    namespace_parent_module_id: ModuleId,
     out: &mut Vec<Rc<Item>>,
     structs: &mut BTreeMap<ModuleName, Vec<String>>,
-    module_paths: &HashSet<String>,
     module_interfaces: &InterfaceTable,
     module_macros: &ModuleMacroExports,
+    tel: &dyn Telemetry,
 ) -> Result<(), ResolveError> {
     let module_name = if let Some(parent) = parent_path {
         parent.child(m.name.clone())
@@ -1754,7 +1770,6 @@ fn flatten_module(
     let module_path = module_name.dotted();
     let mut siblings: HashSet<String> = HashSet::new();
     let mut local_protocols: HashSet<String> = HashSet::new();
-    let mut aliases: HashMap<String, String> = HashMap::new();
     let mut imports: ImportMap = HashMap::new();
     for item in &m.items {
         match &**item {
@@ -1764,18 +1779,13 @@ fn flatten_module(
             Item::Protocol(protocol) if protocol.name.segments().len() == 1 => {
                 local_protocols.insert(protocol.name.last_segment().to_string());
             }
-            Item::Alias {
-                full_path,
-                as_name,
-                span,
-            } => {
+            Item::Alias { full_path, span, .. } => {
                 if !module_interfaces.contains_key(full_path) {
                     return Err(ResolveError::UnknownModule {
                         module: full_path.clone(),
                         span: *span,
                     });
                 }
-                aliases.insert(as_name.clone(), full_path.dotted());
             }
             Item::Import {
                 path,
@@ -1834,9 +1844,24 @@ fn flatten_module(
             Item::Module(_) | Item::Struct(_) | Item::Protocol(_) | Item::ProtocolImpl(_) | Item::MacroCall { .. } => {}
         }
     }
-    if let Some(module_id) = compiler.module_id_for_name(&module_name) {
-        record_imported_visible_callables(compiler, module_id, &imports, module_interfaces);
+    let module_id = compiler.reference_named_module(module_name.clone(), tel);
+    if parent_path.is_some() {
+        compiler.set_namespace_parent(module_id, namespace_parent_module_id);
+    } else if module_id != namespace_parent_module_id {
+        compiler
+            .attach_primitive_prelude_namespace(module_id, tel)
+            .expect("top-level source module namespace should accept primitive prelude parent");
     }
+    record_imported_visible_callables(compiler, module_id, &imports, module_interfaces, tel);
+    record_visible_module_bindings(
+        compiler,
+        module_id,
+        Some(&module_name),
+        &m.items,
+        module_interfaces,
+        tel,
+    )?;
+    compiler.note_namespace_ready(module_id, tel);
 
     for item in &m.items {
         match &**item {
@@ -1847,16 +1872,24 @@ fn flatten_module(
                 for clause in &mut new_def.clauses {
                     let mut intro = pattern_intro(&clause.params);
                     rewrite_expr(
+                        compiler,
+                        Some(module_id),
                         &mut clause.body,
                         &module_path,
                         &siblings,
                         &mut intro,
-                        module_paths,
-                        &aliases,
                         &imports,
                     );
                     if let Some(g) = &mut clause.guard {
-                        rewrite_expr(g, &module_path, &siblings, &mut intro, module_paths, &aliases, &imports);
+                        rewrite_expr(
+                            compiler,
+                            Some(module_id),
+                            g,
+                            &module_path,
+                            &siblings,
+                            &mut intro,
+                            &imports,
+                        );
                     }
                 }
                 out.push(Rc::new(Item::Fn(new_def)));
@@ -1866,11 +1899,12 @@ fn flatten_module(
                     compiler,
                     inner,
                     Some(&module_name),
+                    module_id,
                     out,
                     structs,
-                    module_paths,
                     module_interfaces,
                     module_macros,
+                    tel,
                 )?;
             }
             Item::Struct(def) => {
@@ -1890,7 +1924,15 @@ fn flatten_module(
                 let mut new_args: Vec<Spanned<Expr>> = args.clone();
                 for a in &mut new_args {
                     let mut intro: HashSet<String> = HashSet::new();
-                    rewrite_expr(a, &module_path, &siblings, &mut intro, module_paths, &aliases, &imports);
+                    rewrite_expr(
+                        compiler,
+                        Some(module_id),
+                        a,
+                        &module_path,
+                        &siblings,
+                        &mut intro,
+                        &imports,
+                    );
                 }
                 out.push(Rc::new(Item::MacroCall {
                     name: name.clone(),
@@ -1902,11 +1944,11 @@ fn flatten_module(
             }
             Item::Protocol(_) => {}
             Item::ProtocolImpl(protocol_impl) => flatten_protocol_impl(
+                compiler,
                 protocol_impl,
                 Some(&module_name),
+                Some(module_id),
                 out,
-                module_paths,
-                &aliases,
                 &imports,
                 &local_protocols,
             )?,
@@ -1920,6 +1962,7 @@ fn record_imported_visible_callables(
     module_id: ModuleId,
     imports: &ImportMap,
     interfaces: &InterfaceTable,
+    tel: &dyn Telemetry,
 ) {
     for ((name, arity), binding) in imports {
         let Some(interface) = interfaces.get(&binding.module) else {
@@ -1932,9 +1975,7 @@ fn record_imported_visible_callables(
         {
             continue;
         }
-        let Some(target_module_id) = compiler.module_id_for_name(&binding.module) else {
-            continue;
-        };
+        let target_module_id = compiler.reference_named_module(binding.module.clone(), tel);
         compiler.record_visible_callable_alias(
             module_id,
             name.clone(),
@@ -1947,12 +1988,61 @@ fn record_imported_visible_callables(
     }
 }
 
+fn record_visible_module_bindings(
+    compiler: &mut CompilerWorld,
+    owner_module_id: ModuleId,
+    parent_path: Option<&ModuleName>,
+    items: &[Rc<Item>],
+    interfaces: &InterfaceTable,
+    tel: &dyn Telemetry,
+) -> Result<(), ResolveError> {
+    for item in items {
+        match item.as_ref() {
+            Item::Module(module) => {
+                let module_name = if let Some(parent) = parent_path {
+                    parent.child(module.name.clone())
+                } else {
+                    ModuleName::from_segments(vec![module.name.clone()])
+                };
+                let target_module_id = compiler.reference_named_module(module_name, tel);
+                compiler.record_visible_module_binding(
+                    owner_module_id,
+                    module.name.clone(),
+                    target_module_id,
+                    VisibleModuleBindingOrigin::ChildModule,
+                );
+            }
+            Item::Alias {
+                full_path,
+                as_name,
+                span,
+            } => {
+                if !interfaces.contains_key(full_path) {
+                    return Err(ResolveError::UnknownModule {
+                        module: full_path.clone(),
+                        span: *span,
+                    });
+                }
+                let target_module_id = compiler.reference_named_module(full_path.clone(), tel);
+                compiler.record_visible_module_binding(
+                    owner_module_id,
+                    as_name.clone(),
+                    target_module_id,
+                    VisibleModuleBindingOrigin::Alias,
+                );
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn flatten_protocol_impl(
+    compiler: &mut CompilerWorld,
     protocol_impl: &ProtocolImplDef,
     parent_path: Option<&ModuleName>,
+    namespace_owner_module_id: Option<ModuleId>,
     out: &mut Vec<Rc<Item>>,
-    module_paths: &HashSet<String>,
-    aliases: &HashMap<String, String>,
     imports: &ImportMap,
     local_protocols: &HashSet<String>,
 ) -> Result<(), ResolveError> {
@@ -1976,16 +2066,24 @@ fn flatten_protocol_impl(
             for clause in &mut new_def.clauses {
                 let mut intro = pattern_intro(&clause.params);
                 rewrite_expr(
+                    compiler,
+                    namespace_owner_module_id,
                     &mut clause.body,
                     &module_path,
                     &siblings,
                     &mut intro,
-                    module_paths,
-                    aliases,
                     imports,
                 );
                 if let Some(g) = &mut clause.guard {
-                    rewrite_expr(g, &module_path, &siblings, &mut intro, module_paths, aliases, imports);
+                    rewrite_expr(
+                        compiler,
+                        namespace_owner_module_id,
+                        g,
+                        &module_path,
+                        &siblings,
+                        &mut intro,
+                        imports,
+                    );
                 }
             }
             out.push(Rc::new(Item::Fn(new_def)));
@@ -2088,12 +2186,12 @@ fn collect_pattern_vars(p: &Pattern, out: &mut HashSet<String>) {
 }
 
 fn rewrite_expr(
+    compiler: &mut CompilerWorld,
+    namespace_owner_module_id: Option<ModuleId>,
     e: &mut Spanned<Expr>,
     module_path: &str,
     siblings: &HashSet<String>,
     intro: &mut HashSet<String>,
-    module_paths: &HashSet<String>,
-    aliases: &HashMap<String, String>,
     imports: &ImportMap,
 ) {
     match &mut e.node {
@@ -2104,7 +2202,15 @@ fn rewrite_expr(
         }
         // fz-g58.2.6 — sibling/import rewriting recurses into the `&(...)`
         // body; `&N` is a leaf with no name to resolve.
-        Expr::Capture(body) => rewrite_expr(body, module_path, siblings, intro, module_paths, aliases, imports),
+        Expr::Capture(body) => rewrite_expr(
+            compiler,
+            namespace_owner_module_id,
+            body,
+            module_path,
+            siblings,
+            intro,
+            imports,
+        ),
         Expr::CaptureArg(_) => {}
         // fz-swt.5: `&name/arity` follows the same name-resolution rules
         // as a bare call target — sibling rewriting, then import
@@ -2121,21 +2227,12 @@ fn rewrite_expr(
                 } else if let Some(target) = imports.get(&(name.clone(), *arity)) {
                     *name = format!("{}.{}", target.module, name);
                 }
-            } else if name.contains('.') {
-                // Dotted: split, expand leading alias if present.
-                let parts: Vec<&str> = name.split('.').collect();
-                if let Some(full) = aliases.get(parts[0]) {
-                    let rest = parts[1..].join(".");
-                    *name = if rest.is_empty() {
-                        full.clone()
-                    } else {
-                        format!("{}.{}", full, rest)
-                    };
-                }
+            } else if let Some(qualified) = qualify_dotted_name(compiler, namespace_owner_module_id, name) {
+                *name = qualified;
             }
         }
         Expr::Call(callee, args) => {
-            if let Some(q) = qualify_callee(callee, intro, module_path, module_paths, aliases) {
+            if let Some(q) = qualify_callee(compiler, namespace_owner_module_id, callee, intro) {
                 callee.node = Expr::Var(q);
             } else if let Expr::Var(n) = &callee.node
                 && !intro.contains(n)
@@ -2144,104 +2241,302 @@ fn rewrite_expr(
             {
                 callee.node = Expr::Var(format!("{}.{}", target.module, n));
             }
-            rewrite_expr(callee, module_path, siblings, intro, module_paths, aliases, imports);
+            rewrite_expr(
+                compiler,
+                namespace_owner_module_id,
+                callee,
+                module_path,
+                siblings,
+                intro,
+                imports,
+            );
             for a in args {
-                rewrite_expr(a, module_path, siblings, intro, module_paths, aliases, imports);
+                rewrite_expr(
+                    compiler,
+                    namespace_owner_module_id,
+                    a,
+                    module_path,
+                    siblings,
+                    intro,
+                    imports,
+                );
             }
         }
         Expr::ClosureCall(callee, args) => {
-            rewrite_expr(callee, module_path, siblings, intro, module_paths, aliases, imports);
+            rewrite_expr(
+                compiler,
+                namespace_owner_module_id,
+                callee,
+                module_path,
+                siblings,
+                intro,
+                imports,
+            );
             for a in args {
-                rewrite_expr(a, module_path, siblings, intro, module_paths, aliases, imports);
+                rewrite_expr(
+                    compiler,
+                    namespace_owner_module_id,
+                    a,
+                    module_path,
+                    siblings,
+                    intro,
+                    imports,
+                );
             }
         }
         Expr::List(xs, tail) => {
             for x in xs {
-                rewrite_expr(x, module_path, siblings, intro, module_paths, aliases, imports);
+                rewrite_expr(
+                    compiler,
+                    namespace_owner_module_id,
+                    x,
+                    module_path,
+                    siblings,
+                    intro,
+                    imports,
+                );
             }
             if let Some(t) = tail {
-                rewrite_expr(t, module_path, siblings, intro, module_paths, aliases, imports);
+                rewrite_expr(
+                    compiler,
+                    namespace_owner_module_id,
+                    t,
+                    module_path,
+                    siblings,
+                    intro,
+                    imports,
+                );
             }
         }
         Expr::Tuple(xs) | Expr::Block(xs) => {
             for x in xs {
-                rewrite_expr(x, module_path, siblings, intro, module_paths, aliases, imports);
+                rewrite_expr(
+                    compiler,
+                    namespace_owner_module_id,
+                    x,
+                    module_path,
+                    siblings,
+                    intro,
+                    imports,
+                );
             }
         }
         Expr::Bitstring(fields) => {
             for f in fields {
                 rewrite_expr(
+                    compiler,
+                    namespace_owner_module_id,
                     &mut f.value,
                     module_path,
                     siblings,
                     intro,
-                    module_paths,
-                    aliases,
                     imports,
                 );
             }
         }
         Expr::Map(pairs) => {
             for (k, v) in pairs {
-                rewrite_expr(k, module_path, siblings, intro, module_paths, aliases, imports);
-                rewrite_expr(v, module_path, siblings, intro, module_paths, aliases, imports);
+                rewrite_expr(
+                    compiler,
+                    namespace_owner_module_id,
+                    k,
+                    module_path,
+                    siblings,
+                    intro,
+                    imports,
+                );
+                rewrite_expr(
+                    compiler,
+                    namespace_owner_module_id,
+                    v,
+                    module_path,
+                    siblings,
+                    intro,
+                    imports,
+                );
             }
         }
         Expr::MapUpdate(m, pairs) => {
-            rewrite_expr(m, module_path, siblings, intro, module_paths, aliases, imports);
+            rewrite_expr(
+                compiler,
+                namespace_owner_module_id,
+                m,
+                module_path,
+                siblings,
+                intro,
+                imports,
+            );
             for (k, v) in pairs {
-                rewrite_expr(k, module_path, siblings, intro, module_paths, aliases, imports);
-                rewrite_expr(v, module_path, siblings, intro, module_paths, aliases, imports);
+                rewrite_expr(
+                    compiler,
+                    namespace_owner_module_id,
+                    k,
+                    module_path,
+                    siblings,
+                    intro,
+                    imports,
+                );
+                rewrite_expr(
+                    compiler,
+                    namespace_owner_module_id,
+                    v,
+                    module_path,
+                    siblings,
+                    intro,
+                    imports,
+                );
             }
         }
         Expr::Struct { fields, .. } => {
             for (_, v) in fields {
-                rewrite_expr(v, module_path, siblings, intro, module_paths, aliases, imports);
+                rewrite_expr(
+                    compiler,
+                    namespace_owner_module_id,
+                    v,
+                    module_path,
+                    siblings,
+                    intro,
+                    imports,
+                );
             }
         }
         Expr::Index(o, i) => {
-            rewrite_expr(o, module_path, siblings, intro, module_paths, aliases, imports);
-            rewrite_expr(i, module_path, siblings, intro, module_paths, aliases, imports);
+            rewrite_expr(
+                compiler,
+                namespace_owner_module_id,
+                o,
+                module_path,
+                siblings,
+                intro,
+                imports,
+            );
+            rewrite_expr(
+                compiler,
+                namespace_owner_module_id,
+                i,
+                module_path,
+                siblings,
+                intro,
+                imports,
+            );
         }
         Expr::BinOp(_, l, r) => {
-            rewrite_expr(l, module_path, siblings, intro, module_paths, aliases, imports);
-            rewrite_expr(r, module_path, siblings, intro, module_paths, aliases, imports);
+            rewrite_expr(
+                compiler,
+                namespace_owner_module_id,
+                l,
+                module_path,
+                siblings,
+                intro,
+                imports,
+            );
+            rewrite_expr(
+                compiler,
+                namespace_owner_module_id,
+                r,
+                module_path,
+                siblings,
+                intro,
+                imports,
+            );
         }
-        Expr::UnOp(_, x) | Expr::Ascribe(x, _) => {
-            rewrite_expr(x, module_path, siblings, intro, module_paths, aliases, imports)
-        }
+        Expr::UnOp(_, x) | Expr::Ascribe(x, _) => rewrite_expr(
+            compiler,
+            namespace_owner_module_id,
+            x,
+            module_path,
+            siblings,
+            intro,
+            imports,
+        ),
         Expr::If(c, t, els) => {
-            rewrite_expr(c, module_path, siblings, intro, module_paths, aliases, imports);
-            rewrite_expr(t, module_path, siblings, intro, module_paths, aliases, imports);
+            rewrite_expr(
+                compiler,
+                namespace_owner_module_id,
+                c,
+                module_path,
+                siblings,
+                intro,
+                imports,
+            );
+            rewrite_expr(
+                compiler,
+                namespace_owner_module_id,
+                t,
+                module_path,
+                siblings,
+                intro,
+                imports,
+            );
             if let Some(e) = els {
-                rewrite_expr(e, module_path, siblings, intro, module_paths, aliases, imports);
+                rewrite_expr(
+                    compiler,
+                    namespace_owner_module_id,
+                    e,
+                    module_path,
+                    siblings,
+                    intro,
+                    imports,
+                );
             }
         }
         Expr::Case(scr, arms) => {
             if let Some(scr) = scr {
-                rewrite_expr(scr, module_path, siblings, intro, module_paths, aliases, imports);
+                rewrite_expr(
+                    compiler,
+                    namespace_owner_module_id,
+                    scr,
+                    module_path,
+                    siblings,
+                    intro,
+                    imports,
+                );
             }
             for arm in arms {
                 let mut nested = intro.clone();
                 collect_pattern_vars(&arm.pattern.node, &mut nested);
                 if let Some(g) = &mut arm.guard {
-                    rewrite_expr(g, module_path, siblings, &mut nested, module_paths, aliases, imports);
+                    rewrite_expr(
+                        compiler,
+                        namespace_owner_module_id,
+                        g,
+                        module_path,
+                        siblings,
+                        &mut nested,
+                        imports,
+                    );
                 }
                 rewrite_expr(
+                    compiler,
+                    namespace_owner_module_id,
                     &mut arm.body,
                     module_path,
                     siblings,
                     &mut nested,
-                    module_paths,
-                    aliases,
                     imports,
                 );
             }
         }
         Expr::Cond(pairs) => {
             for (c, b) in pairs {
-                rewrite_expr(c, module_path, siblings, intro, module_paths, aliases, imports);
-                rewrite_expr(b, module_path, siblings, intro, module_paths, aliases, imports);
+                rewrite_expr(
+                    compiler,
+                    namespace_owner_module_id,
+                    c,
+                    module_path,
+                    siblings,
+                    intro,
+                    imports,
+                );
+                rewrite_expr(
+                    compiler,
+                    namespace_owner_module_id,
+                    b,
+                    module_path,
+                    siblings,
+                    intro,
+                    imports,
+                );
             }
         }
         Expr::With(bindings, body, else_clauses) => {
@@ -2249,34 +2544,72 @@ fn rewrite_expr(
             for b in bindings {
                 match b {
                     WithBinding::Match(p, e) => {
-                        rewrite_expr(e, module_path, siblings, &mut nested, module_paths, aliases, imports);
+                        rewrite_expr(
+                            compiler,
+                            namespace_owner_module_id,
+                            e,
+                            module_path,
+                            siblings,
+                            &mut nested,
+                            imports,
+                        );
                         collect_pattern_vars(&p.node, &mut nested);
                     }
-                    WithBinding::Bare(e) => {
-                        rewrite_expr(e, module_path, siblings, &mut nested, module_paths, aliases, imports)
-                    }
+                    WithBinding::Bare(e) => rewrite_expr(
+                        compiler,
+                        namespace_owner_module_id,
+                        e,
+                        module_path,
+                        siblings,
+                        &mut nested,
+                        imports,
+                    ),
                 }
             }
-            rewrite_expr(body, module_path, siblings, &mut nested, module_paths, aliases, imports);
+            rewrite_expr(
+                compiler,
+                namespace_owner_module_id,
+                body,
+                module_path,
+                siblings,
+                &mut nested,
+                imports,
+            );
             for arm in else_clauses {
                 let mut a_intro = intro.clone();
                 collect_pattern_vars(&arm.pattern.node, &mut a_intro);
                 if let Some(g) = &mut arm.guard {
-                    rewrite_expr(g, module_path, siblings, &mut a_intro, module_paths, aliases, imports);
+                    rewrite_expr(
+                        compiler,
+                        namespace_owner_module_id,
+                        g,
+                        module_path,
+                        siblings,
+                        &mut a_intro,
+                        imports,
+                    );
                 }
                 rewrite_expr(
+                    compiler,
+                    namespace_owner_module_id,
                     &mut arm.body,
                     module_path,
                     siblings,
                     &mut a_intro,
-                    module_paths,
-                    aliases,
                     imports,
                 );
             }
         }
         Expr::Match(pat, rhs) => {
-            rewrite_expr(rhs, module_path, siblings, intro, module_paths, aliases, imports);
+            rewrite_expr(
+                compiler,
+                namespace_owner_module_id,
+                rhs,
+                module_path,
+                siblings,
+                intro,
+                imports,
+            );
             collect_pattern_vars(&pat.node, intro);
         }
         Expr::Lambda(clauses) => {
@@ -2287,28 +2620,44 @@ fn rewrite_expr(
                 }
                 if let Some(guard) = &mut clause.guard {
                     rewrite_expr(
+                        compiler,
+                        namespace_owner_module_id,
                         guard,
                         module_path,
                         siblings,
                         &mut nested,
-                        module_paths,
-                        aliases,
                         imports,
                     );
                 }
                 rewrite_expr(
+                    compiler,
+                    namespace_owner_module_id,
                     &mut clause.body,
                     module_path,
                     siblings,
                     &mut nested,
-                    module_paths,
-                    aliases,
                     imports,
                 );
             }
         }
-        Expr::Quote(inner) => rewrite_expr(inner, module_path, siblings, intro, module_paths, aliases, imports),
-        Expr::Unquote(inner) => rewrite_expr(inner, module_path, siblings, intro, module_paths, aliases, imports),
+        Expr::Quote(inner) => rewrite_expr(
+            compiler,
+            namespace_owner_module_id,
+            inner,
+            module_path,
+            siblings,
+            intro,
+            imports,
+        ),
+        Expr::Unquote(inner) => rewrite_expr(
+            compiler,
+            namespace_owner_module_id,
+            inner,
+            module_path,
+            siblings,
+            intro,
+            imports,
+        ),
         // fz-5vj — receive: each clause introduces pattern vars into a
         // nested scope (bound names from the pattern, including the names
         // shadowed by `^name` pins which are *not* binding sites — they
@@ -2319,35 +2668,43 @@ fn rewrite_expr(
                 let mut nested = intro.clone();
                 collect_pattern_vars(&arm.pattern.node, &mut nested);
                 if let Some(g) = &mut arm.guard {
-                    rewrite_expr(g, module_path, siblings, &mut nested, module_paths, aliases, imports);
+                    rewrite_expr(
+                        compiler,
+                        namespace_owner_module_id,
+                        g,
+                        module_path,
+                        siblings,
+                        &mut nested,
+                        imports,
+                    );
                 }
                 rewrite_expr(
+                    compiler,
+                    namespace_owner_module_id,
                     &mut arm.body,
                     module_path,
                     siblings,
                     &mut nested,
-                    module_paths,
-                    aliases,
                     imports,
                 );
             }
             if let Some(af) = after {
                 rewrite_expr(
+                    compiler,
+                    namespace_owner_module_id,
                     &mut af.timeout,
                     module_path,
                     siblings,
                     intro,
-                    module_paths,
-                    aliases,
                     imports,
                 );
                 rewrite_expr(
+                    compiler,
+                    namespace_owner_module_id,
                     &mut af.body,
                     module_path,
                     siblings,
                     intro,
-                    module_paths,
-                    aliases,
                     imports,
                 );
             }
@@ -2357,11 +2714,10 @@ fn rewrite_expr(
 }
 
 fn qualify_callee(
+    compiler: &mut CompilerWorld,
+    namespace_owner_module_id: Option<ModuleId>,
     callee: &Spanned<Expr>,
     intro: &HashSet<String>,
-    module_path: &str,
-    module_paths: &HashSet<String>,
-    aliases: &HashMap<String, String>,
 ) -> Option<String> {
     let mut path: Vec<String> = Vec::new();
     let mut cur = &callee.node;
@@ -2381,31 +2737,52 @@ fn qualify_callee(
                 }
                 path.push(m.clone());
                 path.reverse();
-                let leading = &path[0];
-                if let Some(full) = aliases.get(leading) {
-                    let rest: String = path[1..].join(".");
-                    return Some(if rest.is_empty() {
-                        full.clone()
-                    } else {
-                        format!("{}.{}", full, rest)
-                    });
+                let function_name = path.last()?.clone();
+                let module_segments = path[..path.len() - 1].to_vec();
+                let module_id = resolve_visible_module_path(compiler, namespace_owner_module_id, &module_segments)?;
+                let module_name = compiler.module_display_name(module_id);
+                if module_name.is_empty() {
+                    return None;
                 }
-                if !module_path.is_empty() {
-                    let candidate = format!("{}.{}", module_path, leading);
-                    if module_paths.contains(&candidate) {
-                        let rest: String = path[1..].join(".");
-                        return Some(format!("{}.{}", candidate, rest));
-                    }
-                }
-                let module = path[..path.len() - 1].join(".");
-                if module_paths.contains(&module) {
-                    return Some(path.join("."));
-                }
-                return None;
+                return Some(format!("{}.{}", module_name, function_name));
             }
             _ => return None,
         }
     }
+}
+
+fn qualify_dotted_name(
+    compiler: &mut CompilerWorld,
+    namespace_owner_module_id: Option<ModuleId>,
+    name: &str,
+) -> Option<String> {
+    let parts = name.split('.').map(str::to_string).collect::<Vec<_>>();
+    if parts.len() < 2 {
+        return None;
+    }
+    let function_name = parts.last()?.clone();
+    let module_id = resolve_visible_module_path(compiler, namespace_owner_module_id, &parts[..parts.len() - 1])?;
+    let module_name = compiler.module_display_name(module_id);
+    if module_name.is_empty() {
+        return None;
+    }
+    Some(format!("{}.{}", module_name, function_name))
+}
+
+fn resolve_visible_module_path(
+    compiler: &mut CompilerWorld,
+    namespace_owner_module_id: Option<ModuleId>,
+    segments: &[String],
+) -> Option<ModuleId> {
+    if segments.is_empty() {
+        return None;
+    }
+    let module_name = ModuleName::from_segments(segments.to_vec());
+    if let Some(owner_module_id) = namespace_owner_module_id {
+        let namespace_id = compiler.module(owner_module_id).namespace_id;
+        return Some(compiler.resolve_module(namespace_id, &module_name));
+    }
+    Some(compiler.reference_named_module(module_name, &crate::telemetry::NullTelemetry))
 }
 
 fn is_upper(s: &str) -> bool {

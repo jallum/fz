@@ -64,9 +64,16 @@ pub(crate) struct OwnedConsCapture {
 /// Mint a fresh continuation FnId, snapshot the outer env at this point,
 /// and record the span for diagnostics. The builder is created lazily by
 /// `switch_to_cont_fn`.
-pub(crate) fn mint_cont_fn(ctx: &mut LowerCtx, name: impl Into<String>, span: Span, category: FnCategory) -> ContFn {
+pub(crate) fn mint_cont_fn(
+    compiler: &mut CompilerWorld,
+    ctx: &mut LowerCtx,
+    name: impl Into<String>,
+    span: Span,
+    category: FnCategory,
+) -> ContFn {
     let name = name.into();
-    let id = ctx.fresh_generated_function(FunctionKind::Continuation, name.clone());
+    let id = compiler.declare_anonymous_fn(ctx.current_owner_module_id, FunctionKind::Continuation, name.clone());
+    ctx.register_function_id(id);
     ctx.fn_spans.insert(id, span);
     let outer_captured = ctx.visible_locals();
     let owned_cons_captures = owned_cons_captures_for_visible_locals(ctx, &outer_captured);
@@ -286,6 +293,7 @@ pub(crate) fn finalize_arm(ctx: &mut LowerCtx, arm_value: Var, join: Option<&Con
     ctx.terminated = true;
 }
 pub(crate) fn cps_split_call_closure(
+    compiler: &mut CompilerWorld,
     ctx: &mut LowerCtx,
     closure_var: Var,
     arg_vars: Vec<Var>,
@@ -294,7 +302,8 @@ pub(crate) fn cps_split_call_closure(
     let captured = ctx.visible_locals();
     let owned_cons_captures = owned_cons_captures_for_visible_locals(ctx, &captured);
     let captured_vars = capture_call_args(&captured, &owned_cons_captures);
-    let cont_id = ctx.fresh_generated_function(FunctionKind::Continuation, "k");
+    let cont_id = compiler.declare_anonymous_fn(ctx.current_owner_module_id, FunctionKind::Continuation, "k");
+    ctx.register_function_id(cont_id);
     let caller = ctx.cur_fn_id.expect("cps_split_call_closure: missing current fn id");
 
     ctx.set_term_at(
@@ -333,6 +342,7 @@ pub(crate) fn cps_split_call_closure(
 }
 
 pub(crate) fn cps_split_call(
+    compiler: &mut CompilerWorld,
     ctx: &mut LowerCtx,
     callee: FnId,
     arg_vars: Vec<Var>,
@@ -341,7 +351,8 @@ pub(crate) fn cps_split_call(
     let captured = ctx.visible_locals();
     let owned_cons_captures = owned_cons_captures_for_visible_locals(ctx, &captured);
     let captured_vars = capture_call_args(&captured, &owned_cons_captures);
-    let cont_id = ctx.fresh_generated_function(FunctionKind::Continuation, "k");
+    let cont_id = compiler.declare_anonymous_fn(ctx.current_owner_module_id, FunctionKind::Continuation, "k");
+    ctx.register_function_id(cont_id);
     let caller = ctx.cur_fn_id.expect("cps_split_call: missing current fn id");
 
     // Terminate current block with the call.
@@ -381,6 +392,7 @@ pub(crate) fn cps_split_call(
 }
 
 pub(crate) fn cps_split_external_call(
+    compiler: &mut CompilerWorld,
     ctx: &mut LowerCtx,
     callee: FnId,
     target: ExportKey,
@@ -389,7 +401,8 @@ pub(crate) fn cps_split_external_call(
 ) -> Result<Var, LowerError> {
     let captured = ctx.visible_locals();
     let captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
-    let cont_id = ctx.fresh_generated_function(FunctionKind::Continuation, "k");
+    let cont_id = compiler.declare_anonymous_fn(ctx.current_owner_module_id, FunctionKind::Continuation, "k");
+    ctx.register_function_id(cont_id);
 
     ctx.set_external_direct_term_at(
         Term::Call {

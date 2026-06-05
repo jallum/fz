@@ -1,5 +1,7 @@
 use super::*;
-use crate::compiler::{Compiler, FunctionKey, FunctionKind, ModuleOrigin, ModuleState, VisibleCallableAliasOrigin};
+use crate::compiler::{
+    Compiler, FunctionKey, FunctionKind, ModuleOrigin, ModuleReadinessFact, VisibleCallableAliasOrigin,
+};
 use crate::diag::codes;
 use crate::diag::diagnostic::Severity;
 use crate::fz_ir::{FnCategory, FnId, Term};
@@ -176,8 +178,13 @@ end
     let user_id = compiler
         .module_id_for_name(&user)
         .expect("User should resolve through a compiler-owned module record");
-    assert_eq!(compiler.module(math_id).origin, ModuleOrigin::Filesystem);
-    assert_eq!(compiler.module(math_id).state, ModuleState::InterfaceReady);
+    assert_eq!(compiler.module(math_id).origin(), Some(ModuleOrigin::Filesystem));
+    assert!(
+        compiler
+            .module(math_id)
+            .readiness
+            .has(ModuleReadinessFact::InterfaceTableReady)
+    );
     let math_contract = compiler
         .world()
         .module_contract(math_id)
@@ -232,6 +239,64 @@ end
     assert_eq!(
         math_interface_ready, 1,
         "Math should reach interface_ready once and then be served from compiler cache"
+    );
+}
+
+#[test]
+fn compiler_namespaces_record_child_modules_and_aliases() {
+    let tel = ConfiguredTelemetry::new();
+    let src = r#"
+defmodule Foo do
+  defmodule Bar do
+    fn hop(), do: :ok
+  end
+end
+
+defmodule Outer do
+  alias Foo.Bar, as: Bar
+
+  defmodule Nested do
+    fn run(), do: Bar.hop()
+  end
+
+  fn call(), do: Nested.run()
+end
+"#;
+
+    let mut compiler = Compiler::new();
+    let mut t = crate::types::new();
+    let out = compile_source_with_compiler_types(
+        compiler.world_mut(),
+        &mut t,
+        src.to_string(),
+        "namespace_scope.fz".to_string(),
+        &tel,
+    )
+    .unwrap_or_else(|_| panic!("namespace compile should succeed"));
+
+    assert!(out.module.fn_by_name("Outer.call").is_some());
+    assert!(out.module.fn_by_name("Outer.Nested.run").is_some());
+
+    let outer = ModuleName::from_segments(vec!["Outer".to_string()]);
+    let outer_id = compiler.module_id_for_name(&outer).expect("Outer should be registered");
+    let nested = ModuleName::from_segments(vec!["Outer".to_string(), "Nested".to_string()]);
+    let nested_id = compiler
+        .module_id_for_name(&nested)
+        .expect("Outer.Nested should be registered");
+    let foo_bar = ModuleName::from_segments(vec!["Foo".to_string(), "Bar".to_string()]);
+    let foo_bar_id = compiler
+        .module_id_for_name(&foo_bar)
+        .expect("Foo.Bar should be registered");
+
+    assert_eq!(
+        compiler.world().visible_module_binding_target(outer_id, "Nested"),
+        Some(nested_id),
+        "Outer namespace should bind child module Nested"
+    );
+    assert_eq!(
+        compiler.world().visible_module_binding_target(outer_id, "Bar"),
+        Some(foo_bar_id),
+        "Outer namespace should bind alias Bar -> Foo.Bar"
     );
 }
 
@@ -666,9 +731,19 @@ end
     let user_id = compiler
         .module_id_for_name(&user)
         .expect("User module record should exist");
-    assert_eq!(compiler.module(macros_id).origin, ModuleOrigin::Filesystem);
-    assert_eq!(compiler.module(macros_id).state, ModuleState::MacroSurfaceReady);
-    assert_eq!(compiler.module(user_id).state, ModuleState::InterfaceReady);
+    assert_eq!(compiler.module(macros_id).origin(), Some(ModuleOrigin::Filesystem));
+    assert!(
+        compiler
+            .module(macros_id)
+            .readiness
+            .has(ModuleReadinessFact::MacroSurfaceReady)
+    );
+    assert!(
+        compiler
+            .module(user_id)
+            .readiness
+            .has(ModuleReadinessFact::InterfaceTableReady)
+    );
 
     let parsed_root = capture
         .find(&["fz", "compiler", "parsed"])
@@ -694,26 +769,33 @@ end
     );
     assert!(
         capture
-            .find(&["fz", "compiler", "state_work"])
+            .find(&["fz", "compiler", "readiness_work"])
             .into_iter()
-            .any(|ev| ev.kind == EventKind::SpanStart && captured_str(&ev, "target_state") == "macro_surface_ready"),
-        "macro provider should execute macro_surface_ready state work"
+            .any(|ev| {
+                ev.kind == EventKind::SpanStart && captured_str(&ev, "requested_readiness") == "macro_surface_ready"
+            }),
+        "macro provider should execute macro_surface_ready readiness work"
     );
     assert!(
         capture
-            .find(&["fz", "compiler", "state_work"])
+            .find(&["fz", "compiler", "readiness_work"])
             .into_iter()
             .any(|ev| ev.kind == EventKind::SpanStop && ev.measurements.get("elapsed_ns").is_some()),
-        "macro-surface state timing must report elapsed_ns"
+        "macro-surface readiness timing must report elapsed_ns"
     );
 
     assert!(
         !capture
-            .find(&["fz", "compiler", "state_advanced"])
+            .find(&["fz", "compiler", "readiness_recorded"])
             .into_iter()
             .filter(|ev| captured_str(ev, "module_key") == "Macros")
-            .any(|ev| matches!(captured_str(&ev, "to_state"), "runtime_lowered" | "runtime_planned")),
-        "macro-only provider must not advance into runtime execution states"
+            .any(|ev| {
+                matches!(
+                    captured_str(&ev, "readiness_fact"),
+                    "runtime_lowered" | "runtime_planned"
+                )
+            }),
+        "macro-only provider must not record runtime execution readiness"
     );
     assert!(
         !capture

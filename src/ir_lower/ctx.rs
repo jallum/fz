@@ -88,13 +88,11 @@ pub struct LowerCtx {
     pub(super) imported_fn_value_wrappers: HashMap<ExportKey, FnId>,
     pub(super) protocol_stubs: HashMap<(String, usize), FnId>,
     pub(super) continuation_provenance: HashMap<FnId, ContinuationProvenance>,
-    pub(super) function_registry: LoweringFunctionRegistry,
 }
 
 impl LowerCtx {
     pub fn new(
         shared: Arc<LoweringShared>,
-        function_registry: LoweringFunctionRegistry,
         extern_decls: Vec<ExternDecl>,
         externs: ExternTable,
         next_extern: u32,
@@ -129,44 +127,17 @@ impl LowerCtx {
             imported_fn_value_wrappers: HashMap::new(),
             protocol_stubs: HashMap::new(),
             continuation_provenance: HashMap::new(),
-            function_registry,
         }
     }
 
-    pub(super) fn reserve_named_function(
-        &mut self,
-        owner_module_id: ModuleId,
-        mfa: Mfa,
-        debug_name: impl Into<String>,
-    ) -> FnId {
-        let id = self.function_registry.reserve_named(owner_module_id, mfa, debug_name);
-        self.mb.advance_next_fn_to(id.0 + 1);
-        id
-    }
-
-    pub(super) fn register_local_named_function(
-        &mut self,
-        source: &Mfa,
-        qualified_name: &str,
-        fn_id: FnId,
-    ) {
-        self.local_named_fns.insert(
-            (source.module_id, source.function_name.clone(), source.arity),
-            fn_id,
-        );
-        self.fns
-            .insert((qualified_name.to_string(), source.arity), fn_id);
-    }
-
-    pub(super) fn local_named_fn(
-        &self,
-        module_id: ModuleId,
-        name: &str,
-        arity: usize,
-    ) -> Option<FnId> {
+    pub(super) fn register_local_named_function(&mut self, source: &Mfa, qualified_name: &str, fn_id: FnId) {
         self.local_named_fns
-            .get(&(module_id, name.to_string(), arity))
-            .copied()
+            .insert((source.module_id, source.function_name.clone(), source.arity), fn_id);
+        self.fns.insert((qualified_name.to_string(), source.arity), fn_id);
+    }
+
+    pub(super) fn local_named_fn(&self, module_id: ModuleId, name: &str, arity: usize) -> Option<FnId> {
+        self.local_named_fns.get(&(module_id, name.to_string(), arity)).copied()
     }
 
     pub(super) fn first_local_named_fn(&self, module_id: ModuleId, name: &str) -> Option<FnId> {
@@ -176,12 +147,8 @@ impl LowerCtx {
             .map(|(_, fn_id)| *fn_id)
     }
 
-    pub(super) fn fresh_generated_function(&mut self, kind: FunctionKind, debug_name: impl Into<String>) -> FnId {
-        let id = self
-            .function_registry
-            .fresh_anonymous(self.current_owner_module_id, kind, debug_name);
+    pub(super) fn register_function_id(&mut self, id: FnId) {
         self.mb.advance_next_fn_to(id.0 + 1);
-        id
     }
 
     pub(super) fn record_continuation_provenance(&mut self, continuation: FnId, provenance: ContinuationProvenance) {
@@ -192,7 +159,11 @@ impl LowerCtx {
         self.shared.prelude_imports.get(&(name.to_string(), arity)).cloned()
     }
 
-    pub(super) fn unique_imported_fn_value_target(&mut self, name: &str) -> Option<(String, FnId)> {
+    pub(super) fn unique_imported_fn_value_target(
+        &mut self,
+        compiler: &mut CompilerWorld,
+        name: &str,
+    ) -> Option<(String, FnId)> {
         let mut matches = self
             .shared
             .prelude_imports
@@ -203,27 +174,41 @@ impl LowerCtx {
         if matches.next().is_some() {
             return None;
         }
-        let fn_id = self.imported_fn_value_target(&qualified, arity)?.1;
+        let fn_id = self.imported_fn_value_target(compiler, &qualified, arity)?.1;
         Some((qualified, fn_id))
     }
 
-    pub(super) fn imported_fn_value_target(&mut self, qualified: &str, arity: usize) -> Option<(String, FnId)> {
+    pub(super) fn imported_fn_value_target(
+        &mut self,
+        compiler: &mut CompilerWorld,
+        qualified: &str,
+        arity: usize,
+    ) -> Option<(String, FnId)> {
         if let Some(&fn_id) = self.fns.get(&(qualified.to_string(), arity)) {
             return Some((qualified.to_string(), fn_id));
         }
-        let target = self.shared.external_exports.get(&(qualified.to_string(), arity))?.clone();
-        let fn_id = self.ensure_imported_fn_value_wrapper(target.clone());
+        let target = self
+            .shared
+            .external_exports
+            .get(&(qualified.to_string(), arity))?
+            .clone();
+        let fn_id = self.ensure_imported_fn_value_wrapper(compiler, target.clone());
         Some((qualified.to_string(), fn_id))
     }
 
-    pub(super) fn protocol_callee(&mut self, name: &str, arity: usize) -> Option<FnId> {
+    pub(super) fn protocol_callee(&mut self, compiler: &mut CompilerWorld, name: &str, arity: usize) -> Option<FnId> {
         let key = (name.to_string(), arity);
         let target = self.shared.protocol_callbacks.get(&key)?.clone();
         if let Some(fn_id) = self.protocol_stubs.get(&key).copied() {
             return Some(fn_id);
         }
         let stub_name = format!("__protocol__.{}", name);
-        let fn_id = self.fresh_generated_function(FunctionKind::ProtocolStub, stub_name.clone());
+        let fn_id = compiler.declare_anonymous_fn(
+            self.current_owner_module_id,
+            FunctionKind::ProtocolStub,
+            stub_name.clone(),
+        );
+        self.register_function_id(fn_id);
         let mut stub = FnBuilder::new(fn_id, stub_name);
         let params = (0..arity).map(|_| stub.fresh_var()).collect::<Vec<_>>();
         let entry = stub.block(params);
@@ -236,18 +221,28 @@ impl LowerCtx {
         Some(fn_id)
     }
 
-    pub(super) fn external_callee(&mut self, name: &str, arity: usize) -> Option<(FnId, ExportKey)> {
+    pub(super) fn external_callee(
+        &mut self,
+        compiler: &mut CompilerWorld,
+        name: &str,
+        arity: usize,
+    ) -> Option<(FnId, ExportKey)> {
         let target = self.shared.external_exports.get(&(name.to_string(), arity))?.clone();
-        let fn_id = self.ensure_external_stub(target.clone(), arity);
+        let fn_id = self.ensure_external_stub(compiler, target.clone(), arity);
         Some((fn_id, target))
     }
 
-    fn ensure_external_stub(&mut self, target: ExportKey, arity: usize) -> FnId {
+    fn ensure_external_stub(&mut self, compiler: &mut CompilerWorld, target: ExportKey, arity: usize) -> FnId {
         if let Some(fn_id) = self.external_stubs.get(&target) {
             return *fn_id;
         }
         let stub_name = format!("__external__.{}", target);
-        let fn_id = self.fresh_generated_function(FunctionKind::ExternalStub, stub_name.clone());
+        let fn_id = compiler.declare_anonymous_fn(
+            self.current_owner_module_id,
+            FunctionKind::ExternalStub,
+            stub_name.clone(),
+        );
+        self.register_function_id(fn_id);
         let mut stub = FnBuilder::new(fn_id, stub_name).with_category(FnCategory::User);
         let params = (0..arity).map(|_| stub.fresh_var()).collect::<Vec<_>>();
         let entry = stub.block(params);
@@ -259,13 +254,18 @@ impl LowerCtx {
         fn_id
     }
 
-    fn ensure_imported_fn_value_wrapper(&mut self, target: ExportKey) -> FnId {
+    fn ensure_imported_fn_value_wrapper(&mut self, compiler: &mut CompilerWorld, target: ExportKey) -> FnId {
         if let Some(fn_id) = self.imported_fn_value_wrappers.get(&target) {
             return *fn_id;
         }
-        let callee = self.ensure_external_stub(target.clone(), target.arity);
+        let callee = self.ensure_external_stub(compiler, target.clone(), target.arity);
         let wrapper_name = format!("__import_wrap__.{}.{}__{}", target.module, target.name, target.arity);
-        let fn_id = self.fresh_generated_function(FunctionKind::ImportedFnValueWrapper, wrapper_name.clone());
+        let fn_id = compiler.declare_anonymous_fn(
+            self.current_owner_module_id,
+            FunctionKind::ImportedFnValueWrapper,
+            wrapper_name.clone(),
+        );
+        self.register_function_id(fn_id);
         let mut wrapper = FnBuilder::new(fn_id, wrapper_name)
             .with_category(FnCategory::User)
             .with_owner_module(self.current_owner_module.clone());
@@ -310,7 +310,7 @@ impl LowerCtx {
     /// `&name/arity` requires a top-level fn to point at, and only zero-cap
     /// closure targets get static-singleton allocation. The wrapper body
     /// is just `Prim::Extern(ident, eid, params); Return`.
-    pub(super) fn ensure_extern_wrapper(&mut self, eid: ExternId) -> FnId {
+    pub(super) fn ensure_extern_wrapper(&mut self, compiler: &mut CompilerWorld, eid: ExternId) -> FnId {
         if let Some(id) = self.extern_wrappers.get(&eid) {
             return *id;
         }
@@ -323,7 +323,8 @@ impl LowerCtx {
         // Name carries the fz-visible name verbatim (with `::` if any) so
         // dumps render `&libc::close/1` recognisably.
         let name = format!("__extern_wrap__{}", decl.fz_name);
-        let id = self.fresh_generated_function(FunctionKind::ExternWrapper, name.clone());
+        let id = compiler.declare_anonymous_fn(self.current_owner_module_id, FunctionKind::ExternWrapper, name.clone());
+        self.register_function_id(id);
         let mut tb = FnBuilder::new(id, name)
             .with_category(FnCategory::Prelude)
             .with_owner_module(self.current_owner_module.clone());
@@ -493,7 +494,6 @@ impl Default for LowerCtx {
                 protocol_callbacks: HashMap::new(),
                 struct_schemas: BTreeMap::new(),
             }),
-            LoweringFunctionRegistry::default(),
             Vec::new(),
             ExternTable::new(),
             0,

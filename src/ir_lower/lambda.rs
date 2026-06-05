@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::mem;
 
 pub(crate) fn lower_lambda<T: Types<Ty = Ty>>(
+    compiler: &mut CompilerWorld,
     ctx: &mut LowerCtx,
     t: &mut T,
     params: &[Spanned<Pattern>],
@@ -23,7 +24,8 @@ pub(crate) fn lower_lambda<T: Types<Ty = Ty>>(
 
     // Mint a fresh fn for the lambda.
     let lam_name = "lambda";
-    let lam_id = ctx.fresh_generated_function(FunctionKind::Lambda, lam_name);
+    let lam_id = compiler.declare_anonymous_fn(ctx.current_owner_module_id, FunctionKind::Lambda, lam_name);
+    ctx.register_function_id(lam_id);
 
     // Save current state and switch to building the lambda fn.
     let saved_cur = ctx.cur.take();
@@ -66,9 +68,9 @@ pub(crate) fn lower_lambda<T: Types<Ty = Ty>>(
         }
     }
     for (pv, pat) in lam_param_vars.iter().zip(params) {
-        lower_pattern_bind(ctx, t, *pv, pat, fail_block)?;
+        lower_pattern_bind(compiler, ctx, t, *pv, pat, fail_block)?;
     }
-    let result = lower_expr(ctx, t, body, true)?;
+    let result = lower_expr(compiler, ctx, t, body, true)?;
     if !ctx.terminated {
         ctx.set_term(Term::Return(result));
     }

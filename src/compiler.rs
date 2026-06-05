@@ -5,15 +5,13 @@
 
 use crate::ast::{Attribute, FnDef, Item, ModuleDef, Program, ProtocolImplDef, SpecDecl};
 use crate::diag::{Diagnostic, SourceMap, Span};
-use crate::frontend::resolve::{
-    InterfaceTable, resolve_program_eagerly,
-};
+use crate::frontend::resolve::{InterfaceTable, ModuleContractRequest, ResolveDemandResult, resolve_program_once};
 use crate::frontend::{
-    protocols::{ImplTarget, ProtocolRegistry},
     FrontendErr, FrontendOk, FrontendResult, apply_planned_direct_call_targets, check_frontend_from_entry_fns, macros,
+    protocols::{ImplTarget, ProtocolDecl, ProtocolImplFact, ProtocolImplKey, extend_protocol_facts_from_interfaces},
     resolve,
 };
-use crate::fz_ir::{BlockId, ExternDecl, ExternId, ExternalCallEdge, FnId, FnIr, ProtocolCallTarget, Var};
+use crate::fz_ir::{BlockId, ExternDecl, ExternId, ExternTy, ExternalCallEdge, FnId, FnIr, ProtocolCallTarget, Var};
 use crate::ir_lower::{
     ExternTable, FnKey, LowerError, LoweringDemandResult, begin_compiler_lowering_session, collect_lowerable_fn_keys,
     select_initial_root_fn_keys,
@@ -44,6 +42,9 @@ pub(crate) struct FileId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct FnGroupId(pub u32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct NamespaceId(pub u32);
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum ModuleKey {
     RootPath(PathBuf),
@@ -70,6 +71,7 @@ impl ModuleKey {
 pub(crate) enum ModuleOrigin {
     RootSource,
     Filesystem,
+    Supplemental,
     EmbeddedRuntime,
     PrimitivePrelude,
 }
@@ -79,6 +81,7 @@ impl ModuleOrigin {
         match self {
             ModuleOrigin::RootSource => "root_source",
             ModuleOrigin::Filesystem => "filesystem",
+            ModuleOrigin::Supplemental => "supplemental",
             ModuleOrigin::EmbeddedRuntime => "embedded_runtime",
             ModuleOrigin::PrimitivePrelude => "primitive_prelude",
         }
@@ -88,6 +91,8 @@ impl ModuleOrigin {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum FileOrigin {
     Filesystem(PathBuf),
+    Synthetic(String),
+    Supplemental(String),
     EmbeddedRuntime(String),
     PrimitivePrelude(String),
 }
@@ -96,6 +101,8 @@ impl FileOrigin {
     fn kind(&self) -> &'static str {
         match self {
             FileOrigin::Filesystem(_) => "filesystem",
+            FileOrigin::Synthetic(_) => "synthetic",
+            FileOrigin::Supplemental(_) => "supplemental",
             FileOrigin::EmbeddedRuntime(_) => "embedded_runtime",
             FileOrigin::PrimitivePrelude(_) => "primitive_prelude",
         }
@@ -104,38 +111,77 @@ impl FileOrigin {
     fn render(&self) -> String {
         match self {
             FileOrigin::Filesystem(path) => path.display().to_string(),
-            FileOrigin::EmbeddedRuntime(name) | FileOrigin::PrimitivePrelude(name) => name.clone(),
+            FileOrigin::Synthetic(name)
+            | FileOrigin::Supplemental(name)
+            | FileOrigin::EmbeddedRuntime(name)
+            | FileOrigin::PrimitivePrelude(name) => name.clone(),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum ModuleState {
-    Discovered,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ModuleReadinessFact {
     SourceReady,
     Parsed,
+    NamespaceReady,
     BodySurfaceReady,
-    InterfaceReady,
+    InterfaceTableReady,
     MacroSurfaceReady,
     RuntimeLowered,
     RuntimePlanned,
 }
 
-impl ModuleState {
-    pub(crate) fn covers(self, target: Self) -> bool {
-        self >= target
-    }
-
+impl ModuleReadinessFact {
     fn as_str(self) -> &'static str {
         match self {
-            ModuleState::Discovered => "discovered",
-            ModuleState::SourceReady => "source_ready",
-            ModuleState::Parsed => "parsed",
-            ModuleState::BodySurfaceReady => "body_surface_ready",
-            ModuleState::InterfaceReady => "interface_ready",
-            ModuleState::MacroSurfaceReady => "macro_surface_ready",
-            ModuleState::RuntimeLowered => "runtime_lowered",
-            ModuleState::RuntimePlanned => "runtime_planned",
+            ModuleReadinessFact::SourceReady => "source_ready",
+            ModuleReadinessFact::Parsed => "parsed",
+            ModuleReadinessFact::NamespaceReady => "namespace_ready",
+            ModuleReadinessFact::BodySurfaceReady => "body_surface_ready",
+            ModuleReadinessFact::InterfaceTableReady => "interface_table_ready",
+            ModuleReadinessFact::MacroSurfaceReady => "macro_surface_ready",
+            ModuleReadinessFact::RuntimeLowered => "runtime_lowered",
+            ModuleReadinessFact::RuntimePlanned => "runtime_planned",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct ModuleReadiness {
+    pub(crate) source_ready: bool,
+    pub(crate) parsed: bool,
+    pub(crate) namespace_ready: bool,
+    pub(crate) body_surface_ready: bool,
+    pub(crate) interface_table_ready: bool,
+    pub(crate) macro_surface_ready: bool,
+    pub(crate) runtime_lowered: bool,
+    pub(crate) runtime_planned: bool,
+}
+
+impl ModuleReadiness {
+    pub(crate) fn has(self, fact: ModuleReadinessFact) -> bool {
+        match fact {
+            ModuleReadinessFact::SourceReady => self.source_ready,
+            ModuleReadinessFact::Parsed => self.parsed,
+            ModuleReadinessFact::NamespaceReady => self.namespace_ready,
+            ModuleReadinessFact::BodySurfaceReady => self.body_surface_ready,
+            ModuleReadinessFact::InterfaceTableReady => self.interface_table_ready,
+            ModuleReadinessFact::MacroSurfaceReady => self.macro_surface_ready,
+            ModuleReadinessFact::RuntimeLowered => self.runtime_lowered,
+            ModuleReadinessFact::RuntimePlanned => self.runtime_planned,
+        }
+    }
+
+    fn record(&mut self, fact: ModuleReadinessFact) {
+        match fact {
+            ModuleReadinessFact::SourceReady => self.source_ready = true,
+            ModuleReadinessFact::Parsed => self.parsed = true,
+            ModuleReadinessFact::NamespaceReady => self.namespace_ready = true,
+            ModuleReadinessFact::BodySurfaceReady => self.body_surface_ready = true,
+            ModuleReadinessFact::InterfaceTableReady => self.interface_table_ready = true,
+            ModuleReadinessFact::MacroSurfaceReady => self.macro_surface_ready = true,
+            ModuleReadinessFact::RuntimeLowered => self.runtime_lowered = true,
+            ModuleReadinessFact::RuntimePlanned => self.runtime_planned = true,
         }
     }
 }
@@ -280,9 +326,19 @@ pub(crate) enum FunctionKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum FunctionContractState {
     Referenced,
+    Declared,
     SourceReady,
     InterfaceReady,
     SourceAndInterfaceReady,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ExternFunctionDecl {
+    pub(crate) symbol: String,
+    pub(crate) params: Vec<ExternTy>,
+    pub(crate) variadic: bool,
+    pub(crate) ret: ExternTy,
+    pub(crate) ret_descr: Ty,
 }
 
 #[derive(Debug, Clone)]
@@ -293,61 +349,9 @@ pub(crate) struct FunctionRecord {
     pub(crate) kind: FunctionKind,
     pub(crate) debug_name: String,
     pub(crate) contract_state: FunctionContractState,
+    pub(crate) declared_extern: Option<ExternFunctionDecl>,
     pub(crate) declared_source_specs: Vec<SpecDecl>,
     pub(crate) declared_interface_specs: Vec<InterfaceSpec>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct LoweringFunctionRegistry {
-    next_fn_id: u32,
-    next_anonymous_id: u32,
-    named_fn_ids: HashMap<Mfa, FnId>,
-    new_records: Vec<FunctionRecord>,
-}
-
-impl LoweringFunctionRegistry {
-    pub(crate) fn reserve_named(&mut self, owner_module_id: ModuleId, mfa: Mfa, debug_name: impl Into<String>) -> FnId {
-        if let Some(existing) = self.named_fn_ids.get(&mfa).copied() {
-            return existing;
-        }
-        let id = FnId(self.next_fn_id);
-        self.next_fn_id += 1;
-        self.named_fn_ids.insert(mfa.clone(), id);
-        self.new_records.push(FunctionRecord {
-            id,
-            owner_module_id,
-            key: FunctionKey::Named(mfa),
-            kind: FunctionKind::Source,
-            debug_name: debug_name.into(),
-            contract_state: FunctionContractState::Referenced,
-            declared_source_specs: Vec::new(),
-            declared_interface_specs: Vec::new(),
-        });
-        id
-    }
-
-    pub(crate) fn fresh_anonymous(
-        &mut self,
-        owner_module_id: ModuleId,
-        kind: FunctionKind,
-        debug_name: impl Into<String>,
-    ) -> FnId {
-        let id = FnId(self.next_fn_id);
-        self.next_fn_id += 1;
-        let anonymous_id = AnonymousFunctionId(self.next_anonymous_id);
-        self.next_anonymous_id += 1;
-        self.new_records.push(FunctionRecord {
-            id,
-            owner_module_id,
-            key: FunctionKey::Anonymous(anonymous_id),
-            kind,
-            debug_name: debug_name.into(),
-            contract_state: FunctionContractState::Referenced,
-            declared_source_specs: Vec::new(),
-            declared_interface_specs: Vec::new(),
-        });
-        id
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -461,19 +465,31 @@ impl RuntimeReachabilitySeed {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ModuleContractOrigin {
+    CompilerOwned(ModuleOrigin),
+    Supplemental,
+}
+
+impl ModuleContractOrigin {
+    pub(crate) fn kind(&self) -> &'static str {
+        match self {
+            Self::CompilerOwned(origin) => origin.kind(),
+            Self::Supplemental => "supplemental",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ModuleContractRecord {
     pub(crate) interface: ModuleInterface,
+    pub(crate) origin: ModuleContractOrigin,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum VisibleCallableAliasOrigin {
     SourceDeclaration,
-    Imported {
-        from_module: ModuleName,
-    },
-    PreludeImport {
-        from_module: ModuleName,
-    },
+    Imported { from_module: ModuleName },
+    PreludeImport { from_module: ModuleName },
 }
 
 impl VisibleCallableAliasOrigin {
@@ -501,13 +517,36 @@ pub(crate) struct VisibleCallableAlias {
     pub(crate) origin: VisibleCallableAliasOrigin,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum VisibleModuleBindingOrigin {
+    ChildModule,
+    Alias,
+    PreludeAlias,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VisibleModuleBinding {
+    pub(crate) name: String,
+    pub(crate) target_module_id: ModuleId,
+    pub(crate) origin: VisibleModuleBindingOrigin,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct NamespaceRecord {
+    pub(crate) id: NamespaceId,
+    pub(crate) owner_module_id: ModuleId,
+    pub(crate) parent: Option<NamespaceId>,
+    pub(crate) callable_bindings: HashMap<(String, usize), VisibleCallableAlias>,
+    pub(crate) module_bindings: HashMap<String, VisibleModuleBinding>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ModuleRecord {
     pub(crate) id: ModuleId,
-    pub(crate) key: ModuleKey,
-    pub(crate) origin: ModuleOrigin,
-    pub(crate) file_id: FileId,
-    pub(crate) state: ModuleState,
+    pub(crate) key: Option<ModuleKey>,
+    pub(crate) declaration: Option<ModuleDeclaration>,
+    pub(crate) namespace_id: NamespaceId,
+    pub(crate) readiness: ModuleReadiness,
     pub(crate) reachability: Reachability,
     pub(crate) body_surface: Option<ModuleBodySurface>,
     pub(crate) lowered_groups: HashMap<SourceFnKey, LoweredFnGroup>,
@@ -517,10 +556,36 @@ pub(crate) struct ModuleRecord {
     pub(crate) runtime_planned_specs: Option<usize>,
     pub(crate) interfaces: Option<BTreeMap<ModuleName, ModuleInterface>>,
     pub(crate) contract: Option<ModuleContractRecord>,
-    pub(crate) visible_callables: HashMap<(String, usize), VisibleCallableAlias>,
     pub(crate) macro_exports: Option<HashSet<(String, usize)>>,
     pub(crate) macro_surface: Option<ModuleMacroSurface>,
     pub(crate) prepared_prelude: Option<PreparedPrelude>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ModuleDeclaration {
+    pub(crate) origin: ModuleOrigin,
+    pub(crate) file_id: FileId,
+}
+
+impl ModuleRecord {
+    fn key_render(&self) -> String {
+        self.key
+            .as_ref()
+            .map(ModuleKey::render)
+            .unwrap_or_else(|| "<anonymous>".to_string())
+    }
+
+    fn key_kind(&self) -> &'static str {
+        self.key.as_ref().map(ModuleKey::kind).unwrap_or("anonymous")
+    }
+
+    pub(crate) fn origin(&self) -> Option<ModuleOrigin> {
+        self.declaration.map(|declaration| declaration.origin)
+    }
+
+    pub(crate) fn file_id(&self) -> Option<FileId> {
+        self.declaration.map(|declaration| declaration.file_id)
+    }
 }
 
 #[derive(Clone)]
@@ -555,14 +620,17 @@ impl Error for CompilerInvariantError {}
 
 pub(crate) struct CompilerWorld {
     modules: Vec<ModuleRecord>,
+    namespaces: Vec<NamespaceRecord>,
     files: Vec<FileRecord>,
     functions: Vec<FunctionRecord>,
     extern_decls: Vec<ExternDecl>,
     module_index: BTreeMap<ModuleKey, ModuleId>,
     file_index: BTreeMap<FileOrigin, FileId>,
     named_function_ids: HashMap<Mfa, FnId>,
+    named_function_keys: HashMap<FnId, Mfa>,
     extern_name_ids: HashMap<String, ExternId>,
-    protocol_registry: ProtocolRegistry,
+    protocol_decls: BTreeMap<ModuleName, ProtocolDecl>,
+    protocol_impls: BTreeMap<ProtocolImplKey, ProtocolImplFact>,
     protocol_callback_owners: BTreeMap<ExportKey, ModuleName>,
     protocol_provider_modules: BTreeMap<ModuleName, BTreeSet<ModuleName>>,
     next_anonymous_function_id: u32,
@@ -577,14 +645,17 @@ impl CompilerWorld {
     pub(crate) fn new() -> Self {
         Self {
             modules: Vec::new(),
+            namespaces: Vec::new(),
             files: Vec::new(),
             functions: Vec::new(),
             extern_decls: Vec::new(),
             module_index: BTreeMap::new(),
             file_index: BTreeMap::new(),
             named_function_ids: HashMap::new(),
+            named_function_keys: HashMap::new(),
             extern_name_ids: HashMap::new(),
-            protocol_registry: ProtocolRegistry::default(),
+            protocol_decls: BTreeMap::new(),
+            protocol_impls: BTreeMap::new(),
             protocol_callback_owners: BTreeMap::new(),
             protocol_provider_modules: BTreeMap::new(),
             next_anonymous_function_id: 0,
@@ -599,6 +670,14 @@ impl CompilerWorld {
         self.files.len()
     }
 
+    pub(crate) fn namespace(&self, namespace_id: NamespaceId) -> &NamespaceRecord {
+        &self.namespaces[namespace_id.0 as usize]
+    }
+
+    fn namespace_mut(&mut self, namespace_id: NamespaceId) -> &mut NamespaceRecord {
+        &mut self.namespaces[namespace_id.0 as usize]
+    }
+
     pub(crate) fn function_count(&self) -> usize {
         self.functions.len()
     }
@@ -611,6 +690,24 @@ impl CompilerWorld {
         &self.modules[id.0 as usize]
     }
 
+    pub(crate) fn module_origin(&self, id: ModuleId) -> Option<ModuleOrigin> {
+        self.module(id).origin()
+    }
+
+    pub(crate) fn declared_module_origin(&self, id: ModuleId) -> ModuleOrigin {
+        self.module_origin(id)
+            .unwrap_or_else(|| panic!("module `{}` has no declaration", self.module_key_render(id)))
+    }
+
+    pub(crate) fn module_file_id(&self, id: ModuleId) -> Option<FileId> {
+        self.module(id).file_id()
+    }
+
+    pub(crate) fn declared_module_file_id(&self, id: ModuleId) -> FileId {
+        self.module_file_id(id)
+            .unwrap_or_else(|| panic!("module `{}` has no declaration", self.module_key_render(id)))
+    }
+
     pub(crate) fn file(&self, id: FileId) -> &FileRecord {
         &self.files[id.0 as usize]
     }
@@ -620,14 +717,16 @@ impl CompilerWorld {
     }
 
     pub(crate) fn module_key_render(&self, id: ModuleId) -> String {
-        self.modules[id.0 as usize].key.render()
+        self.modules[id.0 as usize].key_render()
     }
 
     pub(crate) fn module_display_name(&self, id: ModuleId) -> String {
         match &self.module(id).key {
-            ModuleKey::RootPath(_) => String::new(),
-            ModuleKey::Named(_) if self.module(id).origin == ModuleOrigin::PrimitivePrelude => String::new(),
-            ModuleKey::Named(name) => name.dotted(),
+            None | Some(ModuleKey::RootPath(_)) => String::new(),
+            Some(ModuleKey::Named(_)) if self.module_origin(id) == Some(ModuleOrigin::PrimitivePrelude) => {
+                String::new()
+            }
+            Some(ModuleKey::Named(name)) => name.dotted(),
         }
     }
 
@@ -637,15 +736,6 @@ impl CompilerWorld {
             key.function_name.clone()
         } else {
             format!("{owner}.{}", key.function_name)
-        }
-    }
-
-    pub(crate) fn begin_lowering_function_registry(&self) -> LoweringFunctionRegistry {
-        LoweringFunctionRegistry {
-            next_fn_id: self.functions.len() as u32,
-            next_anonymous_id: self.next_anonymous_function_id,
-            named_fn_ids: self.named_function_ids.clone(),
-            new_records: Vec::new(),
         }
     }
 
@@ -700,6 +790,7 @@ impl CompilerWorld {
         }
         let id = FnId(self.functions.len() as u32);
         self.named_function_ids.insert(mfa.clone(), id);
+        self.named_function_keys.insert(id, mfa.clone());
         self.functions.push(FunctionRecord {
             id,
             owner_module_id,
@@ -707,33 +798,42 @@ impl CompilerWorld {
             kind: FunctionKind::Source,
             debug_name: debug_name.into(),
             contract_state: FunctionContractState::Referenced,
+            declared_extern: None,
             declared_source_specs: Vec::new(),
             declared_interface_specs: Vec::new(),
         });
         id
     }
 
-    pub(crate) fn commit_lowering_function_registry(&mut self, registry: LoweringFunctionRegistry) {
-        let expected_start = self.functions.len() as u32;
-        for (offset, record) in registry.new_records.iter().enumerate() {
-            let expected = FnId(expected_start + offset as u32);
-            assert_eq!(
-                record.id, expected,
-                "compiler function registry must append contiguous ids; expected {:?}, got {:?}",
-                expected, record.id
-            );
-        }
-        for record in &registry.new_records {
-            if let FunctionKey::Named(mfa) = &record.key {
-                self.named_function_ids.insert(mfa.clone(), record.id);
-            }
-        }
-        self.next_anonymous_function_id = registry.next_anonymous_id;
-        self.functions.extend(registry.new_records);
+    fn reserve_anonymous_function_entity(
+        &mut self,
+        owner_module_id: ModuleId,
+        kind: FunctionKind,
+        debug_name: impl Into<String>,
+    ) -> FnId {
+        let id = FnId(self.functions.len() as u32);
+        let anonymous_id = AnonymousFunctionId(self.next_anonymous_function_id);
+        self.next_anonymous_function_id += 1;
+        self.functions.push(FunctionRecord {
+            id,
+            owner_module_id,
+            key: FunctionKey::Anonymous(anonymous_id),
+            kind,
+            debug_name: debug_name.into(),
+            contract_state: FunctionContractState::Referenced,
+            declared_extern: None,
+            declared_source_specs: Vec::new(),
+            declared_interface_specs: Vec::new(),
+        });
+        id
     }
 
     pub(crate) fn fn_id_for_mfa(&self, mfa: &Mfa) -> Option<FnId> {
         self.named_function_ids.get(mfa).copied()
+    }
+
+    pub(crate) fn mfa_for_fn_id(&self, fn_id: FnId) -> Option<&Mfa> {
+        self.named_function_keys.get(&fn_id)
     }
 
     pub(crate) fn function_contract_state(&self, mfa: &Mfa) -> Option<FunctionContractState> {
@@ -741,15 +841,74 @@ impl CompilerWorld {
         Some(self.function(fn_id).contract_state)
     }
 
+    pub(crate) fn reference_fn(&mut self, mfa: Mfa) -> FnId {
+        let debug_name = self.render_mfa(&mfa);
+        self.reserve_named_function_entity(mfa.module_id, mfa, debug_name)
+    }
+
+    pub(crate) fn declare_fn(&mut self, mfa: Mfa, is_public: bool) -> FnId {
+        let fn_id = self.reference_fn(mfa.clone());
+        let rendered = self.render_mfa(&mfa);
+        let record = &mut self.functions[fn_id.0 as usize];
+        assert_eq!(
+            record.owner_module_id, mfa.module_id,
+            "function declaration owner conflict for `{}`",
+            rendered
+        );
+        record.kind = FunctionKind::Source;
+        if matches!(record.contract_state, FunctionContractState::Referenced) {
+            record.contract_state = FunctionContractState::Declared;
+        }
+        if is_public {
+            self.record_visible_callable(
+                mfa.module_id,
+                mfa.function_name.clone(),
+                mfa.arity,
+                mfa,
+                VisibleCallableAliasOrigin::SourceDeclaration,
+            );
+        }
+        fn_id
+    }
+
+    pub(crate) fn declare_extern_fn(&mut self, mfa: Mfa, decl: ExternFunctionDecl, is_public: bool) -> FnId {
+        let fn_id = self.declare_fn(mfa.clone(), is_public);
+        let rendered = self.render_mfa(&mfa);
+        let record = &mut self.functions[fn_id.0 as usize];
+        if let Some(existing) = &record.declared_extern {
+            assert_eq!(
+                existing, &decl,
+                "extern function declaration conflict for `{}`",
+                rendered
+            );
+        } else {
+            record.declared_extern = Some(decl);
+        }
+        fn_id
+    }
+
+    pub(crate) fn declare_anonymous_fn(
+        &mut self,
+        owner_module_id: ModuleId,
+        kind: FunctionKind,
+        debug_name: impl Into<String>,
+    ) -> FnId {
+        let fn_id = self.reserve_anonymous_function_entity(owner_module_id, kind, debug_name);
+        self.functions[fn_id.0 as usize].contract_state = FunctionContractState::Declared;
+        fn_id
+    }
+
     pub(crate) fn visible_callable_target(&self, module_id: ModuleId, name: &str, arity: usize) -> Option<Mfa> {
-        self.module(module_id)
-            .visible_callables
-            .get(&(name.to_string(), arity))
-            .map(|alias| alias.target.clone())
+        self.visible_callable_target_in_namespace(self.module(module_id).namespace_id, name, arity)
     }
 
     pub(crate) fn visible_callable_aliases(&self, module_id: ModuleId) -> Vec<VisibleCallableAlias> {
-        let mut aliases = self.module(module_id).visible_callables.values().cloned().collect::<Vec<_>>();
+        let mut aliases = self
+            .namespace(self.module(module_id).namespace_id)
+            .callable_bindings
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
         aliases.sort_by(|left, right| {
             (&left.name, left.arity, self.render_mfa(&left.target)).cmp(&(
                 &right.name,
@@ -760,8 +919,40 @@ impl CompilerWorld {
         aliases
     }
 
+    fn primitive_prelude_import_map(&self, module_id: ModuleId) -> HashMap<(String, usize), String> {
+        self.visible_callable_aliases(module_id)
+            .into_iter()
+            .map(|alias| ((alias.name, alias.arity), self.render_mfa(&alias.target)))
+            .collect()
+    }
+
+    pub(crate) fn visible_module_binding_target(&self, module_id: ModuleId, name: &str) -> Option<ModuleId> {
+        self.visible_module_binding_target_in_namespace(self.module(module_id).namespace_id, name)
+    }
+
+    pub(crate) fn resolve_module(&mut self, namespace_id: NamespaceId, name: &ModuleName) -> ModuleId {
+        if let Some(mut current_module_id) = self.visible_module_binding_target_in_namespace(
+            namespace_id,
+            name.segments().first().map(String::as_str).unwrap_or_default(),
+        ) {
+            for segment in name.segments().iter().skip(1) {
+                let Some(next_module_id) = self.visible_module_binding_target(current_module_id, segment) else {
+                    return self.reference_named_module(name.clone(), &crate::telemetry::NullTelemetry);
+                };
+                current_module_id = next_module_id;
+            }
+            return current_module_id;
+        }
+        self.reference_named_module(name.clone(), &crate::telemetry::NullTelemetry)
+    }
+
     pub(crate) fn module_contract(&self, module_id: ModuleId) -> Option<&ModuleContractRecord> {
         self.module(module_id).contract.as_ref()
+    }
+
+    pub(crate) fn module_contract_for_name(&self, module: &ModuleName) -> Option<&ModuleContractRecord> {
+        let module_id = self.module_id_for_name(module)?;
+        self.module_contract(module_id)
     }
 
     pub(crate) fn function_declared_interface_specs(&self, mfa: &Mfa) -> Option<&[InterfaceSpec]> {
@@ -798,7 +989,7 @@ impl CompilerWorld {
         if !matches!(
             self.function(fn_id).contract_state,
             FunctionContractState::InterfaceReady | FunctionContractState::SourceAndInterfaceReady
-        ) && matches!(self.module(owner_module_id).key, ModuleKey::Named(_))
+        ) && matches!(self.module(owner_module_id).key, Some(ModuleKey::Named(_)))
         {
             let _ = self.ensure_interface_table(owner_module_id, tel)?;
         }
@@ -816,6 +1007,22 @@ impl CompilerWorld {
         self.record_visible_callable(module_id, name, arity, target, origin);
     }
 
+    pub(crate) fn set_namespace_parent(&mut self, module_id: ModuleId, parent_module_id: ModuleId) {
+        let namespace_id = self.module(module_id).namespace_id;
+        let parent_namespace_id = self.module(parent_module_id).namespace_id;
+        let namespace = self.namespace_mut(namespace_id);
+        if let Some(existing_parent) = namespace.parent {
+            assert_eq!(
+                existing_parent,
+                parent_namespace_id,
+                "namespace parent conflict for module `{}`",
+                self.module_key_render(module_id)
+            );
+            return;
+        }
+        namespace.parent = Some(parent_namespace_id);
+    }
+
     fn record_visible_callable(
         &mut self,
         module_id: ModuleId,
@@ -825,7 +1032,8 @@ impl CompilerWorld {
         origin: VisibleCallableAliasOrigin,
     ) {
         let key = (name, arity);
-        if let Some(existing) = self.modules[module_id.0 as usize].visible_callables.get(&key) {
+        let namespace_id = self.module(module_id).namespace_id;
+        if let Some(existing) = self.namespace(namespace_id).callable_bindings.get(&key) {
             assert_eq!(
                 (existing.target.clone(), existing.origin.clone()),
                 (target.clone(), origin.clone()),
@@ -840,7 +1048,7 @@ impl CompilerWorld {
             );
             return;
         }
-        self.modules[module_id.0 as usize].visible_callables.insert(
+        self.namespace_mut(namespace_id).callable_bindings.insert(
             key.clone(),
             VisibleCallableAlias {
                 name: key.0.clone(),
@@ -849,6 +1057,52 @@ impl CompilerWorld {
                 origin,
             },
         );
+    }
+
+    pub(crate) fn record_visible_module_binding(
+        &mut self,
+        module_id: ModuleId,
+        name: String,
+        target_module_id: ModuleId,
+        origin: VisibleModuleBindingOrigin,
+    ) {
+        let namespace_id = self.module(module_id).namespace_id;
+        if let Some(existing) = self.namespace(namespace_id).module_bindings.get(&name) {
+            assert_eq!(
+                (existing.target_module_id, existing.origin.clone()),
+                (target_module_id, origin.clone()),
+                "visible module binding conflict for module `{}` alias `{}`",
+                self.module_key_render(module_id),
+                name,
+            );
+            return;
+        }
+        self.namespace_mut(namespace_id).module_bindings.insert(
+            name.clone(),
+            VisibleModuleBinding {
+                name,
+                target_module_id,
+                origin,
+            },
+        );
+    }
+
+    fn visible_callable_target_in_namespace(&self, namespace_id: NamespaceId, name: &str, arity: usize) -> Option<Mfa> {
+        let namespace = self.namespace(namespace_id);
+        if let Some(alias) = namespace.callable_bindings.get(&(name.to_string(), arity)) {
+            return Some(alias.target.clone());
+        }
+        let parent = namespace.parent?;
+        self.visible_callable_target_in_namespace(parent, name, arity)
+    }
+
+    fn visible_module_binding_target_in_namespace(&self, namespace_id: NamespaceId, name: &str) -> Option<ModuleId> {
+        let namespace = self.namespace(namespace_id);
+        if let Some(binding) = namespace.module_bindings.get(name) {
+            return Some(binding.target_module_id);
+        }
+        let parent = namespace.parent?;
+        self.visible_module_binding_target_in_namespace(parent, name)
     }
 
     fn record_function_source_specs(&mut self, mfa: &Mfa, specs: &[SpecDecl]) {
@@ -861,6 +1115,7 @@ impl CompilerWorld {
             record.declared_source_specs = specs.to_vec();
             record.contract_state = match record.contract_state {
                 FunctionContractState::Referenced => FunctionContractState::SourceReady,
+                FunctionContractState::Declared => FunctionContractState::SourceReady,
                 FunctionContractState::InterfaceReady => FunctionContractState::SourceAndInterfaceReady,
                 state => state,
             };
@@ -883,6 +1138,7 @@ impl CompilerWorld {
             record.declared_interface_specs = specs.to_vec();
             record.contract_state = match record.contract_state {
                 FunctionContractState::Referenced => FunctionContractState::InterfaceReady,
+                FunctionContractState::Declared => FunctionContractState::InterfaceReady,
                 FunctionContractState::SourceReady => FunctionContractState::SourceAndInterfaceReady,
                 state => state,
             };
@@ -901,10 +1157,13 @@ impl CompilerWorld {
     ) -> Vec<crate::fz_ir::NamedFnSurfaceEntry> {
         let mut entries = Vec::new();
         for module in &self.modules {
-            if !file_ids.contains(&module.file_id) {
+            let Some(file_id) = module.file_id() else {
+                continue;
+            };
+            if !file_ids.contains(&file_id) {
                 continue;
             }
-            for target in module.visible_callables.values() {
+            for target in self.namespace(module.namespace_id).callable_bindings.values() {
                 let mfa = target.target.clone();
                 let Some(fn_id) = self.fn_id_for_mfa(&mfa) else {
                     continue;
@@ -920,6 +1179,35 @@ impl CompilerWorld {
         entries
             .dedup_by(|left, right| left.name == right.name && left.arity == right.arity && left.fn_id == right.fn_id);
         entries
+    }
+
+    fn record_module_contract(
+        &mut self,
+        module_id: ModuleId,
+        interface: ModuleInterface,
+        origin: ModuleContractOrigin,
+    ) {
+        let rendered_module = interface.name.to_string();
+        for export in &interface.exports {
+            let mfa = Mfa::new(module_id, export.name.clone(), export.arity);
+            self.reserve_named_function_entity(module_id, mfa.clone(), format!("{}.{}", rendered_module, export.name));
+            self.record_function_interface_specs(&mfa, &export.specs);
+        }
+        let record = &mut self.modules[module_id.0 as usize];
+        if let Some(existing) = &record.contract {
+            assert_eq!(
+                existing.interface, interface,
+                "module contract conflict for `{}`",
+                rendered_module
+            );
+            assert_eq!(
+                existing.origin, origin,
+                "module contract origin conflict for `{}`",
+                rendered_module
+            );
+            return;
+        }
+        record.contract = Some(ModuleContractRecord { interface, origin });
     }
 
     pub(crate) fn source_fn_key_for_qualified_name(
@@ -958,19 +1246,19 @@ impl CompilerWorld {
     ) -> Result<crate::fz_ir::Module, LowerError> {
         let mut session = begin_compiler_lowering_session(self, root_source, t, prog, tel)?;
         let initial_demands = if let Some(root_source) = root_source
-            && !matches!(self.module(root_source).origin, ModuleOrigin::PrimitivePrelude)
+            && self.module_origin(root_source) != Some(ModuleOrigin::PrimitivePrelude)
         {
             let runtime_entry_keys = self.runtime_entry_fn_keys(root_source);
             let root_entry_keys = (!runtime_entry_keys.is_empty()).then_some(&runtime_entry_keys);
-            let surface = self.ensure_body_surface(root_source, tel).map_err(|diagnostic| {
-                LowerError::Unsupported {
+            let surface = self
+                .ensure_body_surface(root_source, tel)
+                .map_err(|diagnostic| LowerError::Unsupported {
                     span: Span::DUMMY,
                     what: diagnostic.message,
-                }
-            })?;
+                })?;
             select_initial_root_fn_keys(&surface, root_entry_keys)
         } else {
-            collect_lowerable_fn_keys(self, ModuleId(u32::MAX), &prog.items)
+            collect_lowerable_fn_keys(self, session.user_root_module_id, &prog.items)
         };
 
         if let Some(root_source) = root_source {
@@ -1019,6 +1307,100 @@ impl CompilerWorld {
         session.finish(self, t, prog, tel)
     }
 
+    fn contract_table_for_modules(&self, modules: &BTreeSet<ModuleName>) -> InterfaceTable {
+        let mut out = InterfaceTable::new();
+        for module in modules {
+            if let Some(contract) = self.module_contract_for_name(module) {
+                out.insert(module.clone(), contract.interface.clone());
+            }
+        }
+        out
+    }
+
+    fn satisfy_module_contract_demand(
+        &mut self,
+        request: &ModuleContractRequest,
+        tel: &dyn Telemetry,
+    ) -> Result<BTreeSet<ModuleName>, Diagnostic> {
+        let mut resolved = BTreeSet::new();
+        let mut queue = VecDeque::from([request.target_module.clone()]);
+        while let Some(module_name) = queue.pop_front() {
+            if !resolved.insert(module_name.clone()) {
+                continue;
+            }
+            if self.module_contract_for_name(&module_name).is_none() {
+                let prelude_id = self.discover_primitive_prelude(tel);
+                self.ensure_primitive_prelude_namespace(prelude_id, tel)?;
+            }
+            if self.module_contract_for_name(&module_name).is_none() {
+                let Some(interface) = self.ensure_runtime_module_interface(&module_name, tel)? else {
+                    return Err(Diagnostic::error(
+                        crate::diag::codes::RESOLVE_UNKNOWN_MODULE,
+                        format!("module `{}` is not defined", module_name),
+                        request.span,
+                    ));
+                };
+                if let Some(module_id) = self.module_id_for_name(&module_name) {
+                    self.record_module_contract(
+                        module_id,
+                        interface,
+                        ModuleContractOrigin::CompilerOwned(self.declared_module_origin(module_id)),
+                    );
+                }
+            }
+            let Some(contract) = self.module_contract_for_name(&module_name) else {
+                return Err(Diagnostic::error(
+                    crate::diag::codes::RESOLVE_UNKNOWN_MODULE,
+                    format!("module `{}` is not defined", module_name),
+                    request.span,
+                ));
+            };
+            for import in &contract.interface.imports {
+                queue.push_back(import.module.clone());
+            }
+            for protocol_impl in &contract.interface.protocol_impls {
+                queue.push_back(protocol_impl.protocol.clone());
+            }
+        }
+        Ok(resolved)
+    }
+
+    pub(crate) fn resolve_program_from_demands<T: Types<Ty = Ty>>(
+        &mut self,
+        t: &mut T,
+        root_source: Option<ModuleId>,
+        prog: Program,
+        interface_table: InterfaceTable,
+        tel: &dyn Telemetry,
+    ) -> Result<Program, Diagnostic> {
+        let local_interfaces = match root_source {
+            Some(root_source) => self.ensure_source_module_interfaces(root_source, tel)?,
+            None => collect_from_program(&prog),
+        };
+        self.record_supplemental_module_contracts(&interface_table, tel);
+        let mut external_modules = interface_table.keys().cloned().collect::<BTreeSet<_>>();
+        loop {
+            let external_interfaces = self.contract_table_for_modules(&external_modules);
+            match resolve_program_once(
+                t,
+                self,
+                root_source,
+                prog.clone(),
+                local_interfaces.clone(),
+                external_interfaces,
+                tel,
+            ) {
+                ResolveDemandResult::Finished(program) => return Ok(program),
+                ResolveDemandResult::Demands(demands) => {
+                    for demand in demands {
+                        external_modules.extend(self.satisfy_module_contract_demand(&demand, tel)?);
+                    }
+                }
+                ResolveDemandResult::Fatal(diagnostic) => return Err(diagnostic),
+            }
+        }
+    }
+
     pub(crate) fn compile_program_from_roots<T>(
         &mut self,
         root_source: Option<ModuleId>,
@@ -1032,12 +1414,12 @@ impl CompilerWorld {
     where
         T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
     {
-        let mut prog = match resolve_program_eagerly(t, self, root_source, prog, interface_table, tel) {
+        let mut prog = match self.resolve_program_from_demands(t, root_source, prog, interface_table, tel) {
             Ok(prog) => prog,
-            Err(err) => {
+            Err(diagnostic) => {
                 return Err(FrontendErr {
                     sm,
-                    diagnostics: crate::diag::Diagnostics::from_one(err.to_diagnostic()),
+                    diagnostics: crate::diag::Diagnostics::from_one(diagnostic),
                 });
             }
         };
@@ -1092,7 +1474,7 @@ impl CompilerWorld {
             check_frontend_from_entry_fns(t, &prog, &module, &planner_entry_fns, validate_surface, tel);
         apply_planner_rewrites_to_fixed_point(t, &mut module, &mut module_plan, &planner_entry_fns);
         if let Some(module_id) = lowering_root_source
-            && self.module(module_id).origin == ModuleOrigin::EmbeddedRuntime
+            && self.module_origin(module_id) == Some(ModuleOrigin::EmbeddedRuntime)
         {
             self.finish_runtime_module_compilation(module_id, module.fns.len(), module_plan.specs.len(), tel);
         }
@@ -1192,6 +1574,27 @@ impl Compiler {
         self.world.fn_id_for_mfa(mfa)
     }
 
+    pub(crate) fn reference_fn(&mut self, mfa: Mfa) -> FnId {
+        self.world.reference_fn(mfa)
+    }
+
+    pub(crate) fn declare_fn(&mut self, mfa: Mfa, is_public: bool) -> FnId {
+        self.world.declare_fn(mfa, is_public)
+    }
+
+    pub(crate) fn declare_extern_fn(&mut self, mfa: Mfa, decl: ExternFunctionDecl, is_public: bool) -> FnId {
+        self.world.declare_extern_fn(mfa, decl, is_public)
+    }
+
+    pub(crate) fn declare_anonymous_fn(
+        &mut self,
+        owner_module_id: ModuleId,
+        kind: FunctionKind,
+        debug_name: impl Into<String>,
+    ) -> FnId {
+        self.world.declare_anonymous_fn(owner_module_id, kind, debug_name)
+    }
+
     pub(crate) fn ensure_source(&mut self, module_id: ModuleId, tel: &dyn Telemetry) -> Arc<str> {
         self.world.ensure_source(module_id, tel)
     }
@@ -1226,6 +1629,14 @@ impl Compiler {
         tel: &dyn Telemetry,
     ) -> Result<PreparedPrelude, Diagnostic> {
         self.world.ensure_prepared_prelude(module_id, &mut self.types, tel)
+    }
+
+    pub(crate) fn ensure_primitive_prelude_namespace(
+        &mut self,
+        module_id: ModuleId,
+        tel: &dyn Telemetry,
+    ) -> Result<(), Diagnostic> {
+        self.world.ensure_primitive_prelude_namespace(module_id, tel)
     }
 
     pub(crate) fn ensure_interface_table(
@@ -1305,30 +1716,30 @@ impl Compiler {
         self.world.validate_invariants()
     }
 
-    pub(crate) fn ensure_module_state<F>(
+    pub(crate) fn ensure_module_readiness<F>(
         &mut self,
         module_id: ModuleId,
-        target: ModuleState,
+        fact: ModuleReadinessFact,
         tel: &dyn Telemetry,
         work: F,
     ) -> bool
     where
         F: FnOnce(&mut CompilerWorld),
     {
-        self.world.ensure_module_state(module_id, target, tel, work)
+        self.world.ensure_module_readiness(module_id, fact, tel, work)
     }
 
-    pub(crate) fn ensure_module_state_result<F, E>(
+    pub(crate) fn ensure_module_readiness_result<F, E>(
         &mut self,
         module_id: ModuleId,
-        target: ModuleState,
+        fact: ModuleReadinessFact,
         tel: &dyn Telemetry,
         work: F,
     ) -> Result<bool, E>
     where
         F: FnOnce(&mut CompilerWorld) -> Result<(), E>,
     {
-        self.world.ensure_module_state_result(module_id, target, tel, work)
+        self.world.ensure_module_readiness_result(module_id, fact, tel, work)
     }
 }
 
@@ -1340,7 +1751,7 @@ fn planner_entry_fns(
     let Some(root_source) = lowering_root_source else {
         return Vec::new();
     };
-    if !matches!(compiler.module(root_source).origin, ModuleOrigin::EmbeddedRuntime) {
+    if compiler.module_origin(root_source) != Some(ModuleOrigin::EmbeddedRuntime) {
         return Vec::new();
     }
     let entry_keys = compiler.runtime_entry_fn_keys(root_source);
@@ -1362,7 +1773,7 @@ fn validate_surface_for_plan(
     let Some(root_source) = lowering_root_source else {
         return true;
     };
-    !matches!(compiler.module(root_source).origin, ModuleOrigin::EmbeddedRuntime) || planner_entry_fns.is_empty()
+    compiler.module_origin(root_source) != Some(ModuleOrigin::EmbeddedRuntime) || planner_entry_fns.is_empty()
 }
 
 fn apply_planner_rewrites_to_fixed_point<T>(
@@ -1388,6 +1799,24 @@ fn apply_planner_rewrites_to_fixed_point<T>(
 }
 
 impl CompilerWorld {
+    pub(crate) fn reference_named_module(&mut self, module: ModuleName, tel: &dyn Telemetry) -> ModuleId {
+        if let Some(existing) = self.module_index.get(&ModuleKey::Named(module.clone())).copied() {
+            let record = self.module(existing);
+            tel.execute(
+                &["fz", "compiler", "module_cache_hit"],
+                &measurements! { module_id: existing.0, file_id: record.file_id().map_or(u64::MAX as u32, |id| id.0) },
+                &metadata! {
+                    module_key: record.key_render(),
+                    module_key_kind: record.key_kind(),
+                    module_origin: self.module_origin_kind(existing),
+                },
+            );
+            return existing;
+        }
+        let id = self.create_module_record(Some(ModuleKey::Named(module)), None, tel);
+        id
+    }
+
     pub(crate) fn register_root_source(
         &mut self,
         path: impl AsRef<Path>,
@@ -1395,8 +1824,8 @@ impl CompilerWorld {
         tel: &dyn Telemetry,
     ) -> ModuleId {
         let path = path.as_ref().to_path_buf();
-        self.register_module(
-            ModuleKey::RootPath(path.clone()),
+        self.declare_module(
+            Some(ModuleKey::RootPath(path.clone())),
             ModuleOrigin::RootSource,
             FileOrigin::Filesystem(path.clone()),
             SourceDescriptor {
@@ -1408,12 +1837,28 @@ impl CompilerWorld {
         )
     }
 
+    pub(crate) fn register_anonymous_root_module(&mut self, label: impl Into<String>, tel: &dyn Telemetry) -> ModuleId {
+        let label = label.into();
+        let ordinal = self.modules.len();
+        self.declare_module(
+            None,
+            ModuleOrigin::RootSource,
+            FileOrigin::Synthetic(format!("anonymous:{label}:{ordinal}")),
+            SourceDescriptor {
+                source_name: format!("anonymous:{label}:{ordinal}"),
+                text: Arc::<str>::from(""),
+                parse_kind: ParseKind::Program,
+            },
+            tel,
+        )
+    }
+
     pub(crate) fn discover_runtime_module(&mut self, module: &ModuleName, tel: &dyn Telemetry) -> Option<ModuleId> {
         let source = RUNTIME_MODULE_SOURCES
             .iter()
             .find(|candidate| candidate.name == module.dotted())?;
-        Some(self.register_module(
-            ModuleKey::Named(module.clone()),
+        Some(self.declare_module(
+            Some(ModuleKey::Named(module.clone())),
             ModuleOrigin::EmbeddedRuntime,
             FileOrigin::EmbeddedRuntime(source.name.to_string()),
             SourceDescriptor {
@@ -1427,8 +1872,8 @@ impl CompilerWorld {
 
     pub(crate) fn discover_primitive_prelude(&mut self, tel: &dyn Telemetry) -> ModuleId {
         let module = ModuleName::from_segments(vec!["$Prelude".to_string()]);
-        self.register_module(
-            ModuleKey::Named(module),
+        self.declare_module(
+            Some(ModuleKey::Named(module)),
             ModuleOrigin::PrimitivePrelude,
             FileOrigin::PrimitivePrelude("runtime.fz".to_string()),
             SourceDescriptor {
@@ -1445,12 +1890,12 @@ impl CompilerWorld {
     }
 
     pub(crate) fn ensure_source(&mut self, module_id: ModuleId, tel: &dyn Telemetry) -> Arc<str> {
-        let _ = self.ensure_module_state(module_id, ModuleState::SourceReady, tel, |this| {
-            let file_id = this.module(module_id).file_id;
+        let _ = self.ensure_module_readiness(module_id, ModuleReadinessFact::SourceReady, tel, |this| {
+            let file_id = this.declared_module_file_id(module_id);
             let measurements = this.state_measurements(module_id);
-            let module_key = this.module(module_id).key.render();
-            let module_key_kind = this.module(module_id).key.kind();
-            let module_origin = this.module(module_id).origin.kind();
+            let module_key = this.module(module_id).key_render();
+            let module_key_kind = this.module(module_id).key_kind();
+            let module_origin = this.declared_module_origin(module_id).kind();
             let record = &mut this.files[file_id.0 as usize];
             let source = record.descriptor.text.clone();
             record.source = Some(source.clone());
@@ -1468,7 +1913,7 @@ impl CompilerWorld {
                 },
             );
         });
-        let file_id = self.module(module_id).file_id;
+        let file_id = self.declared_module_file_id(module_id);
         self.files[file_id.0 as usize]
             .source
             .clone()
@@ -1480,8 +1925,8 @@ impl CompilerWorld {
         module_id: ModuleId,
         tel: &dyn Telemetry,
     ) -> Result<ParsedSource, Diagnostic> {
-        self.ensure_module_state_result(module_id, ModuleState::Parsed, tel, |this| {
-            let file_id = this.module(module_id).file_id;
+        self.ensure_module_readiness_result(module_id, ModuleReadinessFact::Parsed, tel, |this| {
+            let file_id = this.declared_module_file_id(module_id);
             let source = this.ensure_source(module_id, tel);
             let descriptor = this.files[file_id.0 as usize].descriptor.clone();
             let parsed = parse_source(&descriptor, &source, tel)?;
@@ -1490,9 +1935,9 @@ impl CompilerWorld {
                 &["fz", "compiler", "parsed"],
                 &measurements,
                 &metadata! {
-                    module_key: this.module(module_id).key.render(),
-                    module_key_kind: this.module(module_id).key.kind(),
-                    module_origin: this.module(module_id).origin.kind(),
+                    module_key: this.module(module_id).key_render(),
+                    module_key_kind: this.module(module_id).key_kind(),
+                    module_origin: this.declared_module_origin(module_id).kind(),
                     source_name: descriptor.source_name.clone(),
                     parse_kind: parsed.parse_kind().as_str(),
                     items: parsed.item_count() as u64,
@@ -1502,7 +1947,7 @@ impl CompilerWorld {
             Ok(())
         })?;
 
-        let file_id = self.module(module_id).file_id;
+        let file_id = self.declared_module_file_id(module_id);
         Ok(self.files[file_id.0 as usize]
             .parsed
             .clone()
@@ -1531,6 +1976,20 @@ impl CompilerWorld {
         }
     }
 
+    pub(crate) fn ensure_primitive_prelude_namespace(
+        &mut self,
+        module_id: ModuleId,
+        tel: &dyn Telemetry,
+    ) -> Result<(), Diagnostic> {
+        self.ensure_module_readiness_result(module_id, ModuleReadinessFact::NamespaceReady, tel, |this| {
+            let parsed = this.ensure_prelude(module_id, tel)?;
+            record_runtime_prelude_namespace(this, module_id, tel, &parsed.items)?;
+            this.emit_namespace_ready(module_id, tel);
+            Ok(())
+        })?;
+        Ok(())
+    }
+
     pub(crate) fn ensure_prepared_prelude<T: types::Types<Ty = types::Ty>>(
         &mut self,
         module_id: ModuleId,
@@ -1542,8 +2001,9 @@ impl CompilerWorld {
         }
 
         let parsed = self.ensure_prelude(module_id, tel)?;
+        self.ensure_primitive_prelude_namespace(module_id, tel)?;
         let root_types = runtime_library::root_type_env_from_attrs(t, &parsed.attrs);
-        let imports = collect_runtime_prelude_imports(self, tel, &parsed.items);
+        let imports = self.primitive_prelude_import_map(module_id);
         let staged = Program {
             items: parsed.items.clone(),
             module_interfaces: Default::default(),
@@ -1555,8 +2015,7 @@ impl CompilerWorld {
             structs: Default::default(),
             struct_field_types: Default::default(),
         };
-        let mut program = resolve_program_eagerly(t, self, None, staged, BTreeMap::new(), tel)
-            .map_err(|err| err.to_diagnostic())?;
+        let mut program = self.resolve_program_from_demands(t, None, staged, BTreeMap::new(), tel)?;
         program
             .module_type_envs
             .entry(String::new())
@@ -1566,26 +2025,6 @@ impl CompilerWorld {
         program.brand_inners.extend(root_types.brand_inners);
 
         let prepared = PreparedPrelude { program, imports };
-        for ((name, arity), qualified) in &prepared.imports {
-            let Some((module_prefix, function_name)) = qualified.rsplit_once('.') else {
-                continue;
-            };
-            let Ok(module_name) = ModuleName::parse_dotted(module_prefix) else {
-                continue;
-            };
-            let Some(target_module_id) = self.module_id_for_name(&module_name) else {
-                continue;
-            };
-            self.record_visible_callable(
-                module_id,
-                name.clone(),
-                *arity,
-                Mfa::new(target_module_id, function_name.to_string(), *arity),
-                VisibleCallableAliasOrigin::PreludeImport {
-                    from_module: module_name,
-                },
-            );
-        }
         let module = self.module(module_id).clone();
         tel.execute(
             &["fz", "compiler", "prelude_prepared"],
@@ -1595,10 +2034,10 @@ impl CompilerWorld {
                 root_attrs: parsed.attrs.len() as u64,
             },
             &metadata! {
-                module_key: module.key.render(),
-                module_key_kind: module.key.kind(),
-                module_origin: module.origin.kind(),
-                source_name: self.file(module.file_id).descriptor.source_name.clone(),
+                module_key: module.key_render(),
+                module_key_kind: module.key_kind(),
+                module_origin: self.module_origin_kind(module_id),
+                source_name: self.file(self.declared_module_file_id(module_id)).descriptor.source_name.clone(),
             },
         );
         self.modules[module_id.0 as usize].prepared_prelude = Some(prepared.clone());
@@ -1610,7 +2049,7 @@ impl CompilerWorld {
         module_id: ModuleId,
         tel: &dyn Telemetry,
     ) -> Result<ModuleBodySurface, Diagnostic> {
-        self.ensure_module_state_result(module_id, ModuleState::BodySurfaceReady, tel, |this| {
+        self.ensure_module_readiness_result(module_id, ModuleReadinessFact::BodySurfaceReady, tel, |this| {
             let parsed = this.ensure_parsed(module_id, tel)?;
             let record = this.module(module_id).clone();
             let surface = collect_body_surface(this, module_id, &parsed, tel);
@@ -1647,14 +2086,14 @@ impl CompilerWorld {
                     &["fz", "compiler", "fn_group_discovered"],
                     &measurements! {
                         module_id: module_id.0,
-                        file_id: record.file_id.0,
+                        file_id: this.declared_module_file_id(module_id).0,
                         fn_group_id: group.id.0,
                         arity: group.source.arity as u64,
                     },
                     &metadata! {
-                        module_key: record.key.render(),
-                        module_key_kind: record.key.kind(),
-                        module_origin: record.origin.kind(),
+                        module_key: record.key_render(),
+                        module_key_kind: record.key_kind(),
+                        module_origin: this.module_origin_kind(module_id),
                         owner_module: this.module_display_name(group.source.module_id),
                         fn_name: group.qualified_name(),
                         visibility: if group.is_private { "private" } else { "public" },
@@ -1665,9 +2104,9 @@ impl CompilerWorld {
                 &["fz", "compiler", "body_surface_ready"],
                 &measurements,
                 &metadata! {
-                    module_key: record.key.render(),
-                    module_key_kind: record.key.kind(),
-                    module_origin: record.origin.kind(),
+                    module_key: record.key_render(),
+                    module_key_kind: record.key_kind(),
+                    module_origin: this.module_origin_kind(module_id),
                     owner_module: surface.owner_module.clone(),
                     groups: surface.groups.len() as u64,
                     parse_kind: parsed.parse_kind().as_str(),
@@ -1688,7 +2127,7 @@ impl CompilerWorld {
         module_id: ModuleId,
         tel: &dyn Telemetry,
     ) -> Result<BTreeMap<ModuleName, ModuleInterface>, Diagnostic> {
-        self.ensure_module_state_result(module_id, ModuleState::InterfaceReady, tel, |this| {
+        self.ensure_module_readiness_result(module_id, ModuleReadinessFact::InterfaceTableReady, tel, |this| {
             let _ = this.ensure_body_surface(module_id, tel)?;
             let parsed = this.ensure_parsed(module_id, tel)?;
             let interfaces = collect_interfaces(&parsed);
@@ -1698,9 +2137,9 @@ impl CompilerWorld {
                 &["fz", "compiler", "interface_ready"],
                 &measurements,
                 &metadata! {
-                    module_key: this.module(module_id).key.render(),
-                    module_key_kind: this.module(module_id).key.kind(),
-                    module_origin: this.module(module_id).origin.kind(),
+                    module_key: this.module(module_id).key_render(),
+                    module_key_kind: this.module(module_id).key_kind(),
+                    module_origin: this.module_origin_kind(module_id),
                     interfaces: interfaces.len() as u64,
                     parse_kind: parsed.parse_kind().as_str(),
                 },
@@ -1727,26 +2166,89 @@ impl CompilerWorld {
         Ok(interfaces.get(module).cloned())
     }
 
+    pub(crate) fn attach_primitive_prelude_namespace(
+        &mut self,
+        module_id: ModuleId,
+        tel: &dyn Telemetry,
+    ) -> Result<(), Diagnostic> {
+        let prelude_id = self.discover_primitive_prelude(tel);
+        self.ensure_primitive_prelude_namespace(prelude_id, tel)?;
+        self.set_namespace_parent(module_id, prelude_id);
+        Ok(())
+    }
+
+    pub(crate) fn note_namespace_ready(&mut self, module_id: ModuleId, tel: &dyn Telemetry) -> bool {
+        self.ensure_module_readiness(module_id, ModuleReadinessFact::NamespaceReady, tel, |this| {
+            this.emit_namespace_ready(module_id, tel);
+        })
+    }
+
+    fn emit_namespace_ready(&self, module_id: ModuleId, tel: &dyn Telemetry) {
+        let measurements = self.state_measurements(module_id);
+        let namespace = self.namespace(self.module(module_id).namespace_id);
+        let record = self.module(module_id);
+        tel.execute(
+            &["fz", "compiler", "namespace_ready"],
+            &measurements,
+            &metadata! {
+                module_key: record.key_render(),
+                module_key_kind: record.key_kind(),
+                module_origin: self.module_origin_kind(module_id),
+                callables: namespace.callable_bindings.len() as u64,
+                modules: namespace.module_bindings.len() as u64,
+            },
+        );
+    }
+
+    pub(crate) fn record_supplemental_module_contracts(
+        &mut self,
+        interfaces: &BTreeMap<ModuleName, ModuleInterface>,
+        tel: &dyn Telemetry,
+    ) {
+        for (module, interface) in interfaces {
+            let module_id = self.reference_named_module(module.clone(), tel);
+            if self.module_origin(module_id).is_none() {
+                let _ = self.declare_module(
+                    Some(ModuleKey::Named(module.clone())),
+                    ModuleOrigin::Supplemental,
+                    FileOrigin::Supplemental(format!("supplemental:{}", module.dotted())),
+                    SourceDescriptor {
+                        source_name: format!("supplemental:{}", module.dotted()),
+                        text: Arc::<str>::from(""),
+                        parse_kind: ParseKind::Program,
+                    },
+                    tel,
+                );
+            }
+            let origin = if self.module_origin(module_id) == Some(ModuleOrigin::Supplemental) {
+                ModuleContractOrigin::Supplemental
+            } else {
+                ModuleContractOrigin::CompilerOwned(self.declared_module_origin(module_id))
+            };
+            self.record_module_contract(module_id, interface.clone(), origin);
+        }
+    }
+
     pub(crate) fn discover_runtime_export_owner(
         &mut self,
         target: &ExportKey,
         tel: &dyn Telemetry,
     ) -> Result<Option<ModuleId>, Diagnostic> {
         if let Some(existing) = self.module_id_for_name(&target.module)
-            && self.module(existing).origin != ModuleOrigin::EmbeddedRuntime
+            && self.module_origin(existing) != Some(ModuleOrigin::EmbeddedRuntime)
         {
             return Ok(None);
         }
         if let Some(owner_module) = self.protocol_callback_owners.get(target).cloned() {
             if let Some(existing) = self.module_id_for_name(&owner_module)
-                && self.module(existing).origin != ModuleOrigin::EmbeddedRuntime
+                && self.module_origin(existing) != Some(ModuleOrigin::EmbeddedRuntime)
             {
                 return Ok(None);
             }
             return Ok(self.discover_runtime_module(&owner_module, tel));
         }
         if let Some(existing) = self.module_id_for_name(&target.module) {
-            if self.module(existing).origin == ModuleOrigin::EmbeddedRuntime {
+            if self.module_origin(existing) == Some(ModuleOrigin::EmbeddedRuntime) {
                 return Ok(Some(existing));
             }
             return Ok(None);
@@ -1757,7 +2259,7 @@ impl CompilerWorld {
         for source in RUNTIME_MODULE_SOURCES {
             let module = ModuleName::from_segments(vec![source.name.to_string()]);
             if let Some(existing) = self.module_id_for_name(&module)
-                && self.module(existing).origin != ModuleOrigin::EmbeddedRuntime
+                && self.module_origin(existing) != Some(ModuleOrigin::EmbeddedRuntime)
             {
                 continue;
             }
@@ -1832,12 +2334,13 @@ impl CompilerWorld {
         tel: &dyn Telemetry,
     ) -> Result<BTreeMap<ModuleName, ModuleInterface>, Diagnostic> {
         let interfaces = self.ensure_interface_table(root_id, tel)?;
-        let file_id = self.module(root_id).file_id;
+        let named_module_origin = named_module_origin_for_source_owner(self.declared_module_origin(root_id));
+        let file_id = self.declared_module_file_id(root_id);
         let file = self.file(file_id).clone();
         for (module, interface) in &interfaces {
-            let module_id = self.register_module(
-                ModuleKey::Named(module.clone()),
-                ModuleOrigin::Filesystem,
+            let module_id = self.declare_module(
+                Some(ModuleKey::Named(module.clone())),
+                named_module_origin,
                 file.origin.clone(),
                 file.descriptor.clone(),
                 tel,
@@ -1847,7 +2350,7 @@ impl CompilerWorld {
             let module = module.clone();
             let mut single = BTreeMap::new();
             single.insert(module, interface);
-            let _ = self.ensure_module_state(module_id, ModuleState::InterfaceReady, tel, |this| {
+            let _ = self.ensure_module_readiness(module_id, ModuleReadinessFact::InterfaceTableReady, tel, |this| {
                 this.record_module_interface_contracts(module_id, &single);
                 let measurements = this.state_measurements(module_id);
                 let record = this.module(module_id);
@@ -1855,9 +2358,9 @@ impl CompilerWorld {
                     &["fz", "compiler", "interface_ready"],
                     &measurements,
                     &metadata! {
-                        module_key: record.key.render(),
-                        module_key_kind: record.key.kind(),
-                        module_origin: record.origin.kind(),
+                        module_key: record.key_render(),
+                        module_key_kind: record.key_kind(),
+                        module_origin: this.module_origin_kind(module_id),
                         interfaces: 1_u64,
                         parse_kind: file.descriptor.parse_kind.as_str(),
                     },
@@ -1877,12 +2380,13 @@ impl CompilerWorld {
         let exports = collect_source_macro_exports(&parsed.program);
         self.modules[root_id.0 as usize].macro_exports = Some(exports.root.clone());
 
-        let file_id = self.module(root_id).file_id;
+        let named_module_origin = named_module_origin_for_source_owner(self.declared_module_origin(root_id));
+        let file_id = self.declared_module_file_id(root_id);
         let file = self.file(file_id).clone();
         for (module, macros) in &exports.modules {
-            let module_id = self.register_module(
-                ModuleKey::Named(module.clone()),
-                ModuleOrigin::Filesystem,
+            let module_id = self.declare_module(
+                Some(ModuleKey::Named(module.clone())),
+                named_module_origin,
                 file.origin.clone(),
                 file.descriptor.clone(),
                 tel,
@@ -1909,7 +2413,7 @@ impl CompilerWorld {
         queue.extend(seeds);
 
         while let Some(candidate) = queue.pop_front() {
-            if self.module(candidate.module_id).origin != ModuleOrigin::EmbeddedRuntime {
+            if self.module_origin(candidate.module_id) != Some(ModuleOrigin::EmbeddedRuntime) {
                 continue;
             }
             let mut needs_materialization = false;
@@ -1924,9 +2428,9 @@ impl CompilerWorld {
                         &["fz", "compiler", "runtime_entry_requested"],
                         &self.state_measurements(candidate.module_id),
                         &metadata! {
-                            module_key: record.key.render(),
-                            module_key_kind: record.key.kind(),
-                            module_origin: record.origin.kind(),
+                            module_key: record.key_render(),
+                            module_key_kind: record.key_kind(),
+                            module_origin: self.module_origin_kind(candidate.module_id),
                             fn_name: self.render_mfa(&entry),
                             reason: candidate.reason,
                             from_module: candidate
@@ -1953,9 +2457,9 @@ impl CompilerWorld {
                 &["fz", "compiler", "runtime_module_reachable"],
                 &self.state_measurements(candidate.module_id),
                 &metadata! {
-                    module_key: record.key.render(),
-                    module_key_kind: record.key.kind(),
-                    module_origin: record.origin.kind(),
+                    module_key: record.key_render(),
+                    module_key_kind: record.key_kind(),
+                    module_origin: self.module_origin_kind(candidate.module_id),
                     reason: candidate.reason,
                     from_module: candidate
                         .from_module
@@ -1965,7 +2469,7 @@ impl CompilerWorld {
                 },
             );
 
-            let ModuleKey::Named(module_name) = record.key.clone() else {
+            let Some(ModuleKey::Named(module_name)) = record.key.clone() else {
                 continue;
             };
             let interface = self
@@ -2002,8 +2506,10 @@ impl CompilerWorld {
         planned_specs: usize,
         tel: &dyn Telemetry,
     ) {
-        let lowered_advanced = self.ensure_module_state(module_id, ModuleState::RuntimeLowered, tel, |_| {});
-        let planned_advanced = self.ensure_module_state(module_id, ModuleState::RuntimePlanned, tel, |_| {});
+        let lowered_advanced =
+            self.ensure_module_readiness(module_id, ModuleReadinessFact::RuntimeLowered, tel, |_| {});
+        let planned_advanced =
+            self.ensure_module_readiness(module_id, ModuleReadinessFact::RuntimePlanned, tel, |_| {});
 
         let record = &mut self.modules[module_id.0 as usize];
         record.runtime_materialized_entry_fns = record.runtime_entry_fns.clone();
@@ -2017,15 +2523,15 @@ impl CompilerWorld {
                 &["fz", "compiler", "runtime_lowered"],
                 &measurements! {
                     module_id: module_id.0,
-                    file_id: record.file_id.0,
+                    file_id: self.declared_module_file_id(module_id).0,
                     functions: lowered_functions as u64,
                     groups: groups,
                     units: groups,
                 },
                 &metadata! {
-                    module_key: record.key.render(),
-                    module_key_kind: record.key.kind(),
-                    module_origin: record.origin.kind(),
+                    module_key: record.key_render(),
+                    module_key_kind: record.key_kind(),
+                    module_origin: self.module_origin_kind(module_id),
                 },
             );
         }
@@ -2036,15 +2542,15 @@ impl CompilerWorld {
                 &["fz", "compiler", "runtime_planned"],
                 &measurements! {
                     module_id: module_id.0,
-                    file_id: record.file_id.0,
+                    file_id: self.declared_module_file_id(module_id).0,
                     planned_specs: planned_specs as u64,
                     groups: groups,
                     units: groups,
                 },
                 &metadata! {
-                    module_key: record.key.render(),
-                    module_key_kind: record.key.kind(),
-                    module_origin: record.origin.kind(),
+                    module_key: record.key_render(),
+                    module_key_kind: record.key_kind(),
+                    module_origin: self.module_origin_kind(module_id),
                 },
             );
         }
@@ -2059,16 +2565,16 @@ impl CompilerWorld {
         let _ = self
             .ensure_interface_table(module_id, tel)
             .expect("macro surface requires source-backed interface readiness");
-        self.ensure_module_state(module_id, ModuleState::MacroSurfaceReady, tel, |this| {
+        self.ensure_module_readiness(module_id, ModuleReadinessFact::MacroSurfaceReady, tel, |this| {
             let measurements = this.state_measurements(module_id);
             let record = this.module(module_id);
             tel.execute(
                 &["fz", "compiler", "macro_surface_ready"],
                 &measurements,
                 &metadata! {
-                    module_key: record.key.render(),
-                    module_key_kind: record.key.kind(),
-                    module_origin: record.origin.kind(),
+                    module_key: record.key_render(),
+                    module_key_kind: record.key_kind(),
+                    module_origin: this.module_origin_kind(module_id),
                     macros: surface.exports.len() as u64,
                     items: surface.program.items.len() as u64,
                 },
@@ -2080,13 +2586,13 @@ impl CompilerWorld {
     }
 
     pub(crate) fn macro_scope_for_root(&self, root_id: ModuleId) -> Option<Program> {
-        let file_id = self.module(root_id).file_id;
+        let file_id = self.declared_module_file_id(root_id);
         let mut items = Vec::new();
         let mut seen_fns = HashSet::new();
         let mut module_docs = HashMap::new();
 
         for module in &self.modules {
-            if module.file_id != file_id {
+            if module.file_id() != Some(file_id) {
                 continue;
             }
             let Some(surface) = &module.macro_surface else {
@@ -2123,8 +2629,8 @@ impl CompilerWorld {
                 &["fz", "compiler", "cache_hit"],
                 &self.state_measurements(module_id),
                 &metadata! {
-                    module_key: record.key.render(),
-                    module_key_kind: record.key.kind(),
+                    module_key: record.key_render(),
+                    module_key_kind: record.key_kind(),
                     phase: "reachability",
                     reachability: kind.as_str(),
                 },
@@ -2139,9 +2645,9 @@ impl CompilerWorld {
             &["fz", "compiler", "module_reachable"],
             &measurements,
             &metadata! {
-                module_key: record.key.render(),
-                module_key_kind: record.key.kind(),
-                module_origin: record.origin.kind(),
+                module_key: record.key_render(),
+                module_key_kind: record.key_kind(),
+                module_origin: self.module_origin_kind(module_id),
                 reachability: kind.as_str(),
             },
         );
@@ -2174,7 +2680,10 @@ impl CompilerWorld {
                     )));
                 }
             }
-            if file.source.is_some() && file.descriptor.text.is_empty() {
+            if file.source.is_some()
+                && file.descriptor.text.is_empty()
+                && !matches!(file.origin, FileOrigin::Supplemental(_) | FileOrigin::Synthetic(_))
+            {
                 return Err(CompilerInvariantError::new(format!(
                     "file `{}` loaded empty source unexpectedly",
                     file.origin.render()
@@ -2220,6 +2729,23 @@ impl CompilerWorld {
                         )));
                     }
                 }
+                match self.named_function_keys.get(&function.id) {
+                    Some(found) if found == mfa => {}
+                    Some(found) => {
+                        return Err(CompilerInvariantError::new(format!(
+                            "named function id {:?} reverses to `{}` instead of `{}`",
+                            function.id,
+                            self.render_mfa(found),
+                            self.render_mfa(mfa)
+                        )));
+                    }
+                    None => {
+                        return Err(CompilerInvariantError::new(format!(
+                            "named function id {:?} missing reverse MFA entry",
+                            function.id
+                        )));
+                    }
+                }
             }
         }
 
@@ -2231,71 +2757,103 @@ impl CompilerWorld {
                     module.id, expected
                 )));
             }
-            if module.file_id.0 as usize >= self.files.len() {
-                return Err(CompilerInvariantError::new(format!(
-                    "module `{}` references missing file {:?}",
-                    module.key.render(),
-                    module.file_id
-                )));
-            }
-            match self.module_index.get(&module.key) {
-                Some(found) if *found == module.id => {}
-                Some(found) => {
+            if let Some(file_id) = module.file_id() {
+                if file_id.0 as usize >= self.files.len() {
                     return Err(CompilerInvariantError::new(format!(
-                        "module index invariant violated for `{}`: stored {:?}, indexed {:?}",
-                        module.key.render(),
-                        module.id,
-                        found
+                        "module `{}` references missing file {:?}",
+                        module.key_render(),
+                        file_id
                     )));
                 }
-                None => {
-                    return Err(CompilerInvariantError::new(format!(
-                        "module index missing entry for `{}`",
-                        module.key.render()
-                    )));
+            }
+            if let Some(key) = &module.key {
+                match self.module_index.get(key) {
+                    Some(found) if *found == module.id => {}
+                    Some(found) => {
+                        return Err(CompilerInvariantError::new(format!(
+                            "module index invariant violated for `{}`: stored {:?}, indexed {:?}",
+                            module.key_render(),
+                            module.id,
+                            found
+                        )));
+                    }
+                    None => {
+                        return Err(CompilerInvariantError::new(format!(
+                            "module index missing entry for `{}`",
+                            module.key_render()
+                        )));
+                    }
                 }
             }
 
-            let file = self.file(module.file_id);
-            if module.state.covers(ModuleState::SourceReady) && file.source.is_none() {
+            if module.declaration.is_none()
+                && (module.readiness.source_ready
+                    || module.readiness.parsed
+                    || module.readiness.namespace_ready
+                    || module.readiness.body_surface_ready
+                    || module.readiness.interface_table_ready
+                    || module.readiness.macro_surface_ready
+                    || module.readiness.runtime_lowered
+                    || module.readiness.runtime_planned)
+            {
+                return Err(CompilerInvariantError::new(format!(
+                    "undeclared module `{}` recorded readiness facts",
+                    module.key_render()
+                )));
+            }
+
+            let Some(file_id) = module.file_id() else {
+                continue;
+            };
+
+            let file = self.file(file_id);
+            if module.readiness.has(ModuleReadinessFact::SourceReady) && file.source.is_none() {
                 return Err(CompilerInvariantError::new(format!(
                     "module `{}` is source_ready without source text",
-                    module.key.render()
+                    module.key_render()
                 )));
             }
-            if module.state.covers(ModuleState::Parsed) && file.parsed.is_none() {
+            if module.readiness.has(ModuleReadinessFact::Parsed) && file.parsed.is_none() {
                 return Err(CompilerInvariantError::new(format!(
                     "module `{}` is parsed without parsed source",
-                    module.key.render()
+                    module.key_render()
                 )));
             }
-            if module.state.covers(ModuleState::BodySurfaceReady) && module.body_surface.is_none() {
+            if module.readiness.has(ModuleReadinessFact::BodySurfaceReady) && module.body_surface.is_none() {
                 return Err(CompilerInvariantError::new(format!(
                     "module `{}` is body_surface_ready without body surface",
-                    module.key.render()
+                    module.key_render()
                 )));
             }
-            if module.state.covers(ModuleState::InterfaceReady) && module.interfaces.is_none() {
+            if module.readiness.has(ModuleReadinessFact::InterfaceTableReady) && module.interfaces.is_none() {
                 return Err(CompilerInvariantError::new(format!(
                     "module `{}` is interface_ready without interface table",
-                    module.key.render()
+                    module.key_render()
                 )));
             }
-            if matches!(module.key, ModuleKey::Named(_))
-                && module.state.covers(ModuleState::InterfaceReady)
-                && module.origin != ModuleOrigin::PrimitivePrelude
+            if matches!(module.key, Some(ModuleKey::Named(_)))
+                && module.readiness.has(ModuleReadinessFact::InterfaceTableReady)
+                && module.origin() != Some(ModuleOrigin::PrimitivePrelude)
                 && module.contract.is_none()
+                && module
+                    .interfaces
+                    .as_ref()
+                    .and_then(|interfaces| match &module.key {
+                        Some(ModuleKey::Named(module_name)) => Some(interfaces.contains_key(module_name)),
+                        _ => None,
+                    })
+                    .unwrap_or(false)
             {
                 return Err(CompilerInvariantError::new(format!(
                     "named module `{}` is interface_ready without declared contract",
-                    module.key.render()
+                    module.key_render()
                 )));
             }
             if let Some(surface) = &module.body_surface {
                 if surface.owner_module_id != module.id {
                     return Err(CompilerInvariantError::new(format!(
                         "module `{}` body surface owner id {:?} does not match module id {:?}",
-                        module.key.render(),
+                        module.key_render(),
                         surface.owner_module_id,
                         module.id
                     )));
@@ -2304,7 +2862,7 @@ impl CompilerWorld {
                 if surface.owner_module != expected_owner {
                     return Err(CompilerInvariantError::new(format!(
                         "module `{}` body surface owner `{}` does not match module owner `{}`",
-                        module.key.render(),
+                        module.key_render(),
                         surface.owner_module,
                         expected_owner
                     )));
@@ -2312,7 +2870,7 @@ impl CompilerWorld {
                 if surface.groups.len() != surface.group_by_source.len() {
                     return Err(CompilerInvariantError::new(format!(
                         "module `{}` body surface has {} groups but {} source mappings",
-                        module.key.render(),
+                        module.key_render(),
                         surface.groups.len(),
                         surface.group_by_source.len()
                     )));
@@ -2322,7 +2880,7 @@ impl CompilerWorld {
                     if group.id != expected_group_id {
                         return Err(CompilerInvariantError::new(format!(
                             "module `{}` body group `{}` stored id {:?}, expected {:?}",
-                            module.key.render(),
+                            module.key_render(),
                             group.qualified_name(),
                             group.id,
                             expected_group_id
@@ -2333,7 +2891,7 @@ impl CompilerWorld {
                         Some(found) => {
                             return Err(CompilerInvariantError::new(format!(
                                 "module `{}` body group `{}` source key maps to {:?} instead of {:?}",
-                                module.key.render(),
+                                module.key_render(),
                                 group.qualified_name(),
                                 found,
                                 group.id
@@ -2342,7 +2900,7 @@ impl CompilerWorld {
                         None => {
                             return Err(CompilerInvariantError::new(format!(
                                 "module `{}` body group `{}` missing source key mapping",
-                                module.key.render(),
+                                module.key_render(),
                                 group.qualified_name()
                             )));
                         }
@@ -2350,7 +2908,7 @@ impl CompilerWorld {
                     if !body_surface_group_belongs_to_surface(self, surface.owner_module_id, group.source.module_id) {
                         return Err(CompilerInvariantError::new(format!(
                             "module `{}` body group `{}` owner `{}` does not match surface owner `{}`",
-                            module.key.render(),
+                            module.key_render(),
                             group.qualified_name(),
                             self.module_display_name(group.source.module_id),
                             surface.owner_module
@@ -2361,7 +2919,7 @@ impl CompilerWorld {
                     if !surface.groups.iter().any(|group| &group.source == source_key) {
                         return Err(CompilerInvariantError::new(format!(
                             "module `{}` lowered group `{}` has no body-surface descriptor",
-                            module.key.render(),
+                            module.key_render(),
                             self.render_mfa(source_key)
                         )));
                     }
@@ -2371,7 +2929,7 @@ impl CompilerWorld {
                     if lowered.fns.len() != lowered.function_ids.len() {
                         return Err(CompilerInvariantError::new(format!(
                             "module `{}` lowered group {:?} has {} fns but {} function ids",
-                            module.key.render(),
+                            module.key_render(),
                             lowered.id,
                             lowered.fns.len(),
                             lowered.function_ids.len()
@@ -2385,7 +2943,7 @@ impl CompilerWorld {
                     if lowered.source != descriptor.source {
                         return Err(CompilerInvariantError::new(format!(
                             "module `{}` lowered group {:?} source `{}` does not match descriptor `{}`",
-                            module.key.render(),
+                            module.key_render(),
                             lowered.id,
                             self.render_mfa(&lowered.source),
                             descriptor.qualified_name()
@@ -2398,7 +2956,7 @@ impl CompilerWorld {
                     {
                         return Err(CompilerInvariantError::new(format!(
                             "module `{}` lowered group {:?} does not contain root fn `{}`",
-                            module.key.render(),
+                            module.key_render(),
                             lowered.id,
                             descriptor.qualified_name()
                         )));
@@ -2407,7 +2965,7 @@ impl CompilerWorld {
                         if fn_ir.id != *function_id {
                             return Err(CompilerInvariantError::new(format!(
                                 "module `{}` lowered group {:?} stored fn {:?} but function_ids recorded {:?}",
-                                module.key.render(),
+                                module.key_render(),
                                 lowered.id,
                                 fn_ir.id,
                                 function_id
@@ -2416,90 +2974,95 @@ impl CompilerWorld {
                         if !seen_function_ids.insert(*function_id) {
                             return Err(CompilerInvariantError::new(format!(
                                 "module `{}` lowered fn {:?} belongs to more than one cached group",
-                                module.key.render(),
+                                module.key_render(),
                                 function_id
                             )));
                         }
                     }
                 }
             }
-            if module.state == ModuleState::MacroSurfaceReady && module.macro_surface.is_none() {
+            if module.readiness.has(ModuleReadinessFact::MacroSurfaceReady) && module.macro_surface.is_none() {
                 return Err(CompilerInvariantError::new(format!(
                     "module `{}` is macro_surface_ready without macro surface",
-                    module.key.render()
+                    module.key_render()
                 )));
             }
-            if module.state == ModuleState::MacroSurfaceReady && !module.state.covers(ModuleState::InterfaceReady) {
+            if module.readiness.has(ModuleReadinessFact::MacroSurfaceReady)
+                && !module.readiness.has(ModuleReadinessFact::InterfaceTableReady)
+            {
                 return Err(CompilerInvariantError::new(format!(
                     "module `{}` reached macro surface without interface readiness",
-                    module.key.render()
+                    module.key_render()
                 )));
             }
             if let Some(surface) = &module.macro_surface {
                 if surface.program.items.iter().any(|item| !matches!(&**item, Item::Fn(_))) {
                     return Err(CompilerInvariantError::new(format!(
                         "module `{}` macro surface contains non-function items",
-                        module.key.render()
+                        module.key_render()
                     )));
                 }
             }
-            if module.prepared_prelude.is_some() && module.origin != ModuleOrigin::PrimitivePrelude {
+            if module.prepared_prelude.is_some() && module.origin() != Some(ModuleOrigin::PrimitivePrelude) {
                 return Err(CompilerInvariantError::new(format!(
                     "module `{}` cached prepared prelude but is not the primitive prelude",
-                    module.key.render()
+                    module.key_render()
                 )));
             }
-            if module.state.covers(ModuleState::RuntimeLowered) && !module.reachability.runtime {
+            if module.readiness.has(ModuleReadinessFact::RuntimeLowered) && !module.reachability.runtime {
                 return Err(CompilerInvariantError::new(format!(
                     "module `{}` reached runtime_lowered without runtime reachability",
-                    module.key.render()
+                    module.key_render()
                 )));
             }
-            if module.state.covers(ModuleState::RuntimeLowered) && module.runtime_lowered_functions.is_none() {
+            if module.readiness.has(ModuleReadinessFact::RuntimeLowered) && module.runtime_lowered_functions.is_none() {
                 return Err(CompilerInvariantError::new(format!(
                     "module `{}` reached runtime_lowered without recorded lowered function facts",
-                    module.key.render()
+                    module.key_render()
                 )));
             }
-            if module.state.covers(ModuleState::RuntimePlanned) && !module.state.covers(ModuleState::RuntimeLowered) {
+            if module.readiness.has(ModuleReadinessFact::RuntimePlanned)
+                && !module.readiness.has(ModuleReadinessFact::RuntimeLowered)
+            {
                 return Err(CompilerInvariantError::new(format!(
                     "module `{}` reached runtime_planned without runtime_lowered",
-                    module.key.render()
+                    module.key_render()
                 )));
             }
-            if module.state.covers(ModuleState::RuntimePlanned) && module.runtime_planned_specs.is_none() {
+            if module.readiness.has(ModuleReadinessFact::RuntimePlanned) && module.runtime_planned_specs.is_none() {
                 return Err(CompilerInvariantError::new(format!(
                     "module `{}` reached runtime_planned without recorded planned spec facts",
-                    module.key.render()
+                    module.key_render()
                 )));
             }
-            if module.origin == ModuleOrigin::EmbeddedRuntime && !module.reachability.runtime {
+            if module.origin() == Some(ModuleOrigin::EmbeddedRuntime) && !module.reachability.runtime {
                 if !module.lowered_groups.is_empty() {
                     return Err(CompilerInvariantError::new(format!(
                         "runtime module `{}` cached lowered groups without runtime reachability",
-                        module.key.render()
+                        module.key_render()
                     )));
                 }
-                if module.state.covers(ModuleState::RuntimeLowered) || module.state.covers(ModuleState::RuntimePlanned)
+                if module.readiness.has(ModuleReadinessFact::RuntimeLowered)
+                    || module.readiness.has(ModuleReadinessFact::RuntimePlanned)
                 {
                     return Err(CompilerInvariantError::new(format!(
                         "runtime module `{}` advanced execution state without runtime reachability",
-                        module.key.render()
+                        module.key_render()
                     )));
                 }
                 if module.runtime_lowered_functions.is_some() || module.runtime_planned_specs.is_some() {
                     return Err(CompilerInvariantError::new(format!(
                         "runtime module `{}` recorded readiness facts without runtime reachability",
-                        module.key.render()
+                        module.key_render()
                     )));
                 }
             }
-            if module.state.covers(ModuleState::RuntimeLowered) {
+            if module.readiness.has(ModuleReadinessFact::RuntimeLowered) {
                 for entry in &module.runtime_materialized_entry_fns {
                     if !module.lowered_groups.contains_key(entry) {
                         return Err(CompilerInvariantError::new(format!(
                             "runtime module `{}` lowered without cached entry group `{}`/{}",
-                            module.key.render(),
+                            module.key_render(),
                             self.render_mfa(entry),
                             entry.arity
                         )));
@@ -2511,94 +3074,68 @@ impl CompilerWorld {
         Ok(())
     }
 
-    pub(crate) fn ensure_module_state<F>(
+    pub(crate) fn ensure_module_readiness<F>(
         &mut self,
         module_id: ModuleId,
-        target: ModuleState,
+        fact: ModuleReadinessFact,
         tel: &dyn Telemetry,
         work: F,
     ) -> bool
     where
         F: FnOnce(&mut Self),
     {
-        self.ensure_module_state_result(module_id, target, tel, |this| {
+        self.ensure_module_readiness_result(module_id, fact, tel, |this| {
             work(this);
             Ok::<(), ()>(())
         })
-        .expect("infallible compiler state work failed unexpectedly")
+        .expect("infallible compiler readiness work failed unexpectedly")
     }
 
-    pub(crate) fn ensure_module_state_result<F, E>(
+    pub(crate) fn ensure_module_readiness_result<F, E>(
         &mut self,
         module_id: ModuleId,
-        target: ModuleState,
+        fact: ModuleReadinessFact,
         tel: &dyn Telemetry,
         work: F,
     ) -> Result<bool, E>
     where
         F: FnOnce(&mut Self) -> Result<(), E>,
     {
-        let current = self.module(module_id).state;
-        let metadata = self.state_metadata(module_id, current, target);
+        let current = self.module(module_id).readiness;
+        let metadata = self.readiness_metadata(module_id, current, fact);
         let measurements = self.state_measurements(module_id);
-        if current.covers(target) {
+        if current.has(fact) {
             tel.execute(&["fz", "compiler", "cache_hit"], &measurements, &metadata);
             return Ok(false);
         }
         tel.execute(&["fz", "compiler", "cache_miss"], &measurements, &metadata);
-        let _span = tel.span(&["fz", "compiler", "state_work"], metadata.clone());
+        let _span = tel.span(&["fz", "compiler", "readiness_work"], metadata.clone());
         work(self)?;
-        self.advance_module_state(module_id, target, tel);
+        self.record_module_readiness(module_id, fact, tel);
         Ok(true)
     }
 
-    fn register_module(
+    fn create_module_record(
         &mut self,
-        key: ModuleKey,
-        origin: ModuleOrigin,
-        file_origin: FileOrigin,
-        descriptor: SourceDescriptor,
+        key: Option<ModuleKey>,
+        declaration: Option<ModuleDeclaration>,
         tel: &dyn Telemetry,
     ) -> ModuleId {
-        let file_id = self.intern_file(file_origin, descriptor, tel);
-        if let Some(existing) = self.module_index.get(&key).copied() {
-            let existing_record = self.module(existing);
-            assert_eq!(
-                existing_record.origin,
-                origin,
-                "compiler module discovery conflict for `{}`: existing origin `{}`, new origin `{}`",
-                existing_record.key.render(),
-                existing_record.origin.kind(),
-                origin.kind()
-            );
-            assert_eq!(
-                existing_record.file_id,
-                file_id,
-                "compiler module discovery conflict for `{}`: existing file {:?}, new file {:?}",
-                existing_record.key.render(),
-                existing_record.file_id,
-                file_id
-            );
-            tel.execute(
-                &["fz", "compiler", "module_cache_hit"],
-                &measurements! { module_id: existing.0, file_id: file_id.0 },
-                &metadata! {
-                    module_key: existing_record.key.render(),
-                    module_key_kind: existing_record.key.kind(),
-                    module_origin: existing_record.origin.kind(),
-                    file_origin: self.file(file_id).origin.kind(),
-                },
-            );
-            return existing;
-        }
-
         let id = ModuleId(self.modules.len() as u32);
+        let namespace_id = NamespaceId(self.namespaces.len() as u32);
+        self.namespaces.push(NamespaceRecord {
+            id: namespace_id,
+            owner_module_id: id,
+            parent: None,
+            callable_bindings: HashMap::new(),
+            module_bindings: HashMap::new(),
+        });
         let record = ModuleRecord {
             id,
             key: key.clone(),
-            origin,
-            file_id,
-            state: ModuleState::Discovered,
+            declaration,
+            namespace_id,
+            readiness: ModuleReadiness::default(),
             reachability: Reachability::default(),
             body_surface: None,
             lowered_groups: HashMap::new(),
@@ -2608,24 +3145,93 @@ impl CompilerWorld {
             runtime_planned_specs: None,
             interfaces: None,
             contract: None,
-            visible_callables: HashMap::new(),
             macro_exports: None,
             macro_surface: None,
             prepared_prelude: None,
         };
         self.modules.push(record);
-        self.module_index.insert(key.clone(), id);
+        if let Some(key) = key.clone() {
+            self.module_index.insert(key, id);
+        }
         tel.execute(
             &["fz", "compiler", "module_discovered"],
-            &measurements! { module_id: id.0, file_id: file_id.0 },
+            &measurements! {
+                module_id: id.0,
+                file_id: declaration.map_or(u64::MAX as u32, |declaration| declaration.file_id.0),
+            },
             &metadata! {
-                module_key: key.render(),
-                module_key_kind: key.kind(),
+                module_key: self.module(id).key_render(),
+                module_key_kind: self.module(id).key_kind(),
+                module_origin: self.module_origin_kind(id),
+                file_origin: declaration
+                    .map(|declaration| self.file(declaration.file_id).origin.kind().to_string())
+                    .unwrap_or_else(|| "undeclared".to_string()),
+            },
+        );
+        id
+    }
+
+    fn declare_module(
+        &mut self,
+        key: Option<ModuleKey>,
+        origin: ModuleOrigin,
+        file_origin: FileOrigin,
+        descriptor: SourceDescriptor,
+        tel: &dyn Telemetry,
+    ) -> ModuleId {
+        let module_id = match key.clone() {
+            Some(ModuleKey::Named(module)) => self.reference_named_module(module, tel),
+            Some(key) => self
+                .module_index
+                .get(&key)
+                .copied()
+                .unwrap_or_else(|| self.create_module_record(Some(key), None, tel)),
+            None => self.create_module_record(None, None, tel),
+        };
+        let file_id = self.intern_file(file_origin, descriptor, tel);
+        let declaration = ModuleDeclaration { origin, file_id };
+        let record = self.module(module_id).clone();
+        if let Some(existing) = record.declaration {
+            assert_eq!(
+                existing.origin,
+                origin,
+                "compiler module declaration conflict for `{}`: existing origin `{}`, new origin `{}`",
+                record.key_render(),
+                existing.origin.kind(),
+                origin.kind()
+            );
+            assert_eq!(
+                existing.file_id,
+                file_id,
+                "compiler module declaration conflict for `{}`: existing file {:?}, new file {:?}",
+                record.key_render(),
+                existing.file_id,
+                file_id
+            );
+            tel.execute(
+                &["fz", "compiler", "module_cache_hit"],
+                &measurements! { module_id: module_id.0, file_id: file_id.0 },
+                &metadata! {
+                    module_key: record.key_render(),
+                    module_key_kind: record.key_kind(),
+                    module_origin: existing.origin.kind(),
+                    file_origin: self.file(file_id).origin.kind(),
+                },
+            );
+            return module_id;
+        }
+        self.modules[module_id.0 as usize].declaration = Some(declaration);
+        tel.execute(
+            &["fz", "compiler", "module_declared"],
+            &measurements! { module_id: module_id.0, file_id: file_id.0 },
+            &metadata! {
+                module_key: self.module(module_id).key_render(),
+                module_key_kind: self.module(module_id).key_kind(),
                 module_origin: origin.kind(),
                 file_origin: self.file(file_id).origin.kind(),
             },
         );
-        id
+        module_id
     }
 
     fn record_module_interface_contracts(
@@ -2634,30 +3240,33 @@ impl CompilerWorld {
         interfaces: &BTreeMap<ModuleName, ModuleInterface>,
     ) {
         self.record_protocol_facts_from_interfaces(interfaces);
-        let ModuleKey::Named(module_name) = self.module(module_id).key.clone() else {
+        let Some(ModuleKey::Named(module_name)) = self.module(module_id).key.clone() else {
             return;
         };
         let Some(interface) = interfaces.get(&module_name) else {
             return;
         };
-        self.modules[module_id.0 as usize].contract = Some(ModuleContractRecord {
-            interface: interface.clone(),
-        });
-        for export in &interface.exports {
-            let mfa = Mfa::new(module_id, export.name.clone(), export.arity);
-            self.record_function_interface_specs(&mfa, &export.specs);
-        }
+        self.record_module_contract(
+            module_id,
+            interface.clone(),
+            ModuleContractOrigin::CompilerOwned(self.declared_module_origin(module_id)),
+        );
     }
 
     fn record_protocol_facts_from_interfaces(&mut self, interfaces: &BTreeMap<ModuleName, ModuleInterface>) {
-        let mut registry = ProtocolRegistry::default();
-        registry.extend_interfaces(interfaces);
-        self.record_protocol_facts(&registry);
+        let mut protocol_decls = BTreeMap::new();
+        let mut protocol_impls = BTreeMap::new();
+        extend_protocol_facts_from_interfaces(&mut protocol_decls, &mut protocol_impls, interfaces);
+        self.record_protocol_facts(&protocol_decls, &protocol_impls);
     }
 
-    pub(crate) fn record_protocol_facts(&mut self, registry: &ProtocolRegistry) {
-        for (name, protocol) in &registry.protocols {
-            match self.protocol_registry.protocols.get(name) {
+    pub(crate) fn record_protocol_facts(
+        &mut self,
+        protocol_decls: &BTreeMap<ModuleName, ProtocolDecl>,
+        protocol_impls: &BTreeMap<ProtocolImplKey, ProtocolImplFact>,
+    ) {
+        for (name, protocol) in protocol_decls {
+            match self.protocol_decls.get(name) {
                 Some(existing) => {
                     let existing_callbacks = existing
                         .callbacks
@@ -2675,13 +3284,13 @@ impl CompilerWorld {
                     );
                 }
                 None => {
-                    self.protocol_registry.protocols.insert(name.clone(), protocol.clone());
+                    self.protocol_decls.insert(name.clone(), protocol.clone());
                 }
             }
         }
 
-        for (key, implementation) in &registry.impls {
-            match self.protocol_registry.impls.get(key) {
+        for (key, implementation) in protocol_impls {
+            match self.protocol_impls.get(key) {
                 Some(existing) => {
                     assert_eq!(
                         existing.callbacks, implementation.callbacks,
@@ -2690,7 +3299,7 @@ impl CompilerWorld {
                     );
                 }
                 None => {
-                    self.protocol_registry.impls.insert(key.clone(), implementation.clone());
+                    self.protocol_impls.insert(key.clone(), implementation.clone());
                 }
             }
 
@@ -2714,8 +3323,12 @@ impl CompilerWorld {
         }
     }
 
-    pub(crate) fn protocol_registry(&self) -> &ProtocolRegistry {
-        &self.protocol_registry
+    pub(crate) fn protocol_decls(&self) -> &BTreeMap<ModuleName, ProtocolDecl> {
+        &self.protocol_decls
+    }
+
+    pub(crate) fn protocol_impls(&self) -> &BTreeMap<ProtocolImplKey, ProtocolImplFact> {
+        &self.protocol_impls
     }
 
     fn intern_file(&mut self, origin: FileOrigin, descriptor: SourceDescriptor, tel: &dyn Telemetry) -> FileId {
@@ -2770,50 +3383,63 @@ impl CompilerWorld {
         id
     }
 
-    fn advance_module_state(&mut self, module_id: ModuleId, target: ModuleState, tel: &dyn Telemetry) {
+    fn record_module_readiness(&mut self, module_id: ModuleId, fact: ModuleReadinessFact, tel: &dyn Telemetry) {
         let measurements = self.state_measurements(module_id);
         let record = &mut self.modules[module_id.0 as usize];
-        let from = record.state;
         debug_assert!(
-            !from.covers(target),
-            "advance_module_state called for {:?} from {} to {}",
+            !record.readiness.has(fact),
+            "record_module_readiness called twice for {:?} fact {}",
             module_id,
-            from.as_str(),
-            target.as_str()
+            fact.as_str()
         );
-        record.state = target;
+        record.readiness.record(fact);
         tel.execute(
-            &["fz", "compiler", "state_advanced"],
+            &["fz", "compiler", "readiness_recorded"],
             &measurements,
             &metadata! {
-                module_key: record.key.render(),
-                module_key_kind: record.key.kind(),
-                module_origin: record.origin.kind(),
-                from_state: from.as_str(),
-                to_state: target.as_str(),
+                module_key: record.key_render(),
+                module_key_kind: record.key_kind(),
+                module_origin: self.module_origin_kind(module_id),
+                readiness_fact: fact.as_str(),
             },
         );
     }
 
     fn state_measurements(&self, module_id: ModuleId) -> crate::telemetry::Measurements<'static> {
         let record = self.module(module_id);
-        measurements! { module_id: module_id.0, file_id: record.file_id.0 }
+        measurements! {
+            module_id: module_id.0,
+            file_id: record.file_id().map_or(u64::MAX as u32, |file_id| file_id.0),
+        }
     }
 
-    fn state_metadata(
+    fn readiness_metadata(
         &self,
         module_id: ModuleId,
-        current: ModuleState,
-        target: ModuleState,
+        current: ModuleReadiness,
+        fact: ModuleReadinessFact,
     ) -> crate::telemetry::Metadata<'static> {
         let record = self.module(module_id);
         metadata! {
-            module_key: record.key.render(),
-            module_key_kind: record.key.kind(),
-            module_origin: record.origin.kind(),
-            current_state: current.as_str(),
-            target_state: target.as_str(),
+            module_key: record.key_render(),
+            module_key_kind: record.key_kind(),
+            module_origin: self.module_origin_kind(module_id),
+            requested_readiness: fact.as_str(),
+            source_ready: current.source_ready,
+            parsed_ready: current.parsed,
+            namespace_ready: current.namespace_ready,
+            body_surface_ready: current.body_surface_ready,
+            interface_table_ready: current.interface_table_ready,
+            macro_surface_ready: current.macro_surface_ready,
+            runtime_lowered_ready: current.runtime_lowered,
+            runtime_planned_ready: current.runtime_planned,
         }
+    }
+
+    fn module_origin_kind(&self, module_id: ModuleId) -> String {
+        self.module_origin(module_id)
+            .map(|origin| origin.kind().to_string())
+            .unwrap_or_else(|| "undeclared".to_string())
     }
 }
 
@@ -2894,7 +3520,7 @@ fn enqueue_runtime_protocol_impl_providers(
     for source in RUNTIME_MODULE_SOURCES {
         let module = ModuleName::from_segments(vec![source.name.to_string()]);
         if let Some(existing) = compiler.module_id_for_name(&module)
-            && compiler.module(existing).origin != ModuleOrigin::EmbeddedRuntime
+            && compiler.module_origin(existing) != Some(ModuleOrigin::EmbeddedRuntime)
         {
             continue;
         }
@@ -2919,12 +3545,12 @@ fn enqueue_runtime_protocol_impl_providers(
     Ok(())
 }
 
-fn collect_runtime_prelude_imports(
+fn record_runtime_prelude_namespace(
     compiler: &mut CompilerWorld,
+    module_id: ModuleId,
     tel: &dyn Telemetry,
     items: &[Rc<Item>],
-) -> HashMap<(String, usize), String> {
-    let mut out = HashMap::new();
+) -> Result<(), Diagnostic> {
     for item in items {
         match item.as_ref() {
             Item::Import {
@@ -2932,30 +3558,47 @@ fn collect_runtime_prelude_imports(
                 only,
                 except,
                 span,
-            } => {
-                collect_runtime_prelude_import(compiler, tel, &mut out, path, only.as_deref(), except.as_deref(), *span)
-            }
+            } => record_runtime_prelude_import(
+                compiler,
+                module_id,
+                tel,
+                path,
+                only.as_deref(),
+                except.as_deref(),
+                *span,
+            )?,
             Item::Alias { .. } => {
                 panic!("runtime.fz prelude aliases are not supported; use import")
             }
             _ => {}
         }
     }
-    out
+    Ok(())
 }
 
-fn collect_runtime_prelude_import(
+fn record_runtime_prelude_import(
     compiler: &mut CompilerWorld,
+    module_id: ModuleId,
     tel: &dyn Telemetry,
-    out: &mut HashMap<(String, usize), String>,
     module: &ModuleName,
     only: Option<&[(String, usize)]>,
     except: Option<&[(String, usize)]>,
     span: Span,
-) {
-    let interface = runtime_library::interface(compiler, module, tel)
-        .expect("runtime interface lookup must succeed")
-        .unwrap_or_else(|| panic!("runtime.fz imports unknown built-in runtime module `{}`", module));
+) -> Result<(), Diagnostic> {
+    let interface = runtime_library::interface(compiler, module, tel)?.ok_or_else(|| {
+        Diagnostic::error(
+            crate::diag::codes::RESOLVE_UNKNOWN_MODULE,
+            format!("module `{}` is not defined", module),
+            span,
+        )
+    })?;
+    let target_module_id = compiler.module_id_for_name(module).ok_or_else(|| {
+        Diagnostic::error(
+            crate::diag::codes::RESOLVE_UNKNOWN_MODULE,
+            format!("module `{}` is not defined", module),
+            span,
+        )
+    })?;
     let mut exports = interface
         .exports
         .iter()
@@ -2977,15 +3620,17 @@ fn collect_runtime_prelude_import(
         exports.retain(|export| !except.contains(export));
     }
     for (name, arity) in exports {
-        let previous = out.insert((name.clone(), arity), format!("{}.{}", module, name));
-        assert!(
-            previous.is_none(),
-            "runtime.fz import for `{}/{}` conflicts at {:?}",
-            name,
+        compiler.record_visible_callable_alias(
+            module_id,
+            name.clone(),
             arity,
-            span
+            Mfa::new(target_module_id, name, arity),
+            VisibleCallableAliasOrigin::PreludeImport {
+                from_module: module.clone(),
+            },
         );
     }
+    Ok(())
 }
 
 fn parse_source(
@@ -3035,6 +3680,15 @@ fn collect_interfaces(parsed: &ParsedSource) -> BTreeMap<ModuleName, ModuleInter
     }
 }
 
+fn named_module_origin_for_source_owner(owner_origin: ModuleOrigin) -> ModuleOrigin {
+    match owner_origin {
+        ModuleOrigin::RootSource | ModuleOrigin::Filesystem => ModuleOrigin::Filesystem,
+        ModuleOrigin::Supplemental => ModuleOrigin::Supplemental,
+        ModuleOrigin::EmbeddedRuntime => ModuleOrigin::EmbeddedRuntime,
+        ModuleOrigin::PrimitivePrelude => ModuleOrigin::PrimitivePrelude,
+    }
+}
+
 fn collect_body_surface(
     compiler: &mut CompilerWorld,
     surface_module_id: ModuleId,
@@ -3042,9 +3696,13 @@ fn collect_body_surface(
     tel: &dyn Telemetry,
 ) -> ModuleBodySurface {
     let target_module = match &compiler.module(surface_module_id).key {
-        ModuleKey::RootPath(_) => None,
-        ModuleKey::Named(_) if compiler.module(surface_module_id).origin == ModuleOrigin::PrimitivePrelude => None,
-        ModuleKey::Named(name) => Some(name.clone()),
+        None | Some(ModuleKey::RootPath(_)) => None,
+        Some(ModuleKey::Named(_))
+            if compiler.module_origin(surface_module_id) == Some(ModuleOrigin::PrimitivePrelude) =>
+        {
+            None
+        }
+        Some(ModuleKey::Named(name)) => Some(name.clone()),
     };
     let mut surface = ModuleBodySurface {
         owner_module_id: surface_module_id,
@@ -3171,13 +3829,23 @@ fn register_named_body_surface_module(
     tel: &dyn Telemetry,
 ) -> ModuleId {
     let owner = compiler.module(surface_module_id).clone();
-    let file = compiler.file(owner.file_id).clone();
-    let origin = match owner.origin {
+    let file = compiler
+        .file(compiler.declared_module_file_id(surface_module_id))
+        .clone();
+    let origin = match compiler.declared_module_origin(surface_module_id) {
         ModuleOrigin::RootSource | ModuleOrigin::Filesystem => ModuleOrigin::Filesystem,
+        ModuleOrigin::Supplemental => ModuleOrigin::Supplemental,
         ModuleOrigin::EmbeddedRuntime => ModuleOrigin::EmbeddedRuntime,
         ModuleOrigin::PrimitivePrelude => ModuleOrigin::PrimitivePrelude,
     };
-    compiler.register_module(ModuleKey::Named(module), origin, file.origin, file.descriptor, tel)
+    let _ = owner;
+    compiler.declare_module(
+        Some(ModuleKey::Named(module)),
+        origin,
+        file.origin,
+        file.descriptor,
+        tel,
+    )
 }
 
 fn body_surface_should_recurse_into_module(target_module: Option<&ModuleName>, candidate: &ModuleName) -> bool {
@@ -3280,14 +3948,14 @@ fn body_surface_group_belongs_to_surface(
     let surface_owner = compiler.module(surface_owner_id);
     let group_owner = compiler.module(group_owner_id);
     match (&surface_owner.key, &group_owner.key) {
-        (ModuleKey::RootPath(_), _) => surface_owner.file_id == group_owner.file_id,
-        (ModuleKey::Named(_), _) if surface_owner.origin == ModuleOrigin::PrimitivePrelude => {
-            surface_owner.file_id == group_owner.file_id
+        (None | Some(ModuleKey::RootPath(_)), _) => surface_owner.file_id() == group_owner.file_id(),
+        (Some(ModuleKey::Named(_)), _) if surface_owner.origin() == Some(ModuleOrigin::PrimitivePrelude) => {
+            surface_owner.file_id() == group_owner.file_id()
         }
-        (ModuleKey::Named(surface_name), ModuleKey::Named(group_name)) => {
-            group_owner.file_id == surface_owner.file_id && module_name_matches_surface(group_name, surface_name)
+        (Some(ModuleKey::Named(surface_name)), Some(ModuleKey::Named(group_name))) => {
+            group_owner.file_id() == surface_owner.file_id() && module_name_matches_surface(group_name, surface_name)
         }
-        (ModuleKey::Named(_), ModuleKey::RootPath(_)) => false,
+        (Some(ModuleKey::Named(_)), None | Some(ModuleKey::RootPath(_))) => false,
     }
 }
 

@@ -31,8 +31,8 @@
 use crate::ast::MatchClause;
 use crate::ast::{Attribute, Expr, FnDef, Item, Program, Spanned};
 use crate::compiler::{
-    Compiler, CompilerWorld, FnGroupDescriptor, FunctionKind, LoweredFnGroup, LoweringFunctionRegistry,
-    ModuleBodySurface, ModuleId,
+    Compiler, CompilerWorld, ExternFunctionDecl, FnGroupDescriptor, FunctionKind, LoweredFnGroup, ModuleBodySurface,
+    ModuleId,
 };
 use crate::diag::{FileId as SourceFileId, Span};
 #[cfg(test)]
@@ -557,7 +557,9 @@ pub(crate) enum LoweringDemandResult<D, E> {
     Fatal(E),
 }
 
-fn collect_external_exports(interfaces: &BTreeMap<ModuleName, crate::modules::interface::ModuleInterface>) -> HashMap<(String, usize), ExportKey> {
+fn collect_external_exports(
+    interfaces: &BTreeMap<ModuleName, crate::modules::interface::ModuleInterface>,
+) -> HashMap<(String, usize), ExportKey> {
     let mut exports = HashMap::new();
     for (module, interface) in interfaces {
         for export in &interface.exports {
@@ -575,7 +577,7 @@ fn collect_protocol_callbacks(
     interfaces: &BTreeMap<ModuleName, crate::modules::interface::ModuleInterface>,
 ) -> HashMap<(String, usize), ProtocolCallTarget> {
     let mut callbacks = HashMap::new();
-    for (protocol, decl) in &compiler.protocol_registry().protocols {
+    for (protocol, decl) in compiler.protocol_decls() {
         for callback in &decl.callbacks {
             callbacks.insert(
                 (format!("{}.{}", protocol, callback.name), callback.arity),
@@ -652,8 +654,7 @@ pub(crate) fn select_initial_root_fn_keys(
         .iter()
         .filter(|group| {
             !group.is_private
-                && (group.source.function_name == "main"
-                    || group.source.function_name.starts_with(REPL_ENTRY_PREFIX))
+                && (group.source.function_name == "main" || group.source.function_name.starts_with(REPL_ENTRY_PREFIX))
         })
         .map(|group| group.source.clone())
         .collect::<HashSet<_>>();
@@ -773,11 +774,8 @@ fn assign_compiler_source_root_fn_ids(
     let mut fn_key_by_id = HashMap::new();
     for descriptor in surface.groups {
         let fn_def = descriptor.fn_def();
-        let id = ctx.reserve_named_function(
-            descriptor.source.module_id,
-            descriptor.source.clone(),
-            descriptor.qualified_name.clone(),
-        );
+        let id = compiler.declare_fn(descriptor.source.clone(), !fn_def.is_private);
+        ctx.register_function_id(id);
         ctx.register_local_named_function(&descriptor.source, descriptor.qualified_name(), id);
         if fn_def.attrs.iter().any(|a| matches!(a, Attribute::Spec(_))) {
             ctx.boundary_fns.insert(id);
@@ -788,11 +786,31 @@ fn assign_compiler_source_root_fn_ids(
 }
 
 fn ensure_source_extern_decl<T: Types<Ty = Ty>>(
+    compiler: &mut CompilerWorld,
+    owner_module_id: ModuleId,
     ctx: &mut LowerCtx,
     t: &mut T,
     fn_def: &FnDef,
 ) -> Result<ExternId, LowerError> {
+    let arity = fn_arity(fn_def);
+    let source_key = fn_key_for_qualified_name(compiler, owner_module_id, &fn_def.name, arity);
     if let Some(eid) = ctx.externs.lookup(&fn_def.name) {
+        let decl = ctx
+            .extern_decls
+            .iter()
+            .find(|decl| decl.id == eid)
+            .expect("extern table out of sync with extern_decls");
+        let _ = compiler.declare_extern_fn(
+            source_key,
+            ExternFunctionDecl {
+                symbol: decl.symbol.clone(),
+                params: decl.params.clone(),
+                variadic: decl.variadic,
+                ret: decl.ret,
+                ret_descr: decl.ret_descr.clone(),
+            },
+            !fn_def.is_private,
+        );
         return Ok(eid);
     }
     let eid = ExternId(ctx.next_extern);
@@ -803,7 +821,7 @@ fn ensure_source_extern_decl<T: Types<Ty = Ty>>(
         .map(|name| extern_ty_from_name(name).unwrap_or(ExternTy::Any))
         .collect();
     let (ret, ret_descr) = lower_extern_ret_ty(t, fn_def, &ctx.shared.prelude_type_env)?;
-    ctx.extern_decls.push(ExternDecl {
+    let decl = ExternDecl {
         id: eid,
         fz_name: fn_def.name.clone(),
         symbol: extern_symbol_from_name(&fn_def.name).to_string(),
@@ -811,7 +829,19 @@ fn ensure_source_extern_decl<T: Types<Ty = Ty>>(
         variadic: fn_def.variadic,
         ret,
         ret_descr,
-    });
+    };
+    let _ = compiler.declare_extern_fn(
+        source_key,
+        ExternFunctionDecl {
+            symbol: decl.symbol.clone(),
+            params: decl.params.clone(),
+            variadic: decl.variadic,
+            ret: decl.ret,
+            ret_descr: decl.ret_descr.clone(),
+        },
+        !fn_def.is_private,
+    );
+    ctx.extern_decls.push(decl);
     ctx.externs.insert(fn_def.name.clone(), eid);
     Ok(eid)
 }
@@ -830,7 +860,11 @@ fn merge_lowered_fn_group(ctx: &mut LowerCtx, group: &LoweredFnGroup) {
         ctx.externs.insert(decl.fz_name.clone(), decl.id);
     }
     for fn_ir in &group.fns {
-        ctx.mb.add_fn(remap_cached_group_atoms(fn_ir.clone(), &group.atom_names, &mut ctx.atoms));
+        ctx.mb.add_fn(remap_cached_group_atoms(
+            fn_ir.clone(),
+            &group.atom_names,
+            &mut ctx.atoms,
+        ));
     }
     if let Some(max_fn_id) = group.function_ids.iter().map(|id| id.0).max() {
         ctx.mb.advance_next_fn_to(max_fn_id + 1);
@@ -1000,7 +1034,7 @@ fn lower_source_fn_group<T: Types<Ty = Ty>>(
     }
 
     let before_fn_count = ctx.mb.fn_count();
-    lower_fn(ctx, t, fn_def, user_fn_category(fn_def))?;
+    lower_fn(compiler, ctx, t, fn_def, user_fn_category(fn_def))?;
     let group = capture_lowered_fn_group(ctx, before_fn_count, descriptor);
     tel.execute(
         &["fz", "compiler", "fn_group_lowered"],
@@ -1020,6 +1054,7 @@ fn lower_source_fn_group<T: Types<Ty = Ty>>(
 
 pub(crate) struct CompilerLoweringSession {
     root_source: Option<ModuleId>,
+    pub(crate) user_root_module_id: ModuleId,
     prelude_id: ModuleId,
     ctx: LowerCtx,
     prelude: Program,
@@ -1037,12 +1072,12 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
     tel: &dyn Telemetry,
 ) -> Result<CompilerLoweringSession, LowerError> {
     let prelude_id = compiler.discover_primitive_prelude(tel);
+    compiler
+        .ensure_primitive_prelude_namespace(prelude_id, tel)
+        .expect("runtime.fz namespace preparation failed");
     let prepared_prelude = compiler
         .ensure_prepared_prelude(prelude_id, t, tel)
         .expect("runtime.fz bootstrap preparation failed");
-    compiler
-        .ensure_source_module_interfaces(prelude_id, tel)
-        .expect("runtime.fz named modules should register compiler-owned source surfaces");
     let prelude = prepared_prelude.program;
     let runtime_item_count = prelude.items.len();
     let all_items: Vec<Rc<Item>> = prelude
@@ -1094,13 +1129,12 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
     });
     let mut ctx = LowerCtx::new(
         Arc::clone(&shared),
-        compiler.begin_lowering_function_registry(),
         compiler.begin_lowering_extern_decls(),
         compiler.begin_lowering_extern_table(),
         compiler.next_extern_id(),
     );
     let prelude_fn_defs = collect_lowerable_fn_defs(compiler, prelude_id, prelude_items);
-    let user_key_module = root_source.unwrap_or(ModuleId(u32::MAX));
+    let user_key_module = root_source.unwrap_or_else(|| compiler.register_anonymous_root_module("lowering-root", tel));
     if let Some(root_source) = root_source {
         compiler
             .ensure_body_surface(root_source, tel)
@@ -1115,11 +1149,12 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
     for item in all_items.iter().take(runtime_item_count) {
         if let Item::Fn(fn_def) = item.as_ref() {
             if fn_def.extern_abi.is_some() {
-                let _ = ensure_source_extern_decl(&mut ctx, t, fn_def)?;
+                let _ = ensure_source_extern_decl(compiler, prelude_id, &mut ctx, t, fn_def)?;
             } else {
                 let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
                 let source_key = fn_key_for_qualified_name(compiler, prelude_id, &fn_def.name, arity);
-                let id = ctx.reserve_named_function(source_key.module_id, source_key.clone(), fn_def.name.clone());
+                let id = compiler.declare_fn(source_key.clone(), !fn_def.is_private);
+                ctx.register_function_id(id);
                 ctx.register_local_named_function(&source_key, &fn_def.name, id);
                 ctx.prelude_fn_ids.insert(id);
                 fn_key_by_id.insert(id, source_key);
@@ -1140,7 +1175,8 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
         match item.as_ref() {
             Item::Fn(fn_def) => {
                 if fn_def.extern_abi.is_some() {
-                    let _ = ensure_source_extern_decl(&mut ctx, t, fn_def)?;
+                    let owner_module_id = root_source.unwrap_or(user_key_module);
+                    let _ = ensure_source_extern_decl(compiler, owner_module_id, &mut ctx, t, fn_def)?;
                 } else if !ctx.fns.contains_key(&(fn_def.name.clone(), fn_arity(fn_def))) {
                     let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
                     let source_key = fn_key_for_qualified_name(
@@ -1149,7 +1185,8 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
                         &fn_def.name,
                         arity,
                     );
-                    let id = ctx.reserve_named_function(source_key.module_id, source_key.clone(), fn_def.name.clone());
+                    let id = compiler.declare_fn(source_key.clone(), !fn_def.is_private);
+                    ctx.register_function_id(id);
                     ctx.register_local_named_function(&source_key, &fn_def.name, id);
                     if fn_def.attrs.iter().any(|a| matches!(a, Attribute::Spec(_))) {
                         ctx.boundary_fns.insert(id);
@@ -1192,6 +1229,7 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
     }
     Ok(CompilerLoweringSession {
         root_source,
+        user_root_module_id: user_key_module,
         prelude_id,
         ctx,
         prelude,
@@ -1224,12 +1262,12 @@ impl CompilerLoweringSession {
                 {
                     return LoweringDemandResult::Fatal(err);
                 }
-            } else if let Err(err) = lower_fn(&mut self.ctx, t, fn_def, user_fn_category(fn_def)) {
+            } else if let Err(err) = lower_fn(compiler, &mut self.ctx, t, fn_def, user_fn_category(fn_def)) {
                 return LoweringDemandResult::Fatal(err);
             }
         } else if let Some(fn_def) = self.prelude_fn_defs.get(fn_key) {
             self.ctx.current_owner_module_id = fn_key.module_id;
-            if let Err(err) = lower_fn(&mut self.ctx, t, fn_def, FnCategory::Prelude) {
+            if let Err(err) = lower_fn(compiler, &mut self.ctx, t, fn_def, FnCategory::Prelude) {
                 return LoweringDemandResult::Fatal(err);
             }
         } else {
@@ -1279,15 +1317,11 @@ impl CompilerLoweringSession {
         prog: &Program,
         tel: &dyn Telemetry,
     ) -> Result<Module, LowerError> {
-        let function_registry = std::mem::replace(
-            &mut self.ctx.function_registry,
-            compiler.begin_lowering_function_registry(),
-        );
-        compiler.commit_lowering_function_registry(function_registry);
         compiler.commit_lowering_extern_decls(&self.ctx.extern_decls);
         let mb = take(&mut self.ctx.mb);
         let mut module = mb.build();
-        module.protocol_registry = compiler.protocol_registry().clone();
+        module.protocol_decls = compiler.protocol_decls().clone();
+        module.protocol_impls = compiler.protocol_impls().clone();
         module.source = build_source_info(&module, &self.ctx);
         module.atom_names = self.ctx.atoms.names();
         module.externs = take(&mut self.ctx.extern_decls);
@@ -1298,9 +1332,9 @@ impl CompilerLoweringSession {
         module.boundary_fns.retain(|fn_id| module.fn_idx.contains_key(fn_id));
         let mut named_surface_files = HashSet::new();
         if let Some(root_source) = self.root_source {
-            named_surface_files.insert(compiler.module(root_source).file_id);
+            named_surface_files.insert(compiler.declared_module_file_id(root_source));
         }
-        named_surface_files.insert(compiler.module(self.prelude_id).file_id);
+        named_surface_files.insert(compiler.declared_module_file_id(self.prelude_id));
         module.named_fns = compiler.named_surface_entries_for_files(&named_surface_files);
         module
             .named_fns
@@ -1400,14 +1434,9 @@ fn install_inherited_protocol_callback_specs<T: Types<Ty = Ty>>(
     prelude_type_envs: &HashMap<String, ModuleTypeEnv>,
     combined_type_env: &ModuleTypeEnv,
 ) {
-    let impls = module.protocol_registry.impls.values().cloned().collect::<Vec<_>>();
+    let impls = module.protocol_impls.values().cloned().collect::<Vec<_>>();
     for implementation in impls {
-        let Some(protocol) = module
-            .protocol_registry
-            .protocols
-            .get(&implementation.protocol)
-            .cloned()
-        else {
+        let Some(protocol) = module.protocol_decls.get(&implementation.protocol).cloned() else {
             continue;
         };
         for callback in protocol.callbacks {

@@ -6,15 +6,21 @@ fn named_module(name: &str) -> ModuleKey {
     ModuleKey::Named(ModuleName::parse_dotted(name).expect("valid module name"))
 }
 
-fn state_work_events(capture: &Capture) -> Vec<crate::telemetry::capture::OwnedEvent> {
-    capture.find(&["fz", "compiler", "state_work"]).into_iter().collect()
+fn readiness_work_events(capture: &Capture) -> Vec<crate::telemetry::capture::OwnedEvent> {
+    capture
+        .find(&["fz", "compiler", "readiness_work"])
+        .into_iter()
+        .collect()
 }
 
-fn state_start_events_for_target(capture: &Capture, target_state: &str) -> Vec<crate::telemetry::capture::OwnedEvent> {
-    state_work_events(capture)
+fn readiness_start_events_for_fact(
+    capture: &Capture,
+    requested_fact: &str,
+) -> Vec<crate::telemetry::capture::OwnedEvent> {
+    readiness_work_events(capture)
         .into_iter()
         .filter(|ev| ev.kind == EventKind::SpanStart)
-        .filter(|ev| metadata_str(ev, "target_state") == target_state)
+        .filter(|ev| metadata_str(ev, "requested_readiness") == requested_fact)
         .collect()
 }
 
@@ -41,14 +47,14 @@ fn captured_str<'a>(ev: &'a crate::telemetry::capture::OwnedEvent, key: &str) ->
 }
 
 #[test]
-fn compiler_state_cache_hits_skip_repeat_work_and_emit_timing_telemetry() {
+fn compiler_readiness_cache_hits_skip_repeat_work_and_emit_timing_telemetry() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&["fz", "compiler"], capture.handler());
 
     let mut compiler = Compiler::new();
-    let module_id = compiler.world.register_module(
-        named_module("Process"),
+    let module_id = compiler.world.declare_module(
+        Some(named_module("Process")),
         ModuleOrigin::EmbeddedRuntime,
         FileOrigin::EmbeddedRuntime("Process".to_string()),
         SourceDescriptor {
@@ -59,8 +65,8 @@ fn compiler_state_cache_hits_skip_repeat_work_and_emit_timing_telemetry() {
         &tel,
     );
 
-    let again = compiler.world.register_module(
-        named_module("Process"),
+    let again = compiler.world.declare_module(
+        Some(named_module("Process")),
         ModuleOrigin::EmbeddedRuntime,
         FileOrigin::EmbeddedRuntime("Process".to_string()),
         SourceDescriptor {
@@ -73,45 +79,79 @@ fn compiler_state_cache_hits_skip_repeat_work_and_emit_timing_telemetry() {
     assert_eq!(module_id, again, "module discovery should be idempotent");
 
     let mut work_runs = 0;
-    let advanced = compiler.ensure_module_state(module_id, ModuleState::Parsed, &tel, |_| {
+    let advanced = compiler.ensure_module_readiness(module_id, ModuleReadinessFact::Parsed, &tel, |_| {
         work_runs += 1;
     });
-    let cached = compiler.ensure_module_state(module_id, ModuleState::Parsed, &tel, |_| {
+    let cached = compiler.ensure_module_readiness(module_id, ModuleReadinessFact::Parsed, &tel, |_| {
         work_runs += 1;
     });
 
-    assert!(advanced, "first ensure should advance the phase");
+    assert!(advanced, "first ensure should record the readiness fact");
     assert!(!cached, "second ensure should hit the cache");
-    assert_eq!(work_runs, 1, "cache hit must not rerun state work");
-    assert_eq!(compiler.module(module_id).state, ModuleState::Parsed);
+    assert_eq!(work_runs, 1, "cache hit must not rerun readiness work");
+    assert!(compiler.module(module_id).readiness.has(ModuleReadinessFact::Parsed));
 
     assert_eq!(capture.count(&["fz", "compiler", "file_registered"]), 1);
     assert_eq!(capture.count(&["fz", "compiler", "file_cache_hit"]), 1);
     assert_eq!(capture.count(&["fz", "compiler", "module_discovered"]), 1);
-    assert_eq!(capture.count(&["fz", "compiler", "module_cache_hit"]), 1);
+    assert_eq!(capture.count(&["fz", "compiler", "module_declared"]), 1);
+    assert_eq!(capture.count(&["fz", "compiler", "module_cache_hit"]), 2);
     assert_eq!(capture.count(&["fz", "compiler", "cache_miss"]), 1);
     assert_eq!(capture.count(&["fz", "compiler", "cache_hit"]), 1);
-    assert_eq!(capture.count(&["fz", "compiler", "state_advanced"]), 1);
+    assert_eq!(capture.count(&["fz", "compiler", "readiness_recorded"]), 1);
 
-    let state_events = state_work_events(&capture);
+    let readiness_events = readiness_work_events(&capture);
     assert_eq!(
-        state_events.len(),
+        readiness_events.len(),
         2,
-        "one state miss should produce one start/stop span pair"
+        "one readiness miss should produce one start/stop span pair"
     );
-    let start = state_events
+    let start = readiness_events
         .iter()
         .find(|ev| ev.kind == EventKind::SpanStart)
-        .expect("state span start");
-    let stop = state_events
+        .expect("readiness span start");
+    let stop = readiness_events
         .iter()
         .find(|ev| ev.kind == EventKind::SpanStop)
-        .expect("state span stop");
-    assert_eq!(metadata_str(start, "target_state"), "parsed");
+        .expect("readiness span stop");
+    assert_eq!(metadata_str(start, "requested_readiness"), "parsed");
     assert!(
         stop.measurements.get("elapsed_ns").is_some(),
-        "state stop event must carry elapsed_ns"
+        "readiness stop event must carry elapsed_ns"
     );
+}
+
+#[test]
+fn named_module_reference_mints_one_entity_and_declaration_attaches_to_it() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "compiler"], capture.handler());
+
+    let mut compiler = Compiler::new();
+    let process = ModuleName::parse_dotted("Process").expect("valid module name");
+    let referenced = compiler.world.reference_named_module(process.clone(), &tel);
+    assert_eq!(compiler.module(referenced).origin(), None);
+
+    let declared = compiler.world.declare_module(
+        Some(ModuleKey::Named(process.clone())),
+        ModuleOrigin::EmbeddedRuntime,
+        FileOrigin::EmbeddedRuntime("Process".to_string()),
+        SourceDescriptor {
+            source_name: "runtime:Process".to_string(),
+            text: Arc::<str>::from("defmodule Process do\nend\n"),
+            parse_kind: ParseKind::Prelude,
+        },
+        &tel,
+    );
+
+    assert_eq!(
+        referenced, declared,
+        "declaration must attach to the referenced module entity"
+    );
+    assert_eq!(compiler.module(declared).origin(), Some(ModuleOrigin::EmbeddedRuntime));
+    assert_eq!(compiler.module_id_for_name(&process), Some(declared));
+    assert_eq!(capture.count(&["fz", "compiler", "module_discovered"]), 1);
+    assert_eq!(capture.count(&["fz", "compiler", "module_declared"]), 1);
 }
 
 #[test]
@@ -130,21 +170,21 @@ fn root_source_is_loaded_and_parsed_once_with_timing_telemetry() {
 
     assert_eq!(first.program.items.len(), 1);
     assert_eq!(second.program.items.len(), 1);
-    assert_eq!(compiler.module(root).state, ModuleState::Parsed);
+    assert!(compiler.module(root).readiness.has(ModuleReadinessFact::Parsed));
 
     assert_eq!(capture.count(&["fz", "compiler", "source_loaded"]), 1);
     assert_eq!(capture.count(&["fz", "compiler", "parsed"]), 1);
     assert_eq!(capture.count(&["fz", "compiler", "cache_miss"]), 2);
     assert_eq!(capture.count(&["fz", "compiler", "cache_hit"]), 1);
 
-    let parsed_phase_events = state_start_events_for_target(&capture, "parsed");
+    let parsed_phase_events = readiness_start_events_for_fact(&capture, "parsed");
     assert_eq!(
         parsed_phase_events.len(),
         1,
         "one parse should produce one parsed phase start"
     );
     assert!(
-        state_work_events(&capture)
+        readiness_work_events(&capture)
             .iter()
             .any(|ev| ev.kind == EventKind::SpanStop && ev.measurements.get("elapsed_ns").is_some()),
         "compiler state timing must report elapsed_ns"
@@ -181,20 +221,25 @@ fn runtime_module_interface_is_collected_once_from_source() {
     let process_id = compiler
         .discover_runtime_module(&process, &tel)
         .expect("Process runtime module should still be discoverable");
-    assert_eq!(compiler.module(process_id).state, ModuleState::InterfaceReady);
+    assert!(
+        compiler
+            .module(process_id)
+            .readiness
+            .has(ModuleReadinessFact::InterfaceTableReady)
+    );
 
     assert_eq!(capture.count(&["fz", "compiler", "source_loaded"]), 1);
     assert_eq!(capture.count(&["fz", "compiler", "parsed"]), 1);
     assert_eq!(capture.count(&["fz", "compiler", "interface_ready"]), 1);
 
-    let parsed_phase_events = state_start_events_for_target(&capture, "parsed");
+    let parsed_phase_events = readiness_start_events_for_fact(&capture, "parsed");
     assert_eq!(
         parsed_phase_events.len(),
         1,
         "one runtime parse should produce one parsed phase start"
     );
     assert!(
-        state_work_events(&capture)
+        readiness_work_events(&capture)
             .iter()
             .any(|ev| ev.kind == EventKind::SpanStop && ev.measurements.get("elapsed_ns").is_some()),
         "compiler state timing must report elapsed_ns"
@@ -227,7 +272,10 @@ fn primitive_prelude_is_prepared_once_as_compiler_owned_bootstrap_source() {
     );
     assert_eq!(first.program.items.len(), second.program.items.len());
     assert_eq!(first.imports, second.imports);
-    assert_eq!(compiler.module(prelude_id).origin, ModuleOrigin::PrimitivePrelude);
+    assert_eq!(
+        compiler.module(prelude_id).origin(),
+        Some(ModuleOrigin::PrimitivePrelude)
+    );
     let prelude_parsed = capture
         .find(&["fz", "compiler", "parsed"])
         .into_iter()
@@ -252,8 +300,8 @@ fn primitive_prelude_registers_named_operator_functions_in_compiler_world() {
         .ensure_prepared_prelude(prelude_id, &tel)
         .expect("primitive prelude should prepare");
     compiler
-        .ensure_source_module_interfaces(prelude_id, &tel)
-        .expect("primitive prelude named modules should register source interfaces");
+        .ensure_primitive_prelude_namespace(prelude_id, &tel)
+        .expect("primitive prelude namespace should prepare");
 
     let kernel = ModuleName::parse_dotted("Kernel").expect("valid module name");
     let kernel_id = compiler
@@ -273,7 +321,7 @@ fn primitive_prelude_registers_named_operator_functions_in_compiler_world() {
             .owner_module_id;
         assert_eq!(
             compiler.module(owner).key,
-            ModuleKey::Named(kernel.clone()),
+            Some(ModuleKey::Named(kernel.clone())),
             "primitive prelude operator functions should stay attached to the Kernel module entity"
         );
         let visible = compiler
@@ -320,6 +368,72 @@ fn primitive_prelude_registers_named_operator_functions_in_compiler_world() {
 }
 
 #[test]
+fn prelude_bootstrap_resolve_materializes_kernel_contract_from_demands() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler::new();
+    let prelude_id = compiler.discover_primitive_prelude(&tel);
+    let parsed = compiler
+        .ensure_prelude(prelude_id, &tel)
+        .expect("primitive prelude should parse");
+    let staged = Program {
+        items: parsed.items,
+        ..Program::default()
+    };
+    let mut t = crate::types::new();
+    let resolved = compiler
+        .world_mut()
+        .resolve_program_from_demands(&mut t, None, staged, BTreeMap::new(), &tel);
+    assert!(
+        resolved.is_ok(),
+        "prelude bootstrap should resolve through compiler demand loop: {resolved:?}"
+    );
+    let kernel = ModuleName::parse_dotted("Kernel").expect("valid module name");
+    let kernel_id = compiler
+        .module_id_for_name(&kernel)
+        .expect("Kernel should be discovered while satisfying prelude imports");
+    assert!(
+        compiler.world().module_contract(kernel_id).is_some(),
+        "Kernel contract should be recorded on the compiler-owned module record"
+    );
+}
+
+#[test]
+fn prelude_bootstrap_survives_after_root_resolution_in_same_compiler_world() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler::new();
+    let root = compiler.register_root_source(
+        "same-world.fz",
+        "defmodule Local do\n  fn run(x), do: x\nend\n".to_string(),
+        &tel,
+    );
+    let parsed = compiler.ensure_program(root, &tel).expect("root should parse");
+    let mut t = crate::types::new();
+    let _resolved = compiler
+        .world_mut()
+        .resolve_program_from_demands(&mut t, Some(root), parsed.program, BTreeMap::new(), &tel)
+        .expect("root resolve should succeed");
+
+    let prelude_id = compiler.discover_primitive_prelude(&tel);
+    compiler
+        .ensure_primitive_prelude_namespace(prelude_id, &tel)
+        .expect("primitive prelude namespace should still build");
+    let kernel = ModuleName::parse_dotted("Kernel").expect("valid module name");
+    let kernel_id = compiler
+        .module_id_for_name(&kernel)
+        .expect("primitive prelude namespace should register Kernel");
+    assert_eq!(
+        compiler.world().visible_callable_target(prelude_id, "+", 2),
+        Some(Mfa::new(kernel_id, "+", 2)),
+        "primitive prelude namespace should expose Kernel.+/2"
+    );
+    let prepared = compiler.world_mut().ensure_prepared_prelude(prelude_id, &mut t, &tel);
+    assert!(
+        prepared.is_ok(),
+        "prelude bootstrap should survive after root resolution: {prepared:?}"
+    );
+}
+
+#[test]
 fn body_surface_is_cached_and_exposes_stable_root_group_mapping_without_lowering() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -363,7 +477,12 @@ end
     assert_eq!(first.groups[0].source.module_id, root);
     assert_eq!(first.groups[1].source.module_id, root);
     assert_eq!(first.groups[2].source.module_id, nested_id);
-    assert_eq!(compiler.module(root).state, ModuleState::BodySurfaceReady);
+    assert!(
+        compiler
+            .module(root)
+            .readiness
+            .has(ModuleReadinessFact::BodySurfaceReady)
+    );
     assert_eq!(capture.count(&["fz", "compiler", "body_surface_ready"]), 1);
     assert_eq!(capture.count(&["fz", "compiler", "fn_group_discovered"]), 3);
     assert_eq!(capture.count(&["fz", "compiler", "cache_hit"]), 1);
@@ -492,7 +611,10 @@ fn compiler_invariants_reject_broken_module_file_links() {
         .discover_runtime_module(&ModuleName::parse_dotted("Process").expect("valid module name"), &tel)
         .expect("runtime module");
 
-    compiler.world.modules[module_id.0 as usize].file_id = FileId(99);
+    compiler.world.modules[module_id.0 as usize].declaration = Some(ModuleDeclaration {
+        origin: ModuleOrigin::EmbeddedRuntime,
+        file_id: FileId(99),
+    });
 
     let err = compiler
         .validate_invariants()
@@ -514,7 +636,7 @@ fn compiler_invariants_reject_runtime_execution_state_without_readiness_facts() 
         .ensure_runtime_module_interface(&ModuleName::parse_dotted("Process").expect("valid module name"), &tel)
         .expect("Process interface should build");
     compiler.mark_reachable(process, ReachabilityKind::Runtime, &tel);
-    compiler.ensure_module_state(process, ModuleState::RuntimeLowered, &tel, |_| {});
+    compiler.ensure_module_readiness(process, ModuleReadinessFact::RuntimeLowered, &tel, |_| {});
 
     let err = compiler
         .validate_invariants()
@@ -560,8 +682,8 @@ end
             .expect("Macros exports")
             .contains(&("bump".to_string(), 1))
     );
-    assert_eq!(compiler.module(root).state, ModuleState::Parsed);
-    assert_eq!(compiler.module(macros_id).origin, ModuleOrigin::Filesystem);
+    assert!(compiler.module(root).readiness.has(ModuleReadinessFact::Parsed));
+    assert_eq!(compiler.module(macros_id).origin(), Some(ModuleOrigin::Filesystem));
     assert!(
         compiler
             .module(macros_id)
@@ -619,13 +741,18 @@ fn runtime_reachability_marks_only_live_runtime_modules_with_reasons() {
 
     let reachable_names = reachable
         .iter()
-        .map(|id| compiler.module(*id).key.render())
+        .map(|id| compiler.module(*id).key_render())
         .collect::<Vec<_>>();
     assert!(reachable_names.contains(&"Utf8".to_string()));
     assert!(!reachable_names.contains(&"Process".to_string()));
 
     assert!(compiler.module(utf8_id).reachability.runtime);
-    assert_eq!(compiler.module(utf8_id).state, ModuleState::InterfaceReady);
+    assert!(
+        compiler
+            .module(utf8_id)
+            .readiness
+            .has(ModuleReadinessFact::InterfaceTableReady)
+    );
     if let Some(process_id) = compiler.module_id_for_name(&process) {
         assert!(
             !compiler.module(process_id).reachability.runtime,
@@ -647,4 +774,153 @@ fn runtime_reachability_marks_only_live_runtime_modules_with_reasons() {
     compiler
         .validate_invariants()
         .expect("runtime reachability should preserve compiler invariants");
+}
+
+#[test]
+fn reference_fn_mints_one_id_and_declare_fn_upgrades_in_place() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler::new();
+    let module = ModuleName::parse_dotted("Sample").expect("valid module");
+    let module_id = compiler.world.declare_module(
+        Some(ModuleKey::Named(module.clone())),
+        ModuleOrigin::Filesystem,
+        FileOrigin::Filesystem("sample.fz".into()),
+        SourceDescriptor {
+            source_name: "sample.fz".to_string(),
+            text: Arc::<str>::from("defmodule Sample do\nend\n"),
+            parse_kind: ParseKind::Program,
+        },
+        &tel,
+    );
+    compiler
+        .world
+        .attach_primitive_prelude_namespace(module_id, &tel)
+        .expect("module should accept prelude namespace");
+
+    let mfa = Mfa::new(module_id, "work", 1);
+    let referenced = compiler.reference_fn(mfa.clone());
+    let referenced_again = compiler.reference_fn(mfa.clone());
+    assert_eq!(referenced, referenced_again, "reference_fn should be stable");
+    assert_eq!(
+        compiler.world.function_contract_state(&mfa),
+        Some(FunctionContractState::Referenced)
+    );
+
+    let declared = compiler.declare_fn(mfa.clone(), true);
+    assert_eq!(
+        declared, referenced,
+        "declaration must upgrade the referenced function record"
+    );
+    assert_eq!(
+        compiler.world.function_contract_state(&mfa),
+        Some(FunctionContractState::Declared)
+    );
+    assert_eq!(compiler.world.mfa_for_fn_id(declared), Some(&mfa));
+    assert_eq!(
+        compiler.world.visible_callable_target(module_id, "work", 1),
+        Some(mfa.clone()),
+        "declared functions should become visible through the module namespace"
+    );
+    assert!(
+        compiler.world.function(declared).declared_extern.is_none(),
+        "ordinary source declarations should not grow extern facts"
+    );
+}
+
+#[test]
+fn declare_extern_fn_reuses_referenced_id_and_records_extern_facts() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler::new();
+    let module = ModuleName::parse_dotted("Process").expect("valid module");
+    let module_id = compiler.world.declare_module(
+        Some(ModuleKey::Named(module.clone())),
+        ModuleOrigin::EmbeddedRuntime,
+        FileOrigin::EmbeddedRuntime("Process".to_string()),
+        SourceDescriptor {
+            source_name: "runtime:Process".to_string(),
+            text: Arc::<str>::from("defmodule Process do\nend\n"),
+            parse_kind: ParseKind::Prelude,
+        },
+        &tel,
+    );
+    compiler
+        .world
+        .attach_primitive_prelude_namespace(module_id, &tel)
+        .expect("module should accept prelude namespace");
+
+    let mfa = Mfa::new(module_id, "heap_alloc_stats", 0);
+    let referenced = compiler.reference_fn(mfa.clone());
+    let any_ty = compiler.types().any();
+    let declared = compiler.declare_extern_fn(
+        mfa.clone(),
+        ExternFunctionDecl {
+            symbol: "fz_process_heap_alloc_stats".to_string(),
+            params: vec![],
+            variadic: false,
+            ret: crate::fz_ir::ExternTy::Any,
+            ret_descr: any_ty,
+        },
+        true,
+    );
+
+    assert_eq!(
+        declared, referenced,
+        "extern declaration must upgrade the referenced function record"
+    );
+    assert_eq!(
+        compiler.world.function_contract_state(&mfa),
+        Some(FunctionContractState::Declared)
+    );
+    assert_eq!(compiler.world.mfa_for_fn_id(declared), Some(&mfa));
+    let record = compiler.world.function(declared);
+    let extern_decl = record
+        .declared_extern
+        .as_ref()
+        .expect("extern declaration should be stored on the function record");
+    assert_eq!(extern_decl.symbol, "fz_process_heap_alloc_stats");
+    assert_eq!(extern_decl.params, Vec::<crate::fz_ir::ExternTy>::new());
+    assert_eq!(extern_decl.ret, crate::fz_ir::ExternTy::Any);
+    assert_eq!(
+        compiler.world.visible_callable_target(module_id, "heap_alloc_stats", 0),
+        Some(mfa),
+        "extern declarations should publish the function through the module namespace"
+    );
+}
+
+#[test]
+fn declare_anonymous_fn_allocates_in_compiler_owned_fnid_space() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler::new();
+    let module = ModuleName::parse_dotted("Flow").expect("valid module");
+    let module_id = compiler.world.declare_module(
+        Some(ModuleKey::Named(module)),
+        ModuleOrigin::Filesystem,
+        FileOrigin::Filesystem("flow.fz".into()),
+        SourceDescriptor {
+            source_name: "flow.fz".to_string(),
+            text: Arc::<str>::from("defmodule Flow do\nend\n"),
+            parse_kind: ParseKind::Program,
+        },
+        &tel,
+    );
+
+    let first = compiler.declare_anonymous_fn(module_id, FunctionKind::Continuation, "k_after_call");
+    let second = compiler.declare_anonymous_fn(module_id, FunctionKind::Lambda, "lambda_0");
+
+    assert_ne!(first, second, "anonymous declarations must allocate distinct fn ids");
+    assert_eq!(compiler.world.mfa_for_fn_id(first), None);
+    assert_eq!(compiler.world.mfa_for_fn_id(second), None);
+
+    let first_record = compiler.function(first);
+    let second_record = compiler.function(second);
+    assert_eq!(first_record.owner_module_id, module_id);
+    assert_eq!(second_record.owner_module_id, module_id);
+    assert_eq!(first_record.kind, FunctionKind::Continuation);
+    assert_eq!(second_record.kind, FunctionKind::Lambda);
+    assert_eq!(first_record.contract_state, FunctionContractState::Declared);
+    assert_eq!(second_record.contract_state, FunctionContractState::Declared);
+    assert!(matches!(first_record.key, FunctionKey::Anonymous(_)));
+    assert!(matches!(second_record.key, FunctionKey::Anonymous(_)));
+    assert_eq!(first_record.debug_name, "k_after_call");
+    assert_eq!(second_record.debug_name, "lambda_0");
 }

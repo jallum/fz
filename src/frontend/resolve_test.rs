@@ -112,6 +112,29 @@ end
 }
 
 #[test]
+fn cross_module_call_rewrites_before_target_module_is_flattened() {
+    let p = flatten(
+        r#"
+defmodule B do
+  fn caller(), do: A.ping()
+end
+defmodule A do
+  fn ping(), do: 1
+end
+"#,
+    );
+    let caller = p
+        .items
+        .iter()
+        .find_map(|it| match &**it {
+            Item::Fn(d) if d.name == "B.caller" => Some(d),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(callee_name(&caller.clauses[0].body), "A.ping");
+}
+
+#[test]
 fn local_param_does_not_qualify() {
     let p = flatten(
         r#"
@@ -161,6 +184,29 @@ fn f(x), do: x
   end
 end
 fn main() do A.B.f(99) end
+"#,
+    );
+    let main_fn = p
+        .items
+        .iter()
+        .find_map(|it| match &**it {
+            Item::Fn(d) if d.name == "main" => Some(d),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(callee_name(&main_fn.clauses[0].body), "A.B.f");
+}
+
+#[test]
+fn nested_call_from_outside_rewrites_before_nested_module_is_flattened() {
+    let p = flatten(
+        r#"
+fn main() do A.B.f(99) end
+defmodule A do
+  defmodule B do
+fn f(x), do: x
+  end
+end
 "#,
     );
     let main_fn = p
@@ -1420,10 +1466,10 @@ end
 
     let enumerable = ModuleName::from_segments(vec!["Enumerable".to_string()]);
     let list = ModuleName::from_segments(vec!["List".to_string()]);
-    let registry = compiler.world().protocol_registry();
-    assert!(registry.protocols.contains_key(&enumerable));
-    let implementation = registry
-        .impls
+    let protocols = compiler.world().protocol_decls();
+    let implementations = compiler.world().protocol_impls();
+    assert!(protocols.contains_key(&enumerable));
+    let implementation = implementations
         .get(&ProtocolImplKey {
             protocol: enumerable.clone(),
             target: ImplTarget::module(list.clone()),
@@ -1602,11 +1648,11 @@ end
     );
 
     let protocol = ModuleName::from_segments(vec!["P".to_string()]);
-    let registry = compiler.world().protocol_registry();
-    let callback = &registry.protocols[&protocol].callbacks[0];
+    let callback = &compiler.world().protocol_decls()[&protocol].callbacks[0];
     assert_eq!(callback.specs.len(), 2);
-    let implementation = registry
-        .impls
+    let implementation = compiler
+        .world()
+        .protocol_impls()
         .values()
         .find(|fact| fact.protocol == protocol)
         .expect("impl fact");

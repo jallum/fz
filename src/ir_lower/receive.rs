@@ -38,6 +38,7 @@ pub(crate) fn build_receive_pattern_matrix(msg_var: Var, clauses: &[MatchClause]
 }
 
 pub(crate) fn lower_receive<T: Types<Ty = Ty>>(
+    compiler: &mut CompilerWorld,
     ctx: &mut LowerCtx,
     t: &mut T,
     clauses: &[MatchClause],
@@ -57,7 +58,7 @@ pub(crate) fn lower_receive<T: Types<Ty = Ty>>(
     // fn — every Var snapshot that follows must come from the post-split
     // env so they belong to the right fn.
     let timeout_var = match after {
-        Some(a) => Some(lower_expr(ctx, t, &a.timeout, false)?),
+        Some(a) => Some(lower_expr(compiler, ctx, t, &a.timeout, false)?),
         None => None,
     };
 
@@ -94,7 +95,13 @@ pub(crate) fn lower_receive<T: Types<Ty = Ty>>(
     let join_opt = if is_tail {
         None
     } else {
-        Some(mint_cont_fn(ctx, "receive_join", rx_span, FnCategory::ControlFlowCont))
+        Some(mint_cont_fn(
+            compiler,
+            ctx,
+            "receive_join",
+            rx_span,
+            FnCategory::ControlFlowCont,
+        ))
     };
 
     // Mint per-clause body / guard fns, and the after body fn.
@@ -108,6 +115,7 @@ pub(crate) fn lower_receive<T: Types<Ty = Ty>>(
         let mut bound_names: Vec<String> = Vec::new();
         collect_pattern_bound_names(&clause.pattern.node, &mut bound_names);
         let body = mint_cont_fn(
+            compiler,
             ctx,
             format!("rx_clause_{}_body", i),
             clause.span,
@@ -115,6 +123,7 @@ pub(crate) fn lower_receive<T: Types<Ty = Ty>>(
         );
         let guard = if clause.guard.is_some() {
             Some(mint_cont_fn(
+                compiler,
                 ctx,
                 format!("rx_clause_{}_guard", i),
                 clause.span,
@@ -131,7 +140,7 @@ pub(crate) fn lower_receive<T: Types<Ty = Ty>>(
     }
 
     let after_slot: Option<(ContFn, &AfterClause)> = after.map(|a| {
-        let body = mint_cont_fn(ctx, "rx_after_body", a.span, FnCategory::ControlFlowCont);
+        let body = mint_cont_fn(compiler, ctx, "rx_after_body", a.span, FnCategory::ControlFlowCont);
         (body, a)
     });
 
@@ -219,6 +228,7 @@ pub(crate) fn lower_receive<T: Types<Ty = Ty>>(
                 ctx.bind(name, v);
             }
             let g_val = lower_expr(
+                compiler,
                 ctx,
                 t,
                 clause.guard.as_ref().expect("guard cont implies guard expr"),
@@ -237,13 +247,13 @@ pub(crate) fn lower_receive<T: Types<Ty = Ty>>(
         for (name, &v) in slot.bound_names.iter().zip(extras.iter()) {
             ctx.bind(name, v);
         }
-        let result = lower_expr(ctx, t, &clause.body, arm_is_tail)?;
+        let result = lower_expr(compiler, ctx, t, &clause.body, arm_is_tail)?;
         finalize_arm(ctx, result, join_opt.as_ref());
     }
 
     if let Some((cont, a)) = after_slot {
         let _extras = switch_to_cont_fn(ctx, &cont, 0);
-        let result = lower_expr(ctx, t, &a.body, arm_is_tail)?;
+        let result = lower_expr(compiler, ctx, t, &a.body, arm_is_tail)?;
         finalize_arm(ctx, result, join_opt.as_ref());
     }
 

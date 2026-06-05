@@ -10,6 +10,7 @@ use crate::type_expr::parse_type_expr;
 use crate::types::{Ty, Types};
 
 pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
+    compiler: &mut CompilerWorld,
     ctx: &mut LowerCtx,
     t: &mut T,
     fn_def: &FnDef,
@@ -103,7 +104,7 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
                 ctx.terminated = false;
             }
             if let Some(g) = &guard {
-                let guard_var = lower_expr(ctx, t, g, false)?;
+                let guard_var = lower_expr(compiler, ctx, t, g, false)?;
                 let body_b = ctx.cur_mut().block(vec![]);
                 ctx.set_if_term(guard_var, body_b, fall_block);
                 ctx.cur_block = Some(body_b);
@@ -113,6 +114,7 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
                 Some(cont) => cont.clone(),
                 None => {
                     let mut cont = mint_cont_fn(
+                        compiler,
                         ctx,
                         format!("fn_clause_{}", i),
                         clause.span,
@@ -158,7 +160,7 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
             continue;
         };
         let _ = switch_to_cont_fn(ctx, &cont, 0);
-        let result = lower_expr(ctx, t, &clause.body, /* is_tail */ true)?;
+        let result = lower_expr(compiler, ctx, t, &clause.body, /* is_tail */ true)?;
         if !ctx.terminated {
             ctx.set_term(Term::Return(result));
             ctx.terminated = true;
@@ -185,6 +187,7 @@ fn owned_cons_captures_for_bindings(ctx: &LowerCtx, bindings: &[MatchedBinding])
 }
 
 pub(crate) fn lower_if<T: Types<Ty = Ty>>(
+    compiler: &mut CompilerWorld,
     ctx: &mut LowerCtx,
     t: &mut T,
     cond: &Spanned<Expr>,
@@ -219,14 +222,20 @@ pub(crate) fn lower_if<T: Types<Ty = Ty>>(
     // consume the coherent module and may choose tighter planned bodies without
     // relying on a cleanup pass to make this transform valid.
 
-    let cv = lower_expr(ctx, t, cond, false)?;
+    let cv = lower_expr(compiler, ctx, t, cond, false)?;
 
-    let then_cont = mint_cont_fn(ctx, "if_then", if_span, FnCategory::ControlFlowCont);
-    let else_cont = mint_cont_fn(ctx, "if_else", if_span, FnCategory::ControlFlowCont);
+    let then_cont = mint_cont_fn(compiler, ctx, "if_then", if_span, FnCategory::ControlFlowCont);
+    let else_cont = mint_cont_fn(compiler, ctx, "if_else", if_span, FnCategory::ControlFlowCont);
     let join_opt = if is_tail {
         None
     } else {
-        Some(mint_cont_fn(ctx, "if_join", if_span, FnCategory::ControlFlowCont))
+        Some(mint_cont_fn(
+            compiler,
+            ctx,
+            "if_join",
+            if_span,
+            FnCategory::ControlFlowCont,
+        ))
     };
 
     // Allocate arm blocks in the outer (current) fn.
@@ -263,13 +272,13 @@ pub(crate) fn lower_if<T: Types<Ty = Ty>>(
 
     // Move to then_fn. Finalizes the outer fn (which is now fully populated).
     let _ = switch_to_cont_fn(ctx, &then_cont, 0);
-    let tv = lower_expr(ctx, t, then_e, arm_is_tail)?;
+    let tv = lower_expr(compiler, ctx, t, then_e, arm_is_tail)?;
     finalize_arm(ctx, tv, join_opt.as_ref());
 
     // Move to else_fn. Finalizes then_fn (or its CPS-split descendant).
     let _ = switch_to_cont_fn(ctx, &else_cont, 0);
     let ev = if let Some(else_e) = else_opt {
-        lower_expr(ctx, t, else_e, arm_is_tail)?
+        lower_expr(compiler, ctx, t, else_e, arm_is_tail)?
     } else {
         ctx.let_(Prim::Const(Const::Nil))
     };
