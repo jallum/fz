@@ -369,18 +369,12 @@ impl CompilerWorld {
             tel,
             CompileMode::Normal,
         )?;
-        let _ = self.note_runtime_lowered(module_id, frontend.module.fns.len(), tel);
-        let _ = self.note_runtime_planned(module_id, frontend.module_plan.specs.len(), tel);
+        self.record_runtime_unit_readiness(module_id, frontend.module.fns.len(), frontend.module_plan.specs.len(), tel);
         tel.event(
             &["fz", "module", "unit_materialized"],
             metadata! { kind: "runtime-source", module: module_name.dotted() },
         );
-        Ok(Some(CompiledUnit::from_ir_module_with_plan(
-            frontend.module,
-            Some(frontend.module_plan),
-            interfaces.get(&module_name).cloned(),
-            Diagnostics::new(),
-        )))
+        Ok(Some(frontend.compiled_unit_input()))
     }
 
     fn runtime_reachability_seeds(

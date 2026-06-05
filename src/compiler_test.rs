@@ -366,8 +366,7 @@ fn compiler_invariants_accept_consistent_world_state() {
 
     compiler.mark_reachable(root, ReachabilityKind::Interface, &tel);
     compiler.mark_reachable(process, ReachabilityKind::Runtime, &tel);
-    compiler.ensure_module_state(process, ModuleState::RuntimeLowered, &tel, |_| {});
-    compiler.ensure_module_state(process, ModuleState::RuntimePlanned, &tel, |_| {});
+    compiler.record_runtime_unit_readiness(process, 1, 1, &tel);
 
     compiler
         .validate_invariants()
@@ -397,6 +396,28 @@ fn compiler_invariants_reject_broken_module_file_links() {
         .expect_err("broken module/file link must fail validation");
     assert!(
         err.to_string().contains("references missing file"),
+        "unexpected invariant error: {err}"
+    );
+}
+
+#[test]
+fn compiler_invariants_reject_runtime_execution_state_without_readiness_facts() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler::new();
+    let process = compiler
+        .discover_runtime_module(&ModuleName::parse_dotted("Process").expect("valid module name"), &tel)
+        .expect("runtime module");
+    compiler
+        .ensure_runtime_module_interface(&ModuleName::parse_dotted("Process").expect("valid module name"), &tel)
+        .expect("Process interface should build");
+    compiler.mark_reachable(process, ReachabilityKind::Runtime, &tel);
+    compiler.ensure_module_state(process, ModuleState::RuntimeLowered, &tel, |_| {});
+
+    let err = compiler
+        .validate_invariants()
+        .expect_err("runtime lowered state without readiness facts must fail");
+    assert!(
+        err.to_string().contains("recorded lowered function facts"),
         "unexpected invariant error: {err}"
     );
 }

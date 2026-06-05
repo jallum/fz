@@ -361,6 +361,8 @@ pub(crate) struct ModuleRecord {
     pub(crate) body_surface: Option<ModuleBodySurface>,
     pub(crate) lowered_groups: HashMap<SourceFnKey, LoweredFnGroup>,
     pub(crate) runtime_entry_fns: HashSet<Mfa>,
+    pub(crate) runtime_lowered_functions: Option<usize>,
+    pub(crate) runtime_planned_specs: Option<usize>,
     pub(crate) interfaces: Option<BTreeMap<ModuleName, ModuleInterface>>,
     pub(crate) macro_exports: Option<HashSet<(String, usize)>>,
     pub(crate) macro_surface: Option<ModuleMacroSurface>,
@@ -632,17 +634,15 @@ impl Compiler {
             .discover_runtime_reachable_modules(root_interfaces, seeds, tel)
     }
 
-    pub(crate) fn note_runtime_lowered(&mut self, module_id: ModuleId, fns: usize, tel: &dyn Telemetry) -> bool {
-        self.world.note_runtime_lowered(module_id, fns, tel)
-    }
-
-    pub(crate) fn note_runtime_planned(
+    pub(crate) fn record_runtime_unit_readiness(
         &mut self,
         module_id: ModuleId,
+        lowered_functions: usize,
         planned_specs: usize,
         tel: &dyn Telemetry,
-    ) -> bool {
-        self.world.note_runtime_planned(module_id, planned_specs, tel)
+    ) {
+        self.world
+            .record_runtime_unit_readiness(module_id, lowered_functions, planned_specs, tel)
     }
 
     pub(crate) fn mark_reachable(&mut self, module_id: ModuleId, kind: ReachabilityKind, tel: &dyn Telemetry) -> bool {
@@ -1170,9 +1170,39 @@ impl CompilerWorld {
         Ok(reachable)
     }
 
-    pub(crate) fn note_runtime_lowered(&mut self, module_id: ModuleId, fns: usize, tel: &dyn Telemetry) -> bool {
-        let advanced = self.ensure_module_state(module_id, ModuleState::RuntimeLowered, tel, |_| {});
-        if advanced {
+    pub(crate) fn record_runtime_unit_readiness(
+        &mut self,
+        module_id: ModuleId,
+        lowered_functions: usize,
+        planned_specs: usize,
+        tel: &dyn Telemetry,
+    ) {
+        let lowered_advanced = self.ensure_module_state(module_id, ModuleState::RuntimeLowered, tel, |_| {});
+        let planned_advanced = self.ensure_module_state(module_id, ModuleState::RuntimePlanned, tel, |_| {});
+
+        let record = &mut self.modules[module_id.0 as usize];
+        match record.runtime_lowered_functions {
+            Some(existing) => {
+                assert_eq!(
+                    existing, lowered_functions,
+                    "runtime lowered function count for `{}` changed from {} to {}",
+                    record.key.render(), existing, lowered_functions
+                );
+            }
+            None => record.runtime_lowered_functions = Some(lowered_functions),
+        }
+        match record.runtime_planned_specs {
+            Some(existing) => {
+                assert_eq!(
+                    existing, planned_specs,
+                    "runtime planned spec count for `{}` changed from {} to {}",
+                    record.key.render(), existing, planned_specs
+                );
+            }
+            None => record.runtime_planned_specs = Some(planned_specs),
+        }
+
+        if lowered_advanced {
             let record = self.module(module_id);
             let groups = record.lowered_groups.len() as u64;
             tel.execute(
@@ -1180,7 +1210,7 @@ impl CompilerWorld {
                 &measurements! {
                     module_id: module_id.0,
                     file_id: record.file_id.0,
-                    functions: fns as u64,
+                    functions: lowered_functions as u64,
                     groups: groups,
                     units: groups,
                 },
@@ -1191,17 +1221,7 @@ impl CompilerWorld {
                 },
             );
         }
-        advanced
-    }
-
-    pub(crate) fn note_runtime_planned(
-        &mut self,
-        module_id: ModuleId,
-        planned_specs: usize,
-        tel: &dyn Telemetry,
-    ) -> bool {
-        let advanced = self.ensure_module_state(module_id, ModuleState::RuntimePlanned, tel, |_| {});
-        if advanced {
+        if planned_advanced {
             let record = self.module(module_id);
             let groups = record.lowered_groups.len() as u64;
             tel.execute(
@@ -1220,7 +1240,6 @@ impl CompilerWorld {
                 },
             );
         }
-        advanced
     }
 
     pub(crate) fn record_macro_surface(
@@ -1568,9 +1587,21 @@ impl CompilerWorld {
                     module.key.render()
                 )));
             }
+            if module.state.covers(ModuleState::RuntimeLowered) && module.runtime_lowered_functions.is_none() {
+                return Err(CompilerInvariantError::new(format!(
+                    "module `{}` reached runtime_lowered without recorded lowered function facts",
+                    module.key.render()
+                )));
+            }
             if module.state.covers(ModuleState::RuntimePlanned) && !module.state.covers(ModuleState::RuntimeLowered) {
                 return Err(CompilerInvariantError::new(format!(
                     "module `{}` reached runtime_planned without runtime_lowered",
+                    module.key.render()
+                )));
+            }
+            if module.state.covers(ModuleState::RuntimePlanned) && module.runtime_planned_specs.is_none() {
+                return Err(CompilerInvariantError::new(format!(
+                    "module `{}` reached runtime_planned without recorded planned spec facts",
                     module.key.render()
                 )));
             }
@@ -1585,6 +1616,12 @@ impl CompilerWorld {
                 {
                     return Err(CompilerInvariantError::new(format!(
                         "runtime module `{}` advanced execution state without runtime reachability",
+                        module.key.render()
+                    )));
+                }
+                if module.runtime_lowered_functions.is_some() || module.runtime_planned_specs.is_some() {
+                    return Err(CompilerInvariantError::new(format!(
+                        "runtime module `{}` recorded readiness facts without runtime reachability",
                         module.key.render()
                     )));
                 }
@@ -1698,6 +1735,8 @@ impl CompilerWorld {
             body_surface: None,
             lowered_groups: HashMap::new(),
             runtime_entry_fns: HashSet::new(),
+            runtime_lowered_functions: None,
+            runtime_planned_specs: None,
             interfaces: None,
             macro_exports: None,
             macro_surface: None,
