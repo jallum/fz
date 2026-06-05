@@ -18,7 +18,6 @@ use crate::ir_planner::fn_types::CallEdgeTarget;
 use crate::ir_planner::{ModulePlan, plan_module, plan_module_from_entry_fns, rewrite_closed_union_protocol_dispatch};
 use crate::measurements;
 use crate::metadata;
-use crate::modules::identity::Mfa;
 #[cfg(test)]
 use crate::parser::Parser;
 #[cfg(test)]
@@ -370,8 +369,10 @@ fn planner_entry_fns(compiler: &CompilerWorld, lowering_root_source: Option<Modu
         .fns
         .iter()
         .filter(|fn_ir| {
-            let mfa = Mfa::from_qualified(&fn_ir.name, fn_ir.block(fn_ir.entry).params.len());
-            entry_keys.contains(&mfa)
+            compiler
+                .source_fn_key_for_qualified_name(root_source, &fn_ir.name, fn_ir.block(fn_ir.entry).params.len())
+                .ok()
+                .is_some_and(|mfa| entry_keys.contains(&mfa))
         })
         .map(|fn_ir| fn_ir.id)
         .collect()

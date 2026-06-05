@@ -23,15 +23,9 @@ fn export_key_names_module_function_and_arity() {
 }
 
 #[test]
-fn mfa_names_top_level_and_module_qualified_functions() {
-    let top = Mfa::top_level("main", 0);
-    assert_eq!(top.qualified_name(), "main");
-    assert_eq!(top.to_string(), "main/0");
-    assert!(top.module().is_none());
-
-    let nested = Mfa::from_qualified("Outer.Inner.run", 2);
-    assert_eq!(nested.module().expect("qualified module").dotted(), "Outer.Inner");
-    assert_eq!(nested.qualified.name, "run");
-    assert_eq!(nested.qualified_name(), "Outer.Inner.run");
-    assert_eq!(nested.to_string(), "Outer.Inner.run/2");
+fn mfa_names_compiler_owned_module_and_function_identity() {
+    let mfa = Mfa::new(ModuleId(7), "run", 2);
+    assert_eq!(mfa.module_id, ModuleId(7));
+    assert_eq!(mfa.function_name, "run");
+    assert_eq!(mfa.arity, 2);
 }

@@ -10,6 +10,9 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default)]
+pub struct ModuleId(pub u32);
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ModuleName {
     segments: Vec<String>,
@@ -107,55 +110,18 @@ impl fmt::Display for QualifiedName {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Mfa {
-    pub qualified: QualifiedName,
+    pub module_id: ModuleId,
+    pub function_name: String,
     pub arity: usize,
 }
 
 impl Mfa {
-    pub fn new(module: Option<ModuleName>, name: impl Into<String>, arity: usize) -> Self {
+    pub fn new(module_id: ModuleId, function_name: impl Into<String>, arity: usize) -> Self {
         Self {
-            qualified: QualifiedName {
-                module,
-                name: name.into(),
-            },
+            module_id,
+            function_name: function_name.into(),
             arity,
         }
-    }
-
-    pub fn in_module(module: ModuleName, name: impl Into<String>, arity: usize) -> Self {
-        Self::new(Some(module), name, arity)
-    }
-
-    pub fn top_level(name: impl Into<String>, arity: usize) -> Self {
-        Self::new(None, name, arity)
-    }
-
-    pub fn from_qualified(text: &str, arity: usize) -> Self {
-        match text.rsplit_once('.') {
-            Some((module, name)) => {
-                let module = ModuleName::parse_dotted(module).expect("qualified MFA module name must parse");
-                Self::in_module(module, name.to_string(), arity)
-            }
-            None => Self::top_level(text.to_string(), arity),
-        }
-    }
-
-    pub fn module(&self) -> Option<&ModuleName> {
-        self.qualified.module.as_ref()
-    }
-
-    pub fn module_dotted(&self) -> String {
-        self.module().map(ModuleName::dotted).unwrap_or_default()
-    }
-
-    pub fn qualified_name(&self) -> String {
-        self.qualified.dotted()
-    }
-}
-
-impl fmt::Display for Mfa {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}/{}", self.qualified, self.arity)
     }
 }
 

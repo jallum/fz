@@ -369,7 +369,12 @@ impl CompilerWorld {
             tel,
             CompileMode::Normal,
         )?;
-        self.record_runtime_unit_readiness(module_id, frontend.module.fns.len(), frontend.module_plan.specs.len(), tel);
+        self.record_runtime_unit_readiness(
+            module_id,
+            frontend.module.fns.len(),
+            frontend.module_plan.specs.len(),
+            tel,
+        );
         tel.event(
             &["fz", "module", "unit_materialized"],
             metadata! { kind: "runtime-source", module: module_name.dotted() },
@@ -396,11 +401,11 @@ impl CompilerWorld {
             else {
                 continue;
             };
-            let ModuleKey::Named(owner_module) = self.module(owner_module_id).key.clone() else {
+            let ModuleKey::Named(_) = self.module(owner_module_id).key.clone() else {
                 continue;
             };
             seeds.push(
-                RuntimeReachabilitySeed::new(owner_module, "planned_external_target", None)
+                RuntimeReachabilitySeed::new(owner_module_id, "planned_external_target", None)
                     .with_entry(target.name.clone(), target.arity),
             );
         }

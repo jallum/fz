@@ -557,31 +557,57 @@ fn fn_arity(fn_def: &FnDef) -> usize {
     fn_def.clauses.first().map(|clause| clause.params.len()).unwrap_or(0)
 }
 
-pub(crate) fn collect_lowerable_fn_keys(items: &[Rc<Item>]) -> HashSet<FnKey> {
+fn fn_key_for_qualified_name(
+    compiler: &CompilerWorld,
+    default_module_id: ModuleId,
+    qualified_name: &str,
+    arity: usize,
+) -> FnKey {
+    compiler
+        .source_fn_key_for_qualified_name(default_module_id, qualified_name, arity)
+        .unwrap_or_else(|_| FnKey::new(default_module_id, qualified_name.to_string(), arity))
+}
+
+pub(crate) fn collect_lowerable_fn_keys(
+    compiler: &CompilerWorld,
+    default_module_id: ModuleId,
+    items: &[Rc<Item>],
+) -> HashSet<FnKey> {
     items
         .iter()
         .filter_map(|item| match item.as_ref() {
-            Item::Fn(fn_def) if fn_def.extern_abi.is_none() && !fn_def.is_macro => {
-                Some(FnKey::from_qualified(&fn_def.name, fn_arity(fn_def)))
-            }
+            Item::Fn(fn_def) if fn_def.extern_abi.is_none() && !fn_def.is_macro => Some(fn_key_for_qualified_name(
+                compiler,
+                default_module_id,
+                &fn_def.name,
+                fn_arity(fn_def),
+            )),
             _ => None,
         })
         .collect()
 }
 
-pub(crate) fn collect_public_fn_keys(items: &[Rc<Item>]) -> HashSet<FnKey> {
+pub(crate) fn collect_public_fn_keys(
+    compiler: &CompilerWorld,
+    default_module_id: ModuleId,
+    items: &[Rc<Item>],
+) -> HashSet<FnKey> {
     items
         .iter()
         .filter_map(|item| match item.as_ref() {
-            Item::Fn(fn_def) if fn_def.extern_abi.is_none() && !fn_def.is_macro && !fn_def.is_private => {
-                Some(FnKey::from_qualified(&fn_def.name, fn_arity(fn_def)))
-            }
+            Item::Fn(fn_def) if fn_def.extern_abi.is_none() && !fn_def.is_macro && !fn_def.is_private => Some(
+                fn_key_for_qualified_name(compiler, default_module_id, &fn_def.name, fn_arity(fn_def)),
+            ),
             _ => None,
         })
         .collect()
 }
 
-pub(crate) fn select_entry_fn_keys(items: &[Rc<Item>]) -> HashSet<FnKey> {
+pub(crate) fn select_entry_fn_keys(
+    compiler: &CompilerWorld,
+    default_module_id: ModuleId,
+    items: &[Rc<Item>],
+) -> HashSet<FnKey> {
     items
         .iter()
         .filter_map(|item| match item.as_ref() {
@@ -590,7 +616,12 @@ pub(crate) fn select_entry_fn_keys(items: &[Rc<Item>]) -> HashSet<FnKey> {
                     && !fn_def.is_macro
                     && (fn_def.name == "main" || fn_def.name.starts_with(REPL_ENTRY_PREFIX)) =>
             {
-                Some(FnKey::from_qualified(&fn_def.name, fn_arity(fn_def)))
+                Some(fn_key_for_qualified_name(
+                    compiler,
+                    default_module_id,
+                    &fn_def.name,
+                    fn_arity(fn_def),
+                ))
             }
             _ => None,
         })
@@ -598,6 +629,8 @@ pub(crate) fn select_entry_fn_keys(items: &[Rc<Item>]) -> HashSet<FnKey> {
 }
 
 pub(crate) fn select_initial_root_fn_keys(
+    compiler: &CompilerWorld,
+    default_module_id: ModuleId,
     user_items: &[Rc<Item>],
     root_entry_keys: Option<&HashSet<FnKey>>,
 ) -> HashSet<FnKey> {
@@ -606,26 +639,36 @@ pub(crate) fn select_initial_root_fn_keys(
     {
         return root_entry_keys.clone();
     }
-    let user_entries = select_entry_fn_keys(user_items);
+    let user_entries = select_entry_fn_keys(compiler, default_module_id, user_items);
     if !user_entries.is_empty() {
         return user_entries;
     }
-    collect_public_fn_keys(user_items)
+    collect_public_fn_keys(compiler, default_module_id, user_items)
 }
 
-fn collect_lowerable_fn_defs(items: &[Rc<Item>]) -> HashMap<FnKey, Rc<FnDef>> {
+fn collect_lowerable_fn_defs(
+    compiler: &CompilerWorld,
+    default_module_id: ModuleId,
+    items: &[Rc<Item>],
+) -> HashMap<FnKey, Rc<FnDef>> {
     items
         .iter()
         .filter_map(|item| match item.as_ref() {
-            Item::Fn(fn_def) if fn_def.extern_abi.is_none() && !fn_def.is_macro => {
-                Some((FnKey::from_qualified(&fn_def.name, fn_arity(fn_def)), Rc::new(fn_def.clone())))
-            }
+            Item::Fn(fn_def) if fn_def.extern_abi.is_none() && !fn_def.is_macro => Some((
+                fn_key_for_qualified_name(compiler, default_module_id, &fn_def.name, fn_arity(fn_def)),
+                Rc::new(fn_def.clone()),
+            )),
             _ => None,
         })
         .collect()
 }
 
-fn collect_source_fn_key_by_id(items: &[Rc<Item>], ctx: &LowerCtx) -> HashMap<FnId, FnKey> {
+fn collect_source_fn_key_by_id(
+    compiler: &CompilerWorld,
+    default_module_id: ModuleId,
+    items: &[Rc<Item>],
+    ctx: &LowerCtx,
+) -> HashMap<FnId, FnKey> {
     let mut by_id = HashMap::new();
     for item in items {
         let Item::Fn(fn_def) = item.as_ref() else {
@@ -634,8 +677,8 @@ fn collect_source_fn_key_by_id(items: &[Rc<Item>], ctx: &LowerCtx) -> HashMap<Fn
         if fn_def.extern_abi.is_some() || fn_def.is_macro {
             continue;
         }
-        let key = FnKey::from_qualified(&fn_def.name, fn_arity(fn_def));
-        let Some(&fn_id) = ctx.fns.get(&(key.qualified_name(), key.arity)) else {
+        let key = fn_key_for_qualified_name(compiler, default_module_id, &fn_def.name, fn_arity(fn_def));
+        let Some(&fn_id) = ctx.fns.get(&(fn_def.name.clone(), key.arity)) else {
             continue;
         };
         by_id.insert(fn_id, key);
@@ -937,7 +980,7 @@ fn lower_source_fn_group<T: Types<Ty = Ty>>(
             },
             &metadata! {
                 module_key: module_key.clone(),
-                owner_module: descriptor.source.module_dotted(),
+                owner_module: compiler.module_display_name(descriptor.source.module_id),
                 fn_name: descriptor.qualified_name(),
             },
         );
@@ -955,7 +998,7 @@ fn lower_source_fn_group<T: Types<Ty = Ty>>(
         },
         &metadata! {
             module_key: module_key,
-            owner_module: descriptor.source.module_dotted(),
+            owner_module: compiler.module_display_name(descriptor.source.module_id),
             fn_name: descriptor.qualified_name(),
         },
     );
@@ -1021,8 +1064,9 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
         .collect();
     let prelude_items = &all_items[..runtime_item_count];
     let user_items = &all_items[runtime_item_count..];
-    let prelude_fn_defs = collect_lowerable_fn_defs(prelude_items);
-    let user_fn_defs = collect_lowerable_fn_defs(user_items);
+    let prelude_fn_defs = collect_lowerable_fn_defs(compiler, prelude_id, prelude_items);
+    let user_key_module = root_source.unwrap_or(ModuleId(u32::MAX));
+    let user_fn_defs = collect_lowerable_fn_defs(compiler, user_key_module, user_items);
 
     for item in all_items.iter().skip(runtime_item_count) {
         if let Item::Fn(fn_def) = item.as_ref()
@@ -1137,7 +1181,7 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
         reserve_cached_source_fn_ids(compiler, root_source, user_items, &mut ctx, tel);
     }
 
-    let fn_key_by_id = collect_source_fn_key_by_id(&all_items, &ctx);
+    let fn_key_by_id = collect_source_fn_key_by_id(compiler, user_key_module, &all_items, &ctx);
     Ok(CompilerLoweringSession {
         root_source,
         ctx,
@@ -1160,10 +1204,9 @@ impl CompilerLoweringSession {
     ) -> LoweringDemandResult<FnKey, LowerError> {
         let before_fn_count = self.ctx.mb.fn_count();
         if let Some(fn_def) = self.user_fn_defs.get(fn_key) {
-            let arity = fn_key.arity;
             if let Some(root_source) = self.root_source
                 && let Some(descriptor) = compiler
-                    .source_fn_group_descriptor(root_source, &fn_key.qualified_name(), arity, tel)
+                    .source_fn_group_descriptor_for_key(root_source, fn_key, tel)
                     .expect("compiler source group lookup should succeed after parse")
             {
                 if let Err(err) =
@@ -1192,7 +1235,7 @@ impl CompilerLoweringSession {
         if let Some(root_source) = self.root_source {
             for requested_key in &requested {
                 if let Some(descriptor) = compiler
-                    .source_fn_group_descriptor(root_source, &requested_key.qualified_name(), requested_key.arity, tel)
+                    .source_fn_group_descriptor_for_key(root_source, requested_key, tel)
                     .expect("compiler source group lookup should succeed after parse")
                 {
                     tel.execute(
@@ -1203,7 +1246,7 @@ impl CompilerLoweringSession {
                         },
                         &metadata! {
                             module_key: compiler.module_key_render(root_source),
-                            owner_module: descriptor.source.module_dotted(),
+                            owner_module: compiler.module_display_name(descriptor.source.module_id),
                             fn_name: descriptor.qualified_name(),
                         },
                     );
@@ -1304,9 +1347,11 @@ impl CompilerLoweringSession {
         module
             .opaque_inners
             .extend(struct_opaque_inners(t, &prog.structs, &prog.struct_field_types));
-        module
-            .opaque_inners
-            .extend(struct_opaque_inners(t, &self.prelude.structs, &self.prelude.struct_field_types));
+        module.opaque_inners.extend(struct_opaque_inners(
+            t,
+            &self.prelude.structs,
+            &self.prelude.struct_field_types,
+        ));
         module.brand_inners = prog.brand_inners.clone();
         module.brand_inners.extend(self.prelude.brand_inners.clone());
         module.struct_schemas = self.ctx.struct_schemas.clone();

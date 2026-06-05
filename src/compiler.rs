@@ -11,6 +11,7 @@ use crate::ir_lower::{
     FnKey, LowerError, LoweringDemandResult, begin_compiler_lowering_session, collect_lowerable_fn_keys,
     select_initial_root_fn_keys,
 };
+pub(crate) use crate::modules::identity::ModuleId;
 use crate::modules::identity::{ExportKey, Mfa, ModuleName};
 use crate::modules::interface::{ModuleInterface, collect_from_program};
 use crate::modules::runtime_library::{self, RUNTIME_MODULE_SOURCES, RUNTIME_PRELUDE_FZ};
@@ -26,9 +27,6 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct ModuleId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct FileId(pub u32);
@@ -260,6 +258,8 @@ pub(crate) type SourceFnKey = Mfa;
 pub(crate) struct FnGroupDescriptor {
     pub(crate) id: FnGroupId,
     pub(crate) source: SourceFnKey,
+    pub(crate) owner_module: String,
+    pub(crate) qualified_name: String,
     pub(crate) is_private: bool,
     pub(crate) input: FnGroupInput,
 }
@@ -271,34 +271,35 @@ impl FnGroupDescriptor {
         }
     }
 
-    pub(crate) fn qualified_name(&self) -> String {
-        self.source.qualified_name()
+    pub(crate) fn qualified_name(&self) -> &str {
+        &self.qualified_name
     }
 }
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ModuleBodySurface {
+    pub(crate) owner_module_id: ModuleId,
     pub(crate) owner_module: String,
     pub(crate) groups: Vec<FnGroupDescriptor>,
     pub(crate) group_by_source: HashMap<SourceFnKey, FnGroupId>,
 }
 
 impl ModuleBodySurface {
-    fn register_source_group(&mut self, owner_module: &str, def: Rc<FnDef>) {
+    fn register_source_group(
+        &mut self,
+        owner_module_id: ModuleId,
+        owner_module: &str,
+        qualified_name: String,
+        def: Rc<FnDef>,
+    ) {
         let group_id = FnGroupId(self.groups.len() as u32);
         let arity = def.clauses.first().map(|clause| clause.params.len()).unwrap_or(0);
-        let source = if owner_module.is_empty() {
-            SourceFnKey::top_level(def.name.clone(), arity)
-        } else {
-            SourceFnKey::in_module(
-                ModuleName::parse_dotted(owner_module).expect("body-surface owner module must parse"),
-                def.name.clone(),
-                arity,
-            )
-        };
+        let source = SourceFnKey::new(owner_module_id, def.name.clone(), arity);
         self.groups.push(FnGroupDescriptor {
             id: group_id,
             source: source.clone(),
+            owner_module: owner_module.to_string(),
+            qualified_name,
             is_private: def.is_private,
             input: FnGroupInput::SourceFn(def),
         });
@@ -328,16 +329,16 @@ pub(crate) struct LoweredFnGroup {
 
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeReachabilitySeed {
-    pub(crate) module: ModuleName,
+    pub(crate) module_id: ModuleId,
     pub(crate) entry: Option<Mfa>,
     pub(crate) reason: &'static str,
     pub(crate) from_module: Option<ModuleName>,
 }
 
 impl RuntimeReachabilitySeed {
-    pub(crate) fn new(module: ModuleName, reason: &'static str, from_module: Option<ModuleName>) -> Self {
+    pub(crate) fn new(module_id: ModuleId, reason: &'static str, from_module: Option<ModuleName>) -> Self {
         Self {
-            module,
+            module_id,
             entry: None,
             reason,
             from_module,
@@ -345,7 +346,7 @@ impl RuntimeReachabilitySeed {
     }
 
     pub(crate) fn with_entry(mut self, name: impl Into<String>, arity: usize) -> Self {
-        self.entry = Some(Mfa::in_module(self.module.clone(), name, arity));
+        self.entry = Some(Mfa::new(self.module_id, name, arity));
         self
     }
 }
@@ -441,6 +442,50 @@ impl CompilerWorld {
         self.modules[id.0 as usize].key.render()
     }
 
+    pub(crate) fn module_display_name(&self, id: ModuleId) -> String {
+        match &self.module(id).key {
+            ModuleKey::RootPath(_) => String::new(),
+            ModuleKey::Named(_) if self.module(id).origin == ModuleOrigin::PrimitivePrelude => String::new(),
+            ModuleKey::Named(name) => name.dotted(),
+        }
+    }
+
+    pub(crate) fn render_mfa(&self, key: &Mfa) -> String {
+        let owner = self.module_display_name(key.module_id);
+        if owner.is_empty() {
+            key.function_name.clone()
+        } else {
+            format!("{owner}.{}", key.function_name)
+        }
+    }
+
+    pub(crate) fn source_fn_key_for_qualified_name(
+        &self,
+        default_module_id: ModuleId,
+        qualified_name: &str,
+        arity: usize,
+    ) -> Result<SourceFnKey, Diagnostic> {
+        if let Some((module_prefix, function_name)) = qualified_name.rsplit_once('.') {
+            let module = ModuleName::parse_dotted(module_prefix).map_err(|err| {
+                Diagnostic::error(
+                    crate::diag::codes::LOWER_UNBOUND,
+                    format!("invalid qualified function name `{qualified_name}`: {err}"),
+                    Span::DUMMY,
+                )
+            })?;
+            let module_id = self.module_id_for_name(&module).ok_or_else(|| {
+                Diagnostic::error(
+                    crate::diag::codes::LOWER_UNBOUND,
+                    format!("unknown source module `{module}` for `{qualified_name}`"),
+                    Span::DUMMY,
+                )
+            })?;
+            Ok(SourceFnKey::new(module_id, function_name.to_string(), arity))
+        } else {
+            Ok(SourceFnKey::new(default_module_id, qualified_name.to_string(), arity))
+        }
+    }
+
     pub(crate) fn lower_program_from_demands<T: crate::types::Types<Ty = crate::types::Ty>>(
         &mut self,
         root_source: Option<ModuleId>,
@@ -454,9 +499,9 @@ impl CompilerWorld {
         {
             let runtime_entry_keys = self.runtime_entry_fn_keys(root_source);
             let root_entry_keys = (!runtime_entry_keys.is_empty()).then_some(&runtime_entry_keys);
-            select_initial_root_fn_keys(&prog.items, root_entry_keys)
+            select_initial_root_fn_keys(self, root_source, &prog.items, root_entry_keys)
         } else {
-            collect_lowerable_fn_keys(&prog.items)
+            collect_lowerable_fn_keys(self, ModuleId(u32::MAX), &prog.items)
         };
 
         let mut demands = initial_demands.into_iter().collect::<VecDeque<FnKey>>();
@@ -598,6 +643,15 @@ impl Compiler {
         tel: &dyn Telemetry,
     ) -> Result<Option<FnGroupDescriptor>, Diagnostic> {
         self.world.source_fn_group_descriptor(module_id, name, arity, tel)
+    }
+
+    pub(crate) fn source_fn_group_descriptor_for_key(
+        &mut self,
+        module_id: ModuleId,
+        key: &SourceFnKey,
+        tel: &dyn Telemetry,
+    ) -> Result<Option<FnGroupDescriptor>, Diagnostic> {
+        self.world.source_fn_group_descriptor_for_key(module_id, key, tel)
     }
 
     pub(crate) fn ensure_runtime_module_interface(
@@ -849,7 +903,8 @@ impl CompilerWorld {
             structs: Default::default(),
             struct_field_types: Default::default(),
         };
-        let mut program = flatten_modules_with_compiler(t, self, None, staged, tel).map_err(|err| err.to_diagnostic())?;
+        let mut program =
+            flatten_modules_with_compiler(t, self, None, staged, tel).map_err(|err| err.to_diagnostic())?;
         program
             .module_type_envs
             .entry(String::new())
@@ -886,7 +941,7 @@ impl CompilerWorld {
         self.ensure_module_state_result(module_id, ModuleState::BodySurfaceReady, tel, |this| {
             let parsed = this.ensure_parsed(module_id, tel)?;
             let record = this.module(module_id).clone();
-            let surface = collect_body_surface(&record, &parsed);
+            let surface = collect_body_surface(this, module_id, &parsed, tel);
             let measurements = this.state_measurements(module_id);
             for group in &surface.groups {
                 tel.execute(
@@ -901,7 +956,7 @@ impl CompilerWorld {
                         module_key: record.key.render(),
                         module_key_kind: record.key.kind(),
                         module_origin: record.origin.kind(),
-                        owner_module: group.source.module_dotted(),
+                        owner_module: this.module_display_name(group.source.module_id),
                         fn_name: group.qualified_name(),
                         visibility: if group.is_private { "private" } else { "public" },
                     },
@@ -1016,8 +1071,18 @@ impl CompilerWorld {
         tel: &dyn Telemetry,
     ) -> Result<Option<FnGroupDescriptor>, Diagnostic> {
         let surface = self.ensure_body_surface(module_id, tel)?;
-        let key = SourceFnKey::from_qualified(name, arity);
+        let key = self.source_fn_key_for_qualified_name(module_id, name, arity)?;
         Ok(surface.groups.into_iter().find(|group| group.source == key))
+    }
+
+    pub(crate) fn source_fn_group_descriptor_for_key(
+        &mut self,
+        module_id: ModuleId,
+        key: &SourceFnKey,
+        tel: &dyn Telemetry,
+    ) -> Result<Option<FnGroupDescriptor>, Diagnostic> {
+        let surface = self.ensure_body_surface(module_id, tel)?;
+        Ok(surface.groups.into_iter().find(|group| &group.source == key))
     }
 
     pub(crate) fn lowered_group(&self, module_id: ModuleId, source_key: &SourceFnKey) -> Option<LoweredFnGroup> {
@@ -1113,31 +1178,28 @@ impl CompilerWorld {
         let mut reachable = Vec::new();
 
         for interface in root_interfaces.values() {
-            enqueue_runtime_interface_imports(&mut queue, interface, "program_import");
-            enqueue_runtime_protocol_impl_protocols(&mut queue, interface, "program_protocol_impl");
+            enqueue_runtime_interface_imports(self, tel, &mut queue, interface, "program_import");
+            enqueue_runtime_protocol_impl_protocols(self, tel, &mut queue, interface, "program_protocol_impl");
         }
         queue.extend(seeds);
 
         while let Some(candidate) = queue.pop_front() {
-            if let Some(existing) = self.module_id_for_name(&candidate.module)
-                && self.module(existing).origin != ModuleOrigin::EmbeddedRuntime
-            {
+            if self.module(candidate.module_id).origin != ModuleOrigin::EmbeddedRuntime {
                 continue;
             }
-            let Some(module_id) = self.discover_runtime_module(&candidate.module, tel) else {
-                continue;
-            };
             if let Some(entry) = candidate.entry.clone() {
-                self.modules[module_id.0 as usize].runtime_entry_fns.insert(entry);
+                self.modules[candidate.module_id.0 as usize]
+                    .runtime_entry_fns
+                    .insert(entry);
             }
-            if !self.mark_reachable(module_id, ReachabilityKind::Runtime, tel) {
+            if !self.mark_reachable(candidate.module_id, ReachabilityKind::Runtime, tel) {
                 continue;
             }
 
-            let record = self.module(module_id);
+            let record = self.module(candidate.module_id);
             tel.execute(
                 &["fz", "compiler", "runtime_module_reachable"],
-                &self.state_measurements(module_id),
+                &self.state_measurements(candidate.module_id),
                 &metadata! {
                     module_key: record.key.render(),
                     module_key_kind: record.key.kind(),
@@ -1150,18 +1212,30 @@ impl CompilerWorld {
                         .unwrap_or_default(),
                 },
             );
-            reachable.push(module_id);
+            reachable.push(candidate.module_id);
 
+            let ModuleKey::Named(module_name) = record.key.clone() else {
+                continue;
+            };
             let interface = self
-                .ensure_runtime_module_interface(&candidate.module, tel)?
+                .ensure_runtime_module_interface(&module_name, tel)?
                 .expect("discovered runtime module must have interface");
-            enqueue_runtime_interface_imports(&mut queue, &interface, "runtime_import");
-            enqueue_runtime_protocol_impl_protocols(&mut queue, &interface, "runtime_protocol_impl_protocol");
-            for module in runtime_library::implementation_dependencies(self, &candidate.module, tel)? {
+            enqueue_runtime_interface_imports(self, tel, &mut queue, &interface, "runtime_import");
+            enqueue_runtime_protocol_impl_protocols(
+                self,
+                tel,
+                &mut queue,
+                &interface,
+                "runtime_protocol_impl_protocol",
+            );
+            for module in runtime_library::implementation_dependencies(self, &module_name, tel)? {
+                let Some(module_id) = self.discover_runtime_module(&module, tel) else {
+                    continue;
+                };
                 queue.push_back(RuntimeReachabilitySeed::new(
-                    module,
+                    module_id,
                     "runtime_implementation_dependency",
-                    Some(candidate.module.clone()),
+                    Some(module_name.clone()),
                 ));
             }
             enqueue_runtime_protocol_impl_providers(self, tel, &mut queue, &interface)?;
@@ -1184,9 +1258,12 @@ impl CompilerWorld {
         match record.runtime_lowered_functions {
             Some(existing) => {
                 assert_eq!(
-                    existing, lowered_functions,
+                    existing,
+                    lowered_functions,
                     "runtime lowered function count for `{}` changed from {} to {}",
-                    record.key.render(), existing, lowered_functions
+                    record.key.render(),
+                    existing,
+                    lowered_functions
                 );
             }
             None => record.runtime_lowered_functions = Some(lowered_functions),
@@ -1194,9 +1271,12 @@ impl CompilerWorld {
         match record.runtime_planned_specs {
             Some(existing) => {
                 assert_eq!(
-                    existing, planned_specs,
+                    existing,
+                    planned_specs,
                     "runtime planned spec count for `{}` changed from {} to {}",
-                    record.key.render(), existing, planned_specs
+                    record.key.render(),
+                    existing,
+                    planned_specs
                 );
             }
             None => record.runtime_planned_specs = Some(planned_specs),
@@ -1433,12 +1513,21 @@ impl CompilerWorld {
                 )));
             }
             if let Some(surface) = &module.body_surface {
-                if surface.owner_module != body_surface_owner_module(module) {
+                if surface.owner_module_id != module.id {
+                    return Err(CompilerInvariantError::new(format!(
+                        "module `{}` body surface owner id {:?} does not match module id {:?}",
+                        module.key.render(),
+                        surface.owner_module_id,
+                        module.id
+                    )));
+                }
+                let expected_owner = self.module_display_name(module.id);
+                if surface.owner_module != expected_owner {
                     return Err(CompilerInvariantError::new(format!(
                         "module `{}` body surface owner `{}` does not match module owner `{}`",
                         module.key.render(),
                         surface.owner_module,
-                        body_surface_owner_module(module)
+                        expected_owner
                     )));
                 }
                 if surface.groups.len() != surface.group_by_source.len() {
@@ -1479,12 +1568,12 @@ impl CompilerWorld {
                             )));
                         }
                     }
-                    if !body_surface_group_belongs_to_surface(&surface.owner_module, &group.source.module_dotted()) {
+                    if !body_surface_group_belongs_to_surface(self, surface.owner_module_id, group.source.module_id) {
                         return Err(CompilerInvariantError::new(format!(
                             "module `{}` body group `{}` owner `{}` does not match surface owner `{}`",
                             module.key.render(),
                             group.qualified_name(),
-                            group.source.module_dotted(),
+                            self.module_display_name(group.source.module_id),
                             surface.owner_module
                         )));
                     }
@@ -1494,7 +1583,7 @@ impl CompilerWorld {
                         return Err(CompilerInvariantError::new(format!(
                             "module `{}` lowered group `{}` has no body-surface descriptor",
                             module.key.render(),
-                            source_key.qualified_name()
+                            self.render_mfa(source_key)
                         )));
                     }
                 }
@@ -1519,7 +1608,7 @@ impl CompilerWorld {
                             "module `{}` lowered group {:?} source `{}` does not match descriptor `{}`",
                             module.key.render(),
                             lowered.id,
-                            lowered.source.qualified_name(),
+                            self.render_mfa(&lowered.source),
                             descriptor.qualified_name()
                         )));
                     }
@@ -1632,7 +1721,7 @@ impl CompilerWorld {
                         return Err(CompilerInvariantError::new(format!(
                             "runtime module `{}` lowered without cached entry group `{}`/{}",
                             module.key.render(),
-                            entry.qualified_name(),
+                            self.render_mfa(entry),
                             entry.arity
                         )));
                     }
@@ -1857,13 +1946,18 @@ impl CompilerWorld {
 }
 
 fn enqueue_runtime_interface_imports(
+    compiler: &mut CompilerWorld,
+    tel: &dyn Telemetry,
     queue: &mut VecDeque<RuntimeReachabilitySeed>,
     interface: &ModuleInterface,
     reason: &'static str,
 ) {
     for import in &interface.imports {
+        let Some(module_id) = compiler.discover_runtime_module(&import.module, tel) else {
+            continue;
+        };
         queue.push_back(RuntimeReachabilitySeed::new(
-            import.module.clone(),
+            module_id,
             reason,
             Some(interface.name.clone()),
         ));
@@ -1871,6 +1965,8 @@ fn enqueue_runtime_interface_imports(
 }
 
 fn enqueue_runtime_protocol_impl_protocols(
+    compiler: &mut CompilerWorld,
+    tel: &dyn Telemetry,
     queue: &mut VecDeque<RuntimeReachabilitySeed>,
     interface: &ModuleInterface,
     reason: &'static str,
@@ -1882,8 +1978,11 @@ fn enqueue_runtime_protocol_impl_protocols(
         .collect::<HashSet<_>>();
     for protocol_impl in &interface.protocol_impls {
         if !local_protocols.contains(&protocol_impl.protocol) {
+            let Some(module_id) = compiler.discover_runtime_module(&protocol_impl.protocol, tel) else {
+                continue;
+            };
             queue.push_back(RuntimeReachabilitySeed::new(
-                protocol_impl.protocol.clone(),
+                module_id,
                 reason,
                 Some(interface.name.clone()),
             ));
@@ -1920,8 +2019,11 @@ fn enqueue_runtime_protocol_impl_providers(
             .iter()
             .any(|protocol_impl| protocols.contains(&protocol_impl.protocol))
         {
+            let module_id = compiler
+                .discover_runtime_module(&module, tel)
+                .expect("runtime protocol provider must be discoverable once its interface exists");
             queue.push_back(RuntimeReachabilitySeed::new(
-                module,
+                module_id,
                 "runtime_protocol_impl_provider",
                 Some(interface.name.clone()),
             ));
@@ -1943,15 +2045,9 @@ fn collect_runtime_prelude_imports(
                 only,
                 except,
                 span,
-            } => collect_runtime_prelude_import(
-                compiler,
-                tel,
-                &mut out,
-                path,
-                only.as_deref(),
-                except.as_deref(),
-                *span,
-            ),
+            } => {
+                collect_runtime_prelude_import(compiler, tel, &mut out, path, only.as_deref(), except.as_deref(), *span)
+            }
             Item::Alias { .. } => {
                 panic!("runtime.fz prelude aliases are not supported; use import")
             }
@@ -2053,54 +2149,96 @@ fn collect_interfaces(parsed: &ParsedSource) -> BTreeMap<ModuleName, ModuleInter
     }
 }
 
-fn collect_body_surface(module: &ModuleRecord, parsed: &ParsedSource) -> ModuleBodySurface {
-    let owner_module = body_surface_owner_module(module);
+fn collect_body_surface(
+    compiler: &mut CompilerWorld,
+    surface_module_id: ModuleId,
+    parsed: &ParsedSource,
+    tel: &dyn Telemetry,
+) -> ModuleBodySurface {
+    let target_module = match &compiler.module(surface_module_id).key {
+        ModuleKey::RootPath(_) => None,
+        ModuleKey::Named(_) if compiler.module(surface_module_id).origin == ModuleOrigin::PrimitivePrelude => None,
+        ModuleKey::Named(name) => Some(name.clone()),
+    };
     let mut surface = ModuleBodySurface {
-        owner_module: owner_module.clone(),
+        owner_module_id: surface_module_id,
+        owner_module: compiler.module_display_name(surface_module_id),
         ..ModuleBodySurface::default()
     };
-    match parsed {
-        ParsedSource::Program(parsed) => {
-            collect_body_surface_items(&parsed.program.items, "", &owner_module, &mut surface)
-        }
-        ParsedSource::Prelude(parsed) => collect_body_surface_items(&parsed.items, "", &owner_module, &mut surface),
-    }
+    let items = match parsed {
+        ParsedSource::Program(parsed) => &parsed.program.items,
+        ParsedSource::Prelude(parsed) => &parsed.items,
+    };
+    collect_body_surface_items(
+        compiler,
+        surface_module_id,
+        target_module.as_ref(),
+        items,
+        None,
+        surface_module_id,
+        &mut surface,
+        tel,
+    );
     surface
 }
 
-fn body_surface_owner_module(module: &ModuleRecord) -> String {
-    match (&module.key, module.origin) {
-        (ModuleKey::RootPath(_), _) => String::new(),
-        (ModuleKey::Named(_), ModuleOrigin::PrimitivePrelude) => String::new(),
-        (ModuleKey::Named(name), _) => name.dotted(),
-    }
-}
-
 fn collect_body_surface_items(
+    compiler: &mut CompilerWorld,
+    surface_module_id: ModuleId,
+    target_module: Option<&ModuleName>,
     items: &[Rc<Item>],
-    current_module: &str,
-    owner_module: &str,
+    current_module: Option<&ModuleName>,
+    current_module_id: ModuleId,
     surface: &mut ModuleBodySurface,
+    tel: &dyn Telemetry,
 ) {
     for item in items {
         match &**item {
             Item::Fn(def)
                 if def.extern_abi.is_none()
                     && !def.is_macro
-                    && (owner_module.is_empty() || current_module == owner_module) =>
+                    && body_surface_collects_module(target_module, current_module) =>
             {
-                surface.register_source_group(current_module, Rc::new(def.clone()));
+                let owner_module = compiler.module_display_name(current_module_id);
+                surface.register_source_group(
+                    current_module_id,
+                    &owner_module,
+                    qualify_body_surface_fn_name(&owner_module, &def.name),
+                    Rc::new(def.clone()),
+                );
             }
             Item::Module(module) => {
-                let nested = if current_module.is_empty() {
-                    module.name.clone()
-                } else {
-                    format!("{current_module}.{}", module.name)
+                let nested_name = match current_module {
+                    Some(parent) => parent.child(module.name.clone()),
+                    None => ModuleName::from_segments(vec![module.name.clone()]),
                 };
-                collect_body_surface_items(&module.items, &nested, owner_module, surface);
+                if !body_surface_should_recurse_into_module(target_module, &nested_name) {
+                    continue;
+                }
+                let nested_module_id =
+                    register_named_body_surface_module(compiler, surface_module_id, nested_name.clone(), tel);
+                collect_body_surface_items(
+                    compiler,
+                    surface_module_id,
+                    target_module,
+                    &module.items,
+                    Some(&nested_name),
+                    nested_module_id,
+                    surface,
+                    tel,
+                );
             }
             Item::ProtocolImpl(protocol_impl) => {
-                collect_protocol_impl_body_surface_groups(protocol_impl, items, current_module, surface);
+                collect_protocol_impl_body_surface_groups(
+                    compiler,
+                    surface_module_id,
+                    target_module,
+                    protocol_impl,
+                    items,
+                    current_module,
+                    surface,
+                    tel,
+                );
             }
             _ => {}
         }
@@ -2108,22 +2246,73 @@ fn collect_body_surface_items(
 }
 
 fn collect_protocol_impl_body_surface_groups(
+    compiler: &mut CompilerWorld,
+    surface_module_id: ModuleId,
+    target_module: Option<&ModuleName>,
     protocol_impl: &ProtocolImplDef,
     siblings: &[Rc<Item>],
-    current_module: &str,
+    current_module: Option<&ModuleName>,
     surface: &mut ModuleBodySurface,
+    tel: &dyn Telemetry,
 ) {
-    let parent = module_name_from_dotted(current_module);
-    let protocol = body_surface_impl_protocol_name(parent.as_ref(), &protocol_impl.protocol, siblings);
-    let target = body_surface_qualify_module_child(parent.as_ref(), &protocol_impl.target.path);
-    let impl_module = body_surface_protocol_impl_module(&protocol, &target).dotted();
+    let protocol = body_surface_impl_protocol_name(current_module, &protocol_impl.protocol, siblings);
+    let target = body_surface_qualify_module_child(current_module, &protocol_impl.target.path);
+    let impl_module = body_surface_protocol_impl_module(&protocol, &target);
+    if !body_surface_collects_named_module(target_module, &impl_module) {
+        return;
+    }
+    let impl_module_id = register_named_body_surface_module(compiler, surface_module_id, impl_module.clone(), tel);
+    let owner_module = compiler.module_display_name(impl_module_id);
     for item in &protocol_impl.items {
         if let Item::Fn(def) = &**item
             && def.extern_abi.is_none()
             && !def.is_macro
         {
-            surface.register_source_group(&impl_module, Rc::new(def.clone()));
+            surface.register_source_group(
+                impl_module_id,
+                &owner_module,
+                qualify_body_surface_fn_name(&owner_module, &def.name),
+                Rc::new(def.clone()),
+            );
         }
+    }
+}
+
+fn register_named_body_surface_module(
+    compiler: &mut CompilerWorld,
+    surface_module_id: ModuleId,
+    module: ModuleName,
+    tel: &dyn Telemetry,
+) -> ModuleId {
+    let owner = compiler.module(surface_module_id).clone();
+    let file = compiler.file(owner.file_id).clone();
+    let origin = match owner.origin {
+        ModuleOrigin::RootSource | ModuleOrigin::Filesystem => ModuleOrigin::Filesystem,
+        ModuleOrigin::EmbeddedRuntime => ModuleOrigin::EmbeddedRuntime,
+        ModuleOrigin::PrimitivePrelude => ModuleOrigin::PrimitivePrelude,
+    };
+    compiler.register_module(ModuleKey::Named(module), origin, file.origin, file.descriptor, tel)
+}
+
+fn body_surface_should_recurse_into_module(target_module: Option<&ModuleName>, candidate: &ModuleName) -> bool {
+    match target_module {
+        None => true,
+        Some(target) => module_name_has_prefix(candidate, target) || module_name_has_prefix(target, candidate),
+    }
+}
+
+fn body_surface_collects_module(target_module: Option<&ModuleName>, candidate: Option<&ModuleName>) -> bool {
+    match (target_module, candidate) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(target), Some(candidate)) => module_name_has_prefix(candidate, target),
+    }
+}
+
+fn body_surface_collects_named_module(target_module: Option<&ModuleName>, candidate: &ModuleName) -> bool {
+    match target_module {
+        None => true,
+        Some(target) => module_name_matches_surface(candidate, target),
     }
 }
 
@@ -2177,6 +2366,18 @@ fn body_surface_protocol_impl_module(protocol: &ModuleName, target: &ModuleName)
     protocol.child(target.last_segment().to_string())
 }
 
+fn module_name_has_prefix(candidate: &ModuleName, prefix: &ModuleName) -> bool {
+    candidate.segments().starts_with(prefix.segments())
+}
+
+fn module_name_has_suffix(candidate: &ModuleName, suffix: &ModuleName) -> bool {
+    candidate.segments().ends_with(suffix.segments())
+}
+
+fn module_name_matches_surface(candidate: &ModuleName, surface: &ModuleName) -> bool {
+    module_name_has_prefix(candidate, surface) || module_name_has_suffix(candidate, surface)
+}
+
 fn qualify_body_surface_fn_name(owner_module: &str, fn_name: &str) -> String {
     if owner_module.is_empty() {
         fn_name.to_string()
@@ -2185,15 +2386,23 @@ fn qualify_body_surface_fn_name(owner_module: &str, fn_name: &str) -> String {
     }
 }
 
-fn body_surface_group_belongs_to_surface(surface_owner: &str, group_owner: &str) -> bool {
-    surface_owner.is_empty()
-        || group_owner == surface_owner
-        || group_owner
-            .strip_prefix(surface_owner)
-            .is_some_and(|suffix| suffix.starts_with('.'))
-        || group_owner
-            .strip_suffix(surface_owner)
-            .is_some_and(|prefix| prefix.ends_with('.'))
+fn body_surface_group_belongs_to_surface(
+    compiler: &CompilerWorld,
+    surface_owner_id: ModuleId,
+    group_owner_id: ModuleId,
+) -> bool {
+    let surface_owner = compiler.module(surface_owner_id);
+    let group_owner = compiler.module(group_owner_id);
+    match (&surface_owner.key, &group_owner.key) {
+        (ModuleKey::RootPath(_), _) => surface_owner.file_id == group_owner.file_id,
+        (ModuleKey::Named(_), _) if surface_owner.origin == ModuleOrigin::PrimitivePrelude => {
+            surface_owner.file_id == group_owner.file_id
+        }
+        (ModuleKey::Named(surface_name), ModuleKey::Named(group_name)) => {
+            group_owner.file_id == surface_owner.file_id && module_name_matches_surface(group_name, surface_name)
+        }
+        (ModuleKey::Named(_), ModuleKey::RootPath(_)) => false,
+    }
 }
 
 fn collect_source_macro_exports(prog: &Program) -> SourceMacroExports {

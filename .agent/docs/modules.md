@@ -12,7 +12,7 @@ The module subsystem behind `src/modules/mod.rs` now answers three questions:
 
 The pieces that matter:
 
-- `identity`: typed `ModuleName` / `ExportKey`
+- `identity`: typed `ModuleName` / `ModuleId` / `Mfa` / `ExportKey`
 - `interface`: `ModuleInterface`, interface rendering, and strict public-spec
   validation
 - `pipeline`: compiler-owned checked-module and execution-graph preparation
@@ -20,9 +20,24 @@ The pieces that matter:
 
 ## Identity
 
-`ModuleName` is the typed module identity. It owns path segments and renders to
-dotted text only for display or IR spellings. `ExportKey` is the public
-function identity:
+`ModuleName` is the human-facing typed module identity. It owns path segments
+and renders to dotted text only for display or IR spellings.
+
+`ModuleId` is the compiler-owned stable module handle. Compiler-internal demand
+tracking and cached source function ownership key on it, not on dotted strings.
+
+`Mfa` is the compiler-facing source-function identity:
+
+```text
+module_id:     ModuleId
+function_name: String
+arity:         usize
+```
+
+`FnId` is no longer the semantic identity of a source function. It is a lowered
+IR handle looked up from `Mfa` inside a materialized module.
+
+`ExportKey` remains the public cross-module function identity:
 
 ```text
 module: ModuleName
@@ -74,13 +89,13 @@ discovered
 Not every module reaches every phase. Import resolution only needs
 `interface_ready`. Cross-module macro use only needs `macro_surface_ready`.
 `body_surface_ready` is the first compiler-owned split between syntax and
-executable work: the compiler has stable function-group descriptors and root
-fn/group ownership without having emitted body IR yet. Once a root program is
-resolved, lowering starts from entry `fn/arity` roots and reacts outward from
-the lowered IR itself: if a live body references an unloaded local group, the
-compiler requests that group in the same reactive lowering loop and continues
-until the root set closes. The compiler emits only the reachable
-function-groups and caches each group's IR in the compiler world.
+executable work: the compiler has stable function-group descriptors keyed by
+`Mfa` and root fn/group ownership without having emitted body IR yet. Once a
+root program is resolved, lowering starts from entry `fn/arity` roots and
+reacts outward from the lowered IR itself: if a live body references an
+unloaded local group, the compiler requests that group in the same reactive
+lowering loop and continues until the root set closes. The compiler emits only
+the reachable function-groups and caches each group's IR in the compiler world.
 Runtime codegen only needs the modules that become reachable from the checked
 program. Runtime unit discovery now also reacts to already-materialized runtime
 units: the checked root unit seeds exact external runtime exports, each

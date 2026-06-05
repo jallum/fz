@@ -7,10 +7,7 @@ fn named_module(name: &str) -> ModuleKey {
 }
 
 fn state_work_events(capture: &Capture) -> Vec<crate::telemetry::capture::OwnedEvent> {
-    capture
-        .find(&["fz", "compiler", "state_work"])
-        .into_iter()
-        .collect()
+    capture.find(&["fz", "compiler", "state_work"]).into_iter().collect()
 }
 
 fn state_start_events_for_target(capture: &Capture, target_state: &str) -> Vec<crate::telemetry::capture::OwnedEvent> {
@@ -272,6 +269,10 @@ end
     let second = compiler
         .ensure_body_surface(root, &tel)
         .expect("root body surface should come from cache");
+    let nested = ModuleName::parse_dotted("Nested").expect("valid module name");
+    let nested_id = compiler
+        .module_id_for_name(&nested)
+        .expect("Nested module should be registered during body-surface discovery");
 
     assert_eq!(first.owner_module, "");
     assert_eq!(first.groups.len(), 3);
@@ -282,6 +283,9 @@ end
     assert_eq!(first.groups[1].id, FnGroupId(1));
     assert_eq!(first.groups[2].qualified_name(), "Nested.local");
     assert_eq!(first.groups[2].id, FnGroupId(2));
+    assert_eq!(first.groups[0].source.module_id, root);
+    assert_eq!(first.groups[1].source.module_id, root);
+    assert_eq!(first.groups[2].source.module_id, nested_id);
     assert_eq!(compiler.module(root).state, ModuleState::BodySurfaceReady);
     assert_eq!(capture.count(&["fz", "compiler", "body_surface_ready"]), 1);
     assert_eq!(capture.count(&["fz", "compiler", "fn_group_discovered"]), 3);
@@ -331,6 +335,8 @@ end
     assert_eq!(surface.groups[0].id, FnGroupId(0));
     assert_eq!(surface.groups[1].qualified_name(), "Nested.helper");
     assert_eq!(surface.groups[1].id, FnGroupId(1));
+    assert_eq!(surface.groups[0].source.module_id, nested_id);
+    assert_eq!(surface.groups[1].source.module_id, nested_id);
     assert_eq!(surface.groups[1].source.arity, 2);
     assert!(
         capture
@@ -503,14 +509,13 @@ fn runtime_reachability_marks_only_live_runtime_modules_with_reasons() {
         },
     );
 
+    let utf8_id = compiler
+        .discover_runtime_module(&utf8, &tel)
+        .expect("Utf8 runtime module should be discoverable");
     let reachable = compiler
         .discover_runtime_reachable_modules(
             &roots,
-            [RuntimeReachabilitySeed::new(
-                utf8.clone(),
-                "program_runtime_reference",
-                None,
-            )],
+            [RuntimeReachabilitySeed::new(utf8_id, "program_runtime_reference", None)],
             &tel,
         )
         .expect("runtime reachability should succeed");
@@ -522,9 +527,6 @@ fn runtime_reachability_marks_only_live_runtime_modules_with_reasons() {
     assert!(reachable_names.contains(&"Utf8".to_string()));
     assert!(!reachable_names.contains(&"Process".to_string()));
 
-    let utf8_id = compiler
-        .module_id_for_name(&utf8)
-        .expect("Utf8 module record should exist");
     assert!(compiler.module(utf8_id).reachability.runtime);
     assert_eq!(compiler.module(utf8_id).state, ModuleState::InterfaceReady);
     if let Some(process_id) = compiler.module_id_for_name(&process) {
