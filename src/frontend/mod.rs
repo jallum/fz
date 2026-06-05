@@ -7,7 +7,7 @@ pub(crate) mod spec_registry;
 
 use self::resolve::InterfaceTable;
 use crate::ast::{Expr, FnClause, FnDef, Item, Pattern, Program, Spanned, TypeExprBody};
-use crate::compiler::{Compiler, CompilerWorld, ModuleId};
+use crate::compiler::{Compiler, CompilerWorld};
 use crate::diag::codes;
 use crate::diag::emit_through;
 use crate::diag::{Diagnostic, Diagnostics, SourceMap, Span};
@@ -15,7 +15,7 @@ use crate::fz_ir::{CallsiteId, EmitSlot, FnId, Module, rewrite_external_callsite
 use crate::ir_extern_marshal::resolve_module_types;
 use crate::ir_lower::repl_output_frame_names;
 use crate::ir_planner::fn_types::CallEdgeTarget;
-use crate::ir_planner::{ModulePlan, plan_module, plan_module_from_entry_fns, rewrite_closed_union_protocol_dispatch};
+use crate::ir_planner::{ModulePlan, plan_module, plan_module_from_entry_fns};
 use crate::measurements;
 use crate::metadata;
 #[cfg(test)]
@@ -24,7 +24,9 @@ use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
 use crate::pattern_matrix::SubjectDomain;
 use crate::telemetry::value::opaque;
-use crate::telemetry::{NullTelemetry, Telemetry, next_compile_nonce};
+#[cfg(test)]
+use crate::telemetry::NullTelemetry;
+use crate::telemetry::{Telemetry, next_compile_nonce};
 use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Ty, Types};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -122,7 +124,7 @@ fn fn_subject_domains<T: Types<Ty = Ty>>(
         .collect()
 }
 
-fn check_frontend_from_entry_fns<T>(
+pub(crate) fn check_frontend_from_entry_fns<T>(
     t: &mut T,
     prog: &Program,
     module: &Module,
@@ -274,156 +276,7 @@ where
     compiler.compile_program_from_roots(None, None, t, prog, sm, InterfaceTable::new(), tel)
 }
 
-impl CompilerWorld {
-    pub(crate) fn compile_program_from_roots<T>(
-        &mut self,
-        root_source: Option<ModuleId>,
-        lowering_root_source: Option<ModuleId>,
-        t: &mut T,
-        prog: Program,
-        sm: SourceMap,
-        interface_table: InterfaceTable,
-        tel: &dyn Telemetry,
-    ) -> FrontendResult
-    where
-        T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
-    {
-        let mut prog = match resolve::flatten_modules_with_compiler_interface_table(
-            t,
-            self,
-            root_source,
-            prog,
-            interface_table,
-            tel,
-        ) {
-            Ok(prog) => prog,
-            Err(e) => return Err(fail(sm, e.to_diagnostic())),
-        };
-        tel.event(
-            &["fz", "frontend", "resolved"],
-            metadata! {
-                items: prog.items.len(),
-                module_interfaces: prog.module_interfaces.len(),
-                program: opaque(&prog),
-            },
-        );
-        if let Err(diagnostic) = macros::prepare_compiler_macro_surfaces(self, root_source, &prog, tel) {
-            return Err(fail(sm, diagnostic));
-        }
-        if let Err(e) = macros::expand_program_with_compiler_types(self, root_source, t, &mut prog) {
-            return Err(fail(sm, e.to_diagnostic()));
-        }
-        resolve::add_macro_requested_runtime_interfaces(self, &mut prog, tel);
-        tel.event(
-            &["fz", "frontend", "macro_expanded"],
-            metadata! {
-                items: prog.items.len(),
-                program: opaque(&prog),
-            },
-        );
-        let mut module = match crate::ir_lower::lower_program_with_compiler(self, lowering_root_source, t, &prog, tel) {
-            Ok(module) => module,
-            Err(e) => return Err(fail(sm, e.to_diagnostic())),
-        };
-        tel.event(
-            &["fz", "frontend", "lowered"],
-            metadata! {
-                module_path: module.module_path().to_owned(),
-                fns: module.fns.len(),
-                module: opaque(&module),
-            },
-        );
-        let planner_entry_fns = planner_entry_fns(self, lowering_root_source, &module);
-        let validate_surface = validate_surface_for_plan(self, lowering_root_source, &planner_entry_fns);
-        let (diagnostics, mut module_plan) =
-            check_frontend_from_entry_fns(t, &prog, &module, &planner_entry_fns, validate_surface, tel);
-        apply_planner_rewrites_to_fixed_point(t, &mut module, &mut module_plan, &planner_entry_fns);
-        #[cfg(test)]
-        self.validate_invariants()
-            .expect("frontend compile must leave compiler world consistent");
-        Ok(FrontendOk {
-            sm,
-            _prog: prog,
-            module,
-            module_plan,
-            diagnostics,
-        })
-    }
-}
-
-fn planner_entry_fns(compiler: &CompilerWorld, lowering_root_source: Option<ModuleId>, module: &Module) -> Vec<FnId> {
-    let Some(root_source) = lowering_root_source else {
-        return Vec::new();
-    };
-    if !matches!(
-        compiler.module(root_source).origin,
-        crate::compiler::ModuleOrigin::EmbeddedRuntime
-    ) {
-        return Vec::new();
-    }
-    let entry_keys = compiler.runtime_entry_fn_keys(root_source);
-    if entry_keys.is_empty() {
-        return Vec::new();
-    }
-    module
-        .fns
-        .iter()
-        .filter(|fn_ir| {
-            compiler
-                .source_fn_key_for_qualified_name(root_source, &fn_ir.name, fn_ir.block(fn_ir.entry).params.len())
-                .ok()
-                .is_some_and(|mfa| entry_keys.contains(&mfa))
-        })
-        .map(|fn_ir| fn_ir.id)
-        .collect()
-}
-
-fn validate_surface_for_plan(
-    compiler: &CompilerWorld,
-    lowering_root_source: Option<ModuleId>,
-    planner_entry_fns: &[FnId],
-) -> bool {
-    let Some(root_source) = lowering_root_source else {
-        return true;
-    };
-    !matches!(
-        compiler.module(root_source).origin,
-        crate::compiler::ModuleOrigin::EmbeddedRuntime
-    ) || planner_entry_fns.is_empty()
-}
-
-pub(crate) fn apply_planner_rewrites_to_fixed_point<T>(
-    t: &mut T,
-    module: &mut Module,
-    module_plan: &mut ModulePlan,
-    entry_fn_ids: &[FnId],
-) where
-    T: Types<Ty = Ty> + ClosureTypes + RenderTypes,
-{
-    // Protocol/direct-call rewrites can reveal later continuations. Iterate to
-    // a fixed point so every newly reachable protocol call is planned and
-    // rewritten before the interpreter or native backends see the module.
-    loop {
-        let direct_changed = apply_planned_direct_call_targets(module, module_plan);
-        // Closed-domain protocol switch dispatch. A protocol call whose
-        // receiver is a closed union of implementing targets (`integer |
-        // list(...)`) has no single planned target for direct-call application,
-        // so it would stay a call to the `__protocol__` stub and halt. This
-        // rewrites such callsites into a TypeTest/If cascade of per-target
-        // direct calls, reusing IR that already lowers in every engine.
-        let switch_changed = rewrite_closed_union_protocol_dispatch(t, module, module_plan);
-        if !(direct_changed || switch_changed) {
-            break;
-        }
-        *module_plan = if entry_fn_ids.is_empty() {
-            plan_module(t, module, &NullTelemetry)
-        } else {
-            plan_module_from_entry_fns(t, module, entry_fn_ids, &NullTelemetry)
-        };
-    }
-}
-
-fn apply_planned_direct_call_targets(module: &mut Module, module_plan: &ModulePlan) -> bool {
+pub(crate) fn apply_planned_direct_call_targets(module: &mut Module, module_plan: &ModulePlan) -> bool {
     // A physical callsite is shared by every monomorphized spec of its caller.
     // For ordinary calls the resolved target is spec-invariant, but protocol
     // dispatch resolves the *same* callsite to different impls in different

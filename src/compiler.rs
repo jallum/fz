@@ -5,21 +5,25 @@
 
 use crate::ast::{Attribute, FnDef, Item, ModuleDef, Program, ProtocolImplDef};
 use crate::diag::{Diagnostic, SourceMap, Span};
-use crate::frontend::resolve::flatten_modules_with_compiler;
+use crate::frontend::resolve::{InterfaceTable, flatten_modules_with_compiler, flatten_modules_with_compiler_interface_table};
+use crate::frontend::{FrontendErr, FrontendOk, FrontendResult, apply_planned_direct_call_targets, check_frontend_from_entry_fns, macros, resolve};
 use crate::fz_ir::{BlockId, ExternDecl, ExternId, ExternalCallEdge, FnId, FnIr, ProtocolCallTarget, Var};
 use crate::ir_lower::{
     FnKey, LowerError, LoweringDemandResult, begin_compiler_lowering_session, collect_lowerable_fn_keys,
     select_initial_root_fn_keys,
 };
+use crate::ir_planner::{ModulePlan, plan_module, plan_module_from_entry_fns, rewrite_closed_union_protocol_dispatch};
 pub(crate) use crate::modules::identity::ModuleId;
 use crate::modules::identity::{ExportKey, Mfa, ModuleName};
 use crate::modules::interface::{ModuleInterface, collect_from_program};
 use crate::modules::runtime_library::{self, RUNTIME_MODULE_SOURCES, RUNTIME_PRELUDE_FZ};
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
+use crate::telemetry::NullTelemetry;
+use crate::telemetry::value::opaque;
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 use crate::types;
-use crate::types::DefaultTypes;
+use crate::types::{ClosureTypes, DefaultTypes, LiteralTypes, RenderTypes, Ty, Types};
 use crate::{measurements, metadata};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::error::Error;
@@ -524,6 +528,91 @@ impl CompilerWorld {
         }
         session.finish(t, prog, tel)
     }
+
+    pub(crate) fn compile_program_from_roots<T>(
+        &mut self,
+        root_source: Option<ModuleId>,
+        lowering_root_source: Option<ModuleId>,
+        t: &mut T,
+        prog: Program,
+        sm: SourceMap,
+        interface_table: InterfaceTable,
+        tel: &dyn Telemetry,
+    ) -> FrontendResult
+    where
+        T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
+    {
+        let mut prog =
+            match flatten_modules_with_compiler_interface_table(t, self, root_source, prog, interface_table, tel) {
+                Ok(prog) => prog,
+                Err(err) => {
+                    return Err(FrontendErr {
+                        sm,
+                        diagnostics: crate::diag::Diagnostics::from_one(err.to_diagnostic()),
+                    });
+                }
+            };
+        tel.event(
+            &["fz", "frontend", "resolved"],
+            metadata! {
+                items: prog.items.len(),
+                module_interfaces: prog.module_interfaces.len(),
+                program: opaque(&prog),
+            },
+        );
+        if let Err(diagnostic) = macros::prepare_compiler_macro_surfaces(self, root_source, &prog, tel) {
+            return Err(FrontendErr {
+                sm,
+                diagnostics: crate::diag::Diagnostics::from_one(diagnostic),
+            });
+        }
+        if let Err(err) = macros::expand_program_with_compiler_types(self, root_source, t, &mut prog) {
+            return Err(FrontendErr {
+                sm,
+                diagnostics: crate::diag::Diagnostics::from_one(err.to_diagnostic()),
+            });
+        }
+        resolve::add_macro_requested_runtime_interfaces(self, &mut prog, tel);
+        tel.event(
+            &["fz", "frontend", "macro_expanded"],
+            metadata! {
+                items: prog.items.len(),
+                program: opaque(&prog),
+            },
+        );
+        let mut module = match self.lower_program_from_demands(lowering_root_source, t, &prog, tel) {
+            Ok(module) => module,
+            Err(err) => {
+                return Err(FrontendErr {
+                    sm,
+                    diagnostics: crate::diag::Diagnostics::from_one(err.to_diagnostic()),
+                });
+            }
+        };
+        tel.event(
+            &["fz", "frontend", "lowered"],
+            metadata! {
+                module_path: module.module_path().to_owned(),
+                fns: module.fns.len(),
+                module: opaque(&module),
+            },
+        );
+        let planner_entry_fns = planner_entry_fns(self, lowering_root_source, &module);
+        let validate_surface = validate_surface_for_plan(self, lowering_root_source, &planner_entry_fns);
+        let (diagnostics, mut module_plan) =
+            check_frontend_from_entry_fns(t, &prog, &module, &planner_entry_fns, validate_surface, tel);
+        apply_planner_rewrites_to_fixed_point(t, &mut module, &mut module_plan, &planner_entry_fns);
+        #[cfg(test)]
+        self.validate_invariants()
+            .expect("frontend compile must leave compiler world consistent");
+        Ok(FrontendOk {
+            sm,
+            _prog: prog,
+            module,
+            module_plan,
+            diagnostics,
+        })
+    }
 }
 
 impl Compiler {
@@ -731,6 +820,63 @@ impl Compiler {
         F: FnOnce(&mut CompilerWorld) -> Result<(), E>,
     {
         self.world.ensure_module_state_result(module_id, target, tel, work)
+    }
+}
+
+fn planner_entry_fns(compiler: &CompilerWorld, lowering_root_source: Option<ModuleId>, module: &crate::fz_ir::Module) -> Vec<FnId> {
+    let Some(root_source) = lowering_root_source else {
+        return Vec::new();
+    };
+    if !matches!(compiler.module(root_source).origin, ModuleOrigin::EmbeddedRuntime) {
+        return Vec::new();
+    }
+    let entry_keys = compiler.runtime_entry_fn_keys(root_source);
+    if entry_keys.is_empty() {
+        return Vec::new();
+    }
+    module
+        .fns
+        .iter()
+        .filter(|fn_ir| {
+            compiler
+                .source_fn_key_for_qualified_name(root_source, &fn_ir.name, fn_ir.block(fn_ir.entry).params.len())
+                .ok()
+                .is_some_and(|mfa| entry_keys.contains(&mfa))
+        })
+        .map(|fn_ir| fn_ir.id)
+        .collect()
+}
+
+fn validate_surface_for_plan(
+    compiler: &CompilerWorld,
+    lowering_root_source: Option<ModuleId>,
+    planner_entry_fns: &[FnId],
+) -> bool {
+    let Some(root_source) = lowering_root_source else {
+        return true;
+    };
+    !matches!(compiler.module(root_source).origin, ModuleOrigin::EmbeddedRuntime) || planner_entry_fns.is_empty()
+}
+
+fn apply_planner_rewrites_to_fixed_point<T>(
+    t: &mut T,
+    module: &mut crate::fz_ir::Module,
+    module_plan: &mut ModulePlan,
+    entry_fn_ids: &[FnId],
+) where
+    T: Types<Ty = Ty> + ClosureTypes + RenderTypes,
+{
+    loop {
+        let direct_changed = apply_planned_direct_call_targets(module, module_plan);
+        let switch_changed = rewrite_closed_union_protocol_dispatch(t, module, module_plan);
+        if !(direct_changed || switch_changed) {
+            break;
+        }
+        *module_plan = if entry_fn_ids.is_empty() {
+            plan_module(t, module, &NullTelemetry)
+        } else {
+            plan_module_from_entry_fns(t, module, entry_fn_ids, &NullTelemetry)
+        };
     }
 }
 

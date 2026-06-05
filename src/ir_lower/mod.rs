@@ -1372,17 +1372,7 @@ impl CompilerLoweringSession {
 /// so the `Module` is the complete result — there is no second return value.
 pub fn lower_program<T: Types<Ty = Ty>>(t: &mut T, prog: &Program, tel: &dyn Telemetry) -> Result<Module, LowerError> {
     let mut compiler = Compiler::new();
-    lower_program_with_compiler(compiler.world_mut(), None, t, prog, tel)
-}
-
-pub fn lower_program_with_compiler<T: Types<Ty = Ty>>(
-    compiler: &mut CompilerWorld,
-    root_source: Option<ModuleId>,
-    t: &mut T,
-    prog: &Program,
-    tel: &dyn Telemetry,
-) -> Result<Module, LowerError> {
-    compiler.lower_program_from_demands(root_source, t, prog, tel)
+    compiler.world_mut().lower_program_from_demands(None, t, prog, tel)
 }
 
 fn install_inherited_protocol_callback_specs<T: Types<Ty = Ty>>(
