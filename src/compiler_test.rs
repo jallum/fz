@@ -209,6 +209,43 @@ fn runtime_module_interface_is_collected_once_from_source() {
 }
 
 #[test]
+fn primitive_prelude_is_prepared_once_as_compiler_owned_bootstrap_source() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "compiler"], capture.handler());
+
+    let mut compiler = Compiler::new();
+    let prelude_id = compiler.discover_primitive_prelude(&tel);
+
+    let first = compiler
+        .ensure_prepared_prelude(prelude_id, &tel)
+        .expect("primitive prelude should prepare");
+    let second = compiler
+        .ensure_prepared_prelude(prelude_id, &tel)
+        .expect("prepared primitive prelude should come from cache");
+
+    assert!(
+        first.program.items.iter().all(|item| matches!(&**item, Item::Fn(_))),
+        "prepared prelude should be flattened to callable items"
+    );
+    assert_eq!(first.program.items.len(), second.program.items.len());
+    assert_eq!(first.imports, second.imports);
+    assert_eq!(compiler.module(prelude_id).origin, ModuleOrigin::PrimitivePrelude);
+    let prelude_parsed = capture
+        .find(&["fz", "compiler", "parsed"])
+        .into_iter()
+        .filter(|ev| captured_str(ev, "module_origin") == "primitive_prelude")
+        .count();
+    assert_eq!(prelude_parsed, 1);
+    assert_eq!(capture.count(&["fz", "compiler", "prelude_prepared"]), 1);
+    assert_eq!(capture.count(&["fz", "compiler", "runtime_lowered"]), 0);
+
+    compiler
+        .validate_invariants()
+        .expect("prepared prelude cache should preserve compiler invariants");
+}
+
+#[test]
 fn body_surface_is_cached_and_exposes_stable_root_group_mapping_without_lowering() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();

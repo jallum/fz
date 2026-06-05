@@ -5,6 +5,7 @@
 
 use crate::ast::{Attribute, FnDef, Item, ModuleDef, Program, ProtocolImplDef};
 use crate::diag::{Diagnostic, SourceMap, Span};
+use crate::frontend::resolve::flatten_modules_with_compiler;
 use crate::fz_ir::{BlockId, ExternDecl, ExternId, ExternalCallEdge, FnId, FnIr, ProtocolCallTarget, Var};
 use crate::ir_lower::{
     FnKey, LowerError, LoweringDemandResult, begin_compiler_lowering_session, collect_lowerable_fn_keys,
@@ -230,6 +231,12 @@ impl ParsedSource {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedPrelude {
+    pub(crate) program: Program,
+    pub(crate) imports: HashMap<(String, usize), String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SourceMacroExports {
     pub(crate) root: HashSet<(String, usize)>,
@@ -379,6 +386,7 @@ pub(crate) struct ModuleRecord {
     pub(crate) interfaces: Option<BTreeMap<ModuleName, ModuleInterface>>,
     pub(crate) macro_exports: Option<HashSet<(String, usize)>>,
     pub(crate) macro_surface: Option<ModuleMacroSurface>,
+    pub(crate) prepared_prelude: Option<PreparedPrelude>,
 }
 
 #[derive(Clone)]
@@ -576,6 +584,14 @@ impl Compiler {
         tel: &dyn Telemetry,
     ) -> Result<ParsedPrelude, Diagnostic> {
         self.world.ensure_prelude(module_id, tel)
+    }
+
+    pub(crate) fn ensure_prepared_prelude(
+        &mut self,
+        module_id: ModuleId,
+        tel: &dyn Telemetry,
+    ) -> Result<PreparedPrelude, Diagnostic> {
+        self.world.ensure_prepared_prelude(module_id, &mut self.types, tel)
     }
 
     pub(crate) fn ensure_interface_table(
@@ -828,6 +844,60 @@ impl CompilerWorld {
             ParsedSource::Prelude(parsed) => Ok(parsed),
             ParsedSource::Program(_) => panic!("compiler source kind mismatch: expected prelude"),
         }
+    }
+
+    pub(crate) fn ensure_prepared_prelude<T: types::Types<Ty = types::Ty>>(
+        &mut self,
+        module_id: ModuleId,
+        t: &mut T,
+        tel: &dyn Telemetry,
+    ) -> Result<PreparedPrelude, Diagnostic> {
+        if let Some(prepared) = &self.modules[module_id.0 as usize].prepared_prelude {
+            return Ok(prepared.clone());
+        }
+
+        let parsed = self.ensure_prelude(module_id, tel)?;
+        let root_types = runtime_library::root_type_env_from_attrs(t, &parsed.attrs);
+        let imports = collect_runtime_prelude_imports(self, tel, &parsed.items);
+        let staged = Program {
+            items: parsed.items.clone(),
+            module_interfaces: Default::default(),
+            external_module_interfaces: Default::default(),
+            module_docs: Default::default(),
+            module_type_envs: Default::default(),
+            protocol_registry: Default::default(),
+            opaque_inners: Default::default(),
+            brand_inners: Default::default(),
+            structs: Default::default(),
+            struct_field_types: Default::default(),
+        };
+        let mut program = flatten_modules_with_compiler(t, self, None, staged, tel).map_err(|err| err.to_diagnostic())?;
+        program
+            .module_type_envs
+            .entry(String::new())
+            .or_default()
+            .extend_env(root_types.env);
+        program.opaque_inners.extend(root_types.opaque_inners);
+        program.brand_inners.extend(root_types.brand_inners);
+
+        let prepared = PreparedPrelude { program, imports };
+        let module = self.module(module_id).clone();
+        tel.execute(
+            &["fz", "compiler", "prelude_prepared"],
+            &measurements! {
+                items: prepared.program.items.len() as u64,
+                imports: prepared.imports.len() as u64,
+                root_attrs: parsed.attrs.len() as u64,
+            },
+            &metadata! {
+                module_key: module.key.render(),
+                module_key_kind: module.key.kind(),
+                module_origin: module.origin.kind(),
+                source_name: self.file(module.file_id).descriptor.source_name.clone(),
+            },
+        );
+        self.modules[module_id.0 as usize].prepared_prelude = Some(prepared.clone());
+        Ok(prepared)
     }
 
     pub(crate) fn ensure_body_surface(
@@ -1508,6 +1578,12 @@ impl CompilerWorld {
                     )));
                 }
             }
+            if module.prepared_prelude.is_some() && module.origin != ModuleOrigin::PrimitivePrelude {
+                return Err(CompilerInvariantError::new(format!(
+                    "module `{}` cached prepared prelude but is not the primitive prelude",
+                    module.key.render()
+                )));
+            }
             if module.state.covers(ModuleState::RuntimeLowered) && !module.reachability.runtime {
                 return Err(CompilerInvariantError::new(format!(
                     "module `{}` reached runtime_lowered without runtime reachability",
@@ -1648,6 +1724,7 @@ impl CompilerWorld {
             interfaces: None,
             macro_exports: None,
             macro_surface: None,
+            prepared_prelude: None,
         };
         self.modules.push(record);
         self.module_index.insert(key.clone(), id);
@@ -1835,6 +1912,81 @@ fn enqueue_runtime_protocol_impl_providers(
         }
     }
     Ok(())
+}
+
+fn collect_runtime_prelude_imports(
+    compiler: &mut CompilerWorld,
+    tel: &dyn Telemetry,
+    items: &[Rc<Item>],
+) -> HashMap<(String, usize), String> {
+    let mut out = HashMap::new();
+    for item in items {
+        match item.as_ref() {
+            Item::Import {
+                path,
+                only,
+                except,
+                span,
+            } => collect_runtime_prelude_import(
+                compiler,
+                tel,
+                &mut out,
+                path,
+                only.as_deref(),
+                except.as_deref(),
+                *span,
+            ),
+            Item::Alias { .. } => {
+                panic!("runtime.fz prelude aliases are not supported; use import")
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn collect_runtime_prelude_import(
+    compiler: &mut CompilerWorld,
+    tel: &dyn Telemetry,
+    out: &mut HashMap<(String, usize), String>,
+    module: &ModuleName,
+    only: Option<&[(String, usize)]>,
+    except: Option<&[(String, usize)]>,
+    span: Span,
+) {
+    let interface = runtime_library::interface(compiler, module, tel)
+        .expect("runtime interface lookup must succeed")
+        .unwrap_or_else(|| panic!("runtime.fz imports unknown built-in runtime module `{}`", module));
+    let mut exports = interface
+        .exports
+        .iter()
+        .map(|export| (export.name.clone(), export.arity))
+        .collect::<Vec<_>>();
+    if let Some(only) = only {
+        for requested in only {
+            assert!(
+                exports.contains(requested),
+                "runtime.fz imports missing `{}/{}` from `{}`",
+                requested.0,
+                requested.1,
+                module
+            );
+        }
+        exports = only.to_vec();
+    }
+    if let Some(except) = except {
+        exports.retain(|export| !except.contains(export));
+    }
+    for (name, arity) in exports {
+        let previous = out.insert((name.clone(), arity), format!("{}.{}", module, name));
+        assert!(
+            previous.is_none(),
+            "runtime.fz import for `{}/{}` conflicts at {:?}",
+            name,
+            arity,
+            span
+        );
+    }
 }
 
 fn parse_source(

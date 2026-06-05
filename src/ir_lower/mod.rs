@@ -56,7 +56,6 @@ use crate::ir_codegen::compile_planned;
 #[cfg(test)]
 use crate::ir_planner::{collect_diagnostics, plan_module};
 use crate::modules::identity::ModuleName;
-use crate::modules::runtime_library::{interface, root_type_env_from_attrs};
 #[cfg(test)]
 use crate::parser::Parser;
 #[cfg(test)]
@@ -122,72 +121,6 @@ use receive::lower_receive;
 
 pub(crate) const REPL_ENTRY_PREFIX: &str = "__repl_eval_";
 
-/// Return the prelude as a flat `Program` whose `module_type_envs[""]`,
-/// `opaque_inners`, and `brand_inners` include compiler-known runtime
-/// types plus any root declarations still present in `runtime.fz`.
-fn parse_runtime_prelude<T: Types<Ty = Ty>>(
-    compiler: &mut CompilerWorld,
-    t: &mut T,
-    tel: &dyn Telemetry,
-) -> (Program, HashMap<(String, usize), String>) {
-    let prelude_id = compiler.discover_primitive_prelude(tel);
-    let parsed_prelude = compiler
-        .ensure_prelude(prelude_id, tel)
-        .expect("runtime.fz parse error (bug in built-in prelude)");
-    let items = parsed_prelude.items;
-    let attrs = parsed_prelude.attrs;
-    let root_types = root_type_env_from_attrs(t, &attrs);
-    let prelude_imports = collect_runtime_prelude_imports(compiler, tel, &items);
-    let staged = Program {
-        items,
-        module_interfaces: Default::default(),
-        external_module_interfaces: Default::default(),
-        module_docs: Default::default(),
-        module_type_envs: Default::default(),
-        protocol_registry: Default::default(),
-        opaque_inners: Default::default(),
-        brand_inners: Default::default(),
-        structs: Default::default(),
-        struct_field_types: Default::default(),
-    };
-    let mut flat = crate::frontend::resolve::flatten_modules_with_compiler(t, compiler, None, staged, tel)
-        .expect("runtime.fz module flatten error (bug in built-in prelude)");
-    // Merge compiler-known runtime types and any root declarations into the
-    // flattened prelude program.
-    flat.module_type_envs
-        .entry(String::new())
-        .or_default()
-        .extend_env(root_types.env);
-    flat.opaque_inners.extend(root_types.opaque_inners);
-    flat.brand_inners.extend(root_types.brand_inners);
-    (flat, prelude_imports)
-}
-
-fn collect_runtime_prelude_imports(
-    compiler: &mut CompilerWorld,
-    tel: &dyn Telemetry,
-    items: &[Rc<Item>],
-) -> HashMap<(String, usize), String> {
-    let mut out = HashMap::new();
-    for item in items {
-        match item.as_ref() {
-            Item::Import {
-                path,
-                only,
-                except,
-                span,
-            } => {
-                collect_runtime_prelude_import(compiler, tel, &mut out, path, only.as_deref(), except.as_deref(), *span)
-            }
-            Item::Alias { .. } => {
-                panic!("runtime.fz prelude aliases are not supported; use import")
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
 fn struct_opaque_inners<T: Types<Ty = Ty>>(
     t: &mut T,
     structs: &BTreeMap<ModuleName, Vec<String>>,
@@ -214,50 +147,6 @@ fn struct_opaque_inners<T: Types<Ty = Ty>>(
         out.insert(format!("impl-target::{}", module.last_segment()), t.tuple(&ordered));
     }
     out
-}
-
-fn collect_runtime_prelude_import(
-    compiler: &mut CompilerWorld,
-    tel: &dyn Telemetry,
-    out: &mut HashMap<(String, usize), String>,
-    module: &ModuleName,
-    only: Option<&[(String, usize)]>,
-    except: Option<&[(String, usize)]>,
-    span: Span,
-) {
-    let interface = interface(compiler, module, tel)
-        .expect("runtime interface lookup must succeed")
-        .unwrap_or_else(|| panic!("runtime.fz imports unknown built-in runtime module `{}`", module));
-    let mut exports = interface
-        .exports
-        .iter()
-        .map(|export| (export.name.clone(), export.arity))
-        .collect::<Vec<_>>();
-    if let Some(only) = only {
-        for requested in only {
-            assert!(
-                exports.contains(requested),
-                "runtime.fz imports missing `{}/{}` from `{}`",
-                requested.0,
-                requested.1,
-                module
-            );
-        }
-        exports = only.to_vec();
-    }
-    if let Some(except) = except {
-        exports.retain(|export| !except.contains(export));
-    }
-    for (name, arity) in exports {
-        let previous = out.insert((name.clone(), arity), format!("{}.{}", module, name));
-        assert!(
-            previous.is_none(),
-            "runtime.fz import for `{}/{}` conflicts at {:?}",
-            name,
-            arity,
-            span
-        );
-    }
 }
 
 pub(crate) fn compute_current_function_correspondence(
@@ -1105,8 +994,12 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
     ctx.register_protocol_registry(&prog.protocol_registry);
     ctx.register_interface_protocols(&prog.external_module_interfaces);
 
-    let (prelude, prelude_imports) = parse_runtime_prelude(compiler, t, tel);
-    ctx.prelude_imports = prelude_imports;
+    let prelude_id = compiler.discover_primitive_prelude(tel);
+    let prepared_prelude = compiler
+        .ensure_prepared_prelude(prelude_id, t, tel)
+        .expect("runtime.fz bootstrap preparation failed");
+    let prelude = prepared_prelude.program;
+    ctx.prelude_imports = prepared_prelude.imports;
     ctx.struct_schemas.extend(
         prelude
             .structs

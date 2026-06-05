@@ -198,6 +198,11 @@ module through the world the way we intended?" before loader/resolver work lands
   `module_key`, `module_key_kind`, `module_origin`, `source_name`,
   `parse_kind`, `items`. This event should happen once per module/file unless
   invalidation is introduced later.
+- `fz.compiler.prelude_prepared` — the compiler turned the primitive prelude's
+  parsed source into a flattened bootstrap program plus import table, ready to
+  seed later demands without re-parsing or re-flattening `runtime.fz`.
+  Measurements: `module_id`, `file_id`, `items`, `imports`, `root_attrs`.
+  Metadata: `module_key`, `module_key_kind`, `module_origin`, `source_name`.
 - `fz.compiler.fn_group_discovered` — the compiler registered one executable
   function-group descriptor for a module body surface without lowering the
   group's IR yet. Measurements: `module_id`, `file_id`, `fn_group_id`,
