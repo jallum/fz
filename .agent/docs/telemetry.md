@@ -170,6 +170,34 @@ when the generated shape matters.
   resolves, else `indirect`), and `continuation_storage` (`lazy_descriptor` or
   `heap_closure`).
 
+## Compiler World Events
+
+`src/compiler.rs` owns the source-backed module world model introduced by
+`fz-hua.1`. Its event vocabulary is the test seam for "did the compiler move a
+module through the world the way we intended?" before loader/resolver work lands.
+
+- `fz.compiler.file_registered` — a new compiler-owned file identity was created.
+  Measurements: `file_id`. Metadata: `file_origin`, `file_label`.
+- `fz.compiler.file_cache_hit` — the compiler reused an existing file identity.
+  Measurements: `file_id`. Metadata: `file_origin`, `file_label`.
+- `fz.compiler.module_discovered` — a new module identity was created.
+  Measurements: `module_id`, `file_id`. Metadata: `module_key`,
+  `module_key_kind`, `module_origin`, `file_origin`.
+- `fz.compiler.module_cache_hit` — discovery asked for a module the compiler
+  already knows about. Measurements: `module_id`, `file_id`. Metadata mirrors
+  `module_discovered`.
+- `fz.compiler.cache_miss` / `fz.compiler.cache_hit` — a phase or reachability
+  query did or did not need work. Measurements: `module_id`, `file_id`.
+  Metadata names the module plus the requested phase or reachability slice.
+- `fz.compiler.phase` — span around real phase work. Tests should assert on the
+  `SpanStop` event's `elapsed_ns` measurement rather than assuming work happened.
+- `fz.compiler.phase_advanced` — the module state lattice moved forward.
+  Measurements: `module_id`, `file_id`. Metadata: `from_phase`, `to_phase`,
+  plus module identity.
+- `fz.compiler.module_reachable` — one reachability dimension (`interface`,
+  `macro`, or `runtime`) was first marked true for a module. Measurements:
+  `module_id`, `file_id`. Metadata: `reachability` plus module identity.
+
 ## Telemetry In Tests
 
 The bus is the test seam for "did the compiler make the decision I expected?"
