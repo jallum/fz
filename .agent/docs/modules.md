@@ -78,9 +78,9 @@ executable work: the compiler has stable function-group descriptors and root
 fn/group ownership without having emitted body IR yet. Once a root program is
 resolved, lowering starts from entry `fn/arity` roots and reacts outward from
 the lowered IR itself: if a live body references an unloaded local group, the
-compiler requests that group, rebuilds from cached groups, and continues until
-the root set closes. The compiler emits only the reachable function-groups and
-caches each group's IR in the compiler world.
+compiler requests that group in the same reactive lowering loop and continues
+until the root set closes. The compiler emits only the reachable
+function-groups and caches each group's IR in the compiler world.
 Runtime codegen only needs the modules that become reachable from the checked
 program. Runtime unit discovery now also reacts to already-materialized runtime
 units: the checked root unit seeds exact external runtime exports, each
@@ -90,7 +90,7 @@ discovery when a live protocol module still leaves the provider set dynamic.
 Inside each reachable runtime module, the compiler lowers only the live
 function-groups.
 
-The compiler emits phase telemetry such as:
+The compiler emits state/readiness telemetry such as:
 
 ```text
 fz.compiler.module_discovered

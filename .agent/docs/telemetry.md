@@ -211,7 +211,7 @@ module through the world the way we intended?" before loader/resolver work lands
   `fn_name`.
 - `fz.compiler.fn_group_requested` — a live lowered body referenced a source
   function-group that was not yet present in the executable surface, so the
-  compiler requested it for the next reactive lowering pass. Measurements:
+  compiler requested it in the active reactive lowering loop. Measurements:
   `fn_group_id`, `loaded_functions`.
   Metadata: `module_key`, `owner_module`, `fn_name`.
 - `fz.compiler.fn_group_cache_hit` — a later lowering request reused the cached

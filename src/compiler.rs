@@ -370,7 +370,6 @@ pub(crate) struct ModuleRecord {
     pub(crate) state: ModuleState,
     pub(crate) reachability: Reachability,
     pub(crate) body_surface: Option<ModuleBodySurface>,
-    pub(crate) actual_source_fns: HashMap<FnId, SourceFnKey>,
     pub(crate) lowered_groups: HashMap<SourceFnKey, LoweredFnGroup>,
     pub(crate) runtime_entry_fns: HashSet<(String, usize)>,
     pub(crate) interfaces: Option<BTreeMap<ModuleName, ModuleInterface>>,
@@ -930,44 +929,6 @@ impl CompilerWorld {
         Ok(surface.groups.into_iter().find(|group| group.source == key))
     }
 
-    pub(crate) fn record_actual_fn_groups(
-        &mut self,
-        module_id: ModuleId,
-        bindings: &HashMap<(String, usize), FnId>,
-        tel: &dyn Telemetry,
-    ) -> Result<(), Diagnostic> {
-        let surface = self.ensure_body_surface(module_id, tel)?;
-        let by_key = surface
-            .groups
-            .iter()
-            .map(|group| ((group.qualified_name(), group.source.arity), group.source.clone()))
-            .collect::<HashMap<_, _>>();
-        let actual_source_fns = bindings
-            .iter()
-            .filter_map(|((name, arity), fn_id)| {
-                by_key
-                    .get(&(name.clone(), *arity))
-                    .cloned()
-                    .map(|source_key| (*fn_id, source_key))
-            })
-            .collect::<HashMap<_, _>>();
-        self.modules[module_id.0 as usize].actual_source_fns = actual_source_fns;
-        Ok(())
-    }
-
-    pub(crate) fn source_fn_group_for_actual_fn(
-        &mut self,
-        module_id: ModuleId,
-        fn_id: FnId,
-        tel: &dyn Telemetry,
-    ) -> Result<Option<FnGroupDescriptor>, Diagnostic> {
-        let Some(source_key) = self.modules[module_id.0 as usize].actual_source_fns.get(&fn_id).cloned() else {
-            return Ok(None);
-        };
-        let surface = self.ensure_body_surface(module_id, tel)?;
-        Ok(surface.groups.into_iter().find(|group| group.source == source_key))
-    }
-
     pub(crate) fn lowered_group(&self, module_id: ModuleId, source_key: &SourceFnKey) -> Option<LoweredFnGroup> {
         self.modules[module_id.0 as usize]
             .lowered_groups
@@ -1427,16 +1388,6 @@ impl CompilerWorld {
                         )));
                     }
                 }
-                for (fn_id, source_key) in &module.actual_source_fns {
-                    if !surface.groups.iter().any(|group| group.source == *source_key) {
-                        return Err(CompilerInvariantError::new(format!(
-                            "module `{}` actual fn {:?} maps to unknown source fn `{}`",
-                            module.key.render(),
-                            fn_id,
-                            source_key.qualified_name()
-                        )));
-                    }
-                }
                 let mut seen_function_ids = HashSet::new();
                 for lowered in module.lowered_groups.values() {
                     if lowered.fns.len() != lowered.function_ids.len() {
@@ -1462,7 +1413,11 @@ impl CompilerWorld {
                             descriptor.qualified_name()
                         )));
                     }
-                    if !lowered.fns.iter().any(|fn_ir| fn_ir.name == descriptor.qualified_name()) {
+                    if !lowered
+                        .fns
+                        .iter()
+                        .any(|fn_ir| fn_ir.name == descriptor.qualified_name())
+                    {
                         return Err(CompilerInvariantError::new(format!(
                             "module `{}` lowered group {:?} does not contain root fn `{}`",
                             module.key.render(),
@@ -1529,7 +1484,8 @@ impl CompilerWorld {
                         module.key.render()
                     )));
                 }
-                if module.state.covers(ModuleState::RuntimeLowered) || module.state.covers(ModuleState::RuntimePlanned) {
+                if module.state.covers(ModuleState::RuntimeLowered) || module.state.covers(ModuleState::RuntimePlanned)
+                {
                     return Err(CompilerInvariantError::new(format!(
                         "runtime module `{}` advanced execution state without runtime reachability",
                         module.key.render()
@@ -1644,7 +1600,6 @@ impl CompilerWorld {
             state: ModuleState::Discovered,
             reachability: Reachability::default(),
             body_surface: None,
-            actual_source_fns: HashMap::new(),
             lowered_groups: HashMap::new(),
             runtime_entry_fns: HashSet::new(),
             interfaces: None,

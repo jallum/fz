@@ -285,8 +285,8 @@ fn main(), do: helper(41)
         .collect::<Vec<_>>();
     assert_eq!(
         cache_hits.len(),
-        4,
-        "reactive recompiles should reuse main while helper is discovered, then reuse both groups on repeat compile"
+        2,
+        "reactive recompiles should reuse cached groups on the repeat compile without rebuilding the module mid-flight"
     );
     assert!(
         cache_hits
@@ -298,6 +298,78 @@ fn main(), do: helper(41)
     compiler
         .validate_invariants()
         .expect("fn-group cache should leave compiler world consistent");
+}
+
+#[test]
+fn compiler_without_main_seeds_public_surface_and_discovers_only_live_helpers() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "compiler"], capture.handler());
+
+    let src = "\
+fn api(x), do: helper(x)
+fnp helper(x), do: x + 1
+fnp dead(x), do: x + 2
+";
+
+    let mut compiler = Compiler::new();
+    let mut t = crate::types::new();
+    let out = compile_source_with_compiler_types(
+        compiler.world_mut(),
+        &mut t,
+        src.to_string(),
+        "public-surface.fz".to_string(),
+        &tel,
+    )
+    .unwrap_or_else(|_| panic!("compile should succeed"));
+
+    assert!(out.module.fn_by_name("api").is_some());
+    assert!(
+        out.module.fn_by_name("helper").is_some(),
+        "live helper should lower reactively"
+    );
+    assert!(
+        out.module.fn_by_name("dead").is_none(),
+        "private dead fn should stay cold"
+    );
+
+    let lowered_groups = capture
+        .find(&["fz", "compiler", "fn_group_lowered"])
+        .into_iter()
+        .filter(|ev| captured_str(ev, "module_key").ends_with("public-surface.fz"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lowered_groups.len(),
+        2,
+        "public api root and its live helper should lower"
+    );
+    assert!(
+        lowered_groups
+            .iter()
+            .all(|ev| matches!(captured_str(ev, "fn_name"), "api" | "helper")),
+        "only the public root and its live helper should lower"
+    );
+
+    let requested_groups = capture
+        .find(&["fz", "compiler", "fn_group_requested"])
+        .into_iter()
+        .filter(|ev| captured_str(ev, "module_key").ends_with("public-surface.fz"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        requested_groups.len(),
+        1,
+        "only helper should be requested from the public api root"
+    );
+    assert!(
+        requested_groups
+            .iter()
+            .all(|ev| captured_str(ev, "fn_name") == "helper"),
+        "only the live helper should be requested reactively"
+    );
+
+    compiler
+        .validate_invariants()
+        .expect("public-surface compile should leave compiler world consistent");
 }
 
 fn parse_with_source_map(src: &str, source_name: &str) -> (Program, SourceMap) {
