@@ -67,33 +67,6 @@ fn multi_file_isolation() {
 }
 
 #[test]
-fn intern_dedups_on_name_and_content() {
-    let mut sm = SourceMap::new();
-    let a = sm.intern("t", "abc");
-    let b = sm.intern("t", "abc");
-    assert_eq!(a, b, "same (name, bytes) interns to the same FileId");
-    assert_eq!(sm.file_count(), 1);
-}
-
-#[test]
-fn intern_distinguishes_different_content() {
-    let mut sm = SourceMap::new();
-    let a = sm.intern("t", "abc");
-    let b = sm.intern("t", "abd");
-    assert_ne!(a, b, "same name + different bytes are distinct files");
-    assert_eq!(sm.file_count(), 2);
-}
-
-#[test]
-fn intern_distinguishes_different_name() {
-    let mut sm = SourceMap::new();
-    let a = sm.intern("a", "abc");
-    let b = sm.intern("b", "abc");
-    assert_ne!(a, b, "different name + same bytes are distinct files");
-    assert_eq!(sm.file_count(), 2);
-}
-
-#[test]
 fn line_starts_cached_once() {
     let (sm, f) = sm_with("t", "a\nb\nc");
     // Call locate twice; the second call should hit the cache. We can't

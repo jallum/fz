@@ -1,13 +1,8 @@
 //! Module subsystem facade.
 //!
-//! Keep artifact formats, stores, graph traversal, and runtime-library module
-//! provenance behind this package boundary. Compiler stages should use the
-//! narrow types they need instead of depending on every module implementation
-//! detail directly.
+//! Keep module identity, public contracts, runtime-library source, and the
+//! compiler-owned execution pipeline behind this package boundary.
 
-pub(crate) mod artifact;
-pub(crate) mod artifact_store;
-pub(crate) mod graph;
 pub(crate) mod identity;
 pub(crate) mod interface;
 pub(crate) mod pipeline;

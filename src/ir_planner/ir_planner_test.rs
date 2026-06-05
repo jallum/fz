@@ -10,6 +10,7 @@ use super::type_fn::type_fn;
 use super::*;
 use crate::compiler::Compiler;
 use crate::diag::{Span, codes};
+use crate::frontend::compile_source_with_compiler_types;
 use crate::frontend::resolve::{InterfaceTable, ResolveError, flatten_modules};
 use crate::frontend::spec_registry::SpecRegistry;
 use crate::frontend::{compile_source_with_interface_table, compile_source_with_types};
@@ -20,11 +21,8 @@ use crate::fz_ir::{
 use crate::ir_codegen::compile_planned;
 use crate::ir_dest::{lower_list_destinations, lower_map_destinations, lower_tuple_destinations};
 use crate::ir_lower::lower_program;
-use crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT;
 use crate::modules::identity::ModuleName;
-use crate::modules::pipeline::{
-    CompileMode, ProviderInputs, checked_module_for_mode, compile_source_with_providers, prepare_execution_graph,
-};
+use crate::modules::pipeline::{CompileMode, checked_module_for_mode, prepare_execution_graph};
 use crate::parser::{Parser, lexer::Lexer};
 use crate::specs::{
     CallbackReturnDemand, CallbackReturnFact, CallbackReturnQuery, ResolvedSpec, ResolvedSpecSet, ResolvedTypeShape,
@@ -4627,27 +4625,18 @@ fn declared_return_fact_handles_enum_count_on_range_in_runtime_graph() {
     let mut t = crate::types::new();
     let mut compiler = compiler();
     let tel = NullTelemetry;
-    let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-    let frontend = compile_source_with_providers(
+    let frontend = compile_source_with_compiler_types(
         compiler.world_mut(),
         &mut t,
         src.to_string(),
         "enum_take_drop_split_input.fz".to_string(),
-        &providers,
         &tel,
     )
-    .unwrap_or_else(|err| panic!("frontend result: {err}"));
-    let checked = checked_module_for_mode(&mut t, frontend, &tel, CompileMode::Normal)
+    .unwrap_or_else(|err| panic!("frontend result: {:?}", err.diagnostics));
+    let checked = checked_module_for_mode(&mut t, Ok(frontend), &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let prepared = prepare_execution_graph(
-        compiler.world_mut(),
-        &mut t,
-        checked,
-        &providers,
-        &tel,
-        CompileMode::Normal,
-    )
-    .unwrap_or_else(|err| panic!("execution graph: {err}"));
+    let prepared = prepare_execution_graph(compiler.world_mut(), &mut t, checked, &tel, CompileMode::Normal)
+        .unwrap_or_else(|err| panic!("execution graph: {err}"));
     let module = prepared.module;
 
     let callee = module.fn_by_name("Enum.count").expect("Enum.count").id;
@@ -4678,27 +4667,18 @@ end
     let mut t = crate::types::new();
     let mut compiler = compiler();
     let tel = NullTelemetry;
-    let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-    let frontend = compile_source_with_providers(
+    let frontend = compile_source_with_compiler_types(
         compiler.world_mut(),
         &mut t,
         src.to_string(),
         "mixed_enum_take_input.fz".to_string(),
-        &providers,
         &tel,
     )
-    .unwrap_or_else(|err| panic!("frontend result: {err}"));
-    let checked = checked_module_for_mode(&mut t, frontend, &tel, CompileMode::Normal)
+    .unwrap_or_else(|err| panic!("frontend result: {:?}", err.diagnostics));
+    let checked = checked_module_for_mode(&mut t, Ok(frontend), &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let prepared = prepare_execution_graph(
-        compiler.world_mut(),
-        &mut t,
-        checked,
-        &providers,
-        &tel,
-        CompileMode::Normal,
-    )
-    .unwrap_or_else(|err| panic!("execution graph: {err}"));
+    let prepared = prepare_execution_graph(compiler.world_mut(), &mut t, checked, &tel, CompileMode::Normal)
+        .unwrap_or_else(|err| panic!("execution graph: {err}"));
     let module = prepared.module;
     assert_module_plan_consistent(&module);
     let plan = plan_module(&mut t, &module, &tel);
@@ -4739,27 +4719,18 @@ fn declared_return_fact_handles_enum_reduce_with_runtime_graph_reducer() {
     let mut t = crate::types::new();
     let mut compiler = compiler();
     let tel = NullTelemetry;
-    let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-    let frontend = compile_source_with_providers(
+    let frontend = compile_source_with_compiler_types(
         compiler.world_mut(),
         &mut t,
         src.to_string(),
         "enum_take_drop_split_input.fz".to_string(),
-        &providers,
         &tel,
     )
-    .unwrap_or_else(|err| panic!("frontend result: {err}"));
-    let checked = checked_module_for_mode(&mut t, frontend, &tel, CompileMode::Normal)
+    .unwrap_or_else(|err| panic!("frontend result: {:?}", err.diagnostics));
+    let checked = checked_module_for_mode(&mut t, Ok(frontend), &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let prepared = prepare_execution_graph(
-        compiler.world_mut(),
-        &mut t,
-        checked,
-        &providers,
-        &tel,
-        CompileMode::Normal,
-    )
-    .unwrap_or_else(|err| panic!("execution graph: {err}"));
+    let prepared = prepare_execution_graph(compiler.world_mut(), &mut t, checked, &tel, CompileMode::Normal)
+        .unwrap_or_else(|err| panic!("execution graph: {err}"));
     let module = prepared.module;
     assert_module_plan_consistent(&module);
     let plan = plan_module(&mut t, &module, &tel);
@@ -4805,27 +4776,18 @@ fn declared_return_fact_handles_take_positive_reduce_while_in_runtime_graph() {
     let mut t = crate::types::new();
     let mut compiler = compiler();
     let tel = NullTelemetry;
-    let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-    let frontend = compile_source_with_providers(
+    let frontend = compile_source_with_compiler_types(
         compiler.world_mut(),
         &mut t,
         src.to_string(),
         "enum_take_drop_split_input.fz".to_string(),
-        &providers,
         &tel,
     )
-    .unwrap_or_else(|err| panic!("frontend result: {err}"));
-    let checked = checked_module_for_mode(&mut t, frontend, &tel, CompileMode::Normal)
+    .unwrap_or_else(|err| panic!("frontend result: {:?}", err.diagnostics));
+    let checked = checked_module_for_mode(&mut t, Ok(frontend), &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let prepared = prepare_execution_graph(
-        compiler.world_mut(),
-        &mut t,
-        checked,
-        &providers,
-        &tel,
-        CompileMode::Normal,
-    )
-    .unwrap_or_else(|err| panic!("execution graph: {err}"));
+    let prepared = prepare_execution_graph(compiler.world_mut(), &mut t, checked, &tel, CompileMode::Normal)
+        .unwrap_or_else(|err| panic!("execution graph: {err}"));
     let module = prepared.module;
     assert_module_plan_consistent(&module);
     let plan = plan_module(&mut t, &module, &tel);

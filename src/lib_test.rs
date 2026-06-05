@@ -30,7 +30,6 @@ fn main(), do: User.run()
         src.to_string(),
         "telemetry.fz".to_string(),
         CompileMode::Lto,
-        &ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new()),
     );
 
     assert!(capture.contains(&["fz", "module", "interfaces_collected"]));
@@ -53,7 +52,6 @@ fn compile_pipeline_runs_spawn_with_captures_through_single_plan_path() {
         include_str!("../fixtures/spawn_with_captures/input.fz").to_string(),
         "fixtures/spawn_with_captures/input.fz".to_string(),
         CompileMode::Normal,
-        &ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new()),
     );
     let main_fn = compiled.main_fn.expect("main fn");
     let mut rt = Runtime::new(compiled.image.compiled_module(), 1)

@@ -243,7 +243,7 @@ Protocol facts extend existing compiler ownership rather than a parallel subsyst
   module interface under its fully qualified name. Callback specs travel as ordered
   overload sets (`InterfaceProtocolCallback.specs`), preserving input/result
   correlation through artifacts and compatibility checking.
-- `ModuleGraphLoader` traverses module imports and runtime implementation providers,
+- the compiler traverses module imports and runtime reachability from source,
   not protocol callback namespaces. A `defimpl` callback path such as
   `Enumerable.List.reduce/3` is an export namespace inside the defining artifact;
   treating it as an artifact root would create false `Protocol/Target.fzi`

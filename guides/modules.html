@@ -218,112 +218,61 @@ exist to catch that before code starts depending on an inferred body.
 <!-- ─────────────────────────────── 7. ARTIFACTS ─────────────────────────────── -->
 <h2 id="artifacts">7. Compiled artifacts - <code>.fzi</code> and <code>.fzo</code></h2>
 
-<p>Separate compilation needs two files with different jobs:</p>
+<p>Separate compilation is now source-backed. The compiler owns module
+discovery, source loading, parse caches, public interfaces, macro surfaces, and
+runtime reachability. There is no separate <code>.fzi</code> or
+<code>.fzo</code> path in normal operation.</p>
+
+<p>The split that matters is conceptual rather than file-based:</p>
 
 <table class="data">
-<thead><tr><th>Artifact</th><th>What it stores</th><th>Who needs it</th></tr></thead>
+<thead><tr><th>Layer</th><th>What it stores</th><th>Who needs it</th></tr></thead>
 <tbody>
-<tr><td class="cls"><code>.fzi</code></td><td class="shape">the public module interface and its fingerprint</td><td>dependent modules resolving imports</td></tr>
-<tr><td class="cls"><code>.fzo</code></td><td class="shape">the implementation unit envelope and link facts</td><td>the graph loader building a runnable image</td></tr>
+<tr><td class="cls"><code>ModuleInterface</code></td><td class="shape">public imports, exports, specs, protocol facts, and docs</td><td>import resolution and strict interface validation</td></tr>
+<tr><td class="cls">linked runtime graph</td><td class="shape">root module plus only the reachable runtime modules</td><td>planning, codegen, execution, and dumps</td></tr>
 </tbody>
 </table>
 
-<p>The names are intentionally close to familiar compiler terms:
-<code>.fzi</code> is the interface, <code>.fzo</code> is the object-shaped
-implementation unit.</p>
+<p><code>dump --emit interfaces</code> still shows the public contract that
+other modules may depend on. <code>dump --emit specs</code>,
+<code>bodies</code>, and <code>outcomes</code> still show compiler-internal
+planner state for this run.</p>
 
-<div class="box yellow">
-<strong>Current implementation note:</strong> today's <code>.fzo</code> is a
-deterministic source-unit envelope for normal user code. It records identity,
-required imports, fingerprints, and a typed implementation payload. For normal compiled source that payload is a materializable IR
-unit (<code>fz-ir-unit-v1</code>), so graph loading can recover the provider
-implementation input from the artifact without reading the original provider
-source path. Built-in runtime modules are no longer represented as
-<code>.fzo</code> payloads; the compiler loads their embedded source on demand.
-Final object bytes or a richer relocatable format can replace the surviving
-payload formats later without changing what an interface means.
-</div>
-
-<p>The dump commands are separate on purpose. <code>dump --emit interfaces</code>
-shows the public contract that other modules may depend on.
-<code>dump --emit specs</code> shows the compiler's internal planner
-specializations for this run. The interface view replaces using specs as a
-proxy for public module shape; it does not replace the planner dump. Contract
-tests should prefer interface output or <code>.fzi</code> artifacts. Tests for
-provider loading should exercise <code>.fzo</code> artifacts. Raw IR and specs
-remain useful for compiler-internal behavior.</p>
-
-<p>Artifact paths are deterministic. By default, fz uses
-<code>build/fz</code> as the artifact root:</p>
-
-<pre>Utf8        -&gt; build/fz/interfaces/Utf8.fzi
-Utf8        -&gt; build/fz/objects/Utf8.fzo
-Outer.Inner -&gt; build/fz/interfaces/Outer/Inner.fzi
-Outer.Inner -&gt; build/fz/objects/Outer/Inner.fzo</pre>
-
-<p>The path policy is built from parsed module-name segments, not by splitting
-display text. Segments that look like path traversal, separators, spaces, or
-punctuation are rejected before artifact IO can use them.</p>
-
-<p>A build can write interface and object artifacts:</p>
-
-<pre>fz build --emit-fzi --emit-fzo --artifact-root build/fz path/to/input.fz -o path/to/app</pre>
-
-<p>Writing <code>.fzi</code> artifacts uses strict public interface validation:
-public module exports need explicit specs before the contract is stored.
-Writing <code>.fzo</code> artifacts uses the checked module's pre-link unit
-facts. That means a module can emit its own <code>.fzo</code> even when it
-imports provider artifacts that will be linked later.</p>
-
-<p>Run, build, and frontend-only dump commands can load provider artifacts
-without the provider source file:</p>
-
-<pre>fz dump --emit interfaces --interface Math --artifact-root build/fz consumer.fz
-fz run --interface Math --artifact-root build/fz consumer.fz
-fz build --interface Math --artifact-root build/fz consumer.fz -o consumer</pre>
-
-<p>The interface validates imports from the stored contract. Runnable images
-also load reachable <code>.fzo</code> providers, materialize their source-unit
-payloads, and link every imported export exactly once.</p>
-
-<p>The REPL is different. Interactive <code>fz repl</code> uses definitions
-from the current session plus built-in runtime-library interfaces.
-<code>fz repl --script</code> has one whole-file root source, so it can
-materialize reachable built-in runtime modules. Neither mode accepts provider
-artifacts from <code>--interface</code> / <code>--artifact-root</code>. Use
-<code>fz run</code> or <code>fz build</code> for user artifact-backed module
-programs.</p>
-
-<p>Normal compilation follows this shape:</p>
+<p>Normal compilation now follows this shape:</p>
 
 <pre>source module
-  -&gt; interface facts
-  -&gt; .fzi contract
-  -&gt; compiled unit
-  -&gt; .fzo unit envelope
+  -&gt; parse once
+  -&gt; collect interface facts
+  -&gt; collect macro surface if needed
 
-dependent module
-  -&gt; resolve imports from .fzi
-  -&gt; compile without reading dependency bodies
+imports
+  -&gt; ask Compiler for source-backed interfaces
+  -&gt; never load a parallel artifact format
+
+runtime
+  -&gt; discover reachable runtime modules
+  -&gt; parse/lower/plan only the ones that are live
 
 link
-  -&gt; load compatible .fzo providers
-  -&gt; resolve every imported export exactly once
-  -&gt; merge runtime metadata
+  -&gt; fuse the root module with those reachable runtime units
   -&gt; produce one runnable image</pre>
+
+<p>The REPL follows the same rule. Interactive <code>fz repl</code> compiles
+against the session's source world plus built-in runtime modules loaded from
+source. <code>fz repl --script</code> uses the same compiler-owned execution
+graph as <code>run</code> and <code>build</code>.</p>
 
 <p>The linker checks the boring but important things:</p>
 
 <ul>
-  <li>every required import has a provider;</li>
-  <li>no export has two providers;</li>
-  <li>the compiled unit still matches the interface fingerprint it claims;</li>
+  <li>every imported export resolves to exactly one linked implementation;</li>
+  <li>no export has two providers in the linked graph;</li>
   <li>runtime-global tables such as atoms, schemas, static closures, and entrypoints can be merged deterministically.</li>
 </ul>
 
 <p>If any of that fails, the build should report a compiler error with the
-module/import context. It should not quietly fall back to source-loading the
-world.</p>
+module/import context. It should not quietly widen the reachable set or parse
+unrelated runtime modules.</p>
 
 <!-- ─────────────────────────────── 8. RUNTIME ─────────────────────────────── -->
 <h2 id="runtime">8. Runtime library modules</h2>

@@ -5,22 +5,17 @@ use crate::diag::codes::{CODEGEN_SCHEMA_MISSING, LOWER_UNBOUND};
 use crate::diag::diagnostic::Severity;
 use crate::diag::{Diagnostic, Diagnostics, SourceMap, Span, emit_through};
 use crate::frontend::resolve::InterfaceTable;
-use crate::frontend::{
-    FrontendOk, FrontendResult, compile_source_with_compiler_interface_table, compile_source_with_compiler_types,
-};
+use crate::frontend::{FrontendOk, FrontendResult, compile_program_with_compiler_interface_table};
 use crate::fz_ir::Module;
 use crate::ir_codegen::{CompiledUnit, ImageLinkError, link_ir_units};
 use crate::ir_planner::{ModulePlan, plan_module};
 use crate::metadata;
-use crate::modules::artifact::{FZO_PAYLOAD_IR_UNIT_V1, FzoArtifact, IrUnitPayload};
-use crate::modules::artifact_store::{ArtifactStore, ArtifactStoreError};
-use crate::modules::graph::ModuleGraphLoader;
 use crate::modules::identity::ModuleName;
 use crate::modules::interface::{ModuleInterface, validate_public_export_specs};
 use crate::modules::runtime_library;
 use crate::telemetry::{Telemetry, next_compile_nonce};
 use crate::types::DefaultTypes;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -33,22 +28,6 @@ pub(crate) enum CompileMode {
 impl CompileMode {
     pub(crate) fn is_lto(self) -> bool {
         matches!(self, Self::Lto)
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ProviderInputs {
-    pub(crate) artifact_root: String,
-    pub(crate) modules: Vec<ModuleName>,
-}
-
-impl ProviderInputs {
-    pub(crate) fn new(artifact_root: String, modules: Vec<ModuleName>) -> Self {
-        Self { artifact_root, modules }
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.modules.is_empty()
     }
 }
 
@@ -100,10 +79,7 @@ pub(crate) enum PipelineError {
     FrontendDiagnostics,
     LtoInterfaceSpecs,
     LtoRewriteFailed,
-    ArtifactPayload,
-    Artifact(ArtifactStoreError),
     Link(ImageLinkError),
-    MissingFzoModule,
 }
 
 impl Display for PipelineError {
@@ -113,10 +89,7 @@ impl Display for PipelineError {
             Self::FrontendDiagnostics => f.write_str("frontend reported errors"),
             Self::LtoInterfaceSpecs => f.write_str("LTO interface validation failed"),
             Self::LtoRewriteFailed => f.write_str("LTO rewrite failed"),
-            Self::ArtifactPayload => f.write_str("artifact payload is not materializable"),
-            Self::Artifact(err) => write!(f, "{err}"),
             Self::Link(err) => write!(f, "{err}"),
-            Self::MissingFzoModule => f.write_str("fzo artifact has no module identity"),
         }
     }
 }
@@ -126,48 +99,9 @@ impl Error for PipelineError {}
 impl PipelineError {
     pub(crate) fn diagnostics_emitted(&self) -> bool {
         match self {
-            Self::FrontendFailed
-            | Self::FrontendDiagnostics
-            | Self::LtoInterfaceSpecs
-            | Self::LtoRewriteFailed
-            | Self::ArtifactPayload => true,
-            Self::Artifact(err) => err.diagnostics_emitted(),
-            Self::Link(_) | Self::MissingFzoModule => false,
+            Self::FrontendFailed | Self::FrontendDiagnostics | Self::LtoInterfaceSpecs | Self::LtoRewriteFailed => true,
+            Self::Link(_) => false,
         }
-    }
-}
-
-pub(crate) fn load_interface_table(
-    artifact_root: &str,
-    modules: &[ModuleName],
-    tel: &dyn Telemetry,
-) -> Result<InterfaceTable, PipelineError> {
-    let store = ArtifactStore::new(artifact_root);
-    store
-        .load_interface_table(tel, modules)
-        .map_err(PipelineError::Artifact)
-}
-
-pub(crate) fn compile_source_with_providers(
-    compiler: &mut CompilerWorld,
-    t: &mut DefaultTypes,
-    src: String,
-    source_name: String,
-    providers: &ProviderInputs,
-    tel: &dyn Telemetry,
-) -> Result<FrontendResult, PipelineError> {
-    if providers.is_empty() {
-        Ok(compile_source_with_compiler_types(compiler, t, src, source_name, tel))
-    } else {
-        let interfaces = load_interface_table(&providers.artifact_root, &providers.modules, tel)?;
-        Ok(compile_source_with_compiler_interface_table(
-            compiler,
-            t,
-            src,
-            source_name,
-            interfaces,
-            tel,
-        ))
     }
 }
 
@@ -221,13 +155,12 @@ pub(crate) fn prepare_execution_graph(
     compiler: &mut CompilerWorld,
     t: &mut DefaultTypes,
     mut prepared: CheckedModule,
-    providers: &ProviderInputs,
     tel: &dyn Telemetry,
     mode: CompileMode,
 ) -> Result<PreparedExecutionGraph, PipelineError> {
     use crate::telemetry::TelemetryExt as _;
 
-    let linked = link_execution_module(compiler, t, &mut prepared, providers, tel)?;
+    let linked = link_execution_module(compiler, t, &mut prepared, tel)?;
     let LinkedExecutionModule { units, module } = linked;
     let _compile_span = tel.span(
         &["fz", "compile"],
@@ -274,10 +207,9 @@ pub(crate) fn link_execution_module(
     compiler: &mut CompilerWorld,
     t: &mut DefaultTypes,
     prepared: &mut CheckedModule,
-    providers: &ProviderInputs,
     tel: &dyn Telemetry,
 ) -> Result<LinkedExecutionModule, PipelineError> {
-    let units = load_provider_units(compiler, t, prepared, providers, tel)?;
+    let units = load_execution_units(compiler, t, prepared, tel)?;
     let module = if units.len() > 1 {
         link_ir_units(&units).map_err(PipelineError::Link)?
     } else {
@@ -313,14 +245,12 @@ fn has_errors(diagnostics: &Diagnostics) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn load_provider_units(
+fn load_execution_units(
     compiler: &mut CompilerWorld,
     t: &mut DefaultTypes,
     prepared: &mut CheckedModule,
-    providers: &ProviderInputs,
     tel: &dyn Telemetry,
 ) -> Result<Vec<CompiledUnit>, PipelineError> {
-    let store = ArtifactStore::new(&providers.artifact_root);
     let runtime_seed_modules = prepared
         .external_interfaces
         .keys()
@@ -347,12 +277,8 @@ fn load_provider_units(
             emit_through(tel, None, &[diagnostic]);
             PipelineError::FrontendFailed
         })?;
-    let graph = ModuleGraphLoader::new(store)
-        .load_reachable(compiler, tel, &prepared.interfaces, &providers.modules)
-        .map_err(PipelineError::Artifact)?;
     let mut interfaces = prepared.interfaces.clone();
     interfaces.extend(prepared.external_interfaces.clone());
-    interfaces.extend(graph.interfaces.clone());
     for module_id in &runtime_modules {
         let ModuleKey::Named(module) = compiler.module(*module_id).key.clone() else {
             continue;
@@ -364,104 +290,19 @@ fn load_provider_units(
         }
     }
     tel.event(
-        &["fz", "module", "graph_loaded"],
+        &["fz", "module", "execution_units_prepared"],
         metadata! {
             interfaces: interfaces.len() as i64,
-            objects: (graph.objects.len() + runtime_modules.len()) as i64,
+            runtime_units: runtime_modules.len() as i64,
+            total_units: (runtime_modules.len() + 1) as i64,
         },
     );
 
     let mut units = vec![prepared.compiled_unit_input()];
-    for object in graph.objects {
-        let module = object.module.clone().ok_or(PipelineError::MissingFzoModule)?;
-        let interface = interfaces.get(&module).cloned();
-        if object.unit_payload.format == FZO_PAYLOAD_IR_UNIT_V1 {
-            units.push(materialize_ir_unit(
-                t,
-                object,
-                &module,
-                interface,
-                &mut prepared.sm,
-                tel,
-            )?);
-        } else {
-            let source = object
-                .source_unit_text(tel)
-                .map_err(|_err| PipelineError::ArtifactPayload)?;
-            let frontend = run_frontend(
-                compile_source_with_compiler_interface_table(
-                    compiler,
-                    t,
-                    source.to_string(),
-                    format!("artifact:{module}"),
-                    graph.interfaces.clone(),
-                    tel,
-                ),
-                tel,
-            )?;
-            tel.event(
-                &["fz", "module", "unit_materialized"],
-                metadata! { kind: "source", module: module.dotted() },
-            );
-            units.push(CompiledUnit::from_ir_module_with_plan(
-                frontend.module,
-                Some(frontend.module_plan),
-                interface,
-                Diagnostics::new(),
-            ));
-        }
-    }
     for module_id in runtime_modules {
         units.push(materialize_runtime_unit(compiler, t, module_id, &interfaces, tel)?);
     }
     Ok(units)
-}
-
-/// Materialize a provider from a STRUCTURAL `.fzo` (`FZO_PAYLOAD_IR_UNIT_V1`)
-/// WITHOUT recompiling from source: decode the serde `Module` plus its source
-/// files, merge those files into the consumer `SourceMap` (so provider spans
-/// render real diagnostics), remap the module's `FileId`s onto the interned
-/// consumer ids, rebuild the derived indices the serde form drops, and plan the
-/// loaded unit (the plan regenerates the protocol provider-boundary facts that
-/// link depends on).
-fn materialize_ir_unit(
-    t: &mut DefaultTypes,
-    object: FzoArtifact,
-    module_name: &ModuleName,
-    interface: Option<ModuleInterface>,
-    sm: &mut SourceMap,
-    tel: &dyn Telemetry,
-) -> Result<CompiledUnit, PipelineError> {
-    use crate::telemetry::TelemetryExt as _;
-
-    let IrUnitPayload { mut module, sources } = object
-        .ir_unit_payload()
-        .map_err(|_err| PipelineError::ArtifactPayload)?;
-    let mut remap = HashMap::new();
-    for p in &sources {
-        let cid = sm.intern(p.name.clone(), p.bytes.clone());
-        remap.insert(p.file, cid);
-    }
-    module.remap_file_ids(&remap);
-    module.rebuild_indices();
-    let _compile_span = tel.span(
-        &["fz", "compile"],
-        metadata! {
-            compile_nonce: next_compile_nonce(),
-            module_path: module.module_path().to_owned(),
-        },
-    );
-    let module_plan = plan_module(t, &module, tel);
-    tel.event(
-        &["fz", "module", "unit_materialized"],
-        metadata! { kind: "ir-unit", module: module_name.dotted() },
-    );
-    Ok(CompiledUnit::from_ir_module_with_plan(
-        module,
-        Some(module_plan),
-        interface,
-        Diagnostics::new(),
-    ))
 }
 
 fn materialize_runtime_unit(
@@ -472,7 +313,7 @@ fn materialize_runtime_unit(
     tel: &dyn Telemetry,
 ) -> Result<CompiledUnit, PipelineError> {
     let ModuleKey::Named(module_name) = compiler.module(module_id).key.clone() else {
-        return Err(PipelineError::MissingFzoModule);
+        panic!("runtime reachability must only produce named runtime modules");
     };
     let parsed = compiler.ensure_prelude(module_id, tel).map_err(|diagnostic| {
         emit_through(tel, None, &[diagnostic]);
@@ -483,15 +324,7 @@ fn materialize_runtime_unit(
         ..crate::ast::Program::default()
     };
     let frontend = run_frontend(
-        crate::frontend::compile_program_with_compiler_interface_table(
-            compiler,
-            None,
-            t,
-            program,
-            parsed.sm,
-            interfaces.clone(),
-            tel,
-        ),
+        compile_program_with_compiler_interface_table(compiler, None, t, program, parsed.sm, interfaces.clone(), tel),
         tel,
     )?;
     let _ = compiler.note_runtime_lowered(module_id, frontend.module.fns.len(), tel);
