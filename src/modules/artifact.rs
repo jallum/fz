@@ -123,6 +123,7 @@ impl FzoUnitPayload {
         Self::new(FZO_PAYLOAD_SOURCE_UNIT_V1, body)
     }
 
+    #[cfg(test)]
     pub fn runtime_module(body: impl Into<String>) -> Self {
         Self::new(FZO_PAYLOAD_RUNTIME_MODULE_V1, body)
     }

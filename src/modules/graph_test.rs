@@ -163,69 +163,22 @@ fn graph_loader_rejects_fzo_interface_fingerprint_mismatch() {
 }
 
 #[test]
-fn graph_loader_uses_runtime_interfaces_without_user_artifacts() {
+fn graph_loader_skips_runtime_modules_after_runtime_reachability_moved_to_compiler() {
     let store =
-        ArtifactStore::new(std::env::temp_dir().join(format!("fz-module-graph-{}-runtime", std::process::id())));
+        ArtifactStore::new(std::env::temp_dir().join(format!("fz-module-graph-{}-runtime-skip", std::process::id())));
     let app = interface("App", vec!["Utf8"], vec![("main", 0)]);
     let mut roots = InterfaceTable::new();
-    roots.insert(app.name.clone(), app);
+    roots.insert(app.name.clone(), app.clone());
     let mut compiler = compiler();
 
     let graph = ModuleGraphLoader::new(store)
         .load_reachable(compiler.world_mut(), &NullTelemetry, &roots, [])
         .expect("load graph");
 
-    assert!(graph.interfaces.contains_key(&module("Utf8")));
-    assert_eq!(graph.objects.len(), 1);
-    assert_eq!(graph.objects[0].module, Some(module("Utf8")));
-    assert_eq!(graph.objects[0].unit_payload.format, "fz-runtime-module-v1");
+    assert!(graph.interfaces.contains_key(&app.name));
+    assert!(!graph.interfaces.contains_key(&module("Utf8")));
     assert!(
-        graph.objects[0]
-            .source_unit_text(&NullTelemetry)
-            .expect("runtime fzo source")
-            .contains("defmodule Utf8")
+        graph.objects.is_empty(),
+        "runtime modules are no longer materialized by the provider graph loader"
     );
-}
-
-#[test]
-fn graph_loader_follows_runtime_implementation_dependencies() {
-    let store = ArtifactStore::new(
-        std::env::temp_dir().join(format!("fz-module-graph-{}-runtime-impl-deps", std::process::id())),
-    );
-    let app = interface("App", vec!["Enum"], vec![("main", 0)]);
-    let mut roots = InterfaceTable::new();
-    roots.insert(app.name.clone(), app);
-    let mut compiler = compiler();
-
-    let graph = ModuleGraphLoader::new(store)
-        .load_reachable(compiler.world_mut(), &NullTelemetry, &roots, [])
-        .expect("load graph");
-
-    assert!(graph.interfaces.contains_key(&module("Enum")));
-    assert!(graph.interfaces.contains_key(&module("Enumerable")));
-    assert!(graph.interfaces.contains_key(&module("List")));
-    assert!(graph.interfaces.contains_key(&module("Range")));
-    assert!(graph.interfaces.contains_key(&module("Map")));
-}
-
-#[test]
-fn graph_loader_follows_protocol_impl_protocol_dependency() {
-    let store = ArtifactStore::new(
-        std::env::temp_dir().join(format!("fz-module-graph-{}-protocol-impl-protocol", std::process::id())),
-    );
-    let mut app = interface("App", Vec::new(), vec![("main", 0)]);
-    app.protocol_impls.push(InterfaceProtocolImpl {
-        protocol: module("Enumerable"),
-        target: ImplTarget::module(module("Range")),
-        callbacks: Vec::new(),
-    });
-    let mut roots = InterfaceTable::new();
-    roots.insert(app.name.clone(), app);
-    let mut compiler = compiler();
-
-    let graph = ModuleGraphLoader::new(store)
-        .load_reachable(compiler.world_mut(), &NullTelemetry, &roots, [])
-        .expect("load graph");
-
-    assert!(graph.interfaces.contains_key(&module("Enumerable")));
 }

@@ -9,20 +9,27 @@
 //! This module exposes the second layer as deterministic `.fzi`/`.fzo`
 //! artifact envelopes so resolver and linker work can depend on the same
 //! facts a user library would provide.
-use crate::ast::{Attribute, Expr, Item, ModuleDef, Program, ProtocolDef, Spanned, WithBinding};
+use crate::ast::{Attribute, Expr, Item, Program, Spanned, WithBinding};
+#[cfg(test)]
+use crate::ast::{ModuleDef, ProtocolDef};
 use crate::compiler::CompilerWorld;
 use crate::diag::Diagnostic;
 #[cfg(test)]
 use crate::frontend::compile_source_with_interface_table;
 #[cfg(test)]
 use crate::frontend::resolve::InterfaceTable;
+#[cfg(test)]
 use crate::modules::artifact::{
     FZ_ARTIFACT_ABI_VERSION, FZ_RUNTIME_ARTIFACT_ABI_VERSION, FziArtifact, FzoArtifact, FzoUnitPayload, payload_digest,
 };
 #[cfg(test)]
 use crate::modules::artifact_store::ArtifactStore;
-use crate::modules::identity::{ExportKey, ModuleName};
-use crate::modules::interface::{ModuleInterface, collect_from_program, fingerprint_digest};
+#[cfg(test)]
+use crate::modules::identity::ExportKey;
+use crate::modules::identity::ModuleName;
+use crate::modules::interface::ModuleInterface;
+#[cfg(test)]
+use crate::modules::interface::{collect_from_program, fingerprint_digest};
 use crate::telemetry::Telemetry;
 #[cfg(test)]
 use crate::telemetry::{Capture, ConfiguredTelemetry, NullTelemetry};
@@ -95,6 +102,7 @@ pub(crate) const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
     },
 ];
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeLibraryModuleArtifact {
     pub module: ModuleName,
@@ -159,6 +167,7 @@ pub fn prelude_required_modules(compiler: &mut CompilerWorld, tel: &dyn Telemetr
         .collect()
 }
 
+#[cfg(test)]
 pub fn parsed_program(compiler: &mut CompilerWorld, tel: &dyn Telemetry) -> Result<Program, Diagnostic> {
     let mut items = Vec::new();
     for module_source in RUNTIME_MODULE_SOURCES {
@@ -188,6 +197,7 @@ pub fn interface_table(compiler: &mut CompilerWorld, tel: &dyn Telemetry) -> Int
     interfaces(compiler, tel)
 }
 
+#[cfg(test)]
 pub fn interfaces(compiler: &mut CompilerWorld, tel: &dyn Telemetry) -> BTreeMap<ModuleName, ModuleInterface> {
     RUNTIME_MODULE_SOURCES
         .iter()
@@ -223,6 +233,7 @@ pub fn implementation_dependencies(
     Ok(deps.into_iter().collect())
 }
 
+#[cfg(test)]
 pub fn artifact(
     compiler: &mut CompilerWorld,
     module: &ModuleName,
@@ -233,6 +244,7 @@ pub fn artifact(
         .find(|artifact| artifact.module == *module))
 }
 
+#[cfg(test)]
 pub fn artifacts(
     compiler: &mut CompilerWorld,
     tel: &dyn Telemetry,
@@ -439,6 +451,7 @@ fn is_upper(s: &str) -> bool {
     s.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
 }
 
+#[cfg(test)]
 fn collect_protocol_artifact(
     protocol: &ProtocolDef,
     interfaces: &BTreeMap<ModuleName, ModuleInterface>,
@@ -461,6 +474,7 @@ fn collect_protocol_artifact(
     }
 }
 
+#[cfg(test)]
 fn collect_artifacts_recursive(
     module: &ModuleDef,
     parent: Option<&ModuleName>,
@@ -489,10 +503,12 @@ fn collect_artifacts_recursive(
     }
 }
 
+#[cfg(test)]
 fn runtime_module_fzo(module: &ModuleDef, name: &ModuleName, interface: &ModuleInterface) -> FzoArtifact {
     runtime_unit_fzo(name, interface, runtime_implementation_fingerprint(name, module))
 }
 
+#[cfg(test)]
 fn runtime_unit_fzo(
     name: &ModuleName,
     interface: &ModuleInterface,
@@ -515,6 +531,7 @@ fn runtime_unit_fzo(
     }
 }
 
+#[cfg(test)]
 fn interface_imports(interface: &ModuleInterface) -> Vec<ExportKey> {
     interface
         .imports
@@ -529,6 +546,7 @@ fn interface_imports(interface: &ModuleInterface) -> Vec<ExportKey> {
         .collect()
 }
 
+#[cfg(test)]
 fn runtime_implementation_fingerprint(name: &ModuleName, module: &ModuleDef) -> Vec<String> {
     let mut out = vec!["kind=runtime-library-module".to_string(), format!("module={}", name)];
     for item in &module.items {
@@ -541,6 +559,7 @@ fn runtime_implementation_fingerprint(name: &ModuleName, module: &ModuleDef) -> 
     out
 }
 
+#[cfg(test)]
 fn runtime_module_source(name: &ModuleName) -> Option<&'static str> {
     RUNTIME_MODULE_SOURCES
         .iter()

@@ -33,6 +33,13 @@ fn measurement_u64(ev: &crate::telemetry::capture::OwnedEvent, key: &str) -> u64
     }
 }
 
+fn captured_str<'a>(ev: &'a crate::telemetry::capture::OwnedEvent, key: &str) -> &'a str {
+    match ev.metadata.get(key) {
+        Some(Value::Str(value)) => value.as_ref(),
+        other => panic!("expected string metadata `{key}`, got {other:?}"),
+    }
+}
+
 #[test]
 fn compiler_phase_cache_hits_skip_repeat_work_and_emit_timing_telemetry() {
     let tel = ConfiguredTelemetry::new();
@@ -302,4 +309,79 @@ end
     compiler
         .validate_invariants()
         .expect("macro export registration should preserve compiler invariants");
+}
+
+#[test]
+fn runtime_reachability_marks_only_live_runtime_modules_with_reasons() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "compiler"], capture.handler());
+
+    let mut compiler = Compiler::new();
+    let app = ModuleName::parse_dotted("App").expect("valid module");
+    let utf8 = ModuleName::parse_dotted("Utf8").expect("valid module");
+    let process = ModuleName::parse_dotted("Process").expect("valid module");
+    let mut roots = BTreeMap::new();
+    roots.insert(
+        app.clone(),
+        ModuleInterface {
+            name: app,
+            abi_version: crate::modules::interface::FZ_INTERFACE_ABI_VERSION,
+            imports: vec![crate::modules::interface::InterfaceImport {
+                module: utf8.clone(),
+                only: Vec::new(),
+                except: Vec::new(),
+            }],
+            exports: Vec::new(),
+            types: Vec::new(),
+            protocols: Vec::new(),
+            protocol_impls: Vec::new(),
+            docs: None,
+            fingerprint_inputs: Vec::new(),
+        },
+    );
+
+    let reachable = compiler
+        .discover_runtime_reachable_modules(
+            &roots,
+            [RuntimeReachabilitySeed::new(
+                utf8.clone(),
+                "program_runtime_reference",
+                None,
+            )],
+            &tel,
+        )
+        .expect("runtime reachability should succeed");
+
+    let reachable_names = reachable
+        .iter()
+        .map(|id| compiler.module(*id).key.render())
+        .collect::<Vec<_>>();
+    assert!(reachable_names.contains(&"Utf8".to_string()));
+    assert!(!reachable_names.contains(&"Process".to_string()));
+
+    let utf8_id = compiler
+        .module_id_for_name(&utf8)
+        .expect("Utf8 module record should exist");
+    assert!(compiler.module(utf8_id).reachability.runtime);
+    assert_eq!(compiler.module(utf8_id).state, ModuleState::InterfaceReady);
+    assert!(
+        compiler.module_id_for_name(&process).is_none(),
+        "dead runtime module should stay undiscovered"
+    );
+
+    let reasons = capture
+        .find(&["fz", "compiler", "runtime_module_reachable"])
+        .into_iter()
+        .filter(|ev| captured_str(ev, "module_key") == "Utf8")
+        .map(|ev| captured_str(&ev, "reason").to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        reasons.contains(&"program_import".to_string()) || reasons.contains(&"program_runtime_reference".to_string()),
+        "Utf8 should become reachable from the program, reasons: {reasons:?}"
+    );
+
+    compiler
+        .validate_invariants()
+        .expect("runtime reachability should preserve compiler invariants");
 }

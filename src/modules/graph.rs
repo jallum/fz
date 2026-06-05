@@ -1,7 +1,8 @@
-//! Reachable module artifact loading.
+//! Reachable user-provider artifact loading.
 //!
-//! The graph loader owns the policy for moving from root interfaces to the
-//! provider `.fzi`/`.fzo` artifacts actually needed to link a runnable image.
+//! Runtime-library reachability is compiler-owned (`fz-hua.5`). This loader now
+//! only discovers user provider `.fzi` / `.fzo` artifacts that are actually
+//! needed for execution.
 
 use crate::compiler::CompilerWorld;
 use crate::frontend::resolve::InterfaceTable;
@@ -9,7 +10,6 @@ use crate::modules::artifact::FzoArtifact;
 use crate::modules::artifact_store::{ArtifactStore, ArtifactStoreError};
 use crate::modules::identity::ModuleName;
 use crate::modules::interface::ModuleInterface;
-use crate::modules::runtime_library;
 use crate::telemetry::Telemetry;
 use std::collections::{BTreeSet, VecDeque};
 
@@ -38,7 +38,6 @@ impl ModuleGraphLoader {
     ) -> Result<ModuleGraph, ArtifactStoreError> {
         let mut queue = VecDeque::new();
         let mut user_modules = BTreeSet::new();
-        let mut runtime_modules = BTreeSet::new();
         let mut interfaces = root_interfaces.clone();
 
         for interface in root_interfaces.values() {
@@ -53,15 +52,12 @@ impl ModuleGraphLoader {
             if interfaces.contains_key(&module) {
                 continue;
             }
-            if let Some(interface) =
-                runtime_library::interface(compiler, &module, tel).expect("runtime interface lookup must succeed")
+            if let Some(existing) = compiler.module_id_for_name(&module)
+                && compiler.module(existing).origin != crate::compiler::ModuleOrigin::EmbeddedRuntime
             {
-                interfaces.insert(module, interface.clone());
-                enqueue_imports(&mut queue, &interface);
-                enqueue_protocol_impl_protocols(&mut queue, &interface);
-                enqueue_runtime_implementation_imports(compiler, tel, &mut queue, &interface);
-                enqueue_runtime_protocol_impls(compiler, tel, &mut queue, &interfaces, &interface);
-                runtime_modules.insert(interface.name.clone());
+                continue;
+            }
+            if compiler.discover_runtime_module(&module, tel).is_some() {
                 continue;
             }
 
@@ -74,14 +70,6 @@ impl ModuleGraphLoader {
         }
 
         let mut objects = Vec::new();
-        for module in runtime_modules {
-            let Some(artifact) =
-                runtime_library::artifact(compiler, &module, tel).expect("runtime artifact build must succeed")
-            else {
-                continue;
-            };
-            objects.push(artifact.fzo);
-        }
         for module in user_modules {
             let expected = interfaces
                 .get(&module)
@@ -108,48 +96,6 @@ fn enqueue_protocol_impl_protocols(queue: &mut VecDeque<ModuleName>, interface: 
     for protocol_impl in &interface.protocol_impls {
         if !local_protocols.contains(&protocol_impl.protocol) {
             queue.push_back(protocol_impl.protocol.clone());
-        }
-    }
-}
-
-fn enqueue_runtime_implementation_imports(
-    compiler: &mut CompilerWorld,
-    tel: &dyn Telemetry,
-    queue: &mut VecDeque<ModuleName>,
-    interface: &ModuleInterface,
-) {
-    for module in runtime_library::implementation_dependencies(compiler, &interface.name, tel)
-        .expect("runtime implementation dependency scan must succeed")
-    {
-        queue.push_back(module);
-    }
-}
-
-fn enqueue_runtime_protocol_impls(
-    compiler: &mut CompilerWorld,
-    tel: &dyn Telemetry,
-    queue: &mut VecDeque<ModuleName>,
-    loaded: &InterfaceTable,
-    interface: &ModuleInterface,
-) {
-    if interface.protocols.is_empty() {
-        return;
-    }
-    let protocols = interface
-        .protocols
-        .iter()
-        .map(|protocol| protocol.name.clone())
-        .collect::<Vec<_>>();
-    for (module, candidate) in runtime_library::interfaces(compiler, tel) {
-        if loaded.contains_key(&module) {
-            continue;
-        }
-        if candidate
-            .protocol_impls
-            .iter()
-            .any(|protocol_impl| protocols.contains(&protocol_impl.protocol))
-        {
-            queue.push_back(module);
         }
     }
 }

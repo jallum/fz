@@ -61,6 +61,107 @@ end
 }
 
 #[test]
+fn execution_graph_only_lowers_and_plans_live_runtime_modules() {
+    let mut concrete_types = crate::types::new();
+    let mut compiler = compiler();
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "compiler"], capture.handler());
+    let providers = ProviderInputs::new(
+        temp_dir()
+            .join(format!("fz-runtime-live-{}", process::id()))
+            .display()
+            .to_string(),
+        Vec::new(),
+    );
+    let source = r#"
+defmodule User do
+  import Utf8, only: [valid?: 1]
+  fn run(bytes), do: valid?(bytes)
+end
+"#;
+
+    let frontend = compile_source_with_providers(
+        compiler.world_mut(),
+        &mut concrete_types,
+        source.to_string(),
+        "user.fz".to_string(),
+        &providers,
+        &tel,
+    )
+    .unwrap_or_else(|_| panic!("frontend result"));
+    let checked = checked_module_for_mode(&mut concrete_types, frontend, &tel, CompileMode::Normal)
+        .unwrap_or_else(|_| panic!("checked module"));
+    let graph = prepare_execution_graph(
+        compiler.world_mut(),
+        &mut concrete_types,
+        checked,
+        &providers,
+        &tel,
+        CompileMode::Normal,
+    )
+    .unwrap_or_else(|_| panic!("execution graph"));
+
+    let modules = graph
+        .units
+        .iter()
+        .filter_map(|unit| unit.module.as_ref().map(ModuleName::dotted))
+        .collect::<Vec<_>>();
+    assert!(modules.contains(&"Utf8".to_string()));
+    assert!(!modules.contains(&"Process".to_string()));
+
+    let utf8_reachable = capture
+        .find(&["fz", "compiler", "runtime_module_reachable"])
+        .into_iter()
+        .filter(|ev| matches!(ev.metadata.get("module_key"), Some(Value::Str(m)) if m == "Utf8"))
+        .count();
+    assert_eq!(utf8_reachable, 1, "Utf8 should become reachable once");
+    assert!(
+        !capture
+            .find(&["fz", "compiler", "runtime_module_reachable"])
+            .into_iter()
+            .any(|ev| matches!(ev.metadata.get("module_key"), Some(Value::Str(m)) if m == "Process")),
+        "dead runtime module Process must stay cold"
+    );
+    assert!(
+        capture
+            .find(&["fz", "compiler", "runtime_planned"])
+            .into_iter()
+            .any(|ev| matches!(ev.metadata.get("module_key"), Some(Value::Str(m)) if m == "Utf8")),
+        "Utf8 should be explicitly planned as live runtime work"
+    );
+    let utf8_lowered = capture
+        .find(&["fz", "compiler", "runtime_lowered"])
+        .into_iter()
+        .find(|ev| matches!(ev.metadata.get("module_key"), Some(Value::Str(m)) if m == "Utf8"))
+        .expect("Utf8 lowered event");
+    assert!(
+        matches!(utf8_lowered.measurements.get("units"), Some(Value::U64(1))),
+        "Utf8 lowering should report one live unit, event: {utf8_lowered:?}"
+    );
+    let utf8_planned = capture
+        .find(&["fz", "compiler", "runtime_planned"])
+        .into_iter()
+        .find(|ev| matches!(ev.metadata.get("module_key"), Some(Value::Str(m)) if m == "Utf8"))
+        .expect("Utf8 planned event");
+    assert!(
+        matches!(utf8_planned.measurements.get("units"), Some(Value::U64(1))),
+        "Utf8 planning should report one live unit, event: {utf8_planned:?}"
+    );
+    assert!(
+        !capture
+            .find(&["fz", "compiler", "runtime_planned"])
+            .into_iter()
+            .any(|ev| matches!(ev.metadata.get("module_key"), Some(Value::Str(m)) if m == "Process")),
+        "dead runtime module Process must not be planned"
+    );
+
+    compiler
+        .validate_invariants()
+        .expect("execution graph must preserve runtime reachability invariants");
+}
+
+#[test]
 fn protocol_impl_reduce_callback_plans_to_fixed_point() {
     let mut concrete_types = crate::types::new();
     let mut compiler = compiler();

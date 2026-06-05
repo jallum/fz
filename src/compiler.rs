@@ -7,14 +7,14 @@ use crate::ast::{Attribute, Item, ModuleDef, Program};
 use crate::diag::{Diagnostic, SourceMap};
 use crate::modules::identity::ModuleName;
 use crate::modules::interface::{ModuleInterface, collect_from_program};
-use crate::modules::runtime_library::{RUNTIME_MODULE_SOURCES, RUNTIME_PRELUDE_FZ};
+use crate::modules::runtime_library::{self, RUNTIME_MODULE_SOURCES, RUNTIME_PRELUDE_FZ};
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 use crate::types;
 use crate::types::DefaultTypes;
 use crate::{measurements, metadata};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -233,6 +233,23 @@ pub(crate) struct ModuleMacroSurface {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct RuntimeReachabilitySeed {
+    pub(crate) module: ModuleName,
+    pub(crate) reason: &'static str,
+    pub(crate) from_module: Option<ModuleName>,
+}
+
+impl RuntimeReachabilitySeed {
+    pub(crate) fn new(module: ModuleName, reason: &'static str, from_module: Option<ModuleName>) -> Self {
+        Self {
+            module,
+            reason,
+            from_module,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct ModuleRecord {
     pub(crate) id: ModuleId,
     pub(crate) key: ModuleKey,
@@ -429,6 +446,29 @@ impl Compiler {
         tel: &dyn Telemetry,
     ) -> Result<SourceMacroExports, Diagnostic> {
         self.world.ensure_source_module_macro_exports(root_id, tel)
+    }
+
+    pub(crate) fn discover_runtime_reachable_modules(
+        &mut self,
+        root_interfaces: &BTreeMap<ModuleName, ModuleInterface>,
+        seeds: impl IntoIterator<Item = RuntimeReachabilitySeed>,
+        tel: &dyn Telemetry,
+    ) -> Result<Vec<ModuleId>, Diagnostic> {
+        self.world
+            .discover_runtime_reachable_modules(root_interfaces, seeds, tel)
+    }
+
+    pub(crate) fn note_runtime_lowered(&mut self, module_id: ModuleId, fns: usize, tel: &dyn Telemetry) -> bool {
+        self.world.note_runtime_lowered(module_id, fns, tel)
+    }
+
+    pub(crate) fn note_runtime_planned(
+        &mut self,
+        module_id: ModuleId,
+        planned_specs: usize,
+        tel: &dyn Telemetry,
+    ) -> bool {
+        self.world.note_runtime_planned(module_id, planned_specs, tel)
     }
 
     pub(crate) fn mark_reachable(&mut self, module_id: ModuleId, kind: ReachabilityKind, tel: &dyn Telemetry) -> bool {
@@ -717,6 +757,119 @@ impl CompilerWorld {
         Ok(exports)
     }
 
+    pub(crate) fn discover_runtime_reachable_modules(
+        &mut self,
+        root_interfaces: &BTreeMap<ModuleName, ModuleInterface>,
+        seeds: impl IntoIterator<Item = RuntimeReachabilitySeed>,
+        tel: &dyn Telemetry,
+    ) -> Result<Vec<ModuleId>, Diagnostic> {
+        let mut queue = VecDeque::new();
+        let mut reachable = Vec::new();
+
+        for interface in root_interfaces.values() {
+            enqueue_runtime_interface_imports(&mut queue, interface, "program_import");
+            enqueue_runtime_protocol_impl_protocols(&mut queue, interface, "program_protocol_impl");
+        }
+        queue.extend(seeds);
+
+        while let Some(candidate) = queue.pop_front() {
+            if let Some(existing) = self.module_id_for_name(&candidate.module)
+                && self.module(existing).origin != ModuleOrigin::EmbeddedRuntime
+            {
+                continue;
+            }
+            let Some(module_id) = self.discover_runtime_module(&candidate.module, tel) else {
+                continue;
+            };
+            if !self.mark_reachable(module_id, ReachabilityKind::Runtime, tel) {
+                continue;
+            }
+
+            let record = self.module(module_id);
+            tel.execute(
+                &["fz", "compiler", "runtime_module_reachable"],
+                &self.phase_measurements(module_id),
+                &metadata! {
+                    module_key: record.key.render(),
+                    module_key_kind: record.key.kind(),
+                    module_origin: record.origin.kind(),
+                    reason: candidate.reason,
+                    from_module: candidate
+                        .from_module
+                        .as_ref()
+                        .map(ModuleName::dotted)
+                        .unwrap_or_default(),
+                },
+            );
+            reachable.push(module_id);
+
+            let interface = self
+                .ensure_runtime_module_interface(&candidate.module, tel)?
+                .expect("discovered runtime module must have interface");
+            enqueue_runtime_interface_imports(&mut queue, &interface, "runtime_import");
+            enqueue_runtime_protocol_impl_protocols(&mut queue, &interface, "runtime_protocol_impl_protocol");
+            for module in runtime_library::implementation_dependencies(self, &candidate.module, tel)? {
+                queue.push_back(RuntimeReachabilitySeed::new(
+                    module,
+                    "runtime_implementation_dependency",
+                    Some(candidate.module.clone()),
+                ));
+            }
+            enqueue_runtime_protocol_impl_providers(self, tel, &mut queue, &interface)?;
+        }
+
+        Ok(reachable)
+    }
+
+    pub(crate) fn note_runtime_lowered(&mut self, module_id: ModuleId, fns: usize, tel: &dyn Telemetry) -> bool {
+        let advanced = self.ensure_module_state(module_id, ModuleState::RuntimeLowered, tel, |_| {});
+        if advanced {
+            let record = self.module(module_id);
+            tel.execute(
+                &["fz", "compiler", "runtime_lowered"],
+                &measurements! {
+                    module_id: module_id.0,
+                    file_id: record.file_id.0,
+                    functions: fns as u64,
+                    units: 1_u64,
+                },
+                &metadata! {
+                    module_key: record.key.render(),
+                    module_key_kind: record.key.kind(),
+                    module_origin: record.origin.kind(),
+                },
+            );
+        }
+        advanced
+    }
+
+    pub(crate) fn note_runtime_planned(
+        &mut self,
+        module_id: ModuleId,
+        planned_specs: usize,
+        tel: &dyn Telemetry,
+    ) -> bool {
+        let advanced = self.ensure_module_state(module_id, ModuleState::RuntimePlanned, tel, |_| {});
+        if advanced {
+            let record = self.module(module_id);
+            tel.execute(
+                &["fz", "compiler", "runtime_planned"],
+                &measurements! {
+                    module_id: module_id.0,
+                    file_id: record.file_id.0,
+                    planned_specs: planned_specs as u64,
+                    units: 1_u64,
+                },
+                &metadata! {
+                    module_key: record.key.render(),
+                    module_key_kind: record.key.kind(),
+                    module_origin: record.origin.kind(),
+                },
+            );
+        }
+        advanced
+    }
+
     pub(crate) fn record_macro_surface(
         &mut self,
         module_id: ModuleId,
@@ -898,14 +1051,13 @@ impl CompilerWorld {
                     module.key.render()
                 )));
             }
-            if module.state.covers(ModuleState::MacroSurfaceReady) && module.macro_surface.is_none() {
+            if module.state == ModuleState::MacroSurfaceReady && module.macro_surface.is_none() {
                 return Err(CompilerInvariantError::new(format!(
                     "module `{}` is macro_surface_ready without macro surface",
                     module.key.render()
                 )));
             }
-            if module.state.covers(ModuleState::MacroSurfaceReady) && !module.state.covers(ModuleState::InterfaceReady)
-            {
+            if module.state == ModuleState::MacroSurfaceReady && !module.state.covers(ModuleState::InterfaceReady) {
                 return Err(CompilerInvariantError::new(format!(
                     "module `{}` reached macro surface without interface readiness",
                     module.key.render()
@@ -1141,6 +1293,75 @@ impl CompilerWorld {
             target_phase: target.as_str(),
         }
     }
+}
+
+fn enqueue_runtime_interface_imports(
+    queue: &mut VecDeque<RuntimeReachabilitySeed>,
+    interface: &ModuleInterface,
+    reason: &'static str,
+) {
+    for import in &interface.imports {
+        queue.push_back(RuntimeReachabilitySeed::new(
+            import.module.clone(),
+            reason,
+            Some(interface.name.clone()),
+        ));
+    }
+}
+
+fn enqueue_runtime_protocol_impl_protocols(
+    queue: &mut VecDeque<RuntimeReachabilitySeed>,
+    interface: &ModuleInterface,
+    reason: &'static str,
+) {
+    let local_protocols = interface
+        .protocols
+        .iter()
+        .map(|protocol| &protocol.name)
+        .collect::<HashSet<_>>();
+    for protocol_impl in &interface.protocol_impls {
+        if !local_protocols.contains(&protocol_impl.protocol) {
+            queue.push_back(RuntimeReachabilitySeed::new(
+                protocol_impl.protocol.clone(),
+                reason,
+                Some(interface.name.clone()),
+            ));
+        }
+    }
+}
+
+fn enqueue_runtime_protocol_impl_providers(
+    compiler: &mut CompilerWorld,
+    tel: &dyn Telemetry,
+    queue: &mut VecDeque<RuntimeReachabilitySeed>,
+    interface: &ModuleInterface,
+) -> Result<(), Diagnostic> {
+    if interface.protocols.is_empty() {
+        return Ok(());
+    }
+    let protocols = interface
+        .protocols
+        .iter()
+        .map(|protocol| protocol.name.clone())
+        .collect::<Vec<_>>();
+    for source in RUNTIME_MODULE_SOURCES {
+        let module = ModuleName::from_segments(vec![source.name.to_string()]);
+        let Some(candidate) = compiler.ensure_runtime_module_interface(&module, tel)? else {
+            continue;
+        };
+        if candidate
+            .protocol_impls
+            .iter()
+            .any(|protocol_impl| protocols.contains(&protocol_impl.protocol))
+        {
+            queue.push_back(RuntimeReachabilitySeed::new(
+                module,
+                "runtime_protocol_impl_provider",
+                Some(interface.name.clone()),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn parse_source(

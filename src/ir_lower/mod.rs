@@ -143,6 +143,11 @@ fn parse_runtime_prelude<T: Types<Ty = Ty>>(
         .filter(|source| source.role == crate::modules::runtime_library::RuntimeModuleRole::CorePrelude)
     {
         let module = ModuleName::from_segments(vec![module_source.name.to_string()]);
+        if let Some(existing) = compiler.module_id_for_name(&module)
+            && compiler.module(existing).origin != crate::compiler::ModuleOrigin::EmbeddedRuntime
+        {
+            continue;
+        }
         let module_id = compiler
             .discover_runtime_module(&module, tel)
             .expect("registered runtime module");

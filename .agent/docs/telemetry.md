@@ -214,6 +214,16 @@ module through the world the way we intended?" before loader/resolver work lands
 - `fz.compiler.module_reachable` — one reachability dimension (`interface`,
   `macro`, or `runtime`) was first marked true for a module. Measurements:
   `module_id`, `file_id`. Metadata: `reachability` plus module identity.
+- `fz.compiler.runtime_module_reachable` — one runtime-library module became
+  live for execution. Measurements: `module_id`, `file_id`. Metadata:
+  `module_key`, `module_key_kind`, `module_origin`, `reason`, and
+  `from_module` (empty when the module was seeded directly).
+- `fz.compiler.runtime_lowered` — a live runtime-library module was lowered for
+  execution. Measurements: `module_id`, `file_id`, `functions`, `units`.
+  Metadata: module identity.
+- `fz.compiler.runtime_planned` — a live runtime-library module was planned for
+  execution. Measurements: `module_id`, `file_id`, `planned_specs`, `units`.
+  Metadata: module identity.
 
 ## Resolver Contract Events
 

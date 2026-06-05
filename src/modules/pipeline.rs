@@ -1,6 +1,6 @@
 //! Module-aware frontend and execution-graph preparation.
 
-use crate::compiler::CompilerWorld;
+use crate::compiler::{CompilerWorld, ModuleId, ModuleKey, RuntimeReachabilitySeed};
 use crate::diag::codes::{CODEGEN_SCHEMA_MISSING, LOWER_UNBOUND};
 use crate::diag::diagnostic::Severity;
 use crate::diag::{Diagnostic, Diagnostics, SourceMap, Span, emit_through};
@@ -321,7 +321,7 @@ fn load_provider_units(
     tel: &dyn Telemetry,
 ) -> Result<Vec<CompiledUnit>, PipelineError> {
     let store = ArtifactStore::new(&providers.artifact_root);
-    let runtime_roots = prepared
+    let runtime_seed_modules = prepared
         .external_interfaces
         .keys()
         .filter(|module| {
@@ -332,28 +332,49 @@ fn load_provider_units(
         })
         .cloned()
         .collect::<Vec<_>>();
-    let provider_roots = providers
-        .modules
-        .iter()
-        .cloned()
-        .chain(runtime_library::prelude_required_modules(compiler, tel))
-        .chain(runtime_roots)
+    let mut seeds = runtime_library::prelude_required_modules(compiler, tel)
+        .into_iter()
+        .map(|module| RuntimeReachabilitySeed::new(module, "prelude_import", None))
         .collect::<Vec<_>>();
+    seeds.extend(
+        runtime_seed_modules
+            .into_iter()
+            .map(|module| RuntimeReachabilitySeed::new(module, "program_runtime_reference", None)),
+    );
+    let runtime_modules = compiler
+        .discover_runtime_reachable_modules(&prepared.interfaces, seeds, tel)
+        .map_err(|diagnostic| {
+            emit_through(tel, None, &[diagnostic]);
+            PipelineError::FrontendFailed
+        })?;
     let graph = ModuleGraphLoader::new(store)
-        .load_reachable(compiler, tel, &prepared.interfaces, &provider_roots)
+        .load_reachable(compiler, tel, &prepared.interfaces, &providers.modules)
         .map_err(PipelineError::Artifact)?;
+    let mut interfaces = prepared.interfaces.clone();
+    interfaces.extend(prepared.external_interfaces.clone());
+    interfaces.extend(graph.interfaces.clone());
+    for module_id in &runtime_modules {
+        let ModuleKey::Named(module) = compiler.module(*module_id).key.clone() else {
+            continue;
+        };
+        if let Some(interface) =
+            runtime_library::interface(compiler, &module, tel).expect("runtime interface lookup must succeed")
+        {
+            interfaces.insert(module, interface);
+        }
+    }
     tel.event(
         &["fz", "module", "graph_loaded"],
         metadata! {
-            interfaces: graph.interfaces.len() as i64,
-            objects: graph.objects.len() as i64,
+            interfaces: interfaces.len() as i64,
+            objects: (graph.objects.len() + runtime_modules.len()) as i64,
         },
     );
 
     let mut units = vec![prepared.compiled_unit_input()];
     for object in graph.objects {
         let module = object.module.clone().ok_or(PipelineError::MissingFzoModule)?;
-        let interface = graph.interfaces.get(&module).cloned();
+        let interface = interfaces.get(&module).cloned();
         if object.unit_payload.format == FZO_PAYLOAD_IR_UNIT_V1 {
             units.push(materialize_ir_unit(
                 t,
@@ -389,6 +410,9 @@ fn load_provider_units(
                 Diagnostics::new(),
             ));
         }
+    }
+    for module_id in runtime_modules {
+        units.push(materialize_runtime_unit(compiler, t, module_id, &interfaces, tel)?);
     }
     Ok(units)
 }
@@ -436,6 +460,50 @@ fn materialize_ir_unit(
         module,
         Some(module_plan),
         interface,
+        Diagnostics::new(),
+    ))
+}
+
+fn materialize_runtime_unit(
+    compiler: &mut CompilerWorld,
+    t: &mut DefaultTypes,
+    module_id: ModuleId,
+    interfaces: &InterfaceTable,
+    tel: &dyn Telemetry,
+) -> Result<CompiledUnit, PipelineError> {
+    let ModuleKey::Named(module_name) = compiler.module(module_id).key.clone() else {
+        return Err(PipelineError::MissingFzoModule);
+    };
+    let parsed = compiler.ensure_prelude(module_id, tel).map_err(|diagnostic| {
+        emit_through(tel, None, &[diagnostic]);
+        PipelineError::FrontendFailed
+    })?;
+    let program = crate::ast::Program {
+        items: parsed.items,
+        ..crate::ast::Program::default()
+    };
+    let frontend = run_frontend(
+        crate::frontend::compile_program_with_compiler_interface_table(
+            compiler,
+            None,
+            t,
+            program,
+            parsed.sm,
+            interfaces.clone(),
+            tel,
+        ),
+        tel,
+    )?;
+    let _ = compiler.note_runtime_lowered(module_id, frontend.module.fns.len(), tel);
+    let _ = compiler.note_runtime_planned(module_id, frontend.module_plan.specs.len(), tel);
+    tel.event(
+        &["fz", "module", "unit_materialized"],
+        metadata! { kind: "runtime-source", module: module_name.dotted() },
+    );
+    Ok(CompiledUnit::from_ir_module_with_plan(
+        frontend.module,
+        Some(frontend.module_plan),
+        interfaces.get(&module_name).cloned(),
         Diagnostics::new(),
     ))
 }
