@@ -51,42 +51,41 @@ pub struct CompiledUnit {
     pub module: Option<ModuleName>,
     pub code: Module,
     pub module_plan: Option<ModulePlan>,
-    pub exports: Vec<InterfaceFn>,
-    pub interface_fingerprint: Vec<String>,
-    pub interface: Option<ModuleInterface>,
+    pub interfaces: BTreeMap<ModuleName, ModuleInterface>,
+    pub interface_fingerprints: BTreeMap<ModuleName, Vec<String>>,
 }
 
 impl CompiledUnit {
     #[cfg(test)]
-    pub fn from_ir_module(code: Module, interface: Option<ModuleInterface>, _diagnostics: Diagnostics) -> Self {
-        Self::from_ir_module_with_plan(code, None, interface, _diagnostics)
+    pub fn from_ir_module(
+        code: Module,
+        interfaces: BTreeMap<ModuleName, ModuleInterface>,
+        _diagnostics: Diagnostics,
+    ) -> Self {
+        Self::from_ir_module_with_plan(code, None, interfaces, _diagnostics)
     }
 
     pub fn from_ir_module_with_plan(
         code: Module,
         module_plan: Option<ModulePlan>,
-        interface: Option<ModuleInterface>,
+        interfaces: BTreeMap<ModuleName, ModuleInterface>,
         _diagnostics: Diagnostics,
     ) -> Self {
-        let module = interface
-            .as_ref()
-            .map(|interface| interface.name.clone())
-            .or_else(|| ModuleName::parse_dotted(code.module_path()).ok());
-        let exports = interface
-            .as_ref()
-            .map(|interface| interface.exports.clone())
-            .unwrap_or_default();
-        let interface_fingerprint = interface
-            .as_ref()
-            .map(|interface| interface.fingerprint_inputs.clone())
-            .unwrap_or_default();
+        let module = if interfaces.len() == 1 {
+            interfaces.keys().next().cloned()
+        } else {
+            ModuleName::parse_dotted(code.module_path()).ok()
+        };
+        let interface_fingerprints = interfaces
+            .iter()
+            .map(|(module, interface)| (module.clone(), interface.fingerprint_inputs.clone()))
+            .collect();
         Self {
             module,
             code,
             module_plan,
-            exports,
-            interface_fingerprint,
-            interface,
+            interfaces,
+            interface_fingerprints,
         }
     }
 
@@ -250,12 +249,17 @@ impl IrUnitLinker {
     }
 
     fn add_unit(&mut self, unit: &CompiledUnit) -> Result<(), ImageLinkError> {
-        if let Some(interface) = &unit.interface
-            && interface.fingerprint_inputs != unit.interface_fingerprint
-        {
-            return Err(ImageLinkError::InterfaceFingerprintMismatch {
-                module: unit.module.clone(),
-            });
+        for (module, interface) in &unit.interfaces {
+            let expected = unit
+                .interface_fingerprints
+                .get(module)
+                .cloned()
+                .unwrap_or_default();
+            if interface.fingerprint_inputs != expected {
+                return Err(ImageLinkError::InterfaceFingerprintMismatch {
+                    module: Some(module.clone()),
+                });
+            }
         }
 
         let mut fn_map = self.copy_fns(unit);
@@ -458,25 +462,22 @@ impl IrUnitLinker {
     }
 
     fn copy_exports(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) -> Result<(), ImageLinkError> {
-        let Some(module) = &unit.module else {
-            return Ok(());
-        };
-        for export in &unit.exports {
-            let key = ExportKey::new(module.clone(), export.name.clone(), export.arity);
-            let qualified = format!("{}.{}", module, export.name);
-            let target = unit
-                .code
-                .fns
-                .iter()
-                .find(|f| f.name == qualified && f.block(f.entry).params.len() == export.arity)
-                .and_then(|f| fn_map.get(&f.id).copied());
-            if let Some(target) = target
-                && self.export_map.insert(key.clone(), target).is_some()
-            {
-                return Err(ImageLinkError::DuplicateProvider { import: key });
+        for (module, interface) in &unit.interfaces {
+            for export in &interface.exports {
+                let key = ExportKey::new(module.clone(), export.name.clone(), export.arity);
+                let qualified = format!("{}.{}", module, export.name);
+                let target = unit
+                    .code
+                    .fns
+                    .iter()
+                    .find(|f| f.name == qualified && f.block(f.entry).params.len() == export.arity)
+                    .and_then(|f| fn_map.get(&f.id).copied());
+                if let Some(target) = target
+                    && self.export_map.insert(key.clone(), target).is_some()
+                {
+                    return Err(ImageLinkError::DuplicateProvider { import: key });
+                }
             }
-        }
-        if let Some(interface) = &unit.interface {
             for protocol_impl in &interface.protocol_impls {
                 for callback in &protocol_impl.callbacks {
                     let qualified = format!("{}.{}", callback.module, callback.name);
@@ -840,16 +841,17 @@ impl RuntimeUnitMetadata {
             (0..registry.len()).map(|id| registry.get(id as u32).clone()).collect()
         };
         let exported_symbols = unit
-            .module
-            .as_ref()
-            .map(|module| {
-                unit.exports
+            .interfaces
+            .iter()
+            .flat_map(|(module, interface)| {
+                interface
+                    .exports
                     .iter()
-                    .enumerate()
-                    .map(|(idx, export)| (format!("{}.{}/{}", module, export.name, export.arity), idx as u32))
-                    .collect()
+                    .map(move |export| (format!("{}.{}/{}", module, export.name, export.arity), export.arity))
             })
-            .unwrap_or_default();
+            .enumerate()
+            .map(|(idx, (name, _arity))| (name, idx as u32))
+            .collect();
         Self {
             module,
             atoms: compiled.atom_names.clone(),

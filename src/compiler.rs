@@ -9,6 +9,7 @@ use crate::frontend::resolve::{
     InterfaceTable, flatten_modules_with_compiler, flatten_modules_with_compiler_interface_table,
 };
 use crate::frontend::{
+    protocols::{ImplTarget, ProtocolRegistry},
     FrontendErr, FrontendOk, FrontendResult, apply_planned_direct_call_targets, check_frontend_from_entry_fns, macros,
     resolve,
 };
@@ -30,7 +31,7 @@ use crate::telemetry::{Telemetry, TelemetryExt as _};
 use crate::types;
 use crate::types::{ClosureTypes, DefaultTypes, LiteralTypes, RenderTypes, Ty, Types};
 use crate::{measurements, metadata};
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -415,6 +416,7 @@ pub(crate) struct LoweredFnGroup {
     pub(crate) source: SourceFnKey,
     pub(crate) function_ids: Vec<FnId>,
     pub(crate) fns: Vec<FnIr>,
+    pub(crate) atom_names: Vec<String>,
     pub(crate) extern_decls: Vec<ExternDecl>,
     pub(crate) external_call_edges: Vec<ExternalCallEdge>,
     pub(crate) protocol_call_targets: HashMap<FnId, ProtocolCallTarget>,
@@ -451,6 +453,11 @@ impl RuntimeReachabilitySeed {
         self.entry = Some(Mfa::new(self.module_id, name, arity));
         self
     }
+
+    pub(crate) fn with_mfa(mut self, mfa: Mfa) -> Self {
+        self.entry = Some(mfa);
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -464,6 +471,7 @@ pub(crate) struct ModuleRecord {
     pub(crate) body_surface: Option<ModuleBodySurface>,
     pub(crate) lowered_groups: HashMap<SourceFnKey, LoweredFnGroup>,
     pub(crate) runtime_entry_fns: HashSet<Mfa>,
+    pub(crate) runtime_materialized_entry_fns: HashSet<Mfa>,
     pub(crate) runtime_lowered_functions: Option<usize>,
     pub(crate) runtime_planned_specs: Option<usize>,
     pub(crate) interfaces: Option<BTreeMap<ModuleName, ModuleInterface>>,
@@ -512,6 +520,9 @@ pub(crate) struct CompilerWorld {
     file_index: BTreeMap<FileOrigin, FileId>,
     named_function_ids: HashMap<Mfa, FnId>,
     extern_name_ids: HashMap<String, ExternId>,
+    protocol_registry: ProtocolRegistry,
+    protocol_callback_owners: BTreeMap<ExportKey, ModuleName>,
+    protocol_provider_modules: BTreeMap<ModuleName, BTreeSet<ModuleName>>,
     next_anonymous_function_id: u32,
 }
 
@@ -531,6 +542,9 @@ impl CompilerWorld {
             file_index: BTreeMap::new(),
             named_function_ids: HashMap::new(),
             extern_name_ids: HashMap::new(),
+            protocol_registry: ProtocolRegistry::default(),
+            protocol_callback_owners: BTreeMap::new(),
+            protocol_provider_modules: BTreeMap::new(),
             next_anonymous_function_id: 0,
         }
     }
@@ -872,10 +886,42 @@ impl CompilerWorld {
         {
             let runtime_entry_keys = self.runtime_entry_fn_keys(root_source);
             let root_entry_keys = (!runtime_entry_keys.is_empty()).then_some(&runtime_entry_keys);
-            select_initial_root_fn_keys(self, root_source, &prog.items, root_entry_keys)
+            let surface = self.ensure_body_surface(root_source, tel).map_err(|diagnostic| {
+                LowerError::Unsupported {
+                    span: Span::DUMMY,
+                    what: diagnostic.message,
+                }
+            })?;
+            select_initial_root_fn_keys(&surface, root_entry_keys)
         } else {
             collect_lowerable_fn_keys(self, ModuleId(u32::MAX), &prog.items)
         };
+
+        if let Some(root_source) = root_source {
+            for fn_key in &initial_demands {
+                if let Some(descriptor) = self
+                    .source_fn_group_descriptor_for_key(root_source, fn_key, tel)
+                    .map_err(|diagnostic| LowerError::Unsupported {
+                        span: Span::DUMMY,
+                        what: diagnostic.message,
+                    })?
+                {
+                    tel.execute(
+                        &["fz", "compiler", "fn_group_requested"],
+                        &measurements! {
+                            fn_group_id: descriptor.id.0,
+                            loaded_functions: 0_u64,
+                        },
+                        &metadata! {
+                            module_key: self.module_key_render(root_source),
+                            owner_module: self.module_display_name(descriptor.source.module_id),
+                            fn_name: descriptor.qualified_name(),
+                            reason: "initial_root",
+                        },
+                    );
+                }
+            }
+        }
 
         let mut demands = initial_demands.into_iter().collect::<VecDeque<FnKey>>();
         let mut satisfied = HashSet::new();
@@ -929,6 +975,8 @@ impl CompilerWorld {
                 program: opaque(&prog),
             },
         );
+        self.record_protocol_registry(&prog.protocol_registry);
+        self.record_protocol_facts_from_interfaces(&prog.external_module_interfaces);
         if let Err(diagnostic) = macros::prepare_compiler_macro_surfaces(self, root_source, &prog, tel) {
             return Err(FrontendErr {
                 sm,
@@ -1605,6 +1653,19 @@ impl CompilerWorld {
         target: &ExportKey,
         tel: &dyn Telemetry,
     ) -> Result<Option<ModuleId>, Diagnostic> {
+        if let Some(existing) = self.module_id_for_name(&target.module)
+            && self.module(existing).origin != ModuleOrigin::EmbeddedRuntime
+        {
+            return Ok(None);
+        }
+        if let Some(owner_module) = self.protocol_callback_owners.get(target).cloned() {
+            if let Some(existing) = self.module_id_for_name(&owner_module)
+                && self.module(existing).origin != ModuleOrigin::EmbeddedRuntime
+            {
+                return Ok(None);
+            }
+            return Ok(self.discover_runtime_module(&owner_module, tel));
+        }
         if let Some(existing) = self.module_id_for_name(&target.module) {
             if self.module(existing).origin == ModuleOrigin::EmbeddedRuntime {
                 return Ok(Some(existing));
@@ -1667,6 +1728,17 @@ impl CompilerWorld {
 
     pub(crate) fn runtime_entry_fn_keys(&self, module_id: ModuleId) -> HashSet<Mfa> {
         self.modules[module_id.0 as usize].runtime_entry_fns.clone()
+    }
+
+    pub(crate) fn runtime_source_fn_key_for_export_target(
+        &mut self,
+        owner_module_id: ModuleId,
+        target: &ExportKey,
+        tel: &dyn Telemetry,
+    ) -> Result<Mfa, Diagnostic> {
+        let _ = self.ensure_body_surface(owner_module_id, tel)?;
+        let qualified_name = format!("{}.{}", target.module, target.name);
+        self.source_fn_key_for_qualified_name(owner_module_id, &qualified_name, target.arity)
     }
 
     pub(crate) fn record_lowered_group(&mut self, module_id: ModuleId, group: LoweredFnGroup) {
@@ -1761,12 +1833,39 @@ impl CompilerWorld {
             if self.module(candidate.module_id).origin != ModuleOrigin::EmbeddedRuntime {
                 continue;
             }
+            let mut needs_materialization = false;
             if let Some(entry) = candidate.entry.clone() {
-                self.modules[candidate.module_id.0 as usize]
+                let inserted = self.modules[candidate.module_id.0 as usize]
                     .runtime_entry_fns
-                    .insert(entry);
+                    .insert(entry.clone());
+                if inserted {
+                    needs_materialization = true;
+                    let record = self.module(candidate.module_id);
+                    tel.execute(
+                        &["fz", "compiler", "runtime_entry_requested"],
+                        &self.state_measurements(candidate.module_id),
+                        &metadata! {
+                            module_key: record.key.render(),
+                            module_key_kind: record.key.kind(),
+                            module_origin: record.origin.kind(),
+                            fn_name: self.render_mfa(&entry),
+                            reason: candidate.reason,
+                            from_module: candidate
+                                .from_module
+                                .as_ref()
+                                .map(ModuleName::dotted)
+                                .unwrap_or_default(),
+                        },
+                    );
+                }
             }
-            if !self.mark_reachable(candidate.module_id, ReachabilityKind::Runtime, tel) {
+            let newly_reachable = self.mark_reachable(candidate.module_id, ReachabilityKind::Runtime, tel);
+            if !newly_reachable && !needs_materialization {
+                continue;
+            }
+
+            reachable.push(candidate.module_id);
+            if !newly_reachable {
                 continue;
             }
 
@@ -1786,7 +1885,6 @@ impl CompilerWorld {
                         .unwrap_or_default(),
                 },
             );
-            reachable.push(candidate.module_id);
 
             let ModuleKey::Named(module_name) = record.key.clone() else {
                 continue;
@@ -1829,32 +1927,9 @@ impl CompilerWorld {
         let planned_advanced = self.ensure_module_state(module_id, ModuleState::RuntimePlanned, tel, |_| {});
 
         let record = &mut self.modules[module_id.0 as usize];
-        match record.runtime_lowered_functions {
-            Some(existing) => {
-                assert_eq!(
-                    existing,
-                    lowered_functions,
-                    "runtime lowered function count for `{}` changed from {} to {}",
-                    record.key.render(),
-                    existing,
-                    lowered_functions
-                );
-            }
-            None => record.runtime_lowered_functions = Some(lowered_functions),
-        }
-        match record.runtime_planned_specs {
-            Some(existing) => {
-                assert_eq!(
-                    existing,
-                    planned_specs,
-                    "runtime planned spec count for `{}` changed from {} to {}",
-                    record.key.render(),
-                    existing,
-                    planned_specs
-                );
-            }
-            None => record.runtime_planned_specs = Some(planned_specs),
-        }
+        record.runtime_materialized_entry_fns = record.runtime_entry_fns.clone();
+        record.runtime_lowered_functions = Some(lowered_functions);
+        record.runtime_planned_specs = Some(planned_specs);
 
         if lowered_advanced {
             let record = self.module(module_id);
@@ -2331,7 +2406,7 @@ impl CompilerWorld {
                 }
             }
             if module.state.covers(ModuleState::RuntimeLowered) {
-                for entry in &module.runtime_entry_fns {
+                for entry in &module.runtime_materialized_entry_fns {
                     if !module.lowered_groups.contains_key(entry) {
                         return Err(CompilerInvariantError::new(format!(
                             "runtime module `{}` lowered without cached entry group `{}`/{}",
@@ -2439,6 +2514,7 @@ impl CompilerWorld {
             body_surface: None,
             lowered_groups: HashMap::new(),
             runtime_entry_fns: HashSet::new(),
+            runtime_materialized_entry_fns: HashSet::new(),
             runtime_lowered_functions: None,
             runtime_planned_specs: None,
             interfaces: None,
@@ -2467,6 +2543,7 @@ impl CompilerWorld {
         module_id: ModuleId,
         interfaces: &BTreeMap<ModuleName, ModuleInterface>,
     ) {
+        self.record_protocol_facts_from_interfaces(interfaces);
         let ModuleKey::Named(module_name) = self.module(module_id).key.clone() else {
             return;
         };
@@ -2476,6 +2553,71 @@ impl CompilerWorld {
         for export in &interface.exports {
             let mfa = Mfa::new(module_id, export.name.clone(), export.arity);
             self.record_function_interface_specs(&mfa, &export.specs);
+        }
+    }
+
+    fn record_protocol_facts_from_interfaces(&mut self, interfaces: &BTreeMap<ModuleName, ModuleInterface>) {
+        let mut registry = ProtocolRegistry::default();
+        registry.extend_interfaces(interfaces);
+        self.record_protocol_registry(&registry);
+    }
+
+    fn record_protocol_registry(&mut self, registry: &ProtocolRegistry) {
+        for (name, protocol) in &registry.protocols {
+            match self.protocol_registry.protocols.get(name) {
+                Some(existing) => {
+                    let existing_callbacks = existing
+                        .callbacks
+                        .iter()
+                        .map(|callback| (callback.name.clone(), callback.arity))
+                        .collect::<Vec<_>>();
+                    let incoming_callbacks = protocol
+                        .callbacks
+                        .iter()
+                        .map(|callback| (callback.name.clone(), callback.arity))
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        existing_callbacks, incoming_callbacks,
+                        "protocol callback conflict for `{name}`"
+                    );
+                }
+                None => {
+                    self.protocol_registry.protocols.insert(name.clone(), protocol.clone());
+                }
+            }
+        }
+
+        for (key, implementation) in &registry.impls {
+            match self.protocol_registry.impls.get(key) {
+                Some(existing) => {
+                    assert_eq!(
+                        existing.callbacks, implementation.callbacks,
+                        "protocol implementation callback conflict for `{}` on `{}`",
+                        key.protocol, key.target
+                    );
+                }
+                None => {
+                    self.protocol_registry.impls.insert(key.clone(), implementation.clone());
+                }
+            }
+
+            let ImplTarget::Module(owner_module) = &implementation.target;
+            self.protocol_provider_modules
+                .entry(implementation.protocol.clone())
+                .or_default()
+                .insert(owner_module.clone());
+            for callback in implementation.callbacks.values() {
+                if let Some(existing) = self
+                    .protocol_callback_owners
+                    .insert(callback.clone(), owner_module.clone())
+                {
+                    assert_eq!(
+                        existing, *owner_module,
+                        "protocol callback owner conflict for `{}`: existing `{}`, new `{}`",
+                        callback, existing, owner_module
+                    );
+                }
+            }
         }
     }
 
@@ -2637,6 +2779,21 @@ fn enqueue_runtime_protocol_impl_providers(
         .iter()
         .map(|protocol| protocol.name.clone())
         .collect::<Vec<_>>();
+    for protocol in &protocols {
+        let Some(provider_modules) = compiler.protocol_provider_modules.get(protocol).cloned() else {
+            continue;
+        };
+        for module in provider_modules {
+            let Some(module_id) = compiler.discover_runtime_module(&module, tel) else {
+                continue;
+            };
+            queue.push_back(RuntimeReachabilitySeed::new(
+                module_id,
+                "runtime_protocol_impl_provider",
+                Some(interface.name.clone()),
+            ));
+        }
+    }
     for source in RUNTIME_MODULE_SOURCES {
         let module = ModuleName::from_segments(vec![source.name.to_string()]);
         if let Some(existing) = compiler.module_id_for_name(&module)

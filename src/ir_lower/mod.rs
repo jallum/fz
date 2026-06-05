@@ -31,7 +31,8 @@
 use crate::ast::MatchClause;
 use crate::ast::{Attribute, Expr, FnDef, Item, Program, Spanned};
 use crate::compiler::{
-    Compiler, CompilerWorld, FnGroupDescriptor, FunctionKind, LoweredFnGroup, LoweringFunctionRegistry, ModuleId,
+    Compiler, CompilerWorld, FnGroupDescriptor, FunctionKind, LoweredFnGroup, LoweringFunctionRegistry,
+    ModuleBodySurface, ModuleId,
 };
 use crate::diag::{FileId as SourceFileId, Span};
 #[cfg(test)]
@@ -47,10 +48,10 @@ use crate::frontend::protocols::{
 #[cfg(test)]
 use crate::frontend::resolve::flatten_modules;
 #[cfg(test)]
-use crate::fz_ir::{BinOp, BranchOrigin, Const, DeadBranch, ExternMarshal, FnBuilder, ModuleBuilder};
+use crate::fz_ir::{BinOp, BranchOrigin, DeadBranch, ExternMarshal, FnBuilder, ModuleBuilder};
 use crate::fz_ir::{
-    BlockId, ContinuationProvenance, ContinuationProvenanceKind, ExternDecl, ExternId, ExternTy, FnCategory, FnId,
-    FnIr, Module, Prim, SourceInfo, Stmt, Term, Var,
+    BlockId, Const, ContinuationProvenance, ContinuationProvenanceKind, ExternDecl, ExternId, ExternTy, FnCategory,
+    FnId, FnIr, Module, Prim, SourceInfo, Stmt, Term, Var,
 };
 use crate::ir_capture_norm::normalize_continuation_captures_with_telemetry;
 #[cfg(test)]
@@ -589,51 +590,8 @@ pub(crate) fn collect_lowerable_fn_keys(
         .collect()
 }
 
-pub(crate) fn collect_public_fn_keys(
-    compiler: &CompilerWorld,
-    default_module_id: ModuleId,
-    items: &[Rc<Item>],
-) -> HashSet<FnKey> {
-    items
-        .iter()
-        .filter_map(|item| match item.as_ref() {
-            Item::Fn(fn_def) if fn_def.extern_abi.is_none() && !fn_def.is_macro && !fn_def.is_private => Some(
-                fn_key_for_qualified_name(compiler, default_module_id, &fn_def.name, fn_arity(fn_def)),
-            ),
-            _ => None,
-        })
-        .collect()
-}
-
-pub(crate) fn select_entry_fn_keys(
-    compiler: &CompilerWorld,
-    default_module_id: ModuleId,
-    items: &[Rc<Item>],
-) -> HashSet<FnKey> {
-    items
-        .iter()
-        .filter_map(|item| match item.as_ref() {
-            Item::Fn(fn_def)
-                if fn_def.extern_abi.is_none()
-                    && !fn_def.is_macro
-                    && (fn_def.name == "main" || fn_def.name.starts_with(REPL_ENTRY_PREFIX)) =>
-            {
-                Some(fn_key_for_qualified_name(
-                    compiler,
-                    default_module_id,
-                    &fn_def.name,
-                    fn_arity(fn_def),
-                ))
-            }
-            _ => None,
-        })
-        .collect()
-}
-
 pub(crate) fn select_initial_root_fn_keys(
-    compiler: &CompilerWorld,
-    default_module_id: ModuleId,
-    user_items: &[Rc<Item>],
+    surface: &ModuleBodySurface,
     root_entry_keys: Option<&HashSet<FnKey>>,
 ) -> HashSet<FnKey> {
     if let Some(root_entry_keys) = root_entry_keys
@@ -641,11 +599,25 @@ pub(crate) fn select_initial_root_fn_keys(
     {
         return root_entry_keys.clone();
     }
-    let user_entries = select_entry_fn_keys(compiler, default_module_id, user_items);
+    let user_entries = surface
+        .groups
+        .iter()
+        .filter(|group| {
+            !group.is_private
+                && (group.source.function_name == "main"
+                    || group.source.function_name.starts_with(REPL_ENTRY_PREFIX))
+        })
+        .map(|group| group.source.clone())
+        .collect::<HashSet<_>>();
     if !user_entries.is_empty() {
         return user_entries;
     }
-    collect_public_fn_keys(compiler, default_module_id, user_items)
+    surface
+        .groups
+        .iter()
+        .filter(|group| !group.is_private)
+        .map(|group| group.source.clone())
+        .collect()
 }
 
 fn collect_lowerable_fn_defs(
@@ -663,29 +635,6 @@ fn collect_lowerable_fn_defs(
             _ => None,
         })
         .collect()
-}
-
-fn collect_source_fn_key_by_id(
-    compiler: &CompilerWorld,
-    default_module_id: ModuleId,
-    items: &[Rc<Item>],
-    ctx: &LowerCtx,
-) -> HashMap<FnId, FnKey> {
-    let mut by_id = HashMap::new();
-    for item in items {
-        let Item::Fn(fn_def) = item.as_ref() else {
-            continue;
-        };
-        if fn_def.extern_abi.is_some() || fn_def.is_macro {
-            continue;
-        }
-        let key = fn_key_for_qualified_name(compiler, default_module_id, &fn_def.name, fn_arity(fn_def));
-        let Some(&fn_id) = ctx.fns.get(&(fn_def.name.clone(), key.arity)) else {
-            continue;
-        };
-        by_id.insert(fn_id, key);
-    }
-    by_id
 }
 
 fn discover_requested_source_fn_keys(
@@ -764,38 +713,59 @@ fn discover_requested_source_fn_keys(
 fn assign_compiler_source_root_fn_ids(
     compiler: &mut CompilerWorld,
     root_source: ModuleId,
-    items: &[Rc<Item>],
     ctx: &mut LowerCtx,
     tel: &dyn Telemetry,
-) -> Result<(), LowerError> {
-    for item in items {
-        let Item::Fn(fn_def) = item.as_ref() else {
-            continue;
-        };
-        if fn_def.extern_abi.is_some() {
-            continue;
-        }
-        let arity = fn_arity(fn_def);
-        let Some(descriptor) = compiler
-            .source_fn_group_descriptor(root_source, &fn_def.name, arity, tel)
-            .map_err(|diagnostic| LowerError::Unsupported {
-                span: fn_def.span,
-                what: diagnostic.message,
-            })?
-        else {
-            continue;
-        };
+) -> Result<HashMap<FnId, FnKey>, LowerError> {
+    let surface = compiler
+        .ensure_body_surface(root_source, tel)
+        .map_err(|diagnostic| LowerError::Unsupported {
+            span: Span::DUMMY,
+            what: diagnostic.message,
+        })?;
+    let mut fn_key_by_id = HashMap::new();
+    for descriptor in surface.groups {
+        let fn_def = descriptor.fn_def();
         let id = ctx.reserve_named_function(
             descriptor.source.module_id,
             descriptor.source.clone(),
-            fn_def.name.clone(),
+            descriptor.qualified_name.clone(),
         );
-        ctx.fns.insert((fn_def.name.clone(), arity), id);
+        ctx.register_local_named_function(&descriptor.source, descriptor.qualified_name(), id);
         if fn_def.attrs.iter().any(|a| matches!(a, Attribute::Spec(_))) {
             ctx.boundary_fns.insert(id);
         }
+        fn_key_by_id.insert(id, descriptor.source);
     }
-    Ok(())
+    Ok(fn_key_by_id)
+}
+
+fn ensure_source_extern_decl<T: Types<Ty = Ty>>(
+    ctx: &mut LowerCtx,
+    t: &mut T,
+    fn_def: &FnDef,
+) -> Result<ExternId, LowerError> {
+    if let Some(eid) = ctx.externs.lookup(&fn_def.name) {
+        return Ok(eid);
+    }
+    let eid = ExternId(ctx.next_extern);
+    ctx.next_extern += 1;
+    let params: Vec<ExternTy> = fn_def
+        .extern_params
+        .iter()
+        .map(|name| extern_ty_from_name(name).unwrap_or(ExternTy::Any))
+        .collect();
+    let (ret, ret_descr) = lower_extern_ret_ty(t, fn_def, &ctx.prelude_type_env)?;
+    ctx.extern_decls.push(ExternDecl {
+        id: eid,
+        fz_name: fn_def.name.clone(),
+        symbol: extern_symbol_from_name(&fn_def.name).to_string(),
+        params,
+        variadic: fn_def.variadic,
+        ret,
+        ret_descr,
+    });
+    ctx.externs.insert(fn_def.name.clone(), eid);
+    Ok(eid)
 }
 
 fn merge_lowered_fn_group(ctx: &mut LowerCtx, group: &LoweredFnGroup) {
@@ -812,7 +782,7 @@ fn merge_lowered_fn_group(ctx: &mut LowerCtx, group: &LoweredFnGroup) {
         ctx.externs.insert(decl.fz_name.clone(), decl.id);
     }
     for fn_ir in &group.fns {
-        ctx.mb.add_fn(fn_ir.clone());
+        ctx.mb.add_fn(remap_cached_group_atoms(fn_ir.clone(), &group.atom_names, &mut ctx.atoms));
     }
     if let Some(max_fn_id) = group.function_ids.iter().map(|id| id.0).max() {
         ctx.mb.advance_next_fn_to(max_fn_id + 1);
@@ -830,6 +800,29 @@ fn merge_lowered_fn_group(ctx: &mut LowerCtx, group: &LoweredFnGroup) {
     ctx.imported_fn_value_wrappers
         .extend(group.imported_fn_value_wrappers.clone());
     ctx.protocol_stubs.extend(group.protocol_stubs.clone());
+}
+
+fn remap_cached_group_atoms(mut fn_ir: FnIr, group_atoms: &[String], atoms: &mut AtomTable) -> FnIr {
+    for block in &mut fn_ir.blocks {
+        for Stmt::Let(_, prim) in &mut block.stmts {
+            remap_cached_group_prim_atoms(prim, group_atoms, atoms);
+        }
+    }
+    fn_ir
+}
+
+fn remap_cached_group_prim_atoms(prim: &mut Prim, group_atoms: &[String], atoms: &mut AtomTable) {
+    match prim {
+        Prim::Const(Const::Atom(id)) => {
+            if let Some(name) = group_atoms.get(*id as usize) {
+                *id = atoms.intern(name);
+            }
+        }
+        Prim::StructField(_, field) => {
+            let _ = atoms.intern(field);
+        }
+        _ => {}
+    }
 }
 
 fn capture_lowered_fn_group(ctx: &LowerCtx, before_fn_count: usize, descriptor: &FnGroupDescriptor) -> LoweredFnGroup {
@@ -850,6 +843,7 @@ fn capture_lowered_fn_group(ctx: &LowerCtx, before_fn_count: usize, descriptor: 
         source: descriptor.source.clone(),
         function_ids: function_ids.clone(),
         fns,
+        atom_names: ctx.atoms.names(),
         extern_decls: ctx
             .extern_decls
             .iter()
@@ -1044,7 +1038,16 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
     let user_items = &all_items[runtime_item_count..];
     let prelude_fn_defs = collect_lowerable_fn_defs(compiler, prelude_id, prelude_items);
     let user_key_module = root_source.unwrap_or(ModuleId(u32::MAX));
+    if let Some(root_source) = root_source {
+        compiler
+            .ensure_body_surface(root_source, tel)
+            .map_err(|diagnostic| LowerError::Unsupported {
+                span: Span::DUMMY,
+                what: diagnostic.message,
+            })?;
+    }
     let user_fn_defs = collect_lowerable_fn_defs(compiler, user_key_module, user_items);
+    let mut fn_key_by_id = HashMap::new();
 
     for item in all_items.iter().skip(runtime_item_count) {
         if let Item::Fn(fn_def) = item.as_ref()
@@ -1060,60 +1063,32 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
     for item in all_items.iter().take(runtime_item_count) {
         if let Item::Fn(fn_def) = item.as_ref() {
             if fn_def.extern_abi.is_some() {
-                let eid = ExternId(ctx.next_extern);
-                ctx.next_extern += 1;
-                let params: Vec<ExternTy> = fn_def
-                    .extern_params
-                    .iter()
-                    .map(|name| extern_ty_from_name(name).unwrap_or(ExternTy::Any))
-                    .collect();
-                let (ret, ret_descr) = lower_extern_ret_ty(t, fn_def, &ctx.prelude_type_env)?;
-                ctx.extern_decls.push(ExternDecl {
-                    id: eid,
-                    fz_name: fn_def.name.clone(),
-                    symbol: extern_symbol_from_name(&fn_def.name).to_string(),
-                    params,
-                    variadic: fn_def.variadic,
-                    ret,
-                    ret_descr,
-                });
-                ctx.externs.insert(fn_def.name.clone(), eid);
+                let _ = ensure_source_extern_decl(&mut ctx, t, fn_def)?;
             } else {
                 let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
                 let source_key = fn_key_for_qualified_name(compiler, prelude_id, &fn_def.name, arity);
-                let id = ctx.reserve_named_function(source_key.module_id, source_key, fn_def.name.clone());
-                ctx.fns.insert((fn_def.name.clone(), arity), id);
+                let id = ctx.reserve_named_function(source_key.module_id, source_key.clone(), fn_def.name.clone());
+                ctx.register_local_named_function(&source_key, &fn_def.name, id);
                 ctx.prelude_fn_ids.insert(id);
+                fn_key_by_id.insert(id, source_key);
             }
         }
     }
 
     if let Some(root_source) = root_source {
-        assign_compiler_source_root_fn_ids(compiler, root_source, user_items, &mut ctx, tel)?;
+        fn_key_by_id.extend(assign_compiler_source_root_fn_ids(
+            compiler,
+            root_source,
+            &mut ctx,
+            tel,
+        )?);
     }
 
     for item in all_items.iter().skip(runtime_item_count) {
         match item.as_ref() {
             Item::Fn(fn_def) => {
                 if fn_def.extern_abi.is_some() {
-                    let eid = ExternId(ctx.next_extern);
-                    ctx.next_extern += 1;
-                    let params: Vec<ExternTy> = fn_def
-                        .extern_params
-                        .iter()
-                        .map(|name| extern_ty_from_name(name).unwrap_or(ExternTy::Any))
-                        .collect();
-                    let (ret, ret_descr) = lower_extern_ret_ty(t, fn_def, &ctx.prelude_type_env)?;
-                    ctx.extern_decls.push(ExternDecl {
-                        id: eid,
-                        fz_name: fn_def.name.clone(),
-                        symbol: extern_symbol_from_name(&fn_def.name).to_string(),
-                        params,
-                        variadic: fn_def.variadic,
-                        ret,
-                        ret_descr,
-                    });
-                    ctx.externs.insert(fn_def.name.clone(), eid);
+                    let _ = ensure_source_extern_decl(&mut ctx, t, fn_def)?;
                 } else if !ctx.fns.contains_key(&(fn_def.name.clone(), fn_arity(fn_def))) {
                     let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
                     let source_key = fn_key_for_qualified_name(
@@ -1122,11 +1097,12 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
                         &fn_def.name,
                         arity,
                     );
-                    let id = ctx.reserve_named_function(source_key.module_id, source_key, fn_def.name.clone());
-                    ctx.fns.insert((fn_def.name.clone(), arity), id);
+                    let id = ctx.reserve_named_function(source_key.module_id, source_key.clone(), fn_def.name.clone());
+                    ctx.register_local_named_function(&source_key, &fn_def.name, id);
                     if fn_def.attrs.iter().any(|a| matches!(a, Attribute::Spec(_))) {
                         ctx.boundary_fns.insert(id);
                     }
+                    fn_key_by_id.insert(id, source_key);
                 }
             }
             Item::Module(m) => {
@@ -1162,7 +1138,6 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
             }
         }
     }
-    let fn_key_by_id = collect_source_fn_key_by_id(compiler, user_key_module, &all_items, &ctx);
     Ok(CompilerLoweringSession {
         root_source,
         prelude_id,

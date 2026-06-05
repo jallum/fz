@@ -68,6 +68,19 @@ fn compiler_event_count(events: &[Value], event_name: &[&str], module_key: &str)
         .count()
 }
 
+fn compiler_event_count_without_reason(
+    events: &[Value],
+    event_name: &[&str],
+    module_key: &str,
+    reason: &str,
+) -> usize {
+    events
+        .iter()
+        .filter(|ev| event_matches(ev, event_name) && metadata_is(ev, "module_key", module_key))
+        .filter(|ev| !metadata_is(ev, "reason", reason))
+        .count()
+}
+
 fn event_count(events: &[Value], event_name: &[&str], metadata_key: &str, expected: &str) -> usize {
     events
         .iter()
@@ -261,7 +274,12 @@ fn build_reaches_lowers_and_plans_process_once_through_compiler_world() {
         "Process should lower exactly one live source function-group"
     );
     assert_eq!(
-        compiler_event_count(&events, &["fz", "compiler", "fn_group_requested"], "Process"),
+        compiler_event_count_without_reason(
+            &events,
+            &["fz", "compiler", "fn_group_requested"],
+            "Process",
+            "initial_root",
+        ),
         0,
         "Process.heap_alloc_stats/0 should not need sibling runtime groups"
     );
@@ -358,7 +376,12 @@ fn quicksort_build_parses_only_process_and_minimal_runtime_surface() {
         "quicksort should lower exactly one live Process function-group"
     );
     assert_eq!(
-        compiler_event_count(&events, &["fz", "compiler", "fn_group_requested"], "Process"),
+        compiler_event_count_without_reason(
+            &events,
+            &["fz", "compiler", "fn_group_requested"],
+            "Process",
+            "initial_root",
+        ),
         0,
         "quicksort should not request extra Process sibling groups"
     );

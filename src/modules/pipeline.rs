@@ -15,7 +15,7 @@ use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::interface::{ModuleInterface, validate_public_export_specs};
 use crate::telemetry::{Telemetry, next_compile_nonce};
 use crate::types::DefaultTypes;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -42,20 +42,10 @@ pub(crate) struct CheckedModule {
 
 impl CheckedModule {
     pub(crate) fn compiled_unit_input(&self) -> CompiledUnit {
-        let interface = ModuleName::parse_dotted(self.module.module_path())
-            .ok()
-            .and_then(|module| self.interfaces.get(&module).cloned())
-            .or_else(|| {
-                if self.interfaces.len() == 1 {
-                    self.interfaces.values().next().cloned()
-                } else {
-                    None
-                }
-            });
         CompiledUnit::from_ir_module_with_plan(
             self.module.clone(),
             Some(self.module_plan.clone()),
-            interface,
+            self.interfaces.clone(),
             Diagnostics::new(),
         )
     }
@@ -240,11 +230,7 @@ impl CompilerWorld {
         if mode.is_lto() {
             let interfaces = units
                 .iter()
-                .filter_map(|unit| {
-                    unit.interface
-                        .clone()
-                        .map(|interface| (interface.name.clone(), interface))
-                })
+                .flat_map(|unit| unit.interfaces.clone())
                 .collect();
             let linked = LtoLinkedProgram::validate(module.clone(), interfaces, tel, Some(&checked.sm))?;
             let (module, _) = linked.erase_boundaries(tel)?;
@@ -286,59 +272,83 @@ impl CompilerWorld {
         tel: &dyn Telemetry,
     ) -> Result<Vec<CompiledUnit>, PipelineError> {
         let seeds = self.runtime_reachability_seeds(&checked.module, &checked.module_plan, tel)?;
-        let mut pending_runtime_modules = self
-            .discover_runtime_reachable_modules(&checked.interfaces, seeds, tel)
-            .map_err(|diagnostic| {
-                emit_through(tel, None, &[diagnostic]);
-                PipelineError::FrontendFailed
-            })?;
-        let mut interfaces = checked.interfaces.clone();
-        interfaces.extend(checked.external_interfaces.clone());
-        let mut units = vec![checked.compiled_unit_input()];
-        let empty_root_interfaces = BTreeMap::new();
-        while let Some(module_id) = pending_runtime_modules.pop() {
-            let ModuleKey::Named(module_name) = self.module(module_id).key.clone() else {
-                continue;
-            };
-            let Some(interface) = self
-                .ensure_runtime_module_interface(&module_name, tel)
+        let mut pending_runtime_modules = VecDeque::from(
+            self.discover_runtime_reachable_modules(&checked.interfaces, seeds, tel)
                 .map_err(|diagnostic| {
                     emit_through(tel, None, &[diagnostic]);
                     PipelineError::FrontendFailed
-                })?
-            else {
-                continue;
-            };
-            interfaces.insert(module_name, interface);
-            let Some(unit) = self.materialize_runtime_unit(t, module_id, &interfaces, tel)? else {
-                continue;
-            };
-            let follow_up_seeds = unit
-                .module_plan
-                .as_ref()
-                .map(|plan| self.runtime_reachability_seeds(&unit.code, plan, tel))
-                .transpose()?
-                .unwrap_or_default();
-            if !follow_up_seeds.is_empty() {
-                let newly_reachable = self
-                    .discover_runtime_reachable_modules(&empty_root_interfaces, follow_up_seeds, tel)
+                })?,
+        );
+        let mut interfaces = checked.interfaces.clone();
+        interfaces.extend(checked.external_interfaces.clone());
+        let mut runtime_units = BTreeMap::new();
+        let empty_root_interfaces = BTreeMap::new();
+        loop {
+            while let Some(module_id) = pending_runtime_modules.pop_front() {
+                let ModuleKey::Named(module_name) = self.module(module_id).key.clone() else {
+                    continue;
+                };
+                let Some(interface) = self
+                    .ensure_runtime_module_interface(&module_name, tel)
                     .map_err(|diagnostic| {
                         emit_through(tel, None, &[diagnostic]);
                         PipelineError::FrontendFailed
-                    })?;
-                pending_runtime_modules.extend(newly_reachable);
+                    })?
+                else {
+                    continue;
+                };
+                interfaces.insert(module_name, interface);
+                let Some(unit) = self.materialize_runtime_unit(t, module_id, &interfaces, tel)? else {
+                    continue;
+                };
+                let follow_up_seeds = unit
+                    .module_plan
+                    .as_ref()
+                    .map(|plan| self.runtime_reachability_seeds(&unit.code, plan, tel))
+                    .transpose()?
+                    .unwrap_or_default();
+                if !follow_up_seeds.is_empty() {
+                    let newly_reachable = self
+                        .discover_runtime_reachable_modules(&empty_root_interfaces, follow_up_seeds, tel)
+                        .map_err(|diagnostic| {
+                            emit_through(tel, None, &[diagnostic]);
+                            PipelineError::FrontendFailed
+                        })?;
+                    pending_runtime_modules.extend(newly_reachable);
+                }
+                runtime_units.insert(module_id, unit);
             }
-            units.push(unit);
+
+            let mut linked_units = vec![checked.compiled_unit_input()];
+            linked_units.extend(runtime_units.values().cloned());
+            let linked_module = if linked_units.len() > 1 {
+                link_ir_units(&linked_units).map_err(PipelineError::Link)?
+            } else {
+                linked_units[0].code.clone()
+            };
+            let linked_plan = plan_module(t, &linked_module, tel);
+            let follow_up_seeds = self.runtime_reachability_seeds(&linked_module, &linked_plan, tel)?;
+            let newly_reachable = self
+                .discover_runtime_reachable_modules(&empty_root_interfaces, follow_up_seeds, tel)
+                .map_err(|diagnostic| {
+                    emit_through(tel, None, &[diagnostic]);
+                    PipelineError::FrontendFailed
+                })?;
+            if newly_reachable.is_empty() {
+                let mut units = vec![checked.compiled_unit_input()];
+                units.extend(runtime_units.into_values());
+                tel.event(
+                    &["fz", "module", "execution_units_prepared"],
+                    metadata! {
+                        interfaces: interfaces.len() as i64,
+                        runtime_units: (units.len() - 1) as i64,
+                        total_units: units.len() as i64,
+                    },
+                );
+                return Ok(units);
+            }
+            pending_runtime_modules.extend(newly_reachable);
         }
-        tel.event(
-            &["fz", "module", "execution_units_prepared"],
-            metadata! {
-                interfaces: interfaces.len() as i64,
-                runtime_units: (units.len() - 1) as i64,
-                total_units: units.len() as i64,
-            },
-        );
-        Ok(units)
     }
 
     fn materialize_runtime_unit(
@@ -398,9 +408,15 @@ impl CompilerWorld {
             let ModuleKey::Named(_) = self.module(owner_module_id).key.clone() else {
                 continue;
             };
+            let entry = self
+                .runtime_source_fn_key_for_export_target(owner_module_id, &target, tel)
+                .map_err(|diagnostic| {
+                    emit_through(tel, None, &[diagnostic]);
+                    PipelineError::FrontendFailed
+                })?;
             seeds.push(
                 RuntimeReachabilitySeed::new(owner_module_id, "planned_external_target", None)
-                    .with_entry(target.name.clone(), target.arity),
+                    .with_mfa(entry),
             );
         }
         Ok(seeds)

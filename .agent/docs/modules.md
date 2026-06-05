@@ -96,6 +96,10 @@ reacts outward from the lowered IR itself: if a live body references an
 unloaded local group, the compiler requests that group in the same reactive
 lowering loop and continues until the root set closes. The compiler emits only
 the reachable function-groups and caches each group's IR in the compiler world.
+Protocol declarations, impl facts, and protocol-callback ownership also live in
+compiler world: a protocol callback reference is resolved against compiler-owned
+facts first, so user-source impl callbacks never get misrouted into runtime
+module discovery just because they target a builtin type like `List`.
 Runtime codegen only needs the modules that become reachable from the checked
 program. Runtime unit discovery now also reacts to already-materialized runtime
 units: the checked root unit seeds exact external runtime exports, each

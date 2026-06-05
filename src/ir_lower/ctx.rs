@@ -12,7 +12,7 @@ use crate::modules::interface::ModuleInterface;
 use crate::type_expr::ModuleTypeEnv;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-/// Map of source-fn name -> primary FnId (the entry IR fn for a multi-clause source fn).
+/// Map of compiler-visible callable name -> primary FnId.
 pub(super) type FnMap = HashMap<(String, usize), FnId>;
 
 pub struct LowerCtx {
@@ -26,6 +26,7 @@ pub struct LowerCtx {
     pub(super) next_extern: u32,
     pub mb: ModuleBuilder,
     pub fns: FnMap,
+    pub(super) local_named_fns: HashMap<(ModuleId, String, usize), FnId>,
     /// Currently-being-built fn.
     pub(super) cur: Option<FnBuilder>,
     /// FnId of the fn currently being built. Mirrors `cur` so methods that
@@ -115,6 +116,7 @@ impl LowerCtx {
             next_extern,
             mb: ModuleBuilder::new(),
             fns: HashMap::new(),
+            local_named_fns: HashMap::new(),
             cur: None,
             cur_fn_id: None,
             current_owner_module: String::new(),
@@ -156,6 +158,38 @@ impl LowerCtx {
         let id = self.function_registry.reserve_named(owner_module_id, mfa, debug_name);
         self.mb.advance_next_fn_to(id.0 + 1);
         id
+    }
+
+    pub(super) fn register_local_named_function(
+        &mut self,
+        source: &Mfa,
+        qualified_name: &str,
+        fn_id: FnId,
+    ) {
+        self.local_named_fns.insert(
+            (source.module_id, source.function_name.clone(), source.arity),
+            fn_id,
+        );
+        self.fns
+            .insert((qualified_name.to_string(), source.arity), fn_id);
+    }
+
+    pub(super) fn local_named_fn(
+        &self,
+        module_id: ModuleId,
+        name: &str,
+        arity: usize,
+    ) -> Option<FnId> {
+        self.local_named_fns
+            .get(&(module_id, name.to_string(), arity))
+            .copied()
+    }
+
+    pub(super) fn first_local_named_fn(&self, module_id: ModuleId, name: &str) -> Option<FnId> {
+        self.local_named_fns
+            .iter()
+            .find(|((owner, local_name, _arity), _)| *owner == module_id && local_name == name)
+            .map(|(_, fn_id)| *fn_id)
     }
 
     pub(super) fn fresh_generated_function(&mut self, kind: FunctionKind, debug_name: impl Into<String>) -> FnId {

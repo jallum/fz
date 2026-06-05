@@ -107,11 +107,22 @@ end
         docs: None,
         fingerprint_inputs: vec!["export:Math.add/2".to_string()],
     };
-    let unit = CompiledUnit::from_ir_module(m.clone(), Some(interface), Diagnostics::new());
+    let unit = CompiledUnit::from_ir_module(
+        m.clone(),
+        BTreeMap::from([(interface.name.clone(), interface)]),
+        Diagnostics::new(),
+    );
     assert_eq!(unit.module.as_ref().unwrap().dotted(), "Math");
     assert_eq!(unit.code.fns.len(), m.fns.len());
-    assert_eq!(unit.exports[0].name, "add");
-    assert_eq!(unit.interface_fingerprint, ["export:Math.add/2"]);
+    assert_eq!(unit.interfaces.len(), 1);
+    assert_eq!(
+        unit.interfaces[&ModuleName::from_segments(vec!["Math".to_string()])].exports[0].name,
+        "add"
+    );
+    assert_eq!(
+        unit.interface_fingerprints[&ModuleName::from_segments(vec!["Math".to_string()])],
+        ["export:Math.add/2"]
+    );
 }
 
 #[test]
@@ -272,7 +283,11 @@ fn link_test_unit(
             target: import.clone(),
         });
     }
-    let unit = CompiledUnit::from_ir_module(code, Some(interface), Diagnostics::new());
+    let unit = CompiledUnit::from_ir_module(
+        code,
+        BTreeMap::from([(interface.name.clone(), interface)]),
+        Diagnostics::new(),
+    );
     let runtime = RuntimeUnitMetadata {
         module: Some(module_name),
         atoms: Vec::new(),
@@ -363,11 +378,11 @@ fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
     let math_unit = CompiledUnit::from_ir_module_with_plan(
         math.module,
         Some(math.module_plan),
-        Some(math_interface),
+        BTreeMap::from([(math_interface.name.clone(), math_interface)]),
         Diagnostics::new(),
     );
     let user_unit =
-        CompiledUnit::from_ir_module_with_plan(user.module, Some(user.module_plan), None, Diagnostics::new());
+        CompiledUnit::from_ir_module_with_plan(user.module, Some(user.module_plan), BTreeMap::new(), Diagnostics::new());
     let linked = link_ir_units(&[math_unit.clone(), user_unit.clone()]).expect("link ir units");
     // Re-plan the linked module: after the linker rewrites external stub
     // callsites to their resolved targets, a fresh plan must show no External
@@ -459,11 +474,11 @@ fn main(), do: User.run()
     let provider_unit = CompiledUnit::from_ir_module_with_plan(
         provider.module,
         Some(provider.module_plan),
-        Some(contracts_interface),
+        BTreeMap::from([(contracts_interface.name.clone(), contracts_interface)]),
         Diagnostics::new(),
     );
     let user_unit =
-        CompiledUnit::from_ir_module_with_plan(user.module, Some(user.module_plan), None, Diagnostics::new());
+        CompiledUnit::from_ir_module_with_plan(user.module, Some(user.module_plan), BTreeMap::new(), Diagnostics::new());
     let linked = link_ir_units(&[provider_unit, user_unit]).expect("link ir units");
     let entry = linked.fn_by_name("main").expect("main").id;
     let linked_plan = plan_module(&mut t, &linked, &tel);
@@ -1115,7 +1130,11 @@ fn image_linker_rejects_unresolved_external_imports_without_provider() {
         docs: None,
         fingerprint_inputs: Vec::new(),
     };
-    let unit = CompiledUnit::from_ir_module(unit_code.clone(), Some(interface), Diagnostics::new());
+    let unit = CompiledUnit::from_ir_module(
+        unit_code.clone(),
+        BTreeMap::from([(interface.name.clone(), interface)]),
+        Diagnostics::new(),
+    );
     let err = match link_ir_units(&[unit]) {
         Ok(_) => panic!("expected unresolved external calls"),
         Err(err) => err,
@@ -1756,6 +1775,19 @@ fn process_heap_alloc_stats_stays_zero_arg_through_codegen_preflight() {
             }
         }
     }
+}
+
+#[test]
+fn enum_take_drop_split_keeps_direct_dispatch_total_after_materialization() {
+    let src = std::fs::read_to_string("fixtures/enum_take_drop_split/input.fz")
+        .expect("read enum_take_drop_split fixture");
+    let mut t = crate::types::new();
+    let graph = runtime_graph(&mut t, &src);
+    assert_materialized_direct_dispatch_coverage(
+        &mut t,
+        &graph,
+        "enum_take_drop_split runtime graph must keep direct dispatch total",
+    );
 }
 
 #[test]

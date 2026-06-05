@@ -177,6 +177,7 @@ fn main(), do: &Kernel.dbg/1
         .expect("fn-ref runtime reachability must preserve compiler invariants");
 }
 
+
 #[test]
 fn protocol_impl_reduce_callback_plans_to_fixed_point() {
     let mut concrete_types = crate::types::new();
@@ -189,14 +190,14 @@ defprotocol Reducible do
   fn reduce(value, acc, reducer)
 end
 
-defmodule List do
+defmodule ListHelpers do
   fn reduce([], {:cont, acc}, _reducer), do: {:done, acc}
   fn reduce([head | tail], {:cont, acc}, reducer), do: reduce(tail, reducer.(head, acc), reducer)
   fn reduce(_list, {:halt, acc}, _reducer), do: {:halted, acc}
 end
 
 defimpl Reducible, for: List do
-  fn reduce(list, acc, reducer), do: List.reduce(list, acc, reducer)
+  fn reduce(list, acc, reducer), do: ListHelpers.reduce(list, acc, reducer)
 end
 
 fn main() do
@@ -282,6 +283,32 @@ fn linked_runtime_graph_keeps_cont_dispatches_for_enum_take_drop_split() {
             );
         }
     }
+}
+
+#[test]
+fn compiler_world_resolves_protocol_impl_callback_owners() {
+    let mut compiler = compiler();
+    let tel = NullTelemetry;
+    let range = ModuleName::from_segments(vec!["Range".to_string()]);
+    let callback = ExportKey::new(
+        ModuleName::from_segments(vec!["Enumerable".to_string(), "Range".to_string()]),
+        "reduce".to_string(),
+        3,
+    );
+
+    let Some(range_id) = compiler.world_mut().discover_runtime_module(&range, &tel) else {
+        panic!("runtime module Range should be discoverable");
+    };
+    compiler
+        .world_mut()
+        .ensure_runtime_module_interface(&range, &tel)
+        .unwrap_or_else(|diagnostic| panic!("range interface: {}", diagnostic.message));
+
+    let owner = compiler
+        .world_mut()
+        .discover_runtime_export_owner(&callback, &tel)
+        .unwrap_or_else(|diagnostic| panic!("callback owner: {}", diagnostic.message));
+    assert_eq!(owner, Some(range_id), "compiler world should resolve protocol callback owners directly");
 }
 
 #[test]

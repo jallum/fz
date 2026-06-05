@@ -166,6 +166,9 @@ pub(crate) fn lower_expr<T: Types<Ty = Ty>>(
             // bare-name form, picks the first matching name (overloads
             // disambiguate via the explicit `&name/arity` form — see the
             // `Expr::FnRef` arm).
+            if let Some(fn_id) = ctx.first_local_named_fn(ctx.current_owner_module_id, name) {
+                return Ok(ctx.let_at(Prim::make_fn_ref(sp, fn_id), sp));
+            }
             if let Some((_, fn_id)) = ctx
                 .fns
                 .iter()
@@ -193,6 +196,9 @@ pub(crate) fn lower_expr<T: Types<Ty = Ty>>(
             what: "capture `&(...)`/`&N` requires desugaring (fz-g58.15)".to_string(),
         }),
         Expr::FnRef { name, arity } => {
+            if let Some(fn_id) = ctx.local_named_fn(ctx.current_owner_module_id, name, *arity) {
+                return Ok(ctx.let_at(Prim::make_fn_ref(sp, fn_id), sp));
+            }
             if let Some(&fn_id) = ctx.fns.get(&(name.clone(), *arity)) {
                 return Ok(ctx.let_at(Prim::make_fn_ref(sp, fn_id), sp));
             }
@@ -330,7 +336,7 @@ pub(crate) fn lower_expr<T: Types<Ty = Ty>>(
                 }
             };
             let arity = arg_vars.len();
-            let local_callee = ctx.fns.get(&(callee_name.clone(), arity)).copied();
+            let local_callee = ctx.local_named_fn(ctx.current_owner_module_id, &callee_name, arity);
             let callee_name = if local_callee.is_none() {
                 ctx.resolve_prelude_import(&callee_name, arity).unwrap_or(callee_name)
             } else {

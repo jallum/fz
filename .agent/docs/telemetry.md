@@ -225,7 +225,9 @@ module through the world the way we intended?" before loader/resolver work lands
 - `fz.compiler.fn_group_cache_hit` — a later lowering request reused the cached
   IR for one source-backed function-group instead of re-emitting it.
   Measurements mirror `fn_group_lowered`. Metadata mirrors
-  `fn_group_lowered`.
+  `fn_group_lowered`. Cached fn-group IR is remapped back through the active
+  lowering atom table before reuse, so atom literals stay semantically stable
+  even when earlier work changed atom interning order in the current compile.
 - `fz.compiler.interface_ready` — the compiler collected module interfaces from
   cached parsed source. Measurements: `module_id`, `file_id`. Metadata:
   `module_key`, `module_key_kind`, `module_origin`, `interfaces`,

@@ -795,7 +795,9 @@ where
                 .as_ref()
                 .and_then(|slot0| slot0.capability.clone())
                 .or_else(|| key.first().and_then(|ty| callable_capability_for_ty(self.t, ty)));
-            return Some((key, slot0_capability));
+            if !self.has_bottom_arg(&key) {
+                return Some((key, slot0_capability));
+            }
         }
         let slot0 = fallback_slot0?;
         let key = cont_key_from_slot0(&self.any_ty, n_params, slot0.ty, &cont.captured, env);
@@ -825,10 +827,7 @@ where
                     selected_edge,
                 );
                 match knowledge.slot0 {
-                    ResultSlot0::Known(ty) => ContinuationSlot0 {
-                        capability: callable_capability_for_ty(self.t, &ty),
-                        ty,
-                    },
+                    ResultSlot0::Known(ty) => self.planner_visible_continuation_slot0(ty),
                     // Planner-visible continuations must stay coherent even when
                     // inference cannot yet prove a narrower slot-0 type.
                     ResultSlot0::Pending => ContinuationSlot0 {
@@ -897,15 +896,26 @@ where
             env.get(&closure),
         );
         Some(match knowledge.slot0 {
-            ResultSlot0::Known(ty) => ContinuationSlot0 {
-                capability: callable_capability_for_ty(self.t, &ty),
-                ty,
-            },
+            ResultSlot0::Known(ty) => self.planner_visible_continuation_slot0(ty),
             ResultSlot0::Pending => ContinuationSlot0 {
                 ty: self.any_ty.clone(),
                 capability: None,
             },
         })
+    }
+
+    fn planner_visible_continuation_slot0(&mut self, ty: Ty) -> ContinuationSlot0 {
+        let none_ty = self.t.none();
+        if self.t.is_equivalent(&ty, &none_ty) {
+            return ContinuationSlot0 {
+                ty: self.any_ty.clone(),
+                capability: None,
+            };
+        }
+        ContinuationSlot0 {
+            capability: callable_capability_for_ty(self.t, &ty),
+            ty,
+        }
     }
 
     fn seed_receive_matched_outcomes(&mut self, term: &Term) {
