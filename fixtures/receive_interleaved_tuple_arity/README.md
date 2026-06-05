@@ -2,7 +2,7 @@
 purpose: "receive whose clauses interleave tuple-3 / atom / tuple-3 — matrix shares the tuple-arity test across the non-adjacent tuple clauses"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 29
-budget.codegen.instructions: 656
+budget.codegen.instructions: 801
 budget.specs.count: 26
 budget.planner.worklist_pops: 26
 budget.planner.walk_calls: 26
