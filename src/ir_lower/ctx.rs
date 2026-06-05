@@ -1,21 +1,31 @@
 use super::*;
 use crate::ast::FnDef;
 use crate::diag::Span;
-use crate::frontend::protocols::ProtocolRegistry;
 use crate::fz_ir::{
     BlockId, BranchOrigin, CallsiteId, CallsiteIdent, Const, ContinuationProvenance, EmitSlot, ExternArg, ExternDecl,
     ExternId, ExternTy, ExternalCallEdge, FnBuilder, FnCategory, FnId, ModuleBuilder, Prim, ProtocolCallTarget, Term,
     Var,
 };
-use crate::modules::identity::{ExportKey, ModuleName};
-use crate::modules::interface::ModuleInterface;
+use crate::modules::identity::ExportKey;
 use crate::type_expr::ModuleTypeEnv;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 /// Map of compiler-visible callable name -> primary FnId.
 pub(super) type FnMap = HashMap<(String, usize), FnId>;
 
+pub(super) struct LoweringShared {
+    pub(super) prelude_type_env: ModuleTypeEnv,
+    pub(super) combined_type_env: ModuleTypeEnv,
+    pub(super) fn_defs_by_arity: HashMap<(String, usize), FnDef>,
+    pub(super) prelude_imports: HashMap<(String, usize), String>,
+    pub(super) external_exports: HashMap<(String, usize), ExportKey>,
+    pub(super) protocol_callbacks: HashMap<(String, usize), ProtocolCallTarget>,
+    pub(super) struct_schemas: BTreeMap<String, Vec<String>>,
+}
+
 pub struct LowerCtx {
+    pub(super) shared: Arc<LoweringShared>,
     pub atoms: AtomTable,
     pub externs: ExternTable,
     /// Accumulated ExternDecls; moved into Module.externs after build.
@@ -63,14 +73,6 @@ pub struct LowerCtx {
     /// so runtime.fz spans do not overwrite user-source spans that share the
     /// same per-fn `Var` numbering.
     pub prelude_fn_ids: HashSet<FnId>,
-    /// Type env for compiler-known runtime types plus any root aliases still
-    /// declared by the prelude. Downstream passes use it to resolve runtime
-    /// names such as `pid`, `ref`, and `utf8`.
-    pub prelude_type_env: ModuleTypeEnv,
-    /// fz-ty1.9 — Merged type env: prelude + all user-module @type aliases.
-    /// Used by `emit_param_type_guards` to resolve annotation tokens in
-    /// `fn f(x :: T)` parameter heads.
-    pub combined_type_env: ModuleTypeEnv,
     /// fz-jg5.12 (RED.9) — FnIds of user fns that carry an `@spec`. Copied
     /// into `Module.boundary_fns` after build. The reducer treats these as
     /// firewalls so a declared spec is honored as a contract.
@@ -82,34 +84,23 @@ pub struct LowerCtx {
     /// scope, and restore on exit. PatternMatrix helpers and `lower_pattern_bind`
     /// read this when emitting their Ifs.
     pub branch_origin: BranchOrigin,
-    /// fz-puj.49 (X1A) — snapshot of user FnDefs by (name, arity) for
-    /// AST-level β-reduction in guards. Populated at lower_program entry
-    /// before any clause is lowered. Holds clones to avoid threading
-    /// `&Program` through every lowering helper. Only fns that satisfy
-    /// the "pure callee" shape (single clause, no guard, all-Var params,
-    /// pure body — see `is_pure_user_fn_for_guard_inline`) are usable as
-    /// inline substitutions; the rest are kept here so the diagnostic
-    /// can explain *why* a particular call wasn't inlined.
-    pub fn_defs_by_arity: HashMap<(String, usize), FnDef>,
-    pub(super) prelude_imports: HashMap<(String, usize), String>,
-    pub(super) external_exports: HashMap<(String, usize), ExportKey>,
     pub(super) external_stubs: HashMap<ExportKey, FnId>,
     pub(super) imported_fn_value_wrappers: HashMap<ExportKey, FnId>,
-    pub(super) protocol_callbacks: HashMap<(String, usize), ProtocolCallTarget>,
     pub(super) protocol_stubs: HashMap<(String, usize), FnId>,
-    pub(super) struct_schemas: BTreeMap<String, Vec<String>>,
     pub(super) continuation_provenance: HashMap<FnId, ContinuationProvenance>,
     pub(super) function_registry: LoweringFunctionRegistry,
 }
 
 impl LowerCtx {
     pub fn new(
+        shared: Arc<LoweringShared>,
         function_registry: LoweringFunctionRegistry,
         extern_decls: Vec<ExternDecl>,
         externs: ExternTable,
         next_extern: u32,
     ) -> Self {
         Self {
+            shared,
             atoms: AtomTable::default(),
             externs,
             extern_decls,
@@ -132,18 +123,11 @@ impl LowerCtx {
             fn_spans: HashMap::new(),
             extern_wrappers: HashMap::new(),
             prelude_fn_ids: HashSet::new(),
-            prelude_type_env: ModuleTypeEnv::new(),
-            combined_type_env: ModuleTypeEnv::new(),
             boundary_fns: HashSet::new(),
             branch_origin: BranchOrigin::User,
-            fn_defs_by_arity: HashMap::new(),
-            prelude_imports: HashMap::new(),
-            external_exports: HashMap::new(),
             external_stubs: HashMap::new(),
             imported_fn_value_wrappers: HashMap::new(),
-            protocol_callbacks: HashMap::new(),
             protocol_stubs: HashMap::new(),
-            struct_schemas: Default::default(),
             continuation_provenance: HashMap::new(),
             function_registry,
         }
@@ -205,11 +189,12 @@ impl LowerCtx {
     }
 
     pub(super) fn resolve_prelude_import(&self, name: &str, arity: usize) -> Option<String> {
-        self.prelude_imports.get(&(name.to_string(), arity)).cloned()
+        self.shared.prelude_imports.get(&(name.to_string(), arity)).cloned()
     }
 
     pub(super) fn unique_imported_fn_value_target(&mut self, name: &str) -> Option<(String, FnId)> {
         let mut matches = self
+            .shared
             .prelude_imports
             .iter()
             .filter(|((imported, _arity), _qualified)| imported == name)
@@ -226,57 +211,14 @@ impl LowerCtx {
         if let Some(&fn_id) = self.fns.get(&(qualified.to_string(), arity)) {
             return Some((qualified.to_string(), fn_id));
         }
-        let target = self.external_exports.get(&(qualified.to_string(), arity))?.clone();
+        let target = self.shared.external_exports.get(&(qualified.to_string(), arity))?.clone();
         let fn_id = self.ensure_imported_fn_value_wrapper(target.clone());
         Some((qualified.to_string(), fn_id))
     }
 
-    pub(super) fn register_external_interfaces(&mut self, interfaces: &BTreeMap<ModuleName, ModuleInterface>) {
-        for (module, interface) in interfaces {
-            for export in &interface.exports {
-                self.external_exports.insert(
-                    (format!("{}.{}", module, export.name), export.arity),
-                    ExportKey::new(module.clone(), export.name.clone(), export.arity),
-                );
-            }
-        }
-    }
-
-    pub(super) fn register_protocol_registry(&mut self, registry: &ProtocolRegistry) {
-        for (protocol, decl) in &registry.protocols {
-            for callback in &decl.callbacks {
-                self.protocol_callbacks.insert(
-                    (format!("{}.{}", protocol, callback.name), callback.arity),
-                    ProtocolCallTarget {
-                        protocol: protocol.clone(),
-                        callback: callback.name.clone(),
-                        arity: callback.arity,
-                    },
-                );
-            }
-        }
-    }
-
-    pub(super) fn register_interface_protocols(&mut self, interfaces: &BTreeMap<ModuleName, ModuleInterface>) {
-        for interface in interfaces.values() {
-            for protocol in &interface.protocols {
-                for callback in &protocol.callbacks {
-                    self.protocol_callbacks.insert(
-                        (format!("{}.{}", protocol.name, callback.name), callback.arity),
-                        ProtocolCallTarget {
-                            protocol: protocol.name.clone(),
-                            callback: callback.name.clone(),
-                            arity: callback.arity,
-                        },
-                    );
-                }
-            }
-        }
-    }
-
     pub(super) fn protocol_callee(&mut self, name: &str, arity: usize) -> Option<FnId> {
         let key = (name.to_string(), arity);
-        let target = self.protocol_callbacks.get(&key)?.clone();
+        let target = self.shared.protocol_callbacks.get(&key)?.clone();
         if let Some(fn_id) = self.protocol_stubs.get(&key).copied() {
             return Some(fn_id);
         }
@@ -295,7 +237,7 @@ impl LowerCtx {
     }
 
     pub(super) fn external_callee(&mut self, name: &str, arity: usize) -> Option<(FnId, ExportKey)> {
-        let target = self.external_exports.get(&(name.to_string(), arity))?.clone();
+        let target = self.shared.external_exports.get(&(name.to_string(), arity))?.clone();
         let fn_id = self.ensure_external_stub(target.clone(), arity);
         Some((fn_id, target))
     }
@@ -541,6 +483,20 @@ impl LowerCtx {
 
 impl Default for LowerCtx {
     fn default() -> Self {
-        Self::new(LoweringFunctionRegistry::default(), Vec::new(), ExternTable::new(), 0)
+        Self::new(
+            Arc::new(LoweringShared {
+                prelude_type_env: ModuleTypeEnv::new(),
+                combined_type_env: ModuleTypeEnv::new(),
+                fn_defs_by_arity: HashMap::new(),
+                prelude_imports: HashMap::new(),
+                external_exports: HashMap::new(),
+                protocol_callbacks: HashMap::new(),
+                struct_schemas: BTreeMap::new(),
+            }),
+            LoweringFunctionRegistry::default(),
+            Vec::new(),
+            ExternTable::new(),
+            0,
+        )
     }
 }

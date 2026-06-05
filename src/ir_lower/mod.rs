@@ -51,14 +51,14 @@ use crate::frontend::resolve::flatten_modules;
 use crate::fz_ir::{BinOp, BranchOrigin, DeadBranch, ExternMarshal, FnBuilder, ModuleBuilder};
 use crate::fz_ir::{
     BlockId, Const, ContinuationProvenance, ContinuationProvenanceKind, ExternDecl, ExternId, ExternTy, FnCategory,
-    FnId, FnIr, Module, Prim, SourceInfo, Stmt, Term, Var,
+    FnId, FnIr, Module, Prim, ProtocolCallTarget, SourceInfo, Stmt, Term, Var,
 };
 use crate::ir_capture_norm::normalize_continuation_captures_with_telemetry;
 #[cfg(test)]
 use crate::ir_codegen::compile_planned;
 #[cfg(test)]
 use crate::ir_planner::{collect_diagnostics, plan_module};
-use crate::modules::identity::{Mfa, ModuleName};
+use crate::modules::identity::{ExportKey, Mfa, ModuleName};
 #[cfg(test)]
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
@@ -79,6 +79,7 @@ use crate::{measurements, metadata};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::mem::take;
 use std::rc::Rc;
+use std::sync::Arc;
 
 mod atom_table;
 mod brand_erase;
@@ -108,7 +109,7 @@ use cps::{
     ContFn, OwnedConsCapture, cont_call_args, cps_split_call, cps_split_call_closure, cps_split_external_call,
     finalize_arm, mint_cont_fn, switch_to_cont_fn,
 };
-use ctx::LowerCtx;
+use ctx::{LowerCtx, LoweringShared};
 use expr::{bind_param_topname, lower_expr, lower_fn, lower_pattern_bind};
 pub(crate) use extern_table::ExternTable;
 use extern_table::{extern_symbol_from_name, extern_ty_from_name};
@@ -556,6 +557,53 @@ pub(crate) enum LoweringDemandResult<D, E> {
     Fatal(E),
 }
 
+fn collect_external_exports(interfaces: &BTreeMap<ModuleName, crate::modules::interface::ModuleInterface>) -> HashMap<(String, usize), ExportKey> {
+    let mut exports = HashMap::new();
+    for (module, interface) in interfaces {
+        for export in &interface.exports {
+            exports.insert(
+                (format!("{}.{}", module, export.name), export.arity),
+                ExportKey::new(module.clone(), export.name.clone(), export.arity),
+            );
+        }
+    }
+    exports
+}
+
+fn collect_protocol_callbacks(
+    compiler: &CompilerWorld,
+    interfaces: &BTreeMap<ModuleName, crate::modules::interface::ModuleInterface>,
+) -> HashMap<(String, usize), ProtocolCallTarget> {
+    let mut callbacks = HashMap::new();
+    for (protocol, decl) in &compiler.protocol_registry().protocols {
+        for callback in &decl.callbacks {
+            callbacks.insert(
+                (format!("{}.{}", protocol, callback.name), callback.arity),
+                ProtocolCallTarget {
+                    protocol: protocol.clone(),
+                    callback: callback.name.clone(),
+                    arity: callback.arity,
+                },
+            );
+        }
+    }
+    for interface in interfaces.values() {
+        for protocol in &interface.protocols {
+            for callback in &protocol.callbacks {
+                callbacks.insert(
+                    (format!("{}.{}", protocol.name, callback.name), callback.arity),
+                    ProtocolCallTarget {
+                        protocol: protocol.name.clone(),
+                        callback: callback.name.clone(),
+                        arity: callback.arity,
+                    },
+                );
+            }
+        }
+    }
+    callbacks
+}
+
 fn fn_arity(fn_def: &FnDef) -> usize {
     fn_def.clauses.first().map(|clause| clause.params.len()).unwrap_or(0)
 }
@@ -754,7 +802,7 @@ fn ensure_source_extern_decl<T: Types<Ty = Ty>>(
         .iter()
         .map(|name| extern_ty_from_name(name).unwrap_or(ExternTy::Any))
         .collect();
-    let (ret, ret_descr) = lower_extern_ret_ty(t, fn_def, &ctx.prelude_type_env)?;
+    let (ret, ret_descr) = lower_extern_ret_ty(t, fn_def, &ctx.shared.prelude_type_env)?;
     ctx.extern_decls.push(ExternDecl {
         id: eid,
         fz_name: fn_def.name.clone(),
@@ -996,36 +1044,6 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
         .ensure_source_module_interfaces(prelude_id, tel)
         .expect("runtime.fz named modules should register compiler-owned source surfaces");
     let prelude = prepared_prelude.program;
-    let mut ctx = LowerCtx::new(
-        compiler.begin_lowering_function_registry(),
-        compiler.begin_lowering_extern_decls(),
-        compiler.begin_lowering_extern_table(),
-        compiler.next_extern_id(),
-    );
-    ctx.struct_schemas.extend(
-        prog.structs
-            .iter()
-            .map(|(name, fields)| (name.dotted(), fields.clone())),
-    );
-    ctx.register_external_interfaces(&prog.external_module_interfaces);
-    ctx.register_protocol_registry(compiler.protocol_registry());
-    ctx.register_interface_protocols(&prog.external_module_interfaces);
-    ctx.prelude_imports = prepared_prelude.imports;
-    ctx.struct_schemas.extend(
-        prelude
-            .structs
-            .iter()
-            .map(|(name, fields)| (name.dotted(), fields.clone())),
-    );
-    ctx.register_external_interfaces(&prelude.external_module_interfaces);
-    let prelude_type_env = prelude.module_type_envs.get("").cloned().unwrap_or_default();
-    ctx.prelude_type_env = prelude_type_env.clone();
-    let mut combined = prelude_type_env;
-    for module_env in prog.module_type_envs.values() {
-        combined.extend_env(module_env.clone());
-    }
-    ctx.combined_type_env = combined;
-
     let runtime_item_count = prelude.items.len();
     let all_items: Vec<Rc<Item>> = prelude
         .items
@@ -1035,6 +1053,52 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
         .collect();
     let prelude_items = &all_items[..runtime_item_count];
     let user_items = &all_items[runtime_item_count..];
+    let prelude_type_env = prelude.module_type_envs.get("").cloned().unwrap_or_default();
+    let mut combined_type_env = prelude_type_env.clone();
+    for module_env in prog.module_type_envs.values() {
+        combined_type_env.extend_env(module_env.clone());
+    }
+    let mut fn_defs_by_arity = HashMap::new();
+    for item in user_items {
+        if let Item::Fn(fn_def) = item.as_ref()
+            && fn_def.extern_abi.is_none()
+        {
+            let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
+            fn_defs_by_arity
+                .entry((fn_def.name.clone(), arity))
+                .or_insert_with(|| fn_def.clone());
+        }
+    }
+    let mut struct_schemas = prog
+        .structs
+        .iter()
+        .map(|(name, fields)| (name.dotted(), fields.clone()))
+        .collect::<BTreeMap<_, _>>();
+    struct_schemas.extend(
+        prelude
+            .structs
+            .iter()
+            .map(|(name, fields)| (name.dotted(), fields.clone())),
+    );
+    let mut external_exports = collect_external_exports(&prog.external_module_interfaces);
+    external_exports.extend(collect_external_exports(&prelude.external_module_interfaces));
+    let protocol_callbacks = collect_protocol_callbacks(compiler, &prog.external_module_interfaces);
+    let shared = Arc::new(LoweringShared {
+        prelude_type_env,
+        combined_type_env,
+        fn_defs_by_arity,
+        prelude_imports: prepared_prelude.imports,
+        external_exports,
+        protocol_callbacks,
+        struct_schemas,
+    });
+    let mut ctx = LowerCtx::new(
+        Arc::clone(&shared),
+        compiler.begin_lowering_function_registry(),
+        compiler.begin_lowering_extern_decls(),
+        compiler.begin_lowering_extern_table(),
+        compiler.next_extern_id(),
+    );
     let prelude_fn_defs = collect_lowerable_fn_defs(compiler, prelude_id, prelude_items);
     let user_key_module = root_source.unwrap_or(ModuleId(u32::MAX));
     if let Some(root_source) = root_source {
@@ -1047,17 +1111,6 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
     }
     let user_fn_defs = collect_lowerable_fn_defs(compiler, user_key_module, user_items);
     let mut fn_key_by_id = HashMap::new();
-
-    for item in all_items.iter().skip(runtime_item_count) {
-        if let Item::Fn(fn_def) = item.as_ref()
-            && fn_def.extern_abi.is_none()
-        {
-            let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
-            ctx.fn_defs_by_arity
-                .entry((fn_def.name.clone(), arity))
-                .or_insert_with(|| fn_def.clone());
-        }
-    }
 
     for item in all_items.iter().take(runtime_item_count) {
         if let Item::Fn(fn_def) = item.as_ref() {
@@ -1285,7 +1338,7 @@ impl CompilerLoweringSession {
             } else {
                 prog.module_type_envs
                     .get(&module_path)
-                    .unwrap_or(&self.ctx.combined_type_env)
+                    .unwrap_or(&self.ctx.shared.combined_type_env)
             };
             if let Ok(resolved) = resolve_spec_decls(t, specs, env) {
                 module
@@ -1294,14 +1347,14 @@ impl CompilerLoweringSession {
                 module.declared_specs.insert(fid, resolved);
             }
         }
-        install_visible_callable_contracts(t, compiler, &mut module, &self.ctx.combined_type_env, tel);
+        install_visible_callable_contracts(t, compiler, &mut module, &self.ctx.shared.combined_type_env, tel);
         install_inherited_protocol_callback_specs(
             t,
             &mut module,
             &self.ctx.fns,
             &prog.module_type_envs,
             &self.prelude.module_type_envs,
-            &self.ctx.combined_type_env,
+            &self.ctx.shared.combined_type_env,
         );
         let continuation_provenance = self.ctx.continuation_provenance;
         module.continuation_provenance = continuation_provenance.clone();
@@ -1318,7 +1371,7 @@ impl CompilerLoweringSession {
         ));
         module.brand_inners = prog.brand_inners.clone();
         module.brand_inners.extend(self.prelude.brand_inners.clone());
-        module.struct_schemas = self.ctx.struct_schemas.clone();
+        module.struct_schemas = self.ctx.shared.struct_schemas.clone();
         annotate_back_edges(&mut module, &self.ctx.fn_spans)?;
         check_brand_visibility(t, &module, &self.ctx.stmt_spans, &self.ctx.fn_spans)?;
         erase_brands(&mut module);

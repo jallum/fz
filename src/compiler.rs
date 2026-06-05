@@ -6,7 +6,7 @@
 use crate::ast::{Attribute, FnDef, Item, ModuleDef, Program, ProtocolImplDef, SpecDecl};
 use crate::diag::{Diagnostic, SourceMap, Span};
 use crate::frontend::resolve::{
-    InterfaceTable, flatten_modules_with_compiler,
+    InterfaceTable, resolve_program_eagerly,
 };
 use crate::frontend::{
     protocols::{ImplTarget, ProtocolRegistry},
@@ -956,7 +956,7 @@ impl CompilerWorld {
     where
         T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
     {
-        let mut prog = match flatten_modules_with_compiler(t, self, root_source, prog, interface_table, tel) {
+        let mut prog = match resolve_program_eagerly(t, self, root_source, prog, interface_table, tel) {
             Ok(prog) => prog,
             Err(err) => {
                 return Err(FrontendErr {
@@ -1479,7 +1479,7 @@ impl CompilerWorld {
             structs: Default::default(),
             struct_field_types: Default::default(),
         };
-        let mut program = flatten_modules_with_compiler(t, self, None, staged, BTreeMap::new(), tel)
+        let mut program = resolve_program_eagerly(t, self, None, staged, BTreeMap::new(), tel)
             .map_err(|err| err.to_diagnostic())?;
         program
             .module_type_envs

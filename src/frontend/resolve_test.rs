@@ -19,7 +19,7 @@ fn flatten(src: &str) -> Program {
 fn flatten_with_compiler(src: &str) -> (Compiler, Program) {
     let mut compiler = Compiler::new();
     let mut ct = crate::types::new();
-    let program = flatten_modules_with_compiler(
+    let program = resolve_program_eagerly(
         &mut ct,
         compiler.world_mut(),
         None,

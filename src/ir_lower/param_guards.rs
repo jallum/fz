@@ -24,7 +24,7 @@ pub(crate) fn emit_param_type_guards<T: Types<Ty = Ty>>(
             Some(tt) => &tt.0,
             None => continue,
         };
-        let ty = match parse_type_expr(t, toks, &ctx.combined_type_env) {
+        let ty = match parse_type_expr(t, toks, &ctx.shared.combined_type_env) {
             Ok((ty, _)) => ty,
             Err(_) => continue,
         };

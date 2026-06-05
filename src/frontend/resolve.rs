@@ -173,7 +173,7 @@ impl Error for ResolveError {}
 
 pub fn flatten_modules<T: Types<Ty = Ty>>(t: &mut T, prog: Program) -> Result<Program, ResolveError> {
     let mut compiler = Compiler::new();
-    flatten_modules_with_compiler(
+    resolve_program_eagerly(
         t,
         compiler.world_mut(),
         None,
@@ -183,7 +183,7 @@ pub fn flatten_modules<T: Types<Ty = Ty>>(t: &mut T, prog: Program) -> Result<Pr
     )
 }
 
-pub fn flatten_modules_with_compiler<T: Types<Ty = Ty>>(
+pub fn resolve_program_eagerly<T: Types<Ty = Ty>>(
     t: &mut T,
     compiler: &mut CompilerWorld,
     root_source: Option<ModuleId>,
@@ -430,7 +430,7 @@ pub fn flatten_modules_with_interface_table<T: Types<Ty = Ty>>(
     interface_table: InterfaceTable,
 ) -> Result<Program, ResolveError> {
     let mut compiler = Compiler::new();
-    flatten_modules_with_compiler(
+    resolve_program_eagerly(
         t,
         compiler.world_mut(),
         None,

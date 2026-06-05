@@ -52,7 +52,7 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
         let mut preconditions: Vec<(Var, Ty)> = Vec::new();
         for (pv, tok_opt) in param_vars.iter().zip(&c.param_annotations) {
             if let Some(toks) = tok_opt
-                && let Ok((ty, _)) = parse_type_expr(t, &toks.0, &ctx.combined_type_env)
+                && let Ok((ty, _)) = parse_type_expr(t, &toks.0, &ctx.shared.combined_type_env)
             {
                 preconditions.push((*pv, ty));
             }

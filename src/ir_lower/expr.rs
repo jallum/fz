@@ -1022,7 +1022,7 @@ pub(super) fn lower_struct<T: Types<Ty = Ty>>(
     span: Span,
 ) -> Result<Var, LowerError> {
     let module_name = module.dotted();
-    let Some(order) = ctx.struct_schemas.get(&module_name).cloned() else {
+    let Some(order) = ctx.shared.struct_schemas.get(&module_name).cloned() else {
         return Err(LowerError::Unsupported {
             span,
             what: format!("unknown struct `{}`", module_name),

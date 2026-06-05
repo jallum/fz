@@ -790,7 +790,7 @@ pub(crate) fn lower_guard_helper_call_to_dispatch(
     stack: &mut Vec<(String, usize)>,
 ) -> Result<Option<GuardExpr>, PatternMatrixCompileError> {
     let key = (name.to_string(), arity);
-    let Some(fn_def) = ctx.fn_defs_by_arity.get(&key) else {
+    let Some(fn_def) = ctx.shared.fn_defs_by_arity.get(&key) else {
         return Ok(None);
     };
     if stack.contains(&key) {
