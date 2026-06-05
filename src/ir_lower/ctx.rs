@@ -54,14 +54,10 @@ pub struct LowerCtx {
     /// a lambda) so it has *zero captures*, which is what
     /// `static_closure_targets` requires for the AOT dtor table.
     pub(super) extern_wrappers: HashMap<ExternId, FnId>,
-    /// fz-ext.7 — FnIds below this threshold belong to the runtime.fz
-    /// prelude. `build_source_info` ignores their var_meta entries so
-    /// prelude spans (relative to runtime.fz bytes) don't overwrite
-    /// user-program spans (which share the same per-fn Var numbering).
-    pub prelude_fn_id_cutoff: u32,
-    /// Compiler-owned prelude lowering is now demand-driven, so numeric
-    /// ordering is no longer sufficient to classify every prelude-origin fn.
-    /// This set records all lowered prelude fn ids, including continuations.
+    /// Prelude-origin FnIds, including continuations minted while lowering
+    /// prelude roots on demand. `build_source_info` ignores their var metadata
+    /// so runtime.fz spans do not overwrite user-source spans that share the
+    /// same per-fn `Var` numbering.
     pub prelude_fn_ids: HashSet<FnId>,
     /// Type env for compiler-known runtime types plus any root aliases still
     /// declared by the prelude. Downstream passes use it to resolve runtime
@@ -123,7 +119,6 @@ impl LowerCtx {
             term_spans: HashMap::new(),
             fn_spans: HashMap::new(),
             extern_wrappers: HashMap::new(),
-            prelude_fn_id_cutoff: 0,
             prelude_fn_ids: HashSet::new(),
             prelude_type_env: ModuleTypeEnv::new(),
             combined_type_env: ModuleTypeEnv::new(),

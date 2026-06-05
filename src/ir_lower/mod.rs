@@ -765,8 +765,6 @@ fn assign_compiler_source_root_fn_ids(
     ctx: &mut LowerCtx,
     tel: &dyn Telemetry,
 ) -> Result<(), LowerError> {
-    let prelude_cutoff = ctx.prelude_fn_id_cutoff;
-    let mut next_reserved_fn = prelude_cutoff;
     for item in items {
         let Item::Fn(fn_def) = item.as_ref() else {
             continue;
@@ -775,7 +773,7 @@ fn assign_compiler_source_root_fn_ids(
             continue;
         }
         let arity = fn_arity(fn_def);
-        let Some(descriptor) = compiler
+        let Some(_) = compiler
             .source_fn_group_descriptor(root_source, &fn_def.name, arity, tel)
             .map_err(|diagnostic| LowerError::Unsupported {
                 span: fn_def.span,
@@ -784,14 +782,12 @@ fn assign_compiler_source_root_fn_ids(
         else {
             continue;
         };
-        let id = FnId(prelude_cutoff + descriptor.id.0);
+        let id = ctx.mb.fresh_fn_id();
         ctx.fns.insert((fn_def.name.clone(), arity), id);
-        next_reserved_fn = next_reserved_fn.max(id.0 + 1);
         if fn_def.attrs.iter().any(|a| matches!(a, Attribute::Spec(_))) {
             ctx.boundary_fns.insert(id);
         }
     }
-    ctx.mb.advance_next_fn_to(next_reserved_fn);
     Ok(())
 }
 
@@ -1068,7 +1064,6 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
             }
         }
     }
-    ctx.prelude_fn_id_cutoff = ctx.mb.next_fn_id();
 
     if let Some(root_source) = root_source {
         assign_compiler_source_root_fn_ids(compiler, root_source, user_items, &mut ctx, tel)?;
