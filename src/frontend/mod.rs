@@ -7,7 +7,7 @@ pub(crate) mod spec_registry;
 
 use self::resolve::InterfaceTable;
 use crate::ast::{Expr, FnClause, FnDef, Item, Pattern, Program, Spanned, TypeExprBody};
-use crate::compiler::{Compiler, CompilerWorld};
+use crate::compiler::{Compiler, CompilerWorld, ModuleId};
 use crate::diag::codes;
 use crate::diag::{Diagnostic, Diagnostics, SourceMap, Span};
 use crate::fz_ir::{CallsiteId, EmitSlot, FnId, Module, rewrite_external_callsite_for_link};
@@ -221,7 +221,7 @@ where
             program: opaque(&prog),
         },
     );
-    compile_program_with_compiler_interface_table(compiler, t, prog, sm, interface_table, tel)
+    compile_program_with_compiler_interface_table(compiler, Some(root), t, prog, sm, interface_table, tel)
 }
 
 pub(crate) fn compile_program_with_types<T>(
@@ -247,11 +247,12 @@ pub(crate) fn compile_program_with_compiler_types<T>(
 where
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 {
-    compile_program_with_compiler_interface_table(compiler, t, prog, sm, InterfaceTable::new(), tel)
+    compile_program_with_compiler_interface_table(compiler, None, t, prog, sm, InterfaceTable::new(), tel)
 }
 
 pub(crate) fn compile_program_with_compiler_interface_table<T>(
     compiler: &mut CompilerWorld,
+    root_source: Option<ModuleId>,
     t: &mut T,
     prog: Program,
     sm: SourceMap,
@@ -261,8 +262,14 @@ pub(crate) fn compile_program_with_compiler_interface_table<T>(
 where
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 {
-    let mut prog = match resolve::flatten_modules_with_compiler_interface_table(t, compiler, prog, interface_table, tel)
-    {
+    let mut prog = match resolve::flatten_modules_with_compiler_interface_table(
+        t,
+        compiler,
+        root_source,
+        prog,
+        interface_table,
+        tel,
+    ) {
         Ok(prog) => prog,
         Err(e) => return Err(fail(sm, e.to_diagnostic())),
     };

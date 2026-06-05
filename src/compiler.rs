@@ -58,7 +58,7 @@ pub(crate) enum ModuleOrigin {
 }
 
 impl ModuleOrigin {
-    fn kind(self) -> &'static str {
+    pub(crate) fn kind(self) -> &'static str {
         match self {
             ModuleOrigin::RootSource => "root_source",
             ModuleOrigin::Filesystem => "filesystem",
@@ -353,6 +353,10 @@ impl Compiler {
         self.world.discover_primitive_prelude(tel)
     }
 
+    pub(crate) fn module_id_for_name(&self, module: &ModuleName) -> Option<ModuleId> {
+        self.world.module_id_for_name(module)
+    }
+
     pub(crate) fn ensure_source(&mut self, module_id: ModuleId, tel: &dyn Telemetry) -> Arc<str> {
         self.world.ensure_source(module_id, tel)
     }
@@ -395,6 +399,14 @@ impl Compiler {
         tel: &dyn Telemetry,
     ) -> Result<Option<ModuleInterface>, Diagnostic> {
         self.world.ensure_runtime_module_interface(module, tel)
+    }
+
+    pub(crate) fn ensure_source_module_interfaces(
+        &mut self,
+        root_id: ModuleId,
+        tel: &dyn Telemetry,
+    ) -> Result<BTreeMap<ModuleName, ModuleInterface>, Diagnostic> {
+        self.world.ensure_source_module_interfaces(root_id, tel)
     }
 
     pub(crate) fn mark_reachable(&mut self, module_id: ModuleId, kind: ReachabilityKind, tel: &dyn Telemetry) -> bool {
@@ -485,10 +497,17 @@ impl CompilerWorld {
         )
     }
 
+    pub(crate) fn module_id_for_name(&self, module: &ModuleName) -> Option<ModuleId> {
+        self.module_index.get(&ModuleKey::Named(module.clone())).copied()
+    }
+
     pub(crate) fn ensure_source(&mut self, module_id: ModuleId, tel: &dyn Telemetry) -> Arc<str> {
         let _ = self.ensure_module_state(module_id, ModuleState::SourceReady, tel, |this| {
             let file_id = this.module(module_id).file_id;
             let measurements = this.phase_measurements(module_id);
+            let module_key = this.module(module_id).key.render();
+            let module_key_kind = this.module(module_id).key.kind();
+            let module_origin = this.module(module_id).origin.kind();
             let record = &mut this.files[file_id.0 as usize];
             let source = record.descriptor.text.clone();
             record.source = Some(source.clone());
@@ -496,6 +515,9 @@ impl CompilerWorld {
                 &["fz", "compiler", "source_loaded"],
                 &measurements,
                 &metadata! {
+                    module_key: module_key,
+                    module_key_kind: module_key_kind,
+                    module_origin: module_origin,
                     source_name: record.descriptor.source_name.clone(),
                     file_origin: record.origin.kind(),
                     parse_kind: record.descriptor.parse_kind.as_str(),
@@ -525,6 +547,9 @@ impl CompilerWorld {
                 &["fz", "compiler", "parsed"],
                 &measurements,
                 &metadata! {
+                    module_key: this.module(module_id).key.render(),
+                    module_key_kind: this.module(module_id).key.kind(),
+                    module_origin: this.module(module_id).origin.kind(),
                     source_name: descriptor.source_name.clone(),
                     parse_kind: parsed.parse_kind().as_str(),
                     items: parsed.item_count() as u64,
@@ -576,6 +601,9 @@ impl CompilerWorld {
                 &["fz", "compiler", "interface_ready"],
                 &measurements,
                 &metadata! {
+                    module_key: this.module(module_id).key.render(),
+                    module_key_kind: this.module(module_id).key.kind(),
+                    module_origin: this.module(module_id).origin.kind(),
                     interfaces: interfaces.len() as u64,
                     parse_kind: parsed.parse_kind().as_str(),
                 },
@@ -600,6 +628,46 @@ impl CompilerWorld {
         };
         let interfaces = self.ensure_interface_table(module_id, tel)?;
         Ok(interfaces.get(module).cloned())
+    }
+
+    pub(crate) fn ensure_source_module_interfaces(
+        &mut self,
+        root_id: ModuleId,
+        tel: &dyn Telemetry,
+    ) -> Result<BTreeMap<ModuleName, ModuleInterface>, Diagnostic> {
+        let interfaces = self.ensure_interface_table(root_id, tel)?;
+        let file_id = self.module(root_id).file_id;
+        let file = self.file(file_id).clone();
+        for (module, interface) in &interfaces {
+            let module_id = self.register_module(
+                ModuleKey::Named(module.clone()),
+                ModuleOrigin::Filesystem,
+                file.origin.clone(),
+                file.descriptor.clone(),
+                tel,
+            );
+            let interface = interface.clone();
+            let module = module.clone();
+            let mut single = BTreeMap::new();
+            single.insert(module, interface);
+            let _ = self.ensure_module_state(module_id, ModuleState::InterfaceReady, tel, |this| {
+                let measurements = this.phase_measurements(module_id);
+                let record = this.module(module_id);
+                tel.execute(
+                    &["fz", "compiler", "interface_ready"],
+                    &measurements,
+                    &metadata! {
+                        module_key: record.key.render(),
+                        module_key_kind: record.key.kind(),
+                        module_origin: record.origin.kind(),
+                        interfaces: 1_u64,
+                        parse_kind: file.descriptor.parse_kind.as_str(),
+                    },
+                );
+                this.modules[module_id.0 as usize].interfaces = Some(single);
+            });
+        }
+        Ok(interfaces)
     }
 
     pub(crate) fn mark_reachable(&mut self, module_id: ModuleId, kind: ReachabilityKind, tel: &dyn Telemetry) -> bool {

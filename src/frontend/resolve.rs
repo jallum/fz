@@ -22,7 +22,7 @@
 //! diagnostic source for "this call resolves to …".
 
 use crate::ast::*;
-use crate::compiler::{Compiler, CompilerWorld};
+use crate::compiler::{Compiler, CompilerWorld, ModuleId, ModuleOrigin};
 use crate::diag::{Diagnostic, Span, codes};
 use crate::frontend::protocols::{
     ImplTarget, PROTOCOL_ELEM_VAR, ProtocolCallbackFact, ProtocolDecl, ProtocolImplFact, ProtocolImplKey,
@@ -31,10 +31,12 @@ use crate::frontend::protocols::{
 use crate::modules::identity::{ExportKey, ModuleName, QualifiedName};
 use crate::modules::interface::{ModuleInterface, collect_from_program};
 use crate::modules::runtime_library::{interface, root_type_env};
+use crate::telemetry::Telemetry;
 use crate::type_expr::{
     ModuleTypeEnv, build_module_type_env_for_with_base, builtin_type_env, resolve_spec_decl_positions,
 };
 use crate::types::{Ty, Types};
+use crate::{measurements, metadata};
 use std::collections::{BTreeMap, BTreeSet};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -171,16 +173,17 @@ impl Error for ResolveError {}
 
 pub fn flatten_modules<T: Types<Ty = Ty>>(t: &mut T, prog: Program) -> Result<Program, ResolveError> {
     let mut compiler = Compiler::new();
-    flatten_modules_with_compiler(t, compiler.world_mut(), prog, &crate::telemetry::NullTelemetry)
+    flatten_modules_with_compiler(t, compiler.world_mut(), None, prog, &crate::telemetry::NullTelemetry)
 }
 
 pub fn flatten_modules_with_compiler<T: Types<Ty = Ty>>(
     t: &mut T,
     compiler: &mut CompilerWorld,
+    root_source: Option<ModuleId>,
     prog: Program,
-    tel: &dyn crate::telemetry::Telemetry,
+    tel: &dyn Telemetry,
 ) -> Result<Program, ResolveError> {
-    flatten_modules_with_options(compiler, t, prog, BTreeMap::new(), tel)
+    flatten_modules_with_options(compiler, root_source, t, prog, BTreeMap::new(), tel)
 }
 
 /// Synthesize a literal `__info__/1` reflection fn for every `defmodule`, so
@@ -292,6 +295,7 @@ pub fn flatten_modules_with_interface_table<T: Types<Ty = Ty>>(
     flatten_modules_with_compiler_interface_table(
         t,
         compiler.world_mut(),
+        None,
         prog,
         interface_table,
         &crate::telemetry::NullTelemetry,
@@ -301,34 +305,30 @@ pub fn flatten_modules_with_interface_table<T: Types<Ty = Ty>>(
 pub fn flatten_modules_with_compiler_interface_table<T: Types<Ty = Ty>>(
     t: &mut T,
     compiler: &mut CompilerWorld,
+    root_source: Option<ModuleId>,
     prog: Program,
     interface_table: InterfaceTable,
-    tel: &dyn crate::telemetry::Telemetry,
+    tel: &dyn Telemetry,
 ) -> Result<Program, ResolveError> {
-    flatten_modules_with_options(compiler, t, prog, interface_table, tel)
+    flatten_modules_with_options(compiler, root_source, t, prog, interface_table, tel)
 }
 
 fn flatten_modules_with_options<T: Types<Ty = Ty>>(
     compiler: &mut CompilerWorld,
+    root_source: Option<ModuleId>,
     t: &mut T,
     prog: Program,
-    mut interface_table: InterfaceTable,
-    tel: &dyn crate::telemetry::Telemetry,
+    interface_table: InterfaceTable,
+    tel: &dyn Telemetry,
 ) -> Result<Program, ResolveError> {
     let prog = inject_module_info(prog);
     collect_module_fns(&prog)?;
     let module_macros = collect_module_macros(&prog);
-    let module_interfaces = collect_from_program(&prog);
-    add_requested_runtime_interfaces(compiler, &prog, &module_interfaces, &mut interface_table, tel);
-    let external_module_interfaces = interface_table
-        .iter()
-        .filter(|(name, _)| !module_interfaces.contains_key(*name))
-        .map(|(name, interface)| (name.clone(), interface.clone()))
-        .collect::<BTreeMap<_, _>>();
-    for (name, interface) in &module_interfaces {
-        interface_table.insert(name.clone(), interface.clone());
-    }
-    let module_paths = collect_visible_module_paths(&prog, &interface_table);
+    let (module_interfaces, external_module_interfaces) =
+        preload_module_contracts(compiler, root_source, &prog, interface_table, tel)?;
+    let mut all_interfaces = module_interfaces.clone();
+    all_interfaces.extend(external_module_interfaces.clone());
+    let module_paths = collect_visible_module_paths(&prog, &module_interfaces, &external_module_interfaces);
     let mut out: Vec<Rc<Item>> = Vec::new();
     let mut module_docs: HashMap<String, String> = HashMap::new();
     collect_module_docs(&prog, &mut module_docs);
@@ -353,7 +353,7 @@ fn flatten_modules_with_options<T: Types<Ty = Ty>>(
     )?;
     let protocol_registry = collect_protocol_registry(t, &prog, &external_module_interfaces, &mut module_type_envs)?;
     let mut structs = BTreeMap::new();
-    let (root_aliases, root_imports) = collect_import_scope(&prog.items, &interface_table, &module_macros)?;
+    let (root_aliases, root_imports) = collect_import_scope(&prog.items, &all_interfaces, &module_macros)?;
     for item in &prog.items {
         match &**item {
             Item::Fn(def) => {
@@ -390,7 +390,7 @@ fn flatten_modules_with_options<T: Types<Ty = Ty>>(
                 &mut out,
                 &mut structs,
                 &module_paths,
-                &interface_table,
+                &all_interfaces,
                 &module_macros,
             )?,
             Item::Struct(s) => {
@@ -514,219 +514,412 @@ fn collect_struct_field_types(
     Ok(out)
 }
 
-fn add_requested_runtime_interfaces(
+#[derive(Clone, Debug)]
+struct ModuleContractRequest {
+    requester_module: String,
+    target_module: ModuleName,
+    cause: &'static str,
+    span: Span,
+}
+
+fn preload_module_contracts(
     compiler: &mut CompilerWorld,
+    root_source: Option<ModuleId>,
     prog: &Program,
-    local_interfaces: &InterfaceTable,
-    interface_table: &mut InterfaceTable,
-    tel: &dyn crate::telemetry::Telemetry,
-) {
+    external_interfaces: InterfaceTable,
+    tel: &dyn Telemetry,
+) -> Result<(InterfaceTable, InterfaceTable), ResolveError> {
+    let local_interfaces = match root_source {
+        Some(root_source) => compiler
+            .ensure_source_module_interfaces(root_source, tel)
+            .expect("source-backed interface collection must succeed"),
+        None => collect_from_program(prog),
+    };
+    let mut external_interfaces = external_interfaces;
     let mut requested = Vec::new();
-    collect_requested_external_modules(prog, &mut requested);
-    while let Some(module) = requested.pop() {
-        if local_interfaces.contains_key(&module) || interface_table.contains_key(&module) {
-            continue;
-        }
-        if let Some(interface) = interface(compiler, &module, tel).expect("runtime interface lookup must succeed") {
-            enqueue_runtime_interface_dependencies(&interface, &mut requested);
-            interface_table.insert(module, interface);
+    collect_requested_module_references(prog, &mut requested);
+    for request in requested {
+        match require_module_contract(compiler, &local_interfaces, &mut external_interfaces, &request, tel) {
+            Ok(()) => {}
+            Err(ResolveError::UnknownModule { .. }) if request.cause == "qualified_reference" => {}
+            Err(err) => return Err(err),
         }
     }
+    Ok((local_interfaces, external_interfaces))
+}
+
+fn require_module_contract(
+    compiler: &mut CompilerWorld,
+    local_interfaces: &InterfaceTable,
+    external_interfaces: &mut InterfaceTable,
+    request: &ModuleContractRequest,
+    tel: &dyn Telemetry,
+) -> Result<(), ResolveError> {
+    note_contract_request(request, tel);
+    if local_interfaces.contains_key(&request.target_module) {
+        note_contract_ready(
+            request,
+            compiler
+                .module_id_for_name(&request.target_module)
+                .map(|module_id| compiler.module(module_id).origin),
+            tel,
+        );
+        return Ok(());
+    }
+    if external_interfaces.contains_key(&request.target_module) {
+        note_contract_ready(
+            request,
+            compiler
+                .module_id_for_name(&request.target_module)
+                .map(|module_id| compiler.module(module_id).origin),
+            tel,
+        );
+        return Ok(());
+    }
+    let Some(interface) =
+        interface(compiler, &request.target_module, tel).expect("runtime interface lookup must succeed")
+    else {
+        return Err(ResolveError::UnknownModule {
+            module: request.target_module.clone(),
+            span: request.span,
+        });
+    };
+    note_contract_ready(
+        request,
+        compiler
+            .module_id_for_name(&request.target_module)
+            .map(|module_id| compiler.module(module_id).origin),
+        tel,
+    );
+    external_interfaces.insert(request.target_module.clone(), interface.clone());
+    let mut deps = Vec::new();
+    enqueue_runtime_interface_dependency_requests(&interface, &request.target_module.dotted(), &mut deps);
+    for dependency in deps {
+        require_module_contract(compiler, local_interfaces, external_interfaces, &dependency, tel)?;
+    }
+    Ok(())
+}
+
+fn note_contract_request(request: &ModuleContractRequest, tel: &dyn Telemetry) {
+    tel.execute(
+        &["fz", "resolve", "module_contract_requested"],
+        &measurements! {
+            span_start: request.span.start as u64,
+            span_end: request.span.end as u64,
+        },
+        &metadata! {
+            requester_module: request.requester_module.clone(),
+            target_module: request.target_module.dotted(),
+            cause: request.cause,
+        },
+    );
+}
+
+fn note_contract_ready(request: &ModuleContractRequest, origin: Option<ModuleOrigin>, tel: &dyn Telemetry) {
+    tel.execute(
+        &["fz", "resolve", "module_contract_ready"],
+        &measurements! {
+            span_start: request.span.start as u64,
+            span_end: request.span.end as u64,
+        },
+        &metadata! {
+            requester_module: request.requester_module.clone(),
+            target_module: request.target_module.dotted(),
+            cause: request.cause,
+            compiler_owned: origin.is_some(),
+            contract_origin: origin.map(|origin| origin.kind()).unwrap_or("supplemental"),
+        },
+    );
 }
 
 pub(crate) fn add_macro_requested_runtime_interfaces(
     compiler: &mut CompilerWorld,
     prog: &mut Program,
-    tel: &dyn crate::telemetry::Telemetry,
+    tel: &dyn Telemetry,
 ) {
     let mut requested = Vec::new();
-    collect_requested_external_modules(prog, &mut requested);
-    while let Some(module) = requested.pop() {
-        if prog.module_interfaces.contains_key(&module) || prog.external_module_interfaces.contains_key(&module) {
+    collect_requested_module_references(prog, &mut requested);
+    while let Some(request) = requested.pop() {
+        if prog.module_interfaces.contains_key(&request.target_module)
+            || prog.external_module_interfaces.contains_key(&request.target_module)
+        {
             continue;
         }
-        if let Some(interface) = interface(compiler, &module, tel).expect("runtime interface lookup must succeed") {
-            enqueue_runtime_interface_dependencies(&interface, &mut requested);
-            prog.external_module_interfaces.insert(module, interface);
+        if let Some(interface) =
+            interface(compiler, &request.target_module, tel).expect("runtime interface lookup must succeed")
+        {
+            enqueue_runtime_interface_dependency_requests(&interface, &request.target_module.dotted(), &mut requested);
+            prog.external_module_interfaces.insert(request.target_module, interface);
         }
     }
 }
 
-fn enqueue_runtime_interface_dependencies(interface: &ModuleInterface, out: &mut Vec<ModuleName>) {
+fn enqueue_runtime_interface_dependency_requests(
+    interface: &ModuleInterface,
+    requester_module: &str,
+    out: &mut Vec<ModuleContractRequest>,
+) {
     for import in &interface.imports {
-        out.push(import.module.clone());
+        out.push(ModuleContractRequest {
+            requester_module: requester_module.to_string(),
+            target_module: import.module.clone(),
+            cause: "runtime_dependency",
+            span: Span::DUMMY,
+        });
     }
     for protocol_impl in &interface.protocol_impls {
-        out.push(protocol_impl.protocol.clone());
+        out.push(ModuleContractRequest {
+            requester_module: requester_module.to_string(),
+            target_module: protocol_impl.protocol.clone(),
+            cause: "runtime_dependency",
+            span: Span::DUMMY,
+        });
     }
 }
 
-fn collect_requested_external_modules(prog: &Program, out: &mut Vec<ModuleName>) {
+fn collect_requested_module_references(prog: &Program, out: &mut Vec<ModuleContractRequest>) {
     for item in &prog.items {
         match &**item {
-            Item::Module(module) => collect_requested_external_modules_recursive(module, out),
-            Item::Alias { full_path, .. } => out.push(full_path.clone()),
-            Item::Import { path, .. } => out.push(path.clone()),
+            Item::Module(module) => collect_requested_module_references_recursive(module, None, out),
+            Item::Alias { full_path, span, .. } => out.push(ModuleContractRequest {
+                requester_module: String::new(),
+                target_module: full_path.clone(),
+                cause: "alias",
+                span: *span,
+            }),
+            Item::Import { path, span, .. } => out.push(ModuleContractRequest {
+                requester_module: String::new(),
+                target_module: path.clone(),
+                cause: "import",
+                span: *span,
+            }),
             Item::Fn(def) => {
                 for clause in &def.clauses {
-                    collect_top_level_qualified_calls(&clause.body, out);
+                    collect_top_level_qualified_calls(&clause.body, "", out);
                     if let Some(guard) = &clause.guard {
-                        collect_top_level_qualified_calls(guard, out);
+                        collect_top_level_qualified_calls(guard, "", out);
                     }
                 }
             }
+            Item::ProtocolImpl(protocol_impl) => out.push(ModuleContractRequest {
+                requester_module: String::new(),
+                target_module: protocol_impl.protocol.clone(),
+                cause: "protocol_impl_protocol",
+                span: protocol_impl.span,
+            }),
             _ => {}
         }
     }
 }
 
-fn collect_requested_external_modules_recursive(module: &ModuleDef, out: &mut Vec<ModuleName>) {
+fn collect_requested_module_references_recursive(
+    module: &ModuleDef,
+    parent: Option<&ModuleName>,
+    out: &mut Vec<ModuleContractRequest>,
+) {
+    let module_name = if let Some(parent) = parent {
+        parent.child(module.name.clone())
+    } else {
+        ModuleName::from_segments(vec![module.name.clone()])
+    };
+    let requester_module = module_name.dotted();
+    let local_protocols = module
+        .items
+        .iter()
+        .filter_map(|item| match &**item {
+            Item::Protocol(protocol) if protocol.name.segments().len() == 1 => {
+                Some(protocol.name.last_segment().to_string())
+            }
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
     for item in &module.items {
         match &**item {
-            Item::Alias { full_path, .. } => out.push(full_path.clone()),
-            Item::Import { path, .. } => out.push(path.clone()),
+            Item::Alias { full_path, span, .. } => out.push(ModuleContractRequest {
+                requester_module: requester_module.clone(),
+                target_module: full_path.clone(),
+                cause: "alias",
+                span: *span,
+            }),
+            Item::Import { path, span, .. } => out.push(ModuleContractRequest {
+                requester_module: requester_module.clone(),
+                target_module: path.clone(),
+                cause: "import",
+                span: *span,
+            }),
             Item::Fn(def) => {
                 for clause in &def.clauses {
-                    collect_top_level_qualified_calls(&clause.body, out);
+                    collect_top_level_qualified_calls(&clause.body, &requester_module, out);
                     if let Some(guard) = &clause.guard {
-                        collect_top_level_qualified_calls(guard, out);
+                        collect_top_level_qualified_calls(guard, &requester_module, out);
                     }
                 }
             }
-            Item::Module(inner) => collect_requested_external_modules_recursive(inner, out),
+            Item::Module(inner) => collect_requested_module_references_recursive(inner, Some(&module_name), out),
+            Item::ProtocolImpl(protocol_impl) => {
+                let is_local_protocol = protocol_impl.protocol.segments().len() == 1
+                    && (protocol_impl.protocol.last_segment() == module_name.last_segment()
+                        || local_protocols.contains(protocol_impl.protocol.last_segment()));
+                if !is_local_protocol {
+                    out.push(ModuleContractRequest {
+                        requester_module: requester_module.clone(),
+                        target_module: qualify_impl_protocol_name(
+                            Some(&module_name),
+                            &protocol_impl.protocol,
+                            &local_protocols,
+                        ),
+                        cause: "protocol_impl_protocol",
+                        span: protocol_impl.span,
+                    });
+                }
+            }
             _ => {}
         }
     }
 }
 
-fn collect_top_level_qualified_calls(expr: &Spanned<Expr>, out: &mut Vec<ModuleName>) {
+fn collect_top_level_qualified_calls(
+    expr: &Spanned<Expr>,
+    requester_module: &str,
+    out: &mut Vec<ModuleContractRequest>,
+) {
     match &expr.node {
         Expr::Call(callee, args) | Expr::ClosureCall(callee, args) => {
             if let Some(module) = qualified_callee_module(callee) {
-                out.push(module);
+                out.push(ModuleContractRequest {
+                    requester_module: requester_module.to_string(),
+                    target_module: module,
+                    cause: "qualified_reference",
+                    span: callee.span,
+                });
             }
-            collect_top_level_qualified_calls(callee, out);
+            collect_top_level_qualified_calls(callee, requester_module, out);
             for arg in args {
-                collect_top_level_qualified_calls(arg, out);
+                collect_top_level_qualified_calls(arg, requester_module, out);
             }
         }
         // fz-g58.2.6 — recurse into the `&(...)` body for qualified calls;
         // `&N` is a leaf.
-        Expr::Capture(body) => collect_top_level_qualified_calls(body, out),
+        Expr::Capture(body) => collect_top_level_qualified_calls(body, requester_module, out),
         Expr::CaptureArg(_) => {}
         Expr::FnRef { name, .. } => {
             if let Some((module, _fun)) = name.rsplit_once('.')
                 && let Ok(module) = ModuleName::parse_dotted(module)
             {
-                out.push(module);
+                out.push(ModuleContractRequest {
+                    requester_module: requester_module.to_string(),
+                    target_module: module,
+                    cause: "qualified_reference",
+                    span: expr.span,
+                });
             }
         }
         Expr::List(xs, tail) => {
             for x in xs {
-                collect_top_level_qualified_calls(x, out);
+                collect_top_level_qualified_calls(x, requester_module, out);
             }
             if let Some(tail) = tail {
-                collect_top_level_qualified_calls(tail, out);
+                collect_top_level_qualified_calls(tail, requester_module, out);
             }
         }
         Expr::Tuple(xs) | Expr::Block(xs) => {
             for x in xs {
-                collect_top_level_qualified_calls(x, out);
+                collect_top_level_qualified_calls(x, requester_module, out);
             }
         }
         Expr::Bitstring(fields) => {
             for field in fields {
-                collect_top_level_qualified_calls(&field.value, out);
+                collect_top_level_qualified_calls(&field.value, requester_module, out);
             }
         }
         Expr::Map(pairs) => {
             for (key, value) in pairs {
-                collect_top_level_qualified_calls(key, out);
-                collect_top_level_qualified_calls(value, out);
+                collect_top_level_qualified_calls(key, requester_module, out);
+                collect_top_level_qualified_calls(value, requester_module, out);
             }
         }
         Expr::MapUpdate(map, pairs) => {
-            collect_top_level_qualified_calls(map, out);
+            collect_top_level_qualified_calls(map, requester_module, out);
             for (key, value) in pairs {
-                collect_top_level_qualified_calls(key, out);
-                collect_top_level_qualified_calls(value, out);
+                collect_top_level_qualified_calls(key, requester_module, out);
+                collect_top_level_qualified_calls(value, requester_module, out);
             }
         }
         Expr::Struct { fields, .. } => {
             for (_, value) in fields {
-                collect_top_level_qualified_calls(value, out);
+                collect_top_level_qualified_calls(value, requester_module, out);
             }
         }
         Expr::Index(target, key) => {
-            collect_top_level_qualified_calls(target, out);
-            collect_top_level_qualified_calls(key, out);
+            collect_top_level_qualified_calls(target, requester_module, out);
+            collect_top_level_qualified_calls(key, requester_module, out);
         }
         Expr::BinOp(_, left, right) => {
-            collect_top_level_qualified_calls(left, out);
-            collect_top_level_qualified_calls(right, out);
+            collect_top_level_qualified_calls(left, requester_module, out);
+            collect_top_level_qualified_calls(right, requester_module, out);
         }
         Expr::UnOp(_, inner) | Expr::Ascribe(inner, _) | Expr::Quote(inner) | Expr::Unquote(inner) => {
-            collect_top_level_qualified_calls(inner, out);
+            collect_top_level_qualified_calls(inner, requester_module, out);
         }
         Expr::If(cond, then_expr, else_expr) => {
-            collect_top_level_qualified_calls(cond, out);
-            collect_top_level_qualified_calls(then_expr, out);
+            collect_top_level_qualified_calls(cond, requester_module, out);
+            collect_top_level_qualified_calls(then_expr, requester_module, out);
             if let Some(else_expr) = else_expr {
-                collect_top_level_qualified_calls(else_expr, out);
+                collect_top_level_qualified_calls(else_expr, requester_module, out);
             }
         }
         Expr::Case(scrutinee, arms) => {
             if let Some(scrutinee) = scrutinee {
-                collect_top_level_qualified_calls(scrutinee, out);
+                collect_top_level_qualified_calls(scrutinee, requester_module, out);
             }
             for arm in arms {
                 if let Some(guard) = &arm.guard {
-                    collect_top_level_qualified_calls(guard, out);
+                    collect_top_level_qualified_calls(guard, requester_module, out);
                 }
-                collect_top_level_qualified_calls(&arm.body, out);
+                collect_top_level_qualified_calls(&arm.body, requester_module, out);
             }
         }
         Expr::Cond(pairs) => {
             for (cond, body) in pairs {
-                collect_top_level_qualified_calls(cond, out);
-                collect_top_level_qualified_calls(body, out);
+                collect_top_level_qualified_calls(cond, requester_module, out);
+                collect_top_level_qualified_calls(body, requester_module, out);
             }
         }
         Expr::With(bindings, body, else_clauses) => {
             for binding in bindings {
                 match binding {
                     WithBinding::Match(_, expr) | WithBinding::Bare(expr) => {
-                        collect_top_level_qualified_calls(expr, out);
+                        collect_top_level_qualified_calls(expr, requester_module, out);
                     }
                 }
             }
-            collect_top_level_qualified_calls(body, out);
+            collect_top_level_qualified_calls(body, requester_module, out);
             for arm in else_clauses {
                 if let Some(guard) = &arm.guard {
-                    collect_top_level_qualified_calls(guard, out);
+                    collect_top_level_qualified_calls(guard, requester_module, out);
                 }
-                collect_top_level_qualified_calls(&arm.body, out);
+                collect_top_level_qualified_calls(&arm.body, requester_module, out);
             }
         }
-        Expr::Match(_, rhs) => collect_top_level_qualified_calls(rhs, out),
+        Expr::Match(_, rhs) => collect_top_level_qualified_calls(rhs, requester_module, out),
         Expr::Lambda(clauses) => {
             for clause in clauses {
                 if let Some(guard) = &clause.guard {
-                    collect_top_level_qualified_calls(guard, out);
+                    collect_top_level_qualified_calls(guard, requester_module, out);
                 }
-                collect_top_level_qualified_calls(&clause.body, out);
+                collect_top_level_qualified_calls(&clause.body, requester_module, out);
             }
         }
         Expr::Receive { clauses, after } => {
             for clause in clauses {
                 if let Some(guard) = &clause.guard {
-                    collect_top_level_qualified_calls(guard, out);
+                    collect_top_level_qualified_calls(guard, requester_module, out);
                 }
-                collect_top_level_qualified_calls(&clause.body, out);
+                collect_top_level_qualified_calls(&clause.body, requester_module, out);
             }
             if let Some(after) = after {
-                collect_top_level_qualified_calls(&after.timeout, out);
-                collect_top_level_qualified_calls(&after.body, out);
+                collect_top_level_qualified_calls(&after.timeout, requester_module, out);
+                collect_top_level_qualified_calls(&after.body, requester_module, out);
             }
         }
         Expr::Var(_) | Expr::Int(_) | Expr::Float(_) | Expr::Binary(_) | Expr::Atom(_) | Expr::Bool(_) | Expr::Nil => {}
@@ -1288,7 +1481,11 @@ fn qualify_protocol_name(parent: Option<&ModuleName>, name: &ModuleName) -> Modu
     }
 }
 
-fn collect_visible_module_paths(prog: &Program, interfaces: &InterfaceTable) -> HashSet<String> {
+fn collect_visible_module_paths(
+    prog: &Program,
+    local_interfaces: &InterfaceTable,
+    external_interfaces: &InterfaceTable,
+) -> HashSet<String> {
     let mut out = HashSet::new();
     for item in &prog.items {
         match &**item {
@@ -1299,8 +1496,9 @@ fn collect_visible_module_paths(prog: &Program, interfaces: &InterfaceTable) -> 
             _ => {}
         }
     }
-    out.extend(interfaces.keys().map(ModuleName::dotted));
-    for interface in interfaces.values() {
+    out.extend(local_interfaces.keys().map(ModuleName::dotted));
+    out.extend(external_interfaces.keys().map(ModuleName::dotted));
+    for interface in local_interfaces.values().chain(external_interfaces.values()) {
         out.extend(interface.protocols.iter().map(|protocol| protocol.name.dotted()));
     }
     out

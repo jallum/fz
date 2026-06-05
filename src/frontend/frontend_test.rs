@@ -1,10 +1,11 @@
 use super::*;
+use crate::compiler::{Compiler, ModuleOrigin, ModuleState};
 use crate::diag::codes;
 use crate::diag::diagnostic::Severity;
 use crate::fz_ir::{FnCategory, Term};
 use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn, InterfaceSpec, ModuleInterface};
-use crate::telemetry::{ConfiguredTelemetry, Event, Handler, Value};
+use crate::telemetry::{Capture, ConfiguredTelemetry, Event, Handler, Value};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -89,6 +90,20 @@ impl Handler for StructuralHandler {
     }
 }
 
+fn captured_str<'a>(ev: &'a crate::telemetry::capture::OwnedEvent, key: &str) -> &'a str {
+    match ev.metadata.get(key) {
+        Some(Value::Str(value)) => value.as_ref(),
+        other => panic!("expected string metadata `{key}`, got {other:?}"),
+    }
+}
+
+fn captured_bool(ev: &crate::telemetry::capture::OwnedEvent, key: &str) -> bool {
+    match ev.metadata.get(key) {
+        Some(Value::Bool(value)) => *value,
+        other => panic!("expected bool metadata `{key}`, got {other:?}"),
+    }
+}
+
 #[test]
 fn structural_telemetry_exposes_compiler_artifacts_to_handlers() {
     let tel = ConfiguredTelemetry::new();
@@ -111,6 +126,92 @@ fn structural_telemetry_exposes_compiler_artifacts_to_handlers() {
     assert_eq!(facts.lowered_fns, out.module.fns.len());
     assert_eq!(facts.typed_specs, out.module_plan.specs.len());
     assert_eq!(facts.checked_diagnostics, out.diagnostics.len());
+}
+
+#[test]
+fn compiler_backed_resolution_reuses_local_module_contracts() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz"], capture.handler());
+
+    let src = r#"
+defmodule Math do
+  fn add(x, y), do: x + y
+end
+
+defmodule User do
+  import Math, only: [add: 2]
+  fn run(x, y), do: add(x, y)
+end
+"#;
+
+    let mut compiler = Compiler::new();
+    let mut t1 = crate::types::new();
+    let first = compile_source_with_compiler_types(
+        compiler.world_mut(),
+        &mut t1,
+        src.to_string(),
+        "local_contracts.fz".to_string(),
+        &tel,
+    )
+    .unwrap_or_else(|_| panic!("first compile"));
+    let mut t2 = crate::types::new();
+    let second = compile_source_with_compiler_types(
+        compiler.world_mut(),
+        &mut t2,
+        src.to_string(),
+        "local_contracts.fz".to_string(),
+        &tel,
+    )
+    .unwrap_or_else(|_| panic!("second compile"));
+
+    assert!(first.module.fn_by_name("User.run").is_some());
+    assert!(second.module.fn_by_name("User.run").is_some());
+
+    let math = ModuleName::from_segments(vec!["Math".to_string()]);
+    let math_id = compiler
+        .module_id_for_name(&math)
+        .expect("Math should resolve through a compiler-owned module record");
+    assert_eq!(compiler.module(math_id).origin, ModuleOrigin::Filesystem);
+    assert_eq!(compiler.module(math_id).state, ModuleState::InterfaceReady);
+
+    let requests = capture.find(&["fz", "resolve", "module_contract_requested"]);
+    assert!(
+        requests.iter().any(|ev| {
+            captured_str(ev, "requester_module") == "User"
+                && captured_str(ev, "target_module") == "Math"
+                && captured_str(ev, "cause") == "import"
+        }),
+        "resolution telemetry must name the User -> Math import request"
+    );
+
+    let ready = capture.find(&["fz", "resolve", "module_contract_ready"]);
+    assert!(
+        ready.iter().any(|ev| {
+            captured_str(ev, "requester_module") == "User"
+                && captured_str(ev, "target_module") == "Math"
+                && captured_str(ev, "contract_origin") == "filesystem"
+                && captured_bool(ev, "compiler_owned")
+        }),
+        "resolution telemetry must show Math resolving from a compiler-owned filesystem module"
+    );
+
+    let root_parsed = capture
+        .find(&["fz", "compiler", "parsed"])
+        .into_iter()
+        .filter(|ev| captured_str(ev, "module_key") == "local_contracts.fz")
+        .count();
+    assert_eq!(root_parsed, 1, "the root source should parse once across both compiles");
+
+    let math_interface_ready = capture
+        .find(&["fz", "compiler", "interface_ready"])
+        .into_iter()
+        .filter(|ev| captured_str(ev, "module_key") == "Math")
+        .count();
+    assert_eq!(
+        math_interface_ready, 1,
+        "Math should reach interface_ready once and then be served from compiler cache"
+    );
 }
 
 fn parse_with_source_map(src: &str, source_name: &str) -> (Program, SourceMap) {

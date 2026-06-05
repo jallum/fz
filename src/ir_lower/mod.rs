@@ -166,7 +166,7 @@ fn parse_runtime_prelude<T: Types<Ty = Ty>>(
         structs: Default::default(),
         struct_field_types: Default::default(),
     };
-    let mut flat = crate::frontend::resolve::flatten_modules_with_compiler(t, compiler, staged, tel)
+    let mut flat = crate::frontend::resolve::flatten_modules_with_compiler(t, compiler, None, staged, tel)
         .expect("runtime.fz module flatten error (bug in built-in prelude)");
     // Merge compiler-known runtime types and any root declarations into the
     // flattened prelude program.

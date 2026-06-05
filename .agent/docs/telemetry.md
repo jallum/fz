@@ -188,14 +188,17 @@ module through the world the way we intended?" before loader/resolver work lands
   `module_discovered`.
 - `fz.compiler.source_loaded` — the compiler materialized source text for a
   module-owned file. Measurements: `module_id`, `file_id`. Metadata:
-  `source_name`, `file_origin`, `parse_kind`, `bytes`.
+  `module_key`, `module_key_kind`, `module_origin`, `source_name`,
+  `file_origin`, `parse_kind`, `bytes`.
 - `fz.compiler.parsed` — the compiler lexed and parsed one source-backed module
   into its cached syntax form. Measurements: `module_id`, `file_id`. Metadata:
-  `source_name`, `parse_kind`, `items`. This event should happen once per
-  module/file unless invalidation is introduced later.
+  `module_key`, `module_key_kind`, `module_origin`, `source_name`,
+  `parse_kind`, `items`. This event should happen once per module/file unless
+  invalidation is introduced later.
 - `fz.compiler.interface_ready` — the compiler collected module interfaces from
   cached parsed source. Measurements: `module_id`, `file_id`. Metadata:
-  `interfaces`, `parse_kind`.
+  `module_key`, `module_key_kind`, `module_origin`, `interfaces`,
+  `parse_kind`.
 - `fz.compiler.cache_miss` / `fz.compiler.cache_hit` — a phase or reachability
   query did or did not need work. Measurements: `module_id`, `file_id`.
   Metadata names the module plus the requested phase or reachability slice.
@@ -207,6 +210,22 @@ module through the world the way we intended?" before loader/resolver work lands
 - `fz.compiler.module_reachable` — one reachability dimension (`interface`,
   `macro`, or `runtime`) was first marked true for a module. Measurements:
   `module_id`, `file_id`. Metadata: `reachability` plus module identity.
+
+## Resolver Contract Events
+
+`src/frontend/resolve.rs` now emits explicit contract-lookup events so tests can
+prove which source reference asked for a module contract, and whether the answer
+came from a compiler-owned source module or a supplemental interface table.
+
+- `fz.resolve.module_contract_requested` — the resolver encountered a module
+  reference and asked for its contract. Measurements: `span_start`, `span_end`.
+  Metadata: `requester_module`, `target_module`, `cause`
+  (`import`, `alias`, `qualified_reference`, `protocol_impl_protocol`,
+  `runtime_dependency`).
+- `fz.resolve.module_contract_ready` — the resolver satisfied that request.
+  Measurements: `span_start`, `span_end`. Metadata: `requester_module`,
+  `target_module`, `cause`, `compiler_owned`, and `contract_origin`
+  (`filesystem`, `embedded_runtime`, `primitive_prelude`, or `supplemental`).
 
 ## Telemetry In Tests
 
