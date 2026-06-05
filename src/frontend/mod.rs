@@ -295,7 +295,7 @@ where
             program: opaque(&prog),
         },
     );
-    let mut module = match crate::ir_lower::lower_program_with_compiler(compiler, t, &prog, tel) {
+    let mut module = match crate::ir_lower::lower_program_with_compiler(compiler, root_source, t, &prog, tel) {
         Ok(module) => module,
         Err(e) => return Err(fail(sm, e.to_diagnostic())),
     };

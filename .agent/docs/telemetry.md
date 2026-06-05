@@ -205,6 +205,14 @@ module through the world the way we intended?" before loader/resolver work lands
   root-fn ownership without emitted body IR. Measurements: `module_id`,
   `file_id`. Metadata: `module_key`, `module_key_kind`, `module_origin`,
   `owner_module`, `groups`, `parse_kind`.
+- `fz.compiler.fn_group_lowered` — one source-backed function-group emitted IR
+  exactly once into the compiler-owned cache. Measurements: `fn_group_id`,
+  `root_fn_id`, `functions`. Metadata: `module_key`, `owner_module`,
+  `fn_name`.
+- `fz.compiler.fn_group_cache_hit` — a later lowering request reused the cached
+  IR for one source-backed function-group instead of re-emitting it.
+  Measurements mirror `fn_group_lowered`. Metadata mirrors
+  `fn_group_lowered`.
 - `fz.compiler.interface_ready` — the compiler collected module interfaces from
   cached parsed source. Measurements: `module_id`, `file_id`. Metadata:
   `module_key`, `module_key_kind`, `module_origin`, `interfaces`,

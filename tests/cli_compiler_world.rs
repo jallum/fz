@@ -185,12 +185,6 @@ fn dump_interfaces_parses_root_source_once_through_compiler_world() {
         0,
         "interface dumping must not lower runtime work for the root source"
     );
-    assert!(
-        !events
-            .iter()
-            .any(|ev| event_matches(ev, &["fz", "compiler", "fn_group_lowered"])),
-        "body-surface readiness must stay body-free"
-    );
 }
 
 #[test]

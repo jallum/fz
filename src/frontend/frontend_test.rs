@@ -214,6 +214,75 @@ end
     );
 }
 
+#[test]
+fn compiler_owned_fn_groups_lower_only_when_reachable_and_hit_cache_on_repeat_compile() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "compiler"], capture.handler());
+
+    let src = "\
+fn helper(x), do: x + 1
+fnp dead(x), do: x + 2
+fn main(), do: helper(41)
+";
+
+    let mut compiler = Compiler::new();
+    let mut t = crate::types::new();
+    let first = compile_source_with_compiler_types(
+        compiler.world_mut(),
+        &mut t,
+        src.to_string(),
+        "fn-groups.fz".to_string(),
+        &tel,
+    )
+    .unwrap_or_else(|_| panic!("first compile should succeed"));
+    let second = compile_source_with_compiler_types(
+        compiler.world_mut(),
+        &mut t,
+        src.to_string(),
+        "fn-groups.fz".to_string(),
+        &tel,
+    )
+    .unwrap_or_else(|_| panic!("second compile should succeed"));
+
+    assert!(first.module.fn_by_name("main").is_some());
+    assert!(first.module.fn_by_name("helper").is_some());
+    assert!(first.module.fn_by_name("dead").is_none(), "dead fn should stay cold");
+    assert!(second.module.fn_by_name("main").is_some());
+    assert!(second.module.fn_by_name("helper").is_some());
+    assert!(second.module.fn_by_name("dead").is_none(), "dead fn should stay cold");
+
+    let lowered_groups = capture
+        .find(&["fz", "compiler", "fn_group_lowered"])
+        .into_iter()
+        .filter(|ev| captured_str(ev, "module_key").ends_with("fn-groups.fz"))
+        .collect::<Vec<_>>();
+    assert_eq!(lowered_groups.len(), 2, "main and helper should lower once each");
+    assert!(
+        lowered_groups
+            .iter()
+            .all(|ev| matches!(captured_str(ev, "fn_name"), "main" | "helper")),
+        "only reachable source fn groups should lower"
+    );
+
+    let cache_hits = capture
+        .find(&["fz", "compiler", "fn_group_cache_hit"])
+        .into_iter()
+        .filter(|ev| captured_str(ev, "module_key").ends_with("fn-groups.fz"))
+        .collect::<Vec<_>>();
+    assert_eq!(cache_hits.len(), 2, "repeat compile should hit both reachable source fn groups");
+    assert!(
+        cache_hits
+            .iter()
+            .all(|ev| matches!(captured_str(ev, "fn_name"), "main" | "helper")),
+        "only reachable cached groups should be hit"
+    );
+
+    compiler
+        .validate_invariants()
+        .expect("fn-group cache should leave compiler world consistent");
+}
+
 fn parse_with_source_map(src: &str, source_name: &str) -> (Program, SourceMap) {
     let mut sm = SourceMap::new();
     let file_id = sm.add_file(source_name.to_string(), src.to_string());

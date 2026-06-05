@@ -75,9 +75,12 @@ Not every module reaches every phase. Import resolution only needs
 `interface_ready`. Cross-module macro use only needs `macro_surface_ready`.
 `body_surface_ready` is the first compiler-owned split between syntax and
 executable work: the compiler has stable function-group descriptors and root
-fn/group ownership without having emitted body IR yet. Runtime codegen only
-needs the modules that become reachable from the checked program, and later
-tickets lower only the live function-groups inside those modules.
+fn/group ownership without having emitted body IR yet. Once a root program is
+resolved, lowering walks live `fn/arity` roots from `main` and emits only the
+reachable function-groups, caching each group's IR in the compiler world.
+Runtime codegen only needs the modules that become reachable from the checked
+program, and later tickets lower only the live function-groups inside those
+modules.
 
 The compiler emits phase telemetry such as:
 
@@ -87,6 +90,8 @@ fz.compiler.source_loaded
 fz.compiler.parsed
 fz.compiler.body_surface_ready
 fz.compiler.fn_group_discovered
+fz.compiler.fn_group_lowered
+fz.compiler.fn_group_cache_hit
 fz.compiler.interface_ready
 fz.compiler.macro_surface_ready
 fz.compiler.runtime_module_reachable
@@ -171,6 +176,8 @@ Representative properties the suite enforces:
 
 - a source module is parsed once per compiler world
 - repeated interface or macro-surface requests hit compiler caches
+- unreachable source `fn/arity` groups stay cold
+- repeated source compiles hit cached reachable function-groups
 - runtime reachability marks only live modules
 - quicksort-style builds parse only the root source plus the runtime modules
   they actually reference

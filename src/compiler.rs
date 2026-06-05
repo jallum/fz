@@ -4,9 +4,9 @@
 // tickets. Keep the allowance local to this module until those phases are live.
 
 use crate::ast::{Attribute, FnDef, Item, ModuleDef, Program};
-use crate::diag::{Diagnostic, SourceMap};
-use crate::fz_ir::{FnId, FnIr};
-use crate::modules::identity::ModuleName;
+use crate::diag::{Diagnostic, SourceMap, Span};
+use crate::fz_ir::{BlockId, ExternalCallEdge, ExternId, FnId, FnIr, ProtocolCallTarget, Var};
+use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::interface::{ModuleInterface, collect_from_program};
 use crate::modules::runtime_library::{self, RUNTIME_MODULE_SOURCES, RUNTIME_PRELUDE_FZ};
 use crate::parser::Parser;
@@ -277,7 +277,7 @@ impl ModuleBodySurface {
         self.groups.push(FnGroupDescriptor {
             id: group_id,
             owner_module: owner_module.to_string(),
-            name: def.name.clone(),
+            name: qualify_body_surface_fn_name(owner_module, &def.name),
             arity,
             root_fn_id,
             is_private: def.is_private,
@@ -297,6 +297,17 @@ pub(crate) struct LoweredFnGroup {
     pub(crate) root_fn_id: FnId,
     pub(crate) function_ids: Vec<FnId>,
     pub(crate) fns: Vec<FnIr>,
+    pub(crate) external_call_edges: Vec<ExternalCallEdge>,
+    pub(crate) protocol_call_targets: HashMap<FnId, ProtocolCallTarget>,
+    pub(crate) fn_spans: HashMap<FnId, Span>,
+    pub(crate) stmt_spans: HashMap<(FnId, BlockId), Vec<Span>>,
+    pub(crate) term_spans: HashMap<(FnId, BlockId), Span>,
+    pub(crate) var_meta: HashMap<(FnId, Var), (Span, String)>,
+    pub(crate) continuation_provenance: HashMap<FnId, crate::fz_ir::ContinuationProvenance>,
+    pub(crate) extern_wrappers: HashMap<ExternId, FnId>,
+    pub(crate) external_stubs: HashMap<ExportKey, FnId>,
+    pub(crate) imported_fn_value_wrappers: HashMap<ExportKey, FnId>,
+    pub(crate) protocol_stubs: HashMap<(String, usize), FnId>,
 }
 
 #[derive(Debug, Clone)]
@@ -397,6 +408,10 @@ impl CompilerWorld {
 
     pub(crate) fn file(&self, id: FileId) -> &FileRecord {
         &self.files[id.0 as usize]
+    }
+
+    pub(crate) fn module_key_render(&self, id: ModuleId) -> String {
+        self.modules[id.0 as usize].key.render()
     }
 }
 
@@ -833,6 +848,30 @@ impl CompilerWorld {
             .and_then(|surface| surface.group_for_root_fn(root_fn_id))
     }
 
+    pub(crate) fn source_fn_group_descriptor(
+        &mut self,
+        module_id: ModuleId,
+        name: &str,
+        arity: usize,
+        tel: &dyn Telemetry,
+    ) -> Result<Option<FnGroupDescriptor>, Diagnostic> {
+        let surface = self.ensure_body_surface(module_id, tel)?;
+        Ok(surface
+            .groups
+            .into_iter()
+            .find(|group| group.name == name && group.arity == arity))
+    }
+
+    pub(crate) fn lowered_group(&self, module_id: ModuleId, group_id: FnGroupId) -> Option<LoweredFnGroup> {
+        self.modules[module_id.0 as usize].lowered_groups.get(&group_id).cloned()
+    }
+
+    pub(crate) fn record_lowered_group(&mut self, module_id: ModuleId, group: LoweredFnGroup) {
+        self.modules[module_id.0 as usize]
+            .lowered_groups
+            .insert(group.id, group);
+    }
+
     pub(crate) fn ensure_source_module_interfaces(
         &mut self,
         root_id: ModuleId,
@@ -1261,7 +1300,7 @@ impl CompilerWorld {
                             )));
                         }
                     }
-                    if group.owner_module != surface.owner_module {
+                    if !surface.owner_module.is_empty() && group.owner_module != surface.owner_module {
                         return Err(CompilerInvariantError::new(format!(
                             "module `{}` body group `{}` owner `{}` does not match surface owner `{}`",
                             module.key.render(),
@@ -1278,6 +1317,62 @@ impl CompilerWorld {
                             module.key.render(),
                             group_id
                         )));
+                    }
+                }
+                let mut seen_function_ids = HashSet::new();
+                for lowered in module.lowered_groups.values() {
+                    if lowered.fns.len() != lowered.function_ids.len() {
+                        return Err(CompilerInvariantError::new(format!(
+                            "module `{}` lowered group {:?} has {} fns but {} function ids",
+                            module.key.render(),
+                            lowered.id,
+                            lowered.fns.len(),
+                            lowered.function_ids.len()
+                        )));
+                    }
+                    let descriptor = surface
+                        .groups
+                        .iter()
+                        .find(|group| group.id == lowered.id)
+                        .expect("lowered-group descriptor presence already checked");
+                    if lowered.root_fn_id != descriptor.root_fn_id {
+                        return Err(CompilerInvariantError::new(format!(
+                            "module `{}` lowered group {:?} root {:?} does not match descriptor root {:?}",
+                            module.key.render(),
+                            lowered.id,
+                            lowered.root_fn_id,
+                            descriptor.root_fn_id
+                        )));
+                    }
+                    if !lowered
+                        .fns
+                        .iter()
+                        .any(|fn_ir| fn_ir.name == descriptor.name)
+                    {
+                        return Err(CompilerInvariantError::new(format!(
+                            "module `{}` lowered group {:?} does not contain root fn `{}`",
+                            module.key.render(),
+                            lowered.id,
+                            descriptor.name
+                        )));
+                    }
+                    for (fn_ir, function_id) in lowered.fns.iter().zip(&lowered.function_ids) {
+                        if fn_ir.id != *function_id {
+                            return Err(CompilerInvariantError::new(format!(
+                                "module `{}` lowered group {:?} stored fn {:?} but function_ids recorded {:?}",
+                                module.key.render(),
+                                lowered.id,
+                                fn_ir.id,
+                                function_id
+                            )));
+                        }
+                        if !seen_function_ids.insert(*function_id) {
+                            return Err(CompilerInvariantError::new(format!(
+                                "module `{}` lowered fn {:?} belongs to more than one cached group",
+                                module.key.render(),
+                                function_id
+                            )));
+                        }
                     }
                 }
             }
@@ -1675,7 +1770,11 @@ fn collect_body_surface_items(
 ) {
     for item in items {
         match &**item {
-            Item::Fn(def) if def.extern_abi.is_none() && !def.is_macro && current_module == owner_module => {
+            Item::Fn(def)
+                if def.extern_abi.is_none()
+                    && !def.is_macro
+                    && (owner_module.is_empty() || current_module == owner_module) =>
+            {
                 surface.register_source_group(current_module, Rc::new(def.clone()));
             }
             Item::Module(module) => {
@@ -1688,6 +1787,14 @@ fn collect_body_surface_items(
             }
             _ => {}
         }
+    }
+}
+
+fn qualify_body_surface_fn_name(owner_module: &str, fn_name: &str) -> String {
+    if owner_module.is_empty() {
+        fn_name.to_string()
+    } else {
+        format!("{owner_module}.{fn_name}")
     }
 }
 

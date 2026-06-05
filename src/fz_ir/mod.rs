@@ -335,6 +335,7 @@ pub enum BinOp {
     Mul,
     Div,
     Mod,
+    BinConcat,
     Eq,
     Neq,
     Lt,
@@ -1874,6 +1875,20 @@ impl ModuleBuilder {
         self.next_fn
     }
 
+    pub fn fn_count(&self) -> usize {
+        self.fns.len()
+    }
+
+    pub fn fn_slice_from(&self, start: usize) -> &[FnIr] {
+        &self.fns[start..]
+    }
+
+    pub fn advance_next_fn_to(&mut self, next_fn: u32) {
+        if self.next_fn < next_fn {
+            self.next_fn = next_fn;
+        }
+    }
+
     pub fn add_fn(&mut self, fn_ir: FnIr) {
         self.fn_idx.insert(fn_ir.id, self.fns.len());
         self.fns.push(fn_ir);
@@ -1963,6 +1978,7 @@ impl fmt::Display for BinOp {
             BinOp::Mul => "*",
             BinOp::Div => "/",
             BinOp::Mod => "%",
+            BinOp::BinConcat => "<>",
             BinOp::Eq => "==",
             BinOp::Neq => "!=",
             BinOp::Lt => "<",

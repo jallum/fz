@@ -234,17 +234,20 @@ end
         .expect("root body surface should come from cache");
 
     assert_eq!(first.owner_module, "");
-    assert_eq!(first.groups.len(), 2);
-    assert_eq!(second.groups.len(), 2);
+    assert_eq!(first.groups.len(), 3);
+    assert_eq!(second.groups.len(), 3);
     assert_eq!(first.groups[0].name, "main");
     assert_eq!(first.groups[0].root_fn_id, FnId(0));
     assert_eq!(first.groups[1].name, "helper");
     assert_eq!(first.groups[1].root_fn_id, FnId(1));
+    assert_eq!(first.groups[2].name, "Nested.local");
+    assert_eq!(first.groups[2].root_fn_id, FnId(2));
     assert_eq!(compiler.module(root).state, ModuleState::BodySurfaceReady);
     assert_eq!(compiler.fn_group_for_root_fn(root, FnId(0)), Some(FnGroupId(0)));
     assert_eq!(compiler.fn_group_for_root_fn(root, FnId(1)), Some(FnGroupId(1)));
+    assert_eq!(compiler.fn_group_for_root_fn(root, FnId(2)), Some(FnGroupId(2)));
     assert_eq!(capture.count(&["fz", "compiler", "body_surface_ready"]), 1);
-    assert_eq!(capture.count(&["fz", "compiler", "fn_group_discovered"]), 2);
+    assert_eq!(capture.count(&["fz", "compiler", "fn_group_discovered"]), 3);
     assert_eq!(capture.count(&["fz", "compiler", "cache_hit"]), 1);
     assert_eq!(capture.count(&["fz", "compiler", "runtime_lowered"]), 0);
 
@@ -287,9 +290,9 @@ end
 
     assert_eq!(surface.owner_module, "Nested");
     assert_eq!(surface.groups.len(), 2);
-    assert_eq!(surface.groups[0].name, "local");
+    assert_eq!(surface.groups[0].name, "Nested.local");
     assert_eq!(surface.groups[0].root_fn_id, FnId(0));
-    assert_eq!(surface.groups[1].name, "helper");
+    assert_eq!(surface.groups[1].name, "Nested.helper");
     assert_eq!(surface.groups[1].arity, 2);
     assert_eq!(compiler.fn_group_for_root_fn(nested_id, FnId(0)), Some(FnGroupId(0)));
     assert_eq!(compiler.fn_group_for_root_fn(nested_id, FnId(1)), Some(FnGroupId(1)));
