@@ -6,7 +6,7 @@ use fz_runtime::heap::{Heap, deep_copy_any_value_ref};
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, ProcessState};
 
 use super::*;
-use crate::exec::matcher::Matcher;
+use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::fz_ir::{FnId, Module};
 use crate::ir_planner::fn_types::SpecKey;
 use crate::telemetry::Telemetry;
@@ -59,7 +59,7 @@ pub(super) enum InterpStep {
 #[derive(Clone)]
 pub(super) struct ParkRecord {
     pub(super) clauses: Vec<MatchedClause>,
-    pub(super) matcher: Arc<Matcher>,
+    pub(super) dispatch: Arc<PatternDispatchPlan>,
     pub(super) pinned: HashMap<String, AnyValue>,
     pub(super) captures: Vec<AnyValue>,
 }
@@ -89,7 +89,7 @@ impl IrInterpRuntime {
         let sender_heap = &unsafe { &*self.cur_proc() }.heap as *const Heap;
         // fz-yxs/fz-2v3 — sender-side probe for selective receive. If the
         // receiver is parked on a Term::ReceiveMatched, run the parked
-        // matcher inline against the new message; on a hit, set up the
+        // dispatch plan inline against the new message; on a hit, set up the
         // matched clause's body as the receiver's next resume and wake it
         // without touching the mailbox.
         let parked = self.parked.remove(&receiver_pid);
@@ -100,7 +100,7 @@ impl IrInterpRuntime {
                 module,
                 tel,
                 &park.clauses,
-                &park.matcher,
+                &park.dispatch,
                 msg,
                 &park.pinned,
                 &park.captures,

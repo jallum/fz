@@ -1,39 +1,59 @@
 use crate::exec::runtime::DbgCapture;
-use crate::frontend::compile_source;
+use crate::frontend::{FrontendOk, compile_source_with_types};
 use crate::ir_interp::*;
 use crate::ir_lower::lower_program;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
-use crate::telemetry::NullTelemetry;
 use crate::telemetry::bus::ConfiguredTelemetry;
-use crate::test_support::linked_runtime_graph_with_telemetry;
+use crate::test_support::linked_runtime_graph;
 use fz_runtime::any_value::ListCons;
 use fz_runtime::any_value::ValueKind;
 use std::ptr::null_mut;
 
 use crate::fz_ir::Module;
 
+fn compile_source(src: String, source_name: String) -> FrontendOk {
+    let mut t = crate::types::new();
+    let tel = ConfiguredTelemetry::new();
+    compile_source_with_types(&mut t, src, source_name, &tel)
+        .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics))
+}
+
 fn lower_src(src: &str) -> Module {
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
-    lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower")
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
+    lower_program(
+        &mut crate::types::new(),
+        &prog,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("lower")
 }
 
 fn run(src: &str) -> i64 {
     let m = lower_src(src);
-    run_main(&NullTelemetry, &m).expect("interp run")
+    run_main(&crate::telemetry::ConfiguredTelemetry::new(), &m).expect("interp run")
 }
 
 fn run_checked(src: &str) -> i64 {
-    let frontend = compile_source(src.to_string(), "interp-test.fz".to_string())
-        .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
-    run_main(&NullTelemetry, &frontend.module).expect("interp run")
+    let frontend = compile_source(src.to_string(), "interp-test.fz".to_string());
+    run_main(&crate::telemetry::ConfiguredTelemetry::new(), &frontend.module).expect("interp run")
 }
 
 fn run_runtime_graph(src: &str) -> i64 {
     let mut t = crate::types::new();
-    let graph = linked_runtime_graph_with_telemetry(&mut t, src, &NullTelemetry);
-    let (halt, _) = run_main_with_plan(&mut t, &NullTelemetry, &graph.module, graph.module_plan).expect("interp run");
+    let graph = linked_runtime_graph(&mut t, src, &crate::telemetry::ConfiguredTelemetry::new());
+    let (halt, _) = run_main_with_plan(
+        &mut t,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+        &graph.module,
+        graph.module_plan,
+    )
+    .expect("interp run");
     halt
 }
 
@@ -42,7 +62,7 @@ fn capture_runtime_graph(src: &str) -> String {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
-    let graph = linked_runtime_graph_with_telemetry(&mut t, src, &tel);
+    let graph = linked_runtime_graph(&mut t, src, &tel);
     run_main_with_plan(&mut t, &tel, &graph.module, graph.module_plan).expect("interp run");
     dbg.lines().join("\n")
 }
@@ -57,17 +77,16 @@ fn capture(src: &str) -> String {
 }
 
 fn checked_halt_and_closure_allocs(src: &str) -> (i64, u64) {
-    let frontend = compile_source(src.to_string(), "interp-test.fz".to_string())
-        .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
-    let (halt, runtime) = run_main_with_runtime(&NullTelemetry, &frontend.module).expect("interp run");
+    let frontend = compile_source(src.to_string(), "interp-test.fz".to_string());
+    let (halt, runtime) =
+        run_main_with_runtime(&crate::telemetry::ConfiguredTelemetry::new(), &frontend.module).expect("interp run");
     let task = runtime.task(1).expect("main task remains registered");
     let closure_allocs = task.heap.alloc_stats_snapshot().closure.allocs;
     (halt, closure_allocs)
 }
 
 fn checked_halt_and_capture(src: &str) -> (i64, String, Module) {
-    let frontend = compile_source(src.to_string(), "interp-test.fz".to_string())
-        .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
+    let frontend = compile_source(src.to_string(), "interp-test.fz".to_string());
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
@@ -341,7 +360,7 @@ fn interp_deep_copy_float_in_container_preserves_raw_slot() {
         end
     "#,
     );
-    let (_, runtime) = run_main_with_runtime(&NullTelemetry, &m).expect("interp run");
+    let (_, runtime) = run_main_with_runtime(&crate::telemetry::ConfiguredTelemetry::new(), &m).expect("interp run");
 
     let task = runtime.task(1).expect("main task remains registered");
     let any_ref = task.mailbox.front().expect("self-send remains queued");
@@ -375,7 +394,7 @@ fn persistent_runtime_drives_entries_without_resetting_mailbox() {
 
     runtime.enqueue_entry(&m, 1, first, vec![]).expect("enqueue first");
     let first_done = runtime
-        .drive_until_idle(&mut t, &NullTelemetry, Some(1))
+        .drive_until_idle(&mut t, &crate::telemetry::ConfiguredTelemetry::new(), Some(1))
         .expect("drive first");
     assert_eq!(first_done.len(), 1);
     assert_eq!(
@@ -386,7 +405,7 @@ fn persistent_runtime_drives_entries_without_resetting_mailbox() {
 
     runtime.enqueue_entry(&m, 1, second, vec![]).expect("enqueue second");
     let second_done = runtime
-        .drive_until_idle(&mut t, &NullTelemetry, Some(1))
+        .drive_until_idle(&mut t, &crate::telemetry::ConfiguredTelemetry::new(), Some(1))
         .expect("drive second");
     assert_eq!(second_done.last().and_then(|(_, value)| value.as_i64()), Some(41),);
     assert_eq!(
@@ -419,7 +438,7 @@ fn interp_reductions_yield_allocation_light_loops() {
     "#,
     );
 
-    let (halt, runtime) = run_main_with_runtime(&NullTelemetry, &m).expect("interp run");
+    let (halt, runtime) = run_main_with_runtime(&crate::telemetry::ConfiguredTelemetry::new(), &m).expect("interp run");
 
     assert_eq!(halt, 99);
     let main = runtime.task(1).expect("main task remains registered");
@@ -454,7 +473,7 @@ fn interp_quiet_quanta_moves_only_at_scheduler_boundaries() {
     runtime.task_mut(1).expect("main task").reductions_per_quantum = 100;
 
     let completions = runtime
-        .drive_until_idle(&mut t, &NullTelemetry, None)
+        .drive_until_idle(&mut t, &crate::telemetry::ConfiguredTelemetry::new(), None)
         .expect("drive interp");
     let halt = completions
         .iter()
@@ -492,7 +511,7 @@ fn interp_allocation_pressure_yields_before_budget_exhaustion() {
     }
 
     let completions = runtime
-        .drive_until_idle(&mut t, &NullTelemetry, None)
+        .drive_until_idle(&mut t, &crate::telemetry::ConfiguredTelemetry::new(), None)
         .expect("drive interp");
     let halt = completions
         .iter()

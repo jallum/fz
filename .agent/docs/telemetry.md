@@ -24,9 +24,11 @@ exit, `dbg` output, how tests observe a run — live in
 `&[&'static str]` path like `&["fz", "lexer", "tokens_built"]` — broad to
 specific.
 
-**`NullTelemetry`** (`sink.rs`) — the no-op impl. Every method is `#[inline]` and
-returns immediately, allocating nothing. The driver passes `&NullTelemetry` when
-it wants silence; emit sites pay nothing.
+**Silence by configuration** — there is no separate no-op telemetry type.
+Callers still thread a real `&dyn Telemetry` through the pipeline; when they want
+no observable output they instantiate a `ConfiguredTelemetry` and attach no
+handlers. That keeps one observability path across production, tests, and
+interactive tooling.
 
 **`ConfiguredTelemetry`** (`bus.rs`) — the listening impl the driver
 instantiates. It owns a handler registry (`Vec<Entry>`, each entry a `prefix` +

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use super::*;
-use crate::exec::matcher::Matcher;
+use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::fz_ir::{CallsiteId, EmitSlot, FnId, Module, Stmt, Term, Var};
 use crate::ir_extern_marshal::resolve_fn_types;
 use crate::ir_planner::fn_types::SpecKey;
@@ -26,7 +26,7 @@ fn continuation_target(fn_types: &SpecPlan, fn_id: FnId, ident: &crate::fz_ir::C
 /// clause index plus the bindings list (in source order, aligned with
 /// `MatchedClause::bound_names`) on success.
 ///
-/// Receive probes execute the cached AST-free Matcher lowered at the
+/// Receive probes execute the cached AST-free dispatch plan lowered at the
 /// receive site; misses return None without compiling or walking AST.
 pub(super) fn try_match_clauses<T: Types<Ty = Ty>>(
     runtime: &mut IrInterpRuntime,
@@ -34,12 +34,12 @@ pub(super) fn try_match_clauses<T: Types<Ty = Ty>>(
     module: &Module,
     tel: &dyn Telemetry,
     clauses: &[MatchedClause],
-    matcher: &Matcher,
+    dispatch: &PatternDispatchPlan,
     msg: AnyValue,
     pinned: &HashMap<String, AnyValue>,
     _captures: &[AnyValue],
 ) -> Result<Option<(usize, Vec<AnyValue>)>, String> {
-    let matched = execute_matcher(runtime, module, matcher, msg, pinned);
+    let matched = execute_dispatch(runtime, module, dispatch, msg, pinned);
     let Some((body_id, binds)) = matched else {
         tel.execute(
             &["fz", "interp", "receive", "probe_miss"],
@@ -74,7 +74,10 @@ pub(super) fn try_match_clauses<T: Types<Ty = Ty>>(
         },
         &Metadata::new(),
     );
-    debug_assert!(c.guard.is_none(), "receive guards execute inside the cached Matcher");
+    debug_assert!(
+        c.guard.is_none(),
+        "receive guards execute inside the cached dispatch plan"
+    );
     Ok(Some((i, bound_vals)))
 }
 
@@ -370,7 +373,7 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                 // probe to consult on the next arrival.
                 Term::ReceiveMatched {
                     clauses,
-                    matcher,
+                    dispatch,
                     after,
                     pinned,
                     captures,
@@ -405,7 +408,7 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                             module,
                             tel,
                             &matched_clauses,
-                            matcher,
+                            dispatch,
                             msg,
                             &pinned_map,
                             &capture_vals,
@@ -442,7 +445,7 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
 
                     let park = ParkRecord {
                         clauses: matched_clauses,
-                        matcher: matcher.clone(),
+                        dispatch: dispatch.clone(),
                         pinned: pinned_map,
                         captures: capture_vals,
                     };

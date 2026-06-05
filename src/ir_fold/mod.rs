@@ -1,6 +1,6 @@
 //! Planned-body singleton fold pass.
 //!
-//! After `plan_module` proves a prim result or branch condition is a singleton,
+//! After `plan_module_with_role` proves a prim result or branch condition is a singleton,
 //! `PlannedProgram` materialization folds the per-spec body clone. The canonical
 //! `Module` is not mutated with planner facts.
 //!

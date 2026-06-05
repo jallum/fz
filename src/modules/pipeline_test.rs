@@ -1,6 +1,6 @@
 use super::*;
 use crate::ir_interp::run_main;
-use crate::telemetry::{Capture, ConfiguredTelemetry, NullTelemetry, Value};
+use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use std::env::temp_dir;
 use std::fs::remove_dir_all;
 use std::process;
@@ -8,7 +8,7 @@ use std::process;
 #[test]
 fn execution_graph_loads_runtime_import_without_user_providers() {
     let mut concrete_types = crate::types::new();
-    let tel = NullTelemetry;
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
     let providers = ProviderInputs::new(
         temp_dir()
             .join(format!("fz-runtime-graph-{}", process::id()))
@@ -145,7 +145,7 @@ impl Drop for StructuralProviderFixture {
 /// provider structurally — no recompile.
 fn write_structural_provider(tag: &str) -> (StructuralProviderFixture, ModuleName) {
     let mut t = crate::types::new();
-    let tel = NullTelemetry;
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
     let provider = compile_source_with_types(&mut t, PROVIDER_SRC.to_string(), "contracts.fz".to_string(), &tel)
         .unwrap_or_else(|err| panic!("provider frontend: {:?}", err.diagnostics));
     let contracts = ModuleName::from_segments(vec!["Contracts".to_string()]);
@@ -204,7 +204,7 @@ fn prepare_consumer_against(root: &str, provider: &ModuleName, tel: &dyn Telemet
 /// impl and returns 42.
 #[test]
 fn structural_provider_loads_and_runs_without_recompile() {
-    let tel = NullTelemetry;
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
     let (fixture, provider) = write_structural_provider("run");
     let graph = prepare_consumer_against(&fixture.artifact_root, &provider, &tel);
 
@@ -270,7 +270,7 @@ fn structural_provider_is_materialized_without_frontend() {
 /// against the consumer's SourceMap to the provider's actual source line.
 #[test]
 fn structural_provider_spans_resolve_to_real_source() {
-    let tel = NullTelemetry;
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
     let (fixture, provider) = write_structural_provider("diag");
     let graph = prepare_consumer_against(&fixture.artifact_root, &provider, &tel);
 
@@ -304,7 +304,7 @@ fn linked_runtime_graph_keeps_cont_dispatches_for_enum_take_drop_split() {
     use crate::fz_ir::{CallsiteId, EmitSlot, Term};
 
     let mut t = crate::types::new();
-    let tel = NullTelemetry;
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
     let providers = ProviderInputs::new(
         temp_dir()
             .join(format!("fz-enum-linked-{}", process::id()))
@@ -358,7 +358,7 @@ fn linked_runtime_graph_keeps_cont_dispatches_for_spawn_with_captures() {
     use crate::fz_ir::{CallsiteId, EmitSlot, Term};
 
     let mut t = crate::types::new();
-    let tel = NullTelemetry;
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
     let providers = ProviderInputs::new(
         temp_dir()
             .join(format!("fz-spawn-linked-{}", process::id()))

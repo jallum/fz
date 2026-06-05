@@ -75,7 +75,7 @@ pub struct LowerCtx {
     /// current lowering scope. Defaults to `User`; entry points that
     /// initiate generated dispatch (fn-clause selection, pattern-bind,
     /// param guards) save the previous value, set their origin for the
-    /// scope, and restore on exit. PatternMatrix helpers and `lower_pattern_bind`
+    /// scope, and restore on exit. SourcePatternRows helpers and `lower_pattern_bind`
     /// read this when emitting their Ifs.
     pub branch_origin: BranchOrigin,
     /// fz-puj.49 (X1A) — snapshot of user FnDefs by (name, arity) for

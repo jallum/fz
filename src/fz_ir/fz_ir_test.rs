@@ -92,11 +92,17 @@ fn module_serde_roundtrips() {
 /// span reachable from the module. Builds a module populating EVERY span
 /// site, places one span in an unmapped file and one DUMMY span, applies
 /// `{FileId(7) -> FileId(3)}`, and asserts every FileId(7) span (including
-/// the receive matcher's) became FileId(3) while FileId(9) and DUMMY are
+/// the receive dispatch plan's) became FileId(3) while FileId(9) and DUMMY are
 /// untouched.
 #[test]
 fn remap_file_ids_rewrites_every_span_site() {
-    use crate::exec::matcher::{Matcher, MatcherInput, MatcherLeaf, MatcherNode, NodeId};
+    use crate::dispatch_matrix::pattern::{
+        PatternDispatchOutcome, PatternDispatchPlan, PatternInput, PatternPinnedInput, PatternSubjectRef,
+    };
+    use crate::dispatch_matrix::{
+        DispatchGraph, DispatchMatrix, DispatchNode, EdgeEvidence, GraphNodeId, Order, Outcome, OutcomeId,
+        OutcomeMultiplicity, Subject, SubjectId, SubjectSource,
+    };
     use std::sync::Arc;
 
     let f7 = FileId(7);
@@ -104,7 +110,7 @@ fn remap_file_ids_rewrites_every_span_site() {
     let s7 = |start, end| Span::new(f7, start, end);
 
     // One fn carrying a MakeClosure (Prim span), a Term::Call (ident span),
-    // and a Term::ReceiveMatched whose matcher carries non-DUMMY spans.
+    // and a Term::ReceiveMatched whose dispatch plan carries non-DUMMY spans.
     let mut b = FnBuilder::new(FnId(0), "host");
     let p = b.fresh_var();
     let entry = b.block(vec![p]);
@@ -130,26 +136,49 @@ fn remap_file_ids_rewrites_every_span_site() {
         },
     );
 
-    // recv_b: Term::ReceiveMatched with clause/after spans + a matcher
-    // whose input and leaf spans live in f7.
-    let matcher = {
-        let mut m = Matcher::new(
-            vec![MatcherInput {
+    // recv_b: Term::ReceiveMatched with clause/after spans + a dispatch plan
+    // whose input and outcome spans live in f7.
+    let dispatch = {
+        PatternDispatchPlan {
+            matrix: DispatchMatrix {
+                subjects: vec![Subject {
+                    id: SubjectId(0),
+                    source: SubjectSource::Input { ordinal: 0 },
+                }],
+                outcomes: vec![Outcome {
+                    id: OutcomeId(0),
+                    multiplicity: OutcomeMultiplicity::Unique,
+                }],
+                arms: vec![],
+                order: Order::Source,
+            },
+            graph: DispatchGraph {
+                nodes: vec![DispatchNode::Outcome {
+                    outcome: OutcomeId(0),
+                    evidence: EdgeEvidence::empty(),
+                }],
+                root: GraphNodeId(0),
+            },
+            inputs: vec![PatternInput {
                 var: Some(p),
                 span: s7(50, 51),
             }],
-            MatcherNode::Leaf(MatcherLeaf {
+            subjects: vec![Some(PatternSubjectRef::Input(0))],
+            outcomes: vec![PatternDispatchOutcome {
+                outcome: OutcomeId(0),
                 body_id: 0,
                 bindings: Vec::new(),
                 span: s7(52, 53),
-            }),
-        );
-        // A second node parked in an unmapped file proves non-f7 spans
-        // are left alone inside the matcher too.
-        m.push_node(MatcherNode::Fail {
-            span: Span::new(f9, 54, 55),
-        });
-        m
+            }],
+            guards: vec![],
+            pinned: vec![PatternPinnedInput {
+                name: "keep".to_string(),
+                var: None,
+                span: Span::new(f9, 54, 55),
+            }],
+            prepared_keys: vec![],
+            bitstring_direct_bindings: HashMap::new(),
+        }
     };
     b.set_terminator(
         recv_b,
@@ -162,7 +191,7 @@ fn remap_file_ids_rewrites_every_span_site() {
                 body: FnId(0),
                 span: s7(62, 63),
             }],
-            matcher: Arc::new(matcher),
+            dispatch: Arc::new(dispatch),
             after: Some(ReceiveAfter {
                 ident: CallsiteIdent::from_source(s7(64, 65)),
                 timeout: p,
@@ -221,26 +250,16 @@ fn remap_file_ids_rewrites_every_span_site() {
         Term::ReceiveMatched {
             ident,
             clauses,
-            matcher,
+            dispatch,
             after,
             ..
         } => {
             assert_eq!(ident.span().file, f3, "Receive ident f7");
             assert_eq!(clauses[0].span.file, f3, "ReceiveClause f7");
             assert_eq!(after.as_ref().unwrap().span.file, f3, "ReceiveAfter f7");
-            assert_eq!(matcher.inputs[0].span.file, f3, "matcher input f7");
-            match matcher.node(matcher.root) {
-                Some(MatcherNode::Leaf(leaf)) => {
-                    assert_eq!(leaf.span.file, f3, "matcher leaf f7")
-                }
-                other => panic!("expected leaf root, got {:?}", other),
-            }
-            match matcher.node(NodeId(1)) {
-                Some(MatcherNode::Fail { span }) => {
-                    assert_eq!(span.file, f9, "matcher f9 node untouched")
-                }
-                other => panic!("expected fail node, got {:?}", other),
-            }
+            assert_eq!(dispatch.inputs[0].span.file, f3, "dispatch input f7");
+            assert_eq!(dispatch.outcomes[0].span.file, f3, "dispatch outcome f7");
+            assert_eq!(dispatch.pinned[0].span.file, f9, "dispatch f9 pinned untouched");
         }
         other => panic!("expected ReceiveMatched, got {:?}", other),
     }

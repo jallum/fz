@@ -14,13 +14,22 @@ use crate::ir_interp::IrInterpRuntime;
 use crate::ir_lower::lower_program;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
+use crate::telemetry::Telemetry;
 use crate::telemetry::bus::ConfiguredTelemetry;
-use crate::telemetry::{NullTelemetry, Telemetry};
 
 fn lower_src(src: &str) -> Module {
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
-    lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower")
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
+    lower_program(
+        &mut crate::types::new(),
+        &prog,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("lower")
 }
 
 /// A telemetry sink that captures `dbg` lines, returned alongside the capture

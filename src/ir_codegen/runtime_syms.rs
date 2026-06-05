@@ -4,24 +4,10 @@
 //! requires updating the FFI body in ir_runtime.rs AND the matching
 //! entry here.
 
-#![allow(unused_imports)]
-
 use super::*;
-use crate::fz_ir::{BinOp, Const, FnId, Module, Prim, Stmt, Term, UnOp};
-use cranelift_codegen::Context;
-use cranelift_codegen::ir::{
-    self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
-    condcodes::{FloatCC, IntCC},
-    types,
-};
+use cranelift_codegen::ir::{self, AbiParam, Signature, types};
 use cranelift_codegen::isa::CallConv;
-use cranelift_codegen::settings::{self, Configurable};
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
-use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
-use std::collections::HashMap;
-use std::sync::Arc;
+use cranelift_module::{FuncId, Linkage, Module as ClModule};
 
 pub(crate) fn sig1(params: &[ir::Type], rets: &[ir::Type]) -> Signature {
     let mut s = Signature::new(CallConv::SystemV);

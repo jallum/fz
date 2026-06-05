@@ -1,9 +1,12 @@
 use super::*;
-use crate::frontend::{FrontendOk, compile_source};
+use crate::frontend::{FrontendOk, compile_source_with_types};
 use crate::fz_ir::{ExternMarshal, Prim};
+use crate::telemetry::ConfiguredTelemetry;
 
 fn compile(src: &str) -> FrontendOk {
-    compile_source(src.to_string(), "test.fz".to_string())
+    let mut t = crate::types::new();
+    let tel = ConfiguredTelemetry::new();
+    compile_source_with_types(&mut t, src.to_string(), "test.fz".to_string(), &tel)
         .unwrap_or_else(|err| panic!("frontend failed: {:?}", err.diagnostics.as_slice()))
 }
 

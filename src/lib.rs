@@ -3,6 +3,7 @@ mod ast;
 mod callsite_walk;
 mod compiler;
 mod diag;
+mod dispatch_matrix;
 mod frontend;
 mod fz_ir;
 mod ir_capture_norm;
@@ -24,7 +25,6 @@ mod ir_lower;
 mod ir_planner;
 mod modules;
 mod parser;
-mod pattern_matrix;
 mod specs;
 mod telemetry;
 #[cfg(test)]
@@ -46,7 +46,7 @@ use ir_codegen::{
 use ir_interp::run_main_with_plan;
 use ir_planner::{
     fn_types::{SpecKey, display_return_demand},
-    materialize_program, plan_module, pretty_module_plan,
+    materialize_program, pretty_module_plan,
 };
 use libc::{c_int, close, write};
 use modules::artifact::FzoArtifact;
@@ -1001,7 +1001,7 @@ fn checked_module_or_exit(
 }
 
 /// fz-73m — drive a source string through lex → parse → resolve → macros
-/// → ir_lower → plan_module, then pretty-print `ModulePlan` for golden
+/// → ir_lower → plan_module_with_role, then pretty-print `ModulePlan` for golden
 /// inspection. Skips codegen entirely; the dump is a planner-only view.
 fn dump_specs_pipeline(
     compiler: &mut Compiler,
@@ -1067,7 +1067,7 @@ fn render_dispatch_target<F: Fn(FnId) -> String>(t: &mut DefaultTypes, fn_name: 
 /// functions (no user functions in the plan)`.
 ///
 /// Each entry is `<fn_name>: <N> spec(s) [<key_1>] [<key_2>] ...`. The
-/// dump runs the compile pipeline through `plan_module`; the surviving
+/// dump runs the compile pipeline through `plan_module_with_role`; the surviving
 /// fns and their spec keys are read out of `ModulePlan`.
 fn dump_bodies_pipeline(
     compiler: &mut Compiler,
@@ -1138,7 +1138,7 @@ fn dump_bodies_pipeline(
 /// fz-9pr.16 — `fz dump --emit outcomes`: per-callsite verdict diary.
 ///
 /// Runs the codegen front half (lex → parse → resolve → macros →
-/// ir_lower → plan_module) and prints every call-edge entry in
+/// ir_lower → plan_module_with_role) and prints every call-edge entry in
 /// `mt.specs[*].call_edges`, grouped by caller fn. Output shape:
 ///
 /// ```text
@@ -1182,7 +1182,7 @@ fn dump_outcomes_pipeline(
             module_path: module.module_path().to_owned(),
         },
     );
-    let mt = plan_module(compiler.types(), &module, tel);
+    let mt = ir_planner::plan_module_with_role(compiler.types(), &module, tel, "dump_outcomes");
 
     let fn_name = |fid: FnId| -> String {
         module
@@ -1377,13 +1377,9 @@ fn compile_pipeline(
         let unit = graph.units[0]
             .clone()
             .with_code_and_plan(graph.module.clone(), graph.module_plan.clone());
-        CompiledProgram::new(unit, executable).link_image_with_telemetry(tel)
+        CompiledProgram::new(unit, executable).link_image(tel)
     } else {
-        Ok(CompiledImage::from_linked_with_telemetry(
-            tel,
-            graph.units.len(),
-            executable,
-        ))
+        Ok(CompiledImage::from_linked(tel, graph.units.len(), executable))
     }
     .unwrap_or_else(|err| report_pipeline_error_or_exit("fz run", tel, sm_cell, PipelineError::Link(err)));
     if let Some(metadata) = image.metadata() {
@@ -1434,9 +1430,7 @@ fn run_jit_src(
     };
     // fz-swt.10 — attach the IR Module so `fz_make_resource` (callable
     // from JIT'd code) can resolve dtor closures.
-    let mut rt = Runtime::new(compiled.image.compiled_module(), 1)
-        .with_module(&compiled.module)
-        .with_telemetry(tel);
+    let mut rt = Runtime::new(compiled.image.compiled_module(), 1, tel).with_module(&compiled.module);
     let _main_pid = rt.spawn(main_fn);
     notify_fixture_execution_start();
     rt.run_until_idle();

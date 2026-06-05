@@ -1,6 +1,6 @@
-//! Selective-receive matcher fn codegen.
+//! Selective-receive dispatch fn codegen.
 //!
-//! Emits the leaf matcher fn for a `Term::ReceiveMatched`. The matcher
+//! Emits the leaf dispatch fn for a `Term::ReceiveMatched`. The runtime
 //! ABI matches `fz_runtime::park::MatcherFn` (see runtime/src/park.rs):
 //!
 //! ```text
@@ -11,19 +11,22 @@
 //! - `pinned`: pointer to `AnyValueRef` entries, in the order
 //!   they appear in `Term::ReceiveMatched::pinned`.
 //! - `out`: caller-supplied `[AnyValueRef; bound_arity]`
-//!   scratch buffer; the matcher writes the winning clause's bound-var
+//!   scratch buffer; the dispatch writes the winning clause's bound-var
 //!   values here.
 //! - returns `0` on miss; `k > 0` is the 1-based clause index (caller
 //!   indexes `clause_bodies[k-1]`).
 //!
-//! Production codegen consumes the cached AST-free `Matcher` attached to
-//! `Term::ReceiveMatched`; it does not rebuild a PatternMatrix/Matcher from receive
-//! clauses.
+//! Production codegen consumes the cached AST-free `PatternDispatchPlan`
+//! attached to `Term::ReceiveMatched`; it does not rebuild source clauses.
 
-use crate::exec::matcher::{
-    GuardBinOp, GuardDispatch, GuardExpr, GuardUnaryOp, Matcher, MatcherBitField, MatcherBitSize, MatcherBitType,
-    MatcherConst, MatcherEndian, MatcherNode, MatcherTest, NodeId, PinnedId, SubjectRef, SwitchKey, SwitchKind,
-    map_value_subject, prepared_key_name,
+use crate::dispatch_matrix::pattern::{
+    PatternDispatchPlan, PatternGuardBinOp, PatternGuardDispatch, PatternGuardExpr, PatternGuardUnaryOp,
+    prepared_key_name,
+};
+use crate::dispatch_matrix::{
+    BitstringEndian, BitstringFieldKind, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchConst,
+    DispatchNode, EdgeEvidence, GraphNodeId, ListRegion, PinnedValueId, ProjectionKind, Region, SubjectId,
+    SubjectSource,
 };
 use crate::fz_ir::{Module, ReceiveClause, Var};
 use crate::ir_codegen::{CodegenError, SLOT_BYTES, emit_fn_body_stats};
@@ -35,9 +38,9 @@ use fz_runtime::any_value::{AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_I
 use fz_runtime::ir_runtime::fz_bs_field_spec;
 use std::collections::HashMap;
 
-/// Cranelift signature for the matcher fn family. Matches
+/// Cranelift signature for the receive dispatch fn family. Matches
 /// `fz_runtime::park::MatcherFn`.
-pub(crate) fn matcher_signature() -> Signature {
+pub(crate) fn receive_dispatch_signature() -> Signature {
     let mut sig = Signature::new(CallConv::SystemV);
     sig.params.push(AbiParam::new(types::I64)); // process (*mut Process)
     sig.params.push(AbiParam::new(types::I64)); // msg_ref
@@ -47,20 +50,22 @@ pub(crate) fn matcher_signature() -> Signature {
     sig
 }
 
-/// Declare a matcher fn in `module`. The caller is responsible for
-/// pairing this with a single `emit_matcher_body` call before finalize.
-pub(crate) fn declare_matcher<M: cranelift_module::Module>(module: &mut M, name: &str) -> Result<FuncId, CodegenError> {
+/// Declare a receive dispatch fn in `module`.
+pub(crate) fn declare_receive_dispatch<M: cranelift_module::Module>(
+    module: &mut M,
+    name: &str,
+) -> Result<FuncId, CodegenError> {
     module
-        .declare_function(name, Linkage::Local, &matcher_signature())
+        .declare_function(name, Linkage::Local, &receive_dispatch_signature())
         .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))
 }
 
 /// Optional runtime helper `FuncId`s required to emit the receive ABI
-/// matcher body. Each field corresponds to a `fz_runtime` helper that the
-/// matcher may call depending on the patterns it encounters; missing helpers
-/// turn into specific `CodegenError`s if the matcher tries to use them.
+/// dispatch body. Each field corresponds to a `fz_runtime` helper that the
+/// dispatch may call depending on the patterns it encounters; missing helpers
+/// turn into specific `CodegenError`s if dispatch needs them.
 #[derive(Clone, Copy)]
-pub(crate) struct MatcherRuntimeHelpers {
+pub(crate) struct DispatchRuntimeHelpers {
     pub value_eq_typed_id: Option<FuncId>,
     pub matcher_eq_bytes_id: Option<FuncId>,
     pub matcher_map_get_id: Option<FuncId>,
@@ -84,13 +89,13 @@ pub(crate) struct MatcherRuntimeHelpers {
 }
 
 /// Per-function-body `FuncRef`s for the runtime helpers in
-/// [`MatcherRuntimeHelpers`], obtained by `declare_func_in_func` on the
-/// matcher function builder.
+/// [`DispatchRuntimeHelpers`], obtained by `declare_func_in_func` on the
+/// dispatch function builder.
 #[derive(Clone, Copy)]
-struct MatcherRuntimeRefs {
+struct DispatchRuntimeRefs {
     value_eq_typed_fref: Option<ir::FuncRef>,
     matcher_eq_bytes_fref: Option<ir::FuncRef>,
-    // Carried for API parity with `MatcherRuntimeHelpers::matcher_map_get_id`;
+    // Carried for API parity with `DispatchRuntimeHelpers::matcher_map_get_id`;
     // current emit paths use the `_ref` variant instead.
     #[allow(dead_code)]
     matcher_map_get_fref: Option<ir::FuncRef>,
@@ -113,22 +118,21 @@ struct MatcherRuntimeRefs {
     list_tail_fref: Option<ir::FuncRef>,
 }
 
-/// Emit the receive ABI matcher directly from the cached AST-free
-/// [`Matcher`]. The clause slice is still used for ABI metadata
-/// (`bound_names` and guard rejection), but matching control flow comes from
-/// `matcher` instead of rebuilding PatternMatrix/Matcher from receive patterns.
-pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
+/// Emit the receive ABI dispatch directly from the cached AST-free
+/// [`PatternDispatchPlan`]. The clause slice is still used for ABI metadata
+/// (`bound_names`), but matching control flow comes from the dispatch graph.
+pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
     module: &mut M,
     fbctx: &mut FunctionBuilderContext,
-    matcher_id: FuncId,
+    dispatch_id: FuncId,
     fz_module: &Module,
     tuple_schema_ids: &HashMap<usize, u32>,
     pinned: &[(String, Var)],
     clauses: &[ReceiveClause],
-    matcher: &Matcher,
-    helpers: &MatcherRuntimeHelpers,
+    dispatch: &PatternDispatchPlan,
+    helpers: &DispatchRuntimeHelpers,
 ) -> Result<(usize, usize), CodegenError> {
-    let MatcherRuntimeHelpers {
+    let DispatchRuntimeHelpers {
         value_eq_typed_id,
         matcher_eq_bytes_id,
         matcher_map_get_id,
@@ -157,13 +161,13 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
         .collect();
 
     let mut unique_bytes = Vec::new();
-    collect_binary_literals_in_matcher(matcher, &mut unique_bytes);
+    collect_binary_literals_in_dispatch(dispatch, &mut unique_bytes);
     let mut binary_data_ids: HashMap<Vec<u8>, DataId> = HashMap::new();
     for (idx, bytes) in unique_bytes.into_iter().enumerate() {
         if binary_data_ids.contains_key(&bytes) {
             continue;
         }
-        let name = format!(".fz_matcher_bin_{}_{}", matcher_id.as_u32(), idx);
+        let name = format!(".fz_dispatch_bin_{}_{}", dispatch_id.as_u32(), idx);
         let did = module
             .declare_data(&name, Linkage::Local, false, false)
             .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
@@ -177,7 +181,7 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
     }
 
     let mut compile_err: Option<CodegenError> = None;
-    let stats = emit_fn_body_stats(module, fbctx, matcher_signature(), matcher_id, |m, b| {
+    let stats = emit_fn_body_stats(module, fbctx, receive_dispatch_signature(), dispatch_id, |m, b| {
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
@@ -193,7 +197,7 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
             .iter()
             .map(|(bytes, did)| (bytes.clone(), m.declare_data_in_func(*did, b.func)))
             .collect();
-        let runtime = MatcherRuntimeRefs {
+        let runtime = DispatchRuntimeRefs {
             value_eq_typed_fref: value_eq_typed_id.map(|fid| m.declare_func_in_func(fid, b.func)),
             matcher_eq_bytes_fref: matcher_eq_bytes_id.map(|fid| m.declare_func_in_func(fid, b.func)),
             matcher_map_get_fref: matcher_map_get_id.map(|fid| m.declare_func_in_func(fid, b.func)),
@@ -216,7 +220,7 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
             list_tail_fref: list_tail_id.map(|fid| m.declare_func_in_func(fid, b.func)),
         };
 
-        let ctx = MatcherCtx {
+        let ctx = DispatchCtx {
             process,
             fz_module,
             tuple_schema_ids,
@@ -224,16 +228,16 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
             pinned_indices: &pinned_indices,
             pinned_ptr,
             out_ptr,
-            matcher,
+            dispatch,
             inputs: vec![msg],
             binary_data_gvs: &binary_data_gvs,
             runtime,
         };
 
-        let mut state = MatcherEmitState::default();
-        if let Err(e) = emit_matcher_node(b, &ctx, matcher.root, miss_block, &mut state) {
+        let mut state = DispatchEmitState::default();
+        if let Err(e) = emit_dispatch_node(b, &ctx, dispatch.graph.root, miss_block, &mut state) {
             compile_err = Some(e);
-            finish_failed_matcher_body(b, miss_block);
+            finish_failed_dispatch_body(b, miss_block);
             return;
         }
 
@@ -242,7 +246,7 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
         let zero = b.ins().iconst(types::I32, 0);
         b.ins().return_(&[zero]);
     })
-    .map_err(|e| CodegenError::new(format!("define matcher fn: {}", e)))?;
+    .map_err(|e| CodegenError::new(format!("define receive dispatch fn: {}", e)))?;
 
     if let Some(e) = compile_err {
         return Err(e);
@@ -260,10 +264,10 @@ enum ReceiveValue {
     EmptyList,
 }
 
-struct MatcherCtx<'a> {
-    /// The running receiver's `Process*` (matcher fn's first param). Field
+struct DispatchCtx<'a> {
+    /// The running receiver's `Process*` (dispatch fn's first param). Field
     /// projections that need heap state (struct fields via the schema registry,
-    /// map values) pass it to their BIFs — the matcher fn is invoked from Rust,
+    /// map values) pass it to their BIFs. The dispatch fn is invoked from Rust,
     /// not through the pinned-register ABI, so it carries the process explicitly.
     process: ir::Value,
     fz_module: &'a Module,
@@ -272,22 +276,22 @@ struct MatcherCtx<'a> {
     pinned_indices: &'a HashMap<String, usize>,
     pinned_ptr: ir::Value,
     out_ptr: ir::Value,
-    matcher: &'a Matcher,
+    dispatch: &'a PatternDispatchPlan,
     inputs: Vec<ReceiveValue>,
     binary_data_gvs: &'a HashMap<Vec<u8>, ir::GlobalValue>,
-    runtime: MatcherRuntimeRefs,
+    runtime: DispatchRuntimeRefs,
 }
 
 #[derive(Default, Clone)]
-struct MatcherEmitState {
-    values: HashMap<SubjectRef, ReceiveValue>,
-    bitstring_fields: HashMap<(SubjectRef, u32), ReceiveValue>,
+struct DispatchEmitState {
+    values: HashMap<SubjectId, ReceiveValue>,
+    bitstring_fields: HashMap<(SubjectId, u32), ReceiveValue>,
     direct_bindings: HashMap<String, ReceiveValue>,
 }
 
 fn emit_receive_value_ref(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
+    ctx: &DispatchCtx<'_>,
     value: ReceiveValue,
 ) -> Result<ir::Value, CodegenError> {
     match value {
@@ -324,7 +328,7 @@ fn receive_value_from_ref_word(_b: &mut FunctionBuilder<'_>, value_ref: ir::Valu
 
 fn receive_value_tag(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
+    ctx: &DispatchCtx<'_>,
     value: ReceiveValue,
 ) -> Result<ir::Value, CodegenError> {
     match value {
@@ -345,7 +349,7 @@ fn receive_value_tag(
 
 fn receive_value_int(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
+    ctx: &DispatchCtx<'_>,
     value: ReceiveValue,
 ) -> Result<ir::Value, CodegenError> {
     match value {
@@ -363,7 +367,7 @@ fn receive_value_int(
 
 fn receive_value_float(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
+    ctx: &DispatchCtx<'_>,
     value: ReceiveValue,
 ) -> Result<ir::Value, CodegenError> {
     match value {
@@ -381,7 +385,7 @@ fn receive_value_float(
 
 fn receive_value_atom(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
+    ctx: &DispatchCtx<'_>,
     value: ReceiveValue,
 ) -> Result<ir::Value, CodegenError> {
     match value {
@@ -410,7 +414,7 @@ fn load_receive_value_ref(b: &mut FunctionBuilder<'_>, base: ir::Value, idx: usi
 
 fn store_receive_value_ref(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
+    ctx: &DispatchCtx<'_>,
     base: ir::Value,
     idx: usize,
     value: ReceiveValue,
@@ -421,7 +425,7 @@ fn store_receive_value_ref(
     Ok(())
 }
 
-fn finish_failed_matcher_body(b: &mut FunctionBuilder<'_>, miss_block: ir::Block) {
+fn finish_failed_dispatch_body(b: &mut FunctionBuilder<'_>, miss_block: ir::Block) {
     let zero = b.ins().iconst(types::I32, 0);
     b.ins().return_(&[zero]);
     let to_miss = b.create_block();
@@ -434,163 +438,147 @@ fn finish_failed_matcher_body(b: &mut FunctionBuilder<'_>, miss_block: ir::Block
     b.ins().return_(&[zero2]);
 }
 
-fn emit_matcher_node(
+fn emit_dispatch_node(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
-    node_id: NodeId,
+    ctx: &DispatchCtx<'_>,
+    node_id: GraphNodeId,
     miss: ir::Block,
-    state: &mut MatcherEmitState,
+    state: &mut DispatchEmitState,
 ) -> Result<(), CodegenError> {
     let node = ctx
-        .matcher
+        .dispatch
+        .graph
         .node(node_id)
-        .ok_or_else(|| CodegenError::new(format!("matcher node {:?} out of bounds", node_id)))?;
+        .ok_or_else(|| CodegenError::new(format!("dispatch node {:?} out of bounds", node_id)))?;
     match node {
-        MatcherNode::Fail { .. } => {
+        DispatchNode::Fail => {
             b.ins().jump(miss, &[]);
             let dead = b.create_block();
             b.switch_to_block(dead);
             b.seal_block(dead);
             Ok(())
         }
-        MatcherNode::Leaf(leaf) => {
-            let bound = &ctx.bound_indices_per_clause[leaf.body_id as usize];
-            for binding in &leaf.bindings {
-                let val = resolve_matcher_subject(b, ctx, &binding.source, state)?;
+        DispatchNode::Outcome { outcome, .. } => {
+            let outcome = ctx
+                .dispatch
+                .outcome(*outcome)
+                .ok_or_else(|| CodegenError::new(format!("dispatch outcome {:?} out of bounds", outcome)))?;
+            let bound = &ctx.bound_indices_per_clause[outcome.body_id as usize];
+            for binding in &outcome.bindings {
+                let val = resolve_dispatch_subject(b, ctx, binding.source, state)?;
                 if let Some(&idx) = bound.get(&binding.name) {
                     store_receive_value_ref(b, ctx, ctx.out_ptr, idx, val)?;
                 }
             }
-            let k = b.ins().iconst(types::I32, (leaf.body_id + 1) as i64);
+            let k = b.ins().iconst(types::I32, (outcome.body_id + 1) as i64);
             b.ins().return_(&[k]);
             let dead = b.create_block();
             b.switch_to_block(dead);
             b.seal_block(dead);
             Ok(())
         }
-        MatcherNode::Switch {
-            subject,
-            kind,
-            cases,
-            default,
-            ..
-        } => {
-            let val = resolve_matcher_subject(b, ctx, subject, state)?;
-            for (key, case_node) in cases {
-                let match_b = b.create_block();
-                let next_b = b.create_block();
-                emit_matcher_switch_key_test(b, ctx, val, kind, key, match_b, next_b)?;
-                b.switch_to_block(match_b);
-                b.seal_block(match_b);
-                let mut case_state = state.clone();
-                emit_matcher_node(b, ctx, *case_node, miss, &mut case_state)?;
-                b.switch_to_block(next_b);
-                b.seal_block(next_b);
-            }
-            emit_matcher_node(b, ctx, *default, miss, state)
-        }
-        MatcherNode::Test {
-            test,
-            on_true,
-            on_false,
-            ..
+        DispatchNode::Test {
+            predicate,
+            on_match,
+            on_miss,
         } => {
             let true_b = b.create_block();
             let false_b = b.create_block();
-            let true_values = emit_matcher_test(b, ctx, test, true_b, false_b, state)?;
+            let true_values = emit_region_test(
+                b,
+                ctx,
+                predicate.subject,
+                &predicate.region,
+                &on_match.evidence,
+                true_b,
+                false_b,
+                state,
+            )?;
             b.switch_to_block(true_b);
             b.seal_block(true_b);
             let mut true_state = state.clone();
             true_state.values.extend(true_values);
-            emit_matcher_node(b, ctx, *on_true, miss, &mut true_state)?;
+            apply_edge_evidence_to_receive_state(b, ctx, &on_match.evidence, &mut true_state)?;
+            emit_dispatch_node(b, ctx, on_match.target, miss, &mut true_state)?;
             b.switch_to_block(false_b);
             b.seal_block(false_b);
-            emit_matcher_node(b, ctx, *on_false, miss, state)
-        }
-        MatcherNode::Guard {
-            expr,
-            on_true,
-            on_false,
-            ..
-        } => {
-            let value = emit_matcher_guard_expr(b, ctx, expr, state)?;
-            let truthy = emit_truthy_cmp(b, ctx, value)?;
-            let true_b = b.create_block();
-            let false_b = b.create_block();
-            b.ins().brif(truthy, true_b, &[], false_b, &[]);
-            b.switch_to_block(true_b);
-            b.seal_block(true_b);
-            let mut true_state = state.clone();
-            emit_matcher_node(b, ctx, *on_true, miss, &mut true_state)?;
-            b.switch_to_block(false_b);
-            b.seal_block(false_b);
-            emit_matcher_node(b, ctx, *on_false, miss, state)
+            emit_dispatch_node(b, ctx, on_miss.target, miss, state)
         }
     }
 }
 
-fn resolve_matcher_subject(
+fn resolve_dispatch_subject(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
-    sref: &SubjectRef,
-    state: &mut MatcherEmitState,
+    ctx: &DispatchCtx<'_>,
+    subject: SubjectId,
+    state: &mut DispatchEmitState,
 ) -> Result<ReceiveValue, CodegenError> {
-    if let Some(v) = state.values.get(sref).copied() {
+    if let Some(v) = state.values.get(&subject).copied() {
         return Ok(v);
     }
-    let v = match sref {
-        SubjectRef::Input(id) => *ctx
+    let subject_data = ctx
+        .dispatch
+        .matrix
+        .subjects
+        .get(subject.0 as usize)
+        .ok_or_else(|| CodegenError::new(format!("dispatch subject {:?} out of bounds", subject)))?;
+    let v = match &subject_data.source {
+        SubjectSource::Input { ordinal } => *ctx
             .inputs
-            .get(id.0 as usize)
-            .ok_or_else(|| CodegenError::new(format!("receive ABI matcher has no input {:?}", id)))?,
-        SubjectRef::TupleField { tuple, index } => {
-            let parent = resolve_matcher_subject(b, ctx, tuple, state)?;
-            emit_struct_get_field(b, ctx, parent, *index)?
-        }
-        SubjectRef::ListHead(list) => {
-            let parent = resolve_matcher_subject(b, ctx, list, state)?;
-            let Some(fref) = ctx.runtime.list_head_fref else {
-                return Err(CodegenError::new("ListHead matcher projection requires fz_list_head"));
-            };
-            let parent_ref = emit_receive_value_ref(b, ctx, parent)?;
-            // fz_list_head_ref is a pure read — no process needed.
-            let inst = b.ins().call(fref, &[parent_ref]);
-            let out_ref = b.inst_results(inst)[0];
-            receive_value_from_ref_word(b, out_ref)
-        }
-        SubjectRef::ListTail(list) => {
-            let parent = resolve_matcher_subject(b, ctx, list, state)?;
-            let Some(fref) = ctx.runtime.list_tail_fref else {
-                return Err(CodegenError::new("ListTail matcher projection requires fz_list_tail"));
-            };
-            let parent_ref = emit_receive_value_ref(b, ctx, parent)?;
-            // fz_list_tail_ref is a pure read — no process needed.
-            let inst = b.ins().call(fref, &[parent_ref]);
-            let out_ref = b.inst_results(inst)[0];
-            receive_value_from_ref_word(b, out_ref)
-        }
-        SubjectRef::MapValue { map, key } => {
-            let map = resolve_matcher_subject(b, ctx, map, state)?;
-            emit_matcher_map_get_value(b, ctx, map, key)?
-        }
-        SubjectRef::BitstringField { bitstring, index } => *state
-            .bitstring_fields
-            .get(&((**bitstring).clone(), *index))
-            .ok_or_else(|| {
-                CodegenError::new(format!("receive ABI matcher bitstring field {:?} not available", sref))
-            })?,
+            .get(*ordinal as usize)
+            .ok_or_else(|| CodegenError::new(format!("receive dispatch has no input {}", ordinal)))?,
+        SubjectSource::Projection(projection) => match &projection.kind {
+            ProjectionKind::TupleField(index) => {
+                let parent = resolve_dispatch_subject(b, ctx, projection.source, state)?;
+                emit_struct_get_field(b, ctx, parent, *index)?
+            }
+            ProjectionKind::ListHead => {
+                let parent = resolve_dispatch_subject(b, ctx, projection.source, state)?;
+                let Some(fref) = ctx.runtime.list_head_fref else {
+                    return Err(CodegenError::new("ListHead dispatch projection requires fz_list_head"));
+                };
+                let parent_ref = emit_receive_value_ref(b, ctx, parent)?;
+                let inst = b.ins().call(fref, &[parent_ref]);
+                let out_ref = b.inst_results(inst)[0];
+                receive_value_from_ref_word(b, out_ref)
+            }
+            ProjectionKind::ListTail => {
+                let parent = resolve_dispatch_subject(b, ctx, projection.source, state)?;
+                let Some(fref) = ctx.runtime.list_tail_fref else {
+                    return Err(CodegenError::new("ListTail dispatch projection requires fz_list_tail"));
+                };
+                let parent_ref = emit_receive_value_ref(b, ctx, parent)?;
+                let inst = b.ins().call(fref, &[parent_ref]);
+                let out_ref = b.inst_results(inst)[0];
+                receive_value_from_ref_word(b, out_ref)
+            }
+            ProjectionKind::MapValue { key } => {
+                let map = resolve_dispatch_subject(b, ctx, projection.source, state)?;
+                emit_dispatch_map_get_value(b, ctx, map, key)?
+            }
+            ProjectionKind::BitstringField(index) => *state
+                .values
+                .get(&subject)
+                .or_else(|| state.bitstring_fields.get(&(projection.source, *index)))
+                .ok_or_else(|| {
+                    CodegenError::new(format!(
+                        "receive dispatch bitstring field {:?}/{} not available",
+                        projection.source, index
+                    ))
+                })?,
+        },
     };
-    state.values.insert(sref.clone(), v);
+    state.values.insert(subject, v);
     Ok(v)
 }
 
-fn load_pinned_matcher_value(
+fn load_pinned_dispatch_value(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
-    pinned: PinnedId,
+    ctx: &DispatchCtx<'_>,
+    pinned: PinnedValueId,
 ) -> Result<ReceiveValue, CodegenError> {
     let p = ctx
-        .matcher
+        .dispatch
         .pinned
         .get(pinned.0 as usize)
         .ok_or_else(|| CodegenError::new(format!("pinned {:?} out of bounds", pinned)))?;
@@ -605,65 +593,119 @@ fn load_pinned_matcher_value(
     let &idx = ctx
         .pinned_indices
         .get(&p.name)
-        .ok_or_else(|| CodegenError::new(format!("pinned ^{} not in matcher's pinned table", p.name)))?;
+        .ok_or_else(|| CodegenError::new(format!("pinned ^{} not in dispatch pinned table", p.name)))?;
     Ok(load_receive_value_ref(b, ctx.pinned_ptr, idx))
 }
 
-fn emit_matcher_test(
+fn emit_region_test(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
-    test: &MatcherTest,
+    ctx: &DispatchCtx<'_>,
+    subject: SubjectId,
+    region: &Region,
+    evidence: &EdgeEvidence,
     true_b: ir::Block,
     false_b: ir::Block,
-    state: &mut MatcherEmitState,
-) -> Result<Vec<(SubjectRef, ReceiveValue)>, CodegenError> {
+    state: &mut DispatchEmitState,
+) -> Result<Vec<(SubjectId, ReceiveValue)>, CodegenError> {
     let mut true_values = Vec::new();
-    match test {
-        MatcherTest::EqConst { subject, value } => {
-            let val = resolve_matcher_subject(b, ctx, subject, state)?;
-            emit_matcher_const_test(b, ctx, val, value, true_b, false_b)?;
+    match region {
+        Region::Any => {
+            b.ins().jump(true_b, &[]);
         }
-        MatcherTest::EqPinned { subject, pinned } => {
-            let val = resolve_matcher_subject(b, ctx, subject, state)?;
-            let want = load_pinned_matcher_value(b, ctx, *pinned)?;
+        Region::Never => {
+            b.ins().jump(false_b, &[]);
+        }
+        Region::Type(_) => {
+            return Err(CodegenError::new("receive dispatch cannot emit type regions yet"));
+        }
+        Region::Equal(ComparisonValue::Const(value)) => {
+            let val = resolve_dispatch_subject(b, ctx, subject, state)?;
+            emit_dispatch_const_test(b, ctx, val, value, true_b, false_b)?;
+        }
+        Region::Equal(ComparisonValue::Pinned(pinned)) => {
+            let val = resolve_dispatch_subject(b, ctx, subject, state)?;
+            let want = load_pinned_dispatch_value(b, ctx, *pinned)?;
             emit_typed_eq_branch(b, ctx, val, want, true_b, false_b)?;
         }
-        MatcherTest::TupleArity { subject, arity } => {
-            let val = resolve_matcher_subject(b, ctx, subject, state)?;
+        Region::TupleArity(arity) => {
+            let val = resolve_dispatch_subject(b, ctx, subject, state)?;
             emit_tuple_arity_test(b, ctx, ctx.tuple_schema_ids, val, *arity as usize, true_b, false_b)?;
         }
-        MatcherTest::ListCons { subject } => {
-            let val = resolve_matcher_subject(b, ctx, subject, state)?;
+        Region::List(ListRegion::Empty) => {
+            let val = resolve_dispatch_subject(b, ctx, subject, state)?;
+            emit_dispatch_const_test(b, ctx, val, &DispatchConst::EmptyList, true_b, false_b)?;
+        }
+        Region::List(ListRegion::Cons) => {
+            let val = resolve_dispatch_subject(b, ctx, subject, state)?;
             emit_list_cons_test(b, ctx, val, true_b, false_b)?;
         }
-        MatcherTest::MapKind { subject } => {
-            let val = resolve_matcher_subject(b, ctx, subject, state)?;
+        Region::MapKind => {
+            let val = resolve_dispatch_subject(b, ctx, subject, state)?;
             emit_map_kind_test(b, ctx, val, true_b, false_b)?;
         }
-        MatcherTest::MapHasKey { subject, key } => {
-            let val = resolve_matcher_subject(b, ctx, subject, state)?;
-            let got = emit_matcher_map_get_value(b, ctx, val, key)?;
-            true_values.push((map_value_subject(subject, key), got));
-            let cmp = emit_not_matcher_map_miss(b, ctx, got)?;
+        Region::MapKeyPresent { key } => {
+            let val = resolve_dispatch_subject(b, ctx, subject, state)?;
+            let got = emit_dispatch_map_get_value(b, ctx, val, key)?;
+            for projection in &evidence.projections {
+                if projection.source == subject
+                    && matches!(&projection.kind, ProjectionKind::MapValue { key: projection_key } if projection_key == key)
+                {
+                    true_values.push((projection.result, got));
+                }
+            }
+            let cmp = emit_not_dispatch_map_miss(b, ctx, got)?;
             b.ins().brif(cmp, true_b, &[], false_b, &[]);
         }
-        MatcherTest::Bitstring { subject, fields } => {
-            emit_bitstring_test(b, ctx, subject, fields, true_b, false_b, state)?;
+        Region::Bitstring(shape) => {
+            emit_bitstring_test(b, ctx, subject, shape, true_b, false_b, state)?;
         }
-        MatcherTest::Type { .. } => Err(CodegenError::new("receive ABI matcher cannot emit type tests yet"))?,
+        Region::Guard(guard) => {
+            let expr = ctx
+                .dispatch
+                .guards
+                .get(guard.0 as usize)
+                .ok_or_else(|| CodegenError::new(format!("dispatch guard {:?} out of bounds", guard)))?;
+            let value = emit_dispatch_guard_expr(b, ctx, expr, state)?;
+            let truthy = emit_truthy_cmp(b, ctx, value)?;
+            b.ins().brif(truthy, true_b, &[], false_b, &[]);
+        }
     }
     Ok(true_values)
 }
 
-fn emit_matcher_side_tag_const_test(
+fn apply_edge_evidence_to_receive_state(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
+    ctx: &DispatchCtx<'_>,
+    evidence: &EdgeEvidence,
+    state: &mut DispatchEmitState,
+) -> Result<(), CodegenError> {
+    for projection in &evidence.projections {
+        if state.values.contains_key(&projection.result) {
+            continue;
+        }
+
+        if let ProjectionKind::BitstringField(index) = projection.kind
+            && let Some(value) = state.bitstring_fields.get(&(projection.source, index)).copied()
+        {
+            state.values.insert(projection.result, value);
+            continue;
+        }
+
+        let value = resolve_dispatch_subject(b, ctx, projection.result, state)?;
+        state.values.insert(projection.result, value);
+    }
+    Ok(())
+}
+
+fn emit_dispatch_side_tag_const_test(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &DispatchCtx<'_>,
     val: ReceiveValue,
-    value: &MatcherConst,
+    value: &DispatchConst,
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<bool, CodegenError> {
-    let Some(want) = matcher_const_value(ctx.fz_module, value)? else {
+    let Some(want) = dispatch_const_value(ctx.fz_module, value)? else {
         return Ok(false);
     };
     match (want.kind, val) {
@@ -696,9 +738,9 @@ fn emit_matcher_side_tag_const_test(
 
 fn emit_any_ref_const_test(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
+    ctx: &DispatchCtx<'_>,
     value_ref: ir::Value,
-    want: MatcherConstValue,
+    want: DispatchConstValue,
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
@@ -748,47 +790,49 @@ fn emit_any_ref_const_test(
     Ok(())
 }
 
-fn matcher_const_value(module: &Module, value: &MatcherConst) -> Result<Option<MatcherConstValue>, CodegenError> {
+fn dispatch_const_value(module: &Module, value: &DispatchConst) -> Result<Option<DispatchConstValue>, CodegenError> {
     Ok(match value {
-        MatcherConst::Int(n) => Some(MatcherConstValue {
+        DispatchConst::Int(n) => Some(DispatchConstValue {
             raw: *n as u64,
             kind: ValueKind::INT,
         }),
-        MatcherConst::FloatBits(bits) => Some(MatcherConstValue {
+        DispatchConst::FloatBits(bits) => Some(DispatchConstValue {
             raw: *bits,
             kind: ValueKind::FLOAT,
         }),
-        MatcherConst::AtomName(name) => module
-            .atom_names
-            .iter()
-            .position(|n| n == name)
-            .map(|id| MatcherConstValue {
-                raw: id as u64,
-                kind: ValueKind::ATOM,
-            }),
-        MatcherConst::Bool(v) => Some(MatcherConstValue {
+        DispatchConst::AtomName(name) => {
+            module
+                .atom_names
+                .iter()
+                .position(|n| n == name)
+                .map(|id| DispatchConstValue {
+                    raw: id as u64,
+                    kind: ValueKind::ATOM,
+                })
+        }
+        DispatchConst::Bool(v) => Some(DispatchConstValue {
             raw: if *v { TRUE_ATOM_ID as u64 } else { FALSE_ATOM_ID as u64 },
             kind: ValueKind::ATOM,
         }),
-        MatcherConst::Nil => Some(MatcherConstValue {
+        DispatchConst::Nil => Some(DispatchConstValue {
             raw: NIL_ATOM_ID as u64,
             kind: ValueKind::ATOM,
         }),
-        MatcherConst::EmptyList => Some(MatcherConstValue {
+        DispatchConst::EmptyList => Some(DispatchConstValue {
             raw: 0,
             kind: ValueKind::LIST,
         }),
-        MatcherConst::Utf8Binary(_) | MatcherConst::PreparedKey(_) => None,
+        DispatchConst::Utf8Binary(_) => None,
     })
 }
 
 #[derive(Clone, Copy)]
-struct MatcherConstValue {
+struct DispatchConstValue {
     raw: u64,
     kind: ValueKind,
 }
 
-fn matcher_const_receive_value(b: &mut FunctionBuilder<'_>, value: MatcherConstValue) -> ReceiveValue {
+fn dispatch_const_receive_value(b: &mut FunctionBuilder<'_>, value: DispatchConstValue) -> ReceiveValue {
     match value.kind {
         ValueKind::INT => ReceiveValue::Int(b.ins().iconst(types::I64, value.raw as i64)),
         ValueKind::FLOAT => {
@@ -798,95 +842,32 @@ fn matcher_const_receive_value(b: &mut FunctionBuilder<'_>, value: MatcherConstV
         ValueKind::ATOM => ReceiveValue::Atom(b.ins().iconst(types::I64, value.raw as i64)),
         ValueKind::NULL => ReceiveValue::Null,
         ValueKind::LIST if value.raw == 0 => ReceiveValue::EmptyList,
-        _ => unreachable!("matcher constants only materialize scalar, null, or empty list values"),
+        _ => unreachable!("dispatch constants only materialize scalar, null, or empty list values"),
     }
 }
 
-fn emit_matcher_switch_key_test(
+fn emit_dispatch_const_test(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
+    ctx: &DispatchCtx<'_>,
     val: ReceiveValue,
-    kind: &SwitchKind,
-    key: &SwitchKey,
-    match_b: ir::Block,
-    next_b: ir::Block,
-) -> Result<(), CodegenError> {
-    match (kind, key) {
-        (SwitchKind::Atom, SwitchKey::AtomName(name)) => {
-            let c = MatcherConst::AtomName(name.clone());
-            emit_matcher_const_test(b, ctx, val, &c, match_b, next_b)?;
-            Ok(())
-        }
-        (SwitchKind::Int, SwitchKey::Int(n)) => {
-            let c = MatcherConst::Int(*n);
-            emit_matcher_const_test(b, ctx, val, &c, match_b, next_b)?;
-            Ok(())
-        }
-        (SwitchKind::Bool, SwitchKey::Bool(v)) => {
-            let c = MatcherConst::Bool(*v);
-            emit_matcher_const_test(b, ctx, val, &c, match_b, next_b)?;
-            Ok(())
-        }
-        (SwitchKind::Nil, SwitchKey::Nil) => {
-            emit_matcher_const_test(b, ctx, val, &MatcherConst::Nil, match_b, next_b)?;
-            Ok(())
-        }
-        (SwitchKind::ListCons, SwitchKey::Nil) => {
-            emit_matcher_const_test(b, ctx, val, &MatcherConst::EmptyList, match_b, next_b)?;
-            Ok(())
-        }
-        (SwitchKind::TupleArity, SwitchKey::Arity(arity)) => {
-            emit_tuple_arity_test(b, ctx, ctx.tuple_schema_ids, val, *arity as usize, match_b, next_b)
-        }
-        (SwitchKind::ListCons, SwitchKey::EmptyList) => {
-            emit_matcher_const_test(b, ctx, val, &MatcherConst::EmptyList, match_b, next_b)?;
-            Ok(())
-        }
-        (SwitchKind::ListCons, SwitchKey::Cons) => emit_list_cons_test(b, ctx, val, match_b, next_b),
-        (SwitchKind::Float, SwitchKey::FloatBits(bits)) => {
-            emit_matcher_const_test(b, ctx, val, &MatcherConst::FloatBits(*bits), match_b, next_b)
-        }
-        (SwitchKind::Binary, SwitchKey::Utf8Binary(bytes)) => {
-            let bits = emit_receive_value_ref(b, ctx, val)?;
-            emit_binary_literal_test(
-                b,
-                ctx.binary_data_gvs,
-                ctx.runtime.matcher_eq_bytes_fref,
-                bits,
-                bytes,
-                match_b,
-                next_b,
-            )
-        }
-        _ => Err(CodegenError::new(format!(
-            "Matcher Switch kind/key combination not yet supported in receive matcher: {:?} / {:?}",
-            kind, key
-        ))),
-    }
-}
-
-fn emit_matcher_const_test(
-    b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
-    val: ReceiveValue,
-    value: &MatcherConst,
+    value: &DispatchConst,
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
     match value {
-        MatcherConst::FloatBits(_)
-        | MatcherConst::Int(_)
-        | MatcherConst::AtomName(_)
-        | MatcherConst::Bool(_)
-        | MatcherConst::Nil
-        | MatcherConst::EmptyList => {
-            let emitted = emit_matcher_side_tag_const_test(b, ctx, val, value, match_b, next_b)?;
+        DispatchConst::FloatBits(_)
+        | DispatchConst::Int(_)
+        | DispatchConst::AtomName(_)
+        | DispatchConst::Bool(_)
+        | DispatchConst::Nil
+        | DispatchConst::EmptyList => {
+            let emitted = emit_dispatch_side_tag_const_test(b, ctx, val, value, match_b, next_b)?;
             if !emitted {
                 b.ins().jump(next_b, &[]);
             }
             Ok(())
         }
-        MatcherConst::Utf8Binary(bytes) => {
+        DispatchConst::Utf8Binary(bytes) => {
             let bits = emit_receive_value_ref(b, ctx, val)?;
             emit_binary_literal_test(
                 b,
@@ -898,29 +879,26 @@ fn emit_matcher_const_test(
                 next_b,
             )
         }
-        MatcherConst::PreparedKey(_) => Err(CodegenError::new(
-            "prepared heap map keys are not supported in receive ABI matcher yet",
-        )),
     }
 }
 
-fn emit_matcher_map_get_value(
+fn emit_dispatch_map_get_value(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
+    ctx: &DispatchCtx<'_>,
     map: ReceiveValue,
-    key: &MatcherConst,
+    key: &DispatchConst,
 ) -> Result<ReceiveValue, CodegenError> {
-    if let MatcherConst::PreparedKey(index) = key {
+    if let Some(index) = prepared_dispatch_key_index(ctx.dispatch, key) {
         let Some(map_get_ref_fref) = ctx.runtime.matcher_map_get_ref_fref else {
             return Err(CodegenError::new(
-                "Prepared map matcher key requires fz_matcher_map_get_ref",
+                "prepared map dispatch key requires fz_matcher_map_get_ref",
             ));
         };
-        let name = prepared_key_name(*index as usize);
+        let name = prepared_key_name(index);
         let &idx = ctx
             .pinned_indices
             .get(&name)
-            .ok_or_else(|| CodegenError::new(format!("prepared matcher key {} not in pinned table", index)))?;
+            .ok_or_else(|| CodegenError::new(format!("prepared dispatch key {} not in pinned table", index)))?;
         let key = load_receive_value_ref(b, ctx.pinned_ptr, idx);
         let map_ref = emit_receive_value_ref(b, ctx, map)?;
         let key_ref = emit_receive_value_ref(b, ctx, key)?;
@@ -930,53 +908,57 @@ fn emit_matcher_map_get_value(
     }
     let Some(map_get_ref_fref) = ctx.runtime.matcher_map_get_ref_fref else {
         return Err(CodegenError::new(
-            "Map matcher test requires fz_matcher_map_get_ref; runtime not linked in this context",
+            "map dispatch test requires fz_matcher_map_get_ref; runtime not linked in this context",
         ));
     };
-    let Some(key_value) = matcher_const_value(ctx.fz_module, key)? else {
+    let Some(key_value) = dispatch_const_value(ctx.fz_module, key)? else {
         return Err(CodegenError::new(format!(
-            "map-pattern key {:?} cannot be materialized in receive ABI matcher",
+            "map-pattern key {:?} cannot be materialized in receive dispatch",
             key
         )));
     };
     let map_ref = emit_receive_value_ref(b, ctx, map)?;
-    let key_value = matcher_const_receive_value(b, key_value);
+    let key_value = dispatch_const_receive_value(b, key_value);
     let key_ref = emit_receive_value_ref(b, ctx, key_value)?;
     let inst = b.ins().call(map_get_ref_fref, &[ctx.process, map_ref, key_ref]);
     let out_ref = b.inst_results(inst)[0];
     Ok(receive_value_from_ref_word(b, out_ref))
 }
 
+fn prepared_dispatch_key_index(dispatch: &PatternDispatchPlan, key: &DispatchConst) -> Option<usize> {
+    dispatch.prepared_keys.iter().position(|prepared| prepared == key)
+}
+
 fn emit_bitstring_test(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
-    subject: &SubjectRef,
-    fields: &[MatcherBitField],
+    ctx: &DispatchCtx<'_>,
+    subject: SubjectId,
+    shape: &BitstringShape,
     true_b: ir::Block,
     false_b: ir::Block,
-    state: &mut MatcherEmitState,
+    state: &mut DispatchEmitState,
 ) -> Result<(), CodegenError> {
     let Some(init_fref) = ctx.runtime.bs_reader_init_fref else {
-        return Err(CodegenError::new("Bitstring matcher test requires fz_bs_reader_init"));
+        return Err(CodegenError::new("bitstring dispatch test requires fz_bs_reader_init"));
     };
     let Some(read_fref) = ctx.runtime.bs_read_field_fref else {
-        return Err(CodegenError::new("Bitstring matcher test requires fz_bs_read_field"));
+        return Err(CodegenError::new("bitstring dispatch test requires fz_bs_read_field"));
     };
-    let value = resolve_matcher_subject(b, ctx, subject, state)?;
+    let value = resolve_dispatch_subject(b, ctx, subject, state)?;
     emit_bitstring_like_guard(b, ctx, value, false_b)?;
     let value_ref = emit_receive_value_ref(b, ctx, value)?;
     let init = b.ins().call(init_fref, &[ctx.process, value_ref]);
     let mut reader = b.inst_results(init)[0];
 
-    for (index, field) in fields.iter().enumerate() {
-        let (size_present, size_value) = emit_matcher_bit_size(b, ctx, field, state)?;
+    for (index, field) in shape.fields.iter().enumerate() {
+        let (size_present, size_value) = emit_dispatch_bit_size(b, ctx, field, state)?;
         let field_spec = fz_bs_field_spec(
-            matcher_bit_type_tag(field.ty),
+            dispatch_bit_type_tag(field.kind),
             size_present,
-            field.unit.unwrap_or(default_matcher_bit_unit(field.ty)),
-            matcher_endian_tag(field.endian),
+            field.unit.unwrap_or(default_dispatch_bit_unit(field.kind)),
+            dispatch_endian_tag(field.endian),
             field.signed as u32,
-            (index + 1 == fields.len()) as u32,
+            (index + 1 == shape.fields.len()) as u32,
         );
         let field_spec = b.ins().iconst(types::I64, field_spec as i64);
         let inst = b.ins().call(read_fref, &[ctx.process, reader, field_spec, size_value]);
@@ -991,14 +973,22 @@ fn emit_bitstring_test(
         let extracted = emit_struct_get_field(b, ctx, result_value, 1)?;
         let next_reader = emit_struct_get_field(b, ctx, result_value, 2)?;
         reader = emit_receive_value_ref(b, ctx, next_reader)?;
-        state
-            .bitstring_fields
-            .insert((subject.clone(), index as u32), extracted);
-        for name in &field.direct_bindings {
-            state.direct_bindings.insert(name.clone(), extracted);
+        let index = index as u32;
+        state.bitstring_fields.insert((subject, index), extracted);
+        if let Some(field_subject) = bitstring_field_subject(ctx.dispatch, subject, index) {
+            state.values.insert(field_subject, extracted);
+            if let Some(names) = ctx.dispatch.bitstring_direct_bindings.get(&field_subject) {
+                for name in names {
+                    state.direct_bindings.insert(name.clone(), extracted);
+                }
+            }
         }
     }
 
+    if !shape.require_done {
+        b.ins().jump(true_b, &[]);
+        return Ok(());
+    }
     let reader_value = ReceiveValue::AnyRef(reader);
     let bit_len_value = emit_struct_get_field(b, ctx, reader_value, 1)?;
     let bit_len = receive_value_int(b, ctx, bit_len_value)?;
@@ -1009,9 +999,24 @@ fn emit_bitstring_test(
     Ok(())
 }
 
+fn bitstring_field_subject(dispatch: &PatternDispatchPlan, source: SubjectId, index: u32) -> Option<SubjectId> {
+    dispatch
+        .matrix
+        .subjects
+        .iter()
+        .find_map(|subject| match &subject.source {
+            SubjectSource::Projection(projection)
+                if projection.source == source && projection.kind == ProjectionKind::BitstringField(index) =>
+            {
+                Some(subject.id)
+            }
+            _ => None,
+        })
+}
+
 fn emit_struct_get_field(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
+    ctx: &DispatchCtx<'_>,
     struct_value: ReceiveValue,
     field_index: u32,
 ) -> Result<ReceiveValue, CodegenError> {
@@ -1020,7 +1025,7 @@ fn emit_struct_get_field(
 
 fn emit_struct_get_field_value(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
+    ctx: &DispatchCtx<'_>,
     struct_value: ReceiveValue,
     field_index: u32,
 ) -> Result<ReceiveValue, CodegenError> {
@@ -1038,7 +1043,7 @@ fn emit_struct_get_field_value(
 
 fn emit_bitstring_like_guard(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
+    ctx: &DispatchCtx<'_>,
     val: ReceiveValue,
     miss: ir::Block,
 ) -> Result<(), CodegenError> {
@@ -1058,16 +1063,24 @@ fn emit_bitstring_like_guard(
     Ok(())
 }
 
-fn emit_matcher_bit_size(
+fn emit_dispatch_bit_size(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
-    field: &MatcherBitField,
-    state: &MatcherEmitState,
+    ctx: &DispatchCtx<'_>,
+    field: &crate::dispatch_matrix::BitstringFieldShape,
+    state: &DispatchEmitState,
 ) -> Result<(u32, ir::Value), CodegenError> {
     match &field.size {
         None => Ok((0, b.ins().iconst(types::I32, 0))),
-        Some(MatcherBitSize::Literal(n)) => Ok((1, b.ins().iconst(types::I32, *n as i64))),
-        Some(MatcherBitSize::BindingName(name)) => {
+        Some(BitstringFieldSize::Literal(n)) => Ok((1, b.ins().iconst(types::I32, *n as i64))),
+        Some(BitstringFieldSize::Binding(subject)) => {
+            let value = state
+                .values
+                .get(subject)
+                .copied()
+                .ok_or_else(|| CodegenError::new(format!("bitstring size subject {:?} not available", subject)))?;
+            Ok((1, strict_int_i32(b, ctx, value)?))
+        }
+        Some(BitstringFieldSize::BindingName(name)) => {
             let value = state
                 .direct_bindings
                 .get(name)
@@ -1080,67 +1093,67 @@ fn emit_matcher_bit_size(
 
 fn strict_int_i32(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
+    ctx: &DispatchCtx<'_>,
     v: ReceiveValue,
 ) -> Result<ir::Value, CodegenError> {
     let raw = receive_value_int(b, ctx, v)?;
     Ok(b.ins().ireduce(types::I32, raw))
 }
 
-fn matcher_bit_type_tag(ty: MatcherBitType) -> u32 {
+fn dispatch_bit_type_tag(ty: BitstringFieldKind) -> u32 {
     match ty {
-        MatcherBitType::Integer => 0,
-        MatcherBitType::Float => 1,
-        MatcherBitType::Binary => 2,
-        MatcherBitType::Bits => 3,
-        MatcherBitType::Utf8 => 4,
-        MatcherBitType::Utf16 => 5,
-        MatcherBitType::Utf32 => 6,
+        BitstringFieldKind::Integer => 0,
+        BitstringFieldKind::Float => 1,
+        BitstringFieldKind::Binary => 2,
+        BitstringFieldKind::Bits => 3,
+        BitstringFieldKind::Utf8 => 4,
+        BitstringFieldKind::Utf16 => 5,
+        BitstringFieldKind::Utf32 => 6,
     }
 }
 
-fn matcher_endian_tag(endian: MatcherEndian) -> u32 {
+fn dispatch_endian_tag(endian: BitstringEndian) -> u32 {
     match endian {
-        MatcherEndian::Big => 0,
-        MatcherEndian::Little => 1,
-        MatcherEndian::Native => 2,
+        BitstringEndian::Big => 0,
+        BitstringEndian::Little => 1,
+        BitstringEndian::Native => 2,
     }
 }
 
-fn default_matcher_bit_unit(ty: MatcherBitType) -> u32 {
+fn default_dispatch_bit_unit(ty: BitstringFieldKind) -> u32 {
     match ty {
-        MatcherBitType::Integer | MatcherBitType::Float | MatcherBitType::Bits => 1,
-        MatcherBitType::Binary => 8,
-        MatcherBitType::Utf8 | MatcherBitType::Utf16 | MatcherBitType::Utf32 => 1,
+        BitstringFieldKind::Integer | BitstringFieldKind::Float | BitstringFieldKind::Bits => 1,
+        BitstringFieldKind::Binary => 8,
+        BitstringFieldKind::Utf8 | BitstringFieldKind::Utf16 | BitstringFieldKind::Utf32 => 1,
     }
 }
 
-fn emit_matcher_guard_expr(
+fn emit_dispatch_guard_expr(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
-    expr: &GuardExpr,
-    state: &mut MatcherEmitState,
+    ctx: &DispatchCtx<'_>,
+    expr: &PatternGuardExpr,
+    state: &mut DispatchEmitState,
 ) -> Result<ReceiveValue, CodegenError> {
     Ok(match expr {
-        GuardExpr::Const(c) => {
-            let Some(value) = matcher_const_value(ctx.fz_module, c)? else {
+        PatternGuardExpr::Const(c) => {
+            let Some(value) = dispatch_const_value(ctx.fz_module, c)? else {
                 return Err(CodegenError::new(format!(
-                    "guard const {:?} cannot be materialized in receive ABI matcher",
+                    "guard const {:?} cannot be materialized in receive dispatch",
                     c
                 )));
             };
-            matcher_const_receive_value(b, value)
+            dispatch_const_receive_value(b, value)
         }
-        GuardExpr::Subject(subject) => resolve_matcher_subject(b, ctx, subject, state)?,
-        GuardExpr::Pinned(pinned) => load_pinned_matcher_value(b, ctx, *pinned)?,
-        GuardExpr::Unary { op, expr } => {
-            let v = emit_matcher_guard_expr(b, ctx, expr, state)?;
+        PatternGuardExpr::Subject(subject) => resolve_dispatch_subject(b, ctx, *subject, state)?,
+        PatternGuardExpr::Pinned(pinned) => load_pinned_dispatch_value(b, ctx, *pinned)?,
+        PatternGuardExpr::Unary { op, expr } => {
+            let v = emit_dispatch_guard_expr(b, ctx, expr, state)?;
             match op {
-                GuardUnaryOp::Not => {
+                PatternGuardUnaryOp::Not => {
                     let truthy = emit_truthy_cmp(b, ctx, v)?;
                     emit_bool_value_from_truthy(b, truthy, true)
                 }
-                GuardUnaryOp::Neg => {
+                PatternGuardUnaryOp::Neg => {
                     let z = b.ins().iconst(types::I64, 0);
                     let raw = receive_value_int(b, ctx, v)?;
                     let neg = b.ins().isub(z, raw);
@@ -1148,68 +1161,68 @@ fn emit_matcher_guard_expr(
                 }
             }
         }
-        GuardExpr::Binary { op, lhs, rhs } => {
-            if matches!(op, GuardBinOp::And | GuardBinOp::Or) {
+        PatternGuardExpr::Binary { op, lhs, rhs } => {
+            if matches!(op, PatternGuardBinOp::And | PatternGuardBinOp::Or) {
                 return emit_short_circuit_guard(b, ctx, *op, lhs, rhs, state);
             }
-            let l = emit_matcher_guard_expr(b, ctx, lhs, state)?;
-            let r = emit_matcher_guard_expr(b, ctx, rhs, state)?;
+            let l = emit_dispatch_guard_expr(b, ctx, lhs, state)?;
+            let r = emit_dispatch_guard_expr(b, ctx, rhs, state)?;
             match op {
-                GuardBinOp::Add => {
+                PatternGuardBinOp::Add => {
                     let l = receive_value_int(b, ctx, l)?;
                     let r = receive_value_int(b, ctx, r)?;
                     let sum = b.ins().iadd(l, r);
                     int_value(b, sum)
                 }
-                GuardBinOp::Sub => {
+                PatternGuardBinOp::Sub => {
                     let l = receive_value_int(b, ctx, l)?;
                     let r = receive_value_int(b, ctx, r)?;
                     let diff = b.ins().isub(l, r);
                     int_value(b, diff)
                 }
-                GuardBinOp::Mul => {
+                PatternGuardBinOp::Mul => {
                     let l = receive_value_int(b, ctx, l)?;
                     let r = receive_value_int(b, ctx, r)?;
                     let prod = b.ins().imul(l, r);
                     int_value(b, prod)
                 }
-                GuardBinOp::Div => {
+                PatternGuardBinOp::Div => {
                     let l = receive_value_int(b, ctx, l)?;
                     let r = receive_value_int(b, ctx, r)?;
                     let quot = b.ins().sdiv(l, r);
                     int_value(b, quot)
                 }
-                GuardBinOp::Rem => {
+                PatternGuardBinOp::Rem => {
                     let l = receive_value_int(b, ctx, l)?;
                     let r = receive_value_int(b, ctx, r)?;
                     let rem = b.ins().srem(l, r);
                     int_value(b, rem)
                 }
-                GuardBinOp::Eq => {
+                PatternGuardBinOp::Eq => {
                     let cmp = emit_typed_eq_cmp(b, ctx, l, r)?;
                     emit_bool_value(b, cmp)
                 }
-                GuardBinOp::Neq => {
+                PatternGuardBinOp::Neq => {
                     let eq = emit_typed_eq_cmp(b, ctx, l, r)?;
                     let neq = b.ins().bxor_imm(eq, 1);
                     emit_bool_value(b, neq)
                 }
-                GuardBinOp::Lt => emit_int_cmp_value(b, ctx, IntCC::SignedLessThan, l, r)?,
-                GuardBinOp::LtEq => emit_int_cmp_value(b, ctx, IntCC::SignedLessThanOrEqual, l, r)?,
-                GuardBinOp::Gt => emit_int_cmp_value(b, ctx, IntCC::SignedGreaterThan, l, r)?,
-                GuardBinOp::GtEq => emit_int_cmp_value(b, ctx, IntCC::SignedGreaterThanOrEqual, l, r)?,
-                GuardBinOp::And => {
+                PatternGuardBinOp::Lt => emit_int_cmp_value(b, ctx, IntCC::SignedLessThan, l, r)?,
+                PatternGuardBinOp::LtEq => emit_int_cmp_value(b, ctx, IntCC::SignedLessThanOrEqual, l, r)?,
+                PatternGuardBinOp::Gt => emit_int_cmp_value(b, ctx, IntCC::SignedGreaterThan, l, r)?,
+                PatternGuardBinOp::GtEq => emit_int_cmp_value(b, ctx, IntCC::SignedGreaterThanOrEqual, l, r)?,
+                PatternGuardBinOp::And => {
                     unreachable!("short-circuit guard op handled before eager operands")
                 }
-                GuardBinOp::Or => {
+                PatternGuardBinOp::Or => {
                     unreachable!("short-circuit guard op handled before eager operands")
                 }
             }
         }
-        GuardExpr::Dispatch { inputs, dispatch } => {
+        PatternGuardExpr::Dispatch { inputs, dispatch } => {
             let values = inputs
                 .iter()
-                .map(|input| emit_matcher_guard_expr(b, ctx, input, state))
+                .map(|input| emit_dispatch_guard_expr(b, ctx, input, state))
                 .collect::<Result<Vec<_>, _>>()?;
             emit_guard_dispatch(b, ctx, dispatch, values)?
         }
@@ -1218,13 +1231,13 @@ fn emit_matcher_guard_expr(
 
 fn emit_guard_dispatch(
     b: &mut FunctionBuilder<'_>,
-    parent: &MatcherCtx<'_>,
-    dispatch: &GuardDispatch,
+    parent: &DispatchCtx<'_>,
+    dispatch: &PatternGuardDispatch,
     inputs: Vec<ReceiveValue>,
 ) -> Result<ReceiveValue, CodegenError> {
     let done = b.create_block();
     b.append_block_param(done, types::I64);
-    let ctx = MatcherCtx {
+    let ctx = DispatchCtx {
         process: parent.process,
         fz_module: parent.fz_module,
         tuple_schema_ids: parent.tuple_schema_ids,
@@ -1232,13 +1245,13 @@ fn emit_guard_dispatch(
         pinned_indices: parent.pinned_indices,
         pinned_ptr: parent.pinned_ptr,
         out_ptr: parent.out_ptr,
-        matcher: &dispatch.matcher,
+        dispatch: &dispatch.plan,
         inputs,
         binary_data_gvs: parent.binary_data_gvs,
         runtime: parent.runtime,
     };
-    let mut state = MatcherEmitState::default();
-    emit_guard_dispatch_node(b, &ctx, &dispatch.bodies, dispatch.matcher.root, done, &mut state)?;
+    let mut state = DispatchEmitState::default();
+    emit_guard_dispatch_node(b, &ctx, &dispatch.bodies, dispatch.plan.graph.root, done, &mut state)?;
     b.switch_to_block(done);
     b.seal_block(done);
     Ok(ReceiveValue::AnyRef(b.block_params(done)[0]))
@@ -1246,18 +1259,19 @@ fn emit_guard_dispatch(
 
 fn emit_guard_dispatch_node(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
-    bodies: &[GuardExpr],
-    node_id: NodeId,
+    ctx: &DispatchCtx<'_>,
+    bodies: &[PatternGuardExpr],
+    node_id: GraphNodeId,
     done: ir::Block,
-    state: &mut MatcherEmitState,
+    state: &mut DispatchEmitState,
 ) -> Result<(), CodegenError> {
     let node = ctx
-        .matcher
+        .dispatch
+        .graph
         .node(node_id)
         .ok_or_else(|| CodegenError::new(format!("guard dispatch node {:?} out of bounds", node_id)))?;
     match node {
-        MatcherNode::Fail { .. } => {
+        DispatchNode::Fail => {
             let false_value = bool_const_value(b, false);
             let false_ref = emit_receive_value_ref(b, ctx, false_value)?;
             b.ins().jump(done, &[ir::BlockArg::Value(false_ref)]);
@@ -1266,11 +1280,15 @@ fn emit_guard_dispatch_node(
             b.seal_block(dead);
             Ok(())
         }
-        MatcherNode::Leaf(leaf) => {
+        DispatchNode::Outcome { outcome, .. } => {
+            let outcome = ctx
+                .dispatch
+                .outcome(*outcome)
+                .ok_or_else(|| CodegenError::new(format!("guard dispatch outcome {:?} out of bounds", outcome)))?;
             let body = bodies
-                .get(leaf.body_id as usize)
-                .ok_or_else(|| CodegenError::new(format!("guard dispatch body {} out of bounds", leaf.body_id)))?;
-            let value = emit_matcher_guard_expr(b, ctx, body, state)?;
+                .get(outcome.body_id as usize)
+                .ok_or_else(|| CodegenError::new(format!("guard dispatch body {} out of bounds", outcome.body_id)))?;
+            let value = emit_dispatch_guard_expr(b, ctx, body, state)?;
             let value_ref = emit_receive_value_ref(b, ctx, value)?;
             b.ins().jump(done, &[ir::BlockArg::Value(value_ref)]);
             let dead = b.create_block();
@@ -1278,76 +1296,45 @@ fn emit_guard_dispatch_node(
             b.seal_block(dead);
             Ok(())
         }
-        MatcherNode::Switch {
-            subject,
-            kind,
-            cases,
-            default,
-            ..
-        } => {
-            let val = resolve_matcher_subject(b, ctx, subject, state)?;
-            for (key, case_node) in cases {
-                let match_b = b.create_block();
-                let next_b = b.create_block();
-                emit_matcher_switch_key_test(b, ctx, val, kind, key, match_b, next_b)?;
-                b.switch_to_block(match_b);
-                b.seal_block(match_b);
-                let mut case_state = state.clone();
-                emit_guard_dispatch_node(b, ctx, bodies, *case_node, done, &mut case_state)?;
-                b.switch_to_block(next_b);
-                b.seal_block(next_b);
-            }
-            emit_guard_dispatch_node(b, ctx, bodies, *default, done, state)
-        }
-        MatcherNode::Test {
-            test,
-            on_true,
-            on_false,
-            ..
+        DispatchNode::Test {
+            predicate,
+            on_match,
+            on_miss,
         } => {
             let true_b = b.create_block();
             let false_b = b.create_block();
-            let true_values = emit_matcher_test(b, ctx, test, true_b, false_b, state)?;
+            let true_values = emit_region_test(
+                b,
+                ctx,
+                predicate.subject,
+                &predicate.region,
+                &on_match.evidence,
+                true_b,
+                false_b,
+                state,
+            )?;
             b.switch_to_block(true_b);
             b.seal_block(true_b);
             let mut true_state = state.clone();
             true_state.values.extend(true_values);
-            emit_guard_dispatch_node(b, ctx, bodies, *on_true, done, &mut true_state)?;
+            apply_edge_evidence_to_receive_state(b, ctx, &on_match.evidence, &mut true_state)?;
+            emit_guard_dispatch_node(b, ctx, bodies, on_match.target, done, &mut true_state)?;
             b.switch_to_block(false_b);
             b.seal_block(false_b);
-            emit_guard_dispatch_node(b, ctx, bodies, *on_false, done, state)
-        }
-        MatcherNode::Guard {
-            expr,
-            on_true,
-            on_false,
-            ..
-        } => {
-            let value = emit_matcher_guard_expr(b, ctx, expr, state)?;
-            let truthy = emit_truthy_cmp(b, ctx, value)?;
-            let true_b = b.create_block();
-            let false_b = b.create_block();
-            b.ins().brif(truthy, true_b, &[], false_b, &[]);
-            b.switch_to_block(true_b);
-            b.seal_block(true_b);
-            let mut true_state = state.clone();
-            emit_guard_dispatch_node(b, ctx, bodies, *on_true, done, &mut true_state)?;
-            b.switch_to_block(false_b);
-            b.seal_block(false_b);
-            emit_guard_dispatch_node(b, ctx, bodies, *on_false, done, state)
+            emit_guard_dispatch_node(b, ctx, bodies, on_miss.target, done, state)
         }
     }
 }
 
 fn emit_short_circuit_guard(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
-    op: GuardBinOp,
-    lhs: &GuardExpr,
-    rhs: &GuardExpr,
-    state: &mut MatcherEmitState,
+    ctx: &DispatchCtx<'_>,
+    op: PatternGuardBinOp,
+    lhs: &PatternGuardExpr,
+    rhs: &PatternGuardExpr,
+    state: &mut DispatchEmitState,
 ) -> Result<ReceiveValue, CodegenError> {
-    let lhs_value = emit_matcher_guard_expr(b, ctx, lhs, state)?;
+    let lhs_value = emit_dispatch_guard_expr(b, ctx, lhs, state)?;
     let lhs_truthy = emit_truthy_cmp(b, ctx, lhs_value)?;
     let rhs_b = b.create_block();
     let done_b = b.create_block();
@@ -1358,10 +1345,10 @@ fn emit_short_circuit_guard(
     let true_ref = emit_receive_value_ref(b, ctx, true_value)?;
     let false_ref = emit_receive_value_ref(b, ctx, false_value)?;
     match op {
-        GuardBinOp::And => b
+        PatternGuardBinOp::And => b
             .ins()
             .brif(lhs_truthy, rhs_b, &[], done_b, &[ir::BlockArg::Value(false_ref)]),
-        GuardBinOp::Or => b
+        PatternGuardBinOp::Or => b
             .ins()
             .brif(lhs_truthy, done_b, &[ir::BlockArg::Value(true_ref)], rhs_b, &[]),
         _ => unreachable!("non-short-circuit guard op"),
@@ -1370,7 +1357,7 @@ fn emit_short_circuit_guard(
     b.switch_to_block(rhs_b);
     b.seal_block(rhs_b);
     let mut rhs_state = state.clone();
-    let rhs_value = emit_matcher_guard_expr(b, ctx, rhs, &mut rhs_state)?;
+    let rhs_value = emit_dispatch_guard_expr(b, ctx, rhs, &mut rhs_state)?;
     let rhs_truthy = emit_truthy_cmp(b, ctx, rhs_value)?;
     let rhs_bool = emit_bool_value_from_truthy(b, rhs_truthy, false);
     let rhs_ref = emit_receive_value_ref(b, ctx, rhs_bool)?;
@@ -1392,7 +1379,7 @@ fn bool_const_value(b: &mut FunctionBuilder<'_>, value: bool) -> ReceiveValue {
 
 fn emit_int_cmp_value(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
+    ctx: &DispatchCtx<'_>,
     cc: IntCC,
     lhs: ReceiveValue,
     rhs: ReceiveValue,
@@ -1420,7 +1407,7 @@ fn emit_bool_value_from_truthy(b: &mut FunctionBuilder<'_>, truthy: ir::Value, i
 
 fn emit_truthy_cmp(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
+    ctx: &DispatchCtx<'_>,
     v: ReceiveValue,
 ) -> Result<ir::Value, CodegenError> {
     match v {
@@ -1446,7 +1433,7 @@ fn emit_truthy_cmp(
 
 fn emit_typed_eq_cmp(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
+    ctx: &DispatchCtx<'_>,
     lhs: ReceiveValue,
     rhs: ReceiveValue,
 ) -> Result<ir::Value, CodegenError> {
@@ -1479,7 +1466,7 @@ fn emit_typed_eq_cmp(
 
 fn emit_typed_eq_branch(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
+    ctx: &DispatchCtx<'_>,
     lhs: ReceiveValue,
     rhs: ReceiveValue,
     match_b: ir::Block,
@@ -1490,9 +1477,9 @@ fn emit_typed_eq_branch(
     Ok(())
 }
 
-fn emit_not_matcher_map_miss(
+fn emit_not_dispatch_map_miss(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
+    ctx: &DispatchCtx<'_>,
     value: ReceiveValue,
 ) -> Result<ir::Value, CodegenError> {
     match value {
@@ -1508,13 +1495,13 @@ fn emit_not_matcher_map_miss(
 
 fn emit_map_kind_test(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
+    ctx: &DispatchCtx<'_>,
     val: ReceiveValue,
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
     let Some(fref) = ctx.runtime.map_is_map_fref else {
-        return Err(CodegenError::new("MapKind matcher test requires fz_map_is_map"));
+        return Err(CodegenError::new("map-kind dispatch test requires fz_map_is_map"));
     };
     let map_ref = emit_receive_value_ref(b, ctx, val)?;
     let inst = b.ins().call(fref, &[map_ref]);
@@ -1531,7 +1518,7 @@ fn emit_map_kind_test(
 /// vs miss target blocks.
 fn emit_tuple_arity_test(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
+    ctx: &DispatchCtx<'_>,
     tuple_schema_ids: &HashMap<usize, u32>,
     val: ReceiveValue,
     arity: usize,
@@ -1540,7 +1527,7 @@ fn emit_tuple_arity_test(
 ) -> Result<(), CodegenError> {
     let expected_schema_id = *tuple_schema_ids.get(&arity).ok_or_else(|| {
         CodegenError::new(format!(
-            "matcher tuple arity {} not pre-registered (compile() walk missed it?)",
+            "dispatch tuple arity {} not pre-registered (compile() walk missed it?)",
             arity
         ))
     })?;
@@ -1555,7 +1542,7 @@ fn emit_tuple_arity_test(
 
     let Some(fref) = ctx.runtime.struct_schema_id_ref_fref else {
         return Err(CodegenError::new(
-            "tuple arity matcher test requires fz_struct_schema_id_ref",
+            "tuple arity dispatch test requires fz_struct_schema_id_ref",
         ));
     };
     let struct_ref = emit_receive_value_ref(b, ctx, val)?;
@@ -1567,71 +1554,61 @@ fn emit_tuple_arity_test(
     Ok(())
 }
 
-fn collect_binary_literals_in_matcher(matcher: &Matcher, out: &mut Vec<Vec<u8>>) {
-    for key in &matcher.prepared_keys {
+fn collect_binary_literals_in_dispatch(dispatch: &PatternDispatchPlan, out: &mut Vec<Vec<u8>>) {
+    for key in &dispatch.prepared_keys {
         collect_binary_literals_in_const(key, out);
     }
-    for node in &matcher.nodes {
-        match node {
-            MatcherNode::Switch { cases, .. } => {
-                for (key, _) in cases {
-                    if let SwitchKey::Utf8Binary(bytes) = key {
-                        out.push(bytes.clone());
-                    }
-                }
-            }
-            MatcherNode::Test { test, .. } => collect_binary_literals_in_test(test, out),
-            MatcherNode::Guard { expr, .. } => collect_binary_literals_in_guard(expr, out),
-            MatcherNode::Fail { .. } | MatcherNode::Leaf(_) => {}
+    for arm in &dispatch.matrix.arms {
+        for question in &arm.questions {
+            collect_binary_literals_in_region(&question.predicate.region, out);
         }
+    }
+    for guard in &dispatch.guards {
+        collect_binary_literals_in_guard(guard, out);
     }
 }
 
-fn collect_binary_literals_in_guard(expr: &GuardExpr, out: &mut Vec<Vec<u8>>) {
+fn collect_binary_literals_in_region(region: &Region, out: &mut Vec<Vec<u8>>) {
+    match region {
+        Region::Equal(ComparisonValue::Const(value)) | Region::MapKeyPresent { key: value } => {
+            collect_binary_literals_in_const(value, out);
+        }
+        Region::Any
+        | Region::Never
+        | Region::Type(_)
+        | Region::Equal(ComparisonValue::Pinned(_))
+        | Region::TupleArity(_)
+        | Region::List(_)
+        | Region::MapKind
+        | Region::Bitstring(_)
+        | Region::Guard(_) => {}
+    }
+}
+
+fn collect_binary_literals_in_guard(expr: &PatternGuardExpr, out: &mut Vec<Vec<u8>>) {
     match expr {
-        GuardExpr::Const(c) => collect_binary_literals_in_const(c, out),
-        GuardExpr::Unary { expr, .. } => collect_binary_literals_in_guard(expr, out),
-        GuardExpr::Binary { lhs, rhs, .. } => {
+        PatternGuardExpr::Const(value) => collect_binary_literals_in_const(value, out),
+        PatternGuardExpr::Unary { expr, .. } => collect_binary_literals_in_guard(expr, out),
+        PatternGuardExpr::Binary { lhs, rhs, .. } => {
             collect_binary_literals_in_guard(lhs, out);
             collect_binary_literals_in_guard(rhs, out);
         }
-        GuardExpr::Dispatch { inputs, dispatch } => {
+        PatternGuardExpr::Dispatch { inputs, dispatch } => {
             for input in inputs {
                 collect_binary_literals_in_guard(input, out);
             }
-            collect_binary_literals_in_matcher(&dispatch.matcher, out);
+            collect_binary_literals_in_dispatch(&dispatch.plan, out);
             for body in &dispatch.bodies {
                 collect_binary_literals_in_guard(body, out);
             }
         }
-        GuardExpr::Subject(_) | GuardExpr::Pinned(_) => {}
+        PatternGuardExpr::Subject(_) | PatternGuardExpr::Pinned(_) => {}
     }
 }
 
-fn collect_binary_literals_in_const(value: &MatcherConst, out: &mut Vec<Vec<u8>>) {
-    if let MatcherConst::Utf8Binary(bytes) = value {
+fn collect_binary_literals_in_const(value: &DispatchConst, out: &mut Vec<Vec<u8>>) {
+    if let DispatchConst::Utf8Binary(bytes) = value {
         out.push(bytes.clone());
-    }
-}
-
-fn collect_binary_literals_in_test(test: &MatcherTest, out: &mut Vec<Vec<u8>>) {
-    match test {
-        MatcherTest::EqConst {
-            value: MatcherConst::Utf8Binary(bytes),
-            ..
-        } => out.push(bytes.clone()),
-        MatcherTest::MapHasKey {
-            key: MatcherConst::Utf8Binary(bytes),
-            ..
-        } => out.push(bytes.clone()),
-        MatcherTest::Bitstring { .. }
-        | MatcherTest::EqConst { .. }
-        | MatcherTest::EqPinned { .. }
-        | MatcherTest::TupleArity { .. }
-        | MatcherTest::ListCons { .. }
-        | MatcherTest::MapKind { .. }
-        | MatcherTest::MapHasKey { .. }
-        | MatcherTest::Type { .. } => {}
     }
 }
 
@@ -1650,7 +1627,7 @@ fn emit_binary_literal_test(
 ) -> Result<(), CodegenError> {
     let Some(fref) = matcher_eq_bytes_fref else {
         return Err(CodegenError::new(
-            "Pattern::Binary in receive matcher requires fz_matcher_eq_bytes; \
+            "Pattern::Binary in receive dispatch requires fz_matcher_eq_bytes; \
              runtime not linked in this context",
         ));
     };
@@ -1675,13 +1652,13 @@ fn emit_binary_literal_test(
 /// runtime predicate instead of reading a prefix kind.
 fn emit_list_cons_test(
     b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
+    ctx: &DispatchCtx<'_>,
     val: ReceiveValue,
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
     let Some(fref) = ctx.runtime.list_is_cons_fref else {
-        return Err(CodegenError::new("ListCons matcher test requires fz_list_is_cons"));
+        return Err(CodegenError::new("list-cons dispatch test requires fz_list_is_cons"));
     };
     let list_ref = emit_receive_value_ref(b, ctx, val)?;
     let inst = b.ins().call(fref, &[list_ref]);

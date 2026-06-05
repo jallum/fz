@@ -16,8 +16,6 @@
 //! Native-tier fns bypass the trampoline; their ABI is built per-spec
 //! from ArgRepr (see `repr.rs`).
 
-#![allow(unused_imports)]
-
 pub(crate) use crate::frontend::spec_registry::SpecRegistry;
 use crate::fz_ir::Module;
 use crate::ir_planner::ModulePlan;
@@ -53,7 +51,6 @@ mod value;
 
 // Glob re-exports keep cross-module references resolvable through
 // `use super::*;` in each submodule.
-pub(crate) use abi_facts::*;
 pub(crate) use aot_main::*;
 pub(crate) use backend::*;
 pub(crate) use call::*;
@@ -61,11 +58,9 @@ pub(crate) use clif::*;
 pub(crate) use closure::*;
 pub(crate) use compiled::*;
 pub(crate) use demand::*;
-pub(crate) use driver::*;
 pub(crate) use dump::*;
 pub(crate) use entry::*;
 pub(crate) use env::*;
-pub(crate) use error::*;
 pub(crate) use fn_ctx::*;
 pub(crate) use function::*;
 pub(crate) use prim::*;
@@ -78,10 +73,7 @@ pub(crate) use type_pred::*;
 pub(crate) use value::*;
 
 // Public surface preserved for `crate::ir_codegen::*` callers.
-pub use compiled::{
-    CompiledImage, CompiledMetadata, CompiledModule, CompiledProgram, CompiledUnit, ImageLinkError, RuntimeEntrypoints,
-    RuntimeImageMetadata, RuntimeMetadataLinkError, RuntimeStaticClosure, RuntimeUnitMetadata, RuntimeUnitRelocations,
-};
+pub use compiled::{CompiledImage, CompiledMetadata, CompiledModule, CompiledProgram, CompiledUnit, ImageLinkError};
 pub use error::CodegenError;
 pub use support::{asm_record_enable, asm_record_take, ir_text_record_enable, ir_text_record_take};
 

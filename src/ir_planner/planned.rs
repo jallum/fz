@@ -3,7 +3,7 @@ use crate::fz_ir::{
     Block, BlockId, CallsiteId, EmitSlot, FnId, FnIr, Module, Prim, SpecId, Stmt, Term, Var, visit_prim_vars,
     visit_term_vars,
 };
-use crate::ir_dce::{collect_used, dce_fn_with_telemetry};
+use crate::ir_dce::{collect_used, dce_fn};
 use crate::ir_fold::fold_planned_body;
 use crate::ir_fuse::{subst_prim, subst_stmt, subst_term};
 use crate::ir_planner::callgraph::entry_seeds;
@@ -189,7 +189,7 @@ where
                     0
                 };
                 if rewrite_stats.changed() && !materialization_dce_is_observable(module_plan, body.id) {
-                    dce_fn_with_telemetry(module.module_path(), &mut body, tel);
+                    dce_fn(module.module_path(), &mut body, tel);
                     materialized_plan = retype_materialized_body(
                         t,
                         module,

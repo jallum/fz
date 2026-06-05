@@ -2,17 +2,17 @@
 
 use super::*;
 use crate::fz_ir::{
-    self as fz_ir, BlockId, CallsiteId, CallsiteIdent, Cont, EmitSlot, FnId, ReceiveAfter, ReceiveClause, Term, Var,
+    self as fz_ir, BlockId, CallsiteId, Cont, EmitSlot, FnId, ReceiveAfter, ReceiveClause, Term, Var,
     receive_outcome_spec_key,
 };
 use crate::ir_planner::SpecPlan;
-use crate::ir_planner::fn_types::{CallableCapability, ReturnDemand, SpecKey};
+use crate::ir_planner::fn_types::{CallableCapability, SpecKey};
 use crate::types::{ClosureTypes, Ty, Types, key_slots_from_tys};
 use crate::{measurements, metadata};
 use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature, condcodes::IntCC, types};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilder;
-use cranelift_module::{FuncId, Linkage};
+use cranelift_module::FuncId;
 use fz_runtime::heap::Schema;
 use fz_runtime::process::YIELD_REASON_REDUCTIONS;
 use fz_runtime::process_abi::PROCESS_REDUCTIONS_REMAINING_OFFSET;
@@ -384,7 +384,7 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
             after,
             pinned,
             captures,
-            matcher: _,
+            dispatch: _,
             ident: _,
         } => emit_receive_matched(
             body,
@@ -1393,11 +1393,11 @@ fn emit_receive_matched<M: cranelift_module::Module, T: Types<Ty = Ty> + Closure
     pinned: &[(String, Var)],
     captures: &[Var],
 ) -> Result<(), CodegenError> {
-    let matcher_fid = *env
-        .matcher_fn_ids
+    let dispatch_fid = *env
+        .receive_dispatch_fn_ids
         .get(&(caller_fn_id.0, blk.id.0))
-        .expect("matcher fn pre-declared by planned codegen matcher pass");
-    let matcher_addr = fn_addr(body.jmod, matcher_fid, body.b);
+        .expect("receive dispatch fn pre-declared by planned codegen pass");
+    let dispatch_addr = fn_addr(body.jmod, dispatch_fid, body.b);
     let yield_sentinel = build_park_record(
         body,
         t,
@@ -1410,7 +1410,7 @@ fn emit_receive_matched<M: cranelift_module::Module, T: Types<Ty = Ty> + Closure
         after,
         pinned,
         captures,
-        matcher_addr,
+        dispatch_addr,
     );
     // Both native and uniform bodies return the YIELD sentinel so the
     // trampoline parks.

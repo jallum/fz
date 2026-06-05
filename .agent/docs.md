@@ -10,10 +10,11 @@ Read the one whose trigger matches what you are about to touch:
 - [agent-docs](docs/agent-docs.md) — writing or revising `.agent/docs` guidance.
 - [continuation-captures](docs/continuation-captures.md) — continuation ABI, closure captures, lambda captures, or capture pruning.
 - [control-flow-lowering](docs/control-flow-lowering.md) — `if` / `case` / `cond` / `with` / `receive` lowering, arm continuation functions, joins, or tailness across branch boundaries.
-- [pattern-matching](docs/pattern-matching.md) — the `PatternMatrix` → `Matcher` → IR pipeline, test-first/project-second ordering, where bindings land, or the `src/pattern_matrix` / `src/exec/matcher` / `src/ir_lower/matcher.rs` split.
+- [pattern-matching](docs/pattern-matching.md) — the `SourcePatternRows` → `PatternDispatchPlan` → `DispatchMatrix` → `DispatchGraph` path, test-first/project-second ordering, where bindings land, or direct inline/receive dispatch lowering.
 - [destination-passing](docs/destination-passing.md) — destination planning/passing IR, erased init-token facts, tuple/list/map construction lowering, typed container field initialization, physical capabilities, or owned-cons reuse.
 - [dispatch-as-planner-output](docs/dispatch-as-planner-output.md) — planner-owned call-edge facts, `SpecPlan.call_edges`, `SpecKey` variants, callable capabilities, or ReturnDemand capability selection.
-- [single-authoritative-plan](docs/single-authoritative-plan.md) — the one `plan_module` codegen commits to, the `planner.planned` count, destination-lowering plan preservation, or why codegen must not run planner-owned analysis.
+- [dispatch-matrix](docs/dispatch-matrix.md) — the shared `Region` / `Order` / `Outcome` / `DispatchGraph` model for pattern, protocol, and dispatch-shaped compiler work.
+- [single-authoritative-plan](docs/single-authoritative-plan.md) — the one `plan_module_with_role` handoff codegen commits to, the `planner.planned` count, destination-lowering plan preservation, or why codegen must not run planner-owned analysis.
 - [externs](docs/externs.md) — `extern "C"` declarations, marshal classes, variadic calls, or extern codegen/interpreter behavior.
 - [fixtures](docs/fixtures.md) — authoring or changing a fixture, the four-path matrix, pass/fail rules, the four expressive media, or the dump-budget mechanism.
 - [guides](docs/guides.md) — writing or updating user-facing `guides/*.html`.

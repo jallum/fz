@@ -97,8 +97,7 @@ pub struct Parser {
     /// the ambiguity check in `parse_no_parens_keyword_list`.
     saw_no_parens_call: bool,
     /// fz-g58.2.3b — non-fatal diagnostics gathered during the parse. Emitted
-    /// to telemetry by `parse_program_with_telemetry`; dropped on the plain
-    /// `parse_program` path (warnings are observability, not control flow).
+    /// through the required parser telemetry path.
     warnings: Vec<Diagnostic>,
 }
 
@@ -140,8 +139,7 @@ impl Parser {
         }
     }
 
-    /// Record a non-fatal diagnostic. Surfaced via telemetry on the
-    /// `parse_program_with_telemetry` path; otherwise collected and dropped.
+    /// Record a non-fatal diagnostic. Surfaced via parser telemetry.
     fn warn(&mut self, diag: Diagnostic) {
         self.warnings.push(diag);
     }
@@ -282,7 +280,7 @@ impl Parser {
 
     // --- entry ---
 
-    pub fn parse_program(&mut self) -> PR<Program> {
+    fn parse_program_body(&mut self) -> PR<Program> {
         let (items, top_attrs) = self.parse_items_until(&[Tok::Eof])?;
         for a in &top_attrs {
             match a {
@@ -309,11 +307,11 @@ impl Parser {
         })
     }
 
-    pub fn parse_program_with_telemetry(&mut self, tel: &dyn Telemetry) -> PR<Program> {
+    pub fn parse_program(&mut self, tel: &dyn Telemetry) -> PR<Program> {
         use crate::telemetry::TelemetryExt;
 
         let _span = tel.span(PARSE_PASS_NAME, Metadata::new());
-        let prog = self.parse_program()?;
+        let prog = self.parse_program_body()?;
         tel.execute(
             ITEMS_BUILT_NAME,
             &crate::measurements! { count: prog.items.len() },

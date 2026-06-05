@@ -42,8 +42,13 @@ fn math_interface() -> ModuleInterface {
 fn fzi_roundtrip_is_deterministic() {
     let artifact = FziArtifact::new(math_interface());
     let text = artifact.serialize();
-    let decoded = FziArtifact::deserialize(&NullTelemetry, None, &text, Some(&["export:Math.add/2".to_string()]))
-        .expect("deserialize");
+    let decoded = FziArtifact::deserialize(
+        &crate::telemetry::ConfiguredTelemetry::new(),
+        None,
+        &text,
+        Some(&["export:Math.add/2".to_string()]),
+    )
+    .expect("deserialize");
     assert_eq!(decoded, artifact);
     assert_eq!(decoded.serialize(), text);
 }
@@ -51,7 +56,13 @@ fn fzi_roundtrip_is_deterministic() {
 #[test]
 fn fzi_rejects_fingerprint_mismatch() {
     let text = FziArtifact::new(math_interface()).serialize();
-    let err = FziArtifact::deserialize(&NullTelemetry, None, &text, Some(&["different".to_string()])).unwrap_err();
+    let err = FziArtifact::deserialize(
+        &crate::telemetry::ConfiguredTelemetry::new(),
+        None,
+        &text,
+        Some(&["different".to_string()]),
+    )
+    .unwrap_err();
     assert_eq!(err.to_diagnostic().code, codes::ARTIFACT_INVALID);
     assert_eq!(err.to_string(), "fzi interface fingerprint mismatch");
 }
@@ -62,7 +73,7 @@ fn fzi_rejects_fingerprint_digest_mismatch() {
     let text = artifact
         .serialize()
         .replace(&artifact.interface_fingerprint_digest, "bad");
-    let err = FziArtifact::deserialize(&NullTelemetry, None, &text, None).unwrap_err();
+    let err = FziArtifact::deserialize(&crate::telemetry::ConfiguredTelemetry::new(), None, &text, None).unwrap_err();
     assert_eq!(err.to_diagnostic().code, codes::ARTIFACT_INVALID);
     assert_eq!(err.to_string(), "fzi interface fingerprint digest mismatch");
 }
@@ -112,8 +123,13 @@ fn fzo_roundtrip_is_deterministic() {
     let text = artifact.serialize();
     assert!(text.contains(r#""format": "fz-ir-unit-v1""#), "{text}");
     assert!(text.contains(r#""body": "#), "{text}");
-    let decoded = FzoArtifact::deserialize(&NullTelemetry, None, &text, Some(&["export:Math.add/2".to_string()]))
-        .expect("deserialize");
+    let decoded = FzoArtifact::deserialize(
+        &crate::telemetry::ConfiguredTelemetry::new(),
+        None,
+        &text,
+        Some(&["export:Math.add/2".to_string()]),
+    )
+    .expect("deserialize");
     assert_eq!(decoded.unit_payload.format, FZO_PAYLOAD_IR_UNIT_V1);
     assert_eq!(decoded, artifact);
     assert_eq!(decoded.serialize(), text);
@@ -151,7 +167,7 @@ fn fzo_ir_unit_round_trips() {
     let text = fzo.serialize();
     assert!(text.contains(r#""format": "fz-ir-unit-v1""#), "{text}");
 
-    let back = FzoArtifact::deserialize(&NullTelemetry, None, &text, None).unwrap();
+    let back = FzoArtifact::deserialize(&crate::telemetry::ConfiguredTelemetry::new(), None, &text, None).unwrap();
     let payload = back.ir_unit_payload().unwrap();
 
     // The Module survived: canonical Value equality.
@@ -198,8 +214,8 @@ fn fzo_payload_digest_round_trips() {
         payload_digest(&artifact.unit_payload)
     );
     let text = artifact.serialize();
-    let decoded =
-        FzoArtifact::deserialize(&NullTelemetry, None, &text, None).expect("matching payload digest is accepted");
+    let decoded = FzoArtifact::deserialize(&crate::telemetry::ConfiguredTelemetry::new(), None, &text, None)
+        .expect("matching payload digest is accepted");
     assert_eq!(decoded, artifact);
 }
 
@@ -219,7 +235,7 @@ fn fzo_rejects_tampered_payload() {
     artifact.unit_payload.body = tampered_body;
     let text = artifact.serialize();
     // The tampered body is still valid JSON, so this only trips the digest.
-    let err = FzoArtifact::deserialize(&NullTelemetry, None, &text, None).unwrap_err();
+    let err = FzoArtifact::deserialize(&crate::telemetry::ConfiguredTelemetry::new(), None, &text, None).unwrap_err();
     assert_eq!(err.to_diagnostic().code, codes::ARTIFACT_INVALID);
     assert_eq!(err.to_string(), "fzo implementation payload digest mismatch");
 }
@@ -244,7 +260,7 @@ fn fzo_source_unit_payload_is_materializable() {
     );
 
     let decoded = FzoArtifact::deserialize(
-        &NullTelemetry,
+        &crate::telemetry::ConfiguredTelemetry::new(),
         None,
         &artifact.serialize(),
         Some(&interface.fingerprint_inputs),
@@ -254,7 +270,7 @@ fn fzo_source_unit_payload_is_materializable() {
     assert_eq!(decoded.unit_payload.format, FZO_PAYLOAD_SOURCE_UNIT_V1);
     assert!(
         decoded
-            .source_unit_text(&NullTelemetry)
+            .source_unit_text(&crate::telemetry::ConfiguredTelemetry::new())
             .unwrap()
             .contains("defmodule Math")
     );
@@ -266,7 +282,9 @@ fn fzo_rejects_non_source_payload_as_materializable_source() {
     let unit = CompiledUnit::from_ir_module(Module::new(), Some(interface), Diagnostics::new());
     let artifact = FzoArtifact::from_unit_ir(&unit, vec![], Vec::new());
 
-    let err = artifact.source_unit_text(&NullTelemetry).unwrap_err();
+    let err = artifact
+        .source_unit_text(&crate::telemetry::ConfiguredTelemetry::new())
+        .unwrap_err();
 
     assert_eq!(
         err.to_string(),
@@ -282,7 +300,7 @@ fn fzo_rejects_interface_fingerprint_digest_mismatch() {
     let text = artifact
         .serialize()
         .replace(&artifact.interface_fingerprint_digest, "bad");
-    let err = FzoArtifact::deserialize(&NullTelemetry, None, &text, None).unwrap_err();
+    let err = FzoArtifact::deserialize(&crate::telemetry::ConfiguredTelemetry::new(), None, &text, None).unwrap_err();
     assert_eq!(err.to_diagnostic().code, codes::ARTIFACT_INVALID);
     assert_eq!(err.to_string(), "fzo implemented interface fingerprint digest mismatch");
 }
@@ -294,7 +312,7 @@ fn fzo_rejects_empty_unit_payload() {
     let mut artifact = FzoArtifact::from_unit_ir(&unit, vec![], Vec::new());
     artifact.unit_payload.body.clear();
     let text = artifact.serialize();
-    let err = FzoArtifact::deserialize(&NullTelemetry, None, &text, None).unwrap_err();
+    let err = FzoArtifact::deserialize(&crate::telemetry::ConfiguredTelemetry::new(), None, &text, None).unwrap_err();
     assert_eq!(err.to_diagnostic().code, codes::ARTIFACT_INVALID);
     assert_eq!(err.to_string(), "fzo unit payload is empty");
 }
@@ -304,7 +322,13 @@ fn fzo_rejects_interface_fingerprint_mismatch() {
     let interface = math_interface();
     let unit = CompiledUnit::from_ir_module(Module::new(), Some(interface), Diagnostics::new());
     let text = FzoArtifact::from_unit_ir(&unit, vec![], Vec::new()).serialize();
-    let err = FzoArtifact::deserialize(&NullTelemetry, None, &text, Some(&["wrong".to_string()])).unwrap_err();
+    let err = FzoArtifact::deserialize(
+        &crate::telemetry::ConfiguredTelemetry::new(),
+        None,
+        &text,
+        Some(&["wrong".to_string()]),
+    )
+    .unwrap_err();
     assert_eq!(err.to_diagnostic().code, codes::ARTIFACT_INVALID);
     assert_eq!(err.to_string(), "fzo implemented interface fingerprint mismatch");
 }

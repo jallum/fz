@@ -44,15 +44,15 @@ its plucked values.</p>
 
 <p>This is not just a metaphor. The executable matching path is
 documented as
-<code>Pattern -&gt; PatternMatrix rows -&gt; Matcher graph -&gt; inline lowering or receive ABI lowering</code>.
-The runtime-facing matcher is AST-free: once compiled, it carries
+<code>Pattern -&gt; SourcePatternRows -&gt; PatternDispatchPlan -&gt; DispatchMatrix -&gt; DispatchGraph -&gt; inline lowering or receive probe lowering</code>.
+The compiled dispatch plan is AST-free: once compiled, it carries
 subjects, constants, tests, guards, bindings, and outcomes, not source
 patterns.</p>
 
 <!-- ─────────────────────────────── 2 ─────────────────────────────── -->
-<h2 id="matcher">2. The five pieces a matcher uses</h2>
+<h2 id="matcher">2. The five pieces a dispatch plan uses</h2>
 
-<p>A compiled matcher only holds five kinds of node, plus a list of
+<p>A compiled dispatch plan only holds five kinds of node, plus a list of
 inputs, pinned values (the <code>^name</code> things), and any
 pre-prepared constants:</p>
 
@@ -63,7 +63,7 @@ pre-prepared constants:</p>
   Test(test, on_true, on_false)       <span class="com"># single yes/no probe</span>
   Guard(expr, on_true, on_false)      <span class="com"># pure expression check</span></pre>
 
-<p>And the things a matcher can ask about are also a small list:</p>
+<p>And the things a dispatch plan can ask about are also a small list:</p>
 
 <pre>Test
   EqConst        <span class="com"># is this subject equal to this constant?</span>
@@ -85,21 +85,21 @@ original input:</p>
   MapValue(base, key)       <span class="com"># the value under a key, only valid after MapHasKey</span>
   BitstringField(base, i)   <span class="com"># the i-th parsed field of a bitstring</span></pre>
 
-<p>That's the whole vocabulary. A matcher is subjects, tests, branches,
+<p>That's the whole vocabulary. A dispatch plan is subjects, tests, branches,
 guards, and leaves that say "clause <em>k</em> wins, and here are the
 values to pluck." Leaves name the winning body and the bindings to
 materialize for it.</p>
 
 <div class="box blue">
-<p><strong>The useful constraint:</strong> matchers are probes, tests,
+<p><strong>The useful constraint:</strong> dispatch plans are probes, tests,
 branches, guards, and value plucking. They are not where ordinary
 program effects live.</p>
 </div>
 
 <div class="aside">
-The matcher is allowed to be small on purpose. It doesn't allocate
+The receive probe is allowed to be small on purpose. It doesn't allocate
 program objects, doesn't call externs, doesn't <code>receive</code>.
-The compiler enforces that on matcher functions, so the same matcher is
+The compiler enforces that on receive probe functions, so the same plan is
 safe to call from the scheduler when a message arrives.
 </div>
 
@@ -131,7 +131,7 @@ helpers. No allocations, no arbitrary function calls.</p>
 <p>That is exactly the <code>Guard(expr, on_true, on_false)</code> node
 from section 2. On <code>true</code>, the matcher proceeds to the
 leaf; on <code>false</code>, it falls through to the next row of the
-PatternMatrix.</p>
+SourcePatternRows.</p>
 
 <h3>Pins: match against a value already in scope</h3>
 
@@ -159,7 +159,7 @@ its second argument.</p>
 <!-- ─────────────────────────────── 4 ─────────────────────────────── -->
 <h2 id="share">4. We destructure once</h2>
 
-<p>A subtle but important property of the Matcher graph: cross-clause
+<p>A subtle but important property of the DispatchGraph: cross-clause
 work is <em>shared</em>. Look at:</p>
 
 <pre><span class="kw">case</span> msg <span class="kw">do</span>
@@ -175,34 +175,33 @@ it a tuple? of arity 2? what's slot 0?". That is wasteful, and it would
 also mean a guarded clause on the wrong constructor could still run its
 guard.</p>
 
-<p>The PatternMatrix compiler doesn't do that. It looks at all clauses
-together and emits a tree that asks each structural question
+<p>The source-pattern-to-DispatchMatrix producer doesn't do that. It looks at all
+clauses together and emits a graph that asks each structural question
 <em>once</em>:</p>
 
 <pre>Test TupleArity(Input(0), 2)
    on_false → Leaf(body=4, bindings=[ other = Input(0) ])
-   on_true  → Switch on TupleField(Input(0), 0)
-                <span class="atm">:ok</span>     → Leaf(body=1,
+   on_true  → Test EqConst(TupleField(Input(0), 0), <span class="atm">:ok</span>)
+                on_true  → Leaf(body=1,
                                 bindings=[ value = TupleField(Input(0), 1) ])
-                <span class="atm">:error</span>  → Test EqConst(TupleField(Input(0), 1), <span class="atm">:timeout</span>)
-                            on_true  → Leaf(body=2, bindings=[])
-                            on_false → Leaf(body=3,
-                                            bindings=[ why = TupleField(Input(0), 1) ])
-                default → Leaf(body=4, bindings=[ other = Input(0) ])</pre>
+                on_false → Test EqConst(TupleField(Input(0), 0), <span class="atm">:error</span>)
+                              on_true  → Test EqConst(TupleField(Input(0), 1), <span class="atm">:timeout</span>)
+                                           on_true  → Leaf(body=2, bindings=[])
+                                           on_false → Leaf(body=3,
+                                                           bindings=[ why = TupleField(Input(0), 1) ])
+                              on_false → Leaf(body=4, bindings=[ other = Input(0) ])</pre>
 
-<p>One tuple-arity test. One discriminator on slot 0. Slot 1 is named
+<p>One tuple-arity test. Slot 0 drives the shared tag path. Slot 1 is named
 either <code>value</code>, <code>why</code>, or not at all, depending on
 which leaf you land at &mdash; never re-read, never re-tested. If a
 guard had ridden along on one of these clauses, it would sit on its own
 leaf path and never run for the wrong constructor.</p>
 
 <div class="aside">
-That "destructure once" property is the whole reason the matcher is a
+That "destructure once" property is the whole reason dispatch is a
 <em>graph</em> instead of a list of clauses. The compiler does the
-merging up front. <code>Switch</code> exists alongside <code>Test</code>
-in the vocabulary precisely because, when several clauses agree on a
-constructor and disagree only on one field's value, a single jump-table
-is much nicer than a chain of <code>EqConst</code> probes.
+merging up front. The semantic graph is the DispatchGraph: shared
+questions, branch-local proofs, and opaque winning outcomes.
 </div>
 
 <p>You can see a smaller version of this in the fixture in section 9:
@@ -236,31 +235,31 @@ matching clause.</p>
 <span class="kw">end</span></pre>
 
 <p>The frontend, parser, pattern checker, macro system, and
-PatternMatrix builder all still speak AST patterns. That is the source
-language. AST patterns are not the thing the runtime-facing matcher
+source-pattern builder all still speak AST patterns. That is the source
+language. AST patterns are not the thing the runtime decision graph
 executes.</p>
 
 <p>Once we cross into "what the runtime actually executes," it's the
-same Matcher graph every time:</p>
+same DispatchGraph every time:</p>
 
 <table class="data">
   <thead>
-    <tr><th>surface form</th><th>subject</th><th>where the matcher lives</th></tr>
+    <tr><th>surface form</th><th>subject</th><th>how it runs</th></tr>
   </thead>
   <tbody>
-    <tr><td class="term">function clauses</td><td class="shape">the call args</td><td>matcher lowered inline into the function dispatch path</td></tr>
-    <tr><td class="term">case</td><td class="shape">the case subject</td><td>matcher lowered inline into the current function</td></tr>
-    <tr><td class="term">with else</td><td class="shape">the failed <code>with</code> value</td><td>matcher lowered inline into the current function</td></tr>
-    <tr><td class="term">receive</td><td class="shape">one mailbox message at a time</td><td>same Matcher, but emitted behind a small ABI function</td></tr>
+    <tr><td class="term">function clauses</td><td class="shape">the call args</td><td>DispatchGraph lowered inline into the function dispatch path</td></tr>
+    <tr><td class="term">case</td><td class="shape">the case subject</td><td>DispatchGraph lowered inline into the current function</td></tr>
+    <tr><td class="term">with else</td><td class="shape">the failed <code>with</code> value</td><td>DispatchGraph lowered inline into the current function</td></tr>
+    <tr><td class="term">receive</td><td class="shape">one mailbox message at a time</td><td>the same PatternDispatchPlan emitted as a small receive probe function</td></tr>
   </tbody>
 </table>
 
 <p>Receive is the odd-looking one only because the scheduler has to run
-the matcher against mailbox messages over time. The decision language
-is the same; the entry point is different. The PatternMatrix compiler
-turns rows of patterns into a <code>Matcher</code>, and from there it's
-just a question of whether the matcher is inlined into the current
-function or emitted behind a tiny call boundary.</p>
+the dispatch plan against mailbox messages over time. The decision language
+is the same; the entry point is different. SourcePatternRows turn source
+patterns into rows, DispatchMatrix turns those rows into the decision
+graph, and each consumer either lowers that graph inline or emits the
+same plan behind a tiny receive-probe boundary.</p>
 
 <!-- ─────────────────────────────── 6 ─────────────────────────────── -->
 <h2 id="keyword-lists">6. Keyword lists are ordinary lists</h2>
@@ -360,7 +359,7 @@ wildcard clause doesn't pick up someone else's slots.</p>
 <h3>When the receiver reaches <code>receive</code></h3>
 
 <p>The lowered <code>Term::ReceiveMatched</code> is a terminator. It
-carries the cached AST-free matcher, one body function per clause, the
+carries the cached AST-free dispatch plan, one body function per clause, the
 pinned snapshot, the captures, and an optional <code>after</code>
 clause. Native codegen calls <code>fz_receive_park_matched</code>,
 which builds a <code>ParkRecord</code> on the process and yields.</p>
@@ -508,16 +507,16 @@ The body returns <code>:unknown</code>.</p>
 
 <ul>
   <li><strong>One executable matching language.</strong> The same
-      Matcher graph describes function dispatch, case dispatch,
+      DispatchGraph describes function dispatch, case dispatch,
       guard-compatible nested dispatch, and receive probes.</li>
   <li><strong>AST stays at the front.</strong> Source patterns are used
-      to build PatternMatrix rows and diagnostics, but runtime matching
+      to build SourcePatternRows and diagnostics, but runtime matching
       does not fall back to walking AST clauses.</li>
-  <li><strong>Receive stops at the decision point.</strong> The matcher
+  <li><strong>Receive stops at the decision point.</strong> The dispatch plan
       does not inline ordinary outcome code; it returns the chosen
       clause and bound values.</li>
-  <li><strong>Scheduler probes are cheap and pure.</strong> The matcher
-      ABI can be called from send arrival, initial mailbox scan, or
+  <li><strong>Scheduler probes are cheap and pure.</strong> The receive probe
+      can be called from send arrival, initial mailbox scan, or
       runtime code without allocating ordinary program objects.</li>
   <li><strong>The closure is the handoff.</strong> On a hit, the
       receiver resumes through a normal closure shape containing only

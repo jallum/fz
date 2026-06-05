@@ -4,47 +4,29 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use super::*;
-use crate::{measurements, metadata};
-
-#[test]
-fn null_execute_is_a_noop() {
-    let t = NullTelemetry;
-    t.execute(
-        &["fz", "any", "event"],
-        &measurements! { count: 3i64 },
-        &metadata! { fn_name: "x" },
-    );
-    // No panic, no observable effect. Test passes if we got here.
-}
-
-#[test]
-fn null_span_lifecycle_returns_zero_id() {
-    let t = NullTelemetry;
-    let id = t.span_start(&["fz", "x", "pass"], &Metadata::new());
-    assert_eq!(id, 0);
-    t.span_stop(&["fz", "x", "pass"], id, 0);
-    t.span_exception(&["fz", "x", "pass"], id, 0);
-}
+use crate::metadata;
 
 #[test]
 fn telemetry_is_object_safe() {
-    let t: &dyn Telemetry = &NullTelemetry;
+    let bus = crate::telemetry::ConfiguredTelemetry::new();
+    let t: &dyn Telemetry = &bus;
     t.emit(&["fz", "x"]);
 }
 
 #[test]
 fn ext_span_is_callable_through_dyn() {
-    let t: &dyn Telemetry = &NullTelemetry;
+    let bus = crate::telemetry::ConfiguredTelemetry::new();
+    let t: &dyn Telemetry = &bus;
     let span = t.span(&["fz", "any", "pass"], metadata! { x: 1i64 });
-    assert_eq!(span.span_id(), 0);
+    assert_eq!(span.span_id(), 1);
     assert_eq!(span.name(), &["fz", "any", "pass"]);
 }
 
 #[test]
 fn ext_span_is_callable_through_concrete() {
-    let t = NullTelemetry;
+    let t = crate::telemetry::ConfiguredTelemetry::new();
     let span = t.span(&["fz", "any", "pass"], Metadata::new());
-    assert_eq!(span.span_id(), 0);
+    assert_eq!(span.span_id(), 1);
 }
 
 /// Tiny mock that counts each method call. Used by sibling tests
@@ -218,11 +200,4 @@ fn span_drop_reports_nonzero_elapsed_ns() {
         sleep(Duration::from_micros(50));
     }
     assert!(c.elapsed.get() > 0, "expected nonzero elapsed_ns");
-}
-
-#[test]
-fn null_telemetry_span_drop_is_silent() {
-    // Sanity: with NullTelemetry, Drop runs but does nothing observable.
-    let t = NullTelemetry;
-    let _ = t.span(&["fz", "x"], Metadata::new());
 }

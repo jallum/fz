@@ -27,10 +27,8 @@ use crate::exec::runtime::{ExitRecord, output_hook_thunk};
 use crate::fz_ir::{FnId, Module};
 use crate::ir_extern_marshal::resolve_module_types;
 #[cfg(test)]
-use crate::ir_planner::plan_module;
+use crate::ir_planner::plan_module_with_role;
 use crate::ir_planner::{ModulePlan, fn_types::SpecKey};
-#[cfg(test)]
-use crate::telemetry::NullTelemetry;
 use crate::telemetry::Telemetry;
 use crate::types::{ClosureTypes, RenderTypes, Ty, Types};
 use fz_runtime::any_value::{ValueKind, closure_addr_from_tagged};
@@ -41,8 +39,8 @@ use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, 
 use fz_runtime::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
 
 mod binop;
+mod dispatch_exec;
 mod extern_call;
-mod matcher_exec;
 mod prim;
 mod run;
 mod scheduler;
@@ -52,13 +50,13 @@ mod value;
 mod ir_interp_test;
 
 use binop::*;
+use dispatch_exec::*;
 use extern_call::*;
 #[cfg(test)]
 pub(crate) use extern_call::{
     tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
     tests_support_test_dtor_addr,
 };
-use matcher_exec::*;
 use prim::*;
 use run::*;
 use scheduler::*;
@@ -103,7 +101,8 @@ impl CodeImage {
     #[cfg(test)]
     fn from_module(module: &Module) -> Result<Self, String> {
         let mut t = crate::types::new();
-        let module_plan = plan_module(&mut t, module, &NullTelemetry);
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let module_plan = plan_module_with_role(&mut t, module, &tel, "test");
         Self::from_plan(&mut t, module, module_plan)
     }
 
@@ -557,7 +556,7 @@ fn gc_interp_scheduler_roots(
 #[cfg(test)]
 pub fn run_main(tel: &dyn Telemetry, module: &Module) -> Result<i64, String> {
     let mut t = crate::types::new();
-    let module_plan = plan_module(&mut t, module, &NullTelemetry);
+    let module_plan = plan_module_with_role(&mut t, module, tel, "test");
     run_main_with_plan(&mut t, tel, module, module_plan).map(|(halt, _runtime)| halt)
 }
 
@@ -576,7 +575,7 @@ where
 #[cfg(test)]
 pub(crate) fn run_main_with_runtime(tel: &dyn Telemetry, module: &Module) -> Result<(i64, IrInterpRuntime), String> {
     let mut t = crate::types::new();
-    let module_plan = plan_module(&mut t, module, &NullTelemetry);
+    let module_plan = plan_module_with_role(&mut t, module, tel, "test");
     run_main_inner(&mut t, tel, module, module_plan)
 }
 

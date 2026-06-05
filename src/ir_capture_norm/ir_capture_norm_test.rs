@@ -1,6 +1,10 @@
 use super::*;
 use crate::diag::Span;
-use crate::exec::matcher::{Matcher, MatcherLeaf, MatcherNode};
+use crate::dispatch_matrix::pattern::PatternDispatchPlan;
+use crate::dispatch_matrix::{
+    DispatchGraph, DispatchMatrix, DispatchNode, EdgeEvidence, GraphNodeId, Order, Outcome, OutcomeId,
+    OutcomeMultiplicity,
+};
 use crate::fz_ir::{
     BinOp, BlockId, CallsiteIdent, Const, FnBuilder, FnCategory, FnId, ModuleBuilder, Prim, ReceiveAfter, ReceiveClause,
 };
@@ -134,15 +138,32 @@ fn build_module_with_tail_call_cont_site() -> Module {
     mb.build()
 }
 
-fn empty_matcher() -> Arc<Matcher> {
-    Arc::new(Matcher::new(
-        vec![],
-        MatcherNode::Leaf(MatcherLeaf {
-            body_id: 0,
-            bindings: vec![],
-            span: Span::DUMMY,
-        }),
-    ))
+fn empty_dispatch() -> Arc<PatternDispatchPlan> {
+    Arc::new(PatternDispatchPlan {
+        matrix: DispatchMatrix {
+            subjects: vec![],
+            outcomes: vec![Outcome {
+                id: OutcomeId(0),
+                multiplicity: OutcomeMultiplicity::Unique,
+            }],
+            arms: vec![],
+            order: Order::Source,
+        },
+        graph: DispatchGraph {
+            nodes: vec![DispatchNode::Outcome {
+                outcome: OutcomeId(0),
+                evidence: EdgeEvidence::empty(),
+            }],
+            root: GraphNodeId(0),
+        },
+        inputs: vec![],
+        subjects: vec![],
+        outcomes: vec![],
+        guards: vec![],
+        pinned: vec![],
+        prepared_keys: vec![],
+        bitstring_direct_bindings: Default::default(),
+    })
 }
 
 fn build_module_with_receive_matched(captures: Vec<Var>) -> Module {
@@ -159,7 +180,7 @@ fn build_module_with_receive_matched(captures: Vec<Var>) -> Module {
                 body: FnId(1),
                 span: Span::DUMMY,
             }],
-            matcher: empty_matcher(),
+            dispatch: empty_dispatch(),
             after: Some(ReceiveAfter {
                 ident: CallsiteIdent::synthetic(),
                 timeout: Var(99),
@@ -190,7 +211,7 @@ fn normalize_with_capture(module: &mut Module) -> Capture {
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
-    normalize_continuation_captures_with_telemetry(module, &tel);
+    normalize_continuation_captures(module, &tel);
     cap
 }
 

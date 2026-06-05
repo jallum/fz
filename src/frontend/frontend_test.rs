@@ -8,6 +8,12 @@ use crate::telemetry::{ConfiguredTelemetry, Event, Handler, Value};
 use std::cell::RefCell;
 use std::rc::Rc;
 
+fn compile_source(src: String, source_name: String) -> FrontendResult {
+    let mut t = crate::types::new();
+    let tel = ConfiguredTelemetry::new();
+    compile_source_with_types(&mut t, src, source_name, &tel)
+}
+
 #[test]
 fn returns_warning_diagnostics_without_rendering() {
     let src = "\
@@ -112,15 +118,21 @@ fn structural_telemetry_exposes_compiler_artifacts_to_handlers() {
 fn parse_with_source_map(src: &str, source_name: &str) -> (Program, SourceMap) {
     let mut sm = SourceMap::new();
     let file_id = sm.add_file(source_name.to_string(), src.to_string());
-    let toks = Lexer::with_file(src, file_id).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
+    let toks = Lexer::with_file_and_source_name(src, file_id, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
     (prog, sm)
 }
 
 fn parse_expr_with_source_map(src: &str, source_name: &str) -> (Spanned<Expr>, SourceMap) {
     let mut sm = SourceMap::new();
     let file_id = sm.add_file(source_name.to_string(), src.to_string());
-    let toks = Lexer::with_file(src, file_id).tokenize().expect("lex");
+    let toks = Lexer::with_file_and_source_name(src, file_id, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
     let expr = Parser::new(toks).parse_expr_eof().expect("parse expr");
     (expr, sm)
 }
@@ -130,7 +142,7 @@ fn compile_program_with_types_compiles_parsed_program() {
     let src = "fn id(x), do: x\nfn main(), do: id(41)\n";
     let (prog, sm) = parse_with_source_map(src, "parsed.fz");
     let mut t = crate::types::new();
-    let out = match compile_program_with_types(&mut t, prog, sm, &NullTelemetry) {
+    let out = match compile_program_with_types(&mut t, prog, sm, &crate::telemetry::ConfiguredTelemetry::new()) {
         Ok(out) => out,
         Err(_) => panic!("compile parsed program"),
     };
@@ -146,7 +158,7 @@ fn compile_program_with_types_matches_source_pipeline() {
     };
     let (prog, sm) = parse_with_source_map(src, "source.fz");
     let mut t = crate::types::new();
-    let parsed_out = match compile_program_with_types(&mut t, prog, sm, &NullTelemetry) {
+    let parsed_out = match compile_program_with_types(&mut t, prog, sm, &crate::telemetry::ConfiguredTelemetry::new()) {
         Ok(out) => out,
         Err(_) => panic!("compile parsed program"),
     };
@@ -160,7 +172,7 @@ fn compile_program_with_types_preserves_diagnostics() {
     let src = "fn main(), do: missing + 1\n";
     let (prog, sm) = parse_with_source_map(src, "bad-parsed.fz");
     let mut t = crate::types::new();
-    let err = match compile_program_with_types(&mut t, prog, sm, &NullTelemetry) {
+    let err = match compile_program_with_types(&mut t, prog, sm, &crate::telemetry::ConfiguredTelemetry::new()) {
         Ok(_) => panic!("unbound name should fail lowering"),
         Err(err) => err,
     };
@@ -207,7 +219,7 @@ end
         src.to_string(),
         "consumer.fz".to_string(),
         interfaces,
-        &NullTelemetry,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     ) {
         Ok(out) => out,
         Err(_) => panic!("frontend ok"),
@@ -237,7 +249,7 @@ fn main(), do: inc(41)
     };
     let (prog, sm) = parse_with_source_map(src, "macro-source.fz");
     let mut t = crate::types::new();
-    let parsed_out = match compile_program_with_types(&mut t, prog, sm, &NullTelemetry) {
+    let parsed_out = match compile_program_with_types(&mut t, prog, sm, &crate::telemetry::ConfiguredTelemetry::new()) {
         Ok(out) => out,
         Err(_) => panic!("compile parsed program"),
     };
@@ -256,7 +268,7 @@ fn compile_repl_expr_returns_entry_and_frame_layout_for_plain_expression() {
         vec!["x".to_string()],
         "__repl_eval_0".to_string(),
         sm,
-        &NullTelemetry,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     ) {
         Ok(out) => out,
         Err(_) => panic!("compile repl expression"),
@@ -288,7 +300,7 @@ fn compile_repl_expr_extends_frame_for_simple_and_destructuring_bindings() {
             input.clone(),
             "__repl_eval_0".to_string(),
             sm,
-            &NullTelemetry,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ) {
             Ok(out) => out,
             Err(_) => panic!("compile repl expression `{}`", src),
@@ -309,7 +321,7 @@ fn compile_repl_expr_lowers_match_failure_path() {
         vec![],
         "__repl_eval_0".to_string(),
         sm,
-        &NullTelemetry,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     ) {
         Ok(out) => out,
         Err(_) => panic!("compile repl expression"),

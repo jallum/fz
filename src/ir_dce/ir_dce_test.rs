@@ -2,7 +2,7 @@ use super::*;
 use crate::fz_ir::{
     BinOp, CallsiteIdent, Const, Cont, ExternArg, ExternId, ExternTy, FnBuilder, FnId, ModuleBuilder, Prim, Term,
 };
-use crate::telemetry::{Capture, ConfiguredTelemetry, NullTelemetry, Value};
+use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use crate::types::Types;
 
 /// Test 1: Dead Const removed; live Const (used by a Call arg) kept.
@@ -22,7 +22,7 @@ fn dead_const_removed_live_kept() {
     mb.add_fn(f);
     let mut m = mb.build();
 
-    dce_fn_with_telemetry("", &mut m.fns[0], &NullTelemetry);
+    dce_fn("", &mut m.fns[0], &crate::telemetry::ConfiguredTelemetry::new());
 
     let block = m.fns[0].block(m.fns[0].entry);
     assert_eq!(block.stmts.len(), 1, "dead const should be removed");
@@ -57,7 +57,7 @@ fn impure_extern_kept_even_if_unused() {
     mb.add_fn(f);
     let mut m = mb.build();
 
-    dce_fn_with_telemetry("", &mut m.fns[0], &NullTelemetry);
+    dce_fn("", &mut m.fns[0], &crate::telemetry::ConfiguredTelemetry::new());
 
     let block = m.fns[0].block(m.fns[0].entry);
     // The Extern stmt must remain (impure). nil_v is used by both Extern and Return.
@@ -95,7 +95,7 @@ fn dead_chain_eliminated_fixed_point() {
     mb.add_fn(f);
     let mut m = mb.build();
 
-    dce_fn_with_telemetry("", &mut m.fns[0], &NullTelemetry);
+    dce_fn("", &mut m.fns[0], &crate::telemetry::ConfiguredTelemetry::new());
 
     let block = m.fns[0].block(m.fns[0].entry);
     // Only nil_v should remain.
@@ -136,7 +136,7 @@ fn mixed_block_dead_removed_live_kept() {
     mb.add_fn(f);
     let mut m = mb.build();
 
-    dce_fn_with_telemetry("", &mut m.fns[0], &NullTelemetry);
+    dce_fn("", &mut m.fns[0], &crate::telemetry::ConfiguredTelemetry::new());
 
     let block = m.fns[0].block(m.fns[0].entry);
     assert_eq!(
@@ -169,7 +169,7 @@ fn unreachable_block_removed() {
     let mut m = mb.build();
 
     assert_eq!(m.fns[0].blocks.len(), 2, "should start with 2 blocks");
-    dce_fn_with_telemetry("", &mut m.fns[0], &NullTelemetry);
+    dce_fn("", &mut m.fns[0], &crate::telemetry::ConfiguredTelemetry::new());
     assert_eq!(m.fns[0].blocks.len(), 1, "orphan block should be removed");
     assert_eq!(m.fns[0].blocks[0].id, entry);
 }
@@ -194,7 +194,7 @@ fn unreachable_capability_use_does_not_keep_physical_facts() {
     assert_eq!(f.physical_entry_params, vec![source]);
     assert_eq!(f.physical_capabilities.len(), 1);
 
-    dce_fn_with_telemetry("", &mut f, &NullTelemetry);
+    dce_fn("", &mut f, &crate::telemetry::ConfiguredTelemetry::new());
 
     assert_eq!(f.blocks.len(), 1, "orphan block should be removed");
     assert!(f.physical_entry_params.is_empty());
@@ -219,7 +219,7 @@ fn telemetry_reports_pruned_block_identity() {
     mb.add_fn(b.build());
     let mut m = mb.build();
 
-    dce_fn_with_telemetry("Sort", &mut m.fns[0], &tel);
+    dce_fn("Sort", &mut m.fns[0], &tel);
 
     let ev = cap
         .last(&["fz", "ir", "dce", "block_pruned"])
@@ -253,7 +253,7 @@ fn entry_always_retained() {
     let mut mb = ModuleBuilder::new();
     mb.add_fn(b.build());
     let mut m = mb.build();
-    dce_fn_with_telemetry("", &mut m.fns[0], &NullTelemetry);
+    dce_fn("", &mut m.fns[0], &crate::telemetry::ConfiguredTelemetry::new());
     assert_eq!(m.fns[0].blocks.len(), 1);
     assert_eq!(m.fns[0].blocks[0].id, entry);
 }
@@ -274,7 +274,7 @@ fn both_if_branches_kept() {
     let mut mb = ModuleBuilder::new();
     mb.add_fn(b.build());
     let mut m = mb.build();
-    dce_fn_with_telemetry("", &mut m.fns[0], &NullTelemetry);
+    dce_fn("", &mut m.fns[0], &crate::telemetry::ConfiguredTelemetry::new());
     assert_eq!(m.fns[0].blocks.len(), 3, "both If branches must be kept");
 }
 
@@ -296,7 +296,7 @@ fn dead_branch_removed_after_goto() {
     let mut m = mb.build();
 
     assert_eq!(m.fns[0].blocks.len(), 3, "should start with 3 blocks");
-    dce_fn_with_telemetry("", &mut m.fns[0], &NullTelemetry);
+    dce_fn("", &mut m.fns[0], &crate::telemetry::ConfiguredTelemetry::new());
     assert_eq!(m.fns[0].blocks.len(), 2, "else_b removed by dead block elimination");
     assert_eq!(m.fns[0].blocks[0].id, entry);
     assert!(matches!(m.fns[0].blocks[0].terminator, Term::Goto(target, _) if target == then_b));
@@ -372,7 +372,7 @@ fn owned_cons_source_is_live_only_when_capability_head_is_used() {
     b.set_terminator(entry, Term::Return(result));
     let mut f = b.build();
 
-    dce_fn_with_telemetry("", &mut f, &NullTelemetry);
+    dce_fn("", &mut f, &crate::telemetry::ConfiguredTelemetry::new());
 
     assert_eq!(f.physical_entry_params.len(), 1);
     assert_eq!(f.physical_capabilities.len(), 1);
@@ -393,7 +393,7 @@ fn owned_cons_source_is_live_only_when_capability_head_is_used() {
     b.set_terminator(entry, Term::Return(nil));
     let mut f = b.build();
 
-    dce_fn_with_telemetry("", &mut f, &NullTelemetry);
+    dce_fn("", &mut f, &crate::telemetry::ConfiguredTelemetry::new());
 
     assert!(f.physical_entry_params.is_empty());
     assert!(f.physical_capabilities.is_empty());

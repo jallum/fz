@@ -3,8 +3,12 @@ use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
 
 fn interfaces(src: &str) -> BTreeMap<ModuleName, ModuleInterface> {
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
     collect_from_program(&prog)
 }
 

@@ -2,12 +2,23 @@ use super::{Info, TypeInferOutcome, TypeInferReturnState, TypeInferStatus, infer
 use crate::fz_ir::{Const, DeadBranch, EmitSlot, FnBuilder, FnId, Module, ModuleBuilder, Prim, Term};
 use crate::telemetry::{ConfiguredTelemetry, Event, Handler, Value};
 use crate::test_support::{
-    entry_main_fn_id as main_id, linked_runtime_module as linked, linked_runtime_module_unplanned as linked_unplanned,
-    lower_frontend_module as lower,
+    entry_main_fn_id as main_id, linked_runtime_module, linked_runtime_module_unplanned, lower_frontend_module as lower,
 };
 use crate::types::{CallableValueKind, ClosureTarget, ClosureTypes, DefaultTypes, Ty, Types};
 use std::cell::RefCell;
 use std::rc::Rc;
+
+fn linked_fixture(src: &str) -> Module {
+    let mut t = crate::types::new();
+    let tel = ConfiguredTelemetry::new();
+    linked_runtime_module(&mut t, src, &tel)
+}
+
+fn linked_unplanned_fixture(src: &str) -> Module {
+    let mut t = crate::types::new();
+    let tel = ConfiguredTelemetry::new();
+    linked_runtime_module_unplanned(&mut t, src, &tel)
+}
 
 /// Test boundary helper for one activation's return type. The production API
 /// returns activation facts; these focused tests need the entry activation's
@@ -310,7 +321,7 @@ fn infer_entry_return_via_main(module: &Module) -> Ty {
 /// must mark only the pivot and list slots as dispatch subjects.
 #[test]
 fn partition_dispatch_mask_excludes_accumulators() {
-    let module = linked(include_str!("../../fixtures/quicksort/input.fz"));
+    let module = linked_fixture(include_str!("../../fixtures/quicksort/input.fz"));
     let partition = module
         .fn_by_name("partition")
         .expect("quicksort fixture defines partition");
@@ -326,7 +337,7 @@ fn partition_dispatch_mask_excludes_accumulators() {
 /// reads this mask to fold the accumulator slots together.
 #[test]
 fn partition_dispatch_mask_is_emitted() {
-    let module = linked(include_str!("../../fixtures/quicksort/input.fz"));
+    let module = linked_fixture(include_str!("../../fixtures/quicksort/input.fz"));
     let mut t = crate::types::new();
     let report = infer_report_via_main(&mut t, &module);
     let partition = report
@@ -423,7 +434,7 @@ fn runtime_graph_enum_ops_settle_to_int() {
     let mut t = crate::types::new();
     let int = t.int();
     for (label, entry, src) in cases {
-        let module = linked(src);
+        let module = linked_fixture(src);
         let ret = infer_fn_via_main(&module, entry);
         assert!(
             t.is_equivalent(&ret, &int),
@@ -434,7 +445,7 @@ fn runtime_graph_enum_ops_settle_to_int() {
 
 #[test]
 fn enum_reduce_operator_refs_settle_through_kernel_specs() {
-    let module = linked(include_str!("fixtures/enum_reduce_operator_ref.fz"));
+    let module = linked_fixture(include_str!("fixtures/enum_reduce_operator_ref.fz"));
     let mut t = crate::types::new();
     let int = t.int();
     let expected = t.tuple(&[int.clone(), int]);
@@ -450,7 +461,7 @@ fn enum_reduce_operator_refs_settle_through_kernel_specs() {
 
 #[test]
 fn enum_reduce_erased_list_operator_ref_preserves_concrete_caller_witness() {
-    let module = linked(include_str!("fixtures/enum_reduce_erased_list_operator_ref.fz"));
+    let module = linked_fixture(include_str!("fixtures/enum_reduce_erased_list_operator_ref.fz"));
     let mut t = crate::types::new();
     let int = t.int();
     let non_empty_ints = t.non_empty_list(int.clone());
@@ -501,7 +512,7 @@ fn enum_reduce_erased_list_operator_ref_preserves_concrete_caller_witness() {
 
 #[test]
 fn mixed_enum_take_calls_preserve_list_and_range_activations() {
-    let module = linked(
+    let module = linked_fixture(
         r#"
 fn main() do
   xs = [1, 2, 3, 4, 5]
@@ -544,7 +555,7 @@ end
 
 #[test]
 fn receive_clause_body_keeps_typed_capture_and_settles_caller_return() {
-    let module = linked(include_str!("fixtures/receive_cont_capture.fz"));
+    let module = linked_fixture(include_str!("fixtures/receive_cont_capture.fz"));
     let mut t = crate::types::new();
     let int = t.int();
     let any = t.any();
@@ -657,7 +668,7 @@ fn receive_clause_body_keeps_typed_capture_and_settles_caller_return() {
 
 #[test]
 fn linked_runtime_spawn_receive_converges_through_extern_return_contract() {
-    let module = linked(include_str!("fixtures/spawn_receive_capture.fz"));
+    let module = linked_fixture(include_str!("fixtures/spawn_receive_capture.fz"));
     let mut t = crate::types::new();
     let any = t.any();
     let report = infer_report_via_main(&mut t, &module);
@@ -797,7 +808,7 @@ fn linked_runtime_spawn_receive_converges_through_extern_return_contract() {
 
 #[test]
 fn linked_runtime_plain_spawn_surfaces_callable_boundary_to_child() {
-    let module = linked(include_str!("fixtures/spawn_plain.fz"));
+    let module = linked_fixture(include_str!("fixtures/spawn_plain.fz"));
     let mut t = crate::types::new();
     let nil = t.nil();
     let report = infer_report_via_main(&mut t, &module);
@@ -915,7 +926,7 @@ fn string_literal_argument_types_as_str_t() {
 
 #[test]
 fn enum_reduce_runtime_graph_settles() {
-    let module = linked(include_str!("fixtures/enum_reduce.fz"));
+    let module = linked_fixture(include_str!("fixtures/enum_reduce.fz"));
     let mut t = crate::types::new();
     let int = t.int();
 
@@ -939,7 +950,7 @@ fn enum_reduce_runtime_graph_settles() {
 
 #[test]
 fn outcome_exposes_activation_facts_as_production_data() {
-    let module = linked(include_str!("fixtures/enum_reduce.fz"));
+    let module = linked_fixture(include_str!("fixtures/enum_reduce.fz"));
     let mut t = crate::types::new();
     let int = t.int();
     let report = infer_report_via_main(&mut t, &module);
@@ -1060,7 +1071,7 @@ fn outcome_exposes_activation_facts_as_production_data() {
 
 #[test]
 fn invalid_named_reduce_reducer_emits_operator_diagnostic() {
-    let module = linked_unplanned(include_str!("fixtures/enum_reduce_named_ref.fz"));
+    let module = linked_unplanned_fixture(include_str!("fixtures/enum_reduce_named_ref.fz"));
     let mut t = crate::types::new();
     let report = infer_report_via_main(&mut t, &module);
     assert_eq!(report.outcome.status, TypeInferStatus::Invalid);

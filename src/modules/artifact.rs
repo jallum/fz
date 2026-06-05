@@ -16,7 +16,7 @@ use crate::modules::interface::{
 };
 use crate::telemetry::Telemetry;
 #[cfg(test)]
-use crate::telemetry::{Capture, ConfiguredTelemetry, NullTelemetry, Value};
+use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::error::Error;
 use std::fmt::{Display, Formatter};

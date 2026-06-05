@@ -1,37 +1,37 @@
 use super::*;
 use crate::ast::{AfterClause, MatchClause};
 use crate::diag::Span;
-use crate::exec::matcher::{GuardExpr, prepared_key_name};
-use crate::fz_ir::{CallsiteIdent, FnCategory, ReceiveAfter, ReceiveClause, Term, Var};
-use crate::pattern_matrix::{
-    BodyId, PatternMatrix, Row, collect_guard_capture_names, compile_pattern_matrix_with_guard_resolver,
+use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, SourcePatternRows, collect_guard_capture_names};
+use crate::dispatch_matrix::pattern::{
+    PatternGuardExpr, pattern_dispatch_from_source_with_guard_resolver, prepared_key_name,
 };
+use crate::fz_ir::{CallsiteIdent, FnCategory, ReceiveAfter, ReceiveClause, Term, Var};
 use crate::types::{Ty, Types};
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
-/// fz-puj.36 (H7) — build a degenerate (N=1) PatternMatrix from receive clauses.
+/// fz-puj.36 (H7) — build a degenerate (N=1) SourcePatternRows from receive clauses.
 ///
-/// The PatternMatrix subject is a single Var representing the candidate message.
-/// Each clause produces one Row with `patterns: vec![clause.pattern]`,
+/// The SourcePatternRows subject is a single Var representing the candidate message.
+/// Each clause produces one PatternRow with `patterns: vec![clause.pattern]`,
 /// `preconditions: []`, `guard: clause.guard`, and a caller-supplied
 /// `body_id`. Captures/pinned threading is unchanged from receive's
-/// existing wiring — those are not PatternMatrix concerns.
+/// existing wiring — those are not SourcePatternRows concerns.
 ///
-/// The PatternMatrix itself accepts arbitrary patterns; lowering turns it into a
-/// cached AST-free Matcher before any receive probe executes.
-pub(crate) fn build_receive_pattern_matrix(msg_var: Var, clauses: &[MatchClause]) -> PatternMatrix {
-    PatternMatrix {
+/// The SourcePatternRows itself accepts arbitrary patterns; lowering routes it
+/// through DispatchMatrix and caches the graph-derived AST-free dispatch plan
+/// before any receive probe executes.
+pub(crate) fn build_receive_pattern_rows(msg_var: Var, clauses: &[MatchClause]) -> SourcePatternRows {
+    SourcePatternRows {
         subjects: vec![msg_var],
         rows: clauses
             .iter()
             .enumerate()
-            .map(|(i, c)| Row {
+            .map(|(i, c)| PatternRow {
                 patterns: vec![c.pattern.clone()],
                 preconditions: Vec::new(),
-                bindings: Vec::new(),
                 guard: c.guard.clone(),
-                body_id: i as BodyId,
+                body_id: i as PatternBodyId,
             })
             .collect(),
     }
@@ -161,28 +161,29 @@ pub(crate) fn lower_receive<T: Types<Ty = Ty>>(
         body: cont.id,
         span: a.span,
     });
-    let receive_pattern_matrix = build_receive_pattern_matrix(Var(0), clauses);
+    let receive_source_patterns = build_receive_pattern_rows(Var(0), clauses);
     let mut guard_stack = Vec::new();
-    let mut guard_resolver = |name: &str, arity: usize, args: Vec<GuardExpr>| {
+    let mut guard_resolver = |name: &str, arity: usize, args: Vec<PatternGuardExpr>| {
         lower_guard_helper_call_to_dispatch(ctx, name, arity, args, &mut guard_stack)
     };
-    let receive_matcher = compile_pattern_matrix_with_guard_resolver(receive_pattern_matrix, &mut guard_resolver)
-        .map_err(|err| LowerError::Unsupported {
-            span: rx_span,
-            what: format!("receive matcher cannot be lowered: {:?}", err),
-        })
-        .map(Arc::new)?;
-    for (index, key) in receive_matcher.prepared_keys.iter().enumerate() {
+    let receive_dispatch =
+        pattern_dispatch_from_source_with_guard_resolver(receive_source_patterns, &mut guard_resolver)
+            .map_err(|err| LowerError::Unsupported {
+                span: rx_span,
+                what: format!("receive dispatch cannot be lowered: {:?}", err),
+            })
+            .map(Arc::new)?;
+    for (index, key) in receive_dispatch.prepared_keys.iter().enumerate() {
         let name = prepared_key_name(index);
         if !seen_pinned.insert(name.clone()) {
             continue;
         }
-        let v = materialize_prepared_matcher_key(ctx, key)?;
+        let v = materialize_prepared_dispatch_key(ctx, key)?;
         pinned.push((name, v));
     }
-    let mut matcher_pinned = Vec::new();
-    collect_matcher_pinned_names_recursive(&receive_matcher, &mut matcher_pinned);
-    for name in matcher_pinned {
+    let mut dispatch_pinned = Vec::new();
+    collect_dispatch_pinned_names_recursive(&receive_dispatch, &mut dispatch_pinned);
+    for name in dispatch_pinned {
         if !seen_pinned.insert(name.clone()) {
             continue;
         }
@@ -198,7 +199,7 @@ pub(crate) fn lower_receive<T: Types<Ty = Ty>>(
         Term::ReceiveMatched {
             ident: CallsiteIdent::from_source(Span::DUMMY),
             clauses: ir_clauses,
-            matcher: receive_matcher,
+            dispatch: receive_dispatch,
             after: ir_after,
             pinned,
             captures: captures_vars,
@@ -224,7 +225,7 @@ pub(crate) fn lower_receive<T: Types<Ty = Ty>>(
                 clause.guard.as_ref().expect("guard cont implies guard expr"),
                 /* is_tail */ true,
             )?;
-            // Guards return their value to the matcher caller (B3 will
+            // Guards return their value to the dispatch caller (B3 will
             // synthesise the dispatch). Use Term::Return so the value
             // appears as the guard fn's result.
             if !ctx.terminated {

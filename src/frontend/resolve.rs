@@ -30,6 +30,7 @@ use crate::frontend::protocols::{
 use crate::modules::identity::{ExportKey, ModuleName, QualifiedName};
 use crate::modules::interface::{ModuleInterface, collect_from_program};
 use crate::modules::runtime_library::{interface, root_type_env};
+use crate::telemetry::Telemetry;
 use crate::type_expr::{
     ModuleTypeEnv, build_module_type_env_for_with_base, builtin_type_env, resolve_spec_decl_positions,
 };
@@ -168,8 +169,12 @@ impl fmt::Display for ResolveError {
 
 impl Error for ResolveError {}
 
-pub fn flatten_modules<T: Types<Ty = Ty>>(t: &mut T, prog: Program) -> Result<Program, ResolveError> {
-    flatten_modules_with_options(t, prog, BTreeMap::new())
+pub fn flatten_modules<T: Types<Ty = Ty>>(
+    t: &mut T,
+    prog: Program,
+    tel: &dyn Telemetry,
+) -> Result<Program, ResolveError> {
+    flatten_modules_with_options(t, prog, BTreeMap::new(), tel)
 }
 
 /// Synthesize a literal `__info__/1` reflection fn for every `defmodule`, so
@@ -275,20 +280,22 @@ pub fn flatten_modules_with_interface_table<T: Types<Ty = Ty>>(
     t: &mut T,
     prog: Program,
     interface_table: InterfaceTable,
+    tel: &dyn Telemetry,
 ) -> Result<Program, ResolveError> {
-    flatten_modules_with_options(t, prog, interface_table)
+    flatten_modules_with_options(t, prog, interface_table, tel)
 }
 
 fn flatten_modules_with_options<T: Types<Ty = Ty>>(
     t: &mut T,
     prog: Program,
     mut interface_table: InterfaceTable,
+    tel: &dyn Telemetry,
 ) -> Result<Program, ResolveError> {
     let prog = inject_module_info(prog);
     collect_module_fns(&prog)?;
     let module_macros = collect_module_macros(&prog);
     let module_interfaces = collect_from_program(&prog);
-    add_requested_runtime_interfaces(&prog, &module_interfaces, &mut interface_table);
+    add_requested_runtime_interfaces(&prog, &module_interfaces, &mut interface_table, tel);
     let external_module_interfaces = interface_table
         .iter()
         .filter(|(name, _)| !module_interfaces.contains_key(*name))
@@ -306,7 +313,7 @@ fn flatten_modules_with_options<T: Types<Ty = Ty>>(
     // prelude, so module specs and aliases can name standard aliases such as
     // keyword/0 and keyword/1.
     let mut module_type_envs: HashMap<String, ModuleTypeEnv> = HashMap::new();
-    let root_types = root_type_env(t);
+    let root_types = root_type_env(t, tel);
     let root_type_env = root_types.env.clone();
     module_type_envs.insert(String::new(), root_type_env.clone());
     let mut opaque_inners: HashMap<String, Ty> = root_types.opaque_inners;
@@ -487,6 +494,7 @@ fn add_requested_runtime_interfaces(
     prog: &Program,
     local_interfaces: &InterfaceTable,
     interface_table: &mut InterfaceTable,
+    tel: &dyn Telemetry,
 ) {
     let mut requested = Vec::new();
     collect_requested_external_modules(prog, &mut requested);
@@ -494,21 +502,21 @@ fn add_requested_runtime_interfaces(
         if local_interfaces.contains_key(&module) || interface_table.contains_key(&module) {
             continue;
         }
-        if let Some(interface) = interface(&module) {
+        if let Some(interface) = interface(&module, tel) {
             enqueue_runtime_interface_dependencies(&interface, &mut requested);
             interface_table.insert(module, interface);
         }
     }
 }
 
-pub(crate) fn add_macro_requested_runtime_interfaces(prog: &mut Program) {
+pub(crate) fn add_macro_requested_runtime_interfaces(prog: &mut Program, tel: &dyn Telemetry) {
     let mut requested = Vec::new();
     collect_requested_external_modules(prog, &mut requested);
     while let Some(module) = requested.pop() {
         if prog.module_interfaces.contains_key(&module) || prog.external_module_interfaces.contains_key(&module) {
             continue;
         }
-        if let Some(interface) = interface(&module) {
+        if let Some(interface) = interface(&module, tel) {
             enqueue_runtime_interface_dependencies(&interface, &mut requested);
             prog.external_module_interfaces.insert(module, interface);
         }

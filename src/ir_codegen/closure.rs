@@ -1,20 +1,10 @@
 use super::*;
-use crate::fz_ir::{BinOp, Const, FnId, Module, Prim, Stmt, Term, UnOp};
-use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
-    self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature, StackSlotData, StackSlotKind,
-    condcodes::{FloatCC, IntCC},
-    types,
+    self, BlockArg, InstBuilder, MemFlags, StackSlotData, StackSlotKind, condcodes::IntCC, types,
 };
-use cranelift_codegen::isa::CallConv;
-use cranelift_codegen::settings::{self, Configurable};
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
+use cranelift_frontend::FunctionBuilder;
+use cranelift_module::FuncId;
 use fz_runtime::any_value::{AnyValueRefPacking, TAG_FWD, TaggedRefArch};
-use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
-use std::collections::HashMap;
-use std::sync::Arc;
 
 /// Allocate and return a halt-cont singleton for `repr` via `fz_get_halt_cont`.
 /// Used when the caller has no cont_param and needs a halt-cont to pass to the

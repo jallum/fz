@@ -4,7 +4,7 @@ use super::*;
 use crate::fz_ir::{BlockId, Var};
 use crate::ir_planner::SpecPlan;
 use crate::types::{Ty, Types};
-use cranelift_codegen::ir::{self, BlockArg, InstBuilder, MemFlags, condcodes::IntCC, types};
+use cranelift_codegen::ir::{self, InstBuilder, MemFlags, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::Module;
 use fz_runtime::any_value::{AnyValue, AnyValueRef, FALSE_ATOM_ID, TRUE_ATOM_ID, ValueKind};

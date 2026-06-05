@@ -16,7 +16,7 @@ use cranelift_codegen::ir::{
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage};
 use fz_runtime::any_value::{AnyValue, FALSE_ATOM_ID, TRUE_ATOM_ID, ValueKind, struct_size_for_payload};
-use fz_runtime::heap::{FieldKind, SHARED_BIN_THRESHOLD_BYTES};
+use fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
 use fz_runtime::ir_runtime::fz_bs_field_spec;
 use std::collections::HashMap;
 

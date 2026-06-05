@@ -4,7 +4,6 @@ use crate::diag::span::FileId;
 use crate::frontend::macros::expand_program;
 use crate::frontend::resolve::flatten_modules;
 use crate::ir_lower::lower_program;
-use crate::telemetry::NullTelemetry;
 
 fn rebuild(src: &str) -> (SourceMap, FileId) {
     let mut sm = SourceMap::new();
@@ -116,23 +115,29 @@ fn color_off_produces_no_escapes() {
 fn run_pipeline_for_fixture(src: &str, id: FileId, sm: &SourceMap, rel: &str) -> String {
     use crate::parser::Parser;
     use crate::parser::lexer::Lexer;
-    let toks = match Lexer::with_file(src, id).tokenize() {
+    let toks = match Lexer::with_file_and_source_name(src, id, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+    {
         Err(e) => return render(&e.to_diagnostic(), sm),
         Ok(t) => t,
     };
-    let prog = match Parser::new(toks).parse_program() {
+    let prog = match Parser::new(toks).parse_program(&crate::telemetry::ConfiguredTelemetry::new()) {
         Err(e) => return render(&e.to_diagnostic(), sm),
         Ok(p) => p,
     };
     let mut ct = crate::types::new();
-    let mut prog = match flatten_modules(&mut ct, prog) {
+    let mut prog = match flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new()) {
         Err(e) => return render(&e.to_diagnostic(), sm),
         Ok(p) => p,
     };
     if let Err(e) = expand_program(&mut prog) {
         return render(&e.to_diagnostic(), sm);
     }
-    if let Err(e) = lower_program(&mut crate::types::new(), &prog, &NullTelemetry) {
+    if let Err(e) = lower_program(
+        &mut crate::types::new(),
+        &prog,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    ) {
         return render(&e.to_diagnostic(), sm);
     }
     panic!("fixture {} completed pipeline successfully — expected an error", rel);

@@ -23,8 +23,9 @@ use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::interface::{ModuleInterface, collect_from_program, fingerprint_digest};
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
+use crate::telemetry::Telemetry;
 #[cfg(test)]
-use crate::telemetry::{Capture, ConfiguredTelemetry, NullTelemetry};
+use crate::telemetry::{Capture, ConfiguredTelemetry};
 use crate::type_expr::{
     BrandInnerTypes, ModuleTypeEnv, OpaqueInnerTypes, build_module_type_env_for_with_base, builtin_brand_inners,
     builtin_opaque_inners, builtin_type_env,
@@ -112,9 +113,9 @@ pub fn prelude_source() -> &'static str {
     RUNTIME_PRELUDE_FZ
 }
 
-pub fn root_type_env<T: Types<Ty = Ty>>(t: &mut T) -> RuntimeRootTypes {
-    let toks = Lexer::new(prelude_source())
-        .tokenize()
+pub fn root_type_env<T: Types<Ty = Ty>>(t: &mut T, tel: &dyn Telemetry) -> RuntimeRootTypes {
+    let toks = Lexer::with_source_name(prelude_source(), "runtime:runtime.fz")
+        .tokenize(tel)
         .expect("runtime.fz lex error (bug in built-in prelude)");
     let (_items, attrs) = Parser::new(toks)
         .parse_prelude()
@@ -151,13 +152,13 @@ pub fn is_core_prelude_module(module: &ModuleName) -> bool {
         .any(|source| source.role == RuntimeModuleRole::CorePrelude && source.name == module.dotted())
 }
 
-pub fn prelude_required_modules() -> Vec<ModuleName> {
+pub fn prelude_required_modules(tel: &dyn Telemetry) -> Vec<ModuleName> {
     let core_modules = RUNTIME_MODULE_SOURCES
         .iter()
         .filter(|source| source.role == RuntimeModuleRole::CorePrelude)
         .map(|source| ModuleName::from_segments(vec![source.name.to_string()]))
         .collect::<BTreeSet<_>>();
-    primitive_prelude_program()
+    primitive_prelude_program(tel)
         .items
         .iter()
         .filter_map(|item| match &**item {
@@ -167,11 +168,12 @@ pub fn prelude_required_modules() -> Vec<ModuleName> {
         .collect()
 }
 
-pub fn parsed_program() -> Program {
+pub fn parsed_program(tel: &dyn Telemetry) -> Program {
     let mut items = Vec::new();
     for module_source in RUNTIME_MODULE_SOURCES {
-        let toks = Lexer::new(module_source.source)
-            .tokenize()
+        let source_name = runtime_source_name(module_source.name);
+        let toks = Lexer::with_source_name(module_source.source, source_name.clone())
+            .tokenize(tel)
             .unwrap_or_else(|_| panic!("{}.fz lex error (bug in built-in runtime library)", module_source.name));
         let (mut parsed_items, _attrs) = Parser::new(toks).parse_prelude().unwrap_or_else(|err| {
             panic!(
@@ -197,29 +199,30 @@ pub fn parsed_program() -> Program {
 
 #[cfg(test)]
 pub fn interface_table() -> InterfaceTable {
-    interfaces()
+    let tel = ConfiguredTelemetry::new();
+    interfaces(&tel)
 }
 
-pub fn interfaces() -> BTreeMap<ModuleName, ModuleInterface> {
+pub fn interfaces(tel: &dyn Telemetry) -> BTreeMap<ModuleName, ModuleInterface> {
     RUNTIME_MODULE_SOURCES
         .iter()
         .filter_map(|source| {
             let module = ModuleName::from_segments(vec![source.name.to_string()]);
-            interface(&module).map(|interface| (module, interface))
+            interface(&module, tel).map(|interface| (module, interface))
         })
         .collect()
 }
 
-pub fn interface(module: &ModuleName) -> Option<ModuleInterface> {
-    artifact(module).map(|artifact| artifact.interface)
+pub fn interface(module: &ModuleName, tel: &dyn Telemetry) -> Option<ModuleInterface> {
+    artifact(module, tel).map(|artifact| artifact.interface)
 }
 
-pub fn implementation_dependencies(module: &ModuleName) -> Vec<ModuleName> {
+pub fn implementation_dependencies(module: &ModuleName, tel: &dyn Telemetry) -> Vec<ModuleName> {
     let Some(source) = runtime_module_source(module) else {
         return Vec::new();
     };
-    let toks = Lexer::new(source)
-        .tokenize()
+    let toks = Lexer::with_source_name(source, runtime_source_name(module.dotted()))
+        .tokenize(tel)
         .unwrap_or_else(|_| panic!("{}.fz lex error (bug in built-in runtime library)", module));
     let (items, _attrs) = Parser::new(toks).parse_prelude().unwrap_or_else(|err| {
         panic!(
@@ -233,12 +236,12 @@ pub fn implementation_dependencies(module: &ModuleName) -> Vec<ModuleName> {
     deps.into_iter().collect()
 }
 
-pub fn artifact(module: &ModuleName) -> Option<RuntimeLibraryModuleArtifact> {
-    artifacts().into_iter().find(|artifact| artifact.module == *module)
+pub fn artifact(module: &ModuleName, tel: &dyn Telemetry) -> Option<RuntimeLibraryModuleArtifact> {
+    artifacts(tel).into_iter().find(|artifact| artifact.module == *module)
 }
 
-pub fn artifacts() -> Vec<RuntimeLibraryModuleArtifact> {
-    let prog = parsed_program();
+pub fn artifacts(tel: &dyn Telemetry) -> Vec<RuntimeLibraryModuleArtifact> {
+    let prog = parsed_program(tel);
     let interfaces = collect_from_program(&prog);
     let mut out = Vec::new();
     for item in &prog.items {
@@ -549,9 +552,9 @@ fn runtime_module_source(name: &ModuleName) -> Option<&'static str> {
         .map(|source| source.source)
 }
 
-pub fn primitive_prelude_program() -> Program {
-    let toks = Lexer::new(RUNTIME_PRELUDE_FZ)
-        .tokenize()
+pub fn primitive_prelude_program(tel: &dyn Telemetry) -> Program {
+    let toks = Lexer::with_source_name(RUNTIME_PRELUDE_FZ, "runtime:runtime.fz")
+        .tokenize(tel)
         .expect("runtime.fz lex error (bug in built-in prelude)");
     let (items, _attrs) = Parser::new(toks)
         .parse_prelude()
@@ -570,11 +573,21 @@ pub fn primitive_prelude_program() -> Program {
     }
 }
 
+fn runtime_source_name(name: impl AsRef<str>) -> String {
+    let name = name.as_ref();
+    if name.ends_with(".fz") {
+        format!("runtime:{name}")
+    } else {
+        format!("runtime:{name}.fz")
+    }
+}
+
 #[cfg(test)]
 pub fn primitive_contract_names() -> Vec<String> {
     let mut names = Vec::new();
-    collect_primitive_contract_names(&primitive_prelude_program().items, &mut names);
-    for module in parsed_program().items {
+    let tel = ConfiguredTelemetry::new();
+    collect_primitive_contract_names(&primitive_prelude_program(&tel).items, &mut names);
+    for module in parsed_program(&tel).items {
         if let Item::Module(module) = &*module {
             collect_primitive_contract_names(&module.items, &mut names);
         }

@@ -187,7 +187,7 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             "no_dead_const_operands_after_singleton_fold",
             no_dead_const_operands_after_singleton_fold,
         ),
-        ("pattern_matrix_oracle_goldens", pattern_matrix_oracle_goldens),
+        ("source_pattern_oracle_goldens", source_pattern_oracle_goldens),
         (
             "matcher_perf_internal_matcher_repair_baseline",
             matcher_perf_internal_matcher_repair_baseline,
@@ -316,13 +316,12 @@ fn static_tests() -> Vec<(&'static str, fn())> {
     ]
 }
 
-/// fz-puj.29 — freeze the current `PatternMatrix` behavior as a
-/// concrete oracle before replacing it with shared matcher lowering.
+/// fz-puj.29 — freeze source-pattern dispatch behavior as a concrete oracle.
 ///
 /// The fixture goldens named here are deliberately high-level: they pin the
 /// observable CFG facts that matter for router parity without coupling the
 /// future replacement to every incidental Var id in every fixture.
-fn pattern_matrix_oracle_goldens() {
+fn source_pattern_oracle_goldens() {
     // fz-puj.52.7 — case/multi-clause/with-else dispatch lowers the
     // matcher graph inline again. The user-facing oracle properties —
     // wildcard ordering, guard reject continuations, :case_clause /
@@ -1115,7 +1114,7 @@ fn check_failure(fixture: &Path, header: &Header, kind: &str, path: &str, bless:
 
 fn check_diagnostic_telemetry(fixture: &Path, header: &Header, path: &str, expected_code: &str) -> CheckOutcome {
     let telemetry_path = temp_telemetry_path(fixture, "diagnostic");
-    let out = match run_path_with_telemetry(fixture, header, path, &telemetry_path) {
+    let out = match run_path_logged(fixture, header, path, &telemetry_path) {
         Ok(out) => out,
         Err(e) => return CheckOutcome::Fail(e),
     };
@@ -1143,12 +1142,7 @@ fn check_diagnostic_telemetry(fixture: &Path, header: &Header, path: &str, expec
     ))
 }
 
-fn run_path_with_telemetry(
-    fixture: &Path,
-    header: &Header,
-    path: &str,
-    telemetry_path: &Path,
-) -> Result<Output, String> {
+fn run_path_logged(fixture: &Path, header: &Header, path: &str, telemetry_path: &Path) -> Result<Output, String> {
     if path == "aot" {
         let stem = fixture.file_name().and_then(|s| s.to_str()).unwrap_or("fz_fixture");
         let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -2098,6 +2092,10 @@ fn parse_json_u64_field(line: &str, key: &str) -> Option<usize> {
     digits.parse().ok()
 }
 
+fn is_committed_execution_plan_event(line: &str) -> bool {
+    line.contains("\"role\":\"linked_execution_graph\"") || line.contains("\"role\":\"lto_linked_execution_graph\"")
+}
+
 #[derive(Default)]
 struct CodegenStats {
     function_count: usize,
@@ -2160,13 +2158,11 @@ fn dump_telemetry_stats(fixture: &Path) -> DumpTelemetryStats {
             });
         }
         if line.contains("\"name\":[\"fz\",\"planner\",\"planned\"]") {
-            // The budget metrics track the committed plan. dump runs the
-            // frontend plan plus the codegen pipeline; both are authoritative
-            // (fz-hfc removed the intermediate re-derivations), and the parser
-            // keys the spec-shape metrics on the role label so the captured
-            // plan is the one codegen commits to, not an order accident.
+            // Budget metrics track the committed execution graph. Frontend
+            // check/rewrite plans are visible planner phases, but codegen
+            // consumes the linked execution graph plan.
             stats.planner.event_count += 1;
-            if !line.contains("\"role\":\"authoritative\"") {
+            if !is_committed_execution_plan_event(line) {
                 continue;
             }
             stats.planner.spec_count = parse_json_u64_field(line, "spec_count")
@@ -2230,7 +2226,7 @@ fn dump_telemetry_stats(fixture: &Path) -> DumpTelemetryStats {
     );
     assert!(
         stats.planner.spec_count > 0,
-        "{} telemetry missing fz.planner.planned event",
+        "{} telemetry missing committed fz.planner.planned event",
         fixture.display()
     );
     assert!(

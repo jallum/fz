@@ -33,9 +33,9 @@ use crate::ast::{Attribute, Expr, FnDef, Item, Program, Spanned};
 use crate::diag::Span;
 #[cfg(test)]
 use crate::diag::{codes, emit_through};
-use crate::exec::matcher::SubjectRef;
 #[cfg(test)]
-use crate::exec::matcher::{GuardExpr, Matcher, MatcherConst, MatcherNode};
+use crate::dispatch_matrix::pattern::PatternBodyId;
+use crate::dispatch_matrix::pattern::PatternSubjectRef;
 #[cfg(test)]
 use crate::exec::runtime::{DbgCapture, Runtime};
 use crate::frontend::protocols::{
@@ -48,27 +48,25 @@ use crate::fz_ir::{
     BlockId, ContinuationProvenance, ContinuationProvenanceKind, ExternDecl, ExternId, ExternTy, FnCategory, FnId,
     FnIr, Module, Prim, SourceInfo, Stmt, Term, Var,
 };
-use crate::ir_capture_norm::normalize_continuation_captures_with_telemetry;
+use crate::ir_capture_norm::normalize_continuation_captures;
 #[cfg(test)]
 use crate::ir_codegen::compile_planned;
 #[cfg(test)]
-use crate::ir_planner::{collect_diagnostics, plan_module};
+use crate::ir_planner::{collect_diagnostics, plan_module_with_role};
 use crate::modules::identity::ModuleName;
 use crate::modules::runtime_library::{
     core_prelude_module_sources, interface, prelude_source, root_type_env_from_attrs,
 };
 use crate::parser::Parser;
 use crate::parser::lexer::{Lexer, Tok};
-#[cfg(test)]
-use crate::pattern_matrix::BodyId;
 use crate::specs::{
     StructuralCorrespondenceGroup, StructuralOccurrence, StructuralPathStep, spec_set_correspondence_groups,
 };
 use crate::telemetry::Telemetry;
 #[cfg(test)]
-use crate::telemetry::{Capture, ConfiguredTelemetry, NullTelemetry, Value, bus};
+use crate::telemetry::{Capture, ConfiguredTelemetry, Value, bus};
 #[cfg(test)]
-use crate::test_support::linked_runtime_graph_with_telemetry;
+use crate::test_support::linked_runtime_graph;
 use crate::type_expr::{ModuleTypeEnv, parse_type_expr, resolve_spec_decls};
 use crate::types::{Ty, TypeVarId, Types, check_brand_mint_visibility};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -86,8 +84,8 @@ mod error;
 mod expr;
 mod extern_table;
 mod lambda;
-mod matcher;
 mod param_guards;
+mod pattern_dispatch;
 mod receive;
 
 // `LowerError` is the module's only public type: it is the coarse error in the
@@ -107,13 +105,13 @@ use ctx::LowerCtx;
 use expr::{bind_param_topname, lower_expr, lower_fn, lower_pattern_bind};
 use extern_table::{ExternTable, extern_symbol_from_name, extern_ty_from_name};
 use lambda::{collect_pattern_bound_names, collect_pattern_pinned_names, lower_lambda};
-use matcher::{
-    MatchedBinding, collect_matcher_pinned_names_recursive, lower_guard_helper_call_to_dispatch,
-    lower_pattern_matrix_to_current_fn, materialize_prepared_matcher_key,
-};
 use param_guards::emit_param_type_guards;
+use pattern_dispatch::{
+    MatchedBinding, collect_dispatch_pinned_names_recursive, lower_guard_helper_call_to_dispatch,
+    lower_source_patterns_to_current_fn, materialize_prepared_dispatch_key,
+};
 #[cfg(test)]
-use receive::build_receive_pattern_matrix;
+use receive::build_receive_pattern_rows;
 use receive::lower_receive;
 
 pub(crate) const REPL_ENTRY_PREFIX: &str = "__repl_eval_";
@@ -121,14 +119,17 @@ pub(crate) const REPL_ENTRY_PREFIX: &str = "__repl_eval_";
 /// Return the prelude as a flat `Program` whose `module_type_envs[""]`,
 /// `opaque_inners`, and `brand_inners` include compiler-known runtime
 /// types plus any root declarations still present in `runtime.fz`.
-fn parse_runtime_prelude<T: Types<Ty = Ty>>(t: &mut T) -> (Program, HashMap<(String, usize), String>) {
+fn parse_runtime_prelude<T: Types<Ty = Ty>>(
+    t: &mut T,
+    tel: &dyn Telemetry,
+) -> (Program, HashMap<(String, usize), String>) {
     let runtime_fz = prelude_source();
-    let (items, attrs) = parse_runtime_source_items(runtime_fz, "runtime.fz");
+    let (items, attrs) = parse_runtime_source_items(runtime_fz, "runtime.fz", tel);
     let root_types = root_type_env_from_attrs(t, &attrs);
-    let prelude_imports = collect_runtime_prelude_imports(&items);
+    let prelude_imports = collect_runtime_prelude_imports(&items, tel);
     let mut items = items;
     for (name, source) in core_prelude_module_sources() {
-        let (mut module_items, _module_attrs) = parse_runtime_source_items(source, name);
+        let (mut module_items, _module_attrs) = parse_runtime_source_items(source, name, tel);
         items.append(&mut module_items);
     }
     let staged = Program {
@@ -143,7 +144,7 @@ fn parse_runtime_prelude<T: Types<Ty = Ty>>(t: &mut T) -> (Program, HashMap<(Str
         structs: Default::default(),
         struct_field_types: Default::default(),
     };
-    let mut flat = flatten_modules(t, staged).expect("runtime.fz module flatten error (bug in built-in prelude)");
+    let mut flat = flatten_modules(t, staged, tel).expect("runtime.fz module flatten error (bug in built-in prelude)");
     // Merge compiler-known runtime types and any root declarations into the
     // flattened prelude program.
     flat.module_type_envs
@@ -155,16 +156,24 @@ fn parse_runtime_prelude<T: Types<Ty = Ty>>(t: &mut T) -> (Program, HashMap<(Str
     (flat, prelude_imports)
 }
 
-fn parse_runtime_source_items(src: &str, label: &str) -> (Vec<Rc<Item>>, Vec<Attribute>) {
-    let toks = Lexer::new(src)
-        .tokenize()
+fn parse_runtime_source_items(src: &str, label: &str, tel: &dyn Telemetry) -> (Vec<Rc<Item>>, Vec<Attribute>) {
+    let toks = Lexer::with_source_name(src, runtime_source_name(label))
+        .tokenize(tel)
         .unwrap_or_else(|_| panic!("{label} lex error (bug in built-in prelude)"));
     Parser::new(toks)
         .parse_prelude()
         .unwrap_or_else(|_| panic!("{label} parse error (bug in built-in prelude)"))
 }
 
-fn collect_runtime_prelude_imports(items: &[Rc<Item>]) -> HashMap<(String, usize), String> {
+fn runtime_source_name(label: &str) -> String {
+    if label.ends_with(".fz") {
+        format!("runtime:{label}")
+    } else {
+        format!("runtime:{label}.fz")
+    }
+}
+
+fn collect_runtime_prelude_imports(items: &[Rc<Item>], tel: &dyn Telemetry) -> HashMap<(String, usize), String> {
     let mut out = HashMap::new();
     for item in items {
         match item.as_ref() {
@@ -173,7 +182,7 @@ fn collect_runtime_prelude_imports(items: &[Rc<Item>]) -> HashMap<(String, usize
                 only,
                 except,
                 span,
-            } => collect_runtime_prelude_import(&mut out, path, only.as_deref(), except.as_deref(), *span),
+            } => collect_runtime_prelude_import(&mut out, path, only.as_deref(), except.as_deref(), *span, tel),
             Item::Alias { .. } => {
                 panic!("runtime.fz prelude aliases are not supported; use import")
             }
@@ -217,9 +226,10 @@ fn collect_runtime_prelude_import(
     only: Option<&[(String, usize)]>,
     except: Option<&[(String, usize)]>,
     span: Span,
+    tel: &dyn Telemetry,
 ) {
-    let interface =
-        interface(module).unwrap_or_else(|| panic!("runtime.fz imports unknown built-in runtime module `{}`", module));
+    let interface = interface(module, tel)
+        .unwrap_or_else(|| panic!("runtime.fz imports unknown built-in runtime module `{}`", module));
     let mut exports = interface
         .exports
         .iter()
@@ -512,9 +522,9 @@ pub(crate) fn compute_current_function_correspondence(
             .collect()
     }
 
-    fn project_path_through_matcher_subject(
+    fn project_path_through_dispatch_subject(
         path: &[StructuralPathStep],
-        subject: &SubjectRef,
+        subject: &PatternSubjectRef,
     ) -> Option<Vec<StructuralPathStep>> {
         fn strip_after_union_prefix(
             path: &[StructuralPathStep],
@@ -528,32 +538,32 @@ pub(crate) fn compute_current_function_correspondence(
         }
 
         match subject {
-            SubjectRef::Input(_) => Some(path.to_vec()),
-            SubjectRef::TupleField { tuple, index } => {
-                let inner = project_path_through_matcher_subject(path, tuple)?;
+            PatternSubjectRef::Input(_) => Some(path.to_vec()),
+            PatternSubjectRef::TupleField { tuple, index } => {
+                let inner = project_path_through_dispatch_subject(path, tuple)?;
                 strip_after_union_prefix(&inner, StructuralPathStep::TupleElem(*index as usize))
             }
-            SubjectRef::ListHead(list) => {
-                let inner = project_path_through_matcher_subject(path, list)?;
+            PatternSubjectRef::ListHead(list) => {
+                let inner = project_path_through_dispatch_subject(path, list)?;
                 strip_after_union_prefix(&inner, StructuralPathStep::ListElem)
             }
-            SubjectRef::ListTail(list) => project_path_through_matcher_subject(path, list),
-            SubjectRef::MapValue { .. } | SubjectRef::BitstringField { .. } => None,
+            PatternSubjectRef::ListTail(list) => project_path_through_dispatch_subject(path, list),
+            PatternSubjectRef::MapValue { .. } | PatternSubjectRef::BitstringField { .. } => None,
         }
     }
 
-    fn project_matcher_binding_groups(
+    fn project_dispatch_binding_groups(
         provenance: &ContinuationProvenance,
-        bindings: &[(Var, SubjectRef)],
+        bindings: &[(Var, PatternSubjectRef)],
         groups: &[StructuralCorrespondenceGroup],
     ) -> Vec<BTreeSet<StructuralOccurrence>> {
-        fn binding_input_id(source: &SubjectRef) -> Option<u32> {
+        fn binding_input_id(source: &PatternSubjectRef) -> Option<u32> {
             match source {
-                SubjectRef::Input(input_id) => Some(input_id.0),
-                SubjectRef::TupleField { tuple, .. } | SubjectRef::ListHead(tuple) | SubjectRef::ListTail(tuple) => {
-                    binding_input_id(tuple)
-                }
-                SubjectRef::MapValue { .. } | SubjectRef::BitstringField { .. } => None,
+                PatternSubjectRef::Input(input_id) => Some(*input_id),
+                PatternSubjectRef::TupleField { tuple, .. }
+                | PatternSubjectRef::ListHead(tuple)
+                | PatternSubjectRef::ListTail(tuple) => binding_input_id(tuple),
+                PatternSubjectRef::MapValue { .. } | PatternSubjectRef::BitstringField { .. } => None,
             }
         }
 
@@ -575,7 +585,7 @@ pub(crate) fn compute_current_function_correspondence(
                                 else {
                                     continue;
                                 };
-                                let Some(projected_path) = project_path_through_matcher_subject(path, source) else {
+                                let Some(projected_path) = project_path_through_dispatch_subject(path, source) else {
                                     continue;
                                 };
                                 out.insert(StructuralOccurrence::Param {
@@ -632,9 +642,9 @@ pub(crate) fn compute_current_function_correspondence(
                         &caller_groups,
                     ));
                 }
-                ContinuationProvenanceKind::MatcherBody { bindings } => {
+                ContinuationProvenanceKind::DispatchBody { bindings } => {
                     sets.extend(rebase_caller_groups(provenance, &caller_params, &caller_groups, true));
-                    sets.extend(project_matcher_binding_groups(provenance, bindings, &caller_groups));
+                    sets.extend(project_dispatch_binding_groups(provenance, bindings, &caller_groups));
                 }
             }
 
@@ -651,9 +661,9 @@ pub(crate) fn compute_current_function_correspondence(
 /// Lower a resolved `Program` to its fz-IR `Module`.
 ///
 /// The single public entry. Telemetry is threaded unconditionally so tests and
-/// operators observe the same lowering surface; pass `NullTelemetry` to silence
-/// it. The atom table built during lowering is folded into `module.atom_names`,
-/// so the `Module` is the complete result — there is no second return value.
+/// operators observe the same lowering surface. The atom table built during
+/// lowering is folded into `module.atom_names`, so the `Module` is the complete
+/// result — there is no second return value.
 pub fn lower_program<T: Types<Ty = Ty>>(t: &mut T, prog: &Program, tel: &dyn Telemetry) -> Result<Module, LowerError> {
     let mut ctx = LowerCtx::new();
     ctx.struct_schemas.extend(
@@ -668,7 +678,7 @@ pub fn lower_program<T: Types<Ty = Ty>>(t: &mut T, prog: &Program, tel: &dyn Tel
     // Prepend the built-in runtime prelude. `runtime.fz` contributes root
     // type aliases and imports; core prelude module sources (currently
     // Kernel) contribute the implementations those imports expose.
-    let (prelude, prelude_imports) = parse_runtime_prelude(t);
+    let (prelude, prelude_imports) = parse_runtime_prelude(t, tel);
     ctx.prelude_imports = prelude_imports;
     ctx.struct_schemas.extend(
         prelude
@@ -695,7 +705,7 @@ pub fn lower_program<T: Types<Ty = Ty>>(t: &mut T, prog: &Program, tel: &dyn Tel
         .collect();
 
     // Snapshot user FnDefs (non-extern, non-prelude) by (name, arity) for
-    // guard helpers. Receive guards lower helper calls through Matcher
+    // guard helpers. Receive guards lower helper calls through DispatchMatrix
     // dispatch; non-receive dispatch still uses the AST fallback until
     // the general matcher fallback is removed.
     for item in all_items.iter().skip(runtime_item_count) {
@@ -938,7 +948,7 @@ pub fn lower_program<T: Types<Ty = Ty>>(t: &mut T, prog: &Program, tel: &dyn Tel
     // and their Brand match arms become `unreachable!()` rather than
     // silent identity-fallbacks.
     erase_brands(&mut module);
-    normalize_continuation_captures_with_telemetry(&mut module, tel);
+    normalize_continuation_captures(&mut module, tel);
     // fz-uwq.1 — verify the unique-cont invariant the post-type pipeline
     // depends on. See `debug_assert_unique_conts` for the contract.
     debug_assert_unique_conts(&module);

@@ -9,18 +9,18 @@ use self::resolve::InterfaceTable;
 use crate::ast::{Expr, FnClause, FnDef, Item, Pattern, Program, Spanned, TypeExprBody};
 use crate::diag::codes;
 use crate::diag::{Diagnostic, Diagnostics, SourceMap, Span};
+use crate::dispatch_matrix::pattern::KnownSubjectDomain;
 use crate::fz_ir::{CallsiteId, EmitSlot, FnId, Module, rewrite_external_callsite_for_link};
 use crate::ir_extern_marshal::resolve_module_types;
 use crate::ir_lower::{lower_program, repl_output_frame_names};
 use crate::ir_planner::fn_types::CallEdgeTarget;
-use crate::ir_planner::{ModulePlan, plan_module, rewrite_closed_union_protocol_dispatch};
+use crate::ir_planner::{ModulePlan, plan_module_with_role, rewrite_closed_union_protocol_dispatch};
 use crate::measurements;
 use crate::metadata;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
-use crate::pattern_matrix::SubjectDomain;
 use crate::telemetry::value::opaque;
-use crate::telemetry::{NullTelemetry, Telemetry, next_compile_nonce};
+use crate::telemetry::{Telemetry, next_compile_nonce};
 use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Ty, Types};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -78,7 +78,7 @@ fn fn_subject_domains<T: Types<Ty = Ty>>(
     t: &mut T,
     module: &Module,
     module_plan: &ModulePlan,
-) -> HashMap<(String, usize), Vec<SubjectDomain>> {
+) -> HashMap<(String, usize), Vec<KnownSubjectDomain>> {
     let any = t.any();
     let list_any = t.list(any);
     let mut by_fn: HashMap<(String, usize), Vec<bool>> = HashMap::new();
@@ -107,9 +107,9 @@ fn fn_subject_domains<T: Types<Ty = Ty>>(
                     .into_iter()
                     .map(|is_list| {
                         if is_list {
-                            SubjectDomain::List
+                            KnownSubjectDomain::List
                         } else {
-                            SubjectDomain::Any
+                            KnownSubjectDomain::Any
                         }
                     })
                     .collect(),
@@ -122,7 +122,7 @@ pub fn check_frontend<T>(t: &mut T, prog: &Program, module: &Module, tel: &dyn T
 where
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 {
-    let mut mt = plan_module(t, module, tel);
+    let mut mt = plan_module_with_role(t, module, tel, "frontend_check");
     let mut diags = Diagnostics::from_vec(spec_check::validate_specs(t, prog, module, &mt));
     diags.extend(check_patterns(t, prog, module, &mt));
     diags.extend(Diagnostics::from_vec(resolve_module_types(t, module, &mut mt)));
@@ -137,12 +137,6 @@ where
         },
     );
     (diags, mt)
-}
-
-#[cfg(test)]
-pub fn compile_source(src: String, source_name: String) -> FrontendResult {
-    let mut t = crate::types::new();
-    compile_source_with_types(&mut t, src, source_name, &NullTelemetry)
 }
 
 pub fn compile_source_with_types<T>(t: &mut T, src: String, source_name: String, tel: &dyn Telemetry) -> FrontendResult
@@ -174,12 +168,12 @@ where
     );
 
     let mut sm = SourceMap::new();
-    let file_id = sm.add_file(source_name, src.clone());
-    let toks = match Lexer::with_file(&src, file_id).tokenize_with_telemetry(tel) {
+    let file_id = sm.add_file(source_name.clone(), src.clone());
+    let toks = match Lexer::with_file_and_source_name(&src, file_id, source_name).tokenize(tel) {
         Ok(toks) => toks,
         Err(e) => return Err(fail(sm, e.to_diagnostic())),
     };
-    let prog = match Parser::new(toks).parse_program_with_telemetry(tel) {
+    let prog = match Parser::new(toks).parse_program(tel) {
         Ok(prog) => prog,
         Err(e) => return Err(fail(sm, e.to_diagnostic())),
     };
@@ -215,7 +209,7 @@ pub(crate) fn compile_program_with_interface_table<T>(
 where
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 {
-    let mut prog = match resolve::flatten_modules_with_interface_table(t, prog, interface_table) {
+    let mut prog = match resolve::flatten_modules_with_interface_table(t, prog, interface_table, tel) {
         Ok(prog) => prog,
         Err(e) => return Err(fail(sm, e.to_diagnostic())),
     };
@@ -230,7 +224,7 @@ where
     if let Err(e) = macros::expand_program_with_types(t, &mut prog) {
         return Err(fail(sm, e.to_diagnostic()));
     }
-    resolve::add_macro_requested_runtime_interfaces(&mut prog);
+    resolve::add_macro_requested_runtime_interfaces(&mut prog, tel);
     tel.event(
         &["fz", "frontend", "macro_expanded"],
         metadata! {
@@ -251,7 +245,7 @@ where
         },
     );
     let (diagnostics, mut module_plan) = check_frontend(t, &prog, &module, tel);
-    apply_planner_rewrites_to_fixed_point(t, &mut module, &mut module_plan);
+    apply_planner_rewrites_to_fixed_point(t, &mut module, &mut module_plan, tel);
     Ok(FrontendOk {
         sm,
         _prog: prog,
@@ -261,8 +255,12 @@ where
     })
 }
 
-pub(crate) fn apply_planner_rewrites_to_fixed_point<T>(t: &mut T, module: &mut Module, module_plan: &mut ModulePlan)
-where
+pub(crate) fn apply_planner_rewrites_to_fixed_point<T>(
+    t: &mut T,
+    module: &mut Module,
+    module_plan: &mut ModulePlan,
+    tel: &dyn Telemetry,
+) where
     T: Types<Ty = Ty> + ClosureTypes + RenderTypes,
 {
     // Protocol/direct-call rewrites can reveal later continuations. Iterate to
@@ -270,17 +268,15 @@ where
     // rewritten before the interpreter or native backends see the module.
     loop {
         let direct_changed = apply_planned_direct_call_targets(module, module_plan);
-        // Closed-domain protocol switch dispatch. A protocol call whose
-        // receiver is a closed union of implementing targets (`integer |
-        // list(...)`) has no single planned target for direct-call application,
-        // so it would stay a call to the `__protocol__` stub and halt. This
-        // rewrites such callsites into a TypeTest/If cascade of per-target
-        // direct calls, reusing IR that already lowers in every engine.
+        // Protocol union dispatch. A protocol call whose receiver spans
+        // multiple implementing targets has no single direct-call target, so
+        // DispatchMatrix builds a type-region graph and this hook lowers it to
+        // TypeTest/If IR that every engine already supports.
         let switch_changed = rewrite_closed_union_protocol_dispatch(t, module, module_plan);
         if !(direct_changed || switch_changed) {
             break;
         }
-        *module_plan = plan_module(t, module, &NullTelemetry);
+        *module_plan = plan_module_with_role(t, module, tel, "frontend_rewrite");
     }
 }
 

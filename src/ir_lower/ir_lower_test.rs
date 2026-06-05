@@ -1,17 +1,32 @@
 use super::*;
+use crate::dispatch_matrix::DispatchConst;
+use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
 
 fn lower_src(src: &str) -> Module {
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
-    lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower failed")
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
+    lower_program(
+        &mut crate::types::new(),
+        &prog,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("lower failed")
 }
 
 fn lower_flat_src(src: &str) -> (crate::types::DefaultTypes, Module) {
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
     let mut ct = crate::types::new();
-    let prog = flatten_modules(&mut ct, prog).expect("flatten");
-    let module = lower_program(&mut ct, &prog, &NullTelemetry).expect("lower failed");
+    let prog = flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
+    let module = lower_program(&mut ct, &prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("lower failed");
     (ct, module)
 }
 
@@ -19,16 +34,29 @@ fn lower_src_with_capture(src: &str) -> (Module, Capture) {
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
     let module = lower_program(&mut crate::types::new(), &prog, &tel).expect("lower failed");
     (module, cap)
 }
 
 fn lower_src_err(src: &str) -> LowerError {
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
-    lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect_err("expected lower error")
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
+    lower_program(
+        &mut crate::types::new(),
+        &prog,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect_err("expected lower error")
 }
 
 #[test]
@@ -58,13 +86,19 @@ end
 /// correctness rather than just IR shape.
 fn run_and_capture(src: &str) -> String {
     let mut t = crate::types::new();
-    let graph = linked_runtime_graph_with_telemetry(&mut t, src, &NullTelemetry);
+    let graph = linked_runtime_graph(&mut t, src, &crate::telemetry::ConfiguredTelemetry::new());
     let entry = graph.module.fn_by_name("main").expect("no main fn").id;
-    let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
+    let compiled = compile_planned(
+        &mut t,
+        &graph.module,
+        &graph.module_plan,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("compile planned");
     let tel = bus::ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
-    let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel);
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let _ = rt.spawn(entry);
     rt.run_until_idle();
     dbg.lines().join("\n")
@@ -411,7 +445,7 @@ fn lower_persists_matcher_body_continuation_provenance() {
         .get(&continuation.id)
         .expect("matcher-body provenance missing");
     match &provenance.kind {
-        ContinuationProvenanceKind::MatcherBody { bindings } => {
+        ContinuationProvenanceKind::DispatchBody { bindings } => {
             assert_eq!(provenance.capture_param_offset, 0);
             assert_eq!(bindings.len(), 2, "expected head/tail bindings");
         }
@@ -703,8 +737,8 @@ fn unreachable_arm_silenced_on_synthesized_ifs() {
         "end\n",
     ));
     let mut ct = crate::types::new();
-    let mt = plan_module(&mut ct, &m, &NullTelemetry);
-    let diags = collect_diagnostics(&mut ct, &m, &mt, &NullTelemetry);
+    let mt = plan_module_with_role(&mut ct, &m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
+    let diags = collect_diagnostics(&mut ct, &m, &mt, &crate::telemetry::ConfiguredTelemetry::new());
     let unreachable: Vec<_> = diags
         .as_slice()
         .iter()
@@ -724,8 +758,8 @@ fn unreachable_arm_silenced_on_synthesized_ifs() {
 fn dead_binop_diagnostic_observable_via_telemetry() {
     let m = lower_src("fn main() do\n  dbg(1 == :ok)\nend\n");
     let mut ct = crate::types::new();
-    let mt = plan_module(&mut ct, &m, &NullTelemetry);
-    let diags = collect_diagnostics(&mut ct, &m, &mt, &NullTelemetry);
+    let mt = plan_module_with_role(&mut ct, &m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
+    let diags = collect_diagnostics(&mut ct, &m, &mt, &crate::telemetry::ConfiguredTelemetry::new());
 
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
@@ -755,8 +789,8 @@ fn generated_dead_binop_diagnostic_is_not_rendered() {
     let m = mb.build();
 
     let mut ct = crate::types::new();
-    let mt = plan_module(&mut ct, &m, &NullTelemetry);
-    let diags = collect_diagnostics(&mut ct, &m, &mt, &NullTelemetry);
+    let mt = plan_module_with_role(&mut ct, &m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
+    let diags = collect_diagnostics(&mut ct, &m, &mt, &crate::telemetry::ConfiguredTelemetry::new());
 
     assert!(
         !diags.as_slice().iter().any(|d| d.code == codes::TYPE_DEAD_BINOP),
@@ -774,7 +808,7 @@ fn dead_branches_published_for_destructure_and_recursive_list_dispatch() {
     // the synthesized fail edge dead under the one live spec.
     let m = lower_src("fn main() do\n  {a, b} = {1, 2}\n  a + b\nend\n");
     let mut ct = crate::types::new();
-    let mt = plan_module(&mut ct, &m, &NullTelemetry);
+    let mt = plan_module_with_role(&mut ct, &m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
     assert!(
         mt.dead_branches.values().any(|d| matches!(d, DeadBranch::Else)),
         "expected an Else dead branch for {{a,b}} = {{1,2}}; got {:?}",
@@ -789,7 +823,7 @@ fn dead_branches_published_for_destructure_and_recursive_list_dispatch() {
         "fn sum([h | t]), do: h + sum(t)\n",
         "fn main(), do: sum([1, 2, 3])\n",
     ));
-    let mt2 = plan_module(&mut ct, &m2, &NullTelemetry);
+    let mt2 = plan_module_with_role(&mut ct, &m2, &crate::telemetry::ConfiguredTelemetry::new(), "test");
     let sum_fid = m2.fn_by_name("sum").expect("sum exists").id;
     assert!(
         mt2.specs
@@ -850,8 +884,8 @@ fn branch_origin_tagged_per_lowering_path() {
 }
 
 #[test]
-fn multi_clause_dispatch_lowers_matcher_inline() {
-    // fz-puj.52.7 — multi-clause fns lower the Matcher inline
+fn multi_clause_dispatch_lowers_dispatch_graph_inline() {
+    // fz-puj.52.7 — multi-clause fns lower the DispatchGraph inline
     // into the user fn again so dispatch does not become a separate
     // spec-producing matcher fn.
     let m = lower_src("fn fact(0), do: 1\nfn fact(n), do: n * fact(n - 1)");
@@ -1170,8 +1204,8 @@ fn bitstring_expr_lowers() {
 }
 
 #[test]
-fn case_lowers_matcher_inline() {
-    // fz-puj.52.7 — case sites lower the Matcher inline so the
+fn case_lowers_dispatch_graph_inline() {
+    // fz-puj.52.7 — case sites lower the DispatchGraph inline so the
     // planner does not see a case_matcher_N function boundary.
     let m = lower_src(
         r#"
@@ -1231,7 +1265,7 @@ fn map_pattern_uses_map_get_check() {
 }
 
 #[test]
-fn inline_matcher_reuses_tuple_subject_across_test_guard_and_binding() {
+fn inline_dispatch_reuses_tuple_subject_across_test_guard_and_binding() {
     let m = lower_src(
         "fn positive(n), do: n > 0
          fn classify(t) do
@@ -1252,7 +1286,7 @@ fn inline_matcher_reuses_tuple_subject_across_test_guard_and_binding() {
 }
 
 #[test]
-fn inline_matcher_reuses_list_head_across_guard_and_binding() {
+fn inline_dispatch_reuses_list_head_across_guard_and_binding() {
     let m = lower_src(
         "fn positive(n), do: n > 0
          fn classify(xs) do
@@ -1273,7 +1307,7 @@ fn inline_matcher_reuses_list_head_across_guard_and_binding() {
 }
 
 #[test]
-fn inline_matcher_reuses_map_value_across_guard_and_binding() {
+fn inline_dispatch_reuses_map_value_across_guard_and_binding() {
     let m = lower_src(
         "fn positive(n), do: n > 0
          fn classify(m) do
@@ -1313,8 +1347,12 @@ fn quote_returns_post_expansion_node() {
 #[test]
 fn parser_attaches_real_spans_to_expressions() {
     let src = "fn ident(x), do: x + 1";
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
     let Item::Fn(def) = &*prog.items[0] else {
         panic!("expected fn")
     };
@@ -1334,8 +1372,12 @@ fn parser_attaches_real_spans_to_expressions() {
 #[test]
 fn parser_records_fn_name_span() {
     let src = "fn foobar(), do: 0";
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
     let Item::Fn(def) = &*prog.items[0] else {
         panic!("expected fn")
     };
@@ -1351,9 +1393,18 @@ fn parser_records_fn_name_span() {
 #[test]
 fn pattern_var_records_source_name_and_span() {
     let src = "fn double(x), do: x * 2";
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
-    let m = lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
+    let m = lower_program(
+        &mut crate::types::new(),
+        &prog,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("lower");
     let f = m.fn_by_name("double").unwrap();
     let param = f.blocks[0].params[0];
     assert_eq!(m.source.var_name_of(param), Some("x"));
@@ -1368,9 +1419,18 @@ fn pattern_var_records_source_name_and_span() {
 #[test]
 fn fn_span_records_def_position() {
     let src = "fn alpha(), do: 1\nfn beta(), do: 2";
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
-    let m = lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
+    let m = lower_program(
+        &mut crate::types::new(),
+        &prog,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("lower");
     let beta = m.fn_by_name("beta").unwrap();
     let sp = m.source.fn_span_of(beta.id);
     let txt = &src[sp.start as usize..sp.end as usize];
@@ -1385,9 +1445,18 @@ fn fn_span_records_def_position() {
 fn continuation_fn_span_points_at_originating_call() {
     // `callee(x) + 1` forces a non-tail Call -> CPS split.
     let src = "fn callee(y), do: y\nfn caller(x), do: callee(x) + 1";
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
-    let m = lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
+    let m = lower_program(
+        &mut crate::types::new(),
+        &prog,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("lower");
     let caller = m.fn_by_name("caller").unwrap();
     // The continuation fn is the one whose name starts with "k_".
     // Filter out continuations from the runtime.fz prelude (e.g.
@@ -1425,9 +1494,18 @@ fn temp_var_records_span_and_empty_name() {
     // `x + 1` produces a Const(1) Var whose source position is the
     // literal `1` in the body.
     let src = "fn add_one(x), do: x + 1";
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
-    let m = lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
+    let m = lower_program(
+        &mut crate::types::new(),
+        &prog,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("lower");
     let f = m.fn_by_name("add_one").unwrap();
     // Find a Var bound to `Const(Int(1))`.
     let mut const1_var: Option<Var> = None;
@@ -1496,11 +1574,21 @@ fn non_recursive_call_is_not_back_edge() {
 
 #[test]
 fn extern_fn_registers_in_module_externs() {
-    let toks = Lexer::new("extern \"C\" fn fz_nop(any) :: nil\nfn main() do fz_nop(1) end\n")
-        .tokenize()
-        .expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
-    let module = lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower");
+    let toks = Lexer::with_source_name(
+        "extern \"C\" fn fz_nop(any) :: nil\nfn main() do fz_nop(1) end\n",
+        "<test>",
+    )
+    .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+    .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
+    let module = lower_program(
+        &mut crate::types::new(),
+        &prog,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("lower");
     // fz_nop is at the end (user externs follow runtime.fz externs).
     let nop = module
         .externs
@@ -1528,9 +1616,18 @@ extern \"C\" fn fz_open(cstring, integer) :: integer
 extern \"C\" fn fz_write(integer, binary, integer) :: integer
 fn main() do fz_open(\"x\", 0) end
 ";
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
-    let module = lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
+    let module = lower_program(
+        &mut crate::types::new(),
+        &prog,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("lower");
     let open = module
         .externs
         .iter()
@@ -1559,9 +1656,18 @@ fn fn_ref_to_extern_synthesizes_wrapper() {
 extern \"C\" fn libc::close(integer) :: integer
 fn main() do &libc::close/1 end
 ";
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
-    let module = lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
+    let module = lower_program(
+        &mut crate::types::new(),
+        &prog,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("lower");
     let wrap = module
         .fns
         .iter()
@@ -1588,9 +1694,18 @@ fn extern_with_library_prefix_splits_fz_name_from_symbol() {
 extern \"C\" fn libc::open(path :: cstring, integer) :: integer
 fn main() do libc::open(\"x\", 0) end
 ";
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
-    let module = lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
+    let module = lower_program(
+        &mut crate::types::new(),
+        &prog,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("lower");
     let open = module
         .externs
         .iter()
@@ -1694,11 +1809,21 @@ fn main() do libc::open(\"x\") end
 
 #[test]
 fn extern_id_is_stable_and_extern_idx_is_consistent() {
-    let toks = Lexer::new("extern \"C\" fn fz_nop(any) :: nil\nfn main() do fz_nop(1) end\n")
-        .tokenize()
-        .expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
-    let module = lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower");
+    let toks = Lexer::with_source_name(
+        "extern \"C\" fn fz_nop(any) :: nil\nfn main() do fz_nop(1) end\n",
+        "<test>",
+    )
+    .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+    .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
+    let module = lower_program(
+        &mut crate::types::new(),
+        &prog,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("lower");
     // extern_idx must have an entry for every extern.
     assert_eq!(module.extern_idx.len(), module.externs.len());
     // Each extern's id field must resolve via extern_by_id to itself.
@@ -1736,9 +1861,18 @@ fn main() do
   make_adder(1)
 end
 ";
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
-    let module = lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
+    let module = lower_program(
+        &mut crate::types::new(),
+        &prog,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("lower");
 
     let user_names = ["id", "pick", "make_adder", "main"];
     for f in &module.fns {
@@ -1777,11 +1911,15 @@ end
 // longer mints production matcher fns. Receive remains the ABI-driven
 // matcher-fn path.
 
-// ----- fz-puj.36 (H7) — PatternMatrix construction from receive clauses -----
+// ----- fz-puj.36 (H7) — SourcePatternRows construction from receive clauses -----
 
 fn parse_receive_clauses(src: &str) -> Vec<MatchClause> {
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
     fn find_receive(e: &Expr) -> Option<&Vec<MatchClause>> {
         match e {
             Expr::Receive { clauses, .. } => Some(clauses),
@@ -1802,19 +1940,19 @@ fn parse_receive_clauses(src: &str) -> Vec<MatchClause> {
 }
 
 #[test]
-fn build_receive_pattern_matrix_one_clause_shape() {
+fn build_receive_pattern_rows_one_clause_shape() {
     let clauses = parse_receive_clauses("fn rx() do receive do {:ping, _} -> :pong end end");
-    let pattern_matrix = build_receive_pattern_matrix(Var(0), &clauses);
-    assert_eq!(pattern_matrix.subjects, vec![Var(0)]);
-    assert_eq!(pattern_matrix.rows.len(), 1);
-    assert_eq!(pattern_matrix.rows[0].patterns.len(), 1);
-    assert!(pattern_matrix.rows[0].preconditions.is_empty());
-    assert!(pattern_matrix.rows[0].guard.is_none());
-    assert_eq!(pattern_matrix.rows[0].body_id, 0);
+    let source_patterns = build_receive_pattern_rows(Var(0), &clauses);
+    assert_eq!(source_patterns.subjects, vec![Var(0)]);
+    assert_eq!(source_patterns.rows.len(), 1);
+    assert_eq!(source_patterns.rows[0].patterns.len(), 1);
+    assert!(source_patterns.rows[0].preconditions.is_empty());
+    assert!(source_patterns.rows[0].guard.is_none());
+    assert_eq!(source_patterns.rows[0].body_id, 0);
 }
 
 #[test]
-fn build_receive_pattern_matrix_multi_clause_preserves_order_and_ids() {
+fn build_receive_pattern_rows_multi_clause_preserves_order_and_ids() {
     let clauses = parse_receive_clauses(
         "fn rx() do receive do
             :ping -> :pong
@@ -1822,31 +1960,31 @@ fn build_receive_pattern_matrix_multi_clause_preserves_order_and_ids() {
             _ -> :other
         end end",
     );
-    let pattern_matrix = build_receive_pattern_matrix(Var(7), &clauses);
-    assert_eq!(pattern_matrix.subjects, vec![Var(7)]);
-    assert_eq!(pattern_matrix.rows.len(), 3);
-    for (i, row) in pattern_matrix.rows.iter().enumerate() {
-        assert_eq!(row.body_id, i as BodyId);
+    let source_patterns = build_receive_pattern_rows(Var(7), &clauses);
+    assert_eq!(source_patterns.subjects, vec![Var(7)]);
+    assert_eq!(source_patterns.rows.len(), 3);
+    for (i, row) in source_patterns.rows.iter().enumerate() {
+        assert_eq!(row.body_id, i as PatternBodyId);
         assert_eq!(row.patterns.len(), 1);
         assert!(row.preconditions.is_empty());
     }
 }
 
 #[test]
-fn build_receive_pattern_matrix_carries_guard() {
+fn build_receive_pattern_rows_carries_guard() {
     let clauses = parse_receive_clauses(
         "fn rx() do receive do
             n when n > 0 -> :positive
             _ -> :other
         end end",
     );
-    let pattern_matrix = build_receive_pattern_matrix(Var(0), &clauses);
-    assert_eq!(pattern_matrix.rows.len(), 2);
+    let source_patterns = build_receive_pattern_rows(Var(0), &clauses);
+    assert_eq!(source_patterns.rows.len(), 2);
     assert!(
-        pattern_matrix.rows[0].guard.is_some(),
+        source_patterns.rows[0].guard.is_some(),
         "first clause's `when n > 0` guard must appear in row[0].guard"
     );
-    assert!(pattern_matrix.rows[1].guard.is_none());
+    assert!(source_patterns.rows[1].guard.is_none());
 }
 
 #[test]
@@ -1970,9 +2108,9 @@ fn lower_receive_planner_accepts_well_formed() {
     // module. We don't pin the return type — that depends on the
     // body return type which the bodies set to const ints.
     let mut ct = crate::types::new();
-    let mt = plan_module(&mut ct, &m, &NullTelemetry);
+    let mt = plan_module_with_role(&mut ct, &m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
     // No diagnostics from the pure-guard / pure-pattern pass either.
-    let diags = collect_diagnostics(&mut ct, &m, &mt, &NullTelemetry);
+    let diags = collect_diagnostics(&mut ct, &m, &mt, &crate::telemetry::ConfiguredTelemetry::new());
     let impure: Vec<_> = diags
         .as_slice()
         .iter()
@@ -1984,7 +2122,7 @@ fn lower_receive_planner_accepts_well_formed() {
 #[test]
 fn lower_receive_rejects_impure_guard() {
     // The helper body calls an extern-backed runtime fn, so it cannot
-    // lower into the restricted Matcher guard subset.
+    // lower into the restricted dispatch guard subset.
     let src = "fn helper(), do: make_ref()
         fn rx() do
           receive do
@@ -1999,36 +2137,31 @@ fn lower_receive_rejects_impure_guard() {
     );
 }
 
-fn first_receive_matcher(m: &Module) -> Option<&Matcher> {
+fn first_receive_dispatch(m: &Module) -> Option<&PatternDispatchPlan> {
     for f in &m.fns {
         for b in &f.blocks {
-            if let Term::ReceiveMatched { matcher, .. } = &b.terminator {
-                return Some(matcher.as_ref());
+            if let Term::ReceiveMatched { dispatch, .. } = &b.terminator {
+                return Some(dispatch.as_ref());
             }
         }
     }
     None
 }
 
-fn matcher_has_guard_dispatch(matcher: &Matcher) -> bool {
-    fn expr_has_dispatch(expr: &GuardExpr) -> bool {
+fn dispatch_has_guard_dispatch(dispatch: &PatternDispatchPlan) -> bool {
+    fn expr_has_dispatch(expr: &PatternGuardExpr) -> bool {
         match expr {
-            GuardExpr::Dispatch { .. } => true,
-            GuardExpr::Unary { expr, .. } => expr_has_dispatch(expr),
-            GuardExpr::Binary { lhs, rhs, .. } => expr_has_dispatch(lhs) || expr_has_dispatch(rhs),
-            GuardExpr::Const(_) | GuardExpr::Subject(_) | GuardExpr::Pinned(_) => false,
+            PatternGuardExpr::Dispatch { .. } => true,
+            PatternGuardExpr::Unary { expr, .. } => expr_has_dispatch(expr),
+            PatternGuardExpr::Binary { lhs, rhs, .. } => expr_has_dispatch(lhs) || expr_has_dispatch(rhs),
+            PatternGuardExpr::Const(_) | PatternGuardExpr::Subject(_) | PatternGuardExpr::Pinned(_) => false,
         }
     }
-    matcher.nodes.iter().any(|node| {
-        matches!(
-            node,
-            MatcherNode::Guard { expr, .. } if expr_has_dispatch(expr)
-        )
-    })
+    dispatch.guards.iter().any(expr_has_dispatch)
 }
 
 #[test]
-fn receive_guard_with_single_clause_helper_lowers_into_matcher() {
+fn receive_guard_with_single_clause_helper_lowers_into_dispatch() {
     let src = "fn positive(n), do: n > 0
         fn rx() do
           receive do
@@ -2037,14 +2170,11 @@ fn receive_guard_with_single_clause_helper_lowers_into_matcher() {
           end
         end";
     let m = lower_src(src);
-    let matcher = first_receive_matcher(&m).expect("receive matcher");
+    let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
     assert!(
-        matcher
-            .nodes
-            .iter()
-            .any(|node| matches!(node, MatcherNode::Guard { .. })),
-        "expected inlined helper guard in Matcher: {:#?}",
-        matcher
+        !dispatch.guards.is_empty(),
+        "expected inlined helper guard in dispatch: {:#?}",
+        dispatch
     );
 }
 
@@ -2058,16 +2188,16 @@ fn receive_guard_capture_walks_helper_call_args() {
           end
         end";
     let m = lower_src(src);
-    let matcher = first_receive_matcher(&m).expect("receive matcher");
+    let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
     assert!(
-        matcher.pinned.iter().any(|pinned| pinned.name == "limit"),
-        "expected guard call argument capture in Matcher pinned inputs: {:#?}",
-        matcher
+        dispatch.pinned.iter().any(|pinned| pinned.name == "limit"),
+        "expected guard call argument capture in dispatch pinned inputs: {:#?}",
+        dispatch
     );
 }
 
 #[test]
-fn receive_guard_with_transitive_helper_lowers_into_matcher() {
+fn receive_guard_with_transitive_helper_lowers_into_dispatch() {
     let src = "fn positive(n), do: n > 0
         fn wanted(n), do: positive(n)
         fn rx() do
@@ -2077,14 +2207,11 @@ fn receive_guard_with_transitive_helper_lowers_into_matcher() {
           end
         end";
     let m = lower_src(src);
-    let matcher = first_receive_matcher(&m).expect("receive matcher");
+    let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
     assert!(
-        matcher
-            .nodes
-            .iter()
-            .any(|node| matches!(node, MatcherNode::Guard { .. })),
-        "expected transitive helper guard in Matcher: {:#?}",
-        matcher
+        !dispatch.guards.is_empty(),
+        "expected transitive helper guard in dispatch: {:#?}",
+        dispatch
     );
 }
 
@@ -2099,11 +2226,11 @@ fn receive_guard_with_multi_clause_helper_lowers_dispatch() {
           end
         end";
     let m = lower_src(src);
-    let matcher = first_receive_matcher(&m).expect("receive matcher");
+    let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
     assert!(
-        matcher_has_guard_dispatch(matcher),
-        "expected multi-clause helper guard dispatch in Matcher: {:#?}",
-        matcher
+        dispatch_has_guard_dispatch(dispatch),
+        "expected multi-clause helper guard dispatch in receive dispatch: {:#?}",
+        dispatch
     );
 }
 
@@ -2118,16 +2245,16 @@ fn receive_guard_helper_dispatch_handles_destructuring() {
           end
         end";
     let m = lower_src(src);
-    let matcher = first_receive_matcher(&m).expect("receive matcher");
+    let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
     assert!(
-        matcher_has_guard_dispatch(matcher),
+        dispatch_has_guard_dispatch(dispatch),
         "expected nested helper dispatch for destructuring helper: {:#?}",
-        matcher
+        dispatch
     );
 }
 
 #[test]
-fn receive_matcher_prepares_heap_map_keys_outside_matcher() {
+fn receive_dispatch_prepares_heap_map_keys_outside_graph() {
     let src = "fn rx() do
           receive do
             %{\"id\" => value} -> value
@@ -2135,11 +2262,11 @@ fn receive_matcher_prepares_heap_map_keys_outside_matcher() {
           end
         end";
     let m = lower_src(src);
-    let matcher = first_receive_matcher(&m).expect("receive matcher");
-    assert_eq!(matcher.prepared_keys, vec![MatcherConst::Utf8Binary(b"id".to_vec())]);
+    let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
+    assert_eq!(dispatch.prepared_keys, vec![DispatchConst::Utf8Binary(b"id".to_vec())]);
     let s = format!("{}", m);
     assert!(
-        s.contains("pinned=[^__matcher_key_0="),
+        s.contains("pinned=[^__dispatch_key_0="),
         "expected prepared map key to be threaded as receive pinned input, got:\n{}",
         s
     );

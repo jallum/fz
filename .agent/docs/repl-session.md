@@ -201,13 +201,15 @@ does not prevent help from answering.
 ## Script Mode
 
 `fz repl --script <path>` shares the frontend/runtime model but not the terminal
-presentation. `ReplSession::run_script_str_with_telemetry` compiles the whole
-file through the module pipeline, then runs `main/0` on a fresh `ReplRuntime`
-via `run_script_main` (driven with `keepalive = false`) when a zero-parameter
-`main` is present; with no such `main` it succeeds and runs nothing. It emits no
-prompts and echoes no expression display values, so program-side `dbg()` is the
-only script-mode stdout — which makes a fixture's REPL leg exact-comparable to
-the other legs' golden output.
+presentation. `ReplSession::run_script_str` compiles the whole file through the
+module pipeline, then runs `main/0` on a fresh `ReplRuntime` via
+`run_script_main` (driven with `keepalive = false`) when a zero-parameter
+`main` is present; with no such `main` it succeeds and runs nothing. The caller
+supplies the telemetry sink and diagnostic renderer, so script mode observes the
+same compile/runtime events as interactive chunks. It emits no prompts and
+echoes no expression display values, so program-side `dbg()` is the only
+script-mode stdout — which makes a fixture's REPL leg exact-comparable to the
+other legs' golden output.
 
 Script mode bypasses `rustyline` and `ReplComposer` because whole-file parsing
 already provides the complete-source boundary.

@@ -33,13 +33,13 @@ use crate::frontend::resolve::flatten_modules;
 use crate::fz_ir::FnId;
 use crate::ir_interp::run_test_fn;
 use crate::ir_lower::lower_program;
-use crate::ir_planner::plan_module;
+use crate::ir_planner::plan_module_with_role;
 use crate::measurements;
 use crate::metadata;
 use crate::notify_fixture_execution_start;
 use crate::parser::Parser;
 use crate::parser::lexer::{Lexer, Tok, Token};
-use crate::telemetry::{ConfiguredTelemetry, Event, Handler, Metadata, NullTelemetry, Telemetry};
+use crate::telemetry::{ConfiguredTelemetry, Event, Handler, Metadata, Telemetry};
 use std::borrow::Cow;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
@@ -171,17 +171,17 @@ fn run_named_through(tel: &dyn Telemetry, user_src: &str, user_name: &str) -> Re
     // SourceMap built above. Downstream stages still bubble up as
     // TestRunError strings — wiring spans through resolve / macros for
     // test output is a future ticket.
-    let prelude_toks = Lexer::with_file(PRELUDE, prelude_id)
-        .tokenize()
+    let prelude_toks = Lexer::with_file_and_source_name(PRELUDE, prelude_id, "<test-prelude>")
+        .tokenize(tel)
         .map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
-    let user_toks = Lexer::with_file(user_src, user_id)
-        .tokenize()
+    let user_toks = Lexer::with_file_and_source_name(user_src, user_id, user_name)
+        .tokenize(tel)
         .map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
     let toks = splice_token_streams(prelude_toks, user_toks);
     let prog = Parser::new(toks)
-        .parse_program()
+        .parse_program(tel)
         .map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
-    let prog = flatten_modules(compiler.types(), prog)
+    let prog = flatten_modules(compiler.types(), prog, tel)
         .map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
     let mut prog = prog;
     expand_program_with_types(compiler.types(), &mut prog)
@@ -213,9 +213,9 @@ fn run_named_through(tel: &dyn Telemetry, user_src: &str, user_name: &str) -> Re
     // AST evaluator (eval::CompileTimeEvaluator, which stays only for macro
     // expansion above) and runs on the same IR interpreter the fixture matrix
     // uses.
-    let module = lower_program(compiler.types(), &prog, &NullTelemetry)
+    let module = lower_program(compiler.types(), &prog, tel)
         .map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
-    let module_plan = plan_module(compiler.types(), &module, &NullTelemetry);
+    let module_plan = plan_module_with_role(compiler.types(), &module, tel, "test_runner");
     // Map test name → FnId once.
     let test_ids: Vec<(String, FnId)> = tests
         .iter()

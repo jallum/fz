@@ -1,11 +1,11 @@
 use super::*;
 use crate::ast::{Expr, FnDef, Spanned};
 use crate::diag::Span;
+use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, SourcePatternRows};
 use crate::fz_ir::{
     BlockId, BranchOrigin, CallsiteIdent, Const, ContinuationProvenance, ContinuationProvenanceKind, FnCategory, Prim,
     Term, Var,
 };
-use crate::pattern_matrix::{BodyId, PatternMatrix, Row};
 use crate::type_expr::parse_type_expr;
 use crate::types::{Ty, Types};
 
@@ -32,7 +32,7 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
     // per-SCC fixpoint, and the recursive callsite's broadened key
     // (e.g. `[int, int]` for `count`'s tail) lands in the spec set.
 
-    // fz-puj.52.7 — internal dispatch lowers the Matcher inline
+    // fz-puj.52.7 — internal dispatch lowers the DispatchGraph inline
     // into the user fn again. The production matcher-fn shape made
     // dispatch visible as ordinary spec-producing fns, duplicating specs
     // for every key. Receive remains the ABI-driven matcher-fn case.
@@ -47,7 +47,7 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
     ctx.cur_block = Some(matrix_entry);
     ctx.terminated = false;
 
-    let mut rows: Vec<Row> = Vec::with_capacity(fn_def.clauses.len());
+    let mut rows: Vec<PatternRow> = Vec::with_capacity(fn_def.clauses.len());
     for (i, c) in fn_def.clauses.iter().enumerate() {
         let mut preconditions: Vec<(Var, Ty)> = Vec::new();
         for (pv, tok_opt) in param_vars.iter().zip(&c.param_annotations) {
@@ -57,15 +57,14 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
                 preconditions.push((*pv, ty));
             }
         }
-        rows.push(Row {
+        rows.push(PatternRow {
             patterns: c.params.clone(),
             preconditions,
-            bindings: Vec::new(),
             guard: c.guard.clone(),
-            body_id: i as BodyId,
+            body_id: i as PatternBodyId,
         });
     }
-    let pattern_matrix = PatternMatrix {
+    let source_patterns = SourcePatternRows {
         subjects: param_vars.to_vec(),
         rows,
     };
@@ -79,7 +78,7 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
         let clause_conts_ref = &mut clause_conts;
         let mut cb = |ctx: &mut LowerCtx,
                       t: &mut T,
-                      body_id: BodyId,
+                      body_id: PatternBodyId,
                       bindings: Vec<MatchedBinding>,
                       preconditions: Vec<(Var, Ty)>,
                       guard: Option<Spanned<Expr>>,
@@ -126,7 +125,7 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
                             caller: ctx.cur_fn_id.expect("lower_multi_clause: missing current fn id"),
                             captured: cont.outer_captured.iter().map(|(_, var)| *var).collect(),
                             capture_param_offset: 0,
-                            kind: ContinuationProvenanceKind::MatcherBody {
+                            kind: ContinuationProvenanceKind::DispatchBody {
                                 bindings: bindings
                                     .iter()
                                     .map(|binding| (binding.var, binding.source.clone()))
@@ -148,7 +147,7 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
             ctx.terminated = true;
             Ok(())
         };
-        let result = lower_pattern_matrix_to_current_fn(ctx, t, pattern_matrix, fail_block, &mut cb);
+        let result = lower_source_patterns_to_current_fn(ctx, t, source_patterns, fail_block, &mut cb);
         ctx.branch_origin = prev_origin;
         result?;
     }

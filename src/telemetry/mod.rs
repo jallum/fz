@@ -7,8 +7,6 @@
 //! # Design
 //!
 //! - **`Telemetry` trait** (`sink`): the only interface the compiler depends on.
-//!   `NullTelemetry` is the zero-cost no-op impl used when no observability is
-//!   wanted.
 //! - **`ConfiguredTelemetry`** (`bus`): the driver's concrete impl. Maintains
 //!   a handler registry with prefix-based routing and a span stack for parent
 //!   tracking. Single-threaded (`RefCell`, no `Send`/`Sync`).
@@ -56,7 +54,7 @@ pub use event::{Measurements, Metadata};
 pub use handler::EventKind;
 pub use handler::{Event, Handler};
 pub use jsonl::JsonlBackend;
-pub use sink::{NullTelemetry, Telemetry, TelemetryExt};
+pub use sink::{Telemetry, TelemetryExt};
 pub use stats::StatsHandler;
 pub use value::Value;
 

@@ -758,8 +758,12 @@ mod quote_tests {
     /// the value it produced.
     fn eval_in_main(expr_src: &str) -> Value {
         let src = format!("fn _go() do {} end\nfn main() do _go() end", expr_src);
-        let toks = Lexer::new(&src).tokenize().expect("lex");
-        let prog = Parser::new(toks).parse_program().expect("parse");
+        let toks = Lexer::with_source_name(&src, "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .expect("lex");
+        let prog = Parser::new(toks)
+            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+            .expect("parse");
         let interp = CompileTimeEvaluator::new();
         interp.load_program(&prog).expect("load");
         // Evaluate _go directly so we get its return value, not main's nil.
@@ -816,8 +820,12 @@ mod quote_tests {
     #[test]
     fn unquote_outside_quote_errors() {
         let src = "fn main() do unquote(1) end";
-        let toks = Lexer::new(src).tokenize().unwrap();
-        let prog = Parser::new(toks).parse_program().unwrap();
+        let toks = Lexer::with_source_name(src, "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
+        let prog = Parser::new(toks)
+            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
         let interp = CompileTimeEvaluator::new();
         interp.load_program(&prog).unwrap();
         let res = interp.call_named("main", vec![]);
@@ -857,8 +865,12 @@ fn check(x :: integer) do :is_int end
 fn check(x) do :other end
 fn main() do {check(42), check(:foo)} end
 ";
-        let toks = Lexer::new(src).tokenize().expect("lex");
-        let prog = Parser::new(toks).parse_program().expect("parse");
+        let toks = Lexer::with_source_name(src, "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .expect("lex");
+        let prog = Parser::new(toks)
+            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+            .expect("parse");
         let interp = CompileTimeEvaluator::new();
         interp.load_program(&prog).expect("load");
         let v = interp.call_named("main", vec![]).expect("eval");
@@ -878,8 +890,12 @@ fn main() do {check(42), check(:foo)} end
     #[test]
     fn bare_named_calls_do_not_dispatch_to_local_values() {
         let src = "fn main() do\n  count = fn (x) -> x + 1 end\n  count(2)\nend";
-        let toks = Lexer::new(src).tokenize().expect("lex");
-        let prog = Parser::new(toks).parse_program().expect("parse");
+        let toks = Lexer::with_source_name(src, "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .expect("lex");
+        let prog = Parser::new(toks)
+            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+            .expect("parse");
         let interp = CompileTimeEvaluator::new();
         interp.load_program(&prog).expect("load");
         let err = interp

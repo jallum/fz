@@ -166,9 +166,10 @@ message:
 
 A finite-union receiver — `integer | list(...)` where both `Integer` and `List`
 implement the protocol — has no single subtype match, so `protocol_dispatch_key`
-leaves the stub. `rewrite_closed_union_protocol_dispatch` then rewrites that callsite
-into a `TypeTest`/`If` cascade with one direct-call arm per *local* implementing
-target the receiver overlaps:
+leaves the stub. The protocol dispatch producer then builds a DispatchMatrix over
+the receiver domain with one direct-call outcome per *local* implementing target
+the receiver overlaps. The frontend rewrite hook lowers that compiled graph into
+the current `TypeTest`/`If` IR shape:
 
 ```text
   t0 = TypeTest(recv, integer)
@@ -184,12 +185,13 @@ specs it to the right impl. The same path handles named source structs such as
 `Range` by testing their struct schema id, alongside kind tests for lists and maps.
 
 A receiver fully covered by its arms (a closed union) tests every arm but the last,
-which is the final `else`. An open or erased receiver tests every arm and routes the
-final `else` to a fallthrough block that preserves the original stub call, so a
-runtime value matching no arm halts with `protocol_dispatch_unplanned` — the same
-behavior as an unplanned stub. An overlapping target whose impl is external (a
-provider outside this unit) makes the receiver not fully covered: its overlap becomes
-residual handled by the fallthrough, the same local/external boundary
+which is the final direct `else`; this is how the graph's closed residual `Fail`
+tail materializes in IR. An open or erased receiver tests every arm and routes
+the final `else` to a fallthrough block that preserves the original stub call, so
+a runtime value matching no arm halts with `protocol_dispatch_unplanned` — the
+same behavior as an unplanned stub. An overlapping target whose impl is external
+(a provider outside this unit) makes the receiver not fully covered: its overlap
+becomes residual handled by the fallthrough, the same local/external boundary
 `protocol_dispatch_key` draws. `TypeTest`, `If`, and `Call` already lower in the
 interpreter, JIT, and AOT, so the rewrite holds three-path parity with no new
 codegen.

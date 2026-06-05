@@ -1,5 +1,7 @@
 use super::*;
+use crate::telemetry::ConfiguredTelemetry;
 use std::collections::VecDeque;
+use std::rc::Rc;
 
 struct FakeLineEditor {
     lines: VecDeque<ReplLine>,
@@ -33,11 +35,20 @@ fn load_program_test(interp: &CompileTimeEvaluator, prog: &Program) -> Result<()
     Ok(())
 }
 
+fn test_tel() -> Rc<ConfiguredTelemetry> {
+    Rc::new(ConfiguredTelemetry::new())
+}
+
+fn new_composer() -> ReplComposer {
+    ReplComposer::new(test_tel())
+}
+
 /// Drive the same session path as the REPL but capture rendered eval
 /// results in a vec rather than printing.
 fn drive(lines: &[&str]) -> Vec<Result<String, String>> {
     let mut session = ReplSession::new();
-    let mut composer = ReplComposer::new();
+    let tel = test_tel();
+    let mut composer = ReplComposer::new(tel.clone());
     let mut out: Vec<Result<String, String>> = Vec::new();
     for line in lines {
         match composer.submit_buffer(line) {
@@ -45,7 +56,7 @@ fn drive(lines: &[&str]) -> Vec<Result<String, String>> {
             ReplComposerEvent::Quit => break,
             ReplComposerEvent::DocQuery(q) => out.push(Ok(session.lookup_doc(&q))),
             ReplComposerEvent::Diagnostic(msg) => out.push(Err(msg)),
-            ReplComposerEvent::Complete(src) => match session.eval_chunk(&src) {
+            ReplComposerEvent::Complete(src) => match session.eval_chunk(&src, tel.as_ref()) {
                 ReplChunkOutcome::Ok(Some(value)) => {
                     out.push(Ok(session.render_value(value)));
                 }
@@ -107,8 +118,9 @@ end
 #[test]
 fn repl_session_accepts_top_level_runtime_import() {
     let mut session = ReplSession::new();
+    let tel = ConfiguredTelemetry::new();
     assert!(matches!(
-        session.eval_chunk("import Utf8, only: [valid?: 1]"),
+        session.eval_chunk("import Utf8, only: [valid?: 1]", &tel),
         ReplChunkOutcome::Ok(None)
     ));
     assert_eq!(eval_session_render(&mut session, "valid?(<<104, 105>>)"), "true");
@@ -117,15 +129,17 @@ fn repl_session_accepts_top_level_runtime_import() {
 #[test]
 fn repl_session_accepts_top_level_runtime_alias() {
     let mut session = ReplSession::new();
+    let tel = ConfiguredTelemetry::new();
     assert!(matches!(
-        session.eval_chunk("alias Utf8, as: U"),
+        session.eval_chunk("alias Utf8, as: U", &tel),
         ReplChunkOutcome::Ok(None)
     ));
     assert_eq!(eval_session_render(&mut session, "U.valid?(<<0xff, 0xff>>)"), "false");
 }
 
 fn eval_session_i64(session: &mut ReplSession, src: &str) -> Option<i64> {
-    match session.eval_chunk(src) {
+    let tel = ConfiguredTelemetry::new();
+    match session.eval_chunk(src, &tel) {
         ReplChunkOutcome::Ok(Some(value)) => value.as_i64(),
         ReplChunkOutcome::Err(err) => panic!("expected value from `{}`; got err: {}", src, err),
         other => panic!("expected value from `{}`; got {:?}", src, outcome_name(&other)),
@@ -133,7 +147,8 @@ fn eval_session_i64(session: &mut ReplSession, src: &str) -> Option<i64> {
 }
 
 fn eval_session_render(session: &mut ReplSession, src: &str) -> String {
-    match session.eval_chunk(src) {
+    let tel = ConfiguredTelemetry::new();
+    match session.eval_chunk(src, &tel) {
         ReplChunkOutcome::Ok(Some(value)) => session.render_value(value),
         ReplChunkOutcome::Err(err) => panic!("expected value from `{}`; got err: {}", src, err),
         other => panic!("expected value from `{}`; got {:?}", src, outcome_name(&other)),
@@ -162,44 +177,45 @@ fn repl_line_editor_trait_accepts_fake_editor() {
 
 #[test]
 fn line_editor_validator_continues_only_parser_incomplete_input() {
+    let tel = ConfiguredTelemetry::new();
     assert!(matches!(
-        ReplEditorHelper::validation_result_for("do\n  1"),
+        ReplEditorHelper::validation_result_for("do\n  1", &tel),
         ValidationResult::Incomplete
     ));
     assert!(matches!(
-        ReplEditorHelper::validation_result_for("do\n  1\nend"),
+        ReplEditorHelper::validation_result_for("do\n  1\nend", &tel),
         ValidationResult::Valid(None)
     ));
     assert!(matches!(
-        ReplEditorHelper::validation_result_for("1 2"),
+        ReplEditorHelper::validation_result_for("1 2", &tel),
         ValidationResult::Valid(None)
     ));
     assert!(matches!(
-        ReplEditorHelper::validation_result_for(":q"),
+        ReplEditorHelper::validation_result_for(":q", &tel),
         ValidationResult::Valid(None)
     ));
     assert!(matches!(
-        ReplEditorHelper::validation_result_for("   "),
+        ReplEditorHelper::validation_result_for("   ", &tel),
         ValidationResult::Valid(None)
     ));
 }
 
 #[test]
 fn composer_ignores_blank_input() {
-    let mut composer = ReplComposer::new();
+    let mut composer = new_composer();
     assert_eq!(composer.submit_buffer("   "), ReplComposerEvent::Empty);
 }
 
 #[test]
 fn composer_recognizes_quit_command() {
-    let mut composer = ReplComposer::new();
+    let mut composer = new_composer();
     assert_eq!(composer.submit_buffer(":q"), ReplComposerEvent::Quit);
     assert_eq!(composer.submit_buffer(":quit"), ReplComposerEvent::Quit);
 }
 
 #[test]
 fn composer_recognizes_docs_query() {
-    let mut composer = ReplComposer::new();
+    let mut composer = new_composer();
     assert_eq!(
         composer.submit_buffer("? Enum.map"),
         ReplComposerEvent::DocQuery("Enum.map".to_string())
@@ -208,7 +224,7 @@ fn composer_recognizes_docs_query() {
 
 #[test]
 fn composer_accepts_complete_multiline_item_chunks_from_editor() {
-    let mut composer = ReplComposer::new();
+    let mut composer = new_composer();
     assert_eq!(
         composer.submit_buffer(
             r#"@doc "adds one"
@@ -224,7 +240,7 @@ fn add1(n), do: n + 1"#
 
 #[test]
 fn composer_accepts_complete_multiline_expression_chunks_from_editor() {
-    let mut composer = ReplComposer::new();
+    let mut composer = new_composer();
     assert_eq!(
         composer.submit_buffer("do\n  1 + 2\nend"),
         ReplComposerEvent::Complete("do\n  1 + 2\nend".to_string())
@@ -233,7 +249,7 @@ fn composer_accepts_complete_multiline_expression_chunks_from_editor() {
 
 #[test]
 fn composer_keeps_blank_lines_inside_submitted_editor_buffer() {
-    let mut composer = ReplComposer::new();
+    let mut composer = new_composer();
     assert_eq!(
         composer.submit_buffer("do\n\n  1\nend"),
         ReplComposerEvent::Complete("do\n\n  1\nend".to_string())
@@ -242,7 +258,7 @@ fn composer_keeps_blank_lines_inside_submitted_editor_buffer() {
 
 #[test]
 fn composer_reports_invalid_input_without_retaining_state() {
-    let mut composer = ReplComposer::new();
+    let mut composer = new_composer();
     assert!(matches!(
         composer.submit_buffer("1 2"),
         ReplComposerEvent::Diagnostic(_)
@@ -255,7 +271,7 @@ fn composer_reports_invalid_input_without_retaining_state() {
 
 #[test]
 fn composer_accepts_whitespace_heavy_chunks() {
-    let mut composer = ReplComposer::new();
+    let mut composer = new_composer();
     assert_eq!(
         composer.submit_buffer("   fn id(n), do: n   "),
         ReplComposerEvent::Complete("   fn id(n), do: n   ".to_string())
@@ -264,17 +280,21 @@ fn composer_accepts_whitespace_heavy_chunks() {
 
 #[test]
 fn parser_classifies_incomplete_without_error_text() {
-    let toks = Lexer::new("1 +").tokenize().expect("lex");
+    let toks = Lexer::with_source_name("1 +", "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
     let err = Parser::new(toks).parse_expr_eof().unwrap_err();
     assert!(err.is_incomplete(), "{err}");
 }
 
 #[test]
 fn repl_world_classifies_eof_shaped_item_input_as_incomplete() {
+    let tel = ConfiguredTelemetry::new();
     let err = match ReplWorld::new().parse_chunk(
         r#"
 @doc "adds one"
 "#,
+        &tel,
     ) {
         Ok(_) => panic!("expected incomplete input"),
         Err(err) => err,
@@ -285,7 +305,8 @@ fn repl_world_classifies_eof_shaped_item_input_as_incomplete() {
 #[test]
 fn session_rejects_incomplete_execution_input() {
     let mut session = ReplSession::new();
-    match session.eval_chunk("do\n  1") {
+    let tel = ConfiguredTelemetry::new();
+    match session.eval_chunk("do\n  1", &tel) {
         ReplChunkOutcome::Err(msg) => assert!(
             msg.contains("must be composed"),
             "expected composition boundary error, got: {}",
@@ -297,7 +318,8 @@ fn session_rejects_incomplete_execution_input() {
 
 #[test]
 fn repl_world_classifies_invalid_syntax_as_non_incomplete_error() {
-    let err = match ReplWorld::new().parse_chunk("1 2") {
+    let tel = ConfiguredTelemetry::new();
+    let err = match ReplWorld::new().parse_chunk("1 2", &tel) {
         Ok(_) => panic!("expected invalid input"),
         Err(err) => err,
     };
@@ -362,7 +384,8 @@ fn repl_frame_abi_is_not_inferred_by_host_pattern_walkers() {
 #[test]
 fn repl_diagnostics_are_anchored_to_user_source_not_wrapper_text() {
     let mut session = ReplSession::new();
-    match session.eval_chunk("missing_name + 1") {
+    let tel = ConfiguredTelemetry::new();
+    match session.eval_chunk("missing_name + 1", &tel) {
         ReplChunkOutcome::Err(err) => {
             assert!(
                 !err.contains("__repl_eval"),
@@ -391,7 +414,8 @@ fn repl_accepts_whitespace_heavy_multiline_expression_chunks() {
 fn repl_session_match_failure_uses_lowered_runtime_semantics() {
     let mut session = ReplSession::new();
     assert_eq!(eval_session_i64(&mut session, "x = 1"), Some(1));
-    match session.eval_chunk("{:ok, y} = {:error, 2}") {
+    let tel = ConfiguredTelemetry::new();
+    match session.eval_chunk("{:ok, y} = {:error, 2}", &tel) {
         ReplChunkOutcome::Err(err) => assert!(
             err.contains("match") || err.contains("clause"),
             "expected match failure diagnostic, got: {}",
@@ -405,8 +429,9 @@ fn repl_session_match_failure_uses_lowered_runtime_semantics() {
 #[test]
 fn repl_session_top_level_definition_is_callable() {
     let mut session = ReplSession::new();
+    let tel = ConfiguredTelemetry::new();
     assert!(matches!(
-        session.eval_chunk("fn add1(n), do: n + 1"),
+        session.eval_chunk("fn add1(n), do: n + 1", &tel),
         ReplChunkOutcome::Ok(None)
     ));
     assert_eq!(eval_session_i64(&mut session, "add1(41)"), Some(42));
@@ -415,8 +440,9 @@ fn repl_session_top_level_definition_is_callable() {
 #[test]
 fn repl_session_accepts_top_level_extern_declaration() {
     let mut session = ReplSession::new();
+    let tel = ConfiguredTelemetry::new();
     assert!(matches!(
-        session.eval_chunk(r#"extern "C" fn libc::open(cstring, cstring) :: integer"#),
+        session.eval_chunk(r#"extern "C" fn libc::open(cstring, cstring) :: integer"#, &tel,),
         ReplChunkOutcome::Ok(None)
     ));
 }
@@ -441,8 +467,9 @@ fn repl_session_blocked_child_survives_later_code_generation() {
         eval_session_i64(&mut session, "spawn(fn () -> send(parent, receive do x -> x end) end)"),
         Some(2),
     );
+    let tel = ConfiguredTelemetry::new();
     assert!(matches!(
-        session.eval_chunk("fn id(n), do: n"),
+        session.eval_chunk("fn id(n), do: n", &tel),
         ReplChunkOutcome::Ok(None)
     ));
     assert_eq!(eval_session_i64(&mut session, "id(42)"), Some(42));
@@ -505,10 +532,14 @@ fn accepts_multiline_do_end_from_editor_buffer() {
 /// the REPL does for an item-level input, but in one shot.
 fn load(src: &str) -> CompileTimeEvaluator {
     let interp = CompileTimeEvaluator::new();
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
     let mut ct = crate::types::new();
-    let prog = flatten_modules(&mut ct, prog).expect("resolve");
+    let prog = flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("resolve");
     for (path, doc) in &prog.module_docs {
         interp.module_docs.borrow_mut().insert(path.clone(), doc.clone());
     }
@@ -517,16 +548,18 @@ fn load(src: &str) -> CompileTimeEvaluator {
 }
 
 fn apply_world_item(world: &mut ReplWorld, src: &str) {
-    match world.parse_chunk(src).expect("parse world chunk") {
+    let tel = ConfiguredTelemetry::new();
+    match world.parse_chunk(src, &tel).expect("parse world chunk") {
         ReplWorldChunk::Items(prog) => {
-            world.apply_items(src, prog).expect("apply world items");
+            world.apply_items(src, prog, &tel).expect("apply world items");
         }
         ReplWorldChunk::Expr { .. } => panic!("expected item chunk"),
     }
 }
 
 fn parse_world_expr(src: &str) -> (Spanned<Expr>, SourceMap) {
-    match ReplWorld::new().parse_chunk(src).expect("parse world chunk") {
+    let tel = ConfiguredTelemetry::new();
+    match ReplWorld::new().parse_chunk(src, &tel).expect("parse world chunk") {
         ReplWorldChunk::Expr { expr, sm } => (expr, sm),
         ReplWorldChunk::Items(_) => panic!("expected expression chunk"),
     }
@@ -555,8 +588,9 @@ fn repl_world_compiles_accumulated_item_clauses() {
     apply_world_item(&mut world, "fn fact(0), do: 1");
     apply_world_item(&mut world, "fn fact(n), do: n * fact(n - 1)");
     let (expr, sm) = parse_world_expr("fact(5)");
+    let tel = ConfiguredTelemetry::new();
     let module = world
-        .compile_repl_expr(expr, vec![], "__repl_eval_0".to_string(), sm)
+        .compile_repl_expr(expr, vec![], "__repl_eval_0".to_string(), sm, &tel)
         .expect("compile accumulated clauses");
     assert!(module.module.fn_by_name("__repl_eval_0").is_some());
 }
@@ -573,8 +607,9 @@ end
 "#,
     );
     let (expr, sm) = parse_world_expr("inc(41)");
+    let tel = ConfiguredTelemetry::new();
     let module = world
-        .compile_repl_expr(expr, vec![], "__repl_eval_0".to_string(), sm)
+        .compile_repl_expr(expr, vec![], "__repl_eval_0".to_string(), sm, &tel)
         .expect("compile macro-using eval chunk");
     assert!(module.module.fn_by_name("__repl_eval_0").is_some());
 }

@@ -5,7 +5,7 @@ use crate::diag::Diagnostic;
 use crate::diag::codes::LEX_UNEXPECTED_CHAR;
 use crate::diag::{FileId, Span};
 use crate::measurements;
-use crate::telemetry::{Metadata, NullTelemetry, Telemetry};
+use crate::telemetry::{Metadata, Telemetry, Value};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Tok {
@@ -130,6 +130,7 @@ pub struct Lexer<'a> {
     src: &'a [u8],
     pos: usize,
     file: FileId,
+    source_name: Option<String>,
 }
 
 #[derive(Debug)]
@@ -157,18 +158,16 @@ impl LexError {
 }
 
 impl<'a> Lexer<'a> {
-    /// Lex with the default FileId(0). Suitable for the single-source path
-    /// (`fz run <file>`). Multi-file paths (test_runner concatenating a
-    /// prelude with user source) use `with_file`.
-    pub fn new(src: &'a str) -> Self {
-        Self::with_file(src, FileId(0))
+    pub fn with_source_name(src: &'a str, source_name: impl Into<String>) -> Self {
+        Self::with_file_and_source_name(src, FileId(0), source_name)
     }
 
-    pub fn with_file(src: &'a str, file: FileId) -> Self {
+    pub fn with_file_and_source_name(src: &'a str, file: FileId, source_name: impl Into<String>) -> Self {
         Self {
             src: src.as_bytes(),
             pos: 0,
             file,
+            source_name: Some(source_name.into()),
         }
     }
 
@@ -666,27 +665,32 @@ impl<'a> Lexer<'a> {
         })
     }
 
-    pub fn tokenize(self) -> Result<Vec<Token>, LexError> {
-        self.tokenize_with_telemetry(&NullTelemetry)
-    }
-
-    /// Same as `tokenize` but opens a `[fz, lexer, pass]` span and emits
-    /// a `[fz, lexer, tokens_built]` event with the final token count on
-    /// success. The span's stop event records elapsed_ns. Callers that
-    /// don't want observability can use `tokenize()` (NullTelemetry).
-    pub fn tokenize_with_telemetry(mut self, tel: &dyn Telemetry) -> Result<Vec<Token>, LexError> {
+    /// Opens a `[fz, lexer, pass]` span and emits a
+    /// `[fz, lexer, tokens_built]` event with the final token count on
+    /// success. The span's stop event records elapsed_ns.
+    pub fn tokenize(mut self, tel: &dyn Telemetry) -> Result<Vec<Token>, LexError> {
         use crate::telemetry::TelemetryExt;
-        let _span = tel.span(LEX_PASS_NAME, Metadata::new());
+        let metadata = self.telemetry_metadata();
+        let _span = tel.span(LEX_PASS_NAME, metadata.clone());
         let mut out = Vec::new();
         loop {
             let t = self.next_token()?;
             let done = matches!(t.tok, Tok::Eof);
             out.push(t);
             if done {
-                tel.execute(TOKENS_BUILT_NAME, &measurements! { count: out.len() }, &Metadata::new());
+                tel.execute(TOKENS_BUILT_NAME, &measurements! { count: out.len() }, &metadata);
                 return Ok(out);
             }
         }
+    }
+
+    fn telemetry_metadata(&self) -> Metadata<'static> {
+        let mut metadata = Metadata::new();
+        metadata.0.push(("file_id", Value::from(self.file.0)));
+        if let Some(source_name) = &self.source_name {
+            metadata.0.push(("source_name", Value::from(source_name.clone())));
+        }
+        metadata
     }
 }
 

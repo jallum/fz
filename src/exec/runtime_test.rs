@@ -4,7 +4,7 @@ use crate::ir_interp::run_main;
 use crate::telemetry::bus::ConfiguredTelemetry;
 use crate::telemetry::capture::Capture;
 use crate::telemetry::handler::{Event, Handler};
-use crate::test_support::linked_runtime_graph_with_telemetry;
+use crate::test_support::linked_runtime_graph;
 use fz_runtime::any_value::{
     ListCons, ValueKind, closure_addr_from_tagged, closure_capture_ref_word, closure_capture_set,
     closure_size_for_count,
@@ -18,9 +18,10 @@ use std::time::Duration;
 
 fn compile_src(src: &str) -> (CompiledModule, Module, FnId) {
     let mut t = crate::types::new();
-    let graph = linked_runtime_graph_with_telemetry(&mut t, src, &NullTelemetry);
+    let tel = ConfiguredTelemetry::new();
+    let graph = linked_runtime_graph(&mut t, src, &tel);
     let entry = graph.module.fn_by_name("main").expect("main fn").id;
-    let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
+    let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile planned");
     (compiled, graph.module, entry)
 }
 
@@ -45,7 +46,8 @@ fn test_int_ref(value: i64) -> AnyValueRef {
 fn three_tasks_each_compute_their_halt_value() {
     let src = "fn main(), do: 1 + 2 + 3";
     let (compiled, _module, entry) = compile_src(src);
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let a = rt.spawn(entry);
     let b = rt.spawn(entry);
     let c = rt.spawn(entry);
@@ -72,7 +74,7 @@ fn process_exit_capture_yields_exit_record() {
     let cap = ProcessExitCapture::new();
     tel.attach(&[], cap.handler());
 
-    let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel);
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
     rt.run_until_idle();
 
@@ -116,7 +118,7 @@ fn process_exit_event_carries_opaque_process() {
         }),
     );
 
-    let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel);
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let _ = rt.spawn(entry);
     rt.run_until_idle();
 
@@ -166,7 +168,7 @@ fn process_ctx_installed_during_run() {
         }),
     );
 
-    let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel);
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let _ = rt.spawn(entry);
     rt.run_until_idle();
 
@@ -190,7 +192,7 @@ fn both_engines_emit_equivalent_process_exited_and_dbg() {
     let out_c = Capture::new();
     tel_c.attach(&[], exits_c.handler());
     tel_c.attach(&[], out_c.handler());
-    let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel_c);
+    let mut rt = Runtime::new(&compiled, 1, &tel_c);
     let _ = rt.spawn(entry);
     rt.run_until_idle();
     let c = exits_c.last().expect("compiled process_exited");
@@ -229,7 +231,7 @@ fn dbg_output_emits_telemetry_events() {
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
 
-    let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel);
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let _ = rt.spawn(entry);
     rt.run_until_idle();
 
@@ -251,8 +253,9 @@ fn tasks_have_independent_heaps_and_builders() {
     let (ca, ma, _entry_a) = compile_src(src_a);
     let (cb, mb, _entry_b) = compile_src(src_b);
 
-    let mut rt_a = Runtime::new(&ca, 1);
-    let mut rt_b = Runtime::new(&cb, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt_a = Runtime::new(&ca, 1, &tel);
+    let mut rt_b = Runtime::new(&cb, 1, &tel);
     let pa = rt_a.spawn(ma.fn_by_name("main").unwrap().id);
     let pb = rt_b.spawn(mb.fn_by_name("main").unwrap().id);
     rt_a.run_until_idle();
@@ -270,7 +273,8 @@ fn tasks_have_independent_heaps_and_builders() {
 fn spawn_after_idle_resumes_progress() {
     let src = "fn main(), do: 42";
     let (compiled, _module, entry) = compile_src(src);
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let a = rt.spawn(entry);
     rt.run_until_idle();
     assert_eq!(rt.task(a).unwrap().halt_value, 42);
@@ -287,7 +291,8 @@ fn spawn_after_idle_resumes_progress() {
 fn workers_greater_than_one_is_not_yet_supported() {
     let src = "fn main(), do: 0";
     let (compiled, _module, _entry) = compile_src(src);
-    let _ = Runtime::new(&compiled, 2);
+    let tel = ConfiguredTelemetry::new();
+    let _ = Runtime::new(&compiled, 2, &tel);
 }
 
 // ----- fz-ul4.19.2: spawn / self builtins -----
@@ -298,7 +303,8 @@ fn workers_greater_than_one_is_not_yet_supported() {
 fn self_returns_task_pid() {
     let src = "fn main(), do: self()";
     let (compiled, _module, entry) = compile_src(src);
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
     rt.run_until_idle();
     // halt_value is the raw pid i64 carried through the typed halt path.
@@ -314,7 +320,8 @@ fn spawn_enqueues_child_task() {
         fn main(), do: spawn(child)
     "#;
     let (compiled, _module, entry) = compile_src(src);
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let main_pid = rt.spawn(entry);
     rt.run_until_idle();
     // Main halted with the child's pid (spawn returns pid as boxed
@@ -347,7 +354,8 @@ fn send_to_self_then_receive_int() {
         end
     "#;
     let (compiled, _module, entry) = compile_src(src);
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
     rt.run_until_idle();
     // halt_value is the unboxed Int from the received message.
@@ -373,7 +381,8 @@ fn receive_blocks_until_send_arrives() {
         end
     "#;
     let (compiled, _module, entry) = compile_src(src);
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
     rt.run_until_idle();
     assert_eq!(rt.task(pid).unwrap().halt_value, 99);
@@ -405,7 +414,8 @@ fn fixture_ping_pong_via_jit_runtime() {
                end\n";
     let (compiled, _module, entry) = compile_src(src);
 
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let main_pid = rt.spawn(entry);
     assert_eq!(
         main_pid, 1,
@@ -440,7 +450,8 @@ fn send_list_deep_copies_into_receiver_heap() {
         end
     "#;
     let (compiled, _module, entry) = compile_src(src);
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
     rt.run_until_idle();
     // Send-to-self means the message was deep-copied even though
@@ -464,7 +475,8 @@ fn deep_copy_float_in_container_preserves_raw_slot() {
         end
     "#;
     let (compiled, _module, entry) = compile_src(src);
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
     rt.run_until_idle();
     let task = rt.task(pid).unwrap();
@@ -486,7 +498,8 @@ fn mailbox_with_float_boxes_at_any_boundary() {
         end
     "#;
     let (compiled, _module, entry) = compile_src(src);
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
     rt.run_until_idle();
     let task = rt.task(pid).unwrap();
@@ -518,7 +531,7 @@ fn receive_map_pattern_matches_present_nil_value_via_jit_runtime() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
-    let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel);
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     rt.spawn(entry);
     rt.run_until_idle();
     assert_eq!(dbg.lines(), vec!["nil"]);
@@ -534,7 +547,8 @@ fn park_time_gc_fires_when_pressure_set() {
     // [1,2,3] allocates three 16-byte headerless cons cells = 48 bytes.
     let src = "fn main(), do: [1, 2, 3]";
     let (compiled, _module, entry) = compile_src(src);
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
     // Lower threshold below the alloc footprint so the flag trips.
     rt.tasks.get_mut(&pid).unwrap().heap.gc_threshold_bytes = 32;
@@ -564,7 +578,7 @@ fn park_time_gc_preserves_selective_receive_roots() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
-    let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel);
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
     rt.tasks.get_mut(&pid).unwrap().heap.gc_threshold_bytes = 64;
     rt.run_until_idle();
@@ -585,7 +599,8 @@ fn sum(0, acc, _), do: acc
 fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
 fn main(), do: sum(10, 0, nil)";
     let (compiled, _module, entry) = compile_src(src);
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
     {
         let task = rt.tasks.get_mut(&pid).unwrap();
@@ -607,7 +622,8 @@ fn sumf(0, acc, _), do: acc
 fn sumf(n, acc, _), do: sumf(n - 1, acc + 1.5, [n])
 fn main(), do: sumf(4, 0.0, nil)";
     let (compiled, _module, entry) = compile_src(src);
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
     force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
     rt.run_until_idle();
@@ -624,7 +640,8 @@ fn mid_flight_gc_preserves_destination_built_tuple_arg() {
         fn main(), do: sum(10, 0, {0, :kept}, nil)
     "#;
     let (compiled, _module, entry) = compile_src(src);
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
     force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
     rt.run_until_idle();
@@ -645,7 +662,8 @@ fn mid_flight_gc_preserves_destination_built_list_arg() {
         fn main(), do: sum(10, 0, [0])
     "#;
     let (compiled, _module, entry) = compile_src(src);
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
     force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
     rt.run_until_idle();
@@ -666,7 +684,8 @@ fn mid_flight_gc_preserves_destination_built_map_arg() {
         fn main(), do: sum(10, 0, %{last: 0, kept: :ok})
     "#;
     let (compiled, _module, entry) = compile_src(src);
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
     force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
     rt.run_until_idle();
@@ -688,7 +707,8 @@ fn sum(0, acc, _), do: acc
 fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
 fn main(), do: sum(10, 0, nil)";
     let (compiled, _module, entry) = compile_src(src);
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
     force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
     rt.run_until_idle();
@@ -708,7 +728,8 @@ fn sum(0, acc, _), do: acc
 fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
 fn main(), do: sum(8, 0, nil)";
     let (compiled, _module, entry) = compile_src(src);
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let pa = rt.spawn(entry);
     let pb = rt.spawn(entry);
     force_allocation_pressure_yield(rt.tasks.get_mut(&pa).unwrap());
@@ -725,7 +746,8 @@ fn main(), do: sum(8, 0, nil)";
 fn compiled_reductions_yield_allocation_light_loops() {
     let src = "fn count(0, acc), do: acc\nfn count(n, acc), do: count(n - 1, acc + 1)\nfn main(), do: count(5000, 0)";
     let (compiled, _module, entry) = compile_src(src);
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let pa = rt.spawn(entry);
     let pb = rt.spawn(entry);
     force_reduction_yield(rt.tasks.get_mut(&pa).unwrap());
@@ -749,7 +771,8 @@ fn compiled_reductions_yield_allocation_light_loops() {
 fn compiled_yield_measures_full_continuation_allocation_window() {
     let src = "fn count(0, acc), do: acc\nfn count(n, acc), do: count(n - 1, acc + 1)\nfn main(), do: count(5000, 0)";
     let (compiled, _module, entry) = compile_src(src);
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
     force_reduction_yield(rt.tasks.get_mut(&pid).unwrap());
 
@@ -776,7 +799,8 @@ fn quiet_quanta_increments_when_no_mid_flight_yield() {
     // Pure integer counter: no allocations, back-edge never yields.
     let src = "fn count(0, acc), do: acc\nfn count(n, acc), do: count(n - 1, acc + 1)\nfn main(), do: count(20, 0)";
     let (compiled, _module, entry) = compile_src(src);
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
     rt.run_until_idle();
     let task = rt.task(pid).unwrap();
@@ -796,7 +820,8 @@ fn sum(0, acc, _), do: acc
 fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
 fn main(), do: sum(10, 0, nil)";
     let (compiled, _module, entry) = compile_src(src);
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
     force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
     rt.run_until_idle();
@@ -834,8 +859,12 @@ extern "C" fn mock_eq_matcher(
 /// `send_via_current_runtime` calls. Returns (runtime, sender_pid,
 /// receiver_pid). Both tasks are spawned but never executed — we
 /// only drive the send-probe code path.
-fn two_task_rt<'a>(compiled: &'a CompiledModule, main_id: FnId) -> (Runtime<'a>, PidId, PidId) {
-    let mut rt = Runtime::new(compiled, 1);
+fn two_task_rt<'a>(
+    compiled: &'a CompiledModule,
+    main_id: FnId,
+    tel: &'a ConfiguredTelemetry,
+) -> (Runtime<'a>, PidId, PidId) {
+    let mut rt = Runtime::new(compiled, 1, tel);
     let sender = rt.spawn(main_id);
     let receiver = rt.spawn(main_id);
     (rt, sender, receiver)
@@ -855,7 +884,8 @@ fn template_closure(task: &mut Process, stub: usize) -> *mut u8 {
 fn send_probe_hit_wakes_receiver_with_runnable_closure() {
     let src = "fn main(), do: 0";
     let (compiled, _module, main_id) = compile_src(src);
-    let (mut rt, sender_pid, receiver_pid) = two_task_rt(&compiled, main_id);
+    let tel = ConfiguredTelemetry::new();
+    let (mut rt, sender_pid, receiver_pid) = two_task_rt(&compiled, main_id, &tel);
 
     // Pre-seed receiver as wait. Pinned wants msg == 42.
     let receiver = rt.task_mut(receiver_pid).unwrap();
@@ -903,7 +933,8 @@ fn send_probe_hit_wakes_receiver_with_runnable_closure() {
 fn send_probe_miss_leaves_park_in_place_and_appends_to_mailbox() {
     let src = "fn main(), do: 0";
     let (compiled, _module, main_id) = compile_src(src);
-    let (mut rt, sender_pid, receiver_pid) = two_task_rt(&compiled, main_id);
+    let tel = ConfiguredTelemetry::new();
+    let (mut rt, sender_pid, receiver_pid) = two_task_rt(&compiled, main_id, &tel);
 
     let receiver = rt.task_mut(receiver_pid).unwrap();
     receiver.state = ProcessState::Blocked;
@@ -945,7 +976,8 @@ fn send_probe_miss_leaves_park_in_place_and_appends_to_mailbox() {
 fn drain_expired_timers_wakes_after_cont() {
     let src = "fn main(), do: 0";
     let (compiled, _module, main_id) = compile_src(src);
-    let mut rt = Runtime::new(&compiled, 1);
+    let tel = ConfiguredTelemetry::new();
+    let mut rt = Runtime::new(&compiled, 1, &tel);
     let receiver_pid = rt.spawn(main_id);
     rt.run_queue.clear();
 

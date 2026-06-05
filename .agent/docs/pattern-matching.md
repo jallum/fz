@@ -1,202 +1,106 @@
 # Pattern Matching
 
-Pattern matching has one decision model shared by every match site. A
-`PatternMatrix` (rows of patterns over a list of subjects) compiles into a
-`Matcher`: an AST-free graph of tests, switches, guards, failures, and leaves.
-Lowering walks that graph into CPS IR. The rule the whole model enforces is
-**test first, project second**: a constructor's fields are read only on the
-control-flow edge where that constructor's shape is already proven.
+Pattern matching has one decision model shared by function clauses, `case`,
+`with else`, receive probes, and guard-compatible helper dispatch.
+`SourcePatternRows` is row data over source patterns; `DispatchMatrix` owns the
+questions, ordering, branch evidence, and executable `DispatchGraph`.
 
-Three layers, three owners:
-
-- `src/pattern_matrix` owns the matrix and the compiler that turns it into a
-  `Matcher`. It chooses the test order and where bindings land.
-- `src/exec/matcher` owns the `Matcher` data type — the executable shape that
-  carries subjects, tests, switch keys, guards, bindings, and outcomes, with no
-  AST inside.
-- `src/ir_lower/matcher.rs` owns turning a `Matcher` into IR primitives and the
-  branch structure around them.
-
-Function clauses, `case`, `with` else arms, and `receive` all build a
-`PatternMatrix` and lower the resulting `Matcher` the same way. Single-clause
-`fn` heads and single, unguarded `fn` lambdas skip the matrix and bind their
-parameters inline, but obey the same test-first rule.
-
-## The Matrix And Its Compiler
-
-A `Row` carries column `patterns` (one per subject), `preconditions` (`@spec`
-type tests, run before the guard), `bindings` already proven as specialization
-peeled columns away, an optional `guard`, and a `body_id`. Rows arrive in source
-order with strictly increasing `BodyId`s; `validate_source_order` rejects
-anything else, because first-match priority is encoded in that order.
-
-`compile_pattern_matrix` runs a Maranget-lite algorithm in `builder.rs`:
-
-- Pick the leftmost column that any row constrains (`pick_specialization_column`).
-  `Wildcard`/`Var` rows are transparent and join every specialization, recording
-  their bindings.
-- `pick_kind_for_column` reads the first constraining pattern to choose a
-  `SwitchKind` (`TupleArity`, `Atom`, `Int`, `Float`, `Bool`, `Nil`, `Binary`,
-  `ListCons`). The matrix specializes that column into a `Switch` with one
-  `SwitchKey` case per distinct constructor plus a default.
-- Specializing a constructor replaces its column with the constructor's
-  sub-subjects: a tuple of arity 3 becomes three `TupleField` columns; a cons
-  becomes `ListHead` and `ListTail` columns. Merged constructor-and-default rows
-  are re-sorted by `body_id` so priority survives.
-
-A `SubjectRef` is the path to a value: it names *where* a value lives without
-yet computing it. The matrix and the matcher carry distinct `SubjectRef` types.
-The matrix's is rooted at a `Var` (`TupleField`/`ListHead`/`ListTail` reach into
-it). Compilation rewrites it (`subject_to_matcher_ref`) into the matcher's, which
-is rooted at `Input` and adds `MapValue` and `BitstringField` for the paths that
-map and bitstring tests produce.
-
-Some patterns have no constructor switch: `Map`, `Bitstring`, and `Pinned`.
-`find_unspecializable_row` pulls such a row out and lowers it through the
-per-row path (`per_row_to_matcher_node`), which walks the pattern with
-`append_pattern_ops` into a straight-line chain of `MatcherTest`s. A `Pinned`
-pattern dispatches on a runtime value (`MatcherTest::EqPinned` against a
-`pinned` slot), so there is no switch kind for it.
-
-## The Matcher Graph
-
-`Matcher` holds `inputs`, `pinned` slots, `prepared_keys` (heap constants
-materialized outside matcher execution, e.g. float/binary map keys), a `nodes`
-arena, and a `root`. Every `MatcherNode` is one of:
-
-- `Fail` — no row matched on this edge.
-- `Leaf` — a `body_id` plus the `MatcherBinding`s (name -> `SubjectRef`) to
-  expose to the body.
-- `Switch` — a `subject`, a `SwitchKind`, `(SwitchKey, NodeId)` cases, and a
-  `default`.
-- `Test` — one `MatcherTest` with `on_true` / `on_false` edges.
-- `Guard` — a `GuardExpr` with `on_true` / `on_false` edges.
-
-`MatcherTest` variants name exactly the questions the runtime can ask:
-`EqConst`, `EqPinned`, `TupleArity`, `ListCons`, `MapKind`, `MapHasKey`,
-`Bitstring`, `Type`. Bindings live only on `Leaf` nodes, so a name is exposed
-only once its row's tests have all passed.
-
-### Guards
-
-A `Guard` node holds a `GuardExpr` — constants, subject/pinned references, and
-unary/binary operators. A guard that calls a helper function compiles that
-helper's clauses into a nested `Matcher` and stores it as
-`GuardExpr::Dispatch { inputs, dispatch }`. `lower_guard_helper_call_to_dispatch`
-builds the nested matrix, tracks a call stack to reject guard-call cycles
-(`GuardCallCycle`), and lifts the helper's free names into `pinned` slots.
-Lowering a `Dispatch` runs the nested matcher into a fresh value with a `false`
-fallthrough, so a guard helper that matches nothing yields `false` rather than
-halting.
-
-## Lowering To IR
-
-`lower_pattern_matrix_to_current_fn` compiles the matrix, then walks the graph
-with `lower_matcher_node`, threading a `fail_block` and a body callback. A
-`MatcherLowerState` caches each `SubjectRef`'s materialized `Var` per
-control-flow edge, so a projection is computed once and only where it is legal.
-
-`materialize_matcher_subject` is where projections become primitives:
-
-- `TupleField` -> `Prim::TupleField`
-- `ListHead` -> `Prim::ListHead`
-- `ListTail` -> `Prim::ListTail`
-- `MapValue` -> `Prim::MapGet`
-
-The tests become primitives too. `lower_matcher_bool_test` and
-`lower_matcher_switch_test` map a `MatcherTest` / `SwitchKey` to:
-
-- `TupleArity` / `MapKind` / `Type` -> `Prim::TypeTest` against a tuple-of-arity,
-  map-top, or the annotated type.
-- `ListCons` and `SwitchKey::Cons` -> `Prim::IsListCons`.
-- `EqConst { EmptyList }` and `SwitchKey::EmptyList` -> `Prim::IsEmptyList`.
-- other `EqConst` / literal keys -> a constant plus `Prim::BinOp(Eq, ...)`.
-- `EqPinned` -> equality against the resolved pinned `Var`.
-
-A `Test` node lowers as: emit the boolean primitive, branch, recurse into
-`on_true` with the cloned (true-edge) state, then recurse into `on_false` with
-the parent state. A `Switch` lowers each case as its own conditional branch and
-recurses into the `default` last.
-
-### Test First, Project Second
-
-Constructor projections are valid only below a dominating constructor test. The
-graph shape and the per-edge `MatcherLowerState` enforce this together: for
+The pipeline is direct:
 
 ```text
-[head | tail]
+source clauses
+  -> SourcePatternRows
+  -> PatternDispatchPlan
+       matrix: DispatchMatrix
+       graph: DispatchGraph
+       payloads: outcomes, bindings, guards, pinned inputs, prepared keys
+  -> inline lowering / interpreter execution / receive codegen
 ```
 
-the matcher asks `Prim::IsListCons(subject)`. `Prim::ListHead(subject)` and
-`Prim::ListTail(subject)` are materialized only inside the true edge; the false
-edge falls to the next row or to `fail_block`. A non-empty-list test and an
-empty-list test answer different questions: `Prim::IsEmptyList(subject)` is true
-only for the empty-list sentinel, and its false edge still contains non-empty
-lists *and* non-list values — so it cannot gate cons projections. The planner
-narrows the false edge of `IsEmptyList` to `subject \ []` (set difference), not
-to `non_empty_list(any)`; the true edge of `IsListCons` narrows to
-`non_empty_list(any)` (`src/ir_planner/narrow.rs:216`,
-`src/ir_planner/narrow.rs:227`).
+There is no production `Matcher` data model. Pattern code must not rebuild a
+second graph shape to satisfy an old ABI. If a path needs matching semantics, it
+should consume `PatternDispatchPlan` or the underlying `DispatchGraph` directly.
 
-Tuples follow the same rule: a field projection sits below the
-arity `TypeTest`. The inline single-clause path mirrors it in `match_tuple` and
-`match_list` (`src/ir_lower/expr.rs:702`, `src/ir_lower/expr.rs:725`): type-test
-or `IsListCons`/`IsEmptyList`, enter the success block, then project.
+## Layer Ownership
 
-### Maps Distinguish Present-nil From Absent
+- `src/dispatch_matrix/pattern/source.rs` owns AST-facing row data and diagnostics over those rows.
+  It does not own executable matching.
+- `src/dispatch_matrix/mod.rs` owns the generic dispatch model: `Region`,
+  `Order`, `Outcome`, branch-local `EdgeEvidence`, and `DispatchGraph`.
+- `src/dispatch_matrix/pattern.rs` owns source-pattern production. It converts
+  AST patterns into `RegionQuestion`s and stores pattern-specific payloads beside
+  the matrix as `PatternDispatchPlan`.
+- `src/ir_lower/pattern_dispatch.rs` walks `DispatchGraph` into inline IR for
+  function clauses, `case`, `with else`, and guard helper dispatch.
+- `src/ir_interp/dispatch_exec.rs` executes receive probes from the same plan.
+- `src/ir_codegen/receive.rs` emits the scheduler-facing receive probe function
+  by walking the same plan.
 
-The matrix lowers a map entry as presence-then-value, not as a `nil` compare.
-`MatcherTest::MapHasKey` lowers to `Prim::MatcherMapGet(map, key)` followed by
-`Prim::IsMatcherMapMiss(value)`: a dedicated miss sentinel separates "key
-absent" from "key present holding `nil`". The looked-up value becomes a
-`SubjectRef::MapValue`, valid only on the present edge — a missed key never
-inherits it. (The single-clause inline `match_map` path instead uses a plain
-`Prim::MapGet` and a `nil` comparison.)
+## Test First, Project Second
 
-## Where Matrices Come From
+Constructor projections are valid only on a branch where the constructor test
+has succeeded. The graph carries that rule structurally.
 
-- `lower_multi_clause` builds one column per parameter; matching leaves
-  `TailCall` per-clause continuation fns (`fn_clause_N`); an exhausted matcher
-  halts with `:function_clause`.
-- `lower_case` builds a single-column matrix over the scrutinee; leaves route to
-  `case_clause_N` continuations; exhaustion halts with `:case_clause`.
-- `lower_with` lowers the `else` cascade through the same machinery.
-- `lower_receive` compiles a one-column matrix over the candidate message into a
-  cached `Matcher` carried on the receive term.
-- Single-clause `fn` heads and single, unguarded lambdas bind parameters with
-  `lower_pattern_bind`; on mismatch they halt with `:match_error`. A multi-clause
-  or guarded lambda is rejected at lowering (`LowerError::Unsupported`).
+For `[head | tail]`, the dispatch asks `ListCons(subject)`. The success edge
+projects `ListHead(subject)` and `ListTail(subject)`; the miss edge does not.
+For tuples, `TupleArity(n)` dominates every `TupleField` projection. For maps,
+`MapKeyPresent(map, key)` projects a map value only on the present edge, so a
+present `nil` value and an absent key remain distinguishable.
 
-## Compile-Time Analysis
+This rule is the reason the matrix carries branch evidence rather than letting
+lowering freely materialize paths from syntax.
 
-`src/pattern_matrix/analysis.rs` reuses the compiler for diagnostics.
-`find_unreachable_rows` compiles the matrix (with guards normalized to `true`,
-so a guard's reject edge is kept without evaluating it) and reports any
-`body_id` the graph cannot reach. `is_inexhaustive_with_domains` reports `true`
-when some path reaches `Fail`; `SubjectDomain::List` lets a subject known to be
-a list count as covered once both `EmptyList` and `Cons` cases exist.
-`src/frontend/pattern_check.rs` drives these over every match site and emits
-warnings; it skips fns whose body is unreachable and skips coverage verdicts
-when guards or type annotations are present, since the matrix treats those
-clauses as plain catch-alls.
+## Pattern Payloads
 
-## Tiny Walkthrough
+`PatternDispatchPlan` keeps producer-specific payloads outside the generic
+matrix:
 
-```text
-fn f([h | t]), do: ...
-fn f([]),      do: ...
+- `outcomes`: body id plus source bindings for the winning row.
+- `guards`: guard expressions and nested guard dispatch plans.
+- `pinned`: `^name` inputs captured from the surrounding scope.
+- `prepared_keys`: heap values, such as atom/binary/float map keys, materialized
+  once outside the dispatch graph.
+- `bitstring_direct_bindings`: names introduced by bitstring fields that later
+  field-size expressions may reference.
 
-matrix: subject s0, rows [ [h|t] -> 0 ], [ [] -> 1 ]
-compile: Switch(s0, ListCons) {
-           Cons      -> Leaf 0  bind h=ListHead(s0), t=ListTail(s0)
-           EmptyList -> Leaf 1
-           default   -> Fail
-         }
-lower:   isc = IsListCons(s0); if isc -> cons-edge else next
-           cons-edge: h = ListHead(s0); t = ListTail(s0); TailCall fn_clause_0
-         else: ise = IsEmptyList(s0); if ise -> TailCall fn_clause_1 else Fail
-Fail -> Halt(:function_clause)
-```
+The generic `DispatchMatrix` sees only regions and opaque outcome ids. Bodies,
+receive wakeup behavior, and guard result interpretation belong to the producer.
 
-The head and tail reads exist only inside the `IsListCons` true edge; the
-empty-list edge never projects them.
+## Lowering Sites
+
+- Multi-clause functions build one subject per parameter and route successful
+  outcomes to `fn_clause_N` continuation functions. Exhaustion halts with
+  `:function_clause`.
+- `case` builds one subject for the scrutinee and routes outcomes to
+  `case_clause_N`; exhaustion halts with `:case_clause`.
+- `with else` dispatches the unmatched value through the same machinery.
+- `receive` builds one subject for the candidate message. The receive term
+  stores an `Arc<PatternDispatchPlan>`; the interpreter and native receive probe
+  both run that cached plan against mailbox messages.
+- Single-clause unguarded function heads and lambdas still bind inline because
+  there is no dispatch choice. They must still obey test-first/project-second.
+
+## Guards
+
+Guards compile into `PatternGuardExpr`. A pure helper call in a guard lowers to a
+nested `PatternGuardExpr::Dispatch` whose `PatternGuardDispatch` contains a
+full `PatternDispatchPlan` for the helper clauses plus one expression per helper
+body. Guard helper lowering tracks a call stack and rejects cycles with
+`GuardCallCycle`.
+
+Nested guard dispatch returns a boolean-ish guard value: no matching helper arm
+means the guard fails, not that the surrounding match halts.
+
+## Diagnostics
+
+`src/dispatch_matrix/pattern/source.rs` uses the same producer. It normalizes guards to
+`true` for coverage analysis, compiles the rows to a `PatternDispatchPlan`, and
+walks the `DispatchGraph`:
+
+- `find_unreachable_rows` reports row body ids that no graph path reaches.
+- `is_inexhaustive_with_domains` reports whether some path reaches `Fail`.
+- `KnownSubjectDomain::List` lets a known-list subject count as covered when both
+  empty-list and cons regions are present.
+
+Diagnostics should not reimplement matching with syntax walkers. If a warning
+depends on dispatch reachability, ask the dispatch graph.

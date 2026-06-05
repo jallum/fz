@@ -64,8 +64,11 @@ fn runtime_library_interfaces_expose_fz_functions_not_primitive_externs() {
             .keys()
             .any(|module| module.dotted() == "Enumerable.Enumerable")
     );
-    let enumerable_artifact =
-        artifact(&ModuleName::from_segments(vec!["Enumerable".to_string()])).expect("Enumerable artifact");
+    let enumerable_artifact = artifact(
+        &ModuleName::from_segments(vec!["Enumerable".to_string()]),
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("Enumerable artifact");
     assert!(
         enumerable_artifact
             .fzo
@@ -185,13 +188,13 @@ fn runtime_library_interfaces_expose_fz_functions_not_primitive_externs() {
 
 #[test]
 fn runtime_library_artifacts_round_trip_deterministically() {
-    let artifacts = artifacts();
+    let artifacts = artifacts(&crate::telemetry::ConfiguredTelemetry::new());
     assert!(!artifacts.is_empty());
 
     for artifact in artifacts {
         let fzi_text = artifact.fzi.serialize();
         let fzi = FziArtifact::deserialize(
-            &NullTelemetry,
+            &crate::telemetry::ConfiguredTelemetry::new(),
             None,
             &fzi_text,
             Some(&artifact.interface.fingerprint_inputs),
@@ -216,7 +219,7 @@ fn runtime_library_artifacts_round_trip_deterministically() {
 
         let fzo_text = artifact.fzo.serialize();
         let fzo = FzoArtifact::deserialize(
-            &NullTelemetry,
+            &crate::telemetry::ConfiguredTelemetry::new(),
             None,
             &fzo_text,
             Some(&artifact.fzo.interface_fingerprint),
@@ -235,7 +238,7 @@ fn runtime_library_artifacts_write_load_and_import_like_user_artifacts() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&["fz", "module"], capture.handler());
-    let artifacts = artifacts();
+    let artifacts = artifacts(&crate::telemetry::ConfiguredTelemetry::new());
     let interfaces = artifacts
         .iter()
         .map(|artifact| (artifact.module.clone(), artifact.interface.clone()))
@@ -275,7 +278,7 @@ end
         consumer.to_string(),
         "consumer.fz".to_string(),
         loaded_interfaces,
-        &NullTelemetry,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     ) {
         Ok(_) => {}
         Err(_) => panic!("runtime artifact interface resolves like a user artifact"),
@@ -290,7 +293,7 @@ end
 
 #[test]
 fn primitive_prelude_imports_kernel_without_defmodule_body() {
-    let prelude = primitive_prelude_program();
+    let prelude = primitive_prelude_program(&crate::telemetry::ConfiguredTelemetry::new());
     assert!(prelude.items.iter().all(|item| !matches!(&**item, Item::Module(_))));
     assert!(
         prelude

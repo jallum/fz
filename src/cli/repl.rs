@@ -38,7 +38,7 @@ use crate::modules::pipeline::{
 use crate::notify_fixture_execution_start;
 use crate::parser::Parser;
 use crate::parser::lexer::{Lexer, Tok};
-use crate::telemetry::{ConfiguredTelemetry, DiagRenderer, NullTelemetry, Telemetry};
+use crate::telemetry::{ConfiguredTelemetry, DiagRenderer, Telemetry};
 use crate::types::{DefaultTypes, RenderTypes, Ty, Types};
 use rustyline::completion::Completer;
 use rustyline::error::ReadlineError;
@@ -54,9 +54,10 @@ use std::path::Path;
 use std::rc::Rc;
 
 pub fn run() -> io::Result<()> {
+    let tel = Rc::new(ConfiguredTelemetry::new());
     let mut session = ReplSession::new();
-    let mut composer = ReplComposer::new();
-    let mut editor = RustylineReplLineEditor::new()?;
+    let mut composer = ReplComposer::new(tel.clone());
+    let mut editor = RustylineReplLineEditor::new(tel.clone())?;
 
     println!("fz repl — :q to quit");
     loop {
@@ -76,7 +77,7 @@ pub fn run() -> io::Result<()> {
             ReplComposerEvent::Diagnostic(msg) => eprintln!("{}", msg),
             ReplComposerEvent::Complete(src) => {
                 editor.add_history_entry(&src)?;
-                match session.eval_chunk(&src) {
+                match session.eval_chunk(&src, tel.as_ref()) {
                     ReplChunkOutcome::Ok(None) => {}
                     ReplChunkOutcome::Ok(Some(value)) => {
                         if !value.is_nil() {
@@ -108,9 +109,9 @@ struct RustylineReplLineEditor {
 }
 
 impl RustylineReplLineEditor {
-    fn new() -> io::Result<Self> {
+    fn new(tel: Rc<ConfiguredTelemetry>) -> io::Result<Self> {
         let mut editor = Editor::<ReplEditorHelper, DefaultHistory>::new().map_err(rustyline_to_io_error)?;
-        editor.set_helper(Some(ReplEditorHelper));
+        editor.set_helper(Some(ReplEditorHelper { tel }));
         Ok(Self { editor })
     }
 }
@@ -137,14 +138,16 @@ fn rustyline_to_io_error(err: ReadlineError) -> io::Error {
     io::Error::other(err)
 }
 
-struct ReplEditorHelper;
+struct ReplEditorHelper {
+    tel: Rc<ConfiguredTelemetry>,
+}
 
 impl ReplEditorHelper {
-    fn validation_result_for(input: &str) -> ValidationResult {
+    fn validation_result_for(input: &str, tel: &dyn Telemetry) -> ValidationResult {
         if ReplComposer::is_immediate_input(input) {
             return ValidationResult::Valid(None);
         }
-        match ReplWorld::parse_source_chunk(input) {
+        match ReplWorld::parse_source_chunk(input, tel) {
             Err(ReplWorldParse::Incomplete) => ValidationResult::Incomplete,
             Ok(_) | Err(ReplWorldParse::Err(_)) => ValidationResult::Valid(None),
         }
@@ -163,7 +166,7 @@ impl Highlighter for ReplEditorHelper {}
 
 impl Validator for ReplEditorHelper {
     fn validate(&self, ctx: &mut ValidationContext<'_>) -> rustyline::Result<ValidationResult> {
-        Ok(Self::validation_result_for(ctx.input()))
+        Ok(Self::validation_result_for(ctx.input(), self.tel.as_ref()))
     }
 }
 
@@ -176,7 +179,7 @@ pub fn run_script(path: &Path, tel: &ConfiguredTelemetry) -> io::Result<()> {
     let src = std::fs::read_to_string(path)?;
     let source_name = path.display().to_string();
     let diagnostics = attach_repl_diagnostic_renderer(tel);
-    ReplSession::new().run_script_str_with_telemetry(&src, source_name, tel, &diagnostics)
+    ReplSession::new().run_script_str(&src, source_name, tel, &diagnostics)
 }
 
 /// Underlying driver shared by `run_script` and tests. Returns Err on
@@ -184,7 +187,8 @@ pub fn run_script(path: &Path, tel: &ConfiguredTelemetry) -> io::Result<()> {
 /// only output is whatever the program's own `dbg()` calls produced.
 #[cfg(test)]
 pub fn run_script_str(src: &str) -> io::Result<()> {
-    ReplSession::new().run_script_str(src, "<repl-script>".to_string())
+    let (tel, diagnostics) = repl_diagnostic_telemetry();
+    ReplSession::new().run_script_str(src, "<repl-script>".to_string(), &tel, &diagnostics)
 }
 
 pub(crate) struct ReplSession {
@@ -203,12 +207,13 @@ enum ReplComposerEvent {
     Diagnostic(String),
 }
 
-#[derive(Default)]
-struct ReplComposer;
+struct ReplComposer {
+    tel: Rc<ConfiguredTelemetry>,
+}
 
 impl ReplComposer {
-    fn new() -> Self {
-        Self
+    fn new(tel: Rc<ConfiguredTelemetry>) -> Self {
+        Self { tel }
     }
 
     fn submit_buffer(&mut self, buffer: &str) -> ReplComposerEvent {
@@ -223,7 +228,7 @@ impl ReplComposer {
             return ReplComposerEvent::DocQuery(query.trim().to_string());
         }
 
-        match ReplWorld::parse_source_chunk(buffer) {
+        match ReplWorld::parse_source_chunk(buffer, self.tel.as_ref()) {
             Ok(_) => ReplComposerEvent::Complete(buffer.to_string()),
             Err(ReplWorldParse::Incomplete) => ReplComposerEvent::Diagnostic("incomplete repl input".to_string()),
             Err(ReplWorldParse::Err(msg)) => ReplComposerEvent::Diagnostic(msg),
@@ -250,13 +255,7 @@ impl ReplSession {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn run_script_str(&mut self, src: &str, source_name: String) -> io::Result<()> {
-        let (tel, diagnostics) = repl_diagnostic_telemetry();
-        self.run_script_str_with_telemetry(src, source_name, &tel, &diagnostics)
-    }
-
-    fn run_script_str_with_telemetry(
+    fn run_script_str(
         &mut self,
         src: &str,
         source_name: String,
@@ -282,16 +281,16 @@ impl ReplSession {
         }
 
         notify_fixture_execution_start();
-        ReplRuntime::run_script_main(self.world.types(), &prepared.module, prepared.module_plan, main.id)
+        ReplRuntime::run_script_main(self.world.types(), &prepared.module, prepared.module_plan, main.id, tel)
     }
 
-    pub(crate) fn eval_chunk(&mut self, src: &str) -> ReplChunkOutcome {
-        match self.world.parse_chunk(src) {
-            Ok(ReplWorldChunk::Items(prog)) => match self.world.apply_items(src, prog) {
+    pub(crate) fn eval_chunk(&mut self, src: &str, tel: &dyn Telemetry) -> ReplChunkOutcome {
+        match self.world.parse_chunk(src, tel) {
+            Ok(ReplWorldChunk::Items(prog)) => match self.world.apply_items(src, prog, tel) {
                 Ok(_module) => ReplChunkOutcome::Ok(None),
                 Err(e) => ReplChunkOutcome::Err(e),
             },
-            Ok(ReplWorldChunk::Expr { expr, sm }) => self.eval_expr_chunk(src, expr, sm),
+            Ok(ReplWorldChunk::Expr { expr, sm }) => self.eval_expr_chunk(src, expr, sm, tel),
             Err(ReplWorldParse::Incomplete) => {
                 ReplChunkOutcome::Err("incomplete repl input must be composed before execution".to_string())
             }
@@ -299,9 +298,18 @@ impl ReplSession {
         }
     }
 
-    fn eval_expr_chunk(&mut self, _src: &str, expr: Spanned<Expr>, sm: SourceMap) -> ReplChunkOutcome {
+    fn eval_expr_chunk(
+        &mut self,
+        _src: &str,
+        expr: Spanned<Expr>,
+        sm: SourceMap,
+        tel: &dyn Telemetry,
+    ) -> ReplChunkOutcome {
         let eval_name = format!("__repl_eval_{}", self.next_eval);
-        let compiled = match self.world.compile_repl_expr(expr, self.frame.names(), eval_name, sm) {
+        let compiled = match self
+            .world
+            .compile_repl_expr(expr, self.frame.names(), eval_name, sm, tel)
+        {
             Ok(compiled) => compiled,
             Err(e) => return ReplChunkOutcome::Err(e.to_string()),
         };
@@ -316,6 +324,7 @@ impl ReplSession {
             compiled.module_plan,
             compiled.fn_id,
             args,
+            tel,
         ) {
             Ok(value) => value,
             Err(e) => return ReplChunkOutcome::Err(e),
@@ -370,10 +379,11 @@ impl ReplRuntime {
         module: &Module,
         module_plan: ModulePlan,
         main_id: FnId,
+        tel: &dyn Telemetry,
     ) -> io::Result<()> {
         let mut runtime = Self::new(module);
         let completions = runtime
-            .enqueue_and_drive(t, module, module_plan, main_id, vec![], /*keepalive=*/ false)
+            .enqueue_and_drive(t, module, module_plan, main_id, vec![], /*keepalive=*/ false, tel)
             .map_err(io::Error::other)?;
         if completions.iter().any(|(pid, _)| *pid == runtime.evaluator_pid) {
             Ok(())
@@ -389,8 +399,9 @@ impl ReplRuntime {
         module_plan: ModulePlan,
         fn_id: FnId,
         args: Vec<AnyValue>,
+        tel: &dyn Telemetry,
     ) -> Result<AnyValue, String> {
-        let completions = self.enqueue_and_drive(t, module, module_plan, fn_id, args, /*keepalive=*/ true)?;
+        let completions = self.enqueue_and_drive(t, module, module_plan, fn_id, args, /*keepalive=*/ true, tel)?;
         completions
             .into_iter()
             .rev()
@@ -406,12 +417,13 @@ impl ReplRuntime {
         fn_id: FnId,
         args: Vec<AnyValue>,
         keepalive: bool,
+        tel: &dyn Telemetry,
     ) -> Result<Vec<(u32, AnyValue)>, String> {
         self.current_module = module.clone();
         self.interp
             .enqueue_entry_with_plan(t, module, module_plan, self.evaluator_pid, fn_id, args)?;
         let keepalive_pid = keepalive.then_some(self.evaluator_pid);
-        self.interp.drive_until_idle(t, &NullTelemetry, keepalive_pid)
+        self.interp.drive_until_idle(t, tel, keepalive_pid)
     }
 
     fn read_tuple_fields(&self, value: AnyValue, arity: usize) -> Result<Vec<AnyValue>, String> {
@@ -509,15 +521,15 @@ impl ReplWorld {
         self.compiler.types()
     }
 
-    fn parse_chunk(&self, src: &str) -> Result<ReplWorldChunk, ReplWorldParse> {
-        Self::parse_source_chunk(src)
+    fn parse_chunk(&self, src: &str, tel: &dyn Telemetry) -> Result<ReplWorldChunk, ReplWorldParse> {
+        Self::parse_source_chunk(src, tel)
     }
 
-    fn parse_source_chunk(src: &str) -> Result<ReplWorldChunk, ReplWorldParse> {
+    fn parse_source_chunk(src: &str, tel: &dyn Telemetry) -> Result<ReplWorldChunk, ReplWorldParse> {
         let mut sm = SourceMap::new();
         let file_id = sm.add_file("<repl-chunk>".to_string(), src.to_string());
-        let toks = Lexer::with_file(src, file_id)
-            .tokenize()
+        let toks = Lexer::with_file_and_source_name(src, file_id, "<repl-chunk>")
+            .tokenize(tel)
             .map_err(|e| ReplWorldParse::Err(format!("{}", e)))?;
         let starts_with_item = toks
             .iter()
@@ -533,7 +545,7 @@ impl ReplWorld {
 
         if starts_with_item {
             let mut p = Parser::new(toks);
-            return match p.parse_program() {
+            return match p.parse_program(tel) {
                 Ok(prog) => Ok(ReplWorldChunk::Items(prog)),
                 Err(e) if e.is_incomplete() => Err(ReplWorldParse::Incomplete),
                 Err(e) => Err(ReplWorldParse::Err(format!("{}", e))),
@@ -548,9 +560,9 @@ impl ReplWorld {
         }
     }
 
-    fn apply_items(&mut self, _src: &str, prog: Program) -> Result<Module, String> {
+    fn apply_items(&mut self, _src: &str, prog: Program, tel: &dyn Telemetry) -> Result<Module, String> {
         let fns = item_fn_shapes(&prog);
-        self.load_docs_and_macros(prog.clone())?;
+        self.load_docs_and_macros(prog.clone(), tel)?;
         self.item_chunks.retain(|existing| {
             !existing.fns.iter().any(|(old_name, old_arity)| {
                 fns.iter()
@@ -558,7 +570,7 @@ impl ReplWorld {
             })
         });
         self.item_chunks.push(ReplItemChunk { prog, fns });
-        match self.compile_session_module() {
+        match self.compile_session_module(tel) {
             Ok(module) => Ok(module),
             Err(e) => Err(e.to_string()),
         }
@@ -570,17 +582,11 @@ impl ReplWorld {
         input_frame: Vec<String>,
         entry_name: String,
         sm: SourceMap,
+        tel: &dyn Telemetry,
     ) -> io::Result<ReplCompiledEntry> {
         let prog = self.session_program();
-        let out = match compile_repl_expr_with_types(
-            self.types(),
-            prog,
-            expr,
-            input_frame,
-            entry_name.clone(),
-            sm,
-            &NullTelemetry,
-        ) {
+        let out = match compile_repl_expr_with_types(self.types(), prog, expr, input_frame, entry_name.clone(), sm, tel)
+        {
             Ok(out) => out,
             Err(err) => {
                 return Err(diagnostics_to_io_error(&err.sm, err.diagnostics.as_slice()));
@@ -598,7 +604,7 @@ impl ReplWorld {
                 out.frontend.diagnostics.as_slice(),
             ));
         }
-        let graph = prepare_repl_frontend(self.types(), out.frontend)?;
+        let graph = prepare_repl_frontend(self.types(), out.frontend, tel)?;
         let Some(entry_fn) = graph.module.fn_by_name(&entry_name).map(|f| f.id) else {
             return Err(io::Error::other(format!("repl entry `{}` not lowered", entry_name)));
         };
@@ -622,9 +628,9 @@ impl ReplWorld {
         lookup_doc(&self.compile_time, name)
     }
 
-    fn compile_session_module(&mut self) -> io::Result<Module> {
+    fn compile_session_module(&mut self, tel: &dyn Telemetry) -> io::Result<Module> {
         let prog = self.session_program();
-        compile_parsed_program_module(self.types(), prog)
+        compile_parsed_program_module(self.types(), prog, tel)
     }
 
     fn session_program(&self) -> Program {
@@ -638,8 +644,8 @@ impl ReplWorld {
         prog
     }
 
-    fn load_docs_and_macros(&mut self, prog: Program) -> Result<(), String> {
-        let mut prog = flatten_modules(self.types(), prog).map_err(|e| format!("module: {}", e))?;
+    fn load_docs_and_macros(&mut self, prog: Program, tel: &dyn Telemetry) -> Result<(), String> {
+        let mut prog = flatten_modules(self.types(), prog, tel).map_err(|e| format!("module: {}", e))?;
         for (path, doc) in &prog.module_docs {
             self.compile_time
                 .module_docs
@@ -667,8 +673,8 @@ pub(crate) enum ReplChunkOutcome {
     Err(String),
 }
 
-fn compile_parsed_program_module(t: &mut DefaultTypes, prog: Program) -> io::Result<Module> {
-    let frontend = match compile_program_with_types(t, prog, SourceMap::new(), &NullTelemetry) {
+fn compile_parsed_program_module(t: &mut DefaultTypes, prog: Program, tel: &dyn Telemetry) -> io::Result<Module> {
+    let frontend = match compile_program_with_types(t, prog, SourceMap::new(), tel) {
         Ok(ok) => ok,
         Err(err) => {
             return Err(diagnostics_to_io_error(&err.sm, err.diagnostics.as_slice()));
@@ -682,18 +688,23 @@ fn compile_parsed_program_module(t: &mut DefaultTypes, prog: Program) -> io::Res
     {
         return Err(diagnostics_to_io_error(&frontend.sm, frontend.diagnostics.as_slice()));
     }
-    Ok(prepare_repl_frontend(t, frontend)?.module)
+    Ok(prepare_repl_frontend(t, frontend, tel)?.module)
 }
 
-fn prepare_repl_frontend(t: &mut DefaultTypes, frontend: FrontendOk) -> io::Result<PreparedExecutionGraph> {
-    let (tel, diagnostics) = repl_diagnostic_telemetry();
+fn prepare_repl_frontend(
+    t: &mut DefaultTypes,
+    frontend: FrontendOk,
+    tel: &dyn Telemetry,
+) -> io::Result<PreparedExecutionGraph> {
+    let diagnostics = Rc::new(RefCell::new(Vec::new()));
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-    let checked = checked_module_for_mode(t, Ok(frontend), &tel, CompileMode::Normal)
+    let checked = checked_module_for_mode(t, Ok(frontend), tel, CompileMode::Normal)
         .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))?;
-    prepare_execution_graph(t, checked, &providers, &tel, CompileMode::Normal)
+    prepare_execution_graph(t, checked, &providers, tel, CompileMode::Normal)
         .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))
 }
 
+#[cfg(test)]
 fn repl_diagnostic_telemetry() -> (ConfiguredTelemetry, Rc<RefCell<Vec<u8>>>) {
     let tel = ConfiguredTelemetry::new();
     let diagnostics = attach_repl_diagnostic_renderer(&tel);

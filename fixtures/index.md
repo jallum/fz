@@ -38,7 +38,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `enum_sort/` | runtime-library Enum.sort (merge sort) allocation contract across four paths; pins JIT/AOT parity and default-sorter closure erasure | jit, interp, aot, repl |
 | `enum_take_drop_split/` | Enum take/drop/split functions match Elixir, including negative counts and predicate stop points | jit, interp, aot, repl |
 | `enum_tier0/` | Enum tier-0 functions return Elixir-style public values across List, Range, and Map | jit, interp, aot, repl |
-| `enumerable_switch_dispatch/` | Enumerable protocol switch dispatch covers List, Range, and Map receivers | jit, interp, aot, repl |
+| `enumerable_protocol_dispatch/` | Enumerable protocol dispatch covers List, Range, and Map receivers | jit, interp, aot, repl |
 | `fib_tailrec/` | fibonacci via two-accumulator tail recursion — three-clause dispatch + tail-call forwarding under load | jit, interp, aot, repl |
 | `file_handle/` | FileHandle = fd + dtor, exercising cstring/binary/integer marshal classes against real libc with an observable resource lifecycle | jit, interp, aot, repl |
 | `file_resource_lifecycle/` | fz-swt.13 / fz-4mk — File module wraps an fd in a resource; the dtor closes the fd at task-exit drain (interp/JIT/AOT parity). | interp, jit, aot, repl |

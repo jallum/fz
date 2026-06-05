@@ -1,17 +1,20 @@
 use super::*;
 use crate::frontend::resolve::flatten_modules;
 use crate::ir_lower;
-use crate::ir_planner::plan_module;
+use crate::ir_planner::plan_module_with_role;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
-use crate::telemetry::NullTelemetry;
 
 fn pipeline<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(t: &mut T, src: &str) -> (Program, Module, ModulePlan) {
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
-    let prog = flatten_modules(t, prog).expect("flatten");
-    let ir = ir_lower::lower_program(t, &prog, &NullTelemetry).expect("lower");
-    let mt = plan_module(t, &ir, &NullTelemetry);
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
+    let prog = flatten_modules(t, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
+    let ir = ir_lower::lower_program(t, &prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("lower");
+    let mt = plan_module_with_role(t, &ir, &crate::telemetry::ConfiguredTelemetry::new(), "test");
     (prog, ir, mt)
 }
 

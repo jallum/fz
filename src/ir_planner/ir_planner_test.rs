@@ -5,10 +5,12 @@ use super::fn_types::{
     fixed_point_spec_key_for_arity,
 };
 use super::narrow::narrow_for_cond;
+use super::protocol_dispatch::{ProtocolDispatchMatrixSelection, collect_protocol_dispatch_matrix_candidates};
 use super::reachable::{cont_key_from_slot0, cont_slot0_descr, reachable_spec_ids};
 use super::type_fn::type_fn;
 use super::*;
 use crate::diag::{Span, codes};
+use crate::frontend::protocols::{ImplTarget, ProtocolImplFact, ProtocolImplKey};
 use crate::frontend::resolve::{InterfaceTable, ResolveError, flatten_modules};
 use crate::frontend::spec_registry::SpecRegistry;
 use crate::frontend::{compile_source_with_interface_table, compile_source_with_types};
@@ -20,7 +22,7 @@ use crate::ir_codegen::compile_planned;
 use crate::ir_dest::{lower_list_destinations, lower_map_destinations, lower_tuple_destinations};
 use crate::ir_lower::lower_program;
 use crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT;
-use crate::modules::identity::ModuleName;
+use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::pipeline::{
     CompileMode, ProviderInputs, checked_module_for_mode, compile_source_with_providers, prepare_execution_graph,
 };
@@ -29,14 +31,13 @@ use crate::specs::{
     CallbackReturnDemand, CallbackReturnFact, CallbackReturnQuery, ResolvedSpec, ResolvedSpecSet, ResolvedTypeShape,
     SpecApplicationOutcome, StructuralOccurrence, apply_spec_set, instantiate_match,
 };
-use crate::telemetry::{Capture, ConfiguredTelemetry, NullTelemetry, Telemetry, Value};
+use crate::telemetry::{Capture, ConfiguredTelemetry, Telemetry, Value};
 use crate::test_support::{
-    assert_authoritative_planner_consistent, linked_runtime_graph, linked_runtime_graph_with_telemetry,
-    linked_runtime_module, lower_frontend_module, runtime_graph_planner_activation_projection_signals,
-    runtime_graph_reachable_materialized_body_signals,
+    assert_authoritative_planner_consistent, linked_runtime_graph, linked_runtime_module, lower_frontend_module,
+    runtime_graph_planner_activation_projection_signals, runtime_graph_reachable_materialized_body_signals,
 };
 use crate::types::{ClosureTypes, DefaultTypes, KeySlot, Ty, TypeVarId, Types, display_key_slots, key_slots_from_tys};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::read_to_string;
 use std::slice::from_ref;
 
@@ -106,9 +107,18 @@ fn build_module(fns: Vec<FnIr>) -> Module {
 }
 
 fn lower_src_for_plan(src: &str) -> Module {
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
-    lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower")
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
+    lower_program(
+        &mut crate::types::new(),
+        &prog,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("lower")
 }
 
 fn count_if_terminators(f: &FnIr) -> usize {
@@ -261,7 +271,7 @@ fn assert_ty_not_empty(t: &DefaultTypes, ty: &Ty) {
 }
 
 fn ty_for_var_in_fn(t: &mut DefaultTypes, m: &Module, fn_index: usize, var: Var) -> Ty {
-    let mt = plan_module(t, m, &NullTelemetry);
+    let mt = plan_module_with_role(t, m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
     fn_view(t, m, &mt, fn_index)
         .vars
         .get(&var)
@@ -270,7 +280,7 @@ fn ty_for_var_in_fn(t: &mut DefaultTypes, m: &Module, fn_index: usize, var: Var)
 }
 
 fn only_effect_summary(t: &mut DefaultTypes, m: &Module, fid: FnId) -> EffectSummary {
-    let mt = plan_module(t, m, &NullTelemetry);
+    let mt = plan_module_with_role(t, m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
     *mt.fn_effects.get(&fid).expect("missing effect summary for fn")
 }
 
@@ -786,8 +796,8 @@ fn list_is_nil_on_int_var_flags_true_branch_unreachable() {
     mb.set_terminator(mentry, Term::Halt(cl));
     let m = build_module(vec![b.build(), mb.build()]);
     let mut ct = crate::types::new();
-    let t = plan_module(&mut ct, &m, &NullTelemetry);
-    let diags = collect_diagnostics(&mut ct, &m, &t, &NullTelemetry);
+    let t = plan_module_with_role(&mut ct, &m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
+    let diags = collect_diagnostics(&mut ct, &m, &t, &crate::telemetry::ConfiguredTelemetry::new());
     assert_eq!(diags.len(), 1, "expected one unreachable arm, got {:?}", diags);
     assert!(diags.as_slice().iter().all(|d| d.code == codes::TYPE_UNREACHABLE_ARM));
 }
@@ -801,8 +811,8 @@ fn happy_path_emits_no_warnings() {
     b.set_terminator(entry, Term::Halt(v));
     let m = build_module(vec![b.build()]);
     let mut ct = crate::types::new();
-    let t = plan_module(&mut ct, &m, &NullTelemetry);
-    let diags = collect_diagnostics(&mut ct, &m, &t, &NullTelemetry);
+    let t = plan_module_with_role(&mut ct, &m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
+    let diags = collect_diagnostics(&mut ct, &m, &t, &crate::telemetry::ConfiguredTelemetry::new());
     assert!(diags.as_slice().is_empty(), "expected no warnings, got {:?}", diags);
 }
 
@@ -846,8 +856,8 @@ fn eq_then_eq_dup_clause_flags_second_arm_unreachable() {
     mb.set_terminator(mentry, Term::Halt(cl));
     let m = build_module(vec![b.build(), mb.build()]);
     let mut ct = crate::types::new();
-    let t = plan_module(&mut ct, &m, &NullTelemetry);
-    let diags = collect_diagnostics(&mut ct, &m, &t, &NullTelemetry);
+    let t = plan_module_with_role(&mut ct, &m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
+    let diags = collect_diagnostics(&mut ct, &m, &t, &crate::telemetry::ConfiguredTelemetry::new());
     // The dead-block id is mentioned in the diagnostic's notes (post-
     // .20.5 the message is the headline; details live in notes).
     let needle = format!("bb{}", dead_b.0);
@@ -1008,8 +1018,8 @@ fn unreachable_arm_diagnostic_includes_type_vocabulary() {
     mb.set_terminator(mentry, Term::Halt(cl));
     let m = build_module(vec![b.build(), mb.build()]);
     let mut ct = crate::types::new();
-    let t = plan_module(&mut ct, &m, &NullTelemetry);
-    let diags = collect_diagnostics(&mut ct, &m, &t, &NullTelemetry);
+    let t = plan_module_with_role(&mut ct, &m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
+    let diags = collect_diagnostics(&mut ct, &m, &t, &crate::telemetry::ConfiguredTelemetry::new());
     let d = diags.as_slice().iter().next().expect("at least one diagnostic");
     // First note: "type `…`" — rendered set-theoretic vocab.
     let type_note = d
@@ -1251,7 +1261,7 @@ fn known_closure_call_with_branch_continuation_materializes_without_erased_callc
     let cap = Capture::new();
     tel.attach(&["fz", "planner"], cap.handler());
     let mut t = crate::types::new();
-    let module_plan = plan_module(&mut t, &m, &tel);
+    let module_plan = plan_module_with_role(&mut t, &m, &tel, "test");
     let planned_program = materialize_program(&mut t, &m, &module_plan, &tel);
     assert_authoritative_planner_consistent(&cap);
 
@@ -1293,7 +1303,7 @@ fn direct_call_materialization_fuses_cloned_return_continuation_block() {
     let cap = Capture::new();
     tel.attach(&["fz", "planner"], cap.handler());
     let mut t = crate::types::new();
-    let module_plan = plan_module(&mut t, &m, &tel);
+    let module_plan = plan_module_with_role(&mut t, &m, &tel, "test");
     let planned_program = materialize_program(&mut t, &m, &module_plan, &tel);
     assert_authoritative_planner_consistent(&cap);
 
@@ -1342,7 +1352,7 @@ fn materialized_tail_direct_call_prunes_erased_callee_from_reachability() {
     let cap = Capture::new();
     tel.attach(&["fz", "planner"], cap.handler());
     let mut t = crate::types::new();
-    let module_plan = plan_module(&mut t, &m, &tel);
+    let module_plan = plan_module_with_role(&mut t, &m, &tel, "test");
     let planned_program = materialize_program(&mut t, &m, &module_plan, &tel);
     assert_authoritative_planner_consistent(&cap);
 
@@ -1483,7 +1493,7 @@ fn repr_seam_closure_predicate_registers_captured_wrapper_callable_entry() {
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&["fz", "planner"], cap.handler());
-    let graph = linked_runtime_graph_with_telemetry(&mut t, src, &tel);
+    let graph = linked_runtime_graph(&mut t, src, &tel);
 
     let planned_program = materialize_program(&mut t, &graph.module, &graph.module_plan, &tel);
 
@@ -1519,7 +1529,7 @@ fn planner_specializes_pair_by_tuple_destructure_and_value_demand() {
     let m = lower_src_for_plan(src);
     let mut t = crate::types::new();
     let module_plan = plan_module_quiet(&mut t, &m);
-    let planned_program = materialize_program(&mut t, &m, &module_plan, &NullTelemetry);
+    let planned_program = materialize_program(&mut t, &m, &module_plan, &crate::telemetry::ConfiguredTelemetry::new());
     let pair = m.fns.iter().find(|f| f.name == "pair").expect("pair fn");
 
     // `pair` is consumed two ways: `{a, b} = pair(1)` destructures it
@@ -1605,7 +1615,7 @@ fn plan_module_prechecked(t: &mut DefaultTypes, module: &Module) -> (ModulePlan,
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
-    let plan = plan_module(t, module, &tel);
+    let plan = plan_module_with_role(t, module, &tel, "test");
     let _ = materialize_program(t, module, &plan, &tel);
     assert_authoritative_planner_consistent(&cap);
     (plan, cap)
@@ -1622,22 +1632,30 @@ fn assert_module_plan_consistent(module: &Module) {
 }
 
 fn assert_pipeline_consistent(src: &str) {
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
     let mut t = crate::types::new();
-    let prog = flatten_modules(&mut t, prog).expect("flatten");
-    let ir = lower_program(&mut t, &prog, &NullTelemetry).expect("lower");
+    let prog = flatten_modules(&mut t, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
+    let ir = lower_program(&mut t, &prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("lower");
     let (_plan, _cap) = plan_module_prechecked(&mut t, &ir);
 }
 
 fn pipeline(src: &str, tel: &dyn Telemetry) -> (DefaultTypes, Module, ModulePlan) {
     assert_pipeline_consistent(src);
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
     let mut t = crate::types::new();
-    let prog = flatten_modules(&mut t, prog).expect("flatten");
-    let ir = lower_program(&mut t, &prog, &NullTelemetry).expect("lower");
-    let mt = plan_module(&mut t, &ir, tel);
+    let prog = flatten_modules(&mut t, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
+    let ir = lower_program(&mut t, &prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("lower");
+    let mt = plan_module_with_role(&mut t, &ir, tel, "test");
     (t, ir, mt)
 }
 
@@ -1649,9 +1667,10 @@ fn pipeline(src: &str, tel: &dyn Telemetry) -> (DefaultTypes, Module, ModulePlan
 /// fold into a single `[int, list(int), list(int), list(int)]` spec.
 #[test]
 fn quicksort_partition_accumulators_converge_to_one_spec() {
-    let module = linked_runtime_module(include_str!("../../fixtures/quicksort/input.fz"));
     let mut t = crate::types::new();
-    let mt = plan_module(&mut t, &module, &NullTelemetry);
+    let tel = ConfiguredTelemetry::new();
+    let module = linked_runtime_module(&mut t, include_str!("../../fixtures/quicksort/input.fz"), &tel);
+    let mt = plan_module_with_role(&mut t, &module, &tel, "test");
     let partition_id = module.fn_by_name("partition").expect("quicksort defines partition").id;
     let partition_specs: Vec<&SpecKey> = mt.specs.keys().filter(|k| k.fn_id == partition_id).collect();
     assert_eq!(
@@ -1687,9 +1706,10 @@ fn quicksort_partition_accumulators_converge_to_one_spec() {
 /// returns a list and main returns neither, so neither offers a tuple.
 #[test]
 fn return_capabilities_classify_quicksort_fn_shapes() {
-    let module = linked_runtime_module(include_str!("../../fixtures/quicksort/input.fz"));
     let mut t = crate::types::new();
-    let mt = plan_module(&mut t, &module, &NullTelemetry);
+    let tel = ConfiguredTelemetry::new();
+    let module = linked_runtime_module(&mut t, include_str!("../../fixtures/quicksort/input.fz"), &tel);
+    let mt = plan_module_with_role(&mut t, &module, &tel, "test");
     let cap = |name: &str| {
         let id = module
             .fn_by_name(name)
@@ -1725,7 +1745,7 @@ fn frontend_plan(src: &str, tel: &dyn Telemetry) -> (DefaultTypes, Module, Modul
 
     let mut t = crate::types::new();
     let module = frontend_module(src);
-    let plan = plan_module(&mut t, &module, tel);
+    let plan = plan_module_with_role(&mut t, &module, tel, "test");
     (t, module, plan)
 }
 
@@ -1842,7 +1862,7 @@ fn main() do
   dbg(classify([]))
 end
 "#,
-        &NullTelemetry,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let classify = m.fn_by_name("classify").expect("classify");
     let found = mt
@@ -1866,7 +1886,7 @@ fn main() do
   dbg(b)
 end
 "#,
-        &NullTelemetry,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let ignore = m.fn_by_name("ignore").expect("ignore fn");
     assert_eq!(ignore.ignored_entry_params, vec![true, false]);
@@ -2147,8 +2167,7 @@ fn compile_elides_named_ref_callable_fallback_when_calls_are_fully_resolved() {
     tel.attach(&[], cap.handler());
 
     let mut t = crate::types::new();
-    let _graph =
-        linked_runtime_graph_with_telemetry(&mut t, include_str!("../type_infer/fixtures/poly_named_ref.fz"), &tel);
+    let _graph = linked_runtime_graph(&mut t, include_str!("../type_infer/fixtures/poly_named_ref.fz"), &tel);
 
     let id_events: Vec<_> = cap
         .find(&["fz", "planner", "activation_projection"])
@@ -2159,7 +2178,7 @@ fn compile_elides_named_ref_callable_fallback_when_calls_are_fully_resolved() {
                 Some(Value::Str(name)) if name == "id"
             ) && matches!(
                 event.metadata.get("role"),
-                Some(Value::Str(role)) if role == "authoritative"
+                Some(Value::Str(role)) if role == "linked_execution_graph"
             )
         })
         .collect();
@@ -3024,9 +3043,9 @@ fn planner_projects_enum_reduce_runtime_graph_from_activation_facts() {
     tel.attach(&[], cap.handler());
 
     let mut t = crate::types::new();
-    let module = linked_runtime_module(include_str!("../type_infer/fixtures/enum_reduce.fz"));
+    let module = linked_runtime_module(&mut t, include_str!("../type_infer/fixtures/enum_reduce.fz"), &tel);
     assert_module_plan_consistent(&module);
-    let _ = plan_module(&mut t, &module, &tel);
+    let _ = plan_module_with_role(&mut t, &module, &tel, "test");
 
     let events = cap
         .find(&["fz", "planner", "activation_projection"])
@@ -3098,7 +3117,7 @@ fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
     tel.attach(&[], cap.handler());
 
     let mut t = crate::types::new();
-    let graph = linked_runtime_graph_with_telemetry(
+    let graph = linked_runtime_graph(
         &mut t,
         include_str!("../type_infer/fixtures/enum_reduce_operator_ref.fz"),
         &tel,
@@ -3123,7 +3142,7 @@ fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
                 Some(Value::U64(fn_id)) if runtime_body_ids.contains(&(*fn_id as u32))
             ) && matches!(
                 event.metadata.get("role"),
-                Some(Value::Str(role)) if role == "authoritative"
+                Some(Value::Str(role)) if role == "linked_execution_graph"
             )
         })
         .collect::<Vec<_>>();
@@ -3238,9 +3257,13 @@ fn planner_projects_enum_reduce_range_runtime_graph_from_activation_facts() {
     tel.attach(&[], cap.handler());
 
     let mut t = crate::types::new();
-    let module = linked_runtime_module(include_str!("../type_infer/fixtures/enum_reduce_range.fz"));
+    let module = linked_runtime_module(
+        &mut t,
+        include_str!("../type_infer/fixtures/enum_reduce_range.fz"),
+        &tel,
+    );
     assert_module_plan_consistent(&module);
-    let _ = plan_module(&mut t, &module, &tel);
+    let _ = plan_module_with_role(&mut t, &module, &tel, "test");
 
     let events = cap
         .find(&["fz", "planner", "activation_projection"])
@@ -3340,7 +3363,7 @@ fn planner_projects_plain_spawn_child_through_callable_boundary() {
         .find(|signal| signal.body_name == "child")
         .unwrap_or_else(|| panic!("expected child activation projection event: {signals:?}"));
 
-    assert_eq!(child.role, "authoritative");
+    assert_eq!(child.role, "test");
     assert_eq!(child.spec_role, "activation");
     assert_eq!(child.projection_kind, "exact");
     assert_eq!(child.projected_return_state, "known(nil)");
@@ -3354,8 +3377,9 @@ fn planner_projects_plain_spawn_child_through_callable_boundary() {
 fn runtime_graph_enum_take_indirect_calls_keep_callable_capabilities() {
     let src = "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
     let mut t = crate::types::new();
-    let graph = linked_runtime_graph(src);
-    let planned_program = materialize_program(&mut t, &graph.module, &graph.module_plan, &NullTelemetry);
+    let tel = ConfiguredTelemetry::new();
+    let graph = linked_runtime_graph(&mut t, src, &tel);
+    let planned_program = materialize_program(&mut t, &graph.module, &graph.module_plan, &tel);
 
     let mut checked = 0usize;
     for sid in planned_program.reachable_specs() {
@@ -3391,8 +3415,9 @@ fn runtime_graph_enum_take_indirect_calls_keep_callable_capabilities() {
 fn runtime_graph_enum_take_callers_supply_callable_args_to_indirect_closure_specs() {
     let src = "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
     let mut t = crate::types::new();
-    let graph = linked_runtime_graph(src);
-    let planned_program = materialize_program(&mut t, &graph.module, &graph.module_plan, &NullTelemetry);
+    let tel = ConfiguredTelemetry::new();
+    let graph = linked_runtime_graph(&mut t, src, &tel);
+    let planned_program = materialize_program(&mut t, &graph.module, &graph.module_plan, &tel);
 
     let mut checked = 0usize;
     for sid in planned_program.reachable_specs() {
@@ -3522,7 +3547,7 @@ fn sum([]), do: 0
 fn sum([h | t]), do: h + sum(t)
 fn main(), do: dbg(sum([1, 2, 3, 4, 5]))
 "#,
-        &NullTelemetry,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let returns = mt.effective_returns.clone();
     let sum_fn = m.fns.iter().find(|f| f.name == "sum").unwrap();
@@ -3596,7 +3621,7 @@ fn cont_slot0_narrows_to_callee_return_for_direct_call() {
 fn add1(n), do: n + 1
 fn main(), do: dbg(add1(40) + 2)
 "#,
-        &NullTelemetry,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let main = m.fns.iter().find(|f| f.name == "main").unwrap();
     let main_ft = mt.specs.get(&value_spec_key(main.id, vec![])).unwrap();
@@ -3642,7 +3667,7 @@ fn main() do
   dbg(apply2(double, 21))
 end
 "#,
-        &NullTelemetry,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let double = m.fns.iter().find(|f| f.name == "double").unwrap();
     let any_key = key_tys(vec![t.any()]);
@@ -3687,7 +3712,7 @@ fn fn_with_only_typed_callsites_drops_any_key() {
 fn add(a, b), do: a + b
 fn main(), do: dbg(add(1, 2))
 "#,
-        &NullTelemetry,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let add = m.fns.iter().find(|f| f.name == "add").unwrap();
     let any_key = {
@@ -3713,7 +3738,7 @@ fn entry_point_fn_keeps_any_key() {
         r#"
 fn main(), do: dbg(42)
 "#,
-        &NullTelemetry,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let main = m.fns.iter().find(|f| f.name == "main").unwrap();
     let any_key: Vec<KeySlot> = vec![];
@@ -3731,7 +3756,7 @@ fn main(), do: dbg(42)
 fn spawn_wrapper_receives_known_closure_capability() {
     let (_t, m, mt) = frontend_plan(
         include_str!("../../fixtures/spawn_with_captures/input.fz"),
-        &NullTelemetry,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     assert!(
         !m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
@@ -3774,7 +3799,7 @@ fn main() do
   dbg(g.(2.0))
 end
 "#,
-        &NullTelemetry,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let lambda_body_specs = lambda_value_specs(&m, &mt);
     assert!(
@@ -3828,7 +3853,7 @@ fn main() do
   dbg(r + 100)
 end
 "#,
-        &NullTelemetry,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
 
     // The cont after `f(1)` receives an `int`. Find the k_ cont fn
@@ -3884,7 +3909,7 @@ fn main() do
   dbg(z)
 end
 "#,
-        &NullTelemetry,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let apply_fn = m.fns.iter().find(|f| f.name == "apply").unwrap();
     let caller_ft = mt
@@ -3933,7 +3958,7 @@ fn main() do
   dbg(apply2(double, 21))
 end
 "#,
-        &NullTelemetry,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let main = m.fns.iter().find(|f| f.name == "main").unwrap();
     let double = m.fns.iter().find(|f| f.name == "double").unwrap();
@@ -3975,7 +4000,7 @@ fn main() do
   dbg(f.(3))
 end
 "#,
-        &NullTelemetry,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let main = m.fns.iter().find(|f| f.name == "main").unwrap();
     let main_ft = mt
@@ -4025,7 +4050,7 @@ fn main() do
   dbg(apply2(double, 21))
 end
 "#,
-        &NullTelemetry,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let apply2 = m.fns.iter().find(|f| f.name == "apply2").unwrap();
     let double = m.fns.iter().find(|f| f.name == "double").unwrap();
@@ -4050,7 +4075,7 @@ end
 fn returned_captured_closure_capability_propagates_into_cont_slot0() {
     let (_t, m, mt) = pipeline(
         include_str!("../type_infer/fixtures/poly_capture_ref.fz"),
-        &NullTelemetry,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
 
     let mut saw_known_closure = false;
@@ -4139,7 +4164,7 @@ fn main() do
   dbg(apply2(double, 21))
 end
 "#,
-        &NullTelemetry,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let double = m.fns.iter().find(|f| f.name == "double").unwrap();
     let mut saw_narrow = false;
@@ -4345,7 +4370,7 @@ fn narrow_for_cond_and_narrows_both_operands_in_then_branch() {
     assert!(!t.is_equivalent(y_else, &one_ty));
 }
 
-/// fz-uwq.3/.11 — `plan_module` populates `SpecPlan.call_edges` with
+/// fz-uwq.3/.11 — `plan_module_with_role` populates `SpecPlan.call_edges` with
 /// the per-spec dispatch target for each Direct callsite. Build a
 /// trivial 2-fn module (main → id), assert the dispatch entry exists
 /// at main's spec keyed by `id` plus an integer-typed arg slot.
@@ -4415,11 +4440,15 @@ end
 
 fn main(), do: Collectable.id([1])
 "#;
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let parsed = Parser::new(toks).parse_program().expect("parse");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let parsed = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
     let mut t = crate::types::new();
-    let resolved = flatten_modules(&mut t, parsed).expect("resolve");
-    let ir = lower_program(&mut t, &resolved, &NullTelemetry).expect("lower");
+    let resolved = flatten_modules(&mut t, parsed, &crate::telemetry::ConfiguredTelemetry::new()).expect("resolve");
+    let ir = lower_program(&mut t, &resolved, &crate::telemetry::ConfiguredTelemetry::new()).expect("lower");
     let mt = plan_module_quiet(&mut t, &ir);
 
     let main = ir.fn_by_name("main").expect("main");
@@ -4442,7 +4471,7 @@ fn main(), do: Collectable.id([1])
 #[test]
 fn planner_keeps_external_module_calls_at_provider_boundary() {
     let mut t = crate::types::new();
-    let tel = NullTelemetry;
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
     let math = compile_source_with_types(
         &mut t,
         "defmodule Math do\n  fn add(x, y), do: x + y\nend\n".to_string(),
@@ -4507,7 +4536,7 @@ fn planner_keeps_external_module_calls_at_provider_boundary() {
 #[test]
 fn planner_keeps_provider_protocol_calls_at_external_boundary() {
     let mut t = crate::types::new();
-    let tel = NullTelemetry;
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
     let provider = compile_source_with_types(
         &mut t,
         r#"
@@ -4588,7 +4617,7 @@ fn planner_publishes_cont_dispatches_for_non_tail_calls_in_enum_take_drop_split(
         &mut t,
         src.to_string(),
         "enum_take_drop_split_input.fz".to_string(),
-        &NullTelemetry,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     )
     .unwrap_or_else(|err| panic!("frontend compile: {:?}", err.diagnostics));
     let m = compiled.module;
@@ -4620,7 +4649,7 @@ fn planner_publishes_cont_dispatches_for_non_tail_calls_in_enum_take_drop_split(
 fn declared_return_fact_handles_enum_count_on_range_in_runtime_graph() {
     let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
     let mut t = crate::types::new();
-    let tel = NullTelemetry;
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
     let frontend = compile_source_with_providers(
         &mut t,
@@ -4662,7 +4691,7 @@ fn main() do
 end
 "#;
     let mut t = crate::types::new();
-    let tel = NullTelemetry;
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
     let frontend = compile_source_with_providers(
         &mut t,
@@ -4678,7 +4707,7 @@ end
         .unwrap_or_else(|err| panic!("execution graph: {err}"));
     let module = prepared.module;
     assert_module_plan_consistent(&module);
-    let plan = plan_module(&mut t, &module, &tel);
+    let plan = plan_module_with_role(&mut t, &module, &tel, "test");
     let take = module.fn_by_name("Enum.take").expect("Enum.take");
     let range = t.opaque_of("impl-target::Range");
 
@@ -4714,7 +4743,7 @@ end
 fn declared_return_fact_handles_enum_reduce_with_runtime_graph_reducer() {
     let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
     let mut t = crate::types::new();
-    let tel = NullTelemetry;
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
     let frontend = compile_source_with_providers(
         &mut t,
@@ -4730,7 +4759,7 @@ fn declared_return_fact_handles_enum_reduce_with_runtime_graph_reducer() {
         .unwrap_or_else(|err| panic!("execution graph: {err}"));
     let module = prepared.module;
     assert_module_plan_consistent(&module);
-    let plan = plan_module(&mut t, &module, &tel);
+    let plan = plan_module_with_role(&mut t, &module, &tel, "test");
 
     let drop_positive = module.fn_by_name("Enum.drop_positive").expect("Enum.drop_positive");
     let drop_positive_key = plan
@@ -4771,7 +4800,7 @@ fn declared_return_fact_handles_enum_reduce_with_runtime_graph_reducer() {
 fn declared_return_fact_handles_take_positive_reduce_while_in_runtime_graph() {
     let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
     let mut t = crate::types::new();
-    let tel = NullTelemetry;
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
     let frontend = compile_source_with_providers(
         &mut t,
@@ -4787,7 +4816,7 @@ fn declared_return_fact_handles_take_positive_reduce_while_in_runtime_graph() {
         .unwrap_or_else(|err| panic!("execution graph: {err}"));
     let module = prepared.module;
     assert_module_plan_consistent(&module);
-    let plan = plan_module(&mut t, &module, &tel);
+    let plan = plan_module_with_role(&mut t, &module, &tel, "test");
 
     let take_positive = module.fn_by_name("Enum.take_positive").expect("Enum.take_positive");
     let int = t.int();
@@ -4933,11 +4962,15 @@ fn runtime_graph_reduce_helper_clause_carries_function_correspondence() {
         {:suspended, acc, (fn () -> reduce_cont(list, acc, reducer) end)}\n\
       end\n\
     end";
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
     let mut t = crate::types::new();
-    let prog = flatten_modules(&mut t, prog).expect("resolve");
-    let module = lower_program(&mut t, &prog, &NullTelemetry).expect("lower");
+    let prog = flatten_modules(&mut t, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("resolve");
+    let module = lower_program(&mut t, &prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("lower");
     let matches = module
         .fns
         .iter()
@@ -4999,10 +5032,15 @@ end
 
 fn main(), do: P.to_thing([1])
 "#;
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let parsed = Parser::new(toks).parse_program().expect("parse");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let parsed = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
     let mut t = crate::types::new();
-    let err = flatten_modules(&mut t, parsed).expect_err("disjoint callback result spec must be rejected");
+    let err = flatten_modules(&mut t, parsed, &crate::telemetry::ConfiguredTelemetry::new())
+        .expect_err("disjoint callback result spec must be rejected");
     let ResolveError::ProtocolError { msg, .. } = err else {
         panic!("expected ProtocolError, got {err:?}");
     };
@@ -5030,20 +5068,29 @@ end
 
 fn main(), do: P.to_thing([1])
 "#;
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let parsed = Parser::new(toks).parse_program().expect("parse");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let parsed = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
     let mut t = crate::types::new();
-    flatten_modules(&mut t, parsed).expect("compatible callback spec must resolve");
+    flatten_modules(&mut t, parsed, &crate::telemetry::ConfiguredTelemetry::new())
+        .expect("compatible callback spec must resolve");
 }
 
 // ---- fz-t1m.1.3 — no-implementation diagnostic at dispatch ----
 
 fn plan_protocol_src(src: &str) -> (DefaultTypes, Module, ModulePlan) {
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let parsed = Parser::new(toks).parse_program().expect("parse");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let parsed = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
     let mut t = crate::types::new();
-    let resolved = flatten_modules(&mut t, parsed).expect("resolve");
-    let ir = lower_program(&mut t, &resolved, &NullTelemetry).expect("lower");
+    let resolved = flatten_modules(&mut t, parsed, &crate::telemetry::ConfiguredTelemetry::new()).expect("resolve");
+    let ir = lower_program(&mut t, &resolved, &crate::telemetry::ConfiguredTelemetry::new()).expect("lower");
     let mt = plan_module_quiet(&mut t, &ir);
     (t, ir, mt)
 }
@@ -5065,7 +5112,7 @@ end
 fn main(), do: P.each(42)
 "#;
     let (mut t, m, mt) = plan_protocol_src(src);
-    let diags = collect_diagnostics(&mut t, &m, &mt, &NullTelemetry);
+    let diags = collect_diagnostics(&mut t, &m, &mt, &crate::telemetry::ConfiguredTelemetry::new());
     let d = diags
         .as_slice()
         .iter()
@@ -5110,7 +5157,7 @@ end
 fn main(), do: P.each([1])
 "#;
     let (mut t, m, mt) = plan_protocol_src(src);
-    let diags = collect_diagnostics(&mut t, &m, &mt, &NullTelemetry);
+    let diags = collect_diagnostics(&mut t, &m, &mt, &crate::telemetry::ConfiguredTelemetry::new());
     assert!(
         !diags.as_slice().iter().any(|d| d.code == codes::TYPE_PROTOCOL_NO_IMPL),
         "no no-impl diag should fire when an impl matches; got: {:?}",
@@ -5122,7 +5169,7 @@ fn main(), do: P.each([1])
     );
 }
 
-// ---- fz-t1m.1.5 — closed-domain protocol switch dispatch ----
+// ---- fz-t1m.1.5 — closed-domain protocol dispatch ----
 
 /// A protocol call whose receiver is a closed union of two implementing
 /// targets (`7 | list(int)`, covered by `Integer` and `List`) is rewritten
@@ -5168,7 +5215,20 @@ end
         "after the rewrite, describe must not call the __protocol__ stub"
     );
 
-    // It tests the receiver's type at least once...
+    // A two-arm closed union tests the first arm and uses the final `else` as
+    // the second direct arm. Lowering the graph's closed `Fail` tail to an IR
+    // fail/halt would be a behavioral-shape regression.
+    let type_test_count = describe.blocks.iter().fold(0, |count, b| {
+        count
+            + b.stmts
+                .iter()
+                .filter(|Stmt::Let(_, prim)| matches!(prim, Prim::TypeTest(..)))
+                .count()
+    });
+    assert_eq!(
+        type_test_count, 1,
+        "two-arm closed union must lower as one test plus final direct else"
+    );
     let has_type_test = describe.blocks.iter().any(|b| {
         b.stmts
             .iter()
@@ -5195,6 +5255,60 @@ end
     );
 }
 
+#[test]
+fn closed_union_protocol_receiver_matrix_has_direct_outcomes_no_fallback() {
+    let src = r#"
+defprotocol Sizer do
+  fn size(value)
+end
+
+defimpl Sizer, for: Integer do
+  fn size(value), do: 1
+end
+
+defimpl Sizer, for: List do
+  fn size(value), do: 2
+end
+
+fn describe(value), do: Sizer.size(value)
+
+fn main() do
+  case [7, [1, 2, 3]] do
+    [a, b] -> describe(a) + describe(b)
+    _ -> 0
+  end
+end
+"#;
+    let (mut t, m, mt) = plan_protocol_src(src);
+    let candidates = collect_protocol_dispatch_matrix_candidates(&mut t, &m, &mt).expect("protocol matrix candidates");
+    let describe = m.fn_by_name("describe").expect("describe fn");
+    let candidate = candidates
+        .iter()
+        .find(|candidate| candidate.fn_id == describe.id)
+        .expect("describe protocol candidate");
+    let ProtocolDispatchMatrixSelection::Matrix(plan) = &candidate.selection else {
+        panic!(
+            "closed union should request matrix dispatch, got {:?}",
+            candidate.selection
+        );
+    };
+
+    assert!(plan.fully_covered);
+    assert_eq!(plan.fallback_outcome, None);
+    assert_eq!(plan.direct_outcomes.len(), 2);
+    assert_eq!(plan.matrix.arms.len(), 2);
+    assert_eq!(plan.graph.stats.fallback_nodes, 0);
+    assert_eq!(plan.graph.stats.fail_nodes, 1);
+
+    let mut impl_names = plan
+        .direct_outcomes
+        .iter()
+        .map(|outcome| m.fn_by_id(outcome.impl_fn).name.clone())
+        .collect::<Vec<_>>();
+    impl_names.sort();
+    assert_eq!(impl_names, vec!["Sizer.Integer.size", "Sizer.List.size"]);
+}
+
 /// A single-target receiver (a plain list, only `List` implements `Sizer`)
 /// is left untouched — ordinary single dispatch, no cascade.
 #[test]
@@ -5217,6 +5331,35 @@ fn main(), do: describe([1, 2, 3])
     rewrite_closed_union_protocol_dispatch(&mut t, &mut m, &mt);
     let after = m.fn_by_name("describe").unwrap().blocks.len();
     assert_eq!(before, after, "a single-target receiver must not grow a switch cascade");
+}
+
+#[test]
+fn single_target_protocol_receiver_matrix_is_static_direct() {
+    let src = r#"
+defprotocol Sizer do
+  fn size(value)
+end
+
+defimpl Sizer, for: List do
+  fn size(value), do: 2
+end
+
+fn describe(value), do: Sizer.size(value)
+
+fn main(), do: describe([1, 2, 3])
+"#;
+    let (mut t, m, mt) = plan_protocol_src(src);
+    let candidates = collect_protocol_dispatch_matrix_candidates(&mut t, &m, &mt).expect("protocol matrix candidates");
+    let describe = m.fn_by_name("describe").expect("describe fn");
+    let candidate = candidates
+        .iter()
+        .find(|candidate| candidate.fn_id == describe.id)
+        .expect("describe protocol candidate");
+
+    assert!(matches!(
+        candidate.selection,
+        ProtocolDispatchMatrixSelection::StaticDirect
+    ));
 }
 
 // ---- fz-t1m.1.6 — open/erased protocol dispatch (cascade + fallthrough) ----
@@ -5287,6 +5430,137 @@ end
     );
 }
 
+#[test]
+fn open_protocol_receiver_matrix_has_residual_stub_fallback() {
+    let src = r#"
+defprotocol Sizer do
+  fn size(value)
+end
+
+defimpl Sizer, for: Integer do
+  fn size(value), do: 1
+end
+
+defimpl Sizer, for: List do
+  fn size(value), do: 2
+end
+
+fn describe(value), do: Sizer.size(value)
+
+fn main() do
+  case [7, [1, 2, 3], :other] do
+    [a, b, c] -> describe(a) + describe(b)
+    _ -> 0
+  end
+end
+"#;
+    let (mut t, m, mt) = plan_protocol_src(src);
+    let candidates = collect_protocol_dispatch_matrix_candidates(&mut t, &m, &mt).expect("protocol matrix candidates");
+    let describe = m.fn_by_name("describe").expect("describe fn");
+    let candidate = candidates
+        .iter()
+        .find(|candidate| candidate.fn_id == describe.id)
+        .expect("describe protocol candidate");
+    let ProtocolDispatchMatrixSelection::Matrix(plan) = &candidate.selection else {
+        panic!(
+            "open receiver should request matrix dispatch, got {:?}",
+            candidate.selection
+        );
+    };
+
+    assert!(!plan.fully_covered);
+    assert!(plan.fallback_outcome.is_some());
+    assert_eq!(plan.direct_outcomes.len(), 2);
+    assert_eq!(plan.graph.stats.fallback_nodes, 1);
+}
+
+#[test]
+fn external_protocol_impl_overlap_remains_residual_in_matrix() {
+    let src = r#"
+defprotocol Sizer do
+  fn size(value)
+end
+
+defimpl Sizer, for: Integer do
+  fn size(value), do: 1
+end
+
+fn describe(value), do: Sizer.size(value)
+
+fn main() do
+  case [7, 1.0] do
+    [a, b] -> describe(a) + describe(b)
+    _ -> 0
+  end
+end
+"#;
+    let (mut t, mut m, mt) = plan_protocol_src(src);
+    let protocol = ModuleName::parse_dotted("Sizer").expect("protocol name");
+    let target = ImplTarget::module(ModuleName::parse_dotted("Float").expect("target name"));
+    let export = ExportKey::new(
+        ModuleName::parse_dotted("Provider.Sizer.Float").expect("provider module"),
+        "size",
+        1,
+    );
+    m.protocol_registry.impls.insert(
+        ProtocolImplKey {
+            protocol: protocol.clone(),
+            target: target.clone(),
+        },
+        ProtocolImplFact {
+            protocol,
+            target,
+            callbacks: BTreeMap::from([(("size".to_string(), 1), export)]),
+            callback_specs: BTreeMap::new(),
+            span: Span::DUMMY,
+        },
+    );
+
+    let candidates = collect_protocol_dispatch_matrix_candidates(&mut t, &m, &mt).expect("protocol matrix candidates");
+    let describe_id = m.fn_by_name("describe").expect("describe fn").id;
+    let candidate = candidates
+        .iter()
+        .find(|candidate| candidate.fn_id == describe_id)
+        .expect("describe protocol candidate");
+    let ProtocolDispatchMatrixSelection::Matrix(plan) = &candidate.selection else {
+        panic!(
+            "local Integer plus external Float overlap should request open matrix dispatch, got {:?}",
+            candidate.selection
+        );
+    };
+
+    assert!(!plan.fully_covered);
+    assert!(plan.fallback_outcome.is_some());
+    assert_eq!(plan.direct_outcomes.len(), 1);
+    assert_eq!(m.fn_by_id(plan.direct_outcomes[0].impl_fn).name, "Sizer.Integer.size");
+
+    assert!(rewrite_closed_union_protocol_dispatch(&mut t, &mut m, &mt));
+    let describe = m.fn_by_id(describe_id);
+    let mut direct_impl_callees = describe
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.terminator {
+            Term::Call { callee, .. } | Term::TailCall { callee, .. } => {
+                (!m.protocol_call_targets.contains_key(callee)).then_some(*callee)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    direct_impl_callees.sort();
+    direct_impl_callees.dedup();
+    assert_eq!(direct_impl_callees.len(), 1);
+    assert_eq!(m.fn_by_id(direct_impl_callees[0]).name, "Sizer.Integer.size");
+
+    let keeps_stub_fallthrough = describe.blocks.iter().any(|b| match &b.terminator {
+        Term::Call { callee, .. } | Term::TailCall { callee, .. } => m.protocol_call_targets.contains_key(callee),
+        _ => false,
+    });
+    assert!(
+        keeps_stub_fallthrough,
+        "external/provider overlap must remain residual after matrix lowering"
+    );
+}
+
 // ---- fz-swt.8 — `.value` accessor: typing + visibility gating ----
 
 /// Inside the declaring module, `handle.value` typechecks as the inner
@@ -5317,7 +5591,7 @@ fn main() do
   A.get(h)
 end
 "#;
-    let (mut t, m, mt) = pipeline(src, &NullTelemetry);
+    let (mut t, m, mt) = pipeline(src, &crate::telemetry::ConfiguredTelemetry::new());
     let f = m.fn_by_name("A.get").expect("A.get exists post-lower");
     let ft = mt.any_spec_for(f.id).unwrap_or_else(|| {
         let keys: Vec<_> = mt.specs.keys().filter(|key| key.fn_id == f.id).collect();
@@ -5411,10 +5685,10 @@ fn value_accessor_outside_declaring_module_emits_diagnostic() {
     let narrow_key_ty = vec![ct.opaque_of("A::t")];
     let ft = type_fn(&mut ct, &m.fns[0], &m, Some(&narrow_key_ty));
     // Register the spec so collect_diagnostics picks it up.
-    let mut mt = plan_module(&mut ct, &m, &NullTelemetry);
+    let mut mt = plan_module_with_role(&mut ct, &m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
     mt.specs.insert(value_spec_key(FnId(0), key_tys(narrow_key_ty)), ft);
 
-    let diags = collect_diagnostics(&mut ct, &m, &mt, &NullTelemetry);
+    let diags = collect_diagnostics(&mut ct, &m, &mt, &crate::telemetry::ConfiguredTelemetry::new());
     let visibility = diags
         .as_slice()
         .iter()
@@ -5458,8 +5732,8 @@ defmodule A do
   fn get(h :: t), do: h.value
 end
 "#;
-    let (mut t, m, mt) = pipeline(src, &NullTelemetry);
-    let diags = collect_diagnostics(&mut t, &m, &mt, &NullTelemetry);
+    let (mut t, m, mt) = pipeline(src, &crate::telemetry::ConfiguredTelemetry::new());
+    let diags = collect_diagnostics(&mut t, &m, &mt, &crate::telemetry::ConfiguredTelemetry::new());
     assert!(
         !diags.as_slice().iter().any(|d| d.code == codes::TYPE_OPAQUE_VISIBILITY),
         "no opaque-visibility diag should fire from inside the declaring module; got: {:?}",
@@ -5507,11 +5781,15 @@ fn string_literal_lowers_to_utf8_branded_bitstring() {
     // system can recover the brand context when needed), but no
     // Prim::Brand stmt remains in any FnIr.
     let src = r#"fn main(), do: "hi""#;
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
     let mut ct = crate::types::new();
-    let prog = flatten_modules(&mut ct, prog).expect("resolve");
-    let m = lower_program(&mut ct, &prog, &NullTelemetry).expect("lower");
+    let prog = flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("resolve");
+    let m = lower_program(&mut ct, &prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("lower");
     let main = m.fn_by_name("main").expect("main");
     let mut saw_const_bs = false;
     for block in &main.blocks {
@@ -5550,7 +5828,7 @@ fn brand_overlays_brand_tag_on_source_type() {
     b.set_terminator(entry, Term::Halt(branded));
     let m = build_module(vec![b.build()]);
     let mut ct = crate::types::new();
-    let mt = plan_module(&mut ct, &m, &NullTelemetry);
+    let mt = plan_module_with_role(&mut ct, &m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
     let ft = fn_view(&mut ct, &m, &mt, 0);
     let source_ty = ft.vars.get(&bs).unwrap().clone();
     let branded_ty = ft.vars.get(&branded).unwrap().clone();
@@ -5584,7 +5862,7 @@ fn brand_blind_equality_emits_telemetry_without_dead_binop_warning() {
     let binary = ct.str_t();
     let key = SpecKey::value(FnId(0), key_tys(vec![pure_brand.clone(), binary.clone()]));
     let ft = type_fn(&mut ct, m.fn_by_id(FnId(0)), &m, Some(&[pure_brand, binary]));
-    let mut mt = plan_module(&mut ct, &m, &NullTelemetry);
+    let mut mt = plan_module_with_role(&mut ct, &m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
     mt.specs.retain(|spec_key, _| spec_key.fn_id != FnId(0));
     mt.reachable_specs.retain(|spec_key| spec_key.fn_id != FnId(0));
     mt.any_key_specs.remove(&FnId(0));
@@ -5621,7 +5899,7 @@ fn brand_does_not_change_underlying_runtime_shape() {
     b.set_terminator(entry, Term::Halt(branded));
     let m = build_module(vec![b.build()]);
     let mut ct = crate::types::new();
-    let mt = plan_module(&mut ct, &m, &NullTelemetry);
+    let mt = plan_module_with_role(&mut ct, &m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
     let ft = fn_view(&mut ct, &m, &mt, 0);
     let source_t = ft.vars.get(&bs).unwrap().clone();
     let branded_t = ft.vars.get(&branded).unwrap().clone();
@@ -5657,8 +5935,8 @@ fn const_bitstring_types_as_str_t() {
 #[test]
 fn opaque_arithmetic_pid_plus_int_rejected() {
     let src = "fn main(), do: self() + 1";
-    let (mut t, m, mt) = pipeline(src, &NullTelemetry);
-    let diags = collect_diagnostics(&mut t, &m, &mt, &NullTelemetry);
+    let (mut t, m, mt) = pipeline(src, &crate::telemetry::ConfiguredTelemetry::new());
+    let diags = collect_diagnostics(&mut t, &m, &mt, &crate::telemetry::ConfiguredTelemetry::new());
     let d = diags
         .as_slice()
         .iter()
@@ -5684,8 +5962,8 @@ fn opaque_arithmetic_pid_plus_int_rejected() {
 #[test]
 fn opaque_arithmetic_ref_plus_int_rejected() {
     let src = "fn main(), do: make_ref() + 1";
-    let (mut t, m, mt) = pipeline(src, &NullTelemetry);
-    let diags = collect_diagnostics(&mut t, &m, &mt, &NullTelemetry);
+    let (mut t, m, mt) = pipeline(src, &crate::telemetry::ConfiguredTelemetry::new());
+    let diags = collect_diagnostics(&mut t, &m, &mt, &crate::telemetry::ConfiguredTelemetry::new());
     assert!(
         diags.as_slice().iter().any(|d| d.code == codes::TYPE_OPAQUE_ARITHMETIC),
         "expected type/opaque-arithmetic on make_ref() + 1; got: {:?}",
@@ -5708,8 +5986,8 @@ fn main() do
   a == b
 end
 "#;
-    let (mut t, m, mt) = pipeline(src, &NullTelemetry);
-    let diags = collect_diagnostics(&mut t, &m, &mt, &NullTelemetry);
+    let (mut t, m, mt) = pipeline(src, &crate::telemetry::ConfiguredTelemetry::new());
+    let diags = collect_diagnostics(&mut t, &m, &mt, &crate::telemetry::ConfiguredTelemetry::new());
     assert!(
         !diags.as_slice().iter().any(|d| d.code == codes::TYPE_OPAQUE_ARITHMETIC),
         "equality must not raise type/opaque-arithmetic; got: {:?}",
@@ -5724,8 +6002,8 @@ end
 #[test]
 fn plain_int_arithmetic_still_passes() {
     let src = "fn main(), do: 1 + 1";
-    let (mut t, m, mt) = pipeline(src, &NullTelemetry);
-    let diags = collect_diagnostics(&mut t, &m, &mt, &NullTelemetry);
+    let (mut t, m, mt) = pipeline(src, &crate::telemetry::ConfiguredTelemetry::new());
+    let diags = collect_diagnostics(&mut t, &m, &mt, &crate::telemetry::ConfiguredTelemetry::new());
     assert!(
         !diags.as_slice().iter().any(|d| d.code == codes::TYPE_OPAQUE_ARITHMETIC),
         "plain int arithmetic must not raise the diagnostic; got: {:?}",

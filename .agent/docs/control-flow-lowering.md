@@ -48,8 +48,9 @@ function reaches an arm.
 arm block `Term::TailCall`s its arm function with the outer captures. The arm
 function lowers its body, then `finalize_arm` ends it.
 
-`case` (`expr.rs` `lower_case`) lowers the subject, then compiles a
-`PatternMatrix` into the outer function via `lower_pattern_matrix_to_current_fn`.
+`case` (`expr.rs` `lower_case`) lowers the subject, then routes a
+`SourcePatternRows` through DispatchMatrix into the outer function via
+`lower_source_patterns_to_current_fn`.
 The matrix dispatch tail-calls a per-clause `case_clause_N` function with the
 post-match env (outer captures plus the clause's pattern bindings). A final
 mismatch routes to a `fail_block` that `Term::Halt`s the atom `case_clause`.
@@ -70,14 +71,13 @@ ended by `finalize_arm`. `with_fail` receives the unmatched value as its extra
 param and either halts `with_clause` (no `else`) or dispatches the else clauses
 through the matrix to `with_else_N` bodies.
 
-`receive` (`receive.rs` `lower_receive`) is matcher-driven: the outer function's
-block ends with `Term::ReceiveMatched`, whose `clauses` name the body and guard
-`FnId`s and whose `matcher` is the cached `Arc<Matcher>`. Bodies (`rx_clause_N_
-body`), guards (`rx_clause_N_guard`), and the optional `rx_after_body` are
-continuation functions reached by `switch_to_cont_fn`. Each body's params are
-its pattern's bound names followed by the shared captures; `finalize_arm` ends
-each body the same way the other constructs do. (The matcher ABI itself is
-documented separately.)
+`receive` (`receive.rs` `lower_receive`) is DispatchMatrix-driven: the outer
+function's block ends with `Term::ReceiveMatched`, whose `clauses` name the body
+and guard `FnId`s and whose `dispatch` is the cached `Arc<PatternDispatchPlan>`.
+Bodies (`rx_clause_N_body`), guards (`rx_clause_N_guard`), and the optional
+`rx_after_body` are continuation functions reached by `switch_to_cont_fn`. Each
+body's params are its pattern's bound names followed by the shared captures;
+`finalize_arm` ends each body the same way the other constructs do.
 
 ## Tailness across the construct boundary
 

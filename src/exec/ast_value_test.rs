@@ -5,8 +5,12 @@ use crate::parser::lexer::Lexer;
 
 fn parse_expr(src: &str) -> Spanned<Expr> {
     let wrapped = format!("fn _t() do {} end", src);
-    let toks = Lexer::new(&wrapped).tokenize().unwrap();
-    let prog = Parser::new(toks).parse_program().unwrap();
+    let toks = Lexer::with_source_name(&wrapped, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .unwrap();
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .unwrap();
     match &*prog.items[0] {
         Item::Fn(d) => match &d.clauses[0].body.node {
             Expr::Block(xs) => xs[0].clone(),
