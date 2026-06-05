@@ -12,7 +12,9 @@ use cranelift_module::{DataDescription, DataId, Linkage, Module as ClModule};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use fz_runtime::process::Node;
 use fz_runtime::{extern_binary, extern_variadic, fz_panic, ir_runtime, procbin, resource};
+#[cfg(target_os = "macos")]
 use object::macho::PLATFORM_MACOS;
+#[cfg(target_os = "macos")]
 use object::write::MachOBuildVersion;
 use std::collections::HashMap;
 use std::rc::Rc;

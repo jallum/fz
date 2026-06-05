@@ -635,15 +635,22 @@ fn spawn(fun, opts), do: fun.()
     fn c_style_boolean_operators_are_lex_errors() {
         // `&&`/`||`/`!` were removed in favour of `and`/`or`/`not`; the lexer
         // rejects them with a migration hint. Bare `&` (fn-ref) still lexes.
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
         for src in ["true && false", "true || false", "!true"] {
-            let err = Lexer::new(src).tokenize().expect_err("should reject C-style op");
+            let err = Lexer::with_source_name(src, "<test>")
+                .tokenize(&tel)
+                .expect_err("should reject C-style op");
             assert!(
                 err.msg.contains("use `and`") || err.msg.contains("use `or`") || err.msg.contains("use `not`"),
                 "msg={}",
                 err.msg
             );
         }
-        assert!(Lexer::new("apply(&foo/1, 7)").tokenize().is_ok());
+        assert!(
+            Lexer::with_source_name("apply(&foo/1, 7)", "<test>")
+                .tokenize(&tel)
+                .is_ok()
+        );
     }
 
     #[test]
