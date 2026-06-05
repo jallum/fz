@@ -6,7 +6,7 @@
 use crate::ast::{Attribute, FnDef, Item, ModuleDef, Program, ProtocolImplDef, SpecDecl};
 use crate::diag::{Diagnostic, SourceMap, Span};
 use crate::frontend::resolve::{
-    InterfaceTable, flatten_modules_with_compiler, flatten_modules_with_compiler_interface_table,
+    InterfaceTable, flatten_modules_with_compiler,
 };
 use crate::frontend::{
     protocols::{ImplTarget, ProtocolRegistry},
@@ -907,7 +907,7 @@ impl CompilerWorld {
                     })?
                 {
                     tel.execute(
-                        &["fz", "compiler", "fn_group_requested"],
+                        &["fz", "compiler", "fn_group_seeded"],
                         &measurements! {
                             fn_group_id: descriptor.id.0,
                             loaded_functions: 0_u64,
@@ -916,7 +916,6 @@ impl CompilerWorld {
                             module_key: self.module_key_render(root_source),
                             owner_module: self.module_display_name(descriptor.source.module_id),
                             fn_name: descriptor.qualified_name(),
-                            reason: "initial_root",
                         },
                     );
                 }
@@ -957,16 +956,15 @@ impl CompilerWorld {
     where
         T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
     {
-        let mut prog =
-            match flatten_modules_with_compiler_interface_table(t, self, root_source, prog, interface_table, tel) {
-                Ok(prog) => prog,
-                Err(err) => {
-                    return Err(FrontendErr {
-                        sm,
-                        diagnostics: crate::diag::Diagnostics::from_one(err.to_diagnostic()),
-                    });
-                }
-            };
+        let mut prog = match flatten_modules_with_compiler(t, self, root_source, prog, interface_table, tel) {
+            Ok(prog) => prog,
+            Err(err) => {
+                return Err(FrontendErr {
+                    sm,
+                    diagnostics: crate::diag::Diagnostics::from_one(err.to_diagnostic()),
+                });
+            }
+        };
         tel.event(
             &["fz", "frontend", "resolved"],
             metadata! {
@@ -975,8 +973,6 @@ impl CompilerWorld {
                 program: opaque(&prog),
             },
         );
-        self.record_protocol_registry(&prog.protocol_registry);
-        self.record_protocol_facts_from_interfaces(&prog.external_module_interfaces);
         if let Err(diagnostic) = macros::prepare_compiler_macro_surfaces(self, root_source, &prog, tel) {
             return Err(FrontendErr {
                 sm,
@@ -1065,6 +1061,10 @@ impl Compiler {
 
     pub(crate) fn world_mut(&mut self) -> &mut CompilerWorld {
         &mut self.world
+    }
+
+    pub(crate) fn world(&self) -> &CompilerWorld {
+        &self.world
     }
 
     pub(crate) fn module_count(&self) -> usize {
@@ -1474,14 +1474,13 @@ impl CompilerWorld {
             external_module_interfaces: Default::default(),
             module_docs: Default::default(),
             module_type_envs: Default::default(),
-            protocol_registry: Default::default(),
             opaque_inners: Default::default(),
             brand_inners: Default::default(),
             structs: Default::default(),
             struct_field_types: Default::default(),
         };
-        let mut program =
-            flatten_modules_with_compiler(t, self, None, staged, tel).map_err(|err| err.to_diagnostic())?;
+        let mut program = flatten_modules_with_compiler(t, self, None, staged, BTreeMap::new(), tel)
+            .map_err(|err| err.to_diagnostic())?;
         program
             .module_type_envs
             .entry(String::new())
@@ -2559,10 +2558,10 @@ impl CompilerWorld {
     fn record_protocol_facts_from_interfaces(&mut self, interfaces: &BTreeMap<ModuleName, ModuleInterface>) {
         let mut registry = ProtocolRegistry::default();
         registry.extend_interfaces(interfaces);
-        self.record_protocol_registry(&registry);
+        self.record_protocol_facts(&registry);
     }
 
-    fn record_protocol_registry(&mut self, registry: &ProtocolRegistry) {
+    pub(crate) fn record_protocol_facts(&mut self, registry: &ProtocolRegistry) {
         for (name, protocol) in &registry.protocols {
             match self.protocol_registry.protocols.get(name) {
                 Some(existing) => {
@@ -2619,6 +2618,10 @@ impl CompilerWorld {
                 }
             }
         }
+    }
+
+    pub(crate) fn protocol_registry(&self) -> &ProtocolRegistry {
+        &self.protocol_registry
     }
 
     fn intern_file(&mut self, origin: FileOrigin, descriptor: SourceDescriptor, tel: &dyn Telemetry) -> FileId {
@@ -2928,7 +2931,6 @@ fn collect_interfaces(parsed: &ParsedSource) -> BTreeMap<ModuleName, ModuleInter
                 external_module_interfaces: Default::default(),
                 module_docs: Default::default(),
                 module_type_envs: Default::default(),
-                protocol_registry: Default::default(),
                 opaque_inners: Default::default(),
                 brand_inners: Default::default(),
                 structs: Default::default(),

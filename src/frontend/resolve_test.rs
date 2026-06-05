@@ -1,4 +1,5 @@
 use super::*;
+use crate::compiler::Compiler;
 use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn};
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
@@ -13,6 +14,21 @@ fn parse(src: &str) -> Program {
 fn flatten(src: &str) -> Program {
     let mut ct = crate::types::new();
     flatten_modules(&mut ct, parse(src)).expect("flatten")
+}
+
+fn flatten_with_compiler(src: &str) -> (Compiler, Program) {
+    let mut compiler = Compiler::new();
+    let mut ct = crate::types::new();
+    let program = flatten_modules_with_compiler(
+        &mut ct,
+        compiler.world_mut(),
+        None,
+        parse(src),
+        BTreeMap::new(),
+        &crate::telemetry::NullTelemetry,
+    )
+    .expect("flatten");
+    (compiler, program)
 }
 
 fn fn_names(p: &Program) -> Vec<String> {
@@ -1384,10 +1400,8 @@ end
 #[test]
 fn protocol_registry_records_declarations_impls_and_domain_types() {
     let mut ct = crate::types::new();
-    let p = flatten_modules(
-        &mut ct,
-        parse(
-            r#"
+    let (compiler, p) = flatten_with_compiler(
+        r#"
 defprotocol Enumerable do
   @spec reduce(t(a), acc, (a, acc) -> acc) :: acc
   fn reduce(enumerable, acc, reducer)
@@ -1402,13 +1416,11 @@ defmodule Consumer do
   fn use(xs), do: 1
 end
 "#,
-        ),
-    )
-    .expect("flatten");
+    );
 
     let enumerable = ModuleName::from_segments(vec!["Enumerable".to_string()]);
     let list = ModuleName::from_segments(vec!["List".to_string()]);
-    let registry = &p.protocol_registry;
+    let registry = compiler.world().protocol_registry();
     assert!(registry.protocols.contains_key(&enumerable));
     let implementation = registry
         .impls
@@ -1573,11 +1585,8 @@ end
 
 #[test]
 fn protocol_callback_validation_preserves_overload_sets() {
-    let mut ct = crate::types::new();
-    let p = flatten_modules(
-        &mut ct,
-        parse(
-            r#"
+    let (compiler, _program) = flatten_with_compiler(
+        r#"
 defprotocol P do
   @spec pick(integer) :: integer
   @spec pick(float) :: float
@@ -1590,15 +1599,13 @@ defimpl P, for: List do
   fn pick(value), do: value
 end
 "#,
-        ),
-    )
-    .expect("overload-compatible impl must pass");
+    );
 
     let protocol = ModuleName::from_segments(vec!["P".to_string()]);
-    let callback = &p.protocol_registry.protocols[&protocol].callbacks[0];
+    let registry = compiler.world().protocol_registry();
+    let callback = &registry.protocols[&protocol].callbacks[0];
     assert_eq!(callback.specs.len(), 2);
-    let implementation = p
-        .protocol_registry
+    let implementation = registry
         .impls
         .values()
         .find(|fact| fact.protocol == protocol)

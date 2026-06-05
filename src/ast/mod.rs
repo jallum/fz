@@ -1,5 +1,4 @@
 use crate::diag::{Span, SpanOrigin};
-use crate::frontend::protocols::ProtocolRegistry;
 use crate::modules::identity::ModuleName;
 use crate::modules::interface::ModuleInterface;
 use crate::parser::lexer::Token;
@@ -612,11 +611,6 @@ pub struct Program {
     /// such as `@type t :: %Range{first: integer}`. Field order still comes
     /// from `defstruct`; this map supplies the per-field type facts.
     pub struct_field_types: BTreeMap<ModuleName, Vec<(String, Ty)>>,
-    /// Protocol declarations and implementations collected during module
-    /// resolution while source-level protocol ASTs are still available.
-    #[allow(dead_code)]
-    // Consumed by the protocol dispatch/type tickets after registry resolution.
-    pub protocol_registry: ProtocolRegistry,
     /// fz-swt.8 — Inner-type map for `opaque` aliases across every
     /// module in the program. Keyed by the qualified opaque tag (as
     /// stored on the qualified opaque type name); value is the parsed body

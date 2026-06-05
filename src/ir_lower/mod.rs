@@ -1008,7 +1008,7 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
             .map(|(name, fields)| (name.dotted(), fields.clone())),
     );
     ctx.register_external_interfaces(&prog.external_module_interfaces);
-    ctx.register_protocol_registry(&prog.protocol_registry);
+    ctx.register_protocol_registry(compiler.protocol_registry());
     ctx.register_interface_protocols(&prog.external_module_interfaces);
     ctx.prelude_imports = prepared_prelude.imports;
     ctx.struct_schemas.extend(
@@ -1017,7 +1017,6 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
             .iter()
             .map(|(name, fields)| (name.dotted(), fields.clone())),
     );
-    ctx.register_protocol_registry(&prelude.protocol_registry);
     ctx.register_external_interfaces(&prelude.external_module_interfaces);
     let prelude_type_env = prelude.module_type_envs.get("").cloned().unwrap_or_default();
     ctx.prelude_type_env = prelude_type_env.clone();
@@ -1235,18 +1234,7 @@ impl CompilerLoweringSession {
         compiler.commit_lowering_extern_decls(&self.ctx.extern_decls);
         let mb = take(&mut self.ctx.mb);
         let mut module = mb.build();
-        module.protocol_registry = prog.protocol_registry.clone();
-        module
-            .protocol_registry
-            .protocols
-            .extend(self.prelude.protocol_registry.protocols.clone());
-        module
-            .protocol_registry
-            .impls
-            .extend(self.prelude.protocol_registry.impls.clone());
-        module
-            .protocol_registry
-            .extend_interfaces(&prog.external_module_interfaces);
+        module.protocol_registry = compiler.protocol_registry().clone();
         module.source = build_source_info(&module, &self.ctx);
         module.atom_names = self.ctx.atoms.names();
         module.externs = take(&mut self.ctx.extern_decls);

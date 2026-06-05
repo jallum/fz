@@ -217,6 +217,10 @@ module through the world the way we intended?" before loader/resolver work lands
   exactly once into the compiler-owned cache. Measurements: `fn_group_id`,
   `functions`. Metadata: `module_key`, `owner_module`,
   `fn_name`.
+- `fz.compiler.fn_group_seeded` — the compiler seeded one source-backed
+  function-group as an initial lowering root before the reactive lowering loop
+  began. Measurements: `fn_group_id`, `loaded_functions`. Metadata:
+  `module_key`, `owner_module`, `fn_name`.
 - `fz.compiler.fn_group_requested` — a live lowered body referenced a source
   function-group that was not yet present in the executable surface, so the
   compiler requested it in the active reactive lowering loop. Measurements:

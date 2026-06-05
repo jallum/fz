@@ -173,150 +173,20 @@ impl Error for ResolveError {}
 
 pub fn flatten_modules<T: Types<Ty = Ty>>(t: &mut T, prog: Program) -> Result<Program, ResolveError> {
     let mut compiler = Compiler::new();
-    flatten_modules_with_compiler(t, compiler.world_mut(), None, prog, &crate::telemetry::NullTelemetry)
+    flatten_modules_with_compiler(
+        t,
+        compiler.world_mut(),
+        None,
+        prog,
+        BTreeMap::new(),
+        &crate::telemetry::NullTelemetry,
+    )
 }
 
 pub fn flatten_modules_with_compiler<T: Types<Ty = Ty>>(
     t: &mut T,
     compiler: &mut CompilerWorld,
     root_source: Option<ModuleId>,
-    prog: Program,
-    tel: &dyn Telemetry,
-) -> Result<Program, ResolveError> {
-    flatten_modules_with_options(compiler, root_source, t, prog, BTreeMap::new(), tel)
-}
-
-/// Synthesize a literal `__info__/1` reflection fn for every `defmodule`, so
-/// `M.__info__(:functions | :macros | :module)` resolves and runs like any
-/// other module fn. The body is pure literals (atoms, ints,
-/// tuples, lists), so it flows through flatten, lowering, and codegen unchanged
-/// — four-path by construction, no backend special-casing. A user-defined
-/// `__info__` is left untouched.
-fn inject_module_info(prog: Program) -> Program {
-    let items = inject_info_into_items(prog.items);
-    Program { items, ..prog }
-}
-
-fn inject_info_into_items(items: Vec<Rc<Item>>) -> Vec<Rc<Item>> {
-    items
-        .into_iter()
-        .map(|item| match &*item {
-            Item::Module(m) => {
-                let mut m = m.clone();
-                m.items = inject_info_into_items(m.items);
-                if let Some(info) = build_module_info_fn(&m) {
-                    m.items.push(Rc::new(Item::Fn(info)));
-                }
-                Rc::new(Item::Module(m))
-            }
-            _ => item,
-        })
-        .collect()
-}
-
-fn build_module_info_fn(m: &ModuleDef) -> Option<FnDef> {
-    if m.items
-        .iter()
-        .any(|it| matches!(&**it, Item::Fn(f) if f.name == "__info__"))
-    {
-        return None;
-    }
-    let mut functions: Vec<(String, usize)> = Vec::new();
-    let mut macros: Vec<(String, usize)> = Vec::new();
-    for it in &m.items {
-        let Item::Fn(f) = &**it else { continue };
-        // A user `__info__` already short-circuited the whole fn above, so the
-        // only thing to filter here is externs.
-        if f.extern_abi.is_some() {
-            continue;
-        }
-        let Some(arity) = f.clauses.first().map(|c| c.params.len()) else {
-            continue;
-        };
-        if f.is_macro {
-            macros.push((f.name.clone(), arity));
-        } else if !f.is_private {
-            functions.push((f.name.clone(), arity));
-        }
-    }
-
-    let pair_list = |pairs: &[(String, usize)]| -> Spanned<Expr> {
-        let elems = pairs
-            .iter()
-            .map(|(name, arity)| {
-                Spanned::dummy(Expr::Tuple(vec![
-                    Spanned::dummy(Expr::Atom(name.clone())),
-                    Spanned::dummy(Expr::Int(*arity as i64)),
-                ]))
-            })
-            .collect();
-        Spanned::dummy(Expr::List(elems, None))
-    };
-    let clause = |pat: Pattern, body: Spanned<Expr>| FnClause {
-        params: vec![Spanned::dummy(pat)],
-        param_annotations: vec![None],
-        guard: None,
-        body,
-        span: Span::DUMMY,
-    };
-
-    let clauses = vec![
-        clause(Pattern::Atom("functions".to_string()), pair_list(&functions)),
-        clause(Pattern::Atom("macros".to_string()), pair_list(&macros)),
-        clause(
-            Pattern::Atom("module".to_string()),
-            Spanned::dummy(Expr::Atom(m.name.clone())),
-        ),
-        clause(Pattern::Wildcard, Spanned::dummy(Expr::Nil)),
-    ];
-
-    Some(FnDef {
-        name: "__info__".to_string(),
-        name_span: Span::DUMMY,
-        clauses,
-        is_macro: false,
-        is_private: false,
-        extern_abi: None,
-        extern_params: vec![],
-        extern_ret_tokens: TypeExprBody(vec![]),
-        variadic: false,
-        attrs: vec![],
-        span: Span::DUMMY,
-    })
-}
-
-#[cfg(test)]
-pub fn flatten_modules_with_interface_table<T: Types<Ty = Ty>>(
-    t: &mut T,
-    prog: Program,
-    interface_table: InterfaceTable,
-) -> Result<Program, ResolveError> {
-    let mut compiler = Compiler::new();
-    flatten_modules_with_compiler_interface_table(
-        t,
-        compiler.world_mut(),
-        None,
-        prog,
-        interface_table,
-        &crate::telemetry::NullTelemetry,
-    )
-}
-
-pub fn flatten_modules_with_compiler_interface_table<T: Types<Ty = Ty>>(
-    t: &mut T,
-    compiler: &mut CompilerWorld,
-    root_source: Option<ModuleId>,
-    prog: Program,
-    interface_table: InterfaceTable,
-    tel: &dyn Telemetry,
-) -> Result<Program, ResolveError> {
-    flatten_modules_with_options(compiler, root_source, t, prog, interface_table, tel)
-}
-
-fn flatten_modules_with_options<T: Types<Ty = Ty>>(
-    compiler: &mut CompilerWorld,
-    root_source: Option<ModuleId>,
-    t: &mut T,
     prog: Program,
     interface_table: InterfaceTable,
     tel: &dyn Telemetry,
@@ -352,6 +222,7 @@ fn flatten_modules_with_options<T: Types<Ty = Ty>>(
         &mut brand_inners,
     )?;
     let protocol_registry = collect_protocol_registry(t, &prog, &external_module_interfaces, &mut module_type_envs)?;
+    compiler.record_protocol_facts(&protocol_registry);
     let mut structs = BTreeMap::new();
     let (root_aliases, root_imports) = collect_import_scope(&prog.items, &all_interfaces, &module_macros)?;
     if let Some(root_id) = root_source {
@@ -449,12 +320,124 @@ fn flatten_modules_with_options<T: Types<Ty = Ty>>(
         external_module_interfaces,
         module_docs,
         module_type_envs,
-        protocol_registry,
         opaque_inners,
         brand_inners,
         structs,
         struct_field_types,
     })
+}
+
+/// Synthesize a literal `__info__/1` reflection fn for every `defmodule`, so
+/// `M.__info__(:functions | :macros | :module)` resolves and runs like any
+/// other module fn. The body is pure literals (atoms, ints, tuples, lists), so
+/// it flows through flatten, lowering, and codegen unchanged. A user-defined
+/// `__info__` is left untouched.
+fn inject_module_info(prog: Program) -> Program {
+    let items = inject_info_into_items(prog.items);
+    Program { items, ..prog }
+}
+
+fn inject_info_into_items(items: Vec<Rc<Item>>) -> Vec<Rc<Item>> {
+    items
+        .into_iter()
+        .map(|item| match &*item {
+            Item::Module(m) => {
+                let mut m = m.clone();
+                m.items = inject_info_into_items(m.items);
+                if let Some(info) = build_module_info_fn(&m) {
+                    m.items.push(Rc::new(Item::Fn(info)));
+                }
+                Rc::new(Item::Module(m))
+            }
+            _ => item,
+        })
+        .collect()
+}
+
+fn build_module_info_fn(m: &ModuleDef) -> Option<FnDef> {
+    if m.items
+        .iter()
+        .any(|it| matches!(&**it, Item::Fn(f) if f.name == "__info__"))
+    {
+        return None;
+    }
+    let mut functions: Vec<(String, usize)> = Vec::new();
+    let mut macros: Vec<(String, usize)> = Vec::new();
+    for it in &m.items {
+        let Item::Fn(f) = &**it else { continue };
+        if f.extern_abi.is_some() {
+            continue;
+        }
+        let Some(arity) = f.clauses.first().map(|c| c.params.len()) else {
+            continue;
+        };
+        if f.is_macro {
+            macros.push((f.name.clone(), arity));
+        } else if !f.is_private {
+            functions.push((f.name.clone(), arity));
+        }
+    }
+
+    let pair_list = |pairs: &[(String, usize)]| -> Spanned<Expr> {
+        let elems = pairs
+            .iter()
+            .map(|(name, arity)| {
+                Spanned::dummy(Expr::Tuple(vec![
+                    Spanned::dummy(Expr::Atom(name.clone())),
+                    Spanned::dummy(Expr::Int(*arity as i64)),
+                ]))
+            })
+            .collect();
+        Spanned::dummy(Expr::List(elems, None))
+    };
+    let clause = |pat: Pattern, body: Spanned<Expr>| FnClause {
+        params: vec![Spanned::dummy(pat)],
+        param_annotations: vec![None],
+        guard: None,
+        body,
+        span: Span::DUMMY,
+    };
+
+    let clauses = vec![
+        clause(Pattern::Atom("functions".to_string()), pair_list(&functions)),
+        clause(Pattern::Atom("macros".to_string()), pair_list(&macros)),
+        clause(
+            Pattern::Atom("module".to_string()),
+            Spanned::dummy(Expr::Atom(m.name.clone())),
+        ),
+        clause(Pattern::Wildcard, Spanned::dummy(Expr::Nil)),
+    ];
+
+    Some(FnDef {
+        name: "__info__".to_string(),
+        name_span: Span::DUMMY,
+        clauses,
+        is_macro: false,
+        is_private: false,
+        extern_abi: None,
+        extern_params: vec![],
+        extern_ret_tokens: TypeExprBody(vec![]),
+        variadic: false,
+        attrs: vec![],
+        span: Span::DUMMY,
+    })
+}
+
+#[cfg(test)]
+pub fn flatten_modules_with_interface_table<T: Types<Ty = Ty>>(
+    t: &mut T,
+    prog: Program,
+    interface_table: InterfaceTable,
+) -> Result<Program, ResolveError> {
+    let mut compiler = Compiler::new();
+    flatten_modules_with_compiler(
+        t,
+        compiler.world_mut(),
+        None,
+        prog,
+        interface_table,
+        &crate::telemetry::NullTelemetry,
+    )
 }
 
 fn collect_struct_field_types(

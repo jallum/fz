@@ -120,6 +120,7 @@ fz.compiler.parsed
 fz.compiler.body_surface_ready
 fz.compiler.fn_group_discovered
 fz.compiler.fn_group_lowered
+fz.compiler.fn_group_seeded
 fz.compiler.fn_group_requested
 fz.compiler.fn_group_cache_hit
 fz.compiler.interface_ready
