@@ -1,4 +1,5 @@
 use super::*;
+use crate::compiler::Compiler;
 use crate::diag::{Diagnostics, Span};
 use crate::frontend::protocols::{ImplTarget, InterfaceProtocolImpl};
 use crate::fz_ir::Module;
@@ -8,6 +9,10 @@ use crate::modules::artifact_store::ArtifactStore;
 use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn, InterfaceImport, ModuleInterface};
 use crate::telemetry::NullTelemetry;
+
+fn compiler() -> Compiler {
+    Compiler::new()
+}
 
 fn module(name: &str) -> ModuleName {
     ModuleName::from_segments(vec![name.to_string()])
@@ -81,8 +86,9 @@ fn graph_loader_loads_only_reachable_user_artifacts() {
 
     let mut roots = InterfaceTable::new();
     roots.insert(app.name.clone(), app);
+    let mut compiler = compiler();
     let graph = ModuleGraphLoader::new(store)
-        .load_reachable(&NullTelemetry, &roots, [])
+        .load_reachable(compiler.world_mut(), &NullTelemetry, &roots, [])
         .expect("load graph");
 
     assert!(graph.interfaces.contains_key(&module("App")));
@@ -108,8 +114,9 @@ fn graph_loader_keeps_protocol_impl_callback_namespaces_inside_owner_artifact() 
     });
     let mut roots = InterfaceTable::new();
     roots.insert(app.name.clone(), app);
+    let mut compiler = compiler();
     let graph = ModuleGraphLoader::new(store)
-        .load_reachable(&NullTelemetry, &roots, [])
+        .load_reachable(compiler.world_mut(), &NullTelemetry, &roots, [])
         .expect("load graph");
 
     assert!(!graph.interfaces.contains_key(&module("EnumerableList")));
@@ -145,8 +152,9 @@ fn graph_loader_rejects_fzo_interface_fingerprint_mismatch() {
 
     let mut roots = InterfaceTable::new();
     roots.insert(app.name.clone(), app);
+    let mut compiler = compiler();
     let err = ModuleGraphLoader::new(store)
-        .load_reachable(&NullTelemetry, &roots, [])
+        .load_reachable(compiler.world_mut(), &NullTelemetry, &roots, [])
         .unwrap_err();
 
     assert!(err.to_string().contains("fingerprint"));
@@ -161,9 +169,10 @@ fn graph_loader_uses_runtime_interfaces_without_user_artifacts() {
     let app = interface("App", vec!["Utf8"], vec![("main", 0)]);
     let mut roots = InterfaceTable::new();
     roots.insert(app.name.clone(), app);
+    let mut compiler = compiler();
 
     let graph = ModuleGraphLoader::new(store)
-        .load_reachable(&NullTelemetry, &roots, [])
+        .load_reachable(compiler.world_mut(), &NullTelemetry, &roots, [])
         .expect("load graph");
 
     assert!(graph.interfaces.contains_key(&module("Utf8")));
@@ -186,9 +195,10 @@ fn graph_loader_follows_runtime_implementation_dependencies() {
     let app = interface("App", vec!["Enum"], vec![("main", 0)]);
     let mut roots = InterfaceTable::new();
     roots.insert(app.name.clone(), app);
+    let mut compiler = compiler();
 
     let graph = ModuleGraphLoader::new(store)
-        .load_reachable(&NullTelemetry, &roots, [])
+        .load_reachable(compiler.world_mut(), &NullTelemetry, &roots, [])
         .expect("load graph");
 
     assert!(graph.interfaces.contains_key(&module("Enum")));
@@ -211,9 +221,10 @@ fn graph_loader_follows_protocol_impl_protocol_dependency() {
     });
     let mut roots = InterfaceTable::new();
     roots.insert(app.name.clone(), app);
+    let mut compiler = compiler();
 
     let graph = ModuleGraphLoader::new(store)
-        .load_reachable(&NullTelemetry, &roots, [])
+        .load_reachable(compiler.world_mut(), &NullTelemetry, &roots, [])
         .expect("load graph");
 
     assert!(graph.interfaces.contains_key(&module("Enumerable")));

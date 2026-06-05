@@ -37,7 +37,9 @@ use compiler::Compiler;
 use diag::{Diagnostic, FileId, SourceMap, Span, codes::LOWER_UNBOUND, report_or_exit_through};
 use exec::runtime::Runtime;
 use frontend::resolve::InterfaceTable;
-use frontend::{FrontendOk, FrontendResult, compile_source_with_interface_table, compile_source_with_types};
+use frontend::{
+    FrontendOk, FrontendResult, compile_source_with_compiler_interface_table, compile_source_with_compiler_types,
+};
 use fz_ir::{FnCategory, FnId, FnIr, Module, SpecId};
 use ir_codegen::{
     CompiledImage, CompiledProgram, asm_record_enable, asm_record_take, compile_aot_planned, compile_planned,
@@ -376,8 +378,11 @@ fn run_build(tel: &ConfiguredTelemetry, args: &[String]) {
     });
 
     let providers = ProviderInputs::new(artifact_root.clone(), provider_modules);
-    let frontend_result = compile_source_with_providers(compiler.types(), src, src_path.clone(), &providers, tel)
-        .unwrap_or_else(|err| report_pipeline_error_or_exit("fz build", tel, &sm_cell, err));
+    let frontend_result = {
+        let (t, world) = compiler.split_mut();
+        compile_source_with_providers(world, t, src, src_path.clone(), &providers, tel)
+    }
+    .unwrap_or_else(|err| report_pipeline_error_or_exit("fz build", tel, &sm_cell, err));
     let prepared = checked_module_or_exit("fz build", compiler.types(), frontend_result, &sm_cell, tel, mode);
     if emit_fzi || emit_fzo {
         let diags = validate_public_export_specs(&prepared.interfaces);
@@ -393,8 +398,11 @@ fn run_build(tel: &ConfiguredTelemetry, args: &[String]) {
             });
     }
 
-    let graph = prepare_execution_graph(compiler.types(), prepared, &providers, tel, mode)
-        .unwrap_or_else(|err| report_pipeline_error_or_exit("fz build", tel, &sm_cell, err));
+    let graph = {
+        let (t, world) = compiler.split_mut();
+        prepare_execution_graph(world, t, prepared, &providers, tel, mode)
+    }
+    .unwrap_or_else(|err| report_pipeline_error_or_exit("fz build", tel, &sm_cell, err));
 
     if emit_fzo {
         let unit = graph.units.first().expect("execution graph includes root unit");
@@ -504,8 +512,11 @@ fn run_interp(tel: &ConfiguredTelemetry, args: &[String]) {
         exit(1);
     });
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-    let frontend_result = compile_source_with_providers(compiler.types(), src, path, &providers, tel)
-        .unwrap_or_else(|err| report_pipeline_error_or_exit("fz interp", tel, &sm_cell, err));
+    let frontend_result = {
+        let (t, world) = compiler.split_mut();
+        compile_source_with_providers(world, t, src, path, &providers, tel)
+    }
+    .unwrap_or_else(|err| report_pipeline_error_or_exit("fz interp", tel, &sm_cell, err));
     let checked = checked_module_or_exit(
         "fz interp",
         compiler.types(),
@@ -514,8 +525,11 @@ fn run_interp(tel: &ConfiguredTelemetry, args: &[String]) {
         tel,
         CompileMode::Normal,
     );
-    let graph = prepare_execution_graph(compiler.types(), checked, &providers, tel, CompileMode::Normal)
-        .unwrap_or_else(|err| report_pipeline_error_or_exit("fz interp", tel, &sm_cell, err));
+    let graph = {
+        let (t, world) = compiler.split_mut();
+        prepare_execution_graph(world, t, checked, &providers, tel, CompileMode::Normal)
+    }
+    .unwrap_or_else(|err| report_pipeline_error_or_exit("fz interp", tel, &sm_cell, err));
     notify_fixture_execution_start();
     match run_main_with_plan(compiler.types(), tel, &graph.module, graph.module_plan) {
         Ok(_halt) => {}
@@ -1011,11 +1025,11 @@ fn dump_specs_pipeline(
     source_name: String,
     interface_table: InterfaceTable,
 ) -> String {
-    let frontend = run_frontend(
-        compile_source_with_interface_table(compiler.types(), src, source_name, interface_table, tel),
-        sm_cell,
-        tel,
-    );
+    let frontend_result = {
+        let (t, world) = compiler.split_mut();
+        compile_source_with_compiler_interface_table(world, t, src, source_name, interface_table, tel)
+    };
+    let frontend = run_frontend(frontend_result, sm_cell, tel);
     pretty_module_plan(compiler.types(), &frontend.module, &frontend.module_plan)
 }
 
@@ -1028,11 +1042,11 @@ fn dump_interfaces_pipeline(
     strict: bool,
     interface_table: InterfaceTable,
 ) -> String {
-    let frontend = run_frontend(
-        compile_source_with_interface_table(compiler.types(), src, source_name, interface_table, tel),
-        sm_cell,
-        tel,
-    );
+    let frontend_result = {
+        let (t, world) = compiler.split_mut();
+        compile_source_with_compiler_interface_table(world, t, src, source_name, interface_table, tel)
+    };
+    let frontend = run_frontend(frontend_result, sm_cell, tel);
     if strict {
         let diags = validate_public_export_specs(&frontend._prog.module_interfaces);
         report_or_exit_through(tel, &diags);
@@ -1078,7 +1092,10 @@ fn dump_bodies_pipeline(
     mode: CompileMode,
 ) -> String {
     use crate::telemetry::TelemetryExt as _;
-    let frontend_result = compile_source_with_types(compiler.types(), src, source_name, tel);
+    let frontend_result = {
+        let (t, world) = compiler.split_mut();
+        compile_source_with_compiler_types(world, t, src, source_name, tel)
+    };
     let prepared = checked_module_or_exit("fz dump", compiler.types(), frontend_result, sm_cell, tel, mode);
     let module = prepared.module;
     let module_plan = prepared.module_plan;
@@ -1172,7 +1189,10 @@ fn dump_outcomes_pipeline(
 ) -> String {
     use crate::fz_ir::{CallsiteId, EmitSlot};
     use crate::telemetry::TelemetryExt as _;
-    let frontend_result = compile_source_with_types(compiler.types(), src, source_name.clone(), tel);
+    let frontend_result = {
+        let (t, world) = compiler.split_mut();
+        compile_source_with_compiler_types(world, t, src, source_name.clone(), tel)
+    };
     let prepared = checked_module_or_exit("fz dump", compiler.types(), frontend_result, sm_cell, tel, mode);
     let module = prepared.module;
     let _compile_span = tel.span(
@@ -1351,11 +1371,17 @@ fn compile_pipeline(
     mode: CompileMode,
     providers: &ProviderInputs,
 ) -> Compiled {
-    let frontend_result = compile_source_with_providers(compiler.types(), src, source_name, providers, tel)
-        .unwrap_or_else(|err| report_pipeline_error_or_exit("fz run", tel, sm_cell, err));
+    let frontend_result = {
+        let (t, world) = compiler.split_mut();
+        compile_source_with_providers(world, t, src, source_name, providers, tel)
+    }
+    .unwrap_or_else(|err| report_pipeline_error_or_exit("fz run", tel, sm_cell, err));
     let prepared = checked_module_or_exit("fz run", compiler.types(), frontend_result, sm_cell, tel, mode);
-    let graph = prepare_execution_graph(compiler.types(), prepared, providers, tel, mode)
-        .unwrap_or_else(|err| report_pipeline_error_or_exit("fz run", tel, sm_cell, err));
+    let graph = {
+        let (t, world) = compiler.split_mut();
+        prepare_execution_graph(world, t, prepared, providers, tel, mode)
+    }
+    .unwrap_or_else(|err| report_pipeline_error_or_exit("fz run", tel, sm_cell, err));
     let main_fn = graph.module.fn_by_name("main").map(|f| f.id);
     let executable = compile_planned(compiler.types(), &graph.module, &graph.module_plan, tel).unwrap_or_else(|e| {
         report_or_exit_through(tel, &[e.to_diagnostic()]);

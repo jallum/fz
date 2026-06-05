@@ -30,6 +30,7 @@
 #[cfg(test)]
 use crate::ast::MatchClause;
 use crate::ast::{Attribute, Expr, FnDef, Item, Program, Spanned};
+use crate::compiler::{Compiler, CompilerWorld};
 use crate::diag::Span;
 #[cfg(test)]
 use crate::diag::{codes, emit_through};
@@ -41,6 +42,7 @@ use crate::exec::runtime::{DbgCapture, Runtime};
 use crate::frontend::protocols::{
     PROTOCOL_ELEM_VAR, ProtocolImplFact, impl_target_type, impl_target_type_with_element,
 };
+#[cfg(test)]
 use crate::frontend::resolve::flatten_modules;
 #[cfg(test)]
 use crate::fz_ir::{BinOp, BranchOrigin, Const, DeadBranch, ExternMarshal, FnBuilder, ModuleBuilder};
@@ -54,11 +56,12 @@ use crate::ir_codegen::compile_planned;
 #[cfg(test)]
 use crate::ir_planner::{collect_diagnostics, plan_module};
 use crate::modules::identity::ModuleName;
-use crate::modules::runtime_library::{
-    core_prelude_module_sources, interface, prelude_source, root_type_env_from_attrs,
-};
+use crate::modules::runtime_library::{interface, root_type_env_from_attrs};
+#[cfg(test)]
 use crate::parser::Parser;
-use crate::parser::lexer::{Lexer, Tok};
+#[cfg(test)]
+use crate::parser::lexer::Lexer;
+use crate::parser::lexer::Tok;
 #[cfg(test)]
 use crate::pattern_matrix::BodyId;
 use crate::specs::{
@@ -121,15 +124,35 @@ pub(crate) const REPL_ENTRY_PREFIX: &str = "__repl_eval_";
 /// Return the prelude as a flat `Program` whose `module_type_envs[""]`,
 /// `opaque_inners`, and `brand_inners` include compiler-known runtime
 /// types plus any root declarations still present in `runtime.fz`.
-fn parse_runtime_prelude<T: Types<Ty = Ty>>(t: &mut T) -> (Program, HashMap<(String, usize), String>) {
-    let runtime_fz = prelude_source();
-    let (items, attrs) = parse_runtime_source_items(runtime_fz, "runtime.fz");
+fn parse_runtime_prelude<T: Types<Ty = Ty>>(
+    compiler: &mut CompilerWorld,
+    t: &mut T,
+    tel: &dyn Telemetry,
+) -> (Program, HashMap<(String, usize), String>) {
+    let prelude_id = compiler.discover_primitive_prelude(tel);
+    let parsed_prelude = compiler
+        .ensure_prelude(prelude_id, tel)
+        .expect("runtime.fz parse error (bug in built-in prelude)");
+    let items = parsed_prelude.items;
+    let attrs = parsed_prelude.attrs;
     let root_types = root_type_env_from_attrs(t, &attrs);
-    let prelude_imports = collect_runtime_prelude_imports(&items);
+    let prelude_imports = collect_runtime_prelude_imports(compiler, tel, &items);
     let mut items = items;
-    for (name, source) in core_prelude_module_sources() {
-        let (mut module_items, _module_attrs) = parse_runtime_source_items(source, name);
-        items.append(&mut module_items);
+    for module_source in crate::modules::runtime_library::RUNTIME_MODULE_SOURCES
+        .iter()
+        .filter(|source| source.role == crate::modules::runtime_library::RuntimeModuleRole::CorePrelude)
+    {
+        let module = ModuleName::from_segments(vec![module_source.name.to_string()]);
+        let module_id = compiler
+            .discover_runtime_module(&module, tel)
+            .expect("registered runtime module");
+        let mut parsed = compiler.ensure_prelude(module_id, tel).unwrap_or_else(|_| {
+            panic!(
+                "{}.fz parse error (bug in built-in runtime library)",
+                module_source.name
+            )
+        });
+        items.append(&mut parsed.items);
     }
     let staged = Program {
         items,
@@ -143,7 +166,8 @@ fn parse_runtime_prelude<T: Types<Ty = Ty>>(t: &mut T) -> (Program, HashMap<(Str
         structs: Default::default(),
         struct_field_types: Default::default(),
     };
-    let mut flat = flatten_modules(t, staged).expect("runtime.fz module flatten error (bug in built-in prelude)");
+    let mut flat = crate::frontend::resolve::flatten_modules_with_compiler(t, compiler, staged, tel)
+        .expect("runtime.fz module flatten error (bug in built-in prelude)");
     // Merge compiler-known runtime types and any root declarations into the
     // flattened prelude program.
     flat.module_type_envs
@@ -155,16 +179,11 @@ fn parse_runtime_prelude<T: Types<Ty = Ty>>(t: &mut T) -> (Program, HashMap<(Str
     (flat, prelude_imports)
 }
 
-fn parse_runtime_source_items(src: &str, label: &str) -> (Vec<Rc<Item>>, Vec<Attribute>) {
-    let toks = Lexer::new(src)
-        .tokenize()
-        .unwrap_or_else(|_| panic!("{label} lex error (bug in built-in prelude)"));
-    Parser::new(toks)
-        .parse_prelude()
-        .unwrap_or_else(|_| panic!("{label} parse error (bug in built-in prelude)"))
-}
-
-fn collect_runtime_prelude_imports(items: &[Rc<Item>]) -> HashMap<(String, usize), String> {
+fn collect_runtime_prelude_imports(
+    compiler: &mut CompilerWorld,
+    tel: &dyn Telemetry,
+    items: &[Rc<Item>],
+) -> HashMap<(String, usize), String> {
     let mut out = HashMap::new();
     for item in items {
         match item.as_ref() {
@@ -173,7 +192,9 @@ fn collect_runtime_prelude_imports(items: &[Rc<Item>]) -> HashMap<(String, usize
                 only,
                 except,
                 span,
-            } => collect_runtime_prelude_import(&mut out, path, only.as_deref(), except.as_deref(), *span),
+            } => {
+                collect_runtime_prelude_import(compiler, tel, &mut out, path, only.as_deref(), except.as_deref(), *span)
+            }
             Item::Alias { .. } => {
                 panic!("runtime.fz prelude aliases are not supported; use import")
             }
@@ -212,14 +233,17 @@ fn struct_opaque_inners<T: Types<Ty = Ty>>(
 }
 
 fn collect_runtime_prelude_import(
+    compiler: &mut CompilerWorld,
+    tel: &dyn Telemetry,
     out: &mut HashMap<(String, usize), String>,
     module: &ModuleName,
     only: Option<&[(String, usize)]>,
     except: Option<&[(String, usize)]>,
     span: Span,
 ) {
-    let interface =
-        interface(module).unwrap_or_else(|| panic!("runtime.fz imports unknown built-in runtime module `{}`", module));
+    let interface = interface(compiler, module, tel)
+        .expect("runtime interface lookup must succeed")
+        .unwrap_or_else(|| panic!("runtime.fz imports unknown built-in runtime module `{}`", module));
     let mut exports = interface
         .exports
         .iter()
@@ -655,6 +679,16 @@ pub(crate) fn compute_current_function_correspondence(
 /// it. The atom table built during lowering is folded into `module.atom_names`,
 /// so the `Module` is the complete result — there is no second return value.
 pub fn lower_program<T: Types<Ty = Ty>>(t: &mut T, prog: &Program, tel: &dyn Telemetry) -> Result<Module, LowerError> {
+    let mut compiler = Compiler::new();
+    lower_program_with_compiler(compiler.world_mut(), t, prog, tel)
+}
+
+pub fn lower_program_with_compiler<T: Types<Ty = Ty>>(
+    compiler: &mut CompilerWorld,
+    t: &mut T,
+    prog: &Program,
+    tel: &dyn Telemetry,
+) -> Result<Module, LowerError> {
     let mut ctx = LowerCtx::new();
     ctx.struct_schemas.extend(
         prog.structs
@@ -668,7 +702,7 @@ pub fn lower_program<T: Types<Ty = Ty>>(t: &mut T, prog: &Program, tel: &dyn Tel
     // Prepend the built-in runtime prelude. `runtime.fz` contributes root
     // type aliases and imports; core prelude module sources (currently
     // Kernel) contribute the implementations those imports expose.
-    let (prelude, prelude_imports) = parse_runtime_prelude(t);
+    let (prelude, prelude_imports) = parse_runtime_prelude(compiler, t, tel);
     ctx.prelude_imports = prelude_imports;
     ctx.struct_schemas.extend(
         prelude

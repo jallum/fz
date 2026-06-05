@@ -1,4 +1,5 @@
 use super::*;
+use crate::compiler::Compiler;
 use crate::diag::{Diagnostics, Span};
 use crate::exec::runtime::{DbgCapture, ExitRecord, ProcessExitCapture, Runtime};
 use crate::frontend::compile_source_with_interface_table;
@@ -35,6 +36,10 @@ use fz_runtime::any_value::{
 use fz_runtime::heap::Schema;
 use fz_runtime::ir_runtime::{frame_alloc_count_reset, frame_alloc_count_take};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+fn compiler() -> Compiler {
+    Compiler::new()
+}
 
 // `false` halts as its reserved atom ID; name the constant so test
 // assertions stay readable.
@@ -1207,12 +1212,20 @@ fn runtime_graph(t: &mut DefaultTypes, src: &str) -> PreparedExecutionGraph {
 }
 
 fn runtime_graph_with_tel(t: &mut DefaultTypes, src: &str, tel: &dyn Telemetry) -> PreparedExecutionGraph {
+    let mut compiler = compiler();
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-    let frontend = compile_source_with_providers(t, src.to_string(), "test.fz".to_string(), &providers, tel)
-        .unwrap_or_else(|err| panic!("frontend result: {err}"));
+    let frontend = compile_source_with_providers(
+        compiler.world_mut(),
+        t,
+        src.to_string(),
+        "test.fz".to_string(),
+        &providers,
+        tel,
+    )
+    .unwrap_or_else(|err| panic!("frontend result: {err}"));
     let checked = checked_module_for_mode(t, frontend, tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let prepared = prepare_execution_graph(t, checked, &providers, tel, CompileMode::Normal)
+    let prepared = prepare_execution_graph(compiler.world_mut(), t, checked, &providers, tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("execution graph: {err}"));
     assert_module_planner_consistent(t, &prepared.module, "runtime_graph_with_tel");
     prepared
@@ -2995,11 +3008,19 @@ fn frontend_to_codegen_pipeline_reports_planner_phase_events() {
         Err(_) => panic!("frontend"),
     };
 
+    let mut compiler = compiler();
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
     let checked = checked_module_for_mode(&mut t, Ok(frontend), &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let graph = prepare_execution_graph(&mut t, checked, &providers, &tel, CompileMode::Normal)
-        .unwrap_or_else(|err| panic!("execution graph: {err}"));
+    let graph = prepare_execution_graph(
+        compiler.world_mut(),
+        &mut t,
+        checked,
+        &providers,
+        &tel,
+        CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| panic!("execution graph: {err}"));
     compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile planned");
 
     let roles = planner_roles(&cap);
@@ -3087,11 +3108,19 @@ fn compile_emits_spec_pair_inventory_telemetry() {
     let frontend = compile_source_with_types(&mut t, src.to_string(), "test.fz".to_string(), &tel)
         .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
 
+    let mut compiler = compiler();
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
     let checked = checked_module_for_mode(&mut t, Ok(frontend), &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let graph = prepare_execution_graph(&mut t, checked, &providers, &tel, CompileMode::Normal)
-        .unwrap_or_else(|err| panic!("execution graph: {err}"));
+    let graph = prepare_execution_graph(
+        compiler.world_mut(),
+        &mut t,
+        checked,
+        &providers,
+        &tel,
+        CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| panic!("execution graph: {err}"));
     compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile planned");
 
     assert!(

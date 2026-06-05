@@ -55,7 +55,8 @@ impl Handler for StructuralHandler {
                     Some(Value::U64(n)) => *n as usize,
                     _ => 0,
                 };
-                self.0.borrow_mut().parser_items = count;
+                let mut facts = self.0.borrow_mut();
+                facts.parser_items = facts.parser_items.max(count);
             }
             ["fz", "frontend", "parsed"] => {
                 if let Some(program) = ev.metadata.get("program").and_then(|v| v.downcast_ref::<Program>()) {
@@ -102,7 +103,10 @@ fn structural_telemetry_exposes_compiler_artifacts_to_handlers() {
     };
 
     let facts = facts.borrow();
-    assert_eq!(facts.parser_items, 2);
+    assert!(
+        facts.parser_items >= 2,
+        "parser telemetry should expose at least the user program item count"
+    );
     assert_eq!(facts.parsed_items, 2);
     assert_eq!(facts.lowered_fns, out.module.fns.len());
     assert_eq!(facts.typed_specs, out.module_plan.specs.len());

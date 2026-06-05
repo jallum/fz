@@ -1,5 +1,6 @@
 use super::*;
 use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind, Value};
+use std::sync::Arc;
 
 fn named_module(name: &str) -> ModuleKey {
     ModuleKey::Named(ModuleName::parse_dotted(name).expect("valid module name"))
@@ -7,6 +8,14 @@ fn named_module(name: &str) -> ModuleKey {
 
 fn phase_events(capture: &Capture) -> Vec<crate::telemetry::capture::OwnedEvent> {
     capture.find(&["fz", "compiler", "phase"]).into_iter().collect()
+}
+
+fn phase_start_events_for_target(capture: &Capture, target_phase: &str) -> Vec<crate::telemetry::capture::OwnedEvent> {
+    phase_events(capture)
+        .into_iter()
+        .filter(|ev| ev.kind == EventKind::SpanStart)
+        .filter(|ev| metadata_str(ev, "target_phase") == target_phase)
+        .collect()
 }
 
 fn metadata_str<'a>(ev: &'a crate::telemetry::capture::OwnedEvent, key: &str) -> &'a str {
@@ -31,17 +40,27 @@ fn compiler_phase_cache_hits_skip_repeat_work_and_emit_timing_telemetry() {
     tel.attach(&["fz", "compiler"], capture.handler());
 
     let mut compiler = Compiler::new();
-    let module_id = compiler.discover_module(
+    let module_id = compiler.world.register_module(
         named_module("Process"),
         ModuleOrigin::EmbeddedRuntime,
         FileOrigin::EmbeddedRuntime("Process".to_string()),
+        SourceDescriptor {
+            source_name: "runtime:Process".to_string(),
+            text: Arc::<str>::from("defmodule Process do\nend\n"),
+            parse_kind: ParseKind::Prelude,
+        },
         &tel,
     );
 
-    let again = compiler.discover_module(
+    let again = compiler.world.register_module(
         named_module("Process"),
         ModuleOrigin::EmbeddedRuntime,
         FileOrigin::EmbeddedRuntime("Process".to_string()),
+        SourceDescriptor {
+            source_name: "runtime:Process".to_string(),
+            text: Arc::<str>::from("defmodule Process do\nend\n"),
+            parse_kind: ParseKind::Prelude,
+        },
         &tel,
     );
     assert_eq!(module_id, again, "module discovery should be idempotent");
@@ -89,26 +108,114 @@ fn compiler_phase_cache_hits_skip_repeat_work_and_emit_timing_telemetry() {
 }
 
 #[test]
+fn root_source_is_loaded_and_parsed_once_with_timing_telemetry() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "compiler"], capture.handler());
+
+    let mut compiler = Compiler::new();
+    let root = compiler.register_root_source("fixtures/quicksort/input.fz", "fn main(), do: nil\n".to_string(), &tel);
+
+    let first = compiler.ensure_program(root, &tel).expect("root source should parse");
+    let second = compiler
+        .ensure_program(root, &tel)
+        .expect("root source should come from cache");
+
+    assert_eq!(first.program.items.len(), 1);
+    assert_eq!(second.program.items.len(), 1);
+    assert_eq!(compiler.module(root).state, ModuleState::Parsed);
+
+    assert_eq!(capture.count(&["fz", "compiler", "source_loaded"]), 1);
+    assert_eq!(capture.count(&["fz", "compiler", "parsed"]), 1);
+    assert_eq!(capture.count(&["fz", "compiler", "cache_miss"]), 2);
+    assert_eq!(capture.count(&["fz", "compiler", "cache_hit"]), 1);
+
+    let parsed_phase_events = phase_start_events_for_target(&capture, "parsed");
+    assert_eq!(
+        parsed_phase_events.len(),
+        1,
+        "one parse should produce one parsed phase start"
+    );
+    assert!(
+        phase_events(&capture)
+            .iter()
+            .any(|ev| ev.kind == EventKind::SpanStop && ev.measurements.get("elapsed_ns").is_some()),
+        "compiler phase timing must report elapsed_ns"
+    );
+
+    compiler
+        .validate_invariants()
+        .expect("parsed root source should satisfy compiler invariants");
+}
+
+#[test]
+fn runtime_module_interface_is_collected_once_from_source() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "compiler"], capture.handler());
+
+    let mut compiler = Compiler::new();
+    let process = ModuleName::parse_dotted("Process").expect("valid module name");
+
+    let first = compiler
+        .ensure_runtime_module_interface(&process, &tel)
+        .expect("Process interface should build")
+        .expect("Process module should exist");
+    let second = compiler
+        .ensure_runtime_module_interface(&process, &tel)
+        .expect("Process interface should come from cache")
+        .expect("Process module should exist");
+
+    assert_eq!(first.name, process);
+    assert_eq!(second.name, process);
+    assert_eq!(compiler.module_count(), 1);
+    assert_eq!(compiler.file_count(), 1);
+
+    let process_id = compiler
+        .discover_runtime_module(&process, &tel)
+        .expect("Process runtime module should still be discoverable");
+    assert_eq!(compiler.module(process_id).state, ModuleState::InterfaceReady);
+
+    assert_eq!(capture.count(&["fz", "compiler", "source_loaded"]), 1);
+    assert_eq!(capture.count(&["fz", "compiler", "parsed"]), 1);
+    assert_eq!(capture.count(&["fz", "compiler", "interface_ready"]), 1);
+
+    let parsed_phase_events = phase_start_events_for_target(&capture, "parsed");
+    assert_eq!(
+        parsed_phase_events.len(),
+        1,
+        "one runtime parse should produce one parsed phase start"
+    );
+    assert!(
+        phase_events(&capture)
+            .iter()
+            .any(|ev| ev.kind == EventKind::SpanStop && ev.measurements.get("elapsed_ns").is_some()),
+        "compiler phase timing must report elapsed_ns"
+    );
+
+    compiler
+        .validate_invariants()
+        .expect("runtime interface cache should satisfy compiler invariants");
+}
+
+#[test]
 fn compiler_invariants_accept_consistent_world_state() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&["fz", "compiler"], capture.handler());
 
     let mut compiler = Compiler::new();
-    let root = compiler.discover_module(
-        ModuleKey::RootPath("fixtures/quicksort/input.fz".into()),
-        ModuleOrigin::RootSource,
-        FileOrigin::Filesystem("fixtures/quicksort/input.fz".into()),
-        &tel,
-    );
-    let process = compiler.discover_module(
-        named_module("Process"),
-        ModuleOrigin::EmbeddedRuntime,
-        FileOrigin::EmbeddedRuntime("Process".to_string()),
-        &tel,
-    );
+    let root = compiler.register_root_source("fixtures/quicksort/input.fz", "fn main(), do: nil\n".to_string(), &tel);
+    compiler
+        .ensure_interface_table(root, &tel)
+        .expect("root interface should build");
+    let process = compiler
+        .discover_runtime_module(&ModuleName::parse_dotted("Process").expect("valid module name"), &tel)
+        .expect("runtime module");
+    compiler
+        .ensure_runtime_module_interface(&ModuleName::parse_dotted("Process").expect("valid module name"), &tel)
+        .expect("Process interface should build");
 
-    compiler.ensure_module_state(root, ModuleState::InterfaceReady, &tel, |_| {});
     compiler.mark_reachable(root, ReachabilityKind::Interface, &tel);
     compiler.mark_reachable(process, ReachabilityKind::Runtime, &tel);
     compiler.ensure_module_state(process, ModuleState::RuntimeLowered, &tel, |_| {});
@@ -131,14 +238,11 @@ fn compiler_invariants_accept_consistent_world_state() {
 fn compiler_invariants_reject_broken_module_file_links() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler::new();
-    let module_id = compiler.discover_module(
-        named_module("Process"),
-        ModuleOrigin::EmbeddedRuntime,
-        FileOrigin::EmbeddedRuntime("Process".to_string()),
-        &tel,
-    );
+    let module_id = compiler
+        .discover_runtime_module(&ModuleName::parse_dotted("Process").expect("valid module name"), &tel)
+        .expect("runtime module");
 
-    compiler.modules[module_id.0 as usize].file_id = FileId(99);
+    compiler.world.modules[module_id.0 as usize].file_id = FileId(99);
 
     let err = compiler
         .validate_invariants()

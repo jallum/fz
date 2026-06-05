@@ -332,6 +332,22 @@ impl Parser {
         let (items, attrs) = self.parse_items_until(&[Tok::Eof])?;
         Ok((items, attrs))
     }
+
+    pub fn parse_prelude_with_telemetry(&mut self, tel: &dyn Telemetry) -> PR<(Vec<Rc<Item>>, Vec<Attribute>)> {
+        use crate::telemetry::TelemetryExt;
+
+        let _span = tel.span(PARSE_PASS_NAME, Metadata::new());
+        let (items, attrs) = self.parse_prelude()?;
+        tel.execute(
+            ITEMS_BUILT_NAME,
+            &crate::measurements! { count: items.len() + attrs.len() },
+            &Metadata::new(),
+        );
+        for diag in self.warnings.drain(..) {
+            tel.event(DIAG_WARNING_NAME, crate::metadata! { diagnostic: opaque(&diag) });
+        }
+        Ok((items, attrs))
+    }
 }
 
 mod expressions;

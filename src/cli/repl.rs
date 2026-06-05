@@ -264,15 +264,20 @@ impl ReplSession {
         diagnostics: &Rc<RefCell<Vec<u8>>>,
     ) -> io::Result<()> {
         let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-        let frontend =
-            match compile_source_with_providers(self.world.types(), src.to_string(), source_name, &providers, tel) {
-                Ok(ok) => ok,
-                Err(err) => return Err(pipeline_error_to_io_error(err, diagnostics)),
-            };
+        let frontend = match {
+            let (t, world) = self.world.compiler.split_mut();
+            compile_source_with_providers(world, t, src.to_string(), source_name, &providers, tel)
+        } {
+            Ok(ok) => ok,
+            Err(err) => return Err(pipeline_error_to_io_error(err, diagnostics)),
+        };
         let checked = checked_module_for_mode(self.world.types(), frontend, tel, CompileMode::Normal)
             .map_err(|err| pipeline_error_to_io_error(err, diagnostics))?;
-        let prepared = prepare_execution_graph(self.world.types(), checked, &providers, tel, CompileMode::Normal)
-            .map_err(|err| pipeline_error_to_io_error(err, diagnostics))?;
+        let prepared = {
+            let (t, world) = self.world.compiler.split_mut();
+            prepare_execution_graph(world, t, checked, &providers, tel, CompileMode::Normal)
+        }
+        .map_err(|err| pipeline_error_to_io_error(err, diagnostics))?;
 
         let Some(main) = prepared.module.fn_by_name("main") else {
             return Ok(());
@@ -690,7 +695,8 @@ fn prepare_repl_frontend(t: &mut DefaultTypes, frontend: FrontendOk) -> io::Resu
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
     let checked = checked_module_for_mode(t, Ok(frontend), &tel, CompileMode::Normal)
         .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))?;
-    prepare_execution_graph(t, checked, &providers, &tel, CompileMode::Normal)
+    let mut compiler = Compiler::new();
+    prepare_execution_graph(compiler.world_mut(), t, checked, &providers, &tel, CompileMode::Normal)
         .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))
 }
 

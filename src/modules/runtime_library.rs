@@ -10,6 +10,8 @@
 //! artifact envelopes so resolver and linker work can depend on the same
 //! facts a user library would provide.
 use crate::ast::{Attribute, Expr, Item, ModuleDef, Program, ProtocolDef, Spanned, WithBinding};
+use crate::compiler::CompilerWorld;
+use crate::diag::Diagnostic;
 #[cfg(test)]
 use crate::frontend::compile_source_with_interface_table;
 #[cfg(test)]
@@ -21,8 +23,7 @@ use crate::modules::artifact::{
 use crate::modules::artifact_store::ArtifactStore;
 use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::interface::{ModuleInterface, collect_from_program, fingerprint_digest};
-use crate::parser::Parser;
-use crate::parser::lexer::Lexer;
+use crate::telemetry::Telemetry;
 #[cfg(test)]
 use crate::telemetry::{Capture, ConfiguredTelemetry, NullTelemetry};
 use crate::type_expr::{
@@ -37,21 +38,21 @@ use std::env::temp_dir;
 use std::fs::remove_dir_all;
 use std::rc::Rc;
 
-const RUNTIME_PRELUDE_FZ: &str = include_str!("runtime_library/runtime.fz");
+pub(crate) const RUNTIME_PRELUDE_FZ: &str = include_str!("runtime_library/runtime.fz");
 
-struct RuntimeModuleSource {
-    name: &'static str,
-    source: &'static str,
-    role: RuntimeModuleRole,
+pub(crate) struct RuntimeModuleSource {
+    pub(crate) name: &'static str,
+    pub(crate) source: &'static str,
+    pub(crate) role: RuntimeModuleRole,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RuntimeModuleRole {
+pub(crate) enum RuntimeModuleRole {
     CorePrelude,
     Library,
 }
 
-const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
+pub(crate) const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
     RuntimeModuleSource {
         name: "Kernel",
         source: include_str!("runtime_library/kernel.fz"),
@@ -108,18 +109,16 @@ pub struct RuntimeRootTypes {
     pub brand_inners: BrandInnerTypes,
 }
 
-pub fn prelude_source() -> &'static str {
-    RUNTIME_PRELUDE_FZ
-}
-
-pub fn root_type_env<T: Types<Ty = Ty>>(t: &mut T) -> RuntimeRootTypes {
-    let toks = Lexer::new(prelude_source())
-        .tokenize()
-        .expect("runtime.fz lex error (bug in built-in prelude)");
-    let (_items, attrs) = Parser::new(toks)
-        .parse_prelude()
+pub fn root_type_env<T: Types<Ty = Ty>>(
+    compiler: &mut CompilerWorld,
+    t: &mut T,
+    tel: &dyn Telemetry,
+) -> RuntimeRootTypes {
+    let prelude_id = compiler.discover_primitive_prelude(tel);
+    let prelude = compiler
+        .ensure_prelude(prelude_id, tel)
         .expect("runtime.fz parse error (bug in built-in prelude)");
-    root_type_env_from_attrs(t, &attrs)
+    root_type_env_from_attrs(t, &prelude.attrs)
 }
 
 pub fn root_type_env_from_attrs<T: Types<Ty = Ty>>(t: &mut T, attrs: &[Attribute]) -> RuntimeRootTypes {
@@ -138,26 +137,19 @@ pub fn root_type_env_from_attrs<T: Types<Ty = Ty>>(t: &mut T, attrs: &[Attribute
     }
 }
 
-pub fn core_prelude_module_sources() -> impl Iterator<Item = (&'static str, &'static str)> {
-    RUNTIME_MODULE_SOURCES
-        .iter()
-        .filter(|source| source.role == RuntimeModuleRole::CorePrelude)
-        .map(|source| (source.name, source.source))
-}
-
 pub fn is_core_prelude_module(module: &ModuleName) -> bool {
     RUNTIME_MODULE_SOURCES
         .iter()
         .any(|source| source.role == RuntimeModuleRole::CorePrelude && source.name == module.dotted())
 }
 
-pub fn prelude_required_modules() -> Vec<ModuleName> {
+pub fn prelude_required_modules(compiler: &mut CompilerWorld, tel: &dyn Telemetry) -> Vec<ModuleName> {
     let core_modules = RUNTIME_MODULE_SOURCES
         .iter()
         .filter(|source| source.role == RuntimeModuleRole::CorePrelude)
         .map(|source| ModuleName::from_segments(vec![source.name.to_string()]))
         .collect::<BTreeSet<_>>();
-    primitive_prelude_program()
+    primitive_prelude_program(compiler, tel)
         .items
         .iter()
         .filter_map(|item| match &**item {
@@ -167,21 +159,17 @@ pub fn prelude_required_modules() -> Vec<ModuleName> {
         .collect()
 }
 
-pub fn parsed_program() -> Program {
+pub fn parsed_program(compiler: &mut CompilerWorld, tel: &dyn Telemetry) -> Result<Program, Diagnostic> {
     let mut items = Vec::new();
     for module_source in RUNTIME_MODULE_SOURCES {
-        let toks = Lexer::new(module_source.source)
-            .tokenize()
-            .unwrap_or_else(|_| panic!("{}.fz lex error (bug in built-in runtime library)", module_source.name));
-        let (mut parsed_items, _attrs) = Parser::new(toks).parse_prelude().unwrap_or_else(|err| {
-            panic!(
-                "{}.fz parse error (bug in built-in runtime library): {} at {:?}",
-                module_source.name, err, err.span
-            )
-        });
-        items.append(&mut parsed_items);
+        let module = ModuleName::from_segments(vec![module_source.name.to_string()]);
+        let module_id = compiler
+            .discover_runtime_module(&module, tel)
+            .expect("registered runtime module");
+        let mut parsed = compiler.ensure_prelude(module_id, tel)?;
+        items.append(&mut parsed.items);
     }
-    Program {
+    Ok(Program {
         items,
         module_interfaces: BTreeMap::new(),
         external_module_interfaces: BTreeMap::new(),
@@ -192,53 +180,64 @@ pub fn parsed_program() -> Program {
         brand_inners: Default::default(),
         structs: Default::default(),
         struct_field_types: Default::default(),
-    }
+    })
 }
 
 #[cfg(test)]
-pub fn interface_table() -> InterfaceTable {
-    interfaces()
+pub fn interface_table(compiler: &mut CompilerWorld, tel: &dyn Telemetry) -> InterfaceTable {
+    interfaces(compiler, tel)
 }
 
-pub fn interfaces() -> BTreeMap<ModuleName, ModuleInterface> {
+pub fn interfaces(compiler: &mut CompilerWorld, tel: &dyn Telemetry) -> BTreeMap<ModuleName, ModuleInterface> {
     RUNTIME_MODULE_SOURCES
         .iter()
         .filter_map(|source| {
             let module = ModuleName::from_segments(vec![source.name.to_string()]);
-            interface(&module).map(|interface| (module, interface))
+            interface(compiler, &module, tel)
+                .expect("runtime interface build must succeed")
+                .map(|interface| (module, interface))
         })
         .collect()
 }
 
-pub fn interface(module: &ModuleName) -> Option<ModuleInterface> {
-    artifact(module).map(|artifact| artifact.interface)
+pub fn interface(
+    compiler: &mut CompilerWorld,
+    module: &ModuleName,
+    tel: &dyn Telemetry,
+) -> Result<Option<ModuleInterface>, Diagnostic> {
+    compiler.ensure_runtime_module_interface(module, tel)
 }
 
-pub fn implementation_dependencies(module: &ModuleName) -> Vec<ModuleName> {
-    let Some(source) = runtime_module_source(module) else {
-        return Vec::new();
+pub fn implementation_dependencies(
+    compiler: &mut CompilerWorld,
+    module: &ModuleName,
+    tel: &dyn Telemetry,
+) -> Result<Vec<ModuleName>, Diagnostic> {
+    let Some(module_id) = compiler.discover_runtime_module(module, tel) else {
+        return Ok(Vec::new());
     };
-    let toks = Lexer::new(source)
-        .tokenize()
-        .unwrap_or_else(|_| panic!("{}.fz lex error (bug in built-in runtime library)", module));
-    let (items, _attrs) = Parser::new(toks).parse_prelude().unwrap_or_else(|err| {
-        panic!(
-            "{}.fz parse error (bug in built-in runtime library): {} at {:?}",
-            module, err, err.span
-        )
-    });
+    let items = compiler.ensure_prelude(module_id, tel)?.items;
     let mut deps = BTreeSet::new();
     collect_runtime_implementation_dependencies(&items, &mut deps);
     deps.remove(module);
-    deps.into_iter().collect()
+    Ok(deps.into_iter().collect())
 }
 
-pub fn artifact(module: &ModuleName) -> Option<RuntimeLibraryModuleArtifact> {
-    artifacts().into_iter().find(|artifact| artifact.module == *module)
+pub fn artifact(
+    compiler: &mut CompilerWorld,
+    module: &ModuleName,
+    tel: &dyn Telemetry,
+) -> Result<Option<RuntimeLibraryModuleArtifact>, Diagnostic> {
+    Ok(artifacts(compiler, tel)?
+        .into_iter()
+        .find(|artifact| artifact.module == *module))
 }
 
-pub fn artifacts() -> Vec<RuntimeLibraryModuleArtifact> {
-    let prog = parsed_program();
+pub fn artifacts(
+    compiler: &mut CompilerWorld,
+    tel: &dyn Telemetry,
+) -> Result<Vec<RuntimeLibraryModuleArtifact>, Diagnostic> {
+    let prog = parsed_program(compiler, tel)?;
     let interfaces = collect_from_program(&prog);
     let mut out = Vec::new();
     for item in &prog.items {
@@ -248,7 +247,7 @@ pub fn artifacts() -> Vec<RuntimeLibraryModuleArtifact> {
             _ => {}
         }
     }
-    out
+    Ok(out)
 }
 
 fn collect_runtime_implementation_dependencies(items: &[Rc<Item>], out: &mut BTreeSet<ModuleName>) {
@@ -549,13 +548,12 @@ fn runtime_module_source(name: &ModuleName) -> Option<&'static str> {
         .map(|source| source.source)
 }
 
-pub fn primitive_prelude_program() -> Program {
-    let toks = Lexer::new(RUNTIME_PRELUDE_FZ)
-        .tokenize()
-        .expect("runtime.fz lex error (bug in built-in prelude)");
-    let (items, _attrs) = Parser::new(toks)
-        .parse_prelude()
-        .expect("runtime.fz parse error (bug in built-in prelude)");
+pub fn primitive_prelude_program(compiler: &mut CompilerWorld, tel: &dyn Telemetry) -> Program {
+    let prelude_id = compiler.discover_primitive_prelude(tel);
+    let items = compiler
+        .ensure_prelude(prelude_id, tel)
+        .expect("runtime.fz parse error (bug in built-in prelude)")
+        .items;
     Program {
         items,
         module_interfaces: BTreeMap::new(),
@@ -571,10 +569,10 @@ pub fn primitive_prelude_program() -> Program {
 }
 
 #[cfg(test)]
-pub fn primitive_contract_names() -> Vec<String> {
+pub fn primitive_contract_names(compiler: &mut CompilerWorld, tel: &dyn Telemetry) -> Vec<String> {
     let mut names = Vec::new();
-    collect_primitive_contract_names(&primitive_prelude_program().items, &mut names);
-    for module in parsed_program().items {
+    collect_primitive_contract_names(&primitive_prelude_program(compiler, tel).items, &mut names);
+    for module in parsed_program(compiler, tel).expect("runtime library parsed").items {
         if let Item::Module(module) = &*module {
             collect_primitive_contract_names(&module.items, &mut names);
         }

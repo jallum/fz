@@ -186,6 +186,16 @@ module through the world the way we intended?" before loader/resolver work lands
 - `fz.compiler.module_cache_hit` — discovery asked for a module the compiler
   already knows about. Measurements: `module_id`, `file_id`. Metadata mirrors
   `module_discovered`.
+- `fz.compiler.source_loaded` — the compiler materialized source text for a
+  module-owned file. Measurements: `module_id`, `file_id`. Metadata:
+  `source_name`, `file_origin`, `parse_kind`, `bytes`.
+- `fz.compiler.parsed` — the compiler lexed and parsed one source-backed module
+  into its cached syntax form. Measurements: `module_id`, `file_id`. Metadata:
+  `source_name`, `parse_kind`, `items`. This event should happen once per
+  module/file unless invalidation is introduced later.
+- `fz.compiler.interface_ready` — the compiler collected module interfaces from
+  cached parsed source. Measurements: `module_id`, `file_id`. Metadata:
+  `interfaces`, `parse_kind`.
 - `fz.compiler.cache_miss` / `fz.compiler.cache_hit` — a phase or reachability
   query did or did not need work. Measurements: `module_id`, `file_id`.
   Metadata names the module plus the requested phase or reachability slice.

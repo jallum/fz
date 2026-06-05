@@ -1,8 +1,14 @@
 use super::*;
+use crate::compiler::Compiler;
+
+fn compiler() -> Compiler {
+    Compiler::new()
+}
 
 #[test]
 fn runtime_library_interfaces_expose_fz_functions_not_primitive_externs() {
-    let interfaces = interface_table();
+    let mut compiler = compiler();
+    let interfaces = interface_table(compiler.world_mut(), &NullTelemetry);
     let utf8 = interfaces
         .get(&ModuleName::from_segments(vec!["Utf8".to_string()]))
         .expect("Utf8 interface");
@@ -64,8 +70,13 @@ fn runtime_library_interfaces_expose_fz_functions_not_primitive_externs() {
             .keys()
             .any(|module| module.dotted() == "Enumerable.Enumerable")
     );
-    let enumerable_artifact =
-        artifact(&ModuleName::from_segments(vec!["Enumerable".to_string()])).expect("Enumerable artifact");
+    let enumerable_artifact = artifact(
+        compiler.world_mut(),
+        &ModuleName::from_segments(vec!["Enumerable".to_string()]),
+        &NullTelemetry,
+    )
+    .expect("Enumerable artifact")
+    .expect("Enumerable runtime module");
     assert!(
         enumerable_artifact
             .fzo
@@ -162,7 +173,7 @@ fn runtime_library_interfaces_expose_fz_functions_not_primitive_externs() {
     );
 
     assert_eq!(
-        primitive_contract_names(),
+        primitive_contract_names(compiler.world_mut(), &NullTelemetry),
         vec![
             "fz_binary_concat/2",
             "fz_bitstring_valid_utf8/1",
@@ -185,7 +196,8 @@ fn runtime_library_interfaces_expose_fz_functions_not_primitive_externs() {
 
 #[test]
 fn runtime_library_artifacts_round_trip_deterministically() {
-    let artifacts = artifacts();
+    let mut compiler = compiler();
+    let artifacts = artifacts(compiler.world_mut(), &NullTelemetry).expect("runtime artifacts");
     assert!(!artifacts.is_empty());
 
     for artifact in artifacts {
@@ -235,7 +247,8 @@ fn runtime_library_artifacts_write_load_and_import_like_user_artifacts() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&["fz", "module"], capture.handler());
-    let artifacts = artifacts();
+    let mut compiler = compiler();
+    let artifacts = artifacts(compiler.world_mut(), &NullTelemetry).expect("runtime artifacts");
     let interfaces = artifacts
         .iter()
         .map(|artifact| (artifact.module.clone(), artifact.interface.clone()))
@@ -290,7 +303,8 @@ end
 
 #[test]
 fn primitive_prelude_imports_kernel_without_defmodule_body() {
-    let prelude = primitive_prelude_program();
+    let mut compiler = compiler();
+    let prelude = primitive_prelude_program(compiler.world_mut(), &NullTelemetry);
     assert!(prelude.items.iter().all(|item| !matches!(&**item, Item::Module(_))));
     assert!(
         prelude

@@ -1,10 +1,13 @@
 //! Module-aware frontend and execution-graph preparation.
 
+use crate::compiler::CompilerWorld;
 use crate::diag::codes::{CODEGEN_SCHEMA_MISSING, LOWER_UNBOUND};
 use crate::diag::diagnostic::Severity;
 use crate::diag::{Diagnostic, Diagnostics, SourceMap, Span, emit_through};
 use crate::frontend::resolve::InterfaceTable;
-use crate::frontend::{FrontendOk, FrontendResult, compile_source_with_interface_table, compile_source_with_types};
+use crate::frontend::{
+    FrontendOk, FrontendResult, compile_source_with_compiler_interface_table, compile_source_with_compiler_types,
+};
 use crate::fz_ir::Module;
 use crate::ir_codegen::{CompiledUnit, ImageLinkError, link_ir_units};
 use crate::ir_planner::{ModulePlan, plan_module};
@@ -146,6 +149,7 @@ pub(crate) fn load_interface_table(
 }
 
 pub(crate) fn compile_source_with_providers(
+    compiler: &mut CompilerWorld,
     t: &mut DefaultTypes,
     src: String,
     source_name: String,
@@ -153,10 +157,11 @@ pub(crate) fn compile_source_with_providers(
     tel: &dyn Telemetry,
 ) -> Result<FrontendResult, PipelineError> {
     if providers.is_empty() {
-        Ok(compile_source_with_types(t, src, source_name, tel))
+        Ok(compile_source_with_compiler_types(compiler, t, src, source_name, tel))
     } else {
         let interfaces = load_interface_table(&providers.artifact_root, &providers.modules, tel)?;
-        Ok(compile_source_with_interface_table(
+        Ok(compile_source_with_compiler_interface_table(
+            compiler,
             t,
             src,
             source_name,
@@ -213,6 +218,7 @@ pub(crate) fn checked_module_for_mode(
 }
 
 pub(crate) fn prepare_execution_graph(
+    compiler: &mut CompilerWorld,
     t: &mut DefaultTypes,
     mut prepared: CheckedModule,
     providers: &ProviderInputs,
@@ -221,7 +227,7 @@ pub(crate) fn prepare_execution_graph(
 ) -> Result<PreparedExecutionGraph, PipelineError> {
     use crate::telemetry::TelemetryExt as _;
 
-    let linked = link_execution_module(t, &mut prepared, providers, tel)?;
+    let linked = link_execution_module(compiler, t, &mut prepared, providers, tel)?;
     let LinkedExecutionModule { units, module } = linked;
     let _compile_span = tel.span(
         &["fz", "compile"],
@@ -265,12 +271,13 @@ pub(crate) fn prepare_execution_graph(
 }
 
 pub(crate) fn link_execution_module(
+    compiler: &mut CompilerWorld,
     t: &mut DefaultTypes,
     prepared: &mut CheckedModule,
     providers: &ProviderInputs,
     tel: &dyn Telemetry,
 ) -> Result<LinkedExecutionModule, PipelineError> {
-    let units = load_provider_units(t, prepared, providers, tel)?;
+    let units = load_provider_units(compiler, t, prepared, providers, tel)?;
     let module = if units.len() > 1 {
         link_ir_units(&units).map_err(PipelineError::Link)?
     } else {
@@ -307,6 +314,7 @@ fn has_errors(diagnostics: &Diagnostics) -> bool {
 
 #[allow(clippy::too_many_arguments)]
 fn load_provider_units(
+    compiler: &mut CompilerWorld,
     t: &mut DefaultTypes,
     prepared: &mut CheckedModule,
     providers: &ProviderInputs,
@@ -317,18 +325,22 @@ fn load_provider_units(
         .external_interfaces
         .keys()
         .filter(|module| {
-            runtime_library::interface(module).is_some() && !runtime_library::is_core_prelude_module(module)
+            runtime_library::interface(compiler, module, tel)
+                .expect("runtime interface lookup must succeed")
+                .is_some()
+                && !runtime_library::is_core_prelude_module(module)
         })
-        .cloned();
+        .cloned()
+        .collect::<Vec<_>>();
     let provider_roots = providers
         .modules
         .iter()
         .cloned()
-        .chain(runtime_library::prelude_required_modules())
+        .chain(runtime_library::prelude_required_modules(compiler, tel))
         .chain(runtime_roots)
         .collect::<Vec<_>>();
     let graph = ModuleGraphLoader::new(store)
-        .load_reachable(tel, &prepared.interfaces, &provider_roots)
+        .load_reachable(compiler, tel, &prepared.interfaces, &provider_roots)
         .map_err(PipelineError::Artifact)?;
     tel.event(
         &["fz", "module", "graph_loaded"],
@@ -356,7 +368,8 @@ fn load_provider_units(
                 .source_unit_text(tel)
                 .map_err(|_err| PipelineError::ArtifactPayload)?;
             let frontend = run_frontend(
-                compile_source_with_interface_table(
+                compile_source_with_compiler_interface_table(
+                    compiler,
                     t,
                     source.to_string(),
                     format!("artifact:{module}"),

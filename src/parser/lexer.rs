@@ -161,6 +161,7 @@ impl<'a> Lexer<'a> {
     /// Lex with the default FileId(0). Suitable for the single-source path
     /// (`fz run <file>`). Multi-file paths (test_runner concatenating a
     /// prelude with user source) use `with_file`.
+    #[cfg(test)]
     pub fn new(src: &'a str) -> Self {
         Self::with_file(src, FileId(0))
     }

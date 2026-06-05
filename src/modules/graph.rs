@@ -3,6 +3,7 @@
 //! The graph loader owns the policy for moving from root interfaces to the
 //! provider `.fzi`/`.fzo` artifacts actually needed to link a runnable image.
 
+use crate::compiler::CompilerWorld;
 use crate::frontend::resolve::InterfaceTable;
 use crate::modules::artifact::FzoArtifact;
 use crate::modules::artifact_store::{ArtifactStore, ArtifactStoreError};
@@ -30,6 +31,7 @@ impl ModuleGraphLoader {
 
     pub fn load_reachable<'a>(
         &self,
+        compiler: &mut CompilerWorld,
         tel: &dyn Telemetry,
         root_interfaces: &InterfaceTable,
         provider_roots: impl IntoIterator<Item = &'a ModuleName>,
@@ -51,12 +53,14 @@ impl ModuleGraphLoader {
             if interfaces.contains_key(&module) {
                 continue;
             }
-            if let Some(interface) = runtime_library::interface(&module) {
+            if let Some(interface) =
+                runtime_library::interface(compiler, &module, tel).expect("runtime interface lookup must succeed")
+            {
                 interfaces.insert(module, interface.clone());
                 enqueue_imports(&mut queue, &interface);
                 enqueue_protocol_impl_protocols(&mut queue, &interface);
-                enqueue_runtime_implementation_imports(&mut queue, &interface);
-                enqueue_runtime_protocol_impls(&mut queue, &interfaces, &interface);
+                enqueue_runtime_implementation_imports(compiler, tel, &mut queue, &interface);
+                enqueue_runtime_protocol_impls(compiler, tel, &mut queue, &interfaces, &interface);
                 runtime_modules.insert(interface.name.clone());
                 continue;
             }
@@ -71,7 +75,9 @@ impl ModuleGraphLoader {
 
         let mut objects = Vec::new();
         for module in runtime_modules {
-            let Some(artifact) = runtime_library::artifact(&module) else {
+            let Some(artifact) =
+                runtime_library::artifact(compiler, &module, tel).expect("runtime artifact build must succeed")
+            else {
                 continue;
             };
             objects.push(artifact.fzo);
@@ -106,13 +112,22 @@ fn enqueue_protocol_impl_protocols(queue: &mut VecDeque<ModuleName>, interface: 
     }
 }
 
-fn enqueue_runtime_implementation_imports(queue: &mut VecDeque<ModuleName>, interface: &ModuleInterface) {
-    for module in runtime_library::implementation_dependencies(&interface.name) {
+fn enqueue_runtime_implementation_imports(
+    compiler: &mut CompilerWorld,
+    tel: &dyn Telemetry,
+    queue: &mut VecDeque<ModuleName>,
+    interface: &ModuleInterface,
+) {
+    for module in runtime_library::implementation_dependencies(compiler, &interface.name, tel)
+        .expect("runtime implementation dependency scan must succeed")
+    {
         queue.push_back(module);
     }
 }
 
 fn enqueue_runtime_protocol_impls(
+    compiler: &mut CompilerWorld,
+    tel: &dyn Telemetry,
     queue: &mut VecDeque<ModuleName>,
     loaded: &InterfaceTable,
     interface: &ModuleInterface,
@@ -125,7 +140,7 @@ fn enqueue_runtime_protocol_impls(
         .iter()
         .map(|protocol| protocol.name.clone())
         .collect::<Vec<_>>();
-    for (module, candidate) in runtime_library::interfaces() {
+    for (module, candidate) in runtime_library::interfaces(compiler, tel) {
         if loaded.contains_key(&module) {
             continue;
         }

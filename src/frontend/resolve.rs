@@ -22,6 +22,7 @@
 //! diagnostic source for "this call resolves to …".
 
 use crate::ast::*;
+use crate::compiler::{Compiler, CompilerWorld};
 use crate::diag::{Diagnostic, Span, codes};
 use crate::frontend::protocols::{
     ImplTarget, PROTOCOL_ELEM_VAR, ProtocolCallbackFact, ProtocolDecl, ProtocolImplFact, ProtocolImplKey,
@@ -169,7 +170,17 @@ impl fmt::Display for ResolveError {
 impl Error for ResolveError {}
 
 pub fn flatten_modules<T: Types<Ty = Ty>>(t: &mut T, prog: Program) -> Result<Program, ResolveError> {
-    flatten_modules_with_options(t, prog, BTreeMap::new())
+    let mut compiler = Compiler::new();
+    flatten_modules_with_compiler(t, compiler.world_mut(), prog, &crate::telemetry::NullTelemetry)
+}
+
+pub fn flatten_modules_with_compiler<T: Types<Ty = Ty>>(
+    t: &mut T,
+    compiler: &mut CompilerWorld,
+    prog: Program,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> Result<Program, ResolveError> {
+    flatten_modules_with_options(compiler, t, prog, BTreeMap::new(), tel)
 }
 
 /// Synthesize a literal `__info__/1` reflection fn for every `defmodule`, so
@@ -271,24 +282,44 @@ fn build_module_info_fn(m: &ModuleDef) -> Option<FnDef> {
     })
 }
 
+#[cfg(test)]
 pub fn flatten_modules_with_interface_table<T: Types<Ty = Ty>>(
     t: &mut T,
     prog: Program,
     interface_table: InterfaceTable,
 ) -> Result<Program, ResolveError> {
-    flatten_modules_with_options(t, prog, interface_table)
+    let mut compiler = Compiler::new();
+    flatten_modules_with_compiler_interface_table(
+        t,
+        compiler.world_mut(),
+        prog,
+        interface_table,
+        &crate::telemetry::NullTelemetry,
+    )
+}
+
+pub fn flatten_modules_with_compiler_interface_table<T: Types<Ty = Ty>>(
+    t: &mut T,
+    compiler: &mut CompilerWorld,
+    prog: Program,
+    interface_table: InterfaceTable,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> Result<Program, ResolveError> {
+    flatten_modules_with_options(compiler, t, prog, interface_table, tel)
 }
 
 fn flatten_modules_with_options<T: Types<Ty = Ty>>(
+    compiler: &mut CompilerWorld,
     t: &mut T,
     prog: Program,
     mut interface_table: InterfaceTable,
+    tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<Program, ResolveError> {
     let prog = inject_module_info(prog);
     collect_module_fns(&prog)?;
     let module_macros = collect_module_macros(&prog);
     let module_interfaces = collect_from_program(&prog);
-    add_requested_runtime_interfaces(&prog, &module_interfaces, &mut interface_table);
+    add_requested_runtime_interfaces(compiler, &prog, &module_interfaces, &mut interface_table, tel);
     let external_module_interfaces = interface_table
         .iter()
         .filter(|(name, _)| !module_interfaces.contains_key(*name))
@@ -306,7 +337,7 @@ fn flatten_modules_with_options<T: Types<Ty = Ty>>(
     // prelude, so module specs and aliases can name standard aliases such as
     // keyword/0 and keyword/1.
     let mut module_type_envs: HashMap<String, ModuleTypeEnv> = HashMap::new();
-    let root_types = root_type_env(t);
+    let root_types = root_type_env(compiler, t, tel);
     let root_type_env = root_types.env.clone();
     module_type_envs.insert(String::new(), root_type_env.clone());
     let mut opaque_inners: HashMap<String, Ty> = root_types.opaque_inners;
@@ -484,9 +515,11 @@ fn collect_struct_field_types(
 }
 
 fn add_requested_runtime_interfaces(
+    compiler: &mut CompilerWorld,
     prog: &Program,
     local_interfaces: &InterfaceTable,
     interface_table: &mut InterfaceTable,
+    tel: &dyn crate::telemetry::Telemetry,
 ) {
     let mut requested = Vec::new();
     collect_requested_external_modules(prog, &mut requested);
@@ -494,21 +527,25 @@ fn add_requested_runtime_interfaces(
         if local_interfaces.contains_key(&module) || interface_table.contains_key(&module) {
             continue;
         }
-        if let Some(interface) = interface(&module) {
+        if let Some(interface) = interface(compiler, &module, tel).expect("runtime interface lookup must succeed") {
             enqueue_runtime_interface_dependencies(&interface, &mut requested);
             interface_table.insert(module, interface);
         }
     }
 }
 
-pub(crate) fn add_macro_requested_runtime_interfaces(prog: &mut Program) {
+pub(crate) fn add_macro_requested_runtime_interfaces(
+    compiler: &mut CompilerWorld,
+    prog: &mut Program,
+    tel: &dyn crate::telemetry::Telemetry,
+) {
     let mut requested = Vec::new();
     collect_requested_external_modules(prog, &mut requested);
     while let Some(module) = requested.pop() {
         if prog.module_interfaces.contains_key(&module) || prog.external_module_interfaces.contains_key(&module) {
             continue;
         }
-        if let Some(interface) = interface(&module) {
+        if let Some(interface) = interface(compiler, &module, tel).expect("runtime interface lookup must succeed") {
             enqueue_runtime_interface_dependencies(&interface, &mut requested);
             prog.external_module_interfaces.insert(module, interface);
         }

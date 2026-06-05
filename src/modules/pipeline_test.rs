@@ -1,13 +1,19 @@
 use super::*;
+use crate::compiler::Compiler;
 use crate::ir_interp::run_main;
 use crate::telemetry::{Capture, ConfiguredTelemetry, NullTelemetry, Value};
 use std::env::temp_dir;
 use std::fs::remove_dir_all;
 use std::process;
 
+fn compiler() -> Compiler {
+    Compiler::new()
+}
+
 #[test]
 fn execution_graph_loads_runtime_import_without_user_providers() {
     let mut concrete_types = crate::types::new();
+    let mut compiler = compiler();
     let tel = NullTelemetry;
     let providers = ProviderInputs::new(
         temp_dir()
@@ -24,6 +30,7 @@ end
 "#;
 
     let frontend = compile_source_with_providers(
+        compiler.world_mut(),
         &mut concrete_types,
         source.to_string(),
         "user.fz".to_string(),
@@ -33,8 +40,15 @@ end
     .unwrap_or_else(|_| panic!("frontend result"));
     let checked = checked_module_for_mode(&mut concrete_types, frontend, &tel, CompileMode::Normal)
         .unwrap_or_else(|_| panic!("checked module"));
-    let graph = prepare_execution_graph(&mut concrete_types, checked, &providers, &tel, CompileMode::Normal)
-        .unwrap_or_else(|_| panic!("execution graph"));
+    let graph = prepare_execution_graph(
+        compiler.world_mut(),
+        &mut concrete_types,
+        checked,
+        &providers,
+        &tel,
+        CompileMode::Normal,
+    )
+    .unwrap_or_else(|_| panic!("execution graph"));
 
     let modules = graph
         .units
@@ -49,6 +63,7 @@ end
 #[test]
 fn protocol_impl_reduce_callback_plans_to_fixed_point() {
     let mut concrete_types = crate::types::new();
+    let mut compiler = compiler();
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&["fz", "planner", "planned"], capture.handler());
@@ -80,6 +95,7 @@ end
 "#;
 
     let frontend = compile_source_with_providers(
+        compiler.world_mut(),
         &mut concrete_types,
         source.to_string(),
         "protocol_reduce.fz".to_string(),
@@ -89,8 +105,15 @@ end
     .unwrap_or_else(|_| panic!("frontend result"));
     let checked = checked_module_for_mode(&mut concrete_types, frontend, &tel, CompileMode::Normal)
         .unwrap_or_else(|_| panic!("checked module"));
-    prepare_execution_graph(&mut concrete_types, checked, &providers, &tel, CompileMode::Normal)
-        .unwrap_or_else(|_| panic!("execution graph"));
+    prepare_execution_graph(
+        compiler.world_mut(),
+        &mut concrete_types,
+        checked,
+        &providers,
+        &tel,
+        CompileMode::Normal,
+    )
+    .unwrap_or_else(|_| panic!("execution graph"));
 
     let max_pops = capture
         .find(&["fz", "planner", "planned"])
@@ -145,9 +168,16 @@ impl Drop for StructuralProviderFixture {
 /// provider structurally — no recompile.
 fn write_structural_provider(tag: &str) -> (StructuralProviderFixture, ModuleName) {
     let mut t = crate::types::new();
+    let mut compiler = compiler();
     let tel = NullTelemetry;
-    let provider = compile_source_with_types(&mut t, PROVIDER_SRC.to_string(), "contracts.fz".to_string(), &tel)
-        .unwrap_or_else(|err| panic!("provider frontend: {:?}", err.diagnostics));
+    let provider = compile_source_with_compiler_types(
+        compiler.world_mut(),
+        &mut t,
+        PROVIDER_SRC.to_string(),
+        "contracts.fz".to_string(),
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("provider frontend: {:?}", err.diagnostics));
     let contracts = ModuleName::from_segments(vec!["Contracts".to_string()]);
     let interface = provider._prog.module_interfaces[&contracts].clone();
 
@@ -189,14 +219,28 @@ fn write_structural_provider(tag: &str) -> (StructuralProviderFixture, ModuleNam
 /// SourceMap (which the loader merges provider sources into).
 fn prepare_consumer_against(root: &str, provider: &ModuleName, tel: &dyn Telemetry) -> PreparedExecutionGraph {
     let mut t = crate::types::new();
+    let mut compiler = compiler();
     let providers = ProviderInputs::new(root.to_string(), vec![provider.clone()]);
-    let frontend =
-        compile_source_with_providers(&mut t, CONSUMER_SRC.to_string(), "user.fz".to_string(), &providers, tel)
-            .unwrap_or_else(|_| panic!("consumer frontend"));
+    let frontend = compile_source_with_providers(
+        compiler.world_mut(),
+        &mut t,
+        CONSUMER_SRC.to_string(),
+        "user.fz".to_string(),
+        &providers,
+        tel,
+    )
+    .unwrap_or_else(|_| panic!("consumer frontend"));
     let checked = checked_module_for_mode(&mut t, frontend, tel, CompileMode::Normal)
         .unwrap_or_else(|_| panic!("checked module"));
-    prepare_execution_graph(&mut t, checked, &providers, tel, CompileMode::Normal)
-        .unwrap_or_else(|err| panic!("execution graph: {err:?}"))
+    prepare_execution_graph(
+        compiler.world_mut(),
+        &mut t,
+        checked,
+        &providers,
+        tel,
+        CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| panic!("execution graph: {err:?}"))
 }
 
 /// Gate 1: a structurally-loaded provider links and runs WITHOUT recompiling
@@ -304,6 +348,7 @@ fn linked_runtime_graph_keeps_cont_dispatches_for_enum_take_drop_split() {
     use crate::fz_ir::{CallsiteId, EmitSlot, Term};
 
     let mut t = crate::types::new();
+    let mut compiler = compiler();
     let tel = NullTelemetry;
     let providers = ProviderInputs::new(
         temp_dir()
@@ -315,6 +360,7 @@ fn linked_runtime_graph_keeps_cont_dispatches_for_enum_take_drop_split() {
     let source = include_str!("../../fixtures/enum_take_drop_split/input.fz");
 
     let frontend = compile_source_with_providers(
+        compiler.world_mut(),
         &mut t,
         source.to_string(),
         "enum_take_drop_split_input.fz".to_string(),
@@ -324,8 +370,15 @@ fn linked_runtime_graph_keeps_cont_dispatches_for_enum_take_drop_split() {
     .unwrap_or_else(|_| panic!("frontend result"));
     let checked = checked_module_for_mode(&mut t, frontend, &tel, CompileMode::Normal)
         .unwrap_or_else(|_| panic!("checked module"));
-    let graph = prepare_execution_graph(&mut t, checked, &providers, &tel, CompileMode::Normal)
-        .unwrap_or_else(|err| panic!("execution graph: {err:?}"));
+    let graph = prepare_execution_graph(
+        compiler.world_mut(),
+        &mut t,
+        checked,
+        &providers,
+        &tel,
+        CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| panic!("execution graph: {err:?}"));
     let linked = graph.module;
     let mt = graph.module_plan;
 
@@ -358,6 +411,7 @@ fn linked_runtime_graph_keeps_cont_dispatches_for_spawn_with_captures() {
     use crate::fz_ir::{CallsiteId, EmitSlot, Term};
 
     let mut t = crate::types::new();
+    let mut compiler = compiler();
     let tel = NullTelemetry;
     let providers = ProviderInputs::new(
         temp_dir()
@@ -369,6 +423,7 @@ fn linked_runtime_graph_keeps_cont_dispatches_for_spawn_with_captures() {
     let source = include_str!("../../fixtures/spawn_with_captures/input.fz");
 
     let frontend = compile_source_with_providers(
+        compiler.world_mut(),
         &mut t,
         source.to_string(),
         "spawn_with_captures_input.fz".to_string(),
@@ -378,8 +433,15 @@ fn linked_runtime_graph_keeps_cont_dispatches_for_spawn_with_captures() {
     .unwrap_or_else(|_| panic!("frontend result"));
     let checked = checked_module_for_mode(&mut t, frontend, &tel, CompileMode::Normal)
         .unwrap_or_else(|_| panic!("checked module"));
-    let graph = prepare_execution_graph(&mut t, checked, &providers, &tel, CompileMode::Normal)
-        .unwrap_or_else(|err| panic!("execution graph: {err:?}"));
+    let graph = prepare_execution_graph(
+        compiler.world_mut(),
+        &mut t,
+        checked,
+        &providers,
+        &tel,
+        CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| panic!("execution graph: {err:?}"));
     let linked = graph.module;
     let mt = graph.module_plan;
 

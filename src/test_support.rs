@@ -1,3 +1,4 @@
+use crate::compiler::Compiler;
 use crate::fz_ir::{FnId, Module};
 use crate::ir_codegen::compile_planned;
 use crate::ir_planner::{ModulePlan, materialize_program, plan_module};
@@ -12,6 +13,10 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::panic::AssertUnwindSafe;
 use std::rc::Rc;
+
+fn compiler() -> Compiler {
+    Compiler::new()
+}
 
 /// Captures the exact lowered IR module emitted by the production frontend
 /// before planning begins.
@@ -41,8 +46,16 @@ pub(crate) fn lower_frontend_module(src: &str) -> Module {
     std::panic::set_hook(Box::new(|_| {}));
     let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
         let mut t = crate::types::new();
+        let mut compiler = compiler();
         let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-        let _ = compile_source_with_providers(&mut t, src.to_string(), "test_fixture.fz".to_string(), &providers, &tel);
+        let _ = compile_source_with_providers(
+            compiler.world_mut(),
+            &mut t,
+            src.to_string(),
+            "test_fixture.fz".to_string(),
+            &providers,
+            &tel,
+        );
     }));
     std::panic::set_hook(prev_hook);
 
@@ -59,12 +72,20 @@ pub(crate) fn linked_runtime_graph_with_telemetry(
     src: &str,
     tel: &dyn Telemetry,
 ) -> PreparedExecutionGraph {
+    let mut compiler = compiler();
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-    let frontend = compile_source_with_providers(t, src.to_string(), "test_fixture.fz".to_string(), &providers, tel)
-        .unwrap_or_else(|err| panic!("frontend: {err}"));
+    let frontend = compile_source_with_providers(
+        compiler.world_mut(),
+        t,
+        src.to_string(),
+        "test_fixture.fz".to_string(),
+        &providers,
+        tel,
+    )
+    .unwrap_or_else(|err| panic!("frontend: {err}"));
     let checked =
         checked_module_for_mode(t, frontend, tel, CompileMode::Normal).unwrap_or_else(|err| panic!("checked: {err}"));
-    prepare_execution_graph(t, checked, &providers, tel, CompileMode::Normal)
+    prepare_execution_graph(compiler.world_mut(), t, checked, &providers, tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("execution graph: {err}"))
 }
 
@@ -77,8 +98,10 @@ pub(crate) fn linked_runtime_graph(src: &str) -> PreparedExecutionGraph {
 /// linked runtime module, without running the authoritative planner.
 pub(crate) fn linked_runtime_module_unplanned(src: &str) -> Module {
     let mut t = crate::types::new();
+    let mut compiler = compiler();
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
     let frontend = compile_source_with_providers(
+        compiler.world_mut(),
         &mut t,
         src.to_string(),
         "test_fixture.fz".to_string(),
@@ -88,7 +111,7 @@ pub(crate) fn linked_runtime_module_unplanned(src: &str) -> Module {
     .unwrap_or_else(|err| panic!("frontend: {err}"));
     let mut checked = checked_module_for_mode(&mut t, frontend, &NullTelemetry, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked: {err}"));
-    link_execution_module(&mut t, &mut checked, &providers, &NullTelemetry)
+    link_execution_module(compiler.world_mut(), &mut t, &mut checked, &providers, &NullTelemetry)
         .unwrap_or_else(|err| panic!("linked runtime module: {err}"))
         .module
 }

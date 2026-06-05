@@ -7,16 +7,19 @@ pub(crate) mod spec_registry;
 
 use self::resolve::InterfaceTable;
 use crate::ast::{Expr, FnClause, FnDef, Item, Pattern, Program, Spanned, TypeExprBody};
+use crate::compiler::{Compiler, CompilerWorld};
 use crate::diag::codes;
 use crate::diag::{Diagnostic, Diagnostics, SourceMap, Span};
 use crate::fz_ir::{CallsiteId, EmitSlot, FnId, Module, rewrite_external_callsite_for_link};
 use crate::ir_extern_marshal::resolve_module_types;
-use crate::ir_lower::{lower_program, repl_output_frame_names};
+use crate::ir_lower::repl_output_frame_names;
 use crate::ir_planner::fn_types::CallEdgeTarget;
 use crate::ir_planner::{ModulePlan, plan_module, rewrite_closed_union_protocol_dispatch};
 use crate::measurements;
 use crate::metadata;
+#[cfg(test)]
 use crate::parser::Parser;
+#[cfg(test)]
 use crate::parser::lexer::Lexer;
 use crate::pattern_matrix::SubjectDomain;
 use crate::telemetry::value::opaque;
@@ -145,14 +148,45 @@ pub fn compile_source(src: String, source_name: String) -> FrontendResult {
     compile_source_with_types(&mut t, src, source_name, &NullTelemetry)
 }
 
+#[cfg(test)]
 pub fn compile_source_with_types<T>(t: &mut T, src: String, source_name: String, tel: &dyn Telemetry) -> FrontendResult
 where
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 {
-    compile_source_with_interface_table(t, src, source_name, InterfaceTable::new(), tel)
+    let mut compiler = Compiler::new();
+    compile_source_with_compiler_types(compiler.world_mut(), t, src, source_name, tel)
 }
 
+pub fn compile_source_with_compiler_types<T>(
+    compiler: &mut CompilerWorld,
+    t: &mut T,
+    src: String,
+    source_name: String,
+    tel: &dyn Telemetry,
+) -> FrontendResult
+where
+    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
+{
+    compile_source_with_compiler_interface_table(compiler, t, src, source_name, InterfaceTable::new(), tel)
+}
+
+#[cfg(test)]
 pub fn compile_source_with_interface_table<T>(
+    t: &mut T,
+    src: String,
+    source_name: String,
+    interface_table: InterfaceTable,
+    tel: &dyn Telemetry,
+) -> FrontendResult
+where
+    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
+{
+    let mut compiler = Compiler::new();
+    compile_source_with_compiler_interface_table(compiler.world_mut(), t, src, source_name, interface_table, tel)
+}
+
+pub fn compile_source_with_compiler_interface_table<T>(
+    compiler: &mut CompilerWorld,
     t: &mut T,
     src: String,
     source_name: String,
@@ -173,16 +207,13 @@ where
         },
     );
 
-    let mut sm = SourceMap::new();
-    let file_id = sm.add_file(source_name, src.clone());
-    let toks = match Lexer::with_file(&src, file_id).tokenize_with_telemetry(tel) {
-        Ok(toks) => toks,
-        Err(e) => return Err(fail(sm, e.to_diagnostic())),
+    let root = compiler.register_root_source(&source_name, src, tel);
+    let parsed = match compiler.ensure_program(root, tel) {
+        Ok(parsed) => parsed,
+        Err(diagnostic) => return Err(fail(SourceMap::new(), diagnostic)),
     };
-    let prog = match Parser::new(toks).parse_program_with_telemetry(tel) {
-        Ok(prog) => prog,
-        Err(e) => return Err(fail(sm, e.to_diagnostic())),
-    };
+    let sm = parsed.sm;
+    let prog = parsed.program;
     tel.event(
         &["fz", "frontend", "parsed"],
         metadata! {
@@ -190,7 +221,7 @@ where
             program: opaque(&prog),
         },
     );
-    compile_program_with_interface_table(t, prog, sm, interface_table, tel)
+    compile_program_with_compiler_interface_table(compiler, t, prog, sm, interface_table, tel)
 }
 
 pub(crate) fn compile_program_with_types<T>(
@@ -202,10 +233,25 @@ pub(crate) fn compile_program_with_types<T>(
 where
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 {
-    compile_program_with_interface_table(t, prog, sm, InterfaceTable::new(), tel)
+    let mut compiler = Compiler::new();
+    compile_program_with_compiler_types(compiler.world_mut(), t, prog, sm, tel)
 }
 
-pub(crate) fn compile_program_with_interface_table<T>(
+pub(crate) fn compile_program_with_compiler_types<T>(
+    compiler: &mut CompilerWorld,
+    t: &mut T,
+    prog: Program,
+    sm: SourceMap,
+    tel: &dyn Telemetry,
+) -> FrontendResult
+where
+    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
+{
+    compile_program_with_compiler_interface_table(compiler, t, prog, sm, InterfaceTable::new(), tel)
+}
+
+pub(crate) fn compile_program_with_compiler_interface_table<T>(
+    compiler: &mut CompilerWorld,
     t: &mut T,
     prog: Program,
     sm: SourceMap,
@@ -215,7 +261,8 @@ pub(crate) fn compile_program_with_interface_table<T>(
 where
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 {
-    let mut prog = match resolve::flatten_modules_with_interface_table(t, prog, interface_table) {
+    let mut prog = match resolve::flatten_modules_with_compiler_interface_table(t, compiler, prog, interface_table, tel)
+    {
         Ok(prog) => prog,
         Err(e) => return Err(fail(sm, e.to_diagnostic())),
     };
@@ -230,7 +277,7 @@ where
     if let Err(e) = macros::expand_program_with_types(t, &mut prog) {
         return Err(fail(sm, e.to_diagnostic()));
     }
-    resolve::add_macro_requested_runtime_interfaces(&mut prog);
+    resolve::add_macro_requested_runtime_interfaces(compiler, &mut prog, tel);
     tel.event(
         &["fz", "frontend", "macro_expanded"],
         metadata! {
@@ -238,7 +285,7 @@ where
             program: opaque(&prog),
         },
     );
-    let mut module = match lower_program(t, &prog, tel) {
+    let mut module = match crate::ir_lower::lower_program_with_compiler(compiler, t, &prog, tel) {
         Ok(module) => module,
         Err(e) => return Err(fail(sm, e.to_diagnostic())),
     };
@@ -326,6 +373,23 @@ fn apply_planned_direct_call_targets(module: &mut Module, module_plan: &ModulePl
 
 pub(crate) fn compile_repl_expr_with_types<T>(
     t: &mut T,
+    prog: Program,
+    expr: Spanned<Expr>,
+    input_frame: Vec<String>,
+    entry_name: String,
+    sm: SourceMap,
+    tel: &dyn Telemetry,
+) -> Result<ReplEntryOk, FrontendErr>
+where
+    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
+{
+    let mut compiler = Compiler::new();
+    compile_repl_expr_with_compiler_types(compiler.world_mut(), t, prog, expr, input_frame, entry_name, sm, tel)
+}
+
+pub(crate) fn compile_repl_expr_with_compiler_types<T>(
+    compiler: &mut CompilerWorld,
+    t: &mut T,
     mut prog: Program,
     expr: Spanned<Expr>,
     input_frame: Vec<String>,
@@ -344,7 +408,7 @@ where
         expr,
     )));
     prog.items.push(entry_item.clone());
-    let frontend = compile_program_with_types(t, prog, sm, tel)?;
+    let frontend = compile_program_with_compiler_types(compiler, t, prog, sm, tel)?;
     if frontend.module.fn_by_name(&entry_name).is_none() {
         return Err(fail(
             frontend.sm,
