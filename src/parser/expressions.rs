@@ -38,7 +38,7 @@ impl Parser {
         Some(match t {
             Tok::Or => (20, 21, BinOp::Or),   // Elixir 120
             Tok::And => (30, 31, BinOp::And), // Elixir 130
-            Tok::EqEq => (40, 41, BinOp::Eq),    // Elixir 140
+            Tok::EqEq => (40, 41, BinOp::Eq), // Elixir 140
             Tok::NotEq => (40, 41, BinOp::Neq),
             Tok::Lt => (50, 51, BinOp::Lt), // Elixir 150
             Tok::LtEq => (50, 51, BinOp::LtEq),
