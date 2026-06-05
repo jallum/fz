@@ -1,0 +1,214 @@
+use serde_json::Value;
+use std::env::temp_dir;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, id};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const FZ_BIN: &str = env!("CARGO_BIN_EXE_fz");
+
+fn unique_path(stem: &str, ext: &str) -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before unix epoch")
+        .as_nanos();
+    temp_dir().join(format!("{stem}-{}-{nonce}.{ext}", id()))
+}
+
+fn read_events(path: &Path) -> Vec<Value> {
+    fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap_or_else(|e| panic!("parse telemetry line `{line}`: {e}")))
+        .collect()
+}
+
+fn event_matches(ev: &Value, name: &[&str]) -> bool {
+    ev.get("name")
+        .and_then(Value::as_array)
+        .map(|segments| {
+            segments.len() == name.len()
+                && segments
+                    .iter()
+                    .zip(name.iter())
+                    .all(|(actual, expected)| actual.as_str() == Some(*expected))
+        })
+        .unwrap_or(false)
+}
+
+fn metadata_is(ev: &Value, key: &str, expected: &str) -> bool {
+    ev.get("metadata")
+        .and_then(|metadata| metadata.get(key))
+        .and_then(Value::as_str)
+        .map(|actual| actual == expected)
+        .unwrap_or(false)
+}
+
+fn measurement_u64(ev: &Value, key: &str) -> u64 {
+    ev.get("measurements")
+        .and_then(|measurements| measurements.get(key))
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| panic!("missing u64 measurement `{key}` in {ev}"))
+}
+
+fn span_id(ev: &Value) -> u64 {
+    ev.get("span_id")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| panic!("missing span_id in {ev}"))
+}
+
+fn compiler_event_count(events: &[Value], event_name: &[&str], module_key: &str) -> usize {
+    events
+        .iter()
+        .filter(|ev| event_matches(ev, event_name) && metadata_is(ev, "module_key", module_key))
+        .count()
+}
+
+fn parsed_phase_elapsed_ns(events: &[Value], module_key: &str) -> Vec<u64> {
+    let parsed_phase_span_ids = events
+        .iter()
+        .filter(|ev| event_matches(ev, &["fz", "compiler", "phase"]))
+        .filter(|ev| ev.get("kind").and_then(Value::as_str) == Some("span_start"))
+        .filter(|ev| metadata_is(ev, "module_key", module_key))
+        .filter(|ev| metadata_is(ev, "target_phase", "parsed"))
+        .map(span_id)
+        .collect::<Vec<_>>();
+
+    events
+        .iter()
+        .filter(|ev| event_matches(ev, &["fz", "compiler", "phase"]))
+        .filter(|ev| ev.get("kind").and_then(Value::as_str) == Some("span_stop"))
+        .filter(|ev| parsed_phase_span_ids.contains(&span_id(ev)))
+        .map(|ev| measurement_u64(ev, "elapsed_ns"))
+        .collect()
+}
+
+fn run_fz_with_telemetry(args: &[&Path], subcommand: &[&str], extra: &[&str]) -> (Output, Vec<Value>, PathBuf) {
+    let telemetry_path = unique_path("fz-cli-telemetry", "jsonl");
+    let mut cmd = Command::new(FZ_BIN);
+    cmd.args(["--log-telemetry"]).arg(&telemetry_path);
+    cmd.args(subcommand);
+    for arg in args {
+        cmd.arg(arg);
+    }
+    cmd.args(extra);
+    let out = cmd.output().expect("spawn fz");
+    let events = read_events(&telemetry_path);
+    (out, events, telemetry_path)
+}
+
+#[test]
+fn dump_interfaces_parses_root_source_once_through_compiler_world() {
+    let input = unique_path("fz-cli-dump", "fz");
+    let source = "fn main(), do: nil\n";
+    fs::write(&input, source).unwrap_or_else(|e| panic!("write {}: {e}", input.display()));
+
+    let (out, events, telemetry_path) = run_fz_with_telemetry(&[&input], &["dump", "--emit", "interfaces"], &[]);
+
+    let _ = fs::remove_file(&input);
+    let _ = fs::remove_file(&telemetry_path);
+
+    assert!(
+        out.status.success(),
+        "fz dump --emit interfaces exited {}: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let module_key = input.display().to_string();
+    assert_eq!(
+        compiler_event_count(&events, &["fz", "compiler", "parsed"], &module_key),
+        1,
+        "root source should parse exactly once through the compiler world"
+    );
+    assert_eq!(
+        compiler_event_count(&events, &["fz", "compiler", "interface_ready"], &module_key),
+        1,
+        "root source should collect interfaces exactly once through the compiler world"
+    );
+
+    let parsed_elapsed = parsed_phase_elapsed_ns(&events, &module_key);
+    assert_eq!(parsed_elapsed.len(), 1, "root parsed phase should stop exactly once");
+}
+
+#[test]
+fn run_reaches_and_parses_utf8_once_through_compiler_world() {
+    let input = fs::canonicalize("fixtures/utf8_smart_constructor/input.fz")
+        .unwrap_or_else(|e| panic!("canonicalize utf8 fixture: {e}"));
+    let (out, events, telemetry_path) = run_fz_with_telemetry(&[&input], &["run"], &[]);
+    let _ = fs::remove_file(&telemetry_path);
+
+    assert!(
+        out.status.success(),
+        "fz run exited {}: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_eq!(
+        compiler_event_count(&events, &["fz", "compiler", "runtime_module_reachable"], "Utf8"),
+        1,
+        "Utf8 should become runtime-reachable exactly once"
+    );
+    assert_eq!(
+        compiler_event_count(&events, &["fz", "compiler", "parsed"], "Utf8"),
+        1,
+        "Utf8 should parse exactly once"
+    );
+
+    let parsed_elapsed = parsed_phase_elapsed_ns(&events, "Utf8");
+    assert_eq!(parsed_elapsed.len(), 1, "Utf8 parsed phase should stop exactly once");
+}
+
+#[test]
+fn build_reaches_lowers_and_plans_process_once_through_compiler_world() {
+    let input = fs::canonicalize("fixtures/process_heap_stats/input.fz")
+        .unwrap_or_else(|e| panic!("canonicalize Process fixture: {e}"));
+    let out_path = unique_path("fz-cli-build", "bin");
+    let telemetry_path = unique_path("fz-cli-build-telemetry", "jsonl");
+    let out = Command::new(FZ_BIN)
+        .args(["--log-telemetry"])
+        .arg(&telemetry_path)
+        .arg("build")
+        .arg(&input)
+        .arg("-o")
+        .arg(&out_path)
+        .output()
+        .expect("spawn fz build");
+    let events = read_events(&telemetry_path);
+
+    let _ = fs::remove_file(&out_path);
+    let _ = fs::remove_file(out_path.with_extension("o"));
+    let _ = fs::remove_file(&telemetry_path);
+
+    assert!(
+        out.status.success(),
+        "fz build exited {}: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_eq!(
+        compiler_event_count(&events, &["fz", "compiler", "runtime_module_reachable"], "Process"),
+        1,
+        "Process should become runtime-reachable exactly once"
+    );
+    assert_eq!(
+        compiler_event_count(&events, &["fz", "compiler", "parsed"], "Process"),
+        1,
+        "Process should parse exactly once"
+    );
+    assert_eq!(
+        compiler_event_count(&events, &["fz", "compiler", "runtime_lowered"], "Process"),
+        1,
+        "Process should lower exactly once"
+    );
+    assert_eq!(
+        compiler_event_count(&events, &["fz", "compiler", "runtime_planned"], "Process"),
+        1,
+        "Process should plan exactly once"
+    );
+
+    let parsed_elapsed = parsed_phase_elapsed_ns(&events, "Process");
+    assert_eq!(parsed_elapsed.len(), 1, "Process parsed phase should stop exactly once");
+}

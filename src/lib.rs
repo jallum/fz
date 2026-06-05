@@ -37,9 +37,7 @@ use compiler::Compiler;
 use diag::{Diagnostic, FileId, SourceMap, Span, codes::LOWER_UNBOUND, report_or_exit_through};
 use exec::runtime::Runtime;
 use frontend::resolve::InterfaceTable;
-use frontend::{
-    FrontendOk, FrontendResult, compile_source_with_compiler_interface_table, compile_source_with_compiler_types,
-};
+use frontend::{FrontendOk, FrontendResult, compile_source_with_compiler_interface_table};
 use fz_ir::{FnCategory, FnId, FnIr, Module, SpecId};
 use ir_codegen::{
     CompiledImage, CompiledProgram, asm_record_enable, asm_record_take, compile_aot_planned, compile_planned,
@@ -56,8 +54,8 @@ use modules::artifact_store::{ArtifactStore, DEFAULT_ARTIFACT_ROOT};
 use modules::identity::ModuleName;
 use modules::interface::{render_interfaces, validate_public_export_specs};
 use modules::pipeline::{
-    CheckedModule, CompileMode, PipelineError, ProviderInputs, checked_module_for_mode, compile_source_with_providers,
-    link_error_diagnostic, load_interface_table, prepare_execution_graph,
+    CheckedModule, CompileMode, PipelineError, PreparedExecutionGraph, ProviderInputs, checked_module_for_mode,
+    compile_source_with_providers, link_error_diagnostic, load_interface_table, prepare_execution_graph,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -378,12 +376,10 @@ fn run_build(tel: &ConfiguredTelemetry, args: &[String]) {
     });
 
     let providers = ProviderInputs::new(artifact_root.clone(), provider_modules);
-    let frontend_result = {
-        let (t, world) = compiler.split_mut();
-        compile_source_with_providers(world, t, src, src_path.clone(), &providers, tel)
-    }
-    .unwrap_or_else(|err| report_pipeline_error_or_exit("fz build", tel, &sm_cell, err));
-    let prepared = checked_module_or_exit("fz build", compiler.types(), frontend_result, &sm_cell, tel, mode);
+    let frontend_result = compiler
+        .frontend_with_providers(src, src_path.clone(), &providers, tel)
+        .unwrap_or_else(|err| report_pipeline_error_or_exit("fz build", tel, &sm_cell, err));
+    let prepared = compiler.checked_module_or_exit("fz build", frontend_result, &sm_cell, tel, mode);
     if emit_fzi || emit_fzo {
         let diags = validate_public_export_specs(&prepared.interfaces);
         report_or_exit_through(tel, &diags);
@@ -398,11 +394,7 @@ fn run_build(tel: &ConfiguredTelemetry, args: &[String]) {
             });
     }
 
-    let graph = {
-        let (t, world) = compiler.split_mut();
-        prepare_execution_graph(world, t, prepared, &providers, tel, mode)
-    }
-    .unwrap_or_else(|err| report_pipeline_error_or_exit("fz build", tel, &sm_cell, err));
+    let graph = compiler.execution_graph_or_exit("fz build", prepared, &providers, &sm_cell, tel, mode);
 
     if emit_fzo {
         let unit = graph.units.first().expect("execution graph includes root unit");
@@ -512,24 +504,11 @@ fn run_interp(tel: &ConfiguredTelemetry, args: &[String]) {
         exit(1);
     });
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-    let frontend_result = {
-        let (t, world) = compiler.split_mut();
-        compile_source_with_providers(world, t, src, path, &providers, tel)
-    }
-    .unwrap_or_else(|err| report_pipeline_error_or_exit("fz interp", tel, &sm_cell, err));
-    let checked = checked_module_or_exit(
-        "fz interp",
-        compiler.types(),
-        frontend_result,
-        &sm_cell,
-        tel,
-        CompileMode::Normal,
-    );
-    let graph = {
-        let (t, world) = compiler.split_mut();
-        prepare_execution_graph(world, t, checked, &providers, tel, CompileMode::Normal)
-    }
-    .unwrap_or_else(|err| report_pipeline_error_or_exit("fz interp", tel, &sm_cell, err));
+    let frontend_result = compiler
+        .frontend_with_providers(src, path, &providers, tel)
+        .unwrap_or_else(|err| report_pipeline_error_or_exit("fz interp", tel, &sm_cell, err));
+    let checked = compiler.checked_module_or_exit("fz interp", frontend_result, &sm_cell, tel, CompileMode::Normal);
+    let graph = compiler.execution_graph_or_exit("fz interp", checked, &providers, &sm_cell, tel, CompileMode::Normal);
     notify_fixture_execution_start();
     match run_main_with_plan(compiler.types(), tel, &graph.module, graph.module_plan) {
         Ok(_halt) => {}
@@ -815,7 +794,7 @@ fn run_dump(tel: &ConfiguredTelemetry, args: &[String]) {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit specs (spec dump is per-module)");
         }
-        let dump = dump_specs_pipeline(&mut compiler, tel, &sm_cell, src, path.clone(), interface_table);
+        let dump = compiler.dump_specs_text(tel, &sm_cell, src, path.clone(), interface_table);
         tel.event(&["fz", "dump", "specs"], metadata! { text: dump });
         return;
     }
@@ -824,15 +803,7 @@ fn run_dump(tel: &ConfiguredTelemetry, args: &[String]) {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit interfaces");
         }
-        let dump = dump_interfaces_pipeline(
-            &mut compiler,
-            tel,
-            &sm_cell,
-            src,
-            path.clone(),
-            strict_interfaces,
-            interface_table,
-        );
+        let dump = compiler.dump_interfaces_text(tel, &sm_cell, src, path.clone(), strict_interfaces, interface_table);
         tel.event(&["fz", "dump", "interfaces"], metadata! { text: dump });
         return;
     }
@@ -843,7 +814,7 @@ fn run_dump(tel: &ConfiguredTelemetry, args: &[String]) {
         }
         tel.event(
             &["fz", "dump", "bodies"],
-            metadata! { text: dump_bodies_pipeline(&mut compiler, tel, &sm_cell, src, path.clone(), mode) },
+            metadata! { text: compiler.dump_bodies_text(tel, &sm_cell, src, path.clone(), mode) },
         );
         return;
     }
@@ -855,7 +826,7 @@ fn run_dump(tel: &ConfiguredTelemetry, args: &[String]) {
         tel.event(
             &["fz", "dump", "outcomes"],
             metadata! {
-                text: dump_outcomes_pipeline(&mut compiler, tel, &sm_cell, src, path.clone(), show_all, mode)
+                text: compiler.dump_outcomes_text(tel, &sm_cell, src, path.clone(), show_all, mode)
             },
         );
         return;
@@ -866,7 +837,7 @@ fn run_dump(tel: &ConfiguredTelemetry, args: &[String]) {
             eprintln!("fz dump: --fn is ignored with --emit stats");
         }
         let providers = ProviderInputs::new(artifact_root.clone(), Vec::new());
-        let _ = compile_pipeline(&mut compiler, tel, &sm_cell, src, path.clone(), mode, &providers);
+        let _ = compiler.compile_pipeline("fz dump", tel, &sm_cell, src, path.clone(), mode, &providers);
         return;
     }
 
@@ -877,7 +848,7 @@ fn run_dump(tel: &ConfiguredTelemetry, args: &[String]) {
         asm_record_enable();
     }
     let providers = ProviderInputs::new(artifact_root.clone(), Vec::new());
-    let compiled = compile_pipeline(&mut compiler, tel, &sm_cell, src, path.clone(), mode, &providers);
+    let compiled = compiler.compile_pipeline("fz dump", tel, &sm_cell, src, path.clone(), mode, &providers);
     let clif_entries = if emit_clif { ir_text_record_take() } else { Vec::new() };
     let asm_entries = if emit_asm { asm_record_take() } else { Vec::new() };
 
@@ -966,6 +937,392 @@ struct Compiled {
     module: Module,
 }
 
+impl Compiler {
+    fn frontend_with_interface_table(
+        &mut self,
+        src: String,
+        source_name: String,
+        interface_table: InterfaceTable,
+        tel: &dyn Telemetry,
+    ) -> FrontendResult {
+        let (t, world) = self.split_mut();
+        compile_source_with_compiler_interface_table(world, t, src, source_name, interface_table, tel)
+    }
+
+    fn frontend_with_providers(
+        &mut self,
+        src: String,
+        source_name: String,
+        providers: &ProviderInputs,
+        tel: &dyn Telemetry,
+    ) -> Result<FrontendResult, PipelineError> {
+        let (t, world) = self.split_mut();
+        compile_source_with_providers(world, t, src, source_name, providers, tel)
+    }
+
+    fn checked_module_or_exit(
+        &mut self,
+        context: &str,
+        result: FrontendResult,
+        sm_cell: &Rc<RefCell<SourceMap>>,
+        tel: &dyn Telemetry,
+        mode: CompileMode,
+    ) -> CheckedModule {
+        let checked = checked_module_for_mode(self.types(), result, tel, mode)
+            .unwrap_or_else(|err| report_pipeline_error_or_exit(context, tel, sm_cell, err));
+        *sm_cell.borrow_mut() = checked.sm.clone();
+        report_or_exit_through(tel, checked.diagnostics.as_slice());
+        checked
+    }
+
+    fn execution_graph_or_exit(
+        &mut self,
+        context: &str,
+        checked: CheckedModule,
+        providers: &ProviderInputs,
+        sm_cell: &Rc<RefCell<SourceMap>>,
+        tel: &dyn Telemetry,
+        mode: CompileMode,
+    ) -> PreparedExecutionGraph {
+        let (t, world) = self.split_mut();
+        prepare_execution_graph(world, t, checked, providers, tel, mode)
+            .unwrap_or_else(|err| report_pipeline_error_or_exit(context, tel, sm_cell, err))
+    }
+
+    fn dump_specs_text(
+        &mut self,
+        tel: &dyn Telemetry,
+        sm_cell: &Rc<RefCell<SourceMap>>,
+        src: String,
+        source_name: String,
+        interface_table: InterfaceTable,
+    ) -> String {
+        let frontend = run_frontend(
+            self.frontend_with_interface_table(src, source_name, interface_table, tel),
+            sm_cell,
+            tel,
+        );
+        pretty_module_plan(self.types(), &frontend.module, &frontend.module_plan)
+    }
+
+    fn dump_interfaces_text(
+        &mut self,
+        tel: &dyn Telemetry,
+        sm_cell: &Rc<RefCell<SourceMap>>,
+        src: String,
+        source_name: String,
+        strict: bool,
+        interface_table: InterfaceTable,
+    ) -> String {
+        let frontend = run_frontend(
+            self.frontend_with_interface_table(src, source_name, interface_table, tel),
+            sm_cell,
+            tel,
+        );
+        if strict {
+            let diags = validate_public_export_specs(&frontend._prog.module_interfaces);
+            report_or_exit_through(tel, &diags);
+        }
+        render_interfaces(&frontend._prog.module_interfaces)
+    }
+
+    fn dump_bodies_text(
+        &mut self,
+        tel: &dyn Telemetry,
+        sm_cell: &Rc<RefCell<SourceMap>>,
+        src: String,
+        source_name: String,
+        mode: CompileMode,
+    ) -> String {
+        use crate::telemetry::TelemetryExt as _;
+        let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
+        let frontend_result = self
+            .frontend_with_providers(src, source_name, &providers, tel)
+            .unwrap_or_else(|err| report_pipeline_error_or_exit("fz dump", tel, sm_cell, err));
+        let prepared = self.checked_module_or_exit("fz dump", frontend_result, sm_cell, tel, mode);
+        let module = prepared.module;
+        let module_plan = prepared.module_plan;
+        let _compile_span = tel.span(
+            &["fz", "compile"],
+            crate::metadata! {
+                compile_nonce: next_compile_nonce(),
+                module_path: module.module_path().to_owned(),
+            },
+        );
+        let planned_program = materialize_program(self.types(), &module, &module_plan, tel);
+
+        let mut by_name: BTreeMap<String, Vec<SpecKey>> = BTreeMap::new();
+        for sid in planned_program.reachable_specs() {
+            let planned_body = planned_program.executable_body(SpecId(*sid));
+            let name = &planned_body.body.name;
+            if name.starts_with("k_") || name.starts_with("fn_clause_") || name.starts_with("lambda_") || name == "main"
+            {
+                continue;
+            }
+            by_name
+                .entry(name.clone())
+                .or_default()
+                .push(planned_body.spec_key.clone());
+        }
+
+        let mut out = String::new();
+        if by_name.is_empty() {
+            out.push_str("bodies emitted: 0 user functions\n");
+            out.push_str("  (no user functions in the plan)\n");
+            return out;
+        }
+        for keys in by_name.values_mut() {
+            keys.sort_by(|a, b| format!("{:?}", a).cmp(&format!("{:?}", b)));
+        }
+        out.push_str(&format!(
+            "bodies emitted: {} user function{}\n",
+            by_name.len(),
+            if by_name.len() == 1 { "" } else { "s" }
+        ));
+        for (name, keys) in by_name {
+            out.push_str(&format!(
+                "  {}: {} spec{}\n",
+                name,
+                keys.len(),
+                if keys.len() == 1 { "" } else { "s" }
+            ));
+            for key in keys {
+                out.push_str(&format!("    {}\n", render_spec_key(self.types(), &key)));
+            }
+        }
+        out
+    }
+
+    fn dump_outcomes_text(
+        &mut self,
+        tel: &dyn Telemetry,
+        sm_cell: &Rc<RefCell<SourceMap>>,
+        src: String,
+        source_name: String,
+        show_all: bool,
+        mode: CompileMode,
+    ) -> String {
+        use crate::fz_ir::{CallsiteId, EmitSlot};
+        use crate::telemetry::TelemetryExt as _;
+        let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
+        let frontend_result = self
+            .frontend_with_providers(src, source_name.clone(), &providers, tel)
+            .unwrap_or_else(|err| report_pipeline_error_or_exit("fz dump", tel, sm_cell, err));
+        let prepared = self.checked_module_or_exit("fz dump", frontend_result, sm_cell, tel, mode);
+        let module = prepared.module;
+        let _compile_span = tel.span(
+            &["fz", "compile"],
+            crate::metadata! {
+                compile_nonce: next_compile_nonce(),
+                module_path: module.module_path().to_owned(),
+            },
+        );
+        let mt = plan_module(self.types(), &module, tel);
+
+        let fn_name = |fid: FnId| -> String {
+            module
+                .fns
+                .iter()
+                .find(|f| f.id == fid)
+                .map(|f| f.name.clone())
+                .unwrap_or_else(|| format!("?fn{}", fid.0))
+        };
+
+        let slot_str = |s: EmitSlot| -> &'static str {
+            match s {
+                EmitSlot::Direct => "Direct",
+                EmitSlot::Cont => "Cont",
+                EmitSlot::ClosureCall => "ClosureCall",
+                EmitSlot::CallableBoundary => "CallableBoundary",
+            }
+        };
+        let render_span = |sp: Span| -> String {
+            if sp.is_dummy() {
+                "<generated>".to_string()
+            } else {
+                format!("{}:{}-{}", sp.file.0, sp.start, sp.end)
+            }
+        };
+
+        enum Outcome {
+            Static(SpecKey),
+            Indirect(SpecKey),
+        }
+
+        fn render_outcome<F: Fn(FnId) -> String>(t: &mut DefaultTypes, fn_name: &F, outcome: &Outcome) -> String {
+            match outcome {
+                Outcome::Static(target) => {
+                    format!("Static({})", render_dispatch_target(t, fn_name, target))
+                }
+                Outcome::Indirect(target) => {
+                    format!("Indirect({})", render_dispatch_target(t, fn_name, target))
+                }
+            }
+        }
+
+        type Section = (SpecKey, Vec<(CallsiteId, Outcome)>);
+        type SortKey = (u32, String);
+        type RowsBySpec = BTreeMap<SortKey, Section>;
+        let mut rows_by_spec: RowsBySpec = BTreeMap::new();
+
+        let push_row = |rows_by_spec: &mut RowsBySpec,
+                        caller_fid: FnId,
+                        caller_key: &SpecKey,
+                        cid: CallsiteId,
+                        dispatch: Outcome,
+                        sort_key: String| {
+            let entry = rows_by_spec
+                .entry((caller_fid.0, sort_key))
+                .or_insert_with(|| (caller_key.clone(), Vec::new()));
+            entry.1.push((cid, dispatch));
+        };
+
+        for (caller_key, ft) in &mt.specs {
+            for (cid, edge) in ft.call_edges.iter() {
+                let Some(target) = edge.local_target() else {
+                    continue;
+                };
+                let dispatch = match cid.slot {
+                    EmitSlot::ClosureCall => Outcome::Indirect(target.clone()),
+                    _ => Outcome::Static(target.clone()),
+                };
+                let sort_key = render_spec_key(self.types(), caller_key);
+                push_row(
+                    &mut rows_by_spec,
+                    caller_key.fn_id,
+                    caller_key,
+                    cid.clone(),
+                    dispatch,
+                    sort_key,
+                );
+            }
+        }
+
+        for (_, rows) in rows_by_spec.values_mut() {
+            rows.sort_by(|a, b| {
+                a.0.ident
+                    .span()
+                    .start
+                    .cmp(&b.0.ident.span().start)
+                    .then_with(|| slot_str(a.0.slot).cmp(slot_str(b.0.slot)))
+                    .then_with(|| {
+                        render_outcome(self.types(), &fn_name, &a.1).cmp(&render_outcome(self.types(), &fn_name, &b.1))
+                    })
+            });
+        }
+
+        let mut out = String::new();
+        out.push_str(&format!("outcomes for {}\n", source_name));
+        if rows_by_spec.is_empty() {
+            out.push_str("  (no callsites — program is callsite-free)\n");
+            return out;
+        }
+        let reachable_fids: HashSet<FnId> = mt.specs.keys().map(|key| key.fn_id).collect();
+        let should_show = |f: &FnIr| -> bool {
+            if show_all {
+                return true;
+            }
+            if f.category == FnCategory::Prelude {
+                return false;
+            }
+            reachable_fids.contains(&f.id)
+        };
+        let module_fn_order: HashMap<FnId, usize> = module.fns.iter().enumerate().map(|(i, f)| (f.id, i)).collect();
+        type SectionRef<'a> = (SortKey, &'a SpecKey, &'a Vec<(CallsiteId, Outcome)>);
+        let mut sections: Vec<SectionRef<'_>> = rows_by_spec.iter().map(|(k, (sk, rs))| (k.clone(), sk, rs)).collect();
+        sections.sort_by_key(|(k, _, _)| {
+            (
+                module_fn_order.get(&FnId(k.0)).copied().unwrap_or(usize::MAX),
+                k.1.clone(),
+            )
+        });
+        for (_, caller_key, rows) in sections {
+            let Some(f) = module.fns.iter().find(|f| f.id == caller_key.fn_id) else {
+                continue;
+            };
+            if !should_show(f) {
+                continue;
+            }
+            out.push_str(&format!("\n{}{}:\n", f.name, render_spec_key(self.types(), caller_key)));
+            for (cid, dispatch) in rows {
+                out.push_str(&format!(
+                    "  @{} {} -> {}\n",
+                    render_span(cid.ident.span()),
+                    slot_str(cid.slot),
+                    render_outcome(self.types(), &fn_name, dispatch),
+                ));
+            }
+        }
+        out
+    }
+
+    fn compile_pipeline(
+        &mut self,
+        context: &str,
+        tel: &dyn Telemetry,
+        sm_cell: &Rc<RefCell<SourceMap>>,
+        src: String,
+        source_name: String,
+        mode: CompileMode,
+        providers: &ProviderInputs,
+    ) -> Compiled {
+        let frontend_result = self
+            .frontend_with_providers(src, source_name, providers, tel)
+            .unwrap_or_else(|err| report_pipeline_error_or_exit(context, tel, sm_cell, err));
+        let prepared = self.checked_module_or_exit(context, frontend_result, sm_cell, tel, mode);
+        let graph = self.execution_graph_or_exit(context, prepared, providers, sm_cell, tel, mode);
+        let main_fn = graph.module.fn_by_name("main").map(|f| f.id);
+        let executable = compile_planned(self.types(), &graph.module, &graph.module_plan, tel).unwrap_or_else(|e| {
+            report_or_exit_through(tel, &[e.to_diagnostic()]);
+            exit(1);
+        });
+        tel.event(
+            &["fz", "module", "unit_compiled"],
+            metadata! {
+                fns: graph.module.fns.len() as i64,
+                atoms: graph.module.atom_names.len() as i64,
+            },
+        );
+        report_or_exit_through(tel, executable.diagnostics().as_slice());
+        let image = if graph.units.len() == 1 {
+            let unit = graph.units[0]
+                .clone()
+                .with_code_and_plan(graph.module.clone(), graph.module_plan.clone());
+            CompiledProgram::new(unit, executable).link_image_with_telemetry(tel)
+        } else {
+            Ok(CompiledImage::from_linked_with_telemetry(
+                tel,
+                graph.units.len(),
+                executable,
+            ))
+        }
+        .unwrap_or_else(|err| report_pipeline_error_or_exit(context, tel, sm_cell, PipelineError::Link(err)));
+        if let Some(metadata) = image.metadata() {
+            tel.event(
+                &["fz", "link", "metadata"],
+                metadata! {
+                    atoms: metadata.atoms.len() as i64,
+                    schemas: metadata.schemas.len() as i64,
+                    frames: metadata.frame_sizes.len() as i64,
+                    imports: metadata.imported_refs.len() as i64,
+                    exports: metadata.exported_symbols.len() as i64,
+                    static_closures: metadata.static_closures.len() as i64,
+                    halt_kinds: metadata.halt_kinds.len() as i64,
+                    relocations: metadata.relocations.len() as i64,
+                    has_resume: metadata.entrypoints.resume,
+                    has_main: metadata.entrypoints.main,
+                },
+            );
+        }
+        Compiled {
+            image,
+            main_fn,
+            sm: graph.sm,
+            module: graph.module,
+        }
+    }
+}
+
 fn parse_module_name_arg(context: &str, text: &str) -> ModuleName {
     ModuleName::parse_dotted(text).unwrap_or_else(|err| {
         eprintln!("{context}: {err}");
@@ -999,61 +1356,6 @@ fn report_pipeline_error_or_exit(
     exit(1);
 }
 
-fn checked_module_or_exit(
-    context: &str,
-    t: &mut DefaultTypes,
-    result: FrontendResult,
-    sm_cell: &Rc<RefCell<SourceMap>>,
-    tel: &dyn Telemetry,
-    mode: CompileMode,
-) -> CheckedModule {
-    let checked = checked_module_for_mode(t, result, tel, mode)
-        .unwrap_or_else(|err| report_pipeline_error_or_exit(context, tel, sm_cell, err));
-    *sm_cell.borrow_mut() = checked.sm.clone();
-    report_or_exit_through(tel, checked.diagnostics.as_slice());
-    checked
-}
-
-/// fz-73m — drive a source string through lex → parse → resolve → macros
-/// → ir_lower → plan_module, then pretty-print `ModulePlan` for golden
-/// inspection. Skips codegen entirely; the dump is a planner-only view.
-fn dump_specs_pipeline(
-    compiler: &mut Compiler,
-    tel: &dyn Telemetry,
-    sm_cell: &Rc<RefCell<SourceMap>>,
-    src: String,
-    source_name: String,
-    interface_table: InterfaceTable,
-) -> String {
-    let frontend_result = {
-        let (t, world) = compiler.split_mut();
-        compile_source_with_compiler_interface_table(world, t, src, source_name, interface_table, tel)
-    };
-    let frontend = run_frontend(frontend_result, sm_cell, tel);
-    pretty_module_plan(compiler.types(), &frontend.module, &frontend.module_plan)
-}
-
-fn dump_interfaces_pipeline(
-    compiler: &mut Compiler,
-    tel: &dyn Telemetry,
-    sm_cell: &Rc<RefCell<SourceMap>>,
-    src: String,
-    source_name: String,
-    strict: bool,
-    interface_table: InterfaceTable,
-) -> String {
-    let frontend_result = {
-        let (t, world) = compiler.split_mut();
-        compile_source_with_compiler_interface_table(world, t, src, source_name, interface_table, tel)
-    };
-    let frontend = run_frontend(frontend_result, sm_cell, tel);
-    if strict {
-        let diags = validate_public_export_specs(&frontend._prog.module_interfaces);
-        report_or_exit_through(tel, &diags);
-    }
-    render_interfaces(&frontend._prog.module_interfaces)
-}
-
 fn render_key_slots(t: &mut DefaultTypes, key: &[KeySlot]) -> String {
     display_key_slots(t, key)
 }
@@ -1083,75 +1385,6 @@ fn render_dispatch_target<F: Fn(FnId) -> String>(t: &mut DefaultTypes, fn_name: 
 /// Each entry is `<fn_name>: <N> spec(s) [<key_1>] [<key_2>] ...`. The
 /// dump runs the compile pipeline through `plan_module`; the surviving
 /// fns and their spec keys are read out of `ModulePlan`.
-fn dump_bodies_pipeline(
-    compiler: &mut Compiler,
-    tel: &dyn Telemetry,
-    sm_cell: &Rc<RefCell<SourceMap>>,
-    src: String,
-    source_name: String,
-    mode: CompileMode,
-) -> String {
-    use crate::telemetry::TelemetryExt as _;
-    let frontend_result = {
-        let (t, world) = compiler.split_mut();
-        compile_source_with_compiler_types(world, t, src, source_name, tel)
-    };
-    let prepared = checked_module_or_exit("fz dump", compiler.types(), frontend_result, sm_cell, tel, mode);
-    let module = prepared.module;
-    let module_plan = prepared.module_plan;
-    let _compile_span = tel.span(
-        &["fz", "compile"],
-        crate::metadata! {
-            compile_nonce: next_compile_nonce(),
-            module_path: module.module_path().to_owned(),
-        },
-    );
-    let planned_program = materialize_program(compiler.types(), &module, &module_plan, tel);
-
-    // Group surviving specs by user-fn name. Skip the conventional
-    // synthetic helpers (k_*, fn_clause_*, lambda_*) — they're
-    // continuations or pattern-clause bodies, not user fns.
-    let mut by_name: BTreeMap<String, Vec<SpecKey>> = BTreeMap::new();
-    for sid in planned_program.reachable_specs() {
-        let planned_body = planned_program.executable_body(SpecId(*sid));
-        let name = &planned_body.body.name;
-        if name.starts_with("k_") || name.starts_with("fn_clause_") || name.starts_with("lambda_") || name == "main" {
-            continue;
-        }
-        by_name
-            .entry(name.clone())
-            .or_default()
-            .push(planned_body.spec_key.clone());
-    }
-
-    let mut out = String::new();
-    if by_name.is_empty() {
-        out.push_str("bodies emitted: 0 user functions\n");
-        out.push_str("  (no user functions in the plan)\n");
-        return out;
-    }
-    for keys in by_name.values_mut() {
-        keys.sort_by(|a, b| format!("{:?}", a).cmp(&format!("{:?}", b)));
-    }
-    out.push_str(&format!(
-        "bodies emitted: {} user function{}\n",
-        by_name.len(),
-        if by_name.len() == 1 { "" } else { "s" }
-    ));
-    for (name, keys) in by_name {
-        out.push_str(&format!(
-            "  {}: {} spec{}\n",
-            name,
-            keys.len(),
-            if keys.len() == 1 { "" } else { "s" }
-        ));
-        for key in keys {
-            out.push_str(&format!("    {}\n", render_spec_key(compiler.types(), &key)));
-        }
-    }
-    out
-}
-
 /// fz-9pr.16 — `fz dump --emit outcomes`: per-callsite verdict diary.
 ///
 /// Runs the codegen front half (lex → parse → resolve → macros →
@@ -1178,265 +1411,6 @@ fn dump_bodies_pipeline(
 ///     (the body is dead-coded).
 ///
 /// Pass `show_all=true` (CLI `--all`) to bypass both filters.
-fn dump_outcomes_pipeline(
-    compiler: &mut Compiler,
-    tel: &dyn Telemetry,
-    sm_cell: &Rc<RefCell<SourceMap>>,
-    src: String,
-    source_name: String,
-    show_all: bool,
-    mode: CompileMode,
-) -> String {
-    use crate::fz_ir::{CallsiteId, EmitSlot};
-    use crate::telemetry::TelemetryExt as _;
-    let frontend_result = {
-        let (t, world) = compiler.split_mut();
-        compile_source_with_compiler_types(world, t, src, source_name.clone(), tel)
-    };
-    let prepared = checked_module_or_exit("fz dump", compiler.types(), frontend_result, sm_cell, tel, mode);
-    let module = prepared.module;
-    let _compile_span = tel.span(
-        &["fz", "compile"],
-        crate::metadata! {
-            compile_nonce: next_compile_nonce(),
-            module_path: module.module_path().to_owned(),
-        },
-    );
-    let mt = plan_module(compiler.types(), &module, tel);
-
-    let fn_name = |fid: FnId| -> String {
-        module
-            .fns
-            .iter()
-            .find(|f| f.id == fid)
-            .map(|f| f.name.clone())
-            .unwrap_or_else(|| format!("?fn{}", fid.0))
-    };
-
-    let slot_str = |s: EmitSlot| -> &'static str {
-        match s {
-            EmitSlot::Direct => "Direct",
-            EmitSlot::Cont => "Cont",
-            EmitSlot::ClosureCall => "ClosureCall",
-            EmitSlot::CallableBoundary => "CallableBoundary",
-        }
-    };
-    let render_span = |sp: Span| -> String {
-        if sp.is_dummy() {
-            "<generated>".to_string()
-        } else {
-            format!("{}:{}-{}", sp.file.0, sp.start, sp.end)
-        }
-    };
-
-    // fz-try.11 — rows are computed per (caller_spec) so section headers
-    // can carry the spec inline (`apply1[α=int, β=int]:`) instead of the
-    // pre-fz-try.11 `apply1:` + per-row `[under apply1[...]]` annotation.
-    // The Outcome enum separates the structural slot (where) from the
-    // demand-aware dispatch outcome (what).
-    enum Outcome {
-        Static(SpecKey),
-        Indirect(SpecKey),
-    }
-
-    fn render_outcome<F: Fn(FnId) -> String>(t: &mut DefaultTypes, fn_name: &F, outcome: &Outcome) -> String {
-        match outcome {
-            Outcome::Static(target) => {
-                format!("Static({})", render_dispatch_target(t, fn_name, target))
-            }
-            Outcome::Indirect(target) => {
-                format!("Indirect({})", render_dispatch_target(t, fn_name, target))
-            }
-        }
-    }
-
-    // Rows grouped by (caller_fid, caller_key) → list of (cid, Dispatch).
-    type Section = (SpecKey, Vec<(CallsiteId, Outcome)>);
-    type SortKey = (u32, String);
-    type RowsBySpec = BTreeMap<SortKey, Section>;
-    let mut rows_by_spec: RowsBySpec = BTreeMap::new();
-
-    let push_row = |rows_by_spec: &mut RowsBySpec,
-                    caller_fid: FnId,
-                    caller_key: &SpecKey,
-                    cid: CallsiteId,
-                    dispatch: Outcome,
-                    sort_key: String| {
-        let entry = rows_by_spec
-            .entry((caller_fid.0, sort_key))
-            .or_insert_with(|| (caller_key.clone(), Vec::new()));
-        entry.1.push((cid, dispatch));
-    };
-
-    // Per-caller-spec dispatch rows (Static for Direct/Cont; Indirect for
-    // ClosureCall).
-    for (caller_key, ft) in &mt.specs {
-        for (cid, edge) in ft.call_edges.iter() {
-            let Some(target) = edge.local_target() else {
-                continue;
-            };
-            let dispatch = match cid.slot {
-                EmitSlot::ClosureCall => Outcome::Indirect(target.clone()),
-                _ => Outcome::Static(target.clone()),
-            };
-            let sort_key = render_spec_key(compiler.types(), caller_key);
-            push_row(
-                &mut rows_by_spec,
-                caller_key.fn_id,
-                caller_key,
-                cid.clone(),
-                dispatch,
-                sort_key,
-            );
-        }
-    }
-
-    // Stable per-section row ordering: span_start, then slot, then
-    // serialized dispatch (deterministic across runs).
-    for (_, rows) in rows_by_spec.values_mut() {
-        rows.sort_by(|a, b| {
-            a.0.ident
-                .span()
-                .start
-                .cmp(&b.0.ident.span().start)
-                .then_with(|| slot_str(a.0.slot).cmp(slot_str(b.0.slot)))
-                .then_with(|| {
-                    render_outcome(compiler.types(), &fn_name, &a.1).cmp(&render_outcome(
-                        compiler.types(),
-                        &fn_name,
-                        &b.1,
-                    ))
-                })
-        });
-    }
-
-    let mut out = String::new();
-    out.push_str(&format!("outcomes for {}\n", source_name));
-    if rows_by_spec.is_empty() {
-        out.push_str("  (no callsites — program is callsite-free)\n");
-        return out;
-    }
-    // fz-f88.7 — default filter: hide prelude callers and any caller
-    // whose body has no surviving spec in the plan. `--all` bypasses.
-    let reachable_fids: HashSet<FnId> = mt.specs.keys().map(|key| key.fn_id).collect();
-    let should_show = |f: &FnIr| -> bool {
-        if show_all {
-            return true;
-        }
-        if f.category == FnCategory::Prelude {
-            return false;
-        }
-        reachable_fids.contains(&f.id)
-    };
-    let module_fn_order: HashMap<FnId, usize> = module.fns.iter().enumerate().map(|(i, f)| (f.id, i)).collect();
-    type SectionRef<'a> = (SortKey, &'a SpecKey, &'a Vec<(CallsiteId, Outcome)>);
-    let mut sections: Vec<SectionRef<'_>> = rows_by_spec.iter().map(|(k, (sk, rs))| (k.clone(), sk, rs)).collect();
-    sections.sort_by_key(|(k, _, _)| {
-        (
-            module_fn_order.get(&FnId(k.0)).copied().unwrap_or(usize::MAX),
-            k.1.clone(),
-        )
-    });
-    for (_, caller_key, rows) in sections {
-        let Some(f) = module.fns.iter().find(|f| f.id == caller_key.fn_id) else {
-            continue;
-        };
-        if !should_show(f) {
-            continue;
-        }
-        // fz-try.11 — section header carries the caller spec inline.
-        out.push_str(&format!(
-            "\n{}{}:\n",
-            f.name,
-            render_spec_key(compiler.types(), caller_key)
-        ));
-        for (cid, dispatch) in rows {
-            out.push_str(&format!(
-                "  @{} {} -> {}\n",
-                render_span(cid.ident.span()),
-                slot_str(cid.slot),
-                render_outcome(compiler.types(), &fn_name, dispatch),
-            ));
-        }
-    }
-    out
-}
-
-fn compile_pipeline(
-    compiler: &mut Compiler,
-    tel: &dyn Telemetry,
-    sm_cell: &Rc<RefCell<SourceMap>>,
-    src: String,
-    source_name: String,
-    mode: CompileMode,
-    providers: &ProviderInputs,
-) -> Compiled {
-    let frontend_result = {
-        let (t, world) = compiler.split_mut();
-        compile_source_with_providers(world, t, src, source_name, providers, tel)
-    }
-    .unwrap_or_else(|err| report_pipeline_error_or_exit("fz run", tel, sm_cell, err));
-    let prepared = checked_module_or_exit("fz run", compiler.types(), frontend_result, sm_cell, tel, mode);
-    let graph = {
-        let (t, world) = compiler.split_mut();
-        prepare_execution_graph(world, t, prepared, providers, tel, mode)
-    }
-    .unwrap_or_else(|err| report_pipeline_error_or_exit("fz run", tel, sm_cell, err));
-    let main_fn = graph.module.fn_by_name("main").map(|f| f.id);
-    let executable = compile_planned(compiler.types(), &graph.module, &graph.module_plan, tel).unwrap_or_else(|e| {
-        report_or_exit_through(tel, &[e.to_diagnostic()]);
-        exit(1);
-    });
-    tel.event(
-        &["fz", "module", "unit_compiled"],
-        metadata! {
-            fns: graph.module.fns.len() as i64,
-            atoms: graph.module.atom_names.len() as i64,
-        },
-    );
-    // fz-d5b — gate on errors from the planner-side diagnostics
-    // (TYPE_OPAQUE_VISIBILITY, TYPE_OPAQUE_ARITHMETIC,
-    // TYPE_IMPURE_RECEIVE_GUARD). Severity::Warning entries print and
-    // we continue; Severity::Error halts.
-    report_or_exit_through(tel, executable.diagnostics().as_slice());
-    let image = if graph.units.len() == 1 {
-        let unit = graph.units[0]
-            .clone()
-            .with_code_and_plan(graph.module.clone(), graph.module_plan.clone());
-        CompiledProgram::new(unit, executable).link_image_with_telemetry(tel)
-    } else {
-        Ok(CompiledImage::from_linked_with_telemetry(
-            tel,
-            graph.units.len(),
-            executable,
-        ))
-    }
-    .unwrap_or_else(|err| report_pipeline_error_or_exit("fz run", tel, sm_cell, PipelineError::Link(err)));
-    if let Some(metadata) = image.metadata() {
-        tel.event(
-            &["fz", "link", "metadata"],
-            metadata! {
-                atoms: metadata.atoms.len() as i64,
-                schemas: metadata.schemas.len() as i64,
-                frames: metadata.frame_sizes.len() as i64,
-                imports: metadata.imported_refs.len() as i64,
-                exports: metadata.exported_symbols.len() as i64,
-                static_closures: metadata.static_closures.len() as i64,
-                halt_kinds: metadata.halt_kinds.len() as i64,
-                relocations: metadata.relocations.len() as i64,
-                has_resume: metadata.entrypoints.resume,
-                has_main: metadata.entrypoints.main,
-            },
-        );
-    }
-    Compiled {
-        image,
-        main_fn,
-        sm: graph.sm,
-        module: graph.module,
-    }
-}
-
 /// `fz run <path>` (and the no-argument stdin route) — compile, then drive
 /// the program through the Runtime so concurrency-using fixtures work
 /// end-to-end.
@@ -1450,7 +1424,7 @@ fn run_jit_src(
     let sm_cell: Rc<RefCell<SourceMap>> = Rc::new(RefCell::new(SourceMap::new()));
     tel.attach(&["fz", "diag"], Box::new(DiagRenderer::new_stderr(sm_cell.clone())));
     let mut compiler = Compiler::new();
-    let compiled = compile_pipeline(&mut compiler, tel, &sm_cell, src, source_name, mode, providers);
+    let compiled = compiler.compile_pipeline("fz run", tel, &sm_cell, src, source_name, mode, providers);
     let Some(main_fn) = compiled.main_fn else {
         report_or_exit_through(
             tel,

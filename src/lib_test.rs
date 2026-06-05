@@ -23,8 +23,8 @@ fn main(), do: User.run()
     let sm_cell = Rc::new(RefCell::new(SourceMap::new()));
     let mut compiler = Compiler::new();
 
-    let _compiled = compile_pipeline(
-        &mut compiler,
+    let _compiled = compiler.compile_pipeline(
+        "test",
         &tel,
         &sm_cell,
         src.to_string(),
@@ -46,8 +46,8 @@ fn compile_pipeline_runs_spawn_with_captures_through_single_plan_path() {
     let sm_cell = Rc::new(RefCell::new(SourceMap::new()));
     let mut compiler = Compiler::new();
 
-    let compiled = compile_pipeline(
-        &mut compiler,
+    let compiled = compiler.compile_pipeline(
+        "test",
         &tel,
         &sm_cell,
         include_str!("../fixtures/spawn_with_captures/input.fz").to_string(),
