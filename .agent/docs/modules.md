@@ -64,6 +64,7 @@ and file ids plus lazy phase advancement:
 discovered
 -> source_loaded
 -> parsed
+-> body_surface_ready
 -> interface_ready
 -> macro_surface_ready
 -> runtime_lowered
@@ -72,8 +73,11 @@ discovered
 
 Not every module reaches every phase. Import resolution only needs
 `interface_ready`. Cross-module macro use only needs `macro_surface_ready`.
-Runtime codegen only needs the modules that become reachable from the checked
-program.
+`body_surface_ready` is the first compiler-owned split between syntax and
+executable work: the compiler has stable function-group descriptors and root
+fn/group ownership without having emitted body IR yet. Runtime codegen only
+needs the modules that become reachable from the checked program, and later
+tickets lower only the live function-groups inside those modules.
 
 The compiler emits phase telemetry such as:
 
@@ -81,6 +85,8 @@ The compiler emits phase telemetry such as:
 fz.compiler.module_discovered
 fz.compiler.source_loaded
 fz.compiler.parsed
+fz.compiler.body_surface_ready
+fz.compiler.fn_group_discovered
 fz.compiler.interface_ready
 fz.compiler.macro_surface_ready
 fz.compiler.runtime_module_reachable

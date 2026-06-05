@@ -3,8 +3,9 @@
 // later world-model phases are still being pulled into use over the next
 // tickets. Keep the allowance local to this module until those phases are live.
 
-use crate::ast::{Attribute, Item, ModuleDef, Program};
+use crate::ast::{Attribute, FnDef, Item, ModuleDef, Program};
 use crate::diag::{Diagnostic, SourceMap};
+use crate::fz_ir::{FnId, FnIr};
 use crate::modules::identity::ModuleName;
 use crate::modules::interface::{ModuleInterface, collect_from_program};
 use crate::modules::runtime_library::{self, RUNTIME_MODULE_SOURCES, RUNTIME_PRELUDE_FZ};
@@ -26,6 +27,9 @@ pub(crate) struct ModuleId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct FileId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct FnGroupId(pub u32);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum ModuleKey {
@@ -97,6 +101,7 @@ pub(crate) enum ModuleState {
     Discovered,
     SourceReady,
     Parsed,
+    BodySurfaceReady,
     InterfaceReady,
     MacroSurfaceReady,
     RuntimeLowered,
@@ -113,6 +118,7 @@ impl ModuleState {
             ModuleState::Discovered => "discovered",
             ModuleState::SourceReady => "source_ready",
             ModuleState::Parsed => "parsed",
+            ModuleState::BodySurfaceReady => "body_surface_ready",
             ModuleState::InterfaceReady => "interface_ready",
             ModuleState::MacroSurfaceReady => "macro_surface_ready",
             ModuleState::RuntimeLowered => "runtime_lowered",
@@ -233,6 +239,67 @@ pub(crate) struct ModuleMacroSurface {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) enum FnGroupInput {
+    SourceFn(Rc<FnDef>),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FnGroupDescriptor {
+    pub(crate) id: FnGroupId,
+    pub(crate) owner_module: String,
+    pub(crate) name: String,
+    pub(crate) arity: usize,
+    pub(crate) root_fn_id: FnId,
+    pub(crate) is_private: bool,
+    pub(crate) input: FnGroupInput,
+}
+
+impl FnGroupDescriptor {
+    pub(crate) fn fn_def(&self) -> &FnDef {
+        match &self.input {
+            FnGroupInput::SourceFn(def) => def,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ModuleBodySurface {
+    pub(crate) owner_module: String,
+    pub(crate) groups: Vec<FnGroupDescriptor>,
+    pub(crate) group_by_root_fn: HashMap<FnId, FnGroupId>,
+}
+
+impl ModuleBodySurface {
+    fn register_source_group(&mut self, owner_module: &str, def: Rc<FnDef>) {
+        let group_id = FnGroupId(self.groups.len() as u32);
+        let root_fn_id = FnId(self.groups.len() as u32);
+        let arity = def.clauses.first().map(|clause| clause.params.len()).unwrap_or(0);
+        self.groups.push(FnGroupDescriptor {
+            id: group_id,
+            owner_module: owner_module.to_string(),
+            name: def.name.clone(),
+            arity,
+            root_fn_id,
+            is_private: def.is_private,
+            input: FnGroupInput::SourceFn(def),
+        });
+        self.group_by_root_fn.insert(root_fn_id, group_id);
+    }
+
+    pub(crate) fn group_for_root_fn(&self, root_fn_id: FnId) -> Option<FnGroupId> {
+        self.group_by_root_fn.get(&root_fn_id).copied()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LoweredFnGroup {
+    pub(crate) id: FnGroupId,
+    pub(crate) root_fn_id: FnId,
+    pub(crate) function_ids: Vec<FnId>,
+    pub(crate) fns: Vec<FnIr>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct RuntimeReachabilitySeed {
     pub(crate) module: ModuleName,
     pub(crate) reason: &'static str,
@@ -257,6 +324,8 @@ pub(crate) struct ModuleRecord {
     pub(crate) file_id: FileId,
     pub(crate) state: ModuleState,
     pub(crate) reachability: Reachability,
+    pub(crate) body_surface: Option<ModuleBodySurface>,
+    pub(crate) lowered_groups: HashMap<FnGroupId, LoweredFnGroup>,
     pub(crate) interfaces: Option<BTreeMap<ModuleName, ModuleInterface>>,
     pub(crate) macro_exports: Option<HashSet<(String, usize)>>,
     pub(crate) macro_surface: Option<ModuleMacroSurface>,
@@ -422,6 +491,18 @@ impl Compiler {
         tel: &dyn Telemetry,
     ) -> Result<BTreeMap<ModuleName, ModuleInterface>, Diagnostic> {
         self.world.ensure_interface_table(module_id, tel)
+    }
+
+    pub(crate) fn ensure_body_surface(
+        &mut self,
+        module_id: ModuleId,
+        tel: &dyn Telemetry,
+    ) -> Result<ModuleBodySurface, Diagnostic> {
+        self.world.ensure_body_surface(module_id, tel)
+    }
+
+    pub(crate) fn fn_group_for_root_fn(&self, module_id: ModuleId, root_fn_id: FnId) -> Option<FnGroupId> {
+        self.world.fn_group_for_root_fn(module_id, root_fn_id)
     }
 
     pub(crate) fn ensure_runtime_module_interface(
@@ -650,12 +731,65 @@ impl CompilerWorld {
         }
     }
 
+    pub(crate) fn ensure_body_surface(
+        &mut self,
+        module_id: ModuleId,
+        tel: &dyn Telemetry,
+    ) -> Result<ModuleBodySurface, Diagnostic> {
+        self.ensure_module_state_result(module_id, ModuleState::BodySurfaceReady, tel, |this| {
+            let parsed = this.ensure_parsed(module_id, tel)?;
+            let record = this.module(module_id).clone();
+            let surface = collect_body_surface(&record, &parsed);
+            let measurements = this.phase_measurements(module_id);
+            for group in &surface.groups {
+                tel.execute(
+                    &["fz", "compiler", "fn_group_discovered"],
+                    &measurements! {
+                        module_id: module_id.0,
+                        file_id: record.file_id.0,
+                        fn_group_id: group.id.0,
+                        root_fn_id: group.root_fn_id.0,
+                        arity: group.arity as u64,
+                    },
+                    &metadata! {
+                        module_key: record.key.render(),
+                        module_key_kind: record.key.kind(),
+                        module_origin: record.origin.kind(),
+                        owner_module: group.owner_module.clone(),
+                        fn_name: group.name.clone(),
+                        visibility: if group.is_private { "private" } else { "public" },
+                    },
+                );
+            }
+            tel.execute(
+                &["fz", "compiler", "body_surface_ready"],
+                &measurements,
+                &metadata! {
+                    module_key: record.key.render(),
+                    module_key_kind: record.key.kind(),
+                    module_origin: record.origin.kind(),
+                    owner_module: surface.owner_module.clone(),
+                    groups: surface.groups.len() as u64,
+                    parse_kind: parsed.parse_kind().as_str(),
+                },
+            );
+            this.modules[module_id.0 as usize].body_surface = Some(surface);
+            Ok(())
+        })?;
+
+        Ok(self.modules[module_id.0 as usize]
+            .body_surface
+            .clone()
+            .expect("body_surface_ready invariant violated"))
+    }
+
     pub(crate) fn ensure_interface_table(
         &mut self,
         module_id: ModuleId,
         tel: &dyn Telemetry,
     ) -> Result<BTreeMap<ModuleName, ModuleInterface>, Diagnostic> {
         self.ensure_module_state_result(module_id, ModuleState::InterfaceReady, tel, |this| {
+            let _ = this.ensure_body_surface(module_id, tel)?;
             let parsed = this.ensure_parsed(module_id, tel)?;
             let interfaces = collect_interfaces(&parsed);
             let measurements = this.phase_measurements(module_id);
@@ -692,6 +826,13 @@ impl CompilerWorld {
         Ok(interfaces.get(module).cloned())
     }
 
+    pub(crate) fn fn_group_for_root_fn(&self, module_id: ModuleId, root_fn_id: FnId) -> Option<FnGroupId> {
+        self.modules[module_id.0 as usize]
+            .body_surface
+            .as_ref()
+            .and_then(|surface| surface.group_for_root_fn(root_fn_id))
+    }
+
     pub(crate) fn ensure_source_module_interfaces(
         &mut self,
         root_id: ModuleId,
@@ -708,6 +849,7 @@ impl CompilerWorld {
                 file.descriptor.clone(),
                 tel,
             );
+            let _ = self.ensure_body_surface(module_id, tel)?;
             let interface = interface.clone();
             let module = module.clone();
             let mut single = BTreeMap::new();
@@ -876,6 +1018,9 @@ impl CompilerWorld {
         surface: ModuleMacroSurface,
         tel: &dyn Telemetry,
     ) -> bool {
+        let _ = self
+            .ensure_interface_table(module_id, tel)
+            .expect("macro surface requires source-backed interface readiness");
         self.ensure_module_state(module_id, ModuleState::MacroSurfaceReady, tel, |this| {
             let measurements = this.phase_measurements(module_id);
             let record = this.module(module_id);
@@ -1045,11 +1190,96 @@ impl CompilerWorld {
                     module.key.render()
                 )));
             }
+            if module.state.covers(ModuleState::BodySurfaceReady) && module.body_surface.is_none() {
+                return Err(CompilerInvariantError::new(format!(
+                    "module `{}` is body_surface_ready without body surface",
+                    module.key.render()
+                )));
+            }
             if module.state.covers(ModuleState::InterfaceReady) && module.interfaces.is_none() {
                 return Err(CompilerInvariantError::new(format!(
                     "module `{}` is interface_ready without interface table",
                     module.key.render()
                 )));
+            }
+            if let Some(surface) = &module.body_surface {
+                if surface.owner_module != body_surface_owner_module(module) {
+                    return Err(CompilerInvariantError::new(format!(
+                        "module `{}` body surface owner `{}` does not match module owner `{}`",
+                        module.key.render(),
+                        surface.owner_module,
+                        body_surface_owner_module(module)
+                    )));
+                }
+                if surface.groups.len() != surface.group_by_root_fn.len() {
+                    return Err(CompilerInvariantError::new(format!(
+                        "module `{}` body surface has {} groups but {} root mappings",
+                        module.key.render(),
+                        surface.groups.len(),
+                        surface.group_by_root_fn.len()
+                    )));
+                }
+                for (index, group) in surface.groups.iter().enumerate() {
+                    let expected_group_id = FnGroupId(index as u32);
+                    let expected_root_fn_id = FnId(index as u32);
+                    if group.id != expected_group_id {
+                        return Err(CompilerInvariantError::new(format!(
+                            "module `{}` body group `{}` stored id {:?}, expected {:?}",
+                            module.key.render(),
+                            group.name,
+                            group.id,
+                            expected_group_id
+                        )));
+                    }
+                    if group.root_fn_id != expected_root_fn_id {
+                        return Err(CompilerInvariantError::new(format!(
+                            "module `{}` body group `{}` stored root fn {:?}, expected {:?}",
+                            module.key.render(),
+                            group.name,
+                            group.root_fn_id,
+                            expected_root_fn_id
+                        )));
+                    }
+                    match surface.group_by_root_fn.get(&group.root_fn_id) {
+                        Some(found) if *found == group.id => {}
+                        Some(found) => {
+                            return Err(CompilerInvariantError::new(format!(
+                                "module `{}` body group `{}` root {:?} maps to {:?} instead of {:?}",
+                                module.key.render(),
+                                group.name,
+                                group.root_fn_id,
+                                found,
+                                group.id
+                            )));
+                        }
+                        None => {
+                            return Err(CompilerInvariantError::new(format!(
+                                "module `{}` body group `{}` missing root fn mapping for {:?}",
+                                module.key.render(),
+                                group.name,
+                                group.root_fn_id
+                            )));
+                        }
+                    }
+                    if group.owner_module != surface.owner_module {
+                        return Err(CompilerInvariantError::new(format!(
+                            "module `{}` body group `{}` owner `{}` does not match surface owner `{}`",
+                            module.key.render(),
+                            group.name,
+                            group.owner_module,
+                            surface.owner_module
+                        )));
+                    }
+                }
+                for group_id in module.lowered_groups.keys() {
+                    if !surface.groups.iter().any(|group| group.id == *group_id) {
+                        return Err(CompilerInvariantError::new(format!(
+                            "module `{}` lowered group {:?} has no body-surface descriptor",
+                            module.key.render(),
+                            group_id
+                        )));
+                    }
+                }
             }
             if module.state == ModuleState::MacroSurfaceReady && module.macro_surface.is_none() {
                 return Err(CompilerInvariantError::new(format!(
@@ -1177,6 +1407,8 @@ impl CompilerWorld {
             file_id,
             state: ModuleState::Discovered,
             reachability: Reachability::default(),
+            body_surface: None,
+            lowered_groups: HashMap::new(),
             interfaces: None,
             macro_exports: None,
             macro_surface: None,
@@ -1408,6 +1640,53 @@ fn collect_interfaces(parsed: &ParsedSource) -> BTreeMap<ModuleName, ModuleInter
                 struct_field_types: Default::default(),
             };
             collect_from_program(&program)
+        }
+    }
+}
+
+fn collect_body_surface(module: &ModuleRecord, parsed: &ParsedSource) -> ModuleBodySurface {
+    let owner_module = body_surface_owner_module(module);
+    let mut surface = ModuleBodySurface {
+        owner_module: owner_module.clone(),
+        ..ModuleBodySurface::default()
+    };
+    match parsed {
+        ParsedSource::Program(parsed) => {
+            collect_body_surface_items(&parsed.program.items, "", &owner_module, &mut surface)
+        }
+        ParsedSource::Prelude(parsed) => collect_body_surface_items(&parsed.items, "", &owner_module, &mut surface),
+    }
+    surface
+}
+
+fn body_surface_owner_module(module: &ModuleRecord) -> String {
+    match (&module.key, module.origin) {
+        (ModuleKey::RootPath(_), _) => String::new(),
+        (ModuleKey::Named(_), ModuleOrigin::PrimitivePrelude) => String::new(),
+        (ModuleKey::Named(name), _) => name.dotted(),
+    }
+}
+
+fn collect_body_surface_items(
+    items: &[Rc<Item>],
+    current_module: &str,
+    owner_module: &str,
+    surface: &mut ModuleBodySurface,
+) {
+    for item in items {
+        match &**item {
+            Item::Fn(def) if def.extern_abi.is_none() && !def.is_macro && current_module == owner_module => {
+                surface.register_source_group(current_module, Rc::new(def.clone()));
+            }
+            Item::Module(module) => {
+                let nested = if current_module.is_empty() {
+                    module.name.clone()
+                } else {
+                    format!("{current_module}.{}", module.name)
+                };
+                collect_body_surface_items(&module.items, &nested, owner_module, surface);
+            }
+            _ => {}
         }
     }
 }

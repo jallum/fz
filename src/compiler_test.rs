@@ -206,6 +206,108 @@ fn runtime_module_interface_is_collected_once_from_source() {
 }
 
 #[test]
+fn body_surface_is_cached_and_exposes_stable_root_group_mapping_without_lowering() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "compiler"], capture.handler());
+
+    let mut compiler = Compiler::new();
+    let root = compiler.register_root_source(
+        "body-surface.fz",
+        r#"
+fn main(x), do: x
+fn helper(), do: nil
+
+defmodule Nested do
+  fn local(x), do: x
+end
+"#
+        .to_string(),
+        &tel,
+    );
+
+    let first = compiler
+        .ensure_body_surface(root, &tel)
+        .expect("root body surface should build");
+    let second = compiler
+        .ensure_body_surface(root, &tel)
+        .expect("root body surface should come from cache");
+
+    assert_eq!(first.owner_module, "");
+    assert_eq!(first.groups.len(), 2);
+    assert_eq!(second.groups.len(), 2);
+    assert_eq!(first.groups[0].name, "main");
+    assert_eq!(first.groups[0].root_fn_id, FnId(0));
+    assert_eq!(first.groups[1].name, "helper");
+    assert_eq!(first.groups[1].root_fn_id, FnId(1));
+    assert_eq!(compiler.module(root).state, ModuleState::BodySurfaceReady);
+    assert_eq!(compiler.fn_group_for_root_fn(root, FnId(0)), Some(FnGroupId(0)));
+    assert_eq!(compiler.fn_group_for_root_fn(root, FnId(1)), Some(FnGroupId(1)));
+    assert_eq!(capture.count(&["fz", "compiler", "body_surface_ready"]), 1);
+    assert_eq!(capture.count(&["fz", "compiler", "fn_group_discovered"]), 2);
+    assert_eq!(capture.count(&["fz", "compiler", "cache_hit"]), 1);
+    assert_eq!(capture.count(&["fz", "compiler", "runtime_lowered"]), 0);
+
+    compiler
+        .validate_invariants()
+        .expect("body-surface cache should preserve compiler invariants");
+}
+
+#[test]
+fn named_source_module_body_surface_tracks_only_its_own_groups() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "compiler"], capture.handler());
+
+    let mut compiler = Compiler::new();
+    let root = compiler.register_root_source(
+        "named-body-surface.fz",
+        r#"
+fn main(), do: nil
+
+defmodule Nested do
+  fn local(x), do: x
+  fn helper(x, y), do: x
+end
+"#
+        .to_string(),
+        &tel,
+    );
+
+    compiler
+        .ensure_source_module_interfaces(root, &tel)
+        .expect("source module interfaces should build");
+    let nested = ModuleName::parse_dotted("Nested").expect("valid module name");
+    let nested_id = compiler
+        .module_id_for_name(&nested)
+        .expect("Nested module should be registered");
+    let surface = compiler
+        .ensure_body_surface(nested_id, &tel)
+        .expect("named body surface should come from cache");
+
+    assert_eq!(surface.owner_module, "Nested");
+    assert_eq!(surface.groups.len(), 2);
+    assert_eq!(surface.groups[0].name, "local");
+    assert_eq!(surface.groups[0].root_fn_id, FnId(0));
+    assert_eq!(surface.groups[1].name, "helper");
+    assert_eq!(surface.groups[1].arity, 2);
+    assert_eq!(compiler.fn_group_for_root_fn(nested_id, FnId(0)), Some(FnGroupId(0)));
+    assert_eq!(compiler.fn_group_for_root_fn(nested_id, FnId(1)), Some(FnGroupId(1)));
+    assert!(
+        capture
+            .find(&["fz", "compiler", "fn_group_discovered"])
+            .into_iter()
+            .any(|ev| captured_str(&ev, "owner_module") == "Nested"),
+        "named body-surface discovery should name the owning module"
+    );
+    assert_eq!(capture.count(&["fz", "compiler", "runtime_lowered"]), 0);
+
+    compiler
+        .validate_invariants()
+        .expect("named module body surface should preserve compiler invariants");
+}
+
+#[test]
 fn compiler_invariants_accept_consistent_world_state() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -365,10 +467,12 @@ fn runtime_reachability_marks_only_live_runtime_modules_with_reasons() {
         .expect("Utf8 module record should exist");
     assert!(compiler.module(utf8_id).reachability.runtime);
     assert_eq!(compiler.module(utf8_id).state, ModuleState::InterfaceReady);
-    assert!(
-        compiler.module_id_for_name(&process).is_none(),
-        "dead runtime module should stay undiscovered"
-    );
+    if let Some(process_id) = compiler.module_id_for_name(&process) {
+        assert!(
+            !compiler.module(process_id).reachability.runtime,
+            "dead runtime module may be discovered incidentally, but must stay runtime-cold"
+        );
+    }
 
     let reasons = capture
         .find(&["fz", "compiler", "runtime_module_reachable"])

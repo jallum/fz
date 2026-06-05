@@ -195,6 +195,16 @@ module through the world the way we intended?" before loader/resolver work lands
   `module_key`, `module_key_kind`, `module_origin`, `source_name`,
   `parse_kind`, `items`. This event should happen once per module/file unless
   invalidation is introduced later.
+- `fz.compiler.fn_group_discovered` — the compiler registered one executable
+  function-group descriptor for a module body surface without lowering the
+  group's IR yet. Measurements: `module_id`, `file_id`, `fn_group_id`,
+  `root_fn_id`, `arity`. Metadata: `module_key`, `module_key_kind`,
+  `module_origin`, `owner_module`, `fn_name`, `visibility`.
+- `fz.compiler.body_surface_ready` — the compiler collected the body-free
+  executable surface for one module: stable function-group descriptors and
+  root-fn ownership without emitted body IR. Measurements: `module_id`,
+  `file_id`. Metadata: `module_key`, `module_key_kind`, `module_origin`,
+  `owner_module`, `groups`, `parse_kind`.
 - `fz.compiler.interface_ready` — the compiler collected module interfaces from
   cached parsed source. Measurements: `module_id`, `file_id`. Metadata:
   `module_key`, `module_key_kind`, `module_origin`, `interfaces`,
