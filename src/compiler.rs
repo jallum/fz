@@ -11,7 +11,7 @@ use crate::ir_lower::{
     FnKey, LowerError, LoweringDemandResult, begin_compiler_lowering_session, collect_lowerable_fn_keys,
     select_initial_root_fn_keys,
 };
-use crate::modules::identity::{ExportKey, ModuleName};
+use crate::modules::identity::{ExportKey, Mfa, ModuleName};
 use crate::modules::interface::{ModuleInterface, collect_from_program};
 use crate::modules::runtime_library::{self, RUNTIME_MODULE_SOURCES, RUNTIME_PRELUDE_FZ};
 use crate::parser::Parser;
@@ -254,37 +254,7 @@ pub(crate) enum FnGroupInput {
     SourceFn(Rc<FnDef>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct SourceFnKey {
-    pub(crate) owner_module: String,
-    pub(crate) name: String,
-    pub(crate) arity: usize,
-}
-
-impl SourceFnKey {
-    pub(crate) fn new(owner_module: impl Into<String>, name: impl Into<String>, arity: usize) -> Self {
-        Self {
-            owner_module: owner_module.into(),
-            name: name.into(),
-            arity,
-        }
-    }
-
-    pub(crate) fn from_qualified(name: &str, arity: usize) -> Self {
-        match name.rsplit_once('.') {
-            Some((owner_module, local_name)) => Self::new(owner_module.to_string(), local_name.to_string(), arity),
-            None => Self::new(String::new(), name.to_string(), arity),
-        }
-    }
-
-    pub(crate) fn qualified_name(&self) -> String {
-        if self.owner_module.is_empty() {
-            self.name.clone()
-        } else {
-            format!("{}.{}", self.owner_module, self.name)
-        }
-    }
-}
+pub(crate) type SourceFnKey = Mfa;
 
 #[derive(Debug, Clone)]
 pub(crate) struct FnGroupDescriptor {
@@ -317,7 +287,15 @@ impl ModuleBodySurface {
     fn register_source_group(&mut self, owner_module: &str, def: Rc<FnDef>) {
         let group_id = FnGroupId(self.groups.len() as u32);
         let arity = def.clauses.first().map(|clause| clause.params.len()).unwrap_or(0);
-        let source = SourceFnKey::new(owner_module.to_string(), def.name.clone(), arity);
+        let source = if owner_module.is_empty() {
+            SourceFnKey::top_level(def.name.clone(), arity)
+        } else {
+            SourceFnKey::in_module(
+                ModuleName::parse_dotted(owner_module).expect("body-surface owner module must parse"),
+                def.name.clone(),
+                arity,
+            )
+        };
         self.groups.push(FnGroupDescriptor {
             id: group_id,
             source: source.clone(),
@@ -351,7 +329,7 @@ pub(crate) struct LoweredFnGroup {
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeReachabilitySeed {
     pub(crate) module: ModuleName,
-    pub(crate) entry: Option<(String, usize)>,
+    pub(crate) entry: Option<Mfa>,
     pub(crate) reason: &'static str,
     pub(crate) from_module: Option<ModuleName>,
 }
@@ -367,7 +345,7 @@ impl RuntimeReachabilitySeed {
     }
 
     pub(crate) fn with_entry(mut self, name: impl Into<String>, arity: usize) -> Self {
-        self.entry = Some((name.into(), arity));
+        self.entry = Some(Mfa::in_module(self.module.clone(), name, arity));
         self
     }
 }
@@ -382,7 +360,7 @@ pub(crate) struct ModuleRecord {
     pub(crate) reachability: Reachability,
     pub(crate) body_surface: Option<ModuleBodySurface>,
     pub(crate) lowered_groups: HashMap<SourceFnKey, LoweredFnGroup>,
-    pub(crate) runtime_entry_fns: HashSet<(String, usize)>,
+    pub(crate) runtime_entry_fns: HashSet<Mfa>,
     pub(crate) interfaces: Option<BTreeMap<ModuleName, ModuleInterface>>,
     pub(crate) macro_exports: Option<HashSet<(String, usize)>>,
     pub(crate) macro_surface: Option<ModuleMacroSurface>,
@@ -923,7 +901,7 @@ impl CompilerWorld {
                         module_key: record.key.render(),
                         module_key_kind: record.key.kind(),
                         module_origin: record.origin.kind(),
-                        owner_module: group.source.owner_module.clone(),
+                        owner_module: group.source.module_dotted(),
                         fn_name: group.qualified_name(),
                         visibility: if group.is_private { "private" } else { "public" },
                     },
@@ -1049,7 +1027,7 @@ impl CompilerWorld {
             .cloned()
     }
 
-    pub(crate) fn runtime_entry_fn_keys(&self, module_id: ModuleId) -> HashSet<(String, usize)> {
+    pub(crate) fn runtime_entry_fn_keys(&self, module_id: ModuleId) -> HashSet<Mfa> {
         self.modules[module_id.0 as usize].runtime_entry_fns.clone()
     }
 
@@ -1482,12 +1460,12 @@ impl CompilerWorld {
                             )));
                         }
                     }
-                    if !body_surface_group_belongs_to_surface(&surface.owner_module, &group.source.owner_module) {
+                    if !body_surface_group_belongs_to_surface(&surface.owner_module, &group.source.module_dotted()) {
                         return Err(CompilerInvariantError::new(format!(
                             "module `{}` body group `{}` owner `{}` does not match surface owner `{}`",
                             module.key.render(),
                             group.qualified_name(),
-                            group.source.owner_module,
+                            group.source.module_dotted(),
                             surface.owner_module
                         )));
                     }
@@ -1613,13 +1591,12 @@ impl CompilerWorld {
             }
             if module.state.covers(ModuleState::RuntimeLowered) {
                 for entry in &module.runtime_entry_fns {
-                    let source = SourceFnKey::from_qualified(&entry.0, entry.1);
-                    if !module.lowered_groups.contains_key(&source) {
+                    if !module.lowered_groups.contains_key(entry) {
                         return Err(CompilerInvariantError::new(format!(
                             "runtime module `{}` lowered without cached entry group `{}`/{}",
                             module.key.render(),
-                            source.qualified_name(),
-                            source.arity
+                            entry.qualified_name(),
+                            entry.arity
                         )));
                     }
                 }

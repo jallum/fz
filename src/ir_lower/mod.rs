@@ -55,7 +55,7 @@ use crate::ir_capture_norm::normalize_continuation_captures_with_telemetry;
 use crate::ir_codegen::compile_planned;
 #[cfg(test)]
 use crate::ir_planner::{collect_diagnostics, plan_module};
-use crate::modules::identity::ModuleName;
+use crate::modules::identity::{Mfa, ModuleName};
 #[cfg(test)]
 use crate::parser::Parser;
 #[cfg(test)]
@@ -545,7 +545,7 @@ pub(crate) fn compute_current_function_correspondence(
     }
 }
 
-pub(crate) type FnKey = (String, usize);
+pub(crate) type FnKey = Mfa;
 
 pub(crate) enum LoweringDemandResult<D, E> {
     Finished,
@@ -562,7 +562,7 @@ pub(crate) fn collect_lowerable_fn_keys(items: &[Rc<Item>]) -> HashSet<FnKey> {
         .iter()
         .filter_map(|item| match item.as_ref() {
             Item::Fn(fn_def) if fn_def.extern_abi.is_none() && !fn_def.is_macro => {
-                Some((fn_def.name.clone(), fn_arity(fn_def)))
+                Some(FnKey::from_qualified(&fn_def.name, fn_arity(fn_def)))
             }
             _ => None,
         })
@@ -574,7 +574,7 @@ pub(crate) fn collect_public_fn_keys(items: &[Rc<Item>]) -> HashSet<FnKey> {
         .iter()
         .filter_map(|item| match item.as_ref() {
             Item::Fn(fn_def) if fn_def.extern_abi.is_none() && !fn_def.is_macro && !fn_def.is_private => {
-                Some((fn_def.name.clone(), fn_arity(fn_def)))
+                Some(FnKey::from_qualified(&fn_def.name, fn_arity(fn_def)))
             }
             _ => None,
         })
@@ -590,7 +590,7 @@ pub(crate) fn select_entry_fn_keys(items: &[Rc<Item>]) -> HashSet<FnKey> {
                     && !fn_def.is_macro
                     && (fn_def.name == "main" || fn_def.name.starts_with(REPL_ENTRY_PREFIX)) =>
             {
-                Some((fn_def.name.clone(), fn_arity(fn_def)))
+                Some(FnKey::from_qualified(&fn_def.name, fn_arity(fn_def)))
             }
             _ => None,
         })
@@ -618,7 +618,7 @@ fn collect_lowerable_fn_defs(items: &[Rc<Item>]) -> HashMap<FnKey, Rc<FnDef>> {
         .iter()
         .filter_map(|item| match item.as_ref() {
             Item::Fn(fn_def) if fn_def.extern_abi.is_none() && !fn_def.is_macro => {
-                Some(((fn_def.name.clone(), fn_arity(fn_def)), Rc::new(fn_def.clone())))
+                Some((FnKey::from_qualified(&fn_def.name, fn_arity(fn_def)), Rc::new(fn_def.clone())))
             }
             _ => None,
         })
@@ -634,8 +634,8 @@ fn collect_source_fn_key_by_id(items: &[Rc<Item>], ctx: &LowerCtx) -> HashMap<Fn
         if fn_def.extern_abi.is_some() || fn_def.is_macro {
             continue;
         }
-        let key = (fn_def.name.clone(), fn_arity(fn_def));
-        let Some(&fn_id) = ctx.fns.get(&key) else {
+        let key = FnKey::from_qualified(&fn_def.name, fn_arity(fn_def));
+        let Some(&fn_id) = ctx.fns.get(&(key.qualified_name(), key.arity)) else {
             continue;
         };
         by_id.insert(fn_id, key);
@@ -937,7 +937,7 @@ fn lower_source_fn_group<T: Types<Ty = Ty>>(
             },
             &metadata! {
                 module_key: module_key.clone(),
-                owner_module: descriptor.source.owner_module.clone(),
+                owner_module: descriptor.source.module_dotted(),
                 fn_name: descriptor.qualified_name(),
             },
         );
@@ -955,7 +955,7 @@ fn lower_source_fn_group<T: Types<Ty = Ty>>(
         },
         &metadata! {
             module_key: module_key,
-            owner_module: descriptor.source.owner_module.clone(),
+            owner_module: descriptor.source.module_dotted(),
             fn_name: descriptor.qualified_name(),
         },
     );
@@ -1160,10 +1160,10 @@ impl CompilerLoweringSession {
     ) -> LoweringDemandResult<FnKey, LowerError> {
         let before_fn_count = self.ctx.mb.fn_count();
         if let Some(fn_def) = self.user_fn_defs.get(fn_key) {
-            let arity = fn_key.1;
+            let arity = fn_key.arity;
             if let Some(root_source) = self.root_source
                 && let Some(descriptor) = compiler
-                    .source_fn_group_descriptor(root_source, &fn_def.name, arity, tel)
+                    .source_fn_group_descriptor(root_source, &fn_key.qualified_name(), arity, tel)
                     .expect("compiler source group lookup should succeed after parse")
             {
                 if let Err(err) =
@@ -1192,7 +1192,7 @@ impl CompilerLoweringSession {
         if let Some(root_source) = self.root_source {
             for requested_key in &requested {
                 if let Some(descriptor) = compiler
-                    .source_fn_group_descriptor(root_source, &requested_key.0, requested_key.1, tel)
+                    .source_fn_group_descriptor(root_source, &requested_key.qualified_name(), requested_key.arity, tel)
                     .expect("compiler source group lookup should succeed after parse")
                 {
                     tel.execute(
@@ -1203,7 +1203,7 @@ impl CompilerLoweringSession {
                         },
                         &metadata! {
                             module_key: compiler.module_key_render(root_source),
-                            owner_module: descriptor.source.owner_module.clone(),
+                            owner_module: descriptor.source.module_dotted(),
                             fn_name: descriptor.qualified_name(),
                         },
                     );

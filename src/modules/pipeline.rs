@@ -405,10 +405,9 @@ impl CompilerWorld {
             let ModuleKey::Named(owner_module) = self.module(owner_module_id).key.clone() else {
                 continue;
             };
-            let entry = format!("{}.{}", target.module.dotted(), target.name);
             seeds.push(
                 RuntimeReachabilitySeed::new(owner_module, "planned_external_target", None)
-                    .with_entry(entry, target.arity),
+                    .with_entry(target.name.clone(), target.arity),
             );
         }
         Ok(seeds)
