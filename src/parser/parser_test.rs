@@ -5,7 +5,7 @@ mod do_block_sugar_tests {
     use super::*;
     use crate::parser::lexer::Lexer;
     use Attribute::{Doc, Spec};
-    use BinOp::And;
+    use BinOp::{And, Or};
 
     fn parse_fn_body(src: &str) -> Expr {
         let wrapped = format!("fn _t() do {} end", src);
@@ -579,11 +579,31 @@ fn spawn(fun, opts), do: fun.()
     }
 
     #[test]
-    fn double_ampersand_is_still_andand() {
-        // Defensive: adding bare `&` to the lexer must not break `&&`.
-        let e = parse_fn_body("true && false");
-        let Expr::BinOp(op, _, _) = e else { panic!() };
+    fn and_or_keywords_parse_as_boolean_binops() {
+        // fz uses Elixir's `and`/`or`, not C-style `&&`/`||`.
+        let Expr::BinOp(op, _, _) = parse_fn_body("true and false") else {
+            panic!()
+        };
         assert!(matches!(op, And));
+        let Expr::BinOp(op, _, _) = parse_fn_body("true or false") else {
+            panic!()
+        };
+        assert!(matches!(op, Or));
+    }
+
+    #[test]
+    fn c_style_boolean_operators_are_lex_errors() {
+        // `&&`/`||`/`!` were removed in favour of `and`/`or`/`not`; the lexer
+        // rejects them with a migration hint. Bare `&` (fn-ref) still lexes.
+        for src in ["true && false", "true || false", "!true"] {
+            let err = Lexer::new(src).tokenize().expect_err("should reject C-style op");
+            assert!(
+                err.msg.contains("use `and`") || err.msg.contains("use `or`") || err.msg.contains("use `not`"),
+                "msg={}",
+                err.msg
+            );
+        }
+        assert!(Lexer::new("apply(&foo/1, 7)").tokenize().is_ok());
     }
 
     #[test]

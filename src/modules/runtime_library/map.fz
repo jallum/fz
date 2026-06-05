@@ -51,7 +51,7 @@ defmodule Map do
     if index >= count do
       false
     else
-      if fz_map_entry_key(map, index) == key && fz_map_entry_value(map, index) == value do
+      if fz_map_entry_key(map, index) == key and fz_map_entry_value(map, index) == value do
         true
       else
         member_pair?(map, count, index + 1, key, value)
