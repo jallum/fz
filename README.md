@@ -625,6 +625,47 @@ highlighting and editor defaults. It is TextMate-based only for now: no
 language server, no diagnostics, just file association and a grammar tuned
 to the language surface.
 
+## Papers that shaped fz
+
+fz didn't invent its good ideas — it borrowed them from people who worked
+them out properly. The ones that left the deepest marks:
+
+- **Luc Maranget, _Compiling Pattern Matching to Good Decision Trees_**
+  (ML '08). The "one tiny sorting machine" behind every match in the
+  language — the constant-time decision tree that asks yes/no questions
+  about shape and destructures shared structure exactly once — is this
+  paper.
+  [pdf](http://moscova.inria.fr/~maranget/papers/ml05e-maranget.pdf)
+
+- **Alex Reinking, Ningning Xie, Leonardo de Moura & Daan Leijen,
+  _Perceus: Garbage Free Reference Counting with Reuse_** (PLDI '21).
+  The "garbage-free, reuse cells you can prove are private" goal behind
+  owned-cons reuse. Perceus reaches it with runtime reference counts;
+  fz chases the same near-zero-allocation profile but proves privacy
+  statically and pays a single alias bit instead.
+  [pdf](https://xnning.github.io/papers/perceus.pdf)
+
+- **Anton Lorenzen, Daan Leijen & Wouter Swierstra, _FP²: Fully in-Place
+  Functional Programming_** (ICFP '23). The discipline that says when
+  ordinary functional code can run with no allocation at all — the lens
+  we use on destination planning today, and the basis for the planned
+  FBIP tensor type.
+  [pdf](https://www.microsoft.com/en-us/research/wp-content/uploads/2023/05/fbip.pdf)
+
+- **Giuseppe Castagna, _Programming with Union, Intersection, and
+  Negation Types_** (2022). The semantic-subtyping theory the
+  set-theoretic type system stands on — unions, intersections,
+  negations, and the precise typing of branching and pattern matching.
+  [pdf](https://www.irif.fr/~gc/papers/set-theoretic-types-2022.pdf)
+
+- **Giuseppe Castagna, Guillaume Duboc & José Valim, _The Design
+  Principles of the Elixir Type System_** (Programming, 2024). The
+  Castagna line — referenced above — applied directly to the
+  Elixir/Erlang family: function domains tied to arity, guard analysis,
+  unified records and dictionaries, and the dynamic type. fz reads like
+  Elixir and types like this.
+  [pdf](https://arxiv.org/pdf/2306.06391)
+
 ## A note on the name
 
 The name is two keystrokes. The project needed to be called something.
