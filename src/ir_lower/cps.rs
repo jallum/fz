@@ -65,13 +65,14 @@ pub(crate) struct OwnedConsCapture {
 /// and record the span for diagnostics. The builder is created lazily by
 /// `switch_to_cont_fn`.
 pub(crate) fn mint_cont_fn(ctx: &mut LowerCtx, name: impl Into<String>, span: Span, category: FnCategory) -> ContFn {
-    let id = ctx.mb.fresh_fn_id();
+    let name = name.into();
+    let id = ctx.fresh_generated_function(FunctionKind::Continuation, name.clone());
     ctx.fn_spans.insert(id, span);
     let outer_captured = ctx.visible_locals();
     let owned_cons_captures = owned_cons_captures_for_visible_locals(ctx, &outer_captured);
     ContFn {
         id,
-        name: name.into(),
+        name,
         outer_captured,
         span,
         category,
@@ -293,7 +294,7 @@ pub(crate) fn cps_split_call_closure(
     let captured = ctx.visible_locals();
     let owned_cons_captures = owned_cons_captures_for_visible_locals(ctx, &captured);
     let captured_vars = capture_call_args(&captured, &owned_cons_captures);
-    let cont_id = ctx.mb.fresh_fn_id();
+    let cont_id = ctx.fresh_generated_function(FunctionKind::Continuation, "k");
     let caller = ctx.cur_fn_id.expect("cps_split_call_closure: missing current fn id");
 
     ctx.set_term_at(
@@ -340,7 +341,7 @@ pub(crate) fn cps_split_call(
     let captured = ctx.visible_locals();
     let owned_cons_captures = owned_cons_captures_for_visible_locals(ctx, &captured);
     let captured_vars = capture_call_args(&captured, &owned_cons_captures);
-    let cont_id = ctx.mb.fresh_fn_id();
+    let cont_id = ctx.fresh_generated_function(FunctionKind::Continuation, "k");
     let caller = ctx.cur_fn_id.expect("cps_split_call: missing current fn id");
 
     // Terminate current block with the call.
@@ -388,7 +389,7 @@ pub(crate) fn cps_split_external_call(
 ) -> Result<Var, LowerError> {
     let captured = ctx.visible_locals();
     let captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
-    let cont_id = ctx.mb.fresh_fn_id();
+    let cont_id = ctx.fresh_generated_function(FunctionKind::Continuation, "k");
 
     ctx.set_external_direct_term_at(
         Term::Call {

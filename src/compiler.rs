@@ -5,8 +5,13 @@
 
 use crate::ast::{Attribute, FnDef, Item, ModuleDef, Program, ProtocolImplDef};
 use crate::diag::{Diagnostic, SourceMap, Span};
-use crate::frontend::resolve::{InterfaceTable, flatten_modules_with_compiler, flatten_modules_with_compiler_interface_table};
-use crate::frontend::{FrontendErr, FrontendOk, FrontendResult, apply_planned_direct_call_targets, check_frontend_from_entry_fns, macros, resolve};
+use crate::frontend::resolve::{
+    InterfaceTable, flatten_modules_with_compiler, flatten_modules_with_compiler_interface_table,
+};
+use crate::frontend::{
+    FrontendErr, FrontendOk, FrontendResult, apply_planned_direct_call_targets, check_frontend_from_entry_fns, macros,
+    resolve,
+};
 use crate::fz_ir::{BlockId, ExternDecl, ExternId, ExternalCallEdge, FnId, FnIr, ProtocolCallTarget, Var};
 use crate::ir_lower::{
     FnKey, LowerError, LoweringDemandResult, begin_compiler_lowering_session, collect_lowerable_fn_keys,
@@ -251,6 +256,82 @@ pub(crate) struct ModuleMacroSurface {
     pub(crate) program: Program,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct AnonymousFunctionId(pub u32);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum FunctionKey {
+    Named(Mfa),
+    Anonymous(AnonymousFunctionId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum FunctionKind {
+    Source,
+    Continuation,
+    Lambda,
+    ExternWrapper,
+    ExternalStub,
+    ImportedFnValueWrapper,
+    ProtocolStub,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FunctionRecord {
+    pub(crate) id: FnId,
+    pub(crate) owner_module_id: ModuleId,
+    pub(crate) key: FunctionKey,
+    pub(crate) kind: FunctionKind,
+    pub(crate) debug_name: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LoweringFunctionRegistry {
+    next_fn_id: u32,
+    next_anonymous_id: u32,
+    named_fn_ids: HashMap<Mfa, FnId>,
+    new_records: Vec<FunctionRecord>,
+}
+
+impl LoweringFunctionRegistry {
+    pub(crate) fn reserve_named(&mut self, owner_module_id: ModuleId, mfa: Mfa, debug_name: impl Into<String>) -> FnId {
+        if let Some(existing) = self.named_fn_ids.get(&mfa).copied() {
+            return existing;
+        }
+        let id = FnId(self.next_fn_id);
+        self.next_fn_id += 1;
+        self.named_fn_ids.insert(mfa.clone(), id);
+        self.new_records.push(FunctionRecord {
+            id,
+            owner_module_id,
+            key: FunctionKey::Named(mfa),
+            kind: FunctionKind::Source,
+            debug_name: debug_name.into(),
+        });
+        id
+    }
+
+    pub(crate) fn fresh_anonymous(
+        &mut self,
+        owner_module_id: ModuleId,
+        kind: FunctionKind,
+        debug_name: impl Into<String>,
+    ) -> FnId {
+        let id = FnId(self.next_fn_id);
+        self.next_fn_id += 1;
+        let anonymous_id = AnonymousFunctionId(self.next_anonymous_id);
+        self.next_anonymous_id += 1;
+        self.new_records.push(FunctionRecord {
+            id,
+            owner_module_id,
+            key: FunctionKey::Anonymous(anonymous_id),
+            kind,
+            debug_name: debug_name.into(),
+        });
+        id
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum FnGroupInput {
     SourceFn(Rc<FnDef>),
@@ -407,8 +488,11 @@ impl Error for CompilerInvariantError {}
 pub(crate) struct CompilerWorld {
     modules: Vec<ModuleRecord>,
     files: Vec<FileRecord>,
+    functions: Vec<FunctionRecord>,
     module_index: BTreeMap<ModuleKey, ModuleId>,
     file_index: BTreeMap<FileOrigin, FileId>,
+    named_function_ids: HashMap<Mfa, FnId>,
+    next_anonymous_function_id: u32,
 }
 
 pub(crate) struct Compiler {
@@ -421,8 +505,11 @@ impl CompilerWorld {
         Self {
             modules: Vec::new(),
             files: Vec::new(),
+            functions: Vec::new(),
             module_index: BTreeMap::new(),
             file_index: BTreeMap::new(),
+            named_function_ids: HashMap::new(),
+            next_anonymous_function_id: 0,
         }
     }
 
@@ -434,12 +521,20 @@ impl CompilerWorld {
         self.files.len()
     }
 
+    pub(crate) fn function_count(&self) -> usize {
+        self.functions.len()
+    }
+
     pub(crate) fn module(&self, id: ModuleId) -> &ModuleRecord {
         &self.modules[id.0 as usize]
     }
 
     pub(crate) fn file(&self, id: FileId) -> &FileRecord {
         &self.files[id.0 as usize]
+    }
+
+    pub(crate) fn function(&self, id: FnId) -> &FunctionRecord {
+        &self.functions[id.0 as usize]
     }
 
     pub(crate) fn module_key_render(&self, id: ModuleId) -> String {
@@ -461,6 +556,38 @@ impl CompilerWorld {
         } else {
             format!("{owner}.{}", key.function_name)
         }
+    }
+
+    pub(crate) fn begin_lowering_function_registry(&self) -> LoweringFunctionRegistry {
+        LoweringFunctionRegistry {
+            next_fn_id: self.functions.len() as u32,
+            next_anonymous_id: self.next_anonymous_function_id,
+            named_fn_ids: self.named_function_ids.clone(),
+            new_records: Vec::new(),
+        }
+    }
+
+    pub(crate) fn commit_lowering_function_registry(&mut self, registry: LoweringFunctionRegistry) {
+        let expected_start = self.functions.len() as u32;
+        for (offset, record) in registry.new_records.iter().enumerate() {
+            let expected = FnId(expected_start + offset as u32);
+            assert_eq!(
+                record.id, expected,
+                "compiler function registry must append contiguous ids; expected {:?}, got {:?}",
+                expected, record.id
+            );
+        }
+        for record in &registry.new_records {
+            if let FunctionKey::Named(mfa) = &record.key {
+                self.named_function_ids.insert(mfa.clone(), record.id);
+            }
+        }
+        self.next_anonymous_function_id = registry.next_anonymous_id;
+        self.functions.extend(registry.new_records);
+    }
+
+    pub(crate) fn fn_id_for_mfa(&self, mfa: &Mfa) -> Option<FnId> {
+        self.named_function_ids.get(mfa).copied()
     }
 
     pub(crate) fn source_fn_key_for_qualified_name(
@@ -526,7 +653,7 @@ impl CompilerWorld {
                 LoweringDemandResult::Fatal(err) => return Err(err),
             }
         }
-        session.finish(t, prog, tel)
+        session.finish(self, t, prog, tel)
     }
 
     pub(crate) fn compile_program_from_roots<T>(
@@ -643,12 +770,20 @@ impl Compiler {
         self.world.file_count()
     }
 
+    pub(crate) fn function_count(&self) -> usize {
+        self.world.function_count()
+    }
+
     pub(crate) fn module(&self, id: ModuleId) -> &ModuleRecord {
         self.world.module(id)
     }
 
     pub(crate) fn file(&self, id: FileId) -> &FileRecord {
         self.world.file(id)
+    }
+
+    pub(crate) fn function(&self, id: FnId) -> &FunctionRecord {
+        self.world.function(id)
     }
 
     pub(crate) fn register_root_source(
@@ -670,6 +805,10 @@ impl Compiler {
 
     pub(crate) fn module_id_for_name(&self, module: &ModuleName) -> Option<ModuleId> {
         self.world.module_id_for_name(module)
+    }
+
+    pub(crate) fn fn_id_for_mfa(&self, mfa: &Mfa) -> Option<FnId> {
+        self.world.fn_id_for_mfa(mfa)
     }
 
     pub(crate) fn ensure_source(&mut self, module_id: ModuleId, tel: &dyn Telemetry) -> Arc<str> {
@@ -823,7 +962,11 @@ impl Compiler {
     }
 }
 
-fn planner_entry_fns(compiler: &CompilerWorld, lowering_root_source: Option<ModuleId>, module: &crate::fz_ir::Module) -> Vec<FnId> {
+fn planner_entry_fns(
+    compiler: &CompilerWorld,
+    lowering_root_source: Option<ModuleId>,
+    module: &crate::fz_ir::Module,
+) -> Vec<FnId> {
     let Some(root_source) = lowering_root_source else {
         return Vec::new();
     };
@@ -834,16 +977,10 @@ fn planner_entry_fns(compiler: &CompilerWorld, lowering_root_source: Option<Modu
     if entry_keys.is_empty() {
         return Vec::new();
     }
-    module
-        .fns
-        .iter()
-        .filter(|fn_ir| {
-            compiler
-                .source_fn_key_for_qualified_name(root_source, &fn_ir.name, fn_ir.block(fn_ir.entry).params.len())
-                .ok()
-                .is_some_and(|mfa| entry_keys.contains(&mfa))
-        })
-        .map(|fn_ir| fn_ir.id)
+    entry_keys
+        .into_iter()
+        .filter_map(|mfa| compiler.fn_id_for_mfa(&mfa))
+        .filter(|fn_id| module.fn_idx.contains_key(fn_id))
         .collect()
 }
 
@@ -1597,6 +1734,47 @@ impl CompilerWorld {
                     "file `{}` loaded empty source unexpectedly",
                     file.origin.render()
                 )));
+            }
+        }
+
+        for (idx, function) in self.functions.iter().enumerate() {
+            let expected = FnId(idx as u32);
+            if function.id != expected {
+                return Err(CompilerInvariantError::new(format!(
+                    "function table invariant violated at index {idx}: stored {:?}, expected {:?}",
+                    function.id, expected
+                )));
+            }
+            if function.owner_module_id.0 as usize >= self.modules.len() {
+                return Err(CompilerInvariantError::new(format!(
+                    "function {:?} references missing owner module {:?}",
+                    function.id, function.owner_module_id
+                )));
+            }
+            if let FunctionKey::Named(mfa) = &function.key {
+                if mfa.module_id != function.owner_module_id {
+                    return Err(CompilerInvariantError::new(format!(
+                        "named function {:?} owner {:?} does not match MFA owner {:?}",
+                        function.id, function.owner_module_id, mfa.module_id
+                    )));
+                }
+                match self.named_function_ids.get(mfa) {
+                    Some(found) if *found == function.id => {}
+                    Some(found) => {
+                        return Err(CompilerInvariantError::new(format!(
+                            "named function `{}` maps to {:?} instead of {:?}",
+                            self.render_mfa(mfa),
+                            found,
+                            function.id
+                        )));
+                    }
+                    None => {
+                        return Err(CompilerInvariantError::new(format!(
+                            "named function `{}` missing index entry",
+                            self.render_mfa(mfa)
+                        )));
+                    }
+                }
             }
         }
 

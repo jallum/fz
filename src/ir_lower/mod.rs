@@ -30,7 +30,9 @@
 #[cfg(test)]
 use crate::ast::MatchClause;
 use crate::ast::{Attribute, Expr, FnDef, Item, Program, Spanned};
-use crate::compiler::{Compiler, CompilerWorld, FnGroupDescriptor, LoweredFnGroup, ModuleId};
+use crate::compiler::{
+    Compiler, CompilerWorld, FnGroupDescriptor, FunctionKind, LoweredFnGroup, LoweringFunctionRegistry, ModuleId,
+};
 use crate::diag::Span;
 #[cfg(test)]
 use crate::diag::{codes, emit_through};
@@ -759,48 +761,6 @@ fn discover_requested_source_fn_keys(
     requested
 }
 
-fn reserve_cached_source_fn_ids(
-    compiler: &mut CompilerWorld,
-    root_source: ModuleId,
-    items: &[Rc<Item>],
-    ctx: &mut LowerCtx,
-    tel: &dyn Telemetry,
-) {
-    let mut next_reserved_fn = Some(ctx.mb.next_fn_id());
-    let mut next_reserved_extern = None;
-    for item in items {
-        let Item::Fn(fn_def) = item.as_ref() else {
-            continue;
-        };
-        if fn_def.extern_abi.is_some() || fn_def.is_macro {
-            continue;
-        }
-        let Some(descriptor) = compiler
-            .source_fn_group_descriptor(root_source, &fn_def.name, fn_arity(fn_def), tel)
-            .expect("compiler source group lookup should succeed after parse")
-        else {
-            continue;
-        };
-        let Some(group) = compiler.lowered_group(root_source, &descriptor.source) else {
-            continue;
-        };
-        let Some(max_fn_id) = group.function_ids.iter().map(|id| id.0).max() else {
-            continue;
-        };
-        next_reserved_fn = Some(next_reserved_fn.map_or(max_fn_id + 1, |current: u32| current.max(max_fn_id + 1)));
-        if let Some(max_extern_id) = group.extern_decls.iter().map(|decl| decl.id.0).max() {
-            next_reserved_extern =
-                Some(next_reserved_extern.map_or(max_extern_id + 1, |current: u32| current.max(max_extern_id + 1)));
-        }
-    }
-    if let Some(next_reserved_fn) = next_reserved_fn {
-        ctx.mb.advance_next_fn_to(next_reserved_fn);
-    }
-    if let Some(next_reserved_extern) = next_reserved_extern {
-        ctx.next_extern = ctx.next_extern.max(next_reserved_extern);
-    }
-}
-
 fn assign_compiler_source_root_fn_ids(
     compiler: &mut CompilerWorld,
     root_source: ModuleId,
@@ -816,7 +776,7 @@ fn assign_compiler_source_root_fn_ids(
             continue;
         }
         let arity = fn_arity(fn_def);
-        let Some(_) = compiler
+        let Some(descriptor) = compiler
             .source_fn_group_descriptor(root_source, &fn_def.name, arity, tel)
             .map_err(|diagnostic| LowerError::Unsupported {
                 span: fn_def.span,
@@ -825,7 +785,11 @@ fn assign_compiler_source_root_fn_ids(
         else {
             continue;
         };
-        let id = ctx.mb.fresh_fn_id();
+        let id = ctx.reserve_named_function(
+            descriptor.source.module_id,
+            descriptor.source.clone(),
+            fn_def.name.clone(),
+        );
         ctx.fns.insert((fn_def.name.clone(), arity), id);
         if fn_def.attrs.iter().any(|a| matches!(a, Attribute::Spec(_))) {
             ctx.boundary_fns.insert(id);
@@ -1023,7 +987,7 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
     prog: &Program,
     tel: &dyn Telemetry,
 ) -> Result<CompilerLoweringSession, LowerError> {
-    let mut ctx = LowerCtx::new();
+    let mut ctx = LowerCtx::new(compiler.begin_lowering_function_registry());
     ctx.struct_schemas.extend(
         prog.structs
             .iter()
@@ -1102,7 +1066,11 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
                 ctx.externs.insert(fn_def.name.clone(), eid);
             } else {
                 let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
-                let id = ctx.mb.fresh_fn_id();
+                let id = ctx.reserve_named_function(
+                    prelude_id,
+                    Mfa::new(prelude_id, fn_def.name.clone(), arity),
+                    fn_def.name.clone(),
+                );
                 ctx.fns.insert((fn_def.name.clone(), arity), id);
                 ctx.prelude_fn_ids.insert(id);
             }
@@ -1137,7 +1105,25 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
                     ctx.externs.insert(fn_def.name.clone(), eid);
                 } else if !ctx.fns.contains_key(&(fn_def.name.clone(), fn_arity(fn_def))) {
                     let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
-                    let id = ctx.mb.fresh_fn_id();
+                    let module_id = if fn_def.name.contains('.') {
+                        compiler
+                            .source_fn_key_for_qualified_name(
+                                root_source.unwrap_or(user_key_module),
+                                &fn_def.name,
+                                arity,
+                            )
+                            .unwrap_or_else(|_| {
+                                Mfa::new(root_source.unwrap_or(user_key_module), fn_def.name.clone(), arity)
+                            })
+                            .module_id
+                    } else {
+                        root_source.unwrap_or(user_key_module)
+                    };
+                    let id = ctx.reserve_named_function(
+                        module_id,
+                        Mfa::new(module_id, fn_def.name.clone(), arity),
+                        fn_def.name.clone(),
+                    );
                     ctx.fns.insert((fn_def.name.clone(), arity), id);
                     if fn_def.attrs.iter().any(|a| matches!(a, Attribute::Spec(_))) {
                         ctx.boundary_fns.insert(id);
@@ -1177,10 +1163,6 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
             }
         }
     }
-    if let Some(root_source) = root_source {
-        reserve_cached_source_fn_ids(compiler, root_source, user_items, &mut ctx, tel);
-    }
-
     let fn_key_by_id = collect_source_fn_key_by_id(compiler, user_key_module, &all_items, &ctx);
     Ok(CompilerLoweringSession {
         root_source,
@@ -1204,6 +1186,7 @@ impl CompilerLoweringSession {
     ) -> LoweringDemandResult<FnKey, LowerError> {
         let before_fn_count = self.ctx.mb.fn_count();
         if let Some(fn_def) = self.user_fn_defs.get(fn_key) {
+            self.ctx.current_owner_module_id = fn_key.module_id;
             if let Some(root_source) = self.root_source
                 && let Some(descriptor) = compiler
                     .source_fn_group_descriptor_for_key(root_source, fn_key, tel)
@@ -1218,6 +1201,7 @@ impl CompilerLoweringSession {
                 return LoweringDemandResult::Fatal(err);
             }
         } else if let Some(fn_def) = self.prelude_fn_defs.get(fn_key) {
+            self.ctx.current_owner_module_id = fn_key.module_id;
             if let Err(err) = lower_fn(&mut self.ctx, t, fn_def, FnCategory::Prelude) {
                 return LoweringDemandResult::Fatal(err);
             }
@@ -1263,10 +1247,16 @@ impl CompilerLoweringSession {
 
     pub(crate) fn finish<T: Types<Ty = Ty>>(
         mut self,
+        compiler: &mut CompilerWorld,
         t: &mut T,
         prog: &Program,
         tel: &dyn Telemetry,
     ) -> Result<Module, LowerError> {
+        let function_registry = std::mem::replace(
+            &mut self.ctx.function_registry,
+            compiler.begin_lowering_function_registry(),
+        );
+        compiler.commit_lowering_function_registry(function_registry);
         let mb = take(&mut self.ctx.mb);
         let mut module = mb.build();
         module.protocol_registry = prog.protocol_registry.clone();

@@ -22,7 +22,8 @@ pub(crate) fn lower_lambda<T: Types<Ty = Ty>>(
     let captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
 
     // Mint a fresh fn for the lambda.
-    let lam_id = ctx.mb.fresh_fn_id();
+    let lam_name = "lambda";
+    let lam_id = ctx.fresh_generated_function(FunctionKind::Lambda, lam_name);
 
     // Save current state and switch to building the lambda fn.
     let saved_cur = ctx.cur.take();

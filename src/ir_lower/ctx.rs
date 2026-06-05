@@ -31,6 +31,7 @@ pub struct LowerCtx {
     /// builder.
     pub(super) cur_fn_id: Option<FnId>,
     pub(super) current_owner_module: String,
+    pub(super) current_owner_module_id: ModuleId,
     /// Currently-active block within `cur`.
     pub(super) cur_block: Option<BlockId>,
     /// Locals env: source name -> IR Var.
@@ -95,10 +96,11 @@ pub struct LowerCtx {
     pub(super) protocol_stubs: HashMap<(String, usize), FnId>,
     pub(super) struct_schemas: BTreeMap<String, Vec<String>>,
     pub(super) continuation_provenance: HashMap<FnId, ContinuationProvenance>,
+    pub(super) function_registry: LoweringFunctionRegistry,
 }
 
 impl LowerCtx {
-    pub fn new() -> Self {
+    pub fn new(function_registry: LoweringFunctionRegistry) -> Self {
         Self {
             atoms: AtomTable::default(),
             externs: ExternTable::new(),
@@ -109,6 +111,7 @@ impl LowerCtx {
             cur: None,
             cur_fn_id: None,
             current_owner_module: String::new(),
+            current_owner_module_id: ModuleId(u32::MAX),
             cur_block: None,
             env: HashMap::new(),
             env_order: Vec::new(),
@@ -133,7 +136,27 @@ impl LowerCtx {
             protocol_stubs: HashMap::new(),
             struct_schemas: Default::default(),
             continuation_provenance: HashMap::new(),
+            function_registry,
         }
+    }
+
+    pub(super) fn reserve_named_function(
+        &mut self,
+        owner_module_id: ModuleId,
+        mfa: Mfa,
+        debug_name: impl Into<String>,
+    ) -> FnId {
+        let id = self.function_registry.reserve_named(owner_module_id, mfa, debug_name);
+        self.mb.advance_next_fn_to(id.0 + 1);
+        id
+    }
+
+    pub(super) fn fresh_generated_function(&mut self, kind: FunctionKind, debug_name: impl Into<String>) -> FnId {
+        let id = self
+            .function_registry
+            .fresh_anonymous(self.current_owner_module_id, kind, debug_name);
+        self.mb.advance_next_fn_to(id.0 + 1);
+        id
     }
 
     pub(super) fn record_continuation_provenance(&mut self, continuation: FnId, provenance: ContinuationProvenance) {
@@ -216,8 +239,9 @@ impl LowerCtx {
         if let Some(fn_id) = self.protocol_stubs.get(&key).copied() {
             return Some(fn_id);
         }
-        let fn_id = self.mb.fresh_fn_id();
-        let mut stub = FnBuilder::new(fn_id, format!("__protocol__.{}", name));
+        let stub_name = format!("__protocol__.{}", name);
+        let fn_id = self.fresh_generated_function(FunctionKind::ProtocolStub, stub_name.clone());
+        let mut stub = FnBuilder::new(fn_id, stub_name);
         let params = (0..arity).map(|_| stub.fresh_var()).collect::<Vec<_>>();
         let entry = stub.block(params);
         let atom = self.atoms.intern("protocol_dispatch_unplanned");
@@ -239,8 +263,9 @@ impl LowerCtx {
         if let Some(fn_id) = self.external_stubs.get(&target) {
             return *fn_id;
         }
-        let fn_id = self.mb.fresh_fn_id();
-        let mut stub = FnBuilder::new(fn_id, format!("__external__.{}", target)).with_category(FnCategory::User);
+        let stub_name = format!("__external__.{}", target);
+        let fn_id = self.fresh_generated_function(FunctionKind::ExternalStub, stub_name.clone());
+        let mut stub = FnBuilder::new(fn_id, stub_name).with_category(FnCategory::User);
         let params = (0..arity).map(|_| stub.fresh_var()).collect::<Vec<_>>();
         let entry = stub.block(params);
         let atom = self.atoms.intern("external_module_unlinked");
@@ -256,8 +281,8 @@ impl LowerCtx {
             return *fn_id;
         }
         let callee = self.ensure_external_stub(target.clone(), target.arity);
-        let fn_id = self.mb.fresh_fn_id();
         let wrapper_name = format!("__import_wrap__.{}.{}__{}", target.module, target.name, target.arity);
+        let fn_id = self.fresh_generated_function(FunctionKind::ImportedFnValueWrapper, wrapper_name.clone());
         let mut wrapper = FnBuilder::new(fn_id, wrapper_name)
             .with_category(FnCategory::User)
             .with_owner_module(self.current_owner_module.clone());
@@ -312,10 +337,10 @@ impl LowerCtx {
             .find(|d| d.id == eid)
             .expect("ensure_extern_wrapper: eid not in extern_decls")
             .clone();
-        let id = self.mb.fresh_fn_id();
         // Name carries the fz-visible name verbatim (with `::` if any) so
         // dumps render `&libc::close/1` recognisably.
         let name = format!("__extern_wrap__{}", decl.fz_name);
+        let id = self.fresh_generated_function(FunctionKind::ExternWrapper, name.clone());
         let mut tb = FnBuilder::new(id, name)
             .with_category(FnCategory::Prelude)
             .with_owner_module(self.current_owner_module.clone());
@@ -475,6 +500,6 @@ impl LowerCtx {
 
 impl Default for LowerCtx {
     fn default() -> Self {
-        Self::new()
+        Self::new(LoweringFunctionRegistry::default())
     }
 }

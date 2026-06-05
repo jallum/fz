@@ -1,9 +1,9 @@
 use super::*;
-use crate::compiler::{Compiler, ModuleOrigin, ModuleState};
+use crate::compiler::{Compiler, FunctionKey, FunctionKind, ModuleOrigin, ModuleState};
 use crate::diag::codes;
 use crate::diag::diagnostic::Severity;
-use crate::fz_ir::{FnCategory, Term};
-use crate::modules::identity::{ExportKey, ModuleName};
+use crate::fz_ir::{FnCategory, FnId, Term};
+use crate::modules::identity::{ExportKey, Mfa, ModuleId, ModuleName};
 use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn, InterfaceSpec, ModuleInterface};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Event, EventKind, Handler, Value};
 use std::cell::RefCell;
@@ -298,6 +298,64 @@ fn main(), do: helper(41)
     compiler
         .validate_invariants()
         .expect("fn-group cache should leave compiler world consistent");
+
+    let root_module_id = ModuleId(0);
+    let main_id = compiler
+        .fn_id_for_mfa(&Mfa::new(root_module_id, "main", 0))
+        .expect("main should have a compiler-owned named function entry");
+    let helper_id = compiler
+        .fn_id_for_mfa(&Mfa::new(root_module_id, "helper", 1))
+        .expect("helper should have a compiler-owned named function entry");
+    assert_eq!(compiler.function(main_id).kind, FunctionKind::Source);
+    assert_eq!(compiler.function(helper_id).kind, FunctionKind::Source);
+}
+
+#[test]
+fn compiler_registers_anonymous_generated_functions_alongside_named_mfas() {
+    let tel = ConfiguredTelemetry::new();
+    let src = "\
+fn helper(x), do: x + 1
+fn main(x), do: dbg(helper(x))
+";
+
+    let mut compiler = Compiler::new();
+    let mut t = crate::types::new();
+    let out = compile_source_with_compiler_types(
+        compiler.world_mut(),
+        &mut t,
+        src.to_string(),
+        "generated-callables.fz".to_string(),
+        &tel,
+    )
+    .unwrap_or_else(|_| panic!("compile should succeed"));
+
+    assert!(out.module.fn_by_name("main").is_some());
+    assert!(out.module.fn_by_name("helper").is_some());
+
+    let root_module_id = ModuleId(0);
+    let main_id = compiler
+        .fn_id_for_mfa(&Mfa::new(root_module_id, "main", 1))
+        .expect("main should have a named compiler function id");
+    let helper_id = compiler
+        .fn_id_for_mfa(&Mfa::new(root_module_id, "helper", 1))
+        .expect("helper should have a named compiler function id");
+    assert_eq!(
+        compiler.function(main_id).key,
+        FunctionKey::Named(Mfa::new(root_module_id, "main", 1))
+    );
+    assert_eq!(
+        compiler.function(helper_id).key,
+        FunctionKey::Named(Mfa::new(root_module_id, "helper", 1))
+    );
+
+    let anonymous = (0..compiler.function_count())
+        .map(|index| compiler.function(FnId(index as u32)))
+        .filter(|record| matches!(record.key, FunctionKey::Anonymous(_)))
+        .collect::<Vec<_>>();
+    assert!(
+        anonymous.iter().any(|record| record.kind == FunctionKind::Continuation),
+        "non-tail calls should register anonymous continuation functions in compiler world"
+    );
 }
 
 #[test]

@@ -1863,18 +1863,6 @@ impl ModuleBuilder {
         self
     }
 
-    pub fn fresh_fn_id(&mut self) -> FnId {
-        let id = FnId(self.next_fn);
-        self.next_fn += 1;
-        id
-    }
-
-    /// The FnId value that would be assigned by the next `fresh_fn_id` call.
-    /// Used to snapshot the prelude/user boundary in `lower_program_full`.
-    pub fn next_fn_id(&self) -> u32 {
-        self.next_fn
-    }
-
     pub fn fn_count(&self) -> usize {
         self.fns.len()
     }
