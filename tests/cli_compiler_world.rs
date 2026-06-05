@@ -68,6 +68,13 @@ fn compiler_event_count(events: &[Value], event_name: &[&str], module_key: &str)
         .count()
 }
 
+fn event_count(events: &[Value], event_name: &[&str], metadata_key: &str, expected: &str) -> usize {
+    events
+        .iter()
+        .filter(|ev| event_matches(ev, event_name) && metadata_is(ev, metadata_key, expected))
+        .count()
+}
+
 fn compiler_event_module_keys(events: &[Value], event_name: &[&str]) -> BTreeSet<String> {
     events
         .iter()
@@ -81,21 +88,21 @@ fn compiler_event_module_keys(events: &[Value], event_name: &[&str]) -> BTreeSet
         .collect()
 }
 
-fn compiler_phase_elapsed_ns(events: &[Value], module_key: &str, target_phase: &str) -> Vec<u64> {
-    let phase_span_ids = events
+fn compiler_state_elapsed_ns(events: &[Value], module_key: &str, target_state: &str) -> Vec<u64> {
+    let state_span_ids = events
         .iter()
-        .filter(|ev| event_matches(ev, &["fz", "compiler", "phase"]))
+        .filter(|ev| event_matches(ev, &["fz", "compiler", "state_work"]))
         .filter(|ev| ev.get("kind").and_then(Value::as_str) == Some("span_start"))
         .filter(|ev| metadata_is(ev, "module_key", module_key))
-        .filter(|ev| metadata_is(ev, "target_phase", target_phase))
+        .filter(|ev| metadata_is(ev, "target_state", target_state))
         .map(span_id)
         .collect::<Vec<_>>();
 
     events
         .iter()
-        .filter(|ev| event_matches(ev, &["fz", "compiler", "phase"]))
+        .filter(|ev| event_matches(ev, &["fz", "compiler", "state_work"]))
         .filter(|ev| ev.get("kind").and_then(Value::as_str) == Some("span_stop"))
-        .filter(|ev| phase_span_ids.contains(&span_id(ev)))
+        .filter(|ev| state_span_ids.contains(&span_id(ev)))
         .map(|ev| measurement_u64(ev, "elapsed_ns"))
         .collect()
 }
@@ -160,9 +167,9 @@ fn dump_interfaces_parses_root_source_once_through_compiler_world() {
         "root source should collect interfaces exactly once through the compiler world"
     );
 
-    let parsed_elapsed = compiler_phase_elapsed_ns(&events, &module_key, "parsed");
+    let parsed_elapsed = compiler_state_elapsed_ns(&events, &module_key, "parsed");
     assert_eq!(parsed_elapsed.len(), 1, "root parsed phase should stop exactly once");
-    let body_surface_elapsed = compiler_phase_elapsed_ns(&events, &module_key, "body_surface_ready");
+    let body_surface_elapsed = compiler_state_elapsed_ns(&events, &module_key, "body_surface_ready");
     assert_eq!(
         body_surface_elapsed.len(),
         1,
@@ -212,7 +219,7 @@ fn run_reaches_and_parses_utf8_once_through_compiler_world() {
         "Utf8 should parse exactly once"
     );
 
-    let parsed_elapsed = compiler_phase_elapsed_ns(&events, "Utf8", "parsed");
+    let parsed_elapsed = compiler_state_elapsed_ns(&events, "Utf8", "parsed");
     assert_eq!(parsed_elapsed.len(), 1, "Utf8 parsed phase should stop exactly once");
 }
 
@@ -263,8 +270,13 @@ fn build_reaches_lowers_and_plans_process_once_through_compiler_world() {
         1,
         "Process should plan exactly once"
     );
+    assert_eq!(
+        event_count(&events, &["fz", "module", "unit_materialized"], "module", "Process"),
+        1,
+        "Process should materialize exactly one runtime unit"
+    );
 
-    let parsed_elapsed = compiler_phase_elapsed_ns(&events, "Process", "parsed");
+    let parsed_elapsed = compiler_state_elapsed_ns(&events, "Process", "parsed");
     assert_eq!(parsed_elapsed.len(), 1, "Process parsed phase should stop exactly once");
 }
 
@@ -333,6 +345,11 @@ fn quicksort_build_parses_only_process_and_minimal_runtime_surface() {
         runtime_planned,
         BTreeSet::from(["Process".to_string()]),
         "quicksort should plan only the live Process runtime module"
+    );
+    assert_eq!(
+        event_count(&events, &["fz", "module", "unit_materialized"], "module", "Process"),
+        1,
+        "quicksort should materialize exactly one live Process runtime unit"
     );
 
     assert_eq!(

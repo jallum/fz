@@ -704,7 +704,7 @@ impl CompilerWorld {
     pub(crate) fn ensure_source(&mut self, module_id: ModuleId, tel: &dyn Telemetry) -> Arc<str> {
         let _ = self.ensure_module_state(module_id, ModuleState::SourceReady, tel, |this| {
             let file_id = this.module(module_id).file_id;
-            let measurements = this.phase_measurements(module_id);
+            let measurements = this.state_measurements(module_id);
             let module_key = this.module(module_id).key.render();
             let module_key_kind = this.module(module_id).key.kind();
             let module_origin = this.module(module_id).origin.kind();
@@ -742,7 +742,7 @@ impl CompilerWorld {
             let source = this.ensure_source(module_id, tel);
             let descriptor = this.files[file_id.0 as usize].descriptor.clone();
             let parsed = parse_source(&descriptor, &source, tel)?;
-            let measurements = this.phase_measurements(module_id);
+            let measurements = this.state_measurements(module_id);
             tel.execute(
                 &["fz", "compiler", "parsed"],
                 &measurements,
@@ -797,7 +797,7 @@ impl CompilerWorld {
             let parsed = this.ensure_parsed(module_id, tel)?;
             let record = this.module(module_id).clone();
             let surface = collect_body_surface(&record, &parsed);
-            let measurements = this.phase_measurements(module_id);
+            let measurements = this.state_measurements(module_id);
             for group in &surface.groups {
                 tel.execute(
                     &["fz", "compiler", "fn_group_discovered"],
@@ -848,7 +848,7 @@ impl CompilerWorld {
             let _ = this.ensure_body_surface(module_id, tel)?;
             let parsed = this.ensure_parsed(module_id, tel)?;
             let interfaces = collect_interfaces(&parsed);
-            let measurements = this.phase_measurements(module_id);
+            let measurements = this.state_measurements(module_id);
             tel.execute(
                 &["fz", "compiler", "interface_ready"],
                 &measurements,
@@ -1007,7 +1007,7 @@ impl CompilerWorld {
             let mut single = BTreeMap::new();
             single.insert(module, interface);
             let _ = self.ensure_module_state(module_id, ModuleState::InterfaceReady, tel, |this| {
-                let measurements = this.phase_measurements(module_id);
+                let measurements = this.state_measurements(module_id);
                 let record = this.module(module_id);
                 tel.execute(
                     &["fz", "compiler", "interface_ready"],
@@ -1085,7 +1085,7 @@ impl CompilerWorld {
             let record = self.module(module_id);
             tel.execute(
                 &["fz", "compiler", "runtime_module_reachable"],
-                &self.phase_measurements(module_id),
+                &self.state_measurements(module_id),
                 &metadata! {
                     module_key: record.key.render(),
                     module_key_kind: record.key.kind(),
@@ -1181,7 +1181,7 @@ impl CompilerWorld {
             .ensure_interface_table(module_id, tel)
             .expect("macro surface requires source-backed interface readiness");
         self.ensure_module_state(module_id, ModuleState::MacroSurfaceReady, tel, |this| {
-            let measurements = this.phase_measurements(module_id);
+            let measurements = this.state_measurements(module_id);
             let record = this.module(module_id);
             tel.execute(
                 &["fz", "compiler", "macro_surface_ready"],
@@ -1242,7 +1242,7 @@ impl CompilerWorld {
         if record.reachability.is_marked(kind) {
             tel.execute(
                 &["fz", "compiler", "cache_hit"],
-                &self.phase_measurements(module_id),
+                &self.state_measurements(module_id),
                 &metadata! {
                     module_key: record.key.render(),
                     module_key_kind: record.key.kind(),
@@ -1253,7 +1253,7 @@ impl CompilerWorld {
             return false;
         }
 
-        let measurements = self.phase_measurements(module_id);
+        let measurements = self.state_measurements(module_id);
         let record = &mut self.modules[module_id.0 as usize];
         record.reachability.mark(kind);
         tel.execute(
@@ -1522,6 +1522,33 @@ impl CompilerWorld {
                     module.key.render()
                 )));
             }
+            if module.origin == ModuleOrigin::EmbeddedRuntime && !module.reachability.runtime {
+                if !module.lowered_groups.is_empty() {
+                    return Err(CompilerInvariantError::new(format!(
+                        "runtime module `{}` cached lowered groups without runtime reachability",
+                        module.key.render()
+                    )));
+                }
+                if module.state.covers(ModuleState::RuntimeLowered) || module.state.covers(ModuleState::RuntimePlanned) {
+                    return Err(CompilerInvariantError::new(format!(
+                        "runtime module `{}` advanced execution state without runtime reachability",
+                        module.key.render()
+                    )));
+                }
+            }
+            if module.state.covers(ModuleState::RuntimeLowered) {
+                for entry in &module.runtime_entry_fns {
+                    let source = SourceFnKey::from_qualified(&entry.0, entry.1);
+                    if !module.lowered_groups.contains_key(&source) {
+                        return Err(CompilerInvariantError::new(format!(
+                            "runtime module `{}` lowered without cached entry group `{}`/{}",
+                            module.key.render(),
+                            source.qualified_name(),
+                            source.arity
+                        )));
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -1541,7 +1568,7 @@ impl CompilerWorld {
             work(this);
             Ok::<(), ()>(())
         })
-        .expect("infallible compiler phase work failed unexpectedly")
+        .expect("infallible compiler state work failed unexpectedly")
     }
 
     pub(crate) fn ensure_module_state_result<F, E>(
@@ -1555,14 +1582,14 @@ impl CompilerWorld {
         F: FnOnce(&mut Self) -> Result<(), E>,
     {
         let current = self.module(module_id).state;
-        let metadata = self.phase_metadata(module_id, current, target);
-        let measurements = self.phase_measurements(module_id);
+        let metadata = self.state_metadata(module_id, current, target);
+        let measurements = self.state_measurements(module_id);
         if current.covers(target) {
             tel.execute(&["fz", "compiler", "cache_hit"], &measurements, &metadata);
             return Ok(false);
         }
         tel.execute(&["fz", "compiler", "cache_miss"], &measurements, &metadata);
-        let _span = tel.span(&["fz", "compiler", "phase"], metadata.clone());
+        let _span = tel.span(&["fz", "compiler", "state_work"], metadata.clone());
         work(self)?;
         self.advance_module_state(module_id, target, tel);
         Ok(true)
@@ -1692,7 +1719,7 @@ impl CompilerWorld {
     }
 
     fn advance_module_state(&mut self, module_id: ModuleId, target: ModuleState, tel: &dyn Telemetry) {
-        let measurements = self.phase_measurements(module_id);
+        let measurements = self.state_measurements(module_id);
         let record = &mut self.modules[module_id.0 as usize];
         let from = record.state;
         debug_assert!(
@@ -1704,24 +1731,24 @@ impl CompilerWorld {
         );
         record.state = target;
         tel.execute(
-            &["fz", "compiler", "phase_advanced"],
+            &["fz", "compiler", "state_advanced"],
             &measurements,
             &metadata! {
                 module_key: record.key.render(),
                 module_key_kind: record.key.kind(),
                 module_origin: record.origin.kind(),
-                from_phase: from.as_str(),
-                to_phase: target.as_str(),
+                from_state: from.as_str(),
+                to_state: target.as_str(),
             },
         );
     }
 
-    fn phase_measurements(&self, module_id: ModuleId) -> crate::telemetry::Measurements<'static> {
+    fn state_measurements(&self, module_id: ModuleId) -> crate::telemetry::Measurements<'static> {
         let record = self.module(module_id);
         measurements! { module_id: module_id.0, file_id: record.file_id.0 }
     }
 
-    fn phase_metadata(
+    fn state_metadata(
         &self,
         module_id: ModuleId,
         current: ModuleState,
@@ -1732,8 +1759,8 @@ impl CompilerWorld {
             module_key: record.key.render(),
             module_key_kind: record.key.kind(),
             module_origin: record.origin.kind(),
-            current_phase: current.as_str(),
-            target_phase: target.as_str(),
+            current_state: current.as_str(),
+            target_state: target.as_str(),
         }
     }
 }

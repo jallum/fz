@@ -15,7 +15,7 @@ use crate::ir_planner::fn_types::{CallEdgeTarget, ReturnDemand, SpecKey};
 use crate::ir_planner::{ModulePlan, SpecPlan, materialize_program, plan_module};
 use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn, ModuleInterface};
-use crate::modules::pipeline::{CompileMode, PreparedExecutionGraph, checked_module_for_mode, prepare_execution_graph};
+use crate::modules::pipeline::{CheckedModule, CompileMode, PreparedExecutionGraph};
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
 use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind, NullTelemetry, Telemetry, Value};
@@ -1213,9 +1213,11 @@ fn runtime_graph_with_tel(t: &mut DefaultTypes, src: &str, tel: &dyn Telemetry) 
     let frontend =
         compile_source_with_compiler_types(compiler.world_mut(), t, src.to_string(), "test.fz".to_string(), tel)
             .unwrap_or_else(|err| panic!("frontend result: {:?}", err.diagnostics));
-    let checked = checked_module_for_mode(t, Ok(frontend), tel, CompileMode::Normal)
+    let checked = CheckedModule::for_mode(t, Ok(frontend), tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let prepared = prepare_execution_graph(compiler.world_mut(), t, checked, tel, CompileMode::Normal)
+    let prepared = compiler
+        .world_mut()
+        .prepare_execution_graph(t, checked, tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("execution graph: {err}"));
     assert_module_planner_consistent(t, &prepared.module, "runtime_graph_with_tel");
     prepared
@@ -2999,9 +3001,11 @@ fn frontend_to_codegen_pipeline_reports_planner_phase_events() {
     };
 
     let mut compiler = compiler();
-    let checked = checked_module_for_mode(&mut t, Ok(frontend), &tel, CompileMode::Normal)
+    let checked = CheckedModule::for_mode(&mut t, Ok(frontend), &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let graph = prepare_execution_graph(compiler.world_mut(), &mut t, checked, &tel, CompileMode::Normal)
+    let graph = compiler
+        .world_mut()
+        .prepare_execution_graph(&mut t, checked, &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("execution graph: {err}"));
     compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile planned");
 
@@ -3091,9 +3095,11 @@ fn compile_emits_spec_pair_inventory_telemetry() {
         .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
 
     let mut compiler = compiler();
-    let checked = checked_module_for_mode(&mut t, Ok(frontend), &tel, CompileMode::Normal)
+    let checked = CheckedModule::for_mode(&mut t, Ok(frontend), &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let graph = prepare_execution_graph(compiler.world_mut(), &mut t, checked, &tel, CompileMode::Normal)
+    let graph = compiler
+        .world_mut()
+        .prepare_execution_graph(&mut t, checked, &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("execution graph: {err}"));
     compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile planned");
 

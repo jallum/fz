@@ -5,7 +5,7 @@ use crate::diag::codes::{CODEGEN_SCHEMA_MISSING, LOWER_UNBOUND};
 use crate::diag::diagnostic::Severity;
 use crate::diag::{Diagnostic, Diagnostics, SourceMap, Span, emit_through};
 use crate::frontend::resolve::InterfaceTable;
-use crate::frontend::{FrontendOk, FrontendResult, compile_program_with_compiler_roots};
+use crate::frontend::{FrontendOk, FrontendResult};
 use crate::fz_ir::Module;
 use crate::ir_codegen::{CompiledUnit, ImageLinkError, link_ir_units};
 use crate::ir_planner::fn_types::CallEdgeTarget;
@@ -13,7 +13,6 @@ use crate::ir_planner::{ModulePlan, plan_module};
 use crate::metadata;
 use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::interface::{ModuleInterface, validate_public_export_specs};
-use crate::modules::runtime_library;
 use crate::telemetry::{Telemetry, next_compile_nonce};
 use crate::types::DefaultTypes;
 use std::collections::{BTreeMap, BTreeSet};
@@ -106,119 +105,6 @@ impl PipelineError {
     }
 }
 
-pub(crate) fn checked_module_for_mode(
-    t: &mut DefaultTypes,
-    result: FrontendResult,
-    tel: &dyn Telemetry,
-    mode: CompileMode,
-) -> Result<CheckedModule, PipelineError> {
-    use crate::telemetry::TelemetryExt as _;
-
-    let frontend = run_frontend(result, tel)?;
-    let interfaces = frontend._prog.module_interfaces;
-    let external_interfaces = frontend._prog.external_module_interfaces;
-    tel.event(
-        &["fz", "module", "interfaces_collected"],
-        metadata! { interfaces: interfaces.len() as i64 },
-    );
-    if mode.is_lto() {
-        let linked = LtoLinkedProgram::validate(frontend.module, interfaces, tel, Some(&frontend.sm))?;
-        let (module, interfaces) = linked.erase_boundaries(tel)?;
-        let _compile_span = tel.span(
-            &["fz", "compile"],
-            metadata! {
-                compile_nonce: next_compile_nonce(),
-                module_path: module.module_path().to_owned(),
-            },
-        );
-        let module_plan = plan_module(t, &module, tel);
-        Ok(CheckedModule {
-            module,
-            module_plan,
-            interfaces,
-            external_interfaces,
-            sm: frontend.sm,
-            diagnostics: frontend.diagnostics,
-        })
-    } else {
-        Ok(CheckedModule {
-            module: frontend.module,
-            module_plan: frontend.module_plan,
-            interfaces,
-            external_interfaces,
-            sm: frontend.sm,
-            diagnostics: frontend.diagnostics,
-        })
-    }
-}
-
-pub(crate) fn prepare_execution_graph(
-    compiler: &mut CompilerWorld,
-    t: &mut DefaultTypes,
-    mut prepared: CheckedModule,
-    tel: &dyn Telemetry,
-    mode: CompileMode,
-) -> Result<PreparedExecutionGraph, PipelineError> {
-    use crate::telemetry::TelemetryExt as _;
-
-    let linked = link_execution_module(compiler, t, &mut prepared, tel)?;
-    let LinkedExecutionModule { units, module } = linked;
-    let _compile_span = tel.span(
-        &["fz", "compile"],
-        metadata! {
-            compile_nonce: next_compile_nonce(),
-            module_path: module.module_path().to_owned(),
-        },
-    );
-    let module_plan = plan_module(t, &module, tel);
-    // The execution graph hands downstream engines the real linked module and
-    // its one authoritative plan. Mutating IR transforms that change dispatch
-    // or reachability must not run here unless they also preserve that
-    // contract; otherwise they erase facts the planner still needs to observe.
-    // LTO mode still runs boundary erasure for its module-mutating side effect
-    // (rewriting external calls to direct ones); its local plan is discarded.
-    if mode.is_lto() {
-        let interfaces = units
-            .iter()
-            .filter_map(|unit| {
-                unit.interface
-                    .clone()
-                    .map(|interface| (interface.name.clone(), interface))
-            })
-            .collect();
-        let linked = LtoLinkedProgram::validate(module.clone(), interfaces, tel, Some(&prepared.sm))?;
-        let (module, _) = linked.erase_boundaries(tel)?;
-        let module_plan = plan_module(t, &module, tel);
-        return Ok(PreparedExecutionGraph {
-            units,
-            module,
-            module_plan,
-            sm: prepared.sm,
-        });
-    }
-    Ok(PreparedExecutionGraph {
-        units,
-        module,
-        module_plan,
-        sm: prepared.sm,
-    })
-}
-
-pub(crate) fn link_execution_module(
-    compiler: &mut CompilerWorld,
-    t: &mut DefaultTypes,
-    prepared: &mut CheckedModule,
-    tel: &dyn Telemetry,
-) -> Result<LinkedExecutionModule, PipelineError> {
-    let units = load_execution_units(compiler, t, prepared, tel)?;
-    let module = if units.len() > 1 {
-        link_ir_units(&units).map_err(PipelineError::Link)?
-    } else {
-        units[0].code.clone()
-    };
-    Ok(LinkedExecutionModule { units, module })
-}
-
 pub(crate) fn link_error_diagnostic(err: ImageLinkError) -> Diagnostic {
     Diagnostic::error(CODEGEN_SCHEMA_MISSING, err.to_string(), Span::DUMMY)
 }
@@ -245,142 +131,6 @@ fn has_errors(diagnostics: &Diagnostics) -> bool {
         .any(|diagnostic| diagnostic.severity == Severity::Error)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn load_execution_units(
-    compiler: &mut CompilerWorld,
-    t: &mut DefaultTypes,
-    prepared: &mut CheckedModule,
-    tel: &dyn Telemetry,
-) -> Result<Vec<CompiledUnit>, PipelineError> {
-    let seeds = runtime_reachability_seeds(compiler, &prepared.module, &prepared.module_plan, tel)?;
-    let mut pending_runtime_modules = compiler
-        .discover_runtime_reachable_modules(&prepared.interfaces, seeds, tel)
-        .map_err(|diagnostic| {
-            emit_through(tel, None, &[diagnostic]);
-            PipelineError::FrontendFailed
-        })?;
-    let mut interfaces = prepared.interfaces.clone();
-    interfaces.extend(prepared.external_interfaces.clone());
-    let mut units = vec![prepared.compiled_unit_input()];
-    let empty_root_interfaces = BTreeMap::new();
-    while let Some(module_id) = pending_runtime_modules.pop() {
-        let ModuleKey::Named(module) = compiler.module(module_id).key.clone() else {
-            continue;
-        };
-        if let Some(interface) =
-            runtime_library::interface(compiler, &module, tel).expect("runtime interface lookup must succeed")
-        {
-            interfaces.insert(module, interface);
-        }
-        let unit = materialize_runtime_unit(compiler, t, module_id, &interfaces, tel)?;
-        let follow_up_seeds = unit
-            .module_plan
-            .as_ref()
-            .map(|plan| runtime_reachability_seeds(compiler, &unit.code, plan, tel))
-            .transpose()?
-            .unwrap_or_default();
-        if !follow_up_seeds.is_empty() {
-            let newly_reachable = compiler
-                .discover_runtime_reachable_modules(&empty_root_interfaces, follow_up_seeds, tel)
-                .map_err(|diagnostic| {
-                    emit_through(tel, None, &[diagnostic]);
-                    PipelineError::FrontendFailed
-                })?;
-            pending_runtime_modules.extend(newly_reachable);
-        }
-        units.push(unit);
-    }
-    tel.event(
-        &["fz", "module", "execution_units_prepared"],
-        metadata! {
-            interfaces: interfaces.len() as i64,
-            runtime_units: (units.len() - 1) as i64,
-            total_units: units.len() as i64,
-        },
-    );
-    Ok(units)
-}
-
-fn materialize_runtime_unit(
-    compiler: &mut CompilerWorld,
-    t: &mut DefaultTypes,
-    module_id: ModuleId,
-    interfaces: &InterfaceTable,
-    tel: &dyn Telemetry,
-) -> Result<CompiledUnit, PipelineError> {
-    let ModuleKey::Named(module_name) = compiler.module(module_id).key.clone() else {
-        panic!("runtime reachability must only produce named runtime modules");
-    };
-    let parsed = compiler.ensure_prelude(module_id, tel).map_err(|diagnostic| {
-        emit_through(tel, None, &[diagnostic]);
-        PipelineError::FrontendFailed
-    })?;
-    let program = crate::ast::Program {
-        items: parsed.items,
-        ..crate::ast::Program::default()
-    };
-    let frontend = run_frontend(
-        compile_program_with_compiler_roots(
-            compiler,
-            None,
-            Some(module_id),
-            t,
-            program,
-            parsed.sm,
-            interfaces.clone(),
-            tel,
-        ),
-        tel,
-    )?;
-    let _ = compiler.note_runtime_lowered(module_id, frontend.module.fns.len(), tel);
-    let _ = compiler.note_runtime_planned(module_id, frontend.module_plan.specs.len(), tel);
-    tel.event(
-        &["fz", "module", "unit_materialized"],
-        metadata! { kind: "runtime-source", module: module_name.dotted() },
-    );
-    Ok(CompiledUnit::from_ir_module_with_plan(
-        frontend.module,
-        Some(frontend.module_plan),
-        interfaces.get(&module_name).cloned(),
-        Diagnostics::new(),
-    ))
-}
-
-fn runtime_reachability_seeds(
-    compiler: &mut CompilerWorld,
-    module: &Module,
-    module_plan: &ModulePlan,
-    tel: &dyn Telemetry,
-) -> Result<Vec<RuntimeReachabilitySeed>, PipelineError> {
-    let mut targets = BTreeSet::new();
-    targets.extend(module.external_call_edges.iter().map(|edge| edge.target.clone()));
-    targets.extend(planned_external_targets(module_plan));
-
-    let mut seeds = Vec::new();
-    for target in targets {
-        let Some(owner_module_id) = compiler
-            .discover_runtime_export_owner(&target, tel)
-            .map_err(|diagnostic| {
-                emit_through(tel, None, &[diagnostic]);
-                PipelineError::FrontendFailed
-            })?
-        else {
-            continue;
-        };
-        let ModuleKey::Named(owner_module) = compiler.module(owner_module_id).key.clone() else {
-            continue;
-        };
-        let entry = format!("{}.{}", target.module.dotted(), target.name);
-        seeds.push(RuntimeReachabilitySeed::new(
-            owner_module,
-            "planned_external_target",
-            None,
-        )
-        .with_entry(entry, target.arity));
-    }
-    Ok(seeds)
-}
-
 fn planned_external_targets(module_plan: &ModulePlan) -> BTreeSet<ExportKey> {
     let mut targets = BTreeSet::new();
     for spec_key in &module_plan.reachable_specs {
@@ -394,6 +144,245 @@ fn planned_external_targets(module_plan: &ModulePlan) -> BTreeSet<ExportKey> {
         }
     }
     targets
+}
+
+impl CheckedModule {
+    pub(crate) fn for_mode(
+        t: &mut DefaultTypes,
+        result: FrontendResult,
+        tel: &dyn Telemetry,
+        mode: CompileMode,
+    ) -> Result<Self, PipelineError> {
+        use crate::telemetry::TelemetryExt as _;
+
+        let frontend = run_frontend(result, tel)?;
+        let interfaces = frontend._prog.module_interfaces;
+        let external_interfaces = frontend._prog.external_module_interfaces;
+        tel.event(
+            &["fz", "module", "interfaces_collected"],
+            metadata! { interfaces: interfaces.len() as i64 },
+        );
+        if mode.is_lto() {
+            let linked = LtoLinkedProgram::validate(frontend.module, interfaces, tel, Some(&frontend.sm))?;
+            let (module, interfaces) = linked.erase_boundaries(tel)?;
+            let _compile_span = tel.span(
+                &["fz", "compile"],
+                metadata! {
+                    compile_nonce: next_compile_nonce(),
+                    module_path: module.module_path().to_owned(),
+                },
+            );
+            let module_plan = plan_module(t, &module, tel);
+            return Ok(Self {
+                module,
+                module_plan,
+                interfaces,
+                external_interfaces,
+                sm: frontend.sm,
+                diagnostics: frontend.diagnostics,
+            });
+        }
+        Ok(Self {
+            module: frontend.module,
+            module_plan: frontend.module_plan,
+            interfaces,
+            external_interfaces,
+            sm: frontend.sm,
+            diagnostics: frontend.diagnostics,
+        })
+    }
+}
+
+impl CompilerWorld {
+    pub(crate) fn prepare_execution_graph(
+        &mut self,
+        t: &mut DefaultTypes,
+        mut checked: CheckedModule,
+        tel: &dyn Telemetry,
+        mode: CompileMode,
+    ) -> Result<PreparedExecutionGraph, PipelineError> {
+        use crate::telemetry::TelemetryExt as _;
+
+        let linked = self.link_execution_module(t, &mut checked, tel)?;
+        let LinkedExecutionModule { units, module } = linked;
+        let _compile_span = tel.span(
+            &["fz", "compile"],
+            metadata! {
+                compile_nonce: next_compile_nonce(),
+                module_path: module.module_path().to_owned(),
+            },
+        );
+        let module_plan = plan_module(t, &module, tel);
+        if mode.is_lto() {
+            let interfaces = units
+                .iter()
+                .filter_map(|unit| {
+                    unit.interface
+                        .clone()
+                        .map(|interface| (interface.name.clone(), interface))
+                })
+                .collect();
+            let linked = LtoLinkedProgram::validate(module.clone(), interfaces, tel, Some(&checked.sm))?;
+            let (module, _) = linked.erase_boundaries(tel)?;
+            let module_plan = plan_module(t, &module, tel);
+            return Ok(PreparedExecutionGraph {
+                units,
+                module,
+                module_plan,
+                sm: checked.sm,
+            });
+        }
+        Ok(PreparedExecutionGraph {
+            units,
+            module,
+            module_plan,
+            sm: checked.sm,
+        })
+    }
+
+    pub(crate) fn link_execution_module(
+        &mut self,
+        t: &mut DefaultTypes,
+        checked: &mut CheckedModule,
+        tel: &dyn Telemetry,
+    ) -> Result<LinkedExecutionModule, PipelineError> {
+        let units = self.load_execution_units(t, checked, tel)?;
+        let module = if units.len() > 1 {
+            link_ir_units(&units).map_err(PipelineError::Link)?
+        } else {
+            units[0].code.clone()
+        };
+        Ok(LinkedExecutionModule { units, module })
+    }
+
+    fn load_execution_units(
+        &mut self,
+        t: &mut DefaultTypes,
+        checked: &mut CheckedModule,
+        tel: &dyn Telemetry,
+    ) -> Result<Vec<CompiledUnit>, PipelineError> {
+        let seeds = self.runtime_reachability_seeds(&checked.module, &checked.module_plan, tel)?;
+        let mut pending_runtime_modules = self
+            .discover_runtime_reachable_modules(&checked.interfaces, seeds, tel)
+            .map_err(|diagnostic| {
+                emit_through(tel, None, &[diagnostic]);
+                PipelineError::FrontendFailed
+            })?;
+        let mut interfaces = checked.interfaces.clone();
+        interfaces.extend(checked.external_interfaces.clone());
+        let mut units = vec![checked.compiled_unit_input()];
+        let empty_root_interfaces = BTreeMap::new();
+        while let Some(module_id) = pending_runtime_modules.pop() {
+            let ModuleKey::Named(module_name) = self.module(module_id).key.clone() else {
+                continue;
+            };
+            let Some(interface) = self
+                .ensure_runtime_module_interface(&module_name, tel)
+                .map_err(|diagnostic| {
+                    emit_through(tel, None, &[diagnostic]);
+                    PipelineError::FrontendFailed
+                })?
+            else {
+                continue;
+            };
+            interfaces.insert(module_name, interface);
+            let Some(unit) = self.materialize_runtime_unit(t, module_id, &interfaces, tel)? else {
+                continue;
+            };
+            let follow_up_seeds = unit
+                .module_plan
+                .as_ref()
+                .map(|plan| self.runtime_reachability_seeds(&unit.code, plan, tel))
+                .transpose()?
+                .unwrap_or_default();
+            if !follow_up_seeds.is_empty() {
+                let newly_reachable = self
+                    .discover_runtime_reachable_modules(&empty_root_interfaces, follow_up_seeds, tel)
+                    .map_err(|diagnostic| {
+                        emit_through(tel, None, &[diagnostic]);
+                        PipelineError::FrontendFailed
+                    })?;
+                pending_runtime_modules.extend(newly_reachable);
+            }
+            units.push(unit);
+        }
+        tel.event(
+            &["fz", "module", "execution_units_prepared"],
+            metadata! {
+                interfaces: interfaces.len() as i64,
+                runtime_units: (units.len() - 1) as i64,
+                total_units: units.len() as i64,
+            },
+        );
+        Ok(units)
+    }
+
+    fn materialize_runtime_unit(
+        &mut self,
+        t: &mut DefaultTypes,
+        module_id: ModuleId,
+        interfaces: &InterfaceTable,
+        tel: &dyn Telemetry,
+    ) -> Result<Option<CompiledUnit>, PipelineError> {
+        let ModuleKey::Named(module_name) = self.module(module_id).key.clone() else {
+            return Ok(None);
+        };
+        let parsed = self.ensure_prelude(module_id, tel).map_err(|diagnostic| {
+            emit_through(tel, None, &[diagnostic]);
+            PipelineError::FrontendFailed
+        })?;
+        let program = crate::ast::Program {
+            items: parsed.items,
+            ..crate::ast::Program::default()
+        };
+        let frontend =
+            run_frontend(self.compile_program_from_roots(None, Some(module_id), t, program, parsed.sm, interfaces.clone(), tel), tel)?;
+        let _ = self.note_runtime_lowered(module_id, frontend.module.fns.len(), tel);
+        let _ = self.note_runtime_planned(module_id, frontend.module_plan.specs.len(), tel);
+        tel.event(
+            &["fz", "module", "unit_materialized"],
+            metadata! { kind: "runtime-source", module: module_name.dotted() },
+        );
+        Ok(Some(CompiledUnit::from_ir_module_with_plan(
+            frontend.module,
+            Some(frontend.module_plan),
+            interfaces.get(&module_name).cloned(),
+            Diagnostics::new(),
+        )))
+    }
+
+    fn runtime_reachability_seeds(
+        &mut self,
+        module: &Module,
+        module_plan: &ModulePlan,
+        tel: &dyn Telemetry,
+    ) -> Result<Vec<RuntimeReachabilitySeed>, PipelineError> {
+        let mut targets = BTreeSet::new();
+        targets.extend(module.external_call_edges.iter().map(|edge| edge.target.clone()));
+        targets.extend(planned_external_targets(module_plan));
+
+        let mut seeds = Vec::new();
+        for target in targets {
+            let Some(owner_module_id) = self
+                .discover_runtime_export_owner(&target, tel)
+                .map_err(|diagnostic| {
+                    emit_through(tel, None, &[diagnostic]);
+                    PipelineError::FrontendFailed
+                })?
+            else {
+                continue;
+            };
+            let ModuleKey::Named(owner_module) = self.module(owner_module_id).key.clone() else {
+                continue;
+            };
+            let entry = format!("{}.{}", target.module.dotted(), target.name);
+            seeds.push(
+                RuntimeReachabilitySeed::new(owner_module, "planned_external_target", None)
+                    .with_entry(entry, target.arity),
+            );
+        }
+        Ok(seeds)
+    }
 }
 
 struct LtoLinkedProgram {

@@ -4,7 +4,7 @@ use crate::fz_ir::{FnId, Module};
 use crate::ir_codegen::compile_planned;
 use crate::ir_planner::{ModulePlan, materialize_program, plan_module};
 use crate::modules::pipeline::{
-    CompileMode, PreparedExecutionGraph, checked_module_for_mode, link_execution_module, prepare_execution_graph,
+    CheckedModule, CompileMode, PreparedExecutionGraph,
 };
 use crate::telemetry::{Capture, ConfiguredTelemetry, Event, Handler, NullTelemetry, Telemetry};
 use crate::types::{ClosureTypes, DefaultTypes, RenderTypes, Ty, Types};
@@ -78,10 +78,16 @@ pub(crate) fn linked_runtime_graph_with_telemetry(
         tel,
     )
     .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
-    let checked = checked_module_for_mode(t, Ok(frontend), tel, CompileMode::Normal)
+    let checked = CheckedModule::for_mode(t, Ok(frontend), tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked: {err}"));
-    prepare_execution_graph(compiler.world_mut(), t, checked, tel, CompileMode::Normal)
-        .unwrap_or_else(|err| panic!("execution graph: {err}"))
+    let graph = compiler
+        .world_mut()
+        .prepare_execution_graph(t, checked, tel, CompileMode::Normal)
+        .unwrap_or_else(|err| panic!("execution graph: {err}"));
+    compiler
+        .validate_invariants()
+        .expect("linked runtime graph must preserve compiler world invariants");
+    graph
 }
 
 pub(crate) fn linked_runtime_graph(src: &str) -> PreparedExecutionGraph {
@@ -102,11 +108,17 @@ pub(crate) fn linked_runtime_module_unplanned(src: &str) -> Module {
         &NullTelemetry,
     )
     .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
-    let mut checked = checked_module_for_mode(&mut t, Ok(frontend), &NullTelemetry, CompileMode::Normal)
+    let mut checked = CheckedModule::for_mode(&mut t, Ok(frontend), &NullTelemetry, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked: {err}"));
-    link_execution_module(compiler.world_mut(), &mut t, &mut checked, &NullTelemetry)
+    let linked = compiler
+        .world_mut()
+        .link_execution_module(&mut t, &mut checked, &NullTelemetry)
         .unwrap_or_else(|err| panic!("linked runtime module: {err}"))
-        .module
+        .module;
+    compiler
+        .validate_invariants()
+        .expect("linked runtime module must preserve compiler world invariants");
+    linked
 }
 
 /// Compile a program through the production pipeline to the linked runtime IR:

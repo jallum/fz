@@ -27,16 +27,12 @@ end
         &tel,
     )
     .unwrap_or_else(|_| panic!("frontend result"));
-    let checked = checked_module_for_mode(&mut concrete_types, Ok(frontend), &tel, CompileMode::Normal)
+    let checked = CheckedModule::for_mode(&mut concrete_types, Ok(frontend), &tel, CompileMode::Normal)
         .unwrap_or_else(|_| panic!("checked module"));
-    let graph = prepare_execution_graph(
-        compiler.world_mut(),
-        &mut concrete_types,
-        checked,
-        &tel,
-        CompileMode::Normal,
-    )
-    .unwrap_or_else(|_| panic!("execution graph"));
+    let graph = compiler
+        .world_mut()
+        .prepare_execution_graph(&mut concrete_types, checked, &tel, CompileMode::Normal)
+        .unwrap_or_else(|_| panic!("execution graph"));
 
     let modules = graph
         .units
@@ -70,16 +66,12 @@ end
         &tel,
     )
     .unwrap_or_else(|_| panic!("frontend result"));
-    let checked = checked_module_for_mode(&mut concrete_types, Ok(frontend), &tel, CompileMode::Normal)
+    let checked = CheckedModule::for_mode(&mut concrete_types, Ok(frontend), &tel, CompileMode::Normal)
         .unwrap_or_else(|_| panic!("checked module"));
-    let graph = prepare_execution_graph(
-        compiler.world_mut(),
-        &mut concrete_types,
-        checked,
-        &tel,
-        CompileMode::Normal,
-    )
-    .unwrap_or_else(|_| panic!("execution graph"));
+    let graph = compiler
+        .world_mut()
+        .prepare_execution_graph(&mut concrete_types, checked, &tel, CompileMode::Normal)
+        .unwrap_or_else(|_| panic!("execution graph"));
 
     let modules = graph
         .units
@@ -141,6 +133,51 @@ end
 }
 
 #[test]
+fn execution_graph_seeds_runtime_modules_from_nonlocal_fn_refs() {
+    let mut concrete_types = crate::types::new();
+    let mut compiler = compiler();
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "compiler"], capture.handler());
+    let source = r#"
+fn main(), do: &Kernel.dbg/1
+"#;
+
+    let frontend = compile_source_with_compiler_types(
+        compiler.world_mut(),
+        &mut concrete_types,
+        source.to_string(),
+        "fn_ref_seed.fz".to_string(),
+        &tel,
+    )
+    .unwrap_or_else(|_| panic!("frontend result"));
+    let checked = CheckedModule::for_mode(&mut concrete_types, Ok(frontend), &tel, CompileMode::Normal)
+        .unwrap_or_else(|_| panic!("checked module"));
+    let graph = compiler
+        .world_mut()
+        .prepare_execution_graph(&mut concrete_types, checked, &tel, CompileMode::Normal)
+        .unwrap_or_else(|_| panic!("execution graph"));
+
+    let modules = graph
+        .units
+        .iter()
+        .filter_map(|unit| unit.module.as_ref().map(ModuleName::dotted))
+        .collect::<Vec<_>>();
+    assert!(modules.contains(&"Kernel".to_string()));
+    assert!(
+        capture
+            .find(&["fz", "compiler", "runtime_module_reachable"])
+            .into_iter()
+            .any(|ev| matches!(ev.metadata.get("module_key"), Some(Value::Str(m)) if m == "Kernel")),
+        "qualified fn refs should seed runtime reachability from root external call edges"
+    );
+
+    compiler
+        .validate_invariants()
+        .expect("fn-ref runtime reachability must preserve compiler invariants");
+}
+
+#[test]
 fn protocol_impl_reduce_callback_plans_to_fixed_point() {
     let mut concrete_types = crate::types::new();
     let mut compiler = compiler();
@@ -175,16 +212,12 @@ end
         &tel,
     )
     .unwrap_or_else(|_| panic!("frontend result"));
-    let checked = checked_module_for_mode(&mut concrete_types, Ok(frontend), &tel, CompileMode::Normal)
+    let checked = CheckedModule::for_mode(&mut concrete_types, Ok(frontend), &tel, CompileMode::Normal)
         .unwrap_or_else(|_| panic!("checked module"));
-    prepare_execution_graph(
-        compiler.world_mut(),
-        &mut concrete_types,
-        checked,
-        &tel,
-        CompileMode::Normal,
-    )
-    .unwrap_or_else(|_| panic!("execution graph"));
+    compiler
+        .world_mut()
+        .prepare_execution_graph(&mut concrete_types, checked, &tel, CompileMode::Normal)
+        .unwrap_or_else(|_| panic!("execution graph"));
 
     let max_pops = capture
         .find(&["fz", "planner", "planned"])
@@ -218,9 +251,11 @@ fn linked_runtime_graph_keeps_cont_dispatches_for_enum_take_drop_split() {
         &tel,
     )
     .unwrap_or_else(|_| panic!("frontend result"));
-    let checked = checked_module_for_mode(&mut t, Ok(frontend), &tel, CompileMode::Normal)
+    let checked = CheckedModule::for_mode(&mut t, Ok(frontend), &tel, CompileMode::Normal)
         .unwrap_or_else(|_| panic!("checked module"));
-    let graph = prepare_execution_graph(compiler.world_mut(), &mut t, checked, &tel, CompileMode::Normal)
+    let graph = compiler
+        .world_mut()
+        .prepare_execution_graph(&mut t, checked, &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("execution graph: {err:?}"));
     let linked = graph.module;
     let mt = graph.module_plan;
@@ -266,9 +301,11 @@ fn linked_runtime_graph_keeps_cont_dispatches_for_spawn_with_captures() {
         &tel,
     )
     .unwrap_or_else(|_| panic!("frontend result"));
-    let checked = checked_module_for_mode(&mut t, Ok(frontend), &tel, CompileMode::Normal)
+    let checked = CheckedModule::for_mode(&mut t, Ok(frontend), &tel, CompileMode::Normal)
         .unwrap_or_else(|_| panic!("checked module"));
-    let graph = prepare_execution_graph(compiler.world_mut(), &mut t, checked, &tel, CompileMode::Normal)
+    let graph = compiler
+        .world_mut()
+        .prepare_execution_graph(&mut t, checked, &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("execution graph: {err:?}"));
     let linked = graph.module;
     let mt = graph.module_plan;

@@ -50,8 +50,7 @@ use ir_planner::{
 use libc::{c_int, close, write};
 use modules::interface::{render_interfaces, validate_public_export_specs};
 use modules::pipeline::{
-    CheckedModule, CompileMode, PipelineError, PreparedExecutionGraph, checked_module_for_mode, link_error_diagnostic,
-    prepare_execution_graph,
+    CheckedModule, CompileMode, PipelineError, PreparedExecutionGraph, link_error_diagnostic,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -831,7 +830,7 @@ impl Compiler {
         tel: &dyn Telemetry,
         mode: CompileMode,
     ) -> CheckedModule {
-        let checked = checked_module_for_mode(self.types(), result, tel, mode)
+        let checked = CheckedModule::for_mode(self.types(), result, tel, mode)
             .unwrap_or_else(|err| report_pipeline_error_or_exit(context, tel, sm_cell, err));
         *sm_cell.borrow_mut() = checked.sm.clone();
         report_or_exit_through(tel, checked.diagnostics.as_slice());
@@ -847,7 +846,8 @@ impl Compiler {
         mode: CompileMode,
     ) -> PreparedExecutionGraph {
         let (t, world) = self.split_mut();
-        prepare_execution_graph(world, t, checked, tel, mode)
+        world
+            .prepare_execution_graph(t, checked, tel, mode)
             .unwrap_or_else(|err| report_pipeline_error_or_exit(context, tel, sm_cell, err))
     }
 

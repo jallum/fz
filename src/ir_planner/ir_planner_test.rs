@@ -22,7 +22,7 @@ use crate::ir_codegen::compile_planned;
 use crate::ir_dest::{lower_list_destinations, lower_map_destinations, lower_tuple_destinations};
 use crate::ir_lower::lower_program;
 use crate::modules::identity::ModuleName;
-use crate::modules::pipeline::{CompileMode, checked_module_for_mode, prepare_execution_graph};
+use crate::modules::pipeline::{CheckedModule, CompileMode};
 use crate::parser::{Parser, lexer::Lexer};
 use crate::specs::{
     CallbackReturnDemand, CallbackReturnFact, CallbackReturnQuery, ResolvedSpec, ResolvedSpecSet, ResolvedTypeShape,
@@ -4633,9 +4633,11 @@ fn declared_return_fact_handles_enum_count_on_range_in_runtime_graph() {
         &tel,
     )
     .unwrap_or_else(|err| panic!("frontend result: {:?}", err.diagnostics));
-    let checked = checked_module_for_mode(&mut t, Ok(frontend), &tel, CompileMode::Normal)
+    let checked = CheckedModule::for_mode(&mut t, Ok(frontend), &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let prepared = prepare_execution_graph(compiler.world_mut(), &mut t, checked, &tel, CompileMode::Normal)
+    let prepared = compiler
+        .world_mut()
+        .prepare_execution_graph(&mut t, checked, &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("execution graph: {err}"));
     let module = prepared.module;
 
@@ -4675,9 +4677,11 @@ end
         &tel,
     )
     .unwrap_or_else(|err| panic!("frontend result: {:?}", err.diagnostics));
-    let checked = checked_module_for_mode(&mut t, Ok(frontend), &tel, CompileMode::Normal)
+    let checked = CheckedModule::for_mode(&mut t, Ok(frontend), &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let prepared = prepare_execution_graph(compiler.world_mut(), &mut t, checked, &tel, CompileMode::Normal)
+    let prepared = compiler
+        .world_mut()
+        .prepare_execution_graph(&mut t, checked, &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("execution graph: {err}"));
     let module = prepared.module;
     assert_module_plan_consistent(&module);
@@ -4727,9 +4731,11 @@ fn declared_return_fact_handles_enum_reduce_with_runtime_graph_reducer() {
         &tel,
     )
     .unwrap_or_else(|err| panic!("frontend result: {:?}", err.diagnostics));
-    let checked = checked_module_for_mode(&mut t, Ok(frontend), &tel, CompileMode::Normal)
+    let checked = CheckedModule::for_mode(&mut t, Ok(frontend), &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let prepared = prepare_execution_graph(compiler.world_mut(), &mut t, checked, &tel, CompileMode::Normal)
+    let prepared = compiler
+        .world_mut()
+        .prepare_execution_graph(&mut t, checked, &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("execution graph: {err}"));
     let module = prepared.module;
     assert_module_plan_consistent(&module);
@@ -4784,9 +4790,11 @@ fn declared_return_fact_handles_take_positive_reduce_while_in_runtime_graph() {
         &tel,
     )
     .unwrap_or_else(|err| panic!("frontend result: {:?}", err.diagnostics));
-    let checked = checked_module_for_mode(&mut t, Ok(frontend), &tel, CompileMode::Normal)
+    let checked = CheckedModule::for_mode(&mut t, Ok(frontend), &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let prepared = prepare_execution_graph(compiler.world_mut(), &mut t, checked, &tel, CompileMode::Normal)
+    let prepared = compiler
+        .world_mut()
+        .prepare_execution_graph(&mut t, checked, &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("execution graph: {err}"));
     let module = prepared.module;
     assert_module_plan_consistent(&module);

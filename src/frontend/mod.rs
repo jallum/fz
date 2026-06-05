@@ -235,7 +235,7 @@ where
             program: opaque(&prog),
         },
     );
-    compile_program_with_compiler_roots(compiler, Some(root), Some(root), t, prog, sm, interface_table, tel)
+    compiler.compile_program_from_roots(Some(root), Some(root), t, prog, sm, interface_table, tel)
 }
 
 pub(crate) fn compile_program_with_types<T>(
@@ -261,83 +261,79 @@ pub(crate) fn compile_program_with_compiler_types<T>(
 where
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 {
-    compile_program_with_compiler_roots(compiler, None, None, t, prog, sm, InterfaceTable::new(), tel)
+    compiler.compile_program_from_roots(None, None, t, prog, sm, InterfaceTable::new(), tel)
 }
 
-pub(crate) fn compile_program_with_compiler_roots<T>(
-    compiler: &mut CompilerWorld,
-    root_source: Option<ModuleId>,
-    lowering_root_source: Option<ModuleId>,
-    t: &mut T,
-    prog: Program,
-    sm: SourceMap,
-    interface_table: InterfaceTable,
-    tel: &dyn Telemetry,
-) -> FrontendResult
-where
-    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
-{
-    let mut prog = match resolve::flatten_modules_with_compiler_interface_table(
-        t,
-        compiler,
-        root_source,
-        prog,
-        interface_table,
-        tel,
-    ) {
-        Ok(prog) => prog,
-        Err(e) => return Err(fail(sm, e.to_diagnostic())),
-    };
-    tel.event(
-        &["fz", "frontend", "resolved"],
-        metadata! {
-            items: prog.items.len(),
-            module_interfaces: prog.module_interfaces.len(),
-            program: opaque(&prog),
-        },
-    );
-    if let Err(diagnostic) = macros::prepare_compiler_macro_surfaces(compiler, root_source, &prog, tel) {
-        return Err(fail(sm, diagnostic));
+impl CompilerWorld {
+    pub(crate) fn compile_program_from_roots<T>(
+        &mut self,
+        root_source: Option<ModuleId>,
+        lowering_root_source: Option<ModuleId>,
+        t: &mut T,
+        prog: Program,
+        sm: SourceMap,
+        interface_table: InterfaceTable,
+        tel: &dyn Telemetry,
+    ) -> FrontendResult
+    where
+        T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
+    {
+        let mut prog =
+            match resolve::flatten_modules_with_compiler_interface_table(t, self, root_source, prog, interface_table, tel)
+            {
+                Ok(prog) => prog,
+                Err(e) => return Err(fail(sm, e.to_diagnostic())),
+            };
+        tel.event(
+            &["fz", "frontend", "resolved"],
+            metadata! {
+                items: prog.items.len(),
+                module_interfaces: prog.module_interfaces.len(),
+                program: opaque(&prog),
+            },
+        );
+        if let Err(diagnostic) = macros::prepare_compiler_macro_surfaces(self, root_source, &prog, tel) {
+            return Err(fail(sm, diagnostic));
+        }
+        if let Err(e) = macros::expand_program_with_compiler_types(self, root_source, t, &mut prog) {
+            return Err(fail(sm, e.to_diagnostic()));
+        }
+        resolve::add_macro_requested_runtime_interfaces(self, &mut prog, tel);
+        tel.event(
+            &["fz", "frontend", "macro_expanded"],
+            metadata! {
+                items: prog.items.len(),
+                program: opaque(&prog),
+            },
+        );
+        let mut module = match crate::ir_lower::lower_program_with_compiler(self, lowering_root_source, t, &prog, tel) {
+            Ok(module) => module,
+            Err(e) => return Err(fail(sm, e.to_diagnostic())),
+        };
+        tel.event(
+            &["fz", "frontend", "lowered"],
+            metadata! {
+                module_path: module.module_path().to_owned(),
+                fns: module.fns.len(),
+                module: opaque(&module),
+            },
+        );
+        let planner_entry_fns = planner_entry_fns(self, lowering_root_source, &module);
+        let validate_surface = validate_surface_for_plan(self, lowering_root_source, &planner_entry_fns);
+        let (diagnostics, mut module_plan) =
+            check_frontend_from_entry_fns(t, &prog, &module, &planner_entry_fns, validate_surface, tel);
+        apply_planner_rewrites_to_fixed_point(t, &mut module, &mut module_plan, &planner_entry_fns);
+        #[cfg(test)]
+        self.validate_invariants()
+            .expect("frontend compile must leave compiler world consistent");
+        Ok(FrontendOk {
+            sm,
+            _prog: prog,
+            module,
+            module_plan,
+            diagnostics,
+        })
     }
-    if let Err(e) = macros::expand_program_with_compiler_types(compiler, root_source, t, &mut prog) {
-        return Err(fail(sm, e.to_diagnostic()));
-    }
-    resolve::add_macro_requested_runtime_interfaces(compiler, &mut prog, tel);
-    tel.event(
-        &["fz", "frontend", "macro_expanded"],
-        metadata! {
-            items: prog.items.len(),
-            program: opaque(&prog),
-        },
-    );
-    let mut module = match crate::ir_lower::lower_program_with_compiler(compiler, lowering_root_source, t, &prog, tel) {
-        Ok(module) => module,
-        Err(e) => return Err(fail(sm, e.to_diagnostic())),
-    };
-    tel.event(
-        &["fz", "frontend", "lowered"],
-        metadata! {
-            module_path: module.module_path().to_owned(),
-            fns: module.fns.len(),
-            module: opaque(&module),
-        },
-    );
-    let planner_entry_fns = planner_entry_fns(compiler, lowering_root_source, &module);
-    let validate_surface = validate_surface_for_plan(compiler, lowering_root_source, &planner_entry_fns);
-    let (diagnostics, mut module_plan) =
-        check_frontend_from_entry_fns(t, &prog, &module, &planner_entry_fns, validate_surface, tel);
-    apply_planner_rewrites_to_fixed_point(t, &mut module, &mut module_plan, &planner_entry_fns);
-    #[cfg(test)]
-    compiler
-        .validate_invariants()
-        .expect("frontend compile must leave compiler world consistent");
-    Ok(FrontendOk {
-        sm,
-        _prog: prog,
-        module,
-        module_plan,
-        diagnostics,
-    })
 }
 
 fn planner_entry_fns(compiler: &CompilerWorld, lowering_root_source: Option<ModuleId>, module: &Module) -> Vec<FnId> {

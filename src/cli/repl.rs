@@ -33,7 +33,7 @@ use crate::fz_ir::{FnId, Module};
 use crate::ir_interp::{AnyValue, IrInterpRuntime};
 use crate::ir_planner::ModulePlan;
 use crate::modules::pipeline::{
-    CompileMode, PipelineError, PreparedExecutionGraph, checked_module_for_mode, prepare_execution_graph,
+    CheckedModule, CompileMode, PipelineError, PreparedExecutionGraph,
 };
 use crate::notify_fixture_execution_start;
 use crate::parser::Parser;
@@ -270,11 +270,11 @@ impl ReplSession {
             Ok(ok) => ok,
             Err(err) => return Err(diagnostics_to_io_error(&err.sm, err.diagnostics.as_slice())),
         };
-        let checked = checked_module_for_mode(self.world.types(), Ok(frontend), tel, CompileMode::Normal)
+        let checked = CheckedModule::for_mode(self.world.types(), Ok(frontend), tel, CompileMode::Normal)
             .map_err(|err| pipeline_error_to_io_error(err, diagnostics))?;
         let prepared = {
             let (t, world) = self.world.compiler.split_mut();
-            prepare_execution_graph(world, t, checked, tel, CompileMode::Normal)
+            world.prepare_execution_graph(t, checked, tel, CompileMode::Normal)
         }
         .map_err(|err| pipeline_error_to_io_error(err, diagnostics))?;
 
@@ -691,10 +691,12 @@ fn compile_parsed_program_module(t: &mut DefaultTypes, prog: Program) -> io::Res
 
 fn prepare_repl_frontend(t: &mut DefaultTypes, frontend: FrontendOk) -> io::Result<PreparedExecutionGraph> {
     let (tel, diagnostics) = repl_diagnostic_telemetry();
-    let checked = checked_module_for_mode(t, Ok(frontend), &tel, CompileMode::Normal)
+    let checked = CheckedModule::for_mode(t, Ok(frontend), &tel, CompileMode::Normal)
         .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))?;
     let mut compiler = Compiler::new();
-    prepare_execution_graph(compiler.world_mut(), t, checked, &tel, CompileMode::Normal)
+    compiler
+        .world_mut()
+        .prepare_execution_graph(t, checked, &tel, CompileMode::Normal)
         .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))
 }
 

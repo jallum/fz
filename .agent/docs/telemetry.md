@@ -229,11 +229,17 @@ module through the world the way we intended?" before loader/resolver work lands
 - `fz.compiler.cache_miss` / `fz.compiler.cache_hit` — a phase or reachability
   query did or did not need work. Measurements: `module_id`, `file_id`.
   Metadata names the module plus the requested phase or reachability slice.
-- `fz.compiler.phase` — span around real phase work. Tests should assert on the
-  `SpanStop` event's `elapsed_ns` measurement rather than assuming work happened.
-- `fz.compiler.phase_advanced` — the module state lattice moved forward.
-  Measurements: `module_id`, `file_id`. Metadata: `from_phase`, `to_phase`,
+- `fz.compiler.state_work` — span around real state-advancement work. Tests
+  should assert on the `SpanStop` event's `elapsed_ns` measurement rather than
+  assuming work happened.
+- `fz.compiler.state_advanced` — the module state lattice moved forward.
+  Measurements: `module_id`, `file_id`. Metadata: `from_state`, `to_state`,
   plus module identity.
+- `fz.module.unit_materialized` — the compiler-owned reactive runtime loop
+  materialized one runtime source unit. Metadata: `kind`, `module`.
+- `fz.module.execution_units_prepared` — the compiler-owned reactive runtime
+  loop finished linking the root unit plus all reachable runtime units.
+  Measurements: `interfaces`, `runtime_units`, `total_units`.
 - `fz.compiler.module_reachable` — one reachability dimension (`interface`,
   `macro`, or `runtime`) was first marked true for a module. Measurements:
   `module_id`, `file_id`. Metadata: `reachability` plus module identity.

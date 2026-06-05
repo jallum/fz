@@ -514,26 +514,26 @@ end
     );
     assert!(
         capture
-            .find(&["fz", "compiler", "phase"])
+            .find(&["fz", "compiler", "state_work"])
             .into_iter()
-            .any(|ev| ev.kind == EventKind::SpanStart && captured_str(&ev, "target_phase") == "macro_surface_ready"),
-        "macro provider should execute a macro_surface_ready phase"
+            .any(|ev| ev.kind == EventKind::SpanStart && captured_str(&ev, "target_state") == "macro_surface_ready"),
+        "macro provider should execute macro_surface_ready state work"
     );
     assert!(
         capture
-            .find(&["fz", "compiler", "phase"])
+            .find(&["fz", "compiler", "state_work"])
             .into_iter()
             .any(|ev| ev.kind == EventKind::SpanStop && ev.measurements.get("elapsed_ns").is_some()),
-        "macro-surface phase timing must report elapsed_ns"
+        "macro-surface state timing must report elapsed_ns"
     );
 
     assert!(
         !capture
-            .find(&["fz", "compiler", "phase_advanced"])
+            .find(&["fz", "compiler", "state_advanced"])
             .into_iter()
             .filter(|ev| captured_str(ev, "module_key") == "Macros")
-            .any(|ev| matches!(captured_str(&ev, "to_phase"), "runtime_lowered" | "runtime_planned")),
-        "macro-only provider must not advance into runtime phases"
+            .any(|ev| matches!(captured_str(&ev, "to_state"), "runtime_lowered" | "runtime_planned")),
+        "macro-only provider must not advance into runtime execution states"
     );
     assert!(
         !capture

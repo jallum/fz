@@ -6,15 +6,18 @@ fn named_module(name: &str) -> ModuleKey {
     ModuleKey::Named(ModuleName::parse_dotted(name).expect("valid module name"))
 }
 
-fn phase_events(capture: &Capture) -> Vec<crate::telemetry::capture::OwnedEvent> {
-    capture.find(&["fz", "compiler", "phase"]).into_iter().collect()
+fn state_work_events(capture: &Capture) -> Vec<crate::telemetry::capture::OwnedEvent> {
+    capture
+        .find(&["fz", "compiler", "state_work"])
+        .into_iter()
+        .collect()
 }
 
-fn phase_start_events_for_target(capture: &Capture, target_phase: &str) -> Vec<crate::telemetry::capture::OwnedEvent> {
-    phase_events(capture)
+fn state_start_events_for_target(capture: &Capture, target_state: &str) -> Vec<crate::telemetry::capture::OwnedEvent> {
+    state_work_events(capture)
         .into_iter()
         .filter(|ev| ev.kind == EventKind::SpanStart)
-        .filter(|ev| metadata_str(ev, "target_phase") == target_phase)
+        .filter(|ev| metadata_str(ev, "target_state") == target_state)
         .collect()
 }
 
@@ -41,7 +44,7 @@ fn captured_str<'a>(ev: &'a crate::telemetry::capture::OwnedEvent, key: &str) ->
 }
 
 #[test]
-fn compiler_phase_cache_hits_skip_repeat_work_and_emit_timing_telemetry() {
+fn compiler_state_cache_hits_skip_repeat_work_and_emit_timing_telemetry() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&["fz", "compiler"], capture.handler());
@@ -82,7 +85,7 @@ fn compiler_phase_cache_hits_skip_repeat_work_and_emit_timing_telemetry() {
 
     assert!(advanced, "first ensure should advance the phase");
     assert!(!cached, "second ensure should hit the cache");
-    assert_eq!(work_runs, 1, "cache hit must not rerun phase work");
+    assert_eq!(work_runs, 1, "cache hit must not rerun state work");
     assert_eq!(compiler.module(module_id).state, ModuleState::Parsed);
 
     assert_eq!(capture.count(&["fz", "compiler", "file_registered"]), 1);
@@ -91,26 +94,26 @@ fn compiler_phase_cache_hits_skip_repeat_work_and_emit_timing_telemetry() {
     assert_eq!(capture.count(&["fz", "compiler", "module_cache_hit"]), 1);
     assert_eq!(capture.count(&["fz", "compiler", "cache_miss"]), 1);
     assert_eq!(capture.count(&["fz", "compiler", "cache_hit"]), 1);
-    assert_eq!(capture.count(&["fz", "compiler", "phase_advanced"]), 1);
+    assert_eq!(capture.count(&["fz", "compiler", "state_advanced"]), 1);
 
-    let phase_events = phase_events(&capture);
+    let state_events = state_work_events(&capture);
     assert_eq!(
-        phase_events.len(),
+        state_events.len(),
         2,
-        "one phase miss should produce one start/stop span pair"
+        "one state miss should produce one start/stop span pair"
     );
-    let start = phase_events
+    let start = state_events
         .iter()
         .find(|ev| ev.kind == EventKind::SpanStart)
-        .expect("phase span start");
-    let stop = phase_events
+        .expect("state span start");
+    let stop = state_events
         .iter()
         .find(|ev| ev.kind == EventKind::SpanStop)
-        .expect("phase span stop");
-    assert_eq!(metadata_str(start, "target_phase"), "parsed");
+        .expect("state span stop");
+    assert_eq!(metadata_str(start, "target_state"), "parsed");
     assert!(
         stop.measurements.get("elapsed_ns").is_some(),
-        "phase stop event must carry elapsed_ns"
+        "state stop event must carry elapsed_ns"
     );
 }
 
@@ -137,17 +140,17 @@ fn root_source_is_loaded_and_parsed_once_with_timing_telemetry() {
     assert_eq!(capture.count(&["fz", "compiler", "cache_miss"]), 2);
     assert_eq!(capture.count(&["fz", "compiler", "cache_hit"]), 1);
 
-    let parsed_phase_events = phase_start_events_for_target(&capture, "parsed");
+    let parsed_phase_events = state_start_events_for_target(&capture, "parsed");
     assert_eq!(
         parsed_phase_events.len(),
         1,
         "one parse should produce one parsed phase start"
     );
     assert!(
-        phase_events(&capture)
+        state_work_events(&capture)
             .iter()
             .any(|ev| ev.kind == EventKind::SpanStop && ev.measurements.get("elapsed_ns").is_some()),
-        "compiler phase timing must report elapsed_ns"
+        "compiler state timing must report elapsed_ns"
     );
 
     compiler
@@ -187,17 +190,17 @@ fn runtime_module_interface_is_collected_once_from_source() {
     assert_eq!(capture.count(&["fz", "compiler", "parsed"]), 1);
     assert_eq!(capture.count(&["fz", "compiler", "interface_ready"]), 1);
 
-    let parsed_phase_events = phase_start_events_for_target(&capture, "parsed");
+    let parsed_phase_events = state_start_events_for_target(&capture, "parsed");
     assert_eq!(
         parsed_phase_events.len(),
         1,
         "one runtime parse should produce one parsed phase start"
     );
     assert!(
-        phase_events(&capture)
+        state_work_events(&capture)
             .iter()
             .any(|ev| ev.kind == EventKind::SpanStop && ev.measurements.get("elapsed_ns").is_some()),
-        "compiler phase timing must report elapsed_ns"
+        "compiler state timing must report elapsed_ns"
     );
 
     compiler
