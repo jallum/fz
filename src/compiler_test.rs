@@ -252,3 +252,54 @@ fn compiler_invariants_reject_broken_module_file_links() {
         "unexpected invariant error: {err}"
     );
 }
+
+#[test]
+fn source_module_macro_exports_are_registered_from_compiler_owned_source() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler::new();
+    let root = compiler.register_root_source(
+        "macro-exports.fz",
+        r#"
+defmacro make_const(name, value) do
+  {:fn_def, name, value}
+end
+
+defmodule Macros do
+  defmacro bump(x), do: quote do: unquote(x) + 1
+end
+"#
+        .to_string(),
+        &tel,
+    );
+
+    let exports = compiler
+        .ensure_source_module_macro_exports(root, &tel)
+        .expect("root macro exports should collect");
+    let macros = ModuleName::parse_dotted("Macros").expect("valid module name");
+    let macros_id = compiler
+        .module_id_for_name(&macros)
+        .expect("named module should be registered in compiler world");
+
+    assert!(exports.root.contains(&("make_const".to_string(), 2)));
+    assert!(
+        exports
+            .modules
+            .get(&macros)
+            .expect("Macros exports")
+            .contains(&("bump".to_string(), 1))
+    );
+    assert_eq!(compiler.module(root).state, ModuleState::Parsed);
+    assert_eq!(compiler.module(macros_id).origin, ModuleOrigin::Filesystem);
+    assert!(
+        compiler
+            .module(macros_id)
+            .macro_exports
+            .as_ref()
+            .expect("module record stores macro exports")
+            .contains(&("bump".to_string(), 1))
+    );
+
+    compiler
+        .validate_invariants()
+        .expect("macro export registration should preserve compiler invariants");
+}

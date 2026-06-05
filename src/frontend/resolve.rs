@@ -323,7 +323,7 @@ fn flatten_modules_with_options<T: Types<Ty = Ty>>(
 ) -> Result<Program, ResolveError> {
     let prog = inject_module_info(prog);
     collect_module_fns(&prog)?;
-    let module_macros = collect_module_macros(&prog);
+    let module_macros = collect_module_macros(compiler, root_source, &prog, tel)?;
     let (module_interfaces, external_module_interfaces) =
         preload_module_contracts(compiler, root_source, &prog, interface_table, tel)?;
     let mut all_interfaces = module_interfaces.clone();
@@ -1707,14 +1707,26 @@ fn collect_module_fns_recursive(
     Ok(())
 }
 
-fn collect_module_macros(prog: &Program) -> ModuleMacroExports {
+fn collect_module_macros(
+    compiler: &mut CompilerWorld,
+    root_source: Option<ModuleId>,
+    prog: &Program,
+    tel: &dyn Telemetry,
+) -> Result<ModuleMacroExports, ResolveError> {
+    if let Some(root_source) = root_source {
+        let exports = compiler
+            .ensure_source_module_macro_exports(root_source, tel)
+            .expect("root source macro exports should come from parsed compiler state");
+        return Ok(exports.modules);
+    }
+
     let mut out: ModuleMacroExports = HashMap::new();
     for item in &prog.items {
         if let Item::Module(m) = &**item {
             collect_module_macros_recursive(m, None, &mut out);
         }
     }
-    out
+    Ok(out)
 }
 
 fn collect_module_macros_recursive(m: &ModuleDef, parent: Option<&ModuleName>, out: &mut ModuleMacroExports) {

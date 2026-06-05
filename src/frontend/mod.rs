@@ -281,7 +281,10 @@ where
             program: opaque(&prog),
         },
     );
-    if let Err(e) = macros::expand_program_with_types(t, &mut prog) {
+    if let Err(diagnostic) = macros::prepare_compiler_macro_surfaces(compiler, root_source, &prog, tel) {
+        return Err(fail(sm, diagnostic));
+    }
+    if let Err(e) = macros::expand_program_with_compiler_types(compiler, root_source, t, &mut prog) {
         return Err(fail(sm, e.to_diagnostic()));
     }
     resolve::add_macro_requested_runtime_interfaces(compiler, &mut prog, tel);
@@ -306,6 +309,10 @@ where
     );
     let (diagnostics, mut module_plan) = check_frontend(t, &prog, &module, tel);
     apply_planner_rewrites_to_fixed_point(t, &mut module, &mut module_plan);
+    #[cfg(test)]
+    compiler
+        .validate_invariants()
+        .expect("frontend compile must leave compiler world consistent");
     Ok(FrontendOk {
         sm,
         _prog: prog,

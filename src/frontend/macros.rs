@@ -11,10 +11,13 @@
 //! a stack-overflow guard catches runaway expansion).
 
 use crate::ast::*;
+use crate::compiler::{CompilerWorld, ModuleId, ModuleMacroSurface};
 use crate::diag::{Diagnostic, Span, SpanOrigin, codes};
 use crate::exec::ast_value::{expr_to_value, value_to_expr};
 use crate::exec::eval::CompileTimeEvaluator;
 use crate::exec::value::Value;
+use crate::modules::identity::ModuleName;
+use crate::telemetry::Telemetry;
 use crate::types::{RenderTypes, Ty, Types};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -160,13 +163,85 @@ pub fn expand_program_with_types<T>(t: &mut T, prog: &mut Program) -> Result<(),
 where
     T: Types<Ty = Ty> + RenderTypes,
 {
+    let macro_scope = compile_time_scope_from_program(prog);
+    expand_program_with_scope(t, prog, &macro_scope)
+}
+
+pub(crate) fn prepare_compiler_macro_surfaces(
+    compiler: &mut CompilerWorld,
+    root_source: Option<ModuleId>,
+    prog: &Program,
+    tel: &dyn Telemetry,
+) -> Result<(), Diagnostic> {
+    let Some(root_source) = root_source else {
+        return Ok(());
+    };
+    let exports = compiler.ensure_source_module_macro_exports(root_source, tel)?;
+
+    if !exports.root.is_empty() {
+        compiler.record_macro_surface(
+            root_source,
+            ModuleMacroSurface {
+                exports: exports.root.clone(),
+                program: Program {
+                    items: top_level_compile_time_items(prog),
+                    ..Program::default()
+                },
+            },
+            tel,
+        );
+    }
+
+    for (module, module_exports) in exports.modules {
+        if module_exports.is_empty() {
+            continue;
+        }
+        let Some(module_id) = compiler.module_id_for_name(&module) else {
+            continue;
+        };
+        compiler.record_macro_surface(
+            module_id,
+            ModuleMacroSurface {
+                exports: module_exports,
+                program: Program {
+                    items: compile_time_items_for_module(prog, &module),
+                    module_docs: compile_time_docs_for_module(&prog.module_docs, &module),
+                    ..Program::default()
+                },
+            },
+            tel,
+        );
+    }
+
+    Ok(())
+}
+
+pub(crate) fn expand_program_with_compiler_types<T>(
+    compiler: &mut CompilerWorld,
+    root_source: Option<ModuleId>,
+    t: &mut T,
+    prog: &mut Program,
+) -> Result<(), Box<MacroError>>
+where
+    T: Types<Ty = Ty> + RenderTypes,
+{
+    let macro_scope = root_source
+        .and_then(|root| compiler.macro_scope_for_root(root))
+        .unwrap_or_else(|| compile_time_scope_from_program(prog));
+    expand_program_with_scope(t, prog, &macro_scope)
+}
+
+fn expand_program_with_scope<T>(t: &mut T, prog: &mut Program, macro_scope: &Program) -> Result<(), Box<MacroError>>
+where
+    T: Types<Ty = Ty> + RenderTypes,
+{
     // Always run the item-level pass first (it doesn't need the macros set
     // since collect_macros walks both Item::Fn and the resulting Item::Fn
     // post-splice). After items are spliced, run expression-level expansion.
-    let macros = collect_macros(prog);
+    let macros = collect_macros(macro_scope);
     let interp = CompileTimeEvaluator::new();
     interp
-        .load_program_with_types(t, prog)
+        .load_program_with_types(t, macro_scope)
         .map_err(|e| Box::new(MacroError::LoadFailed { inner: e }))?;
 
     // Item-level expansion: replace Item::MacroCall with whatever items
@@ -176,7 +251,7 @@ where
     expand_items(prog, &interp, &macros)?;
 
     // Expression-level expansion across the (now-final) fn bodies.
-    let macros = collect_macros(prog);
+    let macros = collect_macros_union(macro_scope, prog);
     expand_with(prog, &interp, &macros)
 }
 
@@ -392,6 +467,49 @@ pub fn expand_with(
     Ok(())
 }
 
+fn compile_time_scope_from_program(prog: &Program) -> Program {
+    Program {
+        items: prog
+            .items
+            .iter()
+            .filter(|item| matches!(&***item, Item::Fn(_)))
+            .cloned()
+            .collect(),
+        module_docs: prog.module_docs.clone(),
+        ..Program::default()
+    }
+}
+
+fn top_level_compile_time_items(prog: &Program) -> Vec<Rc<Item>> {
+    prog.items
+        .iter()
+        .filter_map(|item| match &**item {
+            Item::Fn(def) if !def.name.contains('.') => Some(item.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn compile_time_items_for_module(prog: &Program, module: &ModuleName) -> Vec<Rc<Item>> {
+    let prefix = format!("{}.", module.dotted());
+    prog.items
+        .iter()
+        .filter_map(|item| match &**item {
+            Item::Fn(def) if def.name.starts_with(&prefix) => Some(item.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn compile_time_docs_for_module(module_docs: &HashMap<String, String>, module: &ModuleName) -> HashMap<String, String> {
+    let prefix = module.dotted();
+    module_docs
+        .iter()
+        .filter(|(path, _)| *path == &prefix || path.starts_with(&(prefix.clone() + ".")))
+        .map(|(path, doc)| (path.clone(), doc.clone()))
+        .collect()
+}
+
 /// Collect names of all macros defined in `prog`. Also exposed for the
 /// REPL, which needs to know the live macro set without re-walking the
 /// program every input.
@@ -416,6 +534,12 @@ pub fn collect_macros(prog: &Program) -> HashSet<String> {
             }
         }
     }
+    out
+}
+
+fn collect_macros_union(macro_scope: &Program, prog: &Program) -> HashSet<String> {
+    let mut out = collect_macros(macro_scope);
+    out.extend(collect_macros(prog));
     out
 }
 

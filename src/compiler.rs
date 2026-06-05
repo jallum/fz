@@ -3,7 +3,7 @@
 // later world-model phases are still being pulled into use over the next
 // tickets. Keep the allowance local to this module until those phases are live.
 
-use crate::ast::{Attribute, Item, Program};
+use crate::ast::{Attribute, Item, ModuleDef, Program};
 use crate::diag::{Diagnostic, SourceMap};
 use crate::modules::identity::ModuleName;
 use crate::modules::interface::{ModuleInterface, collect_from_program};
@@ -14,7 +14,7 @@ use crate::telemetry::{Telemetry, TelemetryExt as _};
 use crate::types;
 use crate::types::DefaultTypes;
 use crate::{measurements, metadata};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -220,6 +220,18 @@ impl ParsedSource {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SourceMacroExports {
+    pub(crate) root: HashSet<(String, usize)>,
+    pub(crate) modules: HashMap<ModuleName, HashSet<(String, usize)>>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ModuleMacroSurface {
+    pub(crate) exports: HashSet<(String, usize)>,
+    pub(crate) program: Program,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ModuleRecord {
     pub(crate) id: ModuleId,
@@ -229,6 +241,8 @@ pub(crate) struct ModuleRecord {
     pub(crate) state: ModuleState,
     pub(crate) reachability: Reachability,
     pub(crate) interfaces: Option<BTreeMap<ModuleName, ModuleInterface>>,
+    pub(crate) macro_exports: Option<HashSet<(String, usize)>>,
+    pub(crate) macro_surface: Option<ModuleMacroSurface>,
 }
 
 #[derive(Clone)]
@@ -407,6 +421,14 @@ impl Compiler {
         tel: &dyn Telemetry,
     ) -> Result<BTreeMap<ModuleName, ModuleInterface>, Diagnostic> {
         self.world.ensure_source_module_interfaces(root_id, tel)
+    }
+
+    pub(crate) fn ensure_source_module_macro_exports(
+        &mut self,
+        root_id: ModuleId,
+        tel: &dyn Telemetry,
+    ) -> Result<SourceMacroExports, Diagnostic> {
+        self.world.ensure_source_module_macro_exports(root_id, tel)
     }
 
     pub(crate) fn mark_reachable(&mut self, module_id: ModuleId, kind: ReachabilityKind, tel: &dyn Telemetry) -> bool {
@@ -670,6 +692,94 @@ impl CompilerWorld {
         Ok(interfaces)
     }
 
+    pub(crate) fn ensure_source_module_macro_exports(
+        &mut self,
+        root_id: ModuleId,
+        tel: &dyn Telemetry,
+    ) -> Result<SourceMacroExports, Diagnostic> {
+        let parsed = self.ensure_program(root_id, tel)?;
+        let exports = collect_source_macro_exports(&parsed.program);
+        self.modules[root_id.0 as usize].macro_exports = Some(exports.root.clone());
+
+        let file_id = self.module(root_id).file_id;
+        let file = self.file(file_id).clone();
+        for (module, macros) in &exports.modules {
+            let module_id = self.register_module(
+                ModuleKey::Named(module.clone()),
+                ModuleOrigin::Filesystem,
+                file.origin.clone(),
+                file.descriptor.clone(),
+                tel,
+            );
+            self.modules[module_id.0 as usize].macro_exports = Some(macros.clone());
+        }
+
+        Ok(exports)
+    }
+
+    pub(crate) fn record_macro_surface(
+        &mut self,
+        module_id: ModuleId,
+        surface: ModuleMacroSurface,
+        tel: &dyn Telemetry,
+    ) -> bool {
+        self.ensure_module_state(module_id, ModuleState::MacroSurfaceReady, tel, |this| {
+            let measurements = this.phase_measurements(module_id);
+            let record = this.module(module_id);
+            tel.execute(
+                &["fz", "compiler", "macro_surface_ready"],
+                &measurements,
+                &metadata! {
+                    module_key: record.key.render(),
+                    module_key_kind: record.key.kind(),
+                    module_origin: record.origin.kind(),
+                    macros: surface.exports.len() as u64,
+                    items: surface.program.items.len() as u64,
+                },
+            );
+            let slot = &mut this.modules[module_id.0 as usize];
+            slot.macro_exports = Some(surface.exports.clone());
+            slot.macro_surface = Some(surface);
+        })
+    }
+
+    pub(crate) fn macro_scope_for_root(&self, root_id: ModuleId) -> Option<Program> {
+        let file_id = self.module(root_id).file_id;
+        let mut items = Vec::new();
+        let mut seen_fns = HashSet::new();
+        let mut module_docs = HashMap::new();
+
+        for module in &self.modules {
+            if module.file_id != file_id {
+                continue;
+            }
+            let Some(surface) = &module.macro_surface else {
+                continue;
+            };
+            for item in &surface.program.items {
+                let Item::Fn(def) = &**item else {
+                    continue;
+                };
+                if seen_fns.insert(def.name.clone()) {
+                    items.push(item.clone());
+                }
+            }
+            for (path, doc) in &surface.program.module_docs {
+                module_docs.entry(path.clone()).or_insert_with(|| doc.clone());
+            }
+        }
+
+        if items.is_empty() {
+            return None;
+        }
+
+        Some(Program {
+            items,
+            module_docs,
+            ..Program::default()
+        })
+    }
+
     pub(crate) fn mark_reachable(&mut self, module_id: ModuleId, kind: ReachabilityKind, tel: &dyn Telemetry) -> bool {
         let record = self.module(module_id);
         if record.reachability.is_marked(kind) {
@@ -788,12 +898,26 @@ impl CompilerWorld {
                     module.key.render()
                 )));
             }
+            if module.state.covers(ModuleState::MacroSurfaceReady) && module.macro_surface.is_none() {
+                return Err(CompilerInvariantError::new(format!(
+                    "module `{}` is macro_surface_ready without macro surface",
+                    module.key.render()
+                )));
+            }
             if module.state.covers(ModuleState::MacroSurfaceReady) && !module.state.covers(ModuleState::InterfaceReady)
             {
                 return Err(CompilerInvariantError::new(format!(
                     "module `{}` reached macro surface without interface readiness",
                     module.key.render()
                 )));
+            }
+            if let Some(surface) = &module.macro_surface {
+                if surface.program.items.iter().any(|item| !matches!(&**item, Item::Fn(_))) {
+                    return Err(CompilerInvariantError::new(format!(
+                        "module `{}` macro surface contains non-function items",
+                        module.key.render()
+                    )));
+                }
             }
             if module.state.covers(ModuleState::RuntimeLowered) && !module.reachability.runtime {
                 return Err(CompilerInvariantError::new(format!(
@@ -902,6 +1026,8 @@ impl CompilerWorld {
             state: ModuleState::Discovered,
             reachability: Reachability::default(),
             interfaces: None,
+            macro_exports: None,
+            macro_surface: None,
         };
         self.modules.push(record);
         self.module_index.insert(key.clone(), id);
@@ -1063,6 +1189,45 @@ fn collect_interfaces(parsed: &ParsedSource) -> BTreeMap<ModuleName, ModuleInter
             collect_from_program(&program)
         }
     }
+}
+
+fn collect_source_macro_exports(prog: &Program) -> SourceMacroExports {
+    let mut out = SourceMacroExports::default();
+    for item in &prog.items {
+        match &**item {
+            Item::Fn(def) if def.is_macro => {
+                let arity = def.clauses.first().map(|clause| clause.params.len()).unwrap_or(0);
+                out.root.insert((def.name.clone(), arity));
+            }
+            Item::Module(module) => collect_module_macro_exports(module, None, &mut out.modules),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn collect_module_macro_exports(
+    module: &ModuleDef,
+    parent: Option<&ModuleName>,
+    out: &mut HashMap<ModuleName, HashSet<(String, usize)>>,
+) {
+    let path = if let Some(parent) = parent {
+        parent.child(module.name.clone())
+    } else {
+        ModuleName::from_segments(vec![module.name.clone()])
+    };
+    let mut macros = HashSet::new();
+    for item in &module.items {
+        match &**item {
+            Item::Fn(def) if def.is_macro => {
+                let arity = def.clauses.first().map(|clause| clause.params.len()).unwrap_or(0);
+                macros.insert((def.name.clone(), arity));
+            }
+            Item::Module(inner) => collect_module_macro_exports(inner, Some(&path), out),
+            _ => {}
+        }
+    }
+    out.insert(path, macros);
 }
 
 #[cfg(test)]

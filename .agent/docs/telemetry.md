@@ -199,6 +199,10 @@ module through the world the way we intended?" before loader/resolver work lands
   cached parsed source. Measurements: `module_id`, `file_id`. Metadata:
   `module_key`, `module_key_kind`, `module_origin`, `interfaces`,
   `parse_kind`.
+- `fz.compiler.macro_surface_ready` — the compiler stored a fn-only compile-time
+  surface for a macro provider without lowering or planning runtime work.
+  Measurements: `module_id`, `file_id`. Metadata: `module_key`,
+  `module_key_kind`, `module_origin`, `macros`, `items`.
 - `fz.compiler.cache_miss` / `fz.compiler.cache_hit` — a phase or reachability
   query did or did not need work. Measurements: `module_id`, `file_id`.
   Metadata names the module plus the requested phase or reachability slice.

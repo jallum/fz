@@ -5,7 +5,7 @@ use crate::diag::diagnostic::Severity;
 use crate::fz_ir::{FnCategory, Term};
 use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn, InterfaceSpec, ModuleInterface};
-use crate::telemetry::{Capture, ConfiguredTelemetry, Event, Handler, Value};
+use crate::telemetry::{Capture, ConfiguredTelemetry, Event, EventKind, Handler, Value};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -348,6 +348,102 @@ fn main(), do: inc(41)
     };
     assert_eq!(parsed_out.module.fns.len(), source_out.module.fns.len());
     assert!(parsed_out.module.fn_by_name("main").is_some());
+}
+
+#[test]
+fn compiler_owned_macro_surfaces_are_cached_without_runtime_lowering() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "compiler"], capture.handler());
+
+    let src = r#"
+defmodule Macros do
+  fn helper(x), do: x + 100
+  defmacro bump(x) do
+    quote do: helper(unquote(x))
+  end
+end
+
+defmodule User do
+  import Macros, only: [bump: 1]
+  fn run(), do: bump(7)
+end
+"#;
+
+    let mut compiler = Compiler::new();
+    let mut t = crate::types::new();
+    let first = compile_source_with_compiler_types(
+        compiler.world_mut(),
+        &mut t,
+        src.to_string(),
+        "macro-provider.fz".to_string(),
+        &tel,
+    )
+    .unwrap_or_else(|_| panic!("first compile should succeed"));
+    let second = compile_source_with_compiler_types(
+        compiler.world_mut(),
+        &mut t,
+        src.to_string(),
+        "macro-provider.fz".to_string(),
+        &tel,
+    )
+    .unwrap_or_else(|_| panic!("second compile should reuse compiler cache"));
+
+    assert!(first.module.fn_by_name("User.run").is_some());
+    assert!(second.module.fn_by_name("User.run").is_some());
+
+    let macros = ModuleName::parse_dotted("Macros").expect("valid module name");
+    let user = ModuleName::parse_dotted("User").expect("valid module name");
+    let macros_id = compiler
+        .module_id_for_name(&macros)
+        .expect("Macros module record should exist");
+    let user_id = compiler
+        .module_id_for_name(&user)
+        .expect("User module record should exist");
+    assert_eq!(compiler.module(macros_id).origin, ModuleOrigin::Filesystem);
+    assert_eq!(compiler.module(macros_id).state, ModuleState::MacroSurfaceReady);
+    assert_eq!(compiler.module(user_id).state, ModuleState::InterfaceReady);
+
+    let parsed_root = capture
+        .find(&["fz", "compiler", "parsed"])
+        .into_iter()
+        .filter(|ev| captured_str(ev, "module_key") == "macro-provider.fz")
+        .count();
+    assert_eq!(parsed_root, 1, "root source should be parsed once");
+
+    let macro_surfaces = capture
+        .find(&["fz", "compiler", "macro_surface_ready"])
+        .into_iter()
+        .filter(|ev| captured_str(ev, "module_key") == "Macros")
+        .count();
+    assert_eq!(macro_surfaces, 1, "macro provider should build one surface");
+    assert!(
+        capture
+            .find(&["fz", "compiler", "phase"])
+            .into_iter()
+            .any(|ev| ev.kind == EventKind::SpanStart && captured_str(&ev, "target_phase") == "macro_surface_ready"),
+        "macro provider should execute a macro_surface_ready phase"
+    );
+    assert!(
+        capture
+            .find(&["fz", "compiler", "phase"])
+            .into_iter()
+            .any(|ev| ev.kind == EventKind::SpanStop && ev.measurements.get("elapsed_ns").is_some()),
+        "macro-surface phase timing must report elapsed_ns"
+    );
+
+    assert!(
+        !capture
+            .find(&["fz", "compiler", "phase_advanced"])
+            .into_iter()
+            .filter(|ev| captured_str(ev, "module_key") == "Macros")
+            .any(|ev| matches!(captured_str(&ev, "to_phase"), "runtime_lowered" | "runtime_planned")),
+        "macro-only provider must not advance into runtime phases"
+    );
+
+    compiler
+        .validate_invariants()
+        .expect("macro-surface compile should leave compiler world consistent");
 }
 
 #[test]
