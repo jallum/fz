@@ -13,11 +13,12 @@ rediscovering them.
 
 ## The Pieces
 
-- **`plan_module`** (`ir_planner/worklist.rs`) produces the authoritative
-  `ModulePlan` for a settled module and emits `fz.planner.planned` with
-  `role: "authoritative"`. The frontend runs it once on the lowered module, and
-  `prepare_execution_graph` runs it again on the linked module, so normal source
-  execution publishes exactly two authoritative `planned` events.
+- **`plan_module_with_role`** (`ir_planner/worklist.rs`) produces the
+  `ModulePlan` for a settled module and emits `fz.planner.planned` with the
+  caller-supplied `role`. The production source pipeline uses
+  `role: "frontend_check"` on the lowered source module and
+  `role: "linked_execution_graph"` on the linked runtime module; LTO and
+  artifact materialization use distinct role names for their own replans.
 - **`PreparedExecutionGraph`** (`modules/pipeline.rs`) is the source/runtime
   handoff. It carries the linked `Module` and the `ModulePlan` for that exact
   module. The interpreter and codegen both consume this pair.
@@ -41,7 +42,7 @@ rediscovering them.
 
 ```text
 source frontend / provider linking
-  -> plan_module                  # authoritative plan for this module
+  -> plan_module_with_role        # exact plan for this module shape
   -> PreparedExecutionGraph       # module + exact plan
   -> compile_planned
        -> lower_destinations      # local invariant-preserving transform
@@ -52,8 +53,8 @@ source frontend / provider linking
 ```
 
 LTO mode is the one place that mutates module boundaries on purpose. It erases
-the boundaries, runs `plan_module` on the erased module, and hands that fresh
-module/plan pair downstream. The pre-erasure plan is discarded.
+the boundaries, runs `plan_module_with_role` on the erased module, and hands
+that fresh module/plan pair downstream. The pre-erasure plan is discarded.
 
 ## What Each Stage Owns And Preserves
 
@@ -85,9 +86,11 @@ authoritative plan never has to carry it:
 
 The observable contract for the whole pipeline: `compile_planned` emits no
 `fz.planner.planned` event. The gating test attaches to that event and asserts
-codegen adds none beyond the two the frontend and linker already published.
-(`materialize_program` still emits its own `fz.planner.body_materialized` and
-`fz.planner.materialized` events — those report the projection, not a replan.)
+codegen adds none beyond the caller-owned planning passes that already
+published the `frontend_check` / `linked_execution_graph` (or corresponding
+LTO/materialization) roles. (`materialize_program` still emits its own
+`fz.planner.body_materialized` and `fz.planner.materialized` events — those
+report the projection, not a replan.)
 
 ## Materializing The Planned Program
 

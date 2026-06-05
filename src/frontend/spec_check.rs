@@ -15,7 +15,7 @@
 //!
 //! ## Pipeline position
 //!
-//! Runs after `ir_planner::plan_module` produces `ModulePlan`. The
+//! Runs after `ir_planner::plan_module_with_role` produces `ModulePlan`. The
 //! validator looks up each AST `FnDef`'s declared `@spec`, resolves it
 //! against the enclosing module's `ModuleTypeEnv` (already built in
 //! `resolve::flatten_modules`), then iterates the registered narrow

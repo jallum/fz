@@ -1,28 +1,15 @@
 //! CodegenEnv (immutable per-module ctx) and CodegenCache (per-fn caches).
 
-#![allow(unused_imports)]
-
 use super::*;
-use crate::fz_ir::{BinOp, BlockId, Const, ExternId, FnId, Module, Prim, Stmt, Term, UnOp, Var};
+use crate::fz_ir::{BlockId, ExternId, FnId, Module, Var};
 use crate::ir_planner::SpecPlan;
 use crate::ir_planner::fn_types::SpecKey;
 use crate::telemetry::Telemetry;
-use cranelift_codegen::Context;
-use cranelift_codegen::ir::{
-    self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
-    condcodes::{FloatCC, IntCC},
-    types,
-};
-use cranelift_codegen::isa::CallConv;
-use cranelift_codegen::settings::{self, Configurable};
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
+use cranelift_codegen::ir::{self};
+use cranelift_module::{DataId, FuncId};
 use fz_runtime::any_value::AnyValue;
-use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 pub(crate) struct CodegenEnv<'a> {
     pub(super) telemetry: &'a dyn Telemetry,

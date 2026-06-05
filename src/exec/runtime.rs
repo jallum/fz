@@ -30,10 +30,10 @@
 use crate::fz_ir::{FnId, Module};
 use crate::ir_codegen::{CompiledModule, PidId, Process, ProcessState};
 use crate::ir_interp::make_resource_in_current_process;
+use crate::telemetry::Telemetry;
 #[cfg(test)]
 use crate::telemetry::handler::{Event, Handler};
 use crate::telemetry::value::opaque;
-use crate::telemetry::{NullTelemetry, Telemetry};
 use fz_runtime::any_value::{AnyValue, AnyValueRef};
 use fz_runtime::exec_ctx::{ExecCtx, timer_cancel};
 use fz_runtime::heap::{Heap, deep_copy_any_value_ref};
@@ -74,16 +74,11 @@ pub struct Runtime<'a> {
     /// after-cont closure.
     pub(crate) timers: TimerWheel,
 
-    /// Observability sink. Defaults to the silent `NullTelemetry`; the
-    /// driver attaches a real one via `with_telemetry`. The run loop emits
-    /// `fz.runtime.process_exited` at each task exit (see `ExitRecord`),
-    /// which is the seam tests observe instead of poking task internals.
+    /// Observability sink. The run loop emits `fz.runtime.process_exited`
+    /// at each task exit (see `ExitRecord`), which is the seam tests observe
+    /// instead of poking task internals.
     tel: &'a dyn Telemetry,
 }
-
-/// Silent default for `Runtime.tel` — a `'static` so it coerces to the
-/// `&'a dyn Telemetry` field for any runtime lifetime.
-static NULL_TELEMETRY: NullTelemetry = NullTelemetry;
 
 /// The facts observed when a task exits, projected from its `Process`. This is
 /// the single place that reads `Process` internals for the
@@ -330,7 +325,7 @@ impl<'a> Runtime<'a> {
     /// Create a Runtime bound to `compiled`. `workers` configures the pool
     /// size; v1 only supports 1 (panics otherwise so the limitation is
     /// loud, not silent).
-    pub fn new(compiled: &'a CompiledModule, workers: usize) -> Self {
+    pub fn new(compiled: &'a CompiledModule, workers: usize, tel: &'a dyn Telemetry) -> Self {
         assert!(
             workers == 1,
             "v1 only supports pool size 1; multi-worker is a follow-up to fz-ul4.19.1"
@@ -342,16 +337,8 @@ impl<'a> Runtime<'a> {
             next_pid: 1,
             timers: TimerWheel::new(),
             module: None,
-            tel: &NULL_TELEMETRY,
+            tel,
         }
-    }
-
-    /// Attach an observability sink. The run loop emits
-    /// `fz.runtime.process_exited` carrying the halt value and heap stats.
-    /// The telemetry must outlive `run_until_idle`.
-    pub fn with_telemetry(mut self, tel: &'a dyn Telemetry) -> Self {
-        self.tel = tel;
-        self
     }
 
     /// fz-swt.10 — attach the IR Module so the `MakeResourceHook` thunk

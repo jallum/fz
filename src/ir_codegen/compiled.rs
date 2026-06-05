@@ -1,12 +1,10 @@
-#![allow(unused_imports)]
-
 use super::*;
 use crate::diag::Diagnostics;
 #[cfg(test)]
 use crate::exec::runtime::{ProcessExitCapture, Runtime};
 use crate::fz_ir::{
-    BinOp, CallsiteId, Const, Cont, ExternId, ExternalLinkError, FnId, FnIr, Module, Prim, ReceiveAfter, ReceiveClause,
-    Stmt, Term, UnOp, rewrite_external_callsite_for_link,
+    CallsiteId, Const, Cont, ExternId, ExternalLinkError, FnId, FnIr, Module, Prim, ReceiveAfter, ReceiveClause, Stmt,
+    Term, rewrite_external_callsite_for_link,
 };
 use crate::ir_planner::fn_types::{
     BodyKey, CallEdgePlan, CallEdgeTarget, CallableCapability, ReturnContract, ReturnStrategy, SpecKey,
@@ -15,20 +13,10 @@ use crate::ir_planner::{ModulePlan, SpecPlan};
 use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::interface::{InterfaceFn, ModuleInterface};
 use crate::telemetry::Telemetry;
-use crate::telemetry::bus::ConfiguredTelemetry;
-use cranelift_codegen::Context;
-use cranelift_codegen::ir::{
-    self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
-    condcodes::{FloatCC, IntCC},
-    types,
-};
-use cranelift_codegen::isa::CallConv;
-use cranelift_codegen::settings::{self, Configurable};
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
+use cranelift_jit::JITModule;
+use cranelift_module::FuncId;
 use fz_runtime::any_value::{AnyValue, AnyValueRef, ValueKind};
-use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema, SchemaRegistry};
+use fz_runtime::heap::{Schema, SchemaRegistry};
 use fz_runtime::pinned_abi::call1;
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node};
 use fz_runtime::sched::{ScanOutcome, initial_scan};
@@ -39,7 +27,6 @@ use std::fmt;
 use std::ptr::null_mut;
 use std::rc::Rc;
 use std::slice::from_ref;
-use std::sync::Arc;
 
 /// One separately compiled source module before link-time/runtime-global
 /// state is assembled.
@@ -119,8 +106,8 @@ impl CompiledProgram {
         }
     }
 
-    pub fn link_image_with_telemetry(self, tel: &dyn Telemetry) -> Result<CompiledImage, ImageLinkError> {
-        match self.link_image() {
+    pub fn link_image(self, tel: &dyn Telemetry) -> Result<CompiledImage, ImageLinkError> {
+        match self.link_image_inner() {
             Ok(image) => {
                 tel.event(&["fz", "link", "succeeded"], crate::metadata! { units: 1 });
                 Ok(image)
@@ -132,7 +119,7 @@ impl CompiledProgram {
         }
     }
 
-    fn link_image(self) -> Result<CompiledImage, ImageLinkError> {
+    fn link_image_inner(self) -> Result<CompiledImage, ImageLinkError> {
         let _linked_ir = link_ir_units(from_ref(&self.unit))?;
         let metadata =
             RuntimeImageMetadata::link_units(from_ref(&self.runtime)).map_err(ImageLinkError::RuntimeMetadata)?;
@@ -144,16 +131,12 @@ impl CompiledProgram {
 }
 
 impl CompiledImage {
-    pub fn from_linked(linked: CompiledModule) -> Self {
+    pub fn from_linked(tel: &dyn Telemetry, units: usize, linked: CompiledModule) -> Self {
+        tel.event(&["fz", "link", "succeeded"], crate::metadata! { units: units as i64 });
         Self {
             inner: linked,
             metadata: None,
         }
-    }
-
-    pub fn from_linked_with_telemetry(tel: &dyn Telemetry, units: usize, linked: CompiledModule) -> Self {
-        tel.event(&["fz", "link", "succeeded"], crate::metadata! { units: units as i64 });
-        Self::from_linked(linked)
     }
 
     pub fn metadata(&self) -> Option<&RuntimeImageMetadata> {
@@ -1307,10 +1290,10 @@ impl CompiledModule {
     pub fn run(&self, fn_id: FnId) -> i64 {
         // Observe the root task through the telemetry seam rather than reading
         // Runtime internals directly.
-        let tel = ConfiguredTelemetry::new();
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
         let exits = ProcessExitCapture::new();
         tel.attach(&[], exits.handler());
-        let mut rt = Runtime::new(self, 1).with_telemetry(&tel);
+        let mut rt = Runtime::new(self, 1, &tel);
         let root_pid = rt.spawn(fn_id);
         rt.run_until_idle();
         exits.by_pid(root_pid).expect("root process_exited captured").halt_value

@@ -7,7 +7,7 @@ use crate::frontend::resolve::InterfaceTable;
 use crate::frontend::{FrontendOk, FrontendResult, compile_source_with_interface_table, compile_source_with_types};
 use crate::fz_ir::Module;
 use crate::ir_codegen::{CompiledUnit, ImageLinkError, link_ir_units};
-use crate::ir_planner::{ModulePlan, plan_module};
+use crate::ir_planner::{ModulePlan, plan_module_with_role};
 use crate::metadata;
 use crate::modules::artifact::{FZO_PAYLOAD_IR_UNIT_V1, FzoArtifact, IrUnitPayload};
 use crate::modules::artifact_store::{ArtifactStore, ArtifactStoreError};
@@ -191,7 +191,7 @@ pub(crate) fn checked_module_for_mode(
                 module_path: module.module_path().to_owned(),
             },
         );
-        let module_plan = plan_module(t, &module, tel);
+        let module_plan = plan_module_with_role(t, &module, tel, "lto_boundary_erased");
         Ok(CheckedModule {
             module,
             module_plan,
@@ -230,7 +230,7 @@ pub(crate) fn prepare_execution_graph(
             module_path: module.module_path().to_owned(),
         },
     );
-    let module_plan = plan_module(t, &module, tel);
+    let module_plan = plan_module_with_role(t, &module, tel, "linked_execution_graph");
     // The execution graph hands downstream engines the real linked module and
     // its one authoritative plan. Mutating IR transforms that change dispatch
     // or reachability must not run here unless they also preserve that
@@ -248,7 +248,7 @@ pub(crate) fn prepare_execution_graph(
             .collect();
         let linked = LtoLinkedProgram::validate(module.clone(), interfaces, tel, Some(&prepared.sm))?;
         let (module, _) = linked.erase_boundaries(tel)?;
-        let module_plan = plan_module(t, &module, tel);
+        let module_plan = plan_module_with_role(t, &module, tel, "lto_linked_execution_graph");
         return Ok(PreparedExecutionGraph {
             units,
             module,
@@ -317,14 +317,14 @@ fn load_provider_units(
         .external_interfaces
         .keys()
         .filter(|module| {
-            runtime_library::interface(module).is_some() && !runtime_library::is_core_prelude_module(module)
+            runtime_library::interface(module, tel).is_some() && !runtime_library::is_core_prelude_module(module)
         })
         .cloned();
     let provider_roots = providers
         .modules
         .iter()
         .cloned()
-        .chain(runtime_library::prelude_required_modules())
+        .chain(runtime_library::prelude_required_modules(tel))
         .chain(runtime_roots)
         .collect::<Vec<_>>();
     let graph = ModuleGraphLoader::new(store)
@@ -414,7 +414,7 @@ fn materialize_ir_unit(
             module_path: module.module_path().to_owned(),
         },
     );
-    let module_plan = plan_module(t, &module, tel);
+    let module_plan = plan_module_with_role(t, &module, tel, "artifact_materialization");
     tel.event(
         &["fz", "module", "unit_materialized"],
         metadata! { kind: "ir-unit", module: module_name.dotted() },

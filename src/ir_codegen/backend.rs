@@ -1,31 +1,21 @@
-#![allow(unused_imports)]
-
 use super::*;
 use crate::diag::Diagnostics;
-use crate::fz_ir::{BinOp, Const, FnId, Module, Prim, Stmt, Term, UnOp, Var};
+use crate::fz_ir::{FnId, Module, Var};
 use crate::ir_planner::SpecPlan;
 use crate::ir_planner::fn_types::{CallableCapability, SpecKey};
 use crate::types::{ClosureLitInfo, ClosureTypes, Ty, Types, key_slots_from_tys};
-use cranelift_codegen::Context;
-use cranelift_codegen::ir::{
-    self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
-    condcodes::{FloatCC, IntCC},
-    types,
-};
+use cranelift_codegen::ir::{AbiParam, Signature, types};
 use cranelift_codegen::isa::CallConv;
-use cranelift_codegen::settings::{self, Configurable};
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use cranelift_frontend::FunctionBuilderContext;
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
+use cranelift_module::{DataDescription, DataId, Linkage, Module as ClModule};
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
 use fz_runtime::process::Node;
 use fz_runtime::{extern_binary, extern_variadic, fz_panic, ir_runtime, procbin, resource};
 use object::macho::PLATFORM_MACOS;
 use object::write::MachOBuildVersion;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 
 /// Abstracts the JIT/AOT split. The codegen pipeline is shared; the trait
 /// owns every legitimate point of variation — fn linkage, per-program

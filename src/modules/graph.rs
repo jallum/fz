@@ -51,12 +51,12 @@ impl ModuleGraphLoader {
             if interfaces.contains_key(&module) {
                 continue;
             }
-            if let Some(interface) = runtime_library::interface(&module) {
+            if let Some(interface) = runtime_library::interface(&module, tel) {
                 interfaces.insert(module, interface.clone());
                 enqueue_imports(&mut queue, &interface);
                 enqueue_protocol_impl_protocols(&mut queue, &interface);
-                enqueue_runtime_implementation_imports(&mut queue, &interface);
-                enqueue_runtime_protocol_impls(&mut queue, &interfaces, &interface);
+                enqueue_runtime_implementation_imports(&mut queue, &interface, tel);
+                enqueue_runtime_protocol_impls(&mut queue, &interfaces, &interface, tel);
                 runtime_modules.insert(interface.name.clone());
                 continue;
             }
@@ -71,7 +71,7 @@ impl ModuleGraphLoader {
 
         let mut objects = Vec::new();
         for module in runtime_modules {
-            let Some(artifact) = runtime_library::artifact(&module) else {
+            let Some(artifact) = runtime_library::artifact(&module, tel) else {
                 continue;
             };
             objects.push(artifact.fzo);
@@ -106,8 +106,12 @@ fn enqueue_protocol_impl_protocols(queue: &mut VecDeque<ModuleName>, interface: 
     }
 }
 
-fn enqueue_runtime_implementation_imports(queue: &mut VecDeque<ModuleName>, interface: &ModuleInterface) {
-    for module in runtime_library::implementation_dependencies(&interface.name) {
+fn enqueue_runtime_implementation_imports(
+    queue: &mut VecDeque<ModuleName>,
+    interface: &ModuleInterface,
+    tel: &dyn Telemetry,
+) {
+    for module in runtime_library::implementation_dependencies(&interface.name, tel) {
         queue.push_back(module);
     }
 }
@@ -116,6 +120,7 @@ fn enqueue_runtime_protocol_impls(
     queue: &mut VecDeque<ModuleName>,
     loaded: &InterfaceTable,
     interface: &ModuleInterface,
+    tel: &dyn Telemetry,
 ) {
     if interface.protocols.is_empty() {
         return;
@@ -125,7 +130,7 @@ fn enqueue_runtime_protocol_impls(
         .iter()
         .map(|protocol| protocol.name.clone())
         .collect::<Vec<_>>();
-    for (module, candidate) in runtime_library::interfaces() {
+    for (module, candidate) in runtime_library::interfaces(tel) {
         if loaded.contains_key(&module) {
             continue;
         }

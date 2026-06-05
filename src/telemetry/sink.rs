@@ -1,10 +1,8 @@
-//! The `Telemetry` trait — the compiler-facing surface — plus the
-//! `NullTelemetry` no-op implementation passed by default.
+//! The `Telemetry` trait — the compiler-facing observability surface.
 //!
 //! Compiler code depends only on the trait. The driver constructs whichever
 //! concrete impl it wants (see fz-ndf.5 for the configured impl) and threads
-//! `&dyn Telemetry` through. Tests pass capture impls (fz-ndf.6). Production
-//! binaries that just want silence pass `&NullTelemetry`.
+//! `&dyn Telemetry` through. Tests pass capture impls (fz-ndf.6).
 //!
 //! Span semantics — start/stop/exception events, elapsed_ns, parent linkage —
 //! land in fz-ndf.4.
@@ -51,28 +49,6 @@ pub trait Telemetry {
     fn event(&self, name: &[&'static str], metadata: Metadata) {
         self.execute(name, &Measurements::new(), &metadata);
     }
-}
-
-/// No-op implementation. Every method returns immediately and allocates
-/// nothing. The compiler treats `&NullTelemetry` as the "silent" default
-/// when the driver doesn't want observability.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NullTelemetry;
-
-impl Telemetry for NullTelemetry {
-    #[inline]
-    fn execute(&self, _: &[&'static str], _: &Measurements, _: &Metadata) {}
-
-    #[inline]
-    fn span_start(&self, _: &[&'static str], _: &Metadata) -> u64 {
-        0
-    }
-
-    #[inline]
-    fn span_stop(&self, _: &[&'static str], _: u64, _: u64) {}
-
-    #[inline]
-    fn span_exception(&self, _: &[&'static str], _: u64, _: u64) {}
 }
 
 /// RAII guard returned by `TelemetryExt::span`. Captures the start time

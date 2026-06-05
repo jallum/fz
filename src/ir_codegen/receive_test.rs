@@ -8,7 +8,7 @@ use crate::ir_codegen::backend::register_runtime_symbols;
 use crate::ir_codegen::runtime_syms::declare_runtime_symbols;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{Module as CraneliftModule, default_libcall_names};
+use cranelift_module::default_libcall_names;
 use fz_runtime::any_value::AnyValue;
 use fz_runtime::heap::{Schema, SchemaRegistry};
 use fz_runtime::ir_runtime::fz_box_int_for_any;

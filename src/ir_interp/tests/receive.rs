@@ -6,14 +6,22 @@ use crate::ir_interp::{AnyValue, IrInterpRuntime, run_main};
 use crate::ir_lower::lower_program;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
-use crate::telemetry::NullTelemetry;
 use crate::telemetry::bus::ConfiguredTelemetry;
 use std::fs::read_to_string;
 
 fn lower_src(src: &str) -> Module {
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
-    lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower")
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
+    lower_program(
+        &mut crate::types::new(),
+        &prog,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("lower")
 }
 
 fn run_and_capture(src: &str) -> Result<String, String> {
@@ -93,13 +101,13 @@ fn persistent_plain_receive_resumes_after_later_drive_send() {
 
     runtime.enqueue_entry(&m, 1, wait, vec![]).expect("enqueue wait");
     let first = runtime
-        .drive_until_idle(&mut t, &NullTelemetry, Some(1))
+        .drive_until_idle(&mut t, &crate::telemetry::ConfiguredTelemetry::new(), Some(1))
         .expect("drive blocked wait");
     assert!(first.is_empty(), "blocked receive must not complete");
 
     runtime.spawn(&m, send, vec![AnyValue::Int(1)]).expect("spawn sender");
     let second = runtime
-        .drive_until_idle(&mut t, &NullTelemetry, Some(1))
+        .drive_until_idle(&mut t, &crate::telemetry::ConfiguredTelemetry::new(), Some(1))
         .expect("drive sender");
     assert_eq!(drive_completion_i64(&second, 1), Some(77));
 }
@@ -144,7 +152,7 @@ fn spawned_child_resumes_with_original_code_image_after_root_advances() {
         .enqueue_entry(&first_image, 1, start_child, vec![])
         .expect("enqueue start_child");
     let child_started = runtime
-        .drive_until_idle(&mut t, &NullTelemetry, Some(1))
+        .drive_until_idle(&mut t, &crate::telemetry::ConfiguredTelemetry::new(), Some(1))
         .expect("drive start_child");
     assert_eq!(drive_completion_i64(&child_started, 1), Some(2));
 
@@ -152,14 +160,14 @@ fn spawned_child_resumes_with_original_code_image_after_root_advances() {
         .enqueue_entry(&second_image, 1, send_to_child, vec![AnyValue::Int(2)])
         .expect("enqueue send_to_child");
     runtime
-        .drive_until_idle(&mut t, &NullTelemetry, Some(1))
+        .drive_until_idle(&mut t, &crate::telemetry::ConfiguredTelemetry::new(), Some(1))
         .expect("drive send_to_child");
 
     runtime
         .enqueue_entry(&second_image, 1, receive_reply, vec![])
         .expect("enqueue receive_reply");
     let reply = runtime
-        .drive_until_idle(&mut t, &NullTelemetry, Some(1))
+        .drive_until_idle(&mut t, &crate::telemetry::ConfiguredTelemetry::new(), Some(1))
         .expect("drive receive_reply");
     assert_eq!(drive_completion_i64(&reply, 1), Some(99));
 }
@@ -186,7 +194,7 @@ fn persistent_selective_receive_resumes_after_later_drive_send() {
 
     runtime.enqueue_entry(&m, 1, wait, vec![]).expect("enqueue wait");
     let first = runtime
-        .drive_until_idle(&mut t, &NullTelemetry, Some(1))
+        .drive_until_idle(&mut t, &crate::telemetry::ConfiguredTelemetry::new(), Some(1))
         .expect("drive blocked selective wait");
     assert!(first.is_empty(), "blocked selective receive must not complete");
 
@@ -194,7 +202,7 @@ fn persistent_selective_receive_resumes_after_later_drive_send() {
         .spawn(&m, send, vec![AnyValue::Int(1)])
         .expect("spawn selective sender");
     let second = runtime
-        .drive_until_idle(&mut t, &NullTelemetry, Some(1))
+        .drive_until_idle(&mut t, &crate::telemetry::ConfiguredTelemetry::new(), Some(1))
         .expect("drive selective sender");
     assert_eq!(drive_completion_i64(&second, 1), Some(88));
 }

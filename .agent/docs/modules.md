@@ -300,18 +300,20 @@ the `SourceMap`, and diagnostics.
 `materialize_ir_unit` is the structural load — it makes a provider available
 without recompiling: decode the `Module` + `sources`, intern those source files
 into the consumer `SourceMap`, remap the module's `FileId`s onto the interned
-ids, `rebuild_indices` for the serde-dropped derived maps, and `plan_module` the
-loaded unit. That load-time plan regenerates the cross-module/protocol call
-facts the linker needs, and because source identity is portable, the provider's
-spans render real diagnostics against its own source after the merge. It emits
+ids, `rebuild_indices` for the serde-dropped derived maps, and
+`plan_module_with_role(..., "artifact_materialization")` the loaded unit. That
+load-time plan regenerates the cross-module/protocol call facts the linker
+needs, and because source identity is portable, the provider's spans render
+real diagnostics against its own source after the merge. It emits
 `unit_materialized` with `kind: "ir-unit"`; the recompile branch emits the same
 event with `kind: "source"`.
 
 With the units in hand, `link_execution_module` calls `link_ir_units` when there
 is more than one unit (otherwise it is the single unit's `code`). The pipeline
-then runs `plan_module` once over the linked module; that single authoritative
-plan is what downstream engines consume, so passes that change dispatch or
-reachability must not run between link and that plan.
+then runs `plan_module_with_role(..., "linked_execution_graph")` over the linked
+module; that linked-execution-graph plan is what downstream engines consume, so
+passes that change dispatch or reachability must not run between link and that
+plan.
 
 ### `link_ir_units` — the one correctness gate
 
@@ -358,12 +360,12 @@ to it: `unresolved external module call `Dep.run/0``.
 - `CompiledImage` — a linked runnable image wrapping a `CompiledModule` and an
   optional `RuntimeImageMetadata`.
 
-`CompiledProgram::link_image_with_telemetry` is the single-unit JIT run path: it
-validates the unit through `link_ir_units`, links that unit's runtime metadata,
-wraps the machine-code module, and emits `link.succeeded` / `link.failed`.
+`CompiledProgram::link_image` is the single-unit JIT run path: it validates the
+unit through `link_ir_units`, links that unit's runtime metadata, wraps the
+machine-code module, and emits `link.succeeded` / `link.failed`.
 Provider-backed runs link earlier through `prepare_execution_graph`, so
-`CompiledImage::from_linked_with_telemetry` only wraps an already-linked module
-and emits `link.succeeded`.
+`CompiledImage::from_linked` only wraps an already-linked module and emits
+`link.succeeded`.
 
 ### Runtime metadata linking
 

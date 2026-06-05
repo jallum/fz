@@ -1,26 +1,13 @@
 //! ArgRepr (per-spec ABI shape) and signature builders.
 
-#![allow(unused_imports)]
-
 use super::*;
-use crate::fz_ir::{BinOp, Const, FnId, FnIr, Module, Prim, Stmt, Term, UnOp};
+use crate::fz_ir::FnIr;
 use crate::ir_planner::SpecPlan;
 use crate::ir_planner::fn_types::SpecKey;
 use crate::types::{KeySlot, Ty, Types, key_slots_to_tys};
-use cranelift_codegen::Context;
-use cranelift_codegen::ir::{
-    self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
-    condcodes::{FloatCC, IntCC},
-    types,
-};
+use cranelift_codegen::ir::{self, AbiParam, Signature, types};
 use cranelift_codegen::isa::CallConv;
-use cranelift_codegen::settings::{self, Configurable};
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
-use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
-use std::collections::HashMap;
-use std::sync::Arc;
+use cranelift_frontend::FunctionBuilder;
 
 /// How a fz arg/return rides the Cranelift ABI for a native fn.
 /// `ValueRef` is the generic strict-parts ABI: raw payload plus side-band

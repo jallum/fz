@@ -229,7 +229,7 @@ pub struct ModulePlan {
     /// planner telemetry reports those as activation projection gaps.
     pub effective_returns: HashMap<BodyKey, Ty>,
     /// Secondary index from FnId to its all-any key. Populated in
-    /// `plan_module` from the final specs map so callers can find any-key
+    /// `plan_module_with_role` from the final specs map so callers can find any-key
     /// specs without scanning the whole spec map.
     pub any_key_specs: HashMap<FnId, Vec<KeySlot>>,
     /// Stable per-family precedence for specialization selection. Keyed by
@@ -243,7 +243,7 @@ pub struct ModulePlan {
     /// instead of re-walking bodies.
     pub fn_effects: FnEffects,
     /// Per-If dead-branch facts safe to report at the module level.
-    /// Populated at the end of `plan_module` by `compute_dead_branches`.
+    /// Populated at the end of `plan_module_with_role` by `compute_dead_branches`.
     /// Keyed by `(FnId, BlockId)` where the block ends in a `Term::If`;
     /// value names which branch is provably never taken. Read by the
     /// `collect_diagnostics`. These facts are proven by the fn's all-domain
@@ -586,7 +586,7 @@ pub(crate) type SpecKeySet = HashSet<SpecKey>;
 /// returned value that flows into the continuation.
 pub(crate) type IncomingParamCallableCapabilities = HashMap<BodyKey, Vec<Option<CallableCapability>>>;
 
-/// Termination tripwire. The proof above (see `plan_module`'s doc) shows the
+/// Termination tripwire. The proof above (see `plan_module_with_role`'s doc) shows the
 /// worklist terminates in O(|specs| · H · |edges|) pops. This bound is
 /// intentionally loose; a hit indicates a violated monotonicity, equivalence,
 /// or recursive-key normalization invariant.

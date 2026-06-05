@@ -5,7 +5,7 @@
 //! flow and activation return convergence. The planner consumes those solved
 //! facts; it does not run a second return-type engine.
 //!
-//! `plan_module` produces a `ModulePlan`: the reachable specialization map,
+//! `plan_module_with_role` produces a `ModulePlan`: the reachable specialization map,
 //! per-specialization `SpecPlan`s, selected call edges, return contracts,
 //! effective returns projected from activation facts, callable
 //! capabilities, effect summaries, precedence, and dead-branch facts.
@@ -67,7 +67,7 @@ pub(crate) use narrow::{find_emptied_var, narrow_for_if};
 pub(crate) use planned::materialize_program;
 pub use pretty::pretty_module_plan;
 pub use protocol_dispatch::rewrite_closed_union_protocol_dispatch;
-pub use worklist::plan_module;
+pub(crate) use worklist::plan_module_with_role;
 
 // ----------------------------------------------------------------------
 // Tests

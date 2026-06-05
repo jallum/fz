@@ -1,12 +1,9 @@
-#![allow(unused_imports)]
-
+use super::abi_facts::AbiFacts;
 #[cfg(debug_assertions)]
 use super::invariants::{assert_no_new_call_shapes, emit_and_assert_spec_dispatch_coverage, snapshot_call_shapes};
 use super::receive::{DispatchRuntimeHelpers, declare_receive_dispatch, emit_receive_dispatch_body};
 use super::*;
-use crate::fz_ir::{
-    BinOp, BlockId, CallsiteId, CallsiteIdent, Const, EmitSlot, FnId, Module, Prim, SpecId, Stmt, Term, UnOp,
-};
+use crate::fz_ir::{BlockId, CallsiteId, CallsiteIdent, EmitSlot, FnId, Module, Prim, SpecId, Stmt, Term};
 use crate::ir_dest::{lower_destinations, verify_module};
 use crate::ir_extern_marshal::resolve_module_types;
 use crate::ir_planner::fn_types::SpecKey;
@@ -14,22 +11,12 @@ use crate::ir_planner::planned::{CallableEntryPlan, PlannedProgram};
 use crate::ir_planner::{ModulePlan, SpecPlan, collect_diagnostics, materialize_program};
 use crate::telemetry::value::opaque;
 use crate::telemetry::{Telemetry, TelemetryExt as _, next_compile_nonce};
-use crate::types::{
-    ClosureTarget, ClosureTypes, LiteralTypes, RenderTypes, Ty, Types, VisibilityTypes, key_slots_from_tys,
-    key_slots_to_tys, ty_descr,
-};
-use cranelift_codegen::Context;
-use cranelift_codegen::ir::{
-    self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
-    condcodes::{FloatCC, IntCC},
-    types,
-};
+use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Ty, Types, VisibilityTypes, key_slots_from_tys, ty_descr};
+use cranelift_codegen::ir::{self, AbiParam, InstBuilder, Signature, condcodes::IntCC, types};
 use cranelift_codegen::isa::CallConv;
-use cranelift_codegen::settings::{self, Configurable};
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
-use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema, SchemaRegistry};
+use cranelift_frontend::FunctionBuilderContext;
+use cranelift_module::{FuncId, Linkage, Module as ClModule};
+use fz_runtime::heap::{FieldKind, Schema, SchemaRegistry};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;

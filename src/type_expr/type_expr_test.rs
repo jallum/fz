@@ -17,7 +17,9 @@ fn parse_one<T: Types<Ty = Ty>>(t: &mut T, src: &str) -> Result<T::Ty, TypeExprE
 }
 
 fn parse_one_with<T: Types<Ty = Ty>>(t: &mut T, src: &str, env: &ModuleTypeEnv) -> Result<T::Ty, TypeExprError> {
-    let toks = Lexer::new(src).tokenize().expect("lex");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
     let (ty, consumed) = parse_type_expr(t, &toks, env)?;
     // Allow trailing Eof.
     let trailing = toks.len() - consumed;
@@ -352,8 +354,8 @@ fn primary_position_rejects_bar() {
 
 #[test]
 fn struct_record_type_parses_field_types() {
-    let toks = Lexer::new("%Range{first: integer, last: integer, step: integer}")
-        .tokenize()
+    let toks = Lexer::with_source_name("%Range{first: integer, last: integer, step: integer}", "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .expect("lex");
     let env = ModuleTypeEnv::new();
     let mut ct = crate::types::new();
@@ -380,7 +382,9 @@ fn type_alias_attr(name: &str, body_src: &str) -> Attribute {
 }
 
 fn type_alias_attr_with_params(name: &str, params: &[&str], body_src: &str) -> Attribute {
-    let toks = Lexer::new(body_src).tokenize().expect("lex body");
+    let toks = Lexer::with_source_name(body_src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex body");
     // Drop trailing Eof to match parser behavior.
     let body_tokens: Vec<_> = toks.into_iter().filter(|t| !matches!(t.tok, Tok::Eof)).collect();
     Attribute::TypeAlias(TypeAliasDecl {
@@ -606,7 +610,9 @@ fn consumed_count_reports_correct_position() {
     // Parser returns how many tokens it consumed, so callers can
     // continue parsing whatever follows (e.g., the `::` separator
     // in `@spec name(T) :: R`).
-    let toks = Lexer::new("integer foo").tokenize().unwrap();
+    let toks = Lexer::with_source_name("integer foo", "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .unwrap();
     let env = ModuleTypeEnv::new();
     let mut ct = crate::types::new();
     let int = ct.int();
@@ -666,7 +672,11 @@ fn resource_inner_type_is_validated() {
 
 #[test]
 fn constrained_polymorphic_spec_resolves_vars_and_bounds() {
-    let toks = |src: &str| Lexer::new(src).tokenize().expect("lex");
+    let toks = |src: &str| {
+        Lexer::with_source_name(src, "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .expect("lex")
+    };
     let mut ct = crate::types::new();
     let spec = SpecDecl {
         name: "make_resource".to_string(),
@@ -682,7 +692,11 @@ fn constrained_polymorphic_spec_resolves_vars_and_bounds() {
 
 #[test]
 fn resolved_spec_retains_structural_shape_for_container_parametricity() {
-    let toks = |src: &str| Lexer::new(src).tokenize().expect("lex");
+    let toks = |src: &str| {
+        Lexer::with_source_name(src, "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .expect("lex")
+    };
     let mut ct = crate::types::new();
     let mut env = ModuleTypeEnv::new();
     env.insert("Enumerable.t".to_string(), ct.any());
@@ -720,7 +734,11 @@ fn resolved_spec_retains_structural_shape_for_container_parametricity() {
 
 #[test]
 fn resolved_spec_retains_structural_shape_for_higher_order_parametricity() {
-    let toks = |src: &str| Lexer::new(src).tokenize().expect("lex");
+    let toks = |src: &str| {
+        Lexer::with_source_name(src, "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .expect("lex")
+    };
     let mut ct = crate::types::new();
     let mut env = ModuleTypeEnv::new();
     env.insert("Enumerable.t".to_string(), ct.any());
@@ -817,7 +835,11 @@ fn resolved_spec_reports_reduce_invariant_slot_correspondence() {
 
 #[test]
 fn resolved_spec_reports_structural_container_correspondence() {
-    let toks = |src: &str| Lexer::new(src).tokenize().expect("lex");
+    let toks = |src: &str| {
+        Lexer::with_source_name(src, "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .expect("lex")
+    };
     let mut ct = crate::types::new();
     let mut env = ModuleTypeEnv::new();
     env.insert("Enumerable.t".to_string(), ct.any());

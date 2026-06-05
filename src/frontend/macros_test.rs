@@ -4,8 +4,12 @@ use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
 
 fn parse(src: &str) -> Program {
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    Parser::new(toks).parse_program().expect("parse")
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse")
 }
 
 /// Run the full pipeline (parse → flatten → expand → eval main) and
@@ -13,7 +17,7 @@ fn parse(src: &str) -> Program {
 fn run(src: &str) -> Value {
     let prog = parse(src);
     let mut ct = crate::types::new();
-    let mut prog = flatten_modules(&mut ct, prog).expect("flatten");
+    let mut prog = flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
     expand_program(&mut prog).expect("expand");
     let interp = CompileTimeEvaluator::new();
     interp.load_program(&prog).expect("load");

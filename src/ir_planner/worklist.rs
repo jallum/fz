@@ -1058,15 +1058,7 @@ fn call_result_slot0<T: Types<Ty = Ty>>(
 ///   O(|specs| * |entry params|)
 /// up to the finite capability lattice. `VISIT_HARD_BOUND` below is a
 /// debug-only tripwire for invariant violation, NOT a release safety net.
-pub fn plan_module<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
-    t: &mut T,
-    m: &Module,
-    tel: &dyn Telemetry,
-) -> ModulePlan {
-    plan_module_with_role(t, m, tel, "authoritative")
-}
-
-fn plan_module_with_role<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
+pub(crate) fn plan_module_with_role<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     t: &mut T,
     m: &Module,
     tel: &dyn Telemetry,
@@ -1135,7 +1127,7 @@ fn plan_module_with_role<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                 // codegen/frontend plan's shape on it instead of guessing from
                 // event order. Non-authoritative planning phases must be
                 // visible too, with their own role, rather than hidden behind
-                // NullTelemetry.
+                // a silent telemetry path.
                 role: role,
                 type_kernel: "activation",
                 module_path: m.module_path().to_owned(),
@@ -1269,7 +1261,7 @@ fn plan_module_with_role<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
 
 /// Outcome of the shared worklist core: the discovered specs (each carrying its
 /// callable capabilities, call edges, and types), activation-projected returns,
-/// and the per-FnId effect summary. `plan_module` finalizes this into a
+/// and the per-FnId effect summary. `plan_module_with_role` finalizes this into a
 /// `ModulePlan` (any-key index, precedence, dead branches, telemetry).
 struct DiscoverOutput {
     specs: HashMap<SpecKey, SpecPlan>,

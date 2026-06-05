@@ -9,8 +9,12 @@ mod do_block_sugar_tests {
 
     fn parse_fn_body(src: &str) -> Expr {
         let wrapped = format!("fn _t() do {} end", src);
-        let toks = Lexer::new(&wrapped).tokenize().unwrap();
-        let prog = Parser::new(toks).parse_program().unwrap();
+        let toks = Lexer::with_source_name(&wrapped, "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
+        let prog = Parser::new(toks)
+            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
         match &*prog.items[0] {
             Item::Fn(d) => match &d.clauses[0].body.node {
                 Expr::Block(xs) => xs[0].node.clone(),
@@ -21,7 +25,9 @@ mod do_block_sugar_tests {
     }
 
     fn parse_expr(src: &str) -> Expr {
-        let toks = Lexer::new(src).tokenize().unwrap();
+        let toks = Lexer::with_source_name(src, "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
         Parser::new(toks).parse_expr_eof().unwrap().node
     }
 
@@ -87,10 +93,12 @@ mod do_block_sugar_tests {
 
     #[test]
     fn list_keyword_sugar_works_in_patterns() {
-        let toks = Lexer::new("fn opts([do: body, else: fallback]), do: body")
-            .tokenize()
+        let toks = Lexer::with_source_name("fn opts([do: body, else: fallback]), do: body", "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
             .unwrap();
-        let prog = Parser::new(toks).parse_program().unwrap();
+        let prog = Parser::new(toks)
+            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
         let Item::Fn(def) = &*prog.items[0] else {
             panic!("expected fn")
         };
@@ -99,16 +107,19 @@ mod do_block_sugar_tests {
 
     #[test]
     fn item_level_call_parses_as_macro_call() {
-        let toks = Lexer::new(
+        let toks = Lexer::with_source_name(
             r#"
 test("addition") do
   1 + 2
 end
 "#,
+            "<test>",
         )
-        .tokenize()
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .unwrap();
-        let prog = Parser::new(toks).parse_program().unwrap();
+        let prog = Parser::new(toks)
+            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
         let mc = prog.items.iter().find_map(|it| match &**it {
             Item::MacroCall { name, args, .. } => Some((name.clone(), args.clone())),
             _ => None,
@@ -160,7 +171,7 @@ end
 
     #[test]
     fn item_level_call_inside_module() {
-        let toks = Lexer::new(
+        let toks = Lexer::with_source_name(
             r#"
 defmodule MyTest do
   test("addition") do
@@ -168,10 +179,13 @@ defmodule MyTest do
   end
 end
 "#,
+            "<test>",
         )
-        .tokenize()
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .unwrap();
-        let prog = Parser::new(toks).parse_program().unwrap();
+        let prog = Parser::new(toks)
+            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
         let m = prog
             .items
             .iter()
@@ -185,7 +199,7 @@ end
 
     #[test]
     fn parses_protocol_callbacks_with_specs() {
-        let toks = Lexer::new(
+        let toks = Lexer::with_source_name(
             r#"
 defprotocol Enumerable do
   @doc "Reduce values"
@@ -193,10 +207,13 @@ defprotocol Enumerable do
   fn reduce(enumerable, acc, reducer)
 end
 "#,
+            "<test>",
         )
-        .tokenize()
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .unwrap();
-        let prog = Parser::new(toks).parse_program().unwrap();
+        let prog = Parser::new(toks)
+            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
         let Item::Protocol(protocol) = &*prog.items[0] else {
             panic!("expected protocol");
         };
@@ -210,16 +227,19 @@ end
 
     #[test]
     fn parses_protocol_impl_with_function_body() {
-        let toks = Lexer::new(
+        let toks = Lexer::with_source_name(
             r#"
 defimpl Enumerable, for: List do
   fn reduce(xs, acc, reducer), do: acc
 end
 "#,
+            "<test>",
         )
-        .tokenize()
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .unwrap();
-        let prog = Parser::new(toks).parse_program().unwrap();
+        let prog = Parser::new(toks)
+            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
         let Item::ProtocolImpl(protocol_impl) = &*prog.items[0] else {
             panic!("expected protocol impl");
         };
@@ -231,25 +251,30 @@ end
 
     #[test]
     fn protocol_callback_rejects_body() {
-        let toks = Lexer::new(
+        let toks = Lexer::with_source_name(
             r#"
 defprotocol Bad do
   fn reduce(xs), do: xs
 end
 "#,
+            "<test>",
         )
-        .tokenize()
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .unwrap();
-        let err = Parser::new(toks).parse_program().unwrap_err();
+        let err = Parser::new(toks)
+            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap_err();
         assert!(err.msg.contains("cannot have bodies"), "unexpected error: {:?}", err);
     }
 
     #[test]
     fn protocol_impl_requires_for_target() {
-        let toks = Lexer::new("defimpl Enumerable, target: List do\nend\n")
-            .tokenize()
+        let toks = Lexer::with_source_name("defimpl Enumerable, target: List do\nend\n", "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
             .unwrap();
-        let err = Parser::new(toks).parse_program().unwrap_err();
+        let err = Parser::new(toks)
+            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap_err();
         assert!(err.msg.contains("for:"), "unexpected error: {:?}", err);
     }
 
@@ -274,8 +299,12 @@ fn _t() do
   []
 end
 "#;
-        let toks = Lexer::new(wrapped).tokenize().unwrap();
-        let prog = Parser::new(toks).parse_program().unwrap();
+        let toks = Lexer::with_source_name(wrapped, "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
+        let prog = Parser::new(toks)
+            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
         let Item::Fn(def) = &*prog.items[0] else {
             panic!("expected fn")
         };
@@ -289,15 +318,18 @@ end
 
     #[test]
     fn same_name_different_arity_forms_distinct_fn_defs() {
-        let toks = Lexer::new(
+        let toks = Lexer::with_source_name(
             r#"
 fn spawn(fun), do: fun.()
 fn spawn(fun, opts), do: fun.()
 "#,
+            "<test>",
         )
-        .tokenize()
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .unwrap();
-        let prog = Parser::new(toks).parse_program().unwrap();
+        let prog = Parser::new(toks)
+            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
         let arities: Vec<usize> = prog
             .items
             .iter()
@@ -311,8 +343,12 @@ fn spawn(fun, opts), do: fun.()
 
     #[test]
     fn fnp_parses_as_private_function_def() {
-        let toks = Lexer::new("fnp helper(x), do: x\n").tokenize().unwrap();
-        let prog = Parser::new(toks).parse_program().unwrap();
+        let toks = Lexer::with_source_name("fnp helper(x), do: x\n", "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
+        let prog = Parser::new(toks)
+            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
         let Item::Fn(def) = &*prog.items[0] else {
             panic!("expected fn");
         };
@@ -468,8 +504,12 @@ fn spawn(fun, opts), do: fun.()
     #[test]
     fn bare_receive_call_is_rejected() {
         let wrapped = "fn _t() do receive() end";
-        let toks = Lexer::new(wrapped).tokenize().unwrap();
-        let err = Parser::new(toks).parse_program().unwrap_err();
+        let toks = Lexer::with_source_name(wrapped, "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
+        let err = Parser::new(toks)
+            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap_err();
         assert!(
             err.msg.contains("plain `receive()` has been removed"),
             "unexpected parse error: {:?}",
@@ -614,8 +654,12 @@ mod extern_parse_tests {
     use crate::parser::lexer::Lexer;
 
     fn parse_extern(src: &str) -> FnDef {
-        let toks = Lexer::new(src).tokenize().unwrap();
-        let prog = Parser::new(toks).parse_program().unwrap();
+        let toks = Lexer::with_source_name(src, "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
+        let prog = Parser::new(toks)
+            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
         match &*prog.items[0] {
             Item::Fn(d) => d.clone(),
             other => panic!("expected Item::Fn, got {:?}", other),
@@ -655,19 +699,23 @@ mod extern_parse_tests {
 
     #[test]
     fn extern_fn_variadic_marker_must_be_final() {
-        let toks = Lexer::new("extern \"C\" fn bad(integer, ..., integer) :: integer\n")
-            .tokenize()
+        let toks = Lexer::with_source_name("extern \"C\" fn bad(integer, ..., integer) :: integer\n", "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
             .unwrap();
-        let err = Parser::new(toks).parse_program().unwrap_err();
+        let err = Parser::new(toks)
+            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap_err();
         assert!(err.msg.contains("must be the final parameter"), "{err:?}");
     }
 
     #[test]
     fn call_arg_ascription_is_preserved() {
-        let toks = Lexer::new("fn main(), do: libc::open(path, flags, mode :: integer)\n")
-            .tokenize()
+        let toks = Lexer::with_source_name("fn main(), do: libc::open(path, flags, mode :: integer)\n", "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
             .unwrap();
-        let prog = Parser::new(toks).parse_program().unwrap();
+        let prog = Parser::new(toks)
+            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
         let Item::Fn(d) = &*prog.items[0] else {
             panic!("expected fn");
         };
@@ -698,10 +746,10 @@ mod telemetry_tests {
         let cap = Capture::new();
         tel.attach(&[], cap.handler());
 
-        let toks = Lexer::new("fn id(x), do: x\nfn main(), do: id(1)\n")
-            .tokenize()
+        let toks = Lexer::with_source_name("fn id(x), do: x\nfn main(), do: id(1)\n", "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
             .expect("lex");
-        let prog = Parser::new(toks).parse_program_with_telemetry(&tel).expect("parse");
+        let prog = Parser::new(toks).parse_program(&tel).expect("parse");
 
         assert_eq!(cap.count_by_kind(SpanStart), 1);
         assert_eq!(cap.count_by_kind(SpanStop), 1);
@@ -723,8 +771,10 @@ mod telemetry_tests {
         let cap = Capture::new();
         tel.attach(&[], cap.handler());
 
-        let toks = Lexer::new("fn main(), do: :ok").tokenize().expect("lex");
-        let _ = Parser::new(toks).parse_program_with_telemetry(&tel).expect("parse");
+        let toks = Lexer::with_source_name("fn main(), do: :ok", "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .expect("lex");
+        let _ = Parser::new(toks).parse_program(&tel).expect("parse");
 
         let start = cap
             .find(PARSE_PASS_NAME)
@@ -738,11 +788,11 @@ mod telemetry_tests {
 
     #[test]
     fn null_telemetry_is_a_silent_no_op() {
-        use crate::telemetry::NullTelemetry;
-
-        let toks = Lexer::new("fn main(), do: :ok").tokenize().expect("lex");
+        let toks = Lexer::with_source_name("fn main(), do: :ok", "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .expect("lex");
         let prog = Parser::new(toks)
-            .parse_program_with_telemetry(&NullTelemetry)
+            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
             .expect("parse");
         assert_eq!(prog.items.len(), 1);
     }
@@ -756,7 +806,9 @@ mod elixir_operator_precedence_tests {
     use UnOp::{Neg, Not};
 
     fn parse(src: &str) -> Expr {
-        let toks = Lexer::new(src).tokenize().unwrap();
+        let toks = Lexer::with_source_name(src, "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
         Parser::new(toks).parse_expr_eof().unwrap().node
     }
 
@@ -844,7 +896,9 @@ mod no_parens_call_tests {
     use UnOp::Neg;
 
     fn parse(src: &str) -> Expr {
-        let toks = Lexer::new(src).tokenize().unwrap();
+        let toks = Lexer::with_source_name(src, "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
         Parser::new(toks).parse_expr_eof().unwrap().node
     }
 
@@ -1039,11 +1093,13 @@ mod no_parens_keyword_ambiguity_tests {
     /// attached, and return how many ambiguity warnings the parser emitted.
     fn warnings_for(body: &str) -> usize {
         let src = format!("fn _t() do\n  {}\nend\n", body);
-        let toks = Lexer::new(&src).tokenize().unwrap();
+        let toks = Lexer::with_source_name(&src, "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
         let capture = Capture::new();
         let tel = ConfiguredTelemetry::new();
         tel.attach(&["fz", "diag"], capture.handler());
-        Parser::new(toks).parse_program_with_telemetry(&tel).expect("parse");
+        Parser::new(toks).parse_program(&tel).expect("parse");
         capture.count(WARNING)
     }
 
@@ -1081,8 +1137,12 @@ mod lambda_tests {
     use crate::parser::lexer::Lexer;
 
     fn parse(src: &str) -> Program {
-        let toks = Lexer::new(src).tokenize().unwrap();
-        Parser::new(toks).parse_program().unwrap()
+        let toks = Lexer::with_source_name(src, "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
+        Parser::new(toks)
+            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap()
     }
 
     /// Parse the first fn's single-expression body (the lambda under test).
@@ -1153,8 +1213,14 @@ mod lambda_tests {
     fn missing_end_is_a_parse_error() {
         // Without `end`, the lambda swallows the enclosing `end`; the fn item
         // never closes, so parsing fails.
-        let toks = Lexer::new("fn _t() do\n  fn x -> x + 1\nend\n").tokenize().unwrap();
-        assert!(Parser::new(toks).parse_program().is_err());
+        let toks = Lexer::with_source_name("fn _t() do\n  fn x -> x + 1\nend\n", "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
+        assert!(
+            Parser::new(toks)
+                .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+                .is_err()
+        );
     }
 
     #[test]
@@ -1176,10 +1242,14 @@ mod lambda_tests {
     fn do_shorthand_lambda_without_end_is_a_parse_error() {
         // Drop the `end`: the lambda runs past the newline into `fn main`,
         // which is not a valid clause, so the program fails to parse.
-        let toks = Lexer::new("fn make(), do: fn x -> x + 1\nfn main(), do: make()\n")
-            .tokenize()
+        let toks = Lexer::with_source_name("fn make(), do: fn x -> x + 1\nfn main(), do: make()\n", "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
             .unwrap();
-        assert!(Parser::new(toks).parse_program().is_err());
+        assert!(
+            Parser::new(toks)
+                .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+                .is_err()
+        );
     }
 }
 
@@ -1194,7 +1264,9 @@ mod capture_tests {
     use BinOp::Add;
 
     fn expr(src: &str) -> Expr {
-        let toks = Lexer::new(src).tokenize().unwrap();
+        let toks = Lexer::with_source_name(src, "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap();
         Parser::new(toks).parse_expr_eof().unwrap().node
     }
 

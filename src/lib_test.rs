@@ -56,9 +56,7 @@ fn compile_pipeline_runs_spawn_with_captures_through_single_plan_path() {
         &ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new()),
     );
     let main_fn = compiled.main_fn.expect("main fn");
-    let mut rt = Runtime::new(compiled.image.compiled_module(), 1)
-        .with_module(&compiled.module)
-        .with_telemetry(&tel);
+    let mut rt = Runtime::new(compiled.image.compiled_module(), 1, &tel).with_module(&compiled.module);
 
     let root_pid = rt.spawn(main_fn);
     rt.run_until_idle();

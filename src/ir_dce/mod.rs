@@ -15,7 +15,7 @@ use crate::fz_ir::{BlockId, FnIr, PhysicalCapability, Prim, Stmt, Term, Var};
 use crate::telemetry::Telemetry;
 use std::collections::HashSet;
 
-pub fn dce_fn_with_telemetry(module_path: &str, f: &mut FnIr, tel: &dyn Telemetry) {
+pub fn dce_fn(module_path: &str, f: &mut FnIr, tel: &dyn Telemetry) {
     loop {
         let used = collect_used(f);
         let mut changed = false;

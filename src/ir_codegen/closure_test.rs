@@ -2,6 +2,7 @@ use super::*;
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{AbiParam, Signature};
 use cranelift_codegen::isa::CallConv;
+use cranelift_frontend::FunctionBuilderContext;
 
 fn render_pointer_ref_pack_for_arch(arch: TaggedRefArch) -> String {
     let mut ctx = Context::new();

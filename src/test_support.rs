@@ -1,12 +1,12 @@
 use crate::fz_ir::{FnId, Module};
 use crate::ir_codegen::compile_planned;
-use crate::ir_planner::{ModulePlan, materialize_program, plan_module};
+use crate::ir_planner::{ModulePlan, materialize_program, plan_module_with_role};
 use crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT;
 use crate::modules::pipeline::{
     CompileMode, PreparedExecutionGraph, ProviderInputs, checked_module_for_mode, compile_source_with_providers,
     link_execution_module, prepare_execution_graph,
 };
-use crate::telemetry::{Capture, ConfiguredTelemetry, Event, Handler, NullTelemetry, Telemetry};
+use crate::telemetry::{Capture, ConfiguredTelemetry, Event, Handler, Telemetry};
 use crate::types::{ClosureTypes, DefaultTypes, RenderTypes, Ty, Types};
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -54,11 +54,7 @@ pub(crate) fn lower_frontend_module(src: &str) -> Module {
 
 /// Compile a program through the production pipeline to the linked runtime IR:
 /// protocol impls, runtime helpers, and execution-graph rewrites are local.
-pub(crate) fn linked_runtime_graph_with_telemetry(
-    t: &mut DefaultTypes,
-    src: &str,
-    tel: &dyn Telemetry,
-) -> PreparedExecutionGraph {
+pub(crate) fn linked_runtime_graph(t: &mut DefaultTypes, src: &str, tel: &dyn Telemetry) -> PreparedExecutionGraph {
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
     let frontend = compile_source_with_providers(t, src.to_string(), "test_fixture.fz".to_string(), &providers, tel)
         .unwrap_or_else(|err| panic!("frontend: {err}"));
@@ -68,35 +64,23 @@ pub(crate) fn linked_runtime_graph_with_telemetry(
         .unwrap_or_else(|err| panic!("execution graph: {err}"))
 }
 
-pub(crate) fn linked_runtime_graph(src: &str) -> PreparedExecutionGraph {
-    let mut t = crate::types::new();
-    linked_runtime_graph_with_telemetry(&mut t, src, &NullTelemetry)
+/// Compile a program through the production pipeline to the linked runtime IR:
+/// protocol impls, runtime helpers, and execution-graph rewrites are local.
+pub(crate) fn linked_runtime_module(t: &mut DefaultTypes, src: &str, tel: &dyn Telemetry) -> Module {
+    linked_runtime_graph(t, src, tel).module
 }
 
 /// Compile through the production frontend/provider/link path and stop at the
-/// linked runtime module, without running the authoritative planner.
-pub(crate) fn linked_runtime_module_unplanned(src: &str) -> Module {
-    let mut t = crate::types::new();
+/// linked runtime module, without running the execution-graph planner.
+pub(crate) fn linked_runtime_module_unplanned(t: &mut DefaultTypes, src: &str, tel: &dyn Telemetry) -> Module {
     let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-    let frontend = compile_source_with_providers(
-        &mut t,
-        src.to_string(),
-        "test_fixture.fz".to_string(),
-        &providers,
-        &NullTelemetry,
-    )
-    .unwrap_or_else(|err| panic!("frontend: {err}"));
-    let mut checked = checked_module_for_mode(&mut t, frontend, &NullTelemetry, CompileMode::Normal)
-        .unwrap_or_else(|err| panic!("checked: {err}"));
-    link_execution_module(&mut t, &mut checked, &providers, &NullTelemetry)
+    let frontend = compile_source_with_providers(t, src.to_string(), "test_fixture.fz".to_string(), &providers, tel)
+        .unwrap_or_else(|err| panic!("frontend: {err}"));
+    let mut checked =
+        checked_module_for_mode(t, frontend, tel, CompileMode::Normal).unwrap_or_else(|err| panic!("checked: {err}"));
+    link_execution_module(t, &mut checked, &providers, tel)
         .unwrap_or_else(|err| panic!("linked runtime module: {err}"))
         .module
-}
-
-/// Compile a program through the production pipeline to the linked runtime IR:
-/// protocol impls, runtime helpers, and execution-graph rewrites are local.
-pub(crate) fn linked_runtime_module(src: &str) -> Module {
-    linked_runtime_graph(src).module
 }
 
 /// Fixture tests enter through a top-level `main`.
@@ -143,7 +127,7 @@ fn activation_projection_signals(cap: &Capture) -> Vec<ActivationProjectionSigna
         .into_iter()
         .filter_map(|event| {
             let role = match event.metadata.get("role") {
-                Some(Value::Str(role)) if role == "authoritative" => role.to_string(),
+                Some(Value::Str(role)) => role.to_string(),
                 _ => return None,
             };
             let body_name = match event.metadata.get("body_name") {
@@ -188,9 +172,9 @@ pub(crate) fn runtime_graph_planner_activation_projection_signals(src: &str) -> 
     tel.attach(&[], cap.handler());
 
     let mut t = crate::types::new();
-    let graph = linked_runtime_graph_with_telemetry(&mut t, src, &tel);
+    let graph = linked_runtime_graph(&mut t, src, &tel);
     cap.clear();
-    let _ = plan_module(&mut t, &graph.module, &tel);
+    let _ = plan_module_with_role(&mut t, &graph.module, &tel, "test");
     let _ = materialize_program(&mut t, &graph.module, &graph.module_plan, &tel);
     assert_authoritative_planner_consistent(&cap);
     activation_projection_signals(&cap)
@@ -205,7 +189,7 @@ pub(crate) fn runtime_graph_codegen_materialized_body_signals(src: &str) -> Vec<
     tel.attach(&[], cap.handler());
 
     let mut t = crate::types::new();
-    let graph = linked_runtime_graph_with_telemetry(&mut t, src, &tel);
+    let graph = linked_runtime_graph(&mut t, src, &tel);
     let _ = materialize_program(&mut t, &graph.module, &graph.module_plan, &tel);
     assert_authoritative_planner_consistent(&cap);
     cap.clear();
@@ -309,7 +293,7 @@ pub(crate) fn runtime_graph_reachable_materialized_body_signals(src: &str) -> Ve
     tel.attach(&[], cap.handler());
 
     let mut t = crate::types::new();
-    let graph = linked_runtime_graph_with_telemetry(&mut t, src, &tel);
+    let graph = linked_runtime_graph(&mut t, src, &tel);
     let _ = materialize_program(&mut t, &graph.module, &graph.module_plan, &tel);
     assert_authoritative_planner_consistent(&cap);
     reachable_materialized_body_signals_from_planned_compile(&mut t, &graph.module, &graph.module_plan, &tel, &cap)
@@ -334,14 +318,8 @@ pub(crate) fn authoritative_planner_consistency_issues(cap: &Capture) -> Vec<Str
     let ev = cap
         .find(&["fz", "planner", "planned"])
         .into_iter()
-        .filter(|ev| {
-            matches!(
-                ev.metadata.get("role"),
-                Some(Value::Str(role)) if role == "authoritative"
-            )
-        })
         .last()
-        .expect("authoritative fz.planner.planned event");
+        .expect("fz.planner.planned event");
     let gap_count = match ev.measurements.get("activation_return_projection_gap_count") {
         Some(Value::U64(n)) => *n as usize,
         other => panic!("activation_return_projection_gap_count missing or wrong type: {other:?}"),
@@ -483,7 +461,7 @@ pub(crate) fn assert_module_planner_consistent<T: Types<Ty = Ty> + ClosureTypes 
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
-    let plan = plan_module(t, module, &tel);
+    let plan = plan_module_with_role(t, module, &tel, "test");
     let _ = materialize_program(t, module, &plan, &tel);
     let issues = authoritative_planner_consistency_issues(&cap);
     assert!(

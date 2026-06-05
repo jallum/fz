@@ -6,13 +6,17 @@ use crate::type_expr::{build_module_type_env, parse_type_expr, resolve_spec_decl
 use crate::types::DefaultTypes;
 
 fn parse(src: &str) -> Program {
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    Parser::new(toks).parse_program().expect("parse")
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse")
 }
 
 fn flatten(src: &str) -> Program {
     let mut ct = crate::types::new();
-    flatten_modules(&mut ct, parse(src)).expect("flatten")
+    flatten_modules(&mut ct, parse(src), &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten")
 }
 
 fn fn_names(p: &Program) -> Vec<String> {
@@ -308,6 +312,7 @@ defmodule User do
 end
 "#,
         ),
+        &crate::telemetry::ConfiguredTelemetry::new(),
     )
     .unwrap_err();
     let d = err.to_diagnostic();
@@ -329,6 +334,7 @@ defmodule User do
 end
 "#,
         ),
+        &crate::telemetry::ConfiguredTelemetry::new(),
     )
     .unwrap_err();
     let d = err.to_diagnostic();
@@ -352,6 +358,7 @@ defmodule User do
 end
 "#,
         ),
+        &crate::telemetry::ConfiguredTelemetry::new(),
     )
     .unwrap_err();
     let d = err.to_diagnostic();
@@ -375,6 +382,7 @@ defmodule User do
 end
 "#,
         ),
+        &crate::telemetry::ConfiguredTelemetry::new(),
     )
     .unwrap_err();
     let d = err.to_diagnostic();
@@ -417,6 +425,7 @@ end
 "#,
         ),
         interfaces,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     )
     .expect("flatten");
     let run = p
@@ -443,6 +452,7 @@ defmodule User do
 end
 "#,
         ),
+        &crate::telemetry::ConfiguredTelemetry::new(),
     )
     .expect("flatten");
 
@@ -474,6 +484,7 @@ defmodule User do
 end
 "#,
         ),
+        &crate::telemetry::ConfiguredTelemetry::new(),
     )
     .expect("flatten");
 
@@ -563,6 +574,7 @@ defmodule User do
 end
 "#,
         ),
+        &crate::telemetry::ConfiguredTelemetry::new(),
     )
     .unwrap_err();
     let d = err.to_diagnostic();
@@ -590,6 +602,7 @@ defmodule User do
 end
 "#,
         ),
+        &crate::telemetry::ConfiguredTelemetry::new(),
     )
     .unwrap_err();
     let d = err.to_diagnostic();
@@ -687,6 +700,7 @@ defmodule M do
 end
 "#,
         ),
+        &crate::telemetry::ConfiguredTelemetry::new(),
     )
     .unwrap_err();
     let d = err.to_diagnostic();
@@ -726,7 +740,7 @@ fn g(y), do: y
         ..Program::default()
     };
     let mut ct = crate::types::new();
-    let err = flatten_modules(&mut ct, prog).unwrap_err();
+    let err = flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new()).unwrap_err();
     let d = err.to_diagnostic();
     assert_eq!(d.code, codes::RESOLVE_DUPLICATE_EXPORT);
     assert_eq!(d.message, "export `M.f/1` is defined more than once");
@@ -814,9 +828,15 @@ end
     assert!(ct.is_equivalent(env.get("id").unwrap(), &int));
     let expected = ct.tuple(&[int.clone(), int]);
     assert!(ct.is_equivalent(env.get("pair").unwrap(), &expected));
-    let keyword_int = parse_type_expr(&mut ct, &Lexer::new("keyword(integer)").tokenize().unwrap(), &env)
-        .unwrap()
-        .0;
+    let keyword_int = parse_type_expr(
+        &mut ct,
+        &Lexer::with_source_name("keyword(integer)", "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .unwrap(),
+        &env,
+    )
+    .unwrap()
+    .0;
     let atom = ct.atom();
     let int = ct.int();
     let pair = ct.tuple(&[atom, int]);
@@ -836,7 +856,7 @@ end
 "#,
     );
     let mut ct = crate::types::new();
-    let flat = flatten_modules(&mut ct, prog).expect("flatten");
+    let flat = flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
     let env = flat.module_type_envs.get("M").expect("module env");
     let opts = env.get("opts").expect("opts alias");
     let atom = ct.atom();
@@ -857,7 +877,7 @@ end
 "#,
     );
     let mut ct = crate::types::new();
-    let flat = flatten_modules(&mut ct, prog).expect("flatten");
+    let flat = flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
     let range = ModuleName::from_segments(vec!["Range".to_string()]);
     let fields = flat.struct_field_types.get(&range).expect("Range field types");
     assert_eq!(
@@ -879,7 +899,8 @@ end
 "#,
     );
     let mut ct = crate::types::new();
-    let err = flatten_modules(&mut ct, prog).expect_err("expected schema mismatch");
+    let err = flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new())
+        .expect_err("expected schema mismatch");
     match err {
         ResolveError::TypeAliasError { msg, span } => {
             assert!(msg.contains("missing field `step`"), "{msg}");
@@ -900,7 +921,7 @@ end
 "#,
     );
     let mut ct = crate::types::new();
-    let flat = flatten_modules(&mut ct, prog).expect("flatten");
+    let flat = flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
     let def = flat
         .items
         .iter()
@@ -1012,15 +1033,16 @@ end
 
 #[test]
 fn spec_arity_mismatch_errors_at_parse_time() {
-    let toks = Lexer::new(
+    let toks = Lexer::with_source_name(
         "defmodule M do\n\
           @spec add1(integer, integer) :: integer\n\
           fn add1(n), do: n + 1\n\
         end\n",
+        "<test>",
     )
-    .tokenize()
+    .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
     .unwrap();
-    let r = Parser::new(toks).parse_program();
+    let r = Parser::new(toks).parse_program(&crate::telemetry::ConfiguredTelemetry::new());
     assert!(r.is_err(), "arity mismatch must error");
     let msg = format!("{:?}", r.unwrap_err());
     assert!(msg.contains("arity"), "expected arity diag, got: {}", msg);
@@ -1028,15 +1050,16 @@ fn spec_arity_mismatch_errors_at_parse_time() {
 
 #[test]
 fn spec_name_mismatch_errors_at_parse_time() {
-    let toks = Lexer::new(
+    let toks = Lexer::with_source_name(
         "defmodule M do\n\
           @spec other(integer) :: integer\n\
           fn add1(n), do: n + 1\n\
         end\n",
+        "<test>",
     )
-    .tokenize()
+    .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
     .unwrap();
-    let r = Parser::new(toks).parse_program();
+    let r = Parser::new(toks).parse_program(&crate::telemetry::ConfiguredTelemetry::new());
     assert!(r.is_err(), "name mismatch must error");
     let msg = format!("{:?}", r.unwrap_err());
     assert!(
@@ -1049,29 +1072,33 @@ fn spec_name_mismatch_errors_at_parse_time() {
 #[test]
 fn spec_without_following_fn_errors() {
     // @spec at the end of a module with no fn following it.
-    let toks = Lexer::new(
+    let toks = Lexer::with_source_name(
         "defmodule M do\n\
           @spec lonely(integer) :: integer\n\
         end\n",
+        "<test>",
     )
-    .tokenize()
+    .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
     .unwrap();
-    let r = Parser::new(toks).parse_program();
+    let r = Parser::new(toks).parse_program(&crate::telemetry::ConfiguredTelemetry::new());
     assert!(r.is_err(), "spec without fn must error");
 }
 
 #[test]
 fn multiple_specs_on_one_fn_attach_in_order() {
-    let toks = Lexer::new(
+    let toks = Lexer::with_source_name(
         "defmodule M do\n\
           @spec add1(integer) :: integer\n\
           @spec add1(float) :: float\n\
           fn add1(n), do: n + 1\n\
         end\n",
+        "<test>",
     )
-    .tokenize()
+    .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
     .unwrap();
-    let prog = Parser::new(toks).parse_program().expect("parse");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
     let m = prog
         .items
         .iter()
@@ -1194,24 +1221,28 @@ end
 
 #[test]
 fn type_alias_at_top_level_errors() {
-    let toks = Lexer::new("@type id :: integer\nfn main(), do: nil")
-        .tokenize()
+    let toks = Lexer::with_source_name("@type id :: integer\nfn main(), do: nil", "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .unwrap();
-    let r = Parser::new(toks).parse_program();
+    let r = Parser::new(toks).parse_program(&crate::telemetry::ConfiguredTelemetry::new());
     assert!(r.is_err(), "@type at top level must error; got {:?}", r);
 }
 
 #[test]
 fn unknown_attribute_errors() {
-    let toks = Lexer::new("@bogus \"x\"\nfn main(), do: nil").tokenize().unwrap();
-    let r = Parser::new(toks).parse_program();
+    let toks = Lexer::with_source_name("@bogus \"x\"\nfn main(), do: nil", "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .unwrap();
+    let r = Parser::new(toks).parse_program(&crate::telemetry::ConfiguredTelemetry::new());
     assert!(r.is_err());
 }
 
 #[test]
 fn moduledoc_at_top_level_errors() {
-    let toks = Lexer::new("@moduledoc \"x\"\nfn main(), do: nil").tokenize().unwrap();
-    let r = Parser::new(toks).parse_program();
+    let toks = Lexer::with_source_name("@moduledoc \"x\"\nfn main(), do: nil", "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .unwrap();
+    let r = Parser::new(toks).parse_program(&crate::telemetry::ConfiguredTelemetry::new());
     assert!(r.is_err());
 }
 
@@ -1294,7 +1325,7 @@ fn sibling_rewrite_preserves_var_span() {
     };
 
     let mut ct = crate::types::new();
-    let post = flatten_modules(&mut ct, pre).expect("flatten");
+    let post = flatten_modules(&mut ct, pre, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
     let g = post
         .items
         .iter()
@@ -1359,7 +1390,7 @@ end
     };
 
     let mut ct = crate::types::new();
-    let post = flatten_modules(&mut ct, pre).expect("flatten");
+    let post = flatten_modules(&mut ct, pre, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
     let u = post
         .items
         .iter()
@@ -1403,6 +1434,7 @@ defmodule Consumer do
 end
 "#,
         ),
+        &crate::telemetry::ConfiguredTelemetry::new(),
     )
     .expect("flatten");
 
@@ -1455,12 +1487,15 @@ defmodule Consumer do
 end
 "#,
         ),
+        &crate::telemetry::ConfiguredTelemetry::new(),
     )
     .expect("flatten");
 
     let env = &p.module_type_envs["Consumer"];
     let parse_dom = |ct: &mut DefaultTypes, src: &str| {
-        let toks = Lexer::new(src).tokenize().expect("lex");
+        let toks = Lexer::with_source_name(src, "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .expect("lex");
         let (ty, _) = parse_type_expr(ct, &toks, env).expect("parse");
         ty
     };
@@ -1499,6 +1534,7 @@ defimpl P, for: List do
 end
 "#,
         ),
+        &crate::telemetry::ConfiguredTelemetry::new(),
     )
     .expect_err("missing callback must fail");
 
@@ -1527,6 +1563,7 @@ defimpl P, for: List do
 end
 "#,
         ),
+        &crate::telemetry::ConfiguredTelemetry::new(),
     )
     .expect_err("duplicate impl must fail");
 
@@ -1554,6 +1591,7 @@ defimpl P, for: List do
 end
 "#,
         ),
+        &crate::telemetry::ConfiguredTelemetry::new(),
     )
     .expect_err("arity mismatch must fail");
 
@@ -1591,6 +1629,7 @@ defimpl P, for: List do
 end
 "#,
         ),
+        &crate::telemetry::ConfiguredTelemetry::new(),
     )
     .expect("overload-compatible impl must pass");
 
@@ -1625,6 +1664,7 @@ defimpl P, for: List do
 end
 "#,
         ),
+        &crate::telemetry::ConfiguredTelemetry::new(),
     )
     .expect_err("uncovered impl overload must fail");
 

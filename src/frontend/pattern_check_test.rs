@@ -7,10 +7,14 @@ use crate::parser::lexer::Lexer;
 fn parse(src: &str) -> Program {
     let mut sm = SourceMap::new();
     let fid = sm.add_file("test.fz", src);
-    let toks = Lexer::with_file(src, fid).tokenize().unwrap();
-    let prog = Parser::new(toks).parse_program().unwrap();
+    let toks = Lexer::with_file_and_source_name(src, fid, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .unwrap();
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .unwrap();
     let mut ct = crate::types::new();
-    flatten_modules(&mut ct, prog).unwrap()
+    flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new()).unwrap()
 }
 
 #[test]

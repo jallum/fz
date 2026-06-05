@@ -7,12 +7,12 @@
 //! entry param.
 
 use crate::fz_ir::{Cont, FnCategory, FnId, FnIr, Module, Stmt, Term, Var};
-use crate::ir_dce::{collect_used, dce_fn_with_telemetry};
+use crate::ir_dce::{collect_used, dce_fn};
 use crate::ir_fuse::{subst_stmt, subst_term};
-use crate::telemetry::{NullTelemetry, Telemetry};
+use crate::telemetry::Telemetry;
 use std::collections::{HashMap, HashSet};
 
-pub fn normalize_continuation_captures_with_telemetry(module: &mut Module, tel: &dyn Telemetry) {
+pub fn normalize_continuation_captures(module: &mut Module, tel: &dyn Telemetry) {
     loop {
         let sites = continuation_sites(module);
         let tail_call_sites = tail_call_continuation_sites(module);
@@ -22,14 +22,14 @@ pub fn normalize_continuation_captures_with_telemetry(module: &mut Module, tel: 
             if site.site_count != 1 {
                 continue;
             }
-            let Some(plan) = plan_site(module, &site) else {
+            let Some(plan) = plan_site(module, &site, tel) else {
                 continue;
             };
             if !plan.changed {
                 continue;
             }
             emit_call_pruned_event(module, &site, &plan, tel);
-            apply_plan(module, site, plan);
+            apply_plan(module, site, plan, tel);
             changed = true;
             break;
         }
@@ -37,14 +37,14 @@ pub fn normalize_continuation_captures_with_telemetry(module: &mut Module, tel: 
             continue;
         }
         for site in shared_continuation_sites(module) {
-            let Some(plan) = plan_shared_continuation_site(module, &site) else {
+            let Some(plan) = plan_shared_continuation_site(module, &site, tel) else {
                 continue;
             };
             if !plan.changed {
                 continue;
             }
             emit_shared_call_pruned_event(module, &site, &plan, tel);
-            apply_shared_continuation_plan(module, site, plan);
+            apply_shared_continuation_plan(module, site, plan, tel);
             changed = true;
             break;
         }
@@ -52,14 +52,14 @@ pub fn normalize_continuation_captures_with_telemetry(module: &mut Module, tel: 
             continue;
         }
         for site in tail_call_sites {
-            let Some(plan) = plan_tail_call_continuation_site(module, &site) else {
+            let Some(plan) = plan_tail_call_continuation_site(module, &site, tel) else {
                 continue;
             };
             if !plan.changed {
                 continue;
             }
             emit_tail_call_pruned_event(module, &site, &plan, tel);
-            apply_tail_call_continuation_plan(module, site, plan);
+            apply_tail_call_continuation_plan(module, site, plan, tel);
             changed = true;
             break;
         }
@@ -70,14 +70,14 @@ pub fn normalize_continuation_captures_with_telemetry(module: &mut Module, tel: 
             if !site.outcomes.iter().all(|outcome| outcome.site_count == 1) {
                 continue;
             }
-            let Some(plan) = plan_receive_matched_site(module, &site) else {
+            let Some(plan) = plan_receive_matched_site(module, &site, tel) else {
                 continue;
             };
             if !plan.changed {
                 continue;
             }
             emit_receive_matched_pruned_event(module, &site, &plan, tel);
-            apply_receive_matched_plan(module, site, plan);
+            apply_receive_matched_plan(module, site, plan, tel);
             changed = true;
             break;
         }
@@ -413,7 +413,7 @@ fn receive_matched_sites(module: &Module) -> Vec<ReceiveMatchedSite> {
         .collect()
 }
 
-fn plan_site(module: &Module, site: &ContinuationSite) -> Option<NormalizePlan> {
+fn plan_site(module: &Module, site: &ContinuationSite, tel: &dyn Telemetry) -> Option<NormalizePlan> {
     let cont_idx = *module.fn_idx.get(&site.cont.fn_id)?;
     let cont_fn = &module.fns[cont_idx];
     let entry = cont_fn.blocks.iter().find(|b| b.id == cont_fn.entry)?;
@@ -424,7 +424,7 @@ fn plan_site(module: &Module, site: &ContinuationSite) -> Option<NormalizePlan> 
         return None;
     }
 
-    let used = live_vars_after_local_dce(cont_fn);
+    let used = live_vars_after_local_dce(cont_fn, tel);
     let captured_params = &entry.params[1..];
     let mut groups: Vec<CaptureGroup> = Vec::new();
     let mut group_by_outer: HashMap<Var, usize> = HashMap::new();
@@ -482,7 +482,11 @@ fn plan_site(module: &Module, site: &ContinuationSite) -> Option<NormalizePlan> 
     })
 }
 
-fn plan_shared_continuation_site(module: &Module, site: &SharedContinuationSite) -> Option<SharedContinuationPlan> {
+fn plan_shared_continuation_site(
+    module: &Module,
+    site: &SharedContinuationSite,
+    tel: &dyn Telemetry,
+) -> Option<SharedContinuationPlan> {
     let cont_idx = *module.fn_idx.get(&site.cont_fn_id)?;
     let cont_fn = &module.fns[cont_idx];
     let entry = cont_fn.blocks.iter().find(|b| b.id == cont_fn.entry)?;
@@ -495,7 +499,7 @@ fn plan_shared_continuation_site(module: &Module, site: &SharedContinuationSite)
         return None;
     }
 
-    let used = live_vars_after_local_dce(cont_fn);
+    let used = live_vars_after_local_dce(cont_fn, tel);
     let live_indices: Vec<usize> = entry.params[1..]
         .iter()
         .enumerate()
@@ -518,6 +522,7 @@ fn plan_shared_continuation_site(module: &Module, site: &SharedContinuationSite)
 fn plan_tail_call_continuation_site(
     module: &Module,
     site: &TailCallContinuationSite,
+    tel: &dyn Telemetry,
 ) -> Option<TailCallContinuationPlan> {
     let callee_idx = *module.fn_idx.get(&site.callee)?;
     let callee = &module.fns[callee_idx];
@@ -533,7 +538,7 @@ fn plan_tail_call_continuation_site(
         return None;
     }
 
-    let used = live_vars_after_local_dce(callee);
+    let used = live_vars_after_local_dce(callee, tel);
     let live_indices: Vec<usize> = entry
         .params
         .iter()
@@ -567,7 +572,11 @@ fn plan_tail_call_continuation_site(
     })
 }
 
-fn plan_receive_matched_site(module: &Module, site: &ReceiveMatchedSite) -> Option<ReceiveMatchedPlan> {
+fn plan_receive_matched_site(
+    module: &Module,
+    site: &ReceiveMatchedSite,
+    tel: &dyn Telemetry,
+) -> Option<ReceiveMatchedPlan> {
     if site.captures.is_empty() {
         return None;
     }
@@ -582,7 +591,7 @@ fn plan_receive_matched_site(module: &Module, site: &ReceiveMatchedSite) -> Opti
             return None;
         }
         outcome_entries.push((outcome.fn_id, outcome.bound_count, entry.params.clone()));
-        used_by_outcome.push(live_vars_after_local_dce(f));
+        used_by_outcome.push(live_vars_after_local_dce(f, tel));
     }
 
     let mut groups: Vec<ReceiveCaptureGroup> = Vec::new();
@@ -656,9 +665,9 @@ fn plan_receive_matched_site(module: &Module, site: &ReceiveMatchedSite) -> Opti
     })
 }
 
-fn live_vars_after_local_dce(f: &FnIr) -> HashSet<Var> {
+fn live_vars_after_local_dce(f: &FnIr, tel: &dyn Telemetry) -> HashSet<Var> {
     let mut pruned = f.clone();
-    dce_fn_with_telemetry("", &mut pruned, &NullTelemetry);
+    dce_fn("", &mut pruned, tel);
     collect_used(&pruned)
 }
 
@@ -690,7 +699,7 @@ struct CapturePosition {
     used: bool,
 }
 
-fn apply_plan(module: &mut Module, site: ContinuationSite, plan: NormalizePlan) {
+fn apply_plan(module: &mut Module, site: ContinuationSite, plan: NormalizePlan, tel: &dyn Telemetry) {
     let cont_idx = *module.fn_idx.get(&site.cont.fn_id).expect("continuation fn exists");
     let cont_fn = &mut module.fns[cont_idx];
     if !plan.subst.is_empty() {
@@ -708,7 +717,7 @@ fn apply_plan(module: &mut Module, site: ContinuationSite, plan: NormalizePlan) 
         .expect("continuation entry block exists");
     entry.params = plan.entry_params;
     cont_fn.ignored_entry_params = vec![false; entry.params.len()];
-    dce_fn_with_telemetry("", cont_fn, &NullTelemetry);
+    dce_fn("", cont_fn, tel);
 
     let term = &mut module.fns[site.caller_fn_idx].blocks[site.caller_block_idx].terminator;
     match term {
@@ -719,7 +728,12 @@ fn apply_plan(module: &mut Module, site: ContinuationSite, plan: NormalizePlan) 
     }
 }
 
-fn apply_shared_continuation_plan(module: &mut Module, site: SharedContinuationSite, plan: SharedContinuationPlan) {
+fn apply_shared_continuation_plan(
+    module: &mut Module,
+    site: SharedContinuationSite,
+    plan: SharedContinuationPlan,
+    tel: &dyn Telemetry,
+) {
     let cont_idx = *module
         .fn_idx
         .get(&site.cont_fn_id)
@@ -732,7 +746,7 @@ fn apply_shared_continuation_plan(module: &mut Module, site: SharedContinuationS
         .expect("shared continuation entry block exists");
     entry.params = plan.entry_params;
     cont_fn.ignored_entry_params = vec![false; entry.params.len()];
-    dce_fn_with_telemetry("", cont_fn, &NullTelemetry);
+    dce_fn("", cont_fn, tel);
 
     for call_site in site.sites {
         let term = &mut module.fns[call_site.caller_fn_idx].blocks[call_site.caller_block_idx].terminator;
@@ -750,6 +764,7 @@ fn apply_tail_call_continuation_plan(
     module: &mut Module,
     site: TailCallContinuationSite,
     plan: TailCallContinuationPlan,
+    tel: &dyn Telemetry,
 ) {
     let callee_idx = *module
         .fn_idx
@@ -763,7 +778,7 @@ fn apply_tail_call_continuation_plan(
         .expect("tail-call continuation entry block exists");
     entry.params = plan.entry_params;
     callee.ignored_entry_params = plan.ignored_entry_params;
-    dce_fn_with_telemetry("", callee, &NullTelemetry);
+    dce_fn("", callee, tel);
 
     for caller in plan.callers {
         let term = &mut module.fns[caller.caller_fn_idx].blocks[caller.caller_block_idx].terminator;
@@ -774,7 +789,12 @@ fn apply_tail_call_continuation_plan(
     }
 }
 
-fn apply_receive_matched_plan(module: &mut Module, site: ReceiveMatchedSite, plan: ReceiveMatchedPlan) {
+fn apply_receive_matched_plan(
+    module: &mut Module,
+    site: ReceiveMatchedSite,
+    plan: ReceiveMatchedPlan,
+    tel: &dyn Telemetry,
+) {
     for outcome in plan.outcomes {
         let fn_idx = *module.fn_idx.get(&outcome.fn_id).expect("receive outcome fn exists");
         let f = &mut module.fns[fn_idx];
@@ -797,7 +817,7 @@ fn apply_receive_matched_plan(module: &mut Module, site: ReceiveMatchedSite, pla
             .expect("receive outcome entry block exists");
         entry.params = outcome.entry_params;
         f.ignored_entry_params = vec![false; entry.params.len()];
-        dce_fn_with_telemetry("", f, &NullTelemetry);
+        dce_fn("", f, tel);
     }
 
     let term = &mut module.fns[site.caller_fn_idx].blocks[site.caller_block_idx].terminator;

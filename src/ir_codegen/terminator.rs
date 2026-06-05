@@ -2,17 +2,17 @@
 
 use super::*;
 use crate::fz_ir::{
-    self as fz_ir, BlockId, CallsiteId, CallsiteIdent, Cont, EmitSlot, FnId, ReceiveAfter, ReceiveClause, Term, Var,
+    self as fz_ir, BlockId, CallsiteId, Cont, EmitSlot, FnId, ReceiveAfter, ReceiveClause, Term, Var,
     receive_outcome_spec_key,
 };
 use crate::ir_planner::SpecPlan;
-use crate::ir_planner::fn_types::{CallableCapability, ReturnDemand, SpecKey};
+use crate::ir_planner::fn_types::{CallableCapability, SpecKey};
 use crate::types::{ClosureTypes, Ty, Types, key_slots_from_tys};
 use crate::{measurements, metadata};
 use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature, condcodes::IntCC, types};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilder;
-use cranelift_module::{FuncId, Linkage};
+use cranelift_module::FuncId;
 use fz_runtime::heap::Schema;
 use fz_runtime::process::YIELD_REASON_REDUCTIONS;
 use fz_runtime::process_abi::PROCESS_REDUCTIONS_REMAINING_OFFSET;

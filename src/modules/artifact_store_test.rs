@@ -1,7 +1,6 @@
 use super::*;
 use crate::diag::Span;
 use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn};
-use crate::telemetry::NullTelemetry;
 use std::env::temp_dir;
 use std::fs::remove_dir_all;
 use std::process::id as process_id;
@@ -80,10 +79,14 @@ fn writes_and_loads_fzi_artifacts_without_provider_source() {
     let mut interfaces = BTreeMap::new();
     interfaces.insert(name.clone(), interface.clone());
 
-    let written = store.write_fzi_artifacts(&NullTelemetry, &interfaces).unwrap();
+    let written = store
+        .write_fzi_artifacts(&crate::telemetry::ConfiguredTelemetry::new(), &interfaces)
+        .unwrap();
     assert_eq!(written, vec![root.join("interfaces/Provider.fzi")]);
 
-    let loaded = store.load_interface_table(&NullTelemetry, [&name]).unwrap();
+    let loaded = store
+        .load_interface_table(&crate::telemetry::ConfiguredTelemetry::new(), [&name])
+        .unwrap();
     assert_eq!(loaded.get(&name), Some(&interface));
 
     let _ = remove_dir_all(&root);

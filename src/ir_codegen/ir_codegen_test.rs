@@ -10,7 +10,7 @@ use crate::fz_ir::{
 use crate::ir_interp::run_main_with_plan;
 use crate::ir_lower::lower_program;
 use crate::ir_planner::fn_types::{CallEdgeTarget, ReturnDemand, SpecKey};
-use crate::ir_planner::{ModulePlan, SpecPlan, materialize_program, plan_module};
+use crate::ir_planner::{ModulePlan, SpecPlan, materialize_program, plan_module_with_role};
 use crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT;
 use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn, ModuleInterface};
@@ -20,7 +20,7 @@ use crate::modules::pipeline::{
 };
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
-use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind, NullTelemetry, Telemetry, Value};
+use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind, Telemetry, Value};
 use crate::test_support::{
     assert_authoritative_planner_consistent, assert_module_planner_consistent,
     module_reachable_materialized_body_signals, runtime_graph_codegen_materialized_body_signals,
@@ -57,17 +57,30 @@ fn packed_ref_tag_mask(kind: ValueKind) -> String {
 }
 
 fn lower_src(src: &str) -> Module {
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
-    lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower")
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
+    lower_program(
+        &mut crate::types::new(),
+        &prog,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("lower")
 }
 
 fn lower_resolved_src(src: &str) -> Module {
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
     let mut t = crate::types::new();
-    let prog = flatten_modules(&mut t, prog).expect("resolve");
-    lower_program(&mut t, &prog, &NullTelemetry).expect("lower")
+    let prog = flatten_modules(&mut t, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("resolve");
+    lower_program(&mut t, &prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("lower")
 }
 
 fn planner_roles(cap: &Capture) -> Vec<String> {
@@ -218,8 +231,8 @@ fn codegen_rejects_unresolved_external_module_calls() {
         target: export,
     });
     let mut t = crate::types::new();
-    let plan = plan_module(&mut t, &m, &NullTelemetry);
-    let err = match compile_planned(&mut t, &m, &plan, &NullTelemetry) {
+    let plan = plan_module_with_role(&mut t, &m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
+    let err = match compile_planned(&mut t, &m, &plan, &crate::telemetry::ConfiguredTelemetry::new()) {
         Ok(_) => panic!("expected unresolved external call error"),
         Err(err) => err,
     };
@@ -304,8 +317,9 @@ fn main(), do: User.run()
     let m = lower_resolved_src(src);
     let entry = m.fn_by_name("main").unwrap().id;
     let mut t = crate::types::new();
-    let plan = plan_module(&mut t, &m, &NullTelemetry);
-    let compiled = compile_planned(&mut t, &m, &plan, &NullTelemetry).expect("compile planned");
+    let plan = plan_module_with_role(&mut t, &m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
+    let compiled =
+        compile_planned(&mut t, &m, &plan, &crate::telemetry::ConfiguredTelemetry::new()).expect("compile planned");
     let (math, _) = link_test_unit("Math", &[("add", 2)], Vec::new());
     let (user, _) = link_test_unit(
         "User",
@@ -321,7 +335,7 @@ fn main(), do: User.run()
     let capture = Capture::new();
     tel.attach(&["fz", "link"], capture.handler());
     let _ = (math, user);
-    let image = CompiledImage::from_linked_with_telemetry(&tel, 2, compiled);
+    let image = CompiledImage::from_linked(&tel, 2, compiled);
     assert!(image.metadata().is_none());
     assert!(capture.contains(&["fz", "link", "succeeded"]));
     assert_eq!(image.run(entry), 42);
@@ -330,7 +344,7 @@ fn main(), do: User.run()
 #[test]
 fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
     let mut t = crate::types::new();
-    let tel = NullTelemetry;
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
     let math = compile_source_with_types(
         &mut t,
         "defmodule Math do\n  fn add(x, y), do: x + y\nend\n".to_string(),
@@ -370,7 +384,7 @@ fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
     // Re-plan the linked module: after the linker rewrites external stub
     // callsites to their resolved targets, a fresh plan must show no External
     // call edges and no protocol-stub targets.
-    let linked_plan = plan_module(&mut t, &linked, &tel);
+    let linked_plan = plan_module_with_role(&mut t, &linked, &tel, "test");
     assert!(
         !linked_plan.specs.values().any(|spec| {
             spec.call_edges
@@ -393,7 +407,7 @@ fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
     let entry = linked.fn_by_name("main").expect("main").id;
 
     let compiled = compile_planned(&mut t, &linked, &linked_plan, &tel).expect("compile planned linked");
-    let image = CompiledImage::from_linked(compiled);
+    let image = CompiledImage::from_linked(&tel, 2, compiled);
 
     assert_eq!(image.run(entry), 42);
 }
@@ -401,7 +415,7 @@ fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
 #[test]
 fn linked_ir_units_preserve_provider_protocol_dispatch_plan() {
     let mut t = crate::types::new();
-    let tel = NullTelemetry;
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
     let provider = compile_source_with_types(
         &mut t,
         r#"
@@ -464,9 +478,9 @@ fn main(), do: User.run()
         CompiledUnit::from_ir_module_with_plan(user.module, Some(user.module_plan), None, Diagnostics::new());
     let linked = link_ir_units(&[provider_unit, user_unit]).expect("link ir units");
     let entry = linked.fn_by_name("main").expect("main").id;
-    let linked_plan = plan_module(&mut t, &linked, &tel);
+    let linked_plan = plan_module_with_role(&mut t, &linked, &tel, "test");
     let compiled = compile_planned(&mut t, &linked, &linked_plan, &tel).expect("compile planned linked");
-    let image = CompiledImage::from_linked(compiled);
+    let image = CompiledImage::from_linked(&tel, 2, compiled);
 
     assert_eq!(image.run(entry), 42);
 }
@@ -474,7 +488,7 @@ fn main(), do: User.run()
 #[test]
 fn native_static_protocol_dispatch_preserves_integer_abi() {
     let mut t = crate::types::new();
-    let tel = NullTelemetry;
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
     let frontend = compile_source_with_types(
         &mut t,
         r#"
@@ -495,7 +509,7 @@ fn main(), do: Integerish.id(41)
     .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
     let entry = frontend.module.fn_by_name("main").expect("main").id;
     let compiled = compile_planned(&mut t, &frontend.module, &frontend.module_plan, &tel).expect("compile planned");
-    let image = CompiledImage::from_linked(compiled);
+    let image = CompiledImage::from_linked(&tel, 1, compiled);
 
     assert_eq!(image.run(entry), 42);
 }
@@ -534,7 +548,7 @@ fn main() do
 end
 "#;
     let mut t = crate::types::new();
-    let tel = NullTelemetry;
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
     let frontend = compile_source_with_types(&mut t, SRC.to_string(), "sizer.fz".to_string(), &tel)
         .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
     let entry = frontend.module.fn_by_name("main").expect("main").id;
@@ -545,7 +559,7 @@ end
 
     // Native path — same module through codegen.
     let compiled = compile_planned(&mut t, &frontend.module, &frontend.module_plan, &tel).expect("compile planned");
-    let image = CompiledImage::from_linked(compiled);
+    let image = CompiledImage::from_linked(&tel, 1, compiled);
     assert_eq!(image.run(entry), 107, "native protocol dispatch");
 }
 
@@ -890,7 +904,7 @@ end
     let graph = runtime_graph(&mut t, src);
     let module = graph.module;
     let plan = graph.module_plan;
-    let planned_program = materialize_program(&mut t, &module, &plan, &NullTelemetry);
+    let planned_program = materialize_program(&mut t, &module, &plan, &crate::telemetry::ConfiguredTelemetry::new());
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&["fz", "codegen", "closure_call_lowered"], cap.handler());
@@ -1132,8 +1146,14 @@ fn aot_compile_produces_object_with_main_symbol() {
     let src = "fn add1(n) do n + 1 end\nfn main() do dbg(add1(41)) end";
     let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
-    let artifact = compile_aot_planned(&mut t, &graph.module, &graph.module_plan, "add1_smoke", &NullTelemetry)
-        .expect("compile_aot planned");
+    let artifact = compile_aot_planned(
+        &mut t,
+        &graph.module,
+        &graph.module_plan,
+        "add1_smoke",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("compile_aot planned");
     assert!(!artifact.object.is_empty(), "AOT object should be non-empty");
     // compile_aot emits a C-callable `main` symbol that wraps
     // fz_aot_run_main; the artifact surfaces it for the linker.
@@ -1166,7 +1186,7 @@ fn observe(compiled: &CompiledModule, entry: FnId) -> Observation {
     let out = DbgCapture::new();
     tel.attach(&[], exits.handler());
     tel.attach(&[], out.handler());
-    let mut rt = Runtime::new(compiled, 1).with_telemetry(&tel);
+    let mut rt = Runtime::new(compiled, 1, &tel);
     let root_pid = rt.spawn(entry);
     rt.run_until_idle();
 
@@ -1184,7 +1204,13 @@ fn run_main_returning_module(src: &str) -> (i64, Module) {
     let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     let entry = graph.module.fn_by_name("main").unwrap().id;
-    let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
+    let compiled = compile_planned(
+        &mut t,
+        &graph.module,
+        &graph.module_plan,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("compile planned");
     let r = compiled.run(entry);
     (r, graph.module)
 }
@@ -1198,12 +1224,18 @@ fn capture_main_with_runtime_graph(src: &str) -> Vec<String> {
     let graph = runtime_graph(&mut t, src);
     let entry = graph.module.fn_by_name("main").unwrap().id;
     assert_direct_call_arities(&graph.module);
-    let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
+    let compiled = compile_planned(
+        &mut t,
+        &graph.module,
+        &graph.module_plan,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("compile planned");
     observe(&compiled, entry).output
 }
 
 fn runtime_graph(t: &mut DefaultTypes, src: &str) -> PreparedExecutionGraph {
-    runtime_graph_with_tel(t, src, &NullTelemetry)
+    runtime_graph_with_tel(t, src, &crate::telemetry::ConfiguredTelemetry::new())
 }
 
 fn runtime_graph_with_tel(t: &mut DefaultTypes, src: &str, tel: &dyn Telemetry) -> PreparedExecutionGraph {
@@ -1221,7 +1253,8 @@ fn runtime_graph_with_tel(t: &mut DefaultTypes, src: &str, tel: &dyn Telemetry) 
 fn capture_main_module_planned(t: &mut DefaultTypes, m: Module, plan: ModulePlan) -> Vec<String> {
     let entry = m.fn_by_name("main").unwrap().id;
     assert_direct_call_arities(&m);
-    let compiled = compile_planned(t, &m, &plan, &NullTelemetry).expect("compile planned");
+    let compiled =
+        compile_planned(t, &m, &plan, &crate::telemetry::ConfiguredTelemetry::new()).expect("compile planned");
     observe(&compiled, entry).output
 }
 
@@ -1229,7 +1262,13 @@ fn run_runtime_graph_main_planned(src: &str) -> i64 {
     let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     let entry = graph.module.fn_by_name("main").unwrap().id;
-    let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
+    let compiled = compile_planned(
+        &mut t,
+        &graph.module,
+        &graph.module_plan,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("compile planned");
     observe(&compiled, entry).exit.halt_value
 }
 
@@ -1269,7 +1308,13 @@ fn count_live_objects(src: &str) -> usize {
     let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     let entry = graph.module.fn_by_name("main").unwrap().id;
-    let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
+    let compiled = compile_planned(
+        &mut t,
+        &graph.module,
+        &graph.module_plan,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("compile planned");
     run_capturing(&compiled, entry).1
 }
 
@@ -1292,7 +1337,13 @@ fn atom_identity_preserved_across_processes_from_same_module() {
     let src = "fn main(), do: :ok";
     let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
-    let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
+    let compiled = compile_planned(
+        &mut t,
+        &graph.module,
+        &graph.module_plan,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("compile planned");
     let entry = graph.module.fn_by_name("main").unwrap().id;
 
     let (ra, _) = run_capturing(&compiled, entry);
@@ -1339,7 +1390,13 @@ fn planned_codegen_runs_runtime_graph_selective_receive() {
     let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     let entry = graph.module.fn_by_name("main").expect("main fn").id;
-    let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
+    let compiled = compile_planned(
+        &mut t,
+        &graph.module,
+        &graph.module_plan,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("compile planned");
     assert_eq!(observe(&compiled, entry).exit.halt_value, 42);
 }
 
@@ -1368,7 +1425,13 @@ fn materialization_keeps_selective_receive_outcome_bodies_reachable() {
 fn runtime_graph_plain_spawn_runs_via_planned_interp_path() {
     let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, "fn child(), do: nil\nfn main() do spawn(child) end");
-    let (halt, _) = run_main_with_plan(&mut t, &NullTelemetry, &graph.module, graph.module_plan).expect("interp run");
+    let (halt, _) = run_main_with_plan(
+        &mut t,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+        &graph.module,
+        graph.module_plan,
+    )
+    .expect("interp run");
     assert_eq!(halt, 2);
 }
 
@@ -1452,7 +1515,7 @@ fn runtime_graph_plain_spawn_make_fn_ref_registers_zero_cap_target() {
             )
         });
 
-    let planned_program = materialize_program(&mut t, &module, &plan, &NullTelemetry);
+    let planned_program = materialize_program(&mut t, &module, &plan, &crate::telemetry::ConfiguredTelemetry::new());
     let child_sid = planned_program
         .spec_registry()
         .resolve_spec_key(&t, &child_target)
@@ -1476,7 +1539,8 @@ fn runtime_graph_plain_spawn_finalizes_resume_addr() {
     let module = graph.module;
     let child_id = module.fn_by_name("child").expect("child fn").id.0;
     let plan = graph.module_plan;
-    let compiled = compile_planned(&mut t, &module, &plan, &NullTelemetry).expect("compile planned");
+    let compiled = compile_planned(&mut t, &module, &plan, &crate::telemetry::ConfiguredTelemetry::new())
+        .expect("compile planned");
     assert!(
         !compiled.resume_addr.is_null(),
         "runtime graph plain spawn should finalize fz_resume"
@@ -1506,7 +1570,7 @@ fn materialized_enum_take_closure_operands_stay_value_ref_typed() {
     let graph = runtime_graph(&mut t, src);
     let module = graph.module;
     let plan = graph.module_plan;
-    let planned_program = materialize_program(&mut t, &module, &plan, &NullTelemetry);
+    let planned_program = materialize_program(&mut t, &module, &plan, &crate::telemetry::ConfiguredTelemetry::new());
 
     let mut checked = 0usize;
     for sid in planned_program.reachable_specs() {
@@ -1578,7 +1642,12 @@ fn planned_enum_take_indirect_closure_body_preserves_spec_key_arity() {
     let mut t = crate::types::new();
     let src = "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
     let graph = runtime_graph(&mut t, src);
-    let planned_program = materialize_program(&mut t, &graph.module, &graph.module_plan, &NullTelemetry);
+    let planned_program = materialize_program(
+        &mut t,
+        &graph.module,
+        &graph.module_plan,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
 
     let mut checked = 0usize;
     for sid in planned_program.reachable_specs() {
@@ -1619,11 +1688,23 @@ fn two_processes_run_independent_map_builds() {
 
     let mut ta = crate::types::new();
     let graph_a = runtime_graph(&mut ta, src_a);
-    let ca = compile_planned(&mut ta, &graph_a.module, &graph_a.module_plan, &NullTelemetry).expect("compile planned");
+    let ca = compile_planned(
+        &mut ta,
+        &graph_a.module,
+        &graph_a.module_plan,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("compile planned");
     let entry_a = graph_a.module.fn_by_name("main").unwrap().id;
     let mut tb = crate::types::new();
     let graph_b = runtime_graph(&mut tb, src_b);
-    let cb = compile_planned(&mut tb, &graph_b.module, &graph_b.module_plan, &NullTelemetry).expect("compile planned");
+    let cb = compile_planned(
+        &mut tb,
+        &graph_b.module,
+        &graph_b.module_plan,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("compile planned");
     let entry_b = graph_b.module.fn_by_name("main").unwrap().id;
 
     // Independent runs: each spawns its own task with its own heap, so any
@@ -2259,7 +2340,13 @@ fn main(), do: loop_with(loop_with, 100000, 0)
     let graph = runtime_graph(&mut t, src);
     let entry = graph.module.fn_by_name("main").expect("main").id;
     let loop_with = graph.module.fn_by_name("loop_with").expect("loop_with").id;
-    let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
+    let compiled = compile_planned(
+        &mut t,
+        &graph.module,
+        &graph.module_plan,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("compile planned");
 
     assert_eq!(
         compiled
@@ -2324,7 +2411,13 @@ fn compile_and_grab_all_ir(src: &str) -> Vec<(String, String)> {
     let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     ir_text_record_enable();
-    let _ = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
+    let _ = compile_planned(
+        &mut t,
+        &graph.module,
+        &graph.module_plan,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("compile planned");
     ir_text_record_take()
 }
 
@@ -2369,7 +2462,12 @@ fn signature_uniform_when_not_native() {
     // Uniform (non-native) sig: `(i64, i64) -> i64` regardless of the
     // typer's narrower facts on the params.
     let m = lower_src("fn add(a, b) do a + b end\nfn main() do dbg(add(1, 2)) end");
-    let mt = plan_module(&mut crate::types::new(), &m, &NullTelemetry);
+    let mt = plan_module_with_role(
+        &mut crate::types::new(),
+        &m,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+        "test",
+    );
     let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
     let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
     let mut t = crate::types::new();
@@ -2550,7 +2648,12 @@ fn signature_native_uses_typed_params_and_cont() {
     // Same `add`, but call-site narrowing has typed both params as int.
     // Native sig is `(i64, i64, cont: i64) -> i64` (cont trailing).
     let m = lower_src("fn add(a, b) do a + b end\nfn main() do dbg(add(1, 2)) end");
-    let mt = plan_module(&mut crate::types::new(), &m, &NullTelemetry);
+    let mt = plan_module_with_role(
+        &mut crate::types::new(),
+        &m,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+        "test",
+    );
     let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
     let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
     let mut t = crate::types::new();
@@ -2569,7 +2672,12 @@ fn signature_native_arity_matches_entry_params_plus_cont() {
     // (Return is canonicalized to i64 even when the value is a float —
     // see the i64-return assertion below.)
     let m = lower_src("fn dist(x, y) do x * x + y * y end\nfn main() do dbg(dist(1.5, 2.5)) end");
-    let mt = plan_module(&mut crate::types::new(), &m, &NullTelemetry);
+    let mt = plan_module_with_role(
+        &mut crate::types::new(),
+        &m,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+        "test",
+    );
     let dist_idx = m.fns.iter().position(|f| f.name == "dist").unwrap();
     let ft = mt.any_spec_for(m.fns[dist_idx].id).expect("registered spec");
     let mut t = crate::types::new();
@@ -2591,7 +2699,13 @@ fn spec_registry_registers_any_key_per_fn_with_spec_id_eq_fn_id() {
     // SpecId.0 == FnId.0.
     let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, "fn add(a, b) do a + b end\nfn main() do dbg(add(1, 2)) end");
-    let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
+    let compiled = compile_planned(
+        &mut t,
+        &graph.module,
+        &graph.module_plan,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("compile planned");
     // Driving a run forces the pipeline registry construction path
     // where the SpecId.0 == FnId.0 invariant is asserted.
     let _ = compiled.run(graph.module.fn_by_name("main").unwrap().id);
@@ -2742,9 +2856,14 @@ fn hot_loop_native_continuations_allocate_no_heap_closures() {
     let graph = runtime_graph(&mut t, src);
     frame_alloc_count_reset();
     let entry = graph.module.fn_by_name("main").unwrap().id;
-    let result = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry)
-        .expect("compile planned")
-        .run(entry);
+    let result = compile_planned(
+        &mut t,
+        &graph.module,
+        &graph.module_plan,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("compile planned")
+    .run(entry);
     let allocation_count = frame_alloc_count_take();
 
     assert_eq!(result, 10, "result must still be 10");
@@ -2845,7 +2964,13 @@ fn condition_cache_bypasses_is_truthy_in_type_dispatch() {
     let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     ir_text_record_enable();
-    let _ = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
+    let _ = compile_planned(
+        &mut t,
+        &graph.module,
+        &graph.module_plan,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("compile planned");
     let ir = ir_text_record_take();
     // Per-spec fold may eliminate every brif if it can statically
     // resolve the dispatch — that's fine. For any spec that retains a
@@ -2884,7 +3009,13 @@ fn pure_branch_type_test_does_not_materialize_bool() {
     let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     ir_text_record_enable();
-    let _ = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
+    let _ = compile_planned(
+        &mut t,
+        &graph.module,
+        &graph.module_plan,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("compile planned");
     let ir = ir_text_record_take();
     let with_brif: Vec<(&str, &str)> = ir
         .iter()
@@ -2961,7 +3092,7 @@ fn const_nil_bool_atom_deduplicated_within_block() {
 }
 
 #[test]
-fn codegen_pipeline_reports_only_one_authoritative_plan() {
+fn codegen_pipeline_reports_frontend_and_linked_plans() {
     let src = "fn main(), do: dbg(42)";
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
@@ -2971,8 +3102,8 @@ fn codegen_pipeline_reports_only_one_authoritative_plan() {
     let roles = planner_roles(&cap);
     assert_eq!(
         roles,
-        vec!["authoritative".to_string(), "authoritative".to_string()],
-        "source execution graph should publish frontend and linked-module authoritative plans"
+        vec!["frontend_check".to_string(), "linked_execution_graph".to_string()],
+        "source execution graph should publish frontend and linked-module planner phases"
     );
     cap.clear();
     compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile planned");
@@ -3005,8 +3136,8 @@ fn frontend_to_codegen_pipeline_reports_planner_phase_events() {
     let roles = planner_roles(&cap);
     assert_eq!(
         roles,
-        vec!["authoritative".to_string(), "authoritative".to_string()],
-        "pretyped pipeline should report only frontend and linked-module authoritative plans"
+        vec!["frontend_check".to_string(), "linked_execution_graph".to_string()],
+        "pretyped pipeline should report only frontend and linked-module planner phases"
     );
 }
 
@@ -3018,7 +3149,7 @@ fn enum_take_drop_split_codegen_plan_reports_activation_projection_telemetry() {
     tel.attach(&["fz", "planner", "planned"], cap.handler());
     let mut t = crate::types::new();
     let graph = runtime_graph_with_tel(&mut t, src, &tel);
-    compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile");
+    compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile");
 
     let ev = cap
         .find(&["fz", "planner", "planned"])
@@ -3026,11 +3157,11 @@ fn enum_take_drop_split_codegen_plan_reports_activation_projection_telemetry() {
         .filter(|ev| {
             matches!(
                 ev.metadata.get("role"),
-                Some(Value::Str(role)) if role == "authoritative"
+                Some(Value::Str(role)) if role == "linked_execution_graph"
             )
         })
         .last()
-        .expect("authoritative linked-module planner event");
+        .expect("linked-module planner event");
     let _ = ev;
     assert_authoritative_planner_consistent(&cap);
 }
@@ -3043,7 +3174,7 @@ fn enum_take_drop_split_planner_telemetry_reports_continuation_edges() {
     tel.attach(&["fz", "planner", "spec_pair_inventory"], cap.handler());
     let mut t = crate::types::new();
     let graph = runtime_graph_with_tel(&mut t, src, &tel);
-    compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile");
+    compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile");
 
     let events = cap
         .find(&["fz", "planner", "spec_pair_inventory"])
@@ -3051,13 +3182,13 @@ fn enum_take_drop_split_planner_telemetry_reports_continuation_edges() {
         .filter(|ev| {
             matches!(
                 ev.metadata.get("role"),
-                Some(Value::Str(role)) if role == "authoritative"
+                Some(Value::Str(role)) if role == "linked_execution_graph"
             )
         })
         .collect::<Vec<_>>();
     assert!(
         !events.is_empty(),
-        "compile should publish authoritative planner spec-pair inventory"
+        "compile should publish linked execution graph spec-pair inventory"
     );
     for body_name in ["Enum.take_positive", "Enum.drop_positive", "Enum.reduce"] {
         let has_cont_edge = events.iter().any(|ev| {
@@ -3071,7 +3202,7 @@ fn enum_take_drop_split_planner_telemetry_reports_continuation_edges() {
         });
         assert!(
             has_cont_edge,
-            "authoritative planner telemetry should report a Cont edge for {body_name}; events={events:?}"
+            "linked execution graph telemetry should report a Cont edge for {body_name}; events={events:?}"
         );
     }
 }
@@ -3151,7 +3282,13 @@ end
     let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     ir_text_record_enable();
-    let _ = compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
+    let _ = compile_planned(
+        &mut t,
+        &graph.module,
+        &graph.module_plan,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("compile planned");
     let ir = ir_text_record_take();
     let names: Vec<String> = ir.iter().map(|(name, _)| name.clone()).collect();
     let cont_body = ir
@@ -3208,7 +3345,7 @@ fn main() do
 end
 "#;
     let mut t = crate::types::new();
-    let tel = NullTelemetry;
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
     let frontend = compile_source_with_types(&mut t, SRC.to_string(), "cons_clause.fz".into(), &tel)
         .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
     let entry = frontend.module.fn_by_name("main").expect("main").id;
@@ -3217,7 +3354,7 @@ end
     assert_eq!(interp, 304, "interpreter function-clause dispatch");
 
     let compiled = compile_planned(&mut t, &frontend.module, &frontend.module_plan, &tel).expect("compile planned");
-    let image = CompiledImage::from_linked(compiled);
+    let image = CompiledImage::from_linked(&tel, 1, compiled);
     assert_eq!(image.run(entry), 304, "native function-clause dispatch");
 }
 
@@ -3244,29 +3381,29 @@ end
     assert_eq!(interp, 200, "interpreter recursive function-clause dispatch");
 
     let compiled = compile_planned(&mut t, &frontend.module, &frontend.module_plan, &tel).expect("compile planned");
-    let image = CompiledImage::from_linked(compiled);
+    let image = CompiledImage::from_linked(&tel, 1, compiled);
     assert_eq!(image.run(entry), 200, "native recursive function-clause dispatch");
     assert_eq!(
         cap.count(&["fz", "codegen", "dispatch_missing"]),
         0,
         "recursive cons compile should not report missing dispatch"
     );
-    let planned_events: Vec<_> = cap
-        .find(&["fz", "planner", "planned"])
-        .into_iter()
-        .filter(|ev| {
+    let roles = planner_roles(&cap);
+    assert_eq!(
+        roles,
+        vec!["frontend_check".to_string(), "test".to_string()],
+        "frontend + interpreter + planned native compile should expose frontend and interpreter planning"
+    );
+    let planned_events = cap.find(&["fz", "planner", "planned"]);
+    let planned = planned_events
+        .iter()
+        .find(|ev| {
             matches!(
                 ev.metadata.get("role"),
-                Some(Value::Str(role)) if role == "authoritative"
+                Some(Value::Str(role)) if role == "frontend_check"
             )
         })
-        .collect();
-    assert_eq!(
-        planned_events.len(),
-        1,
-        "frontend + interpreter + planned native compile should publish only the frontend authoritative plan"
-    );
-    let planned = &planned_events[0];
+        .expect("frontend planner event");
     match planned.measurements.get("activation_return_unresolved_entry_count") {
         Some(Value::U64(0)) => {}
         other => panic!("final activation inference should be complete, got {other:?}"),
@@ -3309,11 +3446,11 @@ mod resource_jit_tests {
         let mut t = crate::types::new();
         let graph = runtime_graph(&mut t, src);
         let entry = graph.module.fn_by_name("main").expect("main fn").id;
-        let compiled =
-            compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
+        let tel = ConfiguredTelemetry::new();
+        let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile planned");
         // with_module installs the MakeResourceHook for the duration of
         // run_until_idle; the task-exit path runs the MSO sweep + dtors.
-        let mut rt = Runtime::new(&compiled, 1).with_module(&graph.module);
+        let mut rt = Runtime::new(&compiled, 1, &tel).with_module(&graph.module);
         let _pid = rt.spawn(entry);
         rt.run_until_idle();
     }

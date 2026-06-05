@@ -1,23 +1,12 @@
 //! Entry-block harness: bind entry params and load closure captures.
 
-#![allow(unused_imports)]
-
 use super::*;
-use crate::fz_ir::{BinOp, Const, FnId, FnIr, Module, Prim, Stmt, Term, UnOp};
-use cranelift_codegen::Context;
-use cranelift_codegen::ir::{
-    self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
-    condcodes::{FloatCC, IntCC},
-    types,
-};
-use cranelift_codegen::isa::CallConv;
-use cranelift_codegen::settings::{self, Configurable};
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
-use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
+use crate::fz_ir::FnIr;
+use cranelift_codegen::ir::{self, InstBuilder, MemFlags, types};
+use cranelift_frontend::FunctionBuilder;
+use cranelift_module::Module as ClModule;
+use fz_runtime::heap::{FieldKind, Schema};
 use std::collections::HashMap;
-use std::sync::Arc;
 
 pub(crate) struct EntryHarnessOut {
     pub(super) var_env: HashMap<u32, CodegenValue>,

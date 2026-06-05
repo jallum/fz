@@ -23,7 +23,7 @@
 //!
 //! Narrowing makes this correct by construction: `narrow::narrow_for_cond`
 //! intersects `recv` with `integer` in the `then` arm and differences it in
-//! the `else` arm, so when the authoritative `plan_module` re-types the
+//! the `else` arm, so when the authoritative `plan_module_with_role` re-types the
 //! rewritten module each arm's receiver is the arm's target type and the
 //! ordinary direct-call planner specs it to the right impl. `TypeTest`,
 //! `If`, and `Call` already lower in the interpreter, JIT, and AOT, so the

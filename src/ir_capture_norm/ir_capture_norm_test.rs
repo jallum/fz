@@ -211,7 +211,7 @@ fn normalize_with_capture(module: &mut Module) -> Capture {
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
-    normalize_continuation_captures_with_telemetry(module, &tel);
+    normalize_continuation_captures(module, &tel);
     cap
 }
 

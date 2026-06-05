@@ -7,7 +7,9 @@ fn alias_attr(name: &str, body_src: &str) -> Attribute {
     use crate::ast::{Attribute, TypeAliasDecl, TypeExprBody};
     use crate::diag::Span;
     use crate::parser::lexer::{Lexer, Tok};
-    let toks = Lexer::new(body_src).tokenize().expect("lex body");
+    let toks = Lexer::with_source_name(body_src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex body");
     let body_tokens: Vec<_> = toks.into_iter().filter(|t| !matches!(t.tok, Tok::Eof)).collect();
     Attribute::TypeAlias(TypeAliasDecl {
         name: name.to_string(),

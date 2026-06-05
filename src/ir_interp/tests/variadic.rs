@@ -7,12 +7,20 @@ use crate::ir_interp::run_main;
 use crate::ir_lower::lower_program;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
-use crate::telemetry::NullTelemetry;
 
 fn lower_src(src: &str) -> Module {
-    let toks = Lexer::new(src).tokenize().expect("lex");
-    let prog = Parser::new(toks).parse_program().expect("parse");
-    lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect("lower")
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
+    lower_program(
+        &mut crate::types::new(),
+        &prog,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("lower")
 }
 
 #[cfg(unix)]
@@ -61,7 +69,7 @@ end
     );
 
     let module = lower_src(&src);
-    let fd = run_main(&NullTelemetry, &module).expect("interp run");
+    let fd = run_main(&crate::telemetry::ConfiguredTelemetry::new(), &module).expect("interp run");
     assert!(fd >= 0, "open failed with fd {}", fd);
     let mode = metadata(&path).expect("created file metadata").permissions().mode() & 0o777;
     let _ = remove_file(&path);
@@ -76,7 +84,8 @@ extern "C" fn libc::printf(fmt :: cstring, ...) :: integer
 fn main() do libc::printf("%f", 1.5) end
 "#,
     );
-    let err = run_main(&NullTelemetry, &module).expect_err("unsupported variadic shape should fail interp");
+    let err = run_main(&crate::telemetry::ConfiguredTelemetry::new(), &module)
+        .expect_err("unsupported variadic shape should fail interp");
     assert!(err.contains("unsupported variadic extern shape"));
     assert!(err.contains("F64"));
 }

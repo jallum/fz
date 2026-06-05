@@ -4,7 +4,9 @@ use crate::diag::SourceMap;
 #[test]
 fn tokens_carry_accurate_byte_spans() {
     let src = "fn foo(x), do: x + 1";
-    let toks = Lexer::new(src).tokenize().expect("lex");
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
     // Every non-Eof token's span text matches the lexeme we expect.
     for t in &toks {
         let slice = &src[t.span.start as usize..t.span.end as usize];
@@ -25,7 +27,9 @@ fn locate_resolves_to_correct_line() {
     let src = "fn a(), do: 1\nfn b(), do: 2\n";
     let mut sm = SourceMap::new();
     let f = sm.add_file("t.fz", src);
-    let toks = Lexer::with_file(src, f).tokenize().expect("lex");
+    let toks = Lexer::with_file_and_source_name(src, f, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
     // Find the `b` ident; verify it locates to line 2.
     let b = toks
         .iter()
@@ -41,8 +45,12 @@ fn multi_file_spans_keep_their_file_id() {
     let mut sm = SourceMap::new();
     let a = sm.add_file("a.fz", "fn foo()");
     let b = sm.add_file("b.fz", "fn bar()");
-    let toks_a = Lexer::with_file("fn foo()", a).tokenize().unwrap();
-    let toks_b = Lexer::with_file("fn bar()", b).tokenize().unwrap();
+    let toks_a = Lexer::with_file_and_source_name("fn foo()", a, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .unwrap();
+    let toks_b = Lexer::with_file_and_source_name("fn bar()", b, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .unwrap();
     let foo = toks_a
         .iter()
         .find(|t| matches!(&t.tok, Tok::Ident(n) if n == "foo"))
@@ -67,7 +75,9 @@ fn multi_file_spans_keep_their_file_id() {
 
 #[test]
 fn binary_literal_carries_raw_bytes() {
-    let toks = Lexer::new(r#""hi""#).tokenize().expect("lex");
+    let toks = Lexer::with_source_name(r#""hi""#, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
     match &toks[0].tok {
         Tok::Binary(b) => assert_eq!(b, &b"hi".to_vec()),
         _ => panic!("expected Tok::Binary, got {:?}", toks[0].tok),
@@ -80,7 +90,9 @@ fn binary_literal_preserves_non_ascii_utf8_bytes() {
     // pushing each byte as a `char` via `c as char`, which
     // re-encoded into UTF-8 multi-byte garbage. Post-L1 the bytes
     // pass through unchanged.
-    let toks = Lexer::new(r#""héllo""#).tokenize().expect("lex");
+    let toks = Lexer::with_source_name(r#""héllo""#, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
     match &toks[0].tok {
         Tok::Binary(b) => assert_eq!(b, "héllo".as_bytes()),
         _ => panic!("expected Tok::Binary"),
@@ -89,7 +101,9 @@ fn binary_literal_preserves_non_ascii_utf8_bytes() {
 
 #[test]
 fn binary_literal_handles_canonical_escapes() {
-    let toks = Lexer::new(r#""a\nb\tc\\d\"e""#).tokenize().expect("lex");
+    let toks = Lexer::with_source_name(r#""a\nb\tc\\d\"e""#, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
     match &toks[0].tok {
         Tok::Binary(b) => assert_eq!(b, b"a\nb\tc\\d\"e"),
         _ => panic!("expected Tok::Binary"),
@@ -98,8 +112,8 @@ fn binary_literal_handles_canonical_escapes() {
 
 #[test]
 fn binary_literal_rejects_unknown_escape() {
-    let err = Lexer::new(r#""bad\q""#)
-        .tokenize()
+    let err = Lexer::with_source_name(r#""bad\q""#, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .expect_err("unknown escape must fail");
     assert!(err.msg.contains("unknown escape"), "msg={}", err.msg);
 }
@@ -123,7 +137,9 @@ fn str_tokens_are_invariantly_utf8() {
         r#""a\nb\tc\\d\"e""#, // all canonical escapes
     ];
     for src in inputs {
-        let toks = Lexer::new(src).tokenize().expect("lex");
+        let toks = Lexer::with_source_name(src, "<test>")
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .expect("lex");
         match &toks[0].tok {
             Tok::Binary(bytes) => {
                 from_utf8(bytes).unwrap_or_else(|_| panic!("Tok::Binary must be UTF-8 for {}", src));
@@ -137,8 +153,8 @@ fn str_tokens_are_invariantly_utf8() {
 
 /// Collect the non-Eof token kinds for a source, for compact assertions.
 fn toks_of(src: &str) -> Vec<Tok> {
-    Lexer::new(src)
-        .tokenize()
+    Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .expect("lex")
         .into_iter()
         .map(|t| t.tok)
@@ -204,8 +220,8 @@ fn id(s: &str) -> Tok {
 
 /// (tok, space_before) for each non-Eof token.
 fn spacing_of(src: &str) -> Vec<(Tok, bool)> {
-    Lexer::new(src)
-        .tokenize()
+    Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .expect("lex")
         .into_iter()
         .map(|t| (t.tok, t.space_before))
@@ -260,7 +276,9 @@ fn adjacency_visible_for_call_and_access_heads() {
 #[test]
 fn lex_error_carries_span_at_offending_byte() {
     let src = "fn `";
-    let err = Lexer::new(src).tokenize().expect_err("should fail");
+    let err = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect_err("should fail");
     // Backtick is at offset 3; err span points at it (or just after).
     assert!(err.span.start <= 3 && err.span.end >= 3, "span={:?}", err.span);
     assert_eq!(err.span.file, FileId(0));
@@ -277,7 +295,7 @@ fn telemetry_emits_pass_span_and_token_count() {
     tel.attach(&[], cap.handler());
 
     let src = "fn foo(x), do: x + 1";
-    let toks = Lexer::new(src).tokenize_with_telemetry(&tel).expect("lex");
+    let toks = Lexer::with_source_name(src, "<test>").tokenize(&tel).expect("lex");
     let expected_count = toks.len();
 
     // Span lifecycle: SpanStart + SpanStop bracketing the user event.
@@ -301,8 +319,8 @@ fn telemetry_user_event_inherits_span_id() {
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
 
-    let _ = Lexer::new("fn x() do, :ok end")
-        .tokenize_with_telemetry(&tel)
+    let _ = Lexer::with_source_name("fn x() do, :ok end", "<test>")
+        .tokenize(&tel)
         .expect("lex");
 
     // Find the SpanStart and the tokens_built event; same span_id.
@@ -319,8 +337,8 @@ fn telemetry_user_event_inherits_span_id() {
 #[test]
 fn null_telemetry_is_a_silent_no_op() {
     // Same call path; just verifies the null impl compiles + runs.
-    let toks = Lexer::new("fn x(), do: :ok")
-        .tokenize_with_telemetry(&NullTelemetry)
+    let toks = Lexer::with_source_name("fn x(), do: :ok", "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .expect("lex");
     assert!(!toks.is_empty());
 }

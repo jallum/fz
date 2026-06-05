@@ -42,8 +42,8 @@ parses read:
   ambiguity check.
 
 Non-fatal diagnostics collect in `warnings` and surface through
-`parse_program_with_telemetry`, which emits each one as a `[fz, diag, warning]`
-event. The plain `parse_program` path drops them.
+`parse_program(tel)`, which emits each one as a `[fz, diag, warning]` event.
+There is no plain parser entry point that drops warning telemetry.
 
 ## Function Items
 

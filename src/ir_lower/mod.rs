@@ -48,11 +48,11 @@ use crate::fz_ir::{
     BlockId, ContinuationProvenance, ContinuationProvenanceKind, ExternDecl, ExternId, ExternTy, FnCategory, FnId,
     FnIr, Module, Prim, SourceInfo, Stmt, Term, Var,
 };
-use crate::ir_capture_norm::normalize_continuation_captures_with_telemetry;
+use crate::ir_capture_norm::normalize_continuation_captures;
 #[cfg(test)]
 use crate::ir_codegen::compile_planned;
 #[cfg(test)]
-use crate::ir_planner::{collect_diagnostics, plan_module};
+use crate::ir_planner::{collect_diagnostics, plan_module_with_role};
 use crate::modules::identity::ModuleName;
 use crate::modules::runtime_library::{
     core_prelude_module_sources, interface, prelude_source, root_type_env_from_attrs,
@@ -64,9 +64,9 @@ use crate::specs::{
 };
 use crate::telemetry::Telemetry;
 #[cfg(test)]
-use crate::telemetry::{Capture, ConfiguredTelemetry, NullTelemetry, Value, bus};
+use crate::telemetry::{Capture, ConfiguredTelemetry, Value, bus};
 #[cfg(test)]
-use crate::test_support::linked_runtime_graph_with_telemetry;
+use crate::test_support::linked_runtime_graph;
 use crate::type_expr::{ModuleTypeEnv, parse_type_expr, resolve_spec_decls};
 use crate::types::{Ty, TypeVarId, Types, check_brand_mint_visibility};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -119,14 +119,17 @@ pub(crate) const REPL_ENTRY_PREFIX: &str = "__repl_eval_";
 /// Return the prelude as a flat `Program` whose `module_type_envs[""]`,
 /// `opaque_inners`, and `brand_inners` include compiler-known runtime
 /// types plus any root declarations still present in `runtime.fz`.
-fn parse_runtime_prelude<T: Types<Ty = Ty>>(t: &mut T) -> (Program, HashMap<(String, usize), String>) {
+fn parse_runtime_prelude<T: Types<Ty = Ty>>(
+    t: &mut T,
+    tel: &dyn Telemetry,
+) -> (Program, HashMap<(String, usize), String>) {
     let runtime_fz = prelude_source();
-    let (items, attrs) = parse_runtime_source_items(runtime_fz, "runtime.fz");
+    let (items, attrs) = parse_runtime_source_items(runtime_fz, "runtime.fz", tel);
     let root_types = root_type_env_from_attrs(t, &attrs);
-    let prelude_imports = collect_runtime_prelude_imports(&items);
+    let prelude_imports = collect_runtime_prelude_imports(&items, tel);
     let mut items = items;
     for (name, source) in core_prelude_module_sources() {
-        let (mut module_items, _module_attrs) = parse_runtime_source_items(source, name);
+        let (mut module_items, _module_attrs) = parse_runtime_source_items(source, name, tel);
         items.append(&mut module_items);
     }
     let staged = Program {
@@ -141,7 +144,7 @@ fn parse_runtime_prelude<T: Types<Ty = Ty>>(t: &mut T) -> (Program, HashMap<(Str
         structs: Default::default(),
         struct_field_types: Default::default(),
     };
-    let mut flat = flatten_modules(t, staged).expect("runtime.fz module flatten error (bug in built-in prelude)");
+    let mut flat = flatten_modules(t, staged, tel).expect("runtime.fz module flatten error (bug in built-in prelude)");
     // Merge compiler-known runtime types and any root declarations into the
     // flattened prelude program.
     flat.module_type_envs
@@ -153,16 +156,24 @@ fn parse_runtime_prelude<T: Types<Ty = Ty>>(t: &mut T) -> (Program, HashMap<(Str
     (flat, prelude_imports)
 }
 
-fn parse_runtime_source_items(src: &str, label: &str) -> (Vec<Rc<Item>>, Vec<Attribute>) {
-    let toks = Lexer::new(src)
-        .tokenize()
+fn parse_runtime_source_items(src: &str, label: &str, tel: &dyn Telemetry) -> (Vec<Rc<Item>>, Vec<Attribute>) {
+    let toks = Lexer::with_source_name(src, runtime_source_name(label))
+        .tokenize(tel)
         .unwrap_or_else(|_| panic!("{label} lex error (bug in built-in prelude)"));
     Parser::new(toks)
         .parse_prelude()
         .unwrap_or_else(|_| panic!("{label} parse error (bug in built-in prelude)"))
 }
 
-fn collect_runtime_prelude_imports(items: &[Rc<Item>]) -> HashMap<(String, usize), String> {
+fn runtime_source_name(label: &str) -> String {
+    if label.ends_with(".fz") {
+        format!("runtime:{label}")
+    } else {
+        format!("runtime:{label}.fz")
+    }
+}
+
+fn collect_runtime_prelude_imports(items: &[Rc<Item>], tel: &dyn Telemetry) -> HashMap<(String, usize), String> {
     let mut out = HashMap::new();
     for item in items {
         match item.as_ref() {
@@ -171,7 +182,7 @@ fn collect_runtime_prelude_imports(items: &[Rc<Item>]) -> HashMap<(String, usize
                 only,
                 except,
                 span,
-            } => collect_runtime_prelude_import(&mut out, path, only.as_deref(), except.as_deref(), *span),
+            } => collect_runtime_prelude_import(&mut out, path, only.as_deref(), except.as_deref(), *span, tel),
             Item::Alias { .. } => {
                 panic!("runtime.fz prelude aliases are not supported; use import")
             }
@@ -215,9 +226,10 @@ fn collect_runtime_prelude_import(
     only: Option<&[(String, usize)]>,
     except: Option<&[(String, usize)]>,
     span: Span,
+    tel: &dyn Telemetry,
 ) {
-    let interface =
-        interface(module).unwrap_or_else(|| panic!("runtime.fz imports unknown built-in runtime module `{}`", module));
+    let interface = interface(module, tel)
+        .unwrap_or_else(|| panic!("runtime.fz imports unknown built-in runtime module `{}`", module));
     let mut exports = interface
         .exports
         .iter()
@@ -649,9 +661,9 @@ pub(crate) fn compute_current_function_correspondence(
 /// Lower a resolved `Program` to its fz-IR `Module`.
 ///
 /// The single public entry. Telemetry is threaded unconditionally so tests and
-/// operators observe the same lowering surface; pass `NullTelemetry` to silence
-/// it. The atom table built during lowering is folded into `module.atom_names`,
-/// so the `Module` is the complete result — there is no second return value.
+/// operators observe the same lowering surface. The atom table built during
+/// lowering is folded into `module.atom_names`, so the `Module` is the complete
+/// result — there is no second return value.
 pub fn lower_program<T: Types<Ty = Ty>>(t: &mut T, prog: &Program, tel: &dyn Telemetry) -> Result<Module, LowerError> {
     let mut ctx = LowerCtx::new();
     ctx.struct_schemas.extend(
@@ -666,7 +678,7 @@ pub fn lower_program<T: Types<Ty = Ty>>(t: &mut T, prog: &Program, tel: &dyn Tel
     // Prepend the built-in runtime prelude. `runtime.fz` contributes root
     // type aliases and imports; core prelude module sources (currently
     // Kernel) contribute the implementations those imports expose.
-    let (prelude, prelude_imports) = parse_runtime_prelude(t);
+    let (prelude, prelude_imports) = parse_runtime_prelude(t, tel);
     ctx.prelude_imports = prelude_imports;
     ctx.struct_schemas.extend(
         prelude
@@ -936,7 +948,7 @@ pub fn lower_program<T: Types<Ty = Ty>>(t: &mut T, prog: &Program, tel: &dyn Tel
     // and their Brand match arms become `unreachable!()` rather than
     // silent identity-fallbacks.
     erase_brands(&mut module);
-    normalize_continuation_captures_with_telemetry(&mut module, tel);
+    normalize_continuation_captures(&mut module, tel);
     // fz-uwq.1 — verify the unique-cont invariant the post-type pipeline
     // depends on. See `debug_assert_unique_conts` for the contract.
     debug_assert_unique_conts(&module);

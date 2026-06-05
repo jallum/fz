@@ -7,9 +7,10 @@ tests observe a run without reaching into a `Process`. It is the runtime side of
 the same idea as compile-time [`telemetry`](telemetry.md): the system writes down
 facts it already holds, and a sink that is listening reads them.
 
-`Runtime::with_telemetry` attaches the sink to the compiled scheduler;
-`IrInterpRuntime` carries one through its run. Both engines route through the
-same emit sites, so a test behaves identically across interpreter, JIT, and AOT.
+`Runtime::new(compiled, workers, tel)` installs the sink on the compiled
+scheduler at construction time; `IrInterpRuntime` carries one through its run.
+Both engines route through the same emit sites, so a test behaves identically
+across interpreter, JIT, and AOT.
 
 Two events matter:
 
