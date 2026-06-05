@@ -3,17 +3,20 @@ use std::env::temp_dir;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, id};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{collections::BTreeSet, ffi::OsStr};
 
 const FZ_BIN: &str = env!("CARGO_BIN_EXE_fz");
+static UNIQUE_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn unique_path(stem: &str, ext: &str) -> PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock before unix epoch")
         .as_nanos();
-    temp_dir().join(format!("{stem}-{}-{nonce}.{ext}", id()))
+    let seq = UNIQUE_PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
+    temp_dir().join(format!("{stem}-{}-{nonce}-{seq}.{ext}", id()))
 }
 
 fn read_events(path: &Path) -> Vec<Value> {
@@ -78,13 +81,13 @@ fn compiler_event_module_keys(events: &[Value], event_name: &[&str]) -> BTreeSet
         .collect()
 }
 
-fn parsed_phase_elapsed_ns(events: &[Value], module_key: &str) -> Vec<u64> {
-    let parsed_phase_span_ids = events
+fn compiler_phase_elapsed_ns(events: &[Value], module_key: &str, target_phase: &str) -> Vec<u64> {
+    let phase_span_ids = events
         .iter()
         .filter(|ev| event_matches(ev, &["fz", "compiler", "phase"]))
         .filter(|ev| ev.get("kind").and_then(Value::as_str) == Some("span_start"))
         .filter(|ev| metadata_is(ev, "module_key", module_key))
-        .filter(|ev| metadata_is(ev, "target_phase", "parsed"))
+        .filter(|ev| metadata_is(ev, "target_phase", target_phase))
         .map(span_id)
         .collect::<Vec<_>>();
 
@@ -92,7 +95,7 @@ fn parsed_phase_elapsed_ns(events: &[Value], module_key: &str) -> Vec<u64> {
         .iter()
         .filter(|ev| event_matches(ev, &["fz", "compiler", "phase"]))
         .filter(|ev| ev.get("kind").and_then(Value::as_str) == Some("span_stop"))
-        .filter(|ev| parsed_phase_span_ids.contains(&span_id(ev)))
+        .filter(|ev| phase_span_ids.contains(&span_id(ev)))
         .map(|ev| measurement_u64(ev, "elapsed_ns"))
         .collect()
 }
@@ -157,8 +160,37 @@ fn dump_interfaces_parses_root_source_once_through_compiler_world() {
         "root source should collect interfaces exactly once through the compiler world"
     );
 
-    let parsed_elapsed = parsed_phase_elapsed_ns(&events, &module_key);
+    let parsed_elapsed = compiler_phase_elapsed_ns(&events, &module_key, "parsed");
     assert_eq!(parsed_elapsed.len(), 1, "root parsed phase should stop exactly once");
+    let body_surface_elapsed = compiler_phase_elapsed_ns(&events, &module_key, "body_surface_ready");
+    assert_eq!(
+        body_surface_elapsed.len(),
+        1,
+        "dump --emit interfaces should build one body surface for the root source"
+    );
+    assert_eq!(
+        compiler_event_count(&events, &["fz", "compiler", "body_surface_ready"], &module_key),
+        1,
+        "interface dumping should make the root body surface ready exactly once"
+    );
+    assert!(
+        events
+            .iter()
+            .filter(|ev| event_matches(ev, &["fz", "compiler", "fn_group_discovered"]))
+            .any(|ev| metadata_is(ev, "module_key", &module_key)),
+        "interface dumping should discover root function-groups through the compiler world"
+    );
+    assert_eq!(
+        compiler_event_count(&events, &["fz", "compiler", "runtime_lowered"], &module_key),
+        0,
+        "interface dumping must not lower runtime work for the root source"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|ev| event_matches(ev, &["fz", "compiler", "fn_group_lowered"])),
+        "body-surface readiness must stay body-free"
+    );
 }
 
 #[test]
@@ -186,7 +218,7 @@ fn run_reaches_and_parses_utf8_once_through_compiler_world() {
         "Utf8 should parse exactly once"
     );
 
-    let parsed_elapsed = parsed_phase_elapsed_ns(&events, "Utf8");
+    let parsed_elapsed = compiler_phase_elapsed_ns(&events, "Utf8", "parsed");
     assert_eq!(parsed_elapsed.len(), 1, "Utf8 parsed phase should stop exactly once");
 }
 
@@ -228,12 +260,12 @@ fn build_reaches_lowers_and_plans_process_once_through_compiler_world() {
         "Process should plan exactly once"
     );
 
-    let parsed_elapsed = parsed_phase_elapsed_ns(&events, "Process");
+    let parsed_elapsed = compiler_phase_elapsed_ns(&events, "Process", "parsed");
     assert_eq!(parsed_elapsed.len(), 1, "Process parsed phase should stop exactly once");
 }
 
 #[test]
-fn quicksort_build_parses_only_process_and_core_runtime_surface() {
+fn quicksort_build_parses_only_process_and_minimal_runtime_surface() {
     let input = fs::canonicalize("fixtures/quicksort/input.fz")
         .unwrap_or_else(|e| panic!("canonicalize quicksort fixture: {e}"));
     let (out, events, out_path, telemetry_path) = build_with_telemetry(&input);
@@ -263,10 +295,6 @@ fn quicksort_build_parses_only_process_and_core_runtime_surface() {
     assert!(parsed_modules.contains("Process"));
     assert!(parsed_modules.contains("$Prelude"));
     assert!(parsed_modules.contains("Kernel"));
-    assert!(parsed_modules.contains("Enumerable"));
-    assert!(parsed_modules.contains("Range"));
-    assert!(parsed_modules.contains("List"));
-    assert!(parsed_modules.contains("Map"));
     assert!(
         !parsed_modules.contains("Utf8"),
         "quicksort should not parse unrelated Utf8 runtime code; parsed modules: {parsed_modules:?}"
@@ -275,6 +303,12 @@ fn quicksort_build_parses_only_process_and_core_runtime_surface() {
         !parsed_modules.contains("Enum"),
         "quicksort should not parse unrelated Enum runtime code; parsed modules: {parsed_modules:?}"
     );
+    for unexpected in ["Enumerable", "Range", "List", "Map"] {
+        assert!(
+            !parsed_modules.contains(unexpected),
+            "quicksort should not parse unrelated core runtime module {unexpected}; parsed modules: {parsed_modules:?}"
+        );
+    }
 
     let runtime_reachable = compiler_event_module_keys(&events, &["fz", "compiler", "runtime_module_reachable"]);
     assert_eq!(

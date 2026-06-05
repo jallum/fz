@@ -417,6 +417,12 @@ end
         .filter(|ev| captured_str(ev, "module_key") == "Macros")
         .count();
     assert_eq!(macro_surfaces, 1, "macro provider should build one surface");
+    let body_surfaces = capture
+        .find(&["fz", "compiler", "body_surface_ready"])
+        .into_iter()
+        .filter(|ev| captured_str(ev, "module_key") == "Macros")
+        .count();
+    assert_eq!(body_surfaces, 1, "macro provider should build one body surface before runtime lowering exists");
     assert!(
         capture
             .find(&["fz", "compiler", "phase"])
@@ -439,6 +445,13 @@ end
             .filter(|ev| captured_str(ev, "module_key") == "Macros")
             .any(|ev| matches!(captured_str(&ev, "to_phase"), "runtime_lowered" | "runtime_planned")),
         "macro-only provider must not advance into runtime phases"
+    );
+    assert!(
+        !capture
+            .find(&["fz", "compiler", "fn_group_lowered"])
+            .into_iter()
+            .any(|ev| captured_str(&ev, "module_key") == "Macros"),
+        "macro-surface preparation must not lower function-group bodies"
     );
 
     compiler
