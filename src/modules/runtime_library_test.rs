@@ -160,7 +160,7 @@ fn runtime_library_interfaces_expose_fz_functions_not_primitive_externs() {
         .iter()
         .map(|f| format!("{}/{}", f.name, f.arity))
         .collect::<Vec<_>>();
-    for export in ["+/2", "-/2", "*/2", "//2", "%/2"] {
+    for export in ["<>/2", "+/2", "-/2", "*/2", "//2", "%/2"] {
         assert!(
             kernel_exports.contains(&export.to_string()),
             "Kernel should export arithmetic operator {export}; exports: {kernel_exports:?}"
@@ -265,14 +265,14 @@ fn runtime_library_implementation_dependencies_are_local_to_requested_module() {
     assert_eq!(
         implementation_dependencies(compiler.world_mut(), &runtime_module("Utf8"), &NullTelemetry)
             .expect("Utf8 implementation dependencies"),
-        Vec::<ModuleName>::new(),
-        "Utf8 should not drag in unrelated runtime modules"
+        vec![runtime_module("Kernel")],
+        "Utf8 should report only the implicit prelude runtime module it actually uses"
     );
     assert_eq!(
         implementation_dependencies(compiler.world_mut(), &runtime_module("Enum"), &NullTelemetry)
             .expect("Enum implementation dependencies"),
-        vec![runtime_module("Enumerable")],
-        "Enum should report only the runtime module it references directly"
+        vec![runtime_module("Enumerable"), runtime_module("Kernel")],
+        "Enum should report the runtime modules it reaches directly or through implicit prelude operators/helpers"
     );
 
     compiler

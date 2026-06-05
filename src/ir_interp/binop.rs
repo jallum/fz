@@ -1,7 +1,7 @@
 use super::*;
 use crate::fz_ir::{BinOp, Const, FnId, UnOp};
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind, closure_captured_count, closure_fn_ptr};
-use fz_runtime::ir_runtime::{fz_closure_get_capture_ref, fz_value_eq_ref};
+use fz_runtime::ir_runtime::{fz_binary_concat, fz_closure_get_capture_ref, fz_value_eq_ref};
 use fz_runtime::process::Process;
 use std::ptr::null_mut;
 
@@ -42,6 +42,11 @@ pub(super) fn eval_binop(proc: *mut Process, op: BinOp, a: AnyValue, b: AnyValue
         BinOp::Mul => int_arith!(*),
         BinOp::Div => int_arith!(/),
         BinOp::Mod => int_arith!(%),
+        BinOp::BinConcat => {
+            let left_ref = a.as_ref_word(proc)?;
+            let right_ref = b.as_ref_word(proc)?;
+            interp_value_from_extern_ref_word(fz_binary_concat(proc, left_ref, right_ref))
+        }
         BinOp::Eq => Ok(interp_bool_value(interp_value_eq(proc, a, b)?)),
         BinOp::Neq => Ok(interp_bool_value(!interp_value_eq(proc, a, b)?)),
         BinOp::Lt => float_cmp!(<),

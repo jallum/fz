@@ -26,6 +26,7 @@ pub(crate) fn type_binop<T: Types<Ty = Ty>>(t: &mut T, op: BinOp, a: &T::Ty, b: 
                 numeric_result(t, a, b)
             }
         }
+        BinConcat => t.str_t(),
         Eq | Neq | Lt | Le | Gt | Ge => compare_result(t, op, a, b),
         And | Or => t.union(a.clone(), b.clone()),
     }

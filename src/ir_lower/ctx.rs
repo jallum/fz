@@ -90,6 +90,7 @@ pub struct LowerCtx {
     pub(super) prelude_imports: HashMap<(String, usize), String>,
     pub(super) external_exports: HashMap<(String, usize), ExportKey>,
     pub(super) external_stubs: HashMap<ExportKey, FnId>,
+    pub(super) imported_fn_value_wrappers: HashMap<ExportKey, FnId>,
     pub(super) protocol_callbacks: HashMap<(String, usize), ProtocolCallTarget>,
     pub(super) protocol_stubs: HashMap<(String, usize), FnId>,
     pub(super) struct_schemas: BTreeMap<String, Vec<String>>,
@@ -127,6 +128,7 @@ impl LowerCtx {
             prelude_imports: HashMap::new(),
             external_exports: HashMap::new(),
             external_stubs: HashMap::new(),
+            imported_fn_value_wrappers: HashMap::new(),
             protocol_callbacks: HashMap::new(),
             protocol_stubs: HashMap::new(),
             struct_schemas: Default::default(),
@@ -142,7 +144,7 @@ impl LowerCtx {
         self.prelude_imports.get(&(name.to_string(), arity)).cloned()
     }
 
-    pub(super) fn unique_imported_fn_value_target(&self, name: &str) -> Option<(String, FnId)> {
+    pub(super) fn unique_imported_fn_value_target(&mut self, name: &str) -> Option<(String, FnId)> {
         let mut matches = self
             .prelude_imports
             .iter()
@@ -152,8 +154,17 @@ impl LowerCtx {
         if matches.next().is_some() {
             return None;
         }
-        let fn_id = *self.fns.get(&(qualified.clone(), arity))?;
+        let fn_id = self.imported_fn_value_target(&qualified, arity)?.1;
         Some((qualified, fn_id))
+    }
+
+    pub(super) fn imported_fn_value_target(&mut self, qualified: &str, arity: usize) -> Option<(String, FnId)> {
+        if let Some(&fn_id) = self.fns.get(&(qualified.to_string(), arity)) {
+            return Some((qualified.to_string(), fn_id));
+        }
+        let target = self.external_exports.get(&(qualified.to_string(), arity))?.clone();
+        let fn_id = self.ensure_imported_fn_value_wrapper(target.clone());
+        Some((qualified.to_string(), fn_id))
     }
 
     pub(super) fn register_external_interfaces(&mut self, interfaces: &BTreeMap<ModuleName, ModuleInterface>) {
@@ -220,21 +231,55 @@ impl LowerCtx {
 
     pub(super) fn external_callee(&mut self, name: &str, arity: usize) -> Option<(FnId, ExportKey)> {
         let target = self.external_exports.get(&(name.to_string(), arity))?.clone();
-        let fn_id = if let Some(fn_id) = self.external_stubs.get(&target) {
-            *fn_id
-        } else {
-            let fn_id = self.mb.fresh_fn_id();
-            let mut stub = FnBuilder::new(fn_id, format!("__external__.{}", target)).with_category(FnCategory::User);
-            let params = (0..arity).map(|_| stub.fresh_var()).collect::<Vec<_>>();
-            let entry = stub.block(params);
-            let atom = self.atoms.intern("external_module_unlinked");
-            let reason = stub.let_(entry, Prim::Const(Const::Atom(atom)));
-            stub.set_terminator(entry, Term::Halt(reason));
-            self.mb.add_fn(stub.build());
-            self.external_stubs.insert(target.clone(), fn_id);
-            fn_id
-        };
+        let fn_id = self.ensure_external_stub(target.clone(), arity);
         Some((fn_id, target))
+    }
+
+    fn ensure_external_stub(&mut self, target: ExportKey, arity: usize) -> FnId {
+        if let Some(fn_id) = self.external_stubs.get(&target) {
+            return *fn_id;
+        }
+        let fn_id = self.mb.fresh_fn_id();
+        let mut stub = FnBuilder::new(fn_id, format!("__external__.{}", target)).with_category(FnCategory::User);
+        let params = (0..arity).map(|_| stub.fresh_var()).collect::<Vec<_>>();
+        let entry = stub.block(params);
+        let atom = self.atoms.intern("external_module_unlinked");
+        let reason = stub.let_(entry, Prim::Const(Const::Atom(atom)));
+        stub.set_terminator(entry, Term::Halt(reason));
+        self.mb.add_fn(stub.build());
+        self.external_stubs.insert(target, fn_id);
+        fn_id
+    }
+
+    fn ensure_imported_fn_value_wrapper(&mut self, target: ExportKey) -> FnId {
+        if let Some(fn_id) = self.imported_fn_value_wrappers.get(&target) {
+            return *fn_id;
+        }
+        let callee = self.ensure_external_stub(target.clone(), target.arity);
+        let fn_id = self.mb.fresh_fn_id();
+        let wrapper_name = format!("__import_wrap__.{}.{}__{}", target.module, target.name, target.arity);
+        let mut wrapper = FnBuilder::new(fn_id, wrapper_name)
+            .with_category(FnCategory::User)
+            .with_owner_module(self.current_owner_module.clone());
+        let params = (0..target.arity).map(|_| wrapper.fresh_var()).collect::<Vec<_>>();
+        let entry = wrapper.block(params.clone());
+        let ident = CallsiteIdent::from_source(Span::DUMMY);
+        wrapper.set_terminator(
+            entry,
+            Term::TailCall {
+                ident: ident.clone(),
+                callee,
+                args: params,
+                is_back_edge: false,
+            },
+        );
+        self.mb.add_fn(wrapper.build());
+        self.mb.external_call_edges.push(ExternalCallEdge {
+            callsite: CallsiteId::new(fn_id, &ident, EmitSlot::Direct),
+            target: target.clone(),
+        });
+        self.imported_fn_value_wrappers.insert(target, fn_id);
+        fn_id
     }
 
     /// Helper: emit an If terminator on the current block using the active

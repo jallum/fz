@@ -719,9 +719,6 @@ fn expand_expr_inner(
                 BinOp::ListSubtract => {
                     e.node = call2("List.subtract", (**l).clone(), (**r).clone());
                 }
-                BinOp::BinConcat => {
-                    e.node = call2("Kernel.fz_binary_concat", (**l).clone(), (**r).clone());
-                }
                 BinOp::Range => {
                     e.node = call3(
                         "Range.new",
@@ -755,6 +752,7 @@ fn expand_expr_inner(
                 | BinOp::GtEq
                 | BinOp::And
                 | BinOp::Or
+                | BinOp::BinConcat
                 | BinOp::Cons => {}
             }
         }

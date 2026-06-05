@@ -317,7 +317,7 @@ end"#,
 
     assert_call_name(&values[0], "List.concat", 2);
     assert_call_name(&values[1], "List.subtract", 2);
-    assert_call_name(&values[2], "Kernel.fz_binary_concat", 2);
+    assert!(matches!(values[2].node, Expr::BinOp(BinOp::BinConcat, _, _)));
     assert_call_name(&values[3], "Range.new", 3);
     assert_call_name(&values[4], "Range.new", 3);
 }

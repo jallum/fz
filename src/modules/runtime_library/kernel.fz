@@ -63,6 +63,9 @@ defmodule Kernel do
   @spec range(integer, integer, integer) :: any
   fn range(first, last, step), do: Range.new(first, last, step)
 
+  @spec binary <> binary :: binary
+  fn left <> right, do: fz_binary_concat(left, right)
+
   @spec integer + integer :: integer
   @spec float + float :: float
   @spec integer + float :: float

@@ -123,6 +123,14 @@ fn first_make_fn_ref(f: &FnIr) -> FnId {
         .expect("expected fn ref construction")
 }
 
+fn external_call_edge_target(module: &Module, caller: FnId) -> Option<crate::modules::identity::ExportKey> {
+    module
+        .external_call_edges
+        .iter()
+        .find(|edge| edge.callsite.caller == caller)
+        .map(|edge| edge.target.clone())
+}
+
 #[test]
 fn lower_const_int_returns_in_entry_block() {
     let m = lower_src("fn f() do 42 end");
@@ -144,6 +152,23 @@ fn lower_binop_add() {
     let s = format!("{}", m);
     assert!(s.contains("const(1)"), "{}", s);
     assert!(s.contains(" + "), "{}", s);
+}
+
+#[test]
+fn lower_binconcat_emits_ir_binop() {
+    let m = lower_src("fn join(left, right), do: left <> right");
+    let join = m.fn_by_name("join").expect("join fn missing");
+    let (lhs, rhs) = join
+        .block(join.entry)
+        .stmts
+        .iter()
+        .find_map(|stmt| match stmt {
+            Stmt::Let(_, Prim::BinOp(BinOp::BinConcat, lhs, rhs)) => Some((*lhs, *rhs)),
+            _ => None,
+        })
+        .expect("binary concat should lower to Prim::BinOp(BinConcat)");
+    assert_eq!(lhs.0, 0);
+    assert_eq!(rhs.0, 1);
 }
 
 #[test]
@@ -975,76 +1000,69 @@ fn dbg_call_lowers_to_identity_extern_intrinsic() {
     );
 }
 
-/// Function references still target the runtime-library wrapper, because a
-/// named callable needs a stable `FnId`; only direct source calls are
-/// intrinsic-lowered.
+/// Imported fn values lower to a local zero-capture wrapper that links to the
+/// runtime export on demand.
 #[test]
-fn dbg_function_reference_routes_through_runtime_fz_wrapper() {
+fn dbg_function_reference_synthesizes_import_wrapper() {
     let m = lower_src("fn p(), do: &dbg/1");
     let dbg = m
         .fns
         .iter()
-        .find(|f| f.name == "Kernel.dbg" && f.block(f.entry).params.len() == 1)
-        .expect("Kernel.dbg/1 prelude fn missing");
+        .find(|f| f.name.starts_with("__import_wrap__.Kernel.dbg__") && f.block(f.entry).params.len() == 1)
+        .expect("Kernel.dbg/1 import wrapper missing");
     let p = m.fn_by_name("p").expect("p fn missing");
     let fn_id = first_make_fn_ref(p);
 
     assert_eq!(fn_id, dbg.id);
+    assert_eq!(
+        external_call_edge_target(&m, dbg.id),
+        Some(crate::modules::identity::ExportKey::new(
+            crate::modules::identity::ModuleName::from_segments(vec!["Kernel".to_string()]),
+            "dbg",
+            1,
+        )),
+        "dbg fn ref wrapper must carry a linkable Kernel.dbg export edge"
+    );
 }
 
-/// `spawn(x)` routes through the runtime.fz prelude import to
-/// `Kernel.spawn/1`, whose implementation owns the raw extern.
+/// `spawn(x)` lowers as an external runtime export reference instead of
+/// copying `Kernel.spawn/1` into the caller.
 #[test]
-fn spawn_callsite_routes_through_runtime_fz_wrapper() {
+fn spawn_callsite_records_runtime_export_edge() {
     let m = lower_src("fn child(), do: 0\nfn p() do spawn(child) end");
     assert!(
         !m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
         "spawn must not synthesize fz_spawn_thunk; fns: {:?}",
         m.fns.iter().map(|f| &f.name).collect::<Vec<_>>()
     );
-    let spawn = m
-        .fns
-        .iter()
-        .find(|f| f.name == "Kernel.spawn" && f.block(f.entry).params.len() == 1)
-        .expect("Kernel.spawn/1 prelude fn missing");
     let p = m.fn_by_name("p").expect("p fn missing");
     let entry = p.block(p.entry);
-    let Term::TailCall { callee, .. } = entry.terminator else {
+    let Term::TailCall { .. } = entry.terminator else {
         panic!("expected p to tail-call spawn/1, got {:?}", entry.terminator);
     };
-    assert_eq!(callee, spawn.id);
-    assert!(
-        spawn.blocks.iter().any(|b| b.stmts.iter().any(|stmt| {
-            let Stmt::Let(_, prim) = stmt;
-            matches!(prim, Prim::Extern(_, _, _))
-        })),
-        "Kernel.spawn/1 must call its runtime extern"
+    assert_eq!(
+        external_call_edge_target(&m, p.id),
+        Some(crate::modules::identity::ExportKey::new(
+            crate::modules::identity::ModuleName::from_segments(vec!["Kernel".to_string()]),
+            "spawn",
+            1,
+        )),
+        "spawn/1 callsite must carry a linkable Kernel.spawn export edge"
     );
 }
 
 #[test]
-fn spawn_wrapper_extern_keeps_intrinsic_boundary_identity() {
+fn spawn_callsite_keeps_intrinsic_boundary_identity() {
     let m = lower_src("fn child(), do: nil\nfn main() do spawn(child) end");
-    let spawn = m
-        .fns
-        .iter()
-        .find(|f| f.name == "Kernel.spawn" && f.block(f.entry).params.len() == 1)
-        .expect("Kernel.spawn/1 prelude fn missing");
-    let (ident, args) = spawn
-        .blocks
-        .iter()
-        .flat_map(|block| block.stmts.iter())
-        .find_map(|stmt| match stmt {
-            Stmt::Let(_, Prim::Extern(ident, _, args)) => Some((ident, args.as_slice())),
-            _ => None,
-        })
-        .expect("Kernel.spawn/1 must contain a runtime extern");
-
-    assert_eq!(args.len(), 1, "spawn wrapper should pass exactly one callable");
+    let main = m.fn_by_name("main").expect("main fn missing");
+    let entry = main.block(main.entry);
+    let Term::TailCall { ident, .. } = &entry.terminator else {
+        panic!("expected main to tail-call spawn/1, got {:?}", entry.terminator);
+    };
     assert_ne!(
         ident.span(),
         Span::DUMMY,
-        "runtime extern boundary must carry an intrinsic callsite span"
+        "spawn callsite must carry an intrinsic source span"
     );
 }
 
@@ -1053,16 +1071,18 @@ fn lambda_tail_receive_does_not_terminate_enclosing_spawn_call() {
     let m = lower_src("fn p(parent) do\nspawn(fn () -> send(parent, receive do x -> x end) end)\nend");
     let p = m.fn_by_name("p").expect("p fn missing");
     let entry = p.block(p.entry);
-    let spawn = m
-        .fns
-        .iter()
-        .find(|f| f.name == "Kernel.spawn" && f.block(f.entry).params.len() == 1)
-        .expect("Kernel.spawn/1 prelude fn missing");
-    let callee = match entry.terminator {
-        Term::TailCall { callee, .. } => callee,
-        ref other => panic!("expected enclosing fn to tail-call spawn/1, got {:?}", other),
+    let Term::TailCall { .. } = entry.terminator else {
+        panic!("expected enclosing fn to tail-call spawn/1, got {:?}", entry.terminator);
     };
-    assert_eq!(callee, spawn.id);
+    assert_eq!(
+        external_call_edge_target(&m, p.id),
+        Some(crate::modules::identity::ExportKey::new(
+            crate::modules::identity::ModuleName::from_segments(vec!["Kernel".to_string()]),
+            "spawn",
+            1,
+        )),
+        "spawn closure callsite must still resolve through the runtime export edge"
+    );
     assert!(
         !p.blocks
             .iter()
@@ -1073,29 +1093,25 @@ fn lambda_tail_receive_does_not_terminate_enclosing_spawn_call() {
 
 /// `spawn/2` follows the same prelude-import path as `spawn/1`.
 #[test]
-fn spawn2_routes_through_runtime_fz_wrapper() {
+fn spawn2_records_runtime_export_edge() {
     let m = lower_src("fn child(), do: 0\nfn p() do spawn(child, 4096) end");
     assert!(
         !m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
         "spawn/2 must not synthesize fz_spawn_thunk"
     );
-    let spawn = m
-        .fns
-        .iter()
-        .find(|f| f.name == "Kernel.spawn" && f.block(f.entry).params.len() == 2)
-        .expect("Kernel.spawn/2 prelude fn missing");
     let p = m.fn_by_name("p").expect("p fn missing");
     let entry = p.block(p.entry);
-    let Term::TailCall { callee, .. } = entry.terminator else {
+    let Term::TailCall { .. } = entry.terminator else {
         panic!("expected p to tail-call spawn/2, got {:?}", entry.terminator);
     };
-    assert_eq!(callee, spawn.id);
-    assert!(
-        spawn.blocks.iter().any(|b| b.stmts.iter().any(|stmt| {
-            let Stmt::Let(_, prim) = stmt;
-            matches!(prim, Prim::Extern(_, _, _))
-        })),
-        "Kernel.spawn/2 must call its runtime extern"
+    assert_eq!(
+        external_call_edge_target(&m, p.id),
+        Some(crate::modules::identity::ExportKey::new(
+            crate::modules::identity::ModuleName::from_segments(vec!["Kernel".to_string()]),
+            "spawn",
+            2,
+        )),
+        "spawn/2 callsite must carry a linkable Kernel.spawn export edge"
     );
 }
 

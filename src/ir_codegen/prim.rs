@@ -1078,6 +1078,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
                     lower_arith_binop(body, t, fn_types, var_env, runtime, *op, *a, *bv)
                 }
+                BinOp::BinConcat => lower_extern_fz_binary_concat(body, var_env, &[*a, *bv], dest_var),
                 BinOp::Eq | BinOp::Neq => lower_eq_binop(body, t, fn_types, var_env, runtime, *op, *a, *bv, dest_var),
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                     lower_cmp_binop(body, t, fn_types, var_env, runtime, *op, *a, *bv, dest_var)

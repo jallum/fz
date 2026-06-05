@@ -118,6 +118,7 @@ fn operator_token_name(t: &Tok) -> Option<&'static str> {
         Tok::Star => "*",
         Tok::Slash => "/",
         Tok::Percent => "%",
+        Tok::Concat => "<>",
         Tok::EqEq => "==",
         Tok::NotEq => "!=",
         Tok::Lt => "<",

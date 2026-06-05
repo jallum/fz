@@ -526,6 +526,7 @@ fn spawn(fun, opts), do: fun.()
             ("&*/2", "*"),
             ("&//2", "/"),
             ("&%/2", "%"),
+            ("&<>/2", "<>"),
         ] {
             match parse_fn_body(src) {
                 Expr::FnRef { name, arity } => {
@@ -545,6 +546,7 @@ fn spawn(fun, opts), do: fun.()
             ("&Kernel.*/2", "Kernel.*"),
             ("&Kernel.//2", "Kernel./"),
             ("&Kernel.%/2", "Kernel.%"),
+            ("&Kernel.<>/2", "Kernel.<>"),
         ] {
             match parse_fn_body(src) {
                 Expr::FnRef { name, arity } => {

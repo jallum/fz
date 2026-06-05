@@ -176,9 +176,10 @@ pub enum BinOp {
     Pipe, // |>
     Cons, // |  (head | tail)
 
-    // Elixir-aligned operators. Like Pipe and Cons, these never reach IR
-    // lowering: the frontend desugar pass (src/frontend/macros.rs) rewrites
-    // them into ordinary calls or constructions first.
+    // Elixir-aligned operators. Most never reach IR lowering: the frontend
+    // desugar pass (src/frontend/macros.rs) rewrites them into ordinary calls
+    // or constructions first. `BinConcat` survives as a first-class IR
+    // operator so Kernel can declare its type surface like any other operator.
     ListConcat,   // ++   list concatenation
     ListSubtract, // --   list subtraction
     BinConcat,    // <>   binary concatenation

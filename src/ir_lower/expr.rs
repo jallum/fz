@@ -196,8 +196,11 @@ pub(crate) fn lower_expr<T: Types<Ty = Ty>>(
             if let Some(&fn_id) = ctx.fns.get(&(name.clone(), *arity)) {
                 return Ok(ctx.let_at(Prim::make_fn_ref(sp, fn_id), sp));
             }
+            if let Some((_, fn_id)) = ctx.imported_fn_value_target(name, *arity) {
+                return Ok(ctx.let_at(Prim::make_fn_ref(sp, fn_id), sp));
+            }
             if let Some(imported) = ctx.resolve_prelude_import(name, *arity)
-                && let Some(&fn_id) = ctx.fns.get(&(imported, *arity))
+                && let Some((_, fn_id)) = ctx.imported_fn_value_target(&imported, *arity)
             {
                 return Ok(ctx.let_at(Prim::make_fn_ref(sp, fn_id), sp));
             }
@@ -590,6 +593,7 @@ pub(super) fn lower_binop(op: AstBinOp, span: Span) -> Result<BinOp, LowerError>
         AstBinOp::Mul => BinOp::Mul,
         AstBinOp::Div => BinOp::Div,
         AstBinOp::Rem => BinOp::Mod,
+        AstBinOp::BinConcat => BinOp::BinConcat,
         AstBinOp::Eq => BinOp::Eq,
         AstBinOp::Neq => BinOp::Neq,
         AstBinOp::Lt => BinOp::Lt,
@@ -612,10 +616,9 @@ pub(super) fn lower_binop(op: AstBinOp, span: Span) -> Result<BinOp, LowerError>
             });
         }
         // Elixir-aligned operators are rewritten by the frontend desugar pass
-        // into calls/constructions; none should survive to lowering.
+        // into calls/constructions before lowering.
         AstBinOp::ListConcat
         | AstBinOp::ListSubtract
-        | AstBinOp::BinConcat
         | AstBinOp::Range
         | AstBinOp::RangeStep
         | AstBinOp::In
