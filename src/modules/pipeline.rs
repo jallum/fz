@@ -109,7 +109,7 @@ pub(crate) fn link_error_diagnostic(err: ImageLinkError) -> Diagnostic {
     Diagnostic::error(CODEGEN_SCHEMA_MISSING, err.to_string(), Span::DUMMY)
 }
 
-fn run_frontend(result: FrontendResult, tel: &dyn Telemetry) -> Result<FrontendOk, PipelineError> {
+fn frontend_ok(result: FrontendResult, tel: &dyn Telemetry) -> Result<FrontendOk, PipelineError> {
     let ok = match result {
         Ok(ok) => ok,
         Err(err) => {
@@ -122,6 +122,50 @@ fn run_frontend(result: FrontendResult, tel: &dyn Telemetry) -> Result<FrontendO
         return Err(PipelineError::FrontendDiagnostics);
     }
     Ok(ok)
+}
+
+fn checked_module_from_frontend(
+    t: &mut DefaultTypes,
+    frontend: FrontendOk,
+    tel: &dyn Telemetry,
+    mode: CompileMode,
+) -> Result<CheckedModule, PipelineError> {
+    use crate::telemetry::TelemetryExt as _;
+
+    let interfaces = frontend._prog.module_interfaces;
+    let external_interfaces = frontend._prog.external_module_interfaces;
+    tel.event(
+        &["fz", "module", "interfaces_collected"],
+        metadata! { interfaces: interfaces.len() as i64 },
+    );
+    if mode.is_lto() {
+        let linked = LtoLinkedProgram::validate(frontend.module, interfaces, tel, Some(&frontend.sm))?;
+        let (module, interfaces) = linked.erase_boundaries(tel)?;
+        let _compile_span = tel.span(
+            &["fz", "compile"],
+            metadata! {
+                compile_nonce: next_compile_nonce(),
+                module_path: module.module_path().to_owned(),
+            },
+        );
+        let module_plan = plan_module(t, &module, tel);
+        return Ok(CheckedModule {
+            module,
+            module_plan,
+            interfaces,
+            external_interfaces,
+            sm: frontend.sm,
+            diagnostics: frontend.diagnostics,
+        });
+    }
+    Ok(CheckedModule {
+        module: frontend.module,
+        module_plan: frontend.module_plan,
+        interfaces,
+        external_interfaces,
+        sm: frontend.sm,
+        diagnostics: frontend.diagnostics,
+    })
 }
 
 fn has_errors(diagnostics: &Diagnostics) -> bool {
@@ -153,47 +197,27 @@ impl CheckedModule {
         tel: &dyn Telemetry,
         mode: CompileMode,
     ) -> Result<Self, PipelineError> {
-        use crate::telemetry::TelemetryExt as _;
-
-        let frontend = run_frontend(result, tel)?;
-        let interfaces = frontend._prog.module_interfaces;
-        let external_interfaces = frontend._prog.external_module_interfaces;
-        tel.event(
-            &["fz", "module", "interfaces_collected"],
-            metadata! { interfaces: interfaces.len() as i64 },
-        );
-        if mode.is_lto() {
-            let linked = LtoLinkedProgram::validate(frontend.module, interfaces, tel, Some(&frontend.sm))?;
-            let (module, interfaces) = linked.erase_boundaries(tel)?;
-            let _compile_span = tel.span(
-                &["fz", "compile"],
-                metadata! {
-                    compile_nonce: next_compile_nonce(),
-                    module_path: module.module_path().to_owned(),
-                },
-            );
-            let module_plan = plan_module(t, &module, tel);
-            return Ok(Self {
-                module,
-                module_plan,
-                interfaces,
-                external_interfaces,
-                sm: frontend.sm,
-                diagnostics: frontend.diagnostics,
-            });
-        }
-        Ok(Self {
-            module: frontend.module,
-            module_plan: frontend.module_plan,
-            interfaces,
-            external_interfaces,
-            sm: frontend.sm,
-            diagnostics: frontend.diagnostics,
-        })
+        checked_module_from_frontend(t, frontend_ok(result, tel)?, tel, mode)
     }
 }
 
 impl CompilerWorld {
+    pub(crate) fn check_program_from_roots(
+        &mut self,
+        root_source: Option<ModuleId>,
+        lowering_root_source: Option<ModuleId>,
+        t: &mut DefaultTypes,
+        prog: crate::ast::Program,
+        sm: SourceMap,
+        interface_table: InterfaceTable,
+        tel: &dyn Telemetry,
+        mode: CompileMode,
+    ) -> Result<CheckedModule, PipelineError> {
+        let result =
+            self.compile_program_from_roots(root_source, lowering_root_source, t, prog, sm, interface_table, tel);
+        checked_module_from_frontend(t, frontend_ok(result, tel)?, tel, mode)
+    }
+
     pub(crate) fn prepare_execution_graph(
         &mut self,
         t: &mut DefaultTypes,
@@ -335,8 +359,16 @@ impl CompilerWorld {
             items: parsed.items,
             ..crate::ast::Program::default()
         };
-        let frontend =
-            run_frontend(self.compile_program_from_roots(None, Some(module_id), t, program, parsed.sm, interfaces.clone(), tel), tel)?;
+        let frontend = self.check_program_from_roots(
+            None,
+            Some(module_id),
+            t,
+            program,
+            parsed.sm,
+            interfaces.clone(),
+            tel,
+            CompileMode::Normal,
+        )?;
         let _ = self.note_runtime_lowered(module_id, frontend.module.fns.len(), tel);
         let _ = self.note_runtime_planned(module_id, frontend.module_plan.specs.len(), tel);
         tel.event(
@@ -363,12 +395,10 @@ impl CompilerWorld {
 
         let mut seeds = Vec::new();
         for target in targets {
-            let Some(owner_module_id) = self
-                .discover_runtime_export_owner(&target, tel)
-                .map_err(|diagnostic| {
-                    emit_through(tel, None, &[diagnostic]);
-                    PipelineError::FrontendFailed
-                })?
+            let Some(owner_module_id) = self.discover_runtime_export_owner(&target, tel).map_err(|diagnostic| {
+                emit_through(tel, None, &[diagnostic]);
+                PipelineError::FrontendFailed
+            })?
             else {
                 continue;
             };

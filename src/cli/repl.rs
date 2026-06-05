@@ -26,15 +26,11 @@ use crate::exec::eval::{CompileTimeEvaluator, format_spec_text};
 use crate::exec::value::{Closure, Value};
 use crate::frontend::macros::expand_with;
 use crate::frontend::resolve::flatten_modules;
-use crate::frontend::{
-    FrontendOk, compile_program_with_types, compile_repl_expr_with_types, compile_source_with_compiler_types,
-};
+use crate::frontend::{FrontendOk, compile_program_with_types, compile_repl_expr_with_types};
 use crate::fz_ir::{FnId, Module};
 use crate::ir_interp::{AnyValue, IrInterpRuntime};
 use crate::ir_planner::ModulePlan;
-use crate::modules::pipeline::{
-    CheckedModule, CompileMode, PipelineError, PreparedExecutionGraph,
-};
+use crate::modules::pipeline::{CheckedModule, CompileMode, PipelineError, PreparedExecutionGraph};
 use crate::notify_fixture_execution_start;
 use crate::parser::Parser;
 use crate::parser::lexer::{Lexer, Tok};
@@ -263,20 +259,11 @@ impl ReplSession {
         tel: &dyn Telemetry,
         diagnostics: &Rc<RefCell<Vec<u8>>>,
     ) -> io::Result<()> {
-        let frontend = match {
-            let (t, world) = self.world.compiler.split_mut();
-            compile_source_with_compiler_types(world, t, src.to_string(), source_name, tel)
-        } {
-            Ok(ok) => ok,
-            Err(err) => return Err(diagnostics_to_io_error(&err.sm, err.diagnostics.as_slice())),
-        };
-        let checked = CheckedModule::for_mode(self.world.types(), Ok(frontend), tel, CompileMode::Normal)
+        let prepared = self
+            .world
+            .compiler
+            .prepared_source(src.to_string(), source_name, tel, CompileMode::Normal)
             .map_err(|err| pipeline_error_to_io_error(err, diagnostics))?;
-        let prepared = {
-            let (t, world) = self.world.compiler.split_mut();
-            world.prepare_execution_graph(t, checked, tel, CompileMode::Normal)
-        }
-        .map_err(|err| pipeline_error_to_io_error(err, diagnostics))?;
 
         let Some(main) = prepared.module.fn_by_name("main") else {
             return Ok(());

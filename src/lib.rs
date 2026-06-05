@@ -34,7 +34,7 @@ mod type_infer;
 pub mod types;
 use cli::repl::run_script;
 use compiler::Compiler;
-use diag::{Diagnostic, FileId, SourceMap, Span, codes::LOWER_UNBOUND, report_or_exit_through};
+use diag::{Diagnostic, FileId, SourceMap, Span, codes::LOWER_UNBOUND, emit_through, report_or_exit_through};
 use exec::runtime::Runtime;
 use frontend::{FrontendOk, FrontendResult, compile_source_with_compiler_types};
 use fz_ir::{FnCategory, FnId, FnIr, Module, SpecId};
@@ -49,9 +49,7 @@ use ir_planner::{
 };
 use libc::{c_int, close, write};
 use modules::interface::{render_interfaces, validate_public_export_specs};
-use modules::pipeline::{
-    CheckedModule, CompileMode, PipelineError, PreparedExecutionGraph, link_error_diagnostic,
-};
+use modules::pipeline::{CheckedModule, CompileMode, PipelineError, PreparedExecutionGraph, link_error_diagnostic};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, read_to_string, remove_file};
@@ -335,9 +333,7 @@ fn run_build(tel: &ConfiguredTelemetry, args: &[String]) {
         exit(1);
     });
 
-    let frontend_result = compiler.frontend(src, src_path.clone(), tel);
-    let prepared = compiler.checked_module_or_exit("fz build", frontend_result, &sm_cell, tel, mode);
-    let graph = compiler.execution_graph_or_exit("fz build", prepared, &sm_cell, tel, mode);
+    let graph = compiler.prepared_source_or_exit("fz build", src, src_path.clone(), &sm_cell, tel, mode);
 
     let obj_name = Path::new(&src_path)
         .file_stem()
@@ -424,9 +420,7 @@ fn run_interp(tel: &ConfiguredTelemetry, args: &[String]) {
         eprintln!("read {}: {}", path, e);
         exit(1);
     });
-    let frontend_result = compiler.frontend(src, path, tel);
-    let checked = compiler.checked_module_or_exit("fz interp", frontend_result, &sm_cell, tel, CompileMode::Normal);
-    let graph = compiler.execution_graph_or_exit("fz interp", checked, &sm_cell, tel, CompileMode::Normal);
+    let graph = compiler.prepared_source_or_exit("fz interp", src, path, &sm_cell, tel, CompileMode::Normal);
     notify_fixture_execution_start();
     match run_main_with_plan(compiler.types(), tel, &graph.module, graph.module_plan) {
         Ok(_halt) => {}
@@ -785,19 +779,6 @@ fn run_dump(tel: &ConfiguredTelemetry, args: &[String]) {
     }
 }
 
-/// Run the frontend pipeline, updating `sm_cell` and routing diagnostics
-/// through the bus. Exits(1) on error or on any `Severity::Error` diagnostic.
-fn run_frontend(result: FrontendResult, sm_cell: &Rc<RefCell<SourceMap>>, tel: &dyn Telemetry) -> FrontendOk {
-    let ok = result.unwrap_or_else(|err| {
-        *sm_cell.borrow_mut() = err.sm;
-        report_or_exit_through(tel, err.diagnostics.as_slice());
-        exit(1);
-    });
-    *sm_cell.borrow_mut() = ok.sm.clone();
-    report_or_exit_through(tel, ok.diagnostics.as_slice());
-    ok
-}
-
 /// Drive a source string through the lex → parse → resolve → macros →
 /// ir_lower → ir_codegen stages. Returns the compiled module; callers
 /// either execute (`fz run`) or inspect (`fz dump`).
@@ -822,32 +803,90 @@ impl Compiler {
         compile_source_with_compiler_types(world, t, src, source_name, tel)
     }
 
-    fn checked_module_or_exit(
+    fn frontend_ok_or_exit(
+        &mut self,
+        src: String,
+        source_name: String,
+        sm_cell: &Rc<RefCell<SourceMap>>,
+        tel: &dyn Telemetry,
+    ) -> FrontendOk {
+        let ok = self.frontend(src, source_name, tel).unwrap_or_else(|err| {
+            emit_through(tel, Some(&err.sm), err.diagnostics.as_slice());
+            exit(1);
+        });
+        *sm_cell.borrow_mut() = ok.sm.clone();
+        report_or_exit_through(tel, ok.diagnostics.as_slice());
+        ok
+    }
+
+    pub(crate) fn checked_frontend_result(
+        &mut self,
+        result: FrontendResult,
+        tel: &dyn Telemetry,
+        mode: CompileMode,
+    ) -> Result<CheckedModule, PipelineError> {
+        CheckedModule::for_mode(self.types(), result, tel, mode)
+    }
+
+    pub(crate) fn checked_source(
+        &mut self,
+        src: String,
+        source_name: String,
+        tel: &dyn Telemetry,
+        mode: CompileMode,
+    ) -> Result<CheckedModule, PipelineError> {
+        let result = self.frontend(src, source_name, tel);
+        self.checked_frontend_result(result, tel, mode)
+    }
+
+    fn checked_source_or_exit(
         &mut self,
         context: &str,
-        result: FrontendResult,
+        src: String,
+        source_name: String,
         sm_cell: &Rc<RefCell<SourceMap>>,
         tel: &dyn Telemetry,
         mode: CompileMode,
     ) -> CheckedModule {
-        let checked = CheckedModule::for_mode(self.types(), result, tel, mode)
+        let checked = self
+            .checked_source(src, source_name, tel, mode)
             .unwrap_or_else(|err| report_pipeline_error_or_exit(context, tel, sm_cell, err));
         *sm_cell.borrow_mut() = checked.sm.clone();
         report_or_exit_through(tel, checked.diagnostics.as_slice());
         checked
     }
 
-    fn execution_graph_or_exit(
+    pub(crate) fn prepared_checked_module(
+        &mut self,
+        checked: CheckedModule,
+        tel: &dyn Telemetry,
+        mode: CompileMode,
+    ) -> Result<PreparedExecutionGraph, PipelineError> {
+        let (t, world) = self.split_mut();
+        world.prepare_execution_graph(t, checked, tel, mode)
+    }
+
+    pub(crate) fn prepared_source(
+        &mut self,
+        src: String,
+        source_name: String,
+        tel: &dyn Telemetry,
+        mode: CompileMode,
+    ) -> Result<PreparedExecutionGraph, PipelineError> {
+        let checked = self.checked_source(src, source_name, tel, mode)?;
+        self.prepared_checked_module(checked, tel, mode)
+    }
+
+    fn prepared_source_or_exit(
         &mut self,
         context: &str,
-        checked: CheckedModule,
+        src: String,
+        source_name: String,
         sm_cell: &Rc<RefCell<SourceMap>>,
         tel: &dyn Telemetry,
         mode: CompileMode,
     ) -> PreparedExecutionGraph {
-        let (t, world) = self.split_mut();
-        world
-            .prepare_execution_graph(t, checked, tel, mode)
+        self.prepared_source(src, source_name, tel, mode)
             .unwrap_or_else(|err| report_pipeline_error_or_exit(context, tel, sm_cell, err))
     }
 
@@ -858,7 +897,7 @@ impl Compiler {
         src: String,
         source_name: String,
     ) -> String {
-        let frontend = run_frontend(self.frontend(src, source_name, tel), sm_cell, tel);
+        let frontend = self.frontend_ok_or_exit(src, source_name, sm_cell, tel);
         pretty_module_plan(self.types(), &frontend.module, &frontend.module_plan)
     }
 
@@ -870,7 +909,7 @@ impl Compiler {
         source_name: String,
         strict: bool,
     ) -> String {
-        let frontend = run_frontend(self.frontend(src, source_name, tel), sm_cell, tel);
+        let frontend = self.frontend_ok_or_exit(src, source_name, sm_cell, tel);
         if strict {
             let diags = validate_public_export_specs(&frontend._prog.module_interfaces);
             report_or_exit_through(tel, &diags);
@@ -887,8 +926,7 @@ impl Compiler {
         mode: CompileMode,
     ) -> String {
         use crate::telemetry::TelemetryExt as _;
-        let frontend_result = self.frontend(src, source_name, tel);
-        let prepared = self.checked_module_or_exit("fz dump", frontend_result, sm_cell, tel, mode);
+        let prepared = self.checked_source_or_exit("fz dump", src, source_name, sm_cell, tel, mode);
         let module = prepared.module;
         let module_plan = prepared.module_plan;
         let _compile_span = tel.span(
@@ -953,8 +991,7 @@ impl Compiler {
     ) -> String {
         use crate::fz_ir::{CallsiteId, EmitSlot};
         use crate::telemetry::TelemetryExt as _;
-        let frontend_result = self.frontend(src, source_name.clone(), tel);
-        let prepared = self.checked_module_or_exit("fz dump", frontend_result, sm_cell, tel, mode);
+        let prepared = self.checked_source_or_exit("fz dump", src, source_name.clone(), sm_cell, tel, mode);
         let module = prepared.module;
         let _compile_span = tel.span(
             &["fz", "compile"],
@@ -1111,9 +1148,7 @@ impl Compiler {
         source_name: String,
         mode: CompileMode,
     ) -> Compiled {
-        let frontend_result = self.frontend(src, source_name, tel);
-        let prepared = self.checked_module_or_exit(context, frontend_result, sm_cell, tel, mode);
-        let graph = self.execution_graph_or_exit(context, prepared, sm_cell, tel, mode);
+        let graph = self.prepared_source_or_exit(context, src, source_name, sm_cell, tel, mode);
         let main_fn = graph.module.fn_by_name("main").map(|f| f.id);
         let executable = compile_planned(self.types(), &graph.module, &graph.module_plan, tel).unwrap_or_else(|e| {
             report_or_exit_through(tel, &[e.to_diagnostic()]);

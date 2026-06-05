@@ -9,6 +9,7 @@ use self::resolve::InterfaceTable;
 use crate::ast::{Expr, FnClause, FnDef, Item, Pattern, Program, Spanned, TypeExprBody};
 use crate::compiler::{Compiler, CompilerWorld, ModuleId};
 use crate::diag::codes;
+use crate::diag::emit_through;
 use crate::diag::{Diagnostic, Diagnostics, SourceMap, Span};
 use crate::fz_ir::{CallsiteId, EmitSlot, FnId, Module, rewrite_external_callsite_for_link};
 use crate::ir_extern_marshal::resolve_module_types;
@@ -224,7 +225,16 @@ where
     let root = compiler.register_root_source(&source_name, src, tel);
     let parsed = match compiler.ensure_program(root, tel) {
         Ok(parsed) => parsed,
-        Err(diagnostic) => return Err(fail(SourceMap::new(), diagnostic)),
+        Err(diagnostic) => {
+            let source = compiler.ensure_source(root, tel);
+            let mut sm = SourceMap::new();
+            sm.add_file(source_name.clone(), source);
+            emit_through(tel, Some(&sm), std::slice::from_ref(&diagnostic));
+            return Err(FrontendErr {
+                sm: SourceMap::new(),
+                diagnostics: Diagnostics::new(),
+            });
+        }
     };
     let sm = parsed.sm;
     let prog = parsed.program;
@@ -278,12 +288,17 @@ impl CompilerWorld {
     where
         T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
     {
-        let mut prog =
-            match resolve::flatten_modules_with_compiler_interface_table(t, self, root_source, prog, interface_table, tel)
-            {
-                Ok(prog) => prog,
-                Err(e) => return Err(fail(sm, e.to_diagnostic())),
-            };
+        let mut prog = match resolve::flatten_modules_with_compiler_interface_table(
+            t,
+            self,
+            root_source,
+            prog,
+            interface_table,
+            tel,
+        ) {
+            Ok(prog) => prog,
+            Err(e) => return Err(fail(sm, e.to_diagnostic())),
+        };
         tel.event(
             &["fz", "frontend", "resolved"],
             metadata! {
@@ -377,8 +392,7 @@ pub(crate) fn apply_planner_rewrites_to_fixed_point<T>(
     module: &mut Module,
     module_plan: &mut ModulePlan,
     entry_fn_ids: &[FnId],
-)
-where
+) where
     T: Types<Ty = Ty> + ClosureTypes + RenderTypes,
 {
     // Protocol/direct-call rewrites can reveal later continuations. Iterate to

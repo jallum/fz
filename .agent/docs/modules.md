@@ -88,7 +88,9 @@ materialized runtime unit can seed more exact runtime exports from its planned
 call edges, and only then does the compiler fall back to protocol-provider
 discovery when a live protocol module still leaves the provider set dynamic.
 Inside each reachable runtime module, the compiler lowers only the live
-function-groups.
+function-groups. Production entrypoints now hand source roots to compiler-owned
+`checked` / `prepared` methods; the CLI, REPL script path, and runtime-unit
+loader no longer sequence `frontend -> checked -> execution graph` themselves.
 
 The compiler emits state/readiness telemetry such as:
 

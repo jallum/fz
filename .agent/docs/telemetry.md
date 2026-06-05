@@ -39,8 +39,10 @@ routes an event to a handler when `name.starts_with(handler.prefix)`; the empty
 prefix `&[]` matches everything. Concrete handlers:
 
 - `DiagRenderer` (`diag_render.rs`) — events under `[fz, diag]` carrying a
-  `Diagnostic` in their metadata; it downcasts and hands them to
-  `diag::render::Renderer` for stderr/writer output.
+  `Diagnostic` in their metadata; source-backed failures can also carry the
+  relevant `SourceMap` in event metadata, so fatal callers do not need to
+  thread render state through error values. The renderer downcasts and hands
+  the diagnostic to `diag::render::Renderer` for stderr/writer output.
 - `JsonlBackend` (`jsonl.rs`) — serializes every routed event to one JSON line.
 - `StatsHandler` (`stats.rs`) — counts events by name.
 - `Capture` (`capture.rs`) — the test handler; copies events into an owned
@@ -116,9 +118,10 @@ across separate compiles — the enclosing `compile_nonce` disambiguates them.
 ## Policy Choices
 
 **Fatal vs telemetry.** A failure that must stop compilation returns
-`Err(FatalError)`. Everything observational — including diagnostics that get
-rendered as user errors — is an event. So the trait has no fallible method: a
-handler cannot change what the compiler computes.
+`Err(FatalError)`. Everything explanatory — including diagnostics that get
+rendered as user errors, plus any source-map context the renderer needs — is an
+event. So the trait has no fallible method: a handler cannot change what the
+compiler computes.
 
 **Measurements vs metadata.** Numbers an aggregator might sum go in
 measurements; identity and reasons (names, paths, kinds, the
