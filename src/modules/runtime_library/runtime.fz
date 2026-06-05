@@ -2,6 +2,7 @@
 @type keyword(t) :: [{atom, t}]
 
 import Kernel, only: [
+  <>: 2,
   +: 2,
   -: 2,
   *: 2,

@@ -477,6 +477,35 @@ fn compile_program_with_types_matches_source_pipeline() {
 }
 
 #[test]
+fn source_pipeline_attaches_visible_kernel_operator_specs_to_lowered_module() {
+    let src = "fn main(), do: 1 + 2\n";
+    let out = match compile_source(src.to_string(), "source.fz".to_string()) {
+        Ok(out) => out,
+        Err(_) => panic!("compile source program"),
+    };
+    let visible_named = out
+        .module
+        .named_fns
+        .iter()
+        .map(|entry| format!("{}/{}", entry.name, entry.arity))
+        .collect::<Vec<_>>();
+    let plus = out
+        .module
+        .named_fn_id("Kernel.+", 2)
+        .expect("Kernel.+/2 should be visible in the lowered module");
+    let specs = out
+        .module
+        .declared_specs
+        .get(&plus)
+        .unwrap_or_else(|| panic!("Kernel.+/2 should keep declared specs; visible={visible_named:?}"));
+    assert_eq!(
+        specs.arrows.len(),
+        4,
+        "Kernel.+/2 should keep its four declared overloads"
+    );
+}
+
+#[test]
 fn compile_program_with_types_preserves_diagnostics() {
     let src = "fn main(), do: missing + 1\n";
     let (prog, sm) = parse_with_source_map(src, "bad-parsed.fz");

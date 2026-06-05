@@ -378,6 +378,7 @@ fn binop_symbol(op: BinOp) -> &'static str {
         BinOp::Mul => "*",
         BinOp::Div => "/",
         BinOp::Mod => "%",
+        BinOp::BinConcat => "<>",
         BinOp::Eq => "==",
         BinOp::Neq => "!=",
         BinOp::Lt => "<",
@@ -792,15 +793,10 @@ impl<'m> Solver<'m> {
 
     fn operator_spec_result<T: Types<Ty = Ty> + ClosureTypes>(&self, t: &mut T, op: BinOp, inputs: &[Info]) -> Info {
         let name = format!("Kernel.{}", binop_symbol(op));
-        let Some(f) = self
-            .module
-            .fns
-            .iter()
-            .find(|f| f.name == name && f.block(f.entry).params.len() == inputs.len())
-        else {
+        let Some(fn_id) = self.module.named_fn_id(&name, inputs.len()) else {
             return unresolved_inputs(inputs);
         };
-        self.declared_spec_result(t, f.id, inputs)
+        self.declared_spec_result(t, fn_id, inputs)
             .unwrap_or_else(|| unresolved_inputs(inputs))
     }
 
@@ -1660,7 +1656,7 @@ impl<'m> Solver<'m> {
                 let lt = info_of(*a, env);
                 let rt = info_of(*b, env);
                 match op {
-                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::BinConcat => {
                         self.operator_spec_result(t, *op, &[lt, rt])
                     }
                     BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
@@ -2344,7 +2340,12 @@ fn exact_float<T: Types<Ty = Ty>>(t: &T, value: &ValueFact) -> Option<f64> {
 }
 
 fn invalid_operator_application(prim: &Prim, env: &Env) -> Option<TypeInferDiagnosticKind> {
-    let Prim::BinOp(op @ (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod), left, right) = prim else {
+    let Prim::BinOp(
+        op @ (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::BinConcat),
+        left,
+        right,
+    ) = prim
+    else {
         return None;
     };
     let left = known_ty(*left, env)?;

@@ -236,6 +236,7 @@ struct IrUnitLinker {
     linked: Module,
     linked_plan: Option<ModulePlan>,
     export_map: BTreeMap<ExportKey, FnId>,
+    next_fn_id: u32,
 }
 
 impl IrUnitLinker {
@@ -257,7 +258,8 @@ impl IrUnitLinker {
             });
         }
 
-        let fn_map = self.copy_fns(unit);
+        let mut fn_map = self.copy_fns(unit);
+        self.copy_named_surface(unit, &mut fn_map);
         self.copy_externs(unit, &fn_map);
         self.copy_external_edges(unit, &fn_map);
         self.copy_protocol_facts(unit, &fn_map);
@@ -298,11 +300,12 @@ impl IrUnitLinker {
 
     fn copy_fns(&mut self, unit: &CompiledUnit) -> BTreeMap<FnId, FnId> {
         let mut map = BTreeMap::new();
-        let base = self.linked.fns.len() as u32;
+        let base = self.next_fn_id;
         for (offset, f) in unit.code.fns.iter().enumerate() {
             let new_id = FnId(base + offset as u32);
             map.insert(f.id, new_id);
         }
+        self.next_fn_id = base + unit.code.fns.len() as u32;
         for f in &unit.code.fns {
             let copied = self.remap_fn(f.clone(), &map, &unit.code.atom_names);
             self.linked.fn_idx.insert(copied.id, self.linked.fns.len());
@@ -314,6 +317,32 @@ impl IrUnitLinker {
             }
         }
         map
+    }
+
+    fn copy_named_surface(&mut self, unit: &CompiledUnit, fn_map: &mut BTreeMap<FnId, FnId>) {
+        for entry in &unit.code.named_fns {
+            let linked_fn_id = if let Some(mapped) = fn_map.get(&entry.fn_id).copied() {
+                mapped
+            } else {
+                let new_id = FnId(self.next_fn_id);
+                self.next_fn_id += 1;
+                fn_map.insert(entry.fn_id, new_id);
+                new_id
+            };
+            if self
+                .linked
+                .named_fns
+                .iter()
+                .any(|existing| existing.name == entry.name && existing.arity == entry.arity)
+            {
+                continue;
+            }
+            self.linked.named_fns.push(crate::fz_ir::NamedFnSurfaceEntry {
+                name: entry.name.clone(),
+                arity: entry.arity,
+                fn_id: linked_fn_id,
+            });
+        }
     }
 
     fn copy_externs(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) {
@@ -367,19 +396,19 @@ impl IrUnitLinker {
             unit.code
                 .declared_specs
                 .iter()
-                .filter_map(|(fid, spec)| fn_map.get(fid).map(|new| (*new, spec.clone()))),
+                .filter_map(|(fid, spec)| fn_map.get(fid).copied().map(|new| (new, spec.clone()))),
         );
         self.linked.function_correspondence.extend(
             unit.code
                 .function_correspondence
                 .iter()
-                .filter_map(|(fid, groups)| fn_map.get(fid).map(|new| (*new, groups.clone()))),
+                .filter_map(|(fid, groups)| fn_map.get(fid).copied().map(|new| (new, groups.clone()))),
         );
         self.linked.continuation_provenance.extend(
             unit.code
                 .continuation_provenance
                 .iter()
-                .filter_map(|(fid, provenance)| fn_map.get(fid).map(|new| (*new, provenance.clone()))),
+                .filter_map(|(fid, provenance)| fn_map.get(fid).copied().map(|new| (new, provenance.clone()))),
         );
     }
 

@@ -1285,6 +1285,13 @@ mod fn_keyed_map {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamedFnSurfaceEntry {
+    pub name: String,
+    pub arity: usize,
+    pub fn_id: FnId,
+}
+
 /// Side-tables that map IR positions back to source spans. Populated by
 /// `ir_lower` as it goes; consumed by `ir_planner` / diagnostics renderers
 /// to point at the right source byte range for a given Var or Stmt.
@@ -1411,6 +1418,10 @@ pub struct Module {
     /// and re-derived after result-flow rewrites.
     #[serde(with = "fn_keyed_map")]
     pub continuation_provenance: HashMap<FnId, ContinuationProvenance>,
+    /// Named callable surface keyed by source-visible name/arity, even when
+    /// the body itself stayed cold. Type inference and other contract readers
+    /// use this to consult declared specs without requiring a lowered body.
+    pub named_fns: Vec<NamedFnSurfaceEntry>,
 }
 
 /// Tarjan strongly-connected components over a fn call graph. Returns SCCs in
@@ -1505,6 +1516,13 @@ impl Module {
 
     pub fn fn_by_name(&self, name: &str) -> Option<&FnIr> {
         self.fns.iter().find(|f| f.name == name)
+    }
+
+    pub fn named_fn_id(&self, name: &str, arity: usize) -> Option<FnId> {
+        self.named_fns
+            .iter()
+            .find(|entry| entry.name == name && entry.arity == arity)
+            .map(|entry| entry.fn_id)
     }
 
     /// The set of fns that participate in recursion: every fn in a
@@ -1909,6 +1927,7 @@ impl ModuleBuilder {
             declared_specs: HashMap::new(),
             function_correspondence: HashMap::new(),
             continuation_provenance: HashMap::new(),
+            named_fns: Vec::new(),
         }
     }
 }

@@ -1156,7 +1156,19 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                     stmt_idx,
                 );
             }
-            lower_extern_generic(body, runtime, var_env, decl, eid, args, dest_var)
+            lower_extern_generic(
+                body,
+                runtime,
+                var_env,
+                decl,
+                eid,
+                args,
+                dest_var,
+                caller_fn_id,
+                &env.module.fn_by_id(caller_fn_id).name,
+                block_id,
+                stmt_idx,
+            )
         }
         Prim::IsEmptyList(c) => {
             // Empty list is the null-address List ref.
@@ -2033,6 +2045,10 @@ fn lower_extern_generic<M: cranelift_module::Module>(
     eid: &ExternId,
     args: &[ExternArg],
     dest_var: Var,
+    caller_fn_id: FnId,
+    caller_fn_name: &str,
+    block_id: BlockId,
+    stmt_idx: usize,
 ) -> Result<LowerOut, CodegenError> {
     let param_tys: Vec<ir::Type> = decl
         .params
@@ -2070,10 +2086,15 @@ fn lower_extern_generic<M: cranelift_module::Module>(
     assert_eq!(
         args.len(),
         param_kinds.len(),
-        "extern `{}` codegen: arg count {} != param count {}",
+        "extern `{}` codegen at {} ({}) {} stmt#{}: arg count {} != param count {}; args={:?}",
         decl.symbol,
+        caller_fn_id,
+        caller_fn_name,
+        block_id,
+        stmt_idx,
         args.len(),
-        param_kinds.len()
+        param_kinds.len(),
+        args
     );
     let arg_vals: Vec<ir::Value> = args
         .iter()

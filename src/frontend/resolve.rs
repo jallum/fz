@@ -28,7 +28,7 @@ use crate::frontend::protocols::{
     ImplTarget, PROTOCOL_ELEM_VAR, ProtocolCallbackFact, ProtocolDecl, ProtocolImplFact, ProtocolImplKey,
     ProtocolRegistry, impl_target_type, impl_target_type_with_element, protocol_domain_tag,
 };
-use crate::modules::identity::{ExportKey, ModuleName, QualifiedName};
+use crate::modules::identity::{ExportKey, Mfa, ModuleName, QualifiedName};
 use crate::modules::interface::{ModuleInterface, collect_from_program};
 use crate::modules::runtime_library::{interface, root_type_env};
 use crate::telemetry::Telemetry;
@@ -354,6 +354,9 @@ fn flatten_modules_with_options<T: Types<Ty = Ty>>(
     let protocol_registry = collect_protocol_registry(t, &prog, &external_module_interfaces, &mut module_type_envs)?;
     let mut structs = BTreeMap::new();
     let (root_aliases, root_imports) = collect_import_scope(&prog.items, &all_interfaces, &module_macros)?;
+    if let Some(root_id) = root_source {
+        record_imported_visible_callables(compiler, root_id, &root_imports, &all_interfaces);
+    }
     for item in &prog.items {
         match &**item {
             Item::Fn(def) => {
@@ -385,6 +388,7 @@ fn flatten_modules_with_options<T: Types<Ty = Ty>>(
                 out.push(Rc::new(Item::Fn(new_def)));
             }
             Item::Module(m) => flatten_module(
+                compiler,
                 m,
                 None,
                 &mut out,
@@ -1750,6 +1754,7 @@ fn collect_module_macros_recursive(m: &ModuleDef, parent: Option<&ModuleName>, o
 }
 
 fn flatten_module(
+    compiler: &mut CompilerWorld,
     m: &ModuleDef,
     parent_path: Option<&ModuleName>,
     out: &mut Vec<Rc<Item>>,
@@ -1846,6 +1851,9 @@ fn flatten_module(
             Item::Module(_) | Item::Struct(_) | Item::Protocol(_) | Item::ProtocolImpl(_) | Item::MacroCall { .. } => {}
         }
     }
+    if let Some(module_id) = compiler.module_id_for_name(&module_name) {
+        record_imported_visible_callables(compiler, module_id, &imports, module_interfaces);
+    }
 
     for item in &m.items {
         match &**item {
@@ -1872,6 +1880,7 @@ fn flatten_module(
             }
             Item::Module(inner) => {
                 flatten_module(
+                    compiler,
                     inner,
                     Some(&module_name),
                     out,
@@ -1921,6 +1930,35 @@ fn flatten_module(
         }
     }
     Ok(())
+}
+
+fn record_imported_visible_callables(
+    compiler: &mut CompilerWorld,
+    module_id: ModuleId,
+    imports: &ImportMap,
+    interfaces: &InterfaceTable,
+) {
+    for ((name, arity), binding) in imports {
+        let Some(interface) = interfaces.get(&binding.module) else {
+            continue;
+        };
+        if !interface
+            .exports
+            .iter()
+            .any(|export| export.name == *name && export.arity == *arity)
+        {
+            continue;
+        }
+        let Some(target_module_id) = compiler.module_id_for_name(&binding.module) else {
+            continue;
+        };
+        compiler.record_visible_callable_alias(
+            module_id,
+            name.clone(),
+            *arity,
+            Mfa::new(target_module_id, name.clone(), *arity),
+        );
+    }
 }
 
 fn flatten_protocol_impl(

@@ -243,6 +243,70 @@ fn primitive_prelude_is_prepared_once_as_compiler_owned_bootstrap_source() {
 }
 
 #[test]
+fn primitive_prelude_registers_named_operator_functions_in_compiler_world() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler::new();
+    let prelude_id = compiler.discover_primitive_prelude(&tel);
+
+    compiler
+        .ensure_prepared_prelude(prelude_id, &tel)
+        .expect("primitive prelude should prepare");
+    compiler
+        .ensure_source_module_interfaces(prelude_id, &tel)
+        .expect("primitive prelude named modules should register source interfaces");
+
+    let kernel = ModuleName::parse_dotted("Kernel").expect("valid module name");
+    let kernel_id = compiler
+        .module_id_for_name(&kernel)
+        .expect("Kernel should be registered as a compiler-owned module");
+
+    for (name, arity) in [("+", 2), ("-", 2), ("*", 2), ("/", 2), ("%", 2), ("<>", 2)] {
+        let mfa = Mfa::new(kernel_id, name, arity);
+        let fn_id = compiler.fn_id_for_mfa(&mfa);
+        assert!(
+            fn_id.is_some(),
+            "primitive prelude should register Kernel.{name}/{arity} in compiler world"
+        );
+        let owner = compiler
+            .world
+            .function(fn_id.expect("named prelude fn id"))
+            .owner_module_id;
+        assert_eq!(
+            compiler.module(owner).key,
+            ModuleKey::Named(kernel.clone()),
+            "primitive prelude operator functions should stay attached to the Kernel module entity"
+        );
+        let visible = compiler
+            .world
+            .visible_callable_target(prelude_id, name, arity)
+            .unwrap_or_else(|| panic!("primitive prelude should expose visible alias {name}/{arity}"));
+        assert_eq!(
+            visible, mfa,
+            "primitive prelude alias {name}/{arity} should point at Kernel.{name}/{arity}"
+        );
+    }
+    let plus_specs = compiler
+        .world
+        .function_declared_interface_specs(&Mfa::new(kernel_id, "+", 2))
+        .expect("Kernel.+/2 should carry declared interface specs");
+    assert_eq!(plus_specs.len(), 4);
+    assert_eq!(
+        compiler.world.function_contract_state(&Mfa::new(kernel_id, "+", 2)),
+        Some(FunctionContractState::SourceAndInterfaceReady),
+        "Kernel.+/2 should advertise contract readiness once prelude preparation and source interfaces run"
+    );
+    let concat_specs = compiler
+        .world
+        .function_declared_interface_specs(&Mfa::new(kernel_id, "<>", 2))
+        .expect("Kernel.<>/2 should carry declared interface specs");
+    assert_eq!(concat_specs.len(), 1);
+
+    compiler
+        .validate_invariants()
+        .expect("primitive prelude operator registration should preserve compiler invariants");
+}
+
+#[test]
 fn body_surface_is_cached_and_exposes_stable_root_group_mapping_without_lowering() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -370,9 +434,29 @@ fn compiler_invariants_accept_consistent_world_state() {
         .ensure_runtime_module_interface(&ModuleName::parse_dotted("Process").expect("valid module name"), &tel)
         .expect("Process interface should build");
 
+    let parsed = compiler
+        .ensure_prelude(process, &tel)
+        .expect("Process source should parse");
+    let mut t = crate::types::new();
+    let program = Program {
+        items: parsed.items,
+        ..Program::default()
+    };
     compiler.mark_reachable(root, ReachabilityKind::Interface, &tel);
     compiler.mark_reachable(process, ReachabilityKind::Runtime, &tel);
-    compiler.record_runtime_unit_readiness(process, 1, 1, &tel);
+    compiler
+        .world
+        .check_program_from_roots(
+            None,
+            Some(process),
+            &mut t,
+            program,
+            parsed.sm,
+            crate::frontend::resolve::InterfaceTable::new(),
+            &tel,
+            crate::modules::pipeline::CompileMode::Normal,
+        )
+        .expect("runtime unit compile should succeed");
 
     compiler
         .validate_invariants()

@@ -369,12 +369,6 @@ impl CompilerWorld {
             tel,
             CompileMode::Normal,
         )?;
-        self.record_runtime_unit_readiness(
-            module_id,
-            frontend.module.fns.len(),
-            frontend.module_plan.specs.len(),
-            tel,
-        );
         tel.event(
             &["fz", "module", "unit_materialized"],
             metadata! { kind: "runtime-source", module: module_name.dotted() },

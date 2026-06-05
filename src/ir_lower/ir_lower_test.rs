@@ -1,4 +1,5 @@
 use super::*;
+use crate::fz_ir::SpecId;
 
 fn lower_src(src: &str) -> Module {
     let toks = Lexer::new(src).tokenize().expect("lex");
@@ -29,6 +30,38 @@ fn lower_src_err(src: &str) -> LowerError {
     let toks = Lexer::new(src).tokenize().expect("lex");
     let prog = Parser::new(toks).parse_program().expect("parse");
     lower_program(&mut crate::types::new(), &prog, &NullTelemetry).expect_err("expected lower error")
+}
+
+#[test]
+fn kernel_operator_interface_specs_resolve_in_lowering_env() {
+    let tel = NullTelemetry;
+    let mut compiler = Compiler::new();
+    let prelude_id = compiler.world_mut().discover_primitive_prelude(&tel);
+    let mut t = crate::types::new();
+    let prepared = compiler
+        .ensure_prepared_prelude(prelude_id, &tel)
+        .expect("primitive prelude should prepare");
+    let kernel = compiler
+        .ensure_runtime_module_interface(&ModuleName::parse_dotted("Kernel").expect("Kernel module name"), &tel)
+        .expect("Kernel interface lookup")
+        .expect("Kernel interface");
+    let plus = kernel
+        .exports
+        .iter()
+        .find(|export| export.name == "+" && export.arity == 2)
+        .expect("Kernel.+/2 export");
+    let env = prepared
+        .program
+        .module_type_envs
+        .get("")
+        .expect("prepared prelude root type env");
+    let spec_decls = plus
+        .specs
+        .iter()
+        .map(|spec| interface_spec_decl("+", spec))
+        .collect::<Vec<_>>();
+    let resolved = resolve_spec_decls(&mut t, spec_decls.iter(), env).expect("Kernel.+ specs should resolve");
+    assert_eq!(resolved.arrows.len(), 4);
 }
 
 #[test]
@@ -91,6 +124,110 @@ fn count_prims_in_fn(f: &FnIr, pred: impl Fn(&Prim) -> bool) -> usize {
             pred(prim)
         })
         .count()
+}
+
+#[test]
+fn process_heap_alloc_stats_stays_a_zero_arg_extern_in_runtime_graph() {
+    let mut t = crate::types::new();
+    let graph =
+        linked_runtime_graph_with_telemetry(&mut t, "fn main(), do: Process.heap_alloc_stats()", &NullTelemetry);
+    let process_fn = graph
+        .module
+        .fn_by_name("Process.heap_alloc_stats")
+        .expect("runtime graph should materialize Process.heap_alloc_stats/0");
+    let (_, extern_id, args) = process_fn
+        .blocks
+        .iter()
+        .flat_map(|block| &block.stmts)
+        .find_map(|stmt| match stmt {
+            Stmt::Let(dest, Prim::Extern(_, extern_id, args)) => Some((*dest, *extern_id, args.as_slice())),
+            _ => None,
+        })
+        .expect("Process.heap_alloc_stats/0 should lower through Prim::Extern");
+    let decl = graph.module.extern_by_id(extern_id);
+    assert_eq!(decl.symbol, "fz_process_heap_alloc_stats");
+    assert_eq!(
+        args.len(),
+        0,
+        "Process.heap_alloc_stats/0 should not lower with synthetic extern args"
+    );
+}
+
+#[test]
+fn process_heap_alloc_stats_stays_a_zero_arg_extern_after_materialization() {
+    let mut t = crate::types::new();
+    let graph =
+        linked_runtime_graph_with_telemetry(&mut t, "fn main(), do: Process.heap_alloc_stats()", &NullTelemetry);
+    let planned = crate::ir_planner::materialize_program(&mut t, &graph.module, &graph.module_plan, &NullTelemetry);
+    let process_spec_id = planned
+        .spec_keys()
+        .iter()
+        .enumerate()
+        .find_map(|(idx, key)| {
+            graph
+                .module
+                .fn_idx
+                .contains_key(&key.fn_id)
+                .then(|| graph.module.fn_by_id(key.fn_id).name == "Process.heap_alloc_stats")
+                .filter(|matches| *matches)
+                .map(|_| SpecId(idx as u32))
+        })
+        .expect("materialized runtime graph should keep Process.heap_alloc_stats");
+    let process_body = planned.executable_body(process_spec_id);
+    let (_, extern_id, args) = process_body
+        .body
+        .blocks
+        .iter()
+        .flat_map(|block| &block.stmts)
+        .find_map(|stmt| match stmt {
+            Stmt::Let(dest, Prim::Extern(_, extern_id, args)) => Some((dest, extern_id, args.as_slice())),
+            _ => None,
+        })
+        .expect("materialized Process.heap_alloc_stats/0 should keep Prim::Extern");
+    let decl = graph.module.extern_by_id(*extern_id);
+    assert_eq!(decl.symbol, "fz_process_heap_alloc_stats");
+    assert_eq!(
+        args.len(),
+        0,
+        "materialization should not synthesize extern args for Process.heap_alloc_stats/0"
+    );
+    for &sid in planned.reachable_specs() {
+        let body = &planned.executable_body(SpecId(sid)).body;
+        for block in &body.blocks {
+            for stmt in &block.stmts {
+                let Stmt::Let(_, Prim::Extern(_, body_extern_id, body_args)) = stmt else {
+                    continue;
+                };
+                let body_decl = graph.module.extern_by_id(*body_extern_id);
+                if body_decl.symbol == "fz_process_heap_alloc_stats" {
+                    assert_eq!(
+                        body_args.len(),
+                        0,
+                        "all materialized calls to fz_process_heap_alloc_stats must stay zero-arg; body={}",
+                        body.name
+                    );
+                }
+            }
+        }
+    }
+    let unexpected_callable_entries = planned
+        .callable_entries()
+        .iter()
+        .filter_map(|(sid, entry)| {
+            let key = &planned.spec_keys()[*sid as usize];
+            graph
+                .module
+                .fn_idx
+                .contains_key(&key.fn_id)
+                .then(|| graph.module.fn_by_id(key.fn_id).name.clone())
+                .filter(|name| name == "Process.heap_alloc_stats")
+                .map(|name| format!("{name} captures={}", entry.capture_count))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        unexpected_callable_entries.is_empty(),
+        "direct runtime Process.heap_alloc_stats/0 should not need callable-entry wrappers: {unexpected_callable_entries:?}"
+    );
 }
 
 fn first_make_closure(f: &FnIr) -> (FnId, Vec<Var>) {

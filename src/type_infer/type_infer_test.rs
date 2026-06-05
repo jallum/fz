@@ -1073,29 +1073,59 @@ fn invalid_named_reduce_reducer_emits_operator_diagnostic() {
 
 #[test]
 fn kernel_declares_the_arithmetic_operator_surface() {
-    let module = lower("fn main(), do: 1 + 2");
+    let module = linked("fn main(), do: 1 + 2");
     let mut missing = Vec::new();
-    for name in ["Kernel.+", "Kernel.-", "Kernel.*", "Kernel./", "Kernel.%"] {
-        let Some(f) = module.fn_by_name(name) else {
+    let visible_named = module
+        .named_fns
+        .iter()
+        .map(|entry| format!("{}/{}", entry.name, entry.arity))
+        .collect::<Vec<_>>();
+    for name in ["Kernel.<>", "Kernel.+", "Kernel.-", "Kernel.*", "Kernel./", "Kernel.%"] {
+        let Some(fid) = module.named_fn_id(name, 2) else {
             missing.push(format!("{name}/2"));
             continue;
         };
-        match module.declared_specs.get(&f.id) {
-            Some(specs) if specs.arrows.len() == 4 => {}
+        let expected_arrows = if name == "Kernel.<>" { 1 } else { 4 };
+        match module.declared_specs.get(&fid) {
+            Some(specs) if specs.arrows.len() == expected_arrows => {}
             Some(specs) => missing.push(format!("{name}/2 has {} arrows", specs.arrows.len())),
             None => missing.push(format!("{name}/2 has no declared specs")),
         }
     }
     assert!(
         missing.is_empty(),
-        "Kernel arithmetic operators should expose the four concrete int/float arrows: {missing:?}"
+        "Kernel arithmetic operators should expose the four concrete int/float arrows: missing={missing:?} visible_named={visible_named:?}"
+    );
+}
+
+#[test]
+fn unplanned_runtime_module_keeps_kernel_operator_specs_visible() {
+    let module = linked_unplanned("fn main(), do: 1 + 2");
+    let mut missing = Vec::new();
+    let visible_named = module
+        .named_fns
+        .iter()
+        .map(|entry| format!("{}/{}", entry.name, entry.arity))
+        .collect::<Vec<_>>();
+    for name in ["Kernel.<>", "Kernel.+", "Kernel.-", "Kernel.*", "Kernel./", "Kernel.%"] {
+        let Some(fid) = module.named_fn_id(name, 2) else {
+            missing.push(format!("{name}/2"));
+            continue;
+        };
+        if !module.declared_specs.contains_key(&fid) {
+            missing.push(format!("{name}/2 has no declared specs"));
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "unplanned runtime module should already carry visible Kernel operator specs: missing={missing:?} visible_named={visible_named:?}"
     );
 }
 
 #[test]
 fn arithmetic_binops_infer_from_kernel_operator_specs() {
     let mut t = crate::types::new();
-    let module = lower("fn main() do\n  {1 + 2, 4 - 1, 2 * 3, 4 / 2, 5 % 2, 1 + 2.0, 4.0 - 1, 2 * 3.0}\nend");
+    let module = linked("fn main() do\n  {1 + 2, 4 - 1, 2 * 3, 4 / 2, 5 % 2, 1 + 2.0, 4.0 - 1, 2 * 3.0}\nend");
     let ret = infer_entry_return_via_main(&module);
     let int = t.int();
     let float = t.float();
@@ -1112,6 +1142,42 @@ fn arithmetic_binops_infer_from_kernel_operator_specs() {
     assert!(
         t.is_equivalent(&ret, &expected),
         "arithmetic operators should be typed by Kernel operator specs, got {ret:?}"
+    );
+}
+
+#[test]
+fn binary_concat_infers_from_kernel_operator_specs() {
+    let mut t = crate::types::new();
+    let module = linked("fn main(), do: \"left\" <> \"right\"");
+    let ret = infer_entry_return_via_main(&module);
+    let binary = t.str_t();
+    assert!(
+        t.is_equivalent(&ret, &binary),
+        "binary concat should be typed by Kernel.<>/2, got {ret:?}"
+    );
+}
+
+#[test]
+fn binary_concat_reports_invalid_non_binary_operands() {
+    let module = linked("fn bad(), do: 1 <> 2");
+    let bad_id = module.fn_by_name("bad").expect("bad fn").id;
+    let tel = ConfiguredTelemetry::new();
+    let cap = TypeInferCapture::new();
+    tel.attach(&["fz", "type_infer"], cap.handler());
+
+    let mut t = crate::types::new();
+    let outcome = infer_from_entry(&mut t, &module, bad_id, &[], &tel);
+
+    assert_eq!(outcome.status, TypeInferStatus::Invalid);
+    assert!(
+        cap.snapshot().has_invalid_operator_for("bad", "<>"),
+        "non-binary concat should emit an invalid-operator diagnostic"
+    );
+    let ret = infer_return(&mut t, &module, bad_id, &[]);
+    let none = t.none();
+    assert!(
+        t.is_equivalent(&ret, &none),
+        "invalid concat should settle to none, got {ret:?}"
     );
 }
 

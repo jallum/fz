@@ -141,6 +141,32 @@ the call's resolved marshal shape (`variadic_dispatcher` in `prim.rs`,
 variadic)` shape is a compiler/interpreter error that lists the concrete
 `ExternTy`s.
 
+## Compiler-Owned Extern Identity
+
+`ExternId` is a compiler-world identity, not a lowering-worker-local counter.
+Reactive lowering may process different function groups in separate sessions,
+then merge them into one runnable module. If each worker started numbering
+externs from zero, two unrelated groups could mint the same numeric `ExternId`
+for different declarations; later codegen would then read the wrong `ExternDecl`
+for a `Prim::Extern` callsite.
+
+The surviving rule is:
+
+- `CompilerWorld` owns the canonical `ExternDecl` list and the name → `ExternId`
+  map.
+- a lowering session starts from that compiler-owned seed (`begin_lowering_*`)
+  and may only append fresh declarations after the current global frontier
+- session finish commits the appended declarations back to `CompilerWorld`
+- merge points treat `ExternId` as globally meaningful and assert that an
+  existing id/name pair never changes meaning
+
+This is why a runtime-graph build can lower `dbg/1`, `fz_map_count/1`, and
+`Process.heap_alloc_stats/0` in different demand waves without corrupting their
+callsites. The telemetry-backed regression tests in `ir_codegen_test` and
+`cli_compiler_world` prove that the pre-codegen graph and the executable path
+both keep `Process.heap_alloc_stats()` zero-arg and keep the `Utf8` runtime
+surface on the correct extern declarations.
+
 `fz_extern_symbol_addr(name)` resolves `dlsym(RTLD_DEFAULT, name)` and caches
 both hits and misses by symbol bytes. It returns `0` for a null or unresolved
 symbol; callers treat zero as lookup failure, not as a callable pointer. A

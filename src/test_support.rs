@@ -3,9 +3,7 @@ use crate::frontend::compile_source_with_compiler_types;
 use crate::fz_ir::{FnId, Module};
 use crate::ir_codegen::compile_planned;
 use crate::ir_planner::{ModulePlan, materialize_program, plan_module};
-use crate::modules::pipeline::{
-    CheckedModule, CompileMode, PreparedExecutionGraph,
-};
+use crate::modules::pipeline::{CheckedModule, CompileMode, PreparedExecutionGraph};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Event, Handler, NullTelemetry, Telemetry};
 use crate::types::{ClosureTypes, DefaultTypes, RenderTypes, Ty, Types};
 use std::cell::RefCell;

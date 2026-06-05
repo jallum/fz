@@ -1,7 +1,8 @@
-use crate::fz_ir::{ExternId, ExternTy};
+use crate::fz_ir::{ExternDecl, ExternId, ExternTy};
 use std::collections::HashMap;
 
 /// Name → ExternId index, built during the zeroth lowering pass.
+#[derive(Clone, Default)]
 pub struct ExternTable {
     map: HashMap<String, ExternId>,
 }
@@ -15,6 +16,14 @@ impl ExternTable {
     }
     pub fn lookup(&self, name: &str) -> Option<ExternId> {
         self.map.get(name).copied()
+    }
+
+    pub(crate) fn from_decls(decls: &[ExternDecl]) -> Self {
+        let mut table = Self::new();
+        for decl in decls {
+            table.insert(decl.fz_name.clone(), decl.id);
+        }
+        table
     }
 }
 

@@ -113,7 +113,7 @@ impl fmt::Display for Tok {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Token {
     pub tok: Tok,
     pub span: Span,

@@ -1223,6 +1223,40 @@ fn runtime_graph_with_tel(t: &mut DefaultTypes, src: &str, tel: &dyn Telemetry) 
     prepared
 }
 
+fn assert_materialized_direct_dispatch_coverage(t: &mut DefaultTypes, graph: &PreparedExecutionGraph, context: &str) {
+    let planned = materialize_program(t, &graph.module, &graph.module_plan, &NullTelemetry);
+    for &sid in planned.reachable_specs() {
+        let body = planned.executable_body(SpecId(sid));
+        let spec = &body.spec_plan;
+        for block in &body.body.blocks {
+            if !spec.reachable_blocks.contains(&block.id) {
+                continue;
+            }
+            let Some(ident) = block.terminator.ident() else {
+                continue;
+            };
+            let maybe_direct = match &block.terminator {
+                Term::Call { .. } | Term::TailCall { .. } => Some(CallsiteId::new(body.fn_id, ident, EmitSlot::Direct)),
+                _ => None,
+            };
+            let Some(direct_callsite) = maybe_direct else {
+                continue;
+            };
+            assert!(
+                spec.local_call_target(&direct_callsite).is_some(),
+                "{context}: missing Direct dispatch for fn={} spec_key={:?} caller={} block={:?} callsite={:?} edge={:?} call_edges={:?}",
+                body.body.name,
+                body.spec_key,
+                body.fn_id.0,
+                block.id,
+                direct_callsite,
+                spec.call_edges.get(&direct_callsite),
+                spec.call_edges.keys().collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
 fn capture_main_module_planned(t: &mut DefaultTypes, m: Module, plan: ModulePlan) -> Vec<String> {
     let entry = m.fn_by_name("main").unwrap().id;
     assert_direct_call_arities(&m);
@@ -1677,6 +1711,51 @@ fn process_heap_alloc_stats_is_callable_from_fz() {
         "fn main() do\n  xs = [1, 2]\n  dbg(xs)\n  stats = Process.heap_alloc_stats()\n  dbg(stats[:list_cons_allocs])\n  dbg(stats[:map_allocs])\nend",
     );
     assert_eq!(lines, vec!["[1, 2]", "2", "0"]);
+}
+
+#[test]
+fn process_heap_alloc_stats_stays_zero_arg_through_codegen_preflight() {
+    use crate::ir_dest::lower_destinations;
+    use crate::ir_extern_marshal::resolve_module_types;
+    use crate::ir_planner::materialize_program;
+    use crate::test_support::linked_runtime_graph;
+
+    let mut t = crate::types::new();
+    let graph = linked_runtime_graph(
+        "fn main() do\n  xs = [1, 2]\n  dbg(xs)\n  stats = Process.heap_alloc_stats()\n  dbg(stats[:list_cons_allocs])\n  dbg(stats[:map_allocs])\nend",
+    );
+    let mut working = graph.module.clone();
+    let mut module_plan = graph.module_plan.clone();
+
+    lower_destinations(&mut working);
+    let diagnostics = resolve_module_types(&mut t, &working, &mut module_plan);
+    assert!(
+        diagnostics.is_empty(),
+        "codegen preflight should not introduce marshal diagnostics: {diagnostics:?}"
+    );
+
+    let planned = materialize_program(&mut t, &working, &module_plan, &NullTelemetry);
+    for sid in planned.reachable_specs() {
+        let body = &planned.executable_body(SpecId(*sid)).body;
+        for block in &body.blocks {
+            for (stmt_idx, stmt) in block.stmts.iter().enumerate() {
+                let Stmt::Let(_, Prim::Extern(_, extern_id, args)) = stmt else {
+                    continue;
+                };
+                let decl = working.extern_by_id(*extern_id);
+                if decl.symbol == "fz_process_heap_alloc_stats" {
+                    assert_eq!(
+                        args.len(),
+                        0,
+                        "codegen preflight must keep fz_process_heap_alloc_stats zero-arg; body={} block={} stmt#{}",
+                        body,
+                        block.id,
+                        stmt_idx
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -3025,6 +3104,7 @@ fn enum_take_drop_split_codegen_plan_reports_activation_projection_telemetry() {
     tel.attach(&["fz", "planner", "planned"], cap.handler());
     let mut t = crate::types::new();
     let graph = runtime_graph_with_tel(&mut t, src, &tel);
+    assert_materialized_direct_dispatch_coverage(&mut t, &graph, "enum_take_drop_split");
     compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile");
 
     let ev = cap

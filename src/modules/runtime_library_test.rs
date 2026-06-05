@@ -166,6 +166,18 @@ fn runtime_library_interfaces_expose_fz_functions_not_primitive_externs() {
             "Kernel should export arithmetic operator {export}; exports: {kernel_exports:?}"
         );
     }
+    let plus = kernel
+        .exports
+        .iter()
+        .find(|export| export.name == "+" && export.arity == 2)
+        .expect("Kernel.+/2 export");
+    assert_eq!(plus.specs.len(), 4, "Kernel.+/2 should carry four declared specs");
+    let concat = kernel
+        .exports
+        .iter()
+        .find(|export| export.name == "<>" && export.arity == 2)
+        .expect("Kernel.<>/2 export");
+    assert_eq!(concat.specs.len(), 1, "Kernel.<>/2 should carry one declared spec");
 
     let list_exports = list_module
         .exports

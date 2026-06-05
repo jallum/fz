@@ -20,7 +20,9 @@ pub struct LowerCtx {
     pub externs: ExternTable,
     /// Accumulated ExternDecls; moved into Module.externs after build.
     pub extern_decls: Vec<ExternDecl>,
-    /// Monotonic counter for minting stable ExternIds. Mirrors mb.next_fn.
+    /// Compiler-seeded monotonic counter for minting new ExternIds during this
+    /// lowering session. CompilerWorld owns the canonical extern identity space;
+    /// workers only borrow the current frontier.
     pub(super) next_extern: u32,
     pub mb: ModuleBuilder,
     pub fns: FnMap,
@@ -100,12 +102,17 @@ pub struct LowerCtx {
 }
 
 impl LowerCtx {
-    pub fn new(function_registry: LoweringFunctionRegistry) -> Self {
+    pub fn new(
+        function_registry: LoweringFunctionRegistry,
+        extern_decls: Vec<ExternDecl>,
+        externs: ExternTable,
+        next_extern: u32,
+    ) -> Self {
         Self {
             atoms: AtomTable::default(),
-            externs: ExternTable::new(),
-            extern_decls: Vec::new(),
-            next_extern: 0,
+            externs,
+            extern_decls,
+            next_extern,
             mb: ModuleBuilder::new(),
             fns: HashMap::new(),
             cur: None,
@@ -500,6 +507,6 @@ impl LowerCtx {
 
 impl Default for LowerCtx {
     fn default() -> Self {
-        Self::new(LoweringFunctionRegistry::default())
+        Self::new(LoweringFunctionRegistry::default(), Vec::new(), ExternTable::new(), 0)
     }
 }

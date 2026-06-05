@@ -23,9 +23,9 @@ use crate::parser::Parser;
 #[cfg(test)]
 use crate::parser::lexer::Lexer;
 use crate::pattern_matrix::SubjectDomain;
-use crate::telemetry::value::opaque;
 #[cfg(test)]
 use crate::telemetry::NullTelemetry;
+use crate::telemetry::value::opaque;
 use crate::telemetry::{Telemetry, next_compile_nonce};
 use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Ty, Types};
 use std::collections::{HashMap, HashSet};

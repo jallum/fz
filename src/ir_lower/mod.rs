@@ -33,7 +33,7 @@ use crate::ast::{Attribute, Expr, FnDef, Item, Program, Spanned};
 use crate::compiler::{
     Compiler, CompilerWorld, FnGroupDescriptor, FunctionKind, LoweredFnGroup, LoweringFunctionRegistry, ModuleId,
 };
-use crate::diag::Span;
+use crate::diag::{FileId as SourceFileId, Span};
 #[cfg(test)]
 use crate::diag::{codes, emit_through};
 use crate::exec::matcher::SubjectRef;
@@ -60,7 +60,6 @@ use crate::ir_planner::{collect_diagnostics, plan_module};
 use crate::modules::identity::{Mfa, ModuleName};
 #[cfg(test)]
 use crate::parser::Parser;
-#[cfg(test)]
 use crate::parser::lexer::Lexer;
 use crate::parser::lexer::Tok;
 #[cfg(test)]
@@ -110,7 +109,8 @@ use cps::{
 };
 use ctx::LowerCtx;
 use expr::{bind_param_topname, lower_expr, lower_fn, lower_pattern_bind};
-use extern_table::{ExternTable, extern_symbol_from_name, extern_ty_from_name};
+pub(crate) use extern_table::ExternTable;
+use extern_table::{extern_symbol_from_name, extern_ty_from_name};
 use lambda::{collect_pattern_bound_names, collect_pattern_pinned_names, lower_lambda};
 use matcher::{
     MatchedBinding, collect_matcher_pinned_names_recursive, lower_guard_helper_call_to_dispatch,
@@ -800,7 +800,13 @@ fn assign_compiler_source_root_fn_ids(
 
 fn merge_lowered_fn_group(ctx: &mut LowerCtx, group: &LoweredFnGroup) {
     for decl in &group.extern_decls {
-        if ctx.extern_decls.iter().all(|existing| existing.id != decl.id) {
+        if let Some(existing) = ctx.extern_decls.iter().find(|existing| existing.id == decl.id) {
+            assert_eq!(
+                existing.fz_name, decl.fz_name,
+                "extern id {:?} changed meaning while merging lowered fn groups: existing `{}`, new `{}`",
+                decl.id, existing.fz_name, decl.fz_name
+            );
+        } else {
             ctx.extern_decls.push(decl.clone());
         }
         ctx.externs.insert(decl.fz_name.clone(), decl.id);
@@ -972,6 +978,7 @@ fn lower_source_fn_group<T: Types<Ty = Ty>>(
 
 pub(crate) struct CompilerLoweringSession {
     root_source: Option<ModuleId>,
+    prelude_id: ModuleId,
     ctx: LowerCtx,
     prelude: Program,
     all_items: Vec<Rc<Item>>,
@@ -987,7 +994,20 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
     prog: &Program,
     tel: &dyn Telemetry,
 ) -> Result<CompilerLoweringSession, LowerError> {
-    let mut ctx = LowerCtx::new(compiler.begin_lowering_function_registry());
+    let prelude_id = compiler.discover_primitive_prelude(tel);
+    let prepared_prelude = compiler
+        .ensure_prepared_prelude(prelude_id, t, tel)
+        .expect("runtime.fz bootstrap preparation failed");
+    compiler
+        .ensure_source_module_interfaces(prelude_id, tel)
+        .expect("runtime.fz named modules should register compiler-owned source surfaces");
+    let prelude = prepared_prelude.program;
+    let mut ctx = LowerCtx::new(
+        compiler.begin_lowering_function_registry(),
+        compiler.begin_lowering_extern_decls(),
+        compiler.begin_lowering_extern_table(),
+        compiler.next_extern_id(),
+    );
     ctx.struct_schemas.extend(
         prog.structs
             .iter()
@@ -996,12 +1016,6 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
     ctx.register_external_interfaces(&prog.external_module_interfaces);
     ctx.register_protocol_registry(&prog.protocol_registry);
     ctx.register_interface_protocols(&prog.external_module_interfaces);
-
-    let prelude_id = compiler.discover_primitive_prelude(tel);
-    let prepared_prelude = compiler
-        .ensure_prepared_prelude(prelude_id, t, tel)
-        .expect("runtime.fz bootstrap preparation failed");
-    let prelude = prepared_prelude.program;
     ctx.prelude_imports = prepared_prelude.imports;
     ctx.struct_schemas.extend(
         prelude
@@ -1066,11 +1080,8 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
                 ctx.externs.insert(fn_def.name.clone(), eid);
             } else {
                 let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
-                let id = ctx.reserve_named_function(
-                    prelude_id,
-                    Mfa::new(prelude_id, fn_def.name.clone(), arity),
-                    fn_def.name.clone(),
-                );
+                let source_key = fn_key_for_qualified_name(compiler, prelude_id, &fn_def.name, arity);
+                let id = ctx.reserve_named_function(source_key.module_id, source_key, fn_def.name.clone());
                 ctx.fns.insert((fn_def.name.clone(), arity), id);
                 ctx.prelude_fn_ids.insert(id);
             }
@@ -1105,25 +1116,13 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
                     ctx.externs.insert(fn_def.name.clone(), eid);
                 } else if !ctx.fns.contains_key(&(fn_def.name.clone(), fn_arity(fn_def))) {
                     let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
-                    let module_id = if fn_def.name.contains('.') {
-                        compiler
-                            .source_fn_key_for_qualified_name(
-                                root_source.unwrap_or(user_key_module),
-                                &fn_def.name,
-                                arity,
-                            )
-                            .unwrap_or_else(|_| {
-                                Mfa::new(root_source.unwrap_or(user_key_module), fn_def.name.clone(), arity)
-                            })
-                            .module_id
-                    } else {
-                        root_source.unwrap_or(user_key_module)
-                    };
-                    let id = ctx.reserve_named_function(
-                        module_id,
-                        Mfa::new(module_id, fn_def.name.clone(), arity),
-                        fn_def.name.clone(),
+                    let source_key = fn_key_for_qualified_name(
+                        compiler,
+                        root_source.unwrap_or(user_key_module),
+                        &fn_def.name,
+                        arity,
                     );
+                    let id = ctx.reserve_named_function(source_key.module_id, source_key, fn_def.name.clone());
                     ctx.fns.insert((fn_def.name.clone(), arity), id);
                     if fn_def.attrs.iter().any(|a| matches!(a, Attribute::Spec(_))) {
                         ctx.boundary_fns.insert(id);
@@ -1166,6 +1165,7 @@ pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
     let fn_key_by_id = collect_source_fn_key_by_id(compiler, user_key_module, &all_items, &ctx);
     Ok(CompilerLoweringSession {
         root_source,
+        prelude_id,
         ctx,
         prelude,
         all_items,
@@ -1257,6 +1257,7 @@ impl CompilerLoweringSession {
             compiler.begin_lowering_function_registry(),
         );
         compiler.commit_lowering_function_registry(function_registry);
+        compiler.commit_lowering_extern_decls(&self.ctx.extern_decls);
         let mb = take(&mut self.ctx.mb);
         let mut module = mb.build();
         module.protocol_registry = prog.protocol_registry.clone();
@@ -1279,6 +1280,18 @@ impl CompilerLoweringSession {
         }
         module.boundary_fns = take(&mut self.ctx.boundary_fns);
         module.boundary_fns.retain(|fn_id| module.fn_idx.contains_key(fn_id));
+        let mut named_surface_files = HashSet::new();
+        if let Some(root_source) = self.root_source {
+            named_surface_files.insert(compiler.module(root_source).file_id);
+        }
+        named_surface_files.insert(compiler.module(self.prelude_id).file_id);
+        module.named_fns = compiler.named_surface_entries_for_files(&named_surface_files);
+        module
+            .named_fns
+            .sort_by(|a, b| (&a.name, a.arity, a.fn_id.0).cmp(&(&b.name, b.arity, b.fn_id.0)));
+        module
+            .named_fns
+            .dedup_by(|left, right| left.name == right.name && left.arity == right.arity && left.fn_id == right.fn_id);
         let empty_env = ModuleTypeEnv::new();
         for item in &self.all_items {
             let Item::Fn(fn_def) = item.as_ref() else {
@@ -1299,9 +1312,6 @@ impl CompilerLoweringSession {
             let Some(&fid) = self.ctx.fns.get(&(fn_def.name.clone(), arity)) else {
                 continue;
             };
-            if !module.fn_idx.contains_key(&fid) {
-                continue;
-            }
             let module_path = fn_def
                 .name
                 .rfind('.')
@@ -1321,6 +1331,7 @@ impl CompilerLoweringSession {
                 module.declared_specs.insert(fid, resolved);
             }
         }
+        install_visible_callable_contracts(t, compiler, &mut module, &self.ctx.combined_type_env, tel);
         install_inherited_protocol_callback_specs(
             t,
             &mut module,
@@ -1395,9 +1406,6 @@ fn install_inherited_protocol_callback_specs<T: Types<Ty = Ty>>(
             let Some(&fid) = fns.get(&(fn_name, export.arity)) else {
                 continue;
             };
-            if !module.fn_idx.contains_key(&fid) {
-                continue;
-            }
             if module.declared_specs.contains_key(&fid) {
                 continue;
             }
@@ -1411,6 +1419,66 @@ fn install_inherited_protocol_callback_specs<T: Types<Ty = Ty>>(
             }
         }
     }
+}
+
+fn install_visible_callable_contracts<T: Types<Ty = Ty>>(
+    t: &mut T,
+    compiler: &mut CompilerWorld,
+    module: &mut Module,
+    env: &ModuleTypeEnv,
+    tel: &dyn Telemetry,
+) {
+    for entry in module.named_fns.clone() {
+        if module.declared_specs.contains_key(&entry.fn_id) {
+            continue;
+        }
+        let crate::compiler::FunctionKey::Named(mfa) = &compiler.function(entry.fn_id).key else {
+            continue;
+        };
+        let mfa = mfa.clone();
+        let Ok(Some(_)) = compiler.ensure_function_contract_state(&mfa, tel) else {
+            continue;
+        };
+        if let Some(spec_decls) = compiler.function_declared_source_specs(&mfa) {
+            if let Ok(resolved) = resolve_spec_decls(t, spec_decls.iter(), env) {
+                module.declared_specs.insert(entry.fn_id, resolved);
+            }
+            continue;
+        }
+        let Some(specs) = compiler.function_declared_interface_specs(&mfa) else {
+            continue;
+        };
+        let spec_decls = specs
+            .iter()
+            .map(|spec| interface_spec_decl(&mfa.function_name, spec))
+            .collect::<Vec<_>>();
+        if let Ok(resolved) = resolve_spec_decls(t, spec_decls.iter(), env) {
+            module.declared_specs.insert(entry.fn_id, resolved);
+        }
+    }
+}
+
+fn interface_spec_decl(name: &str, spec: &crate::modules::interface::InterfaceSpec) -> crate::ast::SpecDecl {
+    crate::ast::SpecDecl {
+        name: name.to_string(),
+        param_body_tokens: spec
+            .params
+            .iter()
+            .map(|param| parse_interface_type_body(param))
+            .collect(),
+        result_body_tokens: parse_interface_type_body(&spec.result),
+        constraints: Vec::new(),
+    }
+}
+
+fn parse_interface_type_body(text: &str) -> crate::ast::TypeExprBody {
+    let toks = Lexer::with_file(text, SourceFileId(0))
+        .tokenize()
+        .expect("module interface type bodies must lex")
+        .into_iter()
+        .filter(|token| token.tok != Tok::Eof)
+        .collect();
+    crate::ast::TypeExprBody(toks)
 }
 
 fn inherited_protocol_spec_env<T: Types<Ty = Ty>>(
