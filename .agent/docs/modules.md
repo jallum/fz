@@ -76,11 +76,19 @@ Not every module reaches every phase. Import resolution only needs
 `body_surface_ready` is the first compiler-owned split between syntax and
 executable work: the compiler has stable function-group descriptors and root
 fn/group ownership without having emitted body IR yet. Once a root program is
-resolved, lowering walks live `fn/arity` roots from `main` and emits only the
-reachable function-groups, caching each group's IR in the compiler world.
+resolved, lowering starts from entry `fn/arity` roots and reacts outward from
+the lowered IR itself: if a live body references an unloaded local group, the
+compiler requests that group, rebuilds from cached groups, and continues until
+the root set closes. The compiler emits only the reachable function-groups and
+caches each group's IR in the compiler world.
 Runtime codegen only needs the modules that become reachable from the checked
-program, and later tickets lower only the live function-groups inside those
-modules.
+program. Runtime unit discovery now also reacts to already-materialized runtime
+units: the checked root unit seeds exact external runtime exports, each
+materialized runtime unit can seed more exact runtime exports from its planned
+call edges, and only then does the compiler fall back to protocol-provider
+discovery when a live protocol module still leaves the provider set dynamic.
+Inside each reachable runtime module, the compiler lowers only the live
+function-groups.
 
 The compiler emits phase telemetry such as:
 
@@ -91,6 +99,7 @@ fz.compiler.parsed
 fz.compiler.body_surface_ready
 fz.compiler.fn_group_discovered
 fz.compiler.fn_group_lowered
+fz.compiler.fn_group_requested
 fz.compiler.fn_group_cache_hit
 fz.compiler.interface_ready
 fz.compiler.macro_surface_ready

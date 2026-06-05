@@ -1,4 +1,4 @@
-use super::callgraph::entry_seeds;
+use super::callgraph::{entry_seed_fn_ids, entry_seeds_for_fn_ids};
 use super::capabilities::compute_return_capabilities;
 use super::closures::literal_closure_return_keys;
 use super::diagnostics::{compute_dead_branches, module_plan_stats};
@@ -191,9 +191,10 @@ impl ActivationReturnFacts {
     fn from_entry_seeds<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
         t: &mut T,
         module: &Module,
+        entry_fn_ids: &[FnId],
         tel: &dyn Telemetry,
     ) -> Self {
-        let seeds = entry_seeds(t, module);
+        let seeds = entry_seeds_for_fn_ids(t, module, entry_fn_ids);
         let mut facts = Self::empty();
         for (entry, input_tys) in seeds {
             let outcome = infer_from_entry(t, module, entry, &input_tys, tel);
@@ -1063,12 +1064,22 @@ pub fn plan_module<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     m: &Module,
     tel: &dyn Telemetry,
 ) -> ModulePlan {
-    plan_module_with_role(t, m, tel, "authoritative")
+    plan_module_from_entry_fns(t, m, &entry_seed_fn_ids(m), tel)
+}
+
+pub(crate) fn plan_module_from_entry_fns<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
+    t: &mut T,
+    m: &Module,
+    entry_fn_ids: &[FnId],
+    tel: &dyn Telemetry,
+) -> ModulePlan {
+    plan_module_with_role(t, m, entry_fn_ids, tel, "authoritative")
 }
 
 fn plan_module_with_role<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     t: &mut T,
     m: &Module,
+    entry_fn_ids: &[FnId],
     tel: &dyn Telemetry,
     role: &'static str,
 ) -> ModulePlan {
@@ -1076,7 +1087,7 @@ fn plan_module_with_role<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     TYPE_FN_CALLS.with(|c| c.set(0));
     WALK_CALLS.with(|c| c.set(0));
 
-    let out = discover_specs(t, m, tel);
+    let out = discover_specs(t, m, entry_fn_ids, tel);
 
     let any_key_specs = build_any_key_index(t, m, &out.specs);
     let spec_precedence = key_precedence_order(&out.specs, &any_key_specs);
@@ -1289,6 +1300,7 @@ struct DiscoverOutput {
 fn discover_specs<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     t: &mut T,
     m: &Module,
+    entry_fn_ids: &[FnId],
     tel: &dyn Telemetry,
 ) -> DiscoverOutput {
     let recursive_fns = m.recursive_fns();
@@ -1298,9 +1310,9 @@ fn discover_specs<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     let mut visit_count: HashMap<SpecKey, usize> = HashMap::new();
     let fn_effects = compute_fn_effects(m);
     let return_capabilities = compute_return_capabilities(m, &fn_effects);
-    let activation_returns = ActivationReturnFacts::from_entry_seeds(t, m, tel);
+    let activation_returns = ActivationReturnFacts::from_entry_seeds(t, m, entry_fn_ids, tel);
 
-    let mut work: VecDeque<SpecKey> = entry_seeds(t, m)
+    let mut work: VecDeque<SpecKey> = entry_seeds_for_fn_ids(t, m, entry_fn_ids)
         .into_iter()
         .map(|(fid, key)| spec_key_for_fn_id(m, fid, key))
         .collect();
@@ -1320,7 +1332,7 @@ fn discover_specs<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
         &mut visit_count,
     );
 
-    let reachable: SpecKeySet = reachable_specs_from_call_edges(t, m, &specs);
+    let reachable: SpecKeySet = reachable_specs_from_call_edges(t, m, entry_fn_ids, &specs);
     let callable_entry_specs: SpecKeySet = reachable
         .iter()
         .filter(|spec| specs.values().any(|plan| plan.callable_entry_targets.contains(*spec)))
@@ -1338,7 +1350,14 @@ fn discover_specs<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     );
     let activation_projection_facts =
         activation_returns.projection_facts(t, m, &recursive_fns, &reachable, &callable_entry_specs);
-    let spec_roles = compute_spec_roles(t, m, &reachable, &callable_entry_specs, &activation_projection_facts);
+    let spec_roles = compute_spec_roles(
+        t,
+        m,
+        entry_fn_ids,
+        &reachable,
+        &callable_entry_specs,
+        &activation_projection_facts,
+    );
     let activation_return_telemetry =
         activation_returns.telemetry(t, m, &recursive_fns, &reachable, &callable_entry_specs);
     let activation_return_projection_gaps =
@@ -1361,9 +1380,10 @@ fn discover_specs<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
 fn reachable_specs_from_call_edges<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     m: &Module,
+    entry_fn_ids: &[FnId],
     specs: &HashMap<SpecKey, SpecPlan>,
 ) -> SpecKeySet {
-    let mut reachable: SpecKeySet = entry_seeds(t, m)
+    let mut reachable: SpecKeySet = entry_seeds_for_fn_ids(t, m, entry_fn_ids)
         .into_iter()
         .map(|(fid, key)| spec_key_for_fn_id(m, fid, key))
         .collect();
@@ -1416,11 +1436,12 @@ fn verify_closed_expectations(
 fn compute_spec_roles<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     m: &Module,
+    entry_fn_ids: &[FnId],
     reachable: &SpecKeySet,
     callable_entry_specs: &SpecKeySet,
     activation_projection_facts: &[ActivationProjectionFact],
 ) -> HashMap<BodyKey, SpecReachabilityRole> {
-    let entry_specs: SpecKeySet = entry_seeds(t, m)
+    let entry_specs: SpecKeySet = entry_seeds_for_fn_ids(t, m, entry_fn_ids)
         .into_iter()
         .map(|(fid, key)| spec_key_for_fn_id(m, fid, key))
         .collect();

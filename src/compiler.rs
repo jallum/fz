@@ -3,9 +3,9 @@
 // later world-model phases are still being pulled into use over the next
 // tickets. Keep the allowance local to this module until those phases are live.
 
-use crate::ast::{Attribute, FnDef, Item, ModuleDef, Program};
+use crate::ast::{Attribute, FnDef, Item, ModuleDef, Program, ProtocolImplDef};
 use crate::diag::{Diagnostic, SourceMap, Span};
-use crate::fz_ir::{BlockId, ExternalCallEdge, ExternId, FnId, FnIr, ProtocolCallTarget, Var};
+use crate::fz_ir::{BlockId, ExternDecl, ExternId, ExternalCallEdge, FnId, FnIr, ProtocolCallTarget, Var};
 use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::interface::{ModuleInterface, collect_from_program};
 use crate::modules::runtime_library::{self, RUNTIME_MODULE_SOURCES, RUNTIME_PRELUDE_FZ};
@@ -243,13 +243,42 @@ pub(crate) enum FnGroupInput {
     SourceFn(Rc<FnDef>),
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct FnGroupDescriptor {
-    pub(crate) id: FnGroupId,
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct SourceFnKey {
     pub(crate) owner_module: String,
     pub(crate) name: String,
     pub(crate) arity: usize,
-    pub(crate) root_fn_id: FnId,
+}
+
+impl SourceFnKey {
+    pub(crate) fn new(owner_module: impl Into<String>, name: impl Into<String>, arity: usize) -> Self {
+        Self {
+            owner_module: owner_module.into(),
+            name: name.into(),
+            arity,
+        }
+    }
+
+    pub(crate) fn from_qualified(name: &str, arity: usize) -> Self {
+        match name.rsplit_once('.') {
+            Some((owner_module, local_name)) => Self::new(owner_module.to_string(), local_name.to_string(), arity),
+            None => Self::new(String::new(), name.to_string(), arity),
+        }
+    }
+
+    pub(crate) fn qualified_name(&self) -> String {
+        if self.owner_module.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{}.{}", self.owner_module, self.name)
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FnGroupDescriptor {
+    pub(crate) id: FnGroupId,
+    pub(crate) source: SourceFnKey,
     pub(crate) is_private: bool,
     pub(crate) input: FnGroupInput,
 }
@@ -260,43 +289,41 @@ impl FnGroupDescriptor {
             FnGroupInput::SourceFn(def) => def,
         }
     }
+
+    pub(crate) fn qualified_name(&self) -> String {
+        self.source.qualified_name()
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ModuleBodySurface {
     pub(crate) owner_module: String,
     pub(crate) groups: Vec<FnGroupDescriptor>,
-    pub(crate) group_by_root_fn: HashMap<FnId, FnGroupId>,
+    pub(crate) group_by_source: HashMap<SourceFnKey, FnGroupId>,
 }
 
 impl ModuleBodySurface {
     fn register_source_group(&mut self, owner_module: &str, def: Rc<FnDef>) {
         let group_id = FnGroupId(self.groups.len() as u32);
-        let root_fn_id = FnId(self.groups.len() as u32);
         let arity = def.clauses.first().map(|clause| clause.params.len()).unwrap_or(0);
+        let source = SourceFnKey::new(owner_module.to_string(), def.name.clone(), arity);
         self.groups.push(FnGroupDescriptor {
             id: group_id,
-            owner_module: owner_module.to_string(),
-            name: qualify_body_surface_fn_name(owner_module, &def.name),
-            arity,
-            root_fn_id,
+            source: source.clone(),
             is_private: def.is_private,
             input: FnGroupInput::SourceFn(def),
         });
-        self.group_by_root_fn.insert(root_fn_id, group_id);
-    }
-
-    pub(crate) fn group_for_root_fn(&self, root_fn_id: FnId) -> Option<FnGroupId> {
-        self.group_by_root_fn.get(&root_fn_id).copied()
+        self.group_by_source.insert(source, group_id);
     }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct LoweredFnGroup {
     pub(crate) id: FnGroupId,
-    pub(crate) root_fn_id: FnId,
+    pub(crate) source: SourceFnKey,
     pub(crate) function_ids: Vec<FnId>,
     pub(crate) fns: Vec<FnIr>,
+    pub(crate) extern_decls: Vec<ExternDecl>,
     pub(crate) external_call_edges: Vec<ExternalCallEdge>,
     pub(crate) protocol_call_targets: HashMap<FnId, ProtocolCallTarget>,
     pub(crate) fn_spans: HashMap<FnId, Span>,
@@ -313,6 +340,7 @@ pub(crate) struct LoweredFnGroup {
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeReachabilitySeed {
     pub(crate) module: ModuleName,
+    pub(crate) entry: Option<(String, usize)>,
     pub(crate) reason: &'static str,
     pub(crate) from_module: Option<ModuleName>,
 }
@@ -321,9 +349,15 @@ impl RuntimeReachabilitySeed {
     pub(crate) fn new(module: ModuleName, reason: &'static str, from_module: Option<ModuleName>) -> Self {
         Self {
             module,
+            entry: None,
             reason,
             from_module,
         }
+    }
+
+    pub(crate) fn with_entry(mut self, name: impl Into<String>, arity: usize) -> Self {
+        self.entry = Some((name.into(), arity));
+        self
     }
 }
 
@@ -336,7 +370,9 @@ pub(crate) struct ModuleRecord {
     pub(crate) state: ModuleState,
     pub(crate) reachability: Reachability,
     pub(crate) body_surface: Option<ModuleBodySurface>,
-    pub(crate) lowered_groups: HashMap<FnGroupId, LoweredFnGroup>,
+    pub(crate) actual_source_fns: HashMap<FnId, SourceFnKey>,
+    pub(crate) lowered_groups: HashMap<SourceFnKey, LoweredFnGroup>,
+    pub(crate) runtime_entry_fns: HashSet<(String, usize)>,
     pub(crate) interfaces: Option<BTreeMap<ModuleName, ModuleInterface>>,
     pub(crate) macro_exports: Option<HashSet<(String, usize)>>,
     pub(crate) macro_surface: Option<ModuleMacroSurface>,
@@ -516,8 +552,14 @@ impl Compiler {
         self.world.ensure_body_surface(module_id, tel)
     }
 
-    pub(crate) fn fn_group_for_root_fn(&self, module_id: ModuleId, root_fn_id: FnId) -> Option<FnGroupId> {
-        self.world.fn_group_for_root_fn(module_id, root_fn_id)
+    pub(crate) fn source_fn_group_descriptor(
+        &mut self,
+        module_id: ModuleId,
+        name: &str,
+        arity: usize,
+        tel: &dyn Telemetry,
+    ) -> Result<Option<FnGroupDescriptor>, Diagnostic> {
+        self.world.source_fn_group_descriptor(module_id, name, arity, tel)
     }
 
     pub(crate) fn ensure_runtime_module_interface(
@@ -763,15 +805,14 @@ impl CompilerWorld {
                         module_id: module_id.0,
                         file_id: record.file_id.0,
                         fn_group_id: group.id.0,
-                        root_fn_id: group.root_fn_id.0,
-                        arity: group.arity as u64,
+                        arity: group.source.arity as u64,
                     },
                     &metadata! {
                         module_key: record.key.render(),
                         module_key_kind: record.key.kind(),
                         module_origin: record.origin.kind(),
-                        owner_module: group.owner_module.clone(),
-                        fn_name: group.name.clone(),
+                        owner_module: group.source.owner_module.clone(),
+                        fn_name: group.qualified_name(),
                         visibility: if group.is_private { "private" } else { "public" },
                     },
                 );
@@ -841,11 +882,40 @@ impl CompilerWorld {
         Ok(interfaces.get(module).cloned())
     }
 
-    pub(crate) fn fn_group_for_root_fn(&self, module_id: ModuleId, root_fn_id: FnId) -> Option<FnGroupId> {
-        self.modules[module_id.0 as usize]
-            .body_surface
-            .as_ref()
-            .and_then(|surface| surface.group_for_root_fn(root_fn_id))
+    pub(crate) fn discover_runtime_export_owner(
+        &mut self,
+        target: &ExportKey,
+        tel: &dyn Telemetry,
+    ) -> Result<Option<ModuleId>, Diagnostic> {
+        if let Some(existing) = self.module_id_for_name(&target.module) {
+            if self.module(existing).origin == ModuleOrigin::EmbeddedRuntime {
+                return Ok(Some(existing));
+            }
+            return Ok(None);
+        }
+        if let Some(module_id) = self.discover_runtime_module(&target.module, tel) {
+            return Ok(Some(module_id));
+        }
+        for source in RUNTIME_MODULE_SOURCES {
+            let module = ModuleName::from_segments(vec![source.name.to_string()]);
+            if let Some(existing) = self.module_id_for_name(&module)
+                && self.module(existing).origin != ModuleOrigin::EmbeddedRuntime
+            {
+                continue;
+            }
+            let Some(candidate) = self.ensure_runtime_module_interface(&module, tel)? else {
+                continue;
+            };
+            if candidate
+                .protocol_impls
+                .iter()
+                .flat_map(|protocol_impl| protocol_impl.callbacks.iter())
+                .any(|callback| callback == target)
+            {
+                return Ok(self.module_id_for_name(&module));
+            }
+        }
+        Ok(None)
     }
 
     pub(crate) fn source_fn_group_descriptor(
@@ -856,20 +926,63 @@ impl CompilerWorld {
         tel: &dyn Telemetry,
     ) -> Result<Option<FnGroupDescriptor>, Diagnostic> {
         let surface = self.ensure_body_surface(module_id, tel)?;
-        Ok(surface
-            .groups
-            .into_iter()
-            .find(|group| group.name == name && group.arity == arity))
+        let key = SourceFnKey::from_qualified(name, arity);
+        Ok(surface.groups.into_iter().find(|group| group.source == key))
     }
 
-    pub(crate) fn lowered_group(&self, module_id: ModuleId, group_id: FnGroupId) -> Option<LoweredFnGroup> {
-        self.modules[module_id.0 as usize].lowered_groups.get(&group_id).cloned()
+    pub(crate) fn record_actual_fn_groups(
+        &mut self,
+        module_id: ModuleId,
+        bindings: &HashMap<(String, usize), FnId>,
+        tel: &dyn Telemetry,
+    ) -> Result<(), Diagnostic> {
+        let surface = self.ensure_body_surface(module_id, tel)?;
+        let by_key = surface
+            .groups
+            .iter()
+            .map(|group| ((group.qualified_name(), group.source.arity), group.source.clone()))
+            .collect::<HashMap<_, _>>();
+        let actual_source_fns = bindings
+            .iter()
+            .filter_map(|((name, arity), fn_id)| {
+                by_key
+                    .get(&(name.clone(), *arity))
+                    .cloned()
+                    .map(|source_key| (*fn_id, source_key))
+            })
+            .collect::<HashMap<_, _>>();
+        self.modules[module_id.0 as usize].actual_source_fns = actual_source_fns;
+        Ok(())
+    }
+
+    pub(crate) fn source_fn_group_for_actual_fn(
+        &mut self,
+        module_id: ModuleId,
+        fn_id: FnId,
+        tel: &dyn Telemetry,
+    ) -> Result<Option<FnGroupDescriptor>, Diagnostic> {
+        let Some(source_key) = self.modules[module_id.0 as usize].actual_source_fns.get(&fn_id).cloned() else {
+            return Ok(None);
+        };
+        let surface = self.ensure_body_surface(module_id, tel)?;
+        Ok(surface.groups.into_iter().find(|group| group.source == source_key))
+    }
+
+    pub(crate) fn lowered_group(&self, module_id: ModuleId, source_key: &SourceFnKey) -> Option<LoweredFnGroup> {
+        self.modules[module_id.0 as usize]
+            .lowered_groups
+            .get(source_key)
+            .cloned()
+    }
+
+    pub(crate) fn runtime_entry_fn_keys(&self, module_id: ModuleId) -> HashSet<(String, usize)> {
+        self.modules[module_id.0 as usize].runtime_entry_fns.clone()
     }
 
     pub(crate) fn record_lowered_group(&mut self, module_id: ModuleId, group: LoweredFnGroup) {
         self.modules[module_id.0 as usize]
             .lowered_groups
-            .insert(group.id, group);
+            .insert(group.source.clone(), group);
     }
 
     pub(crate) fn ensure_source_module_interfaces(
@@ -962,6 +1075,9 @@ impl CompilerWorld {
             let Some(module_id) = self.discover_runtime_module(&candidate.module, tel) else {
                 continue;
             };
+            if let Some(entry) = candidate.entry.clone() {
+                self.modules[module_id.0 as usize].runtime_entry_fns.insert(entry);
+            }
             if !self.mark_reachable(module_id, ReachabilityKind::Runtime, tel) {
                 continue;
             }
@@ -1006,13 +1122,15 @@ impl CompilerWorld {
         let advanced = self.ensure_module_state(module_id, ModuleState::RuntimeLowered, tel, |_| {});
         if advanced {
             let record = self.module(module_id);
+            let groups = record.lowered_groups.len() as u64;
             tel.execute(
                 &["fz", "compiler", "runtime_lowered"],
                 &measurements! {
                     module_id: module_id.0,
                     file_id: record.file_id.0,
                     functions: fns as u64,
-                    units: 1_u64,
+                    groups: groups,
+                    units: groups,
                 },
                 &metadata! {
                     module_key: record.key.render(),
@@ -1033,13 +1151,15 @@ impl CompilerWorld {
         let advanced = self.ensure_module_state(module_id, ModuleState::RuntimePlanned, tel, |_| {});
         if advanced {
             let record = self.module(module_id);
+            let groups = record.lowered_groups.len() as u64;
             tel.execute(
                 &["fz", "compiler", "runtime_planned"],
                 &measurements! {
                     module_id: module_id.0,
                     file_id: record.file_id.0,
                     planned_specs: planned_specs as u64,
-                    units: 1_u64,
+                    groups: groups,
+                    units: groups,
                 },
                 &metadata! {
                     module_key: record.key.render(),
@@ -1250,72 +1370,70 @@ impl CompilerWorld {
                         body_surface_owner_module(module)
                     )));
                 }
-                if surface.groups.len() != surface.group_by_root_fn.len() {
+                if surface.groups.len() != surface.group_by_source.len() {
                     return Err(CompilerInvariantError::new(format!(
-                        "module `{}` body surface has {} groups but {} root mappings",
+                        "module `{}` body surface has {} groups but {} source mappings",
                         module.key.render(),
                         surface.groups.len(),
-                        surface.group_by_root_fn.len()
+                        surface.group_by_source.len()
                     )));
                 }
                 for (index, group) in surface.groups.iter().enumerate() {
                     let expected_group_id = FnGroupId(index as u32);
-                    let expected_root_fn_id = FnId(index as u32);
                     if group.id != expected_group_id {
                         return Err(CompilerInvariantError::new(format!(
                             "module `{}` body group `{}` stored id {:?}, expected {:?}",
                             module.key.render(),
-                            group.name,
+                            group.qualified_name(),
                             group.id,
                             expected_group_id
                         )));
                     }
-                    if group.root_fn_id != expected_root_fn_id {
-                        return Err(CompilerInvariantError::new(format!(
-                            "module `{}` body group `{}` stored root fn {:?}, expected {:?}",
-                            module.key.render(),
-                            group.name,
-                            group.root_fn_id,
-                            expected_root_fn_id
-                        )));
-                    }
-                    match surface.group_by_root_fn.get(&group.root_fn_id) {
+                    match surface.group_by_source.get(&group.source) {
                         Some(found) if *found == group.id => {}
                         Some(found) => {
                             return Err(CompilerInvariantError::new(format!(
-                                "module `{}` body group `{}` root {:?} maps to {:?} instead of {:?}",
+                                "module `{}` body group `{}` source key maps to {:?} instead of {:?}",
                                 module.key.render(),
-                                group.name,
-                                group.root_fn_id,
+                                group.qualified_name(),
                                 found,
                                 group.id
                             )));
                         }
                         None => {
                             return Err(CompilerInvariantError::new(format!(
-                                "module `{}` body group `{}` missing root fn mapping for {:?}",
+                                "module `{}` body group `{}` missing source key mapping",
                                 module.key.render(),
-                                group.name,
-                                group.root_fn_id
+                                group.qualified_name()
                             )));
                         }
                     }
-                    if !surface.owner_module.is_empty() && group.owner_module != surface.owner_module {
+                    if !body_surface_group_belongs_to_surface(&surface.owner_module, &group.source.owner_module) {
                         return Err(CompilerInvariantError::new(format!(
                             "module `{}` body group `{}` owner `{}` does not match surface owner `{}`",
                             module.key.render(),
-                            group.name,
-                            group.owner_module,
+                            group.qualified_name(),
+                            group.source.owner_module,
                             surface.owner_module
                         )));
                     }
                 }
-                for group_id in module.lowered_groups.keys() {
-                    if !surface.groups.iter().any(|group| group.id == *group_id) {
+                for source_key in module.lowered_groups.keys() {
+                    if !surface.groups.iter().any(|group| &group.source == source_key) {
                         return Err(CompilerInvariantError::new(format!(
-                            "module `{}` lowered group {:?} has no body-surface descriptor",
+                            "module `{}` lowered group `{}` has no body-surface descriptor",
                             module.key.render(),
-                            group_id
+                            source_key.qualified_name()
+                        )));
+                    }
+                }
+                for (fn_id, source_key) in &module.actual_source_fns {
+                    if !surface.groups.iter().any(|group| group.source == *source_key) {
+                        return Err(CompilerInvariantError::new(format!(
+                            "module `{}` actual fn {:?} maps to unknown source fn `{}`",
+                            module.key.render(),
+                            fn_id,
+                            source_key.qualified_name()
                         )));
                     }
                 }
@@ -1333,27 +1451,23 @@ impl CompilerWorld {
                     let descriptor = surface
                         .groups
                         .iter()
-                        .find(|group| group.id == lowered.id)
+                        .find(|group| group.source == lowered.source)
                         .expect("lowered-group descriptor presence already checked");
-                    if lowered.root_fn_id != descriptor.root_fn_id {
+                    if lowered.source != descriptor.source {
                         return Err(CompilerInvariantError::new(format!(
-                            "module `{}` lowered group {:?} root {:?} does not match descriptor root {:?}",
+                            "module `{}` lowered group {:?} source `{}` does not match descriptor `{}`",
                             module.key.render(),
                             lowered.id,
-                            lowered.root_fn_id,
-                            descriptor.root_fn_id
+                            lowered.source.qualified_name(),
+                            descriptor.qualified_name()
                         )));
                     }
-                    if !lowered
-                        .fns
-                        .iter()
-                        .any(|fn_ir| fn_ir.name == descriptor.name)
-                    {
+                    if !lowered.fns.iter().any(|fn_ir| fn_ir.name == descriptor.qualified_name()) {
                         return Err(CompilerInvariantError::new(format!(
                             "module `{}` lowered group {:?} does not contain root fn `{}`",
                             module.key.render(),
                             lowered.id,
-                            descriptor.name
+                            descriptor.qualified_name()
                         )));
                     }
                     for (fn_ir, function_id) in lowered.fns.iter().zip(&lowered.function_ids) {
@@ -1503,7 +1617,9 @@ impl CompilerWorld {
             state: ModuleState::Discovered,
             reachability: Reachability::default(),
             body_surface: None,
+            actual_source_fns: HashMap::new(),
             lowered_groups: HashMap::new(),
+            runtime_entry_fns: HashSet::new(),
             interfaces: None,
             macro_exports: None,
             macro_surface: None,
@@ -1673,6 +1789,11 @@ fn enqueue_runtime_protocol_impl_providers(
         .collect::<Vec<_>>();
     for source in RUNTIME_MODULE_SOURCES {
         let module = ModuleName::from_segments(vec![source.name.to_string()]);
+        if let Some(existing) = compiler.module_id_for_name(&module)
+            && compiler.module(existing).origin != ModuleOrigin::EmbeddedRuntime
+        {
+            continue;
+        }
         let Some(candidate) = compiler.ensure_runtime_module_interface(&module, tel)? else {
             continue;
         };
@@ -1785,9 +1906,82 @@ fn collect_body_surface_items(
                 };
                 collect_body_surface_items(&module.items, &nested, owner_module, surface);
             }
+            Item::ProtocolImpl(protocol_impl) => {
+                collect_protocol_impl_body_surface_groups(protocol_impl, items, current_module, surface);
+            }
             _ => {}
         }
     }
+}
+
+fn collect_protocol_impl_body_surface_groups(
+    protocol_impl: &ProtocolImplDef,
+    siblings: &[Rc<Item>],
+    current_module: &str,
+    surface: &mut ModuleBodySurface,
+) {
+    let parent = module_name_from_dotted(current_module);
+    let protocol = body_surface_impl_protocol_name(parent.as_ref(), &protocol_impl.protocol, siblings);
+    let target = body_surface_qualify_module_child(parent.as_ref(), &protocol_impl.target.path);
+    let impl_module = body_surface_protocol_impl_module(&protocol, &target).dotted();
+    for item in &protocol_impl.items {
+        if let Item::Fn(def) = &**item
+            && def.extern_abi.is_none()
+            && !def.is_macro
+        {
+            surface.register_source_group(&impl_module, Rc::new(def.clone()));
+        }
+    }
+}
+
+fn module_name_from_dotted(dotted: &str) -> Option<ModuleName> {
+    (!dotted.is_empty()).then(|| ModuleName::from_segments(dotted.split('.').map(str::to_string).collect()))
+}
+
+fn body_surface_impl_protocol_name(
+    parent: Option<&ModuleName>,
+    name: &ModuleName,
+    siblings: &[Rc<Item>],
+) -> ModuleName {
+    if name.segments().len() != 1 {
+        return name.clone();
+    }
+    if let Some(parent) = parent {
+        let has_local_protocol = siblings.iter().any(|item| {
+            matches!(
+                &**item,
+                Item::Protocol(protocol)
+                    if protocol.name.segments().len() == 1
+                        && protocol.name.last_segment() == name.last_segment()
+            )
+        });
+        if has_local_protocol || name.last_segment() == parent.last_segment() {
+            return if name.last_segment() == parent.last_segment() {
+                parent.clone()
+            } else {
+                parent.child(name.last_segment().to_string())
+            };
+        }
+    }
+    name.clone()
+}
+
+fn body_surface_qualify_module_child(parent: Option<&ModuleName>, name: &ModuleName) -> ModuleName {
+    if name.segments().len() == 1
+        && let Some(parent) = parent
+    {
+        if name.last_segment() == parent.last_segment() {
+            parent.clone()
+        } else {
+            parent.child(name.last_segment().to_string())
+        }
+    } else {
+        name.clone()
+    }
+}
+
+fn body_surface_protocol_impl_module(protocol: &ModuleName, target: &ModuleName) -> ModuleName {
+    protocol.child(target.last_segment().to_string())
 }
 
 fn qualify_body_surface_fn_name(owner_module: &str, fn_name: &str) -> String {
@@ -1796,6 +1990,17 @@ fn qualify_body_surface_fn_name(owner_module: &str, fn_name: &str) -> String {
     } else {
         format!("{owner_module}.{fn_name}")
     }
+}
+
+fn body_surface_group_belongs_to_surface(surface_owner: &str, group_owner: &str) -> bool {
+    surface_owner.is_empty()
+        || group_owner == surface_owner
+        || group_owner
+            .strip_prefix(surface_owner)
+            .is_some_and(|suffix| suffix.starts_with('.'))
+        || group_owner
+            .strip_suffix(surface_owner)
+            .is_some_and(|prefix| prefix.ends_with('.'))
 }
 
 fn collect_source_macro_exports(prog: &Program) -> SourceMacroExports {

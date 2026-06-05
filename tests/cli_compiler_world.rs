@@ -249,6 +249,16 @@ fn build_reaches_lowers_and_plans_process_once_through_compiler_world() {
         "Process should lower exactly once"
     );
     assert_eq!(
+        compiler_event_count(&events, &["fz", "compiler", "fn_group_lowered"], "Process"),
+        1,
+        "Process should lower exactly one live source function-group"
+    );
+    assert_eq!(
+        compiler_event_count(&events, &["fz", "compiler", "fn_group_requested"], "Process"),
+        0,
+        "Process.heap_alloc_stats/0 should not need sibling runtime groups"
+    );
+    assert_eq!(
         compiler_event_count(&events, &["fz", "compiler", "runtime_planned"], "Process"),
         1,
         "Process should plan exactly once"
@@ -309,5 +319,30 @@ fn quicksort_build_parses_only_process_and_minimal_runtime_surface() {
         runtime_reachable,
         BTreeSet::from(["Process".to_string()]),
         "quicksort should make only Process live at runtime"
+    );
+
+    let runtime_lowered = compiler_event_module_keys(&events, &["fz", "compiler", "runtime_lowered"]);
+    assert_eq!(
+        runtime_lowered,
+        BTreeSet::from(["Process".to_string()]),
+        "quicksort should lower only the live Process runtime module"
+    );
+
+    let runtime_planned = compiler_event_module_keys(&events, &["fz", "compiler", "runtime_planned"]);
+    assert_eq!(
+        runtime_planned,
+        BTreeSet::from(["Process".to_string()]),
+        "quicksort should plan only the live Process runtime module"
+    );
+
+    assert_eq!(
+        compiler_event_count(&events, &["fz", "compiler", "fn_group_lowered"], "Process"),
+        1,
+        "quicksort should lower exactly one live Process function-group"
+    );
+    assert_eq!(
+        compiler_event_count(&events, &["fz", "compiler", "fn_group_requested"], "Process"),
+        0,
+        "quicksort should not request extra Process sibling groups"
     );
 }

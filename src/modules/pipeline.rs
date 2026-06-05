@@ -5,17 +5,18 @@ use crate::diag::codes::{CODEGEN_SCHEMA_MISSING, LOWER_UNBOUND};
 use crate::diag::diagnostic::Severity;
 use crate::diag::{Diagnostic, Diagnostics, SourceMap, Span, emit_through};
 use crate::frontend::resolve::InterfaceTable;
-use crate::frontend::{FrontendOk, FrontendResult, compile_program_with_compiler_interface_table};
+use crate::frontend::{FrontendOk, FrontendResult, compile_program_with_compiler_roots};
 use crate::fz_ir::Module;
 use crate::ir_codegen::{CompiledUnit, ImageLinkError, link_ir_units};
+use crate::ir_planner::fn_types::CallEdgeTarget;
 use crate::ir_planner::{ModulePlan, plan_module};
 use crate::metadata;
-use crate::modules::identity::ModuleName;
+use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::interface::{ModuleInterface, validate_public_export_specs};
 use crate::modules::runtime_library;
 use crate::telemetry::{Telemetry, next_compile_nonce};
 use crate::types::DefaultTypes;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -251,27 +252,8 @@ fn load_execution_units(
     prepared: &mut CheckedModule,
     tel: &dyn Telemetry,
 ) -> Result<Vec<CompiledUnit>, PipelineError> {
-    let runtime_seed_modules = prepared
-        .external_interfaces
-        .keys()
-        .filter(|module| {
-            runtime_library::interface(compiler, module, tel)
-                .expect("runtime interface lookup must succeed")
-                .is_some()
-                && !runtime_library::is_core_prelude_module(module)
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut seeds = runtime_library::prelude_required_modules(compiler, tel)
-        .into_iter()
-        .map(|module| RuntimeReachabilitySeed::new(module, "prelude_import", None))
-        .collect::<Vec<_>>();
-    seeds.extend(
-        runtime_seed_modules
-            .into_iter()
-            .map(|module| RuntimeReachabilitySeed::new(module, "program_runtime_reference", None)),
-    );
-    let runtime_modules = compiler
+    let seeds = runtime_reachability_seeds(compiler, &prepared.module, &prepared.module_plan, tel)?;
+    let mut pending_runtime_modules = compiler
         .discover_runtime_reachable_modules(&prepared.interfaces, seeds, tel)
         .map_err(|diagnostic| {
             emit_through(tel, None, &[diagnostic]);
@@ -279,8 +261,10 @@ fn load_execution_units(
         })?;
     let mut interfaces = prepared.interfaces.clone();
     interfaces.extend(prepared.external_interfaces.clone());
-    for module_id in &runtime_modules {
-        let ModuleKey::Named(module) = compiler.module(*module_id).key.clone() else {
+    let mut units = vec![prepared.compiled_unit_input()];
+    let empty_root_interfaces = BTreeMap::new();
+    while let Some(module_id) = pending_runtime_modules.pop() {
+        let ModuleKey::Named(module) = compiler.module(module_id).key.clone() else {
             continue;
         };
         if let Some(interface) =
@@ -288,20 +272,32 @@ fn load_execution_units(
         {
             interfaces.insert(module, interface);
         }
+        let unit = materialize_runtime_unit(compiler, t, module_id, &interfaces, tel)?;
+        let follow_up_seeds = unit
+            .module_plan
+            .as_ref()
+            .map(|plan| runtime_reachability_seeds(compiler, &unit.code, plan, tel))
+            .transpose()?
+            .unwrap_or_default();
+        if !follow_up_seeds.is_empty() {
+            let newly_reachable = compiler
+                .discover_runtime_reachable_modules(&empty_root_interfaces, follow_up_seeds, tel)
+                .map_err(|diagnostic| {
+                    emit_through(tel, None, &[diagnostic]);
+                    PipelineError::FrontendFailed
+                })?;
+            pending_runtime_modules.extend(newly_reachable);
+        }
+        units.push(unit);
     }
     tel.event(
         &["fz", "module", "execution_units_prepared"],
         metadata! {
             interfaces: interfaces.len() as i64,
-            runtime_units: runtime_modules.len() as i64,
-            total_units: (runtime_modules.len() + 1) as i64,
+            runtime_units: (units.len() - 1) as i64,
+            total_units: units.len() as i64,
         },
     );
-
-    let mut units = vec![prepared.compiled_unit_input()];
-    for module_id in runtime_modules {
-        units.push(materialize_runtime_unit(compiler, t, module_id, &interfaces, tel)?);
-    }
     Ok(units)
 }
 
@@ -324,7 +320,16 @@ fn materialize_runtime_unit(
         ..crate::ast::Program::default()
     };
     let frontend = run_frontend(
-        compile_program_with_compiler_interface_table(compiler, None, t, program, parsed.sm, interfaces.clone(), tel),
+        compile_program_with_compiler_roots(
+            compiler,
+            None,
+            Some(module_id),
+            t,
+            program,
+            parsed.sm,
+            interfaces.clone(),
+            tel,
+        ),
         tel,
     )?;
     let _ = compiler.note_runtime_lowered(module_id, frontend.module.fns.len(), tel);
@@ -339,6 +344,56 @@ fn materialize_runtime_unit(
         interfaces.get(&module_name).cloned(),
         Diagnostics::new(),
     ))
+}
+
+fn runtime_reachability_seeds(
+    compiler: &mut CompilerWorld,
+    module: &Module,
+    module_plan: &ModulePlan,
+    tel: &dyn Telemetry,
+) -> Result<Vec<RuntimeReachabilitySeed>, PipelineError> {
+    let mut targets = BTreeSet::new();
+    targets.extend(module.external_call_edges.iter().map(|edge| edge.target.clone()));
+    targets.extend(planned_external_targets(module_plan));
+
+    let mut seeds = Vec::new();
+    for target in targets {
+        let Some(owner_module_id) = compiler
+            .discover_runtime_export_owner(&target, tel)
+            .map_err(|diagnostic| {
+                emit_through(tel, None, &[diagnostic]);
+                PipelineError::FrontendFailed
+            })?
+        else {
+            continue;
+        };
+        let ModuleKey::Named(owner_module) = compiler.module(owner_module_id).key.clone() else {
+            continue;
+        };
+        let entry = format!("{}.{}", target.module.dotted(), target.name);
+        seeds.push(RuntimeReachabilitySeed::new(
+            owner_module,
+            "planned_external_target",
+            None,
+        )
+        .with_entry(entry, target.arity));
+    }
+    Ok(seeds)
+}
+
+fn planned_external_targets(module_plan: &ModulePlan) -> BTreeSet<ExportKey> {
+    let mut targets = BTreeSet::new();
+    for spec_key in &module_plan.reachable_specs {
+        let Some(spec) = module_plan.specs.get(spec_key) else {
+            continue;
+        };
+        for edge in spec.call_edges.values() {
+            if let CallEdgeTarget::External { target, .. } = &edge.target {
+                targets.insert(target.clone());
+            }
+        }
+    }
+    targets
 }
 
 struct LtoLinkedProgram {

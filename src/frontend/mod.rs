@@ -14,7 +14,7 @@ use crate::fz_ir::{CallsiteId, EmitSlot, FnId, Module, rewrite_external_callsite
 use crate::ir_extern_marshal::resolve_module_types;
 use crate::ir_lower::repl_output_frame_names;
 use crate::ir_planner::fn_types::CallEdgeTarget;
-use crate::ir_planner::{ModulePlan, plan_module, rewrite_closed_union_protocol_dispatch};
+use crate::ir_planner::{ModulePlan, plan_module, plan_module_from_entry_fns, rewrite_closed_union_protocol_dispatch};
 use crate::measurements;
 use crate::metadata;
 #[cfg(test)]
@@ -121,13 +121,27 @@ fn fn_subject_domains<T: Types<Ty = Ty>>(
         .collect()
 }
 
-pub fn check_frontend<T>(t: &mut T, prog: &Program, module: &Module, tel: &dyn Telemetry) -> (Diagnostics, ModulePlan)
+fn check_frontend_from_entry_fns<T>(
+    t: &mut T,
+    prog: &Program,
+    module: &Module,
+    entry_fn_ids: &[FnId],
+    validate_surface: bool,
+    tel: &dyn Telemetry,
+) -> (Diagnostics, ModulePlan)
 where
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 {
-    let mut mt = plan_module(t, module, tel);
-    let mut diags = Diagnostics::from_vec(spec_check::validate_specs(t, prog, module, &mt));
-    diags.extend(check_patterns(t, prog, module, &mt));
+    let mut mt = if entry_fn_ids.is_empty() {
+        plan_module(t, module, tel)
+    } else {
+        plan_module_from_entry_fns(t, module, entry_fn_ids, tel)
+    };
+    let mut diags = Diagnostics::new();
+    if validate_surface {
+        diags.extend(Diagnostics::from_vec(spec_check::validate_specs(t, prog, module, &mt)));
+        diags.extend(check_patterns(t, prog, module, &mt));
+    }
     diags.extend(Diagnostics::from_vec(resolve_module_types(t, module, &mut mt)));
     tel.execute(
         &["fz", "frontend", "checked"],
@@ -221,7 +235,7 @@ where
             program: opaque(&prog),
         },
     );
-    compile_program_with_compiler_interface_table(compiler, Some(root), t, prog, sm, interface_table, tel)
+    compile_program_with_compiler_roots(compiler, Some(root), Some(root), t, prog, sm, interface_table, tel)
 }
 
 pub(crate) fn compile_program_with_types<T>(
@@ -247,12 +261,13 @@ pub(crate) fn compile_program_with_compiler_types<T>(
 where
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 {
-    compile_program_with_compiler_interface_table(compiler, None, t, prog, sm, InterfaceTable::new(), tel)
+    compile_program_with_compiler_roots(compiler, None, None, t, prog, sm, InterfaceTable::new(), tel)
 }
 
-pub(crate) fn compile_program_with_compiler_interface_table<T>(
+pub(crate) fn compile_program_with_compiler_roots<T>(
     compiler: &mut CompilerWorld,
     root_source: Option<ModuleId>,
+    lowering_root_source: Option<ModuleId>,
     t: &mut T,
     prog: Program,
     sm: SourceMap,
@@ -295,7 +310,7 @@ where
             program: opaque(&prog),
         },
     );
-    let mut module = match crate::ir_lower::lower_program_with_compiler(compiler, root_source, t, &prog, tel) {
+    let mut module = match crate::ir_lower::lower_program_with_compiler(compiler, lowering_root_source, t, &prog, tel) {
         Ok(module) => module,
         Err(e) => return Err(fail(sm, e.to_diagnostic())),
     };
@@ -307,8 +322,11 @@ where
             module: opaque(&module),
         },
     );
-    let (diagnostics, mut module_plan) = check_frontend(t, &prog, &module, tel);
-    apply_planner_rewrites_to_fixed_point(t, &mut module, &mut module_plan);
+    let planner_entry_fns = planner_entry_fns(compiler, lowering_root_source, &module);
+    let validate_surface = validate_surface_for_plan(compiler, lowering_root_source, &planner_entry_fns);
+    let (diagnostics, mut module_plan) =
+        check_frontend_from_entry_fns(t, &prog, &module, &planner_entry_fns, validate_surface, tel);
+    apply_planner_rewrites_to_fixed_point(t, &mut module, &mut module_plan, &planner_entry_fns);
     #[cfg(test)]
     compiler
         .validate_invariants()
@@ -322,7 +340,48 @@ where
     })
 }
 
-pub(crate) fn apply_planner_rewrites_to_fixed_point<T>(t: &mut T, module: &mut Module, module_plan: &mut ModulePlan)
+fn planner_entry_fns(compiler: &CompilerWorld, lowering_root_source: Option<ModuleId>, module: &Module) -> Vec<FnId> {
+    let Some(root_source) = lowering_root_source else {
+        return Vec::new();
+    };
+    if !matches!(
+        compiler.module(root_source).origin,
+        crate::compiler::ModuleOrigin::EmbeddedRuntime
+    ) {
+        return Vec::new();
+    }
+    let entry_keys = compiler.runtime_entry_fn_keys(root_source);
+    if entry_keys.is_empty() {
+        return Vec::new();
+    }
+    module
+        .fns
+        .iter()
+        .filter(|fn_ir| entry_keys.contains(&(fn_ir.name.clone(), fn_ir.block(fn_ir.entry).params.len())))
+        .map(|fn_ir| fn_ir.id)
+        .collect()
+}
+
+fn validate_surface_for_plan(
+    compiler: &CompilerWorld,
+    lowering_root_source: Option<ModuleId>,
+    planner_entry_fns: &[FnId],
+) -> bool {
+    let Some(root_source) = lowering_root_source else {
+        return true;
+    };
+    !matches!(
+        compiler.module(root_source).origin,
+        crate::compiler::ModuleOrigin::EmbeddedRuntime
+    ) || planner_entry_fns.is_empty()
+}
+
+pub(crate) fn apply_planner_rewrites_to_fixed_point<T>(
+    t: &mut T,
+    module: &mut Module,
+    module_plan: &mut ModulePlan,
+    entry_fn_ids: &[FnId],
+)
 where
     T: Types<Ty = Ty> + ClosureTypes + RenderTypes,
 {
@@ -341,7 +400,11 @@ where
         if !(direct_changed || switch_changed) {
             break;
         }
-        *module_plan = plan_module(t, module, &NullTelemetry);
+        *module_plan = if entry_fn_ids.is_empty() {
+            plan_module(t, module, &NullTelemetry)
+        } else {
+            plan_module_from_entry_fns(t, module, entry_fn_ids, &NullTelemetry)
+        };
     }
 }
 

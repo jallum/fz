@@ -1507,6 +1507,50 @@ impl Module {
         self.fns.iter().find(|f| f.name == name)
     }
 
+    pub fn referenced_fn_ids(&self) -> HashSet<FnId> {
+        let mut referenced = HashSet::new();
+        for f in &self.fns {
+            for block in &f.blocks {
+                for Stmt::Let(_, prim) in &block.stmts {
+                    if let Prim::MakeFnRef(_, target) | Prim::MakeClosure(_, target, _) = prim {
+                        referenced.insert(*target);
+                    }
+                }
+                match &block.terminator {
+                    Term::Call {
+                        callee, continuation, ..
+                    } => {
+                        referenced.insert(*callee);
+                        referenced.insert(continuation.fn_id);
+                    }
+                    Term::TailCall { callee, .. } => {
+                        referenced.insert(*callee);
+                    }
+                    Term::CallClosure { continuation, .. } => {
+                        referenced.insert(continuation.fn_id);
+                    }
+                    Term::ReceiveMatched { clauses, after, .. } => {
+                        for clause in clauses {
+                            referenced.insert(clause.body);
+                            if let Some(guard) = clause.guard {
+                                referenced.insert(guard);
+                            }
+                        }
+                        if let Some(after) = after {
+                            referenced.insert(after.body);
+                        }
+                    }
+                    Term::Goto(..)
+                    | Term::If { .. }
+                    | Term::TailCallClosure { .. }
+                    | Term::Return(_)
+                    | Term::Halt(_) => {}
+                }
+            }
+        }
+        referenced
+    }
+
     /// The set of fns that participate in recursion: every fn in a
     /// strongly-connected component larger than one, plus self-recursive
     /// singletons. The recursion call graph deliberately excludes the

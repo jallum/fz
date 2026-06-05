@@ -68,6 +68,7 @@ pub(crate) use planned::materialize_program;
 pub use pretty::pretty_module_plan;
 pub use switch_dispatch::rewrite_closed_union_protocol_dispatch;
 pub use worklist::plan_module;
+pub(crate) use worklist::plan_module_from_entry_fns;
 
 // ----------------------------------------------------------------------
 // Tests

@@ -27,7 +27,9 @@
 //! in this file (or a future corner case) panics in debug rather than
 //! corrupting downstream passes.
 
-use crate::ast::{AfterClause, Attribute, Expr, FnDef, Item, LambdaClause, MatchClause, Program, Spanned, WithBinding};
+#[cfg(test)]
+use crate::ast::MatchClause;
+use crate::ast::{Attribute, Expr, FnDef, Item, Program, Spanned};
 use crate::compiler::{Compiler, CompilerWorld, FnGroupDescriptor, LoweredFnGroup, ModuleId};
 use crate::diag::Span;
 #[cfg(test)]
@@ -55,7 +57,6 @@ use crate::ir_codegen::compile_planned;
 use crate::ir_planner::{collect_diagnostics, plan_module};
 use crate::modules::identity::ModuleName;
 use crate::modules::runtime_library::{interface, root_type_env_from_attrs};
-use crate::{measurements, metadata};
 #[cfg(test)]
 use crate::parser::Parser;
 #[cfg(test)]
@@ -73,7 +74,8 @@ use crate::telemetry::{Capture, ConfiguredTelemetry, NullTelemetry, Value, bus};
 use crate::test_support::linked_runtime_graph_with_telemetry;
 use crate::type_expr::{ModuleTypeEnv, parse_type_expr, resolve_spec_decls};
 use crate::types::{Ty, TypeVarId, Types, check_brand_mint_visibility};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use crate::{measurements, metadata};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::mem::take;
 use std::rc::Rc;
 
@@ -661,7 +663,8 @@ fn fn_arity(fn_def: &FnDef) -> usize {
 }
 
 fn collect_lowerable_fn_keys(items: &[Rc<Item>]) -> HashSet<FnKey> {
-    items.iter()
+    items
+        .iter()
         .filter_map(|item| match item.as_ref() {
             Item::Fn(fn_def) if fn_def.extern_abi.is_none() && !fn_def.is_macro => {
                 Some((fn_def.name.clone(), fn_arity(fn_def)))
@@ -671,285 +674,166 @@ fn collect_lowerable_fn_keys(items: &[Rc<Item>]) -> HashSet<FnKey> {
         .collect()
 }
 
-fn select_reachable_fn_keys(
-    items: &[Rc<Item>],
-    prelude_imports: &HashMap<FnKey, String>,
-) -> HashSet<FnKey> {
-    let defs_by_key = items
+fn select_entry_fn_keys(items: &[Rc<Item>]) -> HashSet<FnKey> {
+    items
         .iter()
         .filter_map(|item| match item.as_ref() {
-            Item::Fn(fn_def) if fn_def.extern_abi.is_none() && !fn_def.is_macro => {
-                Some(((fn_def.name.clone(), fn_arity(fn_def)), fn_def))
+            Item::Fn(fn_def)
+                if fn_def.extern_abi.is_none()
+                    && !fn_def.is_macro
+                    && (fn_def.name == "main" || fn_def.name.starts_with(REPL_ENTRY_PREFIX)) =>
+            {
+                Some((fn_def.name.clone(), fn_arity(fn_def)))
             }
             _ => None,
         })
-        .collect::<HashMap<_, _>>();
-    let all_keys = defs_by_key.keys().cloned().collect::<HashSet<_>>();
-    let queue = defs_by_key
-        .keys()
-        .filter(|(name, _)| name == "main" || name.starts_with(REPL_ENTRY_PREFIX))
+        .collect()
+}
+
+fn select_initial_source_fn_keys(
+    prelude_items: &[Rc<Item>],
+    user_items: &[Rc<Item>],
+    root_entry_keys: Option<&HashSet<FnKey>>,
+    fallback_to_all_when_no_entries: bool,
+) -> HashSet<FnKey> {
+    let mut selected = collect_lowerable_fn_keys(prelude_items);
+    let user_entries = root_entry_keys
         .cloned()
-        .collect::<VecDeque<_>>();
-    let mut queue = queue;
-    if queue.is_empty() {
-        return all_keys;
+        .unwrap_or_else(|| select_entry_fn_keys(user_items));
+    if user_entries.is_empty() {
+        if fallback_to_all_when_no_entries {
+            selected.extend(collect_lowerable_fn_keys(user_items));
+        }
+    } else {
+        selected.extend(user_entries);
     }
-    let mut reachable = HashSet::new();
-    while let Some(key) = queue.pop_front() {
-        if !reachable.insert(key.clone()) {
+    selected
+}
+
+fn discover_requested_source_fn_keys(
+    compiler: &mut CompilerWorld,
+    root_source: ModuleId,
+    module: &Module,
+    tel: &dyn Telemetry,
+) -> Result<HashSet<FnKey>, LowerError> {
+    let mut requested = HashSet::new();
+    for fn_id in module.referenced_fn_ids() {
+        if module.fn_idx.contains_key(&fn_id) {
             continue;
         }
-        let Some(fn_def) = defs_by_key.get(&key).copied() else {
+        let Some(descriptor) = compiler
+            .source_fn_group_for_actual_fn(root_source, fn_id, tel)
+            .map_err(|diagnostic| LowerError::Unsupported {
+                span: Span::DUMMY,
+                what: diagnostic.message,
+            })?
+        else {
             continue;
         };
-        visit_fn_def_calls(fn_def, &defs_by_key, prelude_imports, &mut |callee| {
-            if !reachable.contains(&callee) {
-                queue.push_back(callee);
-            }
-        });
+        tel.execute(
+            &["fz", "compiler", "fn_group_requested"],
+            &measurements! {
+                fn_group_id: descriptor.id.0,
+                loaded_functions: module.fns.len() as u64,
+            },
+            &metadata! {
+                module_key: compiler.module_key_render(root_source),
+                owner_module: descriptor.source.owner_module.clone(),
+                fn_name: descriptor.qualified_name(),
+            },
+        );
+        requested.insert((descriptor.qualified_name(), descriptor.source.arity));
     }
-    reachable
+    Ok(requested)
 }
 
-fn visit_fn_def_calls(
-    fn_def: &FnDef,
-    defs_by_key: &HashMap<FnKey, &FnDef>,
-    prelude_imports: &HashMap<FnKey, String>,
-    visit: &mut impl FnMut(FnKey),
+fn reserve_cached_source_fn_ids(
+    compiler: &mut CompilerWorld,
+    root_source: ModuleId,
+    items: &[Rc<Item>],
+    selected_fn_keys: &HashSet<FnKey>,
+    ctx: &mut LowerCtx,
+    tel: &dyn Telemetry,
 ) {
-    for clause in &fn_def.clauses {
-        if let Some(guard) = &clause.guard {
-            visit_expr_calls(guard, defs_by_key, prelude_imports, visit);
+    let mut next_reserved_fn = Some(ctx.mb.next_fn_id());
+    let mut next_reserved_extern = None;
+    for item in items {
+        let Item::Fn(fn_def) = item.as_ref() else {
+            continue;
+        };
+        if fn_def.extern_abi.is_some() || !selected_fn_keys.contains(&(fn_def.name.clone(), fn_arity(fn_def))) {
+            continue;
         }
-        visit_expr_calls(&clause.body, defs_by_key, prelude_imports, visit);
+        let Some(descriptor) = compiler
+            .source_fn_group_descriptor(root_source, &fn_def.name, fn_arity(fn_def), tel)
+            .expect("compiler source group lookup should succeed after parse")
+        else {
+            continue;
+        };
+        let Some(group) = compiler.lowered_group(root_source, &descriptor.source) else {
+            continue;
+        };
+        let Some(max_fn_id) = group.function_ids.iter().map(|id| id.0).max() else {
+            continue;
+        };
+        next_reserved_fn = Some(next_reserved_fn.map_or(max_fn_id + 1, |current: u32| current.max(max_fn_id + 1)));
+        if let Some(max_extern_id) = group.extern_decls.iter().map(|decl| decl.id.0).max() {
+            next_reserved_extern =
+                Some(next_reserved_extern.map_or(max_extern_id + 1, |current: u32| current.max(max_extern_id + 1)));
+        }
+    }
+    if let Some(next_reserved_fn) = next_reserved_fn {
+        ctx.mb.advance_next_fn_to(next_reserved_fn);
+    }
+    if let Some(next_reserved_extern) = next_reserved_extern {
+        ctx.next_extern = ctx.next_extern.max(next_reserved_extern);
     }
 }
 
-fn visit_expr_calls(
-    expr: &Spanned<Expr>,
-    defs_by_key: &HashMap<FnKey, &FnDef>,
-    prelude_imports: &HashMap<FnKey, String>,
-    visit: &mut impl FnMut(FnKey),
-) {
-    match &expr.node {
-        Expr::Var(name) => {
-            if let Some(target) = resolve_unique_fn_name(name, defs_by_key, prelude_imports) {
-                visit(target);
-            }
+fn assign_compiler_source_root_fn_ids(
+    compiler: &mut CompilerWorld,
+    root_source: ModuleId,
+    items: &[Rc<Item>],
+    ctx: &mut LowerCtx,
+    tel: &dyn Telemetry,
+) -> Result<(), LowerError> {
+    let prelude_cutoff = ctx.prelude_fn_id_cutoff;
+    let mut next_reserved_fn = prelude_cutoff;
+    for item in items {
+        let Item::Fn(fn_def) = item.as_ref() else {
+            continue;
+        };
+        if fn_def.extern_abi.is_some() {
+            continue;
         }
-        Expr::FnRef { name, arity } => {
-            if let Some(target) = resolve_fn_key(name, *arity, defs_by_key, prelude_imports) {
-                visit(target);
-            }
-        }
-        Expr::Capture(_) | Expr::CaptureArg(_) => {}
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Binary(_)
-        | Expr::Atom(_)
-        | Expr::Bool(_)
-        | Expr::Nil => {}
-        Expr::BinOp(_, left, right) => {
-            visit_expr_calls(left, defs_by_key, prelude_imports, visit);
-            visit_expr_calls(right, defs_by_key, prelude_imports, visit);
-        }
-        Expr::UnOp(_, inner) | Expr::Ascribe(inner, _) | Expr::Quote(inner) | Expr::Unquote(inner) => {
-            visit_expr_calls(inner, defs_by_key, prelude_imports, visit);
-        }
-        Expr::Block(exprs) => {
-            for inner in exprs {
-                visit_expr_calls(inner, defs_by_key, prelude_imports, visit);
-            }
-        }
-        Expr::If(cond, then_expr, else_expr) => {
-            visit_expr_calls(cond, defs_by_key, prelude_imports, visit);
-            visit_expr_calls(then_expr, defs_by_key, prelude_imports, visit);
-            if let Some(else_expr) = else_expr {
-                visit_expr_calls(else_expr, defs_by_key, prelude_imports, visit);
-            }
-        }
-        Expr::Match(_, value) => visit_expr_calls(value, defs_by_key, prelude_imports, visit),
-        Expr::List(items, tail) => {
-            for item in items {
-                visit_expr_calls(item, defs_by_key, prelude_imports, visit);
-            }
-            if let Some(tail) = tail {
-                visit_expr_calls(tail, defs_by_key, prelude_imports, visit);
-            }
-        }
-        Expr::Bitstring(fields) => {
-            for field in fields {
-                visit_expr_calls(&field.value, defs_by_key, prelude_imports, visit);
-            }
-        }
-        Expr::Map(entries) => {
-            for (key, value) in entries {
-                visit_expr_calls(key, defs_by_key, prelude_imports, visit);
-                visit_expr_calls(value, defs_by_key, prelude_imports, visit);
-            }
-        }
-        Expr::MapUpdate(base, updates) => {
-            visit_expr_calls(base, defs_by_key, prelude_imports, visit);
-            for (key, value) in updates {
-                visit_expr_calls(key, defs_by_key, prelude_imports, visit);
-                visit_expr_calls(value, defs_by_key, prelude_imports, visit);
-            }
-        }
-        Expr::Tuple(items) => {
-            for item in items {
-                visit_expr_calls(item, defs_by_key, prelude_imports, visit);
-            }
-        }
-        Expr::Struct { fields, .. } => {
-            for (_, value) in fields {
-                visit_expr_calls(value, defs_by_key, prelude_imports, visit);
-            }
-        }
-        Expr::Call(target, args) => {
-            if let Expr::Var(name) = &target.node
-                && let Some(callee) = resolve_fn_key(name, args.len(), defs_by_key, prelude_imports)
-            {
-                visit(callee);
-            } else {
-                visit_expr_calls(target, defs_by_key, prelude_imports, visit);
-            }
-            for arg in args {
-                visit_expr_calls(arg, defs_by_key, prelude_imports, visit);
-            }
-        }
-        Expr::ClosureCall(target, args) => {
-            visit_expr_calls(target, defs_by_key, prelude_imports, visit);
-            for arg in args {
-                visit_expr_calls(arg, defs_by_key, prelude_imports, visit);
-            }
-        }
-        Expr::Index(target, index) => {
-            visit_expr_calls(target, defs_by_key, prelude_imports, visit);
-            visit_expr_calls(index, defs_by_key, prelude_imports, visit);
-        }
-        Expr::Case(subject, clauses) => {
-            if let Some(subject) = subject {
-                visit_expr_calls(subject, defs_by_key, prelude_imports, visit);
-            }
-            for clause in clauses {
-                visit_match_clause_calls(clause, defs_by_key, prelude_imports, visit);
-            }
-        }
-        Expr::Cond(clauses) => {
-            for (cond, body) in clauses {
-                visit_expr_calls(cond, defs_by_key, prelude_imports, visit);
-                visit_expr_calls(body, defs_by_key, prelude_imports, visit);
-            }
-        }
-        Expr::With(bindings, body, clauses) => {
-            for binding in bindings {
-                visit_with_binding_calls(binding, defs_by_key, prelude_imports, visit);
-            }
-            visit_expr_calls(body, defs_by_key, prelude_imports, visit);
-            for clause in clauses {
-                visit_match_clause_calls(clause, defs_by_key, prelude_imports, visit);
-            }
-        }
-        Expr::Receive { clauses, after } => {
-            for clause in clauses {
-                visit_match_clause_calls(clause, defs_by_key, prelude_imports, visit);
-            }
-            if let Some(after) = after {
-                visit_after_clause_calls(after, defs_by_key, prelude_imports, visit);
-            }
-        }
-        Expr::Lambda(clauses) => {
-            for clause in clauses {
-                visit_lambda_clause_calls(clause, defs_by_key, prelude_imports, visit);
-            }
+        let arity = fn_arity(fn_def);
+        let Some(descriptor) = compiler
+            .source_fn_group_descriptor(root_source, &fn_def.name, arity, tel)
+            .map_err(|diagnostic| LowerError::Unsupported {
+                span: fn_def.span,
+                what: diagnostic.message,
+            })?
+        else {
+            continue;
+        };
+        let id = FnId(prelude_cutoff + descriptor.id.0);
+        ctx.fns.insert((fn_def.name.clone(), arity), id);
+        next_reserved_fn = next_reserved_fn.max(id.0 + 1);
+        if fn_def.attrs.iter().any(|a| matches!(a, Attribute::Spec(_))) {
+            ctx.boundary_fns.insert(id);
         }
     }
-}
-
-fn visit_match_clause_calls(
-    clause: &MatchClause,
-    defs_by_key: &HashMap<FnKey, &FnDef>,
-    prelude_imports: &HashMap<FnKey, String>,
-    visit: &mut impl FnMut(FnKey),
-) {
-    if let Some(guard) = &clause.guard {
-        visit_expr_calls(guard, defs_by_key, prelude_imports, visit);
-    }
-    visit_expr_calls(&clause.body, defs_by_key, prelude_imports, visit);
-}
-
-fn visit_lambda_clause_calls(
-    clause: &LambdaClause,
-    defs_by_key: &HashMap<FnKey, &FnDef>,
-    prelude_imports: &HashMap<FnKey, String>,
-    visit: &mut impl FnMut(FnKey),
-) {
-    if let Some(guard) = &clause.guard {
-        visit_expr_calls(guard, defs_by_key, prelude_imports, visit);
-    }
-    visit_expr_calls(&clause.body, defs_by_key, prelude_imports, visit);
-}
-
-fn visit_with_binding_calls(
-    binding: &WithBinding,
-    defs_by_key: &HashMap<FnKey, &FnDef>,
-    prelude_imports: &HashMap<FnKey, String>,
-    visit: &mut impl FnMut(FnKey),
-) {
-    match binding {
-        WithBinding::Match(_, expr) | WithBinding::Bare(expr) => {
-            visit_expr_calls(expr, defs_by_key, prelude_imports, visit);
-        }
-    }
-}
-
-fn visit_after_clause_calls(
-    after: &AfterClause,
-    defs_by_key: &HashMap<FnKey, &FnDef>,
-    prelude_imports: &HashMap<FnKey, String>,
-    visit: &mut impl FnMut(FnKey),
-) {
-    visit_expr_calls(&after.timeout, defs_by_key, prelude_imports, visit);
-    visit_expr_calls(&after.body, defs_by_key, prelude_imports, visit);
-}
-
-fn resolve_fn_key(
-    name: &str,
-    arity: usize,
-    defs_by_key: &HashMap<FnKey, &FnDef>,
-    prelude_imports: &HashMap<FnKey, String>,
-) -> Option<FnKey> {
-    let local = (name.to_string(), arity);
-    if defs_by_key.contains_key(&local) {
-        return Some(local);
-    }
-    let imported = prelude_imports.get(&(name.to_string(), arity))?;
-    let resolved = (imported.clone(), arity);
-    defs_by_key.contains_key(&resolved).then_some(resolved)
-}
-
-fn resolve_unique_fn_name(
-    name: &str,
-    defs_by_key: &HashMap<FnKey, &FnDef>,
-    prelude_imports: &HashMap<FnKey, String>,
-) -> Option<FnKey> {
-    let mut matches = defs_by_key.keys().filter(|(candidate, _)| candidate == name).cloned();
-    let found = matches.next()?;
-    if matches.next().is_none() {
-        return Some(found);
-    }
-    let mut imported_matches = prelude_imports
-        .iter()
-        .filter(|((candidate, _), _)| candidate == name)
-        .filter_map(|((_candidate, arity), qualified)| {
-            let key = (qualified.clone(), *arity);
-            defs_by_key.contains_key(&key).then_some(key)
-        });
-    let found = imported_matches.next()?;
-    imported_matches.next().is_none().then_some(found)
+    ctx.mb.advance_next_fn_to(next_reserved_fn);
+    Ok(())
 }
 
 fn merge_lowered_fn_group(ctx: &mut LowerCtx, group: &LoweredFnGroup) {
+    for decl in &group.extern_decls {
+        if ctx.extern_decls.iter().all(|existing| existing.id != decl.id) {
+            ctx.extern_decls.push(decl.clone());
+        }
+        ctx.externs.insert(decl.fz_name.clone(), decl.id);
+    }
     for fn_ir in &group.fns {
         ctx.mb.add_fn(fn_ir.clone());
     }
@@ -975,11 +859,29 @@ fn capture_lowered_fn_group(ctx: &LowerCtx, before_fn_count: usize, descriptor: 
     let fns = ctx.mb.fn_slice_from(before_fn_count).to_vec();
     let function_ids = fns.iter().map(|fn_ir| fn_ir.id).collect::<Vec<_>>();
     let function_id_set = function_ids.iter().copied().collect::<HashSet<_>>();
+    let used_extern_ids = fns
+        .iter()
+        .flat_map(|fn_ir| fn_ir.blocks.iter())
+        .flat_map(|block| block.stmts.iter())
+        .filter_map(|stmt| match stmt {
+            Stmt::Let(_, Prim::Extern(_, eid, _)) => Some(*eid),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
     LoweredFnGroup {
         id: descriptor.id,
-        root_fn_id: descriptor.root_fn_id,
+        source: descriptor.source.clone(),
         function_ids: function_ids.clone(),
         fns,
+        extern_decls: ctx
+            .extern_decls
+            .iter()
+            .filter(|decl| {
+                used_extern_ids.contains(&decl.id)
+                    || function_id_set.contains(ctx.extern_wrappers.get(&decl.id).unwrap_or(&FnId(u32::MAX)))
+            })
+            .cloned()
+            .collect(),
         external_call_edges: ctx
             .mb
             .external_call_edges
@@ -1061,19 +963,18 @@ fn lower_source_fn_group<T: Types<Ty = Ty>>(
     tel: &dyn Telemetry,
 ) -> Result<(), LowerError> {
     let module_key = compiler.module_key_render(root_source);
-    if let Some(group) = compiler.lowered_group(root_source, descriptor.id) {
+    if let Some(group) = compiler.lowered_group(root_source, &descriptor.source) {
         merge_lowered_fn_group(ctx, &group);
         tel.execute(
             &["fz", "compiler", "fn_group_cache_hit"],
             &measurements! {
                 fn_group_id: descriptor.id.0,
-                root_fn_id: descriptor.root_fn_id.0,
                 functions: group.function_ids.len() as u64,
             },
             &metadata! {
                 module_key: module_key.clone(),
-                owner_module: descriptor.owner_module.clone(),
-                fn_name: descriptor.name.clone(),
+                owner_module: descriptor.source.owner_module.clone(),
+                fn_name: descriptor.qualified_name(),
             },
         );
         return Ok(());
@@ -1086,13 +987,12 @@ fn lower_source_fn_group<T: Types<Ty = Ty>>(
         &["fz", "compiler", "fn_group_lowered"],
         &measurements! {
             fn_group_id: descriptor.id.0,
-            root_fn_id: descriptor.root_fn_id.0,
             functions: group.function_ids.len() as u64,
         },
         &metadata! {
             module_key: module_key,
-            owner_module: descriptor.owner_module.clone(),
-            fn_name: descriptor.name.clone(),
+            owner_module: descriptor.source.owner_module.clone(),
+            fn_name: descriptor.qualified_name(),
         },
     );
     compiler.record_lowered_group(root_source, group);
@@ -1116,6 +1016,50 @@ pub fn lower_program_with_compiler<T: Types<Ty = Ty>>(
     t: &mut T,
     prog: &Program,
     tel: &dyn Telemetry,
+) -> Result<Module, LowerError> {
+    if let Some(root_source) = root_source {
+        let (prelude, _) = parse_runtime_prelude(compiler, t, tel);
+        let runtime_entry_keys = compiler.runtime_entry_fn_keys(root_source);
+        let root_entry_keys = (!runtime_entry_keys.is_empty()).then_some(&runtime_entry_keys);
+        let fallback_to_all_when_no_entries = !matches!(
+            compiler.module(root_source).origin,
+            crate::compiler::ModuleOrigin::EmbeddedRuntime
+        );
+        let mut selected_fn_keys = select_initial_source_fn_keys(
+            &prelude.items,
+            &prog.items,
+            root_entry_keys,
+            fallback_to_all_when_no_entries,
+        );
+        loop {
+            let module = lower_program_once_with_compiler_selection(
+                compiler,
+                Some(root_source),
+                t,
+                prog,
+                tel,
+                Some(&selected_fn_keys),
+            )?;
+            let requested = discover_requested_source_fn_keys(compiler, root_source, &module, tel)?;
+            let mut changed = false;
+            for key in requested {
+                changed |= selected_fn_keys.insert(key);
+            }
+            if !changed {
+                return Ok(module);
+            }
+        }
+    }
+    lower_program_once_with_compiler_selection(compiler, None, t, prog, tel, None)
+}
+
+fn lower_program_once_with_compiler_selection<T: Types<Ty = Ty>>(
+    compiler: &mut CompilerWorld,
+    root_source: Option<ModuleId>,
+    t: &mut T,
+    prog: &Program,
+    tel: &dyn Telemetry,
+    explicit_selection: Option<&HashSet<FnKey>>,
 ) -> Result<Module, LowerError> {
     let mut ctx = LowerCtx::new();
     ctx.struct_schemas.extend(
@@ -1155,11 +1099,9 @@ pub fn lower_program_with_compiler<T: Types<Ty = Ty>>(
         .cloned()
         .chain(prog.items.iter().cloned())
         .collect();
-    let selected_fn_keys = if root_source.is_some() {
-        select_reachable_fn_keys(&all_items, &ctx.prelude_imports)
-    } else {
-        collect_lowerable_fn_keys(&all_items)
-    };
+    let selected_fn_keys = explicit_selection
+        .cloned()
+        .unwrap_or_else(|| collect_lowerable_fn_keys(&all_items));
 
     // Snapshot user FnDefs (non-extern, non-prelude) by (name, arity) for
     // guard helpers. Receive guards lower helper calls through Matcher
@@ -1225,6 +1167,16 @@ pub fn lower_program_with_compiler<T: Types<Ty = Ty>>(
     }
     ctx.prelude_fn_id_cutoff = ctx.mb.next_fn_id();
 
+    if let Some(root_source) = root_source {
+        assign_compiler_source_root_fn_ids(
+            compiler,
+            root_source,
+            &all_items[runtime_item_count..],
+            &mut ctx,
+            tel,
+        )?;
+    }
+
     for item in all_items.iter().skip(runtime_item_count) {
         match item.as_ref() {
             Item::Fn(fn_def) => {
@@ -1247,7 +1199,7 @@ pub fn lower_program_with_compiler<T: Types<Ty = Ty>>(
                         ret_descr,
                     });
                     ctx.externs.insert(fn_def.name.clone(), eid);
-                } else {
+                } else if !ctx.fns.contains_key(&(fn_def.name.clone(), fn_arity(fn_def))) {
                     let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
                     let id = ctx.mb.fresh_fn_id();
                     ctx.fns.insert((fn_def.name.clone(), arity), id);
@@ -1290,6 +1242,19 @@ pub fn lower_program_with_compiler<T: Types<Ty = Ty>>(
                 });
             }
         }
+    }
+    if let Some(root_source) = root_source {
+        compiler
+            .record_actual_fn_groups(root_source, &ctx.fns, tel)
+            .expect("compiler source fn-group mapping should succeed after body surface collection");
+        reserve_cached_source_fn_ids(
+            compiler,
+            root_source,
+            &all_items[runtime_item_count..],
+            &selected_fn_keys,
+            &mut ctx,
+            tel,
+        );
     }
 
     // Second pass: lower user fn bodies. (Prelude bodies were already

@@ -7,15 +7,33 @@
 use crate::fz_ir::{FnId, Module};
 use crate::types::{Ty, Types};
 
+pub(crate) fn entry_seed_fn_ids(m: &Module) -> Vec<FnId> {
+    m.fns
+        .iter()
+        .find(|f| f.name == "main")
+        .map(|main| vec![main.id])
+        .unwrap_or_default()
+}
+
+pub(crate) fn entry_seeds_for_fn_ids<T: Types<Ty = Ty>>(
+    t: &mut T,
+    m: &Module,
+    entry_fn_ids: &[FnId],
+) -> Vec<(FnId, Vec<Ty>)> {
+    let any = t.any();
+    entry_fn_ids
+        .iter()
+        .filter_map(|fn_id| {
+            let fn_ir = m.fn_by_id(*fn_id);
+            let n_params = fn_ir.block(fn_ir.entry).params.len();
+            Some((*fn_id, t.repeat(any.clone(), n_params)))
+        })
+        .collect()
+}
+
 /// Root set for planner discovery: `main` seeded with an any-keyed arg vector.
 pub(crate) fn entry_seeds<T: Types<Ty = Ty>>(t: &mut T, m: &Module) -> Vec<(FnId, Vec<Ty>)> {
-    let mut seeds = Vec::new();
-    if let Some(main) = m.fns.iter().find(|f| f.name == "main") {
-        let n_params = main.block(main.entry).params.len();
-        let any = t.any();
-        seeds.push((main.id, t.repeat(any, n_params)));
-    }
-    seeds
+    entry_seeds_for_fn_ids(t, m, &entry_seed_fn_ids(m))
 }
 
 #[cfg(test)]

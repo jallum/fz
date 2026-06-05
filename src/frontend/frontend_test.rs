@@ -265,12 +265,29 @@ fn main(), do: helper(41)
         "only reachable source fn groups should lower"
     );
 
+    let requested_groups = capture
+        .find(&["fz", "compiler", "fn_group_requested"])
+        .into_iter()
+        .filter(|ev| captured_str(ev, "module_key").ends_with("fn-groups.fz"))
+        .collect::<Vec<_>>();
+    assert_eq!(requested_groups.len(), 2, "helper should be requested once per compile");
+    assert!(
+        requested_groups
+            .iter()
+            .all(|ev| captured_str(ev, "fn_name") == "helper"),
+        "only the live non-entry helper should be requested reactively"
+    );
+
     let cache_hits = capture
         .find(&["fz", "compiler", "fn_group_cache_hit"])
         .into_iter()
         .filter(|ev| captured_str(ev, "module_key").ends_with("fn-groups.fz"))
         .collect::<Vec<_>>();
-    assert_eq!(cache_hits.len(), 2, "repeat compile should hit both reachable source fn groups");
+    assert_eq!(
+        cache_hits.len(),
+        4,
+        "reactive recompiles should reuse main while helper is discovered, then reuse both groups on repeat compile"
+    );
     assert!(
         cache_hits
             .iter()
@@ -491,7 +508,10 @@ end
         .into_iter()
         .filter(|ev| captured_str(ev, "module_key") == "Macros")
         .count();
-    assert_eq!(body_surfaces, 1, "macro provider should build one body surface before runtime lowering exists");
+    assert_eq!(
+        body_surfaces, 1,
+        "macro provider should build one body surface before runtime lowering exists"
+    );
     assert!(
         capture
             .find(&["fz", "compiler", "phase"])

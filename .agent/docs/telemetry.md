@@ -198,7 +198,7 @@ module through the world the way we intended?" before loader/resolver work lands
 - `fz.compiler.fn_group_discovered` — the compiler registered one executable
   function-group descriptor for a module body surface without lowering the
   group's IR yet. Measurements: `module_id`, `file_id`, `fn_group_id`,
-  `root_fn_id`, `arity`. Metadata: `module_key`, `module_key_kind`,
+  `arity`. Metadata: `module_key`, `module_key_kind`,
   `module_origin`, `owner_module`, `fn_name`, `visibility`.
 - `fz.compiler.body_surface_ready` — the compiler collected the body-free
   executable surface for one module: stable function-group descriptors and
@@ -207,8 +207,13 @@ module through the world the way we intended?" before loader/resolver work lands
   `owner_module`, `groups`, `parse_kind`.
 - `fz.compiler.fn_group_lowered` — one source-backed function-group emitted IR
   exactly once into the compiler-owned cache. Measurements: `fn_group_id`,
-  `root_fn_id`, `functions`. Metadata: `module_key`, `owner_module`,
+  `functions`. Metadata: `module_key`, `owner_module`,
   `fn_name`.
+- `fz.compiler.fn_group_requested` — a live lowered body referenced a source
+  function-group that was not yet present in the executable surface, so the
+  compiler requested it for the next reactive lowering pass. Measurements:
+  `fn_group_id`, `loaded_functions`.
+  Metadata: `module_key`, `owner_module`, `fn_name`.
 - `fz.compiler.fn_group_cache_hit` — a later lowering request reused the cached
   IR for one source-backed function-group instead of re-emitting it.
   Measurements mirror `fn_group_lowered`. Metadata mirrors
@@ -235,13 +240,17 @@ module through the world the way we intended?" before loader/resolver work lands
 - `fz.compiler.runtime_module_reachable` — one runtime-library module became
   live for execution. Measurements: `module_id`, `file_id`. Metadata:
   `module_key`, `module_key_kind`, `module_origin`, `reason`, and
-  `from_module` (empty when the module was seeded directly).
+  `from_module` (empty when the module was seeded directly). Current reasons
+  include exact `planned_external_target` roots, `runtime_import`,
+  `runtime_implementation_dependency`, and the narrower protocol fallback
+  `runtime_protocol_impl_provider`.
 - `fz.compiler.runtime_lowered` — a live runtime-library module was lowered for
-  execution. Measurements: `module_id`, `file_id`, `functions`, `units`.
+  execution. Measurements: `module_id`, `file_id`, `functions`, `groups`,
+  `units`.
   Metadata: module identity.
 - `fz.compiler.runtime_planned` — a live runtime-library module was planned for
-  execution. Measurements: `module_id`, `file_id`, `planned_specs`, `units`.
-  Metadata: module identity.
+  execution. Measurements: `module_id`, `file_id`, `planned_specs`, `groups`,
+  `units`. Metadata: module identity.
 
 ## Resolver Contract Events
 
