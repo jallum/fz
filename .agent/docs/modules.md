@@ -64,8 +64,22 @@ and one per root protocol namespace.
 - optional docs
 - deterministic `fingerprint_inputs`
 
-The interface is an in-memory contract. It is extracted from source each time a
-module is parsed and cached by `Compiler`.
+The interface is an in-memory contract. The compiler records it as a
+compiler-owned module-contract fact on the named module record; it is not a
+parallel resolver blob that later stages need to carry around separately.
+
+Visible imported callables follow the same rule. A module record owns alias
+facts such as:
+
+```text
+name:   "add"
+arity:  2
+target: Mfa(Math, add, 2)
+origin: imported-from Math
+```
+
+That keeps "what names are visible here?" on compiler-owned module state
+instead of reconstructing it from lowered IR or local resolve scratch.
 
 `validate_public_export_specs` is still the strict boundary rule: every public
 export must have an explicit `@spec`.

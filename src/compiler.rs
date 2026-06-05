@@ -460,6 +460,47 @@ impl RuntimeReachabilitySeed {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ModuleContractRecord {
+    pub(crate) interface: ModuleInterface,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum VisibleCallableAliasOrigin {
+    SourceDeclaration,
+    Imported {
+        from_module: ModuleName,
+    },
+    PreludeImport {
+        from_module: ModuleName,
+    },
+}
+
+impl VisibleCallableAliasOrigin {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::SourceDeclaration => "source_declaration",
+            Self::Imported { .. } => "imported",
+            Self::PreludeImport { .. } => "prelude_import",
+        }
+    }
+
+    fn from_module(&self) -> Option<&ModuleName> {
+        match self {
+            Self::SourceDeclaration => None,
+            Self::Imported { from_module } | Self::PreludeImport { from_module } => Some(from_module),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VisibleCallableAlias {
+    pub(crate) name: String,
+    pub(crate) arity: usize,
+    pub(crate) target: Mfa,
+    pub(crate) origin: VisibleCallableAliasOrigin,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ModuleRecord {
     pub(crate) id: ModuleId,
@@ -475,7 +516,8 @@ pub(crate) struct ModuleRecord {
     pub(crate) runtime_lowered_functions: Option<usize>,
     pub(crate) runtime_planned_specs: Option<usize>,
     pub(crate) interfaces: Option<BTreeMap<ModuleName, ModuleInterface>>,
-    pub(crate) visible_callables: HashMap<(String, usize), Mfa>,
+    pub(crate) contract: Option<ModuleContractRecord>,
+    pub(crate) visible_callables: HashMap<(String, usize), VisibleCallableAlias>,
     pub(crate) macro_exports: Option<HashSet<(String, usize)>>,
     pub(crate) macro_surface: Option<ModuleMacroSurface>,
     pub(crate) prepared_prelude: Option<PreparedPrelude>,
@@ -703,7 +745,23 @@ impl CompilerWorld {
         self.module(module_id)
             .visible_callables
             .get(&(name.to_string(), arity))
-            .cloned()
+            .map(|alias| alias.target.clone())
+    }
+
+    pub(crate) fn visible_callable_aliases(&self, module_id: ModuleId) -> Vec<VisibleCallableAlias> {
+        let mut aliases = self.module(module_id).visible_callables.values().cloned().collect::<Vec<_>>();
+        aliases.sort_by(|left, right| {
+            (&left.name, left.arity, self.render_mfa(&left.target)).cmp(&(
+                &right.name,
+                right.arity,
+                self.render_mfa(&right.target),
+            ))
+        });
+        aliases
+    }
+
+    pub(crate) fn module_contract(&self, module_id: ModuleId) -> Option<&ModuleContractRecord> {
+        self.module(module_id).contract.as_ref()
     }
 
     pub(crate) fn function_declared_interface_specs(&self, mfa: &Mfa) -> Option<&[InterfaceSpec]> {
@@ -753,26 +811,44 @@ impl CompilerWorld {
         name: String,
         arity: usize,
         target: Mfa,
+        origin: VisibleCallableAliasOrigin,
     ) {
-        self.record_visible_callable(module_id, name, arity, target);
+        self.record_visible_callable(module_id, name, arity, target, origin);
     }
 
-    fn record_visible_callable(&mut self, module_id: ModuleId, name: String, arity: usize, target: Mfa) {
+    fn record_visible_callable(
+        &mut self,
+        module_id: ModuleId,
+        name: String,
+        arity: usize,
+        target: Mfa,
+        origin: VisibleCallableAliasOrigin,
+    ) {
         let key = (name, arity);
         if let Some(existing) = self.modules[module_id.0 as usize].visible_callables.get(&key) {
             assert_eq!(
-                existing,
-                &target,
-                "visible callable conflict for module `{}` alias `{}/{}': existing target `{}`, new target `{}`",
+                (existing.target.clone(), existing.origin.clone()),
+                (target.clone(), origin.clone()),
+                "visible callable conflict for module `{}` alias `{}/{}': existing target `{}` ({}), new target `{}` ({})",
                 self.module_key_render(module_id),
                 key.0,
                 key.1,
-                self.render_mfa(existing),
-                self.render_mfa(&target)
+                self.render_mfa(&existing.target),
+                existing.origin.kind(),
+                self.render_mfa(&target),
+                origin.kind(),
             );
             return;
         }
-        self.modules[module_id.0 as usize].visible_callables.insert(key, target);
+        self.modules[module_id.0 as usize].visible_callables.insert(
+            key.clone(),
+            VisibleCallableAlias {
+                name: key.0.clone(),
+                arity: key.1,
+                target,
+                origin,
+            },
+        );
     }
 
     fn record_function_source_specs(&mut self, mfa: &Mfa, specs: &[SpecDecl]) {
@@ -829,7 +905,7 @@ impl CompilerWorld {
                 continue;
             }
             for target in module.visible_callables.values() {
-                let mfa = target.clone();
+                let mfa = target.target.clone();
                 let Some(fn_id) = self.fn_id_for_mfa(&mfa) else {
                     continue;
                 };
@@ -1505,6 +1581,9 @@ impl CompilerWorld {
                 name.clone(),
                 *arity,
                 Mfa::new(target_module_id, function_name.to_string(), *arity),
+                VisibleCallableAliasOrigin::PreludeImport {
+                    from_module: module_name,
+                },
             );
         }
         let module = self.module(module_id).clone();
@@ -1561,6 +1640,7 @@ impl CompilerWorld {
                         local_name,
                         group.source.arity,
                         group.source.clone(),
+                        VisibleCallableAliasOrigin::SourceDeclaration,
                     );
                 }
                 tel.execute(
@@ -2201,6 +2281,16 @@ impl CompilerWorld {
                     module.key.render()
                 )));
             }
+            if matches!(module.key, ModuleKey::Named(_))
+                && module.state.covers(ModuleState::InterfaceReady)
+                && module.origin != ModuleOrigin::PrimitivePrelude
+                && module.contract.is_none()
+            {
+                return Err(CompilerInvariantError::new(format!(
+                    "named module `{}` is interface_ready without declared contract",
+                    module.key.render()
+                )));
+            }
             if let Some(surface) = &module.body_surface {
                 if surface.owner_module_id != module.id {
                     return Err(CompilerInvariantError::new(format!(
@@ -2517,6 +2607,7 @@ impl CompilerWorld {
             runtime_lowered_functions: None,
             runtime_planned_specs: None,
             interfaces: None,
+            contract: None,
             visible_callables: HashMap::new(),
             macro_exports: None,
             macro_surface: None,
@@ -2549,6 +2640,9 @@ impl CompilerWorld {
         let Some(interface) = interfaces.get(&module_name) else {
             return;
         };
+        self.modules[module_id.0 as usize].contract = Some(ModuleContractRecord {
+            interface: interface.clone(),
+        });
         for export in &interface.exports {
             let mfa = Mfa::new(module_id, export.name.clone(), export.arity);
             self.record_function_interface_specs(&mfa, &export.specs);

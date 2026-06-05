@@ -1,5 +1,5 @@
 use super::*;
-use crate::compiler::{Compiler, FunctionKey, FunctionKind, ModuleOrigin, ModuleState};
+use crate::compiler::{Compiler, FunctionKey, FunctionKind, ModuleOrigin, ModuleState, VisibleCallableAliasOrigin};
 use crate::diag::codes;
 use crate::diag::diagnostic::Severity;
 use crate::fz_ir::{FnCategory, FnId, Term};
@@ -172,8 +172,29 @@ end
     let math_id = compiler
         .module_id_for_name(&math)
         .expect("Math should resolve through a compiler-owned module record");
+    let user = ModuleName::from_segments(vec!["User".to_string()]);
+    let user_id = compiler
+        .module_id_for_name(&user)
+        .expect("User should resolve through a compiler-owned module record");
     assert_eq!(compiler.module(math_id).origin, ModuleOrigin::Filesystem);
     assert_eq!(compiler.module(math_id).state, ModuleState::InterfaceReady);
+    let math_contract = compiler
+        .world()
+        .module_contract(math_id)
+        .expect("Math contract should live on the compiler-owned module record");
+    assert_eq!(math_contract.interface.name, math);
+    let user_aliases = compiler.world().visible_callable_aliases(user_id);
+    let add_alias = user_aliases
+        .iter()
+        .find(|alias| alias.name == "add" && alias.arity == 2)
+        .expect("User should carry an imported alias for add/2");
+    assert_eq!(add_alias.target, Mfa::new(math_id, "add", 2));
+    assert_eq!(
+        add_alias.origin,
+        VisibleCallableAliasOrigin::Imported {
+            from_module: ModuleName::from_segments(vec!["Math".to_string()]),
+        }
+    );
 
     let requests = capture.find(&["fz", "resolve", "module_contract_requested"]);
     assert!(

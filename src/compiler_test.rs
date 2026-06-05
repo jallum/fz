@@ -284,6 +284,19 @@ fn primitive_prelude_registers_named_operator_functions_in_compiler_world() {
             visible, mfa,
             "primitive prelude alias {name}/{arity} should point at Kernel.{name}/{arity}"
         );
+        let alias = compiler
+            .world
+            .visible_callable_aliases(prelude_id)
+            .into_iter()
+            .find(|alias| alias.name == name && alias.arity == arity)
+            .unwrap_or_else(|| panic!("primitive prelude should retain alias metadata for {name}/{arity}"));
+        assert_eq!(
+            alias.origin,
+            crate::compiler::VisibleCallableAliasOrigin::PreludeImport {
+                from_module: kernel.clone(),
+            },
+            "primitive prelude alias provenance should point back at Kernel.{name}/{arity}"
+        );
     }
     let plus_specs = compiler
         .world

@@ -22,7 +22,7 @@
 //! diagnostic source for "this call resolves to …".
 
 use crate::ast::*;
-use crate::compiler::{Compiler, CompilerWorld, ModuleId, ModuleOrigin};
+use crate::compiler::{Compiler, CompilerWorld, ModuleId, ModuleOrigin, VisibleCallableAliasOrigin};
 use crate::diag::{Diagnostic, Span, codes};
 use crate::frontend::protocols::{
     ImplTarget, PROTOCOL_ELEM_VAR, ProtocolCallbackFact, ProtocolDecl, ProtocolImplFact, ProtocolImplKey,
@@ -1940,6 +1940,9 @@ fn record_imported_visible_callables(
             name.clone(),
             *arity,
             Mfa::new(target_module_id, name.clone(), *arity),
+            VisibleCallableAliasOrigin::Imported {
+                from_module: binding.module.clone(),
+            },
         );
     }
 }
