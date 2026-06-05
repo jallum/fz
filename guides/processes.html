@@ -73,12 +73,12 @@ process running it, and returns the new process's <strong>pid</strong> —
 an integer that identifies it.</p>
 
 <pre><span class="kw">fn</span> <span class="fn">child</span>() <span class="kw">do</span>
-  <span class="fn">print</span>(<span class="atm">:hello</span>)
+  <span class="fn">dbg</span>(<span class="atm">:hello</span>)
 <span class="kw">end</span>
 
 <span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
   pid = <span class="fn">spawn</span>(<span class="fn">child</span>)
-  <span class="fn">print</span>(pid)
+  <span class="fn">dbg</span>(pid)
 <span class="kw">end</span></pre>
 
 <p>Two processes run concurrently here: <code>main</code> and the new
@@ -93,12 +93,12 @@ to run next.</p>
 variables from its surrounding scope, so:</p>
 
 <pre><span class="kw">fn</span> <span class="fn">parent</span>(tag) <span class="kw">do</span>
-  <span class="fn">spawn</span>(<span class="kw">fn</span> () -&gt; <span class="fn">send</span>(<span class="num">1</span>, tag))
-  <span class="fn">receive</span>()
+  <span class="fn">spawn</span>(<span class="kw">fn</span> () -&gt; <span class="fn">send</span>(<span class="num">1</span>, tag) <span class="kw">end</span>)
+  <span class="fn">receive</span> <span class="kw">do</span> msg -&gt; msg <span class="kw">end</span>
 <span class="kw">end</span>
 
 <span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
-  <span class="fn">print</span>(<span class="fn">parent</span>(<span class="num">99</span>))
+  <span class="fn">dbg</span>(<span class="fn">parent</span>(<span class="num">99</span>))
 <span class="kw">end</span></pre>
 
 <p>The lambda captures <code>tag</code> by value. Each captured value is
@@ -123,7 +123,7 @@ of aspirational.
   <li>A top-level fn reference: <code>spawn(worker)</code> (where
       <code>fn worker(), do: …</code> exists).</li>
   <li>An explicit reference: <code>spawn(&amp;worker/0)</code>.</li>
-  <li>A lambda: <code>spawn(fn () -&gt; do_thing(x, y))</code>.</li>
+  <li>A lambda: <code>spawn(fn () -&gt; do_thing(x, y) end)</code>.</li>
 </ul>
 
 <p>If the function returns, the process exits. If it doesn't return — it
@@ -138,7 +138,7 @@ pid via <code>self()</code>:</p>
 
 <pre><span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
   me = <span class="fn">self</span>()
-  <span class="fn">print</span>(me)        <span class="com"># prints 1 (the first process)</span>
+  <span class="fn">dbg</span>(me)        <span class="com"># prints 1 (the first process)</span>
 <span class="kw">end</span></pre>
 
 <p>The very first process (the one that runs <code>main</code>) gets
@@ -159,11 +159,11 @@ so the child can send back:</p>
 
 <span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
   home = <span class="fn">self</span>()
-  <span class="fn">spawn</span>(<span class="kw">fn</span> () -&gt; <span class="fn">worker</span>(home))
+  <span class="fn">spawn</span>(<span class="kw">fn</span> () -&gt; <span class="fn">worker</span>(home) <span class="kw">end</span>)
   reply = <span class="fn">receive</span> <span class="kw">do</span>
     msg -&gt; msg
   <span class="kw">end</span>
-  <span class="fn">print</span>(reply)
+  <span class="fn">dbg</span>(reply)
 <span class="kw">end</span></pre>
 
 <p><code>main</code> tells the child where to send the answer. The child
@@ -212,7 +212,7 @@ arrives.</p>
   msg = <span class="fn">receive</span> <span class="kw">do</span>
     x -&gt; x
   <span class="kw">end</span>
-  <span class="fn">print</span>(msg)
+  <span class="fn">dbg</span>(msg)
 <span class="kw">end</span></pre>
 
 <p>If <code>main</code>'s mailbox is empty, the call blocks. As soon as
@@ -234,14 +234,14 @@ binds the pattern's variables, and runs the matching body.</p>
 
 <pre>val = <span class="kw">receive do</span>
   {<span class="atm">:ok</span>, v}    -&gt; v
-  {<span class="atm">:error</span>, e} -&gt; <span class="fn">print</span>(e); <span class="atm">:failed</span>
+  {<span class="atm">:error</span>, e} -&gt; <span class="fn">dbg</span>(e); <span class="atm">:failed</span>
 <span class="kw">end</span></pre>
 
 <p>If the mailbox holds <code>{:ok, 17}</code>, the first clause matches,
 <code>v</code> binds to <code>17</code>, and <code>val</code> becomes
 <code>17</code>. If the mailbox holds <code>{:error, :timeout}</code>,
 the second clause matches, <code>e</code> binds to <code>:timeout</code>,
-<code>print</code> fires, and <code>val</code> becomes <code>:failed</code>.</p>
+<code>dbg</code> fires, and <code>val</code> becomes <code>:failed</code>.</p>
 
 <p>If the mailbox holds <code>:something_else</code>, <em>neither clause
 matches</em>. The message stays in the mailbox; the process blocks. As
@@ -411,7 +411,7 @@ can't be mistaken for new ones.</p>
     {<span class="atm">:reply</span>, ^ref_a, v} -&gt; v
   <span class="kw">end</span>
 
-  <span class="fn">print</span>({val_a, val_b})
+  <span class="fn">dbg</span>({val_a, val_b})
 <span class="kw">end</span></pre>
 
 <p>Output:</p>
@@ -454,7 +454,7 @@ stream.</p>
 <pre><span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
   xs = [<span class="num">1</span>, <span class="num">2</span>]
   stats = Process.heap_alloc_stats()
-  <span class="fn">print</span>(stats[<span class="atm">:list_cons_allocs</span>])
+  <span class="fn">dbg</span>(stats[<span class="atm">:list_cons_allocs</span>])
 <span class="kw">end</span></pre>
 
 <p><code>Process.heap_alloc_stats()</code> returns a map snapshot of allocation

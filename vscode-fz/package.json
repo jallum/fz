@@ -1,0 +1,64 @@
+{
+  "name": "vscode-fz",
+  "displayName": "FZ",
+  "description": "Syntax highlighting and editor defaults for the FZ language.",
+  "publisher": "j5n",
+  "version": "0.0.1",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.99.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "fz",
+    "syntax highlighting",
+    "textmate"
+  ],
+  "activationEvents": [
+    "onLanguage:fz"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "fz",
+        "aliases": [
+          "FZ",
+          "fz"
+        ],
+        "extensions": [
+          ".fz"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "fz",
+        "scopeName": "source.elixir",
+        "path": "./syntaxes/fz.tmLanguage.json"
+      }
+    ],
+    "configurationDefaults": {
+      "[fz]": {
+        "editor.insertSpaces": true,
+        "editor.tabSize": 2,
+        "editor.wordBasedSuggestions": "off",
+        "editor.formatOnType": false,
+        "editor.trimAutoWhitespace": false,
+        "editor.snippetSuggestions": "inline",
+        "files.trimTrailingWhitespace": true,
+        "files.insertFinalNewline": true,
+        "files.trimFinalNewlines": true
+      }
+    }
+  },
+  "files": [
+    "extension.js",
+    "language-configuration.json",
+    "syntaxes/**",
+    "README.md"
+  ]
+}

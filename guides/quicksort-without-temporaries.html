@@ -74,7 +74,8 @@ callsite capability, then lower that capability mechanically in native codegen.
 
 <h2>What fz actually does on this program</h2>
 
-<p>Here is the code from the pinned fixture in our test library, including its driver:</p>
+<p>Here is the program from the pinned fixture in our test library, with its
+driver (the fixture uses <code>dbg</code> to print):</p>
 
 <pre><span class="kw">fn</span> <span class="fn">append</span>([], ys), do: ys
 <span class="kw">fn</span> <span class="fn">append</span>([h | t], ys), do: [h | <span class="fn">append</span>(t, ys)]
@@ -91,10 +92,10 @@ callsite capability, then lower that capability mechanically in native codegen.
 
 <span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
   sorted = <span class="fn">qsort</span>([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5])
-  <span class="fn">print</span>(sorted)
+  <span class="fn">dbg</span>(sorted)
 
   stats = <span class="fn">Process.heap_alloc_stats</span>()
-  <span class="fn">print</span>(stats)
+  <span class="fn">dbg</span>(stats)
 <span class="kw">end</span></pre>
 
 <p>An eleven-element input list. The reported allocation stats from this exact
@@ -142,15 +143,15 @@ the function's normal type signature. Possible answers include:</p>
   <li><code>TupleFields(2)</code> &mdash; the caller is going to destructure
       this pair immediately, so hand back two Tail-CC values, do not build a
       tuple.</li>
-  <li><code>ListTail(T)</code> &mdash; the caller already knows what the tail
-      of this list will be, so build the cons cells pointing at that tail
-      from the start.</li>
-  <li><code>tuple_fields(2, list_tail(T))</code> &mdash; both at once.</li>
+  <li><code>TupleFields(2)</code> composed with owned-cons reuse &mdash; the
+      same callsite can ask for two register-returned fields while the list
+      builder recycles input cells in place.</li>
 </ul>
 
-<p>That last one is the punchline. The labels <em>compose</em>. A function can
-be told "return two fields, and by the way one of those fields is a list whose
-eventual tail is already known." Codegen then emits exactly that shape.</p>
+<p>The two mechanisms <em>cooperate</em>. A producer can be told to return two
+fields directly in registers, while its recursive list builders construct
+their cons cells forward (tail-recursion-modulo-cons) and recycle owned input
+cells in place. Codegen emits exactly that shape.</p>
 
 <p>Applied to quicksort:</p>
 
@@ -158,11 +159,12 @@ eventual tail is already known." Codegen then emits exactly that shape.</p>
   <li><code>partition</code> is told its caller wants two fields, so it returns
       <code>lo</code> and <code>hi</code> directly as two Tail-CC values. No
       tuple is allocated.</li>
-  <li>The inner <code>qsort(hi)</code> is told its result is going to live in
-      front of the outer continuation's tail, so it builds its cons cells
-      pointing at that tail already. The outer <code>append</code> disappears
-      &mdash; there is nothing to append <em>to</em>, because the list was
-      built into its final position.</li>
+  <li>The list-producing recursions build their cons cells <em>forward</em>
+      (tail-recursion-modulo-cons) with an O(1) continuation, and owned-cons
+      reuse recycles input cells in place. The work the outer
+      <code>append</code> would have done &mdash; walking the low list and
+      re-allocating a copy with a new tail &mdash; collapses to that
+      forward build.</li>
   <li>The pivot cons cell <code>[p | ...]</code> is built directly in front of
       the sorted-high list, in the right place, once.</li>
 </ul>

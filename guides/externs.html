@@ -71,7 +71,7 @@ value." The compiler turns each call into the matching C-ABI invocation.
 
 <pre><span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
   pid = <span class="fn">getpid</span>()
-  <span class="fn">print</span>(pid)
+  <span class="fn">dbg</span>(pid)
 <span class="kw">end</span></pre>
 
 <p>fz emits a System V call to the C symbol <code>getpid</code>, receives an
@@ -239,13 +239,13 @@ represents. The return-side marshal class fills the gap.</p>
   fd = <span class="fn">libc::creat</span>(path, <span class="num">0o600</span>)
   rc = <span class="fn">libc::close</span>(fd)
   <span class="fn">libc::unlink</span>(path)
-  <span class="fn">print</span>(rc)         <span class="com"># prints 0 if close succeeded</span>
+  <span class="fn">dbg</span>(rc)         <span class="com"># prints 0 if close succeeded</span>
 <span class="kw">end</span></pre>
 
 <p>The C-ABI return value comes back in <code>rax</code> as a raw 64-bit
 integer. The <code>:: integer</code> return class marks that payload with
 the <code>INT</code> kind. You can write <code>rc == 0</code>, pass
-<code>rc</code> to <code>print</code>, store it in a list — it's a real fz
+<code>rc</code> to <code>dbg</code>, store it in a list — it's a real fz
 value.</p>
 
 <p>For C functions that return a pointer or some opaque bit pattern, use
@@ -306,7 +306,7 @@ It can be any fz function of the right shape:</p>
 
 <pre><span class="kw">fn</span> <span class="fn">close_and_log</span>(fd) <span class="kw">do</span>
   <span class="fn">libc::close</span>(fd)
-  <span class="fn">print</span>(<span class="atm">:closed</span>)
+  <span class="fn">dbg</span>(<span class="atm">:closed</span>)
 <span class="kw">end</span>
 
 handle = <span class="fn">make_resource</span>(fd, &amp;<span class="fn">close_and_log</span>/<span class="num">1</span>)</pre>
@@ -366,7 +366,7 @@ module that declared it.</p>
 
 <span class="kw">fn</span> <span class="fn">close_observable</span>(fd) <span class="kw">do</span>
   <span class="fn">libc::close</span>(fd)
-  <span class="fn">print</span>(<span class="atm">:dtor_closed</span>)
+  <span class="fn">dbg</span>(<span class="atm">:dtor_closed</span>)
 <span class="kw">end</span>
 
 <span class="kw">defmodule</span> <span class="ty">FileHandle</span> <span class="kw">do</span>
@@ -378,12 +378,12 @@ module that declared it.</p>
 <span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
   path = <span class="str">"/tmp/fz-x5m"</span>
   fd = <span class="fn">libc::creat</span>(path, <span class="num">0o644</span>)
-  <span class="fn">print</span>(<span class="atm">:opened</span>)
+  <span class="fn">dbg</span>(<span class="atm">:opened</span>)
   n = <span class="fn">libc::write</span>(fd, <span class="str">"hi\n"</span>, <span class="num">3</span>)
-  <span class="fn">print</span>(n)
+  <span class="fn">dbg</span>(n)
   _h = <span class="ty">FileHandle</span>.<span class="fn">from_fd</span>(fd)
   <span class="fn">libc::unlink</span>(path)
-  <span class="fn">print</span>(<span class="atm">:done</span>)
+  <span class="fn">dbg</span>(<span class="atm">:done</span>)
 <span class="kw">end</span></pre>
 
 <p>Output:</p>

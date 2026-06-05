@@ -32,13 +32,13 @@ impl Parser {
     /// binds tighter). Left-associative ops use `(n, n+1)`; right-associative
     /// ops use `(n+1, n)`. Two operators sit outside this table: `=` (match,
     /// Elixir level 100) is handled separately at min-bp 5, and the unary
-    /// prefixes `-`/`!`/`not` (Elixir 300) bind tightest via `parse_bp(UNARY_BP)`.
+    /// prefixes `-`/`not` (Elixir 300) bind tightest via `parse_bp(UNARY_BP)`.
     /// `not in` is two tokens, resolved directly in `parse_bp`.
     pub(super) fn infix_bp(t: &Tok) -> Option<(u8, u8, BinOp)> {
         Some(match t {
-            Tok::OrOr => (20, 21, BinOp::Or),    // Elixir 120
-            Tok::AndAnd => (30, 31, BinOp::And), // Elixir 130
-            Tok::EqEq => (40, 41, BinOp::Eq),    // Elixir 140
+            Tok::Or => (20, 21, BinOp::Or),   // Elixir 120
+            Tok::And => (30, 31, BinOp::And), // Elixir 130
+            Tok::EqEq => (40, 41, BinOp::Eq), // Elixir 140
             Tok::NotEq => (40, 41, BinOp::Neq),
             Tok::Lt => (50, 51, BinOp::Lt), // Elixir 150
             Tok::LtEq => (50, 51, BinOp::LtEq),
@@ -407,11 +407,6 @@ impl Parser {
                 self.bump();
                 let e = self.parse_bp(UNARY_BP)?;
                 Expr::UnOp(UnOp::Neg, Box::new(e))
-            }
-            Tok::Bang => {
-                self.bump();
-                let e = self.parse_bp(UNARY_BP)?;
-                Expr::UnOp(UnOp::Not, Box::new(e))
             }
             Tok::Not => {
                 self.bump();

@@ -78,8 +78,8 @@ defmodule Range do
   fnp done?(last, step, current) when step > 0, do: current > last
   fnp done?(last, _step, current), do: current < last
 
-  fnp contains?(first, last, step, value) when step > 0, do: value >= first && value <= last
-  fnp contains?(first, last, _step, value), do: value <= first && value >= last
+  fnp contains?(first, last, step, value) when step > 0, do: value >= first and value <= last
+  fnp contains?(first, last, _step, value), do: value <= first and value >= last
 
   defimpl Enumerable, for: Range do
     fn reduce(%Range{first: first, last: last, step: step}, acc, reducer) do
