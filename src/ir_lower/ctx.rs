@@ -59,6 +59,10 @@ pub struct LowerCtx {
     /// prelude spans (relative to runtime.fz bytes) don't overwrite
     /// user-program spans (which share the same per-fn Var numbering).
     pub prelude_fn_id_cutoff: u32,
+    /// Compiler-owned prelude lowering is now demand-driven, so numeric
+    /// ordering is no longer sufficient to classify every prelude-origin fn.
+    /// This set records all lowered prelude fn ids, including continuations.
+    pub prelude_fn_ids: HashSet<FnId>,
     /// Type env for compiler-known runtime types plus any root aliases still
     /// declared by the prelude. Downstream passes use it to resolve runtime
     /// names such as `pid`, `ref`, and `utf8`.
@@ -120,6 +124,7 @@ impl LowerCtx {
             fn_spans: HashMap::new(),
             extern_wrappers: HashMap::new(),
             prelude_fn_id_cutoff: 0,
+            prelude_fn_ids: HashSet::new(),
             prelude_type_env: ModuleTypeEnv::new(),
             combined_type_env: ModuleTypeEnv::new(),
             boundary_fns: HashSet::new(),

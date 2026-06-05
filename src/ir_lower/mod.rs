@@ -75,7 +75,7 @@ use crate::test_support::linked_runtime_graph_with_telemetry;
 use crate::type_expr::{ModuleTypeEnv, parse_type_expr, resolve_spec_decls};
 use crate::types::{Ty, TypeVarId, Types, check_brand_mint_visibility};
 use crate::{measurements, metadata};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::mem::take;
 use std::rc::Rc;
 
@@ -656,13 +656,19 @@ pub(crate) fn compute_current_function_correspondence(
     }
 }
 
-type FnKey = (String, usize);
+pub(crate) type FnKey = (String, usize);
+
+pub(crate) enum LoweringDemandResult<D, E> {
+    Finished,
+    Demands(Vec<D>),
+    Fatal(E),
+}
 
 fn fn_arity(fn_def: &FnDef) -> usize {
     fn_def.clauses.first().map(|clause| clause.params.len()).unwrap_or(0)
 }
 
-fn collect_lowerable_fn_keys(items: &[Rc<Item>]) -> HashSet<FnKey> {
+pub(crate) fn collect_lowerable_fn_keys(items: &[Rc<Item>]) -> HashSet<FnKey> {
     items
         .iter()
         .filter_map(|item| match item.as_ref() {
@@ -674,7 +680,7 @@ fn collect_lowerable_fn_keys(items: &[Rc<Item>]) -> HashSet<FnKey> {
         .collect()
 }
 
-fn collect_public_fn_keys(items: &[Rc<Item>]) -> HashSet<FnKey> {
+pub(crate) fn collect_public_fn_keys(items: &[Rc<Item>]) -> HashSet<FnKey> {
     items
         .iter()
         .filter_map(|item| match item.as_ref() {
@@ -686,7 +692,7 @@ fn collect_public_fn_keys(items: &[Rc<Item>]) -> HashSet<FnKey> {
         .collect()
 }
 
-fn select_entry_fn_keys(items: &[Rc<Item>]) -> HashSet<FnKey> {
+pub(crate) fn select_entry_fn_keys(items: &[Rc<Item>]) -> HashSet<FnKey> {
     items
         .iter()
         .filter_map(|item| match item.as_ref() {
@@ -702,7 +708,10 @@ fn select_entry_fn_keys(items: &[Rc<Item>]) -> HashSet<FnKey> {
         .collect()
 }
 
-fn select_initial_root_fn_keys(user_items: &[Rc<Item>], root_entry_keys: Option<&HashSet<FnKey>>) -> HashSet<FnKey> {
+pub(crate) fn select_initial_root_fn_keys(
+    user_items: &[Rc<Item>],
+    root_entry_keys: Option<&HashSet<FnKey>>,
+) -> HashSet<FnKey> {
     if let Some(root_entry_keys) = root_entry_keys
         && !root_entry_keys.is_empty()
     {
@@ -1069,53 +1078,23 @@ fn lower_source_fn_group<T: Types<Ty = Ty>>(
     Ok(())
 }
 
-/// Lower a resolved `Program` to its fz-IR `Module`.
-///
-/// The single public entry. Telemetry is threaded unconditionally so tests and
-/// operators observe the same lowering surface; pass `NullTelemetry` to silence
-/// it. The atom table built during lowering is folded into `module.atom_names`,
-/// so the `Module` is the complete result — there is no second return value.
-pub fn lower_program<T: Types<Ty = Ty>>(t: &mut T, prog: &Program, tel: &dyn Telemetry) -> Result<Module, LowerError> {
-    let mut compiler = Compiler::new();
-    lower_program_with_compiler(compiler.world_mut(), None, t, prog, tel)
+pub(crate) struct CompilerLoweringSession {
+    root_source: Option<ModuleId>,
+    ctx: LowerCtx,
+    prelude: Program,
+    all_items: Vec<Rc<Item>>,
+    prelude_fn_defs: HashMap<FnKey, Rc<FnDef>>,
+    user_fn_defs: HashMap<FnKey, Rc<FnDef>>,
+    fn_key_by_id: HashMap<FnId, FnKey>,
 }
 
-pub fn lower_program_with_compiler<T: Types<Ty = Ty>>(
+pub(crate) fn begin_compiler_lowering_session<T: Types<Ty = Ty>>(
     compiler: &mut CompilerWorld,
     root_source: Option<ModuleId>,
     t: &mut T,
     prog: &Program,
     tel: &dyn Telemetry,
-) -> Result<Module, LowerError> {
-    if let Some(root_source) = root_source
-        && !matches!(
-            compiler.module(root_source).origin,
-            crate::compiler::ModuleOrigin::PrimitivePrelude
-        )
-    {
-        let runtime_entry_keys = compiler.runtime_entry_fn_keys(root_source);
-        let root_entry_keys = (!runtime_entry_keys.is_empty()).then_some(&runtime_entry_keys);
-        let selected_fn_keys = select_initial_root_fn_keys(&prog.items, root_entry_keys);
-        return lower_program_once_with_compiler_selection(
-            compiler,
-            Some(root_source),
-            t,
-            prog,
-            tel,
-            Some(&selected_fn_keys),
-        );
-    }
-    lower_program_once_with_compiler_selection(compiler, None, t, prog, tel, None)
-}
-
-fn lower_program_once_with_compiler_selection<T: Types<Ty = Ty>>(
-    compiler: &mut CompilerWorld,
-    root_source: Option<ModuleId>,
-    t: &mut T,
-    prog: &Program,
-    tel: &dyn Telemetry,
-    explicit_selection: Option<&HashSet<FnKey>>,
-) -> Result<Module, LowerError> {
+) -> Result<CompilerLoweringSession, LowerError> {
     let mut ctx = LowerCtx::new();
     ctx.struct_schemas.extend(
         prog.structs
@@ -1126,9 +1105,6 @@ fn lower_program_once_with_compiler_selection<T: Types<Ty = Ty>>(
     ctx.register_protocol_registry(&prog.protocol_registry);
     ctx.register_interface_protocols(&prog.external_module_interfaces);
 
-    // Prepend the built-in runtime prelude. `runtime.fz` contributes root
-    // type aliases and imports; core prelude module sources (currently
-    // Kernel) contribute the implementations those imports expose.
     let (prelude, prelude_imports) = parse_runtime_prelude(compiler, t, tel);
     ctx.prelude_imports = prelude_imports;
     ctx.struct_schemas.extend(
@@ -1141,12 +1117,12 @@ fn lower_program_once_with_compiler_selection<T: Types<Ty = Ty>>(
     ctx.register_external_interfaces(&prelude.external_module_interfaces);
     let prelude_type_env = prelude.module_type_envs.get("").cloned().unwrap_or_default();
     ctx.prelude_type_env = prelude_type_env.clone();
-    // Build the combined type env: prelude aliases + all user-module aliases.
     let mut combined = prelude_type_env;
     for module_env in prog.module_type_envs.values() {
         combined.extend_env(module_env.clone());
     }
     ctx.combined_type_env = combined;
+
     let runtime_item_count = prelude.items.len();
     let all_items: Vec<Rc<Item>> = prelude
         .items
@@ -1156,16 +1132,9 @@ fn lower_program_once_with_compiler_selection<T: Types<Ty = Ty>>(
         .collect();
     let prelude_items = &all_items[..runtime_item_count];
     let user_items = &all_items[runtime_item_count..];
-    let selected_fn_keys = explicit_selection
-        .cloned()
-        .unwrap_or_else(|| collect_lowerable_fn_keys(user_items));
     let prelude_fn_defs = collect_lowerable_fn_defs(prelude_items);
     let user_fn_defs = collect_lowerable_fn_defs(user_items);
 
-    // Snapshot user FnDefs (non-extern, non-prelude) by (name, arity) for
-    // guard helpers. Receive guards lower helper calls through Matcher
-    // dispatch; non-receive dispatch still uses the AST fallback until
-    // the general matcher fallback is removed.
     for item in all_items.iter().skip(runtime_item_count) {
         if let Item::Fn(fn_def) = item.as_ref()
             && fn_def.extern_abi.is_none()
@@ -1177,10 +1146,6 @@ fn lower_program_once_with_compiler_selection<T: Types<Ty = Ty>>(
         }
     }
 
-    // Registration pass: assign ExternIds and FnIds in a single sweep.
-    // Prelude items come first; recording prelude_fn_id_cutoff after them
-    // lets build_source_info ignore prelude var spans (both halves restart
-    // Var numbering at 0, so user spans must not be overwritten).
     for item in all_items.iter().take(runtime_item_count) {
         if let Item::Fn(fn_def) = item.as_ref() {
             if fn_def.extern_abi.is_some() {
@@ -1206,22 +1171,8 @@ fn lower_program_once_with_compiler_selection<T: Types<Ty = Ty>>(
                 let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
                 let id = ctx.mb.fresh_fn_id();
                 ctx.fns.insert((fn_def.name.clone(), arity), id);
+                ctx.prelude_fn_ids.insert(id);
             }
-        }
-    }
-    // fz-qbg.2 — Lower prelude bodies *before* registering user FnIds.
-    // Prelude lowering may mint continuation fns (multi-clause prelude
-    // fns like `print` now route each clause through a
-    // body cont fn). Doing user registration AFTER prelude body lowering
-    // keeps user FnIds contiguous and all >= prelude_fn_id_cutoff —
-    // so `build_source_info` correctly excludes every prelude-origin
-    // FnId (source plus minted conts) from the user var-meta table.
-    for item in all_items.iter().take(runtime_item_count) {
-        if let Item::Fn(fn_def) = item.as_ref()
-            && fn_def.extern_abi.is_none()
-            && selected_fn_keys.contains(&(fn_def.name.clone(), fn_arity(fn_def)))
-        {
-            lower_fn(&mut ctx, t, fn_def, FnCategory::Prelude)?;
         }
     }
     ctx.prelude_fn_id_cutoff = ctx.mb.next_fn_id();
@@ -1256,8 +1207,6 @@ fn lower_program_once_with_compiler_selection<T: Types<Ty = Ty>>(
                     let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
                     let id = ctx.mb.fresh_fn_id();
                     ctx.fns.insert((fn_def.name.clone(), arity), id);
-                    // fz-jg5.12 (RED.9): a user fn with an @spec is a
-                    // reduction boundary — the spec is a signed contract.
                     if fn_def.attrs.iter().any(|a| matches!(a, Attribute::Spec(_))) {
                         ctx.boundary_fns.insert(id);
                     }
@@ -1301,33 +1250,58 @@ fn lower_program_once_with_compiler_selection<T: Types<Ty = Ty>>(
     }
 
     let fn_key_by_id = collect_source_fn_key_by_id(&all_items, &ctx);
-    let mut work_queue = selected_fn_keys.iter().cloned().collect::<VecDeque<_>>();
-    let mut lowered_fn_keys = HashSet::new();
-    while let Some(fn_key) = work_queue.pop_front() {
-        if !lowered_fn_keys.insert(fn_key.clone()) {
-            continue;
-        }
-        let before_fn_count = ctx.mb.fn_count();
-        if let Some(fn_def) = user_fn_defs.get(&fn_key) {
+    Ok(CompilerLoweringSession {
+        root_source,
+        ctx,
+        prelude,
+        all_items,
+        prelude_fn_defs,
+        user_fn_defs,
+        fn_key_by_id,
+    })
+}
+
+impl CompilerLoweringSession {
+    pub(crate) fn satisfy_fn_group_demand<T: Types<Ty = Ty>>(
+        &mut self,
+        compiler: &mut CompilerWorld,
+        t: &mut T,
+        tel: &dyn Telemetry,
+        fn_key: &FnKey,
+        satisfied: &HashSet<FnKey>,
+    ) -> LoweringDemandResult<FnKey, LowerError> {
+        let before_fn_count = self.ctx.mb.fn_count();
+        if let Some(fn_def) = self.user_fn_defs.get(fn_key) {
             let arity = fn_key.1;
-            if let Some(root_source) = root_source
+            if let Some(root_source) = self.root_source
                 && let Some(descriptor) = compiler
                     .source_fn_group_descriptor(root_source, &fn_def.name, arity, tel)
                     .expect("compiler source group lookup should succeed after parse")
             {
-                lower_source_fn_group(compiler, root_source, &descriptor, fn_def, &mut ctx, t, tel)?;
-            } else {
-                lower_fn(&mut ctx, t, fn_def, user_fn_category(fn_def))?;
+                if let Err(err) =
+                    lower_source_fn_group(compiler, root_source, &descriptor, fn_def, &mut self.ctx, t, tel)
+                {
+                    return LoweringDemandResult::Fatal(err);
+                }
+            } else if let Err(err) = lower_fn(&mut self.ctx, t, fn_def, user_fn_category(fn_def)) {
+                return LoweringDemandResult::Fatal(err);
             }
-        } else if let Some(fn_def) = prelude_fn_defs.get(&fn_key) {
-            lower_fn(&mut ctx, t, fn_def, FnCategory::Prelude)?;
+        } else if let Some(fn_def) = self.prelude_fn_defs.get(fn_key) {
+            if let Err(err) = lower_fn(&mut self.ctx, t, fn_def, FnCategory::Prelude) {
+                return LoweringDemandResult::Fatal(err);
+            }
         } else {
-            continue;
+            return LoweringDemandResult::Finished;
         }
 
-        let newly_lowered = ctx.mb.fn_slice_from(before_fn_count);
-        let requested = discover_requested_source_fn_keys(newly_lowered, &fn_key_by_id, &lowered_fn_keys);
-        if let Some(root_source) = root_source {
+        let newly_lowered = self.ctx.mb.fn_slice_from(before_fn_count);
+        if self.prelude_fn_defs.contains_key(fn_key) {
+            self.ctx
+                .prelude_fn_ids
+                .extend(newly_lowered.iter().map(|fn_ir| fn_ir.id));
+        }
+        let requested = discover_requested_source_fn_keys(newly_lowered, &self.fn_key_by_id, satisfied);
+        if let Some(root_source) = self.root_source {
             for requested_key in &requested {
                 if let Some(descriptor) = compiler
                     .source_fn_group_descriptor(root_source, &requested_key.0, requested_key.1, tel)
@@ -1337,7 +1311,7 @@ fn lower_program_once_with_compiler_selection<T: Types<Ty = Ty>>(
                         &["fz", "compiler", "fn_group_requested"],
                         &measurements! {
                             fn_group_id: descriptor.id.0,
-                            loaded_functions: ctx.mb.fn_count() as u64,
+                            loaded_functions: self.ctx.mb.fn_count() as u64,
                         },
                         &metadata! {
                             module_key: compiler.module_key_render(root_source),
@@ -1348,125 +1322,134 @@ fn lower_program_once_with_compiler_selection<T: Types<Ty = Ty>>(
                 }
             }
         }
-        for requested_key in requested {
-            if !lowered_fn_keys.contains(&requested_key) {
-                work_queue.push_back(requested_key);
-            }
+
+        if requested.is_empty() {
+            LoweringDemandResult::Finished
+        } else {
+            LoweringDemandResult::Demands(requested.into_iter().collect())
         }
     }
 
-    // Take the module out first; `ctx.mb` is moved but `ctx` itself is
-    // still usable for source-info collection.
-    let mb = take(&mut ctx.mb);
-    let mut module = mb.build();
-    module.protocol_registry = prog.protocol_registry.clone();
-    module
-        .protocol_registry
-        .protocols
-        .extend(prelude.protocol_registry.protocols.clone());
-    module
-        .protocol_registry
-        .impls
-        .extend(prelude.protocol_registry.impls.clone());
-    module
-        .protocol_registry
-        .extend_interfaces(&prog.external_module_interfaces);
-    module.source = build_source_info(&module, &ctx);
-    module.atom_names = ctx.atoms.names();
-    module.externs = take(&mut ctx.extern_decls);
-    for (i, e) in module.externs.iter().enumerate() {
-        module.extern_idx.insert(e.id, i);
+    pub(crate) fn finish<T: Types<Ty = Ty>>(
+        mut self,
+        t: &mut T,
+        prog: &Program,
+        tel: &dyn Telemetry,
+    ) -> Result<Module, LowerError> {
+        let mb = take(&mut self.ctx.mb);
+        let mut module = mb.build();
+        module.protocol_registry = prog.protocol_registry.clone();
+        module
+            .protocol_registry
+            .protocols
+            .extend(self.prelude.protocol_registry.protocols.clone());
+        module
+            .protocol_registry
+            .impls
+            .extend(self.prelude.protocol_registry.impls.clone());
+        module
+            .protocol_registry
+            .extend_interfaces(&prog.external_module_interfaces);
+        module.source = build_source_info(&module, &self.ctx);
+        module.atom_names = self.ctx.atoms.names();
+        module.externs = take(&mut self.ctx.extern_decls);
+        for (i, e) in module.externs.iter().enumerate() {
+            module.extern_idx.insert(e.id, i);
+        }
+        module.boundary_fns = take(&mut self.ctx.boundary_fns);
+        module.boundary_fns.retain(|fn_id| module.fn_idx.contains_key(fn_id));
+        let empty_env = ModuleTypeEnv::new();
+        for item in &self.all_items {
+            let Item::Fn(fn_def) = item.as_ref() else {
+                continue;
+            };
+            let specs = fn_def
+                .attrs
+                .iter()
+                .filter_map(|a| match a {
+                    Attribute::Spec(spec) => Some(spec),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if specs.is_empty() {
+                continue;
+            }
+            let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
+            let Some(&fid) = self.ctx.fns.get(&(fn_def.name.clone(), arity)) else {
+                continue;
+            };
+            if !module.fn_idx.contains_key(&fid) {
+                continue;
+            }
+            let module_path = fn_def
+                .name
+                .rfind('.')
+                .map(|i| fn_def.name[..i].to_string())
+                .unwrap_or_default();
+            let env = if self.ctx.prelude_fn_ids.contains(&fid) {
+                self.prelude.module_type_envs.get("").unwrap_or(&empty_env)
+            } else {
+                prog.module_type_envs
+                    .get(&module_path)
+                    .unwrap_or(&self.ctx.combined_type_env)
+            };
+            if let Ok(resolved) = resolve_spec_decls(t, specs, env) {
+                module
+                    .function_correspondence
+                    .insert(fid, spec_set_correspondence_groups(&resolved));
+                module.declared_specs.insert(fid, resolved);
+            }
+        }
+        install_inherited_protocol_callback_specs(
+            t,
+            &mut module,
+            &self.ctx.fns,
+            &prog.module_type_envs,
+            &self.prelude.module_type_envs,
+            &self.ctx.combined_type_env,
+        );
+        let continuation_provenance = self.ctx.continuation_provenance;
+        module.continuation_provenance = continuation_provenance.clone();
+        compute_current_function_correspondence(&mut module, &continuation_provenance);
+        module.opaque_inners = prog.opaque_inners.clone();
+        module.opaque_inners.extend(self.prelude.opaque_inners.clone());
+        module
+            .opaque_inners
+            .extend(struct_opaque_inners(t, &prog.structs, &prog.struct_field_types));
+        module
+            .opaque_inners
+            .extend(struct_opaque_inners(t, &self.prelude.structs, &self.prelude.struct_field_types));
+        module.brand_inners = prog.brand_inners.clone();
+        module.brand_inners.extend(self.prelude.brand_inners.clone());
+        module.struct_schemas = self.ctx.struct_schemas.clone();
+        annotate_back_edges(&mut module, &self.ctx.fn_spans)?;
+        check_brand_visibility(t, &module, &self.ctx.stmt_spans, &self.ctx.fn_spans)?;
+        erase_brands(&mut module);
+        normalize_continuation_captures_with_telemetry(&mut module, tel);
+        debug_assert_unique_conts(&module);
+        Ok(module)
     }
-    module.boundary_fns = take(&mut ctx.boundary_fns);
-    module.boundary_fns.retain(|fn_id| module.fn_idx.contains_key(fn_id));
-    let empty_env = ModuleTypeEnv::new();
-    for item in &all_items {
-        let Item::Fn(fn_def) = item.as_ref() else {
-            continue;
-        };
-        let specs = fn_def
-            .attrs
-            .iter()
-            .filter_map(|a| match a {
-                Attribute::Spec(spec) => Some(spec),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        if specs.is_empty() {
-            continue;
-        }
-        let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
-        let Some(&fid) = ctx.fns.get(&(fn_def.name.clone(), arity)) else {
-            continue;
-        };
-        if !module.fn_idx.contains_key(&fid) {
-            continue;
-        }
-        let module_path = fn_def
-            .name
-            .rfind('.')
-            .map(|i| fn_def.name[..i].to_string())
-            .unwrap_or_default();
-        let env = if fid.0 < ctx.prelude_fn_id_cutoff {
-            prelude.module_type_envs.get("").unwrap_or(&empty_env)
-        } else {
-            prog.module_type_envs
-                .get(&module_path)
-                .unwrap_or(&ctx.combined_type_env)
-        };
-        if let Ok(resolved) = resolve_spec_decls(t, specs, env) {
-            module
-                .function_correspondence
-                .insert(fid, spec_set_correspondence_groups(&resolved));
-            module.declared_specs.insert(fid, resolved);
-        }
-    }
-    install_inherited_protocol_callback_specs(
-        t,
-        &mut module,
-        &ctx.fns,
-        &prog.module_type_envs,
-        &prelude.module_type_envs,
-        &ctx.combined_type_env,
-    );
-    let continuation_provenance = ctx.continuation_provenance;
-    module.continuation_provenance = continuation_provenance.clone();
-    compute_current_function_correspondence(&mut module, &continuation_provenance);
-    // fz-swt.8 — carry the resolver's opaque-inner-type map onto the
-    // Module so the planner can resolve `handle.value` accesses to T.
-    // Runtime built-in inners (utf8 brand, pid/ref opaques, ...) live in the
-    // flat-prelude Program, merged here alongside user inners.
-    module.opaque_inners = prog.opaque_inners.clone();
-    module.opaque_inners.extend(prelude.opaque_inners.clone());
-    module
-        .opaque_inners
-        .extend(struct_opaque_inners(t, &prog.structs, &prog.struct_field_types));
-    module
-        .opaque_inners
-        .extend(struct_opaque_inners(t, &prelude.structs, &prelude.struct_field_types));
-    module.brand_inners = prog.brand_inners.clone();
-    module.brand_inners.extend(prelude.brand_inners.clone());
-    module.struct_schemas = ctx.struct_schemas.clone();
-    // fz-02r.4 — annotate TailCall back-edges from the structural SCC.
-    annotate_back_edges(&mut module, &ctx.fn_spans)?;
-    // fz-axu.24 (M3) — brand-mint visibility. Must run before erasure
-    // because erasure drops the Brand prims this pass needs to see.
-    // Built-in brands (utf8, ...) have no module owner and pass
-    // trivially; the gate fires when user-declared brands acquire a
-    // mint syntax and a foreign module tries to use it.
-    check_brand_visibility(t, &module, &ctx.stmt_spans, &ctx.fn_spans)?;
-    // fz-axu.23 (M2) — brand erasure is the final lowering phase. The
-    // Module returned from lower_program has the invariant: no
-    // Prim::Brand survives in any FnIr. Downstream passes (planner,
-    // reducer, codegen, interp, DCE) can treat that as a precondition,
-    // and their Brand match arms become `unreachable!()` rather than
-    // silent identity-fallbacks.
-    erase_brands(&mut module);
-    normalize_continuation_captures_with_telemetry(&mut module, tel);
-    // fz-uwq.1 — verify the unique-cont invariant the post-type pipeline
-    // depends on. See `debug_assert_unique_conts` for the contract.
-    debug_assert_unique_conts(&module);
-    Ok(module)
+}
+
+/// Lower a resolved `Program` to its fz-IR `Module`.
+///
+/// The single public entry. Telemetry is threaded unconditionally so tests and
+/// operators observe the same lowering surface; pass `NullTelemetry` to silence
+/// it. The atom table built during lowering is folded into `module.atom_names`,
+/// so the `Module` is the complete result — there is no second return value.
+pub fn lower_program<T: Types<Ty = Ty>>(t: &mut T, prog: &Program, tel: &dyn Telemetry) -> Result<Module, LowerError> {
+    let mut compiler = Compiler::new();
+    lower_program_with_compiler(compiler.world_mut(), None, t, prog, tel)
+}
+
+pub fn lower_program_with_compiler<T: Types<Ty = Ty>>(
+    compiler: &mut CompilerWorld,
+    root_source: Option<ModuleId>,
+    t: &mut T,
+    prog: &Program,
+    tel: &dyn Telemetry,
+) -> Result<Module, LowerError> {
+    compiler.lower_program_from_demands(root_source, t, prog, tel)
 }
 
 fn install_inherited_protocol_callback_specs<T: Types<Ty = Ty>>(
@@ -1859,14 +1842,13 @@ fn build_source_info(module: &Module, ctx: &LowerCtx) -> SourceInfo {
     }
     // Var spans/names: pick the maximum Var across user-program fns only.
     // Each fn's Vars restart at 0, so we maintain one global table indexed
-    // by Var.0. Prelude fns (FnId < prelude_fn_id_cutoff) are excluded:
-    // their spans are byte offsets into runtime.fz, not the user source,
-    // and would overwrite user-program entries that share the same Var.0.
-    let cutoff = ctx.prelude_fn_id_cutoff;
+    // by Var.0. Prelude-origin fns are excluded: their spans are byte
+    // offsets into runtime.fz, not the user source, and would overwrite
+    // user-program entries that share the same Var.0.
     let max_var = ctx
         .var_meta
         .keys()
-        .filter(|(fid, _)| fid.0 >= cutoff)
+        .filter(|(fid, _)| !ctx.prelude_fn_ids.contains(fid))
         .map(|(_, v)| v.0)
         .max()
         .unwrap_or(0);
@@ -1874,7 +1856,7 @@ fn build_source_info(module: &Module, ctx: &LowerCtx) -> SourceInfo {
     let mut var_span = vec![Span::DUMMY; n];
     let mut var_name = vec![String::new(); n];
     for ((fid, v), (sp, name)) in &ctx.var_meta {
-        if fid.0 < cutoff {
+        if ctx.prelude_fn_ids.contains(fid) {
             continue; // skip prelude fn metadata
         }
         let idx = v.0 as usize;

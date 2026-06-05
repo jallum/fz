@@ -6,6 +6,10 @@
 use crate::ast::{Attribute, FnDef, Item, ModuleDef, Program, ProtocolImplDef};
 use crate::diag::{Diagnostic, SourceMap, Span};
 use crate::fz_ir::{BlockId, ExternDecl, ExternId, ExternalCallEdge, FnId, FnIr, ProtocolCallTarget, Var};
+use crate::ir_lower::{
+    FnKey, LowerError, LoweringDemandResult, begin_compiler_lowering_session, collect_lowerable_fn_keys,
+    select_initial_root_fn_keys,
+};
 use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::interface::{ModuleInterface, collect_from_program};
 use crate::modules::runtime_library::{self, RUNTIME_MODULE_SOURCES, RUNTIME_PRELUDE_FZ};
@@ -447,6 +451,45 @@ impl CompilerWorld {
 
     pub(crate) fn module_key_render(&self, id: ModuleId) -> String {
         self.modules[id.0 as usize].key.render()
+    }
+
+    pub(crate) fn lower_program_from_demands<T: crate::types::Types<Ty = crate::types::Ty>>(
+        &mut self,
+        root_source: Option<ModuleId>,
+        t: &mut T,
+        prog: &Program,
+        tel: &dyn Telemetry,
+    ) -> Result<crate::fz_ir::Module, LowerError> {
+        let mut session = begin_compiler_lowering_session(self, root_source, t, prog, tel)?;
+        let initial_demands = if let Some(root_source) = root_source
+            && !matches!(self.module(root_source).origin, ModuleOrigin::PrimitivePrelude)
+        {
+            let runtime_entry_keys = self.runtime_entry_fn_keys(root_source);
+            let root_entry_keys = (!runtime_entry_keys.is_empty()).then_some(&runtime_entry_keys);
+            select_initial_root_fn_keys(&prog.items, root_entry_keys)
+        } else {
+            collect_lowerable_fn_keys(&prog.items)
+        };
+
+        let mut demands = initial_demands.into_iter().collect::<VecDeque<FnKey>>();
+        let mut satisfied = HashSet::new();
+        while let Some(fn_key) = demands.pop_front() {
+            if !satisfied.insert(fn_key.clone()) {
+                continue;
+            }
+            match session.satisfy_fn_group_demand(self, t, tel, &fn_key, &satisfied) {
+                LoweringDemandResult::Finished => {}
+                LoweringDemandResult::Demands(new_demands) => {
+                    for demand in new_demands {
+                        if !satisfied.contains(&demand) {
+                            demands.push_back(demand);
+                        }
+                    }
+                }
+                LoweringDemandResult::Fatal(err) => return Err(err),
+            }
+        }
+        session.finish(t, prog, tel)
     }
 }
 
