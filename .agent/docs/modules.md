@@ -185,15 +185,13 @@ interface_fingerprint:          Vec<String>
 
 `required_imports` is derived from the unit's `external_call_edges`, so an
 imported module's `.fzo` can be emitted without machine-codegenning its
-unresolved external calls. The payload format is one of three constants:
+unresolved external calls. The payload format is one of two constants:
 
 - `FZO_PAYLOAD_IR_UNIT_V1` (`fz-ir-unit-v1`) — a structural IR unit: the
   serialized `fz_ir::Module` plus every `PortableSourceFile` its spans
   reference (each with name, bytes, FNV content hash, and the provider's
   `FileId`). `FzoArtifact::from_unit_ir` builds it; this is what `fz build`
   emits.
-- `FZO_PAYLOAD_RUNTIME_MODULE_V1` (`fz-runtime-module-v1`) — built-in
-  runtime-library source text, materialized per execution context.
 - `FZO_PAYLOAD_SOURCE_UNIT_V1` (`fz-source-unit-v1`) — checked source text;
   built by `from_unit_source` for tests.
 
@@ -203,9 +201,9 @@ different-but-still-valid-JSON body while other fields stayed stale.
 
 Two reader gates split the payloads by how they are consumed:
 
-- `source_unit_text` returns the body for the two source-shaped formats
-  (`fz-source-unit-v1`, `fz-runtime-module-v1`) and rejects anything else, so
-  inspection-only payloads cannot masquerade as materializable source.
+- `source_unit_text` returns the body for `fz-source-unit-v1` and rejects
+  anything else, so inspection-only payloads cannot masquerade as
+  materializable source.
 - `ir_unit_payload` decodes a `fz-ir-unit-v1` body back into its `Module` +
   `sources`, and rejects any other format.
 
@@ -253,10 +251,11 @@ It walks a worklist by public contract:
    `runtime_library::interface` before the filesystem store; a user module is
    loaded as a provider `.fzi`. Either way its imports and protocol-impl
    protocols are queued.
-3. After all interfaces are reachable, load one `.fzo` per reachable module:
-   runtime modules contribute their built-in `fz-runtime-module-v1` object, user
-   modules load their `.fzo` from the store. Each user `.fzo` is validated
-   against the `.fzi` fingerprint inputs that made the module reachable.
+3. After all user-provider interfaces are reachable, load one user `.fzo` per
+   reachable provider module. Runtime-library modules are compiled from the
+   compiler-owned embedded source path instead of participating in the artifact
+   graph. Each user `.fzo` is validated against the `.fzi` fingerprint inputs
+   that made the module reachable.
 
 Two refinements:
 
@@ -450,11 +449,9 @@ How a runtime module enters a compile:
 - `runtime_library::interface` answers interface requests from imports, aliases,
   and qualified references — including the qualified runtime calls macros emit,
   so operator sugar can depend on `List` without every program importing it.
-- `runtime_library::artifacts` builds the deterministic `.fzi`/`.fzo` envelopes
-  for every built-in module and root protocol namespace; the objects are
-  `fz-runtime-module-v1` source payloads.
-- A reachable non-core runtime module contributes its `.fzo` to
-  `ModuleGraphLoader`; the core prelude is already prepended during lowering.
+- A reachable non-core runtime module is discovered, parsed, and compiled from
+  the compiler-owned embedded source text; the core prelude is already
+  prepended during lowering.
 
 Built-in interfaces are requested defaults. A user source module with the same
 name is collected from the current program and wins for that compile, while

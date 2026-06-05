@@ -238,10 +238,10 @@ deterministic source-unit envelope for normal user code. It records identity,
 required imports, fingerprints, and a typed implementation payload. For normal compiled source that payload is a materializable IR
 unit (<code>fz-ir-unit-v1</code>), so graph loading can recover the provider
 implementation input from the artifact without reading the original provider
-source path. Built-in runtime modules use <code>fz-runtime-module-v1</code>
-with the same materializable-source role. Final object bytes or a richer
-relocatable format can replace those payload formats later without changing
-what an interface means.
+source path. Built-in runtime modules are no longer represented as
+<code>.fzo</code> payloads; the compiler loads their embedded source on demand.
+Final object bytes or a richer relocatable format can replace the surviving
+payload formats later without changing what an interface means.
 </div>
 
 <p>The dump commands are separate on purpose. <code>dump --emit interfaces</code>

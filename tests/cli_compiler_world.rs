@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, id};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::{collections::BTreeSet, ffi::OsStr};
 
 const FZ_BIN: &str = env!("CARGO_BIN_EXE_fz");
 
@@ -64,6 +65,19 @@ fn compiler_event_count(events: &[Value], event_name: &[&str], module_key: &str)
         .count()
 }
 
+fn compiler_event_module_keys(events: &[Value], event_name: &[&str]) -> BTreeSet<String> {
+    events
+        .iter()
+        .filter(|ev| event_matches(ev, event_name))
+        .filter_map(|ev| {
+            ev.get("metadata")
+                .and_then(|metadata| metadata.get("module_key"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .collect()
+}
+
 fn parsed_phase_elapsed_ns(events: &[Value], module_key: &str) -> Vec<u64> {
     let parsed_phase_span_ids = events
         .iter()
@@ -95,6 +109,22 @@ fn run_fz_with_telemetry(args: &[&Path], subcommand: &[&str], extra: &[&str]) ->
     let out = cmd.output().expect("spawn fz");
     let events = read_events(&telemetry_path);
     (out, events, telemetry_path)
+}
+
+fn build_with_telemetry(input: &Path) -> (Output, Vec<Value>, PathBuf, PathBuf) {
+    let out_path = unique_path("fz-cli-build", "bin");
+    let telemetry_path = unique_path("fz-cli-build-telemetry", "jsonl");
+    let out = Command::new(FZ_BIN)
+        .args(["--log-telemetry"])
+        .arg(&telemetry_path)
+        .arg("build")
+        .arg(input)
+        .arg("-o")
+        .arg(&out_path)
+        .output()
+        .expect("spawn fz build");
+    let events = read_events(&telemetry_path);
+    (out, events, out_path, telemetry_path)
 }
 
 #[test]
@@ -164,18 +194,7 @@ fn run_reaches_and_parses_utf8_once_through_compiler_world() {
 fn build_reaches_lowers_and_plans_process_once_through_compiler_world() {
     let input = fs::canonicalize("fixtures/process_heap_stats/input.fz")
         .unwrap_or_else(|e| panic!("canonicalize Process fixture: {e}"));
-    let out_path = unique_path("fz-cli-build", "bin");
-    let telemetry_path = unique_path("fz-cli-build-telemetry", "jsonl");
-    let out = Command::new(FZ_BIN)
-        .args(["--log-telemetry"])
-        .arg(&telemetry_path)
-        .arg("build")
-        .arg(&input)
-        .arg("-o")
-        .arg(&out_path)
-        .output()
-        .expect("spawn fz build");
-    let events = read_events(&telemetry_path);
+    let (out, events, out_path, telemetry_path) = build_with_telemetry(&input);
 
     let _ = fs::remove_file(&out_path);
     let _ = fs::remove_file(out_path.with_extension("o"));
@@ -211,4 +230,56 @@ fn build_reaches_lowers_and_plans_process_once_through_compiler_world() {
 
     let parsed_elapsed = parsed_phase_elapsed_ns(&events, "Process");
     assert_eq!(parsed_elapsed.len(), 1, "Process parsed phase should stop exactly once");
+}
+
+#[test]
+fn quicksort_build_parses_only_process_and_core_runtime_surface() {
+    let input = fs::canonicalize("fixtures/quicksort/input.fz")
+        .unwrap_or_else(|e| panic!("canonicalize quicksort fixture: {e}"));
+    let (out, events, out_path, telemetry_path) = build_with_telemetry(&input);
+
+    let _ = fs::remove_file(&out_path);
+    let _ = fs::remove_file(out_path.with_extension("o"));
+    let _ = fs::remove_file(&telemetry_path);
+
+    assert!(
+        out.status.success(),
+        "fz build quicksort exited {}: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let parsed_modules = compiler_event_module_keys(&events, &["fz", "compiler", "parsed"]);
+    let root_module = input
+        .file_name()
+        .unwrap_or_else(|| OsStr::new("input.fz"))
+        .to_string_lossy()
+        .to_string();
+
+    assert!(
+        parsed_modules.iter().any(|module| module.ends_with(&root_module)),
+        "quicksort root source should parse once; parsed modules: {parsed_modules:?}"
+    );
+    assert!(parsed_modules.contains("Process"));
+    assert!(parsed_modules.contains("$Prelude"));
+    assert!(parsed_modules.contains("Kernel"));
+    assert!(parsed_modules.contains("Enumerable"));
+    assert!(parsed_modules.contains("Range"));
+    assert!(parsed_modules.contains("List"));
+    assert!(parsed_modules.contains("Map"));
+    assert!(
+        !parsed_modules.contains("Utf8"),
+        "quicksort should not parse unrelated Utf8 runtime code; parsed modules: {parsed_modules:?}"
+    );
+    assert!(
+        !parsed_modules.contains("Enum"),
+        "quicksort should not parse unrelated Enum runtime code; parsed modules: {parsed_modules:?}"
+    );
+
+    let runtime_reachable = compiler_event_module_keys(&events, &["fz", "compiler", "runtime_module_reachable"]);
+    assert_eq!(
+        runtime_reachable,
+        BTreeSet::from(["Process".to_string()]),
+        "quicksort should make only Process live at runtime"
+    );
 }

@@ -1,17 +1,109 @@
 use super::*;
 use crate::compiler::Compiler;
+use crate::telemetry::{Capture, ConfiguredTelemetry, NullTelemetry, Value};
+use std::rc::Rc;
 
 fn compiler() -> Compiler {
     Compiler::new()
 }
 
+fn runtime_module(name: &str) -> ModuleName {
+    ModuleName::from_segments(vec![name.to_string()])
+}
+
+fn runtime_interface(compiler: &mut Compiler, name: &str) -> ModuleInterface {
+    compiler
+        .ensure_runtime_module_interface(&runtime_module(name), &NullTelemetry)
+        .expect("runtime interface build")
+        .unwrap_or_else(|| panic!("runtime module `{name}` should exist"))
+}
+
+fn parsed_runtime_modules(capture: &Capture) -> Vec<String> {
+    capture
+        .find(&["fz", "compiler", "parsed"])
+        .into_iter()
+        .filter_map(
+            |ev| match (ev.metadata.get("module_origin"), ev.metadata.get("module_key")) {
+                (Some(Value::Str(origin)), Some(Value::Str(module))) if origin == "embedded_runtime" => {
+                    Some(module.to_string())
+                }
+                _ => None,
+            },
+        )
+        .collect()
+}
+
+fn collect_primitive_contract_names(items: &[Rc<Item>], names: &mut Vec<String>) {
+    for item in items {
+        if let Item::Fn(def) = &**item
+            && def.extern_abi.is_some()
+        {
+            names.push(format!("{}/{}", def.name, def.extern_params.len()));
+        }
+        if let Item::Module(module) = &**item {
+            collect_primitive_contract_names(&module.items, names);
+        }
+    }
+}
+
+fn runtime_primitive_contract_names(compiler: &mut Compiler) -> Vec<String> {
+    let mut names = Vec::new();
+    collect_primitive_contract_names(
+        &primitive_prelude_program(compiler.world_mut(), &NullTelemetry).items,
+        &mut names,
+    );
+    for runtime_source in RUNTIME_MODULE_SOURCES {
+        let module = runtime_module(runtime_source.name);
+        let module_id = compiler
+            .discover_runtime_module(&module, &NullTelemetry)
+            .unwrap_or_else(|| panic!("runtime module `{module}` should be registered"));
+        let parsed = compiler
+            .ensure_prelude(module_id, &NullTelemetry)
+            .unwrap_or_else(|diagnostic| panic!("parse runtime module `{module}`: {diagnostic:?}"));
+        collect_primitive_contract_names(&parsed.items, &mut names);
+    }
+    names.sort();
+    names
+}
+
+#[test]
+fn runtime_library_interface_loading_is_lazy_per_module() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "compiler"], capture.handler());
+
+    let mut compiler = compiler();
+    let utf8 = compiler
+        .ensure_runtime_module_interface(&runtime_module("Utf8"), &tel)
+        .expect("Utf8 interface build")
+        .expect("Utf8 runtime module");
+
+    assert_eq!(utf8.name, runtime_module("Utf8"));
+    assert_eq!(compiler.module_count(), 1);
+    assert_eq!(compiler.file_count(), 1);
+    assert_eq!(
+        parsed_runtime_modules(&capture),
+        vec!["Utf8".to_string()],
+        "loading Utf8's interface should not parse unrelated runtime modules"
+    );
+    assert_eq!(capture.count(&["fz", "compiler", "interface_ready"]), 1);
+
+    compiler
+        .validate_invariants()
+        .expect("single runtime interface load should preserve compiler invariants");
+}
+
 #[test]
 fn runtime_library_interfaces_expose_fz_functions_not_primitive_externs() {
     let mut compiler = compiler();
-    let interfaces = interface_table(compiler.world_mut(), &NullTelemetry);
-    let utf8 = interfaces
-        .get(&ModuleName::from_segments(vec!["Utf8".to_string()]))
-        .expect("Utf8 interface");
+
+    let utf8 = runtime_interface(&mut compiler, "Utf8");
+    let enumerable = runtime_interface(&mut compiler, "Enumerable");
+    let list_module = runtime_interface(&mut compiler, "List");
+    let range_module = runtime_interface(&mut compiler, "Range");
+    let map_module = runtime_interface(&mut compiler, "Map");
+    let enum_module = runtime_interface(&mut compiler, "Enum");
+    let kernel = runtime_interface(&mut compiler, "Kernel");
 
     let exports = utf8
         .exports
@@ -21,9 +113,6 @@ fn runtime_library_interfaces_expose_fz_functions_not_primitive_externs() {
     assert_eq!(exports, vec!["from_bytes/1", "from_bytes!/1", "to_bytes/1", "valid?/1"]);
     assert!(!exports.iter().any(|name| name.starts_with("fz_")));
 
-    let enumerable = interfaces
-        .get(&ModuleName::from_segments(vec!["Enumerable".to_string()]))
-        .expect("Enumerable interface");
     assert!(
         enumerable
             .protocols
@@ -31,15 +120,6 @@ fn runtime_library_interfaces_expose_fz_functions_not_primitive_externs() {
             .any(|protocol| protocol.name.dotted() == "Enumerable")
     );
     assert!(enumerable.exports.is_empty());
-    let list_module = interfaces
-        .get(&ModuleName::from_segments(vec!["List".to_string()]))
-        .expect("List interface");
-    let range_module = interfaces
-        .get(&ModuleName::from_segments(vec!["Range".to_string()]))
-        .expect("Range interface");
-    let map_module = interfaces
-        .get(&ModuleName::from_segments(vec!["Map".to_string()]))
-        .expect("Map interface");
 
     assert!(list_module.protocol_impls.iter().any(|protocol_impl| {
         protocol_impl.protocol.dotted() == "Enumerable"
@@ -65,30 +145,7 @@ fn runtime_library_interfaces_expose_fz_functions_not_primitive_externs() {
                 .iter()
                 .any(|callback| callback.module.dotted() == "Enumerable.Map")
     }));
-    assert!(
-        !interfaces
-            .keys()
-            .any(|module| module.dotted() == "Enumerable.Enumerable")
-    );
-    let enumerable_artifact = artifact(
-        compiler.world_mut(),
-        &ModuleName::from_segments(vec!["Enumerable".to_string()]),
-        &NullTelemetry,
-    )
-    .expect("Enumerable artifact")
-    .expect("Enumerable runtime module");
-    assert!(
-        enumerable_artifact
-            .fzo
-            .unit_payload
-            .body
-            .trim_start()
-            .starts_with("defprotocol Enumerable")
-    );
 
-    let enum_module = interfaces
-        .get(&ModuleName::from_segments(vec!["Enum".to_string()]))
-        .expect("Enum interface");
     let enum_exports = enum_module
         .exports
         .iter()
@@ -98,9 +155,6 @@ fn runtime_library_interfaces_expose_fz_functions_not_primitive_externs() {
         assert!(enum_exports.contains(&export.to_string()));
     }
 
-    let kernel = interfaces
-        .get(&ModuleName::from_segments(vec!["Kernel".to_string()]))
-        .expect("Kernel interface");
     let kernel_exports = kernel
         .exports
         .iter()
@@ -173,7 +227,7 @@ fn runtime_library_interfaces_expose_fz_functions_not_primitive_externs() {
     );
 
     assert_eq!(
-        primitive_contract_names(compiler.world_mut(), &NullTelemetry),
+        runtime_primitive_contract_names(&mut compiler),
         vec![
             "fz_binary_concat/2",
             "fz_bitstring_valid_utf8/1",
@@ -192,113 +246,38 @@ fn runtime_library_interfaces_expose_fz_functions_not_primitive_externs() {
             "fz_spawn_opt/2",
         ]
     );
+
+    compiler
+        .validate_invariants()
+        .expect("runtime interface checks should preserve compiler invariants");
 }
 
 #[test]
-fn runtime_library_artifacts_round_trip_deterministically() {
+fn runtime_library_implementation_dependencies_are_local_to_requested_module() {
     let mut compiler = compiler();
-    let artifacts = artifacts(compiler.world_mut(), &NullTelemetry).expect("runtime artifacts");
-    assert!(!artifacts.is_empty());
 
-    for artifact in artifacts {
-        let fzi_text = artifact.fzi.serialize();
-        let fzi = FziArtifact::deserialize(
-            &NullTelemetry,
-            None,
-            &fzi_text,
-            Some(&artifact.interface.fingerprint_inputs),
-        )
-        .expect("fzi roundtrip");
-        assert_eq!(fzi.interface.name, artifact.interface.name);
-        assert_eq!(fzi.interface.imports, artifact.interface.imports);
-        assert_eq!(fzi.interface.types, artifact.interface.types);
-        assert_eq!(
-            fzi.interface
-                .exports
-                .iter()
-                .map(|f| (&f.name, f.arity, &f.specs))
-                .collect::<Vec<_>>(),
-            artifact
-                .interface
-                .exports
-                .iter()
-                .map(|f| (&f.name, f.arity, &f.specs))
-                .collect::<Vec<_>>()
-        );
-
-        let fzo_text = artifact.fzo.serialize();
-        let fzo = FzoArtifact::deserialize(
-            &NullTelemetry,
-            None,
-            &fzo_text,
-            Some(&artifact.fzo.interface_fingerprint),
-        )
-        .expect("fzo roundtrip");
-        assert_eq!(fzo.module, Some(artifact.module));
-        assert_eq!(fzo.interface_fingerprint, artifact.interface.fingerprint_inputs);
-    }
-}
-
-#[test]
-fn runtime_library_artifacts_write_load_and_import_like_user_artifacts() {
-    let root = temp_dir().join(format!("fz-runtime-artifacts-{}-write-load", std::process::id()));
-    let _ = remove_dir_all(&root);
-    let store = ArtifactStore::new(&root);
-    let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&["fz", "module"], capture.handler());
-    let mut compiler = compiler();
-    let artifacts = artifacts(compiler.world_mut(), &NullTelemetry).expect("runtime artifacts");
-    let interfaces = artifacts
-        .iter()
-        .map(|artifact| (artifact.module.clone(), artifact.interface.clone()))
-        .collect::<BTreeMap<_, _>>();
-
-    let fzi_paths = store.write_fzi_artifacts(&tel, &interfaces).expect("write fzi");
-    let fzo_paths = store
-        .write_fzo_artifacts(&tel, artifacts.iter().map(|artifact| &artifact.fzo))
-        .expect("write fzo");
-    assert_eq!(fzi_paths.len(), artifacts.len());
-    assert_eq!(fzo_paths.len(), artifacts.len());
-
-    let utf8 = ModuleName::from_segments(vec!["Utf8".to_string()]);
-    let loaded_interfaces = store.load_interface_table(&tel, [&utf8]).expect("load fzi");
-    assert!(
-        loaded_interfaces[&utf8]
-            .exports
-            .iter()
-            .any(|export| { export.name == "valid?" && export.arity == 1 && !export.specs.is_empty() })
+    assert_eq!(
+        implementation_dependencies(compiler.world_mut(), &runtime_module("Process"), &NullTelemetry)
+            .expect("Process implementation dependencies"),
+        Vec::<ModuleName>::new(),
+        "Process should not drag in unrelated runtime modules"
     );
-    let loaded_fzo = store
-        .load_fzo_artifact(&tel, &utf8, Some(&loaded_interfaces[&utf8].fingerprint_inputs))
-        .expect("load fzo");
-    assert_eq!(loaded_fzo.module, Some(utf8));
-    assert_eq!(loaded_fzo.unit_payload.format, "fz-runtime-module-v1");
+    assert_eq!(
+        implementation_dependencies(compiler.world_mut(), &runtime_module("Utf8"), &NullTelemetry)
+            .expect("Utf8 implementation dependencies"),
+        Vec::<ModuleName>::new(),
+        "Utf8 should not drag in unrelated runtime modules"
+    );
+    assert_eq!(
+        implementation_dependencies(compiler.world_mut(), &runtime_module("Enum"), &NullTelemetry)
+            .expect("Enum implementation dependencies"),
+        vec![runtime_module("Enumerable")],
+        "Enum should report only the runtime module it references directly"
+    );
 
-    let mut t = crate::types::new();
-    let consumer = r#"
-defmodule User do
-  import Utf8, only: [valid?: 1]
-  @spec accepts(any) :: bool
-  fn accepts(bytes), do: valid?(bytes)
-end
-"#;
-    match compile_source_with_interface_table(
-        &mut t,
-        consumer.to_string(),
-        "consumer.fz".to_string(),
-        loaded_interfaces,
-        &NullTelemetry,
-    ) {
-        Ok(_) => {}
-        Err(_) => panic!("runtime artifact interface resolves like a user artifact"),
-    }
-    assert!(capture.contains(&["fz", "module", "fzi_written"]));
-    assert!(capture.contains(&["fz", "module", "fzo_written"]));
-    assert!(capture.contains(&["fz", "module", "fzi_loaded"]));
-    assert!(capture.contains(&["fz", "module", "fzo_loaded"]));
-
-    let _ = remove_dir_all(&root);
+    compiler
+        .validate_invariants()
+        .expect("implementation dependency discovery should preserve compiler invariants");
 }
 
 #[test]

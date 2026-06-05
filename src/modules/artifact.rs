@@ -25,7 +25,6 @@ use std::path::Path;
 pub const FZ_ARTIFACT_ABI_VERSION: u32 = 1;
 pub const FZ_RUNTIME_ARTIFACT_ABI_VERSION: u32 = 1;
 pub const FZO_PAYLOAD_SOURCE_UNIT_V1: &str = "fz-source-unit-v1";
-pub const FZO_PAYLOAD_RUNTIME_MODULE_V1: &str = "fz-runtime-module-v1";
 pub const FZO_PAYLOAD_IR_UNIT_V1: &str = "fz-ir-unit-v1";
 
 const FZI_MAGIC: &str = "fzi";
@@ -121,11 +120,6 @@ impl FzoUnitPayload {
     #[cfg(test)]
     pub fn source_unit(body: impl Into<String>) -> Self {
         Self::new(FZO_PAYLOAD_SOURCE_UNIT_V1, body)
-    }
-
-    #[cfg(test)]
-    pub fn runtime_module(body: impl Into<String>) -> Self {
-        Self::new(FZO_PAYLOAD_RUNTIME_MODULE_V1, body)
     }
 
     fn ir_unit(body: impl Into<String>) -> Self {
@@ -260,9 +254,7 @@ impl FzoArtifact {
     }
 
     pub fn source_unit_text(&self, tel: &dyn Telemetry) -> Result<&str, ArtifactFormatError> {
-        if self.unit_payload.format == FZO_PAYLOAD_SOURCE_UNIT_V1
-            || self.unit_payload.format == FZO_PAYLOAD_RUNTIME_MODULE_V1
-        {
+        if self.unit_payload.format == FZO_PAYLOAD_SOURCE_UNIT_V1 {
             Ok(&self.unit_payload.body)
         } else {
             emit_invalid(

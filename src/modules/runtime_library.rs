@@ -1,48 +1,23 @@
-//! Built-in runtime library modules as separate-compilation inputs.
+//! Built-in runtime library modules as lazily discovered source modules.
 //!
 //! The language runtime has two layers:
 //!
 //! - primitive extern contracts implemented by Rust/C runtime symbols;
 //! - ordinary FZ modules, such as `Utf8` and `Process`, implemented in
-//!   per-module source files and consumed through module interfaces.
-//!
-//! This module exposes the second layer as deterministic `.fzi`/`.fzo`
-//! artifact envelopes so resolver and linker work can depend on the same
-//! facts a user library would provide.
+//!   per-module source files and loaded through the compiler's source-backed
+//!   module state.
 use crate::ast::{Attribute, Expr, Item, Program, Spanned, WithBinding};
-#[cfg(test)]
-use crate::ast::{ModuleDef, ProtocolDef};
 use crate::compiler::CompilerWorld;
 use crate::diag::Diagnostic;
-#[cfg(test)]
-use crate::frontend::compile_source_with_interface_table;
-#[cfg(test)]
-use crate::frontend::resolve::InterfaceTable;
-#[cfg(test)]
-use crate::modules::artifact::{
-    FZ_ARTIFACT_ABI_VERSION, FZ_RUNTIME_ARTIFACT_ABI_VERSION, FziArtifact, FzoArtifact, FzoUnitPayload, payload_digest,
-};
-#[cfg(test)]
-use crate::modules::artifact_store::ArtifactStore;
-#[cfg(test)]
-use crate::modules::identity::ExportKey;
 use crate::modules::identity::ModuleName;
 use crate::modules::interface::ModuleInterface;
-#[cfg(test)]
-use crate::modules::interface::{collect_from_program, fingerprint_digest};
 use crate::telemetry::Telemetry;
-#[cfg(test)]
-use crate::telemetry::{Capture, ConfiguredTelemetry, NullTelemetry};
 use crate::type_expr::{
     BrandInnerTypes, ModuleTypeEnv, OpaqueInnerTypes, build_module_type_env_for_with_base, builtin_brand_inners,
     builtin_opaque_inners, builtin_type_env,
 };
 use crate::types::{Ty, Types};
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(test)]
-use std::env::temp_dir;
-#[cfg(test)]
-use std::fs::remove_dir_all;
 use std::rc::Rc;
 
 pub(crate) const RUNTIME_PRELUDE_FZ: &str = include_str!("runtime_library/runtime.fz");
@@ -102,15 +77,6 @@ pub(crate) const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
     },
 ];
 
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeLibraryModuleArtifact {
-    pub module: ModuleName,
-    pub interface: ModuleInterface,
-    pub fzi: FziArtifact,
-    pub fzo: FzoArtifact,
-}
-
 pub struct RuntimeRootTypes {
     pub env: ModuleTypeEnv,
     pub opaque_inners: OpaqueInnerTypes,
@@ -167,49 +133,6 @@ pub fn prelude_required_modules(compiler: &mut CompilerWorld, tel: &dyn Telemetr
         .collect()
 }
 
-#[cfg(test)]
-pub fn parsed_program(compiler: &mut CompilerWorld, tel: &dyn Telemetry) -> Result<Program, Diagnostic> {
-    let mut items = Vec::new();
-    for module_source in RUNTIME_MODULE_SOURCES {
-        let module = ModuleName::from_segments(vec![module_source.name.to_string()]);
-        let module_id = compiler
-            .discover_runtime_module(&module, tel)
-            .expect("registered runtime module");
-        let mut parsed = compiler.ensure_prelude(module_id, tel)?;
-        items.append(&mut parsed.items);
-    }
-    Ok(Program {
-        items,
-        module_interfaces: BTreeMap::new(),
-        external_module_interfaces: BTreeMap::new(),
-        module_docs: Default::default(),
-        module_type_envs: Default::default(),
-        protocol_registry: Default::default(),
-        opaque_inners: Default::default(),
-        brand_inners: Default::default(),
-        structs: Default::default(),
-        struct_field_types: Default::default(),
-    })
-}
-
-#[cfg(test)]
-pub fn interface_table(compiler: &mut CompilerWorld, tel: &dyn Telemetry) -> InterfaceTable {
-    interfaces(compiler, tel)
-}
-
-#[cfg(test)]
-pub fn interfaces(compiler: &mut CompilerWorld, tel: &dyn Telemetry) -> BTreeMap<ModuleName, ModuleInterface> {
-    RUNTIME_MODULE_SOURCES
-        .iter()
-        .filter_map(|source| {
-            let module = ModuleName::from_segments(vec![source.name.to_string()]);
-            interface(compiler, &module, tel)
-                .expect("runtime interface build must succeed")
-                .map(|interface| (module, interface))
-        })
-        .collect()
-}
-
 pub fn interface(
     compiler: &mut CompilerWorld,
     module: &ModuleName,
@@ -231,35 +154,6 @@ pub fn implementation_dependencies(
     collect_runtime_implementation_dependencies(&items, &mut deps);
     deps.remove(module);
     Ok(deps.into_iter().collect())
-}
-
-#[cfg(test)]
-pub fn artifact(
-    compiler: &mut CompilerWorld,
-    module: &ModuleName,
-    tel: &dyn Telemetry,
-) -> Result<Option<RuntimeLibraryModuleArtifact>, Diagnostic> {
-    Ok(artifacts(compiler, tel)?
-        .into_iter()
-        .find(|artifact| artifact.module == *module))
-}
-
-#[cfg(test)]
-pub fn artifacts(
-    compiler: &mut CompilerWorld,
-    tel: &dyn Telemetry,
-) -> Result<Vec<RuntimeLibraryModuleArtifact>, Diagnostic> {
-    let prog = parsed_program(compiler, tel)?;
-    let interfaces = collect_from_program(&prog);
-    let mut out = Vec::new();
-    for item in &prog.items {
-        match &**item {
-            Item::Module(module) => collect_artifacts_recursive(module, None, &interfaces, &mut out),
-            Item::Protocol(protocol) => collect_protocol_artifact(protocol, &interfaces, &mut out),
-            _ => {}
-        }
-    }
-    Ok(out)
 }
 
 fn collect_runtime_implementation_dependencies(items: &[Rc<Item>], out: &mut BTreeSet<ModuleName>) {
@@ -451,122 +345,6 @@ fn is_upper(s: &str) -> bool {
     s.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
 }
 
-#[cfg(test)]
-fn collect_protocol_artifact(
-    protocol: &ProtocolDef,
-    interfaces: &BTreeMap<ModuleName, ModuleInterface>,
-    out: &mut Vec<RuntimeLibraryModuleArtifact>,
-) {
-    let name = protocol.name.clone();
-    if let Some(interface) = interfaces.get(&name) {
-        let fzi = FziArtifact::new(interface.clone());
-        let fzo = runtime_unit_fzo(
-            &name,
-            interface,
-            vec!["kind=runtime-library-protocol".to_string(), format!("module={}", name)],
-        );
-        out.push(RuntimeLibraryModuleArtifact {
-            module: name,
-            interface: interface.clone(),
-            fzi,
-            fzo,
-        });
-    }
-}
-
-#[cfg(test)]
-fn collect_artifacts_recursive(
-    module: &ModuleDef,
-    parent: Option<&ModuleName>,
-    interfaces: &BTreeMap<ModuleName, ModuleInterface>,
-    out: &mut Vec<RuntimeLibraryModuleArtifact>,
-) {
-    let name = if let Some(parent) = parent {
-        parent.child(module.name.clone())
-    } else {
-        ModuleName::from_segments(vec![module.name.clone()])
-    };
-    if let Some(interface) = interfaces.get(&name) {
-        let fzi = FziArtifact::new(interface.clone());
-        let fzo = runtime_module_fzo(module, &name, interface);
-        out.push(RuntimeLibraryModuleArtifact {
-            module: name.clone(),
-            interface: interface.clone(),
-            fzi,
-            fzo,
-        });
-    }
-    for item in &module.items {
-        if let Item::Module(inner) = &**item {
-            collect_artifacts_recursive(inner, Some(&name), interfaces, out);
-        }
-    }
-}
-
-#[cfg(test)]
-fn runtime_module_fzo(module: &ModuleDef, name: &ModuleName, interface: &ModuleInterface) -> FzoArtifact {
-    runtime_unit_fzo(name, interface, runtime_implementation_fingerprint(name, module))
-}
-
-#[cfg(test)]
-fn runtime_unit_fzo(
-    name: &ModuleName,
-    interface: &ModuleInterface,
-    implementation_fingerprint: Vec<String>,
-) -> FzoArtifact {
-    let interface_fingerprint = interface.fingerprint_inputs.clone();
-    let unit_payload =
-        FzoUnitPayload::runtime_module(runtime_module_source(name).expect("runtime module source is registered"));
-    let implementation_fingerprint_digest = payload_digest(&unit_payload);
-    FzoArtifact {
-        compiler_abi_version: FZ_ARTIFACT_ABI_VERSION,
-        runtime_abi_version: FZ_RUNTIME_ARTIFACT_ABI_VERSION,
-        module: Some(name.clone()),
-        unit_payload,
-        required_imports: interface_imports(interface),
-        implementation_fingerprint,
-        implementation_fingerprint_digest,
-        interface_fingerprint_digest: fingerprint_digest(&interface_fingerprint),
-        interface_fingerprint,
-    }
-}
-
-#[cfg(test)]
-fn interface_imports(interface: &ModuleInterface) -> Vec<ExportKey> {
-    interface
-        .imports
-        .iter()
-        .flat_map(|import| {
-            import
-                .only
-                .iter()
-                .map(|f| ExportKey::new(import.module.clone(), f.name.clone(), f.arity))
-                .collect::<Vec<_>>()
-        })
-        .collect()
-}
-
-#[cfg(test)]
-fn runtime_implementation_fingerprint(name: &ModuleName, module: &ModuleDef) -> Vec<String> {
-    let mut out = vec!["kind=runtime-library-module".to_string(), format!("module={}", name)];
-    for item in &module.items {
-        if let Item::Fn(def) = &**item {
-            let arity = def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
-            let kind = if def.extern_abi.is_some() { "primitive" } else { "fz" };
-            out.push(format!("fn={}/{}:{}", def.name, arity, kind));
-        }
-    }
-    out
-}
-
-#[cfg(test)]
-fn runtime_module_source(name: &ModuleName) -> Option<&'static str> {
-    RUNTIME_MODULE_SOURCES
-        .iter()
-        .find(|source| source.name == name.dotted())
-        .map(|source| source.source)
-}
-
 pub fn primitive_prelude_program(compiler: &mut CompilerWorld, tel: &dyn Telemetry) -> Program {
     let prelude_id = compiler.discover_primitive_prelude(tel);
     let items = compiler
@@ -584,34 +362,6 @@ pub fn primitive_prelude_program(compiler: &mut CompilerWorld, tel: &dyn Telemet
         brand_inners: Default::default(),
         structs: Default::default(),
         struct_field_types: Default::default(),
-    }
-}
-
-#[cfg(test)]
-pub fn primitive_contract_names(compiler: &mut CompilerWorld, tel: &dyn Telemetry) -> Vec<String> {
-    let mut names = Vec::new();
-    collect_primitive_contract_names(&primitive_prelude_program(compiler, tel).items, &mut names);
-    for module in parsed_program(compiler, tel).expect("runtime library parsed").items {
-        if let Item::Module(module) = &*module {
-            collect_primitive_contract_names(&module.items, &mut names);
-        }
-    }
-    names.sort();
-    names
-}
-
-#[cfg(test)]
-fn collect_primitive_contract_names(items: &[Rc<Item>], names: &mut Vec<String>) {
-    for item in items {
-        if let Item::Fn(def) = &**item
-            && def.extern_abi.is_some()
-        {
-            let arity = def.extern_params.len();
-            names.push(format!("{}/{}", def.name, arity));
-        }
-        if let Item::Module(module) = &**item {
-            collect_primitive_contract_names(&module.items, names);
-        }
     }
 }
 
