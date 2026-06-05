@@ -19,7 +19,7 @@
   <li><a href="#import">4. Importing names</a></li>
   <li><a href="#interface">5. Interfaces - the public contract</a></li>
   <li><a href="#strict">6. Strict interfaces - public functions need specs</a></li>
-  <li><a href="#artifacts">7. Compiled artifacts - <code>.fzi</code> and <code>.fzo</code></a></li>
+  <li><a href="#artifacts">7. Source-backed contracts and runtime units</a></li>
   <li><a href="#runtime">8. Runtime library modules</a></li>
   <li><a href="#lto">9. LTO - whole-program mode when you ask for it</a></li>
   <li><a href="#contract">10. The contract</a></li>
@@ -216,7 +216,7 @@ exist to catch that before code starts depending on an inferred body.
 </div>
 
 <!-- ─────────────────────────────── 7. ARTIFACTS ─────────────────────────────── -->
-<h2 id="artifacts">7. Compiled artifacts - <code>.fzi</code> and <code>.fzo</code></h2>
+<h2 id="artifacts">7. Source-backed contracts and runtime units</h2>
 
 <p>Separate compilation is now source-backed. The compiler owns module
 discovery, source loading, parse caches, public interfaces, macro surfaces, and
@@ -247,7 +247,7 @@ planner state for this run.</p>
 
 imports
   -&gt; ask Compiler for source-backed interfaces
-  -&gt; never load a parallel artifact format
+  -&gt; never load a parallel contract format
 
 runtime
   -&gt; discover reachable runtime modules
@@ -330,17 +330,10 @@ functions should have specs. Primitive <code>extern "C"</code> declarations
 stay inside modules; core prelude modules expose selected functions through
 imports in <code>runtime.fz</code>.</p>
 
-<p>Runtime artifacts use the same module-name paths as user modules:
-<code>build/fz/interfaces/Name.fzi</code> and
-<code>build/fz/objects/Name.fzo</code>. The source filename does not affect the
-artifact path; <code>src/modules/runtime_library/utf8.fz</code> still maps the
-module <code>Utf8</code> to <code>build/fz/interfaces/Utf8.fzi</code> and
-<code>build/fz/objects/Utf8.fzo</code>.</p>
-
 <p>Execution prepends the core prelude: <code>runtime.fz</code> root type
 aliases and imports plus core prelude module sources. Runtime primitive types such as <code>pid</code>,
 <code>ref</code>, and <code>utf8</code> are compiler-known. Imported non-core runtime modules
-are materialized from reachable runtime <code>.fzo</code> payloads during graph
+are materialized from reachable runtime source modules during graph
 loading.</p>
 
 <div class="aside">
@@ -366,7 +359,7 @@ fz dump --lto --emit bodies path/to/file.fz</pre>
 <code>--lto</code>.</p>
 
 <p><code>dump --emit stats</code> is the process view. It counts events such
-as interface collection, artifact loads/writes, link success/failure, and LTO
+as interface collection, source-backed runtime loading, link success/failure, and LTO
 boundary erasure. <code>dump --emit interfaces</code> and
 <code>dump --emit specs</code> remain product views.</p>
 

@@ -19,7 +19,7 @@ Read the one whose trigger matches what you are about to touch:
 - [guides](docs/guides.md) — writing or updating user-facing `guides/*.html`.
 - [ir-interp-runtime](docs/ir-interp-runtime.md) — IR interpreter runtime ownership, persistent drives, or REPL session execution.
 - [lazy-continuation-materialization](docs/lazy-continuation-materialization.md) — compiler-known native continuations, stack-backed continuation descriptors, closure materialization, or scheduler-boundary continuation roots.
-- [modules](docs/modules.md) — module identity, interfaces, `.fzi` / `.fzo` artifacts, compiled units/images, import resolution, link checks, runtime-library modules, or LTO boundary erasure.
+- [modules](docs/modules.md) — module identity, source-backed interfaces, compiled units/images, import resolution, link checks, runtime-library modules, or LTO boundary erasure.
 - [protocols](docs/protocols.md) — `defprotocol` / `defimpl`, protocol-domain types, implementation target identity, protocol dispatch, or plan-preserving protocol/link rules.
 - [pinned-process-register](docs/pinned-process-register.md) — Cranelift pinned register, compiled `Process*` base pointer, process ABI offsets, or the `CURRENT_PROCESS` dual invariant.
 - [repl-session](docs/repl-session.md) — REPL world/bindings/runtime layering, chunk synthesis, docs/help, or macro/runtime boundaries.
