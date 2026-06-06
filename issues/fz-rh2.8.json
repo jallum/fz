@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-06T23:37:22Z",
+  "description": "Goal: consume SemanticClosed facts mechanically. Signal: materialization, ABI, interpreter/JIT/AOT adapters never publish semantic facts or discover reachability.",
+  "id": "fz-rh2.8",
+  "labels": [],
+  "parent": "fz-rh2",
+  "priority": 2,
+  "status": "open",
+  "title": "[EPIC] Compiler2 artifact boundary and backend adapters",
+  "type": "epic",
+  "updated_at": "2026-06-06T23:37:22Z"
+}
