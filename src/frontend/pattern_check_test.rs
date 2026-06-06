@@ -7,7 +7,7 @@ use crate::telemetry::Telemetry;
 
 fn parse(src: &str, tel: &dyn Telemetry) -> Program {
     let mut sm = SourceMap::new();
-    let fid = sm.add_file("test.fz", src);
+    let fid = sm.add_code("test.fz", src);
     let toks = Lexer::with_file_and_source_name(src, fid, "<test>")
         .tokenize(tel)
         .unwrap();

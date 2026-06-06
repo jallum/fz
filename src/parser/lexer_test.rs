@@ -26,7 +26,7 @@ fn tokens_carry_accurate_byte_spans() {
 fn locate_resolves_to_correct_line() {
     let src = "fn a(), do: 1\nfn b(), do: 2\n";
     let mut sm = SourceMap::new();
-    let f = sm.add_file("t.fz", src);
+    let f = sm.add_code("t.fz", src);
     let toks = Lexer::with_file_and_source_name(src, f, "<test>")
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .expect("lex");
@@ -43,8 +43,8 @@ fn locate_resolves_to_correct_line() {
 #[test]
 fn multi_file_spans_keep_their_file_id() {
     let mut sm = SourceMap::new();
-    let a = sm.add_file("a.fz", "fn foo()");
-    let b = sm.add_file("b.fz", "fn bar()");
+    let a = sm.add_code("a.fz", "fn foo()");
+    let b = sm.add_code("b.fz", "fn bar()");
     let toks_a = Lexer::with_file_and_source_name("fn foo()", a, "<test>")
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .unwrap();

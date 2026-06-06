@@ -534,7 +534,7 @@ impl ReplWorld {
 
     fn parse_source_chunk(src: &str, tel: &dyn Telemetry) -> Result<ReplWorldChunk, ReplWorldParse> {
         let mut sm = SourceMap::new();
-        let file_id = sm.add_file("<repl-chunk>".to_string(), src.to_string());
+        let file_id = sm.add_code("<repl-chunk>".to_string(), src.to_string());
         let toks = Lexer::with_file_and_source_name(src, file_id, "<repl-chunk>")
             .tokenize(tel)
             .map_err(|e| ReplWorldParse::Err(format!("{}", e)))?;

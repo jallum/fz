@@ -1,6 +1,6 @@
 //! SourceMap: owns source files and resolves spans to display location.
 //!
-//! Files are added via `add_file` which assigns a FileId. Spans index into
+//! Files are added via `add_code` which assigns a FileId. Spans index into
 //! `bytes` directly; `locate(span)` computes line/col on demand from a
 //! lazily-built line-offset index.
 
@@ -9,7 +9,7 @@ use std::sync::{Arc, OnceLock};
 use super::{FileId, Span};
 
 #[derive(Clone)]
-pub struct SourceFile {
+pub struct Code {
     pub name: String,
     pub bytes: Arc<str>,
     /// Lazily computed on first `locate` for this file. Each entry is the
@@ -17,7 +17,7 @@ pub struct SourceFile {
     line_starts: OnceLock<Vec<u32>>,
 }
 
-impl SourceFile {
+impl Code {
     fn new(name: String, bytes: Arc<str>) -> Self {
         Self {
             name,
@@ -59,7 +59,7 @@ pub struct Location {
 
 #[derive(Default, Clone)]
 pub struct SourceMap {
-    files: Vec<SourceFile>,
+    files: Vec<Code>,
 }
 
 impl SourceMap {
@@ -67,13 +67,13 @@ impl SourceMap {
         Self { files: Vec::new() }
     }
 
-    pub fn add_file(&mut self, name: impl Into<String>, bytes: impl Into<Arc<str>>) -> FileId {
+    pub fn add_code(&mut self, name: impl Into<String>, bytes: impl Into<Arc<str>>) -> FileId {
         let id = FileId(self.files.len() as u32);
-        self.files.push(SourceFile::new(name.into(), bytes.into()));
+        self.files.push(Code::new(name.into(), bytes.into()));
         id
     }
 
-    pub fn file(&self, id: FileId) -> &SourceFile {
+    pub fn file(&self, id: FileId) -> &Code {
         &self.files[id.0 as usize]
     }
 
