@@ -3,12 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-06T11:20:31Z",
-  "description": "Goal\nAdd Compiler-owned APIs for source/frontend checking and execution-graph preparation so , REPL helpers, and test support stop stitching those stages together ad hoc.\n\nSignal\n-  owns the production path from source/program input to .\n- Existing CLI/test callers use those APIs instead of manually calling , , and  in sequence.\n- Tests pin the new Compiler surface and preserve existing telemetry behavior.\n\nStrategy\n- Expand  into a focused driver facade.\n- Keep pass ownership in  and ; only move sequencing/orchestration.\n- Land tests first, then switch callers.\n",
+  "description": "Goal\nAdd Compiler-owned APIs for source/frontend checking and execution-graph preparation so `lib.rs`, REPL helpers, and test support stop stitching those stages together ad hoc.\n\nSignal\n- `Compiler` owns the production path from source or parsed program input to `PreparedExecutionGraph`.\n- Existing CLI and test callers use those APIs instead of manually calling `compile_source_with_types`, `checked_module_for_mode`, and `prepare_execution_graph` in sequence.\n- Tests pin the new Compiler surface and preserve existing telemetry behavior.\n\nStrategy\n- Expand `src/compiler.rs` into a focused driver facade.\n- Keep pass ownership in `frontend` and `modules::pipeline`; only move sequencing/orchestration.\n- Land tests first, then switch callers.",
   "id": "fz-kij",
   "labels": [],
+  "parent": "fz-3je",
   "priority": 1,
   "status": "open",
   "title": "Compiler spine: move frontend and execution-graph driving into Compiler",
   "type": "task",
-  "updated_at": "2026-06-06T11:20:31Z"
+  "updated_at": "2026-06-06T11:21:03Z"
 }
