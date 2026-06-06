@@ -4,14 +4,15 @@
   "blocks": [
     "fz-g1c.3"
   ],
+  "closed_at": "2026-06-06T13:34:24Z",
   "created": "2026-06-06T13:10:46Z",
   "description": "",
   "id": "fz-g1c.5",
   "labels": [],
   "parent": "fz-g1c",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Thread caller-owned telemetry through type-expression and visibility test helpers",
   "type": "task",
-  "updated_at": "2026-06-06T13:13:03Z"
+  "updated_at": "2026-06-06T13:34:24Z"
 }
