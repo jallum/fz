@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.6.2"
+  ],
   "blocks": [],
   "created": "2026-06-06T23:37:22Z",
   "description": "Goal: prove recursion and edits are facts, not phases. Change: finite activation keys, widening/join policy for recursive SCCs, owned-output retraction across root epochs. Check: qsort/partition converges; redefining main to call foo instead of qsort retracts qsort/partition/append from SemanticClosed.",
