@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-06T23:37:22Z",
+  "description": "Goal: prove runtime library and protocols are ordinary code and semantic facts. Signal: Enum.reduce pulls only selected runtime definitions, list protocol implementation, reducer bridge, callable facts, and required intrinsics.",
+  "id": "fz-rh2.7",
+  "labels": [],
+  "parent": "fz-rh2",
+  "priority": 2,
+  "status": "open",
+  "title": "[EPIC] Compiler2 runtime and protocol pull-through",
+  "type": "epic",
+  "updated_at": "2026-06-06T23:37:22Z"
+}
