@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-g1c.3"
+  ],
   "created": "2026-06-06T13:03:56Z",
   "description": "",
   "id": "fz-g1c.2",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Thread caller-owned telemetry through parser frontend lowering and type test helpers",
   "type": "task",
-  "updated_at": "2026-06-06T13:03:56Z"
+  "updated_at": "2026-06-06T13:03:57Z"
 }

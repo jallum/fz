@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-g1c.1"
+    "fz-g1c.1",
+    "fz-g1c.2"
   ],
   "blocks": [],
   "created": "2026-06-06T13:03:56Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Thread caller-owned telemetry through planner codegen and runtime test conveniences",
   "type": "task",
-  "updated_at": "2026-06-06T13:03:56Z"
+  "updated_at": "2026-06-06T13:03:57Z"
 }
