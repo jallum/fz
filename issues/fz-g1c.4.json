@@ -4,14 +4,15 @@
     "fz-g1c.3"
   ],
   "blocks": [],
+  "closed_at": "2026-06-06T13:48:55Z",
   "created": "2026-06-06T13:03:56Z",
   "description": "",
   "id": "fz-g1c.4",
   "labels": [],
   "parent": "fz-g1c",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Document caller-owned telemetry in tests and remove remaining hatch wrappers",
   "type": "task",
-  "updated_at": "2026-06-06T13:42:56Z"
+  "updated_at": "2026-06-06T13:48:55Z"
 }
