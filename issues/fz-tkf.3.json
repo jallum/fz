@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-06T14:13:01Z",
+  "description": "Refactor the compiler facade from a flat src/compiler.rs file into a directory-backed module with focused submodules, colocated tests, and updated agent docs while preserving the crate API at crate::compiler::{Compiler, World}.",
+  "id": "fz-tkf.3",
+  "labels": [],
+  "parent": "fz-tkf",
+  "priority": 2,
+  "status": "open",
+  "title": "Organize compiler into a proper module",
+  "type": "task",
+  "updated_at": "2026-06-06T14:13:01Z"
+}
