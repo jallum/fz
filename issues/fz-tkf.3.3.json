@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-tkf.3.1"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-tkf.3.2"
   ],
