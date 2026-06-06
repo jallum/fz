@@ -1,15 +1,14 @@
 use super::*;
 use crate::ast::Attribute;
+use crate::telemetry::Telemetry;
 use crate::type_expr::{ModuleTypeEnv, build_module_type_env_for_with_base, opaque_owner_module, qualify_opaque_name};
 use crate::types::Types;
 
-fn alias_attr(name: &str, body_src: &str) -> Attribute {
+fn alias_attr(name: &str, body_src: &str, tel: &dyn Telemetry) -> Attribute {
     use crate::ast::{Attribute, TypeAliasDecl, TypeExprBody};
     use crate::diag::Span;
     use crate::parser::lexer::{Lexer, Tok};
-    let toks = Lexer::with_source_name(body_src, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("lex body");
+    let toks = Lexer::with_source_name(body_src, "<test>").tokenize(tel).expect("lex body");
     let body_tokens: Vec<_> = toks.into_iter().filter(|t| !matches!(t.tok, Tok::Eof)).collect();
     Attribute::TypeAlias(TypeAliasDecl {
         name: name.to_string(),
@@ -43,7 +42,7 @@ fn unqualified_opaque_has_no_owner() {
 
 #[test]
 fn opaque_alias_carries_declaring_module() {
-    let attrs = vec![alias_attr("t", "opaque integer")];
+    let attrs = vec![alias_attr("t", "opaque integer", &crate::telemetry::ConfiguredTelemetry::new())];
     let env = env_for("File", &attrs);
     let ct = crate::types::new();
     let t = env.get("t").expect("alias resolved");
@@ -52,7 +51,7 @@ fn opaque_alias_carries_declaring_module() {
 
 #[test]
 fn check_passes_inside_declaring_module() {
-    let attrs = vec![alias_attr("t", "opaque integer")];
+    let attrs = vec![alias_attr("t", "opaque integer", &crate::telemetry::ConfiguredTelemetry::new())];
     let env = env_for("File", &attrs);
     let ct = crate::types::new();
     let t = env.get("t").unwrap();
@@ -61,7 +60,7 @@ fn check_passes_inside_declaring_module() {
 
 #[test]
 fn check_rejects_from_other_module() {
-    let attrs = vec![alias_attr("t", "opaque integer")];
+    let attrs = vec![alias_attr("t", "opaque integer", &crate::telemetry::ConfiguredTelemetry::new())];
     let env = env_for("File", &attrs);
     let ct = crate::types::new();
     let t = env.get("t").unwrap();
@@ -94,8 +93,14 @@ fn check_passes_on_unqualified_builtin_opaque() {
 
 #[test]
 fn two_modules_declaring_t_are_distinct_opaques() {
-    let a = env_for("A", &[alias_attr("t", "opaque integer")]);
-    let b = env_for("B", &[alias_attr("t", "opaque integer")]);
+    let a = env_for(
+        "A",
+        &[alias_attr("t", "opaque integer", &crate::telemetry::ConfiguredTelemetry::new())],
+    );
+    let b = env_for(
+        "B",
+        &[alias_attr("t", "opaque integer", &crate::telemetry::ConfiguredTelemetry::new())],
+    );
     let mut ct = crate::types::new();
     let ta = a.get("t").unwrap();
     let tb = b.get("t").unwrap();
@@ -126,7 +131,11 @@ fn brand_mint_visibility_unqualified_is_global() {
 
 #[test]
 fn opaque_alias_wrapping_resource_is_gated() {
-    let attrs = vec![alias_attr("t", "opaque resource(integer)")];
+    let attrs = vec![alias_attr(
+        "t",
+        "opaque resource(integer)",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )];
     let env = env_for("File", &attrs);
     let ct = crate::types::new();
     let t = env.get("t").unwrap();
