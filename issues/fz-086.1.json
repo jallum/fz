@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-06T11:46:36Z",
+  "description": "Goal\nIntroduce compiler::World as the authoritative mutable compiler state and move execution-graph preparation onto it so Compiler stages populate world state instead of returning PreparedExecutionGraph.\n\nSignal\n- compiler::World owns source-map, diagnostics, linked units, module, and module-plan state needed after execution-graph preparation.\n- Compiler frontend and execution-graph entrypoints mutate a supplied World.\n- PreparedExecutionGraph is removed or reduced to an implementation detail no longer visible at the compiler boundary.\n- Compiler and pipeline tests cover the new world state after preparation.\n\nStrategy\n- Define World and its accessors in src/compiler.rs.\n- Rework modules::pipeline preparation to fill world-owned execution state.\n- Update compiler tests first, then production callers that only need execution-graph data.",
+  "id": "fz-086.1",
+  "labels": [],
+  "parent": "fz-086",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler World: define authoritative state and world-owned execution graph",
+  "type": "task",
+  "updated_at": "2026-06-06T11:46:36Z"
+}
