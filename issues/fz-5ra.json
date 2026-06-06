@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-06T13:59:38Z",
@@ -7,8 +7,8 @@
   "id": "fz-5ra",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Telemetry plumbing: accept the Telemetry trait in helper and driver signatures",
   "type": "task",
-  "updated_at": "2026-06-06T13:59:38Z"
+  "updated_at": "2026-06-06T13:59:41Z"
 }
