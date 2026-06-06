@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.6.2"
+  ],
   "blocks": [],
   "created": "2026-06-06T23:37:22Z",
   "description": "Goal: stress protocol dispatch and callable reducers in the semantic fixpoint. Change: derive list receiver protocol selection, Enumerable.List.reduce activation, reducer bridge callable entry, user lambda activation, Kernel.+ edge, and public return contract. Check: Enum.reduce settles to int without any fallback and excludes map/range/unrelated Enum functions.",
