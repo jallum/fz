@@ -57,7 +57,6 @@ impl ConfiguredTelemetry {
     }
 
     /// Remove a previously attached handler. Returns true if removed.
-    #[cfg(test)]
     pub fn detach(&self, id: HandlerId) -> bool {
         let mut h = self.handlers.borrow_mut();
         if let Some(pos) = h.iter().position(|e| e.id == id) {
@@ -147,6 +146,14 @@ impl Telemetry for ConfiguredTelemetry {
 
     fn span_exception(&self, name: &[&'static str], span_id: u64, elapsed_ns: u64) {
         self.close_span(name, span_id, elapsed_ns, EventKind::SpanException);
+    }
+
+    fn attach(&self, prefix: &[&'static str], handler: Box<dyn Handler>) -> HandlerId {
+        ConfiguredTelemetry::attach(self, prefix, handler)
+    }
+
+    fn detach(&self, id: HandlerId) -> bool {
+        ConfiguredTelemetry::detach(self, id)
     }
 }
 

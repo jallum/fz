@@ -40,7 +40,7 @@ fn capture() -> (ConfiguredTelemetry, DbgCapture) {
     (tel, cap)
 }
 
-fn drive_main(runtime: &mut IrInterpRuntime, module: &Module, tel: &ConfiguredTelemetry) {
+fn drive_main(runtime: &mut IrInterpRuntime, module: &Module, tel: &dyn crate::telemetry::Telemetry) {
     let main_id = module.fn_by_name("main").expect("main/0").id;
     let mut t = crate::types::new();
     runtime.enqueue_entry(module, tel, 1, main_id, vec![]).expect("enqueue");

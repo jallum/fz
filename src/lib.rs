@@ -288,7 +288,7 @@ repl options:
     );
 }
 
-fn run_build(tel: &ConfiguredTelemetry, args: &[String]) {
+fn run_build(tel: &dyn Telemetry, args: &[String]) {
     let sm_cell: Rc<RefCell<SourceMap>> = Rc::new(RefCell::new(SourceMap::new()));
     tel.attach(&["fz", "diag"], Box::new(DiagRenderer::new_stderr(sm_cell.clone())));
     tel.attach(&["fz", "build"], Box::new(ConsoleBuildHandler));
@@ -412,7 +412,7 @@ fn run_build(tel: &ConfiguredTelemetry, args: &[String]) {
 /// interp hits an IR construct it doesn't yet support, it returns a
 /// "not yet supported" error and exits 75 (EX_TEMPFAIL) so the fixture
 /// matrix logs the path as Deferred rather than failing.
-fn run_interp(tel: &ConfiguredTelemetry, args: &[String]) {
+fn run_interp(tel: &dyn Telemetry, args: &[String]) {
     let sm_cell: Rc<RefCell<SourceMap>> = Rc::new(RefCell::new(SourceMap::new()));
     tel.attach(&["fz", "diag"], Box::new(DiagRenderer::new_stderr(sm_cell.clone())));
 
@@ -448,7 +448,7 @@ fn run_interp(tel: &ConfiguredTelemetry, args: &[String]) {
     }
 }
 
-fn run_jit_from_path(tel: &ConfiguredTelemetry, args: &[String]) {
+fn run_jit_from_path(tel: &dyn Telemetry, args: &[String]) {
     let mut mode = CompileMode::Normal;
     let mut src_path: Option<String> = None;
     let mut i = 0;
@@ -605,7 +605,7 @@ impl Handler for ConsoleDumpHandler {
     }
 }
 
-fn run_dump(tel: &ConfiguredTelemetry, args: &[String]) {
+fn run_dump(tel: &dyn Telemetry, args: &[String]) {
     let sm_cell: Rc<RefCell<SourceMap>> = Rc::new(RefCell::new(SourceMap::new()));
     tel.attach(&["fz", "diag"], Box::new(DiagRenderer::new_stderr(sm_cell.clone())));
     tel.attach(&["fz", "dump"], Box::new(ConsoleDumpHandler));
@@ -1249,7 +1249,7 @@ fn compile_pipeline(
 /// `fz run <path>` (and the no-argument stdin route) — compile, then drive
 /// the program through the Runtime so concurrency-using fixtures work
 /// end-to-end.
-fn run_jit_src(tel: &ConfiguredTelemetry, src: String, source_name: String, mode: CompileMode) {
+fn run_jit_src(tel: &dyn Telemetry, src: String, source_name: String, mode: CompileMode) {
     let sm_cell: Rc<RefCell<SourceMap>> = Rc::new(RefCell::new(SourceMap::new()));
     tel.attach(&["fz", "diag"], Box::new(DiagRenderer::new_stderr(sm_cell.clone())));
     let mut compiler = Compiler::new();

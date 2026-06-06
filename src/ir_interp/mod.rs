@@ -99,7 +99,7 @@ impl CodeImage {
     }
 
     #[cfg(test)]
-    fn from_module(module: &Module, tel: &crate::telemetry::ConfiguredTelemetry) -> Result<Self, String> {
+    fn from_module(module: &Module, tel: &dyn crate::telemetry::Telemetry) -> Result<Self, String> {
         let mut t = crate::types::new();
         let module_plan = plan_module_with_role(&mut t, module, tel, "test");
         Self::from_plan(&mut t, module, module_plan)
@@ -301,7 +301,7 @@ impl IrInterpRuntime {
     pub(crate) fn enqueue_entry(
         &mut self,
         module: &Module,
-        tel: &crate::telemetry::ConfiguredTelemetry,
+        tel: &dyn crate::telemetry::Telemetry,
         pid: u32,
         fn_id: FnId,
         args: Vec<AnyValue>,

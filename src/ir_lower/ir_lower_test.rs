@@ -18,7 +18,7 @@ fn lower_flat_src(src: &str, tel: &dyn Telemetry) -> (crate::types::DefaultTypes
     (ct, module)
 }
 
-fn lower_src_with_capture(src: &str, tel: &ConfiguredTelemetry) -> (Module, Capture) {
+fn lower_src_with_capture(src: &str, tel: &dyn Telemetry) -> (Module, Capture) {
     let cap = Capture::new();
     let handler_id = tel.attach(&[], cap.handler());
     let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).expect("lex");
@@ -60,7 +60,7 @@ end
 /// captured stdout (joined by newline). Mirrors `ir_codegen::tests::
 /// capture_main`; lets ir_lower-level tests assert end-to-end runtime
 /// correctness rather than just IR shape.
-fn run_and_capture(src: &str, tel: &ConfiguredTelemetry) -> String {
+fn run_and_capture(src: &str, tel: &dyn Telemetry) -> String {
     let mut graph = linked_runtime_graph(src, tel);
     let entry = graph.linked_module().fn_by_name("main").expect("no main fn").id;
     let (module, module_plan) = graph.cloned_linked_module_plan();

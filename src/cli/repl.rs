@@ -105,7 +105,7 @@ struct RustylineReplLineEditor {
 }
 
 impl RustylineReplLineEditor {
-    fn new(tel: Rc<ConfiguredTelemetry>) -> io::Result<Self> {
+    fn new(tel: Rc<dyn Telemetry>) -> io::Result<Self> {
         let mut editor = Editor::<ReplEditorHelper, DefaultHistory>::new().map_err(rustyline_to_io_error)?;
         editor.set_helper(Some(ReplEditorHelper { tel }));
         Ok(Self { editor })
@@ -135,7 +135,7 @@ fn rustyline_to_io_error(err: ReadlineError) -> io::Error {
 }
 
 struct ReplEditorHelper {
-    tel: Rc<ConfiguredTelemetry>,
+    tel: Rc<dyn Telemetry>,
 }
 
 impl ReplEditorHelper {
@@ -171,7 +171,7 @@ impl Helper for ReplEditorHelper {}
 /// Compile a file's contents, then call `main/0` through `ReplRuntime` if
 /// defined. Only program-side `dbg()` writes to stdout; diagnostics use the
 /// caller's telemetry bus.
-pub fn run_script(path: &Path, tel: &ConfiguredTelemetry) -> io::Result<()> {
+pub fn run_script(path: &Path, tel: &dyn Telemetry) -> io::Result<()> {
     let src = std::fs::read_to_string(path)?;
     let source_name = path.display().to_string();
     let diagnostics = attach_repl_diagnostic_renderer(tel);
@@ -204,11 +204,11 @@ enum ReplComposerEvent {
 }
 
 struct ReplComposer {
-    tel: Rc<ConfiguredTelemetry>,
+    tel: Rc<dyn Telemetry>,
 }
 
 impl ReplComposer {
-    fn new(tel: Rc<ConfiguredTelemetry>) -> Self {
+    fn new(tel: Rc<dyn Telemetry>) -> Self {
         Self { tel }
     }
 
@@ -722,7 +722,7 @@ fn repl_diagnostic_telemetry() -> (ConfiguredTelemetry, Rc<RefCell<Vec<u8>>>) {
     (tel, diagnostics)
 }
 
-fn attach_repl_diagnostic_renderer(tel: &ConfiguredTelemetry) -> Rc<RefCell<Vec<u8>>> {
+fn attach_repl_diagnostic_renderer(tel: &dyn Telemetry) -> Rc<RefCell<Vec<u8>>> {
     let diagnostics = Rc::new(RefCell::new(Vec::new()));
     tel.attach(
         &["fz", "diag"],

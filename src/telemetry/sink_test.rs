@@ -29,6 +29,20 @@ fn ext_span_is_callable_through_concrete() {
     assert_eq!(span.span_id(), 1);
 }
 
+#[test]
+fn dyn_telemetry_attach_and_detach_dispatch_to_configured_bus() {
+    let bus = crate::telemetry::ConfiguredTelemetry::new();
+    let t: &dyn Telemetry = &bus;
+    let cap = crate::telemetry::Capture::new();
+
+    let handler_id = t.attach(&["fz"], cap.handler());
+    t.emit(&["fz", "x"]);
+    assert_eq!(cap.len(), 1);
+    assert!(t.detach(handler_id));
+    t.emit(&["fz", "y"]);
+    assert_eq!(cap.len(), 1);
+}
+
 /// Tiny mock that counts each method call. Used by sibling tests
 /// in fz-ndf.4 onward — here it just demonstrates the trait is
 /// straightforwardly implementable.

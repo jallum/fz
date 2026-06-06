@@ -2,7 +2,7 @@ use crate::fz_ir::{FnId, Module};
 use crate::ir_codegen::compile_planned;
 use crate::ir_planner::{ModulePlan, materialize_program, plan_module_with_role};
 use crate::modules::pipeline::{CompileMode, checked_module_for_mode, link_execution_module};
-use crate::telemetry::{Capture, ConfiguredTelemetry, Event, Handler, Telemetry};
+use crate::telemetry::{Capture, Event, Handler, Telemetry};
 use crate::types::DefaultTypes;
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -28,7 +28,7 @@ impl Handler for LoweredCapture {
 
 /// Run the production frontend and snapshot the lowered IR module from
 /// telemetry. This is the exact frontend output the planner consumes.
-pub(crate) fn lower_frontend_module(src: &str, tel: &ConfiguredTelemetry) -> Module {
+pub(crate) fn lower_frontend_module(src: &str, tel: &dyn Telemetry) -> Module {
     let captured = Rc::new(RefCell::new(None));
     let handler_id = tel.attach(&["fz"], Box::new(LoweredCapture(captured.clone())));
 
@@ -166,7 +166,7 @@ fn activation_projection_signals(cap: &Capture) -> Vec<ActivationProjectionSigna
 #[cfg(test)]
 pub(crate) fn runtime_graph_planner_activation_projection_signals(
     src: &str,
-    tel: &ConfiguredTelemetry,
+    tel: &dyn Telemetry,
 ) -> Vec<ActivationProjectionSignal> {
     let cap = Capture::new();
     let handler_id = tel.attach(&[], cap.handler());
@@ -188,7 +188,7 @@ pub(crate) fn runtime_graph_planner_activation_projection_signals(
 #[cfg(test)]
 pub(crate) fn runtime_graph_codegen_materialized_body_signals(
     src: &str,
-    tel: &ConfiguredTelemetry,
+    tel: &dyn Telemetry,
 ) -> Vec<MaterializedBodySignal> {
     use crate::telemetry::Value;
 
@@ -242,7 +242,7 @@ fn reachable_materialized_body_signals_from_planned_compile(
     t: &mut DefaultTypes,
     module: &Module,
     module_plan: &ModulePlan,
-    tel: &ConfiguredTelemetry,
+    tel: &dyn Telemetry,
     cap: &Capture,
 ) -> Vec<ReachableMaterializedBodySignal> {
     use crate::telemetry::Value;
@@ -302,7 +302,7 @@ fn reachable_materialized_body_signals_from_planned_compile(
 #[cfg(test)]
 pub(crate) fn runtime_graph_reachable_materialized_body_signals(
     src: &str,
-    tel: &ConfiguredTelemetry,
+    tel: &dyn Telemetry,
 ) -> Vec<ReachableMaterializedBodySignal> {
     let cap = Capture::new();
     let handler_id = tel.attach(&[], cap.handler());
@@ -322,7 +322,7 @@ pub(crate) fn module_reachable_materialized_body_signals(
     t: &mut DefaultTypes,
     module: &Module,
     module_plan: &ModulePlan,
-    tel: &ConfiguredTelemetry,
+    tel: &dyn Telemetry,
 ) -> Vec<ReachableMaterializedBodySignal> {
     let cap = Capture::new();
     let handler_id = tel.attach(&[], cap.handler());

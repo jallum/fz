@@ -194,10 +194,10 @@ metadata cloned into `'static` form (`durable_owned`, which drops `Opaque`
 values it cannot own).
 
 The ownership rule is strict: only the true root of a run creates the
-`ConfiguredTelemetry`. Shared helpers take caller-owned `&dyn Telemetry` or
-`&ConfiguredTelemetry`; they do not quietly allocate a second bus, because that
-creates a shadow event stream the test cannot observe and can accidentally
-double-run planner/codegen work under a different sink.
+`ConfiguredTelemetry`. Shared helpers take caller-owned `&dyn Telemetry`; they
+do not quietly allocate a second bus, because that creates a shadow event
+stream the test cannot observe and can accidentally double-run planner/codegen
+work under a different sink.
 
 The decision and the artifact are two questions. Telemetry proves the compiler
 *chose* something — a pass ran, a path was selected, N items were pruned. It does

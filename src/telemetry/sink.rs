@@ -11,6 +11,7 @@ use std::thread::panicking;
 use std::time::Instant;
 
 use super::event::{Measurements, Metadata};
+use super::handler::{Handler, HandlerId};
 
 /// The compiler's observability bus. Every observable thing the compiler
 /// does — diagnostics, stats, span boundaries, artifact dumps — flows
@@ -36,6 +37,17 @@ pub trait Telemetry {
     /// Close a span that was unwound by a panic. Impls typically emit a
     /// `[..name, "exception"]` event carrying `elapsed_ns`.
     fn span_exception(&self, name: &[&'static str], span_id: u64, elapsed_ns: u64);
+
+    /// Attach `handler` to events whose name starts with `prefix`.
+    /// Implementations that are not a configurable bus may reject this.
+    fn attach(&self, _prefix: &[&'static str], _handler: Box<dyn Handler>) -> HandlerId {
+        panic!("telemetry handler attachment is unsupported for this telemetry implementation")
+    }
+
+    /// Remove a previously attached handler. Returns true if removed.
+    fn detach(&self, _id: HandlerId) -> bool {
+        false
+    }
 
     /// Emit an event with no payload. Shorthand for
     /// `execute(name, &Measurements::new(), &Metadata::new())`.

@@ -1728,11 +1728,11 @@ fn return_capabilities_classify_quicksort_fn_shapes() {
     assert_eq!(cap("main").returns_tuple_of_arity, None, "main returns neither a tuple");
 }
 
-fn frontend_module(src: &str, tel: &ConfiguredTelemetry) -> Module {
+fn frontend_module(src: &str, tel: &dyn Telemetry) -> Module {
     lower_frontend_module(src, tel)
 }
 
-fn frontend_plan(src: &str, tel: &ConfiguredTelemetry) -> (DefaultTypes, Module, ModulePlan) {
+fn frontend_plan(src: &str, tel: &dyn Telemetry) -> (DefaultTypes, Module, ModulePlan) {
     let mut t = crate::types::new();
     let frontend_tel = ConfiguredTelemetry::new();
     let module = frontend_module(src, &frontend_tel);
