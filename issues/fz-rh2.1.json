@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-06T23:37:21Z",
+  "description": "Goal: make the new design the active agent reference. Change: keep .agent/docs/agent-docs.md, move old subsystem docs to .agent/deprecated-docs, reduce .agent/docs.md to agent-docs plus northstar.html. Check: docs index has no deprecated subsystem links; northstar opens.",
+  "id": "fz-rh2.1",
+  "labels": [],
+  "parent": "fz-rh2",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 prep: publish northstar and retire old-world docs",
+  "type": "task",
+  "updated_at": "2026-06-06T23:37:21Z"
+}
