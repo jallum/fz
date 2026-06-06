@@ -2,7 +2,8 @@ use super::*;
 
 #[test]
 fn runtime_library_interfaces_expose_fz_functions_not_primitive_externs() {
-    let interfaces = interface_table();
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let interfaces = interface_table(&tel);
     let utf8 = interfaces
         .get(&ModuleName::from_segments(vec!["Utf8".to_string()]))
         .expect("Utf8 interface");
@@ -158,7 +159,7 @@ fn runtime_library_interfaces_expose_fz_functions_not_primitive_externs() {
     );
 
     assert_eq!(
-        primitive_contract_names(),
+        primitive_contract_names(&tel),
         vec![
             "fz_binary_concat/2",
             "fz_bitstring_valid_utf8/1",
@@ -193,7 +194,7 @@ end
         &mut t,
         consumer.to_string(),
         "consumer.fz".to_string(),
-        interface_table(),
+        interface_table(&crate::telemetry::ConfiguredTelemetry::new()),
         &crate::telemetry::ConfiguredTelemetry::new(),
     ) {
         Ok(_) => {}

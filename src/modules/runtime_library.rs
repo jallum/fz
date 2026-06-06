@@ -18,8 +18,6 @@ use crate::modules::identity::ModuleName;
 use crate::modules::interface::{ModuleInterface, collect_from_program};
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
-#[cfg(test)]
-use crate::telemetry::ConfiguredTelemetry;
 use crate::telemetry::Telemetry;
 use crate::type_expr::{
     BrandInnerTypes, ModuleTypeEnv, OpaqueInnerTypes, build_module_type_env_for_with_base, builtin_brand_inners,
@@ -181,9 +179,8 @@ pub fn parsed_program(tel: &dyn Telemetry) -> Program {
 }
 
 #[cfg(test)]
-pub fn interface_table() -> InterfaceTable {
-    let tel = ConfiguredTelemetry::new();
-    interfaces(&tel)
+pub fn interface_table(tel: &dyn Telemetry) -> InterfaceTable {
+    interfaces(tel)
 }
 
 pub fn interfaces(tel: &dyn Telemetry) -> BTreeMap<ModuleName, ModuleInterface> {
@@ -444,11 +441,10 @@ fn runtime_source_name(name: impl AsRef<str>) -> String {
 }
 
 #[cfg(test)]
-pub fn primitive_contract_names() -> Vec<String> {
+pub fn primitive_contract_names(tel: &dyn Telemetry) -> Vec<String> {
     let mut names = Vec::new();
-    let tel = ConfiguredTelemetry::new();
-    collect_primitive_contract_names(&primitive_prelude_program(&tel).items, &mut names);
-    for module in parsed_program(&tel).items {
+    collect_primitive_contract_names(&primitive_prelude_program(tel).items, &mut names);
+    for module in parsed_program(tel).items {
         if let Item::Module(module) = &*module {
             collect_primitive_contract_names(&module.items, &mut names);
         }

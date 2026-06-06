@@ -1731,17 +1731,17 @@ fn return_capabilities_classify_quicksort_fn_shapes() {
     assert_eq!(cap("main").returns_tuple_of_arity, None, "main returns neither a tuple");
 }
 
-fn frontend_module(src: &str) -> Module {
-    lower_frontend_module(src)
+fn frontend_module(src: &str, tel: &ConfiguredTelemetry) -> Module {
+    lower_frontend_module(src, tel)
 }
 
-fn frontend_plan(src: &str, tel: &dyn Telemetry) -> (DefaultTypes, Module, ModulePlan) {
+fn frontend_plan(src: &str, tel: &ConfiguredTelemetry) -> (DefaultTypes, Module, ModulePlan) {
     let mut check_t = crate::types::new();
-    let check_module = frontend_module(src);
+    let check_module = frontend_module(src, tel);
     let (_check_plan, _check_cap) = plan_module_prechecked(&mut check_t, &check_module);
 
     let mut t = crate::types::new();
-    let module = frontend_module(src);
+    let module = frontend_module(src, tel);
     let plan = plan_module_with_role(&mut t, &module, tel, "test");
     (t, module, plan)
 }
@@ -3318,8 +3318,10 @@ fn planner_projects_enum_reduce_range_runtime_graph_from_activation_facts() {
 
 #[test]
 fn runtime_graph_enum_helpers_erase_closure_identity_from_public_spec_keys() {
-    let signals =
-        runtime_graph_reachable_materialized_body_signals(include_str!("../../fixtures/enum_take_drop_split/input.fz"));
+    let signals = runtime_graph_reachable_materialized_body_signals(
+        include_str!("../../fixtures/enum_take_drop_split/input.fz"),
+        &ConfiguredTelemetry::new(),
+    );
 
     let helper_specs = signals
         .iter()
@@ -3343,8 +3345,10 @@ fn runtime_graph_enum_helpers_erase_closure_identity_from_public_spec_keys() {
 
 #[test]
 fn planner_projects_plain_spawn_child_through_callable_boundary() {
-    let signals =
-        runtime_graph_planner_activation_projection_signals(include_str!("../type_infer/fixtures/spawn_plain.fz"));
+    let signals = runtime_graph_planner_activation_projection_signals(
+        include_str!("../type_infer/fixtures/spawn_plain.fz"),
+        &ConfiguredTelemetry::new(),
+    );
 
     let child = signals
         .iter()
@@ -3475,8 +3479,10 @@ fn runtime_graph_enum_take_callers_supply_callable_args_to_indirect_closure_spec
 
 #[test]
 fn materialization_keeps_plain_spawn_child_reachable_through_callable_boundary() {
-    let signals =
-        runtime_graph_reachable_materialized_body_signals(include_str!("../type_infer/fixtures/spawn_plain.fz"));
+    let signals = runtime_graph_reachable_materialized_body_signals(
+        include_str!("../type_infer/fixtures/spawn_plain.fz"),
+        &ConfiguredTelemetry::new(),
+    );
 
     let child = signals
         .iter()

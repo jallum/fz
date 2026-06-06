@@ -2,7 +2,7 @@ use super::{Info, TypeInferOutcome, TypeInferReturnState, TypeInferStatus, infer
 use crate::fz_ir::{Const, DeadBranch, EmitSlot, FnBuilder, FnId, Module, ModuleBuilder, Prim, Term};
 use crate::telemetry::{ConfiguredTelemetry, Event, Handler, Value};
 use crate::test_support::{
-    entry_main_fn_id as main_id, linked_runtime_module, linked_runtime_module_unplanned, lower_frontend_module as lower,
+    entry_main_fn_id as main_id, linked_runtime_module, linked_runtime_module_unplanned, lower_frontend_module,
 };
 use crate::types::{CallableValueKind, ClosureTarget, ClosureTypes, DefaultTypes, Ty, Types};
 use std::cell::RefCell;
@@ -17,6 +17,11 @@ fn linked_unplanned_fixture(src: &str) -> Module {
     let mut t = crate::types::new();
     let tel = ConfiguredTelemetry::new();
     linked_runtime_module_unplanned(&mut t, src, &tel)
+}
+
+fn lower(src: &str) -> Module {
+    let tel = ConfiguredTelemetry::new();
+    lower_frontend_module(src, &tel)
 }
 
 /// Test boundary helper for one activation's return type. The production API

@@ -1395,7 +1395,12 @@ fn materialization_keeps_selective_receive_outcome_bodies_reachable() {
                end";
     let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
-    let reachable = module_reachable_materialized_body_signals(&mut t, &graph.module, &graph.module_plan);
+    let reachable = module_reachable_materialized_body_signals(
+        &mut t,
+        &graph.module,
+        &graph.module_plan,
+        &ConfiguredTelemetry::new(),
+    );
 
     assert!(
         reachable.iter().any(|body| body.fn_name == "rx_clause_0_body"),
@@ -1423,8 +1428,10 @@ fn runtime_graph_plain_spawn_runs_via_planned_interp_path() {
 
 #[test]
 fn codegen_materializes_plain_spawn_child_callable_boundary_target() {
-    let signals =
-        runtime_graph_codegen_materialized_body_signals(include_str!("../type_infer/fixtures/spawn_plain.fz"));
+    let signals = runtime_graph_codegen_materialized_body_signals(
+        include_str!("../type_infer/fixtures/spawn_plain.fz"),
+        &ConfiguredTelemetry::new(),
+    );
 
     let child = signals
         .iter()
