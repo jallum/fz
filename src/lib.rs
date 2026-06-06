@@ -2,6 +2,7 @@ mod aot_link;
 mod ast;
 mod callsite_walk;
 mod compiler;
+pub mod compiler2;
 mod diag;
 mod dispatch_matrix;
 mod frontend;
