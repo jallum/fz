@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-086.2"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-086",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler World: migrate entrypoints, tests, and docs",
   "type": "task",
-  "updated_at": "2026-06-06T11:46:41Z"
+  "updated_at": "2026-06-06T12:00:37Z"
 }
