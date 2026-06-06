@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-06T11:12:18Z",
+  "description": "Placeholder parent ticket for the work to remove the legacy .fzi/.fzo persistence system and any dependent workflow.",
+  "id": "fz-tkf",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Epic: remove .fzi/.fzo storage system",
+  "type": "epic",
+  "updated_at": "2026-06-06T11:12:18Z"
+}
