@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.2"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.5"
+  ],
   "created": "2026-06-06T23:37:21Z",
   "description": "Goal: implement the scheduler/fact substrate. Change: owned fact contributions, aggregate fingerprints, deduped queue plus queued set, dynamic reads/waits/output indexes, changed-fact wakeups, and fatal diagnostic telemetry. Check: coalescing, requeue-after-run, contribution replacement, no-change suppression, waiter wakeup, and fatal stop tests.",
   "id": "fz-rh2.4",
