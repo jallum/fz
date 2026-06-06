@@ -18,6 +18,7 @@
 
 pub(crate) use crate::frontend::spec_registry::SpecRegistry;
 use crate::fz_ir::Module;
+#[cfg(test)]
 use crate::ir_planner::ModulePlan;
 use crate::telemetry::Telemetry;
 use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Ty, Types, VisibilityTypes};
@@ -79,25 +80,12 @@ pub use support::{asm_record_enable, asm_record_take, ir_text_record_enable, ir_
 
 pub use fz_runtime::process::{PidId, Process, ProcessState};
 
-pub(crate) use driver::PreparedNativeProgram;
-
-pub(crate) fn prepare_native_program<
-    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
->(
-    t: &mut T,
-    module: &Module,
-    module_plan: &ModulePlan,
-    tel: &dyn Telemetry,
-) -> Result<PreparedNativeProgram, CodegenError> {
-    driver::prepare_preplanned_native(t, module, module_plan, tel)
-}
-
 pub(crate) fn compile_with_backend_prepared<
     B: Backend,
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
 >(
     t: &mut T,
-    prepared: &PreparedNativeProgram,
+    prepared: &driver::PreparedNativeProgram,
     backend: B,
     tel: &dyn Telemetry,
 ) -> Result<B::Output, CodegenError> {

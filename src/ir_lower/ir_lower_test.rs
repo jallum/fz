@@ -85,8 +85,7 @@ end
 /// capture_main`; lets ir_lower-level tests assert end-to-end runtime
 /// correctness rather than just IR shape.
 fn run_and_capture(src: &str) -> String {
-    let mut t = crate::types::new();
-    let mut graph = linked_runtime_graph(&mut t, src, &crate::telemetry::ConfiguredTelemetry::new());
+    let mut graph = linked_runtime_graph(src, &crate::telemetry::ConfiguredTelemetry::new());
     let entry = graph.module().fn_by_name("main").expect("no main fn").id;
     let (module, module_plan) = graph.cloned_module_plan();
     let compiled = compile_planned(

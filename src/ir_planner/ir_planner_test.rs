@@ -1486,11 +1486,10 @@ fn planned_program_materialization_reports_executable_body_folds() {
 #[test]
 fn repr_seam_closure_predicate_registers_captured_wrapper_callable_entry() {
     let src = include_str!("../../fixtures/repr_seam_closure_predicate/input.fz");
-    let mut t = crate::types::new();
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&["fz", "planner"], cap.handler());
-    let mut graph = linked_runtime_graph(&mut t, src, &tel);
+    let mut graph = linked_runtime_graph(src, &tel);
 
     let (module, module_plan) = graph.cloned_module_plan();
     let planned_program = materialize_program(graph.types(), &module, &module_plan, &tel);
@@ -1665,9 +1664,9 @@ fn pipeline(src: &str, tel: &dyn Telemetry) -> (DefaultTypes, Module, ModulePlan
 /// fold into a single `[int, list(int), list(int), list(int)]` spec.
 #[test]
 fn quicksort_partition_accumulators_converge_to_one_spec() {
-    let mut t = crate::types::new();
     let tel = ConfiguredTelemetry::new();
-    let module = linked_runtime_module(&mut t, include_str!("../../fixtures/quicksort/input.fz"), &tel);
+    let mut t = crate::types::new();
+    let module = linked_runtime_module(include_str!("../../fixtures/quicksort/input.fz"), &tel);
     let mt = plan_module_with_role(&mut t, &module, &tel, "test");
     let partition_id = module.fn_by_name("partition").expect("quicksort defines partition").id;
     let partition_specs: Vec<&SpecKey> = mt.specs.keys().filter(|k| k.fn_id == partition_id).collect();
@@ -1704,9 +1703,9 @@ fn quicksort_partition_accumulators_converge_to_one_spec() {
 /// returns a list and main returns neither, so neither offers a tuple.
 #[test]
 fn return_capabilities_classify_quicksort_fn_shapes() {
-    let mut t = crate::types::new();
     let tel = ConfiguredTelemetry::new();
-    let module = linked_runtime_module(&mut t, include_str!("../../fixtures/quicksort/input.fz"), &tel);
+    let mut t = crate::types::new();
+    let module = linked_runtime_module(include_str!("../../fixtures/quicksort/input.fz"), &tel);
     let mt = plan_module_with_role(&mut t, &module, &tel, "test");
     let cap = |name: &str| {
         let id = module
@@ -2164,8 +2163,7 @@ fn compile_elides_named_ref_callable_fallback_when_calls_are_fully_resolved() {
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
 
-    let mut t = crate::types::new();
-    let _graph = linked_runtime_graph(&mut t, include_str!("../type_infer/fixtures/poly_named_ref.fz"), &tel);
+    let _graph = linked_runtime_graph(include_str!("../type_infer/fixtures/poly_named_ref.fz"), &tel);
 
     let id_events: Vec<_> = cap
         .find(&["fz", "planner", "activation_projection"])
@@ -3041,7 +3039,7 @@ fn planner_projects_enum_reduce_runtime_graph_from_activation_facts() {
     tel.attach(&[], cap.handler());
 
     let mut t = crate::types::new();
-    let module = linked_runtime_module(&mut t, include_str!("../type_infer/fixtures/enum_reduce.fz"), &tel);
+    let module = linked_runtime_module(include_str!("../type_infer/fixtures/enum_reduce.fz"), &tel);
     assert_module_plan_consistent(&module);
     let _ = plan_module_with_role(&mut t, &module, &tel, "test");
 
@@ -3114,12 +3112,7 @@ fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
 
-    let mut t = crate::types::new();
-    let mut graph = linked_runtime_graph(
-        &mut t,
-        include_str!("../type_infer/fixtures/enum_reduce_operator_ref.fz"),
-        &tel,
-    );
+    let mut graph = linked_runtime_graph(include_str!("../type_infer/fixtures/enum_reduce_operator_ref.fz"), &tel);
     let runtime_body_ids = graph
         .module()
         .fns
@@ -3256,11 +3249,7 @@ fn planner_projects_enum_reduce_range_runtime_graph_from_activation_facts() {
     tel.attach(&[], cap.handler());
 
     let mut t = crate::types::new();
-    let module = linked_runtime_module(
-        &mut t,
-        include_str!("../type_infer/fixtures/enum_reduce_range.fz"),
-        &tel,
-    );
+    let module = linked_runtime_module(include_str!("../type_infer/fixtures/enum_reduce_range.fz"), &tel);
     assert_module_plan_consistent(&module);
     let _ = plan_module_with_role(&mut t, &module, &tel, "test");
 
@@ -3375,9 +3364,8 @@ fn planner_projects_plain_spawn_child_through_callable_boundary() {
 #[test]
 fn runtime_graph_enum_take_indirect_calls_keep_callable_capabilities() {
     let src = "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
-    let mut t = crate::types::new();
     let tel = ConfiguredTelemetry::new();
-    let mut graph = linked_runtime_graph(&mut t, src, &tel);
+    let mut graph = linked_runtime_graph(src, &tel);
     let (module, module_plan) = graph.cloned_module_plan();
     let planned_program = materialize_program(graph.types(), &module, &module_plan, &tel);
 
@@ -3414,9 +3402,8 @@ fn runtime_graph_enum_take_indirect_calls_keep_callable_capabilities() {
 #[test]
 fn runtime_graph_enum_take_callers_supply_callable_args_to_indirect_closure_specs() {
     let src = "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
-    let mut t = crate::types::new();
     let tel = ConfiguredTelemetry::new();
-    let mut graph = linked_runtime_graph(&mut t, src, &tel);
+    let mut graph = linked_runtime_graph(src, &tel);
     let (module, module_plan) = graph.cloned_module_plan();
     let planned_program = materialize_program(graph.types(), &module, &module_plan, &tel);
 
@@ -3440,8 +3427,7 @@ fn runtime_graph_enum_take_callers_supply_callable_args_to_indirect_closure_spec
         for caller_sid in planned_program.reachable_specs() {
             let caller = planned_program.executable_body(SpecId(*caller_sid));
             let caller_key = &planned_program.spec_keys()[*caller_sid as usize];
-            let caller_plan = graph
-                .module_plan()
+            let caller_plan = module_plan
                 .specs
                 .get(caller_key)
                 .unwrap_or_else(|| panic!("missing caller spec plan for {caller_key:?}"));
@@ -3454,7 +3440,7 @@ fn runtime_graph_enum_take_callers_supply_callable_args_to_indirect_closure_spec
                 let Some(target_key) = caller_plan.local_call_target(&cid) else {
                     continue;
                 };
-                let Some(target_sid) = planned_program.spec_registry().resolve_spec_key(&t, target_key) else {
+                let Some(target_sid) = planned_program.spec_registry().resolve_spec_key(graph.types(), target_key) else {
                     continue;
                 };
                 if target_sid.0 != *sid {

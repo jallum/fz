@@ -17,9 +17,8 @@ use std::thread::sleep;
 use std::time::Duration;
 
 fn compile_src(src: &str) -> (CompiledModule, Module, FnId) {
-    let mut t = crate::types::new();
     let tel = ConfiguredTelemetry::new();
-    let mut graph = linked_runtime_graph(&mut t, src, &tel);
+    let mut graph = linked_runtime_graph(src, &tel);
     let entry = graph.module().fn_by_name("main").expect("main fn").id;
     let (module, module_plan) = graph.cloned_module_plan();
     let compiled = compile_planned(graph.types(), &module, &module_plan, &tel).expect("compile planned");

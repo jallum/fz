@@ -2,9 +2,10 @@ use crate::ast::Program;
 use crate::diag::{Diagnostics, SourceMap};
 use crate::frontend::{FrontendOk, FrontendResult, compile_program_with_types, compile_source_with_types};
 use crate::fz_ir::Module;
+use crate::ir_codegen::driver::{PreparedNativeProgram, prepare_preplanned_native};
 use crate::ir_codegen::{
-    AotArtifact, AotBackend, Backend, CodegenError, CompiledModule, CompiledUnit, JitBackend, PreparedNativeProgram,
-    compile_with_backend_prepared, prepare_native_program,
+    AotArtifact, AotBackend, Backend, CodegenError, CompiledModule, CompiledUnit, JitBackend,
+    compile_with_backend_prepared,
 };
 use crate::ir_planner::ModulePlan;
 use crate::metadata;
@@ -189,7 +190,7 @@ impl Compiler {
         }
         let module = world.module().clone();
         let module_plan = world.module_plan().clone();
-        let prepared = prepare_native_program(world.types(), &module, &module_plan, tel)?;
+        let prepared = prepare_preplanned_native(world.types(), &module, &module_plan, tel)?;
         world.replace_native(prepared);
         Ok(())
     }

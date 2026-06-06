@@ -50,7 +50,7 @@ pub(crate) fn lower_frontend_module(src: &str) -> Module {
 
 /// Compile a program through the production pipeline to the linked runtime IR:
 /// protocol impls, runtime helpers, and execution-graph rewrites are local.
-pub(crate) fn linked_runtime_graph(_t: &mut DefaultTypes, src: &str, tel: &dyn Telemetry) -> crate::compiler::World {
+pub(crate) fn linked_runtime_graph(src: &str, tel: &dyn Telemetry) -> crate::compiler::World {
     let mut compiler = crate::compiler::Compiler::new();
     let mut world = crate::compiler::World::new();
     compiler
@@ -67,8 +67,8 @@ pub(crate) fn linked_runtime_graph(_t: &mut DefaultTypes, src: &str, tel: &dyn T
 
 /// Compile a program through the production pipeline to the linked runtime IR:
 /// protocol impls, runtime helpers, and execution-graph rewrites are local.
-pub(crate) fn linked_runtime_module(t: &mut DefaultTypes, src: &str, tel: &dyn Telemetry) -> Module {
-    linked_runtime_graph(t, src, tel).module().clone()
+pub(crate) fn linked_runtime_module(src: &str, tel: &dyn Telemetry) -> Module {
+    linked_runtime_graph(src, tel).module().clone()
 }
 
 /// Compile through the production frontend/provider/link path and stop at the
@@ -170,8 +170,7 @@ pub(crate) fn runtime_graph_planner_activation_projection_signals(src: &str) -> 
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
 
-    let mut t = crate::types::new();
-    let mut graph = linked_runtime_graph(&mut t, src, &tel);
+    let mut graph = linked_runtime_graph(src, &tel);
     cap.clear();
     let (module, module_plan) = graph.cloned_module_plan();
     let _ = plan_module_with_role(graph.types(), &module, &tel, "test");
@@ -188,8 +187,7 @@ pub(crate) fn runtime_graph_codegen_materialized_body_signals(src: &str) -> Vec<
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
 
-    let mut t = crate::types::new();
-    let mut graph = linked_runtime_graph(&mut t, src, &tel);
+    let mut graph = linked_runtime_graph(src, &tel);
     let (module, module_plan) = graph.cloned_module_plan();
     let _ = materialize_program(graph.types(), &module, &module_plan, &tel);
     assert_authoritative_planner_consistent(&cap);
@@ -293,8 +291,7 @@ pub(crate) fn runtime_graph_reachable_materialized_body_signals(src: &str) -> Ve
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
 
-    let mut t = crate::types::new();
-    let mut graph = linked_runtime_graph(&mut t, src, &tel);
+    let mut graph = linked_runtime_graph(src, &tel);
     let (module, module_plan) = graph.cloned_module_plan();
     let _ = materialize_program(graph.types(), &module, &module_plan, &tel);
     assert_authoritative_planner_consistent(&cap);

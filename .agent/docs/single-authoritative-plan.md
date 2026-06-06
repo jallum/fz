@@ -20,22 +20,22 @@ rediscovering them.
   `role: "frontend_check"` on the lowered source module and
   `role: "linked_execution_graph"` on the linked runtime module; LTO and
   artifact materialization use distinct role names for their own replans.
-- **`PreparedExecutionGraph`** (`modules/pipeline.rs`) is the source/runtime
-  handoff. It carries the linked `Module` and the `ModulePlan` for that exact
-  module. The interpreter and codegen both consume this pair.
+- **`compiler::World`** (`src/compiler.rs`) is the authoritative mutable state
+  carrier for production callers. It owns the settled linked `Module`, its
+  exact `ModulePlan`, diagnostics/source-map state, linked units, and the
+  native-preparation facts derived from that same module/plan pair.
 - **`Compiler`** (`src/compiler.rs`) is the stage owner for production callers.
-  It drives source/program frontend work, prepares execution graphs through
-  `modules::pipeline`, prepares native programs through `ir_codegen`, and then
-  selects the JIT or AOT backend.
+  It drives source/program frontend work into a mutable `World`, prepares the
+  execution graph through `modules::pipeline`, enriches the same `World` with
+  native-preparation facts, and then selects the JIT or AOT backend.
 - **`compile_planned` / `compile_aot_planned`** (`ir_codegen/mod.rs`) take the
   `ModulePlan` from the caller. They remain as lower-level convenience wrappers
   for tests and helper code, but the production CLI/REPL path reaches native
   emission through `Compiler`.
-- **`prepare_native_program` / `compile_with_backend_prepared`**
-  (`ir_codegen/mod.rs`, `ir_codegen/driver.rs`) are the native handoff boundary:
-  plan-preserving destination lowering, marshal/type resolution, planned-program
-  materialization, and ABI-fact derivation happen before backend-specific CLIF
-  emission.
+- **`prepare_preplanned_native` / `compile_with_backend_prepared`**
+  (`ir_codegen/driver.rs`, wrapped by `Compiler`) are the native-preparation and
+  backend-emission mechanics. Production callers reach them only through
+  `Compiler`, which caches the prepared-native state on `World`.
 - **`materialize_program`** (`ir_planner/planned.rs`) consumes the supplied
   `ModulePlan` and the settled module to build a `PlannedProgram`: stable
   `SpecId` registration, per-slot plan lookup, executable `PlannedBody` values
@@ -53,8 +53,8 @@ rediscovering them.
 ```text
 source frontend / provider linking
   -> plan_module_with_role          # exact plan for this module shape
-  -> PreparedExecutionGraph         # module + exact plan
-  -> Compiler::prepare_native_program
+  -> compiler::World                # linked module + exact plan + diagnostics
+  -> Compiler::prepare_native_program(world)
        -> lower_destinations        # local invariant-preserving transform
        -> resolve_module_types      # validates/attaches marshal facts on lowered IR
        -> materialize_program       # executable projection from ModulePlan
@@ -70,8 +70,8 @@ that fresh module/plan pair downstream. The pre-erasure plan is discarded.
 ## What Each Stage Owns And Preserves
 
 `Compiler::prepare_native_program` runs the plan-preserving transforms before
-native emission, so the plan it materializes still describes the IR codegen
-emits.
+native emission and caches the result on `World`, so the plan it materializes
+still describes the IR codegen emits.
 
 - **`lower_destinations`** adds destination holders and init tokens. It keeps the
   original result vars and adds no call edges, so reachability and dispatch are
@@ -214,7 +214,7 @@ its env must be built per construction.
 fn main(), do: dbg(42)
   frontend: lower + plan_module        -> authoritative "planned" event #1
   prepare_execution_graph: plan_module -> authoritative "planned" event #2
-  Compiler::prepare_native_program(module, plan):
+  Compiler::prepare_native_program(world):
     lower_destinations / resolve_module_types   # plan-preserving
     materialize_program(plan)                   # body_materialized + materialized
     AbiFacts::derive(plan)                       # ABI off planned edges

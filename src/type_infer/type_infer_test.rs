@@ -9,9 +9,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 fn linked_fixture(src: &str) -> Module {
-    let mut t = crate::types::new();
     let tel = ConfiguredTelemetry::new();
-    linked_runtime_module(&mut t, src, &tel)
+    linked_runtime_module(src, &tel)
 }
 
 fn linked_unplanned_fixture(src: &str) -> Module {
