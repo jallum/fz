@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.3"
+  ],
   "created": "2026-06-06T23:37:21Z",
   "description": "Goal: create the Compiler2 module boundary without touching current compiler behavior. Change: add a separate Compiler2 module tree, a minimal public facade, and contract-test harness that can run tiny examples against Compiler2. Check: existing tests still pass; new empty Compiler2 harness proves isolation.",
   "id": "fz-rh2.2",
