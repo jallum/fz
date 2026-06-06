@@ -164,8 +164,8 @@ fn run_named_through(tel: &dyn Telemetry, user_src: &str, user_name: &str) -> Re
     // (not against a synthetic prelude+user concat). Eofs are filtered
     // between streams so the parser sees one continuous list.
     let mut sm = SourceMap::new();
-    let prelude_id = sm.add_code("<prelude>", PRELUDE);
-    let user_id = sm.add_code(user_name, user_src);
+    let prelude_id = sm.add_code(Some("<prelude>"), PRELUDE);
+    let user_id = sm.add_code(Some(user_name), user_src);
     // Lex/parse errors render through the shared renderer using the
     // SourceMap built above. Downstream stages still bubble up as
     // TestRunError strings — wiring spans through resolve / macros for

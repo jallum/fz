@@ -8,7 +8,7 @@ use crate::telemetry::Telemetry;
 
 fn rebuild(src: &str) -> (SourceMap, FileId) {
     let mut sm = SourceMap::new();
-    let id = sm.add_code("input.fz", src);
+    let id = sm.add_code(Some("input.fz"), src);
     (sm, id)
 }
 
@@ -176,7 +176,7 @@ fn fixture_golden_outputs_match() {
             .unwrap_or(name.clone());
 
         let mut sm = SourceMap::new();
-        let id = sm.add_code(rel.clone(), src.clone());
+        let id = sm.add_code(Some(rel.clone()), src.clone());
         // Drive the full pipeline (lex → parse → resolve → macros →
         // lower) and capture whichever stage's diagnostic the fixture
         // is exercising. Codegen errors aren't covered here because

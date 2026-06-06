@@ -10,7 +10,7 @@ use crate::telemetry::value::opaque;
 
 fn fixture() -> (Rc<RefCell<SourceMap>>, FileId) {
     let mut sm = SourceMap::new();
-    let fid = sm.add_code("test.fz", "fn main(), do: :ok\n");
+    let fid = sm.add_code(Some("test.fz"), "fn main(), do: :ok\n");
     (Rc::new(RefCell::new(sm)), fid)
 }
 

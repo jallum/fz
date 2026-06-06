@@ -169,7 +169,7 @@ where
     );
 
     let mut sm = SourceMap::new();
-    let file_id = sm.add_code(source_name.clone(), src.clone());
+    let file_id = sm.add_code(Some(source_name.clone()), src.clone());
     let toks = match Lexer::with_file_and_source_name(&src, file_id, source_name).tokenize(tel) {
         Ok(toks) => toks,
         Err(e) => return Err(fail(sm, e.to_diagnostic())),

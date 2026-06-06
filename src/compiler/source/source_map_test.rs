@@ -2,18 +2,34 @@ use super::*;
 
 fn sm_with(name: &str, src: &str) -> (SourceMap, FileId) {
     let mut sm = SourceMap::new();
-    let f = sm.add_code(name.to_string(), src.to_string());
+    let f = sm.add_code(Some(name.to_string()), src.to_string());
     (sm, f)
 }
 
 #[test]
 fn add_code_assigns_sequential_ids() {
     let mut sm = SourceMap::new();
-    let a = sm.add_code("a".to_string(), "one".to_string());
-    let b = sm.add_code("b".to_string(), "two".to_string());
+    let a = sm.add_code(Some("a".to_string()), "one".to_string());
+    let b = sm.add_code(Some("b".to_string()), "two".to_string());
     assert_eq!(a, FileId(0));
     assert_eq!(b, FileId(1));
     assert_eq!(sm.file_count(), 2);
+}
+
+#[test]
+fn code_carries_its_id_and_name_lookup_is_separate() {
+    let mut sm = SourceMap::new();
+    let id = sm.add_code(Some("named".to_string()), "body".to_string());
+    let code = sm.code(id);
+    assert_eq!(code.id, id);
+    assert_eq!(sm.name(id), Some("named"));
+}
+
+#[test]
+fn unnamed_code_has_no_display_name() {
+    let mut sm = SourceMap::new();
+    let id = sm.add_code::<String>(None, "body".to_string());
+    assert_eq!(sm.name(id), None);
 }
 
 #[test]
@@ -59,8 +75,8 @@ fn locate_on_three_lines() {
 #[test]
 fn multi_file_isolation() {
     let mut sm = SourceMap::new();
-    let a = sm.add_code("a".to_string(), "x\ny".to_string());
-    let b = sm.add_code("b".to_string(), "zz".to_string());
+    let a = sm.add_code(Some("a".to_string()), "x\ny".to_string());
+    let b = sm.add_code(Some("b".to_string()), "zz".to_string());
     let la = sm.locate(Span::new(a, 2, 3));
     let lb = sm.locate(Span::new(b, 1, 2));
     assert_eq!(la.file, a);
@@ -72,7 +88,7 @@ fn multi_file_isolation() {
 #[test]
 fn line_starts_cached_once() {
     let mut sm = SourceMap::new();
-    let f = sm.add_code("a".to_string(), "a\nb\nc".to_string());
+    let f = sm.add_code(Some("a".to_string()), "a\nb\nc".to_string());
     let l1 = sm.locate(Span::new(f, 2, 3));
     let l2 = sm.locate(Span::new(f, 2, 3));
     assert_eq!(l1, l2);

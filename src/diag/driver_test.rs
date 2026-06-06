@@ -24,7 +24,7 @@ fn report_through_emits_event_per_diagnostic() {
     tel.attach(&[], cap.handler());
 
     let mut sm = SourceMap::new();
-    let fid = sm.add_code("a.fz", "fn x(), do: :ok\n");
+    let fid = sm.add_code(Some("a.fz"), "fn x(), do: :ok\n");
     let warn = Diagnostic::warning(DiagCode("a/w"), "warned", Span::new(fid, 0, 1));
     let err = Diagnostic::error(DiagCode("a/e"), "broken", Span::new(fid, 2, 3));
 
@@ -47,7 +47,7 @@ fn report_or_exit_renders_byte_identical_to_direct_path() {
     use crate::telemetry::{ConfiguredTelemetry, DiagRenderer};
 
     let mut sm = SourceMap::new();
-    let fid = sm.add_code("t.fz", "fn main(), do: :ok\n");
+    let fid = sm.add_code(Some("t.fz"), "fn main(), do: :ok\n");
     let mut ds = Diagnostics::new();
     ds.push(Diagnostic::warning(DiagCode("test/w"), "headline", Span::new(fid, 0, 2)).with_label("here"));
     ds.push(Diagnostic::error(DiagCode("test/e"), "boom", Span::new(fid, 3, 5)));

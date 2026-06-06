@@ -1,8 +1,9 @@
-//! SourceMap: owns source files and resolves spans to display location.
+//! SourceMap: owns source code and resolves spans to display location.
 //!
-//! Files are added via `add_code` which assigns a FileId. Spans index into
-//! `bytes` directly; `locate(span)` computes line/col on demand from a
-//! lazily-built line-offset index.
+//! Code is added via `add_code`, which assigns a `FileId`. Optional display
+//! names are stored separately from the code bytes; spans index into `bytes`
+//! directly and `locate(span)` computes line/col on demand from a lazily-built
+//! line-offset index.
 
 use std::sync::{Arc, OnceLock};
 
@@ -10,7 +11,7 @@ use super::{FileId, Span};
 
 #[derive(Clone)]
 pub struct Code {
-    pub name: String,
+    pub id: FileId,
     pub bytes: Arc<str>,
     /// Lazily computed on first `locate` for this file. Each entry is the
     /// byte offset of the start of a line; line 1 starts at byte 0.
@@ -18,9 +19,9 @@ pub struct Code {
 }
 
 impl Code {
-    fn new(name: String, bytes: Arc<str>) -> Self {
+    fn new(id: FileId, bytes: Arc<str>) -> Self {
         Self {
-            name,
+            id,
             bytes,
             line_starts: OnceLock::new(),
         }
@@ -59,33 +60,45 @@ pub struct Location {
 
 #[derive(Default, Clone)]
 pub struct SourceMap {
-    files: Vec<Code>,
+    codes: Vec<Code>,
+    names: Vec<Option<String>>,
 }
 
 impl SourceMap {
     pub fn new() -> Self {
-        Self { files: Vec::new() }
+        Self {
+            codes: Vec::new(),
+            names: Vec::new(),
+        }
     }
 
-    pub fn add_code(&mut self, name: impl Into<String>, bytes: impl Into<Arc<str>>) -> FileId {
-        let id = FileId(self.files.len() as u32);
-        self.files.push(Code::new(name.into(), bytes.into()));
+    pub fn add_code<N>(&mut self, name: Option<N>, bytes: impl Into<Arc<str>>) -> FileId
+    where
+        N: Into<String>,
+    {
+        let id = FileId(self.codes.len() as u32);
+        self.codes.push(Code::new(id, bytes.into()));
+        self.names.push(name.map(Into::into));
         id
     }
 
-    pub fn file(&self, id: FileId) -> &Code {
-        &self.files[id.0 as usize]
+    pub fn code(&self, id: FileId) -> &Code {
+        &self.codes[id.0 as usize]
+    }
+
+    pub fn name(&self, id: FileId) -> Option<&str> {
+        self.names[id.0 as usize].as_deref()
     }
 
     pub fn file_count(&self) -> usize {
-        self.files.len()
+        self.codes.len()
     }
 
     /// Returns the location of `span.start`. Panics on DUMMY spans —
     /// callers are responsible for the is_dummy guard.
     pub fn locate(&self, span: Span) -> Location {
         assert!(!span.is_dummy(), "SourceMap::locate on DUMMY span");
-        let f = self.file(span.file);
+        let f = self.code(span.file);
         let starts = f.line_starts();
         let off = span.start;
         let idx = match starts.binary_search(&off) {

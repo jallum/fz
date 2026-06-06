@@ -174,7 +174,7 @@ fn parse_program(
     tel: &dyn crate::telemetry::Telemetry,
 ) -> (crate::ast::Program, SourceMap) {
     let mut sm = SourceMap::new();
-    let file_id = sm.add_code(source_name.to_string(), src.to_string());
+    let file_id = sm.add_code(Some(source_name.to_string()), src.to_string());
     let toks = Lexer::with_file_and_source_name(src, file_id, source_name)
         .tokenize(tel)
         .expect("tokenize");
