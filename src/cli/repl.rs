@@ -606,7 +606,12 @@ impl ReplWorld {
             ));
         }
         prepare_repl_frontend(&mut self.compiler, &mut self.compiler_world, out.frontend, tel)?;
-        let Some(entry_fn) = self.compiler_world.linked_module().fn_by_name(&entry_name).map(|f| f.id) else {
+        let Some(entry_fn) = self
+            .compiler_world
+            .linked_module()
+            .fn_by_name(&entry_name)
+            .map(|f| f.id)
+        else {
             return Err(io::Error::other(format!("repl entry `{}` not lowered", entry_name)));
         };
         let mut entry_program = Program::default();
