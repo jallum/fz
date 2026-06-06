@@ -3,12 +3,12 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-06T11:42:48Z",
-  "description": "Goal\\nRemove dead production-facing compatibility entrypoints left behind by the compiler-spine refactor so the main build stays warning-free while preserving the test harnesses that still exercise those seams.\\n\\nSignal\\n-  passes after the compiler-spine branch is pushed.\\n- Test-only compatibility helpers in  and  are gated to tests instead of remaining dead in production.\\n- No production caller regresses to the old codegen-owned driver path.\\n\\nStrategy\\n1. Confirm which helpers are now test-only after the refactor.\\n2. Gate those helpers with  rather than carrying dead production code.\\n3. Re-run fmt, clippy, and targeted tests, then push the fix and re-check PR CI.\\n\\nReferences\\n- \\n- \\n- \\n- ",
+  "description": "Goal\nRemove dead production-facing compatibility entrypoints left behind by the compiler-spine refactor so the main build stays warning-free while preserving the test harnesses that still exercise those seams.\n\nSignal\n- `cargo clippy --all-targets -- -D warnings` passes after the compiler-spine branch is pushed.\n- Test-only compatibility helpers in `src/compiler.rs` and `src/ir_codegen` are gated to tests instead of remaining dead in production.\n- No production caller regresses to the old codegen-owned driver path.\n\nStrategy\n1. Confirm which helpers are now test-only after the refactor.\n2. Gate those helpers with `#[cfg(test)]` rather than carrying dead production code.\n3. Re-run fmt, clippy, and targeted tests, then push the fix and re-check PR CI.\n\nReferences\n- `src/compiler.rs`\n- `src/ir_codegen/mod.rs`\n- `src/ir_codegen/driver.rs`\n- `.github/workflows/ci.yml`",
   "id": "fz-k9c",
   "labels": [],
   "priority": 1,
   "status": "in_progress",
   "title": "Compiler spine: prune test-only codegen compatibility shims",
   "type": "bug",
-  "updated_at": "2026-06-06T11:42:53Z"
+  "updated_at": "2026-06-06T11:43:07Z"
 }
