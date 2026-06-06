@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-g1c.3"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-g1c",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Document caller-owned telemetry in tests and remove remaining hatch wrappers",
   "type": "task",
-  "updated_at": "2026-06-06T13:03:57Z"
+  "updated_at": "2026-06-06T13:42:56Z"
 }
