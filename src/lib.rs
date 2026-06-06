@@ -33,7 +33,7 @@ mod type_expr;
 mod type_infer;
 pub mod types;
 use cli::repl::run_script;
-use compiler::Compiler;
+use compiler::{Compiler, World};
 use diag::{Diagnostic, FileId, SourceMap, Span, codes::LOWER_UNBOUND, report_or_exit_through};
 use exec::runtime::Runtime;
 use frontend::{FrontendOk, FrontendResult};
@@ -332,18 +332,19 @@ fn run_build(tel: &ConfiguredTelemetry, args: &[String]) {
         exit(1);
     });
 
-    let graph = compiler
-        .prepare_execution_graph_from_source(src, src_path.clone(), tel, mode)
+    let mut world = World::new();
+    compiler
+        .prepare_execution_graph_from_source(&mut world, src, src_path.clone(), tel, mode)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz build", tel, &sm_cell, err));
-    *sm_cell.borrow_mut() = graph.sm.clone();
-    report_or_exit_through(tel, graph.diagnostics.as_slice());
+    *sm_cell.borrow_mut() = world.sm().clone();
+    report_or_exit_through(tel, world.diagnostics().as_slice());
 
     let obj_name = Path::new(&src_path)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("fz_program");
     let artifact = compiler
-        .compile_aot_planned(&graph.module, &graph.module_plan, obj_name, tel)
+        .compile_aot_planned(&mut world, obj_name, tel)
         .unwrap_or_else(|e| {
             report_or_exit_through(tel, &[e.to_diagnostic()]);
             exit(1);
@@ -424,13 +425,16 @@ fn run_interp(tel: &ConfiguredTelemetry, args: &[String]) {
         eprintln!("read {}: {}", path, e);
         exit(1);
     });
-    let graph = compiler
-        .prepare_execution_graph_from_source(src, path, tel, CompileMode::Normal)
+    let mut world = World::new();
+    compiler
+        .prepare_execution_graph_from_source(&mut world, src, path, tel, CompileMode::Normal)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz interp", tel, &sm_cell, err));
-    *sm_cell.borrow_mut() = graph.sm.clone();
-    report_or_exit_through(tel, graph.diagnostics.as_slice());
+    *sm_cell.borrow_mut() = world.sm().clone();
+    report_or_exit_through(tel, world.diagnostics().as_slice());
     notify_fixture_execution_start();
-    match run_main_with_plan(compiler.types(), tel, &graph.module, graph.module_plan) {
+    let module = world.module().clone();
+    let module_plan = world.module_plan().clone();
+    match run_main_with_plan(world.types(), tel, &module, module_plan) {
         Ok(_halt) => {}
         Err(msg) => {
             eprintln!("fz interp: {}", msg);
@@ -849,8 +853,9 @@ fn dump_specs_pipeline(
     src: String,
     source_name: String,
 ) -> String {
-    let frontend = run_frontend(compiler.compile_source(src, source_name, tel), sm_cell, tel);
-    pretty_module_plan(compiler.types(), &frontend.module, &frontend.module_plan)
+    let mut world = World::new();
+    let frontend = run_frontend(compiler.compile_source(&mut world, src, source_name, tel), sm_cell, tel);
+    pretty_module_plan(world.types(), &frontend.module, &frontend.module_plan)
 }
 
 fn dump_interfaces_pipeline(
@@ -861,7 +866,8 @@ fn dump_interfaces_pipeline(
     source_name: String,
     strict: bool,
 ) -> String {
-    let frontend = run_frontend(compiler.compile_source(src, source_name, tel), sm_cell, tel);
+    let mut world = World::new();
+    let frontend = run_frontend(compiler.compile_source(&mut world, src, source_name, tel), sm_cell, tel);
     if strict {
         let diags = validate_public_export_specs(&frontend._prog.module_interfaces);
         report_or_exit_through(tel, &diags);
@@ -907,13 +913,14 @@ fn dump_bodies_pipeline(
     mode: CompileMode,
 ) -> String {
     use crate::telemetry::TelemetryExt as _;
-    let graph = compiler
-        .prepare_execution_graph_from_source(src, source_name, tel, mode)
+    let mut world = World::new();
+    compiler
+        .prepare_execution_graph_from_source(&mut world, src, source_name, tel, mode)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz dump", tel, sm_cell, err));
-    *sm_cell.borrow_mut() = graph.sm.clone();
-    report_or_exit_through(tel, graph.diagnostics.as_slice());
-    let module = graph.module;
-    let module_plan = graph.module_plan;
+    *sm_cell.borrow_mut() = world.sm().clone();
+    report_or_exit_through(tel, world.diagnostics().as_slice());
+    let module = world.module().clone();
+    let module_plan = world.module_plan().clone();
     let _compile_span = tel.span(
         &["fz", "compile"],
         crate::metadata! {
@@ -921,7 +928,7 @@ fn dump_bodies_pipeline(
             module_path: module.module_path().to_owned(),
         },
     );
-    let planned_program = materialize_program(compiler.types(), &module, &module_plan, tel);
+    let planned_program = materialize_program(world.types(), &module, &module_plan, tel);
 
     // Group surviving specs by user-fn name. Skip the conventional
     // synthetic helpers (k_*, fn_clause_*, lambda_*) — they're
@@ -961,7 +968,7 @@ fn dump_bodies_pipeline(
             if keys.len() == 1 { "" } else { "s" }
         ));
         for key in keys {
-            out.push_str(&format!("    {}\n", render_spec_key(compiler.types(), &key)));
+            out.push_str(&format!("    {}\n", render_spec_key(world.types(), &key)));
         }
     }
     out
@@ -1004,12 +1011,13 @@ fn dump_outcomes_pipeline(
 ) -> String {
     use crate::fz_ir::{CallsiteId, EmitSlot};
     use crate::telemetry::TelemetryExt as _;
-    let graph = compiler
-        .prepare_execution_graph_from_source(src, source_name.clone(), tel, mode)
+    let mut world = World::new();
+    compiler
+        .prepare_execution_graph_from_source(&mut world, src, source_name.clone(), tel, mode)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz dump", tel, sm_cell, err));
-    *sm_cell.borrow_mut() = graph.sm.clone();
-    report_or_exit_through(tel, graph.diagnostics.as_slice());
-    let module = graph.module;
+    *sm_cell.borrow_mut() = world.sm().clone();
+    report_or_exit_through(tel, world.diagnostics().as_slice());
+    let module = world.module().clone();
     let _compile_span = tel.span(
         &["fz", "compile"],
         crate::metadata! {
@@ -1017,7 +1025,7 @@ fn dump_outcomes_pipeline(
             module_path: module.module_path().to_owned(),
         },
     );
-    let mt = ir_planner::plan_module_with_role(compiler.types(), &module, tel, "dump_outcomes");
+    let mt = ir_planner::plan_module_with_role(world.types(), &module, tel, "dump_outcomes");
 
     let fn_name = |fid: FnId| -> String {
         module
@@ -1094,7 +1102,7 @@ fn dump_outcomes_pipeline(
                 EmitSlot::ClosureCall => Outcome::Indirect(target.clone()),
                 _ => Outcome::Static(target.clone()),
             };
-            let sort_key = render_spec_key(compiler.types(), caller_key);
+            let sort_key = render_spec_key(world.types(), caller_key);
             push_row(
                 &mut rows_by_spec,
                 caller_key.fn_id,
@@ -1116,11 +1124,7 @@ fn dump_outcomes_pipeline(
                 .cmp(&b.0.ident.span().start)
                 .then_with(|| slot_str(a.0.slot).cmp(slot_str(b.0.slot)))
                 .then_with(|| {
-                    render_outcome(compiler.types(), &fn_name, &a.1).cmp(&render_outcome(
-                        compiler.types(),
-                        &fn_name,
-                        &b.1,
-                    ))
+                    render_outcome(world.types(), &fn_name, &a.1).cmp(&render_outcome(world.types(), &fn_name, &b.1))
                 })
         });
     }
@@ -1163,14 +1167,14 @@ fn dump_outcomes_pipeline(
         out.push_str(&format!(
             "\n{}{}:\n",
             f.name,
-            render_spec_key(compiler.types(), caller_key)
+            render_spec_key(world.types(), caller_key)
         ));
         for (cid, dispatch) in rows {
             out.push_str(&format!(
                 "  @{} {} -> {}\n",
                 render_span(cid.ident.span()),
                 slot_str(cid.slot),
-                render_outcome(compiler.types(), &fn_name, dispatch),
+                render_outcome(world.types(), &fn_name, dispatch),
             ));
         }
     }
@@ -1185,23 +1189,22 @@ fn compile_pipeline(
     source_name: String,
     mode: CompileMode,
 ) -> Compiled {
-    let graph = compiler
-        .prepare_execution_graph_from_source(src, source_name, tel, mode)
+    let mut world = World::new();
+    compiler
+        .prepare_execution_graph_from_source(&mut world, src, source_name, tel, mode)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz run", tel, sm_cell, err));
-    *sm_cell.borrow_mut() = graph.sm.clone();
-    report_or_exit_through(tel, graph.diagnostics.as_slice());
-    let main_fn = graph.module.fn_by_name("main").map(|f| f.id);
-    let executable = compiler
-        .compile_planned(&graph.module, &graph.module_plan, tel)
-        .unwrap_or_else(|e| {
-            report_or_exit_through(tel, &[e.to_diagnostic()]);
-            exit(1);
-        });
+    *sm_cell.borrow_mut() = world.sm().clone();
+    report_or_exit_through(tel, world.diagnostics().as_slice());
+    let main_fn = world.module().fn_by_name("main").map(|f| f.id);
+    let executable = compiler.compile_planned(&mut world, tel).unwrap_or_else(|e| {
+        report_or_exit_through(tel, &[e.to_diagnostic()]);
+        exit(1);
+    });
     tel.event(
         &["fz", "module", "unit_compiled"],
         metadata! {
-            fns: graph.module.fns.len() as i64,
-            atoms: graph.module.atom_names.len() as i64,
+            fns: world.module().fns.len() as i64,
+            atoms: world.module().atom_names.len() as i64,
         },
     );
     // fz-d5b — gate on errors from the planner-side diagnostics
@@ -1209,13 +1212,13 @@ fn compile_pipeline(
     // TYPE_IMPURE_RECEIVE_GUARD). Severity::Warning entries print and
     // we continue; Severity::Error halts.
     report_or_exit_through(tel, executable.diagnostics().as_slice());
-    let image = if graph.units.len() == 1 {
-        let unit = graph.units[0]
+    let image = if world.units().len() == 1 {
+        let unit = world.units()[0]
             .clone()
-            .with_code_and_plan(graph.module.clone(), graph.module_plan.clone());
+            .with_code_and_plan(world.module().clone(), world.module_plan().clone());
         CompiledProgram::new(unit, executable).link_image(tel)
     } else {
-        Ok(CompiledImage::from_linked(tel, graph.units.len(), executable))
+        Ok(CompiledImage::from_linked(tel, world.units().len(), executable))
     }
     .unwrap_or_else(|err| report_pipeline_error_or_exit("fz run", tel, sm_cell, PipelineError::Link(err)));
     if let Some(metadata) = image.metadata() {
@@ -1238,8 +1241,8 @@ fn compile_pipeline(
     Compiled {
         image,
         main_fn,
-        sm: graph.sm,
-        module: graph.module,
+        sm: world.sm().clone(),
+        module: world.module().clone(),
     }
 }
 

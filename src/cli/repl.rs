@@ -18,7 +18,7 @@
 //! exact-comparable to the other legs' golden.
 
 use crate::ast::{Expr, FnDef, Item, Program, Spanned};
-use crate::compiler::Compiler;
+use crate::compiler::{Compiler, World as CompilerWorld};
 use crate::diag::diagnostic::Severity;
 use crate::diag::style::ColorMode;
 use crate::diag::{Diagnostic, SourceMap, render_one_to_string};
@@ -30,7 +30,7 @@ use crate::frontend::{FrontendOk, compile_repl_expr_with_types};
 use crate::fz_ir::{FnId, Module};
 use crate::ir_interp::{AnyValue, IrInterpRuntime};
 use crate::ir_planner::ModulePlan;
-use crate::modules::pipeline::{CompileMode, PipelineError, PreparedExecutionGraph};
+use crate::modules::pipeline::{CompileMode, PipelineError};
 use crate::notify_fixture_execution_start;
 use crate::parser::Parser;
 use crate::parser::lexer::{Lexer, Tok};
@@ -258,13 +258,18 @@ impl ReplSession {
         tel: &dyn Telemetry,
         diagnostics: &Rc<RefCell<Vec<u8>>>,
     ) -> io::Result<()> {
-        let prepared = self
-            .world
+        self.world
             .compiler
-            .prepare_execution_graph_from_source(src.to_string(), source_name, tel, CompileMode::Normal)
+            .prepare_execution_graph_from_source(
+                &mut self.world.compiler_world,
+                src.to_string(),
+                source_name,
+                tel,
+                CompileMode::Normal,
+            )
             .map_err(|err| pipeline_error_to_io_error(err, diagnostics))?;
 
-        let Some(main) = prepared.module.fn_by_name("main") else {
+        let Some(main) = self.world.compiler_world.module().fn_by_name("main") else {
             return Ok(());
         };
         if !main.block(main.entry).params.is_empty() {
@@ -272,7 +277,10 @@ impl ReplSession {
         }
 
         notify_fixture_execution_start();
-        ReplRuntime::run_script_main(self.world.types(), &prepared.module, prepared.module_plan, main.id, tel)
+        let module = self.world.compiler_world.module().clone();
+        let module_plan = self.world.compiler_world.module_plan().clone();
+        let main_id = main.id;
+        ReplRuntime::run_script_main(self.world.types(), &module, module_plan, main_id, tel)
     }
 
     pub(crate) fn eval_chunk(&mut self, src: &str, tel: &dyn Telemetry) -> ReplChunkOutcome {
@@ -468,6 +476,7 @@ impl ReplFrame {
 
 struct ReplWorld {
     compiler: Compiler,
+    compiler_world: CompilerWorld,
     compile_time: CompileTimeEvaluator,
     item_chunks: Vec<ReplItemChunk>,
     eval_chunks: Vec<Program>,
@@ -502,6 +511,7 @@ impl ReplWorld {
     fn new() -> Self {
         Self {
             compiler: Compiler::new(),
+            compiler_world: CompilerWorld::new(),
             compile_time: CompileTimeEvaluator::new(),
             item_chunks: Vec::new(),
             eval_chunks: Vec::new(),
@@ -509,7 +519,7 @@ impl ReplWorld {
     }
 
     fn types(&mut self) -> &mut DefaultTypes {
-        self.compiler.types()
+        self.compiler_world.types()
     }
 
     fn parse_chunk(&self, src: &str, tel: &dyn Telemetry) -> Result<ReplWorldChunk, ReplWorldParse> {
@@ -595,15 +605,15 @@ impl ReplWorld {
                 out.frontend.diagnostics.as_slice(),
             ));
         }
-        let graph = prepare_repl_frontend(&mut self.compiler, out.frontend, tel)?;
-        let Some(entry_fn) = graph.module.fn_by_name(&entry_name).map(|f| f.id) else {
+        prepare_repl_frontend(&mut self.compiler, &mut self.compiler_world, out.frontend, tel)?;
+        let Some(entry_fn) = self.compiler_world.module().fn_by_name(&entry_name).map(|f| f.id) else {
             return Err(io::Error::other(format!("repl entry `{}` not lowered", entry_name)));
         };
         let mut entry_program = Program::default();
         entry_program.items.push(out.entry_item);
         Ok(ReplCompiledEntry {
-            module: graph.module,
-            module_plan: graph.module_plan,
+            module: self.compiler_world.module().clone(),
+            module_plan: self.compiler_world.module_plan().clone(),
             fn_id: entry_fn,
             input_frame: out.input_frame,
             output_frame: out.output_frame,
@@ -621,7 +631,7 @@ impl ReplWorld {
 
     fn compile_session_module(&mut self, tel: &dyn Telemetry) -> io::Result<Module> {
         let prog = self.session_program();
-        compile_parsed_program_module(&mut self.compiler, prog, tel)
+        compile_parsed_program_module(&mut self.compiler, &mut self.compiler_world, prog, tel)
     }
 
     fn session_program(&self) -> Program {
@@ -643,16 +653,16 @@ impl ReplWorld {
                 .borrow_mut()
                 .insert(path.clone(), doc.clone());
         }
-        let compiler = &mut self.compiler;
         let compile_time = &self.compile_time;
-        if let Err(e) = load_items_filtered(compiler.types(), compile_time, &prog, /*macros=*/ true) {
+        let compiler_world = &mut self.compiler_world;
+        if let Err(e) = load_items_filtered(compiler_world.types(), compile_time, &prog, /*macros=*/ true) {
             return Err(format!("load macros: {}", e));
         }
         let live = compile_time.macro_names.borrow().clone();
         if let Err(e) = expand_with(&mut prog, compile_time, &live) {
             return Err(format!("macro: {}", e));
         }
-        if let Err(e) = load_items_filtered(compiler.types(), compile_time, &prog, /*macros=*/ false) {
+        if let Err(e) = load_items_filtered(compiler_world.types(), compile_time, &prog, /*macros=*/ false) {
             return Err(format!("load fns: {}", e));
         }
         Ok(())
@@ -664,8 +674,13 @@ pub(crate) enum ReplChunkOutcome {
     Err(String),
 }
 
-fn compile_parsed_program_module(compiler: &mut Compiler, prog: Program, tel: &dyn Telemetry) -> io::Result<Module> {
-    let frontend = match compiler.compile_program(prog, SourceMap::new(), tel) {
+fn compile_parsed_program_module(
+    compiler: &mut Compiler,
+    world: &mut CompilerWorld,
+    prog: Program,
+    tel: &dyn Telemetry,
+) -> io::Result<Module> {
+    let frontend = match compiler.compile_program(world, prog, SourceMap::new(), tel) {
         Ok(ok) => ok,
         Err(err) => {
             return Err(diagnostics_to_io_error(&err.sm, err.diagnostics.as_slice()));
@@ -679,17 +694,19 @@ fn compile_parsed_program_module(compiler: &mut Compiler, prog: Program, tel: &d
     {
         return Err(diagnostics_to_io_error(&frontend.sm, frontend.diagnostics.as_slice()));
     }
-    Ok(prepare_repl_frontend(compiler, frontend, tel)?.module)
+    prepare_repl_frontend(compiler, world, frontend, tel)?;
+    Ok(world.module().clone())
 }
 
 fn prepare_repl_frontend(
     compiler: &mut Compiler,
+    world: &mut CompilerWorld,
     frontend: FrontendOk,
     tel: &dyn Telemetry,
-) -> io::Result<PreparedExecutionGraph> {
+) -> io::Result<()> {
     let diagnostics = Rc::new(RefCell::new(Vec::new()));
     compiler
-        .prepare_execution_graph_from_frontend(frontend, tel, CompileMode::Normal)
+        .prepare_execution_graph_from_frontend(world, frontend, tel, CompileMode::Normal)
         .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))
 }
 

@@ -1490,14 +1490,15 @@ fn repr_seam_closure_predicate_registers_captured_wrapper_callable_entry() {
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&["fz", "planner"], cap.handler());
-    let graph = linked_runtime_graph(&mut t, src, &tel);
+    let mut graph = linked_runtime_graph(&mut t, src, &tel);
 
-    let planned_program = materialize_program(&mut t, &graph.module, &graph.module_plan, &tel);
+    let (module, module_plan) = graph.cloned_module_plan();
+    let planned_program = materialize_program(graph.types(), &module, &module_plan, &tel);
 
     assert_authoritative_planner_consistent(&cap);
 
     let wrapper = graph
-        .module
+        .module()
         .fn_by_name("lambda_200")
         .expect("fixture should lower the captured predicate reducer as lambda_200");
     let wrapper_entries = planned_program
@@ -3114,13 +3115,13 @@ fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
     tel.attach(&[], cap.handler());
 
     let mut t = crate::types::new();
-    let graph = linked_runtime_graph(
+    let mut graph = linked_runtime_graph(
         &mut t,
         include_str!("../type_infer/fixtures/enum_reduce_operator_ref.fz"),
         &tel,
     );
     let runtime_body_ids = graph
-        .module
+        .module()
         .fns
         .iter()
         .filter(|f| {
@@ -3128,7 +3129,8 @@ fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
         })
         .map(|f| f.id.0)
         .collect::<HashSet<_>>();
-    let _ = compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile");
+    let (module, module_plan) = graph.cloned_module_plan();
+    let _ = compile_planned(graph.types(), &module, &module_plan, &tel).expect("compile");
 
     let events = cap
         .find(&["fz", "planner", "activation_projection"])
@@ -3375,15 +3377,16 @@ fn runtime_graph_enum_take_indirect_calls_keep_callable_capabilities() {
     let src = "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
     let mut t = crate::types::new();
     let tel = ConfiguredTelemetry::new();
-    let graph = linked_runtime_graph(&mut t, src, &tel);
-    let planned_program = materialize_program(&mut t, &graph.module, &graph.module_plan, &tel);
+    let mut graph = linked_runtime_graph(&mut t, src, &tel);
+    let (module, module_plan) = graph.cloned_module_plan();
+    let planned_program = materialize_program(graph.types(), &module, &module_plan, &tel);
 
     let mut checked = 0usize;
     for sid in planned_program.reachable_specs() {
         let body = &planned_program.executable_body(SpecId(*sid)).body;
         let spec_key = &planned_program.spec_keys()[*sid as usize];
         let spec_plan = graph
-            .module_plan
+            .module_plan()
             .specs
             .get(spec_key)
             .unwrap_or_else(|| panic!("missing spec plan for reachable spec_key={spec_key:?}"));
@@ -3413,8 +3416,9 @@ fn runtime_graph_enum_take_callers_supply_callable_args_to_indirect_closure_spec
     let src = "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
     let mut t = crate::types::new();
     let tel = ConfiguredTelemetry::new();
-    let graph = linked_runtime_graph(&mut t, src, &tel);
-    let planned_program = materialize_program(&mut t, &graph.module, &graph.module_plan, &tel);
+    let mut graph = linked_runtime_graph(&mut t, src, &tel);
+    let (module, module_plan) = graph.cloned_module_plan();
+    let planned_program = materialize_program(graph.types(), &module, &module_plan, &tel);
 
     let mut checked = 0usize;
     for sid in planned_program.reachable_specs() {
@@ -3437,7 +3441,7 @@ fn runtime_graph_enum_take_callers_supply_callable_args_to_indirect_closure_spec
             let caller = planned_program.executable_body(SpecId(*caller_sid));
             let caller_key = &planned_program.spec_keys()[*caller_sid as usize];
             let caller_plan = graph
-                .module_plan
+                .module_plan()
                 .specs
                 .get(caller_key)
                 .unwrap_or_else(|| panic!("missing caller spec plan for {caller_key:?}"));

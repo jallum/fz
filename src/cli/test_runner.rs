@@ -26,7 +26,7 @@
 //! error on failure; the runner catches the error.
 
 use crate::ast::Item;
-use crate::compiler::Compiler;
+use crate::compiler::{Compiler, World};
 use crate::diag::{SourceMap, render_one_to_string};
 use crate::fz_ir::FnId;
 use crate::ir_interp::run_test_fn;
@@ -156,6 +156,7 @@ impl Handler for ConsoleTestHandler {
 
 fn run_named_through(tel: &dyn Telemetry, user_src: &str, user_name: &str) -> Result<(), TestRunError> {
     let mut compiler = Compiler::new();
+    let mut world = World::new();
     // Lex prelude and user source separately into their own FileIds. Token
     // spans then point at the *real* offsets in their respective files, so
     // later stages render user-facing locations against the user's file
@@ -178,7 +179,7 @@ fn run_named_through(tel: &dyn Telemetry, user_src: &str, user_name: &str) -> Re
     let prog = Parser::new(toks)
         .parse_program(tel)
         .map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
-    let frontend = match compiler.compile_program(prog, sm.clone(), tel) {
+    let frontend = match compiler.compile_program(&mut world, prog, sm.clone(), tel) {
         Ok(frontend) => frontend,
         Err(err) => return Err(TestRunError(render_diagnostics(&err.sm, err.diagnostics.as_slice()))),
     };
@@ -215,15 +216,15 @@ fn run_named_through(tel: &dyn Telemetry, user_src: &str, user_name: &str) -> Re
         return Ok(());
     }
 
-    let graph = compiler
-        .prepare_execution_graph_from_frontend(frontend, tel, CompileMode::Normal)
+    compiler
+        .prepare_execution_graph_from_frontend(&mut world, frontend, tel, CompileMode::Normal)
         .map_err(|err| TestRunError(err.to_string()))?;
     // Map test name → FnId once.
     let test_ids: Vec<(String, FnId)> = tests
         .iter()
         .map(|name| {
-            graph
-                .module
+            world
+                .module()
                 .fn_by_name(name)
                 .map(|f| (name.clone(), f.id))
                 .ok_or_else(|| TestRunError(format!("test fn `{}` not in lowered module", name)))
@@ -243,7 +244,9 @@ fn run_named_through(tel: &dyn Telemetry, user_src: &str, user_name: &str) -> Re
         // one test doesn't leak into the next. ir_interp::run_main isn't
         // quite right (it expects a `main` fn); we call the test fn
         // directly through the IR interp on a temporary task.
-        match run_test_fn(compiler.types(), tel, &graph.module, &graph.module_plan, *fn_id) {
+        let module = world.module().clone();
+        let module_plan = world.module_plan().clone();
+        match run_test_fn(world.types(), tel, &module, &module_plan, *fn_id) {
             Ok(()) => {
                 tel.event(&["fz", "test", "passed"], metadata! { name: name.clone() });
             }

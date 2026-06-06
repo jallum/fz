@@ -25,13 +25,20 @@ fn main(), do: User.run()
     let capture = Capture::new();
     tel.attach(&["fz"], capture.handler());
     let mut compiler = Compiler::new();
+    let mut world = World::new();
 
-    let graph = compiler
-        .prepare_execution_graph_from_source(src.to_string(), "telemetry.fz".to_string(), &tel, CompileMode::Lto)
+    compiler
+        .prepare_execution_graph_from_source(
+            &mut world,
+            src.to_string(),
+            "telemetry.fz".to_string(),
+            &tel,
+            CompileMode::Lto,
+        )
         .expect("execution graph");
 
     assert!(
-        graph.module.fn_by_name("main").is_some(),
+        world.module().fn_by_name("main").is_some(),
         "prepared graph should keep main/0"
     );
     assert!(capture.contains(&["fz", "module", "interfaces_collected"]));
@@ -44,17 +51,18 @@ fn compiler_prepares_execution_graph_from_frontend_output() {
     let src = "fn main(), do: 42";
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler::new();
+    let mut world = World::new();
 
-    let frontend = match compiler.compile_source(src.to_string(), "frontend.fz".to_string(), &tel) {
+    let frontend = match compiler.compile_source(&mut world, src.to_string(), "frontend.fz".to_string(), &tel) {
         Ok(frontend) => frontend,
         Err(_) => panic!("frontend result"),
     };
 
-    let graph = compiler
-        .prepare_execution_graph_from_frontend(frontend, &tel, CompileMode::Normal)
+    compiler
+        .prepare_execution_graph_from_frontend(&mut world, frontend, &tel, CompileMode::Normal)
         .expect("execution graph from frontend");
 
-    let main_fn = graph.module.fn_by_name("main").expect("main fn");
+    let main_fn = world.module().fn_by_name("main").expect("main fn");
     assert_eq!(main_fn.name, "main");
 }
 
@@ -63,14 +71,15 @@ fn compiler_prepares_execution_graph_from_program_input() {
     let src = "fn main(), do: 7";
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler::new();
+    let mut world = World::new();
     let (prog, sm) = parse_program("program.fz", src, &tel);
 
-    let graph = compiler
-        .prepare_execution_graph_from_program(prog, sm, &tel, CompileMode::Normal)
+    compiler
+        .prepare_execution_graph_from_program(&mut world, prog, sm, &tel, CompileMode::Normal)
         .expect("execution graph from program");
 
     assert!(
-        graph.module.fn_by_name("main").is_some(),
+        world.module().fn_by_name("main").is_some(),
         "program path should keep main/0"
     );
 }
@@ -81,20 +90,20 @@ fn compiler_compile_planned_runs_spawn_with_captures_through_single_plan_path() 
     let exits = ProcessExitCapture::new();
     tel.attach(&["fz", "runtime"], exits.handler());
     let mut compiler = Compiler::new();
+    let mut world = World::new();
 
-    let graph = compiler
+    compiler
         .prepare_execution_graph_from_source(
+            &mut world,
             include_str!("../fixtures/spawn_with_captures/input.fz").to_string(),
             "fixtures/spawn_with_captures/input.fz".to_string(),
             &tel,
             CompileMode::Normal,
         )
         .expect("execution graph");
-    let compiled = compiler
-        .compile_planned(&graph.module, &graph.module_plan, &tel)
-        .expect("compile planned");
-    let main_fn = graph.module.fn_by_name("main").expect("main fn").id;
-    let mut rt = Runtime::new(&compiled, 1, &tel).with_module(&graph.module);
+    let compiled = compiler.compile_planned(&mut world, &tel).expect("compile planned");
+    let main_fn = world.module().fn_by_name("main").expect("main fn").id;
+    let mut rt = Runtime::new(&compiled, 1, &tel).with_module(world.module());
 
     let root_pid = rt.spawn(main_fn);
     rt.run_until_idle();
@@ -113,13 +122,18 @@ fn compiler_compile_planned_consumes_authoritative_plan_without_replanning() {
     let capture = Capture::new();
     tel.attach(&["fz", "planner", "planned"], capture.handler());
     let mut compiler = Compiler::new();
+    let mut world = World::new();
 
-    let graph = compiler
-        .prepare_execution_graph_from_source(src.to_string(), "planned.fz".to_string(), &tel, CompileMode::Normal)
+    compiler
+        .prepare_execution_graph_from_source(
+            &mut world,
+            src.to_string(),
+            "planned.fz".to_string(),
+            &tel,
+            CompileMode::Normal,
+        )
         .expect("execution graph");
-    let _compiled = compiler
-        .compile_planned(&graph.module, &graph.module_plan, &tel)
-        .expect("compile planned");
+    let _compiled = compiler.compile_planned(&mut world, &tel).expect("compile planned");
 
     assert_eq!(
         planner_roles(&capture),
@@ -133,12 +147,19 @@ fn compiler_compile_aot_planned_produces_main_symbol() {
     let src = "fn main(), do: 7";
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler::new();
+    let mut world = World::new();
 
-    let graph = compiler
-        .prepare_execution_graph_from_source(src.to_string(), "aot.fz".to_string(), &tel, CompileMode::Normal)
+    compiler
+        .prepare_execution_graph_from_source(
+            &mut world,
+            src.to_string(),
+            "aot.fz".to_string(),
+            &tel,
+            CompileMode::Normal,
+        )
         .expect("execution graph");
     let artifact = compiler
-        .compile_aot_planned(&graph.module, &graph.module_plan, "aot_test", &tel)
+        .compile_aot_planned(&mut world, "aot_test", &tel)
         .expect("compile aot planned");
 
     assert!(

@@ -46,12 +46,14 @@ fn run_checked(src: &str) -> i64 {
 
 fn run_runtime_graph(src: &str) -> i64 {
     let mut t = crate::types::new();
-    let graph = linked_runtime_graph(&mut t, src, &crate::telemetry::ConfiguredTelemetry::new());
+    let mut graph = linked_runtime_graph(&mut t, src, &crate::telemetry::ConfiguredTelemetry::new());
+    let module = graph.module().clone();
+    let module_plan = graph.module_plan().clone();
     let (halt, _) = run_main_with_plan(
-        &mut t,
+        graph.types(),
         &crate::telemetry::ConfiguredTelemetry::new(),
-        &graph.module,
-        graph.module_plan,
+        &module,
+        module_plan,
     )
     .expect("interp run");
     halt
@@ -62,8 +64,10 @@ fn capture_runtime_graph(src: &str) -> String {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
-    let graph = linked_runtime_graph(&mut t, src, &tel);
-    run_main_with_plan(&mut t, &tel, &graph.module, graph.module_plan).expect("interp run");
+    let mut graph = linked_runtime_graph(&mut t, src, &tel);
+    let module = graph.module().clone();
+    let module_plan = graph.module_plan().clone();
+    run_main_with_plan(graph.types(), &tel, &module, module_plan).expect("interp run");
     dbg.lines().join("\n")
 }
 
