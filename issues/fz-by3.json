@@ -2,13 +2,14 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-06T14:08:42Z",
   "created": "2026-06-06T14:06:17Z",
   "description": "The Telemetry trait now exposes detach in non-test code paths, but telemetry::bus::Entry only stores HandlerId under cfg(test). CI catches this because clippy and doc tests compile the non-test library shape. Make handler identity part of the real bus model and verify clippy/doc-test builds.",
   "id": "fz-by3",
   "labels": [],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Telemetry bus: make handler identity available in non-test builds",
   "type": "bug",
-  "updated_at": "2026-06-06T14:06:22Z"
+  "updated_at": "2026-06-06T14:08:42Z"
 }
