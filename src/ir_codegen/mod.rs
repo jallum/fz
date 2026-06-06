@@ -18,12 +18,12 @@
 
 pub(crate) use crate::frontend::spec_registry::SpecRegistry;
 use crate::fz_ir::Module;
-#[cfg(test)]
 use crate::ir_planner::ModulePlan;
+use crate::ir_planner::planned::PlannedProgram;
 use crate::telemetry::Telemetry;
 use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Ty, Types, VisibilityTypes};
 
-mod abi_facts;
+pub(crate) mod abi_facts;
 pub(crate) mod aot_main;
 pub(crate) mod backend;
 mod call;
@@ -52,6 +52,7 @@ mod value;
 
 // Glob re-exports keep cross-module references resolvable through
 // `use super::*;` in each submodule.
+pub(crate) use abi_facts::AbiFacts;
 pub(crate) use aot_main::*;
 pub(crate) use backend::*;
 pub(crate) use call::*;
@@ -85,11 +86,22 @@ pub(crate) fn compile_with_backend_prepared<
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
 >(
     t: &mut T,
-    prepared: &driver::PreparedNativeProgram,
+    working: &Module,
+    working_module_plan: &ModulePlan,
+    planned_program: &PlannedProgram,
+    abi_facts: &AbiFacts,
     backend: B,
     tel: &dyn Telemetry,
 ) -> Result<B::Output, CodegenError> {
-    driver::compile_with_backend_prepared(t, prepared, backend, tel)
+    driver::compile_with_backend_prepared(
+        t,
+        working,
+        working_module_plan,
+        planned_program,
+        abi_facts,
+        backend,
+        tel,
+    )
 }
 
 #[cfg(test)]

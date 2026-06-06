@@ -1444,13 +1444,6 @@ fn declare_mid_flight_conts<T: Types<Ty = Ty>, M: cranelift_module::Module>(
     Ok((mid_flight_cont_fn_ids, mid_flight_cont_tail_fn_ids))
 }
 
-pub(crate) struct PreparedNativeProgram {
-    working: Module,
-    module_plan: ModulePlan,
-    planned_program: PlannedProgram,
-    abi_facts: AbiFacts,
-}
-
 pub(crate) fn prepare_preplanned_native<
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
 >(
@@ -1458,7 +1451,7 @@ pub(crate) fn prepare_preplanned_native<
     module: &Module,
     module_plan: &ModulePlan,
     tel: &dyn Telemetry,
-) -> Result<PreparedNativeProgram, CodegenError> {
+) -> Result<(Module, ModulePlan, PlannedProgram, AbiFacts), CodegenError> {
     let mut working = module.clone();
     let mut module_plan = module_plan.clone();
     if let Some(edge) = working.external_call_edges.first() {
@@ -1485,12 +1478,7 @@ pub(crate) fn prepare_preplanned_native<
     }
     let planned_program = materialize_program(t, &working, &module_plan, tel);
     let abi_facts = AbiFacts::derive(&working, &planned_program);
-    Ok(PreparedNativeProgram {
-        working,
-        module_plan,
-        planned_program,
-        abi_facts,
-    })
+    Ok((working, module_plan, planned_program, abi_facts))
 }
 
 #[cfg(test)]
@@ -1512,8 +1500,17 @@ pub(crate) fn compile_with_backend_preplanned<
             module_path: module.module_path().to_owned(),
         },
     );
-    let prepared = prepare_preplanned_native(t, module, module_plan, tel)?;
-    compile_with_backend_prepared_impl(t, &prepared, backend, tel)
+    let (working, prepared_module_plan, planned_program, abi_facts) =
+        prepare_preplanned_native(t, module, module_plan, tel)?;
+    compile_with_backend_prepared_impl(
+        t,
+        &working,
+        &prepared_module_plan,
+        &planned_program,
+        &abi_facts,
+        backend,
+        tel,
+    )
 }
 
 pub(crate) fn compile_with_backend_prepared<
@@ -1521,11 +1518,22 @@ pub(crate) fn compile_with_backend_prepared<
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
 >(
     t: &mut T,
-    prepared: &PreparedNativeProgram,
+    working: &Module,
+    working_module_plan: &ModulePlan,
+    planned_program: &PlannedProgram,
+    abi_facts: &AbiFacts,
     backend: B,
     tel: &dyn Telemetry,
 ) -> Result<B::Output, CodegenError> {
-    compile_with_backend_prepared_impl(t, prepared, backend, tel)
+    compile_with_backend_prepared_impl(
+        t,
+        working,
+        working_module_plan,
+        planned_program,
+        abi_facts,
+        backend,
+        tel,
+    )
 }
 
 fn compile_with_backend_prepared_impl<
@@ -1533,15 +1541,13 @@ fn compile_with_backend_prepared_impl<
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
 >(
     t: &mut T,
-    prepared: &PreparedNativeProgram,
+    working: &Module,
+    module_plan: &ModulePlan,
+    planned_program: &PlannedProgram,
+    abi_facts: &AbiFacts,
     mut backend: B,
     tel: &dyn Telemetry,
 ) -> Result<B::Output, CodegenError> {
-    let working = &prepared.working;
-    let module_plan = &prepared.module_plan;
-    let planned_program = &prepared.planned_program;
-    let abi_facts = &prepared.abi_facts;
-
     let runtime = declare_runtime_symbols(backend.module_mut())?;
 
     let mut fbctx = FunctionBuilderContext::new();

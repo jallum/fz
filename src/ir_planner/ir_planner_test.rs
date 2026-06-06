@@ -3440,7 +3440,10 @@ fn runtime_graph_enum_take_callers_supply_callable_args_to_indirect_closure_spec
                 let Some(target_key) = caller_plan.local_call_target(&cid) else {
                     continue;
                 };
-                let Some(target_sid) = planned_program.spec_registry().resolve_spec_key(graph.types(), target_key) else {
+                let Some(target_sid) = planned_program
+                    .spec_registry()
+                    .resolve_spec_key(graph.types(), target_key)
+                else {
                     continue;
                 };
                 if target_sid.0 != *sid {

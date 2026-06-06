@@ -2,12 +2,14 @@ use crate::ast::Program;
 use crate::diag::{Diagnostics, SourceMap};
 use crate::frontend::{FrontendOk, FrontendResult, compile_program_with_types, compile_source_with_types};
 use crate::fz_ir::Module;
-use crate::ir_codegen::driver::{PreparedNativeProgram, prepare_preplanned_native};
+use crate::ir_codegen::AbiFacts;
+use crate::ir_codegen::driver::prepare_preplanned_native;
 use crate::ir_codegen::{
     AotArtifact, AotBackend, Backend, CodegenError, CompiledModule, CompiledUnit, JitBackend,
     compile_with_backend_prepared,
 };
 use crate::ir_planner::ModulePlan;
+use crate::ir_planner::planned::PlannedProgram;
 use crate::metadata;
 use crate::modules::pipeline::{
     CompileMode, PipelineError, PreparedExecutionGraph, checked_module_for_mode,
@@ -19,36 +21,30 @@ use crate::types::DefaultTypes;
 
 pub(crate) struct World {
     types: DefaultTypes,
-    execution: Option<ExecutionWorld>,
-    native: Option<PreparedNativeProgram>,
-}
-
-struct ExecutionWorld {
     units: Vec<CompiledUnit>,
-    module: Module,
-    module_plan: ModulePlan,
+    module: Option<Module>,
+    module_plan: Option<ModulePlan>,
     sm: SourceMap,
     diagnostics: Diagnostics,
-}
-
-impl From<PreparedExecutionGraph> for ExecutionWorld {
-    fn from(graph: PreparedExecutionGraph) -> Self {
-        Self {
-            units: graph.units,
-            module: graph.module,
-            module_plan: graph.module_plan,
-            sm: graph.sm,
-            diagnostics: graph.diagnostics,
-        }
-    }
+    working: Option<Module>,
+    working_module_plan: Option<ModulePlan>,
+    planned_program: Option<PlannedProgram>,
+    abi_facts: Option<AbiFacts>,
 }
 
 impl World {
     pub(crate) fn new() -> Self {
         Self {
             types: types::new(),
-            execution: None,
-            native: None,
+            units: Vec::new(),
+            module: None,
+            module_plan: None,
+            sm: SourceMap::new(),
+            diagnostics: Diagnostics::new(),
+            working: None,
+            working_module_plan: None,
+            planned_program: None,
+            abi_facts: None,
         }
     }
 
@@ -57,15 +53,19 @@ impl World {
     }
 
     pub(crate) fn units(&self) -> &[CompiledUnit] {
-        &self.execution().units
+        &self.units
     }
 
     pub(crate) fn module(&self) -> &Module {
-        &self.execution().module
+        self.module
+            .as_ref()
+            .expect("compiler world has no execution state; prepare the world before consuming it")
     }
 
     pub(crate) fn module_plan(&self) -> &ModulePlan {
-        &self.execution().module_plan
+        self.module_plan
+            .as_ref()
+            .expect("compiler world has no execution state; prepare the world before consuming it")
     }
 
     #[cfg(test)]
@@ -74,34 +74,62 @@ impl World {
     }
 
     pub(crate) fn sm(&self) -> &SourceMap {
-        &self.execution().sm
+        &self.sm
     }
 
     pub(crate) fn diagnostics(&self) -> &Diagnostics {
-        &self.execution().diagnostics
+        &self.diagnostics
     }
 
     fn replace_execution(&mut self, graph: PreparedExecutionGraph) {
-        self.execution = Some(graph.into());
-        self.native = None;
+        self.units = graph.units;
+        self.module = Some(graph.module);
+        self.module_plan = Some(graph.module_plan);
+        self.sm = graph.sm;
+        self.diagnostics = graph.diagnostics;
+        self.working = None;
+        self.working_module_plan = None;
+        self.planned_program = None;
+        self.abi_facts = None;
     }
 
-    fn replace_native(&mut self, prepared: PreparedNativeProgram) {
-        self.native = Some(prepared);
+    fn replace_native(
+        &mut self,
+        working: Module,
+        working_module_plan: ModulePlan,
+        planned_program: PlannedProgram,
+        abi_facts: AbiFacts,
+    ) {
+        self.working = Some(working);
+        self.working_module_plan = Some(working_module_plan);
+        self.planned_program = Some(planned_program);
+        self.abi_facts = Some(abi_facts);
     }
 
-    fn types_and_native(&mut self) -> (&mut DefaultTypes, &PreparedNativeProgram) {
-        let native = self
-            .native
+    fn types_and_native(&mut self) -> (&mut DefaultTypes, &Module, &ModulePlan, &PlannedProgram, &AbiFacts) {
+        let working = self
+            .working
             .as_ref()
             .expect("compiler world has no native state; prepare native world state before codegen");
-        (&mut self.types, native)
-    }
-
-    fn execution(&self) -> &ExecutionWorld {
-        self.execution
+        let working_module_plan = self
+            .working_module_plan
             .as_ref()
-            .expect("compiler world has no execution state; prepare the world before consuming it")
+            .expect("compiler world has no native state; prepare native world state before codegen");
+        let planned_program = self
+            .planned_program
+            .as_ref()
+            .expect("compiler world has no native state; prepare native world state before codegen");
+        let abi_facts = self
+            .abi_facts
+            .as_ref()
+            .expect("compiler world has no native state; prepare native world state before codegen");
+        (
+            &mut self.types,
+            working,
+            working_module_plan,
+            planned_program,
+            abi_facts,
+        )
     }
 }
 
@@ -185,13 +213,14 @@ impl Compiler {
         world: &mut World,
         tel: &dyn Telemetry,
     ) -> Result<(), CodegenError> {
-        if world.native.is_some() {
+        if world.working.is_some() {
             return Ok(());
         }
         let module = world.module().clone();
         let module_plan = world.module_plan().clone();
-        let prepared = prepare_preplanned_native(world.types(), &module, &module_plan, tel)?;
-        world.replace_native(prepared);
+        let (working, working_module_plan, planned_program, abi_facts) =
+            prepare_preplanned_native(world.types(), &module, &module_plan, tel)?;
+        world.replace_native(working, working_module_plan, planned_program, abi_facts);
         Ok(())
     }
 
@@ -229,8 +258,16 @@ impl Compiler {
             },
         );
         self.prepare_native_program(world, tel)?;
-        let (types, prepared) = world.types_and_native();
-        compile_with_backend_prepared(types, prepared, backend, tel)
+        let (types, working, working_module_plan, planned_program, abi_facts) = world.types_and_native();
+        compile_with_backend_prepared(
+            types,
+            working,
+            working_module_plan,
+            planned_program,
+            abi_facts,
+            backend,
+            tel,
+        )
     }
 }
 

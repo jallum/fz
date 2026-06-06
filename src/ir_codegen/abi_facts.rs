@@ -10,7 +10,7 @@ use crate::ir_planner::fn_types::CallableCapability;
 use crate::ir_planner::planned::PlannedProgram;
 use std::collections::{HashMap, HashSet};
 
-pub(super) struct AbiFacts {
+pub(crate) struct AbiFacts {
     pub native_fns: HashSet<FnId>,
     pub cont_fns: HashSet<FnId>,
     pub cont_target_fns: HashSet<FnId>,
@@ -19,7 +19,7 @@ pub(super) struct AbiFacts {
 }
 
 impl AbiFacts {
-    pub(super) fn derive(module: &Module, planned_program: &PlannedProgram) -> Self {
+    pub(crate) fn derive(module: &Module, planned_program: &PlannedProgram) -> Self {
         let mut direct_callees: HashSet<FnId> = HashSet::new();
         let mut cont_fns: HashSet<FnId> = HashSet::new();
         let mut cont_target_fns: HashSet<FnId> = HashSet::new();
