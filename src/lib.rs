@@ -36,7 +36,7 @@ use cli::repl::run_script;
 use compiler::Compiler;
 use diag::{Diagnostic, FileId, SourceMap, Span, codes::LOWER_UNBOUND, report_or_exit_through};
 use exec::runtime::Runtime;
-use frontend::{FrontendOk, FrontendResult, compile_source_with_types};
+use frontend::{FrontendOk, FrontendResult};
 use fz_ir::{FnCategory, FnId, FnIr, Module, SpecId};
 use ir_codegen::{
     CompiledImage, CompiledProgram, asm_record_enable, asm_record_take, ir_text_record_enable, ir_text_record_take,
@@ -849,11 +849,7 @@ fn dump_specs_pipeline(
     src: String,
     source_name: String,
 ) -> String {
-    let frontend = run_frontend(
-        compile_source_with_types(compiler.types(), src, source_name, tel),
-        sm_cell,
-        tel,
-    );
+    let frontend = run_frontend(compiler.compile_source(src, source_name, tel), sm_cell, tel);
     pretty_module_plan(compiler.types(), &frontend.module, &frontend.module_plan)
 }
 
@@ -865,11 +861,7 @@ fn dump_interfaces_pipeline(
     source_name: String,
     strict: bool,
 ) -> String {
-    let frontend = run_frontend(
-        compile_source_with_types(compiler.types(), src, source_name, tel),
-        sm_cell,
-        tel,
-    );
+    let frontend = run_frontend(compiler.compile_source(src, source_name, tel), sm_cell, tel);
     if strict {
         let diags = validate_public_export_specs(&frontend._prog.module_interfaces);
         report_or_exit_through(tel, &diags);

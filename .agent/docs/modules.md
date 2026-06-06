@@ -174,6 +174,12 @@ sidecar store.
 `modules::pipeline` turns a frontend result into a single linked IR module.
 `CompileMode` is `Normal` or `Lto`.
 
+Production callers do not usually stitch these functions together manually
+anymore. `src/compiler.rs` is the facade that drives source/program frontend
+work into `checked_module_for_mode`, then into `prepare_execution_graph`, and
+passes the resulting linked module/plan pair on to the interpreter or native
+backend.
+
 `checked_module_for_mode` runs the frontend, collects the program's own module
 interfaces (emitting `interfaces_collected`), and in `Lto` mode validates and
 erases boundaries before planning. It yields a `CheckedModule` carrying the

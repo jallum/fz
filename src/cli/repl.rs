@@ -26,15 +26,11 @@ use crate::exec::eval::{CompileTimeEvaluator, format_spec_text};
 use crate::exec::value::{Closure, Value};
 use crate::frontend::macros::expand_with;
 use crate::frontend::resolve::flatten_modules;
-use crate::frontend::{
-    FrontendOk, compile_program_with_types, compile_repl_expr_with_types, compile_source_with_types,
-};
+use crate::frontend::{FrontendOk, compile_repl_expr_with_types};
 use crate::fz_ir::{FnId, Module};
 use crate::ir_interp::{AnyValue, IrInterpRuntime};
 use crate::ir_planner::ModulePlan;
-use crate::modules::pipeline::{
-    CompileMode, PipelineError, PreparedExecutionGraph, checked_module_for_mode, prepare_execution_graph,
-};
+use crate::modules::pipeline::{CompileMode, PipelineError, PreparedExecutionGraph};
 use crate::notify_fixture_execution_start;
 use crate::parser::Parser;
 use crate::parser::lexer::{Lexer, Tok};
@@ -262,10 +258,10 @@ impl ReplSession {
         tel: &dyn Telemetry,
         diagnostics: &Rc<RefCell<Vec<u8>>>,
     ) -> io::Result<()> {
-        let frontend = compile_source_with_types(self.world.types(), src.to_string(), source_name, tel);
-        let checked = checked_module_for_mode(self.world.types(), frontend, tel, CompileMode::Normal)
-            .map_err(|err| pipeline_error_to_io_error(err, diagnostics))?;
-        let prepared = prepare_execution_graph(self.world.types(), checked, tel, CompileMode::Normal)
+        let prepared = self
+            .world
+            .compiler
+            .prepare_execution_graph_from_source(src.to_string(), source_name, tel, CompileMode::Normal)
             .map_err(|err| pipeline_error_to_io_error(err, diagnostics))?;
 
         let Some(main) = prepared.module.fn_by_name("main") else {
@@ -599,7 +595,7 @@ impl ReplWorld {
                 out.frontend.diagnostics.as_slice(),
             ));
         }
-        let graph = prepare_repl_frontend(self.types(), out.frontend, tel)?;
+        let graph = prepare_repl_frontend(&mut self.compiler, out.frontend, tel)?;
         let Some(entry_fn) = graph.module.fn_by_name(&entry_name).map(|f| f.id) else {
             return Err(io::Error::other(format!("repl entry `{}` not lowered", entry_name)));
         };
@@ -625,7 +621,7 @@ impl ReplWorld {
 
     fn compile_session_module(&mut self, tel: &dyn Telemetry) -> io::Result<Module> {
         let prog = self.session_program();
-        compile_parsed_program_module(self.types(), prog, tel)
+        compile_parsed_program_module(&mut self.compiler, prog, tel)
     }
 
     fn session_program(&self) -> Program {
@@ -668,8 +664,8 @@ pub(crate) enum ReplChunkOutcome {
     Err(String),
 }
 
-fn compile_parsed_program_module(t: &mut DefaultTypes, prog: Program, tel: &dyn Telemetry) -> io::Result<Module> {
-    let frontend = match compile_program_with_types(t, prog, SourceMap::new(), tel) {
+fn compile_parsed_program_module(compiler: &mut Compiler, prog: Program, tel: &dyn Telemetry) -> io::Result<Module> {
+    let frontend = match compiler.compile_program(prog, SourceMap::new(), tel) {
         Ok(ok) => ok,
         Err(err) => {
             return Err(diagnostics_to_io_error(&err.sm, err.diagnostics.as_slice()));
@@ -683,18 +679,17 @@ fn compile_parsed_program_module(t: &mut DefaultTypes, prog: Program, tel: &dyn 
     {
         return Err(diagnostics_to_io_error(&frontend.sm, frontend.diagnostics.as_slice()));
     }
-    Ok(prepare_repl_frontend(t, frontend, tel)?.module)
+    Ok(prepare_repl_frontend(compiler, frontend, tel)?.module)
 }
 
 fn prepare_repl_frontend(
-    t: &mut DefaultTypes,
+    compiler: &mut Compiler,
     frontend: FrontendOk,
     tel: &dyn Telemetry,
 ) -> io::Result<PreparedExecutionGraph> {
     let diagnostics = Rc::new(RefCell::new(Vec::new()));
-    let checked = checked_module_for_mode(t, Ok(frontend), tel, CompileMode::Normal)
-        .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))?;
-    prepare_execution_graph(t, checked, tel, CompileMode::Normal)
+    compiler
+        .prepare_execution_graph_from_frontend(frontend, tel, CompileMode::Normal)
         .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))
 }
 

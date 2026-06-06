@@ -2,8 +2,9 @@
 
 Codegen consumes a `ModulePlan`; it never runs the planner. The frontend and the
 module pipeline produce the one authoritative plan for the module shape they hand
-downstream, and `compile_planned` / `compile_aot_planned` lower that planned
-module mechanically.
+downstream, and `Compiler` (`src/compiler.rs`) is the production driver that
+threads that planned module through execution-graph preparation, native
+preflight, and backend emission.
 
 This is the pipeline-level form of the contract in
 [`dispatch-as-planner-output.md`](dispatch-as-planner-output.md): dispatch is
@@ -22,10 +23,19 @@ rediscovering them.
 - **`PreparedExecutionGraph`** (`modules/pipeline.rs`) is the source/runtime
   handoff. It carries the linked `Module` and the `ModulePlan` for that exact
   module. The interpreter and codegen both consume this pair.
+- **`Compiler`** (`src/compiler.rs`) is the stage owner for production callers.
+  It drives source/program frontend work, prepares execution graphs through
+  `modules::pipeline`, prepares native programs through `ir_codegen`, and then
+  selects the JIT or AOT backend.
 - **`compile_planned` / `compile_aot_planned`** (`ir_codegen/mod.rs`) take the
-  `ModulePlan` from the caller. The codegen driver performs local,
-  invariant-preserving lowering (destination lowering), but it does not change
-  call shapes and does not run a second planner pass.
+  `ModulePlan` from the caller. They remain as lower-level convenience wrappers
+  for tests and helper code, but the production CLI/REPL path reaches native
+  emission through `Compiler`.
+- **`prepare_native_program` / `compile_with_backend_prepared`**
+  (`ir_codegen/mod.rs`, `ir_codegen/driver.rs`) are the native handoff boundary:
+  plan-preserving destination lowering, marshal/type resolution, planned-program
+  materialization, and ABI-fact derivation happen before backend-specific CLIF
+  emission.
 - **`materialize_program`** (`ir_planner/planned.rs`) consumes the supplied
   `ModulePlan` and the settled module to build a `PlannedProgram`: stable
   `SpecId` registration, per-slot plan lookup, executable `PlannedBody` values
@@ -42,14 +52,15 @@ rediscovering them.
 
 ```text
 source frontend / provider linking
-  -> plan_module_with_role        # exact plan for this module shape
-  -> PreparedExecutionGraph       # module + exact plan
-  -> compile_planned
-       -> lower_destinations      # local invariant-preserving transform
-       -> resolve_module_types    # validates/attaches marshal facts on lowered IR
-       -> materialize_program     # executable projection from ModulePlan
+  -> plan_module_with_role          # exact plan for this module shape
+  -> PreparedExecutionGraph         # module + exact plan
+  -> Compiler::prepare_native_program
+       -> lower_destinations        # local invariant-preserving transform
+       -> resolve_module_types      # validates/attaches marshal facts on lowered IR
+       -> materialize_program       # executable projection from ModulePlan
        -> AbiFacts::derive
-       -> codegen                 # mechanical CLIF lowering
+  -> Compiler::compile_planned / compile_aot_planned
+       -> codegen backend emission  # mechanical CLIF lowering
 ```
 
 LTO mode is the one place that mutates module boundaries on purpose. It erases
@@ -58,8 +69,9 @@ that fresh module/plan pair downstream. The pre-erasure plan is discarded.
 
 ## What Each Stage Owns And Preserves
 
-`compile_planned` runs the plan-preserving transforms before it lowers, so the
-plan it materializes still describes the IR codegen emits.
+`Compiler::prepare_native_program` runs the plan-preserving transforms before
+native emission, so the plan it materializes still describes the IR codegen
+emits.
 
 - **`lower_destinations`** adds destination holders and init tokens. It keeps the
   original result vars and adds no call edges, so reachability and dispatch are
@@ -84,13 +96,13 @@ authoritative plan never has to carry it:
   choice for construction the lowered IR already makes explicit; it adds no call
   edges and no destination facts and leaves the `ModulePlan` untouched.
 
-The observable contract for the whole pipeline: `compile_planned` emits no
-`fz.planner.planned` event. The gating test attaches to that event and asserts
-codegen adds none beyond the caller-owned planning passes that already
-published the `frontend_check` / `linked_execution_graph` (or corresponding
-LTO/materialization) roles. (`materialize_program` still emits its own
-`fz.planner.body_materialized` and `fz.planner.materialized` events — those
-report the projection, not a replan.)
+The observable contract for the whole pipeline: native compilation emits no new
+`fz.planner.planned` event. The gating tests attach to that event and assert the
+Compiler-driven native path adds none beyond the caller-owned planning passes
+that already published the `frontend_check` / `linked_execution_graph` (or
+corresponding LTO/materialization) roles. (`materialize_program` still emits
+its own `fz.planner.body_materialized` and `fz.planner.materialized` events —
+those report the projection, not a replan.)
 
 ## Materializing The Planned Program
 
@@ -202,16 +214,17 @@ its env must be built per construction.
 fn main(), do: dbg(42)
   frontend: lower + plan_module        -> authoritative "planned" event #1
   prepare_execution_graph: plan_module -> authoritative "planned" event #2
-  compile_planned(module, plan):
+  Compiler::prepare_native_program(module, plan):
     lower_destinations / resolve_module_types   # plan-preserving
     materialize_program(plan)                   # body_materialized + materialized
     AbiFacts::derive(plan)                       # ABI off planned edges
+  Compiler::compile_planned(module, plan):
     codegen                                      # CLIF; no "planned" event
 ```
 
 ## Gate This Model With
 
-- `cargo test --lib ir_codegen::tests::codegen_pipeline_reports_only_one_authoritative_plan -- --nocapture`
+- `cargo test --lib codegen_pipeline_reports_frontend_and_linked_plans -- --nocapture`
 - `cargo test --lib ir_codegen::tests::frontend_to_codegen_pipeline_reports_planner_phase_events -- --nocapture`
 - `cargo test --lib ir_codegen::tests::tail_call_closure_reuses_frame_via_count_loop -- --nocapture`
 - `cargo test --test fixture_matrix`
