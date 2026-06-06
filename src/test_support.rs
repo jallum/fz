@@ -1,9 +1,7 @@
 use crate::fz_ir::{FnId, Module};
 use crate::ir_codegen::compile_planned;
 use crate::ir_planner::{ModulePlan, materialize_program, plan_module_with_role};
-use crate::modules::pipeline::{
-    CompileMode, PreparedExecutionGraph, checked_module_for_mode, link_execution_module, prepare_execution_graph,
-};
+use crate::modules::pipeline::{CompileMode, PreparedExecutionGraph, checked_module_for_mode, link_execution_module};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Event, Handler, Telemetry};
 use crate::types::{ClosureTypes, DefaultTypes, RenderTypes, Ty, Types};
 use std::cell::RefCell;
@@ -53,10 +51,12 @@ pub(crate) fn lower_frontend_module(src: &str) -> Module {
 /// Compile a program through the production pipeline to the linked runtime IR:
 /// protocol impls, runtime helpers, and execution-graph rewrites are local.
 pub(crate) fn linked_runtime_graph(t: &mut DefaultTypes, src: &str, tel: &dyn Telemetry) -> PreparedExecutionGraph {
-    let frontend = crate::frontend::compile_source_with_types(t, src.to_string(), "test_fixture.fz".to_string(), tel);
-    let checked =
-        checked_module_for_mode(t, frontend, tel, CompileMode::Normal).unwrap_or_else(|err| panic!("checked: {err}"));
-    prepare_execution_graph(t, checked, tel, CompileMode::Normal).unwrap_or_else(|err| panic!("execution graph: {err}"))
+    let mut compiler = crate::compiler::Compiler::with_types(std::mem::replace(t, crate::types::new()));
+    let graph = compiler
+        .prepare_execution_graph_from_source(src.to_string(), "test_fixture.fz".to_string(), tel, CompileMode::Normal)
+        .unwrap_or_else(|err| panic!("execution graph: {err}"));
+    *t = compiler.into_types();
+    graph
 }
 
 /// Compile a program through the production pipeline to the linked runtime IR:

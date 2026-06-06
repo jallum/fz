@@ -49,9 +49,7 @@ use ir_planner::{
 };
 use libc::{c_int, close, write};
 use modules::interface::{render_interfaces, validate_public_export_specs};
-use modules::pipeline::{
-    CheckedModule, CompileMode, PipelineError, checked_module_for_mode, link_error_diagnostic, prepare_execution_graph,
-};
+use modules::pipeline::{CompileMode, PipelineError, link_error_diagnostic};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, read_to_string, remove_file};
@@ -335,10 +333,11 @@ fn run_build(tel: &ConfiguredTelemetry, args: &[String]) {
         exit(1);
     });
 
-    let frontend_result = compile_source_with_types(compiler.types(), src, src_path.clone(), tel);
-    let prepared = checked_module_or_exit("fz build", compiler.types(), frontend_result, &sm_cell, tel, mode);
-    let graph = prepare_execution_graph(compiler.types(), prepared, tel, mode)
+    let graph = compiler
+        .prepare_execution_graph_from_source(src, src_path.clone(), tel, mode)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz build", tel, &sm_cell, err));
+    *sm_cell.borrow_mut() = graph.sm.clone();
+    report_or_exit_through(tel, graph.diagnostics.as_slice());
 
     let obj_name = Path::new(&src_path)
         .file_stem()
@@ -425,17 +424,11 @@ fn run_interp(tel: &ConfiguredTelemetry, args: &[String]) {
         eprintln!("read {}: {}", path, e);
         exit(1);
     });
-    let frontend_result = compile_source_with_types(compiler.types(), src, path, tel);
-    let checked = checked_module_or_exit(
-        "fz interp",
-        compiler.types(),
-        frontend_result,
-        &sm_cell,
-        tel,
-        CompileMode::Normal,
-    );
-    let graph = prepare_execution_graph(compiler.types(), checked, tel, CompileMode::Normal)
+    let graph = compiler
+        .prepare_execution_graph_from_source(src, path, tel, CompileMode::Normal)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz interp", tel, &sm_cell, err));
+    *sm_cell.borrow_mut() = graph.sm.clone();
+    report_or_exit_through(tel, graph.diagnostics.as_slice());
     notify_fixture_execution_start();
     match run_main_with_plan(compiler.types(), tel, &graph.module, graph.module_plan) {
         Ok(_halt) => {}
@@ -846,21 +839,6 @@ fn report_pipeline_error_or_exit(
     exit(1);
 }
 
-fn checked_module_or_exit(
-    context: &str,
-    t: &mut DefaultTypes,
-    result: FrontendResult,
-    sm_cell: &Rc<RefCell<SourceMap>>,
-    tel: &dyn Telemetry,
-    mode: CompileMode,
-) -> CheckedModule {
-    let checked = checked_module_for_mode(t, result, tel, mode)
-        .unwrap_or_else(|err| report_pipeline_error_or_exit(context, tel, sm_cell, err));
-    *sm_cell.borrow_mut() = checked.sm.clone();
-    report_or_exit_through(tel, checked.diagnostics.as_slice());
-    checked
-}
-
 /// fz-73m — drive a source string through lex → parse → resolve → macros
 /// → ir_lower → plan_module_with_role, then pretty-print `ModulePlan` for golden
 /// inspection. Skips codegen entirely; the dump is a planner-only view.
@@ -937,10 +915,13 @@ fn dump_bodies_pipeline(
     mode: CompileMode,
 ) -> String {
     use crate::telemetry::TelemetryExt as _;
-    let frontend_result = compile_source_with_types(compiler.types(), src, source_name, tel);
-    let prepared = checked_module_or_exit("fz dump", compiler.types(), frontend_result, sm_cell, tel, mode);
-    let module = prepared.module;
-    let module_plan = prepared.module_plan;
+    let graph = compiler
+        .prepare_execution_graph_from_source(src, source_name, tel, mode)
+        .unwrap_or_else(|err| report_pipeline_error_or_exit("fz dump", tel, sm_cell, err));
+    *sm_cell.borrow_mut() = graph.sm.clone();
+    report_or_exit_through(tel, graph.diagnostics.as_slice());
+    let module = graph.module;
+    let module_plan = graph.module_plan;
     let _compile_span = tel.span(
         &["fz", "compile"],
         crate::metadata! {
@@ -1031,9 +1012,12 @@ fn dump_outcomes_pipeline(
 ) -> String {
     use crate::fz_ir::{CallsiteId, EmitSlot};
     use crate::telemetry::TelemetryExt as _;
-    let frontend_result = compile_source_with_types(compiler.types(), src, source_name.clone(), tel);
-    let prepared = checked_module_or_exit("fz dump", compiler.types(), frontend_result, sm_cell, tel, mode);
-    let module = prepared.module;
+    let graph = compiler
+        .prepare_execution_graph_from_source(src, source_name.clone(), tel, mode)
+        .unwrap_or_else(|err| report_pipeline_error_or_exit("fz dump", tel, sm_cell, err));
+    *sm_cell.borrow_mut() = graph.sm.clone();
+    report_or_exit_through(tel, graph.diagnostics.as_slice());
+    let module = graph.module;
     let _compile_span = tel.span(
         &["fz", "compile"],
         crate::metadata! {
@@ -1209,10 +1193,11 @@ fn compile_pipeline(
     source_name: String,
     mode: CompileMode,
 ) -> Compiled {
-    let frontend_result = compile_source_with_types(compiler.types(), src, source_name, tel);
-    let prepared = checked_module_or_exit("fz run", compiler.types(), frontend_result, sm_cell, tel, mode);
-    let graph = prepare_execution_graph(compiler.types(), prepared, tel, mode)
+    let graph = compiler
+        .prepare_execution_graph_from_source(src, source_name, tel, mode)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz run", tel, sm_cell, err));
+    *sm_cell.borrow_mut() = graph.sm.clone();
+    report_or_exit_through(tel, graph.diagnostics.as_slice());
     let main_fn = graph.module.fn_by_name("main").map(|f| f.id);
     let executable = compile_planned(compiler.types(), &graph.module, &graph.module_plan, tel).unwrap_or_else(|e| {
         report_or_exit_through(tel, &[e.to_diagnostic()]);

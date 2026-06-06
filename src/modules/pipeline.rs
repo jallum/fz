@@ -65,6 +65,7 @@ pub(crate) struct PreparedExecutionGraph {
     pub(crate) module: Module,
     pub(crate) module_plan: ModulePlan,
     pub(crate) sm: SourceMap,
+    pub(crate) diagnostics: Diagnostics,
 }
 
 pub(crate) struct LinkedExecutionModule {
@@ -158,6 +159,8 @@ pub(crate) fn prepare_execution_graph(
 ) -> Result<PreparedExecutionGraph, PipelineError> {
     use crate::telemetry::TelemetryExt as _;
 
+    let diagnostics = prepared.diagnostics.clone();
+    let sm = prepared.sm.clone();
     let linked = link_execution_module(t, &mut prepared, tel)?;
     let LinkedExecutionModule { units, module } = linked;
     let _compile_span = tel.span(
@@ -190,14 +193,16 @@ pub(crate) fn prepare_execution_graph(
             units,
             module,
             module_plan,
-            sm: prepared.sm,
+            sm,
+            diagnostics,
         });
     }
     Ok(PreparedExecutionGraph {
         units,
         module,
         module_plan,
-        sm: prepared.sm,
+        sm,
+        diagnostics,
     })
 }
 
