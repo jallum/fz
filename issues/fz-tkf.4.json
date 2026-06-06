@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-06T14:15:42Z",
+  "description": "Create a compiler::source module and move Span and SourceMap into it, updating call sites and docs while preserving behavior and keeping the module boundaries coherent.",
+  "id": "fz-tkf.4",
+  "labels": [],
+  "parent": "fz-tkf",
+  "priority": 2,
+  "status": "open",
+  "title": "Move source primitives into compiler::source",
+  "type": "task",
+  "updated_at": "2026-06-06T14:15:42Z"
+}
