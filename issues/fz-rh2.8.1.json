@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-06T23:37:22Z",
+  "description": "Goal: define the semantic-to-artifact handoff. Change: MaterializedProgram(root, epoch) reads closed semantic facts, can prune/fold/inline safely, and reports growth as fatal. Check: quicksort plus foo materializes no foo body; Enum.reduce materializes only selected runtime path.",
+  "id": "fz-rh2.8.1",
+  "labels": [],
+  "parent": "fz-rh2.8",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 artifacts: materialize only from SemanticClosed",
+  "type": "task",
+  "updated_at": "2026-06-06T23:37:22Z"
+}
