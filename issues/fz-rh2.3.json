@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-06T23:37:21Z",
+  "description": "Goal: implement the durable entity spine. Change: CodeMap, ModuleMap, FunctionMap, RootMap, NamespaceStore, reference-before-definition placeholders, reverse lookups, namespace save/restore, and prelude_head. Check: tests cover stable IDs, placeholder fill, duplicate references, namespace shadow/restore, and first-match lookup.",
+  "id": "fz-rh2.3",
+  "labels": [],
+  "parent": "fz-rh2",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 core: implement CodeMap, identity maps, and namespace heads",
+  "type": "task",
+  "updated_at": "2026-06-06T23:37:21Z"
+}
