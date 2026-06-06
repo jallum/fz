@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-06T14:06:17Z",
@@ -7,8 +7,8 @@
   "id": "fz-by3",
   "labels": [],
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Telemetry bus: make handler identity available in non-test builds",
   "type": "bug",
-  "updated_at": "2026-06-06T14:06:17Z"
+  "updated_at": "2026-06-06T14:06:22Z"
 }
