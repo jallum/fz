@@ -4,14 +4,15 @@
     "fz-086.2"
   ],
   "blocks": [],
+  "closed_at": "2026-06-06T12:05:02Z",
   "created": "2026-06-06T11:46:36Z",
   "description": "Goal\nMove CLI, REPL, test-support, and documentation onto the compiler::World API and delete the superseded staged-preparation affordances.\n\nSignal\n- Production entrypoints operate through a mutable World.\n- Test helpers and targeted suites assert against world state instead of staged structs.\n- Agent docs describe World as the authoritative compiler spine and note what temporary helpers were removed.\n- The targeted pipeline and entrypoint test matrix passes.\n\nStrategy\n- Switch higher-level callers after World owns both execution and native state.\n- Remove temporary compatibility wrappers once callers are migrated.\n- Update agent docs alongside the final API shape.",
   "id": "fz-086.3",
   "labels": [],
   "parent": "fz-086",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler World: migrate entrypoints, tests, and docs",
   "type": "task",
-  "updated_at": "2026-06-06T12:00:37Z"
+  "updated_at": "2026-06-06T12:05:02Z"
 }
