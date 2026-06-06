@@ -4,14 +4,15 @@
   "blocks": [
     "fz-g1c.3"
   ],
+  "closed_at": "2026-06-06T13:07:58Z",
   "created": "2026-06-06T13:03:56Z",
   "description": "",
   "id": "fz-g1c.1",
   "labels": [],
   "parent": "fz-g1c",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Thread caller-owned telemetry through shared test support and runtime-library helpers",
   "type": "task",
-  "updated_at": "2026-06-06T13:04:12Z"
+  "updated_at": "2026-06-06T13:07:58Z"
 }
