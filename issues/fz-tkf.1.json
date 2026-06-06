@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-06T12:15:20Z",
+  "description": "Goal\nRename the typed module-function-arity identity type from ExportKey to Mfa so the codebase uses the shorter, domain-accurate name consistently at module/interface/link boundaries.\n\nSignal\n- The former ExportKey type and references are renamed to Mfa across production code, tests, and docs.\n- Module/interface/link code still reads clearly at the boundary between typed identities and dotted renderings.\n- Formatting, clippy, and targeted module/compiler/codegen tests pass.\n\nStrategy\n1. Rename the type and its constructor/usages at the identity layer.\n2. Propagate the rename through interfaces, module graph/loading, linker code, tests, and docs.\n3. Run the targeted verification matrix to catch any semantic fallout from the broad rename.\n\nReferences\n- src/modules/identity.rs\n- src/modules/interface.rs\n- src/ir_codegen/compiled.rs\n- .agent/docs/modules.md",
+  "id": "fz-tkf.1",
+  "labels": [],
+  "parent": "fz-tkf",
+  "priority": 1,
+  "status": "open",
+  "title": "Rename ExportKey to Mfa",
+  "type": "task",
+  "updated_at": "2026-06-06T12:15:20Z"
+}
