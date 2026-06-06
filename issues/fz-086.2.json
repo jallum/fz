@@ -6,14 +6,15 @@
   "blocks": [
     "fz-086.3"
   ],
+  "closed_at": "2026-06-06T12:00:36Z",
   "created": "2026-06-06T11:46:36Z",
   "description": "Goal\nMove native-preparation state into compiler::World so destination lowering, type resolution, materialization, and ABI derivation enrich the same authoritative world instead of returning PreparedNativeProgram.\n\nSignal\n- compiler::World carries the native-preparation facts needed by backends.\n- Codegen backends consume mutable world state through Compiler-owned driver methods.\n- PreparedNativeProgram disappears from the public seam and no caller depends on a separate native prep package.\n- Codegen pipeline tests still prove no replanning occurs during native emission.\n\nStrategy\n- Add native-preparation slots and transitions to World.\n- Convert codegen driver entrypoints to consume world state.\n- Keep the authoritative-plan contract explicit in tests and docs.",
   "id": "fz-086.2",
   "labels": [],
   "parent": "fz-086",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler World: fold native preparation into world state",
   "type": "task",
-  "updated_at": "2026-06-06T11:57:25Z"
+  "updated_at": "2026-06-06T12:00:36Z"
 }
