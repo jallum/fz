@@ -35,11 +35,10 @@ use std::slice::from_ref;
 /// contract facts the linker validates before a runnable image exists.
 #[derive(Debug, Clone)]
 pub struct CompiledUnit {
-    pub module: Option<ModuleName>,
+    pub name: Option<ModuleName>,
     pub code: Module,
     pub module_plan: Option<ModulePlan>,
     pub exports: Vec<InterfaceFn>,
-    pub interface_fingerprint: Vec<String>,
     pub interface: Option<ModuleInterface>,
 }
 
@@ -63,16 +62,11 @@ impl CompiledUnit {
             .as_ref()
             .map(|interface| interface.exports.clone())
             .unwrap_or_default();
-        let interface_fingerprint = interface
-            .as_ref()
-            .map(|interface| interface.fingerprint_inputs.clone())
-            .unwrap_or_default();
         Self {
-            module,
+            name: module,
             code,
             module_plan,
             exports,
-            interface_fingerprint,
             interface,
         }
     }
@@ -98,7 +92,7 @@ pub struct CompiledProgram {
 
 impl CompiledProgram {
     pub fn new(unit: CompiledUnit, executable: CompiledModule) -> Self {
-        let runtime = RuntimeUnitMetadata::from_compiled_module(unit.module.clone(), &unit, &executable);
+        let runtime = RuntimeUnitMetadata::from_compiled_module(unit.name.clone(), &unit, &executable);
         Self {
             executable,
             unit,
@@ -152,7 +146,6 @@ unsafe impl Send for CompiledImage {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageLinkError {
-    InterfaceFingerprintMismatch { module: Option<ModuleName> },
     UnresolvedExternalCalls { module: Option<ModuleName> },
     MissingImport { requester: Option<ModuleName>, import: Mfa },
     DuplicateProvider { import: Mfa },
@@ -162,14 +155,6 @@ pub enum ImageLinkError {
 impl fmt::Display for ImageLinkError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InterfaceFingerprintMismatch { module } => write!(
-                f,
-                "compiled unit `{}` does not implement its recorded interface fingerprint",
-                module
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| "<root>".to_string())
-            ),
             Self::UnresolvedExternalCalls { module } => write!(
                 f,
                 "compiled unit `{}` still has unresolved external module calls",
@@ -223,14 +208,6 @@ impl IrUnitLinker {
     }
 
     fn add_unit(&mut self, unit: &CompiledUnit) -> Result<(), ImageLinkError> {
-        if let Some(interface) = &unit.interface
-            && interface.fingerprint_inputs != unit.interface_fingerprint
-        {
-            return Err(ImageLinkError::InterfaceFingerprintMismatch {
-                module: unit.module.clone(),
-            });
-        }
-
         let fn_map = self.copy_fns(unit);
         self.copy_externs(unit, &fn_map);
         self.copy_external_edges(unit, &fn_map);
@@ -403,7 +380,7 @@ impl IrUnitLinker {
     }
 
     fn copy_exports(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) -> Result<(), ImageLinkError> {
-        let Some(module) = &unit.module else {
+        let Some(module) = &unit.name else {
             return Ok(());
         };
         for export in &unit.exports {
@@ -785,7 +762,7 @@ impl RuntimeUnitMetadata {
             (0..registry.len()).map(|id| registry.get(id as u32).clone()).collect()
         };
         let exported_symbols = unit
-            .module
+            .name
             .as_ref()
             .map(|module| {
                 unit.exports

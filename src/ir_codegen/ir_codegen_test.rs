@@ -12,7 +12,7 @@ use crate::ir_lower::lower_program;
 use crate::ir_planner::fn_types::{CallEdgeTarget, ReturnDemand, SpecKey};
 use crate::ir_planner::{ModulePlan, SpecPlan, materialize_program, plan_module_with_role};
 use crate::modules::identity::{Mfa, ModuleName};
-use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn, ModuleInterface};
+use crate::modules::interface::{InterfaceFn, ModuleInterface};
 use crate::modules::pipeline::{CompileMode, PreparedExecutionGraph, checked_module_for_mode, prepare_execution_graph};
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
@@ -100,7 +100,6 @@ end
     );
     let interface = ModuleInterface {
         name: ModuleName::from_segments(vec!["Math".to_string()]),
-        abi_version: FZ_INTERFACE_ABI_VERSION,
         imports: Vec::new(),
         exports: vec![InterfaceFn {
             name: "add".to_string(),
@@ -115,10 +114,13 @@ end
         fingerprint_inputs: vec!["export:Math.add/2".to_string()],
     };
     let unit = CompiledUnit::from_ir_module(m.clone(), Some(interface), Diagnostics::new());
-    assert_eq!(unit.module.as_ref().unwrap().dotted(), "Math");
+    assert_eq!(unit.name.as_ref().unwrap().dotted(), "Math");
     assert_eq!(unit.code.fns.len(), m.fns.len());
     assert_eq!(unit.exports[0].name, "add");
-    assert_eq!(unit.interface_fingerprint, ["export:Math.add/2"]);
+    assert_eq!(
+        unit.interface.as_ref().map(|interface| interface.name.dotted()),
+        Some("Math".to_string())
+    );
 }
 
 #[test]
@@ -239,7 +241,6 @@ fn link_test_unit(module: &str, exports: &[(&str, usize)], imports: Vec<Mfa>) ->
     let module_name = ModuleName::from_segments(vec![module.to_string()]);
     let interface = ModuleInterface {
         name: module_name.clone(),
-        abi_version: FZ_INTERFACE_ABI_VERSION,
         imports: Vec::new(),
         exports: exports
             .iter()
@@ -1106,7 +1107,6 @@ fn image_linker_rejects_unresolved_external_imports_without_provider() {
     });
     let interface = ModuleInterface {
         name: ModuleName::from_segments(vec!["User".to_string()]),
-        abi_version: FZ_INTERFACE_ABI_VERSION,
         imports: Vec::new(),
         exports: Vec::new(),
         types: Vec::new(),

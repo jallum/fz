@@ -3,7 +3,7 @@ use crate::diag::codes;
 use crate::diag::diagnostic::Severity;
 use crate::fz_ir::{FnCategory, Term};
 use crate::modules::identity::{Mfa, ModuleName};
-use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn, InterfaceSpec, ModuleInterface};
+use crate::modules::interface::{InterfaceFn, InterfaceSpec, ModuleInterface};
 use crate::telemetry::{ConfiguredTelemetry, Event, Handler, Value};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -188,7 +188,6 @@ fn compile_source_accepts_loaded_interfaces_without_provider_body() {
         math.clone(),
         ModuleInterface {
             name: math,
-            abi_version: FZ_INTERFACE_ABI_VERSION,
             imports: Vec::new(),
             exports: vec![InterfaceFn {
                 name: "add".to_string(),

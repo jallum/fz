@@ -1,5 +1,5 @@
 use super::*;
-use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn};
+use crate::modules::interface::InterfaceFn;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
 use crate::type_expr::{build_module_type_env, parse_type_expr, resolve_spec_decl};
@@ -399,7 +399,6 @@ fn import_resolves_from_external_interface_table() {
         math.clone(),
         ModuleInterface {
             name: math,
-            abi_version: FZ_INTERFACE_ABI_VERSION,
             imports: Vec::new(),
             exports: vec![InterfaceFn {
                 name: "add".to_string(),

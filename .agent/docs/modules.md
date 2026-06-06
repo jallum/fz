@@ -71,7 +71,6 @@ protocol name).
 `ModuleInterface` carries only contract data:
 
 - `name`: the `ModuleName`;
-- `abi_version`: `FZ_INTERFACE_ABI_VERSION`;
 - `imports`: declared imports with their `only` / `except` filters;
 - `exports`: `Vec<InterfaceFn>` — public functions by name, arity, and ordered
   `@spec` overload set;
@@ -80,7 +79,8 @@ protocol name).
 - `protocols`: protocol declarations and their callback surfaces;
 - `protocol_impls`: `(protocol, ImplTarget)` facts plus callback `Mfa`s;
 - `docs`: optional `@moduledoc`;
-- `fingerprint_inputs`: deterministic semantic strings used for compatibility.
+- `fingerprint_inputs`: deterministic semantic strings used for dumps and test
+  assertions.
 
 A function reaches `exports` only when it is non-macro, non-private, has no
 `extern_abi`, and is not the implicit `__info__/1` reflection builtin. So a
@@ -90,11 +90,10 @@ that stay out of the interface. Interface emission copies signatures, never
 bodies, which is why a dependent can typecheck `Protocol.t(...)` domain
 constraints and resolve imported calls without ever loading a provider body.
 
-`fingerprint_inputs` is a stable list of strings (`abi=...`, `module=...`,
-`import=...`, `type=...`, `fn=name/arity:specs=[...]`, `protocol=...`,
+`fingerprint_inputs` is a stable list of strings (`module=...`, `import=...`,
+`type=...`, `fn=name/arity:specs=[...]`, `protocol=...`,
 `protocol-impl=...`). `interface::fingerprint_digest` folds that list with FNV
-into a 16-hex-digit string. Both the human-readable inputs and the digest are
-the compatibility currency between separate compiles.
+into a 16-hex-digit string for readable dumps and stable tests.
 
 `validate_public_export_specs` enforces the library-boundary policy: every
 module export needs an explicit `@spec`, or it reports `INTERFACE_MISSING_SPEC`
@@ -220,11 +219,9 @@ each unit's interface exports and protocol-impl callbacks; then it rewrites
 
 The checks, and the `ImageLinkError` each produces:
 
-1. A unit whose recorded `interface_fingerprint` disagrees with its interface ->
-   `InterfaceFingerprintMismatch`.
-2. Two providers for one `Mfa` -> `DuplicateProvider`.
-3. A copied `ExternalCallEdge` with no provider -> `MissingImport`.
-4. A callsite that cannot be rewritten -> `UnresolvedExternalCalls`.
+1. Two providers for one `Mfa` -> `DuplicateProvider`.
+2. A copied `ExternalCallEdge` with no provider -> `MissingImport`.
+3. A callsite that cannot be rewritten -> `UnresolvedExternalCalls`.
 
 (`ImageLinkError` also has a `RuntimeMetadata` variant for runtime-table link
 failures.)
@@ -243,8 +240,8 @@ with no unresolved edges. Codegen rejects any edge that survives to it:
 
 `ir_codegen` names the link stages:
 
-- `CompiledUnit` — one pre-link module: `code` (module-local IR), optional
-  `module_plan`, `exports`, `interface`, and `interface_fingerprint`.
+- `CompiledUnit` — one pre-link module: `name` (typed module identity),
+  `code` (module-local IR), optional `module_plan`, `exports`, and `interface`.
 - `CompiledModule` — the JIT machine-code module (a `JITModule` plus per-fn
   pointer table and schemas). It is the executable payload, not the
   driver-facing product.

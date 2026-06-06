@@ -1,6 +1,6 @@
 use super::*;
 use crate::modules::identity::ModuleName;
-use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn, InterfaceSpec, ModuleInterface};
+use crate::modules::interface::{InterfaceFn, InterfaceSpec, ModuleInterface};
 
 /// fn identity(x) = x
 fn build_identity() -> FnIr {
@@ -217,7 +217,6 @@ fn lto_export_map_comes_from_validated_interfaces() {
         math.clone(),
         ModuleInterface {
             name: math.clone(),
-            abi_version: FZ_INTERFACE_ABI_VERSION,
             imports: Vec::new(),
             exports: vec![InterfaceFn {
                 name: "add".to_string(),

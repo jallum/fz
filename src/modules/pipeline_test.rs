@@ -24,7 +24,7 @@ end
     let modules = graph
         .units
         .iter()
-        .filter_map(|unit| unit.module.as_ref().map(ModuleName::dotted))
+        .filter_map(|unit| unit.name.as_ref().map(ModuleName::dotted))
         .collect::<Vec<_>>();
     assert!(modules.contains(&"User".to_string()));
     assert!(modules.contains(&"Utf8".to_string()));

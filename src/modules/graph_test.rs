@@ -2,7 +2,7 @@ use super::*;
 use crate::diag::Span;
 use crate::frontend::protocols::{ImplTarget, InterfaceProtocolImpl};
 use crate::modules::identity::{Mfa, ModuleName};
-use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn, InterfaceImport, ModuleInterface};
+use crate::modules::interface::{InterfaceFn, InterfaceImport, ModuleInterface};
 
 fn module(name: &str) -> ModuleName {
     ModuleName::from_segments(vec![name.to_string()])
@@ -33,7 +33,6 @@ fn interface(name: &str, imports: Vec<&str>, exports: Vec<(&str, usize)>) -> Mod
         .collect();
     ModuleInterface {
         name: module_name,
-        abi_version: FZ_INTERFACE_ABI_VERSION,
         imports: import_facts,
         exports: export_facts,
         types: Vec::new(),
