@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-06T14:25:00Z",
+  "description": "Rename the compiler source primitive SourceFile to Code and update all call sites, tests, and docs that describe that type.",
+  "id": "fz-tkf.5",
+  "labels": [],
+  "parent": "fz-tkf",
+  "priority": 2,
+  "status": "open",
+  "title": "Rename SourceFile to Code",
+  "type": "task",
+  "updated_at": "2026-06-06T14:25:00Z"
+}
