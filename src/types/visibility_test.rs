@@ -8,7 +8,9 @@ fn alias_attr(name: &str, body_src: &str, tel: &dyn Telemetry) -> Attribute {
     use crate::ast::{Attribute, TypeAliasDecl, TypeExprBody};
     use crate::diag::Span;
     use crate::parser::lexer::{Lexer, Tok};
-    let toks = Lexer::with_source_name(body_src, "<test>").tokenize(tel).expect("lex body");
+    let toks = Lexer::with_source_name(body_src, "<test>")
+        .tokenize(tel)
+        .expect("lex body");
     let body_tokens: Vec<_> = toks.into_iter().filter(|t| !matches!(t.tok, Tok::Eof)).collect();
     Attribute::TypeAlias(TypeAliasDecl {
         name: name.to_string(),
@@ -42,7 +44,11 @@ fn unqualified_opaque_has_no_owner() {
 
 #[test]
 fn opaque_alias_carries_declaring_module() {
-    let attrs = vec![alias_attr("t", "opaque integer", &crate::telemetry::ConfiguredTelemetry::new())];
+    let attrs = vec![alias_attr(
+        "t",
+        "opaque integer",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )];
     let env = env_for("File", &attrs);
     let ct = crate::types::new();
     let t = env.get("t").expect("alias resolved");
@@ -51,7 +57,11 @@ fn opaque_alias_carries_declaring_module() {
 
 #[test]
 fn check_passes_inside_declaring_module() {
-    let attrs = vec![alias_attr("t", "opaque integer", &crate::telemetry::ConfiguredTelemetry::new())];
+    let attrs = vec![alias_attr(
+        "t",
+        "opaque integer",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )];
     let env = env_for("File", &attrs);
     let ct = crate::types::new();
     let t = env.get("t").unwrap();
@@ -60,7 +70,11 @@ fn check_passes_inside_declaring_module() {
 
 #[test]
 fn check_rejects_from_other_module() {
-    let attrs = vec![alias_attr("t", "opaque integer", &crate::telemetry::ConfiguredTelemetry::new())];
+    let attrs = vec![alias_attr(
+        "t",
+        "opaque integer",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )];
     let env = env_for("File", &attrs);
     let ct = crate::types::new();
     let t = env.get("t").unwrap();
@@ -95,11 +109,19 @@ fn check_passes_on_unqualified_builtin_opaque() {
 fn two_modules_declaring_t_are_distinct_opaques() {
     let a = env_for(
         "A",
-        &[alias_attr("t", "opaque integer", &crate::telemetry::ConfiguredTelemetry::new())],
+        &[alias_attr(
+            "t",
+            "opaque integer",
+            &crate::telemetry::ConfiguredTelemetry::new(),
+        )],
     );
     let b = env_for(
         "B",
-        &[alias_attr("t", "opaque integer", &crate::telemetry::ConfiguredTelemetry::new())],
+        &[alias_attr(
+            "t",
+            "opaque integer",
+            &crate::telemetry::ConfiguredTelemetry::new(),
+        )],
     );
     let mut ct = crate::types::new();
     let ta = a.get("t").unwrap();

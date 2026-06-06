@@ -34,7 +34,8 @@ interactive tooling.
 instantiates. It owns a handler registry (`Vec<Entry>`, each entry a `prefix` +
 boxed `Handler`), a `span_stack`, and monotonic `next_handler_id` /
 `next_span_id` counters. It is single-threaded by design — `RefCell` interior
-mutability, no `Send`/`Sync`. The CLI driver and each test own their own bus.
+mutability, no `Send`/`Sync`. The CLI driver and each test root own their own
+bus.
 
 **`Handler` trait** (`handler.rs`) — a subscriber: `handle(&Event)`. The bus
 routes an event to a handler when `name.starts_with(handler.prefix)`; the empty
@@ -191,6 +192,12 @@ cap.count(&["fz", "ir", "dce", "block_pruned"])   // assert the pass fired
 `count_by_kind`; events come back as `OwnedEvent` with their measurements and
 metadata cloned into `'static` form (`durable_owned`, which drops `Opaque`
 values it cannot own).
+
+The ownership rule is strict: only the true root of a run creates the
+`ConfiguredTelemetry`. Shared helpers take caller-owned `&dyn Telemetry` or
+`&ConfiguredTelemetry`; they do not quietly allocate a second bus, because that
+creates a shadow event stream the test cannot observe and can accidentally
+double-run planner/codegen work under a different sink.
 
 The decision and the artifact are two questions. Telemetry proves the compiler
 *chose* something — a pass ran, a path was selected, N items were pruned. It does

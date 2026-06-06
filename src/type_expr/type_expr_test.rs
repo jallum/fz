@@ -135,8 +135,12 @@ fn tuple_two_elements() {
     let int = ct.int();
     let atom = ct.atom();
     let expected = ct.tuple(&[int, atom]);
-    let actual =
-        parse_one(&mut ct, "{integer, atom}", &crate::telemetry::ConfiguredTelemetry::new()).unwrap();
+    let actual = parse_one(
+        &mut ct,
+        "{integer, atom}",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .unwrap();
     assert!(ct.is_equivalent(&actual, &expected));
 }
 
@@ -146,8 +150,12 @@ fn tuple_three_elements_with_literal() {
     let ok = ct.atom_lit("ok");
     let int = ct.int();
     let expected = ct.tuple(&[ok, int.clone(), int]);
-    let actual =
-        parse_one(&mut ct, "{:ok, integer, integer}", &crate::telemetry::ConfiguredTelemetry::new()).unwrap();
+    let actual = parse_one(
+        &mut ct,
+        "{:ok, integer, integer}",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .unwrap();
     assert!(ct.is_equivalent(&actual, &expected));
 }
 
@@ -174,8 +182,12 @@ fn arrow_one_arg() {
     let int = ct.int();
     let arg = int.clone();
     let expected = ct.arrow(from_ref(&arg), int);
-    let actual =
-        parse_one(&mut ct, "(integer) -> integer", &crate::telemetry::ConfiguredTelemetry::new()).unwrap();
+    let actual = parse_one(
+        &mut ct,
+        "(integer) -> integer",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .unwrap();
     assert!(ct.is_equivalent(&actual, &expected));
 }
 
@@ -209,15 +221,23 @@ fn paren_grouping_with_union() {
     let int = ct.int();
     let float = ct.float();
     let expected = ct.union(int, float);
-    let actual =
-        parse_one(&mut ct, "(integer | float)", &crate::telemetry::ConfiguredTelemetry::new()).unwrap();
+    let actual = parse_one(
+        &mut ct,
+        "(integer | float)",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .unwrap();
     assert!(ct.is_equivalent(&actual, &expected));
 }
 
 #[test]
 fn paren_multi_without_arrow_errors() {
     let mut ct = crate::types::new();
-    let r = parse_one(&mut ct, "(integer, float)", &crate::telemetry::ConfiguredTelemetry::new());
+    let r = parse_one(
+        &mut ct,
+        "(integer, float)",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     assert!(r.is_err(), "multi-element paren without `->` must error; got ok",);
 }
 
@@ -227,7 +247,12 @@ fn union_two_axes() {
     let int = ct.int();
     let float = ct.float();
     let expected = ct.union(int, float);
-    let actual = parse_one(&mut ct, "integer | float", &crate::telemetry::ConfiguredTelemetry::new()).unwrap();
+    let actual = parse_one(
+        &mut ct,
+        "integer | float",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .unwrap();
     assert!(ct.is_equivalent(&actual, &expected));
 }
 
@@ -239,8 +264,12 @@ fn union_three_axes_is_left_associative_but_equivalent() {
     let nil = ct.nil();
     let u = ct.union(int, float);
     let expected = ct.union(u, nil);
-    let actual =
-        parse_one(&mut ct, "integer | float | nil", &crate::telemetry::ConfiguredTelemetry::new()).unwrap();
+    let actual = parse_one(
+        &mut ct,
+        "integer | float | nil",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .unwrap();
     assert!(ct.is_equivalent(&actual, &expected));
 }
 
@@ -261,8 +290,12 @@ fn list_of_union() {
     let float = ct.float();
     let u = ct.union(int, float);
     let expected = ct.list(u);
-    let actual =
-        parse_one(&mut ct, "[integer | float]", &crate::telemetry::ConfiguredTelemetry::new()).unwrap();
+    let actual = parse_one(
+        &mut ct,
+        "[integer | float]",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .unwrap();
     assert!(ct.is_equivalent(&actual, &expected));
 }
 
@@ -273,7 +306,12 @@ fn nested_tuple_inside_list() {
     let int = ct.int();
     let tup = ct.tuple(&[ok, int]);
     let expected = ct.list(tup);
-    let actual = parse_one(&mut ct, "[{:ok, integer}]", &crate::telemetry::ConfiguredTelemetry::new()).unwrap();
+    let actual = parse_one(
+        &mut ct,
+        "[{:ok, integer}]",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .unwrap();
     assert!(ct.is_equivalent(&actual, &expected));
 }
 
@@ -312,8 +350,13 @@ fn named_ref_used_in_arrow_via_env() {
     env.insert("id".to_string(), int.clone());
     let arg = int.clone();
     let expected = ct.arrow(from_ref(&arg), int);
-    let actual =
-        parse_one_with(&mut ct, "(id) -> id", &env, &crate::telemetry::ConfiguredTelemetry::new()).unwrap();
+    let actual = parse_one_with(
+        &mut ct,
+        "(id) -> id",
+        &env,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .unwrap();
     assert!(ct.is_equivalent(&actual, &expected));
 }
 
@@ -334,8 +377,7 @@ fn builtin_name_takes_precedence_over_alias() {
     let int = ct.int();
     let mut env = ModuleTypeEnv::new();
     env.insert("integer".to_string(), float);
-    let actual =
-        parse_one_with(&mut ct, "integer", &env, &crate::telemetry::ConfiguredTelemetry::new()).unwrap();
+    let actual = parse_one_with(&mut ct, "integer", &env, &crate::telemetry::ConfiguredTelemetry::new()).unwrap();
     assert!(
         ct.is_equivalent(&actual, &int),
         "builtin `integer` must resolve to int regardless of env shadow"
@@ -555,9 +597,13 @@ fn build_env_parameterized_alias_substitutes_args() {
     let attrs = vec![type_alias_attr_with_params("pair", &["a", "b"], "{a, b}")];
     let mut ct = crate::types::new();
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
-    let actual =
-        parse_one_with(&mut ct, "pair(integer, atom)", &env, &crate::telemetry::ConfiguredTelemetry::new())
-            .unwrap();
+    let actual = parse_one_with(
+        &mut ct,
+        "pair(integer, atom)",
+        &env,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .unwrap();
     let int = ct.int();
     let atom = ct.atom();
     let expected = ct.tuple(&[int, atom]);
@@ -579,8 +625,13 @@ fn build_env_allows_same_alias_name_with_different_arities() {
     let any_pair = ct.tuple(&[atom.clone(), any]);
     let expected_mono = ct.list(any_pair);
     assert!(ct.is_equivalent(mono, &expected_mono));
-    let mono_call =
-        parse_one_with(&mut ct, "keyword()", &env, &crate::telemetry::ConfiguredTelemetry::new()).unwrap();
+    let mono_call = parse_one_with(
+        &mut ct,
+        "keyword()",
+        &env,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .unwrap();
     assert!(ct.is_equivalent(&mono_call, &expected_mono));
 
     let applied = parse_one_with(
@@ -698,7 +749,12 @@ fn resource_integer_parses_to_builtin_opaque_tag() {
     // `resource(T)` preserves the payload type now that constrained
     // polymorphic specs can return `resource(t)`.
     let mut ct = crate::types::new();
-    let d = parse_one(&mut ct, "resource(integer)", &crate::telemetry::ConfiguredTelemetry::new()).unwrap();
+    let d = parse_one(
+        &mut ct,
+        "resource(integer)",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .unwrap();
     let payload = ct
         .resource_payload_type(&d)
         .expect("resource payload should be present");
@@ -709,16 +765,18 @@ fn resource_integer_parses_to_builtin_opaque_tag() {
 #[test]
 fn resource_inner_type_is_validated() {
     let mut ct = crate::types::new();
-    let r = parse_one(&mut ct, "resource(nonesuch)", &crate::telemetry::ConfiguredTelemetry::new());
+    let r = parse_one(
+        &mut ct,
+        "resource(nonesuch)",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     assert!(r.is_err(), "unknown inner type must error");
 }
 
 #[test]
 fn constrained_polymorphic_spec_resolves_vars_and_bounds() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let toks = |src: &str| {
-        Lexer::with_source_name(src, "<test>").tokenize(&tel).expect("lex")
-    };
+    let toks = |src: &str| Lexer::with_source_name(src, "<test>").tokenize(&tel).expect("lex");
     let mut ct = crate::types::new();
     let spec = SpecDecl {
         name: "make_resource".to_string(),
@@ -735,9 +793,7 @@ fn constrained_polymorphic_spec_resolves_vars_and_bounds() {
 #[test]
 fn resolved_spec_retains_structural_shape_for_container_parametricity() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let toks = |src: &str| {
-        Lexer::with_source_name(src, "<test>").tokenize(&tel).expect("lex")
-    };
+    let toks = |src: &str| Lexer::with_source_name(src, "<test>").tokenize(&tel).expect("lex");
     let mut ct = crate::types::new();
     let mut env = ModuleTypeEnv::new();
     env.insert("Enumerable.t".to_string(), ct.any());
@@ -776,9 +832,7 @@ fn resolved_spec_retains_structural_shape_for_container_parametricity() {
 #[test]
 fn resolved_spec_retains_structural_shape_for_higher_order_parametricity() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let toks = |src: &str| {
-        Lexer::with_source_name(src, "<test>").tokenize(&tel).expect("lex")
-    };
+    let toks = |src: &str| Lexer::with_source_name(src, "<test>").tokenize(&tel).expect("lex");
     let mut ct = crate::types::new();
     let mut env = ModuleTypeEnv::new();
     env.insert("Enumerable.t".to_string(), ct.any());
@@ -876,9 +930,7 @@ fn resolved_spec_reports_reduce_invariant_slot_correspondence() {
 #[test]
 fn resolved_spec_reports_structural_container_correspondence() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let toks = |src: &str| {
-        Lexer::with_source_name(src, "<test>").tokenize(&tel).expect("lex")
-    };
+    let toks = |src: &str| Lexer::with_source_name(src, "<test>").tokenize(&tel).expect("lex");
     let mut ct = crate::types::new();
     let mut env = ModuleTypeEnv::new();
     env.insert("Enumerable.t".to_string(), ct.any());

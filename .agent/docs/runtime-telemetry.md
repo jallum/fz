@@ -84,7 +84,13 @@ result/output/heap helpers build on it: `run_main` reads `observe(...).exit.halt
 `capture_main` reads `observe(...).output`, and `run_capturing` returns
 `(exit.halt_value, exit.live_count)`.
 
-`CompiledModule::run(fn_id)` is a sibling convenience: a thin `spawn` +
-`run_until_idle` that attaches a `ProcessExitCapture` and returns the root pid's
-`halt_value` from its `process_exited` record. Both seams read the result from the
-event, not from `task.halt_value`.
+`CompiledModule::run(tel, fn_id)` is a sibling convenience: a thin `spawn` +
+`run_until_idle` that uses the caller-owned telemetry bus, attaches a
+`ProcessExitCapture`, and returns the root pid's `halt_value` from its
+`process_exited` record. Both seams read the result from the event, not from
+`task.halt_value`.
+
+Tests follow the same ownership rule as compile-time telemetry: the test root
+creates the bus, then helpers thread it downward. A helper that allocates its
+own runtime bus splits the observation stream and stops the test from seeing the
+actual run it asked for.

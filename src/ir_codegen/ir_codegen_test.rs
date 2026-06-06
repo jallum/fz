@@ -606,7 +606,7 @@ end
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
     let mut t = crate::types::new();
-    let graph = runtime_graph_with_tel(&mut t, src, &tel);
+    let graph = runtime_graph_observed(&mut t, src, &tel);
     let entry = graph.module.fn_by_name("main").unwrap().id;
     let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile planned");
 
@@ -1223,10 +1223,10 @@ fn capture_main_with_runtime_graph(src: &str) -> Vec<String> {
 }
 
 fn runtime_graph(t: &mut DefaultTypes, src: &str) -> PreparedExecutionGraph {
-    runtime_graph_with_tel(t, src, &crate::telemetry::ConfiguredTelemetry::new())
+    runtime_graph_observed(t, src, &crate::telemetry::ConfiguredTelemetry::new())
 }
 
-fn runtime_graph_with_tel(t: &mut DefaultTypes, src: &str, tel: &dyn Telemetry) -> PreparedExecutionGraph {
+fn runtime_graph_observed(t: &mut DefaultTypes, src: &str, tel: &dyn Telemetry) -> PreparedExecutionGraph {
     let frontend = compile_source_with_types(t, src.to_string(), "test.fz".to_string(), tel);
     let checked = checked_module_for_mode(t, frontend, tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked module: {err}"));
@@ -1606,7 +1606,7 @@ fn codegen_lowering_keeps_enum_take_closure_bindings_on_value_ref_lane() {
     tel.attach(&["fz", "codegen", "closure_call_lowered"], cap.handler());
 
     let mut t = crate::types::new();
-    let graph = runtime_graph_with_tel(&mut t, src, &tel);
+    let graph = runtime_graph_observed(&mut t, src, &tel);
     compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile planned");
 
     let events = cap.find(&["fz", "codegen", "closure_call_lowered"]);
@@ -3088,7 +3088,7 @@ fn codegen_pipeline_reports_frontend_and_linked_plans() {
     let cap = Capture::new();
     tel.attach(&["fz", "planner", "planned"], cap.handler());
     let mut t = crate::types::new();
-    let graph = runtime_graph_with_tel(&mut t, src, &tel);
+    let graph = runtime_graph_observed(&mut t, src, &tel);
     let roles = planner_roles(&cap);
     assert_eq!(
         roles,
@@ -3137,7 +3137,7 @@ fn enum_take_drop_split_codegen_plan_reports_activation_projection_telemetry() {
     let cap = Capture::new();
     tel.attach(&["fz", "planner", "planned"], cap.handler());
     let mut t = crate::types::new();
-    let graph = runtime_graph_with_tel(&mut t, src, &tel);
+    let graph = runtime_graph_observed(&mut t, src, &tel);
     compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile");
 
     let ev = cap
@@ -3162,7 +3162,7 @@ fn enum_take_drop_split_planner_telemetry_reports_continuation_edges() {
     let cap = Capture::new();
     tel.attach(&["fz", "planner", "spec_pair_inventory"], cap.handler());
     let mut t = crate::types::new();
-    let graph = runtime_graph_with_tel(&mut t, src, &tel);
+    let graph = runtime_graph_observed(&mut t, src, &tel);
     compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile");
 
     let events = cap
