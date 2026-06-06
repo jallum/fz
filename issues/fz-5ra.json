@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-06T13:59:38Z",
+  "description": "Replace helper and driver parameters that still name ConfiguredTelemetry with \u0026dyn Telemetry, and make trait-object attachment work so tests and runtime helpers can observe telemetry without depending on the concrete bus.",
+  "id": "fz-5ra",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Telemetry plumbing: accept the Telemetry trait in helper and driver signatures",
+  "type": "task",
+  "updated_at": "2026-06-06T13:59:38Z"
+}
