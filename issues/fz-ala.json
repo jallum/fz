@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-06T12:05:42Z",
+  "description": "Goal\nFlatten compiler::World so it owns the fields currently wrapped by ExecutionWorld and PreparedNativeProgram directly. Remove the nested structs once World carries the authoritative execution and native-preparation state itself.\n\nSignal\n- compiler::World directly owns units, module, module_plan, sm, diagnostics, working, planned_program, and abi_facts state.\n- ExecutionWorld and PreparedNativeProgram are deleted.\n- Compiler and codegen continue to operate through mutable World state without reintroducing returned prep packages.\n- The compiler/codegen/entrypoint regression tests and clippy pass.\n\nStrategy\n1. Move the wrapped fields onto World with coherent invalidation rules between execution prep and native prep.\n2. Update compiler/codegen accessors and borrows to read World directly.\n3. Remove the obsolete structs and rerun the targeted verification matrix.\n\nReferences\n- src/compiler.rs\n- src/ir_codegen/driver.rs\n- src/ir_codegen/mod.rs\n- .agent/docs/single-authoritative-plan.md",
+  "id": "fz-ala",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler World: flatten execution and native state fields",
+  "type": "task",
+  "updated_at": "2026-06-06T12:05:42Z"
+}
