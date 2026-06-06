@@ -95,7 +95,7 @@ fn compiler_compile_planned_runs_spawn_with_captures_through_single_plan_path() 
     compiler
         .prepare_execution_graph_from_source(
             &mut world,
-            include_str!("../fixtures/spawn_with_captures/input.fz").to_string(),
+            include_str!("../../fixtures/spawn_with_captures/input.fz").to_string(),
             "fixtures/spawn_with_captures/input.fz".to_string(),
             &tel,
             CompileMode::Normal,

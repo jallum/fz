@@ -174,9 +174,10 @@ sidecar store.
 `CompileMode` is `Normal` or `Lto`.
 
 Production callers do not usually stitch these functions together manually
-anymore. `src/compiler.rs` is the facade that drives source/program frontend
-work into `checked_module_for_mode`, then into `prepare_execution_graph`, and
-stores the resulting linked module/plan pair on `compiler::World` before
+anymore. `src/compiler/mod.rs` re-exports the compiler facade, with
+`src/compiler/driver.rs` driving source/program frontend work into
+`checked_module_for_mode`, then into `prepare_execution_graph`, and
+`src/compiler/world.rs` storing the resulting linked module/plan pair before
 handing that same world state to the interpreter or native backend. The world
 names this execution image `linked_module` / `linked_module_plan` on purpose:
 it is the fused runtime IR image, not one source `defmodule`.
