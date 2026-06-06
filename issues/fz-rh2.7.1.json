@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-06T23:37:22Z",
+  "description": "Goal: remove prelude/runtime special casing from Compiler2. Change: register runtime/builtin package code through CodeMap, FunctionMap, and NamespaceStore. Check: resolving Enum/Process/Kernel names uses namespace bindings and CodeIndexed facts, not scheduler branches.",
+  "id": "fz-rh2.7.1",
+  "labels": [],
+  "parent": "fz-rh2.7",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 runtime: index runtime libraries as ordinary code",
+  "type": "task",
+  "updated_at": "2026-06-06T23:37:22Z"
+}
