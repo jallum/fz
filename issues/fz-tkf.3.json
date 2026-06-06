@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-06T12:36:24Z",
+  "description": "Goal\nMake the compiler spine data model explicit and coherent. Separate source modules, separately compiled units, linked whole-program IR, and native-lowered IR into distinct named concepts so World no longer reads like an accidental bag of Module values and detached ModulePlans.\n\nSignal\n- Each compiler stage has one clear semantic data type and vocabulary.\n- ModulePlan is no longer passed around detached from the specific IR module it describes.\n- Production callers and docs talk in terms of units, linked program IR, and native-lowered IR rather than ambiguous generic modules.\n- Targeted compiler/module/codegen tests and clippy pass after the migration.\n\nStrategy\n1. Introduce stage-specific domain types and attach plans to the IR they describe.\n2. Migrate pipeline/codegen/World ownership to those types while preserving current behavior.\n3. Sweep callers, tests, and docs onto the clarified vocabulary and remove transitional affordances.\n\nReferences\n- src/compiler.rs\n- src/modules/pipeline.rs\n- src/ir_codegen/compiled.rs\n- src/ir_codegen/driver.rs\n- .agent/docs/modules.md\n- .agent/docs/single-authoritative-plan.md",
+  "id": "fz-tkf.3",
+  "labels": [],
+  "parent": "fz-tkf",
+  "priority": 1,
+  "status": "open",
+  "title": "Epic: rationalize compiler world data model",
+  "type": "epic",
+  "updated_at": "2026-06-06T12:36:24Z"
+}
