@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-g1c.3"
+  ],
   "blocks": [],
   "created": "2026-06-06T13:03:56Z",
   "description": "",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Document caller-owned telemetry in tests and remove remaining hatch wrappers",
   "type": "task",
-  "updated_at": "2026-06-06T13:03:56Z"
+  "updated_at": "2026-06-06T13:03:57Z"
 }
