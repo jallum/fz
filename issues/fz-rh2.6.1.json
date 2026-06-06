@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-06T23:37:21Z",
+  "description": "Goal: root requests create exactly one semantic island. Change: RootEntry, SeedRoot, Activation, Executable, CheckSemanticClosure skeleton, and absence assertions. Check: quicksort plus foo activates main/qsort path only; foo remains defined-only.",
+  "id": "fz-rh2.6.1",
+  "labels": [],
+  "parent": "fz-rh2.6",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 semantic: seed roots and keep uncalled functions cold",
+  "type": "task",
+  "updated_at": "2026-06-06T23:37:21Z"
+}
