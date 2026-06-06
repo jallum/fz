@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-06T11:46:22Z",
+  "description": "Goal\nReplace the split PreparedExecutionGraph and PreparedNativeProgram handoff model with one authoritative compiler::World that is passed as mutable compiler state through the spine. The world should accumulate frontend, execution-graph, and native-preparation facts in one place instead of bouncing staged structs through return values.\n\nSignal\n- compiler::World subsumes the state currently carried by PreparedExecutionGraph and PreparedNativeProgram.\n- Compiler entrypoints mutate a supplied World instead of returning staged prep structs.\n- Codegen consumes compiler-owned world state rather than owning a separate prepared-native package.\n- CLI, REPL, tests, and docs use the new world boundary and the targeted pipeline suite passes.\n\nStrategy\n1. Define the world shape and move execution-graph state into compiler-owned state transitions.\n2. Move native-preparation state into the same world and make backend emission consume it.\n3. Migrate callers, tests, and docs to the mutable world API and remove the superseded prep structs.\n\nReferences\n- src/compiler.rs\n- src/modules/pipeline.rs\n- src/ir_codegen/driver.rs\n- src/lib.rs\n- src/cli/repl.rs\n- .agent/docs/single-authoritative-plan.md",
+  "id": "fz-086",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "Epic: make compiler::World the authoritative compiler spine",
+  "type": "epic",
+  "updated_at": "2026-06-06T11:46:22Z"
+}
