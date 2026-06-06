@@ -3,12 +3,12 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-06T11:20:31Z",
-  "description": "Goal\nMake  the authoritative owner of compiler stage sequencing so frontend preparation, execution-graph preparation, native preflight, and engine handoff are driven from one place instead of being split across , , and .\n\nSignal\n-  exposes the production pipeline entrypoints used by CLI / REPL / tests.\n-  no longer owns the top-level native preflight sequencing; it consumes prepared inputs from the compiler spine.\n- The authoritative-plan contract remains intact: planning still happens before codegen, and codegen emits no new  events.\n- Targeted pipeline tests and the fixture matrix pass.\n\nStrategy\n1. Introduce Compiler-owned driver APIs for frontend and execution-graph preparation, then move shared callers onto them.\n2. Extract the native preflight/materialization sequence out of the codegen driver into a Compiler-owned stage boundary.\n3. Finish by routing CLI/REPL/test-runner/interpreter entrypoints through the new spine and updating the agent docs.\n\nReferences\n- \n- \n- \n- \n- \n- \n\nPlan\n\n",
+  "description": "Goal\nMake `src/compiler.rs` the authoritative owner of compiler stage sequencing so frontend preparation, execution-graph preparation, native preflight, and engine handoff are driven from one place instead of being split across `lib.rs`, `modules::pipeline`, and `ir_codegen::driver`.\n\nSignal\n- `Compiler` exposes the production pipeline entrypoints used by CLI, REPL, and tests.\n- `ir_codegen` no longer owns the top-level native preflight sequencing; it consumes prepared inputs from the compiler spine.\n- The authoritative-plan contract remains intact: planning still happens before codegen, and codegen emits no new `fz.planner.planned` events.\n- Targeted pipeline tests and the fixture matrix pass.\n\nStrategy\n1. Introduce Compiler-owned driver APIs for frontend and execution-graph preparation, then move shared callers onto them.\n2. Extract the native preflight/materialization sequence out of the codegen driver into a Compiler-owned stage boundary.\n3. Finish by routing CLI/REPL/test-runner/interpreter entrypoints through the new spine and updating the agent docs.\n\nReferences\n- `src/compiler.rs`\n- `src/frontend/mod.rs`\n- `src/modules/pipeline.rs`\n- `src/ir_codegen/driver.rs`\n- `.agent/docs/single-authoritative-plan.md`\n- `.agent/docs/modules.md`\n\nPlan\n```mermaid\ngraph LR\n  A[frontend and execution graph APIs] --\u003e B[native preflight extracted from codegen]\n  B --\u003e C[all entrypoints moved to Compiler spine]\n```",
   "id": "fz-3je",
   "labels": [],
   "priority": 1,
   "status": "open",
   "title": "Epic: factor compiler spine into Compiler",
   "type": "epic",
-  "updated_at": "2026-06-06T11:20:31Z"
+  "updated_at": "2026-06-06T11:20:56Z"
 }
