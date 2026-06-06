@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-kij"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-48u"
+  ],
   "created": "2026-06-06T11:21:09Z",
   "description": "Goal\nMove destination lowering, invariant checking, extern marshal resolution, and planned-program materialization out of the top-level codegen driver sequence and make Compiler the caller that drives those stages.\n\nSignal\n- The top-level native pipeline order lives in Compiler.\n- Codegen consumes a prepared native package instead of raw `Module + ModulePlan` at the outermost seam.\n- Existing authoritative-plan telemetry and tests still pass.\n\nStrategy\n- Introduce a prepared-native boundary that carries the plan-preserving transform outputs codegen needs.\n- Keep backend-specific CLIF emission in `ir_codegen`.\n- Preserve the one-authoritative-plan rule documented in `.agent/docs/single-authoritative-plan.md`.",
   "id": "fz-3je.1",
