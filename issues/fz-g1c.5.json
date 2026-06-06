@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-g1c.3"
+  ],
   "created": "2026-06-06T13:10:46Z",
   "description": "",
   "id": "fz-g1c.5",
