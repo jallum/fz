@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-06T13:03:56Z",
+  "description": "",
+  "id": "fz-g1c",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Epic: remove telemetry-owned helper hatches",
+  "type": "epic",
+  "updated_at": "2026-06-06T13:03:56Z"
+}
