@@ -1,7 +1,8 @@
 use crate::telemetry::{Telemetry, TelemetryExt};
 use crate::{measurements, metadata};
 
-use super::world::{CodeId, World};
+use super::code::CodeId;
+use super::world::World;
 
 /// Public front door for the side-by-side incremental compiler.
 ///
@@ -34,7 +35,9 @@ impl Compiler2 {
                 name: submission.name.as_deref().unwrap_or("<anonymous>"),
             },
         );
-        let code_id = world.insert_code(submission.clone());
+        let code_id = world
+            .code_mut()
+            .define(submission.name.clone(), submission.text.clone());
         tel.execute(
             &["fz", "compiler2", "code", "submitted"],
             &measurements! {

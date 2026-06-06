@@ -41,8 +41,8 @@ fn run_contract(case: ContractCase<'_>) {
         &tel,
     );
 
-    assert_eq!(world.code_count(), 1, "{} should add one code record", case.name);
-    let record = world.code(submitted.code_id).expect("submitted code record");
+    assert_eq!(world.code().len(), 1, "{} should add one code record", case.name);
+    let record = world.code().get(submitted.code_id).expect("submitted code record");
     assert_eq!(
         record.name(),
         Some(case.source_name),

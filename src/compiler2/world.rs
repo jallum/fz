@@ -1,41 +1,14 @@
-use std::fmt;
-
-use super::driver::CodeSubmission;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CodeId(u32);
-
-impl CodeId {
-    pub fn as_u32(self) -> u32 {
-        self.0
-    }
-}
-
-impl fmt::Display for CodeId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "code#{}", self.0)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodeRecord {
-    name: Option<String>,
-    text: String,
-}
-
-impl CodeRecord {
-    pub fn name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
-
-    pub fn text(&self) -> &str {
-        &self.text
-    }
-}
+use super::code::CodeMap;
+use super::identity::{FunctionMap, ModuleMap, RootMap};
+use super::namespace::NamespaceStore;
 
 #[derive(Debug, Default)]
 pub struct World {
-    code: Vec<CodeRecord>,
+    code: CodeMap,
+    modules: ModuleMap,
+    functions: FunctionMap,
+    roots: RootMap,
+    namespaces: NamespaceStore,
 }
 
 impl World {
@@ -43,20 +16,43 @@ impl World {
         Self::default()
     }
 
-    pub fn insert_code(&mut self, submission: CodeSubmission) -> CodeId {
-        let code_id = CodeId(self.code.len() as u32);
-        self.code.push(CodeRecord {
-            name: submission.name,
-            text: submission.text,
-        });
-        code_id
+    pub fn code(&self) -> &CodeMap {
+        &self.code
     }
 
-    pub fn code(&self, code_id: CodeId) -> Option<&CodeRecord> {
-        self.code.get(code_id.0 as usize)
+    pub fn code_mut(&mut self) -> &mut CodeMap {
+        &mut self.code
     }
 
-    pub fn code_count(&self) -> usize {
-        self.code.len()
+    pub fn modules(&self) -> &ModuleMap {
+        &self.modules
+    }
+
+    pub fn modules_mut(&mut self) -> &mut ModuleMap {
+        &mut self.modules
+    }
+
+    pub fn functions(&self) -> &FunctionMap {
+        &self.functions
+    }
+
+    pub fn functions_mut(&mut self) -> &mut FunctionMap {
+        &mut self.functions
+    }
+
+    pub fn roots(&self) -> &RootMap {
+        &self.roots
+    }
+
+    pub fn roots_mut(&mut self) -> &mut RootMap {
+        &mut self.roots
+    }
+
+    pub fn namespaces(&self) -> &NamespaceStore {
+        &self.namespaces
+    }
+
+    pub fn namespaces_mut(&mut self) -> &mut NamespaceStore {
+        &mut self.namespaces
     }
 }
