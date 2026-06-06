@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-06T13:03:56Z",
+  "description": "",
+  "id": "fz-g1c.1",
+  "labels": [],
+  "parent": "fz-g1c",
+  "priority": 2,
+  "status": "open",
+  "title": "Thread caller-owned telemetry through shared test support and runtime-library helpers",
+  "type": "task",
+  "updated_at": "2026-06-06T13:03:56Z"
+}
