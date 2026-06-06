@@ -4,14 +4,13 @@ use crate::diag::diagnostic::Severity;
 use crate::fz_ir::{FnCategory, Term};
 use crate::modules::identity::{Mfa, ModuleName};
 use crate::modules::interface::{InterfaceFn, InterfaceSpec, ModuleInterface};
-use crate::telemetry::{ConfiguredTelemetry, Event, Handler, Value};
+use crate::telemetry::{ConfiguredTelemetry, Event, Handler, Telemetry, Value};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-fn compile_source(src: String, source_name: String) -> FrontendResult {
+fn compile_source(src: String, source_name: String, tel: &dyn Telemetry) -> FrontendResult {
     let mut t = crate::types::new();
-    let tel = ConfiguredTelemetry::new();
-    compile_source_with_types(&mut t, src, source_name, &tel)
+    compile_source_with_types(&mut t, src, source_name, tel)
 }
 
 #[test]
@@ -21,7 +20,11 @@ fn classify(0), do: :zero
 fn classify(1), do: :one
 fn main(), do: classify(7)
 ";
-    let out = match compile_source(src.to_string(), "test.fz".to_string()) {
+    let out = match compile_source(
+        src.to_string(),
+        "test.fz".to_string(),
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    ) {
         Ok(out) => out,
         Err(_) => panic!("frontend ok"),
     };
@@ -35,7 +38,11 @@ fn main(), do: classify(7)
 
 #[test]
 fn returns_error_diagnostics_without_rendering() {
-    let err = match compile_source("fn main( do\n".to_string(), "bad.fz".to_string()) {
+    let err = match compile_source(
+        "fn main( do\n".to_string(),
+        "bad.fz".to_string(),
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    ) {
         Ok(_) => panic!("frontend should fail"),
         Err(err) => err,
     };
@@ -115,23 +122,21 @@ fn structural_telemetry_exposes_compiler_artifacts_to_handlers() {
     assert_eq!(facts.checked_diagnostics, out.diagnostics.len());
 }
 
-fn parse_with_source_map(src: &str, source_name: &str) -> (Program, SourceMap) {
+fn parse_with_source_map(src: &str, source_name: &str, tel: &dyn Telemetry) -> (Program, SourceMap) {
     let mut sm = SourceMap::new();
     let file_id = sm.add_file(source_name.to_string(), src.to_string());
     let toks = Lexer::with_file_and_source_name(src, file_id, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .tokenize(tel)
         .expect("lex");
-    let prog = Parser::new(toks)
-        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("parse");
+    let prog = Parser::new(toks).parse_program(tel).expect("parse");
     (prog, sm)
 }
 
-fn parse_expr_with_source_map(src: &str, source_name: &str) -> (Spanned<Expr>, SourceMap) {
+fn parse_expr_with_source_map(src: &str, source_name: &str, tel: &dyn Telemetry) -> (Spanned<Expr>, SourceMap) {
     let mut sm = SourceMap::new();
     let file_id = sm.add_file(source_name.to_string(), src.to_string());
     let toks = Lexer::with_file_and_source_name(src, file_id, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .tokenize(tel)
         .expect("lex");
     let expr = Parser::new(toks).parse_expr_eof().expect("parse expr");
     (expr, sm)
@@ -140,7 +145,7 @@ fn parse_expr_with_source_map(src: &str, source_name: &str) -> (Spanned<Expr>, S
 #[test]
 fn compile_program_with_types_compiles_parsed_program() {
     let src = "fn id(x), do: x\nfn main(), do: id(41)\n";
-    let (prog, sm) = parse_with_source_map(src, "parsed.fz");
+    let (prog, sm) = parse_with_source_map(src, "parsed.fz", &crate::telemetry::ConfiguredTelemetry::new());
     let mut t = crate::types::new();
     let out = match compile_program_with_types(&mut t, prog, sm, &crate::telemetry::ConfiguredTelemetry::new()) {
         Ok(out) => out,
@@ -152,11 +157,15 @@ fn compile_program_with_types_compiles_parsed_program() {
 #[test]
 fn compile_program_with_types_matches_source_pipeline() {
     let src = "fn add(a, b), do: a + b\nfn main(), do: add(20, 22)\n";
-    let source_out = match compile_source(src.to_string(), "source.fz".to_string()) {
+    let source_out = match compile_source(
+        src.to_string(),
+        "source.fz".to_string(),
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    ) {
         Ok(out) => out,
         Err(_) => panic!("compile source program"),
     };
-    let (prog, sm) = parse_with_source_map(src, "source.fz");
+    let (prog, sm) = parse_with_source_map(src, "source.fz", &crate::telemetry::ConfiguredTelemetry::new());
     let mut t = crate::types::new();
     let parsed_out = match compile_program_with_types(&mut t, prog, sm, &crate::telemetry::ConfiguredTelemetry::new()) {
         Ok(out) => out,
@@ -170,7 +179,7 @@ fn compile_program_with_types_matches_source_pipeline() {
 #[test]
 fn compile_program_with_types_preserves_diagnostics() {
     let src = "fn main(), do: missing + 1\n";
-    let (prog, sm) = parse_with_source_map(src, "bad-parsed.fz");
+    let (prog, sm) = parse_with_source_map(src, "bad-parsed.fz", &crate::telemetry::ConfiguredTelemetry::new());
     let mut t = crate::types::new();
     let err = match compile_program_with_types(&mut t, prog, sm, &crate::telemetry::ConfiguredTelemetry::new()) {
         Ok(_) => panic!("unbound name should fail lowering"),
@@ -242,11 +251,15 @@ end
 
 fn main(), do: inc(41)
 "#;
-    let source_out = match compile_source(src.to_string(), "macro-source.fz".to_string()) {
+    let source_out = match compile_source(
+        src.to_string(),
+        "macro-source.fz".to_string(),
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    ) {
         Ok(out) => out,
         Err(_) => panic!("compile source program"),
     };
-    let (prog, sm) = parse_with_source_map(src, "macro-source.fz");
+    let (prog, sm) = parse_with_source_map(src, "macro-source.fz", &crate::telemetry::ConfiguredTelemetry::new());
     let mut t = crate::types::new();
     let parsed_out = match compile_program_with_types(&mut t, prog, sm, &crate::telemetry::ConfiguredTelemetry::new()) {
         Ok(out) => out,
@@ -258,7 +271,7 @@ fn main(), do: inc(41)
 
 #[test]
 fn compile_repl_expr_returns_entry_and_frame_layout_for_plain_expression() {
-    let (expr, sm) = parse_expr_with_source_map("x + 1", "repl.fz");
+    let (expr, sm) = parse_expr_with_source_map("x + 1", "repl.fz", &crate::telemetry::ConfiguredTelemetry::new());
     let mut t = crate::types::new();
     let out = match compile_repl_expr_with_types(
         &mut t,
@@ -290,7 +303,7 @@ fn compile_repl_expr_extends_frame_for_simple_and_destructuring_bindings() {
         ("x = 42", vec!["x".to_string()], vec!["x".to_string()]),
     ];
     for (src, input, expected_output) in cases {
-        let (expr, sm) = parse_expr_with_source_map(src, "repl.fz");
+        let (expr, sm) = parse_expr_with_source_map(src, "repl.fz", &crate::telemetry::ConfiguredTelemetry::new());
         let mut t = crate::types::new();
         let out = match compile_repl_expr_with_types(
             &mut t,
@@ -311,7 +324,11 @@ fn compile_repl_expr_extends_frame_for_simple_and_destructuring_bindings() {
 
 #[test]
 fn compile_repl_expr_lowers_match_failure_path() {
-    let (expr, sm) = parse_expr_with_source_map("{:ok, y} = {:error, 2}", "repl.fz");
+    let (expr, sm) = parse_expr_with_source_map(
+        "{:ok, y} = {:error, 2}",
+        "repl.fz",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let mut t = crate::types::new();
     let out = match compile_repl_expr_with_types(
         &mut t,

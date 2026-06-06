@@ -2,21 +2,18 @@ use super::*;
 use crate::modules::interface::InterfaceFn;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
+use crate::telemetry::Telemetry;
 use crate::type_expr::{build_module_type_env, parse_type_expr, resolve_spec_decl};
 use crate::types::DefaultTypes;
 
-fn parse(src: &str) -> Program {
-    let toks = Lexer::with_source_name(src, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("lex");
-    Parser::new(toks)
-        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("parse")
+fn parse(src: &str, tel: &dyn Telemetry) -> Program {
+    let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).expect("lex");
+    Parser::new(toks).parse_program(tel).expect("parse")
 }
 
-fn flatten(src: &str) -> Program {
+fn flatten(src: &str, tel: &dyn Telemetry) -> Program {
     let mut ct = crate::types::new();
-    flatten_modules(&mut ct, parse(src), &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten")
+    flatten_modules(&mut ct, parse(src, tel), tel).expect("flatten")
 }
 
 fn fn_names(p: &Program) -> Vec<String> {
@@ -41,14 +38,17 @@ fn callee_name(body: &Spanned<Expr>) -> &str {
 
 #[test]
 fn module_qualifies_fn_names() {
-    let p = flatten("defmodule M do; fn f(x), do: x + 1 end");
+    let p = flatten(
+        "defmodule M do; fn f(x), do: x + 1 end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     // Every module gains a synthesized `__info__/1`.
     assert_eq!(fn_names(&p), vec!["M.f", "M.__info__"]);
 }
 
 #[test]
 fn ungrouped_fns_keep_bare_names() {
-    let p = flatten("fn helper(x), do: x + 1");
+    let p = flatten("fn helper(x), do: x + 1", &crate::telemetry::ConfiguredTelemetry::new());
     assert_eq!(fn_names(&p), vec!["helper"]);
 }
 
@@ -61,6 +61,7 @@ defmodule M do
   fn use_helper(x), do: helper(x)
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let names = fn_names(&p);
     assert!(names.contains(&"M.helper".to_string()));
@@ -87,6 +88,7 @@ defmodule B do
   fn caller(), do: A.ping()
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let caller = p
         .items
@@ -108,6 +110,7 @@ defmodule M do
   fn shadow(helper), do: helper
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let shadow = p
         .items
@@ -133,6 +136,7 @@ fn f(x), do: x + 1
   end
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     // Every module gains a synthesized `__info__/1` — including the
     // namespace-only outer module `A`.
@@ -150,6 +154,7 @@ fn f(x), do: x
 end
 fn main() do A.B.f(99) end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let main_fn = p
         .items
@@ -176,6 +181,7 @@ defmodule User do
   fn caller(), do: Path.f(7)
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let caller = p
         .items
@@ -202,6 +208,7 @@ defmodule User do
   fn caller(), do: P.f(9)
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let caller = p
         .items
@@ -227,6 +234,7 @@ defmodule User do
   fn run(x, y), do: add(x, y)
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let run = p
         .items
@@ -253,6 +261,7 @@ defmodule User do
   fn r2(x, y), do: mul(x, y)
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let r1 = p
         .items
@@ -287,6 +296,7 @@ defmodule User do
   fn use_local(), do: add(10, 4)
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let use_local = p
         .items
@@ -311,6 +321,7 @@ defmodule User do
   fn run(), do: nil
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -333,6 +344,7 @@ defmodule User do
   fn run(), do: nil
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -357,6 +369,7 @@ defmodule User do
   fn run(x), do: add(x)
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -381,6 +394,7 @@ defmodule User do
   fn run(x, y), do: add(x, y)
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -422,6 +436,7 @@ defmodule User do
   fn run(x, y), do: add(x, y)
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         interfaces,
         &crate::telemetry::ConfiguredTelemetry::new(),
@@ -450,6 +465,7 @@ defmodule User do
   fn run(bytes), do: valid?(bytes)
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -466,7 +482,7 @@ end
     assert_eq!(callee_name(&run.clauses[0].body), "Utf8.valid?");
     assert!(
         !p.module_interfaces
-            .contains_key(&ModuleName::from_segments(vec!["Utf8".to_string()]))
+            .contains_key(&ModuleName::from_segments(vec!["Utf8".to_string()])),
     );
 }
 
@@ -482,6 +498,7 @@ defmodule User do
   fn run(bytes), do: U.valid?(bytes)
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -498,7 +515,7 @@ end
     assert_eq!(callee_name(&run.clauses[0].body), "Utf8.valid?");
     assert!(
         p.external_module_interfaces
-            .contains_key(&ModuleName::from_segments(vec!["Utf8".to_string()]))
+            .contains_key(&ModuleName::from_segments(vec!["Utf8".to_string()])),
     );
     assert!(
         !p.external_module_interfaces
@@ -514,6 +531,7 @@ defmodule User do
   fn run(bytes), do: Utf8.valid?(bytes)
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let run = p
         .items
@@ -546,6 +564,7 @@ defmodule User do
   fn run(), do: Range.new(1, 3, 1)
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     assert!(
         p.external_module_interfaces
@@ -572,6 +591,7 @@ defmodule User do
   fn run(), do: hidden()
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -600,6 +620,7 @@ defmodule User do
   fn run(), do: f()
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -608,7 +629,7 @@ end
     assert_eq!(d.code, codes::RESOLVE_CONFLICTING_IMPORT);
     assert_eq!(
         d.message,
-        "import `f/0` from module `B` conflicts with existing import from module `A`"
+        "import `f/0` from module `B` conflicts with existing import from module `A`",
     );
     assert_eq!(d.secondaries.len(), 1);
 }
@@ -626,6 +647,7 @@ defmodule User do
   fn run(x, y), do: add(x, y)
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let run = p
         .items
@@ -648,6 +670,7 @@ end
 import Math, only: [add: 2]
 fn main(), do: add(20, 22)
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let main = p
         .items
@@ -672,6 +695,7 @@ end
 alias Outer.Inner, as: I
 fn main(), do: I.value()
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let main = p
         .items
@@ -698,6 +722,7 @@ defmodule M do
   fn two(), do: 2
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -716,6 +741,7 @@ fn duplicate_export_diag_names_module_function_and_arity() {
 fn f(x), do: x
 fn g(y), do: y
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let mut defs: Vec<FnDef> = parsed
         .items
@@ -758,6 +784,7 @@ defmodule Greeter do
   fn hi(name), do: name
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let m = prog
         .items
@@ -793,6 +820,7 @@ defmodule M do
   fn one(), do: 1
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let m = prog
         .items
@@ -853,6 +881,7 @@ defmodule M do
   fn run(_), do: nil
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let mut ct = crate::types::new();
     let flat = flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
@@ -874,6 +903,7 @@ defmodule Range do
   @type t :: %Range{first: integer, last: integer, step: integer}
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let mut ct = crate::types::new();
     let flat = flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
@@ -896,6 +926,7 @@ defmodule Range do
   @type t :: %Range{first: integer, last: integer}
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let mut ct = crate::types::new();
     let err = flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new())
@@ -918,6 +949,7 @@ defmodule M do
   fn run(_), do: nil
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let mut ct = crate::types::new();
     let flat = flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
@@ -957,6 +989,7 @@ defmodule M do
   fn add1(n), do: n + 1
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let m = prog
         .items
@@ -1002,6 +1035,7 @@ defmodule M do
   fn one(), do: 1
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let m = prog
         .items
@@ -1138,6 +1172,7 @@ defmodule M do
   fn add1(n), do: n + 1
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let m = prog
         .items
@@ -1185,6 +1220,7 @@ defmodule M do
   fn lookup(x), do: x
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let m = prog
         .items
@@ -1254,6 +1290,7 @@ defmodule M do
   fn d(x), do: x * 2
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let d = p
         .items
@@ -1278,6 +1315,7 @@ fn f(x), do: x + 100
   end
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let names = fn_names(&p);
     assert!(names.contains(&"A.f".to_string()));
@@ -1301,7 +1339,7 @@ end
 #[test]
 fn sibling_rewrite_preserves_var_span() {
     let src = "defmodule M do\n  fn f(x), do: x\n  fn g(x), do: f(x)\nend";
-    let pre = parse(src);
+    let pre = parse(src, &crate::telemetry::ConfiguredTelemetry::new());
 
     // Find the `f` inside `g`'s body BEFORE flattening.
     let pre_span = {
@@ -1344,7 +1382,7 @@ fn sibling_rewrite_preserves_var_span() {
     }
     assert_eq!(
         callee.span, pre_span,
-        "callee span should be preserved through sibling rewrite"
+        "callee span should be preserved through sibling rewrite",
     );
 }
 
@@ -1361,7 +1399,7 @@ defmodule N do
   fn use_it(), do: M.helper(7)
 end
 "#;
-    let pre = parse(src);
+    let pre = parse(src, &crate::telemetry::ConfiguredTelemetry::new());
     let pre_call_span = {
         let n_mod = pre
             .items
@@ -1407,7 +1445,7 @@ end
     }
     assert_eq!(
         callee.span, pre_call_span,
-        "callee span should be preserved through cross-module rewrite"
+        "callee span should be preserved through cross-module rewrite",
     );
 }
 
@@ -1432,6 +1470,7 @@ defmodule Consumer do
   fn use(xs), do: 1
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -1450,7 +1489,7 @@ end
         .expect("impl fact");
     assert_eq!(
         implementation.callbacks[&("reduce".to_string(), 3)],
-        Mfa::new(enumerable.child("List".to_string()), "reduce", 3)
+        Mfa::new(enumerable.child("List".to_string()), "reduce", 3),
     );
     let protocol_ty = p.module_type_envs["Consumer"]
         .get("Enumerable.t")
@@ -1485,6 +1524,7 @@ defmodule Consumer do
   fn use(xs), do: 1
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -1510,7 +1550,7 @@ end
     assert!(ct.is_subtype(&list_int, &refined));
     assert!(
         !ct.is_subtype(&list_atom, &refined),
-        "a refined `Enumerable.t(integer)` must exclude `list(atom)`"
+        "a refined `Enumerable.t(integer)` must exclude `list(atom)`",
     );
     // The bare domain stays element-agnostic (`list(any)`), so it still
     // admits `list(atom)` — proving the refinement genuinely narrows.
@@ -1532,6 +1572,7 @@ defimpl P, for: List do
   fn other(x), do: x
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -1561,6 +1602,7 @@ defimpl P, for: List do
   fn each(x), do: x
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -1589,6 +1631,7 @@ defimpl P, for: List do
   fn each(x, extra), do: x
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -1599,7 +1642,7 @@ end
     assert!(
         d.message.contains("at arity 2") && d.message.contains("`each/1`"),
         "expected arity-mismatch diagnostic naming both arities, got: {}",
-        d.message
+        d.message,
     );
     assert!(
         !d.message.contains("missing callback") && !d.message.contains("unknown callback"),
@@ -1627,6 +1670,7 @@ defimpl P, for: List do
   fn pick(value), do: value
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -1662,6 +1706,7 @@ defimpl P, for: List do
   fn pick(value), do: value
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )

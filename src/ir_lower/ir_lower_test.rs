@@ -1,62 +1,37 @@
 use super::*;
 use crate::dispatch_matrix::DispatchConst;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
+use crate::telemetry::Telemetry;
 
-fn lower_src(src: &str) -> Module {
-    let toks = Lexer::with_source_name(src, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("lex");
-    let prog = Parser::new(toks)
-        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("parse");
-    lower_program(
-        &mut crate::types::new(),
-        &prog,
-        &crate::telemetry::ConfiguredTelemetry::new(),
-    )
-    .expect("lower failed")
+fn lower_src(src: &str, tel: &dyn Telemetry) -> Module {
+    let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).expect("lex");
+    let prog = Parser::new(toks).parse_program(tel).expect("parse");
+    lower_program(&mut crate::types::new(), &prog, tel).expect("lower failed")
 }
 
-fn lower_flat_src(src: &str) -> (crate::types::DefaultTypes, Module) {
-    let toks = Lexer::with_source_name(src, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("lex");
-    let prog = Parser::new(toks)
-        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("parse");
+fn lower_flat_src(src: &str, tel: &dyn Telemetry) -> (crate::types::DefaultTypes, Module) {
+    let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).expect("lex");
+    let prog = Parser::new(toks).parse_program(tel).expect("parse");
     let mut ct = crate::types::new();
-    let prog = flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
-    let module = lower_program(&mut ct, &prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("lower failed");
+    let prog = flatten_modules(&mut ct, prog, tel).expect("flatten");
+    let module = lower_program(&mut ct, &prog, tel).expect("lower failed");
     (ct, module)
 }
 
-fn lower_src_with_capture(src: &str) -> (Module, Capture) {
-    let tel = ConfiguredTelemetry::new();
+fn lower_src_with_capture(src: &str, tel: &ConfiguredTelemetry) -> (Module, Capture) {
     let cap = Capture::new();
-    tel.attach(&[], cap.handler());
-    let toks = Lexer::with_source_name(src, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("lex");
-    let prog = Parser::new(toks)
-        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("parse");
-    let module = lower_program(&mut crate::types::new(), &prog, &tel).expect("lower failed");
+    let handler_id = tel.attach(&[], cap.handler());
+    let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).expect("lex");
+    let prog = Parser::new(toks).parse_program(tel).expect("parse");
+    let module = lower_program(&mut crate::types::new(), &prog, tel).expect("lower failed");
+    assert!(tel.detach(handler_id), "temporary lower capture should detach");
     (module, cap)
 }
 
-fn lower_src_err(src: &str) -> LowerError {
-    let toks = Lexer::with_source_name(src, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("lex");
-    let prog = Parser::new(toks)
-        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("parse");
-    lower_program(
-        &mut crate::types::new(),
-        &prog,
-        &crate::telemetry::ConfiguredTelemetry::new(),
-    )
-    .expect_err("expected lower error")
+fn lower_src_err(src: &str, tel: &dyn Telemetry) -> LowerError {
+    let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).expect("lex");
+    let prog = Parser::new(toks).parse_program(tel).expect("parse");
+    lower_program(&mut crate::types::new(), &prog, tel).expect_err("expected lower error")
 }
 
 #[test]
@@ -69,6 +44,7 @@ defmodule Range do
   fn new(first, last, step), do: %Range{first: first, last: last, step: step}
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let inner = m
         .opaque_inners
@@ -84,23 +60,17 @@ end
 /// captured stdout (joined by newline). Mirrors `ir_codegen::tests::
 /// capture_main`; lets ir_lower-level tests assert end-to-end runtime
 /// correctness rather than just IR shape.
-fn run_and_capture(src: &str) -> String {
-    let mut graph = linked_runtime_graph(src, &crate::telemetry::ConfiguredTelemetry::new());
+fn run_and_capture(src: &str, tel: &ConfiguredTelemetry) -> String {
+    let mut graph = linked_runtime_graph(src, tel);
     let entry = graph.linked_module().fn_by_name("main").expect("no main fn").id;
     let (module, module_plan) = graph.cloned_linked_module_plan();
-    let compiled = compile_planned(
-        graph.types(),
-        &module,
-        &module_plan,
-        &crate::telemetry::ConfiguredTelemetry::new(),
-    )
-    .expect("compile planned");
-    let tel = bus::ConfiguredTelemetry::new();
+    let compiled = compile_planned(graph.types(), &module, &module_plan, tel).expect("compile planned");
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
-    let mut rt = Runtime::new(&compiled, 1, &tel);
+    let handler_id = tel.attach(&[], dbg.handler());
+    let mut rt = Runtime::new(&compiled, 1, tel);
     let _ = rt.spawn(entry);
     rt.run_until_idle();
+    assert!(tel.detach(handler_id), "temporary debug capture should detach");
     dbg.lines().join("\n")
 }
 
@@ -159,7 +129,7 @@ fn first_make_fn_ref(f: &FnIr) -> FnId {
 
 #[test]
 fn lower_const_int_returns_in_entry_block() {
-    let m = lower_src("fn f() do 42 end");
+    let m = lower_src("fn f() do 42 end", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("const(42)"), "{}", s);
     assert!(s.contains("return v"), "{}", s);
@@ -167,14 +137,14 @@ fn lower_const_int_returns_in_entry_block() {
 
 #[test]
 fn lower_var_lookup() {
-    let m = lower_src("fn id(x), do: x");
+    let m = lower_src("fn id(x), do: x", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("return v0"), "got:\n{}", s);
 }
 
 #[test]
 fn lower_binop_add() {
-    let m = lower_src("fn add1(x), do: x + 1");
+    let m = lower_src("fn add1(x), do: x + 1", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("const(1)"), "{}", s);
     assert!(s.contains(" + "), "{}", s);
@@ -182,21 +152,27 @@ fn lower_binop_add() {
 
 #[test]
 fn lower_unop_neg() {
-    let m = lower_src("fn neg(x), do: -x");
+    let m = lower_src("fn neg(x), do: -x", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("- v0"));
 }
 
 #[test]
 fn lower_tail_call_uses_tail_call() {
-    let m = lower_src("fn caller(x), do: callee(x)\nfn callee(y), do: y");
+    let m = lower_src(
+        "fn caller(x), do: callee(x)\nfn callee(y), do: y",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let s = format!("{}", m);
     assert!(s.contains("tail_call"), "got:\n{}", s);
 }
 
 #[test]
 fn lower_nontail_call_splits_into_continuation() {
-    let m = lower_src("fn caller(x), do: callee(x) + 1\nfn callee(y), do: y");
+    let m = lower_src(
+        "fn caller(x), do: callee(x) + 1\nfn callee(y), do: y",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let s = format!("{}", m);
     // "call fnN" where N is callee's FnId (shifts with runtime.fz prelude).
     assert!(s.contains("call fn"), "expected explicit call, got:\n{}", s);
@@ -211,7 +187,10 @@ fn lower_nontail_call_splits_into_continuation() {
 
 #[test]
 fn lower_program_returns_normalized_call_continuation_captures() {
-    let (m, cap) = lower_src_with_capture("fn callee(x), do: x\nfn caller(x, y), do: callee(x) + x");
+    let (m, cap) = lower_src_with_capture(
+        "fn callee(x), do: x\nfn caller(x, y), do: callee(x) + x",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let caller = m.fn_by_name("caller").expect("caller fn missing");
     let continuation = caller
         .blocks
@@ -262,6 +241,7 @@ fn lower_records_declared_spec_overload_set() {
         "@spec pick(integer) :: integer\n\
          @spec pick(float) :: float\n\
          fn pick(x), do: x",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let pick = m.fn_by_name("pick").expect("pick fn missing");
     let specs = m.declared_specs.get(&pick.id).expect("declared specs missing");
@@ -273,6 +253,7 @@ fn lower_records_source_function_correspondence() {
     let m = lower_src(
         "@spec drop(Enumerable.t(a), integer) :: [a]\n\
          fn drop(_enumerable, _count), do: []",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let drop = m.fn_by_name("drop").expect("drop fn missing");
     let groups = m
@@ -306,6 +287,7 @@ fn lower_synthesizes_direct_call_continuation_correspondence() {
            y = id(x)\n\
            {x, y}\n\
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let pair_after_id = m.fn_by_name("pair_after_id").expect("pair_after_id fn missing");
     let continuation = m
@@ -350,6 +332,7 @@ fn lower_persists_direct_call_continuation_provenance() {
            y = id(x)\n\
            {x, y}\n\
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let pair_after_id = m.fn_by_name("pair_after_id").expect("pair_after_id fn missing");
     let continuation = m
@@ -384,6 +367,7 @@ fn lower_synthesizes_closure_call_continuation_correspondence() {
            y = f.(x)\n\
            {x, y}\n\
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let apply_pair = m.fn_by_name("apply_pair").expect("apply_pair fn missing");
     let continuation = m
@@ -434,6 +418,7 @@ fn lower_persists_matcher_body_continuation_provenance() {
              [head | tail] -> {head, tail}\n\
            end\n\
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let continuation = m
         .fns
@@ -458,7 +443,10 @@ fn lower_if_uses_continuation_fns() {
     // fz-duq.2 — `if` lowers to: outer fn with Term::If + per-arm
     // TailCalls into separate fns (if_then / if_else / optional
     // if_join). The old block-join shape is gone.
-    let m = lower_src("fn pos(x), do: if x > 0, do: 1, else: -1");
+    let m = lower_src(
+        "fn pos(x), do: if x > 0, do: 1, else: -1",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let s = format!("{}", m);
     assert!(s.contains("if v"), "expected If terminator: {}", s);
     assert!(s.contains("if_then"), "expected if_then arm fn: {}", s);
@@ -482,6 +470,7 @@ fn fz_84m_repro_a_prints_99() {
          fn main() do\n\
            if 1 == 0 do dbg(helper()) else dbg(99) end\n\
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     assert_eq!(out, "99");
 }
@@ -496,6 +485,7 @@ fn fz_84m_repro_b_prints_7_then_99() {
         "fn helper(), do: 7\n\
          fn pick(n) do if n == 0 do helper() else 99 end end\n\
          fn main() do dbg(pick(0)); dbg(pick(1)) end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     assert_eq!(out, "7\n99");
 }
@@ -512,6 +502,7 @@ fn lower_case_uses_per_clause_cont_fns() {
              _ -> 99\n\
            end\n\
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let s = format!("{}", m);
     assert!(s.contains("case_clause_0"), "expected clause cont: {}", s);
@@ -536,6 +527,7 @@ fn lower_cond_uses_per_arm_cont_fns() {
              true -> 99\n\
            end\n\
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let s = format!("{}", m);
     assert!(s.contains("cond_arm_0"), "expected arm cont: {}", s);
@@ -555,6 +547,7 @@ fn lower_with_uses_continuation_fns() {
              :err -> 2\n\
            end\n\
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let s = format!("{}", m);
     assert!(s.contains("with_fail"), "expected with_fail cont: {}", s);
@@ -577,6 +570,7 @@ fn lower_case_with_call_in_clause_no_panic() {
            dbg(classify(0))\n\
            dbg(classify(5))\n\
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
 }
 
@@ -595,6 +589,7 @@ fn fz_ben_tuple_pattern_typetest_routes_non_tuple_to_else() {
            with {:ok, x} <- v do x else :err -> 0 end\n\
          end\n\
          fn main() do dbg(f(:err)) end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     assert_eq!(out, "0");
 }
@@ -608,6 +603,7 @@ fn fz_84m_repro_c_prints_7_then_99_no_narrowing() {
         "fn helper(), do: 7\n\
          fn pick(n) do if n > 0 do helper() else 99 end end\n\
          fn main() do dbg(pick(5)); dbg(pick(0)) end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     assert_eq!(out, "7\n99");
 }
@@ -618,6 +614,7 @@ fn lower_if_nontail_uses_join_fn() {
     let m = lower_src(
         "fn id(x), do: x\n\
          fn pick(x), do: id(if x > 0, do: 1, else: -1)",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let s = format!("{}", m);
     assert!(s.contains("if_then"), "{}", s);
@@ -639,6 +636,7 @@ fn non_tail_if_call_arm_flows_through_join() {
          fn main() do\n\
            dbg(map_every_list([1, 2, 3, 4], 2, 0, fn (x) -> x * 100 end))\n\
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     assert_eq!(out, "[100, 2, 300, 4]");
 }
@@ -654,6 +652,7 @@ fn non_tail_case_call_arm_flows_through_join() {
            [next]\n\
          end\n\
          fn main() do dbg(pick(0, fn (x) -> x + 1 end)) end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     assert_eq!(out, "[1]");
 }
@@ -669,13 +668,17 @@ fn non_tail_cond_call_arm_flows_through_join() {
            [next]\n\
          end\n\
          fn main() do dbg(pick(0, fn (x) -> x + 1 end)) end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     assert_eq!(out, "[1]");
 }
 
 #[test]
 fn lower_block_evaluates_last_expr() {
-    let m = lower_src("fn b() do\n  1\n  2\n  3\nend");
+    let m = lower_src(
+        "fn b() do\n  1\n  2\n  3\nend",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let s = format!("{}", m);
     assert!(s.contains("const(1)"), "{}", s);
     assert!(s.contains("const(2)"), "{}", s);
@@ -685,7 +688,7 @@ fn lower_block_evaluates_last_expr() {
 
 #[test]
 fn lower_list_makes_list_prim() {
-    let m = lower_src("fn l(), do: [1, 2]");
+    let m = lower_src("fn l(), do: [1, 2]", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("list(["), "{}", s);
     assert!(!s.contains("list([] |"), "no-tail list shouldn't have | sep: {}", s);
@@ -693,21 +696,21 @@ fn lower_list_makes_list_prim() {
 
 #[test]
 fn lower_list_with_tail() {
-    let m = lower_src("fn l(t), do: [1 | t]");
+    let m = lower_src("fn l(t), do: [1 | t]", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("] | v0)"), "expected list with v0 (param t) tail: {}", s);
 }
 
 #[test]
 fn lower_tuple_makes_tuple_prim() {
-    let m = lower_src("fn t(), do: {1, :ok}");
+    let m = lower_src("fn t(), do: {1, :ok}", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("tuple(["), "{}", s);
 }
 
 #[test]
 fn lower_tuple_pattern_projects_fields() {
-    let m = lower_src("fn first({a, b}), do: a");
+    let m = lower_src("fn first({a, b}), do: a", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("tuple_field(v0, 0)"), "got:\n{}", s);
     assert!(s.contains("tuple_field(v0, 1)"), "got:\n{}", s);
@@ -715,7 +718,10 @@ fn lower_tuple_pattern_projects_fields() {
 
 #[test]
 fn lower_match_expr_binds_var() {
-    let m = lower_src("fn m(p) do\n  x = p\n  x\nend");
+    let m = lower_src(
+        "fn m(p) do\n  x = p\n  x\nend",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let s = format!("{}", m);
     assert!(s.contains("return v0"), "got:\n{}", s);
 }
@@ -728,14 +734,17 @@ fn lower_match_expr_binds_var() {
 /// unreachable) still do.
 #[test]
 fn unreachable_arm_silenced_on_synthesized_ifs() {
-    let m = lower_src(concat!(
-        "fn fst(0), do: :zero\n",
-        "fn fst(_), do: :other\n",
-        "fn main() do\n",
-        "  {a, b} = {1, 2}\n",
-        "  fst(a + b)\n",
-        "end\n",
-    ));
+    let m = lower_src(
+        concat!(
+            "fn fst(0), do: :zero\n",
+            "fn fst(_), do: :other\n",
+            "fn main() do\n",
+            "  {a, b} = {1, 2}\n",
+            "  fst(a + b)\n",
+            "end\n",
+        ),
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let mut ct = crate::types::new();
     let mt = plan_module_with_role(&mut ct, &m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
     let diags = collect_diagnostics(&mut ct, &m, &mt, &crate::telemetry::ConfiguredTelemetry::new());
@@ -747,7 +756,7 @@ fn unreachable_arm_silenced_on_synthesized_ifs() {
     assert!(
         unreachable.is_empty(),
         "synthesized dispatch Ifs must not warn; got {:?}",
-        unreachable,
+        unreachable
     );
 }
 
@@ -756,7 +765,10 @@ fn unreachable_arm_silenced_on_synthesized_ifs() {
 /// type/dead-binop), per the project's telemetry-over-stderr policy.
 #[test]
 fn dead_binop_diagnostic_observable_via_telemetry() {
-    let m = lower_src("fn main() do\n  dbg(1 == :ok)\nend\n");
+    let m = lower_src(
+        "fn main() do\n  dbg(1 == :ok)\nend\n",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let mut ct = crate::types::new();
     let mt = plan_module_with_role(&mut ct, &m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
     let diags = collect_diagnostics(&mut ct, &m, &mt, &crate::telemetry::ConfiguredTelemetry::new());
@@ -768,7 +780,7 @@ fn dead_binop_diagnostic_observable_via_telemetry() {
 
     assert!(
         cap.count(&["fz", "diag", "warning"]) >= 1,
-        "dead-binop warning must surface on the telemetry bus",
+        "dead-binop warning must surface on the telemetry bus"
     );
     assert!(
         diags.as_slice().iter().any(|d| d.code == codes::TYPE_DEAD_BINOP),
@@ -806,23 +818,29 @@ fn generated_dead_binop_diagnostic_is_not_rendered() {
 fn dead_branches_published_for_destructure_and_recursive_list_dispatch() {
     // Irrefutable destructure on a known-2-tuple — the planner proves
     // the synthesized fail edge dead under the one live spec.
-    let m = lower_src("fn main() do\n  {a, b} = {1, 2}\n  a + b\nend\n");
+    let m = lower_src(
+        "fn main() do\n  {a, b} = {1, 2}\n  a + b\nend\n",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let mut ct = crate::types::new();
     let mt = plan_module_with_role(&mut ct, &m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
     assert!(
         mt.dead_branches.values().any(|d| matches!(d, DeadBranch::Else)),
         "expected an Else dead branch for {{a,b}} = {{1,2}}; got {:?}",
-        mt.dead_branches,
+        mt.dead_branches
     );
 
     // Recursive sum — with `[]` and `[_ | _]` modeled as disjoint
     // shapes, clause-dispatch branches can be proven dead per
     // specialized dispatch block.
-    let m2 = lower_src(concat!(
-        "fn sum([]), do: 0\n",
-        "fn sum([h | t]), do: h + sum(t)\n",
-        "fn main(), do: sum([1, 2, 3])\n",
-    ));
+    let m2 = lower_src(
+        concat!(
+            "fn sum([]), do: 0\n",
+            "fn sum([h | t]), do: h + sum(t)\n",
+            "fn main(), do: sum([1, 2, 3])\n",
+        ),
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let mt2 = plan_module_with_role(&mut ct, &m2, &crate::telemetry::ConfiguredTelemetry::new(), "test");
     let sum_fid = m2.fn_by_name("sum").expect("sum exists").id;
     assert!(
@@ -834,7 +852,7 @@ fn dead_branches_published_for_destructure_and_recursive_list_dispatch() {
             .iter()
             .filter(|(key, _)| key.fn_id == sum_fid)
             .map(|(key, spec)| (key, &spec.dead_branches))
-            .collect::<Vec<_>>(),
+            .collect::<Vec<_>>()
     );
 }
 
@@ -843,20 +861,23 @@ fn dead_branches_published_for_destructure_and_recursive_list_dispatch() {
 /// each origin and assert the right set appears in the lowered module.
 #[test]
 fn branch_origin_tagged_per_lowering_path() {
-    let m = lower_src(concat!(
-        // ParamGuard: typed param synthesizes a TypeTest If.
-        "fn f(x :: integer), do: x\n",
-        // ClauseDispatch (multi-clause): two clauses on a literal.
-        "fn g(0), do: :zero\n",
-        "fn g(_), do: :other\n",
-        // PatternBind: `{a, b} = ...` synthesizes Ifs that check tuple arity.
-        "fn h() do\n",
-        "  {a, b} = {1, 2}\n",
-        "  a + b\n",
-        "end\n",
-        // User: hand-written `if`.
-        "fn i(n), do: if n > 0, do: 1, else: 0\n",
-    ));
+    let m = lower_src(
+        concat!(
+            // ParamGuard: typed param synthesizes a TypeTest If.
+            "fn f(x :: integer), do: x\n",
+            // ClauseDispatch (multi-clause): two clauses on a literal.
+            "fn g(0), do: :zero\n",
+            "fn g(_), do: :other\n",
+            // PatternBind: `{a, b} = ...` synthesizes Ifs that check tuple arity.
+            "fn h() do\n",
+            "  {a, b} = {1, 2}\n",
+            "  a + b\n",
+            "end\n",
+            // User: hand-written `if`.
+            "fn i(n), do: if n > 0, do: 1, else: 0\n",
+        ),
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let mut seen: HashSet<BranchOrigin> = HashSet::new();
     for f in &m.fns {
         for b in &f.blocks {
@@ -869,7 +890,7 @@ fn branch_origin_tagged_per_lowering_path() {
     assert!(
         seen.contains(&BranchOrigin::PatternBind),
         "missing PatternBind: {:?}",
-        seen,
+        seen
     );
     assert!(
         seen.contains(&BranchOrigin::ClauseDispatch),
@@ -888,7 +909,10 @@ fn multi_clause_dispatch_lowers_dispatch_graph_inline() {
     // fz-puj.52.7 — multi-clause fns lower the DispatchGraph inline
     // into the user fn again so dispatch does not become a separate
     // spec-producing matcher fn.
-    let m = lower_src("fn fact(0), do: 1\nfn fact(n), do: n * fact(n - 1)");
+    let m = lower_src(
+        "fn fact(0), do: 1\nfn fact(n), do: n * fact(n - 1)",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let s = format!("{}", m);
     assert!(!s.contains("fact_matcher_"), "did not expect fact_matcher_N fn: {}", s);
     assert!(s.contains("if v"), "expected pattern test If: {}", s);
@@ -898,7 +922,10 @@ fn multi_clause_dispatch_lowers_dispatch_graph_inline() {
 
 #[test]
 fn lower_lambda_creates_separate_fn_and_closure() {
-    let m = lower_src("fn mk(x), do: fn(y) -> x + y end");
+    let m = lower_src(
+        "fn mk(x), do: fn(y) -> x + y end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let s = format!("{}", m);
     assert!(s.contains("closure(fn"), "expected closure prim, got:\n{}", s);
     assert!(s.contains("lambda_"), "expected lambda fn name: {}", s);
@@ -916,7 +943,10 @@ fn lower_lambda_creates_separate_fn_and_closure() {
 
 #[test]
 fn lower_named_fn_ref_emits_thin_fn_ref_prim() {
-    let m = lower_src("fn id(x), do: x\nfn main(), do: &id/1");
+    let m = lower_src(
+        "fn id(x), do: x\nfn main(), do: &id/1",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let main = m.fn_by_name("main").expect("main fn missing");
     let fn_id = first_make_fn_ref(main);
 
@@ -926,7 +956,10 @@ fn lower_named_fn_ref_emits_thin_fn_ref_prim() {
 
 #[test]
 fn lower_bare_top_level_fn_value_emits_thin_fn_ref_prim() {
-    let m = lower_src("fn id(x), do: x\nfn main(), do: id");
+    let m = lower_src(
+        "fn id(x), do: x\nfn main(), do: id",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let main = m.fn_by_name("main").expect("main fn missing");
     let fn_id = first_make_fn_ref(main);
 
@@ -936,7 +969,10 @@ fn lower_bare_top_level_fn_value_emits_thin_fn_ref_prim() {
 
 #[test]
 fn lower_lambda_captures_only_referenced_outer_names() {
-    let m = lower_src("fn mk(x, y), do: fn(z) -> x + z end");
+    let m = lower_src(
+        "fn mk(x, y), do: fn(z) -> x + z end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let mk = m.fn_by_name("mk").expect("mk fn missing");
     let (lambda_id, captured) = first_make_closure(mk);
 
@@ -956,7 +992,10 @@ fn lower_lambda_captures_only_referenced_outer_names() {
 
 #[test]
 fn lower_lambda_with_no_outer_reads_has_no_captures() {
-    let m = lower_src("fn mk(x), do: fn(y) -> y + 1 end");
+    let m = lower_src(
+        "fn mk(x), do: fn(y) -> y + 1 end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let mk = m.fn_by_name("mk").expect("mk fn missing");
     let lambda_id = first_make_fn_ref(mk);
 
@@ -980,7 +1019,7 @@ fn lower_lambda_with_no_outer_reads_has_no_captures() {
 /// wrapper and its trivial continuations once per concrete argument type.
 #[test]
 fn dbg_call_lowers_to_identity_extern_intrinsic() {
-    let m = lower_src("fn p(), do: dbg(1)");
+    let m = lower_src("fn p(), do: dbg(1)", &crate::telemetry::ConfiguredTelemetry::new());
     let p = m.fn_by_name("p").expect("p fn missing");
     let entry = p.block(p.entry);
     let (extern_dest, eid, args) = entry
@@ -1014,7 +1053,7 @@ fn dbg_call_lowers_to_identity_extern_intrinsic() {
 /// intrinsic-lowered.
 #[test]
 fn dbg_function_reference_routes_through_runtime_fz_wrapper() {
-    let m = lower_src("fn p(), do: &dbg/1");
+    let m = lower_src("fn p(), do: &dbg/1", &crate::telemetry::ConfiguredTelemetry::new());
     let dbg = m
         .fns
         .iter()
@@ -1030,7 +1069,10 @@ fn dbg_function_reference_routes_through_runtime_fz_wrapper() {
 /// `Kernel.spawn/1`, whose implementation owns the raw extern.
 #[test]
 fn spawn_callsite_routes_through_runtime_fz_wrapper() {
-    let m = lower_src("fn child(), do: 0\nfn p() do spawn(child) end");
+    let m = lower_src(
+        "fn child(), do: 0\nfn p() do spawn(child) end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     assert!(
         !m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
         "spawn must not synthesize fz_spawn_thunk; fns: {:?}",
@@ -1058,7 +1100,10 @@ fn spawn_callsite_routes_through_runtime_fz_wrapper() {
 
 #[test]
 fn spawn_wrapper_extern_keeps_intrinsic_boundary_identity() {
-    let m = lower_src("fn child(), do: nil\nfn main() do spawn(child) end");
+    let m = lower_src(
+        "fn child(), do: nil\nfn main() do spawn(child) end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let spawn = m
         .fns
         .iter()
@@ -1084,7 +1129,10 @@ fn spawn_wrapper_extern_keeps_intrinsic_boundary_identity() {
 
 #[test]
 fn lambda_tail_receive_does_not_terminate_enclosing_spawn_call() {
-    let m = lower_src("fn p(parent) do\nspawn(fn () -> send(parent, receive do x -> x end) end)\nend");
+    let m = lower_src(
+        "fn p(parent) do\nspawn(fn () -> send(parent, receive do x -> x end) end)\nend",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let p = m.fn_by_name("p").expect("p fn missing");
     let entry = p.block(p.entry);
     let spawn = m
@@ -1108,7 +1156,10 @@ fn lambda_tail_receive_does_not_terminate_enclosing_spawn_call() {
 /// `spawn/2` follows the same prelude-import path as `spawn/1`.
 #[test]
 fn spawn2_routes_through_runtime_fz_wrapper() {
-    let m = lower_src("fn child(), do: 0\nfn p() do spawn(child, 4096) end");
+    let m = lower_src(
+        "fn child(), do: 0\nfn p() do spawn(child, 4096) end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     assert!(
         !m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
         "spawn/2 must not synthesize fz_spawn_thunk"
@@ -1136,7 +1187,7 @@ fn spawn2_routes_through_runtime_fz_wrapper() {
 /// The lowerer no longer synthesizes fz_spawn_thunk for any program.
 #[test]
 fn spawn_free_program_has_no_compiler_spawn_thunk() {
-    let m = lower_src("fn p(), do: 0");
+    let m = lower_src("fn p(), do: 0", &crate::telemetry::ConfiguredTelemetry::new());
     assert!(
         !m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
         "expected no compiler-synthesized fz_spawn_thunk"
@@ -1145,7 +1196,7 @@ fn spawn_free_program_has_no_compiler_spawn_thunk() {
 
 #[test]
 fn unbound_var_returns_lower_error() {
-    let err = lower_src_err("fn f(), do: missing");
+    let err = lower_src_err("fn f(), do: missing", &crate::telemetry::ConfiguredTelemetry::new());
     assert!(matches!(err, LowerError::Unbound { .. }));
 }
 
@@ -1153,7 +1204,7 @@ fn unbound_var_returns_lower_error() {
 /// not Span::DUMMY.
 #[test]
 fn unbound_var_diag_has_real_span() {
-    let err = lower_src_err("fn f(), do: missing");
+    let err = lower_src_err("fn f(), do: missing", &crate::telemetry::ConfiguredTelemetry::new());
     let d = err.to_diagnostic();
     assert_ne!(
         d.primary.span,
@@ -1165,40 +1216,46 @@ fn unbound_var_diag_has_real_span() {
 
 #[test]
 fn unbound_callee_returns_lower_error() {
-    let err = lower_src_err("fn f(), do: nonesuch(1)");
+    let err = lower_src_err("fn f(), do: nonesuch(1)", &crate::telemetry::ConfiguredTelemetry::new());
     assert!(matches!(err, LowerError::Unbound { .. }));
 }
 
 #[test]
 fn empty_case_returns_unsupported() {
-    let err = lower_src_err("fn f() do case 1 do end end");
+    let err = lower_src_err(
+        "fn f() do case 1 do end end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     assert!(matches!(err, LowerError::Unsupported { .. }));
 }
 
 #[test]
 fn map_lowers_to_make_map() {
-    let m = lower_src("fn m(), do: %{k: 1}");
+    let m = lower_src("fn m(), do: %{k: 1}", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("map({"), "got:\n{}", s);
 }
 
 #[test]
 fn map_update_lowers() {
-    let m = lower_src("fn u(m), do: %{m | k: 2}");
+    let m = lower_src(
+        "fn u(m), do: %{m | k: 2}",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let s = format!("{}", m);
     assert!(s.contains("map_update("), "got:\n{}", s);
 }
 
 #[test]
 fn index_lowers_to_map_get() {
-    let m = lower_src("fn g(m), do: m[:k]");
+    let m = lower_src("fn g(m), do: m[:k]", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("map_get("), "got:\n{}", s);
 }
 
 #[test]
 fn bitstring_expr_lowers() {
-    let m = lower_src("fn b(), do: << 0xA5 >>");
+    let m = lower_src("fn b(), do: << 0xA5 >>", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("bitstring(["), "got:\n{}", s);
 }
@@ -1216,6 +1273,7 @@ _ -> :other
   end
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let s = format!("{}", m);
     assert!(
@@ -1239,6 +1297,7 @@ true -> :nonpos
   end
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let s = format!("{}", m);
     assert!(s.contains("if v"), "got:\n{}", s);
@@ -1252,6 +1311,7 @@ fn w() do
   with {:ok, a} <- {:ok, 1}, do: a
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let s = format!("{}", m);
     assert!(s.contains("tuple_field"), "expected pattern projection: {}", s);
@@ -1259,7 +1319,10 @@ end
 
 #[test]
 fn map_pattern_uses_map_get_check() {
-    let m = lower_src("fn first(%{name: n}), do: n");
+    let m = lower_src(
+        "fn first(%{name: n}), do: n",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let s = format!("{}", m);
     assert!(s.contains("map_get("), "got:\n{}", s);
 }
@@ -1274,6 +1337,7 @@ fn inline_dispatch_reuses_tuple_subject_across_test_guard_and_binding() {
              _ -> 0
            end
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
 
     let classify = m.fn_by_name("classify").expect("classify fn");
@@ -1295,6 +1359,7 @@ fn inline_dispatch_reuses_list_head_across_guard_and_binding() {
              _ -> 0
            end
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
 
     let classify = m.fn_by_name("classify").expect("classify fn");
@@ -1316,6 +1381,7 @@ fn inline_dispatch_reuses_map_value_across_guard_and_binding() {
              _ -> 0
            end
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
 
     let map_get_count = count_prims(&m, |prim| matches!(prim, Prim::MatcherMapGet(_, _)));
@@ -1328,7 +1394,7 @@ fn inline_dispatch_reuses_map_value_across_guard_and_binding() {
 
 #[test]
 fn bitstring_pattern_lowers_to_per_field_reads() {
-    let m = lower_src("fn p(<<x::8>>), do: x");
+    let m = lower_src("fn p(<<x::8>>), do: x", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("bit_reader_init("), "got:\n{}", s);
     assert!(s.contains("bit_read_field("), "got:\n{}", s);
@@ -1338,7 +1404,7 @@ fn bitstring_pattern_lowers_to_per_field_reads() {
 #[test]
 fn quote_returns_post_expansion_node() {
     // Skip macro expansion to surface the leftover-quote error path.
-    let err = lower_src_err("fn f(), do: quote do: 1");
+    let err = lower_src_err("fn f(), do: quote do: 1", &crate::telemetry::ConfiguredTelemetry::new());
     assert!(matches!(err, LowerError::PostExpansionNode { .. }));
 }
 
@@ -1532,7 +1598,7 @@ fn self_recursive_fn_has_back_edge() {
     // fns (`print`) contribute TailCalls to their per-clause
     // cont fns earlier in module order. Look up `loop` specifically
     // rather than the first TailCall anywhere.
-    let m = lower_src("fn loop(n), do: loop(n)");
+    let m = lower_src("fn loop(n), do: loop(n)", &crate::telemetry::ConfiguredTelemetry::new());
     let loop_fn = m.fn_by_name("loop").expect("loop fn missing");
     let (callee, is_back_edge) = loop_fn
         .blocks
@@ -1556,7 +1622,10 @@ fn self_recursive_fn_has_back_edge() {
 
 #[test]
 fn non_recursive_call_is_not_back_edge() {
-    let m = lower_src("fn id(x), do: x\nfn main(), do: id(1)");
+    let m = lower_src(
+        "fn id(x), do: x\nfn main(), do: id(1)",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     // Find the TailCall from main to id.
     let mut found = false;
     for f in &m.fns {
@@ -1724,7 +1793,7 @@ fn extern_call_arity_mismatch_is_lower_error() {
 extern \"C\" fn libc::open(path :: cstring, integer, integer) :: integer
 fn main() do libc::open(\"x\", \"x\", 0, 0) end
 ";
-    let err = lower_src_err(src);
+    let err = lower_src_err(src, &crate::telemetry::ConfiguredTelemetry::new());
     match err {
         LowerError::Unsupported { what, .. } => {
             assert!(
@@ -1743,7 +1812,7 @@ fn variadic_extern_records_decl_and_call_marshal_specs() {
 extern \"C\" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
 fn main() do libc::open(\"x\", 0, 0o644 :: integer) end
 ";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let open = m
         .externs
         .iter()
@@ -1774,7 +1843,7 @@ fn variadic_extern_unascribed_extra_arg_stays_auto() {
 extern \"C\" fn libc::printf(fmt :: cstring, ...) :: integer
 fn main() do libc::printf(\"%d\", 7) end
 ";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let main = m.fn_by_name("main").expect("main missing");
     let extern_args = main
         .blocks
@@ -1794,7 +1863,7 @@ fn variadic_extern_too_few_args_is_lower_error() {
 extern \"C\" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
 fn main() do libc::open(\"x\") end
 ";
-    let err = lower_src_err(src);
+    let err = lower_src_err(src, &crate::telemetry::ConfiguredTelemetry::new());
     match err {
         LowerError::Unsupported { what, .. } => {
             assert!(
@@ -1913,13 +1982,9 @@ end
 
 // ----- fz-puj.36 (H7) — SourcePatternRows construction from receive clauses -----
 
-fn parse_receive_clauses(src: &str) -> Vec<MatchClause> {
-    let toks = Lexer::with_source_name(src, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("lex");
-    let prog = Parser::new(toks)
-        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("parse");
+fn parse_receive_clauses(src: &str, tel: &dyn Telemetry) -> Vec<MatchClause> {
+    let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).expect("lex");
+    let prog = Parser::new(toks).parse_program(tel).expect("parse");
     fn find_receive(e: &Expr) -> Option<&Vec<MatchClause>> {
         match e {
             Expr::Receive { clauses, .. } => Some(clauses),
@@ -1941,7 +2006,10 @@ fn parse_receive_clauses(src: &str) -> Vec<MatchClause> {
 
 #[test]
 fn build_receive_pattern_rows_one_clause_shape() {
-    let clauses = parse_receive_clauses("fn rx() do receive do {:ping, _} -> :pong end end");
+    let clauses = parse_receive_clauses(
+        "fn rx() do receive do {:ping, _} -> :pong end end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let source_patterns = build_receive_pattern_rows(Var(0), &clauses);
     assert_eq!(source_patterns.subjects, vec![Var(0)]);
     assert_eq!(source_patterns.rows.len(), 1);
@@ -1959,6 +2027,7 @@ fn build_receive_pattern_rows_multi_clause_preserves_order_and_ids() {
             {:msg, _} -> :ok
             _ -> :other
         end end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let source_patterns = build_receive_pattern_rows(Var(7), &clauses);
     assert_eq!(source_patterns.subjects, vec![Var(7)]);
@@ -1977,6 +2046,7 @@ fn build_receive_pattern_rows_carries_guard() {
             n when n > 0 -> :positive
             _ -> :other
         end end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let source_patterns = build_receive_pattern_rows(Var(0), &clauses);
     assert_eq!(source_patterns.rows.len(), 2);
@@ -1996,7 +2066,7 @@ fn case_guard_with_pure_user_fn_inlines_and_lowers() {
                    _ -> :neg
                  end
                end";
-    let _ = lower_src(src);
+    let _ = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
 }
 
 #[test]
@@ -2009,7 +2079,10 @@ fn case_guard_with_multi_clause_user_fn_lowers_dispatch() {
                    _ -> dbg(0)
                  end
                end";
-    assert_eq!(run_and_capture(src).trim(), "1");
+    assert_eq!(
+        run_and_capture(src, &crate::telemetry::ConfiguredTelemetry::new()).trim(),
+        "1"
+    );
 }
 
 #[test]
@@ -2018,7 +2091,10 @@ fn guarded_list_cons_clause_survives_compiled_folding() {
                fn partition(p, [h | t], lo, hi) when h < p, do: partition(p, t, [h | lo], hi)
                fn partition(p, [h | t], lo, hi), do: partition(p, t, lo, [h | hi])
                fn main() do dbg(partition(3, [1, 4, 2], [], [])) end";
-    assert_eq!(run_and_capture(src).trim(), "{[2, 1], [4]}");
+    assert_eq!(
+        run_and_capture(src, &crate::telemetry::ConfiguredTelemetry::new()).trim(),
+        "{[2, 1], [4]}"
+    );
 }
 
 // ----- fz-yxs (E2) — selective receive lowering -----
@@ -2030,7 +2106,7 @@ fn lower_receive_one_clause_emits_receive_matched() {
             {:ping, sender} -> :pong
           end
         end";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(
         s.contains("receive_matched [1 clauses]"),
@@ -2052,7 +2128,7 @@ fn lower_receive_after_clause_emits_after_body() {
           after 100 -> :timeout
           end
         end";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("rx_after_body"), "expected after body fn, got:\n{}", s);
     assert!(
@@ -2069,7 +2145,7 @@ fn lower_receive_pinned_resolves_outer_scope() {
             {^want, payload} -> payload
           end
         end";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(
         s.contains("pinned=[^want="),
@@ -2085,7 +2161,7 @@ fn lower_receive_pinned_unbound_is_error() {
             {^nope, _} -> 0
           end
         end";
-    let err = lower_src_err(src);
+    let err = lower_src_err(src, &crate::telemetry::ConfiguredTelemetry::new());
     match err {
         LowerError::Unbound { name, .. } => {
             assert_eq!(name, "^nope");
@@ -2103,7 +2179,7 @@ fn lower_receive_planner_accepts_well_formed() {
             {:pong, _} -> 2
           end
         end";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     // Typing must not panic and must produce a ModulePlan for the
     // module. We don't pin the return type — that depends on the
     // body return type which the bodies set to const ints.
@@ -2129,7 +2205,7 @@ fn lower_receive_rejects_impure_guard() {
             {:foo, _} when helper() -> 0
           end
         end";
-    let err = lower_src_err(src);
+    let err = lower_src_err(src, &crate::telemetry::ConfiguredTelemetry::new());
     assert!(
         format!("{:?}", err).contains("UnsupportedGuardExpr"),
         "expected restricted guard-lowering error, got {:?}",
@@ -2169,7 +2245,7 @@ fn receive_guard_with_single_clause_helper_lowers_into_dispatch() {
             _ -> 0
           end
         end";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
     assert!(
         !dispatch.guards.is_empty(),
@@ -2187,7 +2263,7 @@ fn receive_guard_capture_walks_helper_call_args() {
             _ -> 0
           end
         end";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
     assert!(
         dispatch.pinned.iter().any(|pinned| pinned.name == "limit"),
@@ -2206,7 +2282,7 @@ fn receive_guard_with_transitive_helper_lowers_into_dispatch() {
             _ -> 0
           end
         end";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
     assert!(
         !dispatch.guards.is_empty(),
@@ -2225,7 +2301,7 @@ fn receive_guard_with_multi_clause_helper_lowers_dispatch() {
             _ -> 0
           end
         end";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
     assert!(
         dispatch_has_guard_dispatch(dispatch),
@@ -2244,7 +2320,7 @@ fn receive_guard_helper_dispatch_handles_destructuring() {
             _ -> 0
           end
         end";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
     assert!(
         dispatch_has_guard_dispatch(dispatch),
@@ -2261,7 +2337,7 @@ fn receive_dispatch_prepares_heap_map_keys_outside_graph() {
             _ -> 0
           end
         end";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
     assert_eq!(dispatch.prepared_keys, vec![DispatchConst::Utf8Binary(b"id".to_vec())]);
     let s = format!("{}", m);

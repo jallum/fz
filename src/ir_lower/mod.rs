@@ -64,7 +64,7 @@ use crate::specs::{
 };
 use crate::telemetry::Telemetry;
 #[cfg(test)]
-use crate::telemetry::{Capture, ConfiguredTelemetry, Value, bus};
+use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 #[cfg(test)]
 use crate::test_support::linked_runtime_graph;
 use crate::type_expr::{ModuleTypeEnv, parse_type_expr, resolve_spec_decls};

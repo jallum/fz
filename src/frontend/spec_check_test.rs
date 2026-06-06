@@ -4,17 +4,18 @@ use crate::ir_lower;
 use crate::ir_planner::plan_module_with_role;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
+use crate::telemetry::Telemetry;
 
-fn pipeline<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(t: &mut T, src: &str) -> (Program, Module, ModulePlan) {
-    let toks = Lexer::with_source_name(src, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("lex");
-    let prog = Parser::new(toks)
-        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("parse");
-    let prog = flatten_modules(t, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
-    let ir = ir_lower::lower_program(t, &prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("lower");
-    let mt = plan_module_with_role(t, &ir, &crate::telemetry::ConfiguredTelemetry::new(), "test");
+fn pipeline<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
+    t: &mut T,
+    src: &str,
+    tel: &dyn Telemetry,
+) -> (Program, Module, ModulePlan) {
+    let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).expect("lex");
+    let prog = Parser::new(toks).parse_program(tel).expect("parse");
+    let prog = flatten_modules(t, prog, tel).expect("flatten");
+    let ir = ir_lower::lower_program(t, &prog, tel).expect("lower");
+    let mt = plan_module_with_role(t, &ir, tel, "test");
     (prog, ir, mt)
 }
 
@@ -30,6 +31,7 @@ defmodule M do
 end
 fn main(), do: dbg(M.add1(41))
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let diags = validate_specs(&mut ct, &prog, &ir, &mt);
     assert!(diags.is_empty(), "unexpected diags: {:?}", diags);
@@ -49,6 +51,7 @@ defmodule M do
 end
 fn main(), do: dbg(M.add1(41))
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let diags = validate_specs(&mut ct, &prog, &ir, &mt);
     assert!(
@@ -72,6 +75,7 @@ defmodule M do
 end
 fn main(), do: dbg(M.add1(41))
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let diags = validate_specs(&mut ct, &prog, &ir, &mt);
     assert!(!diags.is_empty(), "disjoint spec must fail");
@@ -100,6 +104,7 @@ fn main() do
   dbg(M.echo(1.5))
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let diags = validate_specs(&mut ct, &prog, &ir, &mt);
     assert!(
@@ -126,6 +131,7 @@ fn main() do
   dbg(M.echo(1.5))
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let diags = validate_specs(&mut ct, &prog, &ir, &mt);
     assert!(
@@ -148,6 +154,7 @@ defmodule M do
 end
 fn main(), do: dbg(M.lookup(7))
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let diags = validate_specs(&mut ct, &prog, &ir, &mt);
     assert!(
@@ -177,6 +184,7 @@ defmodule M do
 end
 fn main(), do: dbg(M.use([1]))
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let diags = validate_specs(&mut ct, &prog, &ir, &mt);
     assert!(
@@ -206,6 +214,7 @@ defmodule M do
 end
 fn main(), do: dbg(M.use(1))
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let diags = validate_specs(&mut ct, &prog, &ir, &mt);
     assert!(!diags.is_empty(), "integer has no Enumerable impl");
@@ -224,6 +233,7 @@ defmodule M do
 end
 fn main(), do: dbg(M.one(0))
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let diags = validate_specs(&mut ct, &prog, &ir, &mt);
     assert!(!diags.is_empty(), "unknown alias must surface a diag");
@@ -254,6 +264,7 @@ defmodule M do
 end
 fn main(), do: dbg(M.add1(41))
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     // Validation passes — either the any-key was dropped (.29.12.6)
     // or it was kept and validation correctly skipped it.
@@ -276,6 +287,7 @@ defmodule M do
 end
 fn main(), do: dbg(M.double(7))
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let diags = validate_specs(&mut ct, &prog, &ir, &mt);
     assert!(
@@ -295,6 +307,7 @@ fn spec_on_top_level_fn_uses_empty_env() {
 fn one(), do: 1
 fn main(), do: dbg(one())
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let diags = validate_specs(&mut ct, &prog, &ir, &mt);
     assert!(

@@ -2,15 +2,12 @@ use super::*;
 use crate::diag::Span;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
+use crate::telemetry::Telemetry;
 
-fn parse_expr(src: &str) -> Spanned<Expr> {
+fn parse_expr(src: &str, tel: &dyn Telemetry) -> Spanned<Expr> {
     let wrapped = format!("fn _t() do {} end", src);
-    let toks = Lexer::with_source_name(&wrapped, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .unwrap();
-    let prog = Parser::new(toks)
-        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-        .unwrap();
+    let toks = Lexer::with_source_name(&wrapped, "<test>").tokenize(tel).unwrap();
+    let prog = Parser::new(toks).parse_program(tel).unwrap();
     match &*prog.items[0] {
         Item::Fn(d) => match &d.clauses[0].body.node {
             Expr::Block(xs) => xs[0].clone(),
@@ -28,8 +25,8 @@ fn parse_expr(src: &str) -> Spanned<Expr> {
     }
 }
 
-fn round_trip(src: &str) {
-    let e = parse_expr(src);
+fn round_trip(src: &str, tel: &dyn Telemetry) {
+    let e = parse_expr(src, tel);
     let v1 = expr_to_value(&e).expect("reify");
     let e2 = value_to_expr(&v1).expect("decode");
     let v2 = expr_to_value(&e2).expect("reify²");
@@ -70,51 +67,51 @@ fn debug_value(v: &Value) -> String {
 
 #[test]
 fn literal_int() {
-    round_trip("42");
+    round_trip("42", &crate::telemetry::ConfiguredTelemetry::new());
 }
 #[test]
 fn literal_float() {
-    round_trip("3.14");
+    round_trip("3.14", &crate::telemetry::ConfiguredTelemetry::new());
 }
 #[test]
 fn literal_bool() {
-    round_trip("true");
+    round_trip("true", &crate::telemetry::ConfiguredTelemetry::new());
 }
 #[test]
 fn literal_nil() {
-    round_trip("nil");
+    round_trip("nil", &crate::telemetry::ConfiguredTelemetry::new());
 }
 #[test]
 fn literal_atom() {
-    round_trip(":ok");
+    round_trip(":ok", &crate::telemetry::ConfiguredTelemetry::new());
 }
 #[test]
 fn literal_binary() {
-    round_trip("\"hello\"");
+    round_trip("\"hello\"", &crate::telemetry::ConfiguredTelemetry::new());
 }
 #[test]
 fn var() {
-    round_trip("x");
+    round_trip("x", &crate::telemetry::ConfiguredTelemetry::new());
 }
 #[test]
 fn list() {
-    round_trip("[1, 2, 3]");
+    round_trip("[1, 2, 3]", &crate::telemetry::ConfiguredTelemetry::new());
 }
 #[test]
 fn tuple_2() {
-    round_trip("{1, 2}");
+    round_trip("{1, 2}", &crate::telemetry::ConfiguredTelemetry::new());
 }
 #[test]
 fn tuple_3() {
-    round_trip("{1, 2, 3}");
+    round_trip("{1, 2, 3}", &crate::telemetry::ConfiguredTelemetry::new());
 }
 #[test]
 fn binop_add() {
-    round_trip("1 + 2");
+    round_trip("1 + 2", &crate::telemetry::ConfiguredTelemetry::new());
 }
 #[test]
 fn binop_eq() {
-    round_trip("a == b");
+    round_trip("a == b", &crate::telemetry::ConfiguredTelemetry::new());
 }
 
 // fz-g58.2.2 — the Elixir-aligned operators have AST representations that
@@ -149,11 +146,11 @@ fn unop_not() {
 }
 #[test]
 fn call() {
-    round_trip("foo(1, 2)");
+    round_trip("foo(1, 2)", &crate::telemetry::ConfiguredTelemetry::new());
 }
 #[test]
 fn nested_call() {
-    round_trip("foo(bar(x), 2 + 3)");
+    round_trip("foo(bar(x), 2 + 3)", &crate::telemetry::ConfiguredTelemetry::new());
 }
 #[test]
 fn block() {
@@ -174,11 +171,11 @@ fn block() {
 }
 #[test]
 fn if_with_else() {
-    round_trip("if true, do: 1, else: 2");
+    round_trip("if true, do: 1, else: 2", &crate::telemetry::ConfiguredTelemetry::new());
 }
 #[test]
 fn match_var() {
-    round_trip("x = 42");
+    round_trip("x = 42", &crate::telemetry::ConfiguredTelemetry::new());
 }
 #[test]
 fn unop_neg() {
@@ -201,7 +198,7 @@ fn unsupported_expr_errors_cleanly() {
 
 #[test]
 fn shape_of_var_is_3_tuple() {
-    let e = parse_expr("foo");
+    let e = parse_expr("foo", &crate::telemetry::ConfiguredTelemetry::new());
     let v = expr_to_value(&e).unwrap();
     let Value::Tuple(t) = &v else {
         panic!("expected tuple, got {:?}", debug_value(&v))
@@ -214,7 +211,7 @@ fn shape_of_var_is_3_tuple() {
 
 #[test]
 fn shape_of_binop_is_3_tuple_with_args_list() {
-    let e = parse_expr("1 + 2");
+    let e = parse_expr("1 + 2", &crate::telemetry::ConfiguredTelemetry::new());
     let v = expr_to_value(&e).unwrap();
     let Value::Tuple(t) = &v else { panic!("expected tuple") };
     assert_eq!(t.len(), 3);
@@ -227,7 +224,7 @@ fn shape_of_binop_is_3_tuple_with_args_list() {
 
 #[test]
 fn three_tuple_literal_is_wrapped() {
-    let e = parse_expr("{1, 2, 3}");
+    let e = parse_expr("{1, 2, 3}", &crate::telemetry::ConfiguredTelemetry::new());
     let v = expr_to_value(&e).unwrap();
     let Value::Tuple(t) = &v else { panic!() };
     assert_eq!(t.len(), 3);
@@ -236,7 +233,7 @@ fn three_tuple_literal_is_wrapped() {
 
 #[test]
 fn decoded_nodes_carry_dummy_span() {
-    let e = parse_expr("foo(1)");
+    let e = parse_expr("foo(1)", &crate::telemetry::ConfiguredTelemetry::new());
     let v = expr_to_value(&e).unwrap();
     let e2 = value_to_expr(&v).unwrap();
     assert!(e2.span.is_dummy(), "value_to_expr must produce DUMMY-spanned nodes");

@@ -4,6 +4,7 @@ use crate::diag::span::FileId;
 use crate::frontend::macros::expand_program;
 use crate::frontend::resolve::flatten_modules;
 use crate::ir_lower::lower_program;
+use crate::telemetry::Telemetry;
 
 fn rebuild(src: &str) -> (SourceMap, FileId) {
     let mut sm = SourceMap::new();
@@ -112,32 +113,26 @@ fn color_off_produces_no_escapes() {
 /// and return the rendered first-error diagnostic. Panics if the
 /// pipeline completes without an error (the fixture must exercise
 /// one of these stages).
-fn run_pipeline_for_fixture(src: &str, id: FileId, sm: &SourceMap, rel: &str) -> String {
+fn run_pipeline_for_fixture(src: &str, id: FileId, sm: &SourceMap, rel: &str, tel: &dyn Telemetry) -> String {
     use crate::parser::Parser;
     use crate::parser::lexer::Lexer;
-    let toks = match Lexer::with_file_and_source_name(src, id, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-    {
+    let toks = match Lexer::with_file_and_source_name(src, id, "<test>").tokenize(tel) {
         Err(e) => return render(&e.to_diagnostic(), sm),
         Ok(t) => t,
     };
-    let prog = match Parser::new(toks).parse_program(&crate::telemetry::ConfiguredTelemetry::new()) {
+    let prog = match Parser::new(toks).parse_program(tel) {
         Err(e) => return render(&e.to_diagnostic(), sm),
         Ok(p) => p,
     };
     let mut ct = crate::types::new();
-    let mut prog = match flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new()) {
+    let mut prog = match flatten_modules(&mut ct, prog, tel) {
         Err(e) => return render(&e.to_diagnostic(), sm),
         Ok(p) => p,
     };
     if let Err(e) = expand_program(&mut prog) {
         return render(&e.to_diagnostic(), sm);
     }
-    if let Err(e) = lower_program(
-        &mut crate::types::new(),
-        &prog,
-        &crate::telemetry::ConfiguredTelemetry::new(),
-    ) {
+    if let Err(e) = lower_program(&mut crate::types::new(), &prog, tel) {
         return render(&e.to_diagnostic(), sm);
     }
     panic!("fixture {} completed pipeline successfully — expected an error", rel);
@@ -188,7 +183,7 @@ fn fixture_golden_outputs_match() {
         // most are backend-plumbing failures without a real source
         // span; the verify/define paths that DO have spans are
         // covered by integration tests, not goldens.
-        let actual = run_pipeline_for_fixture(&src, id, &sm, &rel);
+        let actual = run_pipeline_for_fixture(&src, id, &sm, &rel, &crate::telemetry::ConfiguredTelemetry::new());
         assert_eq!(
             actual.trim_end(),
             expected.trim_end(),

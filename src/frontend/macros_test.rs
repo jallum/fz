@@ -2,30 +2,27 @@ use super::*;
 use crate::frontend::resolve::flatten_modules;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
+use crate::telemetry::Telemetry;
 
-fn parse(src: &str) -> Program {
-    let toks = Lexer::with_source_name(src, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("lex");
-    Parser::new(toks)
-        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("parse")
+fn parse(src: &str, tel: &dyn Telemetry) -> Program {
+    let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).expect("lex");
+    Parser::new(toks).parse_program(tel).expect("parse")
 }
 
 /// Run the full pipeline (parse → flatten → expand → eval main) and
 /// return main's return value.
-fn run(src: &str) -> Value {
-    let prog = parse(src);
+fn run(src: &str, tel: &dyn Telemetry) -> Value {
+    let prog = parse(src, tel);
     let mut ct = crate::types::new();
-    let mut prog = flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
+    let mut prog = flatten_modules(&mut ct, prog, tel).expect("flatten");
     expand_program(&mut prog).expect("expand");
     let interp = CompileTimeEvaluator::new();
     interp.load_program(&prog).expect("load");
     interp.call_named("main", vec![]).expect("eval")
 }
 
-fn expanded_main_body(src: &str) -> Expr {
-    let mut prog = parse(src);
+fn expanded_main_body(src: &str, tel: &dyn Telemetry) -> Expr {
+    let mut prog = parse(src, tel);
     expand_program(&mut prog).expect("expand");
     let item = prog.items.first().expect("main item");
     let Item::Fn(def) = &**item else {
@@ -46,7 +43,10 @@ fn main() do
   plus_one(41)
 end
 "#;
-    assert!(matches!(run(src), Value::Int(42)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(42)
+    ));
 }
 
 #[test]
@@ -62,7 +62,10 @@ fn run() do
 end
 fn main() do run() end
 "#;
-    assert!(matches!(run(src), Value::Int(60)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(60)
+    ));
 }
 
 #[test]
@@ -75,7 +78,10 @@ defmacro use_helper(x) do
 end
 fn main() do use_helper(7) end
 "#;
-    assert!(matches!(run(src), Value::Int(21)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(21)
+    ));
 }
 
 #[test]
@@ -86,7 +92,10 @@ defmacro m1(x) do quote do: unquote(x) + 1 end
 defmacro m2(x) do quote do: m1(unquote(x)) end
 fn main() do m2(40) end
 "#;
-    assert!(matches!(run(src), Value::Int(41)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(41)
+    ));
 }
 
 #[test]
@@ -101,7 +110,10 @@ defmacro m1(x) do quote do: unquote(x) + 1 end
 defmacro m2(x) do quote do: unquote(x) + 5 end
 fn main() do m2(m1(0)) end
 "#;
-    assert!(matches!(run(src), Value::Int(6)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(6)
+    ));
 }
 
 #[test]
@@ -114,7 +126,7 @@ defmacro loop_m(x) do
 end
 fn main() do loop_m(0) end
 "#;
-    let mut prog = parse(src);
+    let mut prog = parse(src, &crate::telemetry::ConfiguredTelemetry::new());
     let res = expand_program(&mut prog);
     assert!(res.is_err(), "expected expansion error");
     assert!(
@@ -138,7 +150,7 @@ fn main() do
   t
 end
 "#;
-    let v = run(src);
+    let v = run(src, &crate::telemetry::ConfiguredTelemetry::new());
     assert!(
         matches!(v, Value::Int(1)),
         "expected caller's t (1) to survive, got {:?}",
@@ -160,7 +172,10 @@ fn main() do
   emit(x)
 end
 "#;
-    assert!(matches!(run(src), Value::Int(8)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(8)
+    ));
 }
 
 #[test]
@@ -181,7 +196,10 @@ end
 "#;
     // Macro returns Block([t__hyg_N = 21, t__hyg_N + t__hyg_N]) → 42.
     // Caller's t stays at 100; macro's t__hyg_N is 21+21.
-    assert!(matches!(run(src), Value::Int(42)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(42)
+    ));
 }
 
 #[test]
@@ -204,7 +222,11 @@ fn main() do User.run() end
 "#;
     // M.bump expands at compile time into M.helper(7) (a fully
     // qualified call), so the result is 107.
-    assert!(matches!(run(src), Value::Int(107)), "expected 107, got {:?}", run(src));
+    assert!(
+        matches!(run(src, &crate::telemetry::ConfiguredTelemetry::new()), Value::Int(107)),
+        "expected 107, got {:?}",
+        run(src, &crate::telemetry::ConfiguredTelemetry::new())
+    );
 }
 
 #[test]
@@ -219,7 +241,10 @@ defmodule User do
 end
 fn main() do User.run() end
 "#;
-    assert!(matches!(run(src), Value::Int(42)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(42)
+    ));
 }
 
 #[test]
@@ -241,7 +266,11 @@ fn main() do
   answer()
 end
 "#;
-    assert!(matches!(run(src), Value::Int(42)), "expected 42, got {:?}", run(src));
+    assert!(
+        matches!(run(src, &crate::telemetry::ConfiguredTelemetry::new()), Value::Int(42)),
+        "expected 42, got {:?}",
+        run(src, &crate::telemetry::ConfiguredTelemetry::new())
+    );
 }
 
 #[test]
@@ -261,7 +290,10 @@ fn main() do
   first() + second()
 end
 "#;
-    assert!(matches!(run(src), Value::Int(30)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(30)
+    ));
 }
 
 #[test]
@@ -281,14 +313,18 @@ fn main() do
   Constants.pi_ish()
 end
 "#;
-    assert!(matches!(run(src), Value::Int(314)), "expected 314, got {:?}", run(src));
+    assert!(
+        matches!(run(src, &crate::telemetry::ConfiguredTelemetry::new()), Value::Int(314)),
+        "expected 314, got {:?}",
+        run(src, &crate::telemetry::ConfiguredTelemetry::new())
+    );
 }
 
 #[test]
 fn no_macros_is_a_noop() {
     // Pipeline without macros must not regress.
     let src = "fn main() do 1 + 2 end";
-    let mut prog = parse(src);
+    let mut prog = parse(src, &crate::telemetry::ConfiguredTelemetry::new());
     expand_program(&mut prog).expect("expand");
     let interp = CompileTimeEvaluator::new();
     interp.load_program(&prog).expect("load");
@@ -299,7 +335,10 @@ fn no_macros_is_a_noop() {
 #[test]
 fn pipe_into_call_rewrites_during_expansion() {
     let src = "fn add2(x), do: x + 2\nfn main(), do: 1 |> add2()";
-    assert!(matches!(run(src), Value::Int(3)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(3)
+    ));
 }
 
 #[test]
@@ -314,6 +353,7 @@ fn operator_sugars_rewrite_to_runtime_calls() {
 1..3//2
   }
 end"#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let Expr::Tuple(values) = &body else {
         panic!("expected tuple");
@@ -335,6 +375,7 @@ fn membership_sugars_rewrite_to_enum_member() {
 4 not in [1, 2, 3]
   }
 end"#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let Expr::Tuple(values) = &body else {
         panic!("expected tuple");
@@ -361,13 +402,19 @@ fn assert_call_name(expr: &Spanned<Expr>, expected: &str, arity: usize) {
 #[test]
 fn capture_shorthand_desugars_to_runnable_lambda() {
     let src = "fn main() do\n  f = &(&1 + &2)\n  f.(20, 22)\nend";
-    assert!(matches!(run(src), Value::Int(42)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(42)
+    ));
 }
 
 #[test]
 fn bare_capture_arg_desugars_to_identity_lambda() {
     let src = "fn main() do\n  f = &1\n  f.(42)\nend";
-    assert!(matches!(run(src), Value::Int(42)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(42)
+    ));
 }
 
 #[test]
@@ -382,7 +429,7 @@ _ -> :other
   {f.(0), f.(2), f.(-1)}
 end
 "#;
-    let got = run(src);
+    let got = run(src, &crate::telemetry::ConfiguredTelemetry::new());
     assert_eq!(format!("{}", got), "{:zero, :pos, :other}");
 }
 
@@ -394,7 +441,7 @@ end
 #[test]
 fn parser_nodes_have_source_origin() {
     let src = "fn main(), do: 1 + 2";
-    let mut prog = parse(src);
+    let mut prog = parse(src, &crate::telemetry::ConfiguredTelemetry::new());
     expand_program(&mut prog).expect("expand");
     let Item::Fn(def) = &*prog.items[0] else { panic!() };
     let body = &def.clauses[0].body;
@@ -413,7 +460,7 @@ defmacro plus_one(x) do
 end
 fn main() do plus_one(41) end
 "#;
-    let mut prog = parse(src);
+    let mut prog = parse(src, &crate::telemetry::ConfiguredTelemetry::new());
 
     // Capture the macro call's span BEFORE expansion replaces it.
     let call_span_before = {
@@ -481,7 +528,7 @@ defmacro plus_one(x) do
 end
 fn main() do plus_one(41) end
 "#;
-    let mut prog = parse(src);
+    let mut prog = parse(src, &crate::telemetry::ConfiguredTelemetry::new());
     expand_program(&mut prog).expect("expand");
     let Item::Fn(def) = &*prog
         .items
@@ -525,7 +572,7 @@ defmacro m1(x) do quote do: unquote(x) + 1 end
 defmacro m2(x) do quote do: m1(unquote(x)) end
 fn main() do m2(40) end
 "#;
-    let mut prog = parse(src);
+    let mut prog = parse(src, &crate::telemetry::ConfiguredTelemetry::new());
     let outer_call_span = {
         let Item::Fn(def) = &*prog
             .items
@@ -580,7 +627,7 @@ make_const(:answer, 42)
 
 fn main(), do: answer()
 "#;
-    let mut prog = parse(src);
+    let mut prog = parse(src, &crate::telemetry::ConfiguredTelemetry::new());
     // Find the original `make_const(...)` MacroCall's span before expansion.
     let macro_call_span = prog
         .items
@@ -635,7 +682,7 @@ defmacro loop_m(x) do
 end
 fn main() do loop_m(0) end
 "#;
-    let mut prog = parse(src);
+    let mut prog = parse(src, &crate::telemetry::ConfiguredTelemetry::new());
     let err = expand_program(&mut prog).unwrap_err();
     let d = err.to_diagnostic();
     assert_ne!(d.primary.span, Span::DUMMY, "ExpansionLoop should carry a real span");
@@ -654,7 +701,7 @@ defmacro bad() do
 end
 fn main() do bad() end
 "#;
-    let mut prog = parse(src);
+    let mut prog = parse(src, &crate::telemetry::ConfiguredTelemetry::new());
     let err = expand_program(&mut prog).unwrap_err();
     match *err {
         MacroError::BodyFailed {

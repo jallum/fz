@@ -1,4 +1,5 @@
 use super::*;
+use crate::telemetry::Telemetry;
 
 #[cfg(test)]
 mod do_block_sugar_tests {
@@ -7,14 +8,10 @@ mod do_block_sugar_tests {
     use Attribute::{Doc, Spec};
     use BinOp::{And, Or};
 
-    fn parse_fn_body(src: &str) -> Expr {
+    fn parse_fn_body(src: &str, tel: &dyn Telemetry) -> Expr {
         let wrapped = format!("fn _t() do {} end", src);
-        let toks = Lexer::with_source_name(&wrapped, "<test>")
-            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-            .unwrap();
-        let prog = Parser::new(toks)
-            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-            .unwrap();
+        let toks = Lexer::with_source_name(&wrapped, "<test>").tokenize(tel).unwrap();
+        let prog = Parser::new(toks).parse_program(tel).unwrap();
         match &*prog.items[0] {
             Item::Fn(d) => match &d.clauses[0].body.node {
                 Expr::Block(xs) => xs[0].node.clone(),
@@ -24,10 +21,8 @@ mod do_block_sugar_tests {
         }
     }
 
-    fn parse_expr(src: &str) -> Expr {
-        let toks = Lexer::with_source_name(src, "<test>")
-            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-            .unwrap();
+    fn parse_expr(src: &str, tel: &dyn Telemetry) -> Expr {
+        let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).unwrap();
         Parser::new(toks).parse_expr_eof().unwrap().node
     }
 
@@ -38,6 +33,7 @@ mod do_block_sugar_tests {
             1
             2
         end"#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         );
         let Expr::Call(callee, args) = e else {
             panic!("not a call")
@@ -50,7 +46,7 @@ mod do_block_sugar_tests {
 
     #[test]
     fn comma_do_kw_appended_as_keyword_arg() {
-        let e = parse_fn_body(r#"f("x"), do: 42"#);
+        let e = parse_fn_body(r#"f("x"), do: 42"#, &crate::telemetry::ConfiguredTelemetry::new());
         let Expr::Call(_, args) = e else { panic!("not a call") };
         assert_eq!(args.len(), 2);
         assert_keyword_list(&args[1], &[("do", "int")]);
@@ -58,13 +54,13 @@ mod do_block_sugar_tests {
 
     #[test]
     fn list_keyword_sugar_is_list_of_atom_pairs() {
-        let e = parse_expr("[a: 1, b: 2]");
+        let e = parse_expr("[a: 1, b: 2]", &crate::telemetry::ConfiguredTelemetry::new());
         assert_keyword_list(&Spanned::dummy(e), &[("a", "int"), ("b", "int")]);
     }
 
     #[test]
     fn call_keywords_are_single_trailing_list_arg() {
-        let e = parse_expr("f(1, a: 2, b: 3)");
+        let e = parse_expr("f(1, a: 2, b: 3)", &crate::telemetry::ConfiguredTelemetry::new());
         let Expr::Call(_, args) = e else { panic!("not a call") };
         assert_eq!(args.len(), 2);
         assert!(matches!(args[0].node, Expr::Int(1)));
@@ -73,7 +69,10 @@ mod do_block_sugar_tests {
 
     #[test]
     fn trailing_do_merges_with_existing_keyword_arg() {
-        let e = parse_expr("f(1, timeout: 10) do 42 end");
+        let e = parse_expr(
+            "f(1, timeout: 10) do 42 end",
+            &crate::telemetry::ConfiguredTelemetry::new(),
+        );
         let Expr::Call(_, args) = e else { panic!("not a call") };
         assert_eq!(args.len(), 2);
         assert_keyword_list(&args[1], &[("timeout", "int"), ("do", "int")]);
@@ -81,7 +80,10 @@ mod do_block_sugar_tests {
 
     #[test]
     fn trailing_do_does_not_merge_with_explicit_atom_pair_list() {
-        let e = parse_expr("f([{:timeout, 10}]) do 42 end");
+        let e = parse_expr(
+            "f([{:timeout, 10}]) do 42 end",
+            &crate::telemetry::ConfiguredTelemetry::new(),
+        );
         let Expr::Call(_, args) = e else { panic!("not a call") };
         assert_eq!(args.len(), 2);
         let Expr::List(items, None) = &args[0].node else {
@@ -280,14 +282,14 @@ end
 
     #[test]
     fn plain_call_no_extra_arg() {
-        let e = parse_fn_body("f(1, 2)");
+        let e = parse_fn_body("f(1, 2)", &crate::telemetry::ConfiguredTelemetry::new());
         let Expr::Call(_, args) = e else { panic!() };
         assert_eq!(args.len(), 2);
     }
 
     #[test]
     fn newline_before_match_operator_continues_expression() {
-        let e = parse_expr("x\n  =\n    41");
+        let e = parse_expr("x\n  =\n    41", &crate::telemetry::ConfiguredTelemetry::new());
         assert!(matches!(e, Expr::Match(_, _)));
     }
 
@@ -369,6 +371,7 @@ fn spawn(fun, opts), do: fun.()
             else
                 2
             end"#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         );
         let Expr::If(cond, _, els) = e else {
             panic!("expected If, got {:?}", e);
@@ -391,6 +394,7 @@ fn spawn(fun, opts), do: fun.()
             r#"receive do
                 msg -> msg
             end"#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         );
         let Expr::Receive { clauses, after } = e else {
             panic!("expected Receive, got {:?}", e);
@@ -409,6 +413,7 @@ fn spawn(fun, opts), do: fun.()
                 {:put, k, v} -> 2
                 :stop -> 3
             end"#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         );
         let Expr::Receive { clauses, after } = e else {
             panic!("expected Receive, got {:?}", e);
@@ -423,6 +428,7 @@ fn spawn(fun, opts), do: fun.()
             r#"receive do
                 n when n > 0 -> n
             end"#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         );
         let Expr::Receive { clauses, after } = e else {
             panic!("expected Receive");
@@ -439,6 +445,7 @@ fn spawn(fun, opts), do: fun.()
             after
                 500 -> :timeout
             end"#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         );
         let Expr::Receive { clauses, after } = e else {
             panic!("expected Receive");
@@ -458,6 +465,7 @@ fn spawn(fun, opts), do: fun.()
             after
                 0 -> nil
             end"#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         );
         let Expr::Receive { clauses: _, after } = e else {
             panic!("expected Receive");
@@ -474,6 +482,7 @@ fn spawn(fun, opts), do: fun.()
             after
                 :infinity -> :never
             end"#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         );
         let Expr::Receive { clauses: _, after } = e else {
             panic!("expected Receive");
@@ -488,6 +497,7 @@ fn spawn(fun, opts), do: fun.()
             r#"receive do
                 {:reply, ^ref, v} -> v
             end"#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         );
         let Expr::Receive { clauses, .. } = e else {
             panic!("expected Receive");
@@ -523,7 +533,7 @@ fn spawn(fun, opts), do: fun.()
 
     #[test]
     fn fn_ref_bare_name_parses() {
-        let e = parse_fn_body("&foo/1");
+        let e = parse_fn_body("&foo/1", &crate::telemetry::ConfiguredTelemetry::new());
         match e {
             Expr::FnRef { name, arity } => {
                 assert_eq!(name, "foo");
@@ -535,7 +545,7 @@ fn spawn(fun, opts), do: fun.()
 
     #[test]
     fn fn_ref_zero_arity_parses() {
-        let e = parse_fn_body("&do_it/0");
+        let e = parse_fn_body("&do_it/0", &crate::telemetry::ConfiguredTelemetry::new());
         match e {
             Expr::FnRef { name, arity } => {
                 assert_eq!(name, "do_it");
@@ -548,7 +558,7 @@ fn spawn(fun, opts), do: fun.()
     #[test]
     fn fn_ref_module_qualified_parses() {
         // `&Mod.fun/2` captures the full dotted path as the name.
-        let e = parse_fn_body("&Mod.fun/2");
+        let e = parse_fn_body("&Mod.fun/2", &crate::telemetry::ConfiguredTelemetry::new());
         match e {
             Expr::FnRef { name, arity } => {
                 assert_eq!(name, "Mod.fun");
@@ -567,7 +577,7 @@ fn spawn(fun, opts), do: fun.()
             ("&//2", "/"),
             ("&%/2", "%"),
         ] {
-            match parse_fn_body(src) {
+            match parse_fn_body(src, &crate::telemetry::ConfiguredTelemetry::new()) {
                 Expr::FnRef { name, arity } => {
                     assert_eq!(name, expected_name);
                     assert_eq!(arity, 2);
@@ -586,7 +596,7 @@ fn spawn(fun, opts), do: fun.()
             ("&Kernel.//2", "Kernel./"),
             ("&Kernel.%/2", "Kernel.%"),
         ] {
-            match parse_fn_body(src) {
+            match parse_fn_body(src, &crate::telemetry::ConfiguredTelemetry::new()) {
                 Expr::FnRef { name, arity } => {
                     assert_eq!(name, expected_name);
                     assert_eq!(arity, 2);
@@ -598,7 +608,7 @@ fn spawn(fun, opts), do: fun.()
 
     #[test]
     fn fn_ref_nested_module_qualified_parses() {
-        let e = parse_fn_body("&A.B.run/3");
+        let e = parse_fn_body("&A.B.run/3", &crate::telemetry::ConfiguredTelemetry::new());
         match e {
             Expr::FnRef { name, arity } => {
                 assert_eq!(name, "A.B.run");
@@ -611,7 +621,7 @@ fn spawn(fun, opts), do: fun.()
     #[test]
     fn fn_ref_as_call_arg_parses() {
         // Ensures &name/arity composes naturally inside argument lists.
-        let e = parse_fn_body("apply(&foo/1, 7)");
+        let e = parse_fn_body("apply(&foo/1, 7)", &crate::telemetry::ConfiguredTelemetry::new());
         let Expr::Call(_, args) = e else { panic!() };
         assert_eq!(args.len(), 2);
         assert!(matches!(&args[0].node, Expr::FnRef { name, arity }
@@ -621,11 +631,13 @@ fn spawn(fun, opts), do: fun.()
     #[test]
     fn and_or_keywords_parse_as_boolean_binops() {
         // fz uses Elixir's `and`/`or`, not C-style `&&`/`||`.
-        let Expr::BinOp(op, _, _) = parse_fn_body("true and false") else {
+        let Expr::BinOp(op, _, _) = parse_fn_body("true and false", &crate::telemetry::ConfiguredTelemetry::new())
+        else {
             panic!()
         };
         assert!(matches!(op, And));
-        let Expr::BinOp(op, _, _) = parse_fn_body("true or false") else {
+        let Expr::BinOp(op, _, _) = parse_fn_body("true or false", &crate::telemetry::ConfiguredTelemetry::new())
+        else {
             panic!()
         };
         assert!(matches!(op, Or));
@@ -663,6 +675,7 @@ fn spawn(fun, opts), do: fun.()
                     1
                 end
             end"#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         );
         let Expr::Case(_, clauses) = e else {
             panic!("expected Case");
@@ -832,17 +845,15 @@ mod elixir_operator_precedence_tests {
     use BinOp::{Add, BinConcat, Eq, In, ListConcat, ListSubtract, Mul, NotIn, Pipe, Range, RangeStep};
     use UnOp::{Neg, Not};
 
-    fn parse(src: &str) -> Expr {
-        let toks = Lexer::with_source_name(src, "<test>")
-            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-            .unwrap();
+    fn parse(src: &str, tel: &dyn Telemetry) -> Expr {
+        let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).unwrap();
         Parser::new(toks).parse_expr_eof().unwrap().node
     }
 
     /// Parse `src` and destructure its top-level binary operation, returning
     /// owned operand clones so the result outlives the parsed tree.
-    fn binop(src: &str) -> (BinOp, Expr, Expr) {
-        match parse(src) {
+    fn binop(src: &str, tel: &dyn Telemetry) -> (BinOp, Expr, Expr) {
+        match parse(src, tel) {
             Expr::BinOp(op, a, b) => (op, a.node, b.node),
             other => panic!("expected BinOp, got {:?}", other),
         }
@@ -850,18 +861,36 @@ mod elixir_operator_precedence_tests {
 
     #[test]
     fn new_operators_parse_to_their_binops() {
-        assert!(matches!(parse("a ++ b"), Expr::BinOp(ListConcat, _, _)));
-        assert!(matches!(parse("a -- b"), Expr::BinOp(ListSubtract, _, _)));
-        assert!(matches!(parse("a <> b"), Expr::BinOp(BinConcat, _, _)));
-        assert!(matches!(parse("a .. b"), Expr::BinOp(Range, _, _)));
-        assert!(matches!(parse("a in b"), Expr::BinOp(In, _, _)));
-        assert!(matches!(parse("a not in b"), Expr::BinOp(NotIn, _, _)));
+        assert!(matches!(
+            parse("a ++ b", &crate::telemetry::ConfiguredTelemetry::new()),
+            Expr::BinOp(ListConcat, _, _)
+        ));
+        assert!(matches!(
+            parse("a -- b", &crate::telemetry::ConfiguredTelemetry::new()),
+            Expr::BinOp(ListSubtract, _, _)
+        ));
+        assert!(matches!(
+            parse("a <> b", &crate::telemetry::ConfiguredTelemetry::new()),
+            Expr::BinOp(BinConcat, _, _)
+        ));
+        assert!(matches!(
+            parse("a .. b", &crate::telemetry::ConfiguredTelemetry::new()),
+            Expr::BinOp(Range, _, _)
+        ));
+        assert!(matches!(
+            parse("a in b", &crate::telemetry::ConfiguredTelemetry::new()),
+            Expr::BinOp(In, _, _)
+        ));
+        assert!(matches!(
+            parse("a not in b", &crate::telemetry::ConfiguredTelemetry::new()),
+            Expr::BinOp(NotIn, _, _)
+        ));
     }
 
     #[test]
     fn concat_is_right_associative() {
         // a ++ b ++ c  =>  a ++ (b ++ c)
-        let (op, _a, rhs) = binop("a ++ b ++ c");
+        let (op, _a, rhs) = binop("a ++ b ++ c", &crate::telemetry::ConfiguredTelemetry::new());
         assert_eq!(op, ListConcat);
         assert!(
             matches!(rhs, Expr::BinOp(ListConcat, _, _)),
@@ -872,7 +901,7 @@ mod elixir_operator_precedence_tests {
     #[test]
     fn arithmetic_binds_tighter_than_concat() {
         // a ++ b + c  =>  a ++ (b + c)
-        let (op, _a, rhs) = binop("a ++ b + c");
+        let (op, _a, rhs) = binop("a ++ b + c", &crate::telemetry::ConfiguredTelemetry::new());
         assert_eq!(op, ListConcat);
         assert!(matches!(rhs, Expr::BinOp(Add, _, _)));
     }
@@ -880,7 +909,7 @@ mod elixir_operator_precedence_tests {
     #[test]
     fn stepped_range_groups_as_range_then_step() {
         // 1..10//2  =>  (1..10) // 2
-        let (op, lhs, _step) = binop("1..10//2");
+        let (op, lhs, _step) = binop("1..10//2", &crate::telemetry::ConfiguredTelemetry::new());
         assert_eq!(op, RangeStep);
         assert!(matches!(lhs, Expr::BinOp(Range, _, _)));
     }
@@ -888,20 +917,23 @@ mod elixir_operator_precedence_tests {
     #[test]
     fn unary_binds_tighter_than_multiplication() {
         // -a * b  =>  (-a) * b
-        let (op, lhs, _b) = binop("-a * b");
+        let (op, lhs, _b) = binop("-a * b", &crate::telemetry::ConfiguredTelemetry::new());
         assert_eq!(op, Mul);
         assert!(matches!(lhs, Expr::UnOp(Neg, _)));
     }
 
     #[test]
     fn prefix_not_parses_as_unop_not() {
-        assert!(matches!(parse("not x"), Expr::UnOp(Not, _)));
+        assert!(matches!(
+            parse("not x", &crate::telemetry::ConfiguredTelemetry::new()),
+            Expr::UnOp(Not, _)
+        ));
     }
 
     #[test]
     fn pipe_binds_tighter_than_comparison() {
         // a |> f() == b  =>  (a |> f()) == b
-        let (op, lhs, _b) = binop("a |> f() == b");
+        let (op, lhs, _b) = binop("a |> f() == b", &crate::telemetry::ConfiguredTelemetry::new());
         assert_eq!(op, Eq);
         assert!(matches!(lhs, Expr::BinOp(Pipe, _, _)));
     }
@@ -909,7 +941,7 @@ mod elixir_operator_precedence_tests {
     #[test]
     fn membership_is_looser_than_arithmetic() {
         // 1 + 2 in xs  =>  (1 + 2) in xs
-        let (op, lhs, _b) = binop("1 + 2 in xs");
+        let (op, lhs, _b) = binop("1 + 2 in xs", &crate::telemetry::ConfiguredTelemetry::new());
         assert_eq!(op, In);
         assert!(matches!(lhs, Expr::BinOp(Add, _, _)));
     }
@@ -922,16 +954,14 @@ mod no_parens_call_tests {
     use BinOp::{Add, Sub};
     use UnOp::Neg;
 
-    fn parse(src: &str) -> Expr {
-        let toks = Lexer::with_source_name(src, "<test>")
-            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-            .unwrap();
+    fn parse(src: &str, tel: &dyn Telemetry) -> Expr {
+        let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).unwrap();
         Parser::new(toks).parse_expr_eof().unwrap().node
     }
 
     /// Parse `src` and destructure a top-level call into (callee, owned args).
-    fn call(src: &str) -> (Expr, Vec<Expr>) {
-        match parse(src) {
+    fn call(src: &str, tel: &dyn Telemetry) -> (Expr, Vec<Expr>) {
+        match parse(src, tel) {
             Expr::Call(callee, args) => (callee.node, args.into_iter().map(|a| a.node).collect()),
             other => panic!("expected Call, got {:?}", other),
         }
@@ -946,7 +976,7 @@ mod no_parens_call_tests {
 
     #[test]
     fn single_arg() {
-        let (c, args) = call("foo a");
+        let (c, args) = call("foo a", &crate::telemetry::ConfiguredTelemetry::new());
         assert_eq!(var(&c), "foo");
         assert_eq!(args.len(), 1);
         assert_eq!(var(&args[0]), "a");
@@ -954,7 +984,7 @@ mod no_parens_call_tests {
 
     #[test]
     fn many_args() {
-        let (c, args) = call("foo a, b, c");
+        let (c, args) = call("foo a, b, c", &crate::telemetry::ConfiguredTelemetry::new());
         assert_eq!(var(&c), "foo");
         assert_eq!(args.len(), 3);
     }
@@ -962,7 +992,7 @@ mod no_parens_call_tests {
     #[test]
     fn arg_is_a_full_expression() {
         // foo a + b  =>  foo(a + b)
-        let (_c, args) = call("foo a + b");
+        let (_c, args) = call("foo a + b", &crate::telemetry::ConfiguredTelemetry::new());
         assert_eq!(args.len(), 1);
         assert!(matches!(args[0], Expr::BinOp(Add, _, _)));
     }
@@ -970,7 +1000,7 @@ mod no_parens_call_tests {
     #[test]
     fn nested_call_grabs_all_args() {
         // f g a, b  =>  f(g(a, b))
-        let (c, args) = call("f g a, b");
+        let (c, args) = call("f g a, b", &crate::telemetry::ConfiguredTelemetry::new());
         assert_eq!(var(&c), "f");
         assert_eq!(args.len(), 1, "outer call takes one arg");
         let Expr::Call(inner, inner_args) = &args[0] else {
@@ -983,7 +1013,7 @@ mod no_parens_call_tests {
     #[test]
     fn arg_then_nested_call() {
         // f a, g b  =>  f(a, g(b))
-        let (c, args) = call("f a, g b");
+        let (c, args) = call("f a, g b", &crate::telemetry::ConfiguredTelemetry::new());
         assert_eq!(var(&c), "f");
         assert_eq!(args.len(), 2);
         assert!(matches!(&args[1], Expr::Call(_, a) if a.len() == 1));
@@ -992,7 +1022,7 @@ mod no_parens_call_tests {
     #[test]
     fn recognized_in_operand_position() {
         // 1 + foo a  =>  1 + foo(a)
-        let Expr::BinOp(Add, _l, r) = parse("1 + foo a") else {
+        let Expr::BinOp(Add, _l, r) = parse("1 + foo a", &crate::telemetry::ConfiguredTelemetry::new()) else {
             panic!("not an addition")
         };
         assert!(matches!(&r.node, Expr::Call(c, a)
@@ -1002,18 +1032,21 @@ mod no_parens_call_tests {
     #[test]
     fn dual_op_spacing_selects_unary_argument() {
         // foo -1  =>  foo(-1)  (unary, because space before `-`, none after)
-        let (c, args) = call("foo -1");
+        let (c, args) = call("foo -1", &crate::telemetry::ConfiguredTelemetry::new());
         assert_eq!(var(&c), "foo");
         assert_eq!(args.len(), 1);
         assert!(matches!(args[0], Expr::UnOp(Neg, _)));
         // foo - 1  =>  binary subtraction, not a call
-        assert!(matches!(parse("foo - 1"), Expr::BinOp(Sub, _, _)));
+        assert!(matches!(
+            parse("foo - 1", &crate::telemetry::ConfiguredTelemetry::new()),
+            Expr::BinOp(Sub, _, _)
+        ));
     }
 
     #[test]
     fn module_qualified_head() {
         // Enum.map xs, f  =>  (Enum.map)(xs, f)
-        let (c, args) = call("Enum.map xs, f");
+        let (c, args) = call("Enum.map xs, f", &crate::telemetry::ConfiguredTelemetry::new());
         assert!(matches!(c, Expr::Index(_, _)), "head is qualified: {:?}", c);
         assert_eq!(args.len(), 2);
     }
@@ -1022,7 +1055,7 @@ mod no_parens_call_tests {
     fn container_keeps_its_comma() {
         // [foo a, b]  =>  [foo(a), b]: the comma belongs to the list, so the
         // no-parens call inside a container takes a single argument.
-        let Expr::List(items, None) = parse("[foo a, b]") else {
+        let Expr::List(items, None) = parse("[foo a, b]", &crate::telemetry::ConfiguredTelemetry::new()) else {
             panic!("not a list")
         };
         assert_eq!(items.len(), 2, "comma belongs to the list");
@@ -1033,13 +1066,19 @@ mod no_parens_call_tests {
 
     #[test]
     fn bare_var_is_not_a_call() {
-        assert!(matches!(parse("foo"), Expr::Var(_)));
-        assert!(matches!(parse("foo + 1"), Expr::BinOp(Add, _, _)));
+        assert!(matches!(
+            parse("foo", &crate::telemetry::ConfiguredTelemetry::new()),
+            Expr::Var(_)
+        ));
+        assert!(matches!(
+            parse("foo + 1", &crate::telemetry::ConfiguredTelemetry::new()),
+            Expr::BinOp(Add, _, _)
+        ));
     }
 
     #[test]
     fn paren_call_unaffected() {
-        let (c, args) = call("foo(a, b)");
+        let (c, args) = call("foo(a, b)", &crate::telemetry::ConfiguredTelemetry::new());
         assert_eq!(var(&c), "foo");
         assert_eq!(args.len(), 2);
     }
@@ -1065,7 +1104,7 @@ mod no_parens_call_tests {
     #[test]
     fn trailing_keyword_collapses_into_one_list() {
         // foo a, b: 1  =>  foo(a, [b: 1])
-        let (c, args) = call("foo a, b: 1");
+        let (c, args) = call("foo a, b: 1", &crate::telemetry::ConfiguredTelemetry::new());
         assert_eq!(var(&c), "foo");
         assert_eq!(args.len(), 2);
         assert_eq!(var(&args[0]), "a");
@@ -1075,7 +1114,7 @@ mod no_parens_call_tests {
     #[test]
     fn many_trailing_keywords_stay_in_one_list() {
         // foo a, b: 1, c: 2  =>  foo(a, [b: 1, c: 2])
-        let (_c, args) = call("foo a, b: 1, c: 2");
+        let (_c, args) = call("foo a, b: 1, c: 2", &crate::telemetry::ConfiguredTelemetry::new());
         assert_eq!(args.len(), 2, "the keywords are one trailing arg");
         assert_eq!(kw_keys(&args[1]), vec!["b", "c"]);
     }
@@ -1083,7 +1122,7 @@ mod no_parens_call_tests {
     #[test]
     fn leading_keyword_is_a_lone_list() {
         // foo b: 1  =>  foo([b: 1])
-        let (c, args) = call("foo b: 1");
+        let (c, args) = call("foo b: 1", &crate::telemetry::ConfiguredTelemetry::new());
         assert_eq!(var(&c), "foo");
         assert_eq!(args.len(), 1);
         assert_eq!(kw_keys(&args[0]), vec!["b"]);
@@ -1092,7 +1131,7 @@ mod no_parens_call_tests {
     #[test]
     fn nested_call_grabs_trailing_keywords() {
         // f g a, b: 1  =>  f(g(a, [b: 1]))
-        let (c, args) = call("f g a, b: 1");
+        let (c, args) = call("f g a, b: 1", &crate::telemetry::ConfiguredTelemetry::new());
         assert_eq!(var(&c), "f");
         assert_eq!(args.len(), 1);
         let Expr::Call(_inner, inner_args) = &args[0] else {
@@ -1163,18 +1202,14 @@ mod lambda_tests {
     use crate::ast::lambda_direct_clause;
     use crate::parser::lexer::Lexer;
 
-    fn parse(src: &str) -> Program {
-        let toks = Lexer::with_source_name(src, "<test>")
-            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-            .unwrap();
-        Parser::new(toks)
-            .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-            .unwrap()
+    fn parse(src: &str, tel: &dyn Telemetry) -> Program {
+        let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).unwrap();
+        Parser::new(toks).parse_program(tel).unwrap()
     }
 
     /// Parse the first fn's single-expression body (the lambda under test).
-    fn body(src: &str) -> Expr {
-        let prog = parse(src);
+    fn body(src: &str, tel: &dyn Telemetry) -> Expr {
+        let prog = parse(src, tel);
         match &*prog.items[0] {
             Item::Fn(d) => match &d.clauses[0].body.node {
                 Expr::Block(xs) => xs[0].node.clone(),
@@ -1186,7 +1221,10 @@ mod lambda_tests {
 
     #[test]
     fn single_clause_fn_is_one_clause() {
-        let Expr::Lambda(clauses) = body("fn _t() do\n  fn x -> x + 1 end\nend\n") else {
+        let Expr::Lambda(clauses) = body(
+            "fn _t() do\n  fn x -> x + 1 end\nend\n",
+            &crate::telemetry::ConfiguredTelemetry::new(),
+        ) else {
             panic!("expected lambda");
         };
         assert_eq!(clauses.len(), 1);
@@ -1198,7 +1236,10 @@ mod lambda_tests {
 
     #[test]
     fn parenthesized_params_parse() {
-        let Expr::Lambda(clauses) = body("fn _t() do\n  fn (x, y) -> x + y end\nend\n") else {
+        let Expr::Lambda(clauses) = body(
+            "fn _t() do\n  fn (x, y) -> x + y end\nend\n",
+            &crate::telemetry::ConfiguredTelemetry::new(),
+        ) else {
             panic!("expected lambda");
         };
         assert_eq!(clauses.len(), 1);
@@ -1207,7 +1248,10 @@ mod lambda_tests {
 
     #[test]
     fn multi_clause_fn_collects_every_clause() {
-        let Expr::Lambda(clauses) = body("fn _t() do\n  fn 0 -> :zero\n     n -> n end\nend\n") else {
+        let Expr::Lambda(clauses) = body(
+            "fn _t() do\n  fn 0 -> :zero\n     n -> n end\nend\n",
+            &crate::telemetry::ConfiguredTelemetry::new(),
+        ) else {
             panic!("expected lambda");
         };
         assert_eq!(clauses.len(), 2);
@@ -1217,7 +1261,10 @@ mod lambda_tests {
 
     #[test]
     fn guard_is_captured_on_the_clause() {
-        let Expr::Lambda(clauses) = body("fn _t() do\n  fn x when x > 0 -> x\n     _ -> 0 end\nend\n") else {
+        let Expr::Lambda(clauses) = body(
+            "fn _t() do\n  fn x when x > 0 -> x\n     _ -> 0 end\nend\n",
+            &crate::telemetry::ConfiguredTelemetry::new(),
+        ) else {
             panic!("expected lambda");
         };
         assert_eq!(clauses.len(), 2);
@@ -1228,7 +1275,10 @@ mod lambda_tests {
 
     #[test]
     fn single_guarded_clause_is_not_direct() {
-        let Expr::Lambda(clauses) = body("fn _t() do\n  fn x when x > 0 -> x end\nend\n") else {
+        let Expr::Lambda(clauses) = body(
+            "fn _t() do\n  fn x when x > 0 -> x end\nend\n",
+            &crate::telemetry::ConfiguredTelemetry::new(),
+        ) else {
             panic!("expected lambda");
         };
         assert_eq!(clauses.len(), 1);
@@ -1254,7 +1304,10 @@ mod lambda_tests {
     fn do_shorthand_lambda_body_needs_end_before_next_item() {
         // `fn make(), do: fn x -> x end` is the lambda as a `do:` body. The
         // lambda's own `end` closes it; the following item parses cleanly.
-        let prog = parse("fn make(), do: fn x -> x + 1 end\nfn main(), do: make()\n");
+        let prog = parse(
+            "fn make(), do: fn x -> x + 1 end\nfn main(), do: make()\n",
+            &crate::telemetry::ConfiguredTelemetry::new(),
+        );
         assert_eq!(prog.items.len(), 2);
         let Item::Fn(d) = &*prog.items[0] else {
             panic!("expected fn item");
