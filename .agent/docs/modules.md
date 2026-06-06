@@ -185,7 +185,7 @@ facts (`Id`, `Span`, `SourceMap`, `Code`) live in `src/compiler/source/`,
 and the pipeline threads that `SourceMap` through frontend, diagnostics, and
 dump/repl surfaces as compiler-owned source state rather than
 diagnostic-owned state. `SourceMap` keeps code bytes and optional display names
-as separate facts: `Code` is the id-plus-bytes payload, while the map owns the
+as separate facts: `Code` is the source-bytes payload, while the map owns the
 `Id -> String` display-name table for named sources.
 
 `checked_module_for_mode` runs the frontend, collects the program's own module

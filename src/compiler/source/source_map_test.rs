@@ -17,11 +17,11 @@ fn add_code_assigns_sequential_ids() {
 }
 
 #[test]
-fn code_carries_its_id_and_name_lookup_is_separate() {
+fn name_lookup_is_separate_from_code_bytes() {
     let mut sm = SourceMap::new();
     let id = sm.add_code(Some("named".to_string()), "body".to_string());
     let code = sm.code(id);
-    assert_eq!(code.id, id);
+    assert_eq!(&*code.bytes, "body");
     assert_eq!(sm.name(id), Some("named"));
 }
 

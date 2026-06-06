@@ -14,7 +14,6 @@ use super::{Id, Span};
 
 #[derive(Clone)]
 pub struct Code {
-    pub id: Id,
     pub bytes: Arc<str>,
     /// Lazily computed on first `locate` for this file. Each entry is the
     /// byte offset of the start of a line; line 1 starts at byte 0.
@@ -22,9 +21,8 @@ pub struct Code {
 }
 
 impl Code {
-    fn new(id: Id, bytes: Arc<str>) -> Self {
+    fn new(bytes: Arc<str>) -> Self {
         Self {
-            id,
             bytes,
             line_starts: OnceLock::new(),
         }
@@ -80,7 +78,7 @@ impl SourceMap {
         N: Into<String>,
     {
         let id = Id(self.codes.len() as u32);
-        self.codes.push(Code::new(id, bytes.into()));
+        self.codes.push(Code::new(bytes.into()));
         if let Some(name) = name {
             self.names.insert(id, name.into());
         }
