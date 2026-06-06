@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-06T14:25:00Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-tkf",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Rename SourceFile to Code",
   "type": "task",
-  "updated_at": "2026-06-06T14:25:00Z"
+  "updated_at": "2026-06-06T14:25:06Z"
 }
