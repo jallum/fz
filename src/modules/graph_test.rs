@@ -1,5 +1,5 @@
 use super::*;
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::frontend::protocols::{ImplTarget, InterfaceProtocolImpl};
 use crate::modules::identity::{Mfa, ModuleName};
 use crate::modules::interface::{InterfaceFn, InterfaceImport, ModuleInterface};

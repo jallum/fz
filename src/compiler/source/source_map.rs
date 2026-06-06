@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use super::span::{FileId, Span};
+use super::{FileId, Span};
 
 #[derive(Clone)]
 pub struct SourceFile {
@@ -88,17 +88,12 @@ impl SourceMap {
         let f = self.file(span.file);
         let starts = f.line_starts();
         let off = span.start;
-        // Binary search for the line whose start <= off.
         let idx = match starts.binary_search(&off) {
             Ok(i) => i,
-            Err(i) => i - 1, // i is the insertion point; previous start is our line
+            Err(i) => i - 1,
         };
         let line_start = starts[idx];
         let line_end = starts.get(idx + 1).copied().unwrap_or(f.bytes.len() as u32);
-        // Trim trailing '\n' from the snippet range so the renderer doesn't
-        // draw an empty next-line. `line_end` here points at the '\n' itself
-        // (or EOF). The renderer will read line_start..line_end inclusive of
-        // any '\r' but exclusive of '\n', which is what we want.
         let line_end = if line_end > line_start && f.bytes.as_bytes().get((line_end - 1) as usize) == Some(&b'\n') {
             line_end - 1
         } else {

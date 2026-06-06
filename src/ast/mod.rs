@@ -1,4 +1,4 @@
-use crate::diag::{Span, SpanOrigin};
+use crate::compiler::source::{Span, SpanOrigin};
 use crate::frontend::protocols::ProtocolRegistry;
 use crate::modules::identity::ModuleName;
 use crate::modules::interface::ModuleInterface;

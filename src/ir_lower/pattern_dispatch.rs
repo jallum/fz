@@ -1,6 +1,6 @@
 use super::*;
 use crate::ast::{BitType, Endian, Expr, Pattern, Spanned};
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::dispatch_matrix::pattern::{
     PatternBodyId, PatternRow, SourcePatternError, SourcePatternRows, collect_guard_capture_names,
 };

@@ -1,9 +1,9 @@
 use std::fmt;
 use std::str::from_utf8;
 
+use crate::compiler::source::{FileId, Span};
 use crate::diag::Diagnostic;
 use crate::diag::codes::LEX_UNEXPECTED_CHAR;
-use crate::diag::{FileId, Span};
 use crate::measurements;
 use crate::telemetry::{Metadata, Telemetry, Value};
 

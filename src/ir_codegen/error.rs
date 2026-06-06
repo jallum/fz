@@ -1,5 +1,6 @@
+use crate::compiler::source::Span;
+use crate::diag::Diagnostic;
 use crate::diag::codes::CODEGEN_SCHEMA_MISSING;
-use crate::diag::{Diagnostic, Span};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 

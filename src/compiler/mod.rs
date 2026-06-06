@@ -1,4 +1,5 @@
 mod driver;
+pub(crate) mod source;
 mod world;
 
 pub(crate) use driver::Compiler;

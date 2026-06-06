@@ -26,7 +26,7 @@ pub struct Span {
 /// the user's `Foo(args)` invocation, `definition` (when present) is the
 /// span of `defmacro Foo …` so a diagnostic can point at the macro itself.
 ///
-/// The renderer (.20.6) consults this when drawing the trailer:
+/// The renderer consults this when drawing the trailer:
 ///   = expanded from `<macro>` at file:line:col
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpanOrigin {

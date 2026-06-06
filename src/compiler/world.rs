@@ -1,4 +1,5 @@
-use crate::diag::{Diagnostics, SourceMap};
+use crate::compiler::source::SourceMap;
+use crate::diag::Diagnostics;
 use crate::fz_ir::Module;
 use crate::ir_codegen::{AbiFacts, CompiledUnit};
 use crate::ir_planner::ModulePlan;

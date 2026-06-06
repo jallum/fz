@@ -1,6 +1,6 @@
 use super::World;
 use crate::ast::Program;
-use crate::diag::SourceMap;
+use crate::compiler::source::SourceMap;
 use crate::frontend::{FrontendOk, FrontendResult, compile_program_with_types, compile_source_with_types};
 use crate::ir_codegen::driver::prepare_preplanned_native;
 use crate::ir_codegen::{

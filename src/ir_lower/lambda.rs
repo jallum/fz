@@ -1,6 +1,6 @@
 use super::*;
 use crate::ast::{BitSize as AstBitSize, Expr, MatchClause, Pattern, Spanned, WithBinding};
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::fz_ir::{Const, FnBuilder, FnCategory, Prim, Term, Var};
 use crate::types::{Ty, Types};
 use std::collections::HashSet;

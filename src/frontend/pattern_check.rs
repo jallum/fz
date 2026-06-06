@@ -10,7 +10,8 @@
 //! driver's render-and-exit logic.
 
 use crate::ast::{Expr, FnClause, FnDef, Item, MatchClause, Pattern, Program, Spanned, WithBinding};
-use crate::diag::{Diagnostic, Span, codes};
+use crate::compiler::source::Span;
+use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::{
     KnownSubjectDomain, PatternBodyId, PatternRow, SourcePatternRows, find_unreachable_rows,
     is_inexhaustive_with_domains,

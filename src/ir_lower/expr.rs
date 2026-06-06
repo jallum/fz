@@ -4,7 +4,7 @@ use crate::ast::{
     BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnDef, MatchClause, Pattern, Spanned,
     TypeExprBody, UnOp as AstUnOp, WithBinding, lambda_direct_clause,
 };
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, SourcePatternRows};
 use crate::fz_ir::{
     BinOp, BitFieldIr, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, ContinuationProvenance,

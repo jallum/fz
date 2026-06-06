@@ -6,7 +6,7 @@
 //! names.
 
 use crate::ast::SpecDecl;
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::modules::identity::{Mfa, ModuleName};
 use crate::modules::interface::{InterfaceSpec, ModuleInterface};
 use crate::types::{Ty, TypeVarId, Types};

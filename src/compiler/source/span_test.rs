@@ -1,5 +1,6 @@
-use super::*;
 use std::mem::size_of;
+
+use super::*;
 
 #[test]
 fn dummy_is_dummy() {
@@ -34,6 +35,6 @@ fn merge_with_dummy_returns_other() {
 fn span_is_copy_12_bytes() {
     assert_eq!(size_of::<Span>(), 12);
     let a = Span::new(FileId(0), 1, 2);
-    let _b = a; // moves are copies
-    let _c = a;
+    let b = a;
+    assert_eq!(a, b);
 }

@@ -1,8 +1,9 @@
 //! Module-aware frontend and execution-graph preparation.
 
+use crate::compiler::source::{SourceMap, Span};
 use crate::diag::codes::{CODEGEN_SCHEMA_MISSING, LOWER_UNBOUND};
 use crate::diag::diagnostic::Severity;
-use crate::diag::{Diagnostic, Diagnostics, SourceMap, Span, emit_through};
+use crate::diag::{Diagnostic, Diagnostics, emit_through};
 use crate::frontend::{FrontendOk, FrontendResult, compile_source_with_interface_table};
 use crate::fz_ir::Module;
 use crate::ir_codegen::{CompiledUnit, ImageLinkError, link_ir_units};

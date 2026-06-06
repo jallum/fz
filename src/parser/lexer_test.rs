@@ -1,5 +1,5 @@
 use super::*;
-use crate::diag::SourceMap;
+use crate::compiler::source::SourceMap;
 
 #[test]
 fn tokens_carry_accurate_byte_spans() {

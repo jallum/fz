@@ -6,7 +6,7 @@ use crate::types::Types;
 
 fn alias_attr(name: &str, body_src: &str, tel: &dyn Telemetry) -> Attribute {
     use crate::ast::{Attribute, TypeAliasDecl, TypeExprBody};
-    use crate::diag::Span;
+    use crate::compiler::source::Span;
     use crate::parser::lexer::{Lexer, Tok};
     let toks = Lexer::with_source_name(body_src, "<test>")
         .tokenize(tel)

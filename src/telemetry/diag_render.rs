@@ -11,9 +11,9 @@ use std::cell::RefCell;
 use std::io::{Write, stderr};
 use std::rc::Rc;
 
+use crate::compiler::source::SourceMap;
 use crate::diag::Diagnostic;
 use crate::diag::render::Renderer as DiagRenderImpl;
-use crate::diag::source_map::SourceMap;
 use crate::diag::style::ColorMode;
 
 use super::handler::{Event, Handler};

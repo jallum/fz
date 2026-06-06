@@ -1,6 +1,6 @@
 use super::*;
 use crate::ast::{BinOp as AstBinOp, Expr as AstExpr, Pattern as AstPattern, Spanned};
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, SourcePatternRows};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, pattern_dispatch_from_source};
 use crate::fz_ir::{CallsiteIdent, FnId, ReceiveClause, Var};

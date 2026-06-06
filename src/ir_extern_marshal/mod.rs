@@ -1,4 +1,5 @@
-use crate::diag::{Diagnostic, Span, codes};
+use crate::compiler::source::Span;
+use crate::diag::{Diagnostic, codes};
 use crate::fz_ir::{ExternMarshal, ExternMarshalSite, ExternTy, FnId, Module, Prim, Stmt};
 use crate::ir_planner::{ModulePlan, SpecPlan};
 use crate::types::{RenderTypes, Ty, Types};

@@ -30,7 +30,7 @@
 use std::collections::HashMap;
 
 use crate::ast::{Attribute, SpecDecl, TypeExprBody};
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::modules::identity::ModuleName;
 use crate::parser::lexer::{Tok, Token};
 use crate::specs::{ResolvedSpec, ResolvedSpecSet, ResolvedStructFieldShape, ResolvedTypeShape};

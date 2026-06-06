@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::slice::from_ref;
 
 use crate::ast::{Attribute, SpecDecl, TypeAliasDecl, TypeExprBody};
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::parser::lexer::Lexer;
 use crate::specs::{
     ResolvedSpec, ResolvedSpecSet, StructuralCorrespondenceGroup, StructuralOccurrence, StructuralPathStep,

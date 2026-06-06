@@ -18,10 +18,11 @@
 //! exact-comparable to the other legs' golden.
 
 use crate::ast::{Expr, FnDef, Item, Program, Spanned};
+use crate::compiler::source::SourceMap;
 use crate::compiler::{Compiler, World as CompilerWorld};
 use crate::diag::diagnostic::Severity;
 use crate::diag::style::ColorMode;
-use crate::diag::{Diagnostic, SourceMap, render_one_to_string};
+use crate::diag::{Diagnostic, render_one_to_string};
 use crate::exec::eval::{CompileTimeEvaluator, format_spec_text};
 use crate::exec::value::{Closure, Value};
 use crate::frontend::macros::expand_with;

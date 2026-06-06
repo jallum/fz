@@ -1,6 +1,6 @@
 use super::*;
 use crate::ast::{AfterClause, MatchClause};
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, SourcePatternRows, collect_guard_capture_names};
 use crate::dispatch_matrix::pattern::{
     PatternGuardExpr, pattern_dispatch_from_source_with_guard_resolver, prepared_key_name,

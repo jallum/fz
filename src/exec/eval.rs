@@ -10,7 +10,7 @@
 //! removable once the test suite is audited for any remaining consumers.
 
 use crate::ast::*;
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::exec::ast_value::{binop_atom, expr_to_value, unop_atom};
 use crate::exec::bitstr::*;
 use crate::exec::value::*;

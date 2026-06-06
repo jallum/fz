@@ -1,6 +1,6 @@
 use super::*;
+use crate::compiler::source::{FileId, SourceMap, Span};
 use crate::diag::codes::{LEX_UNEXPECTED_CHAR, TYPE_UNREACHABLE_ARM};
-use crate::diag::span::FileId;
 use crate::frontend::macros::expand_program;
 use crate::frontend::resolve::flatten_modules;
 use crate::ir_lower::lower_program;

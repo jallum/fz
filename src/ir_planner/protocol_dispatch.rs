@@ -34,7 +34,7 @@
 
 use super::diagnostics::env_after_block_stmts;
 use super::fn_types::{ModulePlan, SpecPlan};
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::dispatch_matrix::{
     CompiledDispatchGraph, DispatchCompileError, DispatchCompileOptions, DispatchMatrix, DispatchMatrixBuilder,
     DispatchNode, EdgeEvidence, EqualTypeRegionPolicy, GraphNodeId, OutcomeId, OutcomeMultiplicity, Region,

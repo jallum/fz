@@ -1,5 +1,5 @@
 use super::*;
-use crate::diag::span::{FileId, Span};
+use crate::compiler::source::{FileId, Span};
 
 fn s(start: u32, end: u32) -> Span {
     Span::new(FileId(0), start, end)

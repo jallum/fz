@@ -113,7 +113,7 @@ pub fn check_pure_term(term: &Term) -> Result<(), ImpureError> {
 #[cfg(test)]
 mod purity_tests {
     use super::*;
-    use crate::diag::Span;
+    use crate::compiler::source::Span;
     use crate::diag::codes::TYPE_IMPURE_MATCHER;
     use crate::fz_ir::{
         BinOp, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, ExternId, FnBuilder, FnCategory, FnId, Module, Prim,

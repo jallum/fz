@@ -180,7 +180,10 @@ anymore. `src/compiler/mod.rs` re-exports the compiler facade, with
 `src/compiler/world.rs` storing the resulting linked module/plan pair before
 handing that same world state to the interpreter or native backend. The world
 names this execution image `linked_module` / `linked_module_plan` on purpose:
-it is the fused runtime IR image, not one source `defmodule`.
+it is the fused runtime IR image, not one source `defmodule`. Source-location
+facts (`FileId`, `Span`, `SourceMap`) live in `src/compiler/source/`, and the
+pipeline threads that `SourceMap` through frontend, diagnostics, and dump/repl
+surfaces as compiler-owned source state rather than diagnostic-owned state.
 
 `checked_module_for_mode` runs the frontend, collects the program's own module
 interfaces (emitting `interfaces_collected`), and in `Lto` mode validates and

@@ -1,7 +1,7 @@
 use super::*;
+use crate::compiler::source::{FileId, SourceMap, Span};
 use crate::diag::diagnostic::{DiagCode, Diagnostic, Diagnostics};
 use crate::diag::render::Renderer;
-use crate::diag::span::{FileId, Span};
 use crate::metadata;
 use crate::telemetry::bus::ConfiguredTelemetry;
 use crate::telemetry::capture::vec_writer;

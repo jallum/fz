@@ -1,5 +1,5 @@
 use super::*;
-use crate::diag::SourceMap;
+use crate::compiler::source::SourceMap;
 use crate::frontend::resolve::flatten_modules;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;

@@ -7,7 +7,8 @@
 use crate::ast::{
     Attribute, FnDef, Item, ModuleDef, Program, ProtocolDef, ProtocolImplDef, SpecDecl, TypeAliasDecl, TypeExprBody,
 };
-use crate::diag::{Diagnostic, Span, codes};
+use crate::compiler::source::Span;
+use crate::diag::{Diagnostic, codes};
 use crate::frontend::protocols::{ImplTarget, InterfaceProtocol, InterfaceProtocolCallback, InterfaceProtocolImpl};
 use crate::modules::identity::{Mfa, ModuleName};
 use crate::parser::lexer::Tok;

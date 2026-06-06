@@ -11,7 +11,8 @@
 //! a stack-overflow guard catches runaway expansion).
 
 use crate::ast::*;
-use crate::diag::{Diagnostic, Span, SpanOrigin, codes};
+use crate::compiler::source::{Span, SpanOrigin};
+use crate::diag::{Diagnostic, codes};
 use crate::exec::ast_value::{expr_to_value, value_to_expr};
 use crate::exec::eval::CompileTimeEvaluator;
 use crate::exec::value::Value;

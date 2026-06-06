@@ -30,7 +30,7 @@
 #[cfg(test)]
 use crate::ast::MatchClause;
 use crate::ast::{Attribute, Expr, FnDef, Item, Program, Spanned};
-use crate::diag::Span;
+use crate::compiler::source::Span;
 #[cfg(test)]
 use crate::diag::{codes, emit_through};
 #[cfg(test)]

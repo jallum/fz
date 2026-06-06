@@ -728,7 +728,7 @@ fn main() do bad() end
 /// errors out earlier today, but the lineage path stays safe.)
 #[test]
 fn missing_def_span_falls_back_to_none() {
-    use crate::diag::{FileId, Span};
+    use crate::compiler::source::{FileId, Span};
     // Build a tree manually and stamp with no definition.
     let mut e = Spanned::dummy(Expr::Int(42));
     let call_span = Span::new(FileId(0), 10, 20);

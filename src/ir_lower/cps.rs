@@ -1,5 +1,5 @@
 use super::*;
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::fz_ir::{
     CallsiteIdent, Cont, ContinuationProvenance, ContinuationProvenanceKind, FnBuilder, FnCategory, FnId, Term, Var,
 };

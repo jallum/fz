@@ -1,5 +1,6 @@
 use super::*;
-use crate::diag::{Diagnostics, Span};
+use crate::compiler::source::Span;
+use crate::diag::Diagnostics;
 use crate::exec::runtime::{DbgCapture, ExitRecord, ProcessExitCapture, Runtime};
 use crate::frontend::compile_source_with_interface_table;
 use crate::frontend::compile_source_with_types;

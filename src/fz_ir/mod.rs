@@ -18,7 +18,7 @@
 //! If-else continuations in this IR.
 
 use crate::ast::{BitType, Endian};
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternSubjectRef};
 use crate::frontend::protocols::ProtocolRegistry;
 use crate::modules::identity::{Mfa, ModuleName};

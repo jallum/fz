@@ -5,7 +5,7 @@
 
 use super::diagnostic::{Diagnostic, Severity};
 use super::render::Renderer;
-use super::source_map::SourceMap;
+use crate::compiler::source::SourceMap;
 use crate::telemetry::Telemetry;
 use crate::telemetry::value::opaque;
 use crate::telemetry::{Metadata, Value};

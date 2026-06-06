@@ -6,7 +6,7 @@ use super::{
     ProjectionKind, Region, RegionPredicate, RegionQuestion, SubjectId, compile_dispatch_matrix,
 };
 use crate::ast::{BitSize, BitType, Endian, Expr, Pattern, Spanned};
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::fz_ir::Var;
 use std::collections::HashMap;
 

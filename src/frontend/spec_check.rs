@@ -24,7 +24,8 @@
 //! returns a list and the driver decides whether to halt.
 
 use crate::ast::{Attribute, Item, Program};
-use crate::diag::{Diagnostic, Span, codes};
+use crate::compiler::source::Span;
+use crate::diag::{Diagnostic, codes};
 use crate::fz_ir::{FnId, FnIr, Module, Term};
 use crate::ir_planner::ModulePlan;
 use crate::ir_planner::fn_types::SpecPlan;

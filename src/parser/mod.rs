@@ -2,7 +2,8 @@ pub(crate) mod lexer;
 
 use self::lexer::{Tok, Token};
 use crate::ast::*;
-use crate::diag::{Diagnostic, Span, codes::PARSE_EXPECTED_TOKEN};
+use crate::compiler::source::Span;
+use crate::diag::{Diagnostic, codes::PARSE_EXPECTED_TOKEN};
 use crate::telemetry::{Metadata, Telemetry, value::opaque};
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};

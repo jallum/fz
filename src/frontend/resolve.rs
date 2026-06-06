@@ -22,7 +22,8 @@
 //! diagnostic source for "this call resolves to …".
 
 use crate::ast::*;
-use crate::diag::{Diagnostic, Span, codes};
+use crate::compiler::source::Span;
+use crate::diag::{Diagnostic, codes};
 use crate::frontend::protocols::{
     ImplTarget, PROTOCOL_ELEM_VAR, ProtocolCallbackFact, ProtocolDecl, ProtocolImplFact, ProtocolImplKey,
     ProtocolRegistry, impl_target_type, impl_target_type_with_element, protocol_domain_tag,

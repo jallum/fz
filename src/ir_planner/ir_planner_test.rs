@@ -9,7 +9,8 @@ use super::protocol_dispatch::{ProtocolDispatchMatrixSelection, collect_protocol
 use super::reachable::{cont_key_from_slot0, cont_slot0_descr, reachable_spec_ids};
 use super::type_fn::type_fn;
 use super::*;
-use crate::diag::{Span, codes};
+use crate::compiler::source::Span;
+use crate::diag::codes;
 use crate::frontend::protocols::{ImplTarget, ProtocolImplFact, ProtocolImplKey};
 use crate::frontend::resolve::{InterfaceTable, ResolveError, flatten_modules};
 use crate::frontend::spec_registry::SpecRegistry;

@@ -1,5 +1,5 @@
 use super::*;
-use crate::diag::SourceMap;
+use crate::compiler::source::SourceMap;
 use crate::exec::runtime::{ProcessExitCapture, Runtime};
 use crate::modules::pipeline::CompileMode;
 use crate::parser::Parser;

@@ -7,8 +7,9 @@ pub(crate) mod spec_registry;
 
 use self::resolve::InterfaceTable;
 use crate::ast::{Expr, FnClause, FnDef, Item, Pattern, Program, Spanned, TypeExprBody};
+use crate::compiler::source::{SourceMap, Span};
 use crate::diag::codes;
-use crate::diag::{Diagnostic, Diagnostics, SourceMap, Span};
+use crate::diag::{Diagnostic, Diagnostics};
 use crate::dispatch_matrix::pattern::KnownSubjectDomain;
 use crate::fz_ir::{CallsiteId, EmitSlot, FnId, Module, rewrite_external_callsite_for_link};
 use crate::ir_extern_marshal::resolve_module_types;

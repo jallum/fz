@@ -3,7 +3,8 @@ use super::fn_types::{ModulePlan, SpecKey, SpecPlan};
 use super::narrow::{find_emptied_var, narrow_for_if};
 use super::prim::type_prim;
 use super::purity::{ImpureError, ImpureKind, ImpureTerm, check_pure_codegen, check_pure_term};
-use crate::diag::{Diagnostic, Diagnostics, Span, codes};
+use crate::compiler::source::Span;
+use crate::diag::{Diagnostic, Diagnostics, codes};
 use crate::frontend::protocols::{impl_target_type, protocol_domain_tag};
 use crate::fz_ir::{
     BinOp, Block, BlockId, BranchOrigin, DeadBranch, FnCategory, FnId, FnIr, Module, Prim, ProtocolCallTarget, Stmt,

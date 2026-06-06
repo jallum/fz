@@ -1,7 +1,7 @@
 //! Low-level Cranelift helpers shared by codegen modules.
 
 use super::*;
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use cranelift_codegen::ir::{self, InstBuilder, Signature, SourceLoc, types};
 use cranelift_codegen::isa::TargetIsa;
 use cranelift_codegen::settings::{self, Configurable, Flags};

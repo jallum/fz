@@ -1,6 +1,6 @@
 use super::*;
 use crate::ast::FnDef;
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::frontend::protocols::ProtocolRegistry;
 use crate::fz_ir::{
     BlockId, BranchOrigin, CallsiteId, CallsiteIdent, Const, ContinuationProvenance, EmitSlot, ExternArg, ExternDecl,

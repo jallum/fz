@@ -1,7 +1,7 @@
 use super::*;
+use crate::compiler::source::{SourceMap, Span};
 use crate::diag::Diagnostics;
 use crate::diag::diagnostic::DiagCode;
-use crate::diag::span::Span;
 use crate::telemetry::capture::vec_writer;
 use std::cell::RefCell;
 use std::rc::Rc;

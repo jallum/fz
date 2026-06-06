@@ -26,8 +26,9 @@
 //! error on failure; the runner catches the error.
 
 use crate::ast::Item;
+use crate::compiler::source::SourceMap;
 use crate::compiler::{Compiler, World};
-use crate::diag::{SourceMap, render_one_to_string};
+use crate::diag::render_one_to_string;
 use crate::fz_ir::FnId;
 use crate::ir_interp::run_test_fn;
 use crate::measurements;

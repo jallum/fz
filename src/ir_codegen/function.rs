@@ -1,7 +1,7 @@
 //! Per-function Cranelift body emission.
 
 use super::*;
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::fz_ir::{Block, FnIr, PhysicalCapability, Prim, SourceInfo, Stmt, Term, Var};
 use crate::ir_dce::classify_var_uses;
 use crate::ir_planner::fn_types::SpecKey;

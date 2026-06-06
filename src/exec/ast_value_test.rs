@@ -1,5 +1,5 @@
 use super::*;
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
 use crate::telemetry::Telemetry;
