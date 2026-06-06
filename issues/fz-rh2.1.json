@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-rh2.2"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-rh2",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 prep: publish northstar and retire old-world docs",
   "type": "task",
-  "updated_at": "2026-06-06T23:37:22Z"
+  "updated_at": "2026-06-06T23:43:13Z"
 }
