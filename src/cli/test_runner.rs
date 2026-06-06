@@ -224,7 +224,7 @@ fn run_named_through(tel: &dyn Telemetry, user_src: &str, user_name: &str) -> Re
         .iter()
         .map(|name| {
             world
-                .module()
+                .linked_module()
                 .fn_by_name(name)
                 .map(|f| (name.clone(), f.id))
                 .ok_or_else(|| TestRunError(format!("test fn `{}` not in lowered module", name)))
@@ -244,8 +244,8 @@ fn run_named_through(tel: &dyn Telemetry, user_src: &str, user_name: &str) -> Re
         // one test doesn't leak into the next. ir_interp::run_main isn't
         // quite right (it expects a `main` fn); we call the test fn
         // directly through the IR interp on a temporary task.
-        let module = world.module().clone();
-        let module_plan = world.module_plan().clone();
+        let module = world.linked_module().clone();
+        let module_plan = world.linked_module_plan().clone();
         match run_test_fn(world.types(), tel, &module, &module_plan, *fn_id) {
             Ok(()) => {
                 tel.event(&["fz", "test", "passed"], metadata! { name: name.clone() });

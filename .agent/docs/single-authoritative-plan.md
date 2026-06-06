@@ -23,7 +23,10 @@ rediscovering them.
 - **`compiler::World`** (`src/compiler.rs`) is the authoritative mutable state
   carrier for production callers. It owns the settled linked `Module`, its
   exact `ModulePlan`, diagnostics/source-map state, linked units, and the
-  native-preparation facts derived from that same module/plan pair.
+  native-preparation facts derived from that same module/plan pair. Its
+  execution-image accessors are named `linked_module()` /
+  `linked_module_plan()` to distinguish that linked whole-program IR image from
+  source-language `defmodule` boundaries.
 - **`Compiler`** (`src/compiler.rs`) is the stage owner for production callers.
   It drives source/program frontend work into a mutable `World`, prepares the
   execution graph through `modules::pipeline`, enriches the same `World` with

@@ -1491,13 +1491,13 @@ fn repr_seam_closure_predicate_registers_captured_wrapper_callable_entry() {
     tel.attach(&["fz", "planner"], cap.handler());
     let mut graph = linked_runtime_graph(src, &tel);
 
-    let (module, module_plan) = graph.cloned_module_plan();
+    let (module, module_plan) = graph.cloned_linked_module_plan();
     let planned_program = materialize_program(graph.types(), &module, &module_plan, &tel);
 
     assert_authoritative_planner_consistent(&cap);
 
     let wrapper = graph
-        .module()
+        .linked_module()
         .fn_by_name("lambda_200")
         .expect("fixture should lower the captured predicate reducer as lambda_200");
     let wrapper_entries = planned_program
@@ -3114,7 +3114,7 @@ fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
 
     let mut graph = linked_runtime_graph(include_str!("../type_infer/fixtures/enum_reduce_operator_ref.fz"), &tel);
     let runtime_body_ids = graph
-        .module()
+        .linked_module()
         .fns
         .iter()
         .filter(|f| {
@@ -3122,7 +3122,7 @@ fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
         })
         .map(|f| f.id.0)
         .collect::<HashSet<_>>();
-    let (module, module_plan) = graph.cloned_module_plan();
+    let (module, module_plan) = graph.cloned_linked_module_plan();
     let _ = compile_planned(graph.types(), &module, &module_plan, &tel).expect("compile");
 
     let events = cap
@@ -3366,7 +3366,7 @@ fn runtime_graph_enum_take_indirect_calls_keep_callable_capabilities() {
     let src = "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
     let tel = ConfiguredTelemetry::new();
     let mut graph = linked_runtime_graph(src, &tel);
-    let (module, module_plan) = graph.cloned_module_plan();
+    let (module, module_plan) = graph.cloned_linked_module_plan();
     let planned_program = materialize_program(graph.types(), &module, &module_plan, &tel);
 
     let mut checked = 0usize;
@@ -3374,7 +3374,7 @@ fn runtime_graph_enum_take_indirect_calls_keep_callable_capabilities() {
         let body = &planned_program.executable_body(SpecId(*sid)).body;
         let spec_key = &planned_program.spec_keys()[*sid as usize];
         let spec_plan = graph
-            .module_plan()
+            .linked_module_plan()
             .specs
             .get(spec_key)
             .unwrap_or_else(|| panic!("missing spec plan for reachable spec_key={spec_key:?}"));
@@ -3404,7 +3404,7 @@ fn runtime_graph_enum_take_callers_supply_callable_args_to_indirect_closure_spec
     let src = "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
     let tel = ConfiguredTelemetry::new();
     let mut graph = linked_runtime_graph(src, &tel);
-    let (module, module_plan) = graph.cloned_module_plan();
+    let (module, module_plan) = graph.cloned_linked_module_plan();
     let planned_program = materialize_program(graph.types(), &module, &module_plan, &tel);
 
     let mut checked = 0usize;

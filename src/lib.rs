@@ -432,8 +432,8 @@ fn run_interp(tel: &ConfiguredTelemetry, args: &[String]) {
     *sm_cell.borrow_mut() = world.sm().clone();
     report_or_exit_through(tel, world.diagnostics().as_slice());
     notify_fixture_execution_start();
-    let module = world.module().clone();
-    let module_plan = world.module_plan().clone();
+    let module = world.linked_module().clone();
+    let module_plan = world.linked_module_plan().clone();
     match run_main_with_plan(world.types(), tel, &module, module_plan) {
         Ok(_halt) => {}
         Err(msg) => {
@@ -919,8 +919,8 @@ fn dump_bodies_pipeline(
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz dump", tel, sm_cell, err));
     *sm_cell.borrow_mut() = world.sm().clone();
     report_or_exit_through(tel, world.diagnostics().as_slice());
-    let module = world.module().clone();
-    let module_plan = world.module_plan().clone();
+    let module = world.linked_module().clone();
+    let module_plan = world.linked_module_plan().clone();
     let _compile_span = tel.span(
         &["fz", "compile"],
         crate::metadata! {
@@ -1017,7 +1017,7 @@ fn dump_outcomes_pipeline(
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz dump", tel, sm_cell, err));
     *sm_cell.borrow_mut() = world.sm().clone();
     report_or_exit_through(tel, world.diagnostics().as_slice());
-    let module = world.module().clone();
+    let module = world.linked_module().clone();
     let _compile_span = tel.span(
         &["fz", "compile"],
         crate::metadata! {
@@ -1195,7 +1195,7 @@ fn compile_pipeline(
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz run", tel, sm_cell, err));
     *sm_cell.borrow_mut() = world.sm().clone();
     report_or_exit_through(tel, world.diagnostics().as_slice());
-    let main_fn = world.module().fn_by_name("main").map(|f| f.id);
+    let main_fn = world.linked_module().fn_by_name("main").map(|f| f.id);
     let executable = compiler.compile_planned(&mut world, tel).unwrap_or_else(|e| {
         report_or_exit_through(tel, &[e.to_diagnostic()]);
         exit(1);
@@ -1203,8 +1203,8 @@ fn compile_pipeline(
     tel.event(
         &["fz", "module", "unit_compiled"],
         metadata! {
-            fns: world.module().fns.len() as i64,
-            atoms: world.module().atom_names.len() as i64,
+            fns: world.linked_module().fns.len() as i64,
+            atoms: world.linked_module().atom_names.len() as i64,
         },
     );
     // fz-d5b — gate on errors from the planner-side diagnostics
@@ -1215,7 +1215,7 @@ fn compile_pipeline(
     let image = if world.units().len() == 1 {
         let unit = world.units()[0]
             .clone()
-            .with_code_and_plan(world.module().clone(), world.module_plan().clone());
+            .with_code_and_plan(world.linked_module().clone(), world.linked_module_plan().clone());
         CompiledProgram::new(unit, executable).link_image(tel)
     } else {
         Ok(CompiledImage::from_linked(tel, world.units().len(), executable))
@@ -1242,7 +1242,7 @@ fn compile_pipeline(
         image,
         main_fn,
         sm: world.sm().clone(),
-        module: world.module().clone(),
+        module: world.linked_module().clone(),
     }
 }
 

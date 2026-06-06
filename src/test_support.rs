@@ -68,7 +68,7 @@ pub(crate) fn linked_runtime_graph(src: &str, tel: &dyn Telemetry) -> crate::com
 /// Compile a program through the production pipeline to the linked runtime IR:
 /// protocol impls, runtime helpers, and execution-graph rewrites are local.
 pub(crate) fn linked_runtime_module(src: &str, tel: &dyn Telemetry) -> Module {
-    linked_runtime_graph(src, tel).module().clone()
+    linked_runtime_graph(src, tel).linked_module().clone()
 }
 
 /// Compile through the production frontend/provider/link path and stop at the
@@ -172,7 +172,7 @@ pub(crate) fn runtime_graph_planner_activation_projection_signals(src: &str) -> 
 
     let mut graph = linked_runtime_graph(src, &tel);
     cap.clear();
-    let (module, module_plan) = graph.cloned_module_plan();
+    let (module, module_plan) = graph.cloned_linked_module_plan();
     let _ = plan_module_with_role(graph.types(), &module, &tel, "test");
     let _ = materialize_program(graph.types(), &module, &module_plan, &tel);
     assert_authoritative_planner_consistent(&cap);
@@ -188,7 +188,7 @@ pub(crate) fn runtime_graph_codegen_materialized_body_signals(src: &str) -> Vec<
     tel.attach(&[], cap.handler());
 
     let mut graph = linked_runtime_graph(src, &tel);
-    let (module, module_plan) = graph.cloned_module_plan();
+    let (module, module_plan) = graph.cloned_linked_module_plan();
     let _ = materialize_program(graph.types(), &module, &module_plan, &tel);
     assert_authoritative_planner_consistent(&cap);
     cap.clear();
@@ -292,7 +292,7 @@ pub(crate) fn runtime_graph_reachable_materialized_body_signals(src: &str) -> Ve
     tel.attach(&[], cap.handler());
 
     let mut graph = linked_runtime_graph(src, &tel);
-    let (module, module_plan) = graph.cloned_module_plan();
+    let (module, module_plan) = graph.cloned_linked_module_plan();
     let _ = materialize_program(graph.types(), &module, &module_plan, &tel);
     assert_authoritative_planner_consistent(&cap);
     reachable_materialized_body_signals_from_planned_compile(graph.types(), &module, &module_plan, &tel, &cap)

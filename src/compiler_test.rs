@@ -38,7 +38,7 @@ fn main(), do: User.run()
         .expect("execution graph");
 
     assert!(
-        world.module().fn_by_name("main").is_some(),
+        world.linked_module().fn_by_name("main").is_some(),
         "prepared graph should keep main/0"
     );
     assert!(capture.contains(&["fz", "module", "interfaces_collected"]));
@@ -62,7 +62,7 @@ fn compiler_prepares_execution_graph_from_frontend_output() {
         .prepare_execution_graph_from_frontend(&mut world, frontend, &tel, CompileMode::Normal)
         .expect("execution graph from frontend");
 
-    let main_fn = world.module().fn_by_name("main").expect("main fn");
+    let main_fn = world.linked_module().fn_by_name("main").expect("main fn");
     assert_eq!(main_fn.name, "main");
 }
 
@@ -79,7 +79,7 @@ fn compiler_prepares_execution_graph_from_program_input() {
         .expect("execution graph from program");
 
     assert!(
-        world.module().fn_by_name("main").is_some(),
+        world.linked_module().fn_by_name("main").is_some(),
         "program path should keep main/0"
     );
 }
@@ -102,8 +102,8 @@ fn compiler_compile_planned_runs_spawn_with_captures_through_single_plan_path() 
         )
         .expect("execution graph");
     let compiled = compiler.compile_planned(&mut world, &tel).expect("compile planned");
-    let main_fn = world.module().fn_by_name("main").expect("main fn").id;
-    let mut rt = Runtime::new(&compiled, 1, &tel).with_module(world.module());
+    let main_fn = world.linked_module().fn_by_name("main").expect("main fn").id;
+    let mut rt = Runtime::new(&compiled, 1, &tel).with_module(world.linked_module());
 
     let root_pid = rt.spawn(main_fn);
     rt.run_until_idle();

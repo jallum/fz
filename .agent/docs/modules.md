@@ -178,7 +178,9 @@ Production callers do not usually stitch these functions together manually
 anymore. `src/compiler.rs` is the facade that drives source/program frontend
 work into `checked_module_for_mode`, then into `prepare_execution_graph`, and
 stores the resulting linked module/plan pair on `compiler::World` before
-handing that same world state to the interpreter or native backend.
+handing that same world state to the interpreter or native backend. The world
+names this execution image `linked_module` / `linked_module_plan` on purpose:
+it is the fused runtime IR image, not one source `defmodule`.
 
 `checked_module_for_mode` runs the frontend, collects the program's own module
 interfaces (emitting `interfaces_collected`), and in `Lto` mode validates and

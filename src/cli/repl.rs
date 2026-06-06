@@ -269,7 +269,7 @@ impl ReplSession {
             )
             .map_err(|err| pipeline_error_to_io_error(err, diagnostics))?;
 
-        let Some(main) = self.world.compiler_world.module().fn_by_name("main") else {
+        let Some(main) = self.world.compiler_world.linked_module().fn_by_name("main") else {
             return Ok(());
         };
         if !main.block(main.entry).params.is_empty() {
@@ -277,8 +277,8 @@ impl ReplSession {
         }
 
         notify_fixture_execution_start();
-        let module = self.world.compiler_world.module().clone();
-        let module_plan = self.world.compiler_world.module_plan().clone();
+        let module = self.world.compiler_world.linked_module().clone();
+        let module_plan = self.world.compiler_world.linked_module_plan().clone();
         let main_id = main.id;
         ReplRuntime::run_script_main(self.world.types(), &module, module_plan, main_id, tel)
     }
@@ -606,14 +606,14 @@ impl ReplWorld {
             ));
         }
         prepare_repl_frontend(&mut self.compiler, &mut self.compiler_world, out.frontend, tel)?;
-        let Some(entry_fn) = self.compiler_world.module().fn_by_name(&entry_name).map(|f| f.id) else {
+        let Some(entry_fn) = self.compiler_world.linked_module().fn_by_name(&entry_name).map(|f| f.id) else {
             return Err(io::Error::other(format!("repl entry `{}` not lowered", entry_name)));
         };
         let mut entry_program = Program::default();
         entry_program.items.push(out.entry_item);
         Ok(ReplCompiledEntry {
-            module: self.compiler_world.module().clone(),
-            module_plan: self.compiler_world.module_plan().clone(),
+            module: self.compiler_world.linked_module().clone(),
+            module_plan: self.compiler_world.linked_module_plan().clone(),
             fn_id: entry_fn,
             input_frame: out.input_frame,
             output_frame: out.output_frame,
@@ -695,7 +695,7 @@ fn compile_parsed_program_module(
         return Err(diagnostics_to_io_error(&frontend.sm, frontend.diagnostics.as_slice()));
     }
     prepare_repl_frontend(compiler, world, frontend, tel)?;
-    Ok(world.module().clone())
+    Ok(world.linked_module().clone())
 }
 
 fn prepare_repl_frontend(

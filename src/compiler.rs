@@ -22,8 +22,8 @@ use crate::types::DefaultTypes;
 pub(crate) struct World {
     types: DefaultTypes,
     units: Vec<CompiledUnit>,
-    module: Option<Module>,
-    module_plan: Option<ModulePlan>,
+    linked_module: Option<Module>,
+    linked_module_plan: Option<ModulePlan>,
     sm: SourceMap,
     diagnostics: Diagnostics,
     working: Option<Module>,
@@ -37,8 +37,8 @@ impl World {
         Self {
             types: types::new(),
             units: Vec::new(),
-            module: None,
-            module_plan: None,
+            linked_module: None,
+            linked_module_plan: None,
             sm: SourceMap::new(),
             diagnostics: Diagnostics::new(),
             working: None,
@@ -56,21 +56,21 @@ impl World {
         &self.units
     }
 
-    pub(crate) fn module(&self) -> &Module {
-        self.module
+    pub(crate) fn linked_module(&self) -> &Module {
+        self.linked_module
             .as_ref()
             .expect("compiler world has no execution state; prepare the world before consuming it")
     }
 
-    pub(crate) fn module_plan(&self) -> &ModulePlan {
-        self.module_plan
+    pub(crate) fn linked_module_plan(&self) -> &ModulePlan {
+        self.linked_module_plan
             .as_ref()
             .expect("compiler world has no execution state; prepare the world before consuming it")
     }
 
     #[cfg(test)]
-    pub(crate) fn cloned_module_plan(&self) -> (Module, ModulePlan) {
-        (self.module().clone(), self.module_plan().clone())
+    pub(crate) fn cloned_linked_module_plan(&self) -> (Module, ModulePlan) {
+        (self.linked_module().clone(), self.linked_module_plan().clone())
     }
 
     pub(crate) fn sm(&self) -> &SourceMap {
@@ -83,8 +83,8 @@ impl World {
 
     fn replace_execution(&mut self, graph: PreparedExecutionGraph) {
         self.units = graph.units;
-        self.module = Some(graph.module);
-        self.module_plan = Some(graph.module_plan);
+        self.linked_module = Some(graph.module);
+        self.linked_module_plan = Some(graph.module_plan);
         self.sm = graph.sm;
         self.diagnostics = graph.diagnostics;
         self.working = None;
@@ -216,8 +216,8 @@ impl Compiler {
         if world.working.is_some() {
             return Ok(());
         }
-        let module = world.module().clone();
-        let module_plan = world.module_plan().clone();
+        let module = world.linked_module().clone();
+        let module_plan = world.linked_module_plan().clone();
         let (working, working_module_plan, planned_program, abi_facts) =
             prepare_preplanned_native(world.types(), &module, &module_plan, tel)?;
         world.replace_native(working, working_module_plan, planned_program, abi_facts);
@@ -249,7 +249,7 @@ impl Compiler {
     ) -> Result<B::Output, CodegenError> {
         use crate::telemetry::TelemetryExt as _;
 
-        let module_path = world.module().module_path().to_owned();
+        let module_path = world.linked_module().module_path().to_owned();
         let _compile_span = tel.span(
             &["fz", "compile"],
             metadata! {
