@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-06T23:37:22Z",
+  "description": "Goal: decide when Compiler2 can replace the old compiler. Change: compare contract fixtures against the current compiler oracle, list obsolete old-world modules/docs/tests to delete, and create follow-up scrap tickets. Check: no deletion happens until Compiler2 covers agreed contracts.",
+  "id": "fz-rh2.9",
+  "labels": [],
+  "parent": "fz-rh2",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 migration: compare contracts and plan old compiler scrap",
+  "type": "task",
+  "updated_at": "2026-06-06T23:37:22Z"
+}
