@@ -137,7 +137,7 @@ where `kind.is_span()` and counts only `EventKind::Event`, keyed by the
 stderr; the driver calls it after a run.
 
 **Jsonl is dependency-free and lossy on purpose.** `JsonlBackend` hand-rolls the
-JSON (no serde in the default build) and stamps each line with `time_ns`, a
+JSON and stamps each line with `time_ns`, a
 monotonic offset from when the backend was constructed, so relative ordering is
 trivial to profile. It drops `Opaque` values (no stable serialization), renders
 `Bytes` as `"<N bytes>"` to keep lines ASCII, and renders non-finite floats as

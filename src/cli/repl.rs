@@ -26,14 +26,14 @@ use crate::exec::eval::{CompileTimeEvaluator, format_spec_text};
 use crate::exec::value::{Closure, Value};
 use crate::frontend::macros::expand_with;
 use crate::frontend::resolve::flatten_modules;
-use crate::frontend::{FrontendOk, compile_program_with_types, compile_repl_expr_with_types};
+use crate::frontend::{
+    FrontendOk, compile_program_with_types, compile_repl_expr_with_types, compile_source_with_types,
+};
 use crate::fz_ir::{FnId, Module};
 use crate::ir_interp::{AnyValue, IrInterpRuntime};
 use crate::ir_planner::ModulePlan;
-use crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT;
 use crate::modules::pipeline::{
-    CompileMode, PipelineError, PreparedExecutionGraph, ProviderInputs, checked_module_for_mode,
-    compile_source_with_providers, prepare_execution_graph,
+    CompileMode, PipelineError, PreparedExecutionGraph, checked_module_for_mode, prepare_execution_graph,
 };
 use crate::notify_fixture_execution_start;
 use crate::parser::Parser;
@@ -262,15 +262,10 @@ impl ReplSession {
         tel: &dyn Telemetry,
         diagnostics: &Rc<RefCell<Vec<u8>>>,
     ) -> io::Result<()> {
-        let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-        let frontend =
-            match compile_source_with_providers(self.world.types(), src.to_string(), source_name, &providers, tel) {
-                Ok(ok) => ok,
-                Err(err) => return Err(pipeline_error_to_io_error(err, diagnostics)),
-            };
+        let frontend = compile_source_with_types(self.world.types(), src.to_string(), source_name, tel);
         let checked = checked_module_for_mode(self.world.types(), frontend, tel, CompileMode::Normal)
             .map_err(|err| pipeline_error_to_io_error(err, diagnostics))?;
-        let prepared = prepare_execution_graph(self.world.types(), checked, &providers, tel, CompileMode::Normal)
+        let prepared = prepare_execution_graph(self.world.types(), checked, tel, CompileMode::Normal)
             .map_err(|err| pipeline_error_to_io_error(err, diagnostics))?;
 
         let Some(main) = prepared.module.fn_by_name("main") else {
@@ -697,10 +692,9 @@ fn prepare_repl_frontend(
     tel: &dyn Telemetry,
 ) -> io::Result<PreparedExecutionGraph> {
     let diagnostics = Rc::new(RefCell::new(Vec::new()));
-    let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
     let checked = checked_module_for_mode(t, Ok(frontend), tel, CompileMode::Normal)
         .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))?;
-    prepare_execution_graph(t, checked, &providers, tel, CompileMode::Normal)
+    prepare_execution_graph(t, checked, tel, CompileMode::Normal)
         .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))
 }
 
@@ -807,7 +801,6 @@ fn pipeline_error_to_io_error(err: PipelineError, diagnostics: &Rc<RefCell<Vec<u
     }
     drop(rendered);
     match err {
-        PipelineError::Artifact(err) => io::Error::other(err.to_string()),
         PipelineError::Link(err) => io::Error::other(err.to_string()),
         err => io::Error::other(err.to_string()),
     }

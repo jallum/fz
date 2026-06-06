@@ -26,7 +26,7 @@ use super::views::{
 };
 use super::{ty_descr, ty_from_descr};
 
-#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct Descr {
     pub(crate) basic: BasicBits,
     pub(crate) atoms: AtomSet,

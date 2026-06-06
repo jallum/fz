@@ -18,7 +18,7 @@
 //! If-else continuations in this IR.
 
 use crate::ast::{BitType, Endian};
-use crate::diag::{FileId, Span};
+use crate::diag::Span;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternSubjectRef};
 use crate::frontend::protocols::ProtocolRegistry;
 use crate::modules::identity::{ExportKey, ModuleName};
@@ -26,8 +26,7 @@ use crate::modules::interface::ModuleInterface;
 use crate::specs::{ResolvedSpecSet, StructuralCorrespondenceGroup};
 use crate::types::{KeySlot, Nominals, Ty, ty_display};
 use fz_runtime::heap::Schema;
-use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -57,10 +56,10 @@ use std::sync::Arc;
 /// Hash uses the `Rc`'s pointer address. Stable within a single
 /// process; not reproducible across runs. Golden dumps must render
 /// by span and context, not by raw pointer.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct CallsiteIdent(Rc<CallsiteIdentInner>);
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct CallsiteIdentInner {
     pub span: Span,
 }
@@ -92,13 +91,13 @@ impl CallsiteIdent {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub enum BitSizeIr {
     Literal(u32),
     Var(Var),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct BitFieldIr {
     pub value: Var,
     pub ty: BitType,
@@ -108,7 +107,7 @@ pub struct BitFieldIr {
     pub unit: Option<u32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FnId(pub u32);
 
 /// Per-callsite specialization identifier. fz-ul4.29.2.
@@ -121,10 +120,10 @@ pub struct FnId(pub u32);
 /// SpecId.0 doubles as the runtime's `schema_id` (frame header field),
 /// so the runtime contract — schema_ids are dense u32 from 0..count —
 /// is preserved as the codegen layer grows multiple specs per FnIr.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SpecId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BlockId(pub u32);
 
 /// fz-9pr.1 — disambiguates *which kind of emit* a given block produces.
@@ -134,7 +133,7 @@ pub struct BlockId(pub u32);
 /// `Cont` target). The slot value names which one. Mirrors the
 /// `EmitSlot` used by ir_planner's discovery walker — by hosting it in
 /// fz_ir we make `CallsiteId` independent of planner internals.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EmitSlot {
     /// `Term::Call` / `Term::TailCall` callee.
     Direct,
@@ -167,20 +166,20 @@ pub enum EmitSlot {
 /// post-planner passes that renumber blocks (per-spec fuse, dce_module's
 /// internal fuse). The ident is intrinsic to the IR object and
 /// survives all positional moves.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CallsiteId {
     pub caller: FnId,
     pub ident: CallsiteIdent,
     pub slot: EmitSlot,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExternalCallEdge {
     pub callsite: CallsiteId,
     pub target: ExportKey,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProtocolCallTarget {
     pub protocol: ModuleName,
     pub callback: String,
@@ -218,7 +217,7 @@ impl CallsiteId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Var(pub u32);
 
 /// Linear construction token for destination-passing IR.
@@ -227,16 +226,16 @@ pub struct Var(pub u32);
 /// Destination primitives consume one token and either produce the next token
 /// or freeze the value. Tokens are not source values and must never become
 /// observable runtime data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct InitTokenId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExternId(pub u32);
 
 /// Per-call-site key for concrete extern argument marshal decisions.
 /// `stmt_idx` indexes the `Stmt::Let` in `(fn_id, block_id)`;
 /// `arg_idx` indexes the `Prim::Extern` argument list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExternMarshalSite {
     pub block: BlockId,
     pub stmt_idx: usize,
@@ -244,7 +243,7 @@ pub struct ExternMarshalSite {
 }
 
 /// C ABI wire type for `extern "C" fn` declarations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternTy {
     I64,
     F64,
@@ -262,7 +261,7 @@ pub enum ExternTy {
 }
 
 /// Per-call-site marshal decision for an extern argument.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternMarshal {
     /// Fixed argument governed by `ExternDecl.params`.
     Fixed(ExternTy),
@@ -273,7 +272,7 @@ pub enum ExternMarshal {
 }
 
 /// One argument to `Prim::Extern`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExternArg {
     pub var: Var,
     pub marshal: ExternMarshal,
@@ -303,7 +302,7 @@ impl ExternArg {
 }
 
 /// One resolved `extern "C" fn` declaration stored in `Module.externs`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ExternDecl {
     pub id: ExternId,
     pub fz_name: String,
@@ -318,7 +317,7 @@ pub struct ExternDecl {
     pub ret_descr: Ty,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Const {
     Int(i64),
     Float(f64),
@@ -328,7 +327,7 @@ pub enum Const {
     False,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
     Add,
     Sub,
@@ -345,13 +344,13 @@ pub enum BinOp {
     Or,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnOp {
     Neg,
     Not,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub enum Prim {
     Const(Const),
     BinOp(BinOp, Var, Var),
@@ -629,14 +628,14 @@ impl Prim {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub enum Stmt {
     Let(Var, Prim),
 }
 
 /// First-class continuation: an IR fn to invoke with the given captured vars
 /// (plus the value(s) being returned to it, supplied by the caller at runtime).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Cont {
     pub fn_id: FnId,
     pub captured: Vec<Var>,
@@ -654,7 +653,7 @@ pub struct Cont {
 ///
 /// Both-branches-dead means the enclosing If is unreachable; out of scope
 /// here and handled by block-level DCE. So at most one variant per If.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeadBranch {
     Then,
     Else,
@@ -676,7 +675,7 @@ pub enum DeadBranch {
 /// remove, or renumber blocks must carry branch origin with the branch, so
 /// survival is structural instead of depending on stale `(FnId, BlockId)`
 /// metadata.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BranchOrigin {
     /// Hand-written conditional in source: `if`, `case`, `with`, fn guards.
     User,
@@ -688,7 +687,7 @@ pub enum BranchOrigin {
     ParamGuard,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub enum Term {
     Goto(BlockId, Vec<Var>),
     If {
@@ -754,14 +753,14 @@ pub enum Term {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContinuationProvenanceKind {
     DirectCall { callee: FnId, args: Vec<Var> },
     ClosureCall { closure: Var, args: Vec<Var> },
     DispatchBody { bindings: Vec<(Var, PatternSubjectRef)> },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContinuationProvenance {
     pub caller: FnId,
     pub captured: Vec<Var>,
@@ -770,7 +769,7 @@ pub struct ContinuationProvenance {
 }
 
 /// fz-yxs — one arm of a `Term::ReceiveMatched`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ReceiveClause {
     /// Intrinsic identity for this clause outcome site. Planner discovery,
     /// reachability, and codegen use this instead of reconstructing a fresh
@@ -791,7 +790,7 @@ pub struct ReceiveClause {
 }
 
 /// fz-yxs — optional `after timeout -> body` tail clause.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ReceiveAfter {
     /// Intrinsic identity for this after-outcome site.
     pub ident: CallsiteIdent,
@@ -1036,7 +1035,7 @@ pub(crate) fn visit_term_vars(term: &Term, mut visit: impl FnMut(Var)) {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Block {
     pub id: BlockId,
     pub params: Vec<Var>,
@@ -1050,7 +1049,7 @@ pub struct Block {
 /// answer "where did this fn come from?" without re-deriving from the
 /// `prelude_fn_id_cutoff` boundary or string-matching the `name`
 /// (`fn_clause_N`, `k_N`, `lambda_N`, etc.).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FnCategory {
     /// Parsed from user source.
     User,
@@ -1076,7 +1075,7 @@ pub enum FnCategory {
     ReplEntry,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct FnIr {
     pub id: FnId,
     pub name: String,
@@ -1203,7 +1202,7 @@ impl FnIr {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PhysicalCapabilityFact {
     pub source: Var,
     pub capability: PhysicalCapability,
@@ -1218,7 +1217,7 @@ impl PhysicalCapabilityFact {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PhysicalCapability {
     OwnedConsReuse { head: Var },
 }
@@ -1231,59 +1230,6 @@ impl PhysicalCapability {
     }
 }
 
-/// (De)serialize a `HashMap` whose key is a `(FnId, BlockId)` tuple as a
-/// sequence of `(key, value)` entries. serde_json forbids non-string object
-/// keys, so the natural map encoding fails; the sequence form round-trips
-/// losslessly and is order-independent through `serde_json::Value`.
-mod tuple_keyed_map {
-    use super::{BlockId, FnId};
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::collections::HashMap;
-
-    pub fn serialize<S, V>(map: &HashMap<(FnId, BlockId), V>, s: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-        V: Serialize,
-    {
-        map.iter().collect::<Vec<_>>().serialize(s)
-    }
-
-    pub fn deserialize<'de, D, V>(d: D) -> Result<HashMap<(FnId, BlockId), V>, D::Error>
-    where
-        D: Deserializer<'de>,
-        V: Deserialize<'de>,
-    {
-        Ok(Vec::<((FnId, BlockId), V)>::deserialize(d)?.into_iter().collect())
-    }
-}
-
-/// (De)serialize a `HashMap<FnId, V>` as a sequence of `(FnId, value)` entries.
-/// `FnId` is a newtype over `u32`, which serde_json renders as a number — not a
-/// valid object key — so the natural map encoding fails the moment the map is
-/// non-empty. The sequence form round-trips losslessly and order-independently,
-/// matching `tuple_keyed_map`'s approach for `(FnId, BlockId)`-keyed tables.
-mod fn_keyed_map {
-    use super::FnId;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::collections::HashMap;
-
-    pub fn serialize<S, V>(map: &HashMap<FnId, V>, s: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-        V: Serialize,
-    {
-        map.iter().collect::<Vec<_>>().serialize(s)
-    }
-
-    pub fn deserialize<'de, D, V>(d: D) -> Result<HashMap<FnId, V>, D::Error>
-    where
-        D: Deserializer<'de>,
-        V: Deserialize<'de>,
-    {
-        Ok(Vec::<(FnId, V)>::deserialize(d)?.into_iter().collect())
-    }
-}
-
 /// Side-tables that map IR positions back to source spans. Populated by
 /// `ir_lower` as it goes; consumed by `ir_planner` / diagnostics renderers
 /// to point at the right source byte range for a given Var or Stmt.
@@ -1291,7 +1237,7 @@ mod fn_keyed_map {
 /// The IR types themselves stay narrow (`Prim`, `Stmt`, `Term` carry no
 /// span fields). Spans live here so codegen-internal IR transformations
 /// don't have to thread spans through every constructor.
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone)]
 pub struct SourceInfo {
     /// Indexed by `Var.0`: span of the source expression / pattern that
     /// introduced this Var. `Span::DUMMY` for compiler-introduced temps
@@ -1307,13 +1253,9 @@ pub struct SourceInfo {
     /// stmt; codegen-internal transformations may leave their stmts
     /// unspanned, which is fine.
     ///
-    /// Serialized as a sequence of entries: the `(FnId, BlockId)` tuple key is
-    /// not a valid serde_json object key.
-    #[serde(with = "tuple_keyed_map")]
     pub stmt_spans: HashMap<(FnId, BlockId), Vec<Span>>,
     /// Span per `(FnId, BlockId)` for the block's terminator. Same
-    /// sparsity contract as `stmt_spans`. Same tuple-key serialization.
-    #[serde(with = "tuple_keyed_map")]
+    /// sparsity contract as `stmt_spans`.
     pub term_span: HashMap<(FnId, BlockId), Span>,
     /// Span of the source fn declaration. Indexed by `FnId.0`. Synthetic
     /// continuations created by CPS-splitting an expression use the
@@ -1339,7 +1281,7 @@ impl SourceInfo {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone)]
 pub struct Module {
     /// Logical module path for this IR module. Root/top-level code uses "".
     pub module_path: String,
@@ -1353,23 +1295,16 @@ pub struct Module {
     /// `:ok` instead of `:atom_1`. Closed by fz-ul4.25.
     pub atom_names: Vec<String>,
     /// O(1) index from FnId to position in `fns`. Kept in sync by
-    /// `ModuleBuilder::add_fn`; never mutated after `build()`. Derived from
-    /// `fns`, so it is skipped during (de)serialization and rebuilt via
-    /// [`Module::rebuild_indices`].
-    #[serde(skip)]
+    /// `ModuleBuilder::add_fn`; never mutated after `build()`.
     pub fn_idx: HashMap<FnId, usize>,
     /// All `extern "C" fn` declarations. Stable: ExternId is a counter, not a vec index.
     pub externs: Vec<ExternDecl>,
     /// O(1) index from ExternId to position in `externs`. Mirrors fn_idx.
-    /// Derived from `externs`; skipped during (de)serialization and rebuilt
-    /// via [`Module::rebuild_indices`].
-    #[serde(skip)]
     pub extern_idx: HashMap<ExternId, usize>,
     /// First-class imported module calls. The terminator still carries a
     /// placeholder `FnId` until link/LTO resolution loads the provider
     /// implementation and rewrites the edge to a direct local call.
     pub external_call_edges: Vec<ExternalCallEdge>,
-    #[serde(with = "fn_keyed_map")]
     pub protocol_call_targets: HashMap<FnId, ProtocolCallTarget>,
     pub protocol_registry: ProtocolRegistry,
     /// fz-jg5.12 (RED.9) — Fns marked as reduction boundaries. Populated
@@ -1397,18 +1332,15 @@ pub struct Module {
     pub struct_schemas: BTreeMap<String, Vec<String>>,
     /// Resolved declared `@spec` overload sets keyed by IR function id. Used by
     /// call typing for source-level polymorphic contracts.
-    #[serde(with = "fn_keyed_map")]
     pub declared_specs: HashMap<FnId, ResolvedSpecSet>,
     /// Function correspondence keyed by IR function id. Declared source
     /// functions contribute structural groups directly from `@spec`; CPS
     /// continuations contribute synthesized groups from lowering provenance.
-    #[serde(with = "fn_keyed_map")]
     pub function_correspondence: HashMap<FnId, Vec<StructuralCorrespondenceGroup>>,
     /// Continuation provenance keyed by synthesized continuation FnId. This is
     /// the durable IR-owned record of how lowering split a non-tail call or
     /// matcher body, from which planner-facing correspondence can be derived
     /// and re-derived after result-flow rewrites.
-    #[serde(with = "fn_keyed_map")]
     pub continuation_provenance: HashMap<FnId, ContinuationProvenance>,
 }
 
@@ -1486,114 +1418,6 @@ impl Module {
 
     pub fn module_path(&self) -> &str {
         &self.module_path
-    }
-
-    /// Repopulate the derived `fn_idx` / `extern_idx` lookup tables from `fns`
-    /// and `externs`. Both indices are `#[serde(skip)]`, so a deserialized
-    /// `Module` arrives with them empty; call this to make `fn_by_id` /
-    /// `extern_by_id` usable again. Mirrors `ModuleBuilder::add_fn`'s keying
-    /// (FnId → position in `fns`) and `extern_by_id`'s (ExternId → position
-    /// in `externs`).
-    pub fn rebuild_indices(&mut self) {
-        self.fn_idx = self.fns.iter().enumerate().map(|(idx, f)| (f.id, idx)).collect();
-        self.extern_idx = self.externs.iter().enumerate().map(|(idx, e)| (e.id, idx)).collect();
-    }
-
-    /// Rewrite the `file` of every `Span` reachable from this module through
-    /// `remap`. A `FileId` absent from `remap` (including `FileId::NONE`/DUMMY)
-    /// is left unchanged. This is how a relocatably-loaded module's spans are
-    /// merged onto a consumer's `SourceMap`: the consumer interns the loaded
-    /// module's source files (`SourceMap::intern`), builds the old→new FileId
-    /// map, then calls this so every diagnostic resolves against real source.
-    ///
-    /// Span-site inventory (kept exhaustive by `match` arms below, so a future
-    /// span-carrying variant fails to compile rather than being missed):
-    ///   - `SourceInfo`: `var_span`, `fn_span`, `stmt_spans`, `term_span`.
-    ///   - `Prim::MakeClosure` callsite ident (the only span-carrying Prim).
-    ///   - the six call-ident `Term`s (rebuilt via `from_source`), plus
-    ///     `ReceiveClause`/`ReceiveAfter` spans and the `ReceiveMatched`
-    ///     dispatch plan.
-    ///   - `external_call_edges[].callsite.ident`.
-    pub fn remap_file_ids(&mut self, remap: &HashMap<FileId, FileId>) {
-        // SourceInfo side-tables.
-        for s in &mut self.source.var_span {
-            remap_span(s, remap);
-        }
-        for s in &mut self.source.fn_span {
-            remap_span(s, remap);
-        }
-        for spans in self.source.stmt_spans.values_mut() {
-            for s in spans {
-                remap_span(s, remap);
-            }
-        }
-        for s in self.source.term_span.values_mut() {
-            remap_span(s, remap);
-        }
-
-        // Per-fn IR: stmt prims and block terminators.
-        for f in &mut self.fns {
-            for block in &mut f.blocks {
-                for Stmt::Let(_, prim) in &mut block.stmts {
-                    remap_prim_span(prim, remap);
-                }
-                remap_term_span(&mut block.terminator, remap);
-            }
-        }
-
-        // External call edges carry their own callsite ident span.
-        for edge in &mut self.external_call_edges {
-            remap_ident(&mut edge.callsite.ident, remap);
-        }
-    }
-
-    /// Read-only twin of `remap_file_ids`: visits every `Span` reachable from
-    /// the module, in the same exhaustive span-site inventory. Used to gather a
-    /// module's referenced source files for portable IR units.
-    pub fn visit_spans(&self, f: &mut impl FnMut(Span)) {
-        // SourceInfo side-tables.
-        for s in &self.source.var_span {
-            f(*s);
-        }
-        for s in &self.source.fn_span {
-            f(*s);
-        }
-        for spans in self.source.stmt_spans.values() {
-            for s in spans {
-                f(*s);
-            }
-        }
-        for s in self.source.term_span.values() {
-            f(*s);
-        }
-
-        // Per-fn IR: stmt prims and block terminators.
-        for fn_ir in &self.fns {
-            for block in &fn_ir.blocks {
-                for Stmt::Let(_, prim) in &block.stmts {
-                    visit_prim_span(prim, f);
-                }
-                visit_term_span(&block.terminator, f);
-            }
-        }
-
-        // External call edges carry their own callsite ident span.
-        for edge in &self.external_call_edges {
-            f(edge.callsite.ident.span());
-        }
-    }
-
-    /// Every distinct, non-`NONE` `FileId` referenced by the module's spans.
-    /// `DUMMY`/`FileId::NONE` spans are excluded. This is the source-file set a
-    /// portable IR unit must carry so a later loader can relocate the module.
-    pub fn referenced_files(&self) -> BTreeSet<FileId> {
-        let mut files = BTreeSet::new();
-        self.visit_spans(&mut |span| {
-            if span.file != FileId::NONE {
-                files.insert(span.file);
-            }
-        });
-        files
     }
 
     /// A borrowed view of this module's brand/opaque inner-type maps, for the
@@ -1773,180 +1597,6 @@ fn rewrite_external_callsite(m: &mut Module, callsite: &CallsiteId, target: FnId
 
 pub(crate) fn rewrite_external_callsite_for_link(m: &mut Module, callsite: &CallsiteId, target: FnId) -> bool {
     rewrite_external_callsite(m, callsite, target)
-}
-
-/// Rewrite `s.file` through `remap`; a `FileId` absent from the map (including
-/// `FileId::NONE`/DUMMY) is left unchanged. Single source of span-remap truth
-/// for `Module::remap_file_ids`.
-fn remap_span(s: &mut Span, remap: &HashMap<FileId, FileId>) {
-    if let Some(&to) = remap.get(&s.file) {
-        s.file = to;
-    }
-}
-
-/// Rebuild a `CallsiteIdent` carrying its span remapped. Minting a fresh `Rc`
-/// is fine at load time — a freshly deserialized module has no aliases to
-/// preserve. `from_source` faithfully reconstructs the single-field inner.
-fn remap_ident(ident: &mut CallsiteIdent, remap: &HashMap<FileId, FileId>) {
-    let mut span = ident.span();
-    remap_span(&mut span, remap);
-    *ident = CallsiteIdent::from_source(span);
-}
-
-/// Remap any span carried by a `Prim`. `MakeFnRef`, `MakeClosure`, and `Extern`
-/// carry one; the
-/// `match` is exhaustive so a future span-carrying Prim variant fails to
-/// compile rather than being silently skipped.
-fn remap_prim_span(prim: &mut Prim, remap: &HashMap<FileId, FileId>) {
-    match prim {
-        Prim::MakeFnRef(ident, _) | Prim::MakeClosure(ident, _, _) | Prim::Extern(ident, _, _) => {
-            remap_ident(ident, remap)
-        }
-        // Span-free prims: explicit no-op arms keep the match exhaustive.
-        Prim::Const(_)
-        | Prim::BinOp(_, _, _)
-        | Prim::UnOp(_, _)
-        | Prim::ListHead(_)
-        | Prim::ListTail(_)
-        | Prim::IsEmptyList(_)
-        | Prim::IsListCons(_)
-        | Prim::MakeTuple(_)
-        | Prim::MakeStruct { .. }
-        | Prim::DestTupleBegin { .. }
-        | Prim::DestTupleSet { .. }
-        | Prim::DestFreeze { .. }
-        | Prim::TupleField(_, _)
-        | Prim::StructField(_, _)
-        | Prim::MakeList(_, _)
-        | Prim::DestListBegin { .. }
-        | Prim::DestListCons { .. }
-        | Prim::DestListFreeze { .. }
-        | Prim::MakeMap(_)
-        | Prim::MapUpdate(_, _)
-        | Prim::DestMapBegin { .. }
-        | Prim::DestMapPut { .. }
-        | Prim::DestMapFreeze { .. }
-        | Prim::MapGet(_, _)
-        | Prim::MatcherMapGet(_, _)
-        | Prim::IsMatcherMapMiss(_)
-        | Prim::MakeBitstring(_)
-        | Prim::ConstBitstring(_, _)
-        | Prim::BitReaderInit(_)
-        | Prim::BitReadField { .. }
-        | Prim::BitReaderDone(_)
-        | Prim::TypeTest(_, _)
-        | Prim::Brand(_, _) => {}
-    }
-}
-
-/// Remap every span carried by a `Term`: the six call-ident terms rebuild
-/// their `CallsiteIdent`; `ReceiveMatched` also remaps its clause/after spans
-/// and its cached dispatch plan. The `match` is exhaustive so a future span-carrying
-/// terminator variant fails to compile rather than being silently skipped.
-fn remap_term_span(term: &mut Term, remap: &HashMap<FileId, FileId>) {
-    match term {
-        Term::Call { ident, .. }
-        | Term::TailCall { ident, .. }
-        | Term::CallClosure { ident, .. }
-        | Term::TailCallClosure { ident, .. } => remap_ident(ident, remap),
-        Term::ReceiveMatched {
-            ident,
-            clauses,
-            dispatch,
-            after,
-            ..
-        } => {
-            remap_ident(ident, remap);
-            for clause in clauses {
-                remap_ident(&mut clause.ident, remap);
-                remap_span(&mut clause.span, remap);
-            }
-            if let Some(after) = after {
-                remap_ident(&mut after.ident, remap);
-                remap_span(&mut after.span, remap);
-            }
-            Arc::make_mut(dispatch).remap_file_ids(remap);
-        }
-        // Span-free terminators: explicit no-op arms keep the match exhaustive.
-        Term::Goto(_, _) | Term::If { .. } | Term::Return(_) | Term::Halt(_) => {}
-    }
-}
-
-/// Read-only twin of `remap_prim_span`: visits any span carried by a `Prim`.
-/// `MakeFnRef`, `MakeClosure`, and `Extern` carry one; the `match` is
-/// exhaustive so a future span-carrying Prim variant fails to compile rather
-/// than being skipped.
-fn visit_prim_span(prim: &Prim, f: &mut impl FnMut(Span)) {
-    match prim {
-        Prim::MakeFnRef(ident, _) | Prim::MakeClosure(ident, _, _) | Prim::Extern(ident, _, _) => f(ident.span()),
-        // Span-free prims: explicit no-op arms keep the match exhaustive.
-        Prim::Const(_)
-        | Prim::BinOp(_, _, _)
-        | Prim::UnOp(_, _)
-        | Prim::ListHead(_)
-        | Prim::ListTail(_)
-        | Prim::IsEmptyList(_)
-        | Prim::IsListCons(_)
-        | Prim::MakeTuple(_)
-        | Prim::MakeStruct { .. }
-        | Prim::DestTupleBegin { .. }
-        | Prim::DestTupleSet { .. }
-        | Prim::DestFreeze { .. }
-        | Prim::TupleField(_, _)
-        | Prim::StructField(_, _)
-        | Prim::MakeList(_, _)
-        | Prim::DestListBegin { .. }
-        | Prim::DestListCons { .. }
-        | Prim::DestListFreeze { .. }
-        | Prim::MakeMap(_)
-        | Prim::MapUpdate(_, _)
-        | Prim::DestMapBegin { .. }
-        | Prim::DestMapPut { .. }
-        | Prim::DestMapFreeze { .. }
-        | Prim::MapGet(_, _)
-        | Prim::MatcherMapGet(_, _)
-        | Prim::IsMatcherMapMiss(_)
-        | Prim::MakeBitstring(_)
-        | Prim::ConstBitstring(_, _)
-        | Prim::BitReaderInit(_)
-        | Prim::BitReadField { .. }
-        | Prim::BitReaderDone(_)
-        | Prim::TypeTest(_, _)
-        | Prim::Brand(_, _) => {}
-    }
-}
-
-/// Read-only twin of `remap_term_span`: visits every span carried by a `Term`,
-/// including the `ReceiveMatched` clause/after spans and its cached dispatch plan.
-/// The `match` is exhaustive so a future span-carrying terminator variant fails
-/// to compile rather than being silently skipped.
-fn visit_term_span(term: &Term, f: &mut impl FnMut(Span)) {
-    match term {
-        Term::Call { ident, .. }
-        | Term::TailCall { ident, .. }
-        | Term::CallClosure { ident, .. }
-        | Term::TailCallClosure { ident, .. } => f(ident.span()),
-        Term::ReceiveMatched {
-            ident,
-            clauses,
-            dispatch,
-            after,
-            ..
-        } => {
-            f(ident.span());
-            for clause in clauses {
-                f(clause.ident.span());
-                f(clause.span);
-            }
-            if let Some(after) = after {
-                f(after.ident.span());
-                f(after.span);
-            }
-            dispatch.visit_spans(f);
-        }
-        // Span-free terminators: explicit no-op arms keep the match exhaustive.
-        Term::Goto(_, _) | Term::If { .. } | Term::Return(_) | Term::Halt(_) => {}
-    }
 }
 
 // ---------- builder ----------

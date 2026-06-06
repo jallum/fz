@@ -24,7 +24,6 @@ fn all_codes_follow_stage_slash_kind_format() {
         TYPE_OPAQUE_VISIBILITY,
         TYPE_EXTERN_MARSHAL,
         CODEGEN_SCHEMA_MISSING,
-        ARTIFACT_INVALID,
         INTERNAL_POST_RESOLUTION_LEFTOVER,
     ];
     for c in codes {

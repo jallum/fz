@@ -48,9 +48,9 @@ namespace owns the required callback names and arities, the public callback spec
 and the protocol-domain constructor `Protocol.t(...)`.
 
 A protocol namespace is not a wrapper module: a root `defprotocol Enumerable`
-publishes `Enumerable`, not `Enumerable.Enumerable`. The interface/artifact layer
+publishes `Enumerable`, not `Enumerable.Enumerable`. The interface layer
 represents the protocol with a module-shaped `ModuleInterface` because imports,
-artifacts, linking, and qualified references already speak in public namespace
+linking, and qualified references already speak in public namespace
 identities. The source semantic object stays the protocol fact.
 
 `defimpl` declares the protocol it implements, the target, and the callback bodies.
@@ -118,8 +118,8 @@ source syntax; compiler facts use the `ImplTarget` identity, just as linking use
 ## Open And Closed Domains
 
 Library interfaces expose protocol declarations and implementation facts as public
-contract data, so dependents can check protocol-domain specs from `.fzi` interfaces
-without loading provider bodies. Compilation sees two domain shapes:
+contract data, so dependents can check protocol-domain specs from module
+interfaces without loading provider bodies. Compilation sees two domain shapes:
 
 - an **open** library domain, where unloaded modules may add implementations;
 - a **closed** executable/link domain, where the linked implementation set is known.
@@ -239,19 +239,19 @@ Protocol facts extend existing compiler ownership rather than a parallel subsyst
   `Enumerable.t(integer)`, looks `Enumerable.t` up as a `ProtocolDomain` alias, and
   instantiates its `PROTOCOL_ELEM_VAR` with the (concrete) element.
 - `ModuleInterface` carries `protocols` and `protocol_impls` in interface
-  fingerprints so `.fzi` artifacts expose protocol contracts without provider
-  bodies. A top-level `defprotocol` contributes its own interface keyed by the
+  fingerprints so interface dumps and compatibility checks expose protocol
+  contracts without provider bodies. A top-level `defprotocol` contributes its own interface keyed by the
   protocol namespace; a nested protocol contributes its facts to the containing
   module interface under its fully qualified name. Callback specs travel as ordered
   overload sets (`InterfaceProtocolCallback.specs`), preserving input/result
-  correlation through artifacts and compatibility checking.
+  correlation through compatibility checking.
 - `ModuleGraphLoader` traverses module imports and runtime implementation providers,
   not protocol callback namespaces. A `defimpl` callback path such as
-  `Enumerable.List.reduce/3` is an export namespace inside the defining artifact;
-  treating it as an artifact root would create false `Protocol/Target.fzi`
-  dependencies. A nested protocol declared in the same module interface is already
-  loaded, so a `defimpl Contracts.Collectable` inside `Contracts` does not make the
-  loader request a separate `Contracts/Collectable.fzi`.
+  `Enumerable.List.reduce/3` is an export namespace inside the defining module;
+  treating it as a separate module root would create false dependencies. A nested
+  protocol declared in the same module interface is already loaded, so a
+  `defimpl Contracts.Collectable` inside `Contracts` does not make the loader
+  request a separate `Contracts.Collectable` module.
 - `ir_lower` records each protocol callback call as a call to a `__protocol__.<name>`
   stub fn that halts with the atom `protocol_dispatch_unplanned`, keyed in
   `Module.protocol_call_targets: HashMap<FnId, ProtocolCallTarget>`. Prelude protocol

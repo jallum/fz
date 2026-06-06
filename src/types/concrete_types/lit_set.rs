@@ -13,7 +13,7 @@ use super::bits::F64Bits;
 ///
 /// Used to track singleton-type precision for atoms, ints, strs, and floats
 /// (the latter via the `F64Bits` wrapper for sane equality/ordering).
-#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct LiteralSet<T: Ord + Clone> {
     pub set: BTreeSet<T>,
     pub cofinite: bool,

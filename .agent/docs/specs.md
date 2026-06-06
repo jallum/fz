@@ -248,8 +248,8 @@ already-resolved specs through the `SpecRegistry`; linking copies
 
 IR walking uses `unique_matching_params` only for the selected-arrow case.
 Protocol callbacks and module interfaces store ordered spec lists
-(`Vec<InterfaceSpec>`), so overloaded public contracts survive `.fzi` artifacts
-and interface fingerprinting.
+(`Vec<InterfaceSpec>`), so overloaded public contracts survive interface
+collection, dumps, and fingerprinting.
 
 ## Tests
 

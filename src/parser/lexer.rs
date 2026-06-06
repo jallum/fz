@@ -7,7 +7,7 @@ use crate::diag::{FileId, Span};
 use crate::measurements;
 use crate::telemetry::{Metadata, Telemetry, Value};
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Tok {
     // literals
     Int(i64),
@@ -112,7 +112,7 @@ impl fmt::Display for Tok {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Token {
     pub tok: Tok,
     pub span: Span,

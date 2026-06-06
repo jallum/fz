@@ -6,9 +6,8 @@ use super::{
     ProjectionKind, Region, RegionPredicate, RegionQuestion, SubjectId, compile_dispatch_matrix,
 };
 use crate::ast::{BitSize, BitType, Endian, Expr, Pattern, Spanned};
-use crate::diag::{FileId, Span};
+use crate::diag::Span;
 use crate::fz_ir::Var;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub(crate) mod source;
@@ -17,7 +16,7 @@ pub(crate) use source::{
     find_unreachable_rows, is_inexhaustive_with_domains,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PatternDispatchPlan {
     pub(crate) matrix: DispatchMatrix,
     pub(crate) graph: DispatchGraph,
@@ -38,58 +37,22 @@ impl PatternDispatchPlan {
     pub(crate) fn subject_ref(&self, id: SubjectId) -> Option<&PatternSubjectRef> {
         self.subjects.get(id.0 as usize).and_then(|entry| entry.as_ref())
     }
-
-    pub(crate) fn remap_file_ids(&mut self, remap: &HashMap<FileId, FileId>) {
-        for input in &mut self.inputs {
-            remap_span(&mut input.span, remap);
-        }
-        for pinned in &mut self.pinned {
-            remap_span(&mut pinned.span, remap);
-        }
-        for guard in &mut self.guards {
-            guard.remap_file_ids(remap);
-        }
-        for outcome in &mut self.outcomes {
-            remap_span(&mut outcome.span, remap);
-            for binding in &mut outcome.bindings {
-                remap_span(&mut binding.span, remap);
-            }
-        }
-    }
-
-    pub(crate) fn visit_spans(&self, f: &mut impl FnMut(Span)) {
-        for input in &self.inputs {
-            f(input.span);
-        }
-        for pinned in &self.pinned {
-            f(pinned.span);
-        }
-        for guard in &self.guards {
-            guard.visit_spans(f);
-        }
-        for outcome in &self.outcomes {
-            f(outcome.span);
-            for binding in &outcome.bindings {
-                f(binding.span);
-            }
-        }
-    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PatternInput {
     pub(crate) var: Option<Var>,
     pub(crate) span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PatternPinnedInput {
     pub(crate) name: String,
     pub(crate) var: Option<Var>,
     pub(crate) span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PatternDispatchOutcome {
     pub(crate) outcome: OutcomeId,
     pub(crate) body_id: PatternBodyId,
@@ -97,14 +60,14 @@ pub(crate) struct PatternDispatchOutcome {
     pub(crate) span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PatternDispatchBinding {
     pub(crate) name: String,
     pub(crate) source: SubjectId,
     pub(crate) span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum PatternSubjectRef {
     Input(u32),
     TupleField {
@@ -123,7 +86,7 @@ pub(crate) enum PatternSubjectRef {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PatternGuardExpr {
     Const(DispatchConst),
     Subject(SubjectId),
@@ -143,61 +106,19 @@ pub(crate) enum PatternGuardExpr {
     },
 }
 
-impl PatternGuardExpr {
-    fn remap_file_ids(&mut self, remap: &HashMap<FileId, FileId>) {
-        match self {
-            PatternGuardExpr::Unary { expr, .. } => expr.remap_file_ids(remap),
-            PatternGuardExpr::Binary { lhs, rhs, .. } => {
-                lhs.remap_file_ids(remap);
-                rhs.remap_file_ids(remap);
-            }
-            PatternGuardExpr::Dispatch { inputs, dispatch } => {
-                for input in inputs {
-                    input.remap_file_ids(remap);
-                }
-                dispatch.plan.remap_file_ids(remap);
-                for body in &mut dispatch.bodies {
-                    body.remap_file_ids(remap);
-                }
-            }
-            PatternGuardExpr::Const(_) | PatternGuardExpr::Subject(_) | PatternGuardExpr::Pinned(_) => {}
-        }
-    }
-
-    fn visit_spans(&self, f: &mut impl FnMut(Span)) {
-        match self {
-            PatternGuardExpr::Unary { expr, .. } => expr.visit_spans(f),
-            PatternGuardExpr::Binary { lhs, rhs, .. } => {
-                lhs.visit_spans(f);
-                rhs.visit_spans(f);
-            }
-            PatternGuardExpr::Dispatch { inputs, dispatch } => {
-                for input in inputs {
-                    input.visit_spans(f);
-                }
-                dispatch.plan.visit_spans(f);
-                for body in &dispatch.bodies {
-                    body.visit_spans(f);
-                }
-            }
-            PatternGuardExpr::Const(_) | PatternGuardExpr::Subject(_) | PatternGuardExpr::Pinned(_) => {}
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PatternGuardDispatch {
     pub(crate) plan: Box<PatternDispatchPlan>,
     pub(crate) bodies: Vec<PatternGuardExpr>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PatternGuardUnaryOp {
     Not,
     Neg,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PatternGuardBinOp {
     Add,
     Sub,
@@ -821,11 +742,5 @@ fn bitstring_endian(endian: Endian) -> BitstringEndian {
         Endian::Big => BitstringEndian::Big,
         Endian::Little => BitstringEndian::Little,
         Endian::Native => BitstringEndian::Native,
-    }
-}
-
-fn remap_span(span: &mut Span, remap: &HashMap<FileId, FileId>) {
-    if let Some(&to) = remap.get(&span.file) {
-        span.file = to;
     }
 }

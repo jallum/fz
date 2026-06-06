@@ -10,161 +10,70 @@ use crate::diag::Span;
 use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::interface::{InterfaceSpec, ModuleInterface};
 use crate::types::{Ty, TypeVarId, Types};
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct ProtocolRegistry {
-    /// `ModuleName` derives `Serialize` as a struct (`{ segments: [...] }`),
-    /// which serde_json rejects as a map key, so this map serializes as a
-    /// sequence of `(key, value)` entries.
-    #[serde(with = "protocols_as_seq")]
     pub protocols: BTreeMap<ModuleName, ProtocolDecl>,
-    /// `ProtocolImplKey` is a struct, which serde_json rejects as a map key,
-    /// so this map serializes as a sequence of `(key, value)` entries.
-    #[serde(with = "impls_as_seq")]
     pub impls: BTreeMap<ProtocolImplKey, ProtocolImplFact>,
 }
 
-/// (De)serialize `BTreeMap<ModuleName, ProtocolDecl>` as a
-/// `Vec<(ModuleName, ProtocolDecl)>` so the struct key survives serde_json
-/// (which forbids non-string object keys).
-mod protocols_as_seq {
-    use super::{ModuleName, ProtocolDecl};
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::collections::BTreeMap;
-
-    pub fn serialize<S: Serializer>(map: &BTreeMap<ModuleName, ProtocolDecl>, s: S) -> Result<S::Ok, S::Error> {
-        map.iter().collect::<Vec<_>>().serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<ModuleName, ProtocolDecl>, D::Error> {
-        Ok(Vec::<(ModuleName, ProtocolDecl)>::deserialize(d)?.into_iter().collect())
-    }
-}
-
-/// (De)serialize `BTreeMap<ProtocolImplKey, ProtocolImplFact>` as a
-/// `Vec<(ProtocolImplKey, ProtocolImplFact)>` so the struct key survives
-/// serde_json (which forbids non-string object keys).
-mod impls_as_seq {
-    use super::{ProtocolImplFact, ProtocolImplKey};
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::collections::BTreeMap;
-
-    pub fn serialize<S: Serializer>(
-        map: &BTreeMap<ProtocolImplKey, ProtocolImplFact>,
-        s: S,
-    ) -> Result<S::Ok, S::Error> {
-        map.iter().collect::<Vec<_>>().serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        d: D,
-    ) -> Result<BTreeMap<ProtocolImplKey, ProtocolImplFact>, D::Error> {
-        Ok(Vec::<(ProtocolImplKey, ProtocolImplFact)>::deserialize(d)?
-            .into_iter()
-            .collect())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InterfaceProtocol {
     pub name: ModuleName,
     pub callbacks: Vec<InterfaceProtocolCallback>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct InterfaceProtocolCallback {
     pub name: String,
     pub arity: usize,
-    #[serde(default)]
     pub specs: Vec<InterfaceSpec>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InterfaceProtocolImpl {
     pub protocol: ModuleName,
     pub target: ImplTarget,
     pub callbacks: Vec<ExportKey>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ProtocolDecl {
     pub callbacks: Vec<ProtocolCallbackFact>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ProtocolCallbackFact {
     pub name: String,
     pub arity: usize,
-    #[serde(default)]
     // Callback spec compatibility consumes the ordered overload set during
     // protocol implementation validation.
     pub specs: Vec<SpecDecl>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ProtocolImplFact {
     pub protocol: ModuleName,
     pub target: ImplTarget,
-    /// Tuple `(String, usize)` keys are not valid serde_json object keys, so
-    /// these two maps serialize as sequences of `(key, value)` entries.
-    #[serde(with = "callbacks_as_seq")]
     pub callbacks: BTreeMap<(String, usize), ExportKey>,
     /// Declared `@spec` of each impl callback that carries one, keyed by
     /// `(name, arity)`. Empty for interface-sourced impls (the interface does
     /// not carry impl callback specs) and for callbacks declared without a
     /// spec. Consumed by callback-spec compatibility checking.
-    #[serde(with = "callback_specs_as_seq")]
     pub callback_specs: BTreeMap<(String, usize), Vec<SpecDecl>>,
     pub span: Span,
 }
 
-/// (De)serialize the tuple-keyed `callbacks` map as a sequence of entries.
-mod callbacks_as_seq {
-    use crate::modules::identity::ExportKey;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::collections::BTreeMap;
-
-    pub fn serialize<S: Serializer>(map: &BTreeMap<(String, usize), ExportKey>, s: S) -> Result<S::Ok, S::Error> {
-        map.iter().collect::<Vec<_>>().serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<(String, usize), ExportKey>, D::Error> {
-        Ok(Vec::<((String, usize), ExportKey)>::deserialize(d)?
-            .into_iter()
-            .collect())
-    }
-}
-
-/// (De)serialize the tuple-keyed `callback_specs` map as a sequence of entries.
-mod callback_specs_as_seq {
-    use crate::ast::SpecDecl;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::collections::BTreeMap;
-
-    type CallbackSpecs = BTreeMap<(String, usize), Vec<SpecDecl>>;
-
-    pub fn serialize<S: Serializer>(map: &CallbackSpecs, s: S) -> Result<S::Ok, S::Error> {
-        map.iter().collect::<Vec<_>>().serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<CallbackSpecs, D::Error> {
-        Ok(Vec::<((String, usize), Vec<SpecDecl>)>::deserialize(d)?
-            .into_iter()
-            .collect())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ProtocolImplKey {
     pub protocol: ModuleName,
     pub target: ImplTarget,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ImplTarget {
     Module(ModuleName),
 }

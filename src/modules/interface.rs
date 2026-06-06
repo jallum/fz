@@ -1,7 +1,7 @@
 //! Module interface emission.
 //!
 //! Interfaces are generated from the source-level module AST and carried
-//! alongside the flattened program. Resolvers, artifact writers, and LTO
+//! alongside the flattened program. Resolvers, dumps, and LTO
 //! validation consume them as public module contracts.
 
 use crate::ast::{
@@ -11,75 +11,66 @@ use crate::diag::{Diagnostic, Span, codes};
 use crate::frontend::protocols::{ImplTarget, InterfaceProtocol, InterfaceProtocolCallback, InterfaceProtocolImpl};
 use crate::modules::identity::{ExportKey, ModuleName};
 use crate::parser::lexer::Tok;
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
 pub const FZ_INTERFACE_ABI_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleInterface {
     pub name: ModuleName,
     pub abi_version: u32,
     pub imports: Vec<InterfaceImport>,
     pub exports: Vec<InterfaceFn>,
     pub types: Vec<InterfaceType>,
-    #[serde(default)]
     pub protocols: Vec<InterfaceProtocol>,
-    #[serde(default)]
     pub protocol_impls: Vec<InterfaceProtocolImpl>,
     pub docs: Option<String>,
-    /// Deterministic semantic inputs used by future artifact fingerprinting.
-    /// This is not a digest yet; keeping the inputs visible makes the first
-    /// interface tests easier to audit.
+    /// Deterministic semantic inputs used for interface compatibility checks
+    /// and human-readable interface dumps. This is not a digest yet; keeping
+    /// the inputs visible makes interface tests easier to audit.
     pub fingerprint_inputs: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct InterfaceImport {
     pub module: ModuleName,
     pub only: Vec<InterfaceImportFn>,
     pub except: Vec<InterfaceImportFn>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct InterfaceImportFn {
     pub name: String,
     pub arity: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InterfaceFn {
     pub name: String,
     pub arity: usize,
-    #[serde(default)]
     pub specs: Vec<InterfaceSpec>,
-    #[serde(skip, default = "dummy_span")]
     pub name_span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct InterfaceSpec {
     pub params: Vec<String>,
     pub result: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum InterfaceTypeKind {
     Alias,
     Opaque,
     Refines,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct InterfaceType {
     pub name: String,
     pub kind: InterfaceTypeKind,
     pub body: String,
-}
-
-fn dummy_span() -> Span {
-    Span::DUMMY
 }
 
 pub fn collect_from_program(prog: &Program) -> BTreeMap<ModuleName, ModuleInterface> {
@@ -141,8 +132,8 @@ fn collect_module(module: &ModuleDef, parent: Option<&ModuleName>, out: &mut BTr
         .filter_map(|item| match &**item {
             // `__info__/1` is an implicit reflection builtin, not a declared
             // export: it is callable as `M.__info__` within a program
-            // but is excluded from the module interface, so it is not imported,
-            // not artifact-exported, and not subject to strict @spec validation.
+            // but is excluded from the module interface, so it is not imported
+            // and not subject to strict @spec validation.
             Item::Fn(def) if !def.is_macro && !def.is_private && def.extern_abi.is_none() && def.name != "__info__" => {
                 Some(interface_fn(def))
             }

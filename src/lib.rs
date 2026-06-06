@@ -36,8 +36,7 @@ use cli::repl::run_script;
 use compiler::Compiler;
 use diag::{Diagnostic, FileId, SourceMap, Span, codes::LOWER_UNBOUND, report_or_exit_through};
 use exec::runtime::Runtime;
-use frontend::resolve::InterfaceTable;
-use frontend::{FrontendOk, FrontendResult, compile_source_with_interface_table, compile_source_with_types};
+use frontend::{FrontendOk, FrontendResult, compile_source_with_types};
 use fz_ir::{FnCategory, FnId, FnIr, Module, SpecId};
 use ir_codegen::{
     CompiledImage, CompiledProgram, asm_record_enable, asm_record_take, compile_aot_planned, compile_planned,
@@ -49,13 +48,9 @@ use ir_planner::{
     materialize_program, pretty_module_plan,
 };
 use libc::{c_int, close, write};
-use modules::artifact::FzoArtifact;
-use modules::artifact_store::{ArtifactStore, DEFAULT_ARTIFACT_ROOT};
-use modules::identity::ModuleName;
 use modules::interface::{render_interfaces, validate_public_export_specs};
 use modules::pipeline::{
-    CheckedModule, CompileMode, PipelineError, ProviderInputs, checked_module_for_mode, compile_source_with_providers,
-    link_error_diagnostic, load_interface_table, prepare_execution_graph,
+    CheckedModule, CompileMode, PipelineError, checked_module_for_mode, link_error_diagnostic, prepare_execution_graph,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -197,8 +192,7 @@ pub fn run() {
                     eprintln!("reading stdin: {}", e);
                     exit(1);
                 }
-                let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-                run_jit_src(&tel, src, "<stdin>".into(), CompileMode::Normal, &providers);
+                run_jit_src(&tel, src, "<stdin>".into(), CompileMode::Normal);
             }
         }
     }
@@ -242,9 +236,6 @@ impl Handler for ConsoleBuildHandler {
             n if n == ["fz", "build", "cc_exit"] => {
                 eprintln!("fz build: cc exited {}", s("status"));
             }
-            n if n == ["fz", "build", "fzi_failed"] => {
-                eprintln!("fz build: failed to write .fzi artifacts: {}", s("error"));
-            }
             n if n == ["fz", "build", "runtime_archive_failed"] => {
                 eprintln!("fz build: runtime archive: {}", s("error"));
             }
@@ -257,10 +248,8 @@ impl Handler for ConsoleBuildHandler {
 
 /// `fz help` / `fz --help` / `fz -h` — a brief tour of the commands and the
 /// switches each accepts. Kept in lockstep with the subcommand parsers in this
-/// file and the dump `--emit` set in `run_dump`; the artifact-root default is
-/// read from the one constant both share so the two never drift.
+/// file and the dump `--emit` set in `run_dump`.
 fn print_help() {
-    let root = DEFAULT_ARTIFACT_ROOT;
     print!(
         "\
 fz — the fz compiler and runtime
@@ -285,15 +274,9 @@ Global options (placed before the command):
 
 Compile options (run, build, dump):
   --lto, --whole-program   whole-program mode: erase module boundaries
-  --interface <Module>     load a provider module's interface (repeatable)
-  --provider <Module>      alias for --interface (run, build)
-  --artifact-root <dir>    where .fzi/.fzo artifacts are read/written
-                           (default: {root})
 
 build options:
   -o <out>                 output executable path (required)
-  --emit-fzi               also write .fzi interface artifacts
-  --emit-fzo               also write .fzo IR/object artifacts
 
 dump options:
   --emit <what>            clif | asm | both | interfaces | specs |
@@ -316,32 +299,11 @@ fn run_build(tel: &ConfiguredTelemetry, args: &[String]) {
     let mut compiler = Compiler::new();
     let mut src_path: Option<String> = None;
     let mut out_path: Option<String> = None;
-    let mut artifact_root = DEFAULT_ARTIFACT_ROOT.to_string();
-    let mut emit_fzi = false;
-    let mut emit_fzo = false;
     let mut mode = CompileMode::Normal;
-    let mut provider_modules = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--lto" | "--whole-program" => mode = CompileMode::Lto,
-            "--emit-fzi" => emit_fzi = true,
-            "--emit-fzo" => emit_fzo = true,
-            "--artifact-root" => {
-                i += 1;
-                artifact_root = args.get(i).cloned().unwrap_or_else(|| {
-                    eprintln!("fz build: --artifact-root expects a path");
-                    exit(2);
-                });
-            }
-            "--interface" | "--provider" => {
-                i += 1;
-                let module = args.get(i).cloned().unwrap_or_else(|| {
-                    eprintln!("fz build: --interface expects a module name");
-                    exit(2);
-                });
-                provider_modules.push(parse_module_name_arg("fz build", &module));
-            }
             "-o" => {
                 i += 1;
                 out_path = args.get(i).cloned();
@@ -361,9 +323,7 @@ fn run_build(tel: &ConfiguredTelemetry, args: &[String]) {
         i += 1;
     }
     let src_path = src_path.unwrap_or_else(|| {
-        eprintln!(
-            "fz build [--lto] [--emit-fzi] [--emit-fzo] [--interface <Module>] [--artifact-root <dir>] <src.fz> -o <out>"
-        );
+        eprintln!("fz build [--lto] <src.fz> -o <out>");
         exit(2);
     });
     let out_path = out_path.unwrap_or_else(|| {
@@ -375,48 +335,10 @@ fn run_build(tel: &ConfiguredTelemetry, args: &[String]) {
         exit(1);
     });
 
-    let providers = ProviderInputs::new(artifact_root.clone(), provider_modules);
-    let frontend_result = compile_source_with_providers(compiler.types(), src, src_path.clone(), &providers, tel)
-        .unwrap_or_else(|err| report_pipeline_error_or_exit("fz build", tel, &sm_cell, err));
+    let frontend_result = compile_source_with_types(compiler.types(), src, src_path.clone(), tel);
     let prepared = checked_module_or_exit("fz build", compiler.types(), frontend_result, &sm_cell, tel, mode);
-    if emit_fzi || emit_fzo {
-        let diags = validate_public_export_specs(&prepared.interfaces);
-        report_or_exit_through(tel, &diags);
-    }
-    if emit_fzi {
-        let store = ArtifactStore::new(&artifact_root);
-        store
-            .write_fzi_artifacts(tel, &prepared.interfaces)
-            .unwrap_or_else(|e| {
-                tel.event(&["fz", "build", "fzi_failed"], metadata! { error: e.to_string() });
-                exit(1);
-            });
-    }
-
-    let graph = prepare_execution_graph(compiler.types(), prepared, &providers, tel, mode)
+    let graph = prepare_execution_graph(compiler.types(), prepared, tel, mode)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz build", tel, &sm_cell, err));
-
-    if emit_fzo {
-        let unit = graph.units.first().expect("execution graph includes root unit");
-        let sources = {
-            let sm = sm_cell.borrow();
-            unit.code
-                .referenced_files()
-                .into_iter()
-                .map(|fid| sm.file(fid).to_portable(fid))
-                .collect::<Vec<_>>()
-        };
-        let fzo = FzoArtifact::from_unit_ir(
-            unit,
-            sources,
-            vec!["kind=source-compiled-module".to_string(), format!("source={src_path}")],
-        );
-        let store = ArtifactStore::new(&artifact_root);
-        store.write_fzo_artifacts(tel, [&fzo]).unwrap_or_else(|e| {
-            tel.event(&["fz", "build", "fzo_failed"], metadata! { error: e.to_string() });
-            exit(1);
-        });
-    }
 
     let obj_name = Path::new(&src_path)
         .file_stem()
@@ -503,9 +425,7 @@ fn run_interp(tel: &ConfiguredTelemetry, args: &[String]) {
         eprintln!("read {}: {}", path, e);
         exit(1);
     });
-    let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-    let frontend_result = compile_source_with_providers(compiler.types(), src, path, &providers, tel)
-        .unwrap_or_else(|err| report_pipeline_error_or_exit("fz interp", tel, &sm_cell, err));
+    let frontend_result = compile_source_with_types(compiler.types(), src, path, tel);
     let checked = checked_module_or_exit(
         "fz interp",
         compiler.types(),
@@ -514,7 +434,7 @@ fn run_interp(tel: &ConfiguredTelemetry, args: &[String]) {
         tel,
         CompileMode::Normal,
     );
-    let graph = prepare_execution_graph(compiler.types(), checked, &providers, tel, CompileMode::Normal)
+    let graph = prepare_execution_graph(compiler.types(), checked, tel, CompileMode::Normal)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz interp", tel, &sm_cell, err));
     notify_fixture_execution_start();
     match run_main_with_plan(compiler.types(), tel, &graph.module, graph.module_plan) {
@@ -534,27 +454,10 @@ fn run_interp(tel: &ConfiguredTelemetry, args: &[String]) {
 fn run_jit_from_path(tel: &ConfiguredTelemetry, args: &[String]) {
     let mut mode = CompileMode::Normal;
     let mut src_path: Option<String> = None;
-    let mut artifact_root = DEFAULT_ARTIFACT_ROOT.to_string();
-    let mut provider_modules = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--lto" | "--whole-program" => mode = CompileMode::Lto,
-            "--artifact-root" => {
-                i += 1;
-                artifact_root = args.get(i).cloned().unwrap_or_else(|| {
-                    eprintln!("fz run: --artifact-root expects a path");
-                    exit(2);
-                });
-            }
-            "--interface" | "--provider" => {
-                i += 1;
-                let module = args.get(i).cloned().unwrap_or_else(|| {
-                    eprintln!("fz run: --interface expects a module name");
-                    exit(2);
-                });
-                provider_modules.push(parse_module_name_arg("fz run", &module));
-            }
             a if !a.starts_with("--") && src_path.is_none() => src_path = Some(a.to_string()),
             a => {
                 eprintln!("fz run: unknown arg `{}`", a);
@@ -564,15 +467,14 @@ fn run_jit_from_path(tel: &ConfiguredTelemetry, args: &[String]) {
         i += 1;
     }
     let src_path = src_path.unwrap_or_else(|| {
-        eprintln!("fz run [--lto] [--interface <Module>] [--artifact-root <dir>] <src.fz>");
+        eprintln!("fz run [--lto] <src.fz>");
         exit(2);
     });
     let src = read_to_string(&src_path).unwrap_or_else(|e| {
         eprintln!("read {}: {}", src_path, e);
         exit(1);
     });
-    let providers = ProviderInputs::new(artifact_root, provider_modules);
-    run_jit_src(tel, src, src_path, mode, &providers);
+    run_jit_src(tel, src, src_path, mode);
 }
 
 /// `fz dump <src.fz> [--emit clif|asm|both] [--fn <name>]` — drive a
@@ -716,8 +618,6 @@ fn run_dump(tel: &ConfiguredTelemetry, args: &[String]) {
     let mut emit = "clif".to_string();
     let mut show_all = false;
     let mut strict_interfaces = false;
-    let mut artifact_root = DEFAULT_ARTIFACT_ROOT.to_string();
-    let mut interface_modules = Vec::new();
     let mut mode = CompileMode::Normal;
     let mut i = 0;
     while i < args.len() {
@@ -740,21 +640,6 @@ fn run_dump(tel: &ConfiguredTelemetry, args: &[String]) {
             // fz-f88.7 — bypass dump_outcomes filtering (prelude + dead bodies).
             "--all" => show_all = true,
             "--strict-interfaces" => strict_interfaces = true,
-            "--artifact-root" => {
-                i += 1;
-                artifact_root = args.get(i).cloned().unwrap_or_else(|| {
-                    eprintln!("fz dump: --artifact-root expects a path");
-                    exit(2);
-                });
-            }
-            "--interface" => {
-                i += 1;
-                let module = args.get(i).cloned().unwrap_or_else(|| {
-                    eprintln!("fz dump: --interface expects a module name");
-                    exit(2);
-                });
-                interface_modules.push(parse_module_name_arg("fz dump", &module));
-            }
             "--lto" | "--whole-program" => mode = CompileMode::Lto,
             a if !a.starts_with("--") && path.is_none() => path = Some(a.to_string()),
             a => {
@@ -766,7 +651,7 @@ fn run_dump(tel: &ConfiguredTelemetry, args: &[String]) {
     }
     let path = path.unwrap_or_else(|| {
         eprintln!(
-            "fz dump <src.fz> [--lto] [--interface <Module>] [--artifact-root <dir>] [--emit clif|asm|both|interfaces|specs|bodies|outcomes|stats] [--fn <name>]"
+            "fz dump <src.fz> [--lto] [--emit clif|asm|both|interfaces|specs|bodies|outcomes|stats] [--fn <name>]"
         );
         exit(2);
     });
@@ -793,15 +678,13 @@ fn run_dump(tel: &ConfiguredTelemetry, args: &[String]) {
         eprintln!("read {}: {}", path, e);
         exit(1);
     });
-    let interface_table = load_interface_table(&artifact_root, &interface_modules, tel)
-        .unwrap_or_else(|err| report_pipeline_error_or_exit("fz dump", tel, &sm_cell, err));
     let mut compiler = Compiler::new();
 
     if emit_specs {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit specs (spec dump is per-module)");
         }
-        let dump = dump_specs_pipeline(&mut compiler, tel, &sm_cell, src, path.clone(), interface_table);
+        let dump = dump_specs_pipeline(&mut compiler, tel, &sm_cell, src, path.clone());
         tel.event(&["fz", "dump", "specs"], metadata! { text: dump });
         return;
     }
@@ -810,15 +693,7 @@ fn run_dump(tel: &ConfiguredTelemetry, args: &[String]) {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit interfaces");
         }
-        let dump = dump_interfaces_pipeline(
-            &mut compiler,
-            tel,
-            &sm_cell,
-            src,
-            path.clone(),
-            strict_interfaces,
-            interface_table,
-        );
+        let dump = dump_interfaces_pipeline(&mut compiler, tel, &sm_cell, src, path.clone(), strict_interfaces);
         tel.event(&["fz", "dump", "interfaces"], metadata! { text: dump });
         return;
     }
@@ -851,8 +726,7 @@ fn run_dump(tel: &ConfiguredTelemetry, args: &[String]) {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit stats");
         }
-        let providers = ProviderInputs::new(artifact_root.clone(), Vec::new());
-        let _ = compile_pipeline(&mut compiler, tel, &sm_cell, src, path.clone(), mode, &providers);
+        let _ = compile_pipeline(&mut compiler, tel, &sm_cell, src, path.clone(), mode);
         return;
     }
 
@@ -862,8 +736,7 @@ fn run_dump(tel: &ConfiguredTelemetry, args: &[String]) {
     if emit_asm {
         asm_record_enable();
     }
-    let providers = ProviderInputs::new(artifact_root.clone(), Vec::new());
-    let compiled = compile_pipeline(&mut compiler, tel, &sm_cell, src, path.clone(), mode, &providers);
+    let compiled = compile_pipeline(&mut compiler, tel, &sm_cell, src, path.clone(), mode);
     let clif_entries = if emit_clif { ir_text_record_take() } else { Vec::new() };
     let asm_entries = if emit_asm { asm_record_take() } else { Vec::new() };
 
@@ -952,13 +825,6 @@ struct Compiled {
     module: Module,
 }
 
-fn parse_module_name_arg(context: &str, text: &str) -> ModuleName {
-    ModuleName::parse_dotted(text).unwrap_or_else(|err| {
-        eprintln!("{context}: {err}");
-        exit(2);
-    })
-}
-
 fn report_pipeline_error_or_exit(
     context: &str,
     tel: &dyn Telemetry,
@@ -967,11 +833,6 @@ fn report_pipeline_error_or_exit(
 ) -> ! {
     let _ = sm_cell;
     match err {
-        PipelineError::Artifact(err) => {
-            if !err.diagnostics_emitted() {
-                eprintln!("{context}: {err}");
-            }
-        }
         PipelineError::Link(err) => {
             let diagnostic = link_error_diagnostic(err);
             report_or_exit_through(tel, &[diagnostic]);
@@ -1009,10 +870,9 @@ fn dump_specs_pipeline(
     sm_cell: &Rc<RefCell<SourceMap>>,
     src: String,
     source_name: String,
-    interface_table: InterfaceTable,
 ) -> String {
     let frontend = run_frontend(
-        compile_source_with_interface_table(compiler.types(), src, source_name, interface_table, tel),
+        compile_source_with_types(compiler.types(), src, source_name, tel),
         sm_cell,
         tel,
     );
@@ -1026,10 +886,9 @@ fn dump_interfaces_pipeline(
     src: String,
     source_name: String,
     strict: bool,
-    interface_table: InterfaceTable,
 ) -> String {
     let frontend = run_frontend(
-        compile_source_with_interface_table(compiler.types(), src, source_name, interface_table, tel),
+        compile_source_with_types(compiler.types(), src, source_name, tel),
         sm_cell,
         tel,
     );
@@ -1349,12 +1208,10 @@ fn compile_pipeline(
     src: String,
     source_name: String,
     mode: CompileMode,
-    providers: &ProviderInputs,
 ) -> Compiled {
-    let frontend_result = compile_source_with_providers(compiler.types(), src, source_name, providers, tel)
-        .unwrap_or_else(|err| report_pipeline_error_or_exit("fz run", tel, sm_cell, err));
+    let frontend_result = compile_source_with_types(compiler.types(), src, source_name, tel);
     let prepared = checked_module_or_exit("fz run", compiler.types(), frontend_result, sm_cell, tel, mode);
-    let graph = prepare_execution_graph(compiler.types(), prepared, providers, tel, mode)
+    let graph = prepare_execution_graph(compiler.types(), prepared, tel, mode)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz run", tel, sm_cell, err));
     let main_fn = graph.module.fn_by_name("main").map(|f| f.id);
     let executable = compile_planned(compiler.types(), &graph.module, &graph.module_plan, tel).unwrap_or_else(|e| {
@@ -1410,17 +1267,11 @@ fn compile_pipeline(
 /// `fz run <path>` (and the no-argument stdin route) — compile, then drive
 /// the program through the Runtime so concurrency-using fixtures work
 /// end-to-end.
-fn run_jit_src(
-    tel: &ConfiguredTelemetry,
-    src: String,
-    source_name: String,
-    mode: CompileMode,
-    providers: &ProviderInputs,
-) {
+fn run_jit_src(tel: &ConfiguredTelemetry, src: String, source_name: String, mode: CompileMode) {
     let sm_cell: Rc<RefCell<SourceMap>> = Rc::new(RefCell::new(SourceMap::new()));
     tel.attach(&["fz", "diag"], Box::new(DiagRenderer::new_stderr(sm_cell.clone())));
     let mut compiler = Compiler::new();
-    let compiled = compile_pipeline(&mut compiler, tel, &sm_cell, src, source_name, mode, providers);
+    let compiled = compile_pipeline(&mut compiler, tel, &sm_cell, src, source_name, mode);
     let Some(main_fn) = compiled.main_fn else {
         report_or_exit_through(
             tel,

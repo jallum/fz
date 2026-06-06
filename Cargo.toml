@@ -19,8 +19,6 @@ target-lexicon = "0.13"
 fz-runtime = { path = "runtime" }
 smallvec = { version = "1.15.1", default-features = false }
 rustyline = { version = "18.0.0", default-features = false }
-serde = { version = "1.0.228", features = ["derive", "rc"] }
-serde_json = "1.0.150"
 
 [dev-dependencies]
 # fz-fkv — fixture matrix uses libtest-mimic so each (fixture, path) pair

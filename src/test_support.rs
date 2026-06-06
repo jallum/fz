@@ -1,10 +1,8 @@
 use crate::fz_ir::{FnId, Module};
 use crate::ir_codegen::compile_planned;
 use crate::ir_planner::{ModulePlan, materialize_program, plan_module_with_role};
-use crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT;
 use crate::modules::pipeline::{
-    CompileMode, PreparedExecutionGraph, ProviderInputs, checked_module_for_mode, compile_source_with_providers,
-    link_execution_module, prepare_execution_graph,
+    CompileMode, PreparedExecutionGraph, checked_module_for_mode, link_execution_module, prepare_execution_graph,
 };
 use crate::telemetry::{Capture, ConfiguredTelemetry, Event, Handler, Telemetry};
 use crate::types::{ClosureTypes, DefaultTypes, RenderTypes, Ty, Types};
@@ -41,8 +39,8 @@ pub(crate) fn lower_frontend_module(src: &str) -> Module {
     std::panic::set_hook(Box::new(|_| {}));
     let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
         let mut t = crate::types::new();
-        let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-        let _ = compile_source_with_providers(&mut t, src.to_string(), "test_fixture.fz".to_string(), &providers, &tel);
+        let _ =
+            crate::frontend::compile_source_with_types(&mut t, src.to_string(), "test_fixture.fz".to_string(), &tel);
     }));
     std::panic::set_hook(prev_hook);
 
@@ -55,13 +53,10 @@ pub(crate) fn lower_frontend_module(src: &str) -> Module {
 /// Compile a program through the production pipeline to the linked runtime IR:
 /// protocol impls, runtime helpers, and execution-graph rewrites are local.
 pub(crate) fn linked_runtime_graph(t: &mut DefaultTypes, src: &str, tel: &dyn Telemetry) -> PreparedExecutionGraph {
-    let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-    let frontend = compile_source_with_providers(t, src.to_string(), "test_fixture.fz".to_string(), &providers, tel)
-        .unwrap_or_else(|err| panic!("frontend: {err}"));
+    let frontend = crate::frontend::compile_source_with_types(t, src.to_string(), "test_fixture.fz".to_string(), tel);
     let checked =
         checked_module_for_mode(t, frontend, tel, CompileMode::Normal).unwrap_or_else(|err| panic!("checked: {err}"));
-    prepare_execution_graph(t, checked, &providers, tel, CompileMode::Normal)
-        .unwrap_or_else(|err| panic!("execution graph: {err}"))
+    prepare_execution_graph(t, checked, tel, CompileMode::Normal).unwrap_or_else(|err| panic!("execution graph: {err}"))
 }
 
 /// Compile a program through the production pipeline to the linked runtime IR:
@@ -73,12 +68,10 @@ pub(crate) fn linked_runtime_module(t: &mut DefaultTypes, src: &str, tel: &dyn T
 /// Compile through the production frontend/provider/link path and stop at the
 /// linked runtime module, without running the execution-graph planner.
 pub(crate) fn linked_runtime_module_unplanned(t: &mut DefaultTypes, src: &str, tel: &dyn Telemetry) -> Module {
-    let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-    let frontend = compile_source_with_providers(t, src.to_string(), "test_fixture.fz".to_string(), &providers, tel)
-        .unwrap_or_else(|err| panic!("frontend: {err}"));
+    let frontend = crate::frontend::compile_source_with_types(t, src.to_string(), "test_fixture.fz".to_string(), tel);
     let mut checked =
         checked_module_for_mode(t, frontend, tel, CompileMode::Normal).unwrap_or_else(|err| panic!("checked: {err}"));
-    link_execution_module(t, &mut checked, &providers, tel)
+    link_execution_module(t, &mut checked, tel)
         .unwrap_or_else(|err| panic!("linked runtime module: {err}"))
         .module
 }

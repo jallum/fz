@@ -58,7 +58,7 @@ The interned implementation duplicates the concrete kernel under
 children store already-interned `InternedTy` handles. Each instance owns its
 `TypeInterner` plus a `HashMap<Descr, InternedTy>` dedup index; there is no
 global/static interner, so every handle is meaningful only with the owning
-`InternedConcreteTypes` value. `InternedTy` carries no serde derive: a raw id
+`InternedConcreteTypes` value. `InternedTy` is intentionally local: a raw id
 without its arena is a meaningless wire value, so it is never serialized.
 
 `Types` is the abstraction boundary for construction, projection,

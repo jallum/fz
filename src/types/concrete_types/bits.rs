@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub(crate) struct BasicBits(pub(super) u32);
 
 impl BasicBits {
@@ -49,7 +49,7 @@ impl BasicBits {
 /// ordered/hashed sets. Two distinct bit patterns are considered distinct
 /// values. `+0.0` and `-0.0` are distinct (matches IEEE bit equality but not
 /// IEEE value equality — fine here, where the type system tracks values).
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct F64Bits(u64);
 
 impl F64Bits {

@@ -9,18 +9,18 @@ use crate::types::{CallableValueKind, MapKey, Ty};
 use super::descr::Descr;
 use super::{ty_descr, ty_from_descr};
 
-#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct TupleSig {
     pub elems: Vec<Descr>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ListSig {
     pub empty: bool,
     pub elem: Option<Box<Descr>>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ResourceSig {
     pub payload: Box<Descr>,
 }
@@ -88,14 +88,14 @@ impl ListSig {
 /// `captures` match. Lit-bearing clauses do not collapse with lit-free clauses
 /// under union — callable singletons are stricter than plain arrows, and the
 /// union keeps both to preserve singleton precision downstream.
-#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ClosureLit {
     pub kind: CallableValueKind,
     pub fn_id: FnId,
     pub captures: Vec<Ty>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ArrowSig {
     pub args: Vec<Descr>,
     pub ret: Box<Descr>,
@@ -109,29 +109,9 @@ pub(crate) struct ArrowSig {
 ///
 /// Subtyping (open record): `s <: t` iff every field in `t` is in `s` with
 /// subtype value. More required keys = smaller set.
-#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct MapSig {
-    /// Serialized as a sequence of `(MapKey, Descr)` entries: `MapKey` is an
-    /// enum, and serde_json rejects non-string map keys, so the map cannot
-    /// round-trip as a JSON object.
-    #[serde(with = "map_sig_fields")]
     pub fields: BTreeMap<MapKey, Descr>,
-}
-
-/// (De)serialize `BTreeMap<MapKey, Descr>` as a `Vec<(MapKey, Descr)>` so the
-/// enum key survives serde_json (which forbids non-string object keys).
-mod map_sig_fields {
-    use super::{Descr, MapKey};
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::collections::BTreeMap;
-
-    pub fn serialize<S: Serializer>(fields: &BTreeMap<MapKey, Descr>, s: S) -> Result<S::Ok, S::Error> {
-        fields.iter().collect::<Vec<_>>().serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<MapKey, Descr>, D::Error> {
-        Ok(Vec::<(MapKey, Descr)>::deserialize(d)?.into_iter().collect())
-    }
 }
 
 /// fz-jvo — sig types that support semantic merging at the

@@ -21,11 +21,8 @@ use crate::fz_ir::{
 use crate::ir_codegen::compile_planned;
 use crate::ir_dest::{lower_list_destinations, lower_map_destinations, lower_tuple_destinations};
 use crate::ir_lower::lower_program;
-use crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT;
 use crate::modules::identity::{ExportKey, ModuleName};
-use crate::modules::pipeline::{
-    CompileMode, ProviderInputs, checked_module_for_mode, compile_source_with_providers, prepare_execution_graph,
-};
+use crate::modules::pipeline::{CompileMode, checked_module_for_mode, prepare_execution_graph};
 use crate::parser::{Parser, lexer::Lexer};
 use crate::specs::{
     CallbackReturnDemand, CallbackReturnFact, CallbackReturnQuery, ResolvedSpec, ResolvedSpecSet, ResolvedTypeShape,
@@ -4650,18 +4647,15 @@ fn declared_return_fact_handles_enum_count_on_range_in_runtime_graph() {
     let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
     let mut t = crate::types::new();
     let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-    let frontend = compile_source_with_providers(
+    let frontend = compile_source_with_types(
         &mut t,
         src.to_string(),
         "enum_take_drop_split_input.fz".to_string(),
-        &providers,
         &tel,
-    )
-    .unwrap_or_else(|err| panic!("frontend result: {err}"));
+    );
     let checked = checked_module_for_mode(&mut t, frontend, &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let prepared = prepare_execution_graph(&mut t, checked, &providers, &tel, CompileMode::Normal)
+    let prepared = prepare_execution_graph(&mut t, checked, &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("execution graph: {err}"));
     let module = prepared.module;
 
@@ -4692,18 +4686,10 @@ end
 "#;
     let mut t = crate::types::new();
     let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-    let frontend = compile_source_with_providers(
-        &mut t,
-        src.to_string(),
-        "mixed_enum_take_input.fz".to_string(),
-        &providers,
-        &tel,
-    )
-    .unwrap_or_else(|err| panic!("frontend result: {err}"));
+    let frontend = compile_source_with_types(&mut t, src.to_string(), "mixed_enum_take_input.fz".to_string(), &tel);
     let checked = checked_module_for_mode(&mut t, frontend, &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let prepared = prepare_execution_graph(&mut t, checked, &providers, &tel, CompileMode::Normal)
+    let prepared = prepare_execution_graph(&mut t, checked, &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("execution graph: {err}"));
     let module = prepared.module;
     assert_module_plan_consistent(&module);
@@ -4744,18 +4730,15 @@ fn declared_return_fact_handles_enum_reduce_with_runtime_graph_reducer() {
     let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
     let mut t = crate::types::new();
     let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-    let frontend = compile_source_with_providers(
+    let frontend = compile_source_with_types(
         &mut t,
         src.to_string(),
         "enum_take_drop_split_input.fz".to_string(),
-        &providers,
         &tel,
-    )
-    .unwrap_or_else(|err| panic!("frontend result: {err}"));
+    );
     let checked = checked_module_for_mode(&mut t, frontend, &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let prepared = prepare_execution_graph(&mut t, checked, &providers, &tel, CompileMode::Normal)
+    let prepared = prepare_execution_graph(&mut t, checked, &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("execution graph: {err}"));
     let module = prepared.module;
     assert_module_plan_consistent(&module);
@@ -4801,18 +4784,15 @@ fn declared_return_fact_handles_take_positive_reduce_while_in_runtime_graph() {
     let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
     let mut t = crate::types::new();
     let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
-    let frontend = compile_source_with_providers(
+    let frontend = compile_source_with_types(
         &mut t,
         src.to_string(),
         "enum_take_drop_split_input.fz".to_string(),
-        &providers,
         &tel,
-    )
-    .unwrap_or_else(|err| panic!("frontend result: {err}"));
+    );
     let checked = checked_module_for_mode(&mut t, frontend, &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let prepared = prepare_execution_graph(&mut t, checked, &providers, &tel, CompileMode::Normal)
+    let prepared = prepare_execution_graph(&mut t, checked, &tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("execution graph: {err}"));
     let module = prepared.module;
     assert_module_plan_consistent(&module);

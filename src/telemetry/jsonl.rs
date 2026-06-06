@@ -3,8 +3,8 @@
 //! `JsonlBackend` is a `Handler` that serializes every event to one JSON
 //! line and writes it to a `Write` sink (usually a file opened by the
 //! driver). No external dep — values are serialized with a hand-rolled
-//! emitter because the format is simple and we want zero compile-time cost
-//! from serde in the default build.
+//! emitter because the format is simple and we want zero extra compile-time
+//! cost for telemetry encoding.
 //!
 //! Format per line (keys always in this order, no pretty-printing):
 //!

@@ -6,36 +6,27 @@
 //! - ordinary FZ modules, such as `Utf8` and `Process`, implemented in
 //!   per-module source files and consumed through module interfaces.
 //!
-//! This module exposes the second layer as deterministic `.fzi`/`.fzo`
-//! artifact envelopes so resolver and linker work can depend on the same
-//! facts a user library would provide.
-use crate::ast::{Attribute, Expr, Item, ModuleDef, Program, ProtocolDef, Spanned, WithBinding};
+//! This module exposes the second layer as in-memory module interfaces plus
+//! source text so resolver and linker work can depend on the same facts a user
+//! library would provide.
+use crate::ast::{Attribute, Expr, Item, Program, Spanned, WithBinding};
 #[cfg(test)]
 use crate::frontend::compile_source_with_interface_table;
 #[cfg(test)]
 use crate::frontend::resolve::InterfaceTable;
-use crate::modules::artifact::{
-    FZ_ARTIFACT_ABI_VERSION, FZ_RUNTIME_ARTIFACT_ABI_VERSION, FziArtifact, FzoArtifact, FzoUnitPayload, payload_digest,
-};
-#[cfg(test)]
-use crate::modules::artifact_store::ArtifactStore;
-use crate::modules::identity::{ExportKey, ModuleName};
-use crate::modules::interface::{ModuleInterface, collect_from_program, fingerprint_digest};
+use crate::modules::identity::ModuleName;
+use crate::modules::interface::{ModuleInterface, collect_from_program};
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
-use crate::telemetry::Telemetry;
 #[cfg(test)]
-use crate::telemetry::{Capture, ConfiguredTelemetry};
+use crate::telemetry::ConfiguredTelemetry;
+use crate::telemetry::Telemetry;
 use crate::type_expr::{
     BrandInnerTypes, ModuleTypeEnv, OpaqueInnerTypes, build_module_type_env_for_with_base, builtin_brand_inners,
     builtin_opaque_inners, builtin_type_env,
 };
 use crate::types::{Ty, Types};
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(test)]
-use std::env::temp_dir;
-#[cfg(test)]
-use std::fs::remove_dir_all;
 use std::rc::Rc;
 
 const RUNTIME_PRELUDE_FZ: &str = include_str!("runtime_library/runtime.fz");
@@ -94,14 +85,6 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         role: RuntimeModuleRole::Library,
     },
 ];
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeLibraryModuleArtifact {
-    pub module: ModuleName,
-    pub interface: ModuleInterface,
-    pub fzi: FziArtifact,
-    pub fzo: FzoArtifact,
-}
 
 pub struct RuntimeRootTypes {
     pub env: ModuleTypeEnv,
@@ -204,17 +187,11 @@ pub fn interface_table() -> InterfaceTable {
 }
 
 pub fn interfaces(tel: &dyn Telemetry) -> BTreeMap<ModuleName, ModuleInterface> {
-    RUNTIME_MODULE_SOURCES
-        .iter()
-        .filter_map(|source| {
-            let module = ModuleName::from_segments(vec![source.name.to_string()]);
-            interface(&module, tel).map(|interface| (module, interface))
-        })
-        .collect()
+    collect_from_program(&parsed_program(tel))
 }
 
 pub fn interface(module: &ModuleName, tel: &dyn Telemetry) -> Option<ModuleInterface> {
-    artifact(module, tel).map(|artifact| artifact.interface)
+    interfaces(tel).remove(module)
 }
 
 pub fn implementation_dependencies(module: &ModuleName, tel: &dyn Telemetry) -> Vec<ModuleName> {
@@ -236,22 +213,8 @@ pub fn implementation_dependencies(module: &ModuleName, tel: &dyn Telemetry) -> 
     deps.into_iter().collect()
 }
 
-pub fn artifact(module: &ModuleName, tel: &dyn Telemetry) -> Option<RuntimeLibraryModuleArtifact> {
-    artifacts(tel).into_iter().find(|artifact| artifact.module == *module)
-}
-
-pub fn artifacts(tel: &dyn Telemetry) -> Vec<RuntimeLibraryModuleArtifact> {
-    let prog = parsed_program(tel);
-    let interfaces = collect_from_program(&prog);
-    let mut out = Vec::new();
-    for item in &prog.items {
-        match &**item {
-            Item::Module(module) => collect_artifacts_recursive(module, None, &interfaces, &mut out),
-            Item::Protocol(protocol) => collect_protocol_artifact(protocol, &interfaces, &mut out),
-            _ => {}
-        }
-    }
-    out
+pub fn source(module: &ModuleName) -> Option<&'static str> {
+    runtime_module_source(module)
 }
 
 fn collect_runtime_implementation_dependencies(items: &[Rc<Item>], out: &mut BTreeSet<ModuleName>) {
@@ -441,108 +404,6 @@ fn qualified_callee_module(callee: &Spanned<Expr>) -> Option<ModuleName> {
 
 fn is_upper(s: &str) -> bool {
     s.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
-}
-
-fn collect_protocol_artifact(
-    protocol: &ProtocolDef,
-    interfaces: &BTreeMap<ModuleName, ModuleInterface>,
-    out: &mut Vec<RuntimeLibraryModuleArtifact>,
-) {
-    let name = protocol.name.clone();
-    if let Some(interface) = interfaces.get(&name) {
-        let fzi = FziArtifact::new(interface.clone());
-        let fzo = runtime_unit_fzo(
-            &name,
-            interface,
-            vec!["kind=runtime-library-protocol".to_string(), format!("module={}", name)],
-        );
-        out.push(RuntimeLibraryModuleArtifact {
-            module: name,
-            interface: interface.clone(),
-            fzi,
-            fzo,
-        });
-    }
-}
-
-fn collect_artifacts_recursive(
-    module: &ModuleDef,
-    parent: Option<&ModuleName>,
-    interfaces: &BTreeMap<ModuleName, ModuleInterface>,
-    out: &mut Vec<RuntimeLibraryModuleArtifact>,
-) {
-    let name = if let Some(parent) = parent {
-        parent.child(module.name.clone())
-    } else {
-        ModuleName::from_segments(vec![module.name.clone()])
-    };
-    if let Some(interface) = interfaces.get(&name) {
-        let fzi = FziArtifact::new(interface.clone());
-        let fzo = runtime_module_fzo(module, &name, interface);
-        out.push(RuntimeLibraryModuleArtifact {
-            module: name.clone(),
-            interface: interface.clone(),
-            fzi,
-            fzo,
-        });
-    }
-    for item in &module.items {
-        if let Item::Module(inner) = &**item {
-            collect_artifacts_recursive(inner, Some(&name), interfaces, out);
-        }
-    }
-}
-
-fn runtime_module_fzo(module: &ModuleDef, name: &ModuleName, interface: &ModuleInterface) -> FzoArtifact {
-    runtime_unit_fzo(name, interface, runtime_implementation_fingerprint(name, module))
-}
-
-fn runtime_unit_fzo(
-    name: &ModuleName,
-    interface: &ModuleInterface,
-    implementation_fingerprint: Vec<String>,
-) -> FzoArtifact {
-    let interface_fingerprint = interface.fingerprint_inputs.clone();
-    let unit_payload =
-        FzoUnitPayload::runtime_module(runtime_module_source(name).expect("runtime module source is registered"));
-    let implementation_fingerprint_digest = payload_digest(&unit_payload);
-    FzoArtifact {
-        compiler_abi_version: FZ_ARTIFACT_ABI_VERSION,
-        runtime_abi_version: FZ_RUNTIME_ARTIFACT_ABI_VERSION,
-        module: Some(name.clone()),
-        unit_payload,
-        required_imports: interface_imports(interface),
-        implementation_fingerprint,
-        implementation_fingerprint_digest,
-        interface_fingerprint_digest: fingerprint_digest(&interface_fingerprint),
-        interface_fingerprint,
-    }
-}
-
-fn interface_imports(interface: &ModuleInterface) -> Vec<ExportKey> {
-    interface
-        .imports
-        .iter()
-        .flat_map(|import| {
-            import
-                .only
-                .iter()
-                .map(|f| ExportKey::new(import.module.clone(), f.name.clone(), f.arity))
-                .collect::<Vec<_>>()
-        })
-        .collect()
-}
-
-fn runtime_implementation_fingerprint(name: &ModuleName, module: &ModuleDef) -> Vec<String> {
-    let mut out = vec!["kind=runtime-library-module".to_string(), format!("module={}", name)];
-    for item in &module.items {
-        if let Item::Fn(def) = &**item {
-            let arity = def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
-            let kind = if def.extern_abi.is_some() { "primitive" } else { "fz" };
-            out.push(format!("fn={}/{}:{}", def.name, arity, kind));
-        }
-    }
-    out
 }
 
 fn runtime_module_source(name: &ModuleName) -> Option<&'static str> {

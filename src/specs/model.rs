@@ -6,22 +6,16 @@ use crate::types::{Ty, TypeVarId};
 /// Resolved form of a `SpecDecl` after type-expression lookup. The
 /// type-expression layer constructs this model; spec consumers own the
 /// semantic operations over it.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub(crate) struct ResolvedSpec {
     pub params: Vec<Ty>,
-    #[serde(default)]
     pub param_shapes: Vec<ResolvedTypeShape>,
     pub result: Ty,
-    #[serde(default)]
     pub result_shape: ResolvedTypeShape,
-    /// `TypeVarId` is a `u32` newtype, which serde_json renders as a number,
-    /// not a valid object key, so this map serializes as a sequence of
-    /// `(TypeVarId, Ty)` entries.
-    #[serde(with = "constraints_as_seq")]
     pub constraints: HashMap<TypeVarId, Ty>,
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ResolvedSpecSet {
     pub arrows: Vec<ResolvedSpec>,
 }
@@ -32,19 +26,19 @@ pub(crate) struct ResolvedSpecMatch {
     pub result: Ty,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct StructuralCorrespondenceGroup {
     pub var: TypeVarId,
     pub occurrences: Vec<StructuralOccurrence>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ResolvedStructFieldShape {
     pub name: String,
     pub ty: ResolvedTypeShape,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) enum ResolvedTypeShape {
     #[default]
     Any,
@@ -81,7 +75,7 @@ pub(crate) enum ResolvedTypeShape {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum StructuralPathStep {
     NamedArg(usize),
     ResourceInner,
@@ -93,7 +87,7 @@ pub(crate) enum StructuralPathStep {
     StructField(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum StructuralOccurrence {
     Param {
         param_index: usize,
@@ -111,23 +105,4 @@ pub(crate) enum StructuralOccurrence {
         param_index: usize,
         path: Vec<StructuralPathStep>,
     },
-}
-
-/// (De)serialize `HashMap<TypeVarId, Ty>` as a `Vec<(TypeVarId, Ty)>` so the
-/// numeric key survives serde_json, which forbids non-string object keys.
-mod constraints_as_seq {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::collections::HashMap;
-
-    use crate::types::{Ty, TypeVarId};
-
-    type Constraints = HashMap<TypeVarId, Ty>;
-
-    pub fn serialize<S: Serializer>(map: &Constraints, s: S) -> Result<S::Ok, S::Error> {
-        map.iter().collect::<Vec<_>>().serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Constraints, D::Error> {
-        Ok(Vec::<(TypeVarId, Ty)>::deserialize(d)?.into_iter().collect())
-    }
 }

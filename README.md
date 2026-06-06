@@ -493,20 +493,14 @@ fz dump fixtures/quicksort/input.fz --emit outcomes   # what happened at each ca
 fz dump fixtures/quicksort/input.fz --emit stats      # compiler counters
 ```
 
-Module interface artifacts can be written during a build:
+Module interfaces are compiler facts, not a stored sidecar format.
+`fz dump --emit interfaces` is the public-contract view for a compile, and
+`--strict-interfaces` requires explicit `@spec`s on public exports.
 
-```sh
-fz build --emit-fzi --artifact-root build/fz path/to/input.fz -o path/to/app
-```
-
-This writes `.fzi` files under `build/fz/interfaces/...` and requires public
-module exports to have explicit specs.
-
-Frontend-only dump commands can load those interfaces without provider source:
-
-```sh
-fz dump --emit interfaces --interface Math --artifact-root build/fz consumer.fz
-```
+Run/build/dump commands always compile the root source directly. If the program
+pulls in built-in runtime modules such as `Utf8` or `Enum`, the execution graph
+loads their checked-in source on demand and links that reachable set into the
+same image.
 
 These answer the questions you actually have while changing things:
 *Did this call get folded? Did this function get specialized? Did

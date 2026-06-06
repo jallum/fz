@@ -76,7 +76,7 @@ pub fn new() -> DefaultTypes {
 /// Opaque handle to a type. Inner representation is private and is
 /// expected to change (interned id, BDD root, ...) without consumer
 /// impact. Consumers must go through `Types` for every operation.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Ty(pub(crate) Arc<Descr>);
 
 /// Semantic specialization-key slot.

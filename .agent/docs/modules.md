@@ -1,4 +1,4 @@
-# Modules, Interfaces, and Artifacts
+# Modules, Interfaces, and Runtime Sources
 
 A module is a unit of separate compilation. The subsystem behind
 `src/modules/mod.rs` answers four questions: who exists, what may others depend
@@ -26,12 +26,9 @@ The pieces that matter:
   from any dotted display text.
 - `interface`: `ModuleInterface`, the public contract, and the strict-export
   validator.
-- `artifact`: `FziArtifact` (`.fzi`) and `FzoArtifact` (`.fzo`) serde envelopes
-  with ABI and fingerprint checks.
-- `artifact_store`: `ModuleName` -> filesystem path policy and `.fzi`/`.fzo` IO.
-- `graph`: `ModuleGraphLoader`, which walks from root interfaces to the provider
-  artifacts a runnable image needs.
-- `pipeline`: provider-aware frontend, execution-graph preparation, and LTO.
+- `graph`: `ModuleGraphLoader`, which walks from root interfaces to the
+  reachable runtime-library modules a runnable image needs.
+- `pipeline`: source-first frontend, execution-graph preparation, and LTO.
 - `runtime_library`: built-in standard-library modules as separate-compilation
   inputs.
 
@@ -59,8 +56,8 @@ arity:  usize
 ```
 
 `Math.add/2` is what `ExportKey::fmt` prints; the key itself is
-`ExportKey { module: Math, name: "add", arity: 2 }`. Link and artifact code key
-on the typed value.
+`ExportKey { module: Math, name: "add", arity: 2 }`. Link and interface code
+key on the typed value.
 
 ## Interface Emission
 
@@ -134,146 +131,43 @@ Resolution behavior:
 The flattened dotted spelling is the IR rendering; boundary code keys on the
 typed `ModuleName` / `ExportKey`.
 
-## Artifacts: `.fzi` and `.fzo`
-
-`modules::artifact` owns two serde envelopes. Each serializes as a one-line
-magic header (`fzi` / `fzo`) followed by pretty JSON. `decode` rejects a wrong
-header; the typed deserializer plus explicit ABI/fingerprint checks reject
-incompatible content. Every load failure is an `ArtifactFormatError` rendered as
-an `artifact/invalid` diagnostic.
-
-### `.fzi` — the interface artifact
-
-`FziArtifact` is the public contract artifact and nothing else:
-
-```text
-compiler_abi_version:         FZ_ARTIFACT_ABI_VERSION
-runtime_abi_version:          FZ_RUNTIME_ARTIFACT_ABI_VERSION
-interface_fingerprint_digest: hex digest of interface_fingerprint
-interface_fingerprint:        Vec<String>
-interface:                    ModuleInterface
-```
-
-`InterfaceFn.specs` and protocol-callback specs are ordered overload sets;
-every `@spec` arrow appears in the fingerprint in source order, so a separate
-compile sees the same correlated arrows the source module did.
-
-`FziArtifact::deserialize` rejects: wrong/missing header; unsupported
-compiler / runtime / interface ABI; malformed JSON or typed fields; a
-fingerprint digest that does not match the recomputed digest; fingerprint
-inputs that disagree with `interface.fingerprint_inputs`; and (when the caller
-passes one) an expected fingerprint that does not match. Strict-export
-validation is separate from deserialization — an export can deserialize without
-a spec, but the emit path validates first.
-
-### `.fzo` — the implementation-unit envelope
-
-`FzoArtifact` carries an implementation, not a contract. The graph loader
-consumes it only after interface compatibility is established:
-
-```text
-compiler_abi_version:           FZ_ARTIFACT_ABI_VERSION
-runtime_abi_version:            FZ_RUNTIME_ARTIFACT_ABI_VERSION
-module:                         Option<ModuleName>
-unit_payload:                   FzoUnitPayload { format, body }
-required_imports:               Vec<ExportKey>
-implementation_fingerprint:     Vec<String>
-implementation_fingerprint_digest: hex digest over the payload
-interface_fingerprint_digest:   hex digest of interface_fingerprint
-interface_fingerprint:          Vec<String>
-```
-
-`required_imports` is derived from the unit's `external_call_edges`, so an
-imported module's `.fzo` can be emitted without machine-codegenning its
-unresolved external calls. The payload format is one of three constants:
-
-- `FZO_PAYLOAD_IR_UNIT_V1` (`fz-ir-unit-v1`) — a structural IR unit: the
-  serialized `fz_ir::Module` plus every `PortableSourceFile` its spans
-  reference (each with name, bytes, FNV content hash, and the provider's
-  `FileId`). `FzoArtifact::from_unit_ir` builds it; this is what `fz build`
-  emits.
-- `FZO_PAYLOAD_RUNTIME_MODULE_V1` (`fz-runtime-module-v1`) — built-in
-  runtime-library source text, materialized per execution context.
-- `FZO_PAYLOAD_SOURCE_UNIT_V1` (`fz-source-unit-v1`) — checked source text;
-  built by `from_unit_source` for tests.
-
-`implementation_fingerprint_digest` is recomputed at load via `payload_digest`
-(FNV over format tag + full body). It catches a payload that was swapped for a
-different-but-still-valid-JSON body while other fields stayed stale.
-
-Two reader gates split the payloads by how they are consumed:
-
-- `source_unit_text` returns the body for the two source-shaped formats
-  (`fz-source-unit-v1`, `fz-runtime-module-v1`) and rejects anything else, so
-  inspection-only payloads cannot masquerade as materializable source.
-- `ir_unit_payload` decodes a `fz-ir-unit-v1` body back into its `Module` +
-  `sources`, and rejects any other format.
-
-`FzoArtifact::deserialize` rejects: wrong/missing header; compiler/runtime ABI
-mismatch; empty payload format or body; an interface fingerprint digest or
-fingerprint mismatch; and a payload digest mismatch.
-
-### Store paths
-
-`modules::artifact_store::ArtifactStore` maps typed `ModuleName` values to
-deterministic paths under a root (`DEFAULT_ARTIFACT_ROOT` is `build/fz`):
-
-```text
-build/fz/interfaces/<parent segments>/<last segment>.fzi
-build/fz/objects/<parent segments>/<last segment>.fzo
-```
-
-```text
-Utf8        -> build/fz/interfaces/Utf8.fzi          / objects/Utf8.fzo
-Outer.Inner -> build/fz/interfaces/Outer/Inner.fzi   / objects/Outer/Inner.fzo
-```
-
-`path_for` consumes `ModuleName::segments()`; it never splits dotted text.
-`validate_path_segment` requires each segment to be non-empty, not `.` or `..`,
-and ASCII alphanumeric or `_`, so `.`, separators, spaces, and punctuation are
-rejected before any filesystem touch.
-
-The store owns the small IO helpers and emits process telemetry as it goes:
-`write_fzi_artifacts` (`fzi_written`), `write_fzo_artifacts` (`fzo_written`),
-`load_interface_table` (`fzi_loaded`), and `load_fzo_artifact` (`fzo_loaded`).
-`load_fzi_artifact` reads one `.fzi` without emitting an event; the graph loader
-calls it directly while walking the import tree.
-
-## Reachable Graph Loading
+## Runtime Reachability
 
 `modules::graph::ModuleGraphLoader::load_reachable` starts from the root
-`InterfaceTable` plus explicit provider-root `ModuleName`s and produces a
-`ModuleGraph { interfaces, objects }`.
+`InterfaceTable` plus explicit runtime-root `ModuleName`s and produces a
+`ModuleGraph { interfaces, runtime_modules }`.
 
 It walks a worklist by public contract:
 
 1. Queue each root's imports and the protocols of its `protocol_impls` (a
    `defimpl` depends on the protocol namespace as a public fact).
 2. Pop a module. A runtime-library module is resolved through
-   `runtime_library::interface` before the filesystem store; a user module is
-   loaded as a provider `.fzi`. Either way its imports and protocol-impl
+   `runtime_library::interface`; when found, its imports and protocol-impl
    protocols are queued.
-3. After all interfaces are reachable, load one `.fzo` per reachable module:
-   runtime modules contribute their built-in `fz-runtime-module-v1` object, user
-   modules load their `.fzo` from the store. Each user `.fzo` is validated
-   against the `.fzi` fingerprint inputs that made the module reachable.
+3. For each loaded runtime interface, queue any extra implementation-only
+   runtime imports and any runtime modules that implement newly discovered
+   protocols.
 
 Two refinements:
 
 - A protocol declaration already present in a loaded interface is a local fact.
-  If a provider artifact `Contracts` owns nested protocol `Contracts.Collectable`,
-  that protocol is not reloaded as a sibling `.fzi`. Protocol-impl callback
-  namespaces are export namespaces inside the defining module's object, not
-  separate artifact roots.
+  If `Contracts` owns nested protocol `Contracts.Collectable`, that protocol is
+  not reloaded as a sibling module. Protocol-impl callback namespaces are
+  export namespaces inside the defining module, not separate graph roots.
 - Runtime-library implementation bodies may call other runtime modules that the
   interface does not advertise. `enqueue_runtime_implementation_imports` uses
   `runtime_library::implementation_dependencies` to scan checked-in
   runtime-library source for those references. This is consulted only for
-  runtime modules; user implementation dependencies are carried by imports and
-  provider roots.
+  runtime modules.
+- Runtime protocol implementation providers are discovered by comparing loaded
+  protocol namespaces against the built-in runtime interface table. That keeps
+  callback namespaces inside their owner modules while still loading reachable
+  implementations such as `Enumerable.List`.
 
-Unused artifacts under the root are never read, so a stray `.fzo` for an
-unreachable module cannot corrupt a build.
+There is no user-module filesystem walk in this phase. User modules are present
+only when they were part of the explicit source world compiled by the frontend;
+an import of a missing user module fails in resolution instead of consulting a
+sidecar store.
 
 ## Execution Graph and Linking
 
@@ -283,30 +177,22 @@ unreachable module cannot corrupt a build.
 `checked_module_for_mode` runs the frontend, collects the program's own module
 interfaces (emitting `interfaces_collected`), and in `Lto` mode validates and
 erases boundaries before planning. It yields a `CheckedModule` carrying the
-module, its `ModulePlan`, its own interfaces, the external provider interfaces,
-the `SourceMap`, and diagnostics.
+module, its `ModulePlan`, its own interfaces, the external interfaces, the
+`SourceMap`, and diagnostics.
 
-`prepare_execution_graph` -> `load_provider_units` does the provider work:
+`prepare_execution_graph` does source-first execution prep:
 
-- Provider roots are the explicit `--interface`/`--provider` modules, the
-  prelude-required modules, and any non-core runtime module that appears in the
-  external interfaces.
-- `ModuleGraphLoader::load_reachable` returns the graph (emitting
+- It computes runtime roots from `runtime_library::prelude_required_modules()`
+  plus any non-core runtime modules already named in the checked module's
+  `external_interfaces`.
+- `ModuleGraphLoader::load_reachable` returns the interface graph (emitting
   `graph_loaded`).
-- Each reachable object becomes a `CompiledUnit`. A `fz-ir-unit-v1` object is
-  materialized structurally; any other (source-shaped) object is recompiled
-  through the frontend.
-
-`materialize_ir_unit` is the structural load — it makes a provider available
-without recompiling: decode the `Module` + `sources`, intern those source files
-into the consumer `SourceMap`, remap the module's `FileId`s onto the interned
-ids, `rebuild_indices` for the serde-dropped derived maps, and
-`plan_module_with_role(..., "artifact_materialization")` the loaded unit. That
-load-time plan regenerates the cross-module/protocol call facts the linker
-needs, and because source identity is portable, the provider's spans render
-real diagnostics against its own source after the merge. It emits
-`unit_materialized` with `kind: "ir-unit"`; the recompile branch emits the same
-event with `kind: "source"`.
+- The root `CheckedModule` becomes the first `CompiledUnit`.
+- Each reachable runtime module is recompiled from its registered source text
+  through `compile_source_with_interface_table(...)`, using the full graph
+  interface table so runtime modules resolve imports the same way user modules
+  do. Each of those units emits `unit_materialized` with
+  `kind: "runtime-source"`.
 
 With the units in hand, `link_execution_module` calls `link_ir_units` when there
 is more than one unit (otherwise it is the single unit's `code`). The pipeline
@@ -335,15 +221,15 @@ The checks, and the `ImageLinkError` each produces:
 (`ImageLinkError` also has a `RuntimeMetadata` variant for runtime-table link
 failures.)
 
-`copy_planner_facts` carries provider plans forward on a best-effort basis: each
+`copy_planner_facts` carries upstream plans forward on a best-effort basis: each
 unit's `module_plan` is remapped and merged into an internal `linked_plan` that
 only needs to cover the edges the linker rewrites. Because the pipeline plans
 the linked module again before codegen, a missing upstream planner fact is not a
 link error.
 
-`materialize_ir_unit`-backed providers and the consumer link, plan as one
-module, and run with no unresolved edges. Codegen rejects any edge that survives
-to it: `unresolved external module call `Dep.run/0``.
+The runtime-source units and the consumer link, plan as one module, and run
+with no unresolved edges. Codegen rejects any edge that survives to it:
+`unresolved external module call `Dep.run/0``.
 
 ### Compiled unit, program, image
 
@@ -419,10 +305,9 @@ placeholder `FnId` until link or LTO resolves the edge.
 
 ## Runtime Library Modules
 
-`runtime_library` owns the built-in standard-library source set and exposes each
-module as the same `.fzi`/`.fzo` facts a user library would provide. The runtime
-has two layers: primitive `extern "C"` contracts implemented by Rust/C symbols,
-and ordinary FZ modules built on top of them.
+`runtime_library` owns the built-in standard-library source set. The runtime has
+two layers: primitive `extern "C"` contracts implemented by Rust/C symbols, and
+ordinary FZ modules built on top of them.
 
 `RUNTIME_MODULE_SOURCES` in `src/modules/runtime_library.rs` registers each
 module with a `RuntimeModuleRole`:
@@ -452,16 +337,14 @@ How a runtime module enters a compile:
 - `runtime_library::interface` answers interface requests from imports, aliases,
   and qualified references — including the qualified runtime calls macros emit,
   so operator sugar can depend on `List` without every program importing it.
-- `runtime_library::artifacts` builds the deterministic `.fzi`/`.fzo` envelopes
-  for every built-in module and root protocol namespace; the objects are
-  `fz-runtime-module-v1` source payloads.
-- A reachable non-core runtime module contributes its `.fzo` to
+- `runtime_library::source` returns the checked-in source text for a reachable
+  runtime module; `prepare_execution_graph` recompiles that source into a
+  `CompiledUnit`.
+- A reachable non-core runtime module contributes its interface and source to
   `ModuleGraphLoader`; the core prelude is already prepended during lowering.
 
 Built-in interfaces are requested defaults. A user source module with the same
-name is collected from the current program and wins for that compile, while
-artifact paths stay module-name based — so a distributor avoids shipping a user
-and a built-in artifact under one module identity in one root.
+name is collected from the current program and wins for that compile.
 
 To add a runtime-library module: add `src/modules/runtime_library/<name>.fz`
 holding exactly one `defmodule Name do ... end` (or one root
@@ -494,8 +377,7 @@ via `fz dump --emit stats`:
 
 ```text
 fz.module.interfaces_collected
-fz.module.fzi_written / fzi_loaded / fzo_written / fzo_loaded
-fz.module.unit_materialized   (kind = ir-unit | source)
+fz.module.unit_materialized   (kind = runtime-source)
 fz.module.graph_loaded
 fz.link.succeeded / fz.link.failed
 fz.lto.interfaces_validated / fz.lto.boundaries_erased
@@ -503,28 +385,23 @@ fz.lto.interfaces_validated / fz.lto.boundaries_erased
 
 ## Command Surface
 
-`fz build --emit-fzi --emit-fzo --artifact-root build/fz in.fz -o app` writes
-artifacts: either emit flag first runs strict public export-spec validation;
-`--emit-fzi` writes one `.fzi` per module; `--emit-fzo` writes the root unit as a
-structural `fz-ir-unit-v1` object whose sources are the unit's referenced files.
+`fz dump --emit interfaces` is the public contract surface; add
+`--strict-interfaces` to require explicit specs on public exports. `fz run`,
+`fz build`, and `fz dump` always compile the root source directly and then load
+reachable built-in runtime modules from checked-in source when the execution
+graph needs them.
 
-`fz run` and `fz build` accept `--interface <Module>` (alias `--provider`) and
-`--artifact-root <dir>`. `--interface` loads a provider's `.fzi` into the
-resolver's external `InterfaceTable`, which proves provider-source-free import
-validation; the current file's own interfaces still override external entries
-for a shared name. Running or building the provider's body is the graph/linker
-stage's job: those commands load reachable `.fzo` payloads through
-`ModuleGraphLoader`, materialize provider `CompiledUnit`s, link, and reject
-missing or duplicate providers before execution/codegen.
+There are no `--emit-fzi`, `--emit-fzo`, `--interface`, `--provider`, or
+`--artifact-root` flags anymore. User-module separate compilation is source
+explicit: if a program needs another user module, that module must be part of
+the source world being compiled.
 
 `fz repl` is session-eager: it compiles against source already entered into the
 REPL world plus built-in runtime-library interfaces. `fz repl --script` has one
-whole-file root, so it takes the provider-free execution-graph path and can
-materialize reachable built-in runtime modules. REPL commands take no
-`--interface`, `--provider`, or `--artifact-root` and load no user provider
-artifacts; artifact-backed imports belong to whole-file `fz run` / `fz build`,
-where root source and provider roots are explicit.
+whole-file root, so it takes the source-first execution-graph path and can
+materialize reachable built-in runtime modules. REPL commands load no user
+module store because there is none.
 
-Tests follow the same split: assert public contracts with `.fzi` artifacts or
-`fz dump --emit interfaces`; assert implementation-unit and graph behavior with
-`.fzo` round-trips and provider-source-free `run`/`build` fixtures.
+Tests follow the same split: assert public contracts with
+`fz dump --emit interfaces`; assert execution-graph and linking behavior with
+source-first `run` / `build` / `repl --script` fixtures.
