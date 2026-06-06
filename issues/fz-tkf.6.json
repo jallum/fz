@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-06T14:35:05Z",
   "created": "2026-06-06T14:29:45Z",
   "description": "Refactor compiler::source::SourceMap so Code carries its id and source bytes while SourceMap maintains a separate id-to-name map. Make add_code accept an optional name and update consumers, tests, and docs accordingly.",
   "id": "fz-tkf.6",
   "labels": [],
   "parent": "fz-tkf",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Separate code bytes from source names in SourceMap",
   "type": "task",
-  "updated_at": "2026-06-06T14:29:45Z"
+  "updated_at": "2026-06-06T14:35:05Z"
 }
