@@ -2,7 +2,7 @@ use super::*;
 use crate::diag::codes;
 use crate::diag::diagnostic::Severity;
 use crate::fz_ir::{FnCategory, Term};
-use crate::modules::identity::{ExportKey, ModuleName};
+use crate::modules::identity::{Mfa, ModuleName};
 use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn, InterfaceSpec, ModuleInterface};
 use crate::telemetry::{ConfiguredTelemetry, Event, Handler, Value};
 use std::cell::RefCell;
@@ -230,7 +230,7 @@ end
     assert_eq!(out.module.external_call_edges.len(), 1);
     assert_eq!(
         out.module.external_call_edges[0].target,
-        ExportKey::new(ModuleName::from_segments(vec!["Math".to_string()]), "add", 2,)
+        Mfa::new(ModuleName::from_segments(vec!["Math".to_string()]), "add", 2,)
     );
 }
 

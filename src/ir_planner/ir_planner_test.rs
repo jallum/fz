@@ -21,7 +21,7 @@ use crate::fz_ir::{
 use crate::ir_codegen::compile_planned;
 use crate::ir_dest::{lower_list_destinations, lower_map_destinations, lower_tuple_destinations};
 use crate::ir_lower::lower_program;
-use crate::modules::identity::{ExportKey, ModuleName};
+use crate::modules::identity::{Mfa, ModuleName};
 use crate::modules::pipeline::{CompileMode, checked_module_for_mode, prepare_execution_graph};
 use crate::parser::{Parser, lexer::Lexer};
 use crate::specs::{
@@ -5470,7 +5470,7 @@ end
     let (mut t, mut m, mt) = plan_protocol_src(src);
     let protocol = ModuleName::parse_dotted("Sizer").expect("protocol name");
     let target = ImplTarget::module(ModuleName::parse_dotted("Float").expect("target name"));
-    let export = ExportKey::new(
+    let export = Mfa::new(
         ModuleName::parse_dotted("Provider.Sizer.Float").expect("provider module"),
         "size",
         1,

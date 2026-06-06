@@ -104,13 +104,13 @@ impl fmt::Display for QualifiedName {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ExportKey {
+pub struct Mfa {
     pub module: ModuleName,
     pub name: String,
     pub arity: usize,
 }
 
-impl ExportKey {
+impl Mfa {
     pub fn new(module: ModuleName, name: impl Into<String>, arity: usize) -> Self {
         Self {
             module,
@@ -120,7 +120,7 @@ impl ExportKey {
     }
 }
 
-impl fmt::Display for ExportKey {
+impl fmt::Display for Mfa {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}.{}/{}", self.module, self.name, self.arity)
     }

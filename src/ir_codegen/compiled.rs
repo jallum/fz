@@ -10,7 +10,7 @@ use crate::ir_planner::fn_types::{
     BodyKey, CallEdgePlan, CallEdgeTarget, CallableCapability, ReturnContract, ReturnStrategy, SpecKey,
 };
 use crate::ir_planner::{ModulePlan, SpecPlan};
-use crate::modules::identity::{ExportKey, ModuleName};
+use crate::modules::identity::{Mfa, ModuleName};
 use crate::modules::interface::{InterfaceFn, ModuleInterface};
 use crate::telemetry::Telemetry;
 use cranelift_jit::JITModule;
@@ -152,19 +152,10 @@ unsafe impl Send for CompiledImage {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageLinkError {
-    InterfaceFingerprintMismatch {
-        module: Option<ModuleName>,
-    },
-    UnresolvedExternalCalls {
-        module: Option<ModuleName>,
-    },
-    MissingImport {
-        requester: Option<ModuleName>,
-        import: ExportKey,
-    },
-    DuplicateProvider {
-        import: ExportKey,
-    },
+    InterfaceFingerprintMismatch { module: Option<ModuleName> },
+    UnresolvedExternalCalls { module: Option<ModuleName> },
+    MissingImport { requester: Option<ModuleName>, import: Mfa },
+    DuplicateProvider { import: Mfa },
     RuntimeMetadata(RuntimeMetadataLinkError),
 }
 
@@ -218,7 +209,7 @@ pub fn link_ir_units(units: &[CompiledUnit]) -> Result<Module, ImageLinkError> {
 struct IrUnitLinker {
     linked: Module,
     linked_plan: Option<ModulePlan>,
-    export_map: BTreeMap<ExportKey, FnId>,
+    export_map: BTreeMap<Mfa, FnId>,
 }
 
 impl IrUnitLinker {
@@ -416,7 +407,7 @@ impl IrUnitLinker {
             return Ok(());
         };
         for export in &unit.exports {
-            let key = ExportKey::new(module.clone(), export.name.clone(), export.arity);
+            let key = Mfa::new(module.clone(), export.name.clone(), export.arity);
             let qualified = format!("{}.{}", module, export.name);
             let target = unit
                 .code
@@ -766,7 +757,7 @@ pub struct RuntimeUnitMetadata {
     pub schemas: Vec<Schema>,
     pub frame_sizes: Vec<u32>,
     pub exported_symbols: BTreeMap<String, u32>,
-    pub imported_refs: Vec<ExportKey>,
+    pub imported_refs: Vec<Mfa>,
     pub static_closures: Vec<RuntimeStaticClosure>,
     pub halt_kinds: BTreeMap<u32, u32>,
     pub entrypoints: RuntimeEntrypoints,
@@ -854,7 +845,7 @@ pub struct RuntimeImageMetadata {
     pub schemas: Vec<Schema>,
     pub frame_sizes: Vec<u32>,
     pub exported_symbols: BTreeMap<String, u32>,
-    pub imported_refs: Vec<ExportKey>,
+    pub imported_refs: Vec<Mfa>,
     pub static_closures: Vec<(usize, RuntimeStaticClosure)>,
     pub halt_kinds: BTreeMap<u32, u32>,
     pub entrypoints: RuntimeEntrypoints,

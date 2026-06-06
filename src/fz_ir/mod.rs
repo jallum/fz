@@ -21,7 +21,7 @@ use crate::ast::{BitType, Endian};
 use crate::diag::Span;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternSubjectRef};
 use crate::frontend::protocols::ProtocolRegistry;
-use crate::modules::identity::{ExportKey, ModuleName};
+use crate::modules::identity::{Mfa, ModuleName};
 use crate::modules::interface::ModuleInterface;
 use crate::specs::{ResolvedSpecSet, StructuralCorrespondenceGroup};
 use crate::types::{KeySlot, Nominals, Ty, ty_display};
@@ -176,7 +176,7 @@ pub struct CallsiteId {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExternalCallEdge {
     pub callsite: CallsiteId,
-    pub target: ExportKey,
+    pub target: Mfa,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -188,7 +188,7 @@ pub struct ProtocolCallTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExternalLinkError {
-    MissingTarget(ExportKey),
+    MissingTarget(Mfa),
     MissingCallsite(CallsiteId),
 }
 
@@ -1510,7 +1510,7 @@ impl Module {
 
     pub fn rewrite_external_calls_for_lto(
         &mut self,
-        exports: &BTreeMap<ExportKey, FnId>,
+        exports: &BTreeMap<Mfa, FnId>,
     ) -> Result<usize, ExternalLinkError> {
         let edges = take(&mut self.external_call_edges);
         let mut rewritten = 0;
@@ -1528,10 +1528,7 @@ impl Module {
         Ok(rewritten)
     }
 
-    pub fn interface_export_map(
-        &self,
-        interfaces: &BTreeMap<ModuleName, ModuleInterface>,
-    ) -> BTreeMap<ExportKey, FnId> {
+    pub fn interface_export_map(&self, interfaces: &BTreeMap<ModuleName, ModuleInterface>) -> BTreeMap<Mfa, FnId> {
         let mut out = BTreeMap::new();
         for (module, interface) in interfaces {
             for export in &interface.exports {
@@ -1541,7 +1538,7 @@ impl Module {
                     .iter()
                     .find(|f| f.name == name && f.block(f.entry).params.len() == export.arity)
                 {
-                    out.insert(ExportKey::new(module.clone(), export.name.clone(), export.arity), f.id);
+                    out.insert(Mfa::new(module.clone(), export.name.clone(), export.arity), f.id);
                 }
             }
             for protocol_impl in &interface.protocol_impls {

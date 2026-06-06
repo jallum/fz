@@ -113,7 +113,7 @@ target's last segment to a concrete type shape: `List` → `list(element)`, `Int
 and any other name → `opaque_of("impl-target::<name>")` (a named source struct such
 as `Range`). Display spellings (`ImplTarget::display_name`) are for diagnostics and
 source syntax; compiler facts use the `ImplTarget` identity, just as linking uses
-`ModuleName` and `ExportKey` instead of dotted strings.
+`ModuleName` and `Mfa` instead of dotted strings.
 
 ## Open And Closed Domains
 
@@ -146,8 +146,8 @@ and returns one of:
 - `ProtocolDispatch::Local(SpecKey, n_params)` — a matching impl lives in this unit;
   the edge becomes an ordinary direct call (`CallEdgeTarget::Local`) to that impl
   callback.
-- `ProtocolDispatch::External { target: ExportKey, input, demand }` — the matching
-  callback is known by `ExportKey` but its body lives in another unit until module
+- `ProtocolDispatch::External { target: Mfa, input, demand }` — the matching
+  callback is known by `Mfa` but its body lives in another unit until module
   linking; recorded as `CallEdgeTarget::External`.
 
 When no impl matches, `protocol_dispatch_key` returns `None` and the unplanned
@@ -210,7 +210,7 @@ codegen-required planner facts across the unit boundary: call-edge dispatch fact
 return contracts, function constant facts, extern marshal facts, and protocol
 implementation edge facts.
 
-`ExternalCallEdge` (a `CallsiteId` plus an `ExportKey` target) is the
+`ExternalCallEdge` (a `CallsiteId` plus an `Mfa` target) is the
 provider-boundary call edge. A protocol callback that crosses a provider boundary
 uses the same model: the impl callback is known by typed export identity before its
 local `FnId` exists. `IrUnitLinker::resolve_external_call_edges_in_plan` rewrites
@@ -228,7 +228,7 @@ Protocol facts extend existing compiler ownership rather than a parallel subsyst
 - `frontend/protocols.rs` owns `ProtocolRegistry` — `protocols:
   BTreeMap<ModuleName, ProtocolDecl>` and `impls: BTreeMap<ProtocolImplKey,
   ProtocolImplFact>`. A `ProtocolImplFact` carries the protocol, the `ImplTarget`,
-  the callbacks keyed by `(name, arity)` → `ExportKey`, and each impl callback's
+  the callbacks keyed by `(name, arity)` → `Mfa`, and each impl callback's
   declared `@spec`s (`callback_specs`, empty for interface-sourced impls).
 - `resolve::flatten_modules` collects protocol facts while source-level protocol AST
   is available: it validates duplicate impls and callback coverage

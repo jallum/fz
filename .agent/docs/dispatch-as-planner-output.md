@@ -120,7 +120,7 @@ part of the proof.
 
 A `CallEdgePlan` carries a `CallEdgeTarget` and an optional `ReturnContract`.
 The target is `Local(SpecKey)` for an in-module body or
-`External { target: ExportKey, input, demand }` for a provider boundary.
+`External { target: Mfa, input, demand }` for a provider boundary.
 
 `Cont` edges come from the same map. When the activation kernel observed the
 callee input for a callsite, `continuation_key` uses that full callee input
@@ -132,7 +132,7 @@ capability still comes from the producing call's result knowledge when that
 carries a more precise `KnownFn`/`KnownClosure` fact than the key's first type.
 
 Provider and protocol edges ride the same shape. Before link, an imported edge
-is `External`, naming an `ExportKey` plus public input and demand. The synthetic
+is `External`, naming an `Mfa` plus public input and demand. The synthetic
 `__external__.*` body that `ir_lower` emits is only a lowering anchor, not a real
 body to plan through. `Module::rewrite_external_calls_for_lto` resolves each
 `ExternalCallEdge` to a local `FnId` and rewrites the call site in the IR; the

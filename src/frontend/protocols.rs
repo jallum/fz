@@ -7,7 +7,7 @@
 
 use crate::ast::SpecDecl;
 use crate::diag::Span;
-use crate::modules::identity::{ExportKey, ModuleName};
+use crate::modules::identity::{Mfa, ModuleName};
 use crate::modules::interface::{InterfaceSpec, ModuleInterface};
 use crate::types::{Ty, TypeVarId, Types};
 use std::collections::BTreeMap;
@@ -36,7 +36,7 @@ pub struct InterfaceProtocolCallback {
 pub struct InterfaceProtocolImpl {
     pub protocol: ModuleName,
     pub target: ImplTarget,
-    pub callbacks: Vec<ExportKey>,
+    pub callbacks: Vec<Mfa>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,7 +58,7 @@ pub struct ProtocolCallbackFact {
 pub struct ProtocolImplFact {
     pub protocol: ModuleName,
     pub target: ImplTarget,
-    pub callbacks: BTreeMap<(String, usize), ExportKey>,
+    pub callbacks: BTreeMap<(String, usize), Mfa>,
     /// Declared `@spec` of each impl callback that carries one, keyed by
     /// `(name, arity)`. Empty for interface-sourced impls (the interface does
     /// not carry impl callback specs) and for callbacks declared without a

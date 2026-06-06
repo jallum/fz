@@ -1,7 +1,7 @@
 use super::*;
 use crate::diag::Span;
 use crate::frontend::protocols::{ImplTarget, InterfaceProtocolImpl};
-use crate::modules::identity::{ExportKey, ModuleName};
+use crate::modules::identity::{Mfa, ModuleName};
 use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn, InterfaceImport, ModuleInterface};
 
 fn module(name: &str) -> ModuleName {
@@ -50,7 +50,7 @@ fn graph_loader_keeps_protocol_impl_callback_namespaces_inside_owner_module() {
     app.protocol_impls.push(InterfaceProtocolImpl {
         protocol: module("Enumerable"),
         target: ImplTarget::module(module("List")),
-        callbacks: vec![ExportKey::new(module("EnumerableList"), "reduce", 3)],
+        callbacks: vec![Mfa::new(module("EnumerableList"), "reduce", 3)],
     });
     let mut roots = InterfaceTable::new();
     roots.insert(app.name.clone(), app);

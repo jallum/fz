@@ -9,7 +9,7 @@ use crate::ast::{
 };
 use crate::diag::{Diagnostic, Span, codes};
 use crate::frontend::protocols::{ImplTarget, InterfaceProtocol, InterfaceProtocolCallback, InterfaceProtocolImpl};
-use crate::modules::identity::{ExportKey, ModuleName};
+use crate::modules::identity::{Mfa, ModuleName};
 use crate::parser::lexer::Tok;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -273,7 +273,7 @@ fn interface_protocol_impl(
         .items
         .iter()
         .filter_map(|item| match &**item {
-            Item::Fn(def) => Some(ExportKey::new(
+            Item::Fn(def) => Some(Mfa::new(
                 impl_module.clone(),
                 def.name.clone(),
                 def.clauses.first().map(|c| c.params.len()).unwrap_or(0),

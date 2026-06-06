@@ -27,7 +27,7 @@ use crate::frontend::protocols::{
     ImplTarget, PROTOCOL_ELEM_VAR, ProtocolCallbackFact, ProtocolDecl, ProtocolImplFact, ProtocolImplKey,
     ProtocolRegistry, impl_target_type, impl_target_type_with_element, protocol_domain_tag,
 };
-use crate::modules::identity::{ExportKey, ModuleName, QualifiedName};
+use crate::modules::identity::{Mfa, ModuleName, QualifiedName};
 use crate::modules::interface::{ModuleInterface, collect_from_program};
 use crate::modules::runtime_library::{interface, root_type_env};
 use crate::telemetry::Telemetry;
@@ -52,7 +52,7 @@ pub enum ResolveError {
         duplicate_span: Span,
     },
     DuplicateExport {
-        export: ExportKey,
+        export: Mfa,
         first_span: Span,
         duplicate_span: Span,
     },
@@ -61,7 +61,7 @@ pub enum ResolveError {
         span: Span,
     },
     UnknownImport {
-        export: ExportKey,
+        export: Mfa,
         span: Span,
     },
     ConflictingImport {
@@ -998,10 +998,7 @@ fn protocol_decl<T: Types<Ty = Ty>>(
     })
 }
 
-type ProtocolImplCallbacks = (
-    BTreeMap<(String, usize), ExportKey>,
-    BTreeMap<(String, usize), Vec<SpecDecl>>,
-);
+type ProtocolImplCallbacks = (BTreeMap<(String, usize), Mfa>, BTreeMap<(String, usize), Vec<SpecDecl>>);
 
 fn protocol_impl_callbacks(
     impl_module: &ModuleName,
@@ -1015,10 +1012,7 @@ fn protocol_impl_callbacks(
                 let arity = def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
                 let key = (def.name.clone(), arity);
                 if callbacks
-                    .insert(
-                        key.clone(),
-                        ExportKey::new(impl_module.clone(), def.name.clone(), arity),
-                    )
+                    .insert(key.clone(), Mfa::new(impl_module.clone(), def.name.clone(), arity))
                     .is_some()
                 {
                     return Err(ResolveError::ProtocolError {
@@ -1462,7 +1456,7 @@ fn collect_module_fns_recursive(
         match &**item {
             Item::Fn(def) => {
                 let arity = def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
-                let export = ExportKey::new(path.clone(), def.name.clone(), arity);
+                let export = Mfa::new(path.clone(), def.name.clone(), arity);
                 let fns = &mut out.get_mut(&path).expect("module fn map was inserted").fns;
                 let key = (def.name.clone(), arity);
                 if let Some(first_span) = fns.insert(key, def.name_span) {
@@ -1772,7 +1766,7 @@ fn validate_import_filter(
     for (name, arity) in filter {
         if !target_exports.contains(&(name.clone(), *arity)) {
             return Err(ResolveError::UnknownImport {
-                export: ExportKey::new(module.clone(), name.clone(), *arity),
+                export: Mfa::new(module.clone(), name.clone(), *arity),
                 span,
             });
         }

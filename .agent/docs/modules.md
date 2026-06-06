@@ -22,7 +22,7 @@ proof itself.
 
 The pieces that matter:
 
-- `identity`: typed `ModuleName` / `ExportKey` — the link identity, separate
+- `identity`: typed `ModuleName` / `Mfa` — the link identity, separate
   from any dotted display text.
 - `interface`: `ModuleInterface`, the public contract, and the strict-export
   validator.
@@ -47,7 +47,7 @@ strings are display spellings, not the identity.
 - `QualifiedName` is `{ module: Option<ModuleName>, name: String }` — a
   possibly module-qualified function or type name that bridges flattened IR
   spellings.
-- `ExportKey` is the link identity of a public function:
+- `Mfa` is the link identity of a public function:
 
 ```text
 module: ModuleName
@@ -55,8 +55,8 @@ name:   String
 arity:  usize
 ```
 
-`Math.add/2` is what `ExportKey::fmt` prints; the key itself is
-`ExportKey { module: Math, name: "add", arity: 2 }`. Link and interface code
+`Math.add/2` is what `Mfa::fmt` prints; the key itself is
+`Mfa { module: Math, name: "add", arity: 2 }`. Link and interface code
 key on the typed value.
 
 ## Interface Emission
@@ -78,7 +78,7 @@ protocol name).
 - `types`: public `@type` aliases, opaques, and refines (`InterfaceTypeKind` is
   `Alias` / `Opaque` / `Refines`);
 - `protocols`: protocol declarations and their callback surfaces;
-- `protocol_impls`: `(protocol, ImplTarget)` facts plus callback `ExportKey`s;
+- `protocol_impls`: `(protocol, ImplTarget)` facts plus callback `Mfa`s;
 - `docs`: optional `@moduledoc`;
 - `fingerprint_inputs`: deterministic semantic strings used for compatibility.
 
@@ -129,7 +129,7 @@ Resolution behavior:
   `add(x, y)` becomes `Math.add(x, y)`.
 
 The flattened dotted spelling is the IR rendering; boundary code keys on the
-typed `ModuleName` / `ExportKey`.
+typed `ModuleName` / `Mfa`.
 
 ## Runtime Reachability
 
@@ -212,7 +212,7 @@ plan.
 `ir_codegen::link_ir_units` fuses reachable `CompiledUnit` IR into one dense
 linked `Module`. `IrUnitLinker` copies each unit's fns, externs, external-call
 edges, protocol facts, specs, planner facts, and type facts, remapping `FnId`,
-`ExternId`, and atom ids as it goes; it builds an `ExportKey -> FnId` map from
+`ExternId`, and atom ids as it goes; it builds an `Mfa -> FnId` map from
 each unit's interface exports and protocol-impl callbacks; then it rewrites
 `ExternalCallEdge` placeholders to direct local `FnId`s.
 
@@ -220,7 +220,7 @@ The checks, and the `ImageLinkError` each produces:
 
 1. A unit whose recorded `interface_fingerprint` disagrees with its interface ->
    `InterfaceFingerprintMismatch`.
-2. Two providers for one `ExportKey` -> `DuplicateProvider`.
+2. Two providers for one `Mfa` -> `DuplicateProvider`.
 3. A copied `ExternalCallEdge` with no provider -> `MissingImport`.
 4. A callsite that cannot be rewritten -> `UnresolvedExternalCalls`.
 
@@ -305,7 +305,7 @@ direct calls and lets inlining run, a call that exists before LTO can vanish
 from `fz dump --emit bodies --lto`, which reads the same materialized reachable
 body set.
 
-`ExternalCallEdge { callsite: CallsiteId, target: ExportKey }` in
+`ExternalCallEdge { callsite: CallsiteId, target: Mfa }` in
 `fz_ir::Module` is how an imported call is represented; its terminator carries a
 placeholder `FnId` until link or LTO resolves the edge.
 

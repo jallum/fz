@@ -156,7 +156,7 @@ fn lto_rewrites_external_call_edge_to_direct_fn_id() {
     mb.add_fn(caller.build());
     mb.add_fn(target.build());
     let mut module = mb.build();
-    let export = ExportKey::new(ModuleName::from_segments(vec!["A".to_string()]), "f", 0);
+    let export = Mfa::new(ModuleName::from_segments(vec!["A".to_string()]), "f", 0);
     module.external_call_edges.push(ExternalCallEdge {
         callsite: CallsiteId::new(FnId(0), &ident, EmitSlot::Direct),
         target: export.clone(),
@@ -188,7 +188,7 @@ fn lto_reports_missing_external_call_target() {
     let mut mb = ModuleBuilder::new();
     mb.add_fn(caller.build());
     let mut module = mb.build();
-    let export = ExportKey::new(ModuleName::from_segments(vec!["Missing".to_string()]), "f", 0);
+    let export = Mfa::new(ModuleName::from_segments(vec!["Missing".to_string()]), "f", 0);
     module.external_call_edges.push(ExternalCallEdge {
         callsite: CallsiteId::new(FnId(0), &ident, EmitSlot::Direct),
         target: export.clone(),
@@ -236,7 +236,7 @@ fn lto_export_map_comes_from_validated_interfaces() {
         },
     );
 
-    let key = ExportKey::new(math, "add", 2);
+    let key = Mfa::new(math, "add", 2);
     assert_eq!(module.interface_export_map(&interfaces).get(&key), Some(&FnId(7)));
 }
 

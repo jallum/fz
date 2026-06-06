@@ -3,7 +3,7 @@ use crate::diag::Span;
 use crate::fz_ir::{
     CallsiteIdent, Cont, ContinuationProvenance, ContinuationProvenanceKind, FnBuilder, FnCategory, FnId, Term, Var,
 };
-use crate::modules::identity::ExportKey;
+use crate::modules::identity::Mfa;
 
 // -----------------------------------------------------------------------------
 // fz-duq.1: branching-construct join helpers
@@ -382,7 +382,7 @@ pub(crate) fn cps_split_call(
 pub(crate) fn cps_split_external_call(
     ctx: &mut LowerCtx,
     callee: FnId,
-    target: ExportKey,
+    target: Mfa,
     arg_vars: Vec<Var>,
     call_span: Span,
 ) -> Result<Var, LowerError> {

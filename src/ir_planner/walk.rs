@@ -16,7 +16,7 @@ use crate::fz_ir::{
     BlockId, CallsiteId, CallsiteIdent, Cont, EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term, Var,
     receive_outcome_spec_key,
 };
-use crate::modules::identity::ExportKey;
+use crate::modules::identity::Mfa;
 use crate::specs::unique_matching_params;
 use crate::types::{ClosureTypes, KeySlot, Ty, Types, key_slots_from_tys};
 use std::collections::{HashMap, HashSet};
@@ -65,7 +65,7 @@ impl WalkResult {
         caller: &SpecKey,
         ident: &CallsiteIdent,
         slot: EmitSlot,
-        target: ExportKey,
+        target: Mfa,
         input: Vec<KeySlot>,
         demand: ReturnDemand,
     ) -> CallsiteId {
@@ -138,7 +138,7 @@ struct ContinuationSlot0 {
 enum ProtocolDispatch {
     Local(SpecKey, usize),
     External {
-        target: ExportKey,
+        target: Mfa,
         input: Vec<KeySlot>,
         demand: ReturnDemand,
     },
@@ -859,7 +859,7 @@ where
         key_slots_from_tys(padded_direct_input_tys(self.t, arg_tys, arity))
     }
 
-    fn external_target(&self, term_ident: &CallsiteIdent, slot: EmitSlot) -> Option<ExportKey> {
+    fn external_target(&self, term_ident: &CallsiteIdent, slot: EmitSlot) -> Option<Mfa> {
         let cid = WalkResult::callsite_id(self.caller_spec_key, term_ident, slot);
         self.m
             .external_call_edges

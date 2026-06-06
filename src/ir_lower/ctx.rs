@@ -7,7 +7,7 @@ use crate::fz_ir::{
     ExternId, ExternTy, ExternalCallEdge, FnBuilder, FnCategory, FnId, ModuleBuilder, Prim, ProtocolCallTarget, Term,
     Var,
 };
-use crate::modules::identity::{ExportKey, ModuleName};
+use crate::modules::identity::{Mfa, ModuleName};
 use crate::modules::interface::ModuleInterface;
 use crate::type_expr::ModuleTypeEnv;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -88,8 +88,8 @@ pub struct LowerCtx {
     /// can explain *why* a particular call wasn't inlined.
     pub fn_defs_by_arity: HashMap<(String, usize), FnDef>,
     pub(super) prelude_imports: HashMap<(String, usize), String>,
-    pub(super) external_exports: HashMap<(String, usize), ExportKey>,
-    pub(super) external_stubs: HashMap<ExportKey, FnId>,
+    pub(super) external_exports: HashMap<(String, usize), Mfa>,
+    pub(super) external_stubs: HashMap<Mfa, FnId>,
     pub(super) protocol_callbacks: HashMap<(String, usize), ProtocolCallTarget>,
     pub(super) protocol_stubs: HashMap<(String, usize), FnId>,
     pub(super) struct_schemas: BTreeMap<String, Vec<String>>,
@@ -161,7 +161,7 @@ impl LowerCtx {
             for export in &interface.exports {
                 self.external_exports.insert(
                     (format!("{}.{}", module, export.name), export.arity),
-                    ExportKey::new(module.clone(), export.name.clone(), export.arity),
+                    Mfa::new(module.clone(), export.name.clone(), export.arity),
                 );
             }
         }
@@ -218,7 +218,7 @@ impl LowerCtx {
         Some(fn_id)
     }
 
-    pub(super) fn external_callee(&mut self, name: &str, arity: usize) -> Option<(FnId, ExportKey)> {
+    pub(super) fn external_callee(&mut self, name: &str, arity: usize) -> Option<(FnId, Mfa)> {
         let target = self.external_exports.get(&(name.to_string(), arity))?.clone();
         let fn_id = if let Some(fn_id) = self.external_stubs.get(&target) {
             *fn_id
@@ -410,7 +410,7 @@ impl LowerCtx {
         }
     }
 
-    pub(super) fn set_external_direct_term_at(&mut self, mut term: Term, span: Span, target: ExportKey) {
+    pub(super) fn set_external_direct_term_at(&mut self, mut term: Term, span: Span, target: Mfa) {
         term.set_source_span(span);
         let ident = term
             .ident()

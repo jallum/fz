@@ -1451,7 +1451,7 @@ end
         .expect("impl fact");
     assert_eq!(
         implementation.callbacks[&("reduce".to_string(), 3)],
-        ExportKey::new(enumerable.child("List".to_string()), "reduce", 3)
+        Mfa::new(enumerable.child("List".to_string()), "reduce", 3)
     );
     let protocol_ty = p.module_type_envs["Consumer"]
         .get("Enumerable.t")

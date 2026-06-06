@@ -11,7 +11,7 @@ use crate::ir_interp::run_main_with_plan;
 use crate::ir_lower::lower_program;
 use crate::ir_planner::fn_types::{CallEdgeTarget, ReturnDemand, SpecKey};
 use crate::ir_planner::{ModulePlan, SpecPlan, materialize_program, plan_module_with_role};
-use crate::modules::identity::{ExportKey, ModuleName};
+use crate::modules::identity::{Mfa, ModuleName};
 use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn, ModuleInterface};
 use crate::modules::pipeline::{CompileMode, PreparedExecutionGraph, checked_module_for_mode, prepare_execution_graph};
 use crate::parser::Parser;
@@ -151,7 +151,7 @@ fn runtime_metadata_link_merges_overlapping_atoms_and_schemas_deterministically(
         schemas: vec![Schema::tuple_of_arity(2), Schema::tuple_of_arity(3)],
         frame_sizes: vec![16, 24],
         exported_symbols: b_exports,
-        imported_refs: vec![ExportKey::new(module_a, "f", 0)],
+        imported_refs: vec![Mfa::new(module_a, "f", 0)],
         static_closures: vec![RuntimeStaticClosure {
             closure_schema_id: 2,
             fn_id: 1,
@@ -205,7 +205,7 @@ fn runtime_metadata_link_rejects_duplicate_exports() {
 #[test]
 fn runtime_unit_metadata_carries_external_import_refs() {
     let mut module = Module::new();
-    let export = ExportKey::new(ModuleName::from_segments(vec!["Dep".to_string()]), "run", 1);
+    let export = Mfa::new(ModuleName::from_segments(vec!["Dep".to_string()]), "run", 1);
     module.external_call_edges.push(ExternalCallEdge {
         callsite: CallsiteId::new(FnId(0), &CallsiteIdent::synthetic(), EmitSlot::Direct),
         target: export.clone(),
@@ -217,7 +217,7 @@ fn runtime_unit_metadata_carries_external_import_refs() {
 #[test]
 fn codegen_rejects_unresolved_external_module_calls() {
     let mut m = lower_src("fn main(), do: 0");
-    let export = ExportKey::new(ModuleName::from_segments(vec!["Dep".to_string()]), "run", 0);
+    let export = Mfa::new(ModuleName::from_segments(vec!["Dep".to_string()]), "run", 0);
     m.external_call_edges.push(ExternalCallEdge {
         callsite: CallsiteId::new(
             m.fn_by_name("main").unwrap().id,
@@ -235,11 +235,7 @@ fn codegen_rejects_unresolved_external_module_calls() {
     assert_eq!(err.message, "unresolved external module call `Dep.run/0`");
 }
 
-fn link_test_unit(
-    module: &str,
-    exports: &[(&str, usize)],
-    imports: Vec<ExportKey>,
-) -> (CompiledUnit, RuntimeUnitMetadata) {
+fn link_test_unit(module: &str, exports: &[(&str, usize)], imports: Vec<Mfa>) -> (CompiledUnit, RuntimeUnitMetadata) {
     let module_name = ModuleName::from_segments(vec![module.to_string()]);
     let interface = ModuleInterface {
         name: module_name.clone(),
@@ -320,11 +316,7 @@ fn main(), do: User.run()
     let (user, _) = link_test_unit(
         "User",
         &[("run", 0)],
-        vec![ExportKey::new(
-            ModuleName::from_segments(vec!["Math".to_string()]),
-            "add",
-            2,
-        )],
+        vec![Mfa::new(ModuleName::from_segments(vec!["Math".to_string()]), "add", 2)],
     );
 
     let tel = ConfiguredTelemetry::new();
@@ -1076,7 +1068,7 @@ end
 
 #[test]
 fn image_linker_rejects_missing_and_duplicate_providers() {
-    let missing = ExportKey::new(ModuleName::from_segments(vec!["Missing".to_string()]), "f", 0);
+    let missing = Mfa::new(ModuleName::from_segments(vec!["Missing".to_string()]), "f", 0);
     let (user, _) = link_test_unit("User", &[("run", 0)], vec![missing.clone()]);
     let err = match link_ir_units(&[user]) {
         Ok(_) => panic!("expected missing import"),
@@ -1101,7 +1093,7 @@ fn image_linker_rejects_missing_and_duplicate_providers() {
 
 #[test]
 fn image_linker_rejects_unresolved_external_imports_without_provider() {
-    let target = ExportKey::new(ModuleName::from_segments(vec!["Provider".to_string()]), "run", 0);
+    let target = Mfa::new(ModuleName::from_segments(vec!["Provider".to_string()]), "run", 0);
     let mut unit_code = Module::new();
     let mut builder = FnBuilder::new(FnId(0), "User.run").with_owner_module("User");
     let entry = builder.block(Vec::new());
@@ -1132,7 +1124,7 @@ fn image_linker_rejects_unresolved_external_imports_without_provider() {
         err,
         ImageLinkError::MissingImport {
             requester: Some(ModuleName::from_segments(vec!["User".to_string()])),
-            import: ExportKey::new(ModuleName::from_segments(vec!["Provider".to_string()]), "run", 0,),
+            import: Mfa::new(ModuleName::from_segments(vec!["Provider".to_string()]), "run", 0,),
         }
     );
 }
