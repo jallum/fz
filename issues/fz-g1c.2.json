@@ -4,14 +4,15 @@
   "blocks": [
     "fz-g1c.3"
   ],
+  "closed_at": "2026-06-06T13:30:46Z",
   "created": "2026-06-06T13:03:56Z",
   "description": "",
   "id": "fz-g1c.2",
   "labels": [],
   "parent": "fz-g1c",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Thread caller-owned telemetry through parser, frontend, lowering, and diagnostic fixture helpers",
   "type": "task",
-  "updated_at": "2026-06-06T13:13:03Z"
+  "updated_at": "2026-06-06T13:30:46Z"
 }
