@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-06T23:37:21Z",
+  "description": "Goal: replace separate type/planning phases with one root-scoped semantic fact fixpoint. Signal: SemanticClosed appears only when root semantic jobs are quiescent, waiters are resolved, and fingerprints are stable.",
+  "id": "fz-rh2.6",
+  "labels": [],
+  "parent": "fz-rh2",
+  "priority": 1,
+  "status": "open",
+  "title": "[EPIC] Compiler2 semantic closure: co-derive type and executable facts",
+  "type": "epic",
+  "updated_at": "2026-06-06T23:37:21Z"
+}
