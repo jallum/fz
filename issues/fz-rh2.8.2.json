@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.8.1"
+  ],
   "blocks": [],
   "created": "2026-06-06T23:37:22Z",
   "description": "Goal: create backend-ready contracts without semantic discovery. Change: AbiReady and Emitted facts for interpreter/JIT/AOT adapters using materialized bodies, callable entries, effects, extern facts, and allocation telemetry. Check: backend attempts to ask type/callee/reachability questions are fatal; Enum.reduce allocation contract remains observable.",
