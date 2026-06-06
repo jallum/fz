@@ -52,7 +52,7 @@ pub use diag_render::DiagRenderer;
 pub use event::{Measurements, Metadata};
 #[cfg(test)]
 pub use handler::EventKind;
-pub use handler::{Event, Handler};
+pub use handler::{Event, Handler, HandlerId};
 pub use jsonl::JsonlBackend;
 pub use sink::{Telemetry, TelemetryExt};
 pub use stats::StatsHandler;

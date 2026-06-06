@@ -174,8 +174,13 @@ impl Helper for ReplEditorHelper {}
 pub fn run_script(path: &Path, tel: &dyn Telemetry) -> io::Result<()> {
     let src = std::fs::read_to_string(path)?;
     let source_name = path.display().to_string();
-    let diagnostics = attach_repl_diagnostic_renderer(tel);
-    ReplSession::new().run_script_str(&src, source_name, tel, &diagnostics)
+    let (diagnostics, handler_id) = attach_repl_diagnostic_renderer(tel);
+    let result = ReplSession::new().run_script_str(&src, source_name, tel, &diagnostics);
+    assert!(
+        tel.detach(handler_id),
+        "temporary repl diagnostic renderer should detach"
+    );
+    result
 }
 
 /// Underlying driver shared by `run_script` and tests. Returns Err on
@@ -718,13 +723,13 @@ fn prepare_repl_frontend(
 #[cfg(test)]
 fn repl_diagnostic_telemetry() -> (ConfiguredTelemetry, Rc<RefCell<Vec<u8>>>) {
     let tel = ConfiguredTelemetry::new();
-    let diagnostics = attach_repl_diagnostic_renderer(&tel);
+    let (diagnostics, _handler_id) = attach_repl_diagnostic_renderer(&tel);
     (tel, diagnostics)
 }
 
-fn attach_repl_diagnostic_renderer(tel: &dyn Telemetry) -> Rc<RefCell<Vec<u8>>> {
+fn attach_repl_diagnostic_renderer(tel: &dyn Telemetry) -> (Rc<RefCell<Vec<u8>>>, crate::telemetry::HandlerId) {
     let diagnostics = Rc::new(RefCell::new(Vec::new()));
-    tel.attach(
+    let handler_id = tel.attach(
         &["fz", "diag"],
         Box::new(DiagRenderer::new_to_writer(
             Rc::new(RefCell::new(SourceMap::new())),
@@ -732,7 +737,7 @@ fn attach_repl_diagnostic_renderer(tel: &dyn Telemetry) -> Rc<RefCell<Vec<u8>>> 
             ColorMode::Never,
         )),
     );
-    diagnostics
+    (diagnostics, handler_id)
 }
 
 struct ReplDiagnosticWriter(Rc<RefCell<Vec<u8>>>);

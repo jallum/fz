@@ -16,7 +16,6 @@ use super::handler::{Event, EventKind, Handler, HandlerId};
 use super::sink::Telemetry;
 
 struct Entry {
-    #[cfg(test)]
     id: HandlerId,
     prefix: Vec<&'static str>,
     handler: Box<dyn Handler>,
@@ -48,7 +47,6 @@ impl ConfiguredTelemetry {
         let id = HandlerId(self.next_handler_id.get());
         self.next_handler_id.set(id.0 + 1);
         self.handlers.borrow_mut().push(Entry {
-            #[cfg(test)]
             id,
             prefix: prefix.to_vec(),
             handler,
