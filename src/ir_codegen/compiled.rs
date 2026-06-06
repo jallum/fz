@@ -1255,13 +1255,12 @@ impl CompiledModule {
     /// return that root task's halt value, even if the program spawns
     /// additional tasks. Tests that need the full exit stream attach their own
     /// telemetry capture and read `fz.runtime.process_exited` directly.
-    pub fn run(&self, fn_id: FnId) -> i64 {
+    pub fn run(&self, tel: &crate::telemetry::ConfiguredTelemetry, fn_id: FnId) -> i64 {
         // Observe the root task through the telemetry seam rather than reading
         // Runtime internals directly.
-        let tel = crate::telemetry::ConfiguredTelemetry::new();
         let exits = ProcessExitCapture::new();
         tel.attach(&[], exits.handler());
-        let mut rt = Runtime::new(self, 1, &tel);
+        let mut rt = Runtime::new(self, 1, tel);
         let root_pid = rt.spawn(fn_id);
         rt.run_until_idle();
         exits.by_pid(root_pid).expect("root process_exited captured").halt_value
@@ -1270,8 +1269,8 @@ impl CompiledModule {
 
 #[cfg(test)]
 impl CompiledImage {
-    pub fn run(&self, fn_id: FnId) -> i64 {
-        self.inner.run(fn_id)
+    pub fn run(&self, tel: &crate::telemetry::ConfiguredTelemetry, fn_id: FnId) -> i64 {
+        self.inner.run(tel, fn_id)
     }
 }
 

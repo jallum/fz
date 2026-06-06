@@ -393,11 +393,12 @@ fn persistent_runtime_drives_entries_without_resetting_mailbox() {
     let second = m.fn_by_name("second").expect("second fn").id;
     let mut t = crate::types::new();
     let mut runtime = IrInterpRuntime::fresh_with_root(&m);
+    let tel = ConfiguredTelemetry::new();
 
-    runtime.enqueue_entry(&m, 1, first, vec![]).expect("enqueue first");
-    let first_done = runtime
-        .drive_until_idle(&mut t, &crate::telemetry::ConfiguredTelemetry::new(), Some(1))
-        .expect("drive first");
+    runtime
+        .enqueue_entry(&m, &tel, 1, first, vec![])
+        .expect("enqueue first");
+    let first_done = runtime.drive_until_idle(&mut t, &tel, Some(1)).expect("drive first");
     assert_eq!(first_done.len(), 1);
     assert_eq!(
         runtime.task(1).expect("root task").mailbox.len(),
@@ -405,10 +406,10 @@ fn persistent_runtime_drives_entries_without_resetting_mailbox() {
         "first drive leaves self-sent message in persistent mailbox",
     );
 
-    runtime.enqueue_entry(&m, 1, second, vec![]).expect("enqueue second");
-    let second_done = runtime
-        .drive_until_idle(&mut t, &crate::telemetry::ConfiguredTelemetry::new(), Some(1))
-        .expect("drive second");
+    runtime
+        .enqueue_entry(&m, &tel, 1, second, vec![])
+        .expect("enqueue second");
+    let second_done = runtime.drive_until_idle(&mut t, &tel, Some(1)).expect("drive second");
     assert_eq!(second_done.last().and_then(|(_, value)| value.as_i64()), Some(41),);
     assert_eq!(
         runtime.task(1).expect("root task").mailbox.len(),
@@ -471,12 +472,11 @@ fn interp_quiet_quanta_moves_only_at_scheduler_boundaries() {
     let main = m.fn_by_name("main").expect("main").id;
     let mut t = crate::types::new();
     let mut runtime = IrInterpRuntime::fresh_with_root(&m);
-    runtime.enqueue_entry(&m, 1, main, vec![]).expect("enqueue main");
+    let tel = ConfiguredTelemetry::new();
+    runtime.enqueue_entry(&m, &tel, 1, main, vec![]).expect("enqueue main");
     runtime.task_mut(1).expect("main task").reductions_per_quantum = 100;
 
-    let completions = runtime
-        .drive_until_idle(&mut t, &crate::telemetry::ConfiguredTelemetry::new(), None)
-        .expect("drive interp");
+    let completions = runtime.drive_until_idle(&mut t, &tel, None).expect("drive interp");
     let halt = completions
         .iter()
         .rev()
@@ -505,16 +505,15 @@ fn interp_allocation_pressure_yields_before_budget_exhaustion() {
     let main = m.fn_by_name("main").expect("main").id;
     let mut t = crate::types::new();
     let mut runtime = IrInterpRuntime::fresh_with_root(&m);
-    runtime.enqueue_entry(&m, 1, main, vec![]).expect("enqueue main");
+    let tel = ConfiguredTelemetry::new();
+    runtime.enqueue_entry(&m, &tel, 1, main, vec![]).expect("enqueue main");
     {
         let task = runtime.task_mut(1).expect("main task");
         task.reductions_per_quantum = 1000;
         task.heap.allocation_watermark = null_mut();
     }
 
-    let completions = runtime
-        .drive_until_idle(&mut t, &crate::telemetry::ConfiguredTelemetry::new(), None)
-        .expect("drive interp");
+    let completions = runtime.drive_until_idle(&mut t, &tel, None).expect("drive interp");
     let halt = completions
         .iter()
         .rev()

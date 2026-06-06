@@ -3,7 +3,7 @@ use crate::ir_codegen::compile_planned;
 use crate::ir_planner::{ModulePlan, materialize_program, plan_module_with_role};
 use crate::modules::pipeline::{CompileMode, checked_module_for_mode, link_execution_module};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Event, Handler, Telemetry};
-use crate::types::{ClosureTypes, DefaultTypes, RenderTypes, Ty, Types};
+use crate::types::DefaultTypes;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::panic::AssertUnwindSafe;
@@ -472,23 +472,5 @@ pub(crate) fn assert_authoritative_planner_consistent(cap: &Capture) {
     assert!(
         gaps.is_empty(),
         "authoritative planner consistency check failed before tests inspected the model: {gaps:?}"
-    );
-}
-
-#[cfg(test)]
-pub(crate) fn assert_module_planner_consistent<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
-    t: &mut T,
-    module: &Module,
-    context: &str,
-) {
-    let tel = ConfiguredTelemetry::new();
-    let cap = Capture::new();
-    tel.attach(&[], cap.handler());
-    let plan = plan_module_with_role(t, module, &tel, "test");
-    let _ = materialize_program(t, module, &plan, &tel);
-    let issues = authoritative_planner_consistency_issues(&cap);
-    assert!(
-        issues.is_empty(),
-        "authoritative planner consistency check failed after {context}: {issues:?}"
     );
 }

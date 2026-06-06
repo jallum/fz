@@ -99,10 +99,9 @@ impl CodeImage {
     }
 
     #[cfg(test)]
-    fn from_module(module: &Module) -> Result<Self, String> {
+    fn from_module(module: &Module, tel: &crate::telemetry::ConfiguredTelemetry) -> Result<Self, String> {
         let mut t = crate::types::new();
-        let tel = crate::telemetry::ConfiguredTelemetry::new();
-        let module_plan = plan_module_with_role(&mut t, module, &tel, "test");
+        let module_plan = plan_module_with_role(&mut t, module, tel, "test");
         Self::from_plan(&mut t, module, module_plan)
     }
 
@@ -302,6 +301,7 @@ impl IrInterpRuntime {
     pub(crate) fn enqueue_entry(
         &mut self,
         module: &Module,
+        tel: &crate::telemetry::ConfiguredTelemetry,
         pid: u32,
         fn_id: FnId,
         args: Vec<AnyValue>,
@@ -309,7 +309,7 @@ impl IrInterpRuntime {
         if !self.tasks.contains_key(&pid) {
             return Err(format!("enqueue_entry: unknown pid {}", pid));
         }
-        self.set_task_code_image(pid, Rc::new(CodeImage::from_module(module)?));
+        self.set_task_code_image(pid, Rc::new(CodeImage::from_module(module, tel)?));
         self.enqueue_entry_with_image(pid, fn_id, args)
     }
 

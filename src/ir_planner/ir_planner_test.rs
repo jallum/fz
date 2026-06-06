@@ -103,19 +103,10 @@ fn build_module(fns: Vec<FnIr>) -> Module {
     mb.build()
 }
 
-fn lower_src_for_plan(src: &str) -> Module {
-    let toks = Lexer::with_source_name(src, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("lex");
-    let prog = Parser::new(toks)
-        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("parse");
-    lower_program(
-        &mut crate::types::new(),
-        &prog,
-        &crate::telemetry::ConfiguredTelemetry::new(),
-    )
-    .expect("lower")
+fn lower_src_for_plan(src: &str, tel: &dyn Telemetry) -> Module {
+    let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).expect("lex");
+    let prog = Parser::new(toks).parse_program(tel).expect("parse");
+    lower_program(&mut crate::types::new(), &prog, tel).expect("lower")
 }
 
 fn count_if_terminators(f: &FnIr) -> usize {
@@ -267,8 +258,8 @@ fn assert_ty_not_empty(t: &DefaultTypes, ty: &Ty) {
     assert!(!t.is_empty(ty), "unexpected empty type: {}", t.display(ty));
 }
 
-fn ty_for_var_in_fn(t: &mut DefaultTypes, m: &Module, fn_index: usize, var: Var) -> Ty {
-    let mt = plan_module_with_role(t, m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
+fn ty_for_var_in_fn(t: &mut DefaultTypes, m: &Module, fn_index: usize, var: Var, tel: &dyn Telemetry) -> Ty {
+    let mt = plan_module_with_role(t, m, tel, "test");
     fn_view(t, m, &mt, fn_index)
         .vars
         .get(&var)
@@ -276,8 +267,8 @@ fn ty_for_var_in_fn(t: &mut DefaultTypes, m: &Module, fn_index: usize, var: Var)
         .clone()
 }
 
-fn only_effect_summary(t: &mut DefaultTypes, m: &Module, fid: FnId) -> EffectSummary {
-    let mt = plan_module_with_role(t, m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
+fn only_effect_summary(t: &mut DefaultTypes, m: &Module, fid: FnId, tel: &dyn Telemetry) -> EffectSummary {
+    let mt = plan_module_with_role(t, m, tel, "test");
     *mt.fn_effects.get(&fid).expect("missing effect summary for fn")
 }
 
@@ -291,7 +282,7 @@ fn effect_summary_tracks_allocation_without_observability() {
     b.set_terminator(entry, Term::Return(list));
     let m = build_module(vec![b.build()]);
 
-    let effects = only_effect_summary(&mut t, &m, FnId(0));
+    let effects = only_effect_summary(&mut t, &m, FnId(0), &crate::telemetry::ConfiguredTelemetry::new());
     assert!(effects.allocates);
     assert!(!effects.observable);
     assert!(!effects.reads_allocation_stats);
@@ -313,7 +304,7 @@ fn effect_summary_marks_extern_and_heap_stats_observer() {
     ));
     m.extern_idx.insert(ExternId(0), 0);
 
-    let effects = only_effect_summary(&mut t, &m, FnId(0));
+    let effects = only_effect_summary(&mut t, &m, FnId(0), &crate::telemetry::ConfiguredTelemetry::new());
     assert!(effects.observable);
     assert!(effects.reads_allocation_stats);
 }
@@ -345,7 +336,7 @@ fn effect_summary_propagates_observable_tail_calls() {
         .push(extern_decl(&mut t, ExternId(0), "fz_dbg_value", ExternTy::Unit));
     m.extern_idx.insert(ExternId(0), 0);
 
-    let effects = only_effect_summary(&mut t, &m, FnId(0));
+    let effects = only_effect_summary(&mut t, &m, FnId(0), &crate::telemetry::ConfiguredTelemetry::new());
     assert!(effects.observable);
     assert!(!effects.reads_allocation_stats);
 }
@@ -662,8 +653,20 @@ fn lowered_tuple_freeze_preserves_make_tuple_type() {
     lower_tuple_destinations(&mut lowered);
 
     let mut t = crate::types::new();
-    let before = ty_for_var_in_fn(&mut t, &original, 0, tuple);
-    let after = ty_for_var_in_fn(&mut t, &lowered, 0, tuple);
+    let before = ty_for_var_in_fn(
+        &mut t,
+        &original,
+        0,
+        tuple,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
+    let after = ty_for_var_in_fn(
+        &mut t,
+        &lowered,
+        0,
+        tuple,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     assert!(
         t.is_equivalent(&before, &after),
         "type(MakeTuple(xs)) == type(DestFreeze(lower(MakeTuple(xs)))): before {}, after {}",
@@ -753,7 +756,7 @@ fn malformed_tuple_token_reuse_falls_back_to_any() {
     let m = build_module(vec![b.build()]);
 
     let mut t = crate::types::new();
-    let ty = ty_for_var_in_fn(&mut t, &m, 0, freeze);
+    let ty = ty_for_var_in_fn(&mut t, &m, 0, freeze, &crate::telemetry::ConfiguredTelemetry::new());
     let any = t.any();
     assert!(
         t.is_equivalent(&ty, &any),
@@ -910,15 +913,15 @@ fn lowered_make_map_preserves_static_field_type() {
     lower_map_destinations(&mut lowered);
 
     let mut t = crate::types::new();
-    let before = ty_for_var_in_fn(&mut t, &original, 0, map);
-    let after = ty_for_var_in_fn(&mut t, &lowered, 0, map);
+    let before = ty_for_var_in_fn(&mut t, &original, 0, map, &crate::telemetry::ConfiguredTelemetry::new());
+    let after = ty_for_var_in_fn(&mut t, &lowered, 0, map, &crate::telemetry::ConfiguredTelemetry::new());
     assert!(
         t.is_equivalent(&before, &after),
         "type(MakeMap(static fields)) == type(DestMapFreeze(lower(MakeMap))): before {}, after {}",
         t.display(&before),
         t.display(&after)
     );
-    let got_ty = ty_for_var_in_fn(&mut t, &lowered, 0, got);
+    let got_ty = ty_for_var_in_fn(&mut t, &lowered, 0, got, &crate::telemetry::ConfiguredTelemetry::new());
     let val_b_ty = t.int_lit(22);
     assert!(
         t.is_subtype(&val_b_ty, &got_ty),
@@ -944,8 +947,20 @@ fn lowered_map_update_preserves_static_refinement() {
     lower_map_destinations(&mut lowered);
 
     let mut t = crate::types::new();
-    let before = ty_for_var_in_fn(&mut t, &original, 0, updated);
-    let after = ty_for_var_in_fn(&mut t, &lowered, 0, updated);
+    let before = ty_for_var_in_fn(
+        &mut t,
+        &original,
+        0,
+        updated,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
+    let after = ty_for_var_in_fn(
+        &mut t,
+        &lowered,
+        0,
+        updated,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     assert!(
         t.is_equivalent(&before, &after),
         "lowered map update should preserve static-key refinement: before {}, after {}",
@@ -967,7 +982,7 @@ fn lowered_make_map_dynamic_key_is_map_top() {
     lower_map_destinations(&mut lowered);
 
     let mut t = crate::types::new();
-    let map_ty = ty_for_var_in_fn(&mut t, &lowered, 0, map);
+    let map_ty = ty_for_var_in_fn(&mut t, &lowered, 0, map, &crate::telemetry::ConfiguredTelemetry::new());
     let top = t.map_top();
     assert!(
         t.is_equivalent(&map_ty, &top),
@@ -1253,8 +1268,8 @@ fn known_closure_call_with_branch_continuation_materializes_without_erased_callc
                  end\n\
                end\n\
                fn main(), do: choose(fn (x, y) -> x <= y end, 1, 2)\n";
-    let m = lower_src_for_plan(src);
     let tel = ConfiguredTelemetry::new();
+    let m = lower_src_for_plan(src, &tel);
     let cap = Capture::new();
     tel.attach(&["fz", "planner"], cap.handler());
     let mut t = crate::types::new();
@@ -1295,8 +1310,8 @@ fn known_closure_call_with_branch_continuation_materializes_without_erased_callc
 
 #[test]
 fn direct_call_materialization_fuses_cloned_return_continuation_block() {
-    let m = lower_src_for_plan(include_str!("../../fixtures/add1/input.fz"));
     let tel = ConfiguredTelemetry::new();
+    let m = lower_src_for_plan(include_str!("../../fixtures/add1/input.fz"), &tel);
     let cap = Capture::new();
     tel.attach(&["fz", "planner"], cap.handler());
     let mut t = crate::types::new();
@@ -1344,8 +1359,8 @@ fn direct_call_materialization_fuses_cloned_return_continuation_block() {
 
 #[test]
 fn materialized_tail_direct_call_prunes_erased_callee_from_reachability() {
-    let m = lower_src_for_plan("fn add(x, y), do: x + y\nfn main(), do: add(20, 22)\n");
     let tel = ConfiguredTelemetry::new();
+    let m = lower_src_for_plan("fn add(x, y), do: x + y\nfn main(), do: add(20, 22)\n", &tel);
     let cap = Capture::new();
     tel.attach(&["fz", "planner"], cap.handler());
     let mut t = crate::types::new();
@@ -1404,8 +1419,8 @@ fn planned_program_materialization_reports_executable_body_folds() {
     let src = "fn check(x :: integer) do :is_int end\n\
                fn check(x) do :other end\n\
                fn main(), do: dbg(check(42))\n";
-    let m = lower_src_for_plan(src);
     let tel = ConfiguredTelemetry::new();
+    let m = lower_src_for_plan(src, &tel);
     let cap = Capture::new();
     tel.attach(&["fz", "planner"], cap.handler());
     let mut t = crate::types::new();
@@ -1523,7 +1538,7 @@ fn planner_specializes_pair_by_tuple_destructure_and_value_demand() {
                  {a, b} = pair(1)\n\
                  dbg({a, b, pair(2)})\n\
                end\n";
-    let m = lower_src_for_plan(src);
+    let m = lower_src_for_plan(src, &crate::telemetry::ConfiguredTelemetry::new());
     let mut t = crate::types::new();
     let module_plan = plan_module_quiet(&mut t, &m);
     let planned_program = materialize_program(&mut t, &m, &module_plan, &crate::telemetry::ConfiguredTelemetry::new());
@@ -1628,30 +1643,12 @@ fn assert_module_plan_consistent(module: &Module) {
     let (_plan, _cap) = plan_module_prechecked(&mut t, module);
 }
 
-fn assert_pipeline_consistent(src: &str) {
-    let toks = Lexer::with_source_name(src, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("lex");
-    let prog = Parser::new(toks)
-        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("parse");
-    let mut t = crate::types::new();
-    let prog = flatten_modules(&mut t, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
-    let ir = lower_program(&mut t, &prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("lower");
-    let (_plan, _cap) = plan_module_prechecked(&mut t, &ir);
-}
-
 fn pipeline(src: &str, tel: &dyn Telemetry) -> (DefaultTypes, Module, ModulePlan) {
-    assert_pipeline_consistent(src);
-    let toks = Lexer::with_source_name(src, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("lex");
-    let prog = Parser::new(toks)
-        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("parse");
+    let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).expect("lex");
+    let prog = Parser::new(toks).parse_program(tel).expect("parse");
     let mut t = crate::types::new();
-    let prog = flatten_modules(&mut t, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
-    let ir = lower_program(&mut t, &prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("lower");
+    let prog = flatten_modules(&mut t, prog, tel).expect("flatten");
+    let ir = lower_program(&mut t, &prog, tel).expect("lower");
     let mt = plan_module_with_role(&mut t, &ir, tel, "test");
     (t, ir, mt)
 }
@@ -1736,12 +1733,9 @@ fn frontend_module(src: &str, tel: &ConfiguredTelemetry) -> Module {
 }
 
 fn frontend_plan(src: &str, tel: &ConfiguredTelemetry) -> (DefaultTypes, Module, ModulePlan) {
-    let mut check_t = crate::types::new();
-    let check_module = frontend_module(src, tel);
-    let (_check_plan, _check_cap) = plan_module_prechecked(&mut check_t, &check_module);
-
     let mut t = crate::types::new();
-    let module = frontend_module(src, tel);
+    let frontend_tel = ConfiguredTelemetry::new();
+    let module = frontend_module(src, &frontend_tel);
     let plan = plan_module_with_role(&mut t, &module, tel, "test");
     (t, module, plan)
 }
@@ -5060,16 +5054,12 @@ fn main(), do: P.to_thing([1])
 
 // ---- fz-t1m.1.3 — no-implementation diagnostic at dispatch ----
 
-fn plan_protocol_src(src: &str) -> (DefaultTypes, Module, ModulePlan) {
-    let toks = Lexer::with_source_name(src, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("lex");
-    let parsed = Parser::new(toks)
-        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("parse");
+fn plan_protocol_src(src: &str, tel: &dyn Telemetry) -> (DefaultTypes, Module, ModulePlan) {
+    let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).expect("lex");
+    let parsed = Parser::new(toks).parse_program(tel).expect("parse");
     let mut t = crate::types::new();
-    let resolved = flatten_modules(&mut t, parsed, &crate::telemetry::ConfiguredTelemetry::new()).expect("resolve");
-    let ir = lower_program(&mut t, &resolved, &crate::telemetry::ConfiguredTelemetry::new()).expect("lower");
+    let resolved = flatten_modules(&mut t, parsed, tel).expect("resolve");
+    let ir = lower_program(&mut t, &resolved, tel).expect("lower");
     let mt = plan_module_quiet(&mut t, &ir);
     (t, ir, mt)
 }
@@ -5090,7 +5080,7 @@ end
 
 fn main(), do: P.each(42)
 "#;
-    let (mut t, m, mt) = plan_protocol_src(src);
+    let (mut t, m, mt) = plan_protocol_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let diags = collect_diagnostics(&mut t, &m, &mt, &crate::telemetry::ConfiguredTelemetry::new());
     let d = diags
         .as_slice()
@@ -5135,7 +5125,7 @@ end
 
 fn main(), do: P.each([1])
 "#;
-    let (mut t, m, mt) = plan_protocol_src(src);
+    let (mut t, m, mt) = plan_protocol_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let diags = collect_diagnostics(&mut t, &m, &mt, &crate::telemetry::ConfiguredTelemetry::new());
     assert!(
         !diags.as_slice().iter().any(|d| d.code == codes::TYPE_PROTOCOL_NO_IMPL),
@@ -5179,7 +5169,7 @@ fn main() do
   end
 end
 "#;
-    let (mut t, mut m, mt) = plan_protocol_src(src);
+    let (mut t, mut m, mt) = plan_protocol_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     rewrite_closed_union_protocol_dispatch(&mut t, &mut m, &mt);
 
     let describe = m.fn_by_name("describe").expect("describe fn");
@@ -5258,7 +5248,7 @@ fn main() do
   end
 end
 "#;
-    let (mut t, m, mt) = plan_protocol_src(src);
+    let (mut t, m, mt) = plan_protocol_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let candidates = collect_protocol_dispatch_matrix_candidates(&mut t, &m, &mt).expect("protocol matrix candidates");
     let describe = m.fn_by_name("describe").expect("describe fn");
     let candidate = candidates
@@ -5305,7 +5295,7 @@ fn describe(value), do: Sizer.size(value)
 
 fn main(), do: describe([1, 2, 3])
 "#;
-    let (mut t, mut m, mt) = plan_protocol_src(src);
+    let (mut t, mut m, mt) = plan_protocol_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let before = m.fn_by_name("describe").unwrap().blocks.len();
     rewrite_closed_union_protocol_dispatch(&mut t, &mut m, &mt);
     let after = m.fn_by_name("describe").unwrap().blocks.len();
@@ -5327,7 +5317,7 @@ fn describe(value), do: Sizer.size(value)
 
 fn main(), do: describe([1, 2, 3])
 "#;
-    let (mut t, m, mt) = plan_protocol_src(src);
+    let (mut t, m, mt) = plan_protocol_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let candidates = collect_protocol_dispatch_matrix_candidates(&mut t, &m, &mt).expect("protocol matrix candidates");
     let describe = m.fn_by_name("describe").expect("describe fn");
     let candidate = candidates
@@ -5373,7 +5363,7 @@ fn main() do
   end
 end
 "#;
-    let (mut t, mut m, mt) = plan_protocol_src(src);
+    let (mut t, mut m, mt) = plan_protocol_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     rewrite_closed_union_protocol_dispatch(&mut t, &mut m, &mt);
 
     let describe = m.fn_by_name("describe").expect("describe fn");
@@ -5433,7 +5423,7 @@ fn main() do
   end
 end
 "#;
-    let (mut t, m, mt) = plan_protocol_src(src);
+    let (mut t, m, mt) = plan_protocol_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let candidates = collect_protocol_dispatch_matrix_candidates(&mut t, &m, &mt).expect("protocol matrix candidates");
     let describe = m.fn_by_name("describe").expect("describe fn");
     let candidate = candidates
@@ -5473,7 +5463,7 @@ fn main() do
   end
 end
 "#;
-    let (mut t, mut m, mt) = plan_protocol_src(src);
+    let (mut t, mut m, mt) = plan_protocol_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let protocol = ModuleName::parse_dotted("Sizer").expect("protocol name");
     let target = ImplTarget::module(ModuleName::parse_dotted("Float").expect("target name"));
     let export = Mfa::new(

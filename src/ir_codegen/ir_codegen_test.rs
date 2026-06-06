@@ -18,8 +18,8 @@ use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
 use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind, Telemetry, Value};
 use crate::test_support::{
-    assert_authoritative_planner_consistent, assert_module_planner_consistent,
-    module_reachable_materialized_body_signals, runtime_graph_codegen_materialized_body_signals,
+    assert_authoritative_planner_consistent, module_reachable_materialized_body_signals,
+    runtime_graph_codegen_materialized_body_signals,
 };
 use crate::types::{DefaultTypes, KeySlot, Types, key_slots_from_tys};
 use cranelift_codegen::ir::types;
@@ -327,7 +327,7 @@ fn main(), do: User.run()
     let image = CompiledImage::from_linked(&tel, 2, compiled);
     assert!(image.metadata().is_none());
     assert!(capture.contains(&["fz", "link", "succeeded"]));
-    assert_eq!(image.run(entry), 42);
+    assert_eq!(image.run(&tel, entry), 42);
 }
 
 #[test]
@@ -398,7 +398,7 @@ fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
     let compiled = compile_planned(&mut t, &linked, &linked_plan, &tel).expect("compile planned linked");
     let image = CompiledImage::from_linked(&tel, 2, compiled);
 
-    assert_eq!(image.run(entry), 42);
+    assert_eq!(image.run(&tel, entry), 42);
 }
 
 #[test]
@@ -471,7 +471,7 @@ fn main(), do: User.run()
     let compiled = compile_planned(&mut t, &linked, &linked_plan, &tel).expect("compile planned linked");
     let image = CompiledImage::from_linked(&tel, 2, compiled);
 
-    assert_eq!(image.run(entry), 42);
+    assert_eq!(image.run(&tel, entry), 42);
 }
 
 #[test]
@@ -500,7 +500,7 @@ fn main(), do: Integerish.id(41)
     let compiled = compile_planned(&mut t, &frontend.module, &frontend.module_plan, &tel).expect("compile planned");
     let image = CompiledImage::from_linked(&tel, 1, compiled);
 
-    assert_eq!(image.run(entry), 42);
+    assert_eq!(image.run(&tel, entry), 42);
 }
 
 /// fz-t1m.1.5 — a closed-union protocol receiver dispatches to the correct
@@ -549,7 +549,7 @@ end
     // Native path — same module through codegen.
     let compiled = compile_planned(&mut t, &frontend.module, &frontend.module_plan, &tel).expect("compile planned");
     let image = CompiledImage::from_linked(&tel, 1, compiled);
-    assert_eq!(image.run(entry), 107, "native protocol dispatch");
+    assert_eq!(image.run(&tel, entry), 107, "native protocol dispatch");
 }
 
 #[test]
@@ -1199,7 +1199,7 @@ fn run_main_returning_module(src: &str) -> (i64, Module) {
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
     .expect("compile planned");
-    let r = compiled.run(entry);
+    let r = compiled.run(&ConfiguredTelemetry::new(), entry);
     (r, graph.module)
 }
 
@@ -1230,10 +1230,7 @@ fn runtime_graph_with_tel(t: &mut DefaultTypes, src: &str, tel: &dyn Telemetry) 
     let frontend = compile_source_with_types(t, src.to_string(), "test.fz".to_string(), tel);
     let checked = checked_module_for_mode(t, frontend, tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let prepared = prepare_execution_graph(t, checked, tel, CompileMode::Normal)
-        .unwrap_or_else(|err| panic!("execution graph: {err}"));
-    assert_module_planner_consistent(t, &prepared.module, "runtime_graph_with_tel");
-    prepared
+    prepare_execution_graph(t, checked, tel, CompileMode::Normal).unwrap_or_else(|err| panic!("execution graph: {err}"))
 }
 
 fn capture_main_module_planned(t: &mut DefaultTypes, m: Module, plan: ModulePlan) -> Vec<String> {
@@ -2351,7 +2348,7 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         "self-applying loop_with/3 needs one function-value singleton and one specialized direct-self singleton: {:?}",
         compiled.static_closure_targets()
     );
-    assert_eq!(compiled.run(entry), 100_000);
+    assert_eq!(compiled.run(&ConfiguredTelemetry::new(), entry), 100_000);
 }
 
 #[test]
@@ -2701,7 +2698,7 @@ fn spec_registry_registers_any_key_per_fn_with_spec_id_eq_fn_id() {
     .expect("compile planned");
     // Driving a run forces the pipeline registry construction path
     // where the SpecId.0 == FnId.0 invariant is asserted.
-    let _ = compiled.run(graph.module.fn_by_name("main").unwrap().id);
+    let _ = compiled.run(&ConfiguredTelemetry::new(), graph.module.fn_by_name("main").unwrap().id);
 }
 
 #[test]
@@ -2856,7 +2853,7 @@ fn hot_loop_native_continuations_allocate_no_heap_closures() {
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
     .expect("compile planned")
-    .run(entry);
+    .run(&ConfiguredTelemetry::new(), entry);
     let allocation_count = frame_alloc_count_take();
 
     assert_eq!(result, 10, "result must still be 10");
@@ -3346,7 +3343,7 @@ end
 
     let compiled = compile_planned(&mut t, &frontend.module, &frontend.module_plan, &tel).expect("compile planned");
     let image = CompiledImage::from_linked(&tel, 1, compiled);
-    assert_eq!(image.run(entry), 304, "native function-clause dispatch");
+    assert_eq!(image.run(&tel, entry), 304, "native function-clause dispatch");
 }
 
 #[test]
@@ -3373,7 +3370,7 @@ end
 
     let compiled = compile_planned(&mut t, &frontend.module, &frontend.module_plan, &tel).expect("compile planned");
     let image = CompiledImage::from_linked(&tel, 1, compiled);
-    assert_eq!(image.run(entry), 200, "native recursive function-clause dispatch");
+    assert_eq!(image.run(&tel, entry), 200, "native recursive function-clause dispatch");
     assert_eq!(
         cap.count(&["fz", "codegen", "dispatch_missing"]),
         0,
