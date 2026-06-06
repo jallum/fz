@@ -97,7 +97,7 @@ pub(crate) fn compile_with_backend_prepared<
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
 >(
     t: &mut T,
-    prepared: PreparedNativeProgram,
+    prepared: &PreparedNativeProgram,
     backend: B,
     tel: &dyn Telemetry,
 ) -> Result<B::Output, CodegenError> {

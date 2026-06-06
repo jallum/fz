@@ -1513,7 +1513,7 @@ pub(crate) fn compile_with_backend_preplanned<
         },
     );
     let prepared = prepare_preplanned_native(t, module, module_plan, tel)?;
-    compile_with_backend_prepared_impl(t, prepared, backend, tel)
+    compile_with_backend_prepared_impl(t, &prepared, backend, tel)
 }
 
 pub(crate) fn compile_with_backend_prepared<
@@ -1521,7 +1521,7 @@ pub(crate) fn compile_with_backend_prepared<
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
 >(
     t: &mut T,
-    prepared: PreparedNativeProgram,
+    prepared: &PreparedNativeProgram,
     backend: B,
     tel: &dyn Telemetry,
 ) -> Result<B::Output, CodegenError> {
@@ -1533,16 +1533,14 @@ fn compile_with_backend_prepared_impl<
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
 >(
     t: &mut T,
-    prepared: PreparedNativeProgram,
+    prepared: &PreparedNativeProgram,
     mut backend: B,
     tel: &dyn Telemetry,
 ) -> Result<B::Output, CodegenError> {
-    let PreparedNativeProgram {
-        working,
-        module_plan,
-        planned_program,
-        abi_facts,
-    } = prepared;
+    let working = &prepared.working;
+    let module_plan = &prepared.module_plan;
+    let planned_program = &prepared.planned_program;
+    let abi_facts = &prepared.abi_facts;
 
     let runtime = declare_runtime_symbols(backend.module_mut())?;
 
@@ -1556,7 +1554,7 @@ fn compile_with_backend_prepared_impl<
     let user_schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
     user_schemas.borrow_mut().closure_env(0);
     let (tuple_arities, tuple_schema_ids, bs_tuple_arity1_schema, bs_tuple_arity3_schema) =
-        collect_tuple_arities_and_register_schemas(&working, &user_schemas);
+        collect_tuple_arities_and_register_schemas(working, &user_schemas);
     let named_schema_ids = {
         let mut ids = HashMap::new();
         let mut reg = user_schemas.borrow_mut();
@@ -1576,20 +1574,20 @@ fn compile_with_backend_prepared_impl<
 
     let callable_entries = planned_program.callable_entries();
 
-    let schemas = build_per_spec_schemas(t, &planned_program);
+    let schemas = build_per_spec_schemas(t, planned_program);
     let frame_sizes: Vec<u32> = schemas.iter().map(|s| s.allocation_payload_size() as u32).collect();
-    let return_tys = derive_return_tys(t, spec_keys, spec_fnidx, &module_plan);
+    let return_tys = derive_return_tys(t, spec_keys, spec_fnidx, module_plan);
 
-    let param_reprs = derive_param_reprs(t, &planned_program, &abi_facts.cont_fns);
+    let param_reprs = derive_param_reprs(t, planned_program, &abi_facts.cont_fns);
     let tagged_return_specs = compute_tagged_return_specs(
         t,
         module,
         &return_tys,
-        &planned_program,
+        planned_program,
         &abi_facts.closure_capture_counts,
     );
     let return_reprs = build_return_reprs(t, &return_tys, &tagged_return_specs);
-    let tagged_slot0_cont_specs = compute_tagged_slot0_cont_specs(t, &planned_program, &return_reprs);
+    let tagged_slot0_cont_specs = compute_tagged_slot0_cont_specs(t, planned_program, &return_reprs);
     let param_reprs = refine_param_reprs_for_tagging(param_reprs, &tagged_slot0_cont_specs);
 
     emit_codegen_abi_contracts(
@@ -1627,7 +1625,7 @@ fn compile_with_backend_prepared_impl<
         t,
         backend.module_mut(),
         module,
-        &module_plan,
+        module_plan,
         spec_registry,
         spec_fnidx,
         &param_reprs,
@@ -1829,8 +1827,8 @@ fn compile_with_backend_prepared_impl<
         &abi_facts.closure_capture_counts,
     );
 
-    let diagnostics = collect_diagnostics(t, module, &module_plan, tel);
-    let halt_reprs = compute_halt_reprs(t, module, &planned_program, &return_reprs);
+    let diagnostics = collect_diagnostics(t, module, module_plan, tel);
+    let halt_reprs = compute_halt_reprs(t, module, planned_program, &return_reprs);
     let fn_halt_kinds = derive_fn_halt_kinds(module, &halt_reprs);
     emit_mid_flight_cont_bodies(
         backend.module_mut(),

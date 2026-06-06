@@ -19,6 +19,7 @@ use crate::types::DefaultTypes;
 pub(crate) struct World {
     types: DefaultTypes,
     execution: Option<ExecutionWorld>,
+    native: Option<PreparedNativeProgram>,
 }
 
 struct ExecutionWorld {
@@ -46,6 +47,7 @@ impl World {
         Self {
             types: types::new(),
             execution: None,
+            native: None,
         }
     }
 
@@ -80,6 +82,19 @@ impl World {
 
     fn replace_execution(&mut self, graph: PreparedExecutionGraph) {
         self.execution = Some(graph.into());
+        self.native = None;
+    }
+
+    fn replace_native(&mut self, prepared: PreparedNativeProgram) {
+        self.native = Some(prepared);
+    }
+
+    fn types_and_native(&mut self) -> (&mut DefaultTypes, &PreparedNativeProgram) {
+        let native = self
+            .native
+            .as_ref()
+            .expect("compiler world has no native state; prepare native world state before codegen");
+        (&mut self.types, native)
     }
 
     fn execution(&self) -> &ExecutionWorld {
@@ -168,10 +183,15 @@ impl Compiler {
         &mut self,
         world: &mut World,
         tel: &dyn Telemetry,
-    ) -> Result<PreparedNativeProgram, CodegenError> {
+    ) -> Result<(), CodegenError> {
+        if world.native.is_some() {
+            return Ok(());
+        }
         let module = world.module().clone();
         let module_plan = world.module_plan().clone();
-        prepare_native_program(world.types(), &module, &module_plan, tel)
+        let prepared = prepare_native_program(world.types(), &module, &module_plan, tel)?;
+        world.replace_native(prepared);
+        Ok(())
     }
 
     pub(crate) fn compile_planned(
@@ -207,8 +227,9 @@ impl Compiler {
                 module_path: module_path,
             },
         );
-        let prepared = self.prepare_native_program(world, tel)?;
-        compile_with_backend_prepared(world.types(), prepared, backend, tel)
+        self.prepare_native_program(world, tel)?;
+        let (types, prepared) = world.types_and_native();
+        compile_with_backend_prepared(types, prepared, backend, tel)
     }
 }
 
