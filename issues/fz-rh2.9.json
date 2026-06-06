@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.8.2"
+  ],
   "blocks": [],
   "created": "2026-06-06T23:37:22Z",
   "description": "Goal: decide when Compiler2 can replace the old compiler. Change: compare contract fixtures against the current compiler oracle, list obsolete old-world modules/docs/tests to delete, and create follow-up scrap tickets. Check: no deletion happens until Compiler2 covers agreed contracts.",
