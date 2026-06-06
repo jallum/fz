@@ -4,14 +4,15 @@
     "fz-3je.1"
   ],
   "blocks": [],
+  "closed_at": "2026-06-06T11:38:07Z",
   "created": "2026-06-06T11:20:31Z",
   "description": "Goal\nFinish the refactor by routing CLI, REPL, interpreter, and test-runner entrypoints through the new Compiler spine and updating the agent docs to describe the final ownership model.\n\nSignal\n- Production entrypoints reach codegen or interp through Compiler-owned driver APIs.\n- REPL and test-runner use the same settled pipeline boundaries where appropriate.\n- `.agent/docs/single-authoritative-plan.md` and any related docs describe the new spine accurately.\n- Relevant tests pass, including targeted compiler/codegen pipeline tests.\n\nStrategy\n- Switch callers after the Compiler APIs and native preflight boundary exist.\n- Update tests alongside each caller migration.\n- Finish with doc updates and verification runs.",
   "id": "fz-48u",
   "labels": [],
   "parent": "fz-3je",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler spine: route entrypoints through Compiler and update docs",
   "type": "task",
-  "updated_at": "2026-06-06T11:33:46Z"
+  "updated_at": "2026-06-06T11:38:07Z"
 }
