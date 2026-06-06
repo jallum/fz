@@ -8,14 +8,15 @@
   "blocks": [
     "fz-g1c.4"
   ],
+  "closed_at": "2026-06-06T13:42:40Z",
   "created": "2026-06-06T13:03:56Z",
   "description": "",
   "id": "fz-g1c.3",
   "labels": [],
   "parent": "fz-g1c",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Thread caller-owned telemetry through planner, codegen, interpreter, and runtime test conveniences",
   "type": "task",
-  "updated_at": "2026-06-06T13:34:28Z"
+  "updated_at": "2026-06-06T13:42:40Z"
 }
