@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-g1c.3"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-g1c",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Thread caller-owned telemetry through parser frontend lowering and type test helpers",
   "type": "task",
-  "updated_at": "2026-06-06T13:03:57Z"
+  "updated_at": "2026-06-06T13:08:14Z"
 }
