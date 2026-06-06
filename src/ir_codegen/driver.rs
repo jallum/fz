@@ -1442,6 +1442,55 @@ fn declare_mid_flight_conts<T: Types<Ty = Ty>, M: cranelift_module::Module>(
     Ok((mid_flight_cont_fn_ids, mid_flight_cont_tail_fn_ids))
 }
 
+pub(crate) struct PreparedNativeProgram {
+    working: Module,
+    module_plan: ModulePlan,
+    planned_program: PlannedProgram,
+    abi_facts: AbiFacts,
+}
+
+pub(crate) fn prepare_preplanned_native<
+    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    module_plan: &ModulePlan,
+    tel: &dyn Telemetry,
+) -> Result<PreparedNativeProgram, CodegenError> {
+    let mut working = module.clone();
+    let mut module_plan = module_plan.clone();
+    if let Some(edge) = working.external_call_edges.first() {
+        return Err(CodegenError::new(format!(
+            "unresolved external module call `{}`",
+            edge.target
+        )));
+    }
+
+    #[cfg(debug_assertions)]
+    let call_shapes_pre = snapshot_call_shapes(&working);
+    lower_destinations(&mut working);
+    verify_module(&working).map_err(|errors| {
+        CodegenError::new(format!(
+            "destination-passing IR invariant failed:\n{}",
+            errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n")
+        ))
+    })?;
+    #[cfg(debug_assertions)]
+    assert_no_new_call_shapes(&working, &call_shapes_pre);
+    let diagnostics = resolve_module_types(t, &working, &mut module_plan);
+    if let Some(diagnostic) = diagnostics.into_iter().next() {
+        return Err(CodegenError::new(diagnostic.message).with_span(diagnostic.primary.span));
+    }
+    let planned_program = materialize_program(t, &working, &module_plan, tel);
+    let abi_facts = AbiFacts::derive(&working, &planned_program);
+    Ok(PreparedNativeProgram {
+        working,
+        module_plan,
+        planned_program,
+        abi_facts,
+    })
+}
+
 pub(crate) fn compile_with_backend_preplanned<
     B: Backend,
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
@@ -1452,34 +1501,45 @@ pub(crate) fn compile_with_backend_preplanned<
     backend: B,
     tel: &dyn Telemetry,
 ) -> Result<B::Output, CodegenError> {
-    compile_with_backend_preplanned_impl(t, module.clone(), module_plan.clone(), backend, tel)
-}
-
-fn compile_with_backend_preplanned_impl<
-    B: Backend,
-    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
->(
-    t: &mut T,
-    mut working: Module,
-    mut module_plan: ModulePlan,
-    mut backend: B,
-    tel: &dyn Telemetry,
-) -> Result<B::Output, CodegenError> {
-    if let Some(edge) = working.external_call_edges.first() {
-        return Err(CodegenError::new(format!(
-            "unresolved external module call `{}`",
-            edge.target
-        )));
-    }
-
     let compile_nonce = next_compile_nonce();
     let _compile_span = tel.span(
         &["fz", "compile"],
         crate::metadata! {
             compile_nonce: compile_nonce,
-            module_path: working.module_path().to_owned(),
+            module_path: module.module_path().to_owned(),
         },
     );
+    let prepared = prepare_preplanned_native(t, module, module_plan, tel)?;
+    compile_with_backend_prepared_impl(t, prepared, backend, tel)
+}
+
+pub(crate) fn compile_with_backend_prepared<
+    B: Backend,
+    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
+>(
+    t: &mut T,
+    prepared: PreparedNativeProgram,
+    backend: B,
+    tel: &dyn Telemetry,
+) -> Result<B::Output, CodegenError> {
+    compile_with_backend_prepared_impl(t, prepared, backend, tel)
+}
+
+fn compile_with_backend_prepared_impl<
+    B: Backend,
+    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
+>(
+    t: &mut T,
+    prepared: PreparedNativeProgram,
+    mut backend: B,
+    tel: &dyn Telemetry,
+) -> Result<B::Output, CodegenError> {
+    let PreparedNativeProgram {
+        working,
+        module_plan,
+        planned_program,
+        abi_facts,
+    } = prepared;
 
     let runtime = declare_runtime_symbols(backend.module_mut())?;
 
@@ -1504,29 +1564,11 @@ fn compile_with_backend_preplanned_impl<
         ids
     };
 
-    #[cfg(debug_assertions)]
-    let call_shapes_pre = snapshot_call_shapes(&working);
-    lower_destinations(&mut working);
-    verify_module(&working).map_err(|errors| {
-        CodegenError::new(format!(
-            "destination-passing IR invariant failed:\n{}",
-            errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n")
-        ))
-    })?;
-    #[cfg(debug_assertions)]
-    assert_no_new_call_shapes(&working, &call_shapes_pre);
-    let diagnostics = resolve_module_types(t, &working, &mut module_plan);
-    if let Some(diagnostic) = diagnostics.into_iter().next() {
-        return Err(CodegenError::new(diagnostic.message).with_span(diagnostic.primary.span));
-    }
     let module = &working;
-
-    let planned_program = materialize_program(t, module, &module_plan, tel);
     let spec_registry = planned_program.spec_registry();
     let spec_count = planned_program.spec_count();
     let spec_keys = planned_program.spec_keys();
     let spec_fnidx = planned_program.spec_fn_indices();
-    let abi_facts = AbiFacts::derive(module, &planned_program);
     let reachable = planned_program.reachable_specs();
 
     let callable_entries = planned_program.callable_entries();

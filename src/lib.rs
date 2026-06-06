@@ -39,8 +39,7 @@ use exec::runtime::Runtime;
 use frontend::{FrontendOk, FrontendResult, compile_source_with_types};
 use fz_ir::{FnCategory, FnId, FnIr, Module, SpecId};
 use ir_codegen::{
-    CompiledImage, CompiledProgram, asm_record_enable, asm_record_take, compile_aot_planned, compile_planned,
-    ir_text_record_enable, ir_text_record_take,
+    CompiledImage, CompiledProgram, asm_record_enable, asm_record_take, ir_text_record_enable, ir_text_record_take,
 };
 use ir_interp::run_main_with_plan;
 use ir_planner::{
@@ -343,7 +342,8 @@ fn run_build(tel: &ConfiguredTelemetry, args: &[String]) {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("fz_program");
-    let artifact = compile_aot_planned(compiler.types(), &graph.module, &graph.module_plan, obj_name, tel)
+    let artifact = compiler
+        .compile_aot_planned(&graph.module, &graph.module_plan, obj_name, tel)
         .unwrap_or_else(|e| {
             report_or_exit_through(tel, &[e.to_diagnostic()]);
             exit(1);
@@ -1199,10 +1199,12 @@ fn compile_pipeline(
     *sm_cell.borrow_mut() = graph.sm.clone();
     report_or_exit_through(tel, graph.diagnostics.as_slice());
     let main_fn = graph.module.fn_by_name("main").map(|f| f.id);
-    let executable = compile_planned(compiler.types(), &graph.module, &graph.module_plan, tel).unwrap_or_else(|e| {
-        report_or_exit_through(tel, &[e.to_diagnostic()]);
-        exit(1);
-    });
+    let executable = compiler
+        .compile_planned(&graph.module, &graph.module_plan, tel)
+        .unwrap_or_else(|e| {
+            report_or_exit_through(tel, &[e.to_diagnostic()]);
+            exit(1);
+        });
     tel.event(
         &["fz", "module", "unit_compiled"],
         metadata! {

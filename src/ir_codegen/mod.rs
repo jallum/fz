@@ -79,6 +79,31 @@ pub use support::{asm_record_enable, asm_record_take, ir_text_record_enable, ir_
 
 pub use fz_runtime::process::{PidId, Process, ProcessState};
 
+pub(crate) use driver::PreparedNativeProgram;
+
+pub(crate) fn prepare_native_program<
+    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    module_plan: &ModulePlan,
+    tel: &dyn Telemetry,
+) -> Result<PreparedNativeProgram, CodegenError> {
+    driver::prepare_preplanned_native(t, module, module_plan, tel)
+}
+
+pub(crate) fn compile_with_backend_prepared<
+    B: Backend,
+    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
+>(
+    t: &mut T,
+    prepared: PreparedNativeProgram,
+    backend: B,
+    tel: &dyn Telemetry,
+) -> Result<B::Output, CodegenError> {
+    driver::compile_with_backend_prepared(t, prepared, backend, tel)
+}
+
 pub(crate) fn compile_with_backend_planned<
     B: Backend,
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,

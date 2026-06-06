@@ -1,9 +1,11 @@
 use super::*;
 use crate::diag::SourceMap;
+use crate::exec::runtime::{ProcessExitCapture, Runtime};
 use crate::modules::pipeline::CompileMode;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
-use crate::telemetry::{Capture, ConfiguredTelemetry};
+use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+use fz_runtime::any_value::NIL_ATOM_ID;
 
 #[test]
 fn compiler_prepares_execution_graph_from_source_and_emits_lto_telemetry() {
@@ -73,6 +75,78 @@ fn compiler_prepares_execution_graph_from_program_input() {
     );
 }
 
+#[test]
+fn compiler_compile_planned_runs_spawn_with_captures_through_single_plan_path() {
+    let tel = ConfiguredTelemetry::new();
+    let exits = ProcessExitCapture::new();
+    tel.attach(&["fz", "runtime"], exits.handler());
+    let mut compiler = Compiler::new();
+
+    let graph = compiler
+        .prepare_execution_graph_from_source(
+            include_str!("../fixtures/spawn_with_captures/input.fz").to_string(),
+            "fixtures/spawn_with_captures/input.fz".to_string(),
+            &tel,
+            CompileMode::Normal,
+        )
+        .expect("execution graph");
+    let compiled = compiler
+        .compile_planned(&graph.module, &graph.module_plan, &tel)
+        .expect("compile planned");
+    let main_fn = graph.module.fn_by_name("main").expect("main fn").id;
+    let mut rt = Runtime::new(&compiled, 1, &tel).with_module(&graph.module);
+
+    let root_pid = rt.spawn(main_fn);
+    rt.run_until_idle();
+
+    let exit = exits.by_pid(root_pid).expect("root process_exited telemetry");
+    assert_eq!(
+        exit.halt_value, NIL_ATOM_ID as i64,
+        "spawn_with_captures should complete successfully through Compiler::compile_planned"
+    );
+}
+
+#[test]
+fn compiler_compile_planned_consumes_authoritative_plan_without_replanning() {
+    let src = "fn main(), do: 42";
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "planner", "planned"], capture.handler());
+    let mut compiler = Compiler::new();
+
+    let graph = compiler
+        .prepare_execution_graph_from_source(src.to_string(), "planned.fz".to_string(), &tel, CompileMode::Normal)
+        .expect("execution graph");
+    let _compiled = compiler
+        .compile_planned(&graph.module, &graph.module_plan, &tel)
+        .expect("compile planned");
+
+    assert_eq!(
+        planner_roles(&capture),
+        vec!["frontend_check".to_string(), "linked_execution_graph".to_string()],
+        "Compiler native compile should consume the supplied plan without publishing another planner.planned event"
+    );
+}
+
+#[test]
+fn compiler_compile_aot_planned_produces_main_symbol() {
+    let src = "fn main(), do: 7";
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler::new();
+
+    let graph = compiler
+        .prepare_execution_graph_from_source(src.to_string(), "aot.fz".to_string(), &tel, CompileMode::Normal)
+        .expect("execution graph");
+    let artifact = compiler
+        .compile_aot_planned(&graph.module, &graph.module_plan, "aot_test", &tel)
+        .expect("compile aot planned");
+
+    assert!(
+        artifact.main_symbol.is_some(),
+        "AOT compile should emit a C-callable main symbol"
+    );
+}
+
 fn parse_program(
     source_name: &str,
     src: &str,
@@ -85,4 +159,14 @@ fn parse_program(
         .expect("tokenize");
     let prog = Parser::new(toks).parse_program(tel).expect("parse program");
     (prog, sm)
+}
+
+fn planner_roles(cap: &Capture) -> Vec<String> {
+    cap.find(&["fz", "planner", "planned"])
+        .into_iter()
+        .map(|ev| match ev.metadata.get("role") {
+            Some(Value::Str(role)) => role.to_string(),
+            other => panic!("planner.planned event missing role metadata: {:?}", other),
+        })
+        .collect()
 }
