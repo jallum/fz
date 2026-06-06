@@ -4,7 +4,9 @@
     "fz-rh2.3",
     "fz-rh2.4"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.6.1"
+  ],
   "created": "2026-06-06T23:37:21Z",
   "description": "Goal: make code contributions define identity without lowering bodies. Change: IndexCode creates CodeState, module/function definitions, owned expanded ClauseAst/FunctionAst, and namespace bindings. Check: quicksort plus foo defines all functions but creates no LoweredBody/Activation/Executable facts.",
   "id": "fz-rh2.5",
