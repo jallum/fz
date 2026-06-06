@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-06T12:31:18Z",
   "created": "2026-06-06T12:29:17Z",
   "description": "Goal\nRename compiler::World execution-image fields and accessors so they describe the linked whole-program image rather than a source-language defmodule. This should remove the current collision between source modules and the linked execution module carried by World.\n\nSignal\n- World no longer exposes ambiguous `module` / `module_plan` names for the linked execution image.\n- Callers, tests, and docs use the new linked-program terminology consistently.\n- Formatting, clippy, and targeted compiler/module/codegen tests pass.\n\nStrategy\n1. Rename the World storage and accessors to linked-program terms.\n2. Propagate the new names through callers, helpers, and docs.\n3. Re-run the targeted verification matrix to catch any missed boundary references.\n\nReferences\n- src/compiler.rs\n- src/lib.rs\n- src/test_support.rs\n- .agent/docs/modules.md\n- .agent/docs/single-authoritative-plan.md",
   "id": "fz-tkf.2",
   "labels": [],
   "parent": "fz-tkf",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Rename World module fields to linked program terms",
   "type": "task",
-  "updated_at": "2026-06-06T12:29:27Z"
+  "updated_at": "2026-06-06T12:31:18Z"
 }
