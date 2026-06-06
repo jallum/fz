@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.6.1"
+  ],
   "blocks": [],
   "created": "2026-06-06T23:37:22Z",
   "description": "Goal: co-derive the first useful semantic facts from lowered bodies. Change: AnalyzeActivation, AnalyzeCallSite, ResolveDirectCall, DeriveReturnNeed, DeriveExecutable, PlanExecutable for direct calls and tuple destructure. Check: quicksort partition publishes tuple return type, TupleFields(2) return need, selected call edges, and executable facts before artifacts.",
