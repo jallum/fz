@@ -1,5 +1,5 @@
 use super::*;
-use crate::compiler::source::SourceMap;
+use crate::compiler::source::{Id, SourceMap};
 
 #[test]
 fn tokens_carry_accurate_byte_spans() {
@@ -27,7 +27,7 @@ fn locate_resolves_to_correct_line() {
     let src = "fn a(), do: 1\nfn b(), do: 2\n";
     let mut sm = SourceMap::new();
     let f = sm.add_code(Some("t.fz"), src);
-    let toks = Lexer::with_file_and_source_name(src, f, "<test>")
+    let toks = Lexer::with_code_id_and_source_name(src, f, "<test>")
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .expect("lex");
     // Find the `b` ident; verify it locates to line 2.
@@ -41,14 +41,14 @@ fn locate_resolves_to_correct_line() {
 }
 
 #[test]
-fn multi_file_spans_keep_their_file_id() {
+fn multi_file_spans_keep_their_code_id() {
     let mut sm = SourceMap::new();
     let a = sm.add_code(Some("a.fz"), "fn foo()");
     let b = sm.add_code(Some("b.fz"), "fn bar()");
-    let toks_a = Lexer::with_file_and_source_name("fn foo()", a, "<test>")
+    let toks_a = Lexer::with_code_id_and_source_name("fn foo()", a, "<test>")
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .unwrap();
-    let toks_b = Lexer::with_file_and_source_name("fn bar()", b, "<test>")
+    let toks_b = Lexer::with_code_id_and_source_name("fn bar()", b, "<test>")
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .unwrap();
     let foo = toks_a
@@ -59,14 +59,14 @@ fn multi_file_spans_keep_their_file_id() {
         .iter()
         .find(|t| matches!(&t.tok, Tok::Ident(n) if n == "bar"))
         .unwrap();
-    assert_eq!(foo.span.file, a);
-    assert_eq!(bar.span.file, b);
+    assert_eq!(foo.span.code_id, a);
+    assert_eq!(bar.span.code_id, b);
     assert_eq!(
-        &sm.code(foo.span.file).bytes[foo.span.start as usize..foo.span.end as usize],
+        &sm.code(foo.span.code_id).bytes[foo.span.start as usize..foo.span.end as usize],
         "foo"
     );
     assert_eq!(
-        &sm.code(bar.span.file).bytes[bar.span.start as usize..bar.span.end as usize],
+        &sm.code(bar.span.code_id).bytes[bar.span.start as usize..bar.span.end as usize],
         "bar"
     );
 }
@@ -281,7 +281,7 @@ fn lex_error_carries_span_at_offending_byte() {
         .expect_err("should fail");
     // Backtick is at offset 3; err span points at it (or just after).
     assert!(err.span.start <= 3 && err.span.end >= 3, "span={:?}", err.span);
-    assert_eq!(err.span.file, FileId(0));
+    assert_eq!(err.span.code_id, Id(0));
 }
 
 // -- Telemetry integration (fz-ndf.8) --

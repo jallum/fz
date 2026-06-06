@@ -33,7 +33,7 @@ mod type_expr;
 mod type_infer;
 pub mod types;
 use cli::repl::run_script;
-use compiler::source::{FileId, SourceMap, Span};
+use compiler::source::{Id as CodeId, SourceMap, Span};
 use compiler::{Compiler, World};
 use diag::{Diagnostic, codes::LOWER_UNBOUND, report_or_exit_through};
 use exec::runtime::Runtime;
@@ -488,7 +488,7 @@ fn run_jit_from_path(tel: &dyn Telemetry, args: &[String]) {
 /// pushed far right and annotated lines pinned at col 0 — the mismatch
 /// is hard to read. We strip the gutter, re-indent from scratch, decode
 /// the srcloc to `@line:col`, and fold it into a trailing comment on
-/// each inst. Srcloc encoding (top 8 bits = file_id, low 24 bits =
+/// each inst. Srcloc encoding (top 8 bits = code_id, low 24 bits =
 /// byte offset) matches `span_to_srcloc` in src/ir_codegen.rs.
 fn format_clif(text: &str, sm: &SourceMap) -> String {
     const BODY_WIDTH: usize = 40;
@@ -505,10 +505,10 @@ fn format_clif(text: &str, sm: &SourceMap) -> String {
             let (hex, tail) = after_at.split_at(after_at.find(' ').unwrap_or(after_at.len()));
             match u32::from_str_radix(hex, 16) {
                 Ok(bits) => {
-                    let file_id = FileId(bits >> 24);
+                    let code_id = CodeId(bits >> 24);
                     let offset = bits & 0x00FF_FFFF;
-                    if (file_id.0 as usize) < sm.file_count() {
-                        let loc = sm.locate(Span::new(file_id, offset, offset));
+                    if (code_id.0 as usize) < sm.code_count() {
+                        let loc = sm.locate(Span::new(code_id, offset, offset));
                         (Some(format!("{}:{}", loc.line, loc.col)), tail.trim_start())
                     } else {
                         (None, trimmed)
@@ -1049,7 +1049,7 @@ fn dump_outcomes_pipeline(
         if sp.is_dummy() {
             "<generated>".to_string()
         } else {
-            format!("{}:{}-{}", sp.file.0, sp.start, sp.end)
+            format!("{}:{}-{}", sp.code_id.0, sp.start, sp.end)
         }
     };
 

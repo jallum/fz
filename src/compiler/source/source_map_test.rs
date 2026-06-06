@@ -1,6 +1,6 @@
 use super::*;
 
-fn sm_with(name: &str, src: &str) -> (SourceMap, FileId) {
+fn sm_with(name: &str, src: &str) -> (SourceMap, Id) {
     let mut sm = SourceMap::new();
     let f = sm.add_code(Some(name.to_string()), src.to_string());
     (sm, f)
@@ -11,9 +11,9 @@ fn add_code_assigns_sequential_ids() {
     let mut sm = SourceMap::new();
     let a = sm.add_code(Some("a".to_string()), "one".to_string());
     let b = sm.add_code(Some("b".to_string()), "two".to_string());
-    assert_eq!(a, FileId(0));
-    assert_eq!(b, FileId(1));
-    assert_eq!(sm.file_count(), 2);
+    assert_eq!(a, Id(0));
+    assert_eq!(b, Id(1));
+    assert_eq!(sm.code_count(), 2);
 }
 
 #[test]
@@ -79,9 +79,9 @@ fn multi_file_isolation() {
     let b = sm.add_code(Some("b".to_string()), "zz".to_string());
     let la = sm.locate(Span::new(a, 2, 3));
     let lb = sm.locate(Span::new(b, 1, 2));
-    assert_eq!(la.file, a);
+    assert_eq!(la.code_id, a);
     assert_eq!(la.line, 2);
-    assert_eq!(lb.file, b);
+    assert_eq!(lb.code_id, b);
     assert_eq!(lb.line, 1);
 }
 

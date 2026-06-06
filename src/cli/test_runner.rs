@@ -158,9 +158,10 @@ impl Handler for ConsoleTestHandler {
 fn run_named_through(tel: &dyn Telemetry, user_src: &str, user_name: &str) -> Result<(), TestRunError> {
     let mut compiler = Compiler::new();
     let mut world = World::new();
-    // Lex prelude and user source separately into their own FileIds. Token
-    // spans then point at the *real* offsets in their respective files, so
-    // later stages render user-facing locations against the user's file
+    // Lex prelude and user source separately into their own code ids. Token
+    // spans then point at the *real* offsets in their respective source
+    // buffers, so later stages render user-facing locations against the
+    // user's file
     // (not against a synthetic prelude+user concat). Eofs are filtered
     // between streams so the parser sees one continuous list.
     let mut sm = SourceMap::new();
@@ -170,10 +171,10 @@ fn run_named_through(tel: &dyn Telemetry, user_src: &str, user_name: &str) -> Re
     // SourceMap built above. Downstream stages still bubble up as
     // TestRunError strings — wiring spans through resolve / macros for
     // test output is a future ticket.
-    let prelude_toks = Lexer::with_file_and_source_name(PRELUDE, prelude_id, "<test-prelude>")
+    let prelude_toks = Lexer::with_code_id_and_source_name(PRELUDE, prelude_id, "<test-prelude>")
         .tokenize(tel)
         .map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
-    let user_toks = Lexer::with_file_and_source_name(user_src, user_id, user_name)
+    let user_toks = Lexer::with_code_id_and_source_name(user_src, user_id, user_name)
         .tokenize(tel)
         .map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
     let toks = splice_token_streams(prelude_toks, user_toks);

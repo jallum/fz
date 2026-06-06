@@ -1,12 +1,12 @@
 use super::*;
-use crate::compiler::source::{FileId, SourceMap, Span};
+use crate::compiler::source::{Id as CodeId, SourceMap, Span};
 use crate::diag::codes::{LEX_UNEXPECTED_CHAR, TYPE_UNREACHABLE_ARM};
 use crate::frontend::macros::expand_program;
 use crate::frontend::resolve::flatten_modules;
 use crate::ir_lower::lower_program;
 use crate::telemetry::Telemetry;
 
-fn rebuild(src: &str) -> (SourceMap, FileId) {
+fn rebuild(src: &str) -> (SourceMap, CodeId) {
     let mut sm = SourceMap::new();
     let id = sm.add_code(Some("input.fz"), src);
     (sm, id)
@@ -113,10 +113,10 @@ fn color_off_produces_no_escapes() {
 /// and return the rendered first-error diagnostic. Panics if the
 /// pipeline completes without an error (the fixture must exercise
 /// one of these stages).
-fn run_pipeline_for_fixture(src: &str, id: FileId, sm: &SourceMap, rel: &str, tel: &dyn Telemetry) -> String {
+fn run_pipeline_for_fixture(src: &str, id: CodeId, sm: &SourceMap, rel: &str, tel: &dyn Telemetry) -> String {
     use crate::parser::Parser;
     use crate::parser::lexer::Lexer;
-    let toks = match Lexer::with_file_and_source_name(src, id, "<test>").tokenize(tel) {
+    let toks = match Lexer::with_code_id_and_source_name(src, id, "<test>").tokenize(tel) {
         Err(e) => return render(&e.to_diagnostic(), sm),
         Ok(t) => t,
     };

@@ -124,8 +124,8 @@ fn structural_telemetry_exposes_compiler_artifacts_to_handlers() {
 
 fn parse_with_source_map(src: &str, source_name: &str, tel: &dyn Telemetry) -> (Program, SourceMap) {
     let mut sm = SourceMap::new();
-    let file_id = sm.add_code(Some(source_name.to_string()), src.to_string());
-    let toks = Lexer::with_file_and_source_name(src, file_id, "<test>")
+    let code_id = sm.add_code(Some(source_name.to_string()), src.to_string());
+    let toks = Lexer::with_code_id_and_source_name(src, code_id, "<test>")
         .tokenize(tel)
         .expect("lex");
     let prog = Parser::new(toks).parse_program(tel).expect("parse");
@@ -134,8 +134,8 @@ fn parse_with_source_map(src: &str, source_name: &str, tel: &dyn Telemetry) -> (
 
 fn parse_expr_with_source_map(src: &str, source_name: &str, tel: &dyn Telemetry) -> (Spanned<Expr>, SourceMap) {
     let mut sm = SourceMap::new();
-    let file_id = sm.add_code(Some(source_name.to_string()), src.to_string());
-    let toks = Lexer::with_file_and_source_name(src, file_id, "<test>")
+    let code_id = sm.add_code(Some(source_name.to_string()), src.to_string());
+    let toks = Lexer::with_code_id_and_source_name(src, code_id, "<test>")
         .tokenize(tel)
         .expect("lex");
     let expr = Parser::new(toks).parse_expr_eof().expect("parse expr");

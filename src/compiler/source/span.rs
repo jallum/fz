@@ -1,21 +1,21 @@
-//! Span: byte-offset source position keyed by FileId.
+//! Span: byte-offset source position keyed by source::Id.
 //!
 //! Spans are intentionally narrow (Copy, 12 bytes) and carry no source bytes.
 //! The SourceMap holds the bytes; the renderer resolves spans to display
 //! line/col on demand. This keeps the AST/IR cheap to copy.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct FileId(pub u32);
+pub struct Id(pub u32);
 
-impl FileId {
+impl Id {
     /// Sentinel for "no file" — used by Span::DUMMY.
-    pub const NONE: FileId = FileId(u32::MAX);
+    pub const NONE: Id = Id(u32::MAX);
 }
 
 /// A half-open byte range `[start, end)` within a single source file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
-    pub file: FileId,
+    pub code_id: Id,
     pub start: u32,
     pub end: u32,
 }
@@ -40,17 +40,17 @@ impl Span {
     /// continuations, etc.). The renderer treats DUMMY as "(generated)" —
     /// no snippet, just the lineage trailer if any.
     pub const DUMMY: Span = Span {
-        file: FileId::NONE,
+        code_id: Id::NONE,
         start: 0,
         end: 0,
     };
 
-    pub const fn new(file: FileId, start: u32, end: u32) -> Self {
-        Self { file, start, end }
+    pub const fn new(code_id: Id, start: u32, end: u32) -> Self {
+        Self { code_id, start, end }
     }
 
     pub const fn is_dummy(self) -> bool {
-        self.file.0 == FileId::NONE.0
+        self.code_id.0 == Id::NONE.0
     }
 
     /// Merge two spans into one covering both. Returns `self` if `other` is
@@ -65,11 +65,11 @@ impl Span {
         if other.is_dummy() {
             return self;
         }
-        if self.file != other.file {
+        if self.code_id != other.code_id {
             return self;
         }
         Span {
-            file: self.file,
+            code_id: self.code_id,
             start: self.start.min(other.start),
             end: self.end.max(other.end),
         }

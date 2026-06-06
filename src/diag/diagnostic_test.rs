@@ -1,8 +1,8 @@
 use super::*;
-use crate::compiler::source::{FileId, Span};
+use crate::compiler::source::{Id as CodeId, Span};
 
 fn s(start: u32, end: u32) -> Span {
-    Span::new(FileId(0), start, end)
+    Span::new(CodeId(0), start, end)
 }
 
 #[test]

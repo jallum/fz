@@ -728,10 +728,10 @@ fn main() do bad() end
 /// errors out earlier today, but the lineage path stays safe.)
 #[test]
 fn missing_def_span_falls_back_to_none() {
-    use crate::compiler::source::{FileId, Span};
+    use crate::compiler::source::{Id as CodeId, Span};
     // Build a tree manually and stamp with no definition.
     let mut e = Spanned::dummy(Expr::Int(42));
-    let call_span = Span::new(FileId(0), 10, 20);
+    let call_span = Span::new(CodeId(0), 10, 20);
     super::stamp_expanded(&mut e, call_span, None);
     match e.origin {
         SpanOrigin::Expanded { macro_call, definition } => {
