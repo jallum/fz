@@ -10,7 +10,9 @@ use crate::ir_planner::fn_types::SpecKey;
 use crate::ir_planner::planned::{CallableEntryPlan, PlannedProgram};
 use crate::ir_planner::{ModulePlan, SpecPlan, collect_diagnostics, materialize_program};
 use crate::telemetry::value::opaque;
-use crate::telemetry::{Telemetry, TelemetryExt as _, next_compile_nonce};
+use crate::telemetry::{Telemetry, TelemetryExt as _};
+#[cfg(test)]
+use crate::telemetry::next_compile_nonce;
 use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Ty, Types, VisibilityTypes, key_slots_from_tys, ty_descr};
 use cranelift_codegen::ir::{self, AbiParam, InstBuilder, Signature, condcodes::IntCC, types};
 use cranelift_codegen::isa::CallConv;
@@ -1491,6 +1493,7 @@ pub(crate) fn prepare_preplanned_native<
     })
 }
 
+#[cfg(test)]
 pub(crate) fn compile_with_backend_preplanned<
     B: Backend,
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,

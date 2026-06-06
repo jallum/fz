@@ -104,6 +104,7 @@ pub(crate) fn compile_with_backend_prepared<
     driver::compile_with_backend_prepared(t, prepared, backend, tel)
 }
 
+#[cfg(test)]
 pub(crate) fn compile_with_backend_planned<
     B: Backend,
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
@@ -117,6 +118,7 @@ pub(crate) fn compile_with_backend_planned<
     driver::compile_with_backend_preplanned(t, module, module_plan, backend, tel)
 }
 
+#[cfg(test)]
 pub(crate) fn compile_planned<T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes>(
     t: &mut T,
     module: &Module,
@@ -126,6 +128,7 @@ pub(crate) fn compile_planned<T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + 
     compile_with_backend_planned(t, module, module_plan, JitBackend::new(), tel)
 }
 
+#[cfg(test)]
 pub(crate) fn compile_aot_planned<T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes>(
     t: &mut T,
     module: &Module,

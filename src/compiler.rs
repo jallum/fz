@@ -23,6 +23,7 @@ impl Compiler {
         Self { types: types::new() }
     }
 
+    #[cfg(test)]
     pub(crate) fn with_types(types: DefaultTypes) -> Self {
         Self { types }
     }
@@ -46,6 +47,7 @@ impl Compiler {
         self.prepare_execution_graph(frontend, tel, mode)
     }
 
+    #[cfg(test)]
     pub(crate) fn prepare_execution_graph_from_program(
         &mut self,
         prog: Program,
@@ -108,6 +110,7 @@ impl Compiler {
         &mut self.types
     }
 
+    #[cfg(test)]
     pub(crate) fn into_types(self) -> DefaultTypes {
         self.types
     }
