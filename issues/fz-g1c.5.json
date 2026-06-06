@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-06T13:10:46Z",
+  "description": "",
+  "id": "fz-g1c.5",
+  "labels": [],
+  "parent": "fz-g1c",
+  "priority": 2,
+  "status": "open",
+  "title": "Thread caller-owned telemetry through type-expression and visibility test helpers",
+  "type": "task",
+  "updated_at": "2026-06-06T13:10:46Z"
+}
