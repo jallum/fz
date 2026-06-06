@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+#
+# pre-commit — keep the working tree formatted and the lints clean.
+#
+# Mirrors the CI lint job (.github/workflows/ci.yml):
+#   * cargo fmt --all                          (applied here, then re-staged)
+#   * cargo check --all                        (must compile)
+#   * cargo clippy --all-targets -- -D warnings  (aborts the commit on any lint)
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+#
+set -euo pipefail
+
+say() { printf 'pre-commit: %s\n' "$*"; }
+run() { say "$*"; "$@"; }
+
+# Rust files staged for this commit (added / copied / modified).
+staged_rs="$(git diff --cached --name-only --diff-filter=ACM -- '*.rs')"
+
+if [ -n "$staged_rs" ]; then
+  # A file that is staged *and* carries further unstaged edits would have those
+  # unstaged hunks pulled in when we re-`git add` it after formatting. Refuse
+  # rather than silently committing work the author never staged.
+  partial="$(comm -12 \
+    <(printf '%s\n' "$staged_rs" | sort -u) \
+    <(git diff --name-only -- '*.rs' | sort -u) || true)"
+  if [ -n "$partial" ]; then
+    say "these files are partially staged — stage or stash them first:"
+    printf '%s\n' "$partial" | sed 's/^/  /'
+    exit 1
+  fi
+
+  run cargo fmt --all
+
+  # Re-stage the now-formatted files so the commit reflects the formatting.
+  # One git add per path keeps spaces in filenames safe.
+  while IFS= read -r f; do
+    [ -n "$f" ] && git add -- "$f"
+  done <<< "$staged_rs"
+fi
+
+run cargo check --all
+run cargo clippy --all-targets -- -D warnings
+
+say "ok"

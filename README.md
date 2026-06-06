@@ -564,6 +564,19 @@ fixture conventions — how each fixture pins its claim, and the compiler
 dump-budget mechanism — are explained in
 [fixtures/GOLDEN.md](fixtures/GOLDEN.md).
 
+### Pre-commit hook
+
+A tracked pre-commit hook lives in [`.githooks/`](.githooks/). It formats
+the staged Rust with `cargo fmt --all`, re-stages it, then runs
+`cargo check --all` and `cargo clippy --all-targets -- -D warnings` —
+mirroring the CI lint job, so a clippy complaint aborts the commit before
+it ever reaches CI. Git looks for hooks in `.git/hooks` by default, so
+enable the tracked directory once per clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
 ---
 
 ## What's in the box today
