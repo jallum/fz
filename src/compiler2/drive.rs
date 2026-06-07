@@ -110,16 +110,19 @@ impl World<'_> {
                 }
                 Err(_) => {
                     job_span.stop_with(&measurements! {}, &metadata! {});
+                    self.clear_unresolved_diagnostics();
                     span.stop_with(&measurements! { jobs_ran: jobs_ran }, &metadata! { job: opaque(&job) });
                     return DriveOutcome::Fatal { job };
                 }
             }
         }
         if !self.work_graph.has_unresolved() {
+            self.clear_unresolved_diagnostics();
             span.close_with(measurements! { jobs_ran: jobs_ran }, metadata! {});
             DriveOutcome::Resolved
         } else {
             let unresolved = self.work_graph.unresolved();
+            self.emit_unresolved_diagnostics(&unresolved);
             span.stop_with(
                 &measurements! { jobs_ran: jobs_ran },
                 &metadata! {

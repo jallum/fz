@@ -20,6 +20,7 @@ pub const PARSE_AMBIGUOUS_NO_PARENS_KEYWORD: DiagCode = DiagCode("parse/ambiguou
 pub const RESOLVE_DUPLICATE_MODULE: DiagCode = DiagCode("resolve/duplicate-module");
 pub const RESOLVE_DUPLICATE_EXPORT: DiagCode = DiagCode("resolve/duplicate-export");
 pub const RESOLVE_UNKNOWN_MODULE: DiagCode = DiagCode("resolve/unknown-module");
+pub const RESOLVE_UNKNOWN_FUNCTION: DiagCode = DiagCode("resolve/unknown-function");
 pub const RESOLVE_UNKNOWN_IMPORT: DiagCode = DiagCode("resolve/unknown-import");
 pub const RESOLVE_CONFLICTING_IMPORT: DiagCode = DiagCode("resolve/conflicting-import");
 pub const RESOLVE_TYPE_ALIAS: DiagCode = DiagCode("resolve/type-alias");

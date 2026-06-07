@@ -11,6 +11,9 @@ use std::rc::Rc;
 
 use crate::ast::FnDef;
 use crate::ast::Item;
+use crate::compiler::source::Span;
+use crate::diag::driver::emit_through;
+use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch};
 use crate::modules::runtime_library;
 use crate::telemetry::{Telemetry, opaque};
@@ -23,6 +26,7 @@ use super::CodeId;
 use super::artifact::{MaterializedProgram, MaterializedProgramMap};
 use super::body::{LoweredBody, LoweredBodyMap};
 use super::code::CodeMap;
+use super::deps::UnresolvedWait;
 use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
 use super::drive::{FactKey, Job, JobEffects, WorkGraph};
 use super::facts::FactValue;
@@ -39,6 +43,18 @@ use super::runtime::{self, RuntimeModuleCode};
 use super::semantic::{
     ActivationAnalysis, ActivationMap, CallSiteKey, CallSiteMap, CallSiteSummary, SemanticClosure, SemanticClosureMap,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum UnresolvedIssueKey {
+    Module(ModuleId),
+    Function(FunctionId),
+    Export(FunctionId),
+}
+
+struct UnresolvedIssue {
+    key: UnresolvedIssueKey,
+    diagnostic: Diagnostic,
+}
 
 pub struct World<'a> {
     tel: &'a dyn Telemetry,
@@ -60,6 +76,7 @@ pub struct World<'a> {
     namespaces: NamespaceStore,
     runtime_prelude: CodeId,
     runtime_modules: HashMap<ModuleId, RuntimeModuleCode>,
+    reported_unresolved: HashSet<UnresolvedIssueKey>,
     pub(crate) work_graph: WorkGraph,
 }
 
@@ -101,6 +118,7 @@ impl<'a> World<'a> {
             namespaces: NamespaceStore::new(),
             runtime_prelude: CodeId::ZERO,
             runtime_modules: HashMap::new(),
+            reported_unresolved: HashSet::new(),
             work_graph: WorkGraph::new(),
         };
         world.runtime_modules = runtime::bootstrap(&mut world.modules);
@@ -187,6 +205,24 @@ impl<'a> World<'a> {
 
     pub fn demand(&mut self, job: Job) -> bool {
         self.work_graph.enqueue(job)
+    }
+
+    pub(crate) fn emit_unresolved_diagnostics(&mut self, waits: &[UnresolvedWait<Job, FactKey>]) {
+        let issues = self.unresolved_issues(waits);
+        let next = issues.iter().map(|issue| issue.key).collect::<HashSet<_>>();
+        let diagnostics = issues
+            .into_iter()
+            .filter(|issue| !self.reported_unresolved.contains(&issue.key))
+            .map(|issue| issue.diagnostic)
+            .collect::<Vec<_>>();
+        if !diagnostics.is_empty() {
+            emit_through(self.tel, None, &diagnostics);
+        }
+        self.reported_unresolved = next;
+    }
+
+    pub(crate) fn clear_unresolved_diagnostics(&mut self) {
+        self.reported_unresolved.clear();
     }
 
     pub fn code_name(&self, id: CodeId) -> Option<&str> {
@@ -1028,6 +1064,77 @@ impl<'a> World<'a> {
             }
             ModuleSourceKind::Body { .. } | ModuleSourceKind::Protocol { .. } => None,
         }
+    }
+
+    fn unresolved_issues(&self, waits: &[UnresolvedWait<Job, FactKey>]) -> Vec<UnresolvedIssue> {
+        let frontier = waits.iter().map(|wait| wait.fact.clone()).collect::<HashSet<_>>();
+        let mut issues = Vec::new();
+        for wait in waits {
+            if let Some(issue) = self.unresolved_issue(&frontier, &wait.fact) {
+                issues.push(issue);
+            }
+        }
+        issues.sort_by_key(|issue| match issue.key {
+            UnresolvedIssueKey::Module(module) => (0_u8, module.as_u32()),
+            UnresolvedIssueKey::Function(function) => (1_u8, function.as_u32()),
+            UnresolvedIssueKey::Export(function) => (2_u8, function.as_u32()),
+        });
+        issues.dedup_by_key(|issue| issue.key);
+        issues
+    }
+
+    fn unresolved_issue(&self, frontier: &HashSet<FactKey>, fact: &FactKey) -> Option<UnresolvedIssue> {
+        match fact {
+            FactKey::ModuleIndexed(module) => Some(UnresolvedIssue {
+                key: UnresolvedIssueKey::Module(*module),
+                diagnostic: Diagnostic::error(
+                    codes::RESOLVE_UNKNOWN_MODULE,
+                    format!(
+                        "module `{}` is not defined",
+                        self.module_name(*module)
+                            .expect("referenced modules should have reverse names")
+                    ),
+                    Span::DUMMY,
+                ),
+            }),
+            FactKey::FunctionDefined(function) => self.unresolved_function_issue(frontier, *function),
+            _ => None,
+        }
+    }
+
+    fn unresolved_function_issue(&self, frontier: &HashSet<FactKey>, function: FunctionId) -> Option<UnresolvedIssue> {
+        let function_ref = self.function_ref(function);
+        if function_ref.module.is_global() {
+            return Some(UnresolvedIssue {
+                key: UnresolvedIssueKey::Function(function),
+                diagnostic: Diagnostic::error(
+                    codes::RESOLVE_UNKNOWN_FUNCTION,
+                    format!("function `{}/{}` is not defined", function_ref.name, function_ref.arity),
+                    Span::DUMMY,
+                ),
+            });
+        }
+
+        if frontier.contains(&FactKey::ModuleIndexed(function_ref.module))
+            || self.module_defined_revision(function_ref.module).is_none()
+        {
+            return None;
+        }
+
+        let module_name = self
+            .module_name(function_ref.module)
+            .expect("referenced function modules should have reverse names");
+        Some(UnresolvedIssue {
+            key: UnresolvedIssueKey::Export(function),
+            diagnostic: Diagnostic::error(
+                codes::RESOLVE_UNKNOWN_IMPORT,
+                format!(
+                    "module `{}` does not export `{}/{}`",
+                    module_name, function_ref.name, function_ref.arity
+                ),
+                Span::DUMMY,
+            ),
+        })
     }
 }
 

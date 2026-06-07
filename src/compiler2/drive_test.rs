@@ -1421,6 +1421,29 @@ fn compiler2_submit_root_before_code_reports_unresolved_until_entry_is_defined()
         }
         other => panic!("root-before-code should finish unresolved: {other:?}"),
     }
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("missing global entry diagnostic");
+    assert_eq!(
+        metadata_str(&diagnostic, "code"),
+        codes::RESOLVE_UNKNOWN_FUNCTION.0,
+        "missing top-level roots should report an unknown-function diagnostic"
+    );
+    assert_eq!(
+        metadata_str(&diagnostic, "message"),
+        "function `main/0` is not defined",
+        "missing top-level roots should name the unresolved function"
+    );
+
+    match compiler.drive() {
+        DriveOutcome::Unresolved { .. } => {}
+        other => panic!("re-driving an unchanged missing root should stay unresolved: {other:?}"),
+    }
+    assert_eq!(
+        capture.count(&["fz", "diag", "error"]),
+        1,
+        "the same unresolved root should not re-emit duplicate diagnostics"
+    );
 
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/late_main.fz".to_string()),
@@ -1429,6 +1452,54 @@ fn compiler2_submit_root_before_code_reports_unresolved_until_entry_is_defined()
     assert_resolved(
         compiler.drive(),
         "adding the entry definition should resolve the waiting root",
+    );
+}
+
+#[test]
+fn compiler2_submit_module_root_without_code_reports_one_unknown_module_diag() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_root(RootSubmission {
+        module_name: Some("User".to_string()),
+        name: "run".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    match compiler.drive() {
+        DriveOutcome::Unresolved { .. } => {}
+        other => panic!("missing module root should finish unresolved: {other:?}"),
+    }
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("missing module diagnostic");
+    assert_eq!(
+        metadata_str(&diagnostic, "code"),
+        codes::RESOLVE_UNKNOWN_MODULE.0,
+        "missing named roots should report the missing module, not an internal wait fact"
+    );
+    assert_eq!(
+        metadata_str(&diagnostic, "message"),
+        "module `User` is not defined",
+        "missing named roots should name the unresolved module"
+    );
+    assert_eq!(
+        capture.count(&["fz", "diag", "error"]),
+        1,
+        "one missing module should emit one diagnostic even when multiple waits depend on it"
+    );
+
+    match compiler.drive() {
+        DriveOutcome::Unresolved { .. } => {}
+        other => panic!("re-driving an unchanged missing module should stay unresolved: {other:?}"),
+    }
+    assert_eq!(
+        capture.count(&["fz", "diag", "error"]),
+        1,
+        "the same unresolved module should not re-emit duplicate diagnostics"
     );
 }
 
@@ -2634,8 +2705,21 @@ end
         other => panic!("missing exact import should become unresolved demand: {other:?}"),
     }
     assert!(
-        !capture.contains(&["fz", "diag", "error"]),
-        "lazy exact imports should not emit eager import diagnostics"
+        capture.contains(&["fz", "diag", "error"]),
+        "using a missing exact import should emit the deferred missing-export diagnostic"
+    );
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("missing exact import diagnostic");
+    assert_eq!(
+        metadata_str(&diagnostic, "code"),
+        codes::RESOLVE_UNKNOWN_IMPORT.0,
+        "missing exact imports should reuse the module-export diagnostic shape"
+    );
+    assert_eq!(
+        metadata_str(&diagnostic, "message"),
+        "module `Math` does not export `missing/1`",
+        "missing exact imports should name the unresolved export"
     );
 }
 
