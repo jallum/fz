@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-06T23:37:21Z",
-  "description": "Goal: replace separate type/planning phases with one root-scoped semantic fact fixpoint. Signal: SemanticClosed appears only when root semantic jobs are quiescent, waiters are resolved, and fingerprints are stable.",
+  "description": "Goal: replace separate type/planning phases with one root-scoped semantic fact fixpoint.\n\nSignal:\n- `SemanticClosed(root)` appears only when root semantic jobs are quiescent, required waiters are resolved, and semantic fact revisions are stable.\n- Function definitions can exist without lowered bodies; lowered bodies can exist without root activation; activation/executable facts appear only through reachable roots.\n- Type facts, selected callees, return needs, executable specs, callable entries, and effects are co-derived by work-graph rules, not by multiple hidden phase loops.\n\nSpine:\n1. Keep the drive/work graph small and move job families into focused modules.\n2. Add a per-function `LoweredBody(function)` boundary owned by Compiler2.\n3. Derive direct-call semantic facts from lowered bodies.\n4. Add recursive convergence and retraction semantics.\n5. Pull runtime/protocol/callable cases through the same facts.\n6. Let artifacts consume `SemanticClosed` mechanically.",
   "id": "fz-rh2.6",
   "labels": [],
   "parent": "fz-rh2",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "Compiler2 semantic closure: co-derive type and executable facts",
   "type": "epic",
-  "updated_at": "2026-06-06T23:37:55Z"
+  "updated_at": "2026-06-07T13:54:48Z"
 }
