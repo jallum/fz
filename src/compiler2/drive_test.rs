@@ -2,7 +2,7 @@ use super::{CodeSubmission, Compiler2, DriveOutcome, ExactPattern, ExecutableNee
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
     ActivationKey, CallSiteKey, CallSiteSummary, ExecutableKey, FactKey, FunctionId, FunctionRef, LoweredBody,
-    LoweredStep, Module, ModuleId, SelectedCallee,
+    LoweredStep, MaterializedProgram, Module, ModuleId, SelectedCallee, SemanticClosure,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
@@ -24,6 +24,7 @@ type FunctionDefs = Rc<RefCell<Vec<FunctionDefinedRecord>>>;
 type ModuleDefs = Rc<RefCell<HashMap<ModuleId, Vec<Module>>>>;
 type CallsiteDefs = Rc<RefCell<Vec<CallsiteDefinedRecord>>>;
 type SemanticClosedDefs = Rc<RefCell<Vec<SemanticClosedRecord>>>;
+type MaterializedProgramDefs = Rc<RefCell<Vec<MaterializedProgramRecord>>>;
 type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
 
 #[test]
@@ -755,6 +756,210 @@ fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
     assert!(
         t.is_equivalent(&returns.last_for_function(root_id, kernel_plus_id).return_ty, &int),
         "Kernel.+/2 should retain a concrete int activation under the operator-ref reducer fixture",
+    );
+}
+
+#[test]
+fn compiler2_materialization_projects_only_the_closed_quicksort_frontier() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let materialized = MaterializedProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "materialized_program", "defined"],
+        materialized.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
+        text: format!(
+            "{}\nfn foo(), do: 42\n",
+            include_str!("../../fixtures/quicksort/input.fz")
+        ),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "materialization should project only the closed quicksort frontier into backend-owned data",
+    );
+
+    let program = materialized.last(root_id).program;
+    let main_id = function_id(&functions, "main", 0);
+    let qsort_id = function_id(&functions, "qsort", 1);
+    let partition_id = function_id(&functions, "partition", 4);
+    let append_id = function_id(&functions, "append", 2);
+    let foo_id = function_id(&functions, "foo", 0);
+    let executable_ids = program
+        .executables
+        .keys()
+        .map(|key| key.activation.function)
+        .collect::<HashSet<_>>();
+
+    assert_eq!(
+        program.entry.activation.function, main_id,
+        "the materialized program entry should stay rooted at main/0",
+    );
+    assert!(
+        executable_ids.contains(&main_id)
+            && executable_ids.contains(&qsort_id)
+            && executable_ids.contains(&partition_id)
+            && executable_ids.contains(&append_id),
+        "materialization should keep the closed quicksort path",
+    );
+    assert!(
+        !executable_ids.contains(&foo_id),
+        "materialization should keep uncalled foo/0 out of the backend snapshot",
+    );
+
+    let materialize_outputs = outputs
+        .take(Job::MaterializeRoot(root_id))
+        .expect("MaterializeRoot job effects for quicksort root");
+    assert!(
+        materialize_outputs
+            .iter()
+            .all(|(fact, _)| *fact == FactKey::MaterializedProgram(root_id)),
+        "materialization should publish only the materialized-program fact and no semantic facts",
+    );
+    assert!(
+        !outputs
+            .stops_matching(|job| matches!(job, Job::MaterializeRoot(root) if *root == root_id))
+            .is_empty(),
+        "materialization should run as an ordinary root-owned job",
+    );
+    assert!(
+        capture.find(&["fz", "planner"]).is_empty(),
+        "Compiler2 materialization should not invoke the legacy planner pipeline",
+    );
+}
+
+#[test]
+fn compiler2_materialization_freezes_only_the_selected_enum_reduce_path() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    let materialized = MaterializedProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "materialized_program", "defined"],
+        materialized.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
+        text: r#"
+fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "materialization should freeze only the selected runtime, protocol, and callable reduce path",
+    );
+
+    let program = materialized.last(root_id).program;
+    let main_id = function_id(&functions, "main", 0);
+    let enum_reduce_id = function_id_in_module(&functions, &modules, "Enum", "reduce", 3);
+    let enum_map_id = function_id_in_module(&functions, &modules, "Enum", "map", 2);
+    let enum_reverse_id = function_id_in_module(&functions, &modules, "Enum", "reverse", 1);
+    let list_id = module_id(&modules, "List");
+    let main_generated = generated_functions_owned_by(&functions, main_id);
+    let user_reducer_id = main_generated[0].function_id;
+    let enum_generated = generated_functions_owned_by(&functions, enum_reduce_id);
+    let bridge_reducer_id = enum_generated[0].function_id;
+    let list_impl_reduce_id = functions
+        .all()
+        .into_iter()
+        .find(|record| {
+            record.function_ref.name == "reduce"
+                && record.arity == 3
+                && record.owner_module_id == Some(list_id)
+                && record.module_id != list_id
+        })
+        .unwrap_or_else(|| panic!("function.defined for the selected List-backed protocol callback"))
+        .function_id;
+
+    let executable_ids = program
+        .executables
+        .keys()
+        .map(|key| key.activation.function)
+        .collect::<HashSet<_>>();
+    assert!(
+        executable_ids.contains(&main_id)
+            && executable_ids.contains(&enum_reduce_id)
+            && executable_ids.contains(&list_impl_reduce_id)
+            && executable_ids.contains(&bridge_reducer_id)
+            && executable_ids.contains(&user_reducer_id),
+        "materialization should keep the selected public reduce path, protocol callback, bridge lambda, and user reducer",
+    );
+    assert!(
+        !executable_ids.contains(&enum_map_id) && !executable_ids.contains(&enum_reverse_id),
+        "materialization should keep unrelated Enum paths cold",
+    );
+
+    let enum_reduce_edges = &program
+        .executables
+        .iter()
+        .find(|(key, _)| key.activation.function == enum_reduce_id)
+        .expect("materialized executable for Enum.reduce/3")
+        .1
+        .call_edges;
+    assert!(
+        enum_reduce_edges
+            .values()
+            .any(|edge| edge.callee == SelectedCallee::Function(list_impl_reduce_id)),
+        "materialization should freeze Enum.reduce/3's protocol call to the selected List-backed callback",
+    );
+
+    let bridge_edges = &program
+        .executables
+        .iter()
+        .find(|(key, _)| key.activation.function == bridge_reducer_id)
+        .expect("materialized executable for the bridge reducer lambda")
+        .1
+        .call_edges;
+    assert!(
+        bridge_edges
+            .values()
+            .any(|edge| edge.callee == SelectedCallee::Function(user_reducer_id)),
+        "materialization should freeze the bridge reducer call to the user reducer executable",
+    );
+
+    let materialize_outputs = outputs
+        .take(Job::MaterializeRoot(root_id))
+        .expect("MaterializeRoot job effects for Enum.reduce root");
+    assert!(
+        materialize_outputs
+            .iter()
+            .all(|(fact, _)| *fact == FactKey::MaterializedProgram(root_id)),
+        "materialization should publish only the materialized-program fact and no semantic facts",
+    );
+    assert!(
+        capture.find(&["fz", "planner"]).is_empty(),
+        "Compiler2 materialization should not invoke the legacy planner pipeline",
     );
 }
 
@@ -2399,8 +2604,14 @@ struct CallsiteDefinedRecord {
 #[derive(Debug, Clone)]
 struct SemanticClosedRecord {
     root_id: crate::compiler2::RootId,
-    activations: Vec<ActivationKey>,
-    executables: Vec<ExecutableKey>,
+    activations: HashSet<ActivationKey>,
+    executables: HashSet<ExecutableKey>,
+}
+
+#[derive(Debug, Clone)]
+struct MaterializedProgramRecord {
+    root_id: crate::compiler2::RootId,
+    program: MaterializedProgram,
 }
 
 #[derive(Debug, Clone)]
@@ -2427,6 +2638,10 @@ struct SemanticClosedCapture {
 
 struct ReturnTypeCapture {
     defs: ReturnTypeDefs,
+}
+
+struct MaterializedProgramCapture {
+    defs: MaterializedProgramDefs,
 }
 
 struct EntryDispatchCapture {
@@ -2634,6 +2849,30 @@ impl ReturnTypeCapture {
     }
 }
 
+impl MaterializedProgramCapture {
+    fn new() -> Self {
+        Self {
+            defs: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(MaterializedProgramCaptureHandler {
+            defs: self.defs.clone(),
+        })
+    }
+
+    fn last(&self, root_id: crate::compiler2::RootId) -> MaterializedProgramRecord {
+        self.defs
+            .borrow()
+            .iter()
+            .rev()
+            .find(|record| record.root_id == root_id)
+            .cloned()
+            .unwrap_or_else(|| panic!("materialized_program.defined for {root_id:?}"))
+    }
+}
+
 impl GuardDispatchCapture {
     fn new() -> Self {
         Self {
@@ -2730,6 +2969,10 @@ struct SemanticClosedCaptureHandler {
 
 struct ReturnTypeCaptureHandler {
     defs: ReturnTypeDefs,
+}
+
+struct MaterializedProgramCaptureHandler {
+    defs: MaterializedProgramDefs,
 }
 
 struct EntryDispatchCaptureHandler {
@@ -2883,24 +3126,17 @@ impl Handler for SemanticClosedCaptureHandler {
         let Some(Value::U64(root_id)) = event.measurements.get("root_id") else {
             return;
         };
-        let Some(activations) = event
+        let Some(closure) = event
             .metadata
-            .get("activations")
-            .and_then(|value| value.downcast_ref::<Vec<ActivationKey>>())
-        else {
-            return;
-        };
-        let Some(executables) = event
-            .metadata
-            .get("executables")
-            .and_then(|value| value.downcast_ref::<Vec<ExecutableKey>>())
+            .get("closure")
+            .and_then(|value| value.downcast_ref::<SemanticClosure>())
         else {
             return;
         };
         self.defs.borrow_mut().push(SemanticClosedRecord {
             root_id: crate::compiler2::RootId::from_u32(*root_id as u32),
-            activations: activations.clone(),
-            executables: executables.clone(),
+            activations: closure.activations.clone(),
+            executables: closure.executables.clone(),
         });
     }
 }
@@ -2927,6 +3163,28 @@ impl Handler for ReturnTypeCaptureHandler {
         self.defs.borrow_mut().push(ReturnTypeRecord {
             activation: activation.clone(),
             return_ty: return_ty.clone(),
+        });
+    }
+}
+
+impl Handler for MaterializedProgramCaptureHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if event.name != ["fz", "compiler2", "materialized_program", "defined"] || event.kind != EventKind::Event {
+            return;
+        }
+        let Some(Value::U64(root_id)) = event.measurements.get("root_id") else {
+            return;
+        };
+        let Some(program) = event
+            .metadata
+            .get("program")
+            .and_then(|value| value.downcast_ref::<MaterializedProgram>())
+        else {
+            return;
+        };
+        self.defs.borrow_mut().push(MaterializedProgramRecord {
+            root_id: crate::compiler2::RootId::from_u32(*root_id as u32),
+            program: program.clone(),
         });
     }
 }

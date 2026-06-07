@@ -380,7 +380,10 @@ fn resolve_direct_call(
 ) -> Result<(Option<CallSiteSummary>, Ty), FatalError> {
     let mut t = types::new();
     if arg_types.iter().any(|arg| t.is_empty(arg)) {
-        return Ok((call_summary(selected_callee(callee), arg_types, _need), t.none()));
+        return Ok((
+            call_summary(selected_callee(callee), arg_types, _need, t.none()),
+            t.none(),
+        ));
     }
 
     match callee {
@@ -388,7 +391,7 @@ fn resolve_direct_call(
             resolve_function_call(world, caller, *function, arg_types, _need, reads, waits, follow_up)
         }
         DirectCallee::Named { .. } => Ok((
-            call_summary(selected_callee(callee), arg_types, _need),
+            call_summary(selected_callee(callee), arg_types, _need, types::new().any()),
             types::new().any(),
         )),
     }
@@ -423,6 +426,7 @@ fn resolve_function_call(
             callee: SelectedCallee::Function(function),
             input_types,
             need,
+            return_ty: return_ty.clone(),
         }),
         return_ty,
     ))
@@ -502,6 +506,7 @@ fn resolve_protocol_call(
             callee: SelectedCallee::Function(selected.function),
             input_types,
             need,
+            return_ty: return_ty.clone(),
         }),
         return_ty,
     ))
@@ -606,11 +611,17 @@ fn selected_callee(callee: &DirectCallee) -> Option<SelectedCallee> {
     })
 }
 
-fn call_summary(callee: Option<SelectedCallee>, input_types: Vec<Ty>, need: ExecutableNeed) -> Option<CallSiteSummary> {
+fn call_summary(
+    callee: Option<SelectedCallee>,
+    input_types: Vec<Ty>,
+    need: ExecutableNeed,
+    return_ty: Ty,
+) -> Option<CallSiteSummary> {
     Some(CallSiteSummary {
         callee: callee?,
         input_types,
         need,
+        return_ty,
     })
 }
 

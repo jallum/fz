@@ -78,6 +78,7 @@ pub const TYPE_PROTOCOL_NO_IMPL: DiagCode = DiagCode("type/protocol-no-impl");
 
 // ----- codegen -----
 
+pub const ARTIFACT_INCOMPLETE_SEMANTIC_PLAN: DiagCode = DiagCode("artifact/incomplete-semantic-plan");
 pub const CODEGEN_SCHEMA_MISSING: DiagCode = DiagCode("codegen/schema-missing");
 
 // ----- internal (compiler invariants) -----

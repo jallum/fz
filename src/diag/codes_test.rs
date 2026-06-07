@@ -23,6 +23,7 @@ fn all_codes_follow_stage_slash_kind_format() {
         TYPE_UNREACHABLE_ARM,
         TYPE_OPAQUE_VISIBILITY,
         TYPE_EXTERN_MARSHAL,
+        ARTIFACT_INCOMPLETE_SEMANTIC_PLAN,
         CODEGEN_SCHEMA_MISSING,
         INTERNAL_POST_RESOLUTION_LEFTOVER,
     ];

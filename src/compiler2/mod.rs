@@ -1,4 +1,5 @@
 mod agenda;
+mod artifact;
 mod body;
 mod code;
 mod compiler;
@@ -16,6 +17,7 @@ mod semantic;
 mod world;
 
 pub use agenda::Agenda;
+pub use artifact::{MaterializedCallEdge, MaterializedExecutable, MaterializedProgram, MaterializedProgramMap};
 pub use body::{
     BodySlot, BodyState, CallSiteId, DirectCallee, Literal, LoweredBlock, LoweredBody, LoweredBodyMap, LoweredClause,
     LoweredStep, ValueId,
@@ -34,7 +36,7 @@ pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
 pub use scheduler::{AppliedStep, DriveOutcome, FatalError, Scheduler};
 pub use semantic::{
     ActivationAnalysis, ActivationMap, ActivationSlot, ActivationSummary, CallSiteKey, CallSiteMap, CallSiteSummary,
-    SelectedCallee,
+    SelectedCallee, SemanticClosure, SemanticClosureMap,
 };
 pub use world::World;
 

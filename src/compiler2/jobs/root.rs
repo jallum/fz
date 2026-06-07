@@ -3,10 +3,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use super::super::drive::{FactKey, Job, JobEffects};
 use super::super::identity::{ExecutableKey, RootId};
 use super::super::scheduler::FatalError;
-use super::super::semantic::SelectedCallee;
+use super::super::semantic::{SelectedCallee, SemanticClosure};
 use super::super::world::World;
-use crate::telemetry::opaque;
-use crate::{measurements, metadata};
 
 /// Seeds one semantic root once its entry definition exists.
 ///
@@ -133,8 +131,11 @@ pub(super) fn check_semantic_closure(world: &mut World<'_>, root_id: RootId) -> 
         }
     }
 
-    let activations = activation_revisions.keys().cloned().collect::<Vec<_>>();
-    let mut executables = Vec::new();
+    let activations = activation_revisions
+        .keys()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+    let mut executables = std::collections::HashSet::new();
     for activation in &activations {
         let activation_revision = *activation_revisions
             .get(activation)
@@ -149,22 +150,44 @@ pub(super) fn check_semantic_closure(world: &mut World<'_>, root_id: RootId) -> 
                 need,
             };
             outputs.push((FactKey::Executable(executable.clone()), activation_revision));
-            executables.push(executable);
+            executables.insert(executable);
         }
     }
 
-    world.tel().execute(
-        &["fz", "compiler2", "semantic_closed", "defined"],
-        &measurements! {
-            root_id: root_id.as_u32() as u64,
-            revision: revision,
-        },
-        &metadata! {
-            activations: opaque(&activations),
-            executables: opaque(&executables),
-        },
-    );
-    outputs.push((FactKey::SemanticClosed(root_id), revision));
+    if waits.is_empty() {
+        for activation in &activations {
+            let lowered_fact = FactKey::LoweredBody(activation.function);
+            let Some(lowered_revision) = world.fact_revision(lowered_fact.clone()) else {
+                waits.insert(lowered_fact);
+                follow_up.insert(Job::LowerFunction(activation.function));
+                continue;
+            };
+            reads.push(lowered_fact);
+            revision = revision.max(lowered_revision);
+        }
+    }
+
+    if waits.is_empty() {
+        let entry = ExecutableKey {
+            activation: super::super::ActivationKey {
+                root: root_id,
+                function: root.function,
+                input: Vec::new(),
+            },
+            need: root.need,
+        };
+        let semantic_closed = world.define_semantic_closure(
+            root_id,
+            SemanticClosure {
+                entry,
+                activations,
+                executables,
+            },
+            revision,
+        );
+        outputs.push((FactKey::SemanticClosed(root_id), semantic_closed));
+        follow_up.insert(Job::MaterializeRoot(root_id));
+    }
 
     Ok(JobEffects {
         reads,

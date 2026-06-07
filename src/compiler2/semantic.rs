@@ -1,14 +1,15 @@
 //! Compiler2's root-scoped semantic facts.
 //!
-//! This module stores activation-local summaries that the work graph owns:
-//! observed input shapes, reachable callsites, and settled return types.
+//! This module stores activation-local summaries and closed-root frontiers that
+//! the work graph owns: observed input shapes, reachable callsites, settled
+//! return types, and the semantic closure each root has reached.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::types::{Ty, Types};
 
 use super::body::CallSiteId;
-use super::identity::{ActivationKey, ExecutableNeed, FunctionId};
+use super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CallSiteKey {
@@ -27,6 +28,7 @@ pub struct CallSiteSummary {
     pub callee: SelectedCallee,
     pub input_types: Vec<Ty>,
     pub need: ExecutableNeed,
+    pub return_ty: Ty,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +41,13 @@ pub struct ActivationSummary {
 pub struct ActivationAnalysis {
     pub reachable_clauses: Vec<u32>,
     pub callsites: Vec<CallSiteId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticClosure {
+    pub entry: ExecutableKey,
+    pub activations: HashSet<ActivationKey>,
+    pub executables: HashSet<ExecutableKey>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +67,17 @@ pub struct ActivationMap {
 #[derive(Debug, Default)]
 pub struct CallSiteMap {
     slots: HashMap<CallSiteKey, Revisioned<CallSiteSummary>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SemanticClosureSlot {
+    closure: SemanticClosure,
+    revision: u64,
+}
+
+#[derive(Debug, Default)]
+pub struct SemanticClosureMap {
+    slots: Vec<Option<SemanticClosureSlot>>,
 }
 
 #[derive(Debug, Clone)]
@@ -133,7 +153,7 @@ impl ActivationMap {
             .slots
             .get_mut(key)
             .expect("activations should exist before defining return types");
-        if slot.summary.return_ty != return_ty {
+        if slot.return_revision == 0 || slot.summary.return_ty != return_ty {
             slot.summary.return_ty = return_ty;
             slot.return_revision += 1;
         }
@@ -208,6 +228,37 @@ impl CallSiteMap {
 
     pub fn revision(&self, key: &CallSiteKey) -> Option<u64> {
         self.slots.get(key).map(|slot| slot.revision)
+    }
+}
+
+impl SemanticClosureMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn define(&mut self, root: RootId, closure: SemanticClosure, revision: u64) -> u64 {
+        self.ensure(root);
+        self.slots[root.as_u32() as usize] = Some(SemanticClosureSlot { closure, revision });
+        revision
+    }
+
+    pub fn get(&self, root: RootId) -> Option<&SemanticClosure> {
+        self.slots
+            .get(root.as_u32() as usize)
+            .and_then(|slot| slot.as_ref().map(|slot| &slot.closure))
+    }
+
+    pub fn revision(&self, root: RootId) -> Option<u64> {
+        self.slots
+            .get(root.as_u32() as usize)
+            .and_then(|slot| slot.as_ref().map(|slot| slot.revision))
+    }
+
+    fn ensure(&mut self, root: RootId) {
+        let needed = root.as_u32() as usize + 1;
+        if self.slots.len() < needed {
+            self.slots.resize_with(needed, || None);
+        }
     }
 }
 

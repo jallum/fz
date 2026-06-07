@@ -8,6 +8,7 @@ use super::drive::{Job, JobEffects};
 use super::scheduler::FatalError;
 use super::world::World;
 
+mod artifact;
 mod body;
 mod dispatch;
 mod root;
@@ -25,5 +26,6 @@ pub(crate) fn run(world: &mut World<'_>, job: &Job) -> Result<JobEffects, FatalE
         Job::SeedRoot(root_id) => root::seed_root(world, *root_id),
         Job::AnalyzeActivation(activation) => semantic::analyze_activation(world, activation),
         Job::CheckSemanticClosure(root_id) => root::check_semantic_closure(world, *root_id),
+        Job::MaterializeRoot(root_id) => artifact::materialize_root(world, *root_id),
     }
 }

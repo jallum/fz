@@ -19,6 +19,7 @@ use crate::types::{ClosureTarget, ClosureTypes, Ty, Types};
 use crate::{measurements, metadata};
 
 use super::CodeId;
+use super::artifact::{MaterializedProgram, MaterializedProgramMap};
 use super::body::{LoweredBody, LoweredBodyMap};
 use super::code::CodeMap;
 use super::deps::ExactPattern;
@@ -34,7 +35,8 @@ use super::protocol::{
 };
 use super::runtime::{self, RuntimeModuleCode};
 use super::semantic::{
-    ActivationAnalysis, ActivationMap, ActivationSummary, CallSiteKey, CallSiteMap, CallSiteSummary,
+    ActivationAnalysis, ActivationMap, ActivationSummary, CallSiteKey, CallSiteMap, CallSiteSummary, SemanticClosure,
+    SemanticClosureMap,
 };
 
 pub struct World<'a> {
@@ -49,6 +51,8 @@ pub struct World<'a> {
     protocol_impls: ProtocolImplMap,
     activations: ActivationMap,
     callsites: CallSiteMap,
+    semantic_closures: SemanticClosureMap,
+    artifacts: MaterializedProgramMap,
     roots: RootMap,
     namespaces: NamespaceStore,
     runtime_modules: HashMap<ModuleId, RuntimeModuleCode>,
@@ -84,6 +88,8 @@ impl<'a> World<'a> {
             protocol_impls: ProtocolImplMap::new(),
             activations: ActivationMap::new(),
             callsites: CallSiteMap::new(),
+            semantic_closures: SemanticClosureMap::new(),
+            artifacts: MaterializedProgramMap::new(),
             roots: RootMap::new(),
             namespaces: NamespaceStore::new(),
             runtime_modules: HashMap::new(),
@@ -186,7 +192,7 @@ impl<'a> World<'a> {
         function: FunctionId,
         inputs: Vec<Ty>,
     ) -> (super::identity::ActivationKey, u64) {
-        let key = self.activation_key(root, function, &inputs);
+        let key = self.canonical_activation_key(root, function, &inputs);
         let revision = self.activations.activate(key.clone(), inputs.clone());
         let slot = self
             .activations
@@ -286,6 +292,44 @@ impl<'a> World<'a> {
 
     pub fn callsite_summary(&self, key: &CallSiteKey) -> Option<&CallSiteSummary> {
         self.callsites.get(key)
+    }
+
+    pub(crate) fn define_semantic_closure(&mut self, root: RootId, closure: SemanticClosure, revision: u64) -> u64 {
+        let revision = self.semantic_closures.define(root, closure.clone(), revision);
+        self.tel.execute(
+            &["fz", "compiler2", "semantic_closed", "defined"],
+            &measurements! {
+                root_id: root.as_u32() as u64,
+                revision: revision,
+            },
+            &metadata! {
+                closure: opaque(&closure),
+            },
+        );
+        revision
+    }
+
+    pub(crate) fn semantic_closure(&self, root: RootId) -> SemanticClosure {
+        self.semantic_closures
+            .get(root)
+            .cloned()
+            .expect("semantic closures should only be read after their fact is defined")
+    }
+
+    pub(crate) fn define_materialized_program(&mut self, root: RootId, program: MaterializedProgram) -> u64 {
+        let revision = self.artifacts.define(root, program.clone());
+        self.tel.execute(
+            &["fz", "compiler2", "materialized_program", "defined"],
+            &measurements! {
+                root_id: root.as_u32() as u64,
+                revision: revision,
+                executable_count: program.executables.len() as u64,
+            },
+            &metadata! {
+                program: opaque(&program),
+            },
+        );
+        revision
     }
 
     pub fn reference_module(&mut self, name: impl Into<String>) -> ModuleId {
@@ -790,7 +834,12 @@ impl<'a> World<'a> {
         }
     }
 
-    fn activation_key(&self, root: RootId, function: FunctionId, inputs: &[Ty]) -> super::identity::ActivationKey {
+    pub(crate) fn canonical_activation_key(
+        &self,
+        root: RootId,
+        function: FunctionId,
+        inputs: &[Ty],
+    ) -> super::identity::ActivationKey {
         let mask = self.dispatch_input_mask(function);
         let recursive = self.function_is_recursive(function);
         let mut t = types::new();

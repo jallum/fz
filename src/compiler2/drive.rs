@@ -24,6 +24,7 @@ pub enum Job {
     SeedRoot(RootId),
     AnalyzeActivation(ActivationKey),
     CheckSemanticClosure(RootId),
+    MaterializeRoot(RootId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -44,6 +45,7 @@ pub enum FactKey {
     ReturnNeed(CallSiteKey),
     Executable(ExecutableKey),
     SemanticClosed(RootId),
+    MaterializedProgram(RootId),
 }
 
 pub type WorkGraph = Scheduler<Job, FactKey, super::deps::ExactPattern<FactKey>>;

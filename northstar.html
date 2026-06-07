@@ -723,8 +723,9 @@ fn pop(agenda: &amp;mut Agenda) -&gt; Option&lt;JobKey&gt; {
       <h2>Closure And Artifacts</h2>
       <p>
         <code>SemanticClosed(root, epoch)</code> is the only semantic-to-backend handoff. The epoch
-        fingerprints the closed set and the base revisions it read. Artifact jobs are ordinary
-        agenda jobs, but their inputs are closed facts, not source or type questions.
+        fingerprints the closed set and the base revisions it read, including the lowered-body
+        revisions for every closed executable. Artifact jobs are ordinary agenda jobs, but their
+        wakeup signal is the closed fact itself, not mid-fixpoint semantic churn.
       </p>
       <pre><code>SemanticClosed(root, epoch)
   -&gt; MaterializedProgram(root, epoch)
@@ -732,10 +733,12 @@ fn pop(agenda: &amp;mut Agenda) -&gt; Option&lt;JobKey&gt; {
   -&gt; Emitted(root, target, epoch)</code></pre>
 
       <p>
-        Materialization may clone, fold, inline safe known calls, fuse blocks, and prune dead
-        edges. It must not publish semantic facts. If materialization needs a callee, return type,
-        effect, callable entry, or extern marshal fact that is absent from the closed semantic set,
-        the compiler reports an incomplete-semantic-plan diagnostic.
+        <code>MaterializedProgram</code> is a root-owned copy of the closed executable set: one
+        entry executable, one pruned lowered body per reachable <code>ExecutableKey</code>, and one
+        frozen callsite summary per reachable callsite. Materialization may clone, fold, inline
+        safe known calls, fuse blocks, and prune dead edges. It must not publish semantic facts.
+        If materialization needs a closed constituent that the closure claimed was available, the
+        compiler reports an incomplete-semantic-plan diagnostic.
       </p>
     </section>
 
@@ -1179,7 +1182,8 @@ Enumerable.Map.*
 unused Kernel wrappers</code></pre>
         <p>
           Once <code>SemanticClosed(root, epoch E)</code> is published, artifact jobs can run.
-          Materialization must not grow the reachable semantic set. Growth is a diagnostic.
+          Materialization reads that closure snapshot and the lowered bodies named by it. It must
+          not grow the reachable semantic set. Growth is a diagnostic.
         </p>
       </div>
 
