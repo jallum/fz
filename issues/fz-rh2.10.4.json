@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-07T21:13:07Z",
+  "description": "Goal: the docs should describe the corrected engine, and the quicksort trace should remain the reproducible signal. Signal: `northstar.html`, `.agent/docs/telemetry.md`, and the ignored quicksort dump harness all describe lazy runtime bootstrap, state-change-only emission, and how to rerun/analyze the trace. Strategy: fold the cleanup-arc invariants into the design/docs after the code changes settle, then keep the trace harness as the regression probe.\n\nChange:\n- Update `northstar.html` to describe the quieter closure boundary and lazy runtime bootstrap.\n- Update `.agent/docs/telemetry.md` with the Compiler2 rule that emit sites send raw ids/facts and only on state change.\n- Keep the ignored quicksort JSONL dump harness documented as the reproducible signal for this arc.\n\nWhy:\n- This cleanup arc changes the observable contract; the docs need to become the guideposts for the next tickets.\n\nChecks:\n- The docs match the code and the quicksort trace.\n- The harness path and rerun command are captured in the docs.",
+  "id": "fz-rh2.10.4",
+  "labels": [],
+  "parent": "fz-rh2.10",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 docs: publish the corrected closure and telemetry contract",
+  "type": "task",
+  "updated_at": "2026-06-07T21:13:07Z"
+}
