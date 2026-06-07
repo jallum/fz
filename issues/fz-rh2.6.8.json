@@ -4,14 +4,15 @@
   "blocks": [
     "fz-rh2.6.9"
   ],
+  "closed_at": "2026-06-07T15:45:56Z",
   "created": "2026-06-07T15:25:04Z",
   "description": "Goal: make `dispatch_matrix` a genuinely shared compiler service that Compiler2 can consume directly, without copying the planner and without adapting Compiler2 through old-world compatibility glue.\n\nChange:\n- Neutralize the remaining old-world handle leakage at the shared planner boundary so producers identify subjects/inputs without `fz_ir::Var` baggage.\n- Keep the planner and its algorithm in one place; old-world and Compiler2 consumers both adapt at their own edges to the same shared core.\n- Move any old-consumer-specific assumptions out of the shared plan artifact rather than wrapping the artifact in Compiler2-local adapters.\n- Preserve and extend the existing `dispatch_matrix` tests in place as the canonical contract for ordered dispatch planning.\n\nWhy:\n- Copying the planner into Compiler2 would fork semantics and invite drift.\n- A bridge layer that pretends Compiler2 is the old lowerer would be locally convenient and globally wrong.\n- The clean solution is one shared planner with a producer-neutral surface.\n\nChecks:\n- Existing `dispatch_matrix` tests still pass after the boundary neutralization.\n- Old consumers still compile against the shared planner through their own edge logic.\n- Compiler2 can construct planner inputs directly, with no compatibility wrapper module and no planner clone.\n\nNon-goals:\n- No Compiler2 semantic facts yet.\n- No Compiler2-local import or fork of `dispatch_matrix`.\n- No temporary adapter layer translating Compiler2 data into a fake old-world shape.",
   "id": "fz-rh2.6.8",
   "labels": [],
   "parent": "fz-rh2.6",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 dispatch: neutralize shared dispatch_matrix for cross-compiler reuse",
   "type": "task",
-  "updated_at": "2026-06-07T15:36:29Z"
+  "updated_at": "2026-06-07T15:45:56Z"
 }
