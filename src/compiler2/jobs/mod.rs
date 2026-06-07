@@ -11,6 +11,7 @@ use super::world::World;
 mod artifact;
 mod body;
 mod dispatch;
+mod keying;
 mod root;
 mod semantic;
 mod source;
@@ -23,6 +24,8 @@ pub(crate) fn run(world: &mut World<'_>, job: &Job) -> Result<JobEffects, FatalE
         Job::LowerFunction(function_id) => body::lower_function(world, *function_id),
         Job::ReifyGuardDispatch(function_id) => dispatch::reify_guard_dispatch(world, *function_id),
         Job::PlanEntryDispatch(function_id) => dispatch::plan_entry_dispatch(world, *function_id),
+        Job::DeriveRecursive(function_id) => keying::derive_recursive(world, *function_id),
+        Job::DeriveDispatchMask(function_id) => keying::derive_dispatch_mask(world, *function_id),
         Job::SeedRoot(root_id) => root::seed_root(world, *root_id),
         Job::AnalyzeActivation(activation) => semantic::analyze_activation(world, activation),
         Job::CheckSemanticClosure(root_id) => root::check_semantic_closure(world, *root_id),

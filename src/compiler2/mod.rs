@@ -9,6 +9,7 @@ mod drive;
 mod facts;
 mod identity;
 mod jobs;
+mod keying;
 mod namespace;
 mod protocol;
 mod runtime;
@@ -52,5 +53,7 @@ mod identity_test;
 mod namespace_test;
 #[cfg(test)]
 mod scheduler_test;
+#[cfg(test)]
+mod telemetry_dump_test;
 #[cfg(test)]
 mod world_test;

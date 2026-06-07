@@ -32,6 +32,8 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
     effects.reads.push(function_fact);
     effects.follow_up.push(Job::LowerFunction(root.function));
     effects.follow_up.push(Job::PlanEntryDispatch(root.function));
+    effects.follow_up.push(Job::DeriveRecursive(root.function));
+    effects.follow_up.push(Job::DeriveDispatchMask(root.function));
     effects.follow_up.push(Job::CheckSemanticClosure(root_id));
     Ok(effects)
 }
@@ -51,6 +53,15 @@ pub(super) fn check_semantic_closure(world: &mut World<'_>, root_id: RootId) -> 
     };
     reads.push(function_fact);
     revision = revision.max(function_revision);
+
+    if !world.require_activation_key_facts(root.function, &mut reads, &mut waits, &mut follow_up) {
+        return Ok(JobEffects {
+            reads,
+            waits: waits.into_iter().collect(),
+            follow_up: follow_up.into_iter().collect(),
+            ..JobEffects::default()
+        });
+    }
 
     let (entry_activation, entry_revision) = world.activate(root_id, root.function, Vec::new());
     let mut activation_revisions = HashMap::from([(entry_activation.clone(), entry_revision)]);
@@ -120,6 +131,9 @@ pub(super) fn check_semantic_closure(world: &mut World<'_>, root_id: RootId) -> 
                 continue;
             };
 
+            if !world.require_activation_key_facts(function, &mut reads, &mut waits, &mut follow_up) {
+                continue;
+            }
             let (callee, callee_revision) = world.activate(root_id, function, summary.input_types);
             let previous_revision = activation_revisions.insert(callee.clone(), callee_revision);
             let needs = executable_needs.entry(callee.clone()).or_default();

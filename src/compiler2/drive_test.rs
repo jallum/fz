@@ -9,7 +9,7 @@ use crate::dispatch_matrix::Region;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
 use crate::telemetry::handler::{Event, EventKind, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
-use crate::types::Ty;
+use crate::types::{Ty, Types};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -1508,6 +1508,87 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
         capture.count(&["fz", "planner", "planned"]),
         0,
         "Compiler2 lowering should stay above the old planner"
+    );
+}
+
+#[test]
+fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let semantic = SemanticClosedCapture::new();
+    tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/compiler2_lambda_recursion_keying.fz".to_string()),
+        text: r#"
+fn build(acc, n) do
+  if n == 0 do
+    acc
+  else
+    step = fn () -> build([n | acc], n - 1) end
+    step.()
+  end
+end
+
+fn main(), do: dbg(build([], 5))
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "lambda-mediated recursion should settle through recursive activation key facts",
+    );
+
+    let build_id = function_id(&functions, "build", 2);
+    let generated = generated_functions_owned_by(&functions, build_id);
+    assert_eq!(
+        generated.len(),
+        1,
+        "lowering build/2 should mint the generated recursive step lambda",
+    );
+    assert!(
+        outputs
+            .take(Job::DeriveRecursive(build_id))
+            .expect("DeriveRecursive job effects for build/2")
+            .contains(&(FactKey::Recursive(build_id), 1)),
+        "the recursive fact should be published for closure-mediated recursion",
+    );
+    assert!(
+        !outputs
+            .stops_matching(|job| *job == Job::LowerFunction(generated[0].function_id))
+            .is_empty(),
+        "deriving recursion should inspect the generated lambda body instead of peeking only at build/2",
+    );
+
+    let closed = semantic.last(root_id);
+    let build_activations = closed
+        .activations
+        .iter()
+        .filter(|activation| activation.function == build_id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        build_activations.len(),
+        1,
+        "recursive non-dispatch inputs should collapse to one build/2 activation key",
+    );
+
+    let mut types = crate::types::new();
+    let empty = types.empty_list();
+    let expected_acc = types.convergence_class(&empty);
+    assert!(
+        types.is_equivalent(&build_activations[0].input[0], &expected_acc),
+        "build/2 accumulator should use the recursive convergence class",
     );
 }
 

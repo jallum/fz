@@ -545,17 +545,7 @@ fn activate_function_call(
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
 ) -> Ty {
-    let lowered_fact = FactKey::LoweredBody(function);
-    if world.fact_revision(lowered_fact.clone()).is_none() {
-        waits.insert(lowered_fact.clone());
-        follow_up.insert(Job::LowerFunction(function));
-    }
-    let dispatch_fact = FactKey::EntryDispatch(function);
-    if world.fact_revision(dispatch_fact.clone()).is_none() {
-        waits.insert(dispatch_fact.clone());
-        follow_up.insert(Job::PlanEntryDispatch(function));
-    }
-    if waits.contains(&lowered_fact) || waits.contains(&dispatch_fact) {
+    if !world.require_activation_key_facts(function, reads, waits, follow_up) {
         return types::new().any();
     }
 

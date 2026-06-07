@@ -6,7 +6,7 @@
 //! legitimate state absence like "this known function is still a placeholder"
 //! or "this known code has not been indexed yet".
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::ast::FnDef;
@@ -29,6 +29,7 @@ use super::identity::{
     ExecutableNeed, FunctionDef, FunctionId, FunctionMap, ModuleExport, ModuleId, ModuleMap, ModuleSourceKind,
     ModuleState, RootEntry, RootId, RootMap,
 };
+use super::keying::{DispatchMaskMap, RecursiveMap};
 use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
 use super::protocol::{
     ProtocolCallback, ProtocolCallbackImpl, ProtocolCallbackMap, ProtocolImpl, ProtocolImplKey, ProtocolImplMap,
@@ -47,6 +48,8 @@ pub struct World<'a> {
     bodies: LoweredBodyMap,
     guard_dispatches: GuardDispatchMap,
     entry_dispatches: EntryDispatchMap,
+    recursive: RecursiveMap,
+    dispatch_masks: DispatchMaskMap,
     protocol_callbacks: ProtocolCallbackMap,
     protocol_impls: ProtocolImplMap,
     activations: ActivationMap,
@@ -84,6 +87,8 @@ impl<'a> World<'a> {
             bodies: LoweredBodyMap::new(),
             guard_dispatches: GuardDispatchMap::new(),
             entry_dispatches: EntryDispatchMap::new(),
+            recursive: RecursiveMap::new(),
+            dispatch_masks: DispatchMaskMap::new(),
             protocol_callbacks: ProtocolCallbackMap::new(),
             protocol_impls: ProtocolImplMap::new(),
             activations: ActivationMap::new(),
@@ -637,6 +642,14 @@ impl<'a> World<'a> {
         revision
     }
 
+    pub(crate) fn define_recursive(&mut self, function: FunctionId, recursive: bool) -> u64 {
+        self.recursive.define(function, recursive)
+    }
+
+    pub(crate) fn define_dispatch_mask(&mut self, function: FunctionId, mask: Vec<bool>) -> u64 {
+        self.dispatch_masks.define(function, mask)
+    }
+
     pub(crate) fn entry_dispatch(&self, function: FunctionId) -> PatternDispatchPlan {
         self.entry_dispatches
             .get(function)
@@ -749,6 +762,34 @@ impl<'a> World<'a> {
         self.work_graph.facts().get(&key)
     }
 
+    pub(crate) fn require_activation_key_facts(
+        &self,
+        function: FunctionId,
+        reads: &mut Vec<FactKey>,
+        waits: &mut HashSet<FactKey>,
+        follow_up: &mut HashSet<Job>,
+    ) -> bool {
+        let recursive = FactKey::Recursive(function);
+        let recursive_ready = self.fact_revision(recursive.clone()).is_some();
+        if recursive_ready {
+            reads.push(recursive);
+        } else {
+            waits.insert(recursive);
+            follow_up.insert(Job::DeriveRecursive(function));
+        }
+
+        let dispatch_mask = FactKey::DispatchMask(function);
+        let dispatch_mask_ready = self.fact_revision(dispatch_mask.clone()).is_some();
+        if dispatch_mask_ready {
+            reads.push(dispatch_mask);
+        } else {
+            waits.insert(dispatch_mask);
+            follow_up.insert(Job::DeriveDispatchMask(function));
+        }
+
+        recursive_ready && dispatch_mask_ready
+    }
+
     pub(crate) fn lookup_callable_namespace(
         &mut self,
         head: Namespace,
@@ -840,8 +881,14 @@ impl<'a> World<'a> {
         function: FunctionId,
         inputs: &[Ty],
     ) -> super::identity::ActivationKey {
-        let mask = self.dispatch_input_mask(function);
-        let recursive = self.function_is_recursive(function);
+        let mask = self
+            .dispatch_masks
+            .get(function)
+            .expect("activation keying should wait for dispatch mask facts before activation");
+        let recursive = *self
+            .recursive
+            .get(function)
+            .expect("activation keying should wait for recursive facts before activation");
         let mut t = types::new();
         let canonical = inputs
             .iter()
@@ -869,91 +916,6 @@ impl<'a> World<'a> {
         let arity = self.functions.reference_for(function).arity;
         let mut t = types::new();
         t.closure_lit(ClosureTarget(function.as_u32()), captures, arity)
-    }
-
-    fn dispatch_input_mask(&self, function: FunctionId) -> Vec<bool> {
-        let Some(plan) = self.entry_dispatches.get(function) else {
-            return vec![true; self.function_arity(function)];
-        };
-        let mut mask = vec![false; plan.input_count];
-        for arm in &plan.matrix.arms {
-            for question in &arm.questions {
-                self.mark_subject_inputs(&plan.matrix.subjects, question.predicate.subject, &mut mask);
-            }
-        }
-        for guard in &plan.guards {
-            self.mark_guard_inputs(plan, guard, &mut mask);
-        }
-        mask
-    }
-
-    fn mark_subject_inputs(
-        &self,
-        subjects: &[crate::dispatch_matrix::Subject],
-        subject: crate::dispatch_matrix::SubjectId,
-        mask: &mut [bool],
-    ) {
-        let Some(subject) = subjects.get(subject.0 as usize) else {
-            return;
-        };
-        match &subject.source {
-            crate::dispatch_matrix::SubjectSource::Input { ordinal } => {
-                if let Some(slot) = mask.get_mut(*ordinal as usize) {
-                    *slot = true;
-                }
-            }
-            crate::dispatch_matrix::SubjectSource::Projection(projection) => {
-                self.mark_subject_inputs(subjects, projection.source, mask);
-            }
-        }
-    }
-
-    fn mark_guard_inputs(
-        &self,
-        plan: &PatternDispatchPlan,
-        guard: &crate::dispatch_matrix::pattern::PatternGuardExpr,
-        mask: &mut [bool],
-    ) {
-        use crate::dispatch_matrix::pattern::PatternGuardExpr;
-
-        match guard {
-            PatternGuardExpr::Const(_) | PatternGuardExpr::Pinned(_) => {}
-            PatternGuardExpr::Subject(subject) => self.mark_subject_inputs(&plan.matrix.subjects, *subject, mask),
-            PatternGuardExpr::Unary { expr, .. } => self.mark_guard_inputs(plan, expr, mask),
-            PatternGuardExpr::Binary { lhs, rhs, .. } => {
-                self.mark_guard_inputs(plan, lhs, mask);
-                self.mark_guard_inputs(plan, rhs, mask);
-            }
-            PatternGuardExpr::Dispatch { inputs, dispatch } => {
-                for input in inputs {
-                    self.mark_guard_inputs(plan, input, mask);
-                }
-                for guard in &dispatch.plan.guards {
-                    self.mark_guard_inputs(&dispatch.plan, guard, mask);
-                }
-            }
-        }
-    }
-
-    fn function_is_recursive(&self, function: FunctionId) -> bool {
-        let Some(slot) = self.bodies.get(function) else {
-            return false;
-        };
-        let body = match &slot.state {
-            super::body::BodyState::Lowered(body) => body,
-            super::body::BodyState::Placeholder => return false,
-        };
-        match body {
-            LoweredBody::Extern { .. } => false,
-            LoweredBody::Clauses { clauses, generated } => {
-                if generated.contains(&function) {
-                    return true;
-                }
-                clauses
-                    .iter()
-                    .any(|clause| block_mentions_function(function, &clause.body))
-            }
-        }
     }
 
     fn qualified_module_name(&self, parent: ModuleId, local_name: &str) -> String {
@@ -1071,17 +1033,4 @@ fn impl_target_ty<T: Types<Ty = Ty>>(t: &mut T, module_name: &str) -> Ty {
         "Map" => t.map_top(),
         other => crate::frontend::protocols::struct_impl_target_type(t, other),
     }
-}
-
-fn block_mentions_function(function: FunctionId, block: &super::body::LoweredBlock) -> bool {
-    block.steps.iter().any(|step| match step {
-        super::body::LoweredStep::DirectCall {
-            callee: super::body::DirectCallee::Function(callee),
-            ..
-        } => *callee == function,
-        super::body::LoweredStep::If {
-            then_block, else_block, ..
-        } => block_mentions_function(function, then_block) || block_mentions_function(function, else_block),
-        _ => false,
-    })
 }
