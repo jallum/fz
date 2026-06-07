@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-07T15:25:58Z",
+  "description": "Goal: remove the temporary clause-head matching scaffolding from Compiler2 bodies once entry dispatch exists.\n\nChange:\n- Move function-entry matching responsibility fully into `EntryDispatch(function)` and stop treating `LoweredBody` as the source of truth for clause-head setup/guard selection.\n- Shrink or reshape the per-clause body representation so it carries clause bodies and body-local structure, not a second entry matcher.\n- Update any semantic consumers to read entry dispatch plus lowered bodies instead of clause-local rematching fields.\n\nWhy:\n- Keeping entry dispatch and clause-local rematching in parallel leaves two sources of truth and makes later retraction/convergence work noisier than it needs to be.\n- This is explicit scaffolding-removal work for the temporary body shape introduced before shared dispatch planning landed.\n\nChecks:\n- Compiler2 semantic and lowering tests continue to pass while entry dispatch remains the only entry-matching authority.\n- No semantic consumer depends on clause-local setup/guard data for function-head selection.\n\nNon-goals:\n- No new body-site dispatch support.\n- No new artifact work.",
+  "id": "fz-rh2.6.11",
+  "labels": [],
+  "parent": "fz-rh2.6",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 cleanup: remove clause-head matching scaffolding from lowered bodies",
+  "type": "task",
+  "updated_at": "2026-06-07T15:25:58Z"
+}
