@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-rh2.10.2"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-rh2.10",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 signal honesty: publish and emit only on real state change",
   "type": "task",
-  "updated_at": "2026-06-07T21:23:43Z"
+  "updated_at": "2026-06-07T21:25:13Z"
 }
