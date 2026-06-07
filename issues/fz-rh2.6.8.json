@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-07T15:25:04Z",
+  "description": "Goal: make `dispatch_matrix` a shared compiler service that Compiler2 can consume directly without copying or old-world handle leakage.\n\nChange:\n- Neutralize the source-pattern producer boundary so it no longer depends on `fz_ir::Var`-flavored input identity in shared planner data.\n- Replace old-world input/precondition handles with producer-neutral ordinals or equivalent shared input refs, while keeping `PatternDispatchPlan` AST-free and consumer-neutral.\n- Update old lowering, interp, codegen, and frontend pattern-check consumers at their edges instead of forking planner logic into Compiler2.\n- Preserve existing decision-graph, evidence/projection, pin, guard, map, bitstring, and type-order semantics.\n\nWhy:\n- Copying `dispatch_matrix` and its tests into Compiler2 would fork semantics and create two matchers to keep in sync.\n- The current coupling is shallow and local; paying it off once is cheaper and cleaner than a long-lived duplicate.\n\nChecks:\n- Existing `dispatch_matrix` tests stay green with no semantic drift.\n- Existing old-world consumers still compile and pass with the neutralized planner boundary.\n- No Compiler2 semantic jobs depend on a copied planner tree.\n\nNon-goals:\n- No Compiler2-specific dispatch facts yet.\n- No change to the core dispatch algorithm beyond representational neutralization.",
+  "id": "fz-rh2.6.8",
+  "labels": [],
+  "parent": "fz-rh2.6",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 dispatch: neutralize shared dispatch_matrix for cross-compiler reuse",
+  "type": "task",
+  "updated_at": "2026-06-07T15:25:04Z"
+}
