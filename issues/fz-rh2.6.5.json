@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-07T13:10:14Z",
+  "description": "Goal: keep the work loop reading the work graph in domain language instead of reaching into agenda details. Signal: work_graph exposes pending_jobs(), and the drive loop uses it instead of agenda().len(). Strategy: move the count helper to WorkGraph, remove the callsite detail leak, and prove the behavior stays unchanged with focused Compiler2 checks.",
+  "id": "fz-rh2.6.5",
+  "labels": [],
+  "parent": "fz-rh2.6",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 work graph: expose pending job count",
+  "type": "task",
+  "updated_at": "2026-06-07T13:10:14Z"
+}
