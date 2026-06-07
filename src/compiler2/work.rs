@@ -92,7 +92,7 @@ impl World<'_> {
         let mut span = self.tel().span(
             &["fz", "compiler2", "drive"],
             metadata! {
-                pending_jobs: self.work_graph.agenda().len() as u64,
+                pending_jobs: self.work_graph.pending_jobs() as u64,
             },
         );
         let mut jobs_ran = 0_u64;

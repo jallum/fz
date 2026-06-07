@@ -58,6 +58,10 @@ where
         &self.agenda
     }
 
+    pub fn pending_jobs(&self) -> usize {
+        self.agenda.len()
+    }
+
     pub fn facts(&self) -> &FactTable<J, F> {
         &self.facts
     }
