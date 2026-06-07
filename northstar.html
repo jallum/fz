@@ -310,13 +310,13 @@ enum FunctionDef {
     Code {
         visibility: Visibility,
         clauses: Vec&lt;ClauseAst&gt;,
-        namespace: NamespaceHead,
+        namespace: Namespace,
         code: CodeId,
     },
     Macro {
         visibility: Visibility,
         clauses: Vec&lt;ClauseAst&gt;,
-        namespace: NamespaceHead,
+        namespace: Namespace,
         code: CodeId,
     },
     Intrinsic {
@@ -326,7 +326,7 @@ enum FunctionDef {
     Generated {
         owner: FunctionId,
         body: FunctionAst,
-        namespace: NamespaceHead,
+        namespace: Namespace,
     },
 }</code></pre>
 
@@ -349,15 +349,15 @@ enum FunctionDef {
         name pushes a binding and returns the new head. Leaving the scope restores the saved head.
         Lookup walks from the current head backward; the first matching binding wins.
       </p>
-      <pre><code>type NamespaceHead = Option&lt;BindingId&gt;;
+      <pre><code>type Namespace = Option&lt;BindingId&gt;;
 
 struct NamespaceStore {
     bindings: Vec&lt;NamespaceBinding&gt;,
-    prelude_head: NamespaceHead,
+    prelude_head: Namespace,
 }
 
 struct NamespaceBinding {
-    prev: NamespaceHead,
+    prev: Namespace,
     name: Symbol,
     value: BindingValue,
     span: Span,
@@ -371,15 +371,15 @@ enum BindingValue {
     Value(LocalId),
 }
 
-fn push(ns: &amp;mut NamespaceStore, head: NamespaceHead, binding: NamespaceBinding)
-    -&gt; NamespaceHead
+fn push(ns: &amp;mut NamespaceStore, head: Namespace, binding: NamespaceBinding)
+    -&gt; Namespace
 {
     let id = BindingId(ns.bindings.len());
     ns.bindings.push(binding.with_prev(head));
     Some(id)
 }
 
-fn lookup(ns: &amp;NamespaceStore, mut head: NamespaceHead, name: Symbol, kind: BindingKind)
+fn lookup(ns: &amp;NamespaceStore, mut head: Namespace, name: Symbol, kind: BindingKind)
     -&gt; Option&lt;BindingValue&gt;
 {
     while let Some(id) = head {
@@ -1260,7 +1260,7 @@ unused Kernel wrappers</code></pre>
         <li><strong>No speculative specs:</strong> executable facts appear because semantic rules derive them from reachable callsites and return needs.</li>
         <li><strong>No backend discovery:</strong> artifact jobs cannot publish semantic fact families.</li>
         <li><strong>Uniform code:</strong> user code, runtime libraries, and built-in packages are code contributions, not scheduler special cases.</li>
-        <li><strong>Prelude is a namespace:</strong> default visibility is a saved <code>NamespaceHead</code> after bootstrap bindings, not a compiler phase.</li>
+        <li><strong>Prelude is a namespace:</strong> default visibility is a saved <code>Namespace</code> after bootstrap bindings, not a compiler phase.</li>
         <li><strong>Cheap telemetry:</strong> events carry already-owned values and lists; handlers compute summaries when needed.</li>
         <li><strong>Absent facts matter:</strong> tests should assert that uncalled functions and unrelated runtime implementations remain absent from semantic/artifact facts.</li>
       </ul>

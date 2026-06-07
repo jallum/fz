@@ -138,12 +138,33 @@ impl Telemetry for ConfiguredTelemetry {
         id
     }
 
-    fn span_stop(&self, name: &[&'static str], span_id: u64, elapsed_ns: u64) {
-        self.close_span(name, span_id, elapsed_ns, EventKind::SpanStop);
+    fn span_stop(
+        &self,
+        name: &[&'static str],
+        span_id: u64,
+        elapsed_ns: u64,
+        measurements: &Measurements,
+        metadata: &Metadata,
+    ) {
+        self.close_span(name, span_id, elapsed_ns, measurements, metadata, EventKind::SpanStop);
     }
 
-    fn span_exception(&self, name: &[&'static str], span_id: u64, elapsed_ns: u64) {
-        self.close_span(name, span_id, elapsed_ns, EventKind::SpanException);
+    fn span_exception(
+        &self,
+        name: &[&'static str],
+        span_id: u64,
+        elapsed_ns: u64,
+        measurements: &Measurements,
+        metadata: &Metadata,
+    ) {
+        self.close_span(
+            name,
+            span_id,
+            elapsed_ns,
+            measurements,
+            metadata,
+            EventKind::SpanException,
+        );
     }
 
     fn attach(&self, prefix: &[&'static str], handler: Box<dyn Handler>) -> HandlerId {
@@ -156,7 +177,15 @@ impl Telemetry for ConfiguredTelemetry {
 }
 
 impl ConfiguredTelemetry {
-    fn close_span(&self, name: &[&'static str], span_id: u64, elapsed_ns: u64, kind: EventKind) {
+    fn close_span(
+        &self,
+        name: &[&'static str],
+        span_id: u64,
+        elapsed_ns: u64,
+        measurements: &Measurements,
+        metadata: &Metadata,
+        kind: EventKind,
+    ) {
         let parent_id = {
             let s = self.span_stack.borrow();
             // Walk from the top to find the one being closed. Spans drop
@@ -165,8 +194,9 @@ impl ConfiguredTelemetry {
             let pos = s.iter().rposition(|&x| x == span_id);
             pos.and_then(|i| (i > 0).then(|| s[i - 1])).unwrap_or(0)
         };
-        let m = measurements! { elapsed_ns: elapsed_ns };
-        self.dispatch(name, kind, &m, &Metadata::new(), span_id, parent_id);
+        let mut m = measurements! { elapsed_ns: elapsed_ns };
+        m.0.extend(measurements.iter().cloned());
+        self.dispatch(name, kind, &m, metadata, span_id, parent_id);
         // Pop after dispatch so within-handler peeks at the stack still
         // see the span as "open." Bind the position first so the
         // immutable borrow is released before borrow_mut.

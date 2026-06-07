@@ -1,15 +1,19 @@
-use super::identity::{FunctionId, ModuleId};
+use std::rc::Rc;
+
+use crate::ast::Item;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CodeId(u32);
 
 impl CodeId {
+    pub const ZERO: Self = Self(0);
+
     pub fn as_u32(self) -> u32 {
         self.0
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Code {
     state: CodeState,
     revision: u64,
@@ -25,13 +29,10 @@ impl Code {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum CodeState {
     Pending,
-    Indexed {
-        modules: Vec<ModuleId>,
-        functions: Vec<FunctionId>,
-    },
+    Indexed { items: Vec<Rc<Item>> },
 }
 
 #[derive(Debug, Default)]
@@ -57,9 +58,13 @@ impl CodeMap {
         id
     }
 
-    pub fn index(&mut self, id: CodeId, modules: Vec<ModuleId>, functions: Vec<FunctionId>) -> u64 {
+    pub fn index(&mut self, id: CodeId, items: Vec<Rc<Item>>) -> u64 {
         let code = &mut self.slots[id.0 as usize];
-        code.state = CodeState::Indexed { modules, functions };
+        let next = CodeState::Indexed { items };
+        if same_code_state(&code.state, &next) {
+            return code.revision;
+        }
+        code.state = next;
         code.revision += 1;
         code.revision
     }
@@ -72,8 +77,11 @@ impl CodeMap {
         self.names.get(id.0 as usize).and_then(|name| name.as_deref())
     }
 
-    pub fn text(&self, id: CodeId) -> Option<&str> {
-        self.texts.get(id.0 as usize).map(String::as_str)
+    pub fn text(&self, id: CodeId) -> &str {
+        self.texts
+            .get(id.0 as usize)
+            .map(String::as_str)
+            .expect("code ids should have source text")
     }
 
     pub fn len(&self) -> usize {
@@ -83,4 +91,16 @@ impl CodeMap {
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
     }
+}
+
+fn same_code_state(left: &CodeState, right: &CodeState) -> bool {
+    match (left, right) {
+        (CodeState::Pending, CodeState::Pending) => true,
+        (CodeState::Indexed { items: left }, CodeState::Indexed { items: right }) => same_items(left, right),
+        _ => false,
+    }
+}
+
+fn same_items(left: &[Rc<Item>], right: &[Rc<Item>]) -> bool {
+    left.len() == right.len() && left.iter().zip(right).all(|(left, right)| Rc::ptr_eq(left, right))
 }

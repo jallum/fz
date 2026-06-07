@@ -1,16 +1,24 @@
 use std::collections::HashMap;
 
-use crate::ast::FnDef;
+use std::rc::Rc;
+
+use crate::ast::{FnDef, Item};
 
 use super::code::CodeId;
-use super::namespace::NamespaceHead;
+use super::namespace::{Namespace, NamespaceSymbol};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ModuleId(u32);
 
 impl ModuleId {
+    pub const GLOBAL: Self = Self(0);
+
     pub fn as_u32(self) -> u32 {
         self.0
+    }
+
+    pub fn is_global(self) -> bool {
+        self == Self::GLOBAL
     }
 }
 
@@ -23,16 +31,7 @@ impl FunctionId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RootId(u32);
-
-impl RootId {
-    pub fn as_u32(self) -> u32 {
-        self.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Module {
     state: ModuleState,
     revision: u64,
@@ -46,31 +45,85 @@ impl Module {
     pub fn revision(&self) -> u64 {
         self.revision
     }
+
+    fn source(&self) -> Option<&ModuleSource> {
+        match &self.state {
+            ModuleState::Placeholder => None,
+            ModuleState::Indexed(source) | ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. } => {
+                Some(source)
+            }
+        }
+    }
+
+    fn base_namespace(&self) -> Option<Namespace> {
+        match &self.state {
+            ModuleState::Scoped { base, .. } => Some(*base),
+            ModuleState::Defined { surface, .. } => Some(surface.base),
+            _ => None,
+        }
+    }
+
+    fn codes(&self) -> Option<Vec<CodeId>> {
+        match &self.state {
+            ModuleState::Defined { surface, .. } => Some(surface.codes.clone()),
+            ModuleState::Indexed(source) | ModuleState::Scoped { source, .. } => Some(vec![source.code]),
+            ModuleState::Placeholder => None,
+        }
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum ModuleState {
     Placeholder,
+    Indexed(ModuleSource),
+    Scoped {
+        source: ModuleSource,
+        base: Namespace,
+    },
     Defined {
-        codes: Vec<CodeId>,
-        namespace: NamespaceHead,
+        source: ModuleSource,
+        surface: ModuleSurface,
     },
 }
 
 #[derive(Debug, Clone)]
-pub struct Function {
-    state: FunctionState,
-    revision: u64,
+pub struct ModuleSource {
+    pub code: CodeId,
+    pub parent: ModuleId,
+    pub local_name: String,
+    pub items: Vec<Rc<Item>>,
 }
 
-impl Function {
-    pub fn state(&self) -> &FunctionState {
-        &self.state
+impl ModuleSource {
+    fn empty(code: CodeId) -> Self {
+        Self {
+            code,
+            parent: ModuleId::GLOBAL,
+            local_name: String::new(),
+            items: Vec::new(),
+        }
     }
+}
 
-    pub fn revision(&self) -> u64 {
-        self.revision
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleSurface {
+    pub codes: Vec<CodeId>,
+    pub base: Namespace,
+    pub namespace: Namespace,
+    pub exports: Vec<ModuleExport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleExport {
+    pub name: String,
+    pub arity: usize,
+    pub symbol: NamespaceSymbol,
+}
+
+#[derive(Debug, Clone)]
+pub struct Function {
+    pub state: FunctionState,
+    pub revision: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -81,61 +134,21 @@ pub enum FunctionState {
 
 #[derive(Debug, Clone)]
 pub struct FunctionDef {
-    code: CodeId,
-    namespace: NamespaceHead,
-    ast: FnDef,
-}
-
-impl FunctionDef {
-    pub fn new(code: CodeId, namespace: NamespaceHead, ast: FnDef) -> Self {
-        Self { code, namespace, ast }
-    }
-
-    pub fn code(&self) -> CodeId {
-        self.code
-    }
-
-    pub fn namespace(&self) -> NamespaceHead {
-        self.namespace
-    }
-
-    pub fn ast(&self) -> &FnDef {
-        &self.ast
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Root {
-    state: RootState,
-    revision: u64,
-}
-
-impl Root {
-    pub fn state(&self) -> &RootState {
-        &self.state
-    }
-
-    pub fn revision(&self) -> u64 {
-        self.revision
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RootState {
-    Placeholder,
-    Defined,
+    pub code: CodeId,
+    pub namespace: Namespace,
+    pub ast: FnDef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct FunctionKey {
-    module: Option<ModuleId>,
+    module: ModuleId,
     name: String,
     arity: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionRef {
-    pub module: Option<ModuleId>,
+    pub module: ModuleId,
     pub name: String,
     pub arity: usize,
 }
@@ -149,7 +162,22 @@ pub struct ModuleMap {
 
 impl ModuleMap {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            slots: vec![Module {
+                state: ModuleState::Defined {
+                    source: ModuleSource::empty(CodeId::ZERO),
+                    surface: ModuleSurface {
+                        codes: Vec::new(),
+                        base: Namespace::default(),
+                        namespace: Namespace::default(),
+                        exports: Vec::new(),
+                    },
+                },
+                revision: 0,
+            }],
+            names: vec![None],
+            by_name: HashMap::new(),
+        }
     }
 
     pub fn reference_named(&mut self, name: impl Into<String>) -> ModuleId {
@@ -167,26 +195,70 @@ impl ModuleMap {
         id
     }
 
-    pub fn define(&mut self, id: ModuleId, code: CodeId, namespace: NamespaceHead) -> u64 {
+    pub fn define(&mut self, id: ModuleId, code: CodeId, namespace: Namespace, exports: Vec<ModuleExport>) -> u64 {
         let module = &mut self.slots[id.0 as usize];
-        let mut codes = match &module.state {
-            ModuleState::Placeholder => Vec::new(),
-            ModuleState::Defined { codes, .. } => codes.clone(),
-        };
+        let source = module.source().cloned().unwrap_or_else(|| ModuleSource::empty(code));
+        let mut codes = module.codes().unwrap_or_else(|| vec![source.code]);
         if !codes.contains(&code) {
             codes.push(code);
         }
-        module.state = ModuleState::Defined { codes, namespace };
-        module.revision += 1;
-        module.revision
+        let next = ModuleState::Defined {
+            source,
+            surface: ModuleSurface {
+                codes,
+                base: module.base_namespace().unwrap_or(namespace),
+                namespace,
+                exports,
+            },
+        };
+        replace_if_changed(&mut module.state, &mut module.revision, next)
     }
 
-    pub fn define_anonymous(&mut self, code: CodeId, namespace: NamespaceHead) -> ModuleId {
+    pub fn scope(&mut self, id: ModuleId, base_namespace: Namespace) -> Option<u64> {
+        let module = self.slots.get_mut(id.0 as usize)?;
+        let source = module.source()?.clone();
+        let next = if let ModuleState::Defined { surface, .. } = &module.state {
+            let mut surface = surface.clone();
+            surface.base = base_namespace;
+            ModuleState::Defined { source, surface }
+        } else {
+            ModuleState::Scoped {
+                source,
+                base: base_namespace,
+            }
+        };
+        Some(replace_if_changed(&mut module.state, &mut module.revision, next))
+    }
+
+    pub fn index(
+        &mut self,
+        id: ModuleId,
+        code: CodeId,
+        parent: ModuleId,
+        local_name: String,
+        items: Vec<Rc<Item>>,
+    ) -> u64 {
+        let module = &mut self.slots[id.0 as usize];
+        let next = ModuleState::Indexed(ModuleSource {
+            code,
+            parent,
+            local_name,
+            items,
+        });
+        replace_if_changed(&mut module.state, &mut module.revision, next)
+    }
+
+    pub fn define_anonymous(&mut self, code: CodeId, namespace: Namespace) -> ModuleId {
         let id = ModuleId(self.slots.len() as u32);
         self.slots.push(Module {
             state: ModuleState::Defined {
-                codes: vec![code],
-                namespace,
+                source: ModuleSource::empty(code),
+                surface: ModuleSurface {
+                    codes: vec![code],
+                    base: namespace,
+                    namespace,
+                    exports: Vec::new(),
+                },
             },
             revision: 1,
         });
@@ -223,7 +295,7 @@ impl FunctionMap {
         Self::default()
     }
 
-    pub fn reference(&mut self, module: Option<ModuleId>, name: impl Into<String>, arity: usize) -> FunctionId {
+    pub fn reference(&mut self, module: ModuleId, name: impl Into<String>, arity: usize) -> FunctionId {
         let name = name.into();
         let key = FunctionKey {
             module,
@@ -245,9 +317,8 @@ impl FunctionMap {
 
     pub fn define(&mut self, id: FunctionId, def: FunctionDef) -> u64 {
         let function = &mut self.slots[id.0 as usize];
-        function.state = FunctionState::Defined { def };
-        function.revision += 1;
-        function.revision
+        let next = FunctionState::Defined { def };
+        replace_if_changed(&mut function.state, &mut function.revision, next)
     }
 
     pub fn get(&self, id: FunctionId) -> Option<&Function> {
@@ -267,64 +338,69 @@ impl FunctionMap {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct RootMap {
-    slots: Vec<Root>,
-    names: Vec<Option<String>>,
-    by_name: HashMap<String, RootId>,
+trait SameState {
+    fn same_state(&self, other: &Self) -> bool;
 }
 
-impl RootMap {
-    pub fn new() -> Self {
-        Self::default()
+fn replace_if_changed<T: SameState>(state: &mut T, revision: &mut u64, next: T) -> u64 {
+    if !state.same_state(&next) {
+        *state = next;
+        *revision += 1;
     }
+    *revision
+}
 
-    pub fn reference_named(&mut self, name: impl Into<String>) -> RootId {
-        let name = name.into();
-        if let Some(id) = self.by_name.get(&name) {
-            return *id;
+impl SameState for ModuleState {
+    fn same_state(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ModuleState::Placeholder, ModuleState::Placeholder) => true,
+            (ModuleState::Indexed(left), ModuleState::Indexed(right)) => left.same_source(right),
+            (
+                ModuleState::Scoped {
+                    source: left_source,
+                    base: left_base,
+                },
+                ModuleState::Scoped {
+                    source: right_source,
+                    base: right_base,
+                },
+            ) => left_source.same_source(right_source) && left_base == right_base,
+            (
+                ModuleState::Defined {
+                    source: left_source,
+                    surface: left_surface,
+                },
+                ModuleState::Defined {
+                    source: right_source,
+                    surface: right_surface,
+                },
+            ) => left_source.same_source(right_source) && left_surface == right_surface,
+            _ => false,
         }
-        let id = RootId(self.slots.len() as u32);
-        self.slots.push(Root {
-            state: RootState::Placeholder,
-            revision: 0,
-        });
-        self.names.push(Some(name.clone()));
-        self.by_name.insert(name, id);
-        id
     }
+}
 
-    pub fn define_named(&mut self, name: impl Into<String>) -> RootId {
-        let id = self.reference_named(name);
-        let root = &mut self.slots[id.0 as usize];
-        root.state = RootState::Defined;
-        root.revision += 1;
-        id
+impl ModuleSource {
+    fn same_source(&self, other: &Self) -> bool {
+        self.code == other.code
+            && self.parent == other.parent
+            && self.local_name == other.local_name
+            && same_items(&self.items, &other.items)
     }
+}
 
-    pub fn define_anonymous(&mut self) -> RootId {
-        let id = RootId(self.slots.len() as u32);
-        self.slots.push(Root {
-            state: RootState::Defined,
-            revision: 1,
-        });
-        self.names.push(None);
-        id
-    }
+fn same_items(left: &[Rc<Item>], right: &[Rc<Item>]) -> bool {
+    left.len() == right.len() && left.iter().zip(right).all(|(left, right)| Rc::ptr_eq(left, right))
+}
 
-    pub fn get(&self, id: RootId) -> Option<&Root> {
-        self.slots.get(id.0 as usize)
-    }
-
-    pub fn name(&self, id: RootId) -> Option<&str> {
-        self.names.get(id.0 as usize).and_then(|name| name.as_deref())
-    }
-
-    pub fn len(&self) -> usize {
-        self.slots.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.slots.is_empty()
+impl SameState for FunctionState {
+    fn same_state(&self, other: &Self) -> bool {
+        match (self, other) {
+            (FunctionState::Placeholder, FunctionState::Placeholder) => true,
+            (FunctionState::Defined { def: left }, FunctionState::Defined { def: right }) => {
+                left.code == right.code && left.namespace == right.namespace
+            }
+            _ => false,
+        }
     }
 }

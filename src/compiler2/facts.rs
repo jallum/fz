@@ -1,28 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Fingerprint(u64);
-
-impl Fingerprint {
-    pub fn new(value: u64) -> Self {
-        Self(value)
-    }
-
-    pub fn absent() -> Self {
-        Self(0)
-    }
-
-    pub fn as_u64(self) -> u64 {
-        self.0
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactChange<F> {
     pub key: F,
-    pub old_fingerprint: Fingerprint,
-    pub new_fingerprint: Fingerprint,
+    pub old_revision: Option<u64>,
+    pub new_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -32,69 +15,55 @@ pub struct FactReplace<F> {
 }
 
 #[derive(Debug, Clone)]
-pub struct FactSlot<J, V> {
-    aggregate: Option<V>,
-    fingerprint: Fingerprint,
-    contributions: HashMap<J, V>,
+pub struct FactSlot<J> {
+    revision: Option<u64>,
+    contributions: HashMap<J, u64>,
 }
 
-impl<J, V> Default for FactSlot<J, V> {
+impl<J> Default for FactSlot<J> {
     fn default() -> Self {
         Self {
-            aggregate: None,
-            fingerprint: Fingerprint::absent(),
+            revision: None,
             contributions: HashMap::new(),
         }
     }
 }
 
-impl<J, V> FactSlot<J, V> {
-    pub fn aggregate(&self) -> Option<&V> {
-        self.aggregate.as_ref()
+impl<J> FactSlot<J> {
+    pub fn revision(&self) -> Option<u64> {
+        self.revision
     }
 
-    pub fn fingerprint(&self) -> Fingerprint {
-        self.fingerprint
-    }
-
-    pub fn contributions(&self) -> &HashMap<J, V> {
+    pub fn contributions(&self) -> &HashMap<J, u64> {
         &self.contributions
     }
 }
 
-pub trait FactAggregator<J, F, V>
-where
-    J: Eq + Hash,
-{
-    fn aggregate(&self, key: &F, contributions: &HashMap<J, V>) -> Option<V>;
-
-    fn fingerprint(&self, key: &F, aggregate: &V) -> Fingerprint;
-}
-
 #[derive(Debug)]
-pub struct FactTable<J, F, V, A> {
-    slots: HashMap<F, FactSlot<J, V>>,
-    aggregator: A,
+pub struct FactTable<J, F> {
+    slots: HashMap<F, FactSlot<J>>,
 }
 
-impl<J, F, V, A> FactTable<J, F, V, A>
+impl<J, F> Default for FactTable<J, F> {
+    fn default() -> Self {
+        Self { slots: HashMap::new() }
+    }
+}
+
+impl<J, F> FactTable<J, F>
 where
     J: Clone + Eq + Hash,
     F: Clone + Eq + Hash,
-    A: FactAggregator<J, F, V>,
 {
-    pub fn new(aggregator: A) -> Self {
-        Self {
-            slots: HashMap::new(),
-            aggregator,
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    pub fn get(&self, key: &F) -> Option<&V> {
-        self.slots.get(key).and_then(FactSlot::aggregate)
+    pub fn get(&self, key: &F) -> Option<u64> {
+        self.slots.get(key).and_then(FactSlot::revision)
     }
 
-    pub fn slot(&self, key: &F) -> Option<&FactSlot<J, V>> {
+    pub fn slot(&self, key: &F) -> Option<&FactSlot<J>> {
         self.slots.get(key)
     }
 
@@ -102,7 +71,7 @@ where
         &mut self,
         job: &J,
         previous_output_keys: &HashSet<F>,
-        outputs: Vec<(F, V)>,
+        outputs: Vec<(F, u64)>,
     ) -> FactReplace<F> {
         let mut new_outputs = HashMap::new();
         for (key, value) in outputs {
@@ -121,7 +90,7 @@ where
         let mut changed = Vec::new();
         for key in touched {
             let mut slot = self.slots.remove(&key).unwrap_or_default();
-            let old_fingerprint = slot.fingerprint;
+            let old_revision = slot.revision;
 
             if let Some(value) = new_outputs.remove(&key) {
                 slot.contributions.insert(job.clone(), value);
@@ -129,22 +98,17 @@ where
                 slot.contributions.remove(job);
             }
 
-            let new_fingerprint = match self.aggregator.aggregate(&key, &slot.contributions) {
-                Some(aggregate) => {
-                    let fingerprint = self.aggregator.fingerprint(&key, &aggregate);
-                    slot.aggregate = Some(aggregate);
-                    slot.fingerprint = fingerprint;
-                    self.slots.insert(key.clone(), slot);
-                    fingerprint
-                }
-                None => Fingerprint::absent(),
-            };
+            let new_revision = slot.contributions.values().copied().max();
+            if let Some(revision) = new_revision {
+                slot.revision = Some(revision);
+                self.slots.insert(key.clone(), slot);
+            }
 
-            if old_fingerprint != new_fingerprint {
+            if old_revision != new_revision {
                 changed.push(FactChange {
                     key,
-                    old_fingerprint,
-                    new_fingerprint,
+                    old_revision,
+                    new_revision,
                 });
             }
         }

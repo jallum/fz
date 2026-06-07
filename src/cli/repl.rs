@@ -17,7 +17,7 @@
 //! program-side `dbg()` reaches stdout, so a fixture's REPL-leg output is
 //! exact-comparable to the other legs' golden.
 
-use crate::ast::{Expr, FnDef, Item, Program, Spanned};
+use crate::ast::{Expr, Item, Program, Spanned};
 use crate::compiler::source::SourceMap;
 use crate::compiler::{Compiler, World as CompilerWorld};
 use crate::diag::diagnostic::Severity;
@@ -776,13 +776,13 @@ where
             prog.items.push(item);
             continue;
         };
-        let new_arity = fn_def_arity(new_def);
+        let new_arity = new_def.arity();
         let existing = prog.items.iter_mut().find_map(|existing| {
             let Item::Fn(existing_def) = existing.as_ref() else {
                 return None;
             };
             (existing_def.name == new_def.name
-                && fn_def_arity(existing_def) == new_arity
+                && existing_def.arity() == new_arity
                 && existing_def.is_macro == new_def.is_macro
                 && existing_def.extern_abi == new_def.extern_abi)
                 .then_some(existing)
@@ -802,10 +802,6 @@ where
         }
         *existing = Rc::new(Item::Fn(merged));
     }
-}
-
-fn fn_def_arity(def: &FnDef) -> usize {
-    def.clauses.first().map(|clause| clause.params.len()).unwrap_or(0)
 }
 
 fn diagnostics_to_io_error(sm: &SourceMap, diags: &[Diagnostic]) -> io::Error {

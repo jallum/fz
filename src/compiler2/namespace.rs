@@ -1,28 +1,36 @@
 use super::identity::{FunctionId, ModuleId};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct BindingId(u32);
 
-pub type NamespaceHead = Option<BindingId>;
+impl BindingId {
+    pub const END: Self = Self(0);
+
+    pub fn is_end(self) -> bool {
+        self == Self::END
+    }
+}
+
+pub type Namespace = BindingId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NamespaceSymbol {
     Module(ModuleId),
-    Functions(Vec<FunctionId>),
-    Macros(Vec<FunctionId>),
+    Function(FunctionId),
+    Macro(FunctionId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Binding {
     name: String,
     symbol: NamespaceSymbol,
-    prev: NamespaceHead,
+    prev: Namespace,
 }
 
 #[derive(Debug, Default)]
 pub struct NamespaceStore {
     bindings: Vec<Binding>,
-    prelude_head: NamespaceHead,
+    prelude_head: Namespace,
 }
 
 impl NamespaceStore {
@@ -30,19 +38,19 @@ impl NamespaceStore {
         Self::default()
     }
 
-    pub fn bind(&mut self, head: NamespaceHead, name: impl Into<String>, symbol: NamespaceSymbol) -> NamespaceHead {
-        let id = BindingId(self.bindings.len() as u32);
+    pub fn bind(&mut self, head: Namespace, name: impl Into<String>, symbol: NamespaceSymbol) -> Namespace {
+        let id = BindingId(self.bindings.len() as u32 + 1);
         self.bindings.push(Binding {
             name: name.into(),
             symbol,
             prev: head,
         });
-        Some(id)
+        id
     }
 
-    pub fn lookup(&self, mut head: NamespaceHead, name: &str) -> Option<&NamespaceSymbol> {
-        while let Some(binding_id) = head {
-            let binding = &self.bindings[binding_id.0 as usize];
+    pub fn lookup(&self, mut head: Namespace, name: &str) -> Option<&NamespaceSymbol> {
+        while !head.is_end() {
+            let binding = &self.bindings[head.0 as usize - 1];
             if binding.name == name {
                 return Some(&binding.symbol);
             }
@@ -51,15 +59,15 @@ impl NamespaceStore {
         None
     }
 
-    pub fn restore(&self, savepoint: NamespaceHead) -> NamespaceHead {
+    pub fn restore(&self, savepoint: Namespace) -> Namespace {
         savepoint
     }
 
-    pub fn prelude_head(&self) -> NamespaceHead {
+    pub fn prelude_head(&self) -> Namespace {
         self.prelude_head
     }
 
-    pub fn set_prelude_head(&mut self, head: NamespaceHead) {
+    pub fn set_prelude_head(&mut self, head: Namespace) {
         self.prelude_head = head;
     }
 }

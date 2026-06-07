@@ -1,99 +1,131 @@
-use super::{CodeState, FunctionDef, FunctionState, ModuleState, NamespaceSymbol, RootState, World};
+use super::{
+    CodeMap, CodeState, FunctionDef, FunctionMap, FunctionState, ModuleId, ModuleMap, ModuleState, NamespaceStore,
+    NamespaceSymbol,
+};
 
 #[test]
 fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
-    let mut world = World::new();
-    let code_id = world
-        .code_mut()
-        .define(Some("math.fz".to_string()), "fn add(x, y), do: x + y\n".to_string());
-    let namespace = world.namespaces().prelude_head();
+    let mut code = CodeMap::new();
+    let namespaces = NamespaceStore::new();
+    let mut modules = ModuleMap::new();
+    let mut functions = FunctionMap::new();
 
-    let math_ref = world.modules_mut().reference_named("Math");
+    let code_id = code.define(Some("math.fz".to_string()), "fn add(x, y), do: x + y\n".to_string());
+    let namespace = namespaces.prelude_head();
+
+    let math_ref = modules.reference_named("Math");
     let math_def = math_ref;
-    let math_revision = world.modules_mut().define(math_def, code_id, namespace);
+    let math_revision = modules.define(math_def, code_id, namespace, Vec::new());
     assert_eq!(
         math_ref, math_def,
         "module definition should fill the referenced placeholder"
     );
-    assert_eq!(world.modules().name(math_def), Some("Math"));
-    let module = world.modules().get(math_def).expect("defined module");
+    let same_math_revision = modules.define(math_def, code_id, namespace, Vec::new());
+    assert_eq!(
+        same_math_revision, math_revision,
+        "replaying the same module definition should not bump the revision"
+    );
+    assert_eq!(modules.name(math_def), Some("Math"));
+    let module = modules.get(math_def).expect("defined module");
     assert_eq!(module.revision(), math_revision);
     match module.state() {
-        ModuleState::Defined { codes, namespace } => {
-            assert_eq!(codes, &vec![code_id]);
-            assert_eq!(*namespace, world.namespaces().prelude_head());
+        ModuleState::Defined { surface, .. } => {
+            assert_eq!(surface.codes, vec![code_id]);
+            assert_eq!(surface.namespace, namespaces.prelude_head());
         }
         other => panic!("module should promote from placeholder to defined, got {other:?}"),
     }
 
-    let add_ref = world.functions_mut().reference(Some(math_def), "add", 2);
+    let scoped_ref = modules.reference_named("Scoped");
+    let indexed_revision = modules.index(scoped_ref, code_id, ModuleId::GLOBAL, "Scoped".to_string(), Vec::new());
+    let same_indexed_revision = modules.index(scoped_ref, code_id, ModuleId::GLOBAL, "Scoped".to_string(), Vec::new());
+    assert_eq!(
+        same_indexed_revision, indexed_revision,
+        "replaying the same module index should not bump the revision"
+    );
+    let scoped_revision = modules.scope(scoped_ref, namespace).expect("scope indexed module");
+    let same_scoped_revision = modules.scope(scoped_ref, namespace).expect("rescope indexed module");
+    assert_eq!(
+        same_scoped_revision, scoped_revision,
+        "replaying the same module scope should not bump the revision"
+    );
+
+    let add_ref = functions.reference(math_def, "add", 2);
     let add_def = add_ref;
-    let add_revision = world.functions_mut().define(
+    let add_ast = crate::ast::FnDef {
+        name: "Math.add".to_string(),
+        name_span: crate::compiler::source::Span::DUMMY,
+        clauses: vec![crate::ast::FnClause {
+            params: vec![],
+            param_annotations: vec![],
+            guard: None,
+            body: crate::ast::Spanned::dummy(crate::ast::Expr::Int(42)),
+            span: crate::compiler::source::Span::DUMMY,
+        }],
+        is_macro: false,
+        is_private: false,
+        extern_abi: None,
+        extern_params: vec![],
+        extern_ret_tokens: crate::ast::TypeExprBody(vec![]),
+        variadic: false,
+        attrs: vec![],
+        span: crate::compiler::source::Span::DUMMY,
+    };
+    let add_revision = functions.define(
         add_def,
-        FunctionDef::new(
-            code_id,
+        FunctionDef {
+            code: code_id,
             namespace,
-            crate::ast::FnDef {
-                name: "Math.add".to_string(),
-                name_span: crate::compiler::source::Span::DUMMY,
-                clauses: vec![crate::ast::FnClause {
-                    params: vec![],
-                    param_annotations: vec![],
-                    guard: None,
-                    body: crate::ast::Spanned::dummy(crate::ast::Expr::Int(42)),
-                    span: crate::compiler::source::Span::DUMMY,
-                }],
-                is_macro: false,
-                is_private: false,
-                extern_abi: None,
-                extern_params: vec![],
-                extern_ret_tokens: crate::ast::TypeExprBody(vec![]),
-                variadic: false,
-                attrs: vec![],
-                span: crate::compiler::source::Span::DUMMY,
-            },
-        ),
+            ast: add_ast.clone(),
+        },
+    );
+    let same_add_revision = functions.define(
+        add_def,
+        FunctionDef {
+            code: code_id,
+            namespace,
+            ast: add_ast.clone(),
+        },
+    );
+    assert_eq!(
+        same_add_revision, add_revision,
+        "replaying the same function definition should not bump the revision"
     );
     assert_eq!(
         add_ref, add_def,
         "function definition should fill the referenced placeholder"
     );
-    let add_ref_data = world.functions().reference_for(add_def).expect("function ref");
-    assert_eq!(add_ref_data.module, Some(math_def));
+    let add_ref_data = functions.reference_for(add_def).expect("function ref");
+    assert_eq!(add_ref_data.module, math_def);
     assert_eq!(add_ref_data.name, "add");
     assert_eq!(add_ref_data.arity, 2);
-    let function = world.functions().get(add_def).expect("defined function");
-    assert_eq!(function.revision(), add_revision);
-    match function.state() {
+    let function = functions.get(add_def).expect("defined function");
+    assert_eq!(function.revision, add_revision);
+    match &function.state {
         FunctionState::Defined { def } => {
-            assert_eq!(def.code(), code_id);
-            assert_eq!(def.ast().name, "Math.add");
+            assert_eq!(def.code, code_id);
+            assert_eq!(def.ast.name, "Math.add");
         }
         other => panic!("function should promote from placeholder to defined, got {other:?}"),
     }
 
-    let code = world.code().get(code_id).expect("defined code");
-    assert_eq!(code.state(), &CodeState::Pending);
-
-    let repl_ref = world.roots_mut().reference_named("repl");
-    let repl_def = world.roots_mut().define_named("repl");
-    assert_eq!(
-        repl_ref, repl_def,
-        "root definition should fill the referenced placeholder"
+    let code_slot = code.get(code_id).expect("defined code");
+    assert!(
+        matches!(code_slot.state(), CodeState::Pending),
+        "new code should remain pending until indexing runs"
     );
-    assert_eq!(world.roots().name(repl_def), Some("repl"));
+    let indexed_code_revision = code.index(code_id, Vec::new());
+    let same_indexed_code_revision = code.index(code_id, Vec::new());
     assert_eq!(
-        world.roots().get(repl_def).map(|root| root.state()),
-        Some(&RootState::Defined),
-        "root should promote from placeholder to defined"
+        same_indexed_code_revision, indexed_code_revision,
+        "replaying the same code index should not bump the revision"
     );
 
-    let head = world
-        .namespaces_mut()
-        .bind(namespace, "add", NamespaceSymbol::Functions(vec![add_def]));
+    let mut namespaces = namespaces;
+    let head = namespaces.bind(namespace, "add", NamespaceSymbol::Function(add_def));
     assert_eq!(
-        world.namespaces().lookup(head, "add"),
-        Some(&NamespaceSymbol::Functions(vec![add_def])),
+        namespaces.lookup(head, "add"),
+        Some(&NamespaceSymbol::Function(add_def)),
         "namespace lookup should preserve grouped function bindings"
     );
 }

@@ -456,6 +456,21 @@ pub struct FnDef {
 }
 
 impl FnDef {
+    /// Returns the callable arity for regular and extern functions.
+    ///
+    /// Regular functions take their arity from the first clause. Extern
+    /// declarations have no clauses, so their parameter list owns the arity.
+    pub fn arity(&self) -> usize {
+        if self.extern_abi.is_some() {
+            self.extern_params.len()
+        } else {
+            self.clauses
+                .first()
+                .map(|clause| clause.params.len())
+                .expect("functions should have at least one clause")
+        }
+    }
+
     /// Returns the first `@doc` string attached to this fn, if any.
     pub fn doc(&self) -> Option<&str> {
         self.attrs.iter().find_map(|a| match a {
@@ -632,3 +647,6 @@ pub struct Program {
     /// `brand("B") ⊆ T` when the declaration is in scope.
     pub brand_inners: HashMap<String, Ty>,
 }
+
+#[cfg(test)]
+mod ast_test;
