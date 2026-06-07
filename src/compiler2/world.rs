@@ -22,7 +22,7 @@ pub struct World<'a> {
     functions: FunctionMap,
     roots: RootMap,
     namespaces: NamespaceStore,
-    work_graph: WorkGraph,
+    pub(crate) work_graph: WorkGraph,
 }
 
 impl std::fmt::Debug for World<'_> {
@@ -116,14 +116,6 @@ impl<'a> World<'a> {
         let _ = self
             .work_graph
             .complete(job, reads, waits, effects.outputs, effects.follow_up);
-    }
-
-    pub fn pending_jobs(&self) -> usize {
-        self.work_graph.agenda().len()
-    }
-
-    pub fn pop_job(&mut self) -> Option<Job> {
-        self.work_graph.pop()
     }
 
     pub fn demand(&mut self, job: Job) -> bool {

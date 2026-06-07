@@ -4,7 +4,7 @@ use super::ExecutableNeed;
 use super::Job;
 use super::code::CodeId;
 use super::identity::RootId;
-use super::scheduler::DriveError;
+use super::scheduler::DriveOutcome;
 use super::world::World;
 
 /// Public front door for the side-by-side incremental compiler.
@@ -55,7 +55,7 @@ impl<'a> Compiler2<'a> {
         self.world.demand(job)
     }
 
-    pub fn drive(&mut self) -> Result<(), DriveError<Job>> {
-        self.world.drive().map(|_| ())
+    pub fn drive(&mut self) -> DriveOutcome<Job, super::ExactPattern<super::FactKey>> {
+        self.world.drive()
     }
 }

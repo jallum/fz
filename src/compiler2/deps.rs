@@ -17,6 +17,12 @@ where
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnresolvedWait<J, P> {
+    pub pattern: P,
+    pub jobs: Vec<J>,
+}
+
 #[derive(Debug)]
 pub struct DependencyIndex<J, F, P> {
     reads: HashMap<J, HashSet<F>>,
@@ -108,6 +114,20 @@ where
             .flat_map(|(_, jobs)| jobs.iter().cloned())
             .collect::<HashSet<_>>()
             .into_iter()
+            .collect()
+    }
+
+    pub fn has_unresolved(&self) -> bool {
+        !self.waiters.is_empty()
+    }
+
+    pub fn unresolved(&self) -> Vec<UnresolvedWait<J, P>> {
+        self.waiters
+            .iter()
+            .map(|(pattern, jobs)| UnresolvedWait {
+                pattern: pattern.clone(),
+                jobs: jobs.iter().cloned().collect(),
+            })
             .collect()
     }
 }

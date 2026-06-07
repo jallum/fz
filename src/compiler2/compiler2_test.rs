@@ -1,4 +1,4 @@
-use super::{CodeSubmission, Compiler2, Job};
+use super::{CodeSubmission, Compiler2, DriveOutcome, Job};
 use crate::telemetry::capture::OwnedEvent;
 use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind, Value};
 
@@ -77,9 +77,10 @@ fn run_contract(case: ContractCase<'_>) {
         case.name
     );
 
-    compiler
-        .drive()
-        .expect("compiler2 drive should index the submitted code");
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Resolved),
+        "compiler2 drive should index the submitted code and finish resolved"
+    );
 
     let drive_span = capture
         .find(&["fz", "compiler2", "drive"])
@@ -114,7 +115,11 @@ fn run_contract(case: ContractCase<'_>) {
         Some(Value::Str(value)) => value.as_ref(),
         other => panic!("drive stop missing outcome metadata: {other:?}"),
     };
-    assert_eq!(drive_outcome, "ok", "{} should close drive with ok outcome", case.name);
+    assert_eq!(
+        drive_outcome, "resolved",
+        "{} should close drive with resolved outcome",
+        case.name
+    );
 
     let indexed_start = job_start(&capture, "IndexCode", code_id.as_u32() as u64);
     assert_eq!(

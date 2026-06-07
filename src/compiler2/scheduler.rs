@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use std::hash::Hash;
 
 use super::agenda::Agenda;
-use super::deps::{DependencyIndex, FactPattern};
+use super::deps::{DependencyIndex, FactPattern, UnresolvedWait};
 use super::facts::{FactChange, FactTable};
 
 #[derive(Debug, Clone)]
@@ -16,8 +16,10 @@ pub struct AppliedStep<J, F> {
 pub struct FatalError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DriveError<J> {
-    pub job: J,
+pub enum DriveOutcome<J, P> {
+    Resolved,
+    Unresolved { waits: Vec<UnresolvedWait<J, P>> },
+    Fatal { job: J },
 }
 
 #[derive(Debug)]
@@ -62,6 +64,14 @@ where
 
     pub fn deps(&self) -> &DependencyIndex<J, F, P> {
         &self.deps
+    }
+
+    pub fn has_unresolved(&self) -> bool {
+        self.deps.has_unresolved()
+    }
+
+    pub fn unresolved(&self) -> Vec<UnresolvedWait<J, P>> {
+        self.deps.unresolved()
     }
 
     pub fn enqueue(&mut self, job: J) -> bool {

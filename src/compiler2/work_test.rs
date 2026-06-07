@@ -1,4 +1,4 @@
-use super::{CodeSubmission, Compiler2, ExecutableNeed, Job, RootSubmission};
+use super::{CodeSubmission, Compiler2, DriveOutcome, ExactPattern, ExecutableNeed, Job, RootSubmission};
 use crate::compiler2::work::JobEffects;
 use crate::compiler2::{ActivationKey, ExecutableKey, FactKey, FunctionId};
 use crate::diag::codes;
@@ -38,7 +38,7 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
         "submit_code should not index eagerly"
     );
 
-    compiler.drive().expect("first drive should index quicksort plus foo");
+    assert_resolved(compiler.drive(), "first drive should index quicksort plus foo");
 
     let indexed_start = job_start(&capture, "IndexCode", code_id.as_u32() as u64);
     let indexed_stop = job_stop(&capture, &indexed_start);
@@ -52,7 +52,7 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
         compiler.demand(Job::ScopeCode(code_id)),
         "explicit demand should enqueue root definition for quicksort plus foo"
     );
-    compiler.drive().expect("second drive should define quicksort plus foo");
+    assert_resolved(compiler.drive(), "second drive should define quicksort plus foo");
 
     let mut names = capture
         .find(&["fz", "compiler2", "function", "defined"])
@@ -181,9 +181,10 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         need: ExecutableNeed::Value,
     });
 
-    compiler
-        .drive()
-        .expect("root submission should pull the source surface through to the entry seed");
+    assert_resolved(
+        compiler.drive(),
+        "root submission should pull the source surface through to the entry seed",
+    );
 
     let root_submitted = capture
         .last(&["fz", "compiler2", "root", "submitted"])
@@ -300,6 +301,63 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
 }
 
 #[test]
+fn compiler2_submit_root_before_code_reports_unresolved_until_entry_is_defined() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let submitted = capture
+        .last(&["fz", "compiler2", "root", "submitted"])
+        .expect("root submitted event");
+    let function_id = match submitted.measurements.get("function_id") {
+        Some(Value::U64(id)) => FunctionId::from_u32(*id as u32),
+        other => panic!("root submission missing function_id measurement: {other:?}"),
+    };
+
+    let outcome = compiler.drive();
+    match outcome {
+        DriveOutcome::Unresolved { waits } => {
+            assert!(
+                waits.iter().any(|wait| {
+                    wait.pattern == ExactPattern(FactKey::FunctionDefined(function_id))
+                        && wait.jobs.contains(&Job::SeedRoot(root_id))
+                }),
+                "unresolved drive should report SeedRoot waiting on the entry definition"
+            );
+        }
+        other => panic!("root-before-code should finish unresolved: {other:?}"),
+    }
+
+    let drive_stop = capture
+        .find(&["fz", "compiler2", "drive"])
+        .into_iter()
+        .find(|event| event.kind == EventKind::SpanStop)
+        .expect("drive stop event");
+    assert_eq!(
+        metadata_str(&drive_stop, "outcome"),
+        "unresolved",
+        "drive should close as unresolved while the root is waiting on code"
+    );
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/late_main.fz".to_string()),
+        text: "fn main(), do: 42\n".to_string(),
+    });
+    assert_resolved(
+        compiler.drive(),
+        "adding the entry definition should resolve the waiting root",
+    );
+}
+
+#[test]
 fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseeding_semantics() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -318,7 +376,7 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.drive().expect("first drive should seed the initial root");
+    assert_resolved(compiler.drive(), "first drive should seed the initial root");
     assert_eq!(
         job_stops(&capture, "SeedRoot").len(),
         2,
@@ -329,9 +387,10 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
         name: Some("fixtures/late_foo.fz".to_string()),
         text: "fn foo(), do: 42\n".to_string(),
     });
-    compiler
-        .drive()
-        .expect("second drive should scope late code automatically while a root is active");
+    assert_resolved(
+        compiler.drive(),
+        "second drive should scope late code automatically while a root is active",
+    );
 
     let scope_outputs = outputs
         .take("ScopeCode", late_code_id.as_u32() as u64)
@@ -378,7 +437,7 @@ end
         .to_string(),
     });
 
-    compiler.drive().expect("first drive should index nested module scopes");
+    assert_resolved(compiler.drive(), "first drive should index nested module scopes");
     let indexed_outputs = outputs
         .take("IndexCode", code_id.as_u32() as u64)
         .expect("IndexCode job effects");
@@ -397,9 +456,10 @@ end
         compiler.demand(Job::ScopeCode(code_id)),
         "explicit demand should enqueue root definition for nested modules"
     );
-    compiler
-        .drive()
-        .expect("second drive should scope the root module declarations");
+    assert_resolved(
+        compiler.drive(),
+        "second drive should scope the root module declarations",
+    );
 
     assert_eq!(
         capture.count(&["fz", "compiler2", "module", "defined"]),
@@ -416,9 +476,10 @@ end
         compiler.demand(Job::DefineModule(*module_ids.last().expect("deepest module id"))),
         "explicit demand should enqueue the nested module definition"
     );
-    compiler
-        .drive()
-        .expect("third drive should define the demanded nested module and its parents");
+    assert_resolved(
+        compiler.drive(),
+        "third drive should define the demanded nested module and its parents",
+    );
 
     let mut defined_modules = capture
         .find(&["fz", "compiler2", "module", "defined"])
@@ -508,7 +569,7 @@ end
         .to_string(),
     });
 
-    compiler.drive().expect("first drive should index import-only scope");
+    assert_resolved(compiler.drive(), "first drive should index import-only scope");
     let module_ids = module_indexed_ids(
         &outputs
             .take("IndexCode", code_id.as_u32() as u64)
@@ -518,7 +579,7 @@ end
         compiler.demand(Job::ScopeCode(code_id)),
         "explicit demand should enqueue root definition for import-only scope"
     );
-    compiler.drive().expect("second drive should scope import-only modules");
+    assert_resolved(compiler.drive(), "second drive should scope import-only modules");
     assert_eq!(
         capture.count(&["fz", "compiler2", "function", "defined"]),
         0,
@@ -528,9 +589,7 @@ end
         compiler.demand(Job::DefineModule(module_ids[0])),
         "demanding User should enqueue the consumer module only"
     );
-    compiler
-        .drive()
-        .expect("third drive should define Math before retrying User");
+    assert_resolved(compiler.drive(), "third drive should define Math before retrying User");
     let mut names = capture
         .find(&["fz", "compiler2", "function", "defined"])
         .into_iter()
@@ -577,9 +636,7 @@ end
         .to_string(),
     });
 
-    compiler
-        .drive()
-        .expect("first drive should index import-only unknown scope");
+    assert_resolved(compiler.drive(), "first drive should index import-only unknown scope");
     let module_ids = module_indexed_ids(
         &outputs
             .take("IndexCode", code_id.as_u32() as u64)
@@ -589,18 +646,21 @@ end
         compiler.demand(Job::ScopeCode(code_id)),
         "explicit demand should enqueue root definition for import-only unknown scope"
     );
-    compiler
-        .drive()
-        .expect("second drive should scope import-only unknown modules");
+    assert_resolved(
+        compiler.drive(),
+        "second drive should scope import-only unknown modules",
+    );
     assert!(
         compiler.demand(Job::DefineModule(module_ids[0])),
         "demanding User should enqueue the consumer module only"
     );
-    let err = compiler
-        .drive()
-        .expect_err("third drive should fail once Math's defined surface lacks missing/1");
+    let outcome = compiler.drive();
+    let job = match outcome {
+        DriveOutcome::Fatal { job } => job,
+        other => panic!("third drive should fail once Math's defined surface lacks missing/1: {other:?}"),
+    };
     assert_eq!(
-        err.job,
+        job,
         Job::DefineModule(module_ids[0]),
         "fatal job should be the retried consumer module"
     );
@@ -644,7 +704,7 @@ end
         .to_string(),
     });
 
-    compiler.drive().expect("first drive should index import-all scope");
+    assert_resolved(compiler.drive(), "first drive should index import-all scope");
     let module_ids = module_indexed_ids(
         &outputs
             .take("IndexCode", code_id.as_u32() as u64)
@@ -654,14 +714,12 @@ end
         compiler.demand(Job::ScopeCode(code_id)),
         "explicit demand should enqueue root definition for import-all scope"
     );
-    compiler.drive().expect("second drive should scope import-all modules");
+    assert_resolved(compiler.drive(), "second drive should scope import-all modules");
     assert!(
         compiler.demand(Job::DefineModule(module_ids[0])),
         "demanding User should enqueue the consumer module only"
     );
-    compiler
-        .drive()
-        .expect("third drive should define Math before retrying User");
+    assert_resolved(compiler.drive(), "third drive should define Math before retrying User");
     let mut names = capture
         .find(&["fz", "compiler2", "function", "defined"])
         .into_iter()
@@ -710,7 +768,7 @@ end
         .to_string(),
     });
 
-    compiler.drive().expect("first drive should index import-except scope");
+    assert_resolved(compiler.drive(), "first drive should index import-except scope");
     let module_ids = module_indexed_ids(
         &outputs
             .take("IndexCode", code_id.as_u32() as u64)
@@ -720,16 +778,12 @@ end
         compiler.demand(Job::ScopeCode(code_id)),
         "explicit demand should enqueue root definition for import-except scope"
     );
-    compiler
-        .drive()
-        .expect("second drive should scope import-except modules");
+    assert_resolved(compiler.drive(), "second drive should scope import-except modules");
     assert!(
         compiler.demand(Job::DefineModule(module_ids[0])),
         "demanding User should enqueue the consumer module only"
     );
-    compiler
-        .drive()
-        .expect("third drive should define Math before retrying User");
+    assert_resolved(compiler.drive(), "third drive should define Math before retrying User");
     let mut names = capture
         .find(&["fz", "compiler2", "function", "defined"])
         .into_iter()
@@ -878,6 +932,10 @@ fn metadata_str<'a>(event: &'a OwnedEvent, key: &str) -> &'a str {
         Some(Value::Str(value)) => value.as_ref(),
         other => panic!("metadata key `{key}` missing or not str: {other:?}"),
     }
+}
+
+fn assert_resolved(outcome: DriveOutcome<Job, ExactPattern<FactKey>>, message: &str) {
+    assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
 }
 
 fn function_id(capture: &Capture, name: &str, arity: u64) -> FunctionId {

@@ -24,7 +24,7 @@ use std::collections::HashSet;
 use super::code::CodeId;
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleExport, ModuleId, RootId};
 use super::namespace::{Namespace, NamespaceSymbol};
-use super::scheduler::{DriveError, FatalError, Scheduler};
+use super::scheduler::{DriveOutcome, FatalError, Scheduler};
 use super::world::World;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -88,15 +88,15 @@ impl World<'_> {
     /// Each job gets one telemetry span. A successful job closes with its raw
     /// effects, then the world publishes those effects to the graph. A fatal
     /// job closes its span, closes the drive span as fatal, and stops the loop.
-    pub fn drive(&mut self) -> Result<(), DriveError<Job>> {
+    pub fn drive(&mut self) -> DriveOutcome<Job, super::deps::ExactPattern<FactKey>> {
         let mut span = self.tel().span(
             &["fz", "compiler2", "drive"],
             metadata! {
-                pending_jobs: self.pending_jobs() as u64,
+                pending_jobs: self.work_graph.agenda().len() as u64,
             },
         );
         let mut jobs_ran = 0_u64;
-        while let Some(job) = self.pop_job() {
+        while let Some(job) = self.work_graph.pop() {
             let job_kind = job.kind();
             let job_id = job.id();
             let mut job_span = self.tel().span(
@@ -128,12 +128,24 @@ impl World<'_> {
                 Err(_) => {
                     job_span.close_with(measurements! {}, metadata! { outcome: "fatal" });
                     span.close_with(measurements! { jobs_ran: jobs_ran }, metadata! { outcome: "fatal" });
-                    return Err(DriveError { job });
+                    return DriveOutcome::Fatal { job };
                 }
             }
         }
-        span.close_with(measurements! { jobs_ran: jobs_ran }, metadata! { outcome: "ok" });
-        Ok(())
+        if !self.work_graph.has_unresolved() {
+            span.close_with(measurements! { jobs_ran: jobs_ran }, metadata! { outcome: "resolved" });
+            DriveOutcome::Resolved
+        } else {
+            let unresolved = self.work_graph.unresolved();
+            span.stop_with(
+                &measurements! { jobs_ran: jobs_ran },
+                &metadata! {
+                    outcome: "unresolved",
+                    waits: opaque(&unresolved),
+                },
+            );
+            DriveOutcome::Unresolved { waits: unresolved }
+        }
     }
 }
 

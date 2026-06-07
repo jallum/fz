@@ -11,7 +11,7 @@ mod world;
 
 pub use agenda::Agenda;
 pub use code::{Code, CodeId, CodeMap, CodeState};
-pub use deps::{DependencyIndex, ExactPattern, FactPattern};
+pub use deps::{DependencyIndex, ExactPattern, FactPattern, UnresolvedWait};
 pub use driver::{CodeSubmission, Compiler2, RootSubmission};
 pub use facts::{FactChange, FactReplace, FactSlot, FactTable};
 pub use identity::{
@@ -20,7 +20,7 @@ pub use identity::{
     RootEntry, RootId, RootMap,
 };
 pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
-pub use scheduler::{AppliedStep, DriveError, FatalError, Scheduler};
+pub use scheduler::{AppliedStep, DriveOutcome, FatalError, Scheduler};
 pub use work::{FactKey, Job, WorkGraph};
 pub use world::World;
 

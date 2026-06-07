@@ -130,6 +130,39 @@ fn compiler2_scheduler_wakes_waiters_when_a_matching_fact_appears() {
 }
 
 #[test]
+fn compiler2_scheduler_has_unresolved_tracks_waiter_presence_without_materializing_frontier() {
+    let mut scheduler = TestScheduler::new();
+    assert!(
+        !scheduler.has_unresolved(),
+        "a fresh scheduler should not report unresolved waiters"
+    );
+
+    scheduler.complete(
+        4_u32,
+        HashSet::new(),
+        HashSet::from([ExactPattern("foo")]),
+        Vec::new(),
+        Vec::new(),
+    );
+    assert!(
+        scheduler.has_unresolved(),
+        "registering a waiter should make unresolved work observable"
+    );
+
+    scheduler.complete(1_u32, HashSet::new(), HashSet::new(), vec![("foo", 1)], Vec::new());
+    assert_eq!(
+        scheduler.pop(),
+        Some(4_u32),
+        "publishing the waited-for fact should enqueue the blocked job to rerun"
+    );
+    scheduler.complete(4_u32, HashSet::new(), HashSet::new(), Vec::new(), Vec::new());
+    assert!(
+        !scheduler.has_unresolved(),
+        "once the waited-for fact appears and the waiter reruns, unresolved should clear"
+    );
+}
+
+#[test]
 fn compiler2_scheduler_complete_enqueues_follow_up_jobs_once() {
     let mut scheduler = TestScheduler::new();
     assert!(scheduler.enqueue(1));
