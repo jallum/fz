@@ -1,10 +1,13 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashSet;
+use std::collections::VecDeque;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use super::super::drive::{FactKey, Job, JobEffects};
 use super::super::facts::FactValue;
 use super::super::identity::{ExecutableKey, RootId};
 use super::super::scheduler::FatalError;
-use super::super::semantic::{SelectedCallee, SemanticClosure};
+use super::super::semantic::{CallSiteKey, SelectedCallee, SemanticClosure};
 use super::super::world::World;
 
 /// Seeds one semantic root once its entry definition exists.
@@ -31,29 +34,71 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
     };
 
     effects.reads.push(function_fact);
+    let mut waits = HashSet::new();
+    let mut follow_up = HashSet::new();
+    if !world.require_activation_key_facts(root.function, &mut effects.reads, &mut waits, &mut follow_up) {
+        effects.waits.extend(waits);
+        effects.follow_up.extend(follow_up);
+        return Ok(effects);
+    }
+
+    let entry_activation = world.activation_key(root_id, root.function, &[]);
+    effects.outputs.push((
+        FactKey::Activation(entry_activation.clone()),
+        FactValue::inputs(Vec::new()),
+    ));
+    effects.outputs.push((
+        FactKey::Executable(ExecutableKey {
+            activation: entry_activation.clone(),
+            need: root.need,
+        }),
+        FactValue::presence(1),
+    ));
     effects.follow_up.push(Job::LowerFunction(root.function));
     effects.follow_up.push(Job::PlanEntryDispatch(root.function));
-    effects.follow_up.push(Job::DeriveRecursive(root.function));
-    effects.follow_up.push(Job::DeriveDispatchMask(root.function));
+    effects.follow_up.push(Job::AnalyzeActivation(entry_activation));
     effects.follow_up.push(Job::CheckSemanticClosure(root_id));
     Ok(effects)
 }
 
-/// Walks one root's live semantic frontier and republishes its closure facts.
+/// Checks whether one root's current activation facts have settled.
 pub(super) fn check_semantic_closure(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let root = world.root_entry(root_id);
-    let mut reads = vec![FactKey::RootEntry(root_id)];
+    let mut reads = Vec::new();
     let mut waits = HashSet::new();
     let mut follow_up = HashSet::new();
     let mut outputs = Vec::new();
-    let mut revision = world.root_revision(root_id);
+    let mut dependencies = Vec::new();
+
+    let root_fact = FactKey::RootEntry(root_id);
+    if let Some(root_fingerprint) = world.fact_revision(root_fact.clone()) {
+        reads.push(root_fact.clone());
+        dependencies.push((root_fact, root_fingerprint));
+    } else {
+        waits.insert(root_fact);
+        follow_up.insert(Job::SeedRoot(root_id));
+    }
 
     let function_fact = FactKey::FunctionDefined(root.function);
-    let Some(function_revision) = world.function_defined_revision(root.function) else {
-        return Ok(world.wait_for_function_definition(root.function));
+    let function_ready = if let Some(function_fingerprint) = world.function_defined_revision(root.function) {
+        reads.push(function_fact.clone());
+        dependencies.push((function_fact, function_fingerprint));
+        true
+    } else {
+        let wait = world.wait_for_function_definition(root.function);
+        waits.extend(wait.waits);
+        follow_up.extend(wait.follow_up);
+        false
     };
-    reads.push(function_fact);
-    revision = revision.max(function_revision);
+
+    if !function_ready {
+        return Ok(JobEffects {
+            reads,
+            waits: waits.into_iter().collect(),
+            follow_up: follow_up.into_iter().collect(),
+            ..JobEffects::default()
+        });
+    }
 
     if !world.require_activation_key_facts(root.function, &mut reads, &mut waits, &mut follow_up) {
         return Ok(JobEffects {
@@ -64,20 +109,42 @@ pub(super) fn check_semantic_closure(world: &mut World<'_>, root_id: RootId) -> 
         });
     }
 
-    let (entry_activation, entry_revision) = world.activate(root_id, root.function, Vec::new());
-    let mut activation_revisions = HashMap::from([(entry_activation.clone(), entry_revision)]);
-    let mut executable_needs = HashMap::from([(entry_activation.clone(), HashSet::from([root.need]))]);
-    let mut queue = VecDeque::from([entry_activation]);
-    let mut queued = HashSet::from([queue[0].clone()]);
+    let entry = ExecutableKey {
+        activation: world.activation_key(root_id, root.function, &[]),
+        need: root.need,
+    };
+    let entry_activation_fact = FactKey::Activation(entry.activation.clone());
+    if world.fact_revision(entry_activation_fact.clone()).is_none() {
+        waits.insert(entry_activation_fact);
+        follow_up.insert(Job::SeedRoot(root_id));
+    }
+    let entry_executable_fact = FactKey::Executable(entry.clone());
+    if world.fact_revision(entry_executable_fact.clone()).is_none() {
+        waits.insert(entry_executable_fact);
+        follow_up.insert(Job::SeedRoot(root_id));
+    }
 
-    while let Some(activation) = queue.pop_front() {
-        let activation_revision = *activation_revisions
-            .get(&activation)
-            .expect("queued activations should have a current revision");
-        outputs.push((
-            FactKey::Activation(activation.clone()),
-            FactValue::presence(activation_revision),
-        ));
+    let mut activations = HashSet::new();
+    let mut executables = HashSet::new();
+    let mut pending = VecDeque::new();
+    if waits.is_empty() {
+        pending.push_back(entry.clone());
+    }
+
+    while let Some(executable) = pending.pop_front() {
+        let activation = executable.activation.clone();
+        let activation_fact = FactKey::Activation(activation.clone());
+        let activation_ready = read_fact(world, activation_fact, &mut reads, &mut dependencies, &mut waits);
+
+        let executable_fact = FactKey::Executable(executable.clone());
+        let executable_ready = read_fact(world, executable_fact, &mut reads, &mut dependencies, &mut waits);
+        if !activation_ready || !executable_ready {
+            continue;
+        }
+        executables.insert(executable);
+        if !activations.insert(activation.clone()) {
+            continue;
+        }
 
         let analyzed_fact = FactKey::ActivationAnalyzed(activation.clone());
         let Some(analyzed_revision) = world.fact_revision(analyzed_fact.clone()) else {
@@ -86,7 +153,11 @@ pub(super) fn check_semantic_closure(world: &mut World<'_>, root_id: RootId) -> 
             continue;
         };
         reads.push(analyzed_fact);
-        revision = revision.max(analyzed_revision);
+        dependencies.push((FactKey::ActivationAnalyzed(activation.clone()), analyzed_revision));
+        let analysis = world
+            .activation_analysis(&activation)
+            .expect("activation analysis fact should have an analysis value")
+            .clone();
 
         let return_fact = FactKey::ReturnType(activation.clone());
         let Some(return_revision) = world.fact_revision(return_fact.clone()) else {
@@ -95,116 +166,75 @@ pub(super) fn check_semantic_closure(world: &mut World<'_>, root_id: RootId) -> 
             continue;
         };
         reads.push(return_fact);
-        revision = revision.max(return_revision);
+        dependencies.push((FactKey::ReturnType(activation.clone()), return_revision));
 
-        let Some(analysis) = world.activation_analysis(&activation).cloned() else {
-            waits.insert(FactKey::ActivationAnalyzed(activation.clone()));
-            follow_up.insert(Job::AnalyzeActivation(activation.clone()));
+        let lowered_fact = FactKey::LoweredBody(activation.function);
+        let Some(lowered_revision) = world.fact_revision(lowered_fact.clone()) else {
+            waits.insert(lowered_fact);
+            follow_up.insert(Job::LowerFunction(activation.function));
             continue;
         };
+        reads.push(lowered_fact.clone());
+        dependencies.push((lowered_fact, lowered_revision));
 
-        for callsite in &analysis.callsites {
-            let key = super::super::semantic::CallSiteKey {
+        for callsite in analysis.callsites {
+            let key = CallSiteKey {
                 activation: activation.clone(),
-                callsite: *callsite,
+                callsite,
             };
             let selected_fact = FactKey::SelectedCallee(key.clone());
-            let Some(selected_revision) = world.fact_revision(selected_fact.clone()) else {
-                waits.insert(selected_fact);
+            let selected_ready = read_fact(world, selected_fact.clone(), &mut reads, &mut dependencies, &mut waits);
+            let need_fact = FactKey::ReturnNeed(key.clone());
+            let need_ready = read_fact(world, need_fact.clone(), &mut reads, &mut dependencies, &mut waits);
+            if !selected_ready || !need_ready {
                 follow_up.insert(Job::AnalyzeActivation(activation.clone()));
                 continue;
-            };
-            reads.push(selected_fact);
-            revision = revision.max(selected_revision);
-
-            let return_need_fact = FactKey::ReturnNeed(key.clone());
-            let Some(return_need_revision) = world.fact_revision(return_need_fact.clone()) else {
-                waits.insert(return_need_fact);
-                follow_up.insert(Job::AnalyzeActivation(activation.clone()));
-                continue;
-            };
-            reads.push(return_need_fact);
-            revision = revision.max(return_need_revision);
-
-            let Some(summary) = world.callsite_summary(&key).cloned() else {
-                waits.insert(FactKey::SelectedCallee(key));
-                follow_up.insert(Job::AnalyzeActivation(activation.clone()));
-                continue;
-            };
+            }
+            let summary = world
+                .callsite_summary(&key)
+                .expect("callsite facts should have a summary value")
+                .clone();
             let SelectedCallee::Function(function) = summary.callee else {
                 continue;
             };
-
             if !world.require_activation_key_facts(function, &mut reads, &mut waits, &mut follow_up) {
                 continue;
             }
-            let (callee, callee_revision) = world.activate(root_id, function, summary.input_types);
-            let previous_revision = activation_revisions.insert(callee.clone(), callee_revision);
-            let needs = executable_needs.entry(callee.clone()).or_default();
-            let inserted_need = needs.insert(summary.need);
-            let widened = previous_revision.is_some_and(|previous| previous != callee_revision);
-            if queued.insert(callee.clone()) || widened || inserted_need {
-                queue.push_back(callee);
+            let callee_activation = world.activation_key(root_id, function, &summary.input_types);
+            let callee_executable = ExecutableKey {
+                activation: callee_activation.clone(),
+                need: summary.need,
+            };
+            let activation_ready = read_fact(
+                world,
+                FactKey::Activation(callee_activation.clone()),
+                &mut reads,
+                &mut dependencies,
+                &mut waits,
+            );
+            let executable_ready = read_fact(
+                world,
+                FactKey::Executable(callee_executable.clone()),
+                &mut reads,
+                &mut dependencies,
+                &mut waits,
+            );
+            if activation_ready && executable_ready {
+                pending.push_back(callee_executable);
             }
         }
     }
 
-    let activations = activation_revisions
-        .keys()
-        .cloned()
-        .collect::<std::collections::HashSet<_>>();
-    let mut executables = std::collections::HashSet::new();
-    for activation in &activations {
-        let activation_revision = *activation_revisions
-            .get(activation)
-            .expect("frontier activations should have a current revision");
-        for need in executable_needs
-            .get(activation)
-            .into_iter()
-            .flat_map(|needs| needs.iter().copied())
-        {
-            let executable = ExecutableKey {
-                activation: activation.clone(),
-                need,
-            };
-            outputs.push((
-                FactKey::Executable(executable.clone()),
-                FactValue::presence(activation_revision),
-            ));
-            executables.insert(executable);
-        }
-    }
-
     if waits.is_empty() {
-        for activation in &activations {
-            let lowered_fact = FactKey::LoweredBody(activation.function);
-            let Some(lowered_revision) = world.fact_revision(lowered_fact.clone()) else {
-                waits.insert(lowered_fact);
-                follow_up.insert(Job::LowerFunction(activation.function));
-                continue;
-            };
-            reads.push(lowered_fact);
-            revision = revision.max(lowered_revision);
-        }
-    }
-
-    if waits.is_empty() {
-        let entry = ExecutableKey {
-            activation: super::super::ActivationKey {
-                root: root_id,
-                function: root.function,
-                input: Vec::new(),
-            },
-            need: root.need,
-        };
+        let dependency_fingerprint = combined_fingerprint(&dependencies);
         let semantic_closed = world.define_semantic_closure(
             root_id,
             SemanticClosure {
-                entry,
+                entry: entry.clone(),
                 activations,
                 executables,
             },
-            revision,
+            dependency_fingerprint,
         );
         outputs.push((FactKey::SemanticClosed(root_id), FactValue::presence(semantic_closed)));
         follow_up.insert(Job::MaterializeRoot(root_id));
@@ -213,26 +243,35 @@ pub(super) fn check_semantic_closure(world: &mut World<'_>, root_id: RootId) -> 
     Ok(JobEffects {
         reads,
         waits: waits.into_iter().collect(),
-        outputs: dedupe_outputs(outputs),
+        outputs,
         follow_up: follow_up.into_iter().collect(),
     })
 }
 
-fn dedupe_outputs(outputs: Vec<(FactKey, FactValue)>) -> Vec<(FactKey, FactValue)> {
-    let mut deduped: HashMap<FactKey, FactValue> = HashMap::new();
-    for (fact, value) in outputs {
-        let FactValue::Presence(revision) = value else {
-            panic!("root job emits only presence facts")
-        };
-        deduped
-            .entry(fact)
-            .and_modify(|current| match current {
-                FactValue::Presence(current_revision) => {
-                    *current_revision = (*current_revision).max(revision);
-                }
-                FactValue::Inputs(_) => panic!("root job emits only presence facts"),
-            })
-            .or_insert(FactValue::Presence(revision));
+fn read_fact(
+    world: &World<'_>,
+    fact: FactKey,
+    reads: &mut Vec<FactKey>,
+    dependencies: &mut Vec<(FactKey, u64)>,
+    waits: &mut HashSet<FactKey>,
+) -> bool {
+    if let Some(fingerprint) = world.fact_revision(fact.clone()) {
+        reads.push(fact.clone());
+        dependencies.push((fact, fingerprint));
+        true
+    } else {
+        waits.insert(fact);
+        false
     }
-    deduped.into_iter().collect()
+}
+
+fn combined_fingerprint(dependencies: &[(FactKey, u64)]) -> u64 {
+    let mut combined = 0_u64;
+    for (fact, fingerprint) in dependencies {
+        let mut hasher = DefaultHasher::new();
+        fact.hash(&mut hasher);
+        fingerprint.hash(&mut hasher);
+        combined ^= hasher.finish();
+    }
+    combined
 }

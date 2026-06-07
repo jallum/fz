@@ -61,7 +61,13 @@ impl FactValue {
     }
 
     pub fn inputs(inputs: Vec<Ty>) -> Self {
-        Self::Inputs(inputs)
+        let mut types = crate::types::new();
+        Self::Inputs(
+            inputs
+                .into_iter()
+                .map(|input| types.alpha_normalize_vars(&input))
+                .collect(),
+        )
     }
 
     fn fingerprint(&self) -> u64 {
@@ -75,7 +81,7 @@ impl FactValue {
         }
     }
 
-    fn join<'a>(values: impl IntoIterator<Item = &'a FactValue>) -> Option<FactValue> {
+    pub(crate) fn join<'a>(values: impl IntoIterator<Item = &'a FactValue>) -> Option<FactValue> {
         let mut values = values.into_iter();
         let first = values.next()?.clone();
         Some(match first {
@@ -104,10 +110,16 @@ impl FactValue {
                     joined = joined
                         .into_iter()
                         .zip(inputs.iter().cloned())
-                        .map(|(current, observed)| types.refine_widen(&current, &observed))
+                        .map(|(current, observed)| {
+                            if current == observed {
+                                current
+                            } else {
+                                types.refine_widen(&current, &observed)
+                            }
+                        })
                         .collect();
                 }
-                FactValue::Inputs(joined)
+                FactValue::inputs(joined)
             }
         })
     }

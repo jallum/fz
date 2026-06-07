@@ -7,7 +7,7 @@ use std::time::Instant;
 use crate::compiler2::artifact::MaterializedProgram;
 use crate::compiler2::drive::{FactKey, Job, JobEffects};
 use crate::compiler2::protocol::{ProtocolCallback, ProtocolImpl, ProtocolImplKey};
-use crate::compiler2::semantic::{ActivationAnalysis, ActivationSummary, CallSiteSummary, SemanticClosure};
+use crate::compiler2::semantic::{ActivationAnalysis, CallSiteSummary, SemanticClosure};
 use crate::compiler2::{
     ActivationKey, CodeSubmission, Compiler2, DriveOutcome, ExactPattern, ExecutableNeed, Function, FunctionRef,
     LoweredBody, Module, Root, RootSubmission, UnresolvedWait,
@@ -192,7 +192,6 @@ fn opaque_debug(value: &Value<'_>) -> Option<(&'static str, String)> {
     try_debug!(Function);
     try_debug!(Module);
     try_debug!(ActivationKey);
-    try_debug!(ActivationSummary);
     try_debug!(ActivationAnalysis);
     try_debug!(CallSiteSummary);
     try_debug!(crate::types::Ty);

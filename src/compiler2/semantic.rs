@@ -31,10 +31,10 @@ pub struct CallSiteSummary {
     pub return_ty: Ty,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActivationSummary {
-    pub inputs: Vec<Ty>,
-    pub return_ty: Ty,
+impl CallSiteSummary {
+    fn same_fact_surface(&self, other: &Self) -> bool {
+        self.callee == other.callee && self.input_types == other.input_types && self.need == other.need
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,8 +52,7 @@ pub struct SemanticClosure {
 
 #[derive(Debug, Clone)]
 pub struct ActivationSlot {
-    summary: ActivationSummary,
-    input_revision: u64,
+    return_ty: Option<Ty>,
     return_revision: u64,
     analysis: Option<ActivationAnalysis>,
     analysis_revision: u64,
@@ -72,6 +71,7 @@ pub struct CallSiteMap {
 #[derive(Debug, Clone)]
 pub struct SemanticClosureSlot {
     closure: SemanticClosure,
+    dependency_fingerprint: u64,
     revision: u64,
 }
 
@@ -91,80 +91,35 @@ impl ActivationMap {
         Self::default()
     }
 
-    pub fn activate(&mut self, key: ActivationKey, inputs: Vec<Ty>) -> u64 {
-        match self.slots.get_mut(&key) {
-            Some(slot) => {
-                assert_eq!(
-                    slot.summary.inputs.len(),
-                    inputs.len(),
-                    "activation arity should stay stable for one activation key"
-                );
-
-                let mut t = crate::types::new();
-                let mut changed = false;
-                let widened = slot
-                    .summary
-                    .inputs
-                    .iter()
-                    .cloned()
-                    .zip(inputs)
-                    .map(|(current, observed)| {
-                        if t.is_equivalent(&current, &observed) {
-                            return current;
-                        }
-                        let next = t.refine_widen(&current, &observed);
-                        if next != current {
-                            changed = true;
-                        }
-                        next
-                    })
-                    .collect::<Vec<_>>();
-                if changed {
-                    slot.summary.inputs = widened;
-                    slot.input_revision += 1;
-                }
-                slot.input_revision
-            }
-            None => {
-                self.slots.insert(
-                    key,
-                    ActivationSlot {
-                        summary: ActivationSummary {
-                            inputs,
-                            return_ty: crate::types::new().none(),
-                        },
-                        input_revision: 1,
-                        return_revision: 0,
-                        analysis: None,
-                        analysis_revision: 0,
-                    },
-                );
-                1
-            }
-        }
-    }
-
     pub fn get(&self, key: &ActivationKey) -> Option<&ActivationSlot> {
         self.slots.get(key)
     }
 
     pub fn define_return(&mut self, key: &ActivationKey, return_ty: Ty) -> u64 {
-        let slot = self
-            .slots
-            .get_mut(key)
-            .expect("activations should exist before defining return types");
-        if slot.return_revision == 0 || slot.summary.return_ty != return_ty {
-            slot.summary.return_ty = return_ty;
-            slot.return_revision += 1;
+        let slot = self.slots.entry(key.clone()).or_insert_with(ActivationSlot::new);
+        match &slot.return_ty {
+            Some(current) => {
+                let next = if current == &return_ty {
+                    current.clone()
+                } else {
+                    let mut types = crate::types::new();
+                    types.refine_widen(current, &return_ty)
+                };
+                if &next != current {
+                    slot.return_ty = Some(next);
+                    slot.return_revision += 1;
+                }
+            }
+            None => {
+                slot.return_ty = Some(return_ty);
+                slot.return_revision += 1;
+            }
         }
         slot.return_revision
     }
 
     pub fn define_analysis(&mut self, key: &ActivationKey, analysis: ActivationAnalysis) -> u64 {
-        let slot = self
-            .slots
-            .get_mut(key)
-            .expect("activations should exist before defining analyses");
+        let slot = self.slots.entry(key.clone()).or_insert_with(ActivationSlot::new);
         if slot.analysis.as_ref() != Some(&analysis) {
             slot.analysis = Some(analysis);
             slot.analysis_revision += 1;
@@ -174,16 +129,21 @@ impl ActivationMap {
 }
 
 impl ActivationSlot {
-    pub fn summary(&self) -> &ActivationSummary {
-        &self.summary
-    }
-
-    pub fn input_revision(&self) -> u64 {
-        self.input_revision
+    fn new() -> Self {
+        Self {
+            return_ty: None,
+            return_revision: 0,
+            analysis: None,
+            analysis_revision: 0,
+        }
     }
 
     pub fn return_revision(&self) -> u64 {
         self.return_revision
+    }
+
+    pub fn return_ty(&self) -> Option<&Ty> {
+        self.return_ty.as_ref()
     }
 
     pub fn analysis(&self) -> Option<&ActivationAnalysis> {
@@ -203,10 +163,10 @@ impl CallSiteMap {
     pub fn define(&mut self, key: CallSiteKey, summary: CallSiteSummary) -> u64 {
         match self.slots.get_mut(&key) {
             Some(slot) => {
-                if slot.value != summary {
-                    slot.value = summary;
+                if !slot.value.same_fact_surface(&summary) {
                     slot.revision += 1;
                 }
+                slot.value = summary;
                 slot.revision
             }
             None => {
@@ -236,9 +196,23 @@ impl SemanticClosureMap {
         Self::default()
     }
 
-    pub fn define(&mut self, root: RootId, closure: SemanticClosure, revision: u64) -> u64 {
+    pub fn define(&mut self, root: RootId, closure: SemanticClosure, dependency_fingerprint: u64) -> u64 {
         self.ensure(root);
-        self.slots[root.as_u32() as usize] = Some(SemanticClosureSlot { closure, revision });
+        let slot = &mut self.slots[root.as_u32() as usize];
+        let revision = match slot {
+            Some(existing)
+                if existing.closure == closure && existing.dependency_fingerprint == dependency_fingerprint =>
+            {
+                existing.revision
+            }
+            Some(existing) => existing.revision + 1,
+            None => 1,
+        };
+        *slot = Some(SemanticClosureSlot {
+            closure,
+            dependency_fingerprint,
+            revision,
+        });
         revision
     }
 
@@ -259,72 +233,5 @@ impl SemanticClosureMap {
         if self.slots.len() < needed {
             self.slots.resize_with(needed, || None);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::compiler2::RootId;
-    use crate::types::{ClosureTypes, Types};
-
-    #[test]
-    fn activation_map_widens_same_key_inputs_monotonically() {
-        let mut activations = ActivationMap::new();
-        let key = ActivationKey {
-            root: RootId::from_u32(0),
-            function: FunctionId::from_u32(0),
-            input: Vec::new(),
-        };
-
-        let mut t = crate::types::new();
-        let empty = t.empty_list();
-        let one = t.int_lit(1);
-        let two = t.int_lit(2);
-        let singleton = t.non_empty_list(one);
-        let widened = t.list(two);
-
-        assert_eq!(activations.activate(key.clone(), vec![empty.clone()]), 1);
-        assert_eq!(activations.activate(key.clone(), vec![empty]), 1);
-        assert_eq!(activations.activate(key.clone(), vec![singleton]), 2);
-        assert_eq!(activations.activate(key.clone(), vec![widened]), 3);
-
-        let observed = activations
-            .get(&key)
-            .expect("activation should exist after observations")
-            .summary();
-        let int = t.int();
-        let expected = t.list(int);
-        assert!(
-            t.is_equivalent(&observed.inputs[0], &expected),
-            "same-key observations should widen to the stable input join: got {}",
-            crate::types::ty_display(&observed.inputs[0])
-        );
-    }
-
-    #[test]
-    fn activation_map_preserves_closure_identity_for_equivalent_observations() {
-        let mut activations = ActivationMap::new();
-        let key = ActivationKey {
-            root: RootId::from_u32(0),
-            function: FunctionId::from_u32(0),
-            input: Vec::new(),
-        };
-
-        let mut t = crate::types::new();
-        let capture = t.int_lit(41);
-        let closure = t.closure_lit(crate::types::ClosureTarget(7), vec![capture], 2);
-
-        assert_eq!(activations.activate(key.clone(), vec![closure.clone()]), 1);
-        assert_eq!(activations.activate(key.clone(), vec![closure]), 1);
-
-        let observed = activations
-            .get(&key)
-            .expect("activation should exist after equivalent closure observations")
-            .summary();
-        assert!(
-            t.closure_lit_parts(&observed.inputs[0]).is_some(),
-            "equivalent closure observations should keep closure identity concrete",
-        );
     }
 }

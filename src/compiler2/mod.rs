@@ -36,8 +36,8 @@ pub use identity::{
 pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
 pub use scheduler::{AppliedStep, DriveOutcome, FatalError, Scheduler};
 pub use semantic::{
-    ActivationAnalysis, ActivationMap, ActivationSlot, ActivationSummary, CallSiteKey, CallSiteMap, CallSiteSummary,
-    SelectedCallee, SemanticClosure, SemanticClosureMap,
+    ActivationAnalysis, ActivationMap, ActivationSlot, CallSiteKey, CallSiteMap, CallSiteSummary, SelectedCallee,
+    SemanticClosure, SemanticClosureMap,
 };
 pub use world::World;
 

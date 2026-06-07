@@ -25,9 +25,10 @@ use super::code::CodeMap;
 use super::deps::ExactPattern;
 use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
 use super::drive::{FactKey, Job, JobEffects, WorkGraph};
+use super::facts::FactValue;
 use super::identity::{
-    ExecutableNeed, FunctionDef, FunctionId, FunctionMap, ModuleExport, ModuleId, ModuleMap, ModuleSourceKind,
-    ModuleState, RootEntry, RootId, RootMap,
+    ActivationKey, ExecutableNeed, FunctionDef, FunctionId, FunctionMap, ModuleExport, ModuleId, ModuleMap,
+    ModuleSourceKind, ModuleState, RootEntry, RootId, RootMap,
 };
 use super::keying::{DispatchMaskMap, RecursiveMap};
 use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
@@ -36,8 +37,7 @@ use super::protocol::{
 };
 use super::runtime::{self, RuntimeModuleCode};
 use super::semantic::{
-    ActivationAnalysis, ActivationMap, ActivationSummary, CallSiteKey, CallSiteMap, CallSiteSummary, SemanticClosure,
-    SemanticClosureMap,
+    ActivationAnalysis, ActivationMap, CallSiteKey, CallSiteMap, CallSiteSummary, SemanticClosure, SemanticClosureMap,
 };
 
 pub struct World<'a> {
@@ -166,8 +166,7 @@ impl<'a> World<'a> {
     pub(crate) fn complete_job(&mut self, job: Job, effects: JobEffects) {
         let reads = effects.reads.into_iter().collect();
         let waits = effects.waits.into_iter().map(ExactPattern).collect();
-        let _ = self
-            .work_graph
+        self.work_graph
             .complete(job, reads, waits, effects.outputs, effects.follow_up);
     }
 
@@ -191,56 +190,33 @@ impl<'a> World<'a> {
         self.roots.get(id).revision
     }
 
-    pub fn activate(
-        &mut self,
-        root: RootId,
-        function: FunctionId,
-        inputs: Vec<Ty>,
-    ) -> (super::identity::ActivationKey, u64) {
-        let key = self.canonical_activation_key(root, function, &inputs);
-        let revision = self.activations.activate(key.clone(), inputs.clone());
-        let slot = self
-            .activations
-            .get(&key)
-            .expect("activations should exist after activation");
-        self.tel.execute(
-            &["fz", "compiler2", "activation", "updated"],
-            &measurements! {
-                root_id: root.as_u32() as u64,
-                function_id: function.as_u32() as u64,
-                revision: revision,
-                input_arity: inputs.len() as u64,
-            },
-            &metadata! {
-                activation: opaque(&key),
-                summary: opaque(slot.summary()),
-            },
-        );
-        (key, revision)
+    pub(crate) fn activation_key(&self, root: RootId, function: FunctionId, inputs: &[Ty]) -> ActivationKey {
+        self.canonical_activation_key(root, function, inputs)
     }
 
-    pub fn activation_summary(&self, key: &super::identity::ActivationKey) -> &ActivationSummary {
-        self.activations
-            .get(key)
-            .expect("activations should exist before reading semantic summaries")
-            .summary()
+    pub(crate) fn activation_inputs(&self, key: &ActivationKey) -> Option<Vec<Ty>> {
+        match self
+            .work_graph
+            .facts()
+            .slot(&FactKey::Activation(key.clone()))
+            .and_then(|slot| slot.value())
+        {
+            Some(FactValue::Inputs(inputs)) => Some(inputs.clone()),
+            Some(FactValue::Presence(_)) => panic!("activation facts should carry input values"),
+            None => None,
+        }
     }
 
-    pub fn activation_analysis(&self, key: &super::identity::ActivationKey) -> Option<&ActivationAnalysis> {
+    pub fn activation_analysis(&self, key: &ActivationKey) -> Option<&ActivationAnalysis> {
         self.activations.get(key).and_then(|slot| slot.analysis())
     }
 
-    pub fn activation_return(&self, key: &super::identity::ActivationKey) -> Option<Ty> {
-        self.activations
-            .get(key)
-            .and_then(|slot| (slot.return_revision() > 0).then(|| slot.summary().return_ty.clone()))
+    pub fn activation_return(&self, key: &ActivationKey) -> Option<Ty> {
+        self.fact_revision(FactKey::ReturnType(key.clone()))?;
+        self.activations.get(key).and_then(|slot| slot.return_ty().cloned())
     }
 
-    pub fn define_activation_analysis(
-        &mut self,
-        key: &super::identity::ActivationKey,
-        analysis: ActivationAnalysis,
-    ) -> u64 {
+    pub fn define_activation_analysis(&mut self, key: &ActivationKey, analysis: ActivationAnalysis) -> u64 {
         let revision = self.activations.define_analysis(key, analysis.clone());
         self.tel.execute(
             &["fz", "compiler2", "activation_analysis", "defined"],
@@ -259,7 +235,9 @@ impl<'a> World<'a> {
         revision
     }
 
-    pub fn define_activation_return(&mut self, key: &super::identity::ActivationKey, return_ty: Ty) -> u64 {
+    pub fn define_activation_return(&mut self, key: &ActivationKey, return_ty: Ty) -> u64 {
+        let mut types = types::new();
+        let return_ty = types.alpha_normalize_vars(&return_ty);
         let revision = self.activations.define_return(key, return_ty.clone());
         self.tel.execute(
             &["fz", "compiler2", "return_type", "defined"],
@@ -276,7 +254,14 @@ impl<'a> World<'a> {
         revision
     }
 
-    pub fn define_callsite_summary(&mut self, key: CallSiteKey, summary: CallSiteSummary) -> u64 {
+    pub fn define_callsite_summary(&mut self, key: CallSiteKey, mut summary: CallSiteSummary) -> u64 {
+        let mut types = types::new();
+        summary.input_types = summary
+            .input_types
+            .into_iter()
+            .map(|input| types.alpha_normalize_vars(&input))
+            .collect();
+        summary.return_ty = types.alpha_normalize_vars(&summary.return_ty);
         let revision = self.callsites.define(key.clone(), summary.clone());
         self.tel.execute(
             &["fz", "compiler2", "callsite", "defined"],
@@ -409,6 +394,7 @@ impl<'a> World<'a> {
         let arity = ast.arity();
         let clauses = ast.clauses.len() as u64;
         let id = self.functions.reference(module, local_name, arity);
+        let previous_revision = self.functions.get(id).revision;
         let revision = self.functions.define(
             id,
             FunctionDef {
@@ -419,24 +405,26 @@ impl<'a> World<'a> {
                 ast,
             },
         );
-        let function = self.functions.get(id);
-        let function_ref = self.functions.reference_for(id);
-        self.tel.execute(
-            &["fz", "compiler2", "function", "defined"],
-            &measurements! {
-                code_id: code.as_u32() as u64,
-                module_id: module.as_u32() as u64,
-                owner_module_id: owner_module.as_u32() as u64,
-                function_id: id.as_u32() as u64,
-                revision: revision,
-                arity: arity as u64,
-                clauses: clauses,
-            },
-            &metadata! {
-                function: opaque(function),
-                function_ref: opaque(function_ref),
-            },
-        );
+        if revision != previous_revision {
+            let function = self.functions.get(id);
+            let function_ref = self.functions.reference_for(id);
+            self.tel.execute(
+                &["fz", "compiler2", "function", "defined"],
+                &measurements! {
+                    code_id: code.as_u32() as u64,
+                    module_id: module.as_u32() as u64,
+                    owner_module_id: owner_module.as_u32() as u64,
+                    function_id: id.as_u32() as u64,
+                    revision: revision,
+                    arity: arity as u64,
+                    clauses: clauses,
+                },
+                &metadata! {
+                    function: opaque(function),
+                    function_ref: opaque(function_ref),
+                },
+            );
+        }
         (id, revision)
     }
 
@@ -515,6 +503,7 @@ impl<'a> World<'a> {
         let id = self
             .functions
             .reference_generated(owner, owner_module, ast.span, ast.arity());
+        let previous_revision = self.functions.get(id).revision;
         let revision = self.functions.define(
             id,
             super::identity::FunctionDef {
@@ -525,25 +514,27 @@ impl<'a> World<'a> {
                 ast: ast.clone(),
             },
         );
-        let function = self.functions.get(id);
-        let function_ref = self.functions.reference_for(id);
-        self.tel.execute(
-            &["fz", "compiler2", "function", "defined"],
-            &measurements! {
-                code_id: owner_code.as_u32() as u64,
-                module_id: owner_module.as_u32() as u64,
-                owner_module_id: owner_def.owner_module.as_u32() as u64,
-                function_id: id.as_u32() as u64,
-                revision: revision,
-                arity: ast.arity() as u64,
-                clauses: ast.clauses.len() as u64,
-                owner_function_id: owner.as_u32() as u64,
-            },
-            &metadata! {
-                function: opaque(function),
-                function_ref: opaque(function_ref),
-            },
-        );
+        if revision != previous_revision {
+            let function = self.functions.get(id);
+            let function_ref = self.functions.reference_for(id);
+            self.tel.execute(
+                &["fz", "compiler2", "function", "defined"],
+                &measurements! {
+                    code_id: owner_code.as_u32() as u64,
+                    module_id: owner_module.as_u32() as u64,
+                    owner_module_id: owner_def.owner_module.as_u32() as u64,
+                    function_id: id.as_u32() as u64,
+                    revision: revision,
+                    arity: ast.arity() as u64,
+                    clauses: ast.clauses.len() as u64,
+                    owner_function_id: owner.as_u32() as u64,
+                },
+                &metadata! {
+                    function: opaque(function),
+                    function_ref: opaque(function_ref),
+                },
+            );
+        }
         (id, revision)
     }
 
@@ -904,6 +895,10 @@ impl<'a> World<'a> {
                     input.clone()
                 }
             })
+            .collect::<Vec<_>>();
+        let key_inputs = key_inputs
+            .into_iter()
+            .map(|input| t.alpha_normalize_vars(&input))
             .collect();
         super::identity::ActivationKey {
             root,

@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use super::{Agenda, DependencyIndex, ExactPattern, FactValue, Scheduler};
-use crate::types::Types;
+use crate::types::{ClosureTarget, ClosureTypes, Types};
 
 type TestScheduler = Scheduler<u32, &'static str, ExactPattern<&'static str>>;
 
@@ -296,5 +296,37 @@ fn compiler2_scheduler_joins_input_values_and_wakes_only_when_join_changes() {
     assert!(
         third.enqueued.is_empty(),
         "stable activation-input joins should not wake subscribers"
+    );
+}
+
+#[test]
+fn compiler2_scheduler_preserves_equal_callable_input_identity() {
+    let mut scheduler = TestScheduler::new();
+    let fact = "activation";
+
+    let mut types = crate::types::new();
+    let reducer = types.fn_ref_lit(ClosureTarget(42), 2);
+
+    scheduler.complete(
+        1_u32,
+        HashSet::new(),
+        HashSet::new(),
+        vec![(fact, FactValue::inputs(vec![reducer.clone()]))],
+        Vec::new(),
+    );
+    scheduler.complete(
+        2_u32,
+        HashSet::new(),
+        HashSet::new(),
+        vec![(fact, FactValue::inputs(vec![reducer]))],
+        Vec::new(),
+    );
+
+    let Some(FactValue::Inputs(inputs)) = scheduler.facts().slot(&fact).and_then(|slot| slot.value()) else {
+        panic!("activation fact should hold joined input values");
+    };
+    assert!(
+        types.closure_lit_parts(&inputs[0]).is_some(),
+        "joining equal callable inputs should not erase the callable identity"
     );
 }

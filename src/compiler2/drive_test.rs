@@ -261,34 +261,18 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         "SeedRoot should publish the root entry fact"
     );
     assert!(
-        !seed_outputs
-            .iter()
-            .any(|(fact, _)| matches!(fact, FactKey::Activation(_))),
-        "SeedRoot should leave frontier publication to semantic closure"
+        seed_outputs.iter().any(|(fact, _)| {
+            *fact
+                == FactKey::Activation(ActivationKey {
+                    root: root_id,
+                    function: main_id,
+                    input: Vec::new(),
+                })
+        }),
+        "SeedRoot should publish the entry activation"
     );
     assert!(
-        !seed_outputs
-            .iter()
-            .any(|(fact, _)| matches!(fact, FactKey::Executable(_))),
-        "SeedRoot should leave executable publication to semantic closure"
-    );
-
-    let closure_outputs = outputs
-        .take(Job::CheckSemanticClosure(root_id))
-        .expect("CheckSemanticClosure job effects");
-    assert!(
-        closure_outputs.contains(&presence(
-            FactKey::Activation(ActivationKey {
-                root: root_id,
-                function: main_id,
-                input: Vec::new(),
-            }),
-            1,
-        )),
-        "semantic closure should publish the entry activation"
-    );
-    assert!(
-        closure_outputs.contains(&presence(
+        seed_outputs.contains(&presence(
             FactKey::Executable(ExecutableKey {
                 activation: ActivationKey {
                     root: root_id,
@@ -299,7 +283,23 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
             }),
             1,
         )),
-        "semantic closure should publish the entry executable request"
+        "SeedRoot should publish the entry executable request"
+    );
+
+    let closure_outputs = outputs
+        .take(Job::CheckSemanticClosure(root_id))
+        .expect("CheckSemanticClosure job effects");
+    assert!(
+        !closure_outputs
+            .iter()
+            .any(|(fact, _)| matches!(fact, FactKey::Activation(_))),
+        "semantic closure should read activation facts rather than publish them"
+    );
+    assert!(
+        !closure_outputs
+            .iter()
+            .any(|(fact, _)| matches!(fact, FactKey::Executable(_))),
+        "semantic closure should read executable facts rather than publish them"
     );
     assert!(
         !closure_outputs.iter().any(|(fact, _)| {
@@ -335,10 +335,9 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
             .is_empty(),
         "root submission should pull the source surface work it needs"
     );
-    assert_eq!(
-        outputs.stops_matching(|job| matches!(job, Job::SeedRoot(_))).len(),
-        2,
-        "root submission should publish the root fact first, then rerun once the entry definition exists"
+    assert!(
+        outputs.stops_matching(|job| matches!(job, Job::SeedRoot(_))).len() >= 2,
+        "root submission should let SeedRoot retry while the entry definition and keying facts settle"
     );
     assert!(
         !outputs
@@ -1394,9 +1393,9 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
         .stops_matching(|job| matches!(job, Job::CheckSemanticClosure(_)))
         .len();
     let lowered_before = outputs.stops_matching(|job| matches!(job, Job::LowerFunction(_))).len();
-    assert_eq!(
-        outputs.stops_matching(|job| matches!(job, Job::SeedRoot(_))).len(),
-        2,
+    let seed_stops_before = outputs.stops_matching(|job| matches!(job, Job::SeedRoot(_))).len();
+    assert!(
+        seed_stops_before >= 2,
         "entry seeding should settle before later code arrives"
     );
 
@@ -1421,7 +1420,7 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
     );
     assert_eq!(
         outputs.stops_matching(|job| matches!(job, Job::SeedRoot(_))).len(),
-        2,
+        seed_stops_before,
         "late unrelated code should not reseed the existing root"
     );
     assert_eq!(
@@ -1498,10 +1497,18 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
         generated_outputs.contains(&presence(FactKey::LoweredBody(generated[0]), 1)),
         "reaching the local lambda through the rooted call should lower its body in its own job",
     );
+    let lowered_functions = outputs
+        .stops_matching(|job| matches!(job, Job::LowerFunction(_)))
+        .into_iter()
+        .filter_map(|stop| match stop.job {
+            Job::LowerFunction(function) => Some(function),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
     assert_eq!(
-        outputs.stops_matching(|job| matches!(job, Job::LowerFunction(_))).len(),
-        2,
-        "rooting a local lambda should lower exactly the reachable owner and generated lambda bodies",
+        lowered_functions,
+        HashSet::from([main_id, generated[0]]),
+        "rooting a local lambda should lower only the reachable owner and generated lambda bodies",
     );
     assert_eq!(
         capture.count(&["fz", "frontend", "lowered"]),
