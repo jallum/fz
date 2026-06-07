@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-07T21:13:07Z",
+  "description": "Goal: restore the northstar pull model before ABI/emission work resumes. Signal: the quicksort trace shows no eager runtime lex/parse before demand, state-derived facts emit only on true revision change, dead-end bottom activations do not churn through the loop, and northstar/telemetry docs describe the corrected invariants and rerunnable trace harness. Strategy: push change detection into compiler-owned state transitions, collapse semantic churn at the activation frontier, move runtime bootstrap to reference-only lazy surfaces, then refresh docs and the trace contract so regressions are easy to see.",
+  "id": "fz-rh2.10",
+  "labels": [],
+  "parent": "fz-rh2",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 cleanup: make the fixpoint honest, lazy, and quiet",
+  "type": "epic",
+  "updated_at": "2026-06-07T21:13:07Z"
+}
