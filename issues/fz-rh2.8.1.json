@@ -8,7 +8,7 @@
     "fz-rh2.8.2"
   ],
   "created": "2026-06-06T23:37:22Z",
-  "description": "Goal: define the semantic-to-artifact handoff. Change: MaterializedProgram(root, epoch) reads closed semantic facts, can prune/fold/inline safely, and reports growth as fatal. Check: quicksort plus foo materializes no foo body; Enum.reduce materializes only selected runtime path.",
+  "description": "Goal: define the semantic-to-artifact handoff so materialization consumes `SemanticClosed(root)` mechanically.\n\nChange:\n- Add `MaterializedProgram(root, semantic_revision)` or equivalent artifact fact keyed by the closed semantic root revision.\n- Materialization reads only closed semantic facts plus root-independent lowered bodies named by those facts.\n- It may fold, inline safe known calls, fuse, and prune inside the closed set, but it must not publish semantic facts or discover new reachability.\n- Missing callee/type/return/callable/effect facts at materialization time are fatal incomplete-semantic-plan errors with details emitted through telemetry.\n\nWhy:\n- Backend preparation must be a projection of settled semantic facts. If artifact work can ask semantic questions, `SemanticClosed` is not a real boundary.\n\nChecks:\n- Quicksort plus uncalled `foo/0` materializes no `foo/0` body.\n- Enum.reduce materializes only the selected runtime/protocol/callable path.\n- Tests prove artifact jobs emit no selected-callee, activation, executable, return-type, or planner-style facts.",
   "id": "fz-rh2.8.1",
   "labels": [],
   "parent": "fz-rh2.8",
@@ -16,5 +16,5 @@
   "status": "open",
   "title": "Compiler2 artifacts: materialize only from SemanticClosed",
   "type": "task",
-  "updated_at": "2026-06-06T23:37:22Z"
+  "updated_at": "2026-06-07T13:55:09Z"
 }
