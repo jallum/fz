@@ -33,6 +33,49 @@ fn presence(fact: FactKey, revision: u64) -> (FactKey, FactValue) {
 }
 
 #[test]
+fn compiler2_runtime_prelude_does_not_run_frontend_before_drive() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
+        text: format!(
+            "{}\nfn foo(), do: 42\n",
+            include_str!("../../fixtures/quicksort/input.fz")
+        ),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_eq!(
+        capture.count(&["fz", "lexer", "pass"]),
+        0,
+        "Compiler2 construction and submission should not lex runtime or user source"
+    );
+    assert_eq!(
+        capture.count(&["fz", "lexer", "tokens_built"]),
+        0,
+        "Compiler2 construction and submission should not build tokens"
+    );
+    assert_eq!(
+        capture.count(&["fz", "parser", "pass"]),
+        0,
+        "Compiler2 construction and submission should not parse source"
+    );
+    assert_eq!(
+        capture.count(&["fz", "parser", "items_built"]),
+        0,
+        "Compiler2 construction and submission should not build AST items"
+    );
+}
+
+#[test]
 fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_bodies() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -133,9 +176,11 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
         "indexing should not emit a separate code.indexed event"
     );
     assert_eq!(
-        outputs.stops_matching(|job| matches!(job, Job::IndexCode(_))).len(),
+        outputs
+            .stops_matching(|job| matches!(job, Job::IndexCode(id) if *id == code_id))
+            .len(),
         1,
-        "indexing should close one IndexCode job span"
+        "indexing should close one IndexCode job span for the user submission"
     );
     assert_eq!(
         outputs.stops_matching(|job| matches!(job, Job::LowerFunction(_))).len(),
@@ -486,7 +531,7 @@ fn compiler2_unused_runtime_library_stays_cold() {
     tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
 
     let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
+    let code_id = compiler.submit_code(CodeSubmission {
         name: Some("no_runtime.fz".to_string()),
         text: "fn main(), do: 42\n".to_string(),
     });
@@ -507,10 +552,12 @@ fn compiler2_unused_runtime_library_stays_cold() {
         modules.defined_names().is_empty(),
         "runtime modules should not be defined when no path reaches them"
     );
-    assert_eq!(
-        outputs.stops_matching(|job| matches!(job, Job::ScopeCode(_))).len(),
-        1,
-        "only the user code should be scoped when runtime stays cold"
+    assert!(
+        outputs
+            .stops_matching(|job| matches!(job, Job::ScopeCode(_)))
+            .iter()
+            .any(|stop| stop.job == Job::ScopeCode(code_id)),
+        "the user code should scope even though runtime modules stay cold"
     );
     assert_eq!(
         outputs.stops_matching(|job| matches!(job, Job::DefineModule(_))).len(),
@@ -2439,7 +2486,7 @@ end
 }
 
 #[test]
-fn compiler2_import_only_waits_for_defined_module_surface() {
+fn compiler2_import_only_binds_exact_refs_and_pulls_provider_when_used() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
@@ -2483,7 +2530,32 @@ end
         compiler.demand(Job::DefineModule(module_ids[0])),
         "demanding User should enqueue the consumer module only"
     );
-    assert_resolved(compiler.drive(), "third drive should define Math before retrying User");
+    assert_resolved(
+        compiler.drive(),
+        "third drive should define User without warming exact-import providers",
+    );
+    let mut names = functions
+        .all()
+        .into_iter()
+        .map(|record| (function_fq_name(&record, &modules), record.arity))
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(
+        names,
+        vec![("User.run".to_string(), 0)],
+        "defining the importing module should not define exact-import providers"
+    );
+
+    compiler.submit_root(RootSubmission {
+        module_name: Some("User".to_string()),
+        name: "run".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(
+        compiler.drive(),
+        "rooting User.run should pull Math because the imported add/2 is actually used",
+    );
     let mut names = functions
         .all()
         .into_iter()
@@ -2497,12 +2569,12 @@ end
             ("Math.add".to_string(), 2),
             ("User.run".to_string(), 0),
         ],
-        "import-only indexing should preserve the imported overloads alongside the consumer"
+        "demand should pull the provider surface when an exact import is reached"
     );
 }
 
 #[test]
-fn compiler2_import_only_reports_unknown_import_after_surface_is_defined() {
+fn compiler2_import_only_missing_target_is_unresolved_when_used() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
@@ -2539,28 +2611,31 @@ end
         compiler.demand(Job::DefineModule(module_ids[0])),
         "demanding User should enqueue the consumer module only"
     );
-    let outcome = compiler.drive();
-    let job = match outcome {
-        DriveOutcome::Fatal { job } => job,
-        other => panic!("third drive should fail once Math's defined surface lacks missing/1: {other:?}"),
-    };
-    assert_eq!(
-        job,
-        Job::DefineModule(module_ids[0]),
-        "fatal job should be the retried consumer module"
+    assert_resolved(
+        compiler.drive(),
+        "third drive should define User without validating cold exact imports",
     );
 
-    let diagnostic = capture
-        .last(&["fz", "diag", "error"])
-        .expect("unknown import diagnostic");
-    assert_eq!(
-        metadata_str(&diagnostic, "code"),
-        codes::RESOLVE_UNKNOWN_IMPORT.0,
-        "only: should validate against the provider surface"
-    );
+    compiler.submit_root(RootSubmission {
+        module_name: Some("User".to_string()),
+        name: "run".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    match compiler.drive() {
+        DriveOutcome::Unresolved { waits } => {
+            assert!(
+                waits
+                    .iter()
+                    .any(|wait| matches!(wait.fact, FactKey::FunctionDefined(_))),
+                "using a missing exact import should leave precise function-definition demand unresolved"
+            );
+        }
+        other => panic!("missing exact import should become unresolved demand: {other:?}"),
+    }
     assert!(
-        metadata_str(&diagnostic, "message").contains("missing/1"),
-        "diagnostic should name the missing import"
+        !capture.contains(&["fz", "diag", "error"]),
+        "lazy exact imports should not emit eager import diagnostics"
     );
 }
 

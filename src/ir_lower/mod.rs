@@ -133,6 +133,7 @@ fn parse_runtime_prelude<T: Types<Ty = Ty>>(
         items.append(&mut module_items);
     }
     let staged = Program {
+        attrs: Vec::new(),
         items,
         module_interfaces: Default::default(),
         external_module_interfaces: Default::default(),
@@ -183,9 +184,7 @@ fn collect_runtime_prelude_imports(items: &[Rc<Item>], tel: &dyn Telemetry) -> H
                 except,
                 span,
             } => collect_runtime_prelude_import(&mut out, path, only.as_deref(), except.as_deref(), *span, tel),
-            Item::Alias { .. } => {
-                panic!("runtime.fz prelude aliases are not supported; use import")
-            }
+            Item::Alias { .. } => {}
             _ => {}
         }
     }

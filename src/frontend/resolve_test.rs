@@ -1255,12 +1255,22 @@ end
 }
 
 #[test]
-fn type_alias_at_top_level_errors() {
+fn type_alias_at_top_level_is_retained_on_program_attrs() {
     let toks = Lexer::with_source_name("@type id :: integer\nfn main(), do: nil", "<test>")
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .unwrap();
-    let r = Parser::new(toks).parse_program(&crate::telemetry::ConfiguredTelemetry::new());
-    assert!(r.is_err(), "@type at top level must error; got {:?}", r);
+    let program = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("top-level @type should parse");
+    let names = program
+        .attrs
+        .iter()
+        .filter_map(|attr| match attr {
+            Attribute::TypeAlias(alias) => Some(alias.name.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(names, vec!["id"], "top-level @type should be a root program attr");
 }
 
 #[test]

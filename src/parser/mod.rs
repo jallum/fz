@@ -288,13 +288,12 @@ impl Parser {
                 Attribute::ModuleDoc(_) => {
                     return self.err("@moduledoc only valid inside a defmodule body".to_string());
                 }
-                Attribute::TypeAlias(_) => {
-                    return self.err("@type only valid inside a defmodule body".to_string());
-                }
+                Attribute::TypeAlias(_) => {}
                 _ => {}
             }
         }
         Ok(Program {
+            attrs: top_attrs,
             items,
             module_interfaces: Default::default(),
             external_module_interfaces: Default::default(),

@@ -102,6 +102,12 @@ fn collect_static_graph(
         if world.protocol_callback(function).is_some() {
             return;
         }
+        let module = world.function_module(function);
+        if !module.is_global() && world.module_defined_revision(module).is_none() {
+            waits.insert(FactKey::ModuleDefined(module));
+            follow_up.extend(world.ensure_function_surface(function));
+            return;
+        }
         waits.insert(FactKey::FunctionDefined(function));
         follow_up.extend(world.ensure_function_surface(function));
         return;

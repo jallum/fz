@@ -75,8 +75,29 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
             [Job::IndexCode(code_id)],
         ));
     };
-    match define_scope(world, code_id, ModuleId::GLOBAL, world.prelude_head(), &items)? {
-        ScopeResult::Complete { reads, mut outputs, .. } => {
+    let mut reads = Vec::new();
+    let base_namespace = if world.is_runtime_prelude(code_id) {
+        Namespace::default()
+    } else {
+        let prelude = world.runtime_prelude();
+        let prelude_fact = FactKey::CodeScoped(prelude);
+        if world.fact_revision(prelude_fact.clone()).is_none() {
+            return Ok(JobEffects::wait_on(prelude_fact, [Job::ScopeCode(prelude)]));
+        }
+        reads.push(prelude_fact);
+        world.prelude_head()
+    };
+    match define_scope(world, code_id, ModuleId::GLOBAL, base_namespace, &items)? {
+        ScopeResult::Complete {
+            namespace,
+            reads: scope_reads,
+            mut outputs,
+            ..
+        } => {
+            if world.is_runtime_prelude(code_id) {
+                world.set_prelude_head(namespace);
+            }
+            reads.extend(scope_reads);
             outputs.push((
                 FactKey::CodeScoped(code_id),
                 FactValue::presence(world.code_revision(code_id)),
@@ -223,6 +244,14 @@ fn define_scope(
                 span,
             } => {
                 let imported_module = world.reference_module(path.dotted());
+                if let Some(only) = only.as_deref() {
+                    for (name, arity) in only {
+                        let function = world.reference_function(imported_module, name.clone(), *arity);
+                        scope = world.bind_namespace(scope, name.clone(), NamespaceSymbol::Function(function));
+                    }
+                    continue;
+                }
+
                 let surface_fact = FactKey::ModuleDefined(imported_module);
                 if world.module_defined_revision(imported_module).is_none() {
                     let follow_up = if imported_module.is_global() {
@@ -235,21 +264,7 @@ fn define_scope(
                 reads.push(surface_fact);
 
                 let exports = world.module_exports(imported_module);
-                if let Some(only) = only.as_deref() {
-                    for (name, arity) in only {
-                        let export = find_export(&exports, name, *arity).ok_or_else(|| {
-                            emit_job_diagnostic(
-                                world,
-                                Diagnostic::error(
-                                    codes::RESOLVE_UNKNOWN_IMPORT,
-                                    format!("module `{}` does not export `{}/{}`", path, name, arity),
-                                    *span,
-                                ),
-                            )
-                        })?;
-                        scope = bind_export(world, scope, export);
-                    }
-                } else if let Some(except) = except.as_deref() {
+                if let Some(except) = except.as_deref() {
                     let mut deny = HashSet::new();
                     for (name, arity) in except {
                         if find_export(&exports, name, *arity).is_none() {

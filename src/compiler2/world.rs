@@ -12,6 +12,7 @@ use std::rc::Rc;
 use crate::ast::FnDef;
 use crate::ast::Item;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch};
+use crate::modules::runtime_library;
 use crate::telemetry::{Telemetry, opaque};
 use crate::type_expr::{ModuleTypeEnv, build_module_type_env_for_with_base, builtin_type_env};
 use crate::types;
@@ -57,6 +58,7 @@ pub struct World<'a> {
     artifacts: MaterializedProgramMap,
     roots: RootMap,
     namespaces: NamespaceStore,
+    runtime_prelude: CodeId,
     runtime_modules: HashMap<ModuleId, RuntimeModuleCode>,
     pub(crate) work_graph: WorkGraph,
 }
@@ -70,6 +72,7 @@ impl std::fmt::Debug for World<'_> {
             .field("bodies", &self.bodies)
             .field("roots", &self.roots)
             .field("namespaces", &self.namespaces)
+            .field("runtime_prelude", &self.runtime_prelude)
             .field("runtime_modules", &self.runtime_modules)
             .field("work_graph", &self.work_graph)
             .finish()
@@ -96,11 +99,15 @@ impl<'a> World<'a> {
             artifacts: MaterializedProgramMap::new(),
             roots: RootMap::new(),
             namespaces: NamespaceStore::new(),
+            runtime_prelude: CodeId::ZERO,
             runtime_modules: HashMap::new(),
             work_graph: WorkGraph::new(),
         };
-        world.runtime_modules =
-            runtime::bootstrap(tel, &mut world.modules, &mut world.functions, &mut world.namespaces);
+        world.runtime_modules = runtime::bootstrap(&mut world.modules);
+        world.runtime_prelude = world.code.define(
+            Some("runtime:runtime.fz".to_string()),
+            runtime_library::prelude_source().to_string(),
+        );
         world
     }
 
@@ -674,6 +681,18 @@ impl<'a> World<'a> {
         self.namespaces.prelude_head()
     }
 
+    pub(crate) fn runtime_prelude(&self) -> CodeId {
+        self.runtime_prelude
+    }
+
+    pub(crate) fn is_runtime_prelude(&self, code: CodeId) -> bool {
+        code == self.runtime_prelude
+    }
+
+    pub(crate) fn set_prelude_head(&mut self, head: Namespace) {
+        self.namespaces.set_prelude_head(head);
+    }
+
     pub fn bind_namespace(&mut self, head: Namespace, name: impl Into<String>, symbol: NamespaceSymbol) -> Namespace {
         self.namespaces.bind(head, name, symbol)
     }
@@ -990,17 +1009,6 @@ impl<'a> World<'a> {
 
     fn derived_protocol_callback(&self, function: FunctionId) -> Option<ProtocolCallback> {
         let function_ref = self.functions.reference_for(function);
-        if let Some(module) = self.runtime_modules.get(&function_ref.module)
-            && let Some(callbacks) = &module.protocol_callbacks
-            && callbacks
-                .iter()
-                .any(|(name, arity)| name == &function_ref.name && *arity == function_ref.arity)
-        {
-            return Some(ProtocolCallback {
-                protocol: function_ref.module,
-            });
-        }
-
         let module = self.modules.get(function_ref.module);
         let source = match &module.state {
             ModuleState::Indexed(source) | ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. } => {

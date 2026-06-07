@@ -462,6 +462,9 @@ fn resolve_function_call(
             follow_up,
         );
     }
+    if wait_for_unresolved_function_module(world, function, waits, follow_up) {
+        return Ok((None, None, types::new().any()));
+    }
     let Some((activation, already_present, return_ty)) =
         prepare_function_call(world, caller, function, input_types.clone(), reads, waits, follow_up)
     else {
@@ -659,6 +662,24 @@ fn wait_for_protocol_module(
     }
     waits.insert(FactKey::ModuleDefined(protocol));
     follow_up.insert(Job::DefineModule(protocol));
+}
+
+fn wait_for_unresolved_function_module(
+    world: &mut World<'_>,
+    function: FunctionId,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> bool {
+    if world.function_defined_revision(function).is_some() {
+        return false;
+    }
+    let module = world.function_module(function);
+    if module.is_global() || world.module_defined_revision(module).is_some() {
+        return false;
+    }
+    waits.insert(FactKey::ModuleDefined(module));
+    follow_up.extend(world.ensure_function_surface(function));
+    true
 }
 
 fn selected_callee(callee: &DirectCallee) -> Option<SelectedCallee> {

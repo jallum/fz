@@ -169,6 +169,7 @@ pub fn parsed_program(tel: &dyn Telemetry) -> Program {
         items.append(&mut parsed_items);
     }
     Program {
+        attrs: Vec::new(),
         items,
         module_interfaces: BTreeMap::new(),
         external_module_interfaces: BTreeMap::new(),
@@ -418,10 +419,11 @@ pub fn primitive_prelude_program(tel: &dyn Telemetry) -> Program {
     let toks = Lexer::with_source_name(RUNTIME_PRELUDE_FZ, "runtime:runtime.fz")
         .tokenize(tel)
         .expect("runtime.fz lex error (bug in built-in prelude)");
-    let (items, _attrs) = Parser::new(toks)
+    let (items, attrs) = Parser::new(toks)
         .parse_prelude()
         .expect("runtime.fz parse error (bug in built-in prelude)");
     Program {
+        attrs,
         items,
         module_interfaces: BTreeMap::new(),
         external_module_interfaces: BTreeMap::new(),

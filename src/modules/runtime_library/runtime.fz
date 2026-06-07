@@ -1,6 +1,15 @@
 @type keyword() :: [{atom, any}]
 @type keyword(t) :: [{atom, t}]
 
+alias Enum
+alias Enumerable
+alias Kernel
+alias List
+alias Map
+alias Process
+alias Range
+alias Utf8
+
 import Kernel, only: [
   +: 2,
   -: 2,

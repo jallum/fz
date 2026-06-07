@@ -315,10 +315,18 @@ fn flatten_modules_with_options<T: Types<Ty = Ty>>(
     // keyword/0 and keyword/1.
     let mut module_type_envs: HashMap<String, ModuleTypeEnv> = HashMap::new();
     let root_types = root_type_env(t, tel);
-    let root_type_env = root_types.env.clone();
+    let (root_type_env, root_opaque_inners, root_brand_inners) =
+        build_module_type_env_for_with_base(t, &prog.attrs, "", &root_types.env).map_err(|e| {
+            ResolveError::TypeAliasError {
+                msg: format!("root: {}", e.msg),
+                span: e.span,
+            }
+        })?;
     module_type_envs.insert(String::new(), root_type_env.clone());
     let mut opaque_inners: HashMap<String, Ty> = root_types.opaque_inners;
+    opaque_inners.extend(root_opaque_inners);
     let mut brand_inners: HashMap<String, Ty> = root_types.brand_inners;
+    brand_inners.extend(root_brand_inners);
     collect_module_type_envs(
         t,
         &prog,
@@ -417,6 +425,7 @@ fn flatten_modules_with_options<T: Types<Ty = Ty>>(
     }
     let struct_field_types = collect_struct_field_types(&module_type_envs, &structs)?;
     Ok(Program {
+        attrs: prog.attrs,
         items: out,
         module_interfaces,
         external_module_interfaces,
