@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-rh2.10.6"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-rh2.10",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 unresolved demand diagnostics",
   "type": "task",
-  "updated_at": "2026-06-07T23:24:53Z"
+  "updated_at": "2026-06-07T23:28:46Z"
 }
