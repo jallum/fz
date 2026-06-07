@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-07T13:00:41Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-rh2.6",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 drive: report unresolved frontier at quiescence",
   "type": "task",
-  "updated_at": "2026-06-07T13:00:41Z"
+  "updated_at": "2026-06-07T13:00:44Z"
 }
