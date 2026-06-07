@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.6.7"
+  ],
   "created": "2026-06-07T13:53:45Z",
   "description": "Goal: make the work layer read as the scheduler spine before semantic jobs grow. `work.rs` should own the shared work vocabulary and drive dispatch; job-family modules should own their private helpers.\n\nChange:\n- Keep `Job`, `FactKey`, `JobEffects`, `WorkGraph`, job metadata, and `World::drive` in the work spine.\n- Move source-surface jobs to `compiler2/jobs/source.rs`: `IndexCode`, `ScopeCode`, `DefineModule`, namespace/import helpers, and diagnostics local to source indexing/scoping.\n- Move root jobs to `compiler2/jobs/root.rs`: `SeedRoot` and the current `CheckSemanticClosure` placeholder.\n- Add `compiler2/jobs/mod.rs` as the small dispatch surface used by the drive loop.\n- Preserve the rule that jobs return `JobEffects`; only the world drive loop applies effects to the work graph.\n\nWhy:\n- The next semantic ticket needs body and semantic job families with their own private helpers. Keeping those in `work.rs` would mix source scoping, lowering, semantic analysis, and drive mechanics in one file.\n- This is a behavior-preserving cleanup that protects the dataflow boundary before adding new facts.\n\nChecks:\n- Compiler2 telemetry-driven tests still pass with the same job span names and outcomes.\n- `cargo test --lib compiler2::` passes.\n- No lowering, semantic analysis, planner, or artifact behavior is added here.",
   "id": "fz-rh2.6.6",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 work: split job families behind the drive spine",
   "type": "task",
-  "updated_at": "2026-06-07T13:53:45Z"
+  "updated_at": "2026-06-07T13:54:07Z"
 }
