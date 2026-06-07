@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.10.2"
+  ],
   "blocks": [],
   "created": "2026-06-07T21:13:07Z",
   "description": "Goal: `World::new` should allocate identities, not parse runtime source. Signal: the quicksort trace has no runtime `fz/lexer` / `fz/parser` activity before the first real code/root demand, and referenced runtime modules still pull through ordinary Compiler2 jobs when needed. Strategy: replace eager runtime parsing/interface discovery with a reference-only bootstrap surface owned by Compiler2, then let runtime source enter through normal code/module work on first pull.\n\nChange:\n- Remove eager runtime lex/parse from Compiler2 construction.\n- Bootstrap only stable runtime module/function references and prelude surface bindings.\n- Pull runtime source, protocol callbacks, and imports through ordinary Compiler2 work when demanded.\n\nWhy:\n- The trace currently shows measurable compile work before `drive()` even starts, which violates the pull-based northstar.\n\nChecks:\n- No runtime parser/lexer telemetry fires during `Compiler2::new` for the quicksort trace.\n- Runtime-backed quicksort and `Enum.reduce` scenarios still settle through ordinary Compiler2 jobs.",

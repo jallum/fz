@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.10.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.10.3"
+  ],
   "created": "2026-06-07T21:13:07Z",
   "description": "Goal: the semantic loop should not spend time analyzing impossible activations that never survive into the closed frontier. Signal: the quicksort trace no longer analyzes `qsort([])`, `qsort(none)`, `append(none, ...)`, `dbg(none)`-style dead islands, while the final closed frontier stays the same and `CheckSemanticClosure` / `AnalyzeActivation` counts fall materially. Strategy: make activation admission and call propagation respect inhabitation and subsumption at the Compiler2 boundary, then tighten the root walk so only live frontier changes reopen semantic work.\n\nChange:\n- Revisit activation-key admission and propagation so bottom/empty transient shapes do not become ordinary semantic work unless semantically real.\n- Tighten `CheckSemanticClosure` / `AnalyzeActivation` interaction around changed inputs and live waits only.\n- Preserve the current closed quicksort and `Enum.reduce` frontiers while reducing rerun churn.\n\nWhy:\n- The current trace shows real work being spent on dead-end semantic islands that do not survive into the settled root closure.\n\nChecks:\n- Quicksort trace job counts drop without changing the final closed activation/executable frontier.\n- No dead transient activations remain in the trace unless the rooted program semantically requires them.",
   "id": "fz-rh2.10.2",
