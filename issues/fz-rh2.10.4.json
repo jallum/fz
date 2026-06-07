@@ -7,13 +7,13 @@
     "fz-rh2.8.2"
   ],
   "created": "2026-06-07T21:13:07Z",
-  "description": "Goal: the docs should describe the corrected engine, and the quicksort trace should remain the reproducible signal. Signal: `northstar.html`, `.agent/docs/telemetry.md`, the ignored quicksort JSONL dump harness, and the new trace-summary helper all describe lazy runtime bootstrap, state-change-only emission, and how to rerun/analyze the trace. Strategy: fold the cleanup-arc invariants into the design/docs after the code changes settle, then keep both the rich dump and summary probes as regression guideposts.\n\nChange:\n- Update `northstar.html` to describe the quieter closure boundary, the waste-free summary goals, and lazy runtime bootstrap.\n- Update `.agent/docs/telemetry.md` with the Compiler2 rule that emit sites send raw ids/facts and only on state change, while handlers may reconstruct summaries.\n- Capture the ignored quicksort JSONL dump harness and the quicksort trace-summary helper as the reproducible signals for this arc.\n\nWhy:\n- This cleanup arc changes the observable contract; the docs need to become the guideposts for the next tickets.\n\nChecks:\n- The docs match the code, the summary assertions, and the deep JSONL trace.\n- The harness paths and rerun commands are captured in the docs.",
+  "description": "Goal: the work graph should expose the behaviors the design depends on: exact waits, coalescing, blocking, fact changes, and bounded convergence. Signal: FactPattern is gone, waits are exact-key O(1), AppliedStep reports changed/enqueued/coalesced/blocked work from one seam, and non-converging fact values fail with a precise diagnostic instead of hanging the drive loop. Strategy: delete speculative wait-pattern generality, return complete applied-step data from Scheduler::complete, emit cheap raw telemetry from World::complete_job, and add a per-fact fingerprint-change guard grounded in lattice height.\n\nChange:\n- Replace FactPattern/ExactPattern with exact FactKey wait maps.\n- Extend AppliedStep with coalesced and blocked work.\n- Emit raw job/fact/coalesced/blocked events from World::complete_job using AppliedStep; handlers may format if they care.\n- Add per-drive fact churn accounting and SEMANTIC_NONCONVERGENCE for facts that exceed their family height bound.\n\nWhy:\n- Waits are exact today; the trait and linear scan are unused generality on a hot path.\n- The engine already knows what changed and what work moved; Compiler2 should observe that uniformly instead of sprinkling special events.\n- A fixpoint compiler needs a legible floor for the one residual case static recursion facts cannot prove.\n\nChecks:\n- Scheduler tests cover exact waits, coalesced follow-ups, blocked waits, and changed facts.\n- Compiler2 trace-summary uses AppliedStep events as its daily signal.\n- A higher-order recursive non-convergence repro emits a fatal diagnostic naming the unstable fact.",
   "id": "fz-rh2.10.4",
   "labels": [],
   "parent": "fz-rh2.10",
   "priority": 2,
   "status": "open",
-  "title": "Compiler2 docs: publish the corrected closure and telemetry contract",
+  "title": "Compiler2 engine: exact waits, applied-step signal, and convergence guard",
   "type": "task",
-  "updated_at": "2026-06-07T21:23:43Z"
+  "updated_at": "2026-06-07T21:40:07Z"
 }
