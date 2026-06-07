@@ -8,7 +8,10 @@ use crate::{measurements, metadata};
 use super::CodeId;
 use super::code::CodeMap;
 use super::deps::ExactPattern;
-use super::identity::{FunctionDef, FunctionId, FunctionMap, ModuleExport, ModuleId, ModuleMap, ModuleState};
+use super::identity::{
+    ExecutableNeed, FunctionDef, FunctionId, FunctionMap, ModuleExport, ModuleId, ModuleMap, ModuleState, RootEntry,
+    RootId, RootMap,
+};
 use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
 use super::work::{FactKey, Job, JobEffects, WorkGraph};
 
@@ -17,6 +20,7 @@ pub struct World<'a> {
     code: CodeMap,
     modules: ModuleMap,
     functions: FunctionMap,
+    roots: RootMap,
     namespaces: NamespaceStore,
     work_graph: WorkGraph,
 }
@@ -27,6 +31,7 @@ impl std::fmt::Debug for World<'_> {
             .field("code", &self.code)
             .field("modules", &self.modules)
             .field("functions", &self.functions)
+            .field("roots", &self.roots)
             .field("namespaces", &self.namespaces)
             .field("work_graph", &self.work_graph)
             .finish()
@@ -40,6 +45,7 @@ impl<'a> World<'a> {
             code: CodeMap::new(),
             modules: ModuleMap::new(),
             functions: FunctionMap::new(),
+            roots: RootMap::new(),
             namespaces: NamespaceStore::new(),
             work_graph: WorkGraph::new(),
         }
@@ -54,6 +60,9 @@ impl<'a> World<'a> {
         let bytes = text.len() as u64;
         let code_id = self.code.define(name, text);
         self.work_graph.enqueue(Job::IndexCode(code_id));
+        if !self.roots.is_empty() {
+            self.work_graph.enqueue(Job::ScopeCode(code_id));
+        }
         self.tel.execute(
             &["fz", "compiler2", "code", "submitted"],
             &measurements! {
@@ -65,6 +74,40 @@ impl<'a> World<'a> {
             },
         );
         code_id
+    }
+
+    pub fn submit_root(
+        &mut self,
+        module_name: Option<String>,
+        name: String,
+        arity: usize,
+        need: ExecutableNeed,
+    ) -> RootId {
+        let module = match module_name.as_deref() {
+            Some(name) => self.reference_module(name.to_string()),
+            None => ModuleId::GLOBAL,
+        };
+        let function = self.reference_function(module, name.clone(), arity);
+        let root_id = self.roots.define(RootEntry { function, need });
+        for code_id in self.code.ids() {
+            self.work_graph.enqueue(Job::ScopeCode(code_id));
+        }
+        self.work_graph.enqueue(Job::SeedRoot(root_id));
+        self.tel.execute(
+            &["fz", "compiler2", "root", "submitted"],
+            &measurements! {
+                root_id: root_id.as_u32() as u64,
+                function_id: function.as_u32() as u64,
+                arity: arity as u64,
+                pending_codes: self.code.len() as u64,
+            },
+            &metadata! {
+                module_name: module_name.as_deref().unwrap_or("<top-level>"),
+                name: name.as_str(),
+                need: need.as_str(),
+            },
+        );
+        root_id
     }
 
     pub(crate) fn complete_job(&mut self, job: Job, effects: JobEffects) {
@@ -93,6 +136,20 @@ impl<'a> World<'a> {
 
     pub fn code_text(&self, id: CodeId) -> &str {
         self.code.text(id)
+    }
+
+    pub fn root_entry(&self, id: RootId) -> RootEntry {
+        self.roots
+            .get(id)
+            .map(|root| root.entry)
+            .expect("root ids should be known before reading entries")
+    }
+
+    pub fn root_revision(&self, id: RootId) -> u64 {
+        self.roots
+            .get(id)
+            .map(|root| root.revision)
+            .expect("root ids should be known before reading revisions")
     }
 
     pub fn reference_module(&mut self, name: impl Into<String>) -> ModuleId {
@@ -220,6 +277,20 @@ impl<'a> World<'a> {
             return None;
         }
         self.work_graph.facts().get(&FactKey::ModuleDefined(module))
+    }
+
+    pub fn function_defined_revision(&self, function: FunctionId) -> Option<u64> {
+        if !matches!(
+            self.functions.get(function)?.state,
+            super::identity::FunctionState::Defined { .. }
+        ) {
+            return None;
+        }
+        self.work_graph.facts().get(&FactKey::FunctionDefined(function))
+    }
+
+    pub fn fact_revision(&self, key: FactKey) -> Option<u64> {
+        self.work_graph.facts().get(&key)
     }
 
     pub fn code_items(&self, id: CodeId) -> Option<&[Rc<Item>]> {

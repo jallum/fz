@@ -26,9 +26,63 @@ impl ModuleId {
 pub struct FunctionId(u32);
 
 impl FunctionId {
+    pub fn from_u32(value: u32) -> Self {
+        Self(value)
+    }
+
     pub fn as_u32(self) -> u32 {
         self.0
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RootId(u32);
+
+impl RootId {
+    pub fn from_u32(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ActivationKey {
+    pub root: RootId,
+    pub function: FunctionId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExecutableNeed {
+    Value,
+}
+
+impl ExecutableNeed {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Value => "value",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ExecutableKey {
+    pub activation: ActivationKey,
+    pub need: ExecutableNeed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RootEntry {
+    pub function: FunctionId,
+    pub need: ExecutableNeed,
+}
+
+#[derive(Debug, Clone)]
+pub struct Root {
+    pub entry: RootEntry,
+    pub revision: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -327,6 +381,35 @@ impl FunctionMap {
 
     pub fn reference_for(&self, id: FunctionId) -> Option<&FunctionRef> {
         self.refs.get(id.0 as usize)
+    }
+
+    pub fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct RootMap {
+    slots: Vec<Root>,
+}
+
+impl RootMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn define(&mut self, entry: RootEntry) -> RootId {
+        let id = RootId(self.slots.len() as u32);
+        self.slots.push(Root { entry, revision: 1 });
+        id
+    }
+
+    pub fn get(&self, id: RootId) -> Option<&Root> {
+        self.slots.get(id.0 as usize)
     }
 
     pub fn len(&self) -> usize {

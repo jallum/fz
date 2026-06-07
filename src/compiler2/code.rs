@@ -84,6 +84,10 @@ impl CodeMap {
             .expect("code ids should have source text")
     }
 
+    pub fn ids(&self) -> Vec<CodeId> {
+        (0..self.slots.len()).map(|index| CodeId(index as u32)).collect()
+    }
+
     pub fn len(&self) -> usize {
         self.slots.len()
     }

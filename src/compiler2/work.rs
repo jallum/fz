@@ -1,10 +1,12 @@
-//! Work loop and early source-surface jobs.
+//! Work loop, source-surface jobs, and the first semantic root seed.
 //!
 //! This work layer turns submitted code into compiler-owned facts. `IndexCode`
 //! parses source and discovers module shells. `ScopeCode` builds the top-level
-//! namespace. `DefineModule` builds a module surface on demand. Jobs do not
-//! mutate the work graph directly; they return `JobEffects`, and the world
-//! applies those effects after the job span closes.
+//! namespace. `DefineModule` builds a module surface on demand. `SeedRoot` and
+//! `CheckSemanticClosure` start the root-scoped semantic island without
+//! lowering or planning bodies yet. Jobs do not mutate the work graph
+//! directly; they return `JobEffects`, and the world applies those effects
+//! after the job span closes.
 
 use std::rc::Rc;
 
@@ -20,7 +22,7 @@ use crate::{measurements, metadata};
 use std::collections::HashSet;
 
 use super::code::CodeId;
-use super::identity::{FunctionId, ModuleExport, ModuleId};
+use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleExport, ModuleId, RootId};
 use super::namespace::{Namespace, NamespaceSymbol};
 use super::scheduler::{DriveError, FatalError, Scheduler};
 use super::world::World;
@@ -30,6 +32,8 @@ pub enum Job {
     IndexCode(CodeId),
     ScopeCode(CodeId),
     DefineModule(ModuleId),
+    SeedRoot(RootId),
+    CheckSemanticClosure(RootId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -39,6 +43,10 @@ pub enum FactKey {
     ModuleIndexed(ModuleId),
     ModuleDefined(ModuleId),
     FunctionDefined(FunctionId),
+    RootEntry(RootId),
+    Activation(ActivationKey),
+    Executable(ExecutableKey),
+    SemanticClosed(RootId),
 }
 
 pub type WorkGraph = Scheduler<Job, FactKey, super::deps::ExactPattern<FactKey>>;
@@ -102,6 +110,8 @@ impl World<'_> {
                 Job::IndexCode(code_id) => index_code(self, code_id),
                 Job::ScopeCode(code_id) => scope_code(self, code_id),
                 Job::DefineModule(module_id) => define_module(self, module_id),
+                Job::SeedRoot(root_id) => seed_root(self, root_id),
+                Job::CheckSemanticClosure(root_id) => check_semantic_closure(self, root_id),
             };
             match result {
                 Ok(effects) => {
@@ -133,6 +143,8 @@ impl Job {
             Job::IndexCode(_) => "IndexCode",
             Job::ScopeCode(_) => "ScopeCode",
             Job::DefineModule(_) => "DefineModule",
+            Job::SeedRoot(_) => "SeedRoot",
+            Job::CheckSemanticClosure(_) => "CheckSemanticClosure",
         }
     }
 
@@ -140,6 +152,7 @@ impl Job {
         match self {
             Job::IndexCode(id) | Job::ScopeCode(id) => id.as_u32() as u64,
             Job::DefineModule(id) => id.as_u32() as u64,
+            Job::SeedRoot(id) | Job::CheckSemanticClosure(id) => id.as_u32() as u64,
         }
     }
 }
@@ -239,6 +252,78 @@ fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Result<JobEffect
     }
 
     Ok(JobEffects::wait_on(FactKey::ModuleIndexed(module_id), []))
+}
+
+/// Seeds one semantic root once its entry definition exists.
+///
+/// A root entry is compiler-owned and can exist before the function does. The
+/// seed publishes the root fact immediately, then waits until the entry
+/// function is defined before it publishes the first activation and executable.
+fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
+    let root = world.root_entry(root_id);
+    let root_fact = FactKey::RootEntry(root_id);
+    let root_revision = world.root_revision(root_id);
+    let mut effects = JobEffects {
+        reads: vec![root_fact.clone()],
+        outputs: vec![(root_fact, root_revision)],
+        ..JobEffects::default()
+    };
+
+    let function_fact = FactKey::FunctionDefined(root.function);
+    let Some(function_revision) = world.function_defined_revision(root.function) else {
+        effects.waits.push(function_fact);
+        return Ok(effects);
+    };
+
+    effects.reads.push(function_fact);
+    let revision = root_revision.max(function_revision);
+    let activation = ActivationKey {
+        root: root_id,
+        function: root.function,
+    };
+    let executable = ExecutableKey {
+        activation,
+        need: root.need,
+    };
+    effects.outputs.push((FactKey::Activation(activation), revision));
+    effects.outputs.push((FactKey::Executable(executable), revision));
+    effects.follow_up.push(Job::CheckSemanticClosure(root_id));
+    Ok(effects)
+}
+
+/// Publishes the first semantic-closure marker for a seeded root.
+///
+/// This ticket keeps closure intentionally small: once the entry activation and
+/// executable exist, the root can publish `SemanticClosed`. Later semantic jobs
+/// will make this job stricter without changing the work-graph contract.
+fn check_semantic_closure(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
+    let root = world.root_entry(root_id);
+    let activation = ActivationKey {
+        root: root_id,
+        function: root.function,
+    };
+    let executable = ExecutableKey {
+        activation,
+        need: root.need,
+    };
+    let mut reads = vec![FactKey::RootEntry(root_id)];
+    let Some(activation_revision) = world.fact_revision(FactKey::Activation(activation)) else {
+        return Ok(JobEffects::wait_on(FactKey::Activation(activation), []));
+    };
+    reads.push(FactKey::Activation(activation));
+    let Some(executable_revision) = world.fact_revision(FactKey::Executable(executable)) else {
+        return Ok(JobEffects::wait_on(FactKey::Executable(executable), []));
+    };
+    reads.push(FactKey::Executable(executable));
+    let revision = world
+        .root_revision(root_id)
+        .max(activation_revision)
+        .max(executable_revision);
+    Ok(JobEffects {
+        reads,
+        outputs: vec![(FactKey::SemanticClosed(root_id), revision)],
+        ..JobEffects::default()
+    })
 }
 
 /// Walks one scope in source order and returns the namespace it produces.

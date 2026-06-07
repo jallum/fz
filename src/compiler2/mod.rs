@@ -12,11 +12,12 @@ mod world;
 pub use agenda::Agenda;
 pub use code::{Code, CodeId, CodeMap, CodeState};
 pub use deps::{DependencyIndex, ExactPattern, FactPattern};
-pub use driver::{CodeSubmission, Compiler2};
+pub use driver::{CodeSubmission, Compiler2, RootSubmission};
 pub use facts::{FactChange, FactReplace, FactSlot, FactTable};
 pub use identity::{
-    Function, FunctionDef, FunctionId, FunctionMap, FunctionRef, FunctionState, Module, ModuleExport, ModuleId,
-    ModuleMap, ModuleSource, ModuleState, ModuleSurface,
+    ActivationKey, ExecutableKey, ExecutableNeed, Function, FunctionDef, FunctionId, FunctionMap, FunctionRef,
+    FunctionState, Module, ModuleExport, ModuleId, ModuleMap, ModuleSource, ModuleState, ModuleSurface, Root,
+    RootEntry, RootId, RootMap,
 };
 pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
 pub use scheduler::{AppliedStep, DriveError, FatalError, Scheduler};

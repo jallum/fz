@@ -1,17 +1,17 @@
-use super::{CodeSubmission, Compiler2, Job};
-use crate::compiler2::FactKey;
+use super::{CodeSubmission, Compiler2, ExecutableNeed, Job, RootSubmission};
 use crate::compiler2::work::JobEffects;
+use crate::compiler2::{ActivationKey, ExecutableKey, FactKey, FunctionId};
 use crate::diag::codes;
 use crate::telemetry::capture::OwnedEvent;
 use crate::telemetry::handler::{Event, EventKind, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 type OutputFacts = Vec<(FactKey, u64)>;
-type OutputSlot = Rc<RefCell<Option<OutputFacts>>>;
-type SpanIdSet = Rc<RefCell<HashSet<u64>>>;
+type JobOutputMap = Rc<RefCell<HashMap<(String, u64), Vec<OutputFacts>>>>;
+type SpanJobs = Rc<RefCell<HashMap<u64, (String, u64)>>>;
 
 #[test]
 fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_bodies() {
@@ -125,7 +125,9 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
         "indexing should stay above planning"
     );
 
-    let outputs = outputs.take().expect("IndexCode job effects");
+    let outputs = outputs
+        .take("IndexCode", code_id.as_u32() as u64)
+        .expect("IndexCode job effects");
     assert_eq!(
         outputs
             .iter()
@@ -157,6 +159,203 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
 }
 
 #[test]
+fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_foo() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let _code_id = compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
+        text: format!(
+            "{}\nfn foo(), do: 42\n",
+            include_str!("../../fixtures/quicksort/input.fz")
+        ),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler
+        .drive()
+        .expect("root submission should pull the source surface through to the entry seed");
+
+    let root_submitted = capture
+        .last(&["fz", "compiler2", "root", "submitted"])
+        .expect("root submitted event");
+    assert_eq!(
+        measurement_u64(&root_submitted, "root_id"),
+        root_id.as_u32() as u64,
+        "root submission should report the returned root id"
+    );
+    assert_eq!(
+        metadata_str(&root_submitted, "module_name"),
+        "<top-level>",
+        "root submission should mark top-level entry functions clearly"
+    );
+    assert_eq!(
+        metadata_str(&root_submitted, "name"),
+        "main",
+        "root submission should report the entry function name"
+    );
+    assert_eq!(
+        metadata_str(&root_submitted, "need"),
+        "value",
+        "root submission should report the requested executable need"
+    );
+
+    let main_id = function_id(&capture, "main", 0);
+    let foo_id = function_id(&capture, "foo", 0);
+
+    let seed_outputs = outputs
+        .take("SeedRoot", root_id.as_u32() as u64)
+        .expect("SeedRoot job effects");
+    assert!(
+        seed_outputs.contains(&(FactKey::RootEntry(root_id), 1)),
+        "SeedRoot should publish the root entry fact"
+    );
+    assert!(
+        seed_outputs.contains(&(
+            FactKey::Activation(ActivationKey {
+                root: root_id,
+                function: main_id,
+            }),
+            1,
+        )),
+        "SeedRoot should activate the entry function"
+    );
+    assert!(
+        seed_outputs.contains(&(
+            FactKey::Executable(ExecutableKey {
+                activation: ActivationKey {
+                    root: root_id,
+                    function: main_id,
+                },
+                need: ExecutableNeed::Value,
+            }),
+            1,
+        )),
+        "SeedRoot should publish the entry executable request"
+    );
+    assert!(
+        !seed_outputs.iter().any(|(fact, _)| {
+            matches!(
+                fact,
+                FactKey::Activation(ActivationKey {
+                    function,
+                    ..
+                }) if *function == foo_id
+            ) || matches!(
+                fact,
+                FactKey::Executable(ExecutableKey {
+                    activation: ActivationKey {
+                        function,
+                        ..
+                    },
+                    ..
+                }) if *function == foo_id
+            )
+        }),
+        "submitting a root should keep uncalled foo/0 semantically cold"
+    );
+
+    let closure_outputs = outputs
+        .take("CheckSemanticClosure", root_id.as_u32() as u64)
+        .expect("CheckSemanticClosure job effects");
+    assert!(
+        closure_outputs.contains(&(FactKey::SemanticClosed(root_id), 1)),
+        "semantic closure should publish once the seeded entry facts exist"
+    );
+
+    assert_eq!(
+        job_stops(&capture, "ScopeCode").len(),
+        1,
+        "root submission should pull one top-level scope job for the single code input"
+    );
+    assert_eq!(
+        job_stops(&capture, "SeedRoot").len(),
+        2,
+        "root submission should publish the root fact first, then rerun once the entry definition exists"
+    );
+    assert_eq!(
+        job_stops(&capture, "CheckSemanticClosure").len(),
+        1,
+        "root submission should run the initial closure check once"
+    );
+    assert_eq!(
+        capture.count(&["fz", "frontend", "lowered"]),
+        0,
+        "root seeding should not invoke lowering yet"
+    );
+    assert_eq!(
+        capture.count(&["fz", "planner", "planned"]),
+        0,
+        "root seeding should not invoke the production planner"
+    );
+}
+
+#[test]
+fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseeding_semantics() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/entry_only.fz".to_string()),
+        text: "fn main(), do: 42\n".to_string(),
+    });
+    let _root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.drive().expect("first drive should seed the initial root");
+    assert_eq!(
+        job_stops(&capture, "SeedRoot").len(),
+        2,
+        "entry seeding should settle before later code arrives"
+    );
+
+    let late_code_id = compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/late_foo.fz".to_string()),
+        text: "fn foo(), do: 42\n".to_string(),
+    });
+    compiler
+        .drive()
+        .expect("second drive should scope late code automatically while a root is active");
+
+    let scope_outputs = outputs
+        .take("ScopeCode", late_code_id.as_u32() as u64)
+        .expect("late code ScopeCode job effects");
+    let foo_id = function_id(&capture, "foo", 0);
+    assert!(
+        scope_outputs
+            .iter()
+            .any(|(fact, _)| *fact == FactKey::FunctionDefined(foo_id)),
+        "late code should define foo/0 without an explicit ScopeCode demand"
+    );
+    assert_eq!(
+        job_stops(&capture, "SeedRoot").len(),
+        2,
+        "late unrelated code should not reseed the existing root"
+    );
+    assert_eq!(
+        job_stops(&capture, "CheckSemanticClosure").len(),
+        1,
+        "late unrelated code should not reopen semantic closure for the existing root"
+    );
+}
+
+#[test]
 fn compiler2_index_code_recurses_through_nested_modules() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -180,7 +379,9 @@ end
     });
 
     compiler.drive().expect("first drive should index nested module scopes");
-    let indexed_outputs = outputs.take().expect("IndexCode job effects");
+    let indexed_outputs = outputs
+        .take("IndexCode", code_id.as_u32() as u64)
+        .expect("IndexCode job effects");
     let module_ids = module_indexed_ids(&indexed_outputs);
     assert_eq!(module_ids.len(), 3, "nested indexing should discover X, X.Y, and X.Y.Z");
 
@@ -308,7 +509,11 @@ end
     });
 
     compiler.drive().expect("first drive should index import-only scope");
-    let module_ids = module_indexed_ids(&outputs.take().expect("IndexCode job effects"));
+    let module_ids = module_indexed_ids(
+        &outputs
+            .take("IndexCode", code_id.as_u32() as u64)
+            .expect("IndexCode job effects"),
+    );
     assert!(
         compiler.demand(Job::ScopeCode(code_id)),
         "explicit demand should enqueue root definition for import-only scope"
@@ -375,7 +580,11 @@ end
     compiler
         .drive()
         .expect("first drive should index import-only unknown scope");
-    let module_ids = module_indexed_ids(&outputs.take().expect("IndexCode job effects"));
+    let module_ids = module_indexed_ids(
+        &outputs
+            .take("IndexCode", code_id.as_u32() as u64)
+            .expect("IndexCode job effects"),
+    );
     assert!(
         compiler.demand(Job::ScopeCode(code_id)),
         "explicit demand should enqueue root definition for import-only unknown scope"
@@ -436,7 +645,11 @@ end
     });
 
     compiler.drive().expect("first drive should index import-all scope");
-    let module_ids = module_indexed_ids(&outputs.take().expect("IndexCode job effects"));
+    let module_ids = module_indexed_ids(
+        &outputs
+            .take("IndexCode", code_id.as_u32() as u64)
+            .expect("IndexCode job effects"),
+    );
     assert!(
         compiler.demand(Job::ScopeCode(code_id)),
         "explicit demand should enqueue root definition for import-all scope"
@@ -498,7 +711,11 @@ end
     });
 
     compiler.drive().expect("first drive should index import-except scope");
-    let module_ids = module_indexed_ids(&outputs.take().expect("IndexCode job effects"));
+    let module_ids = module_indexed_ids(
+        &outputs
+            .take("IndexCode", code_id.as_u32() as u64)
+            .expect("IndexCode job effects"),
+    );
     assert!(
         compiler.demand(Job::ScopeCode(code_id)),
         "explicit demand should enqueue root definition for import-except scope"
@@ -537,33 +754,40 @@ end
 }
 
 struct OutputCapture {
-    outputs: OutputSlot,
-    index_spans: SpanIdSet,
+    outputs: JobOutputMap,
+    spans: SpanJobs,
 }
 
 impl OutputCapture {
     fn new() -> Self {
         Self {
-            outputs: Rc::new(RefCell::new(None)),
-            index_spans: Rc::new(RefCell::new(HashSet::new())),
+            outputs: Rc::new(RefCell::new(HashMap::new())),
+            spans: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
     fn handler(&self) -> Box<dyn Handler> {
         Box::new(OutputCaptureHandler {
             outputs: self.outputs.clone(),
-            index_spans: self.index_spans.clone(),
+            spans: self.spans.clone(),
         })
     }
 
-    fn take(&self) -> Option<OutputFacts> {
-        self.outputs.borrow_mut().take()
+    fn take(&self, job_kind: &str, id: u64) -> Option<OutputFacts> {
+        let key = (job_kind.to_string(), id);
+        let mut outputs = self.outputs.borrow_mut();
+        let matches = outputs.get_mut(&key)?;
+        let output = matches.pop();
+        if matches.is_empty() {
+            outputs.remove(&key);
+        }
+        output
     }
 }
 
 struct OutputCaptureHandler {
-    outputs: OutputSlot,
-    index_spans: SpanIdSet,
+    outputs: JobOutputMap,
+    spans: SpanJobs,
 }
 
 impl Handler for OutputCaptureHandler {
@@ -573,20 +797,32 @@ impl Handler for OutputCaptureHandler {
         }
         match event.kind {
             EventKind::SpanStart => {
-                if matches!(event.metadata.get("kind"), Some(Value::Str(kind)) if kind.as_ref() == "IndexCode") {
-                    self.index_spans.borrow_mut().insert(event.span_id);
-                }
+                let Some(Value::Str(kind)) = event.metadata.get("kind") else {
+                    return;
+                };
+                let Some(Value::U64(id)) = event.metadata.get("id") else {
+                    return;
+                };
+                self.spans
+                    .borrow_mut()
+                    .insert(event.span_id, (kind.as_ref().to_string(), *id));
             }
             EventKind::SpanStop => {
-                if !self.index_spans.borrow_mut().remove(&event.span_id) {
+                let Some(job_key) = self.spans.borrow_mut().remove(&event.span_id) else {
                     return;
-                }
-                let effects = event
+                };
+                let Some(effects) = event
                     .metadata
                     .get("effects")
                     .and_then(|value| value.downcast_ref::<JobEffects>())
-                    .expect("IndexCode job stop should expose job effects");
-                self.outputs.replace(Some(effects.outputs.clone()));
+                else {
+                    return;
+                };
+                self.outputs
+                    .borrow_mut()
+                    .entry(job_key)
+                    .or_default()
+                    .push(effects.outputs.clone());
             }
             EventKind::Event | EventKind::SpanException => {}
         }
@@ -641,6 +877,18 @@ fn metadata_str<'a>(event: &'a OwnedEvent, key: &str) -> &'a str {
     match event.metadata.get(key) {
         Some(Value::Str(value)) => value.as_ref(),
         other => panic!("metadata key `{key}` missing or not str: {other:?}"),
+    }
+}
+
+fn function_id(capture: &Capture, name: &str, arity: u64) -> FunctionId {
+    let event = capture
+        .find(&["fz", "compiler2", "function", "defined"])
+        .into_iter()
+        .find(|event| metadata_str(event, "name") == name && measurement_u64(event, "arity") == arity)
+        .unwrap_or_else(|| panic!("function.defined for {name}/{arity}"));
+    match event.measurements.get("function_id") {
+        Some(Value::U64(id)) => FunctionId::from_u32(*id as u32),
+        other => panic!("function_id measurement missing or not u64: {other:?}"),
     }
 }
 
