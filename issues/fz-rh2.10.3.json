@@ -7,13 +7,13 @@
     "fz-rh2.10.4"
   ],
   "created": "2026-06-07T21:13:07Z",
-  "description": "Goal: `World::new` should allocate identities, not parse runtime source. Signal: the quicksort trace-summary reports zero pre-drive `fz/lexer` / `fz/parser` events, and referenced runtime modules still pull through ordinary Compiler2 jobs when needed. Strategy: replace eager runtime parsing/interface discovery with a reference-only bootstrap surface owned by Compiler2, then let runtime source enter through normal code/module work on first pull.\n\nChange:\n- Remove eager runtime lex/parse from Compiler2 construction.\n- Bootstrap only stable runtime module/function references and prelude surface bindings.\n- Pull runtime source, protocol callbacks, and imports through ordinary Compiler2 work when demanded.\n\nWhy:\n- The trace currently shows measurable compile work before `drive()` even starts, which violates the pull-based northstar.\n\nChecks:\n- The trace-summary reports zero pre-drive frontend work for the quicksort rooted run.\n- Runtime-backed quicksort and `Enum.reduce` scenarios still settle through ordinary Compiler2 jobs.",
+  "description": "Goal: activation input widening should be owned by the fact graph, not by ActivationMap or CheckSemanticClosure. Signal: AnalyzeActivation contributes callee input facts, Activation input is the refine_widen join of caller contributions, CheckSemanticClosure no longer walks and mutates the frontier, and the quicksort trace-summary shows the double activation gone. Strategy: move callee activation contributions into AnalyzeActivation outputs, make Activation input a multi-owner Inputs fact, have activation analysis subscribe to that joined input, and reduce closure checking to a read-only predicate over activation/return/analyzed facts.\n\nChange:\n- Replace world.activate side-store widening with caller-owned Activation input contributions.\n- SeedRoot contributes the root entry activation input.\n- AnalyzeActivation contributes callee activation inputs and executable needs from each resolved callsite.\n- CheckSemanticClosure reads the live root activation facts and completion facts; it does not call activate or rediscover callees by BFS.\n- Delete ActivationMap::activate widening, activation_revisions bookkeeping, closure BFS, and local output dedupe built around max revisions.\n\nWhy:\n- The caller already knows each callee and argument vector. The activation input is physically the join of those caller observations, so the work graph should own the join.\n\nChecks:\n- Quicksort first compile has no double activation and no dead transient activations outside the final closure.\n- Redefining main from qsort to foo retracts only the actual dependent activation chain.\n- Quicksort and Enum.reduce closed frontiers remain semantically correct.",
   "id": "fz-rh2.10.3",
   "labels": [],
   "parent": "fz-rh2.10",
   "priority": 1,
   "status": "open",
-  "title": "Compiler2 runtime bootstrap: replace eager parsing with lazy surface bootstrap",
+  "title": "Compiler2 activations: make input a caller-contributed fact",
   "type": "task",
-  "updated_at": "2026-06-07T21:23:43Z"
+  "updated_at": "2026-06-07T21:39:49Z"
 }
