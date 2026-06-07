@@ -1,7 +1,6 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-rh2.10.4",
     "fz-rh2.10.6",
     "fz-rh2.8.1"
   ],
@@ -17,5 +16,5 @@
   "status": "open",
   "title": "Compiler2 artifacts: derive ABI and emission from closed facts",
   "type": "task",
-  "updated_at": "2026-06-07T21:40:21Z"
+  "updated_at": "2026-06-07T21:40:22Z"
 }

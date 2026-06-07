@@ -4,8 +4,7 @@
     "fz-rh2.10.3"
   ],
   "blocks": [
-    "fz-rh2.10.5",
-    "fz-rh2.8.2"
+    "fz-rh2.10.5"
   ],
   "created": "2026-06-07T21:13:07Z",
   "description": "Goal: the work graph should expose the behaviors the design depends on: exact waits, coalescing, blocking, fact changes, and bounded convergence. Signal: FactPattern is gone, waits are exact-key O(1), AppliedStep reports changed/enqueued/coalesced/blocked work from one seam, and non-converging fact values fail with a precise diagnostic instead of hanging the drive loop. Strategy: delete speculative wait-pattern generality, return complete applied-step data from Scheduler::complete, emit cheap raw telemetry from World::complete_job, and add a per-fact fingerprint-change guard grounded in lattice height.\n\nChange:\n- Replace FactPattern/ExactPattern with exact FactKey wait maps.\n- Extend AppliedStep with coalesced and blocked work.\n- Emit raw job/fact/coalesced/blocked events from World::complete_job using AppliedStep; handlers may format if they care.\n- Add per-drive fact churn accounting and SEMANTIC_NONCONVERGENCE for facts that exceed their family height bound.\n\nWhy:\n- Waits are exact today; the trait and linear scan are unused generality on a hot path.\n- The engine already knows what changed and what work moved; Compiler2 should observe that uniformly instead of sprinkling special events.\n- A fixpoint compiler needs a legible floor for the one residual case static recursion facts cannot prove.\n\nChecks:\n- Scheduler tests cover exact waits, coalesced follow-ups, blocked waits, and changed facts.\n- Compiler2 trace-summary uses AppliedStep events as its daily signal.\n- A higher-order recursive non-convergence repro emits a fatal diagnostic naming the unstable fact.",
@@ -16,5 +15,5 @@
   "status": "open",
   "title": "Compiler2 engine: exact waits, applied-step signal, and convergence guard",
   "type": "task",
-  "updated_at": "2026-06-07T21:40:21Z"
+  "updated_at": "2026-06-07T21:40:22Z"
 }
