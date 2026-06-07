@@ -67,10 +67,6 @@ where
         self.slots.get(key)
     }
 
-    pub fn keys(&self) -> impl Iterator<Item = &F> {
-        self.slots.keys()
-    }
-
     pub fn replace_contributions(
         &mut self,
         job: &J,

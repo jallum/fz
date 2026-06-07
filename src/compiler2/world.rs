@@ -200,10 +200,8 @@ impl<'a> World<'a> {
             .summary()
     }
 
-    pub fn activation_analysis_revision(&self, key: &super::identity::ActivationKey) -> Option<u64> {
-        self.activations
-            .get(key)
-            .and_then(|slot| (slot.analysis().is_some()).then_some(slot.analysis_revision()))
+    pub fn activation_analysis(&self, key: &super::identity::ActivationKey) -> Option<&ActivationAnalysis> {
+        self.activations.get(key).and_then(|slot| slot.analysis())
     }
 
     pub fn activation_return(&self, key: &super::identity::ActivationKey) -> Option<Ty> {
@@ -271,26 +269,8 @@ impl<'a> World<'a> {
         revision
     }
 
-    pub fn root_activations(&self, root: RootId) -> Vec<super::identity::ActivationKey> {
-        self.work_graph
-            .facts()
-            .keys()
-            .filter_map(|fact| match fact {
-                FactKey::Activation(activation) if activation.root == root => Some(activation.clone()),
-                _ => None,
-            })
-            .collect()
-    }
-
-    pub fn root_executables(&self, root: RootId) -> Vec<super::identity::ExecutableKey> {
-        self.work_graph
-            .facts()
-            .keys()
-            .filter_map(|fact| match fact {
-                FactKey::Executable(executable) if executable.activation.root == root => Some(executable.clone()),
-                _ => None,
-            })
-            .collect()
+    pub fn callsite_summary(&self, key: &CallSiteKey) -> Option<&CallSiteSummary> {
+        self.callsites.get(key)
     }
 
     pub fn reference_module(&mut self, name: impl Into<String>) -> ModuleId {

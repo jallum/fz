@@ -16,7 +16,7 @@ use crate::types::{self, ClosureTarget, ClosureTypes, Ty, Types};
 
 use super::super::body::{CallSiteId, DirectCallee, Literal, LoweredBlock, LoweredBody, LoweredStep, ValueId};
 use super::super::drive::{FactKey, Job, JobEffects};
-use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed};
+use super::super::identity::{ActivationKey, ExecutableNeed};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallSiteSummary, SelectedCallee};
 use super::super::world::World;
@@ -84,7 +84,6 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
                     &clause.projections,
                     &mut values,
                     &mut analysis_calls,
-                    &mut outputs,
                     activation,
                     &mut reads,
                     &mut waits,
@@ -95,7 +94,6 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
                     &clause.body,
                     &mut values,
                     &mut analysis_calls,
-                    &mut outputs,
                     activation,
                     &mut reads,
                     &mut waits,
@@ -152,23 +150,12 @@ fn analyze_block(
     block: &LoweredBlock,
     values: &mut ValueTypes,
     calls: &mut Vec<CallEmission>,
-    outputs: &mut Vec<(FactKey, u64)>,
     activation: &ActivationKey,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
 ) -> Result<Ty, FatalError> {
-    apply_steps(
-        world,
-        &block.steps,
-        values,
-        calls,
-        outputs,
-        activation,
-        reads,
-        waits,
-        follow_up,
-    )?;
+    apply_steps(world, &block.steps, values, calls, activation, reads, waits, follow_up)?;
     Ok(values.get(&block.result).cloned().unwrap_or_else(|| types::new().any()))
 }
 
@@ -177,7 +164,6 @@ fn apply_steps(
     steps: &[LoweredStep],
     values: &mut ValueTypes,
     calls: &mut Vec<CallEmission>,
-    outputs: &mut Vec<(FactKey, u64)>,
     activation: &ActivationKey,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
@@ -190,7 +176,6 @@ fn apply_steps(
             step,
             values,
             calls,
-            outputs,
             activation,
             &return_needs,
             reads,
@@ -206,7 +191,6 @@ fn apply_step(
     step: &LoweredStep,
     values: &mut ValueTypes,
     calls: &mut Vec<CallEmission>,
-    outputs: &mut Vec<(FactKey, u64)>,
     activation: &ActivationKey,
     return_needs: &HashMap<CallSiteId, ExecutableNeed>,
     reads: &mut Vec<FactKey>,
@@ -248,7 +232,6 @@ fn apply_step(
                 callee,
                 arg_types.clone(),
                 need,
-                outputs,
                 reads,
                 waits,
                 follow_up,
@@ -303,7 +286,6 @@ fn apply_step(
                 then_block,
                 &mut then_values,
                 calls,
-                outputs,
                 activation,
                 reads,
                 waits,
@@ -314,7 +296,6 @@ fn apply_step(
                 else_block,
                 &mut else_values,
                 calls,
-                outputs,
                 activation,
                 reads,
                 waits,
@@ -371,8 +352,7 @@ fn resolve_direct_call(
     _callsite: CallSiteId,
     callee: &DirectCallee,
     arg_types: Vec<Ty>,
-    need: ExecutableNeed,
-    outputs: &mut Vec<(FactKey, u64)>,
+    _need: ExecutableNeed,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
@@ -407,26 +387,12 @@ fn resolve_direct_call(
                 return Ok((SelectedCallee::Function(*function), types::new().any()));
             }
 
-            let (activation, activation_revision) = world.activate(caller.root, *function, arg_types);
-            let executable = ExecutableKey {
-                activation: activation.clone(),
-                need,
-            };
-            outputs.push((FactKey::Activation(activation.clone()), activation_revision));
-            outputs.push((FactKey::Executable(executable.clone()), activation_revision));
+            let (activation, _) = world.activate(caller.root, *function, arg_types);
             reads.push(FactKey::ReturnType(activation.clone()));
             let return_ty = world
                 .activation_return(&activation)
                 .unwrap_or_else(|| world.activation_summary(&activation).return_ty.clone());
-            reads.push(FactKey::Activation(activation.clone()));
-            reads.push(FactKey::Executable(executable.clone()));
             follow_up.insert(Job::CheckSemanticClosure(caller.root));
-            let activation_fact = FactKey::Activation(activation.clone());
-            let needs_analysis = world.fact_revision(activation_fact.clone()) != Some(activation_revision)
-                || world.activation_analysis_revision(&activation).is_none();
-            if needs_analysis {
-                follow_up.insert(Job::AnalyzeActivation(activation.clone()));
-            }
             Ok((SelectedCallee::Function(*function), return_ty))
         }
         DirectCallee::Named { name, arity } => Ok((

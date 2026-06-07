@@ -673,7 +673,7 @@ fn pop(agenda: &amp;mut Agenda) -&gt; Option&lt;JobKey&gt; {
           <tr>
             <td><code>SeedRoot</code></td>
             <td><code>RootEntry(root)</code></td>
-            <td>Initial <code>Activation</code> and <code>Executable</code> for the entry function.</td>
+            <td>Publishes the root entry fact and schedules the first closure walk once the entry definition exists.</td>
           </tr>
           <tr>
             <td><code>AnalyzeActivation</code></td>
@@ -712,8 +712,8 @@ fn pop(agenda: &amp;mut Agenda) -&gt; Option&lt;JobKey&gt; {
           </tr>
           <tr>
             <td><code>CheckSemanticClosure</code></td>
-            <td>Root-scoped agenda state, waiters, semantic fact fingerprint.</td>
-            <td><code>SemanticClosed(root, epoch)</code> when the semantic stratum is quiescent and complete.</td>
+            <td>Root entry, activation analyses, return facts, selected callees, return needs.</td>
+            <td>Republished root-owned <code>Activation</code> / <code>Executable</code> facts and <code>SemanticClosed(root, epoch)</code> when the semantic frontier is stable.</td>
           </tr>
         </tbody>
       </table>
@@ -801,6 +801,9 @@ FunctionDefined(foo/0, clauses = Ast[...])</code></pre>
         <pre><code>RootEntry(root, main/0, input = [], target = jit)
 
 SeedRoot(root) publishes:
+  RootEntry(root)
+
+CheckSemanticClosure(root) then owns the root frontier:
   Activation(root, main/0, [])
   Executable(root, main/0, [], Value)</code></pre>
         <p>
@@ -828,7 +831,8 @@ Kernel.+/2</code></pre>
         <pre><code>ValueType(root, main, literal_list) = nonempty_list(int)
 ArgTypes(root, callsite qsort) = [nonempty_list(int)]</code></pre>
         <p>
-          <code>ResolveDirectCall(qsort callsite)</code> publishes:
+          <code>AnalyzeActivation(main)</code> publishes the direct call edge, and the next closure
+          walk extends the rooted frontier:
         </p>
         <pre><code>SelectedCallee(root, qsort callsite) = qsort/1
 Activation(root, qsort/1, [nonempty_list(int)])
@@ -953,7 +957,7 @@ Emitted(root, jit, Q)</code></pre>
         <p>
           If a later REPL source redefines <code>main/0</code> to also call <code>foo()</code>, the
           changed <code>main/0</code> definition wakes <code>LowerFunction(main/0)</code>. The new
-          lowered body publishes a <code>foo/0</code> callsite, and only then do these facts appear:
+          lowered body publishes a <code>foo/0</code> callsite, and the next closure walk adds:
         </p>
         <pre><code>SelectedCallee(root, foo callsite) = foo/0
 Activation(root, foo/0, [])

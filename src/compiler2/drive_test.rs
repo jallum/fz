@@ -10,7 +10,7 @@ use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch,
 use crate::telemetry::handler::{Event, EventKind, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 type OutputFacts = Vec<(FactKey, u64)>;
@@ -22,6 +22,7 @@ type SpanJobs = Rc<RefCell<HashMap<u64, Job>>>;
 type FunctionDefs = Rc<RefCell<Vec<FunctionDefinedRecord>>>;
 type ModuleDefs = Rc<RefCell<HashMap<ModuleId, Vec<Module>>>>;
 type CallsiteDefs = Rc<RefCell<Vec<CallsiteDefinedRecord>>>;
+type SemanticClosedDefs = Rc<RefCell<Vec<SemanticClosedRecord>>>;
 
 #[test]
 fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_bodies() {
@@ -253,7 +254,23 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         "SeedRoot should publish the root entry fact"
     );
     assert!(
-        seed_outputs.contains(&(
+        !seed_outputs
+            .iter()
+            .any(|(fact, _)| matches!(fact, FactKey::Activation(_))),
+        "SeedRoot should leave frontier publication to semantic closure"
+    );
+    assert!(
+        !seed_outputs
+            .iter()
+            .any(|(fact, _)| matches!(fact, FactKey::Executable(_))),
+        "SeedRoot should leave executable publication to semantic closure"
+    );
+
+    let closure_outputs = outputs
+        .take(Job::CheckSemanticClosure(root_id))
+        .expect("CheckSemanticClosure job effects");
+    assert!(
+        closure_outputs.contains(&(
             FactKey::Activation(ActivationKey {
                 root: root_id,
                 function: main_id,
@@ -261,10 +278,10 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
             }),
             1,
         )),
-        "SeedRoot should activate the entry function"
+        "semantic closure should publish the entry activation"
     );
     assert!(
-        seed_outputs.contains(&(
+        closure_outputs.contains(&(
             FactKey::Executable(ExecutableKey {
                 activation: ActivationKey {
                     root: root_id,
@@ -275,10 +292,10 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
             }),
             1,
         )),
-        "SeedRoot should publish the entry executable request"
+        "semantic closure should publish the entry executable request"
     );
     assert!(
-        !seed_outputs.iter().any(|(fact, _)| {
+        !closure_outputs.iter().any(|(fact, _)| {
             matches!(
                 fact,
                 FactKey::Activation(ActivationKey {
@@ -298,10 +315,6 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         }),
         "submitting a root should keep uncalled foo/0 semantically cold"
     );
-
-    let closure_outputs = outputs
-        .take(Job::CheckSemanticClosure(root_id))
-        .expect("CheckSemanticClosure job effects");
     assert!(
         closure_outputs
             .iter()
@@ -425,6 +438,281 @@ fn compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_nee
         capture.find(&["fz", "planner"]).len(),
         0,
         "Compiler2 semantic analysis should not invoke the legacy planner pipeline"
+    );
+}
+
+#[test]
+fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
+    use crate::types::Types;
+
+    let tel = ConfiguredTelemetry::new();
+    let semantic = SemanticClosedCapture::new();
+    tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
+        text: format!(
+            "{}\nfn foo(), do: 42\n",
+            include_str!("../../fixtures/quicksort/input.fz")
+        ),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "quicksort root should settle to a finite semantic frontier",
+    );
+
+    let main_id = function_id(&functions, "main", 0);
+    let qsort_id = function_id(&functions, "qsort", 1);
+    let partition_id = function_id(&functions, "partition", 4);
+    let append_id = function_id(&functions, "append", 2);
+    let foo_id = function_id(&functions, "foo", 0);
+
+    let closed = semantic.last(root_id);
+    let activations = closed.activations.iter().cloned().collect::<HashSet<_>>();
+
+    let mut t = crate::types::new();
+    let int = t.int();
+    let any = t.any();
+    let list_int = t.list(int.clone());
+    let nonempty_int = t.non_empty_list(int.clone());
+    let list_any = t.list(any);
+
+    assert!(
+        activations.contains(&ActivationKey {
+            root: root_id,
+            function: main_id,
+            input: Vec::new(),
+        }),
+        "root closure should keep the entry activation in the settled frontier"
+    );
+    assert!(
+        activations.contains(&ActivationKey {
+            root: root_id,
+            function: qsort_id,
+            input: vec![nonempty_int],
+        }),
+        "root closure should keep qsort/1's non-empty recursive activation"
+    );
+    assert!(
+        activations.contains(&ActivationKey {
+            root: root_id,
+            function: qsort_id,
+            input: vec![list_int.clone()],
+        }),
+        "root closure should keep qsort/1's widened list activation"
+    );
+    assert!(
+        activations.contains(&ActivationKey {
+            root: root_id,
+            function: partition_id,
+            input: vec![int.clone(), list_int.clone(), list_any.clone(), list_any.clone()],
+        }),
+        "root closure should keep partition/4's recursive activation"
+    );
+    assert!(
+        activations.contains(&ActivationKey {
+            root: root_id,
+            function: append_id,
+            input: vec![list_int, list_any],
+        }),
+        "root closure should keep append/2's recursive activation"
+    );
+    assert!(
+        activations.len() <= 6,
+        "quicksort should settle to a small finite recursive activation frontier"
+    );
+    assert!(
+        !activations.iter().any(|activation| activation.function == foo_id),
+        "quicksort root should not activate the uncalled foo/0"
+    );
+    assert!(
+        closed
+            .executables
+            .iter()
+            .all(|executable| executable.activation.function != foo_id),
+        "uncalled foo/0 should not appear in the closed executable frontier"
+    );
+}
+
+#[test]
+fn compiler2_redefining_uncalled_foo_does_not_reopen_quicksort_root() {
+    let tel = ConfiguredTelemetry::new();
+    let semantic = SemanticClosedCapture::new();
+    tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_plus_foo_v1.fz".to_string()),
+        text: format!(
+            "{}\nfn foo(), do: 42\n",
+            include_str!("../../fixtures/quicksort/input.fz")
+        ),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(compiler.drive(), "initial quicksort root should settle");
+    let closed_before = semantic.last(root_id);
+    let count_before = semantic.count(root_id);
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_plus_foo_v2.fz".to_string()),
+        text: "fn foo(), do: 99\n".to_string(),
+    });
+    assert_resolved(
+        compiler.drive(),
+        "redefining uncalled foo/0 should not reopen the quicksort root",
+    );
+
+    assert_eq!(
+        semantic.count(root_id),
+        count_before,
+        "uncalled foo/0 redefinition should not republish semantic closure for the rooted quicksort frontier"
+    );
+    assert_eq!(
+        semantic.last(root_id).activations.into_iter().collect::<HashSet<_>>(),
+        closed_before.activations.into_iter().collect::<HashSet<_>>(),
+        "uncalled foo/0 redefinition should leave the rooted activation frontier unchanged"
+    );
+}
+
+#[test]
+fn compiler2_redefining_main_retracts_the_old_root_frontier_and_activates_foo() {
+    let tel = ConfiguredTelemetry::new();
+    let semantic = SemanticClosedCapture::new();
+    tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_plus_foo_v1.fz".to_string()),
+        text: format!(
+            "{}\nfn foo(), do: 42\n",
+            include_str!("../../fixtures/quicksort/input.fz")
+        ),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(compiler.drive(), "initial quicksort root should settle");
+
+    let qsort_id = function_id(&functions, "qsort", 1);
+    let partition_id = function_id(&functions, "partition", 4);
+    let append_id = function_id(&functions, "append", 2);
+    let foo_id = function_id(&functions, "foo", 0);
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_plus_foo_v2.fz".to_string()),
+        text: "fn foo(), do: 42\nfn main(), do: foo()\n".to_string(),
+    });
+    assert_resolved(
+        compiler.drive(),
+        "redefining main/0 should retract the old quicksort root frontier",
+    );
+
+    let closed_after = semantic.last(root_id);
+    let activation_functions = closed_after
+        .activations
+        .iter()
+        .map(|activation| activation.function)
+        .collect::<HashSet<_>>();
+    let executable_functions = closed_after
+        .executables
+        .iter()
+        .map(|executable| executable.activation.function)
+        .collect::<HashSet<_>>();
+
+    assert_eq!(
+        activation_functions,
+        HashSet::from([function_id(&functions, "main", 0), foo_id]),
+        "redefining main/0 should leave only main/0 and foo/0 in the rooted activation frontier"
+    );
+    assert_eq!(
+        executable_functions,
+        HashSet::from([function_id(&functions, "main", 0), foo_id]),
+        "redefining main/0 should leave only main/0 and foo/0 in the rooted executable frontier"
+    );
+    assert!(
+        !closed_after.activations.iter().any(
+            |activation| matches!(activation.function, id if id == qsort_id || id == partition_id || id == append_id)
+        ),
+        "redefining main/0 should retract the old quicksort recursive frontier"
+    );
+}
+
+#[test]
+fn compiler2_helper_redefinition_republishes_only_the_dependent_root_frontier() {
+    let tel = ConfiguredTelemetry::new();
+    let semantic = SemanticClosedCapture::new();
+    tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/helper_roots_v1.fz".to_string()),
+        text: r#"
+fn positive(n), do: n > 0
+fn wanted(n) when positive(n), do: :yes
+fn wanted(_), do: :no
+fn other(n) when n > 0, do: :yes
+fn other(_), do: :no
+fn main(), do: wanted(1)
+fn other_main(), do: other(1)
+"#
+        .to_string(),
+    });
+    let main_root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let other_root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "other_main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(compiler.drive(), "initial rooted helper users should settle");
+    let main_count_before = semantic.count(main_root);
+    let other_count_before = semantic.count(other_root);
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/helper_roots_v2.fz".to_string()),
+        text: "fn positive(n), do: n >= 0\n".to_string(),
+    });
+    assert_resolved(
+        compiler.drive(),
+        "redefining a helper should republish only the dependent rooted semantic frontier",
+    );
+
+    assert!(
+        semantic.count(main_root) > main_count_before,
+        "redefining the helper should republish the dependent root frontier"
+    );
+    assert_eq!(
+        semantic.count(other_root),
+        other_count_before,
+        "redefining the helper should not republish the independent root frontier"
     );
 }
 
@@ -1633,6 +1921,13 @@ struct CallsiteDefinedRecord {
     summary: CallSiteSummary,
 }
 
+#[derive(Debug, Clone)]
+struct SemanticClosedRecord {
+    root_id: crate::compiler2::RootId,
+    activations: Vec<ActivationKey>,
+    executables: Vec<ExecutableKey>,
+}
+
 struct FunctionCapture {
     defs: FunctionDefs,
 }
@@ -1643,6 +1938,10 @@ struct ModuleCapture {
 
 struct CallsiteCapture {
     defs: CallsiteDefs,
+}
+
+struct SemanticClosedCapture {
+    defs: SemanticClosedDefs,
 }
 
 struct EntryDispatchCapture {
@@ -1794,6 +2093,38 @@ impl CallsiteCapture {
     }
 }
 
+impl SemanticClosedCapture {
+    fn new() -> Self {
+        Self {
+            defs: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(SemanticClosedCaptureHandler {
+            defs: self.defs.clone(),
+        })
+    }
+
+    fn last(&self, root_id: crate::compiler2::RootId) -> SemanticClosedRecord {
+        self.defs
+            .borrow()
+            .iter()
+            .rev()
+            .find(|record| record.root_id == root_id)
+            .cloned()
+            .unwrap_or_else(|| panic!("semantic_closed.defined for {root_id:?}"))
+    }
+
+    fn count(&self, root_id: crate::compiler2::RootId) -> usize {
+        self.defs
+            .borrow()
+            .iter()
+            .filter(|record| record.root_id == root_id)
+            .count()
+    }
+}
+
 impl GuardDispatchCapture {
     fn new() -> Self {
         Self {
@@ -1882,6 +2213,10 @@ struct ModuleCaptureHandler {
 
 struct CallsiteCaptureHandler {
     defs: CallsiteDefs,
+}
+
+struct SemanticClosedCaptureHandler {
+    defs: SemanticClosedDefs,
 }
 
 struct EntryDispatchCaptureHandler {
@@ -2018,6 +2353,36 @@ impl Handler for CallsiteCaptureHandler {
         self.defs.borrow_mut().push(CallsiteDefinedRecord {
             key: key.clone(),
             summary: summary.clone(),
+        });
+    }
+}
+
+impl Handler for SemanticClosedCaptureHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if event.name != ["fz", "compiler2", "semantic_closed", "defined"] || event.kind != EventKind::Event {
+            return;
+        }
+        let Some(Value::U64(root_id)) = event.measurements.get("root_id") else {
+            return;
+        };
+        let Some(activations) = event
+            .metadata
+            .get("activations")
+            .and_then(|value| value.downcast_ref::<Vec<ActivationKey>>())
+        else {
+            return;
+        };
+        let Some(executables) = event
+            .metadata
+            .get("executables")
+            .and_then(|value| value.downcast_ref::<Vec<ExecutableKey>>())
+        else {
+            return;
+        };
+        self.defs.borrow_mut().push(SemanticClosedRecord {
+            root_id: crate::compiler2::RootId::from_u32(*root_id as u32),
+            activations: activations.clone(),
+            executables: executables.clone(),
         });
     }
 }
