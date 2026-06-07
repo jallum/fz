@@ -1,6 +1,9 @@
 use super::{CodeSubmission, Compiler2, DriveOutcome, Job};
-use crate::telemetry::capture::OwnedEvent;
+use crate::telemetry::handler::{Event, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind, Value};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 
 struct ContractCase<'a> {
     name: &'a str,
@@ -30,6 +33,8 @@ fn run_contract(case: ContractCase<'_>) {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
+    let jobs = JobCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], jobs.handler());
     let mut compiler = Compiler2::new(&tel);
 
     let code_id = compiler.submit_code(CodeSubmission {
@@ -50,13 +55,10 @@ fn run_contract(case: ContractCase<'_>) {
         "{} should report the submitted code id",
         case.name
     );
-    let submitted_name = match submitted_event.metadata.get("name") {
-        Some(Value::Str(name)) => name.as_ref(),
-        other => panic!("submitted event missing name metadata: {other:?}"),
-    };
     assert_eq!(
-        submitted_name, case.source_name,
-        "{} should report the source name",
+        submitted_event.metadata.len(),
+        0,
+        "{} should not durable-capture synthesized code submission metadata",
         case.name
     );
     let submitted_bytes = match submitted_event.measurements.get("bytes") {
@@ -71,7 +73,7 @@ fn run_contract(case: ContractCase<'_>) {
     );
 
     assert_eq!(
-        job_stops(&capture, "IndexCode").len(),
+        jobs.stop_count(Job::IndexCode(code_id)),
         0,
         "{} should not index before drive runs",
         case.name
@@ -111,32 +113,27 @@ fn run_contract(case: ContractCase<'_>) {
         "{} should only process the index job without explicit demand",
         case.name
     );
-    let drive_outcome = match drive_stop.metadata.get("outcome") {
-        Some(Value::Str(value)) => value.as_ref(),
-        other => panic!("drive stop missing outcome metadata: {other:?}"),
-    };
     assert_eq!(
-        drive_outcome, "resolved",
-        "{} should close drive with resolved outcome",
+        drive_stop.metadata.len(),
+        0,
+        "{} should not durable-capture resolved drive metadata",
         case.name
     );
-
-    let indexed_start = job_start(&capture, "IndexCode", code_id.as_u32() as u64);
+    let indexed_start = jobs.start(Job::IndexCode(code_id));
     assert_eq!(
         indexed_start.parent_span_id, drive_span.span_id,
         "{} should start indexed work under the drive span",
         case.name
     );
-    let indexed_stop = job_stop(&capture, &indexed_start);
+    let indexed_stop = jobs.stop(Job::IndexCode(code_id));
     assert_eq!(
         indexed_stop.parent_span_id, drive_span.span_id,
         "{} should emit indexed work under the drive span",
         case.name
     );
-    assert_eq!(
-        metadata_str(&indexed_stop, "outcome"),
-        "ok",
-        "{} should close the indexing job with ok outcome",
+    assert!(
+        indexed_stop.effects_present,
+        "{} should close the indexing job with effects metadata",
         case.name
     );
 
@@ -154,7 +151,7 @@ fn run_contract(case: ContractCase<'_>) {
         case.name
     );
     assert_eq!(
-        job_stops(&capture, "IndexCode").len(),
+        jobs.stop_count(Job::IndexCode(code_id)),
         1,
         "{} should close exactly one IndexCode job span",
         case.name
@@ -169,8 +166,12 @@ fn run_contract(case: ContractCase<'_>) {
         case.name
     );
     assert!(
-        indexed_stop.metadata.get("effects").is_none(),
-        "{} capture should not durable-copy opaque job effects",
+        capture
+            .find(&["fz", "compiler2", "job"])
+            .into_iter()
+            .filter(|event| event.kind == EventKind::SpanStop && event.span_id == indexed_stop.span_id)
+            .all(|event| event.metadata.get("effects").is_none()),
+        "{} generic capture should not durable-copy opaque job effects",
         case.name
     );
     assert_eq!(
@@ -210,7 +211,7 @@ fn run_contract(case: ContractCase<'_>) {
         case.name
     );
     assert_eq!(
-        job_stops(&capture, "IndexCode").len(),
+        jobs.stop_count(Job::IndexCode(code_id)),
         1,
         "{} should close exactly one IndexCode job span",
         case.name
@@ -229,46 +230,100 @@ fn run_contract(case: ContractCase<'_>) {
     );
 }
 
-fn job_start(capture: &Capture, job_kind: &str, id: u64) -> OwnedEvent {
-    capture
-        .find(&["fz", "compiler2", "job"])
-        .into_iter()
-        .find(|event| {
-            event.kind == EventKind::SpanStart
-                && matches!(event.metadata.get("kind"), Some(Value::Str(kind)) if kind.as_ref() == job_kind)
-                && matches!(event.metadata.get("id"), Some(Value::U64(value)) if *value == id)
-        })
-        .unwrap_or_else(|| panic!("{job_kind} job start event for id {id}"))
+#[derive(Debug, Clone)]
+struct JobSpanStart {
+    job: Job,
+    parent_span_id: u64,
 }
 
-fn job_stop(capture: &Capture, start: &OwnedEvent) -> OwnedEvent {
-    capture
-        .find(&["fz", "compiler2", "job"])
-        .into_iter()
-        .find(|event| event.kind == EventKind::SpanStop && event.span_id == start.span_id)
-        .unwrap_or_else(|| panic!("job stop event for span {}", start.span_id))
+#[derive(Debug, Clone)]
+struct JobSpanStop {
+    job: Job,
+    span_id: u64,
+    parent_span_id: u64,
+    effects_present: bool,
 }
 
-fn job_stops(capture: &Capture, job_kind: &str) -> Vec<OwnedEvent> {
-    capture
-        .find(&["fz", "compiler2", "job"])
-        .into_iter()
-        .filter(|event| {
-            event.kind == EventKind::SpanStart
-                && matches!(event.metadata.get("kind"), Some(Value::Str(kind)) if kind.as_ref() == job_kind)
-        })
-        .filter_map(|start| {
-            capture
-                .find(&["fz", "compiler2", "job"])
-                .into_iter()
-                .find(|event| event.kind == EventKind::SpanStop && event.span_id == start.span_id)
-        })
-        .collect()
+struct JobCapture {
+    live: Rc<RefCell<HashMap<u64, Job>>>,
+    starts: Rc<RefCell<Vec<JobSpanStart>>>,
+    stops: Rc<RefCell<Vec<JobSpanStop>>>,
 }
 
-fn metadata_str<'a>(event: &'a OwnedEvent, key: &str) -> &'a str {
-    match event.metadata.get(key) {
-        Some(Value::Str(value)) => value.as_ref(),
-        other => panic!("metadata key `{key}` missing or not str: {other:?}"),
+impl JobCapture {
+    fn new() -> Self {
+        Self {
+            live: Rc::new(RefCell::new(HashMap::new())),
+            starts: Rc::new(RefCell::new(Vec::new())),
+            stops: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(JobCaptureHandler {
+            live: self.live.clone(),
+            starts: self.starts.clone(),
+            stops: self.stops.clone(),
+        })
+    }
+
+    fn start(&self, job: Job) -> JobSpanStart {
+        self.starts
+            .borrow()
+            .iter()
+            .find(|start| start.job == job)
+            .cloned()
+            .unwrap_or_else(|| panic!("job start event for {job:?}"))
+    }
+
+    fn stop(&self, job: Job) -> JobSpanStop {
+        self.stops
+            .borrow()
+            .iter()
+            .find(|stop| stop.job == job)
+            .cloned()
+            .unwrap_or_else(|| panic!("job stop event for {job:?}"))
+    }
+
+    fn stop_count(&self, job: Job) -> usize {
+        self.stops.borrow().iter().filter(|stop| stop.job == job).count()
+    }
+}
+
+struct JobCaptureHandler {
+    live: Rc<RefCell<HashMap<u64, Job>>>,
+    starts: Rc<RefCell<Vec<JobSpanStart>>>,
+    stops: Rc<RefCell<Vec<JobSpanStop>>>,
+}
+
+impl Handler for JobCaptureHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if event.name != ["fz", "compiler2", "job"] {
+            return;
+        }
+        match event.kind {
+            EventKind::SpanStart => {
+                let Some(job) = event.metadata.get("job").and_then(|value| value.downcast_ref::<Job>()) else {
+                    return;
+                };
+                self.live.borrow_mut().insert(event.span_id, job.clone());
+                self.starts.borrow_mut().push(JobSpanStart {
+                    job: job.clone(),
+                    parent_span_id: event.parent_span_id,
+                });
+            }
+            EventKind::SpanStop => {
+                let Some(job) = self.live.borrow_mut().remove(&event.span_id) else {
+                    return;
+                };
+                self.stops.borrow_mut().push(JobSpanStop {
+                    job,
+                    span_id: event.span_id,
+                    parent_span_id: event.parent_span_id,
+                    effects_present: event.metadata.get("effects").is_some(),
+                });
+            }
+            EventKind::Event | EventKind::SpanException => {}
+        }
     }
 }

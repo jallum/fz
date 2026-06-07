@@ -76,7 +76,6 @@ impl<'a> World<'a> {
     }
 
     pub fn submit_code(&mut self, name: Option<String>, text: String) -> CodeId {
-        let submitted_name = name.clone();
         let bytes = text.len() as u64;
         let code_id = self.code.define(name, text);
         self.work_graph.enqueue(Job::IndexCode(code_id));
@@ -89,9 +88,7 @@ impl<'a> World<'a> {
                 code_id: code_id.as_u32() as u64,
                 bytes: bytes,
             },
-            &metadata! {
-                name: submitted_name.as_deref().unwrap_or("<anonymous>"),
-            },
+            &metadata! {},
         );
         code_id
     }
@@ -113,18 +110,20 @@ impl<'a> World<'a> {
             self.work_graph.enqueue(Job::ScopeCode(code_id));
         }
         self.work_graph.enqueue(Job::SeedRoot(root_id));
+        let root = self.roots.get(root_id);
+        let function_ref = self.functions.reference_for(function);
         self.tel.execute(
             &["fz", "compiler2", "root", "submitted"],
             &measurements! {
                 root_id: root_id.as_u32() as u64,
+                module_id: module.as_u32() as u64,
                 function_id: function.as_u32() as u64,
                 arity: arity as u64,
                 pending_codes: self.code.len() as u64,
             },
             &metadata! {
-                module_name: module_name.as_deref().unwrap_or("<top-level>"),
-                name: name.as_str(),
-                need: need.as_str(),
+                root: opaque(root),
+                function_ref: opaque(function_ref),
             },
         );
         root_id
@@ -168,9 +167,9 @@ impl<'a> World<'a> {
     }
 
     pub fn define_module(&mut self, id: ModuleId, namespace: Namespace, exports: Vec<ModuleExport>) -> u64 {
-        let (code, name) = self.module_definition_metadata(id);
+        let code = self.module_definition_code(id);
         let revision = self.modules.define(id, code, namespace, exports);
-        let source_name = self.code.name(code).unwrap_or("<anonymous>");
+        let module = self.modules.get(id);
         self.tel.execute(
             &["fz", "compiler2", "module", "defined"],
             &measurements! {
@@ -179,8 +178,7 @@ impl<'a> World<'a> {
                 revision: revision,
             },
             &metadata! {
-                source_name: source_name,
-                module_name: name.as_str(),
+                module: opaque(module),
             },
         );
         revision
@@ -215,33 +213,24 @@ impl<'a> World<'a> {
         ast: FnDef,
     ) -> (FunctionId, u64) {
         let arity = ast.arity();
-        let id = self.functions.reference(module, local_name.clone(), arity);
-        let module_name = (!module.is_global()).then(|| self.modules.name(module)).flatten();
-        let fq_name = match module_name {
-            Some(module_name) => format!("{module_name}.{local_name}"),
-            None => local_name.clone(),
-        };
-        let source_name = self.code.name(code).unwrap_or("<anonymous>");
-        let kind = if ast.is_macro { "macro" } else { "function" };
-        let visibility = if ast.is_private { "private" } else { "public" };
         let clauses = ast.clauses.len() as u64;
+        let id = self.functions.reference(module, local_name, arity);
         let revision = self.functions.define(id, FunctionDef { code, namespace, ast });
+        let function = self.functions.get(id);
+        let function_ref = self.functions.reference_for(id);
         self.tel.execute(
             &["fz", "compiler2", "function", "defined"],
             &measurements! {
                 code_id: code.as_u32() as u64,
+                module_id: module.as_u32() as u64,
                 function_id: id.as_u32() as u64,
                 revision: revision,
                 arity: arity as u64,
                 clauses: clauses,
             },
             &metadata! {
-                source_name: source_name,
-                module_name: module_name.unwrap_or("<top-level>"),
-                name: local_name.as_str(),
-                fq_name: fq_name.as_str(),
-                kind: kind,
-                visibility: visibility,
+                function: opaque(function),
+                function_ref: opaque(function_ref),
             },
         );
         (id, revision)
@@ -266,19 +255,13 @@ impl<'a> World<'a> {
                 ast: ast.clone(),
             },
         );
-        let module_name = if owner_module.is_global() {
-            "<top-level>".to_string()
-        } else {
-            self.modules
-                .name(owner_module)
-                .expect("generated function modules should have a reverse lookup")
-                .to_string()
-        };
-        let source_name = self.code.name(owner_code).unwrap_or("<anonymous>");
+        let function = self.functions.get(id);
+        let function_ref = self.functions.reference_for(id);
         self.tel.execute(
             &["fz", "compiler2", "function", "defined"],
             &measurements! {
                 code_id: owner_code.as_u32() as u64,
+                module_id: owner_module.as_u32() as u64,
                 function_id: id.as_u32() as u64,
                 revision: revision,
                 arity: ast.arity() as u64,
@@ -286,42 +269,63 @@ impl<'a> World<'a> {
                 owner_function_id: owner.as_u32() as u64,
             },
             &metadata! {
-                source_name: source_name,
-                module_name: module_name.as_str(),
-                name: ast.name.as_str(),
-                fq_name: ast.name.as_str(),
-                kind: "generated",
-                visibility: "private",
+                function: opaque(function),
+                function_ref: opaque(function_ref),
             },
         );
         (id, revision)
     }
 
     pub(crate) fn define_lowered_body(&mut self, function: FunctionId, body: LoweredBody) -> u64 {
-        self.bodies.define(function, body)
+        let revision = self.bodies.define(function, body.clone());
+        let function_ref = self.functions.reference_for(function);
+        let slot = self.functions.get(function);
+        let def = match &slot.state {
+            super::identity::FunctionState::Defined { def } => def,
+            super::identity::FunctionState::Placeholder => {
+                panic!("lowered bodies should only be defined for known functions")
+            }
+        };
+        let (clauses, generated, arity) = match &body {
+            LoweredBody::Extern { arity, .. } => (0_u64, 0_u64, *arity as u64),
+            LoweredBody::Clauses { clauses, generated } => {
+                (clauses.len() as u64, generated.len() as u64, def.ast.arity() as u64)
+            }
+        };
+        self.tel.execute(
+            &["fz", "compiler2", "lowered_body", "defined"],
+            &measurements! {
+                code_id: def.code.as_u32() as u64,
+                module_id: function_ref.module.as_u32() as u64,
+                function_id: function.as_u32() as u64,
+                revision: revision,
+                arity: arity,
+                clauses: clauses,
+                generated: generated,
+            },
+            &metadata! {
+                function_ref: opaque(function_ref),
+                body: opaque(&body),
+            },
+        );
+        revision
     }
 
     pub(crate) fn define_guard_dispatch(&mut self, function: FunctionId, dispatch: PatternGuardDispatch) -> u64 {
-        let def = self.function_definition(function);
-        let function_ref = self.functions.reference_for(function);
-        let module_name = if function_ref.module.is_global() {
-            "<top-level>".to_string()
-        } else {
-            self.modules
-                .name(function_ref.module)
-                .expect("named guard dispatch modules should have a reverse lookup")
-                .to_string()
-        };
-        let fq_name = if module_name == "<top-level>" {
-            function_ref.name.clone()
-        } else {
-            format!("{}.{}", module_name, function_ref.name)
-        };
         let revision = self.guard_dispatches.define(function, dispatch.clone());
+        let function_ref = self.functions.reference_for(function);
+        let slot = self.functions.get(function);
+        let def = match &slot.state {
+            super::identity::FunctionState::Defined { def } => def,
+            super::identity::FunctionState::Placeholder => {
+                panic!("guard dispatch should only be defined for known functions")
+            }
+        };
         self.tel.execute(
             &["fz", "compiler2", "guard_dispatch", "defined"],
             &measurements! {
                 code_id: def.code.as_u32() as u64,
+                module_id: function_ref.module.as_u32() as u64,
                 function_id: function.as_u32() as u64,
                 revision: revision,
                 arity: def.ast.arity() as u64,
@@ -330,10 +334,7 @@ impl<'a> World<'a> {
                 pinned: dispatch.plan.pinned.len() as u64,
             },
             &metadata! {
-                source_name: self.code.name(def.code).unwrap_or("<anonymous>"),
-                module_name: module_name.as_str(),
-                name: function_ref.name.as_str(),
-                fq_name: fq_name.as_str(),
+                function_ref: opaque(function_ref),
                 dispatch: opaque(&dispatch),
             },
         );
@@ -341,26 +342,20 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_entry_dispatch(&mut self, function: FunctionId, plan: PatternDispatchPlan) -> u64 {
-        let def = self.function_definition(function);
-        let function_ref = self.functions.reference_for(function);
-        let module_name = if function_ref.module.is_global() {
-            "<top-level>".to_string()
-        } else {
-            self.modules
-                .name(function_ref.module)
-                .expect("named entry dispatch modules should have a reverse lookup")
-                .to_string()
-        };
-        let fq_name = if module_name == "<top-level>" {
-            function_ref.name.clone()
-        } else {
-            format!("{}.{}", module_name, function_ref.name)
-        };
         let revision = self.entry_dispatches.define(function, plan.clone());
+        let function_ref = self.functions.reference_for(function);
+        let slot = self.functions.get(function);
+        let def = match &slot.state {
+            super::identity::FunctionState::Defined { def } => def,
+            super::identity::FunctionState::Placeholder => {
+                panic!("entry dispatch should only be defined for known functions")
+            }
+        };
         self.tel.execute(
             &["fz", "compiler2", "entry_dispatch", "defined"],
             &measurements! {
                 code_id: def.code.as_u32() as u64,
+                module_id: function_ref.module.as_u32() as u64,
                 function_id: function.as_u32() as u64,
                 revision: revision,
                 arity: def.ast.arity() as u64,
@@ -369,10 +364,7 @@ impl<'a> World<'a> {
                 pinned: plan.pinned.len() as u64,
             },
             &metadata! {
-                source_name: self.code.name(def.code).unwrap_or("<anonymous>"),
-                module_name: module_name.as_str(),
-                name: function_ref.name.as_str(),
-                fq_name: fq_name.as_str(),
+                function_ref: opaque(function_ref),
                 plan: opaque(&plan),
             },
         );
@@ -513,12 +505,9 @@ impl<'a> World<'a> {
         }
     }
 
-    fn module_definition_metadata(&self, module: ModuleId) -> (CodeId, String) {
+    fn module_definition_code(&self, module: ModuleId) -> CodeId {
         match &self.modules.get(module).state {
-            ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. } => (
-                source.code,
-                self.qualified_module_name(source.parent, &source.local_name),
-            ),
+            ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. } => source.code,
             ModuleState::Placeholder | ModuleState::Indexed(_) => {
                 panic!("modules should be scoped before definition")
             }

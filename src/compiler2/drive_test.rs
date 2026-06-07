@@ -1,10 +1,11 @@
 use super::{CodeSubmission, Compiler2, DriveOutcome, ExactPattern, ExecutableNeed, Job, RootSubmission};
 use crate::compiler2::drive::JobEffects;
-use crate::compiler2::{ActivationKey, ExecutableKey, FactKey, FunctionId};
+use crate::compiler2::{
+    ActivationKey, ExecutableKey, FactKey, FunctionId, FunctionRef, LoweredBody, LoweredStep, Module, ModuleId,
+};
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
-use crate::telemetry::capture::OwnedEvent;
 use crate::telemetry::handler::{Event, EventKind, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use std::cell::RefCell;
@@ -12,10 +13,13 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 type OutputFacts = Vec<(FactKey, u64)>;
-type JobOutputMap = Rc<RefCell<HashMap<(String, u64), Vec<OutputFacts>>>>;
-type EntryDispatchMap = Rc<RefCell<HashMap<(String, u64), Vec<PatternDispatchPlan>>>>;
-type GuardDispatchMap = Rc<RefCell<HashMap<(String, u64), Vec<PatternGuardDispatch>>>>;
-type SpanJobs = Rc<RefCell<HashMap<u64, (String, u64)>>>;
+type JobOutputMap = Rc<RefCell<HashMap<Job, Vec<OutputFacts>>>>;
+type EntryDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternDispatchPlan>>>>;
+type GuardDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternGuardDispatch>>>>;
+type LoweredBodyDefs = Rc<RefCell<HashMap<FunctionId, Vec<LoweredBody>>>>;
+type SpanJobs = Rc<RefCell<HashMap<u64, Job>>>;
+type FunctionDefs = Rc<RefCell<Vec<FunctionDefinedRecord>>>;
+type ModuleDefs = Rc<RefCell<HashMap<ModuleId, Vec<Module>>>>;
 
 #[test]
 fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_bodies() {
@@ -24,6 +28,10 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
     tel.attach(&[], capture.handler());
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
 
     let mut compiler = Compiler2::new(&tel);
     let source = format!(
@@ -37,20 +45,15 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
     });
 
     assert_eq!(
-        job_stops(&capture, "IndexCode").len(),
+        outputs.stops_matching(|job| matches!(job, Job::IndexCode(_))).len(),
         0,
         "submit_code should not index eagerly"
     );
 
     assert_resolved(compiler.drive(), "first drive should index quicksort plus foo");
 
-    let indexed_start = job_start(&capture, "IndexCode", code_id.as_u32() as u64);
-    let indexed_stop = job_stop(&capture, &indexed_start);
-    assert_eq!(
-        metadata_str(&indexed_stop, "outcome"),
-        "ok",
-        "indexing job should finish ok"
-    );
+    let indexed_stop = outputs.stop(Job::IndexCode(code_id));
+    assert!(indexed_stop.effects_present, "indexing job should finish with effects");
 
     assert!(
         compiler.demand(Job::ScopeCode(code_id)),
@@ -58,17 +61,21 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
     );
     assert_resolved(compiler.drive(), "second drive should define quicksort plus foo");
 
-    let mut names = capture
-        .find(&["fz", "compiler2", "function", "defined"])
+    let mut names = functions
+        .all()
         .into_iter()
-        .map(|event| {
+        .map(|record| {
             (
-                metadata_str(&event, "name").to_string(),
-                measurement_u64(&event, "arity"),
-                metadata_str(&event, "module_name").to_string(),
-                metadata_str(&event, "fq_name").to_string(),
-                metadata_str(&event, "kind").to_string(),
-                measurement_u64(&event, "clauses"),
+                record.function_ref.name.clone(),
+                record.arity,
+                function_module_name(&record, &modules),
+                function_fq_name(&record, &modules),
+                if record.owner_function_id.is_some() {
+                    "generated".to_string()
+                } else {
+                    "function".to_string()
+                },
+                record.clauses,
             )
         })
         .collect::<Vec<_>>();
@@ -102,18 +109,25 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
         5,
         "indexing should emit one function.defined event per function"
     );
+    assert!(
+        capture
+            .find(&["fz", "compiler2", "function", "defined"])
+            .into_iter()
+            .all(|event| event.metadata.len() == 0),
+        "generic capture should not durable-copy synthesized function definition metadata"
+    );
     assert_eq!(
         capture.count(&["fz", "compiler2", "code", "indexed"]),
         0,
         "indexing should not emit a separate code.indexed event"
     );
     assert_eq!(
-        job_stops(&capture, "IndexCode").len(),
+        outputs.stops_matching(|job| matches!(job, Job::IndexCode(_))).len(),
         1,
         "indexing should close one IndexCode job span"
     );
     assert_eq!(
-        job_stops(&capture, "LowerFunction").len(),
+        outputs.stops_matching(|job| matches!(job, Job::LowerFunction(_))).len(),
         0,
         "indexing should not lower any function bodies"
     );
@@ -134,9 +148,7 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
         "indexing should stay above planning"
     );
 
-    let outputs = outputs
-        .take("IndexCode", code_id.as_u32() as u64)
-        .expect("IndexCode job effects");
+    let outputs = outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects");
     assert_eq!(
         outputs
             .iter()
@@ -174,6 +186,8 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
     tel.attach(&[], capture.handler());
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
 
     let mut compiler = Compiler2::new(&tel);
     let _code_id = compiler.submit_code(CodeSubmission {
@@ -204,26 +218,21 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         "root submission should report the returned root id"
     );
     assert_eq!(
-        metadata_str(&root_submitted, "module_name"),
-        "<top-level>",
-        "root submission should mark top-level entry functions clearly"
+        measurement_u64(&root_submitted, "module_id"),
+        ModuleId::GLOBAL.as_u32() as u64,
+        "root submission should mark top-level entries with the global module id"
     );
     assert_eq!(
-        metadata_str(&root_submitted, "name"),
-        "main",
-        "root submission should report the entry function name"
-    );
-    assert_eq!(
-        metadata_str(&root_submitted, "need"),
-        "value",
-        "root submission should report the requested executable need"
+        root_submitted.metadata.len(),
+        0,
+        "generic capture should not durable-copy opaque root submission metadata",
     );
 
-    let main_id = function_id(&capture, "main", 0);
-    let foo_id = function_id(&capture, "foo", 0);
+    let main_id = function_id(&functions, "main", 0);
+    let foo_id = function_id(&functions, "foo", 0);
 
     let lower_outputs = outputs
-        .take("LowerFunction", main_id.as_u32() as u64)
+        .take(Job::LowerFunction(main_id))
         .expect("LowerFunction job effects for main/0");
     assert!(
         lower_outputs.contains(&(FactKey::LoweredBody(main_id), 1)),
@@ -236,9 +245,7 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         "lowering the entry function should keep uncalled foo/0 cold"
     );
 
-    let seed_outputs = outputs
-        .take("SeedRoot", root_id.as_u32() as u64)
-        .expect("SeedRoot job effects");
+    let seed_outputs = outputs.take(Job::SeedRoot(root_id)).expect("SeedRoot job effects");
     assert!(
         seed_outputs.contains(&(FactKey::RootEntry(root_id), 1)),
         "SeedRoot should publish the root entry fact"
@@ -289,7 +296,7 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
     );
 
     let closure_outputs = outputs
-        .take("CheckSemanticClosure", root_id.as_u32() as u64)
+        .take(Job::CheckSemanticClosure(root_id))
         .expect("CheckSemanticClosure job effects");
     assert!(
         closure_outputs.contains(&(FactKey::SemanticClosed(root_id), 1)),
@@ -297,22 +304,24 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
     );
 
     assert_eq!(
-        job_stops(&capture, "ScopeCode").len(),
+        outputs.stops_matching(|job| matches!(job, Job::ScopeCode(_))).len(),
         1,
         "root submission should pull one top-level scope job for the single code input"
     );
     assert_eq!(
-        job_stops(&capture, "SeedRoot").len(),
+        outputs.stops_matching(|job| matches!(job, Job::SeedRoot(_))).len(),
         2,
         "root submission should publish the root fact first, then rerun once the entry definition exists"
     );
     assert_eq!(
-        job_stops(&capture, "CheckSemanticClosure").len(),
+        outputs
+            .stops_matching(|job| matches!(job, Job::CheckSemanticClosure(_)))
+            .len(),
         1,
         "root submission should run the initial closure check once"
     );
     assert_eq!(
-        job_stops(&capture, "LowerFunction").len(),
+        outputs.stops_matching(|job| matches!(job, Job::LowerFunction(_))).len(),
         1,
         "root submission should lower only the entry body"
     );
@@ -364,17 +373,6 @@ fn compiler2_submit_root_before_code_reports_unresolved_until_entry_is_defined()
         other => panic!("root-before-code should finish unresolved: {other:?}"),
     }
 
-    let drive_stop = capture
-        .find(&["fz", "compiler2", "drive"])
-        .into_iter()
-        .find(|event| event.kind == EventKind::SpanStop)
-        .expect("drive stop event");
-    assert_eq!(
-        metadata_str(&drive_stop, "outcome"),
-        "unresolved",
-        "drive should close as unresolved while the root is waiting on code"
-    );
-
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/late_main.fz".to_string()),
         text: "fn main(), do: 42\n".to_string(),
@@ -392,6 +390,8 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
     tel.attach(&[], capture.handler());
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
@@ -406,7 +406,7 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
     });
     assert_resolved(compiler.drive(), "first drive should seed the initial root");
     assert_eq!(
-        job_stops(&capture, "SeedRoot").len(),
+        outputs.stops_matching(|job| matches!(job, Job::SeedRoot(_))).len(),
         2,
         "entry seeding should settle before later code arrives"
     );
@@ -421,9 +421,9 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
     );
 
     let scope_outputs = outputs
-        .take("ScopeCode", late_code_id.as_u32() as u64)
+        .take(Job::ScopeCode(late_code_id))
         .expect("late code ScopeCode job effects");
-    let foo_id = function_id(&capture, "foo", 0);
+    let foo_id = function_id(&functions, "foo", 0);
     assert!(
         scope_outputs
             .iter()
@@ -431,17 +431,19 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
         "late code should define foo/0 without an explicit ScopeCode demand"
     );
     assert_eq!(
-        job_stops(&capture, "SeedRoot").len(),
+        outputs.stops_matching(|job| matches!(job, Job::SeedRoot(_))).len(),
         2,
         "late unrelated code should not reseed the existing root"
     );
     assert_eq!(
-        job_stops(&capture, "CheckSemanticClosure").len(),
+        outputs
+            .stops_matching(|job| matches!(job, Job::CheckSemanticClosure(_)))
+            .len(),
         1,
         "late unrelated code should not reopen semantic closure for the existing root"
     );
     assert_eq!(
-        job_stops(&capture, "LowerFunction").len(),
+        outputs.stops_matching(|job| matches!(job, Job::LowerFunction(_))).len(),
         1,
         "late unrelated code should not lower foo/0 just because a root already exists"
     );
@@ -454,6 +456,8 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
     tel.attach(&[], capture.handler());
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
@@ -472,9 +476,9 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
         "rooting enum_reduce should lower only the reachable entry function",
     );
 
-    let main_id = function_id(&capture, "main", 0);
+    let main_id = function_id(&functions, "main", 0);
     let lower_outputs = outputs
-        .take("LowerFunction", main_id.as_u32() as u64)
+        .take(Job::LowerFunction(main_id))
         .expect("LowerFunction job effects for enum_reduce main/0");
     let generated = lower_outputs
         .iter()
@@ -499,7 +503,7 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
         "lowering main/0 should not eagerly lower the generated reducer lambda"
     );
     assert_eq!(
-        job_stops(&capture, "LowerFunction").len(),
+        outputs.stops_matching(|job| matches!(job, Job::LowerFunction(_))).len(),
         1,
         "lowering enum_reduce should stop at main/0 until something demands the lambda body"
     );
@@ -516,12 +520,146 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
 }
 
 #[test]
+fn compiler2_lowered_body_keeps_clause_projections_separate_from_entry_matching() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let bodies = LoweredBodyCapture::new();
+    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let code_id = compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/lowered_clause_projections.fz".to_string()),
+        text: r#"
+fn positive(n), do: n > 0
+fn wanted({:ok, {n, _}}) when positive(n), do: n
+fn wanted(_), do: 0
+"#
+        .to_string(),
+    });
+
+    assert_resolved(compiler.drive(), "first drive should index the clause fixture");
+    assert!(
+        compiler.demand(Job::ScopeCode(code_id)),
+        "lowering still needs defined functions",
+    );
+    assert_resolved(compiler.drive(), "second drive should define the clause fixture");
+
+    let wanted_id = function_id(&functions, "wanted", 1);
+    assert!(
+        compiler.demand(Job::LowerFunction(wanted_id)),
+        "wanted/1 should be demandable for lowering",
+    );
+    assert_resolved(
+        compiler.drive(),
+        "lowering should publish a body without re-embedding entry dispatch",
+    );
+
+    let lowered_outputs = outputs
+        .take(Job::LowerFunction(wanted_id))
+        .expect("LowerFunction job effects for wanted/1");
+    assert!(
+        lowered_outputs.contains(&(FactKey::LoweredBody(wanted_id), 1)),
+        "lowering wanted/1 should publish its lowered body fact",
+    );
+
+    let body = lowered_body(&bodies, wanted_id);
+    let LoweredBody::Clauses { clauses, .. } = body else {
+        panic!("wanted/1 should lower as clauses");
+    };
+    assert_eq!(clauses.len(), 2, "wanted/1 should preserve both source clauses");
+    assert!(
+        !clauses[0].projections.is_empty(),
+        "destructuring heads should retain projection steps after dispatch picks the clause",
+    );
+    assert!(
+        clauses[0]
+            .projections
+            .iter()
+            .all(|step| matches!(step, LoweredStep::TupleField { .. } | LoweredStep::SplitList { .. })),
+        "entry-clause lowering should keep only projection steps and not repeat matcher asserts",
+    );
+}
+
+#[test]
+fn compiler2_lowered_body_keeps_local_match_asserts_inside_the_body() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let bodies = LoweredBodyCapture::new();
+    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let code_id = compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/lowered_local_match.fz".to_string()),
+        text: r#"
+fn main() do
+  {:ok, n} = {:ok, 42}
+  n
+end
+"#
+        .to_string(),
+    });
+
+    assert_resolved(compiler.drive(), "first drive should index the local match fixture");
+    assert!(
+        compiler.demand(Job::ScopeCode(code_id)),
+        "lowering still needs a defined function",
+    );
+    assert_resolved(compiler.drive(), "second drive should define the local match fixture");
+
+    let main_id = function_id(&functions, "main", 0);
+    assert!(
+        compiler.demand(Job::LowerFunction(main_id)),
+        "main/0 should be demandable for lowering",
+    );
+    assert_resolved(compiler.drive(), "lowering should publish the local match body");
+
+    let lowered_outputs = outputs
+        .take(Job::LowerFunction(main_id))
+        .expect("LowerFunction job effects for main/0");
+    assert!(
+        lowered_outputs.contains(&(FactKey::LoweredBody(main_id), 1)),
+        "lowering main/0 should publish its lowered body fact",
+    );
+
+    let body = lowered_body(&bodies, main_id);
+    let LoweredBody::Clauses { clauses, .. } = body else {
+        panic!("main/0 should lower as clauses");
+    };
+    assert_eq!(
+        clauses[0].projections.len(),
+        0,
+        "main/0 has no head params to project after entry dispatch",
+    );
+    assert!(
+        clauses[0].body.steps.iter().any(|step| {
+            matches!(
+                step,
+                LoweredStep::AssertTuple { .. } | LoweredStep::AssertLiteral { .. } | LoweredStep::AssertSame { .. }
+            )
+        }),
+        "local match expressions should still lower their own assert steps inside the body",
+    );
+}
+
+#[test]
 fn compiler2_guard_dispatch_reifies_single_clause_and_transitive_helpers() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
     let guard_defs = GuardDispatchCapture::new();
     tel.attach(&["fz", "compiler2", "guard_dispatch", "defined"], guard_defs.handler());
 
@@ -542,8 +680,8 @@ fn wanted(n), do: positive(n)
     );
     assert_resolved(compiler.drive(), "second drive should define helper functions");
 
-    let positive_id = function_id(&capture, "positive", 1);
-    let wanted_id = function_id(&capture, "wanted", 1);
+    let positive_id = function_id(&functions, "positive", 1);
+    let wanted_id = function_id(&functions, "wanted", 1);
 
     assert!(
         compiler.demand(Job::ReifyGuardDispatch(positive_id)),
@@ -551,13 +689,13 @@ fn wanted(n), do: positive(n)
     );
     assert_resolved(compiler.drive(), "positive/1 should reify into a guard dispatch");
     let positive_outputs = outputs
-        .take("ReifyGuardDispatch", positive_id.as_u32() as u64)
+        .take(Job::ReifyGuardDispatch(positive_id))
         .expect("ReifyGuardDispatch job effects for positive/1");
     assert!(
         positive_outputs.contains(&(FactKey::GuardDispatch(positive_id), 1)),
         "positive/1 should publish its guard dispatch fact"
     );
-    let positive_dispatch = guard_dispatch(&guard_defs, "positive", 1);
+    let positive_dispatch = guard_dispatch(&guard_defs, positive_id);
     assert!(
         !guard_dispatch_has_nested_dispatch(&positive_dispatch),
         "single-clause positive/1 should reify directly without nested helper dispatch"
@@ -572,13 +710,13 @@ fn wanted(n), do: positive(n)
         "wanted/1 should reify through its transitive helper call",
     );
     let wanted_outputs = outputs
-        .take("ReifyGuardDispatch", wanted_id.as_u32() as u64)
+        .take(Job::ReifyGuardDispatch(wanted_id))
         .expect("ReifyGuardDispatch job effects for wanted/1");
     assert!(
         wanted_outputs.contains(&(FactKey::GuardDispatch(wanted_id), 1)),
         "wanted/1 should publish its guard dispatch fact"
     );
-    let wanted_dispatch = guard_dispatch(&guard_defs, "wanted", 1);
+    let wanted_dispatch = guard_dispatch(&guard_defs, wanted_id);
     assert!(
         guard_dispatch_has_nested_dispatch(&wanted_dispatch),
         "transitive helper calls should reify as nested guard dispatch"
@@ -592,6 +730,8 @@ fn compiler2_guard_dispatch_threads_call_arguments_and_destructuring() {
     tel.attach(&[], capture.handler());
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
     let guard_defs = GuardDispatchCapture::new();
     tel.attach(&["fz", "compiler2", "guard_dispatch", "defined"], guard_defs.handler());
 
@@ -614,7 +754,7 @@ fn wanted(_), do: false
     );
     assert_resolved(compiler.drive(), "second drive should define destructuring helpers");
 
-    let wanted_id = function_id(&capture, "wanted", 1);
+    let wanted_id = function_id(&functions, "wanted", 1);
     assert!(
         compiler.demand(Job::ReifyGuardDispatch(wanted_id)),
         "multi-clause wanted/1 should be demandable"
@@ -625,13 +765,13 @@ fn wanted(_), do: false
     );
 
     let wanted_outputs = outputs
-        .take("ReifyGuardDispatch", wanted_id.as_u32() as u64)
+        .take(Job::ReifyGuardDispatch(wanted_id))
         .expect("ReifyGuardDispatch job effects for destructuring wanted/1");
     assert!(
         wanted_outputs.contains(&(FactKey::GuardDispatch(wanted_id), 1)),
         "multi-clause wanted/1 should publish its guard dispatch fact"
     );
-    let wanted_dispatch = guard_dispatch(&guard_defs, "wanted", 1);
+    let wanted_dispatch = guard_dispatch(&guard_defs, wanted_id);
     assert_eq!(
         wanted_dispatch.bodies.len(),
         2,
@@ -657,6 +797,8 @@ fn compiler2_guard_dispatch_rejects_cycles() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
 
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
@@ -675,7 +817,7 @@ fn b(n), do: a(n)
     );
     assert_resolved(compiler.drive(), "second drive should define cyclic helpers");
 
-    let a_id = function_id(&capture, "a", 1);
+    let a_id = function_id(&functions, "a", 1);
     assert!(
         compiler.demand(Job::ReifyGuardDispatch(a_id)),
         "cyclic helper should still be demandable"
@@ -708,6 +850,8 @@ fn compiler2_guard_dispatch_rejects_impure_helpers() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
 
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
@@ -731,7 +875,7 @@ end
     );
     assert_resolved(compiler.drive(), "second drive should define impure helpers");
 
-    let bad_id = function_id(&capture, "bad", 1);
+    let bad_id = function_id(&functions, "bad", 1);
     assert!(
         compiler.demand(Job::ReifyGuardDispatch(bad_id)),
         "impure helper should still be demandable"
@@ -768,6 +912,8 @@ fn compiler2_entry_dispatch_plans_clause_heads_with_preconditions_and_helper_gua
     tel.attach(&[], capture.handler());
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
     let entry_defs = EntryDispatchCapture::new();
     tel.attach(&["fz", "compiler2", "entry_dispatch", "defined"], entry_defs.handler());
 
@@ -794,7 +940,7 @@ end
     );
     let module_ids = module_indexed_ids(
         &outputs
-            .take("IndexCode", code_id.as_u32() as u64)
+            .take(Job::IndexCode(code_id))
             .expect("IndexCode job effects for module-scoped entry dispatch"),
     );
     assert!(
@@ -808,8 +954,8 @@ end
     );
     assert_resolved(compiler.drive(), "third drive should define module-scoped functions");
 
-    let wanted_id = function_id(&capture, "wanted", 1);
-    let positive_id = function_id(&capture, "positive", 1);
+    let wanted_id = function_id(&functions, "wanted", 1);
+    let positive_id = function_id(&functions, "positive", 1);
     assert!(
         compiler.demand(Job::PlanEntryDispatch(wanted_id)),
         "multi-clause wanted/1 should be demandable as entry dispatch",
@@ -820,21 +966,21 @@ end
     );
 
     let helper_outputs = outputs
-        .take("ReifyGuardDispatch", positive_id.as_u32() as u64)
+        .take(Job::ReifyGuardDispatch(positive_id))
         .expect("ReifyGuardDispatch job effects for positive/1");
     assert!(
         helper_outputs.contains(&(FactKey::GuardDispatch(positive_id), 1)),
         "helper planning should automatically publish the nested guard-dispatch fact",
     );
     let wanted_outputs = outputs
-        .take("PlanEntryDispatch", wanted_id.as_u32() as u64)
+        .take(Job::PlanEntryDispatch(wanted_id))
         .expect("PlanEntryDispatch job effects for wanted/1");
     assert!(
         wanted_outputs.contains(&(FactKey::EntryDispatch(wanted_id), 1)),
         "wanted/1 should publish its entry-dispatch fact",
     );
 
-    let plan = entry_dispatch(&entry_defs, "wanted", 1);
+    let plan = entry_dispatch(&entry_defs, wanted_id);
     assert_eq!(
         plan.outcomes.iter().map(|outcome| outcome.body_id).collect::<Vec<_>>(),
         vec![0, 1, 2],
@@ -857,6 +1003,8 @@ fn compiler2_entry_dispatch_plans_trivial_single_clause_functions() {
     tel.attach(&[], capture.handler());
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
     let entry_defs = EntryDispatchCapture::new();
     tel.attach(&["fz", "compiler2", "entry_dispatch", "defined"], entry_defs.handler());
 
@@ -876,7 +1024,7 @@ fn compiler2_entry_dispatch_plans_trivial_single_clause_functions() {
         "second drive should define the single-clause function",
     );
 
-    let wanted_id = function_id(&capture, "wanted", 1);
+    let wanted_id = function_id(&functions, "wanted", 1);
     assert!(
         compiler.demand(Job::PlanEntryDispatch(wanted_id)),
         "single-clause functions should still publish entry dispatch",
@@ -884,14 +1032,14 @@ fn compiler2_entry_dispatch_plans_trivial_single_clause_functions() {
     assert_resolved(compiler.drive(), "single-clause entry dispatch should plan trivially");
 
     let wanted_outputs = outputs
-        .take("PlanEntryDispatch", wanted_id.as_u32() as u64)
+        .take(Job::PlanEntryDispatch(wanted_id))
         .expect("PlanEntryDispatch job effects for single-clause wanted/1");
     assert!(
         wanted_outputs.contains(&(FactKey::EntryDispatch(wanted_id), 1)),
         "single-clause wanted/1 should publish its entry-dispatch fact",
     );
 
-    let plan = entry_dispatch(&entry_defs, "wanted", 1);
+    let plan = entry_dispatch(&entry_defs, wanted_id);
     assert_eq!(plan.outcomes.len(), 1, "trivial entry dispatch should have one outcome");
     assert_eq!(plan.guards.len(), 0, "trivial entry dispatch should not invent guards");
     assert_eq!(
@@ -908,6 +1056,8 @@ fn compiler2_entry_dispatch_recomputes_only_the_dependent_helper_blast_radius() 
     tel.attach(&[], capture.handler());
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
     let entry_defs = EntryDispatchCapture::new();
     tel.attach(&["fz", "compiler2", "entry_dispatch", "defined"], entry_defs.handler());
 
@@ -931,9 +1081,9 @@ fn other(_), do: false
     );
     assert_resolved(compiler.drive(), "second drive should define helper users");
 
-    let positive_id = function_id(&capture, "positive", 1);
-    let wanted_id = function_id(&capture, "wanted", 1);
-    let other_id = function_id(&capture, "other", 1);
+    let positive_id = function_id(&functions, "positive", 1);
+    let wanted_id = function_id(&functions, "wanted", 1);
+    let other_id = function_id(&functions, "other", 1);
 
     assert!(
         compiler.demand(Job::PlanEntryDispatch(wanted_id)),
@@ -946,16 +1096,16 @@ fn other(_), do: false
     assert_resolved(compiler.drive(), "initial entry dispatch planning should resolve");
 
     let _ = outputs
-        .take("ReifyGuardDispatch", positive_id.as_u32() as u64)
+        .take(Job::ReifyGuardDispatch(positive_id))
         .expect("initial helper reification should run");
     let _ = outputs
-        .take("PlanEntryDispatch", wanted_id.as_u32() as u64)
+        .take(Job::PlanEntryDispatch(wanted_id))
         .expect("initial wanted/1 entry dispatch should run");
     let _ = outputs
-        .take("PlanEntryDispatch", other_id.as_u32() as u64)
+        .take(Job::PlanEntryDispatch(other_id))
         .expect("initial other/1 entry dispatch should run");
-    let _ = entry_dispatch(&entry_defs, "wanted", 1);
-    let _ = entry_dispatch(&entry_defs, "other", 1);
+    let _ = entry_dispatch(&entry_defs, wanted_id);
+    let _ = entry_dispatch(&entry_defs, other_id);
 
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_dispatch_blast_radius_v2.fz".to_string()),
@@ -971,21 +1121,21 @@ fn other(_), do: false
     );
 
     let helper_outputs = outputs
-        .take("ReifyGuardDispatch", positive_id.as_u32() as u64)
+        .take(Job::ReifyGuardDispatch(positive_id))
         .expect("helper reification should rerun after helper redefinition");
     assert!(
         helper_outputs.contains(&(FactKey::GuardDispatch(positive_id), 2)),
         "helper reification should publish a revised guard-dispatch fact",
     );
     let wanted_outputs = outputs
-        .take("PlanEntryDispatch", wanted_id.as_u32() as u64)
+        .take(Job::PlanEntryDispatch(wanted_id))
         .expect("dependent wanted/1 entry dispatch should rerun");
     assert!(
         wanted_outputs.contains(&(FactKey::EntryDispatch(wanted_id), 2)),
         "dependent wanted/1 entry dispatch should republish with a new revision",
     );
     assert!(
-        outputs.take("PlanEntryDispatch", other_id.as_u32() as u64).is_none(),
+        outputs.take(Job::PlanEntryDispatch(other_id)).is_none(),
         "independent other/1 entry dispatch should stay cold across helper redefinition",
     );
 }
@@ -997,6 +1147,10 @@ fn compiler2_index_code_recurses_through_nested_modules() {
     tel.attach(&[], capture.handler());
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
 
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
@@ -1014,19 +1168,12 @@ end
     });
 
     assert_resolved(compiler.drive(), "first drive should index nested module scopes");
-    let indexed_outputs = outputs
-        .take("IndexCode", code_id.as_u32() as u64)
-        .expect("IndexCode job effects");
+    let indexed_outputs = outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects");
     let module_ids = module_indexed_ids(&indexed_outputs);
     assert_eq!(module_ids.len(), 3, "nested indexing should discover X, X.Y, and X.Y.Z");
 
-    let indexed_start = job_start(&capture, "IndexCode", code_id.as_u32() as u64);
-    let indexed_stop = job_stop(&capture, &indexed_start);
-    assert_eq!(
-        metadata_str(&indexed_stop, "outcome"),
-        "ok",
-        "indexing job should finish ok"
-    );
+    let indexed_stop = outputs.stop(Job::IndexCode(code_id));
+    assert!(indexed_stop.effects_present, "indexing job should finish with effects");
 
     assert!(
         compiler.demand(Job::ScopeCode(code_id)),
@@ -1057,11 +1204,7 @@ end
         "third drive should define the demanded nested module and its parents",
     );
 
-    let mut defined_modules = capture
-        .find(&["fz", "compiler2", "module", "defined"])
-        .into_iter()
-        .map(|event| metadata_str(&event, "module_name").to_string())
-        .collect::<Vec<_>>();
+    let mut defined_modules = modules.defined_names();
     defined_modules.sort();
     assert_eq!(
         defined_modules,
@@ -1069,25 +1212,28 @@ end
         "module.defined should emit one event per nested module"
     );
 
-    let function_defined = capture
-        .find(&["fz", "compiler2", "function", "defined"])
+    let function_defined = functions
+        .all()
         .into_iter()
         .next()
         .expect("nested function.defined event");
     assert_eq!(
-        metadata_str(&function_defined, "module_name"),
+        function_module_name(&function_defined, &modules),
         "X.Y.Z",
         "nested function should be attributed to its fully-qualified module"
     );
     assert_eq!(
-        metadata_str(&function_defined, "fq_name"),
+        function_fq_name(&function_defined, &modules),
         "X.Y.Z.func",
         "nested function should publish its fully-qualified function name"
     );
-    assert_eq!(
-        measurement_u64(&function_defined, "arity"),
-        0,
-        "nested function arity should be preserved"
+    assert_eq!(function_defined.arity, 0, "nested function arity should be preserved");
+    assert!(
+        capture
+            .find(&["fz", "compiler2", "module", "defined"])
+            .into_iter()
+            .all(|event| event.metadata.len() == 0),
+        "generic capture should not durable-copy synthesized module definition metadata"
     );
 
     assert_eq!(
@@ -1127,6 +1273,10 @@ fn compiler2_import_only_waits_for_defined_module_surface() {
     tel.attach(&[], capture.handler());
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
 
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
@@ -1146,11 +1296,7 @@ end
     });
 
     assert_resolved(compiler.drive(), "first drive should index import-only scope");
-    let module_ids = module_indexed_ids(
-        &outputs
-            .take("IndexCode", code_id.as_u32() as u64)
-            .expect("IndexCode job effects"),
-    );
+    let module_ids = module_indexed_ids(&outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects"));
     assert!(
         compiler.demand(Job::ScopeCode(code_id)),
         "explicit demand should enqueue root definition for import-only scope"
@@ -1166,15 +1312,10 @@ end
         "demanding User should enqueue the consumer module only"
     );
     assert_resolved(compiler.drive(), "third drive should define Math before retrying User");
-    let mut names = capture
-        .find(&["fz", "compiler2", "function", "defined"])
+    let mut names = functions
+        .all()
         .into_iter()
-        .map(|event| {
-            (
-                metadata_str(&event, "fq_name").to_string(),
-                measurement_u64(&event, "arity"),
-            )
-        })
+        .map(|record| (function_fq_name(&record, &modules), record.arity))
         .collect::<Vec<_>>();
     names.sort();
     assert_eq!(
@@ -1213,11 +1354,7 @@ end
     });
 
     assert_resolved(compiler.drive(), "first drive should index import-only unknown scope");
-    let module_ids = module_indexed_ids(
-        &outputs
-            .take("IndexCode", code_id.as_u32() as u64)
-            .expect("IndexCode job effects"),
-    );
+    let module_ids = module_indexed_ids(&outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects"));
     assert!(
         compiler.demand(Job::ScopeCode(code_id)),
         "explicit demand should enqueue root definition for import-only unknown scope"
@@ -1262,6 +1399,10 @@ fn compiler2_import_all_waits_for_defined_module_surface() {
     tel.attach(&[], capture.handler());
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
 
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
@@ -1281,11 +1422,7 @@ end
     });
 
     assert_resolved(compiler.drive(), "first drive should index import-all scope");
-    let module_ids = module_indexed_ids(
-        &outputs
-            .take("IndexCode", code_id.as_u32() as u64)
-            .expect("IndexCode job effects"),
-    );
+    let module_ids = module_indexed_ids(&outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects"));
     assert!(
         compiler.demand(Job::ScopeCode(code_id)),
         "explicit demand should enqueue root definition for import-all scope"
@@ -1296,15 +1433,10 @@ end
         "demanding User should enqueue the consumer module only"
     );
     assert_resolved(compiler.drive(), "third drive should define Math before retrying User");
-    let mut names = capture
-        .find(&["fz", "compiler2", "function", "defined"])
+    let mut names = functions
+        .all()
         .into_iter()
-        .map(|event| {
-            (
-                metadata_str(&event, "fq_name").to_string(),
-                measurement_u64(&event, "arity"),
-            )
-        })
+        .map(|record| (function_fq_name(&record, &modules), record.arity))
         .collect::<Vec<_>>();
     names.sort();
     assert_eq!(
@@ -1325,6 +1457,10 @@ fn compiler2_import_except_waits_for_defined_module_surface() {
     tel.attach(&[], capture.handler());
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
 
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
@@ -1345,11 +1481,7 @@ end
     });
 
     assert_resolved(compiler.drive(), "first drive should index import-except scope");
-    let module_ids = module_indexed_ids(
-        &outputs
-            .take("IndexCode", code_id.as_u32() as u64)
-            .expect("IndexCode job effects"),
-    );
+    let module_ids = module_indexed_ids(&outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects"));
     assert!(
         compiler.demand(Job::ScopeCode(code_id)),
         "explicit demand should enqueue root definition for import-except scope"
@@ -1360,15 +1492,10 @@ end
         "demanding User should enqueue the consumer module only"
     );
     assert_resolved(compiler.drive(), "third drive should define Math before retrying User");
-    let mut names = capture
-        .find(&["fz", "compiler2", "function", "defined"])
+    let mut names = functions
+        .all()
         .into_iter()
-        .map(|event| {
-            (
-                metadata_str(&event, "fq_name").to_string(),
-                measurement_u64(&event, "arity"),
-            )
-        })
+        .map(|record| (function_fq_name(&record, &modules), record.arity))
         .collect::<Vec<_>>();
     names.sort();
     assert_eq!(
@@ -1386,6 +1513,31 @@ end
 struct OutputCapture {
     outputs: JobOutputMap,
     spans: SpanJobs,
+    stops: Rc<RefCell<Vec<JobSpanStop>>>,
+}
+
+#[derive(Debug, Clone)]
+struct JobSpanStop {
+    job: Job,
+    effects_present: bool,
+}
+
+#[derive(Debug, Clone)]
+struct FunctionDefinedRecord {
+    function_id: FunctionId,
+    module_id: ModuleId,
+    arity: u64,
+    clauses: u64,
+    owner_function_id: Option<FunctionId>,
+    function_ref: FunctionRef,
+}
+
+struct FunctionCapture {
+    defs: FunctionDefs,
+}
+
+struct ModuleCapture {
+    defs: ModuleDefs,
 }
 
 struct EntryDispatchCapture {
@@ -1396,11 +1548,16 @@ struct GuardDispatchCapture {
     dispatches: GuardDispatchMap,
 }
 
+struct LoweredBodyCapture {
+    bodies: LoweredBodyDefs,
+}
+
 impl OutputCapture {
     fn new() -> Self {
         Self {
             outputs: Rc::new(RefCell::new(HashMap::new())),
             spans: Rc::new(RefCell::new(HashMap::new())),
+            stops: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
@@ -1408,18 +1565,109 @@ impl OutputCapture {
         Box::new(OutputCaptureHandler {
             outputs: self.outputs.clone(),
             spans: self.spans.clone(),
+            stops: self.stops.clone(),
         })
     }
 
-    fn take(&self, job_kind: &str, id: u64) -> Option<OutputFacts> {
-        let key = (job_kind.to_string(), id);
+    fn take(&self, job: Job) -> Option<OutputFacts> {
         let mut outputs = self.outputs.borrow_mut();
-        let matches = outputs.get_mut(&key)?;
+        let matches = outputs.get_mut(&job)?;
         let output = matches.pop();
         if matches.is_empty() {
-            outputs.remove(&key);
+            outputs.remove(&job);
         }
         output
+    }
+
+    fn stop(&self, job: Job) -> JobSpanStop {
+        self.stops
+            .borrow()
+            .iter()
+            .find(|stop| stop.job == job)
+            .cloned()
+            .unwrap_or_else(|| panic!("job stop event for {job:?}"))
+    }
+
+    fn stops_matching(&self, mut matches: impl FnMut(&Job) -> bool) -> Vec<JobSpanStop> {
+        self.stops
+            .borrow()
+            .iter()
+            .filter(|stop| matches(&stop.job))
+            .cloned()
+            .collect()
+    }
+}
+
+impl FunctionCapture {
+    fn new() -> Self {
+        Self {
+            defs: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(FunctionCaptureHandler {
+            defs: self.defs.clone(),
+        })
+    }
+
+    fn all(&self) -> Vec<FunctionDefinedRecord> {
+        self.defs.borrow().clone()
+    }
+
+    fn id(&self, name: &str, arity: u64) -> FunctionId {
+        self.defs
+            .borrow()
+            .iter()
+            .find(|record| record.function_ref.name == name && record.arity == arity)
+            .map(|record| record.function_id)
+            .unwrap_or_else(|| panic!("function.defined for {name}/{arity}"))
+    }
+}
+
+impl ModuleCapture {
+    fn new() -> Self {
+        Self {
+            defs: Rc::new(RefCell::new(HashMap::new())),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(ModuleCaptureHandler {
+            defs: self.defs.clone(),
+        })
+    }
+
+    fn qualified_name(&self, module_id: ModuleId) -> String {
+        if module_id == ModuleId::GLOBAL {
+            return "<top-level>".to_string();
+        }
+        let module = self
+            .defs
+            .borrow()
+            .get(&module_id)
+            .and_then(|defs| defs.last())
+            .cloned()
+            .unwrap_or_else(|| panic!("module.defined for {}", module_id.as_u32()));
+        match &module.state {
+            crate::compiler2::ModuleState::Defined { source, .. }
+            | crate::compiler2::ModuleState::Scoped { source, .. }
+            | crate::compiler2::ModuleState::Indexed(source) => {
+                if source.parent == ModuleId::GLOBAL {
+                    source.local_name.clone()
+                } else {
+                    format!("{}.{}", self.qualified_name(source.parent), source.local_name)
+                }
+            }
+            crate::compiler2::ModuleState::Placeholder => {
+                panic!("defined module capture should not contain placeholders")
+            }
+        }
+    }
+
+    fn defined_names(&self) -> Vec<String> {
+        let ids = self.defs.borrow().keys().copied().collect::<Vec<_>>();
+        ids.into_iter().map(|id| self.qualified_name(id)).collect()
     }
 }
 
@@ -1436,13 +1684,12 @@ impl GuardDispatchCapture {
         })
     }
 
-    fn take(&self, name: &str, arity: u64) -> Option<PatternGuardDispatch> {
-        let key = (name.to_string(), arity);
+    fn take(&self, function: FunctionId) -> Option<PatternGuardDispatch> {
         let mut dispatches = self.dispatches.borrow_mut();
-        let matches = dispatches.get_mut(&key)?;
+        let matches = dispatches.get_mut(&function)?;
         let dispatch = matches.pop();
         if matches.is_empty() {
-            dispatches.remove(&key);
+            dispatches.remove(&function);
         }
         dispatch
     }
@@ -1461,21 +1708,53 @@ impl EntryDispatchCapture {
         })
     }
 
-    fn take(&self, name: &str, arity: u64) -> Option<PatternDispatchPlan> {
-        let key = (name.to_string(), arity);
+    fn take(&self, function: FunctionId) -> Option<PatternDispatchPlan> {
         let mut plans = self.plans.borrow_mut();
-        let matches = plans.get_mut(&key)?;
+        let matches = plans.get_mut(&function)?;
         let plan = matches.pop();
         if matches.is_empty() {
-            plans.remove(&key);
+            plans.remove(&function);
         }
         plan
+    }
+}
+
+impl LoweredBodyCapture {
+    fn new() -> Self {
+        Self {
+            bodies: Rc::new(RefCell::new(HashMap::new())),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(LoweredBodyCaptureHandler {
+            bodies: self.bodies.clone(),
+        })
+    }
+
+    fn take(&self, function: FunctionId) -> Option<LoweredBody> {
+        let mut bodies = self.bodies.borrow_mut();
+        let matches = bodies.get_mut(&function)?;
+        let body = matches.pop();
+        if matches.is_empty() {
+            bodies.remove(&function);
+        }
+        body
     }
 }
 
 struct OutputCaptureHandler {
     outputs: JobOutputMap,
     spans: SpanJobs,
+    stops: Rc<RefCell<Vec<JobSpanStop>>>,
+}
+
+struct FunctionCaptureHandler {
+    defs: FunctionDefs,
+}
+
+struct ModuleCaptureHandler {
+    defs: ModuleDefs,
 }
 
 struct EntryDispatchCaptureHandler {
@@ -1486,6 +1765,10 @@ struct GuardDispatchCaptureHandler {
     dispatches: GuardDispatchMap,
 }
 
+struct LoweredBodyCaptureHandler {
+    bodies: LoweredBodyDefs,
+}
+
 impl Handler for OutputCaptureHandler {
     fn handle(&self, event: &Event<'_, '_, '_>) {
         if event.name != ["fz", "compiler2", "job"] {
@@ -1493,20 +1776,19 @@ impl Handler for OutputCaptureHandler {
         }
         match event.kind {
             EventKind::SpanStart => {
-                let Some(Value::Str(kind)) = event.metadata.get("kind") else {
+                let Some(job) = event.metadata.get("job").and_then(|value| value.downcast_ref::<Job>()) else {
                     return;
                 };
-                let Some(Value::U64(id)) = event.metadata.get("id") else {
-                    return;
-                };
-                self.spans
-                    .borrow_mut()
-                    .insert(event.span_id, (kind.as_ref().to_string(), *id));
+                self.spans.borrow_mut().insert(event.span_id, job.clone());
             }
             EventKind::SpanStop => {
-                let Some(job_key) = self.spans.borrow_mut().remove(&event.span_id) else {
+                let Some(job) = self.spans.borrow_mut().remove(&event.span_id) else {
                     return;
                 };
+                self.stops.borrow_mut().push(JobSpanStop {
+                    job: job.clone(),
+                    effects_present: event.metadata.get("effects").is_some(),
+                });
                 let Some(effects) = event
                     .metadata
                     .get("effects")
@@ -1516,7 +1798,7 @@ impl Handler for OutputCaptureHandler {
                 };
                 self.outputs
                     .borrow_mut()
-                    .entry(job_key)
+                    .entry(job)
                     .or_default()
                     .push(effects.outputs.clone());
             }
@@ -1525,15 +1807,74 @@ impl Handler for OutputCaptureHandler {
     }
 }
 
+impl Handler for FunctionCaptureHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if event.name != ["fz", "compiler2", "function", "defined"] || event.kind != EventKind::Event {
+            return;
+        }
+        let Some(Value::U64(function_id)) = event.measurements.get("function_id") else {
+            return;
+        };
+        let Some(Value::U64(module_id)) = event.measurements.get("module_id") else {
+            return;
+        };
+        let Some(Value::U64(arity)) = event.measurements.get("arity") else {
+            return;
+        };
+        let Some(Value::U64(clauses)) = event.measurements.get("clauses") else {
+            return;
+        };
+        let Some(function_ref) = event
+            .metadata
+            .get("function_ref")
+            .and_then(|value| value.downcast_ref::<FunctionRef>())
+        else {
+            return;
+        };
+        let owner_function_id = match event.measurements.get("owner_function_id") {
+            Some(Value::U64(owner)) => Some(FunctionId::from_u32(*owner as u32)),
+            _ => None,
+        };
+        self.defs.borrow_mut().push(FunctionDefinedRecord {
+            function_id: FunctionId::from_u32(*function_id as u32),
+            module_id: ModuleId::from_u32(*module_id as u32),
+            arity: *arity,
+            clauses: *clauses,
+            owner_function_id,
+            function_ref: function_ref.clone(),
+        });
+    }
+}
+
+impl Handler for ModuleCaptureHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if event.name != ["fz", "compiler2", "module", "defined"] || event.kind != EventKind::Event {
+            return;
+        }
+        let Some(Value::U64(module_id)) = event.measurements.get("module_id") else {
+            return;
+        };
+        let Some(module) = event
+            .metadata
+            .get("module")
+            .and_then(|value| value.downcast_ref::<Module>())
+        else {
+            return;
+        };
+        self.defs
+            .borrow_mut()
+            .entry(ModuleId::from_u32(*module_id as u32))
+            .or_default()
+            .push(module.clone());
+    }
+}
+
 impl Handler for GuardDispatchCaptureHandler {
     fn handle(&self, event: &Event<'_, '_, '_>) {
         if event.name != ["fz", "compiler2", "guard_dispatch", "defined"] || event.kind != EventKind::Event {
             return;
         }
-        let Some(Value::Str(name)) = event.metadata.get("name") else {
-            return;
-        };
-        let Some(Value::U64(arity)) = event.measurements.get("arity") else {
+        let Some(Value::U64(function_id)) = event.measurements.get("function_id") else {
             return;
         };
         let Some(dispatch) = event
@@ -1545,7 +1886,7 @@ impl Handler for GuardDispatchCaptureHandler {
         };
         self.dispatches
             .borrow_mut()
-            .entry((name.as_ref().to_string(), *arity))
+            .entry(FunctionId::from_u32(*function_id as u32))
             .or_default()
             .push(dispatch.clone());
     }
@@ -1556,10 +1897,7 @@ impl Handler for EntryDispatchCaptureHandler {
         if event.name != ["fz", "compiler2", "entry_dispatch", "defined"] || event.kind != EventKind::Event {
             return;
         }
-        let Some(Value::Str(name)) = event.metadata.get("name") else {
-            return;
-        };
-        let Some(Value::U64(arity)) = event.measurements.get("arity") else {
+        let Some(Value::U64(function_id)) = event.measurements.get("function_id") else {
             return;
         };
         let Some(plan) = event
@@ -1571,73 +1909,65 @@ impl Handler for EntryDispatchCaptureHandler {
         };
         self.plans
             .borrow_mut()
-            .entry((name.as_ref().to_string(), *arity))
+            .entry(FunctionId::from_u32(*function_id as u32))
             .or_default()
             .push(plan.clone());
     }
 }
 
-fn job_start(capture: &Capture, job_kind: &str, id: u64) -> OwnedEvent {
-    capture
-        .find(&["fz", "compiler2", "job"])
-        .into_iter()
-        .find(|event| {
-            event.kind == EventKind::SpanStart
-                && matches!(event.metadata.get("kind"), Some(Value::Str(kind)) if kind.as_ref() == job_kind)
-                && matches!(event.metadata.get("id"), Some(Value::U64(value)) if *value == id)
-        })
-        .unwrap_or_else(|| panic!("{job_kind} job start event for id {id}"))
+impl Handler for LoweredBodyCaptureHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if event.name != ["fz", "compiler2", "lowered_body", "defined"] || event.kind != EventKind::Event {
+            return;
+        }
+        let Some(Value::U64(function_id)) = event.measurements.get("function_id") else {
+            return;
+        };
+        let Some(body) = event
+            .metadata
+            .get("body")
+            .and_then(|value| value.downcast_ref::<LoweredBody>())
+        else {
+            return;
+        };
+        self.bodies
+            .borrow_mut()
+            .entry(FunctionId::from_u32(*function_id as u32))
+            .or_default()
+            .push(body.clone());
+    }
 }
 
-fn job_stop(capture: &Capture, start: &OwnedEvent) -> OwnedEvent {
-    capture
-        .find(&["fz", "compiler2", "job"])
-        .into_iter()
-        .find(|event| event.kind == EventKind::SpanStop && event.span_id == start.span_id)
-        .unwrap_or_else(|| panic!("job stop event for span {}", start.span_id))
-}
-
-fn job_stops(capture: &Capture, job_kind: &str) -> Vec<OwnedEvent> {
-    capture
-        .find(&["fz", "compiler2", "job"])
-        .into_iter()
-        .filter(|event| {
-            event.kind == EventKind::SpanStart
-                && matches!(event.metadata.get("kind"), Some(Value::Str(kind)) if kind.as_ref() == job_kind)
-        })
-        .filter_map(|start| {
-            capture
-                .find(&["fz", "compiler2", "job"])
-                .into_iter()
-                .find(|event| event.kind == EventKind::SpanStop && event.span_id == start.span_id)
-        })
-        .collect()
-}
-
-fn measurement_u64(event: &OwnedEvent, key: &str) -> u64 {
+fn measurement_u64(event: &crate::telemetry::capture::OwnedEvent, key: &str) -> u64 {
     match event.measurements.get(key) {
         Some(Value::U64(value)) => *value,
         other => panic!("measurement key `{key}` missing or not u64: {other:?}"),
     }
 }
 
-fn metadata_str<'a>(event: &'a OwnedEvent, key: &str) -> &'a str {
+fn metadata_str<'a>(event: &'a crate::telemetry::capture::OwnedEvent, key: &str) -> &'a str {
     match event.metadata.get(key) {
         Some(Value::Str(value)) => value.as_ref(),
         other => panic!("metadata key `{key}` missing or not str: {other:?}"),
     }
 }
 
-fn guard_dispatch(capture: &GuardDispatchCapture, name: &str, arity: u64) -> PatternGuardDispatch {
+fn guard_dispatch(capture: &GuardDispatchCapture, function: FunctionId) -> PatternGuardDispatch {
     capture
-        .take(name, arity)
-        .unwrap_or_else(|| panic!("guard_dispatch.defined for {name}/{arity}"))
+        .take(function)
+        .unwrap_or_else(|| panic!("guard_dispatch.defined for {function:?}"))
 }
 
-fn entry_dispatch(capture: &EntryDispatchCapture, name: &str, arity: u64) -> PatternDispatchPlan {
+fn entry_dispatch(capture: &EntryDispatchCapture, function: FunctionId) -> PatternDispatchPlan {
     capture
-        .take(name, arity)
-        .unwrap_or_else(|| panic!("entry_dispatch.defined for {name}/{arity}"))
+        .take(function)
+        .unwrap_or_else(|| panic!("entry_dispatch.defined for {function:?}"))
+}
+
+fn lowered_body(capture: &LoweredBodyCapture, function: FunctionId) -> LoweredBody {
+    capture
+        .take(function)
+        .unwrap_or_else(|| panic!("lowered_body.defined for {function:?}"))
 }
 
 fn plan_has_nested_guard_dispatch(plan: &PatternDispatchPlan) -> bool {
@@ -1699,16 +2029,24 @@ fn assert_resolved(outcome: DriveOutcome<Job, ExactPattern<FactKey>>, message: &
     assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
 }
 
-fn function_id(capture: &Capture, name: &str, arity: u64) -> FunctionId {
-    let event = capture
-        .find(&["fz", "compiler2", "function", "defined"])
-        .into_iter()
-        .find(|event| metadata_str(event, "name") == name && measurement_u64(event, "arity") == arity)
-        .unwrap_or_else(|| panic!("function.defined for {name}/{arity}"));
-    match event.measurements.get("function_id") {
-        Some(Value::U64(id)) => FunctionId::from_u32(*id as u32),
-        other => panic!("function_id measurement missing or not u64: {other:?}"),
+fn function_id(capture: &FunctionCapture, name: &str, arity: u64) -> FunctionId {
+    capture.id(name, arity)
+}
+
+fn function_fq_name(function: &FunctionDefinedRecord, modules: &ModuleCapture) -> String {
+    if function.module_id == ModuleId::GLOBAL {
+        function.function_ref.name.clone()
+    } else {
+        format!(
+            "{}.{}",
+            modules.qualified_name(function.module_id),
+            function.function_ref.name
+        )
     }
+}
+
+fn function_module_name(function: &FunctionDefinedRecord, modules: &ModuleCapture) -> String {
+    modules.qualified_name(function.module_id)
 }
 
 fn module_indexed_ids(outputs: &OutputFacts) -> Vec<crate::compiler2::ModuleId> {

@@ -75,13 +75,10 @@ impl World<'_> {
         );
         let mut jobs_ran = 0_u64;
         while let Some(job) = self.work_graph.pop() {
-            let job_kind = job.kind();
-            let job_id = job.id();
-            let mut job_span = self.tel().span(
+            let job_span = self.tel().span(
                 &["fz", "compiler2", "job"],
                 metadata! {
-                    kind: job_kind,
-                    id: job_id,
+                    job: opaque(&job),
                 },
             );
             let result = super::jobs::run(self, &job);
@@ -91,56 +88,30 @@ impl World<'_> {
                     job_span.stop_with(
                         &measurements! {},
                         &metadata! {
-                            outcome: "ok",
                             effects: opaque(&effects),
                         },
                     );
                     self.complete_job(job, effects);
                 }
                 Err(_) => {
-                    job_span.close_with(measurements! {}, metadata! { outcome: "fatal" });
-                    span.close_with(measurements! { jobs_ran: jobs_ran }, metadata! { outcome: "fatal" });
+                    job_span.stop_with(&measurements! {}, &metadata! {});
+                    span.stop_with(&measurements! { jobs_ran: jobs_ran }, &metadata! { job: opaque(&job) });
                     return DriveOutcome::Fatal { job };
                 }
             }
         }
         if !self.work_graph.has_unresolved() {
-            span.close_with(measurements! { jobs_ran: jobs_ran }, metadata! { outcome: "resolved" });
+            span.close_with(measurements! { jobs_ran: jobs_ran }, metadata! {});
             DriveOutcome::Resolved
         } else {
             let unresolved = self.work_graph.unresolved();
             span.stop_with(
                 &measurements! { jobs_ran: jobs_ran },
                 &metadata! {
-                    outcome: "unresolved",
                     waits: opaque(&unresolved),
                 },
             );
             DriveOutcome::Unresolved { waits: unresolved }
-        }
-    }
-}
-
-impl Job {
-    fn kind(&self) -> &'static str {
-        match self {
-            Job::IndexCode(_) => "IndexCode",
-            Job::ScopeCode(_) => "ScopeCode",
-            Job::DefineModule(_) => "DefineModule",
-            Job::LowerFunction(_) => "LowerFunction",
-            Job::ReifyGuardDispatch(_) => "ReifyGuardDispatch",
-            Job::PlanEntryDispatch(_) => "PlanEntryDispatch",
-            Job::SeedRoot(_) => "SeedRoot",
-            Job::CheckSemanticClosure(_) => "CheckSemanticClosure",
-        }
-    }
-
-    fn id(&self) -> u64 {
-        match self {
-            Job::IndexCode(id) | Job::ScopeCode(id) => id.as_u32() as u64,
-            Job::DefineModule(id) => id.as_u32() as u64,
-            Job::LowerFunction(id) | Job::ReifyGuardDispatch(id) | Job::PlanEntryDispatch(id) => id.as_u32() as u64,
-            Job::SeedRoot(id) | Job::CheckSemanticClosure(id) => id.as_u32() as u64,
         }
     }
 }

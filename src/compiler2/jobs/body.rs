@@ -108,26 +108,20 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
 
     fn lower_clause(&mut self, clause: &FnClause) -> Result<LoweredClause, FatalError> {
         let mut env = HashMap::new();
-        let mut setup = Vec::new();
+        let mut projections = Vec::new();
         let mut params = Vec::new();
         for param in &clause.params {
             let value = self.fresh_value();
             params.push(value);
-            self.apply_pattern(&param.node, param.span, value, &mut env, &mut setup)?;
+            self.bind_pattern(&param.node, param.span, value, &mut env, &mut projections)?;
         }
 
-        let guard = clause
-            .guard
-            .as_ref()
-            .map(|guard| self.lower_expr_as_block(guard, env.clone()))
-            .transpose()?;
         let body = self.lower_expr_as_block(&clause.body, env)?;
 
         Ok(LoweredClause {
             span: clause.span,
             params,
-            setup,
-            guard,
+            projections,
             body,
         })
     }
@@ -556,6 +550,71 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 Diagnostic::error(
                     codes::LOWER_UNSUPPORTED,
                     format!("compiler2 does not lower `{}` patterns yet", pattern_name(pattern)),
+                    span,
+                ),
+            )),
+        }
+    }
+
+    fn bind_pattern(
+        &mut self,
+        pattern: &Pattern,
+        span: Span,
+        source: ValueId,
+        env: &mut HashMap<String, ValueId>,
+        steps: &mut Vec<LoweredStep>,
+    ) -> Result<(), FatalError> {
+        match pattern {
+            Pattern::Wildcard
+            | Pattern::Int(_)
+            | Pattern::Float(_)
+            | Pattern::Binary(_)
+            | Pattern::Atom(_)
+            | Pattern::Bool(_)
+            | Pattern::Nil
+            | Pattern::Pinned(_) => Ok(()),
+            Pattern::Var(name) => {
+                env.insert(name.clone(), source);
+                Ok(())
+            }
+            Pattern::Tuple(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    let value = self.fresh_value();
+                    steps.push(LoweredStep::TupleField { value, source, index });
+                    self.bind_pattern(&item.node, item.span, value, env, steps)?;
+                }
+                Ok(())
+            }
+            Pattern::List(items, tail) => {
+                let mut current = source;
+                for item in items {
+                    let head = self.fresh_value();
+                    let tail_value = self.fresh_value();
+                    steps.push(LoweredStep::SplitList {
+                        source: current,
+                        head,
+                        tail: tail_value,
+                    });
+                    self.bind_pattern(&item.node, item.span, head, env, steps)?;
+                    current = tail_value;
+                }
+                if let Some(tail) = tail {
+                    self.bind_pattern(&tail.node, tail.span, current, env, steps)?;
+                }
+                Ok(())
+            }
+            Pattern::As(name, inner) => {
+                env.insert(name.clone(), source);
+                self.bind_pattern(&inner.node, inner.span, source, env, steps)
+            }
+            Pattern::Map(_) | Pattern::Struct { .. } | Pattern::Bitstring(_) => Err(emit_job_diagnostic(
+                self.world,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    format!(
+                        "compiler2 does not lower `{}` clause projections yet",
+                        pattern_name(pattern)
+                    ),
                     span,
                 ),
             )),

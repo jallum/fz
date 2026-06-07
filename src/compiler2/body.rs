@@ -67,8 +67,7 @@ pub enum LoweredBody {
 pub struct LoweredClause {
     pub span: Span,
     pub params: Vec<ValueId>,
-    pub setup: Vec<LoweredStep>,
-    pub guard: Option<LoweredBlock>,
+    pub projections: Vec<LoweredStep>,
     pub body: LoweredBlock,
 }
 
