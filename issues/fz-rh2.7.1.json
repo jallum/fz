@@ -7,7 +7,7 @@
     "fz-rh2.7.2"
   ],
   "created": "2026-06-06T23:37:22Z",
-  "description": "Goal: make runtime and compiler builtins ordinary Compiler2 code contributions, with namespace bindings established by the same maps used for user source.\n\nChange:\n- Submit runtime/builtin packages through `CodeMap` and index them with ordinary `IndexCode`/module-surface jobs.\n- Populate the initial namespace head from compiler builtin definitions and runtime module references, not from scheduler branches or lowerer prelude injection.\n- Runtime definitions are referenced by module/function identity and lowered only when reachable semantic jobs ask for them.\n\nWhy:\n- Compiler2 should not reproduce the old prelude path where lowering prepends runtime source and eagerly registers/lower bodies.\n- Builtins are just early namespace facts plus ordinary code/function definitions; pull-through remains by function.\n\nChecks:\n- Resolving `Enum`, `Kernel`, and `Process` names uses namespace/module/function facts.\n- Referencing a runtime function can wait on ordinary `CodeIndexed`, `ModuleDefined`, `FunctionDefined`, and `LoweredBody` facts.\n- Unused runtime definitions do not produce lowered bodies, activations, executable facts, or artifact work.",
+  "description": "Goal: make runtime and compiler builtins ordinary Compiler2 code contributions, with namespace bindings established by the same maps used for user source.\n\nChange:\n- Submit runtime/builtin packages through `CodeMap` and index them with ordinary `IndexCode`/module-surface jobs.\n- Populate the initial namespace head from compiler builtin definitions and runtime module references, not from scheduler branches or lowerer prelude injection.\n- Runtime definitions participate in the same `FunctionDefined`, dispatch-pure helper, entry-dispatch, and lowered-body facts as user code, and are lowered only when reachable semantic jobs ask for them.\n\nWhy:\n- Compiler2 should not reproduce the old prelude path where lowering prepends runtime source and eagerly registers/lower bodies.\n- Builtins are just early namespace facts plus ordinary code/function definitions; pull-through remains by function.\n\nChecks:\n- Resolving `Enum`, `Kernel`, and `Process` names uses namespace/module/function facts.\n- Referencing a runtime function can wait on ordinary `CodeIndexed`, `ModuleDefined`, `FunctionDefined`, entry-dispatch, and `LoweredBody` facts.\n- Unused runtime definitions do not produce lowered bodies, activations, executable facts, or artifact work.",
   "id": "fz-rh2.7.1",
   "labels": [],
   "parent": "fz-rh2.7",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "Compiler2 runtime: index runtime libraries as ordinary code",
   "type": "task",
-  "updated_at": "2026-06-07T13:55:09Z"
+  "updated_at": "2026-06-07T15:26:09Z"
 }
