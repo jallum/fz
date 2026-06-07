@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-rh2.10.5"
+    "fz-rh2.10.5",
+    "fz-rh2.10.7"
   ],
   "blocks": [
     "fz-rh2.8.2"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Compiler2 docs: publish the corrected fixpoint and telemetry contract",
   "type": "task",
-  "updated_at": "2026-06-07T21:55:02Z"
+  "updated_at": "2026-06-07T23:24:53Z"
 }
