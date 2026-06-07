@@ -4,6 +4,7 @@
     "fz-rh2.10.3"
   ],
   "blocks": [
+    "fz-rh2.10.5",
     "fz-rh2.8.2"
   ],
   "created": "2026-06-07T21:13:07Z",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Compiler2 engine: exact waits, applied-step signal, and convergence guard",
   "type": "task",
-  "updated_at": "2026-06-07T21:40:07Z"
+  "updated_at": "2026-06-07T21:40:21Z"
 }
