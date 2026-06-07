@@ -6,14 +6,15 @@
   "blocks": [
     "fz-rh2.5"
   ],
+  "closed_at": "2026-06-07T00:09:21Z",
   "created": "2026-06-06T23:37:21Z",
   "description": "Goal: implement the scheduler/fact substrate. Change: owned fact contributions, aggregate fingerprints, deduped queue plus queued set, dynamic reads/waits/output indexes, changed-fact wakeups, and fatal diagnostic telemetry. Check: coalescing, requeue-after-run, contribution replacement, no-change suppression, waiter wakeup, and fatal stop tests.",
   "id": "fz-rh2.4",
   "labels": [],
   "parent": "fz-rh2",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 core: implement fact table, agenda, waiters, and fatal telemetry",
   "type": "task",
-  "updated_at": "2026-06-07T00:01:47Z"
+  "updated_at": "2026-06-07T00:09:21Z"
 }
