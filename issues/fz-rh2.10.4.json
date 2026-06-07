@@ -6,14 +6,15 @@
   "blocks": [
     "fz-rh2.10.5"
   ],
+  "closed_at": "2026-06-07T23:00:25Z",
   "created": "2026-06-07T21:13:07Z",
   "description": "Goal: the work graph should expose the behaviors the fixpoint design depends on without doing structural type work in the engine. Signal: FactPattern is gone, waits are exact-key O(1), AppliedStep reports changed/enqueued/coalesced/blocked work from one seam, and semantic type comparisons happen through stable interned type ids that can be memoized inside the type system. Strategy: delete speculative wait-pattern generality, return complete applied-step data from Scheduler::complete, emit cheap raw telemetry from World::complete_job, and make convergence safety lean on observable fact-value changes plus InternedConcreteTypes comparison caches rather than formatting, structural hashing, or ad hoc churn limits.\n\nChange:\n- Replace FactPattern/ExactPattern with exact FactKey wait maps.\n- Extend AppliedStep with changed facts, enqueued jobs, coalesced jobs, and blocked exact fact keys.\n- Emit one cheap raw work-graph event from World::complete_job using AppliedStep; handlers may format or count if they care.\n- Add the narrow InternedConcreteTypes memoization seam needed for repeated subtype/equivalence/disjointness checks over immutable type ids.\n- Do not add an arbitrary iteration-count fatal guard; a real non-convergence guard needs a fact-family bound, while this ticket exposes the changed-fact stream that future bounded guards can consume.\n\nWhy:\n- Waits are exact today; the trait and linear scan are unused generality on a hot path.\n- The engine already knows what changed and what work moved; Compiler2 should observe that uniformly instead of sprinkling special events.\n- Interned type ids are stable integers. Once a comparison between two ids is known, the result is stable for the lifetime of the type context and should be memoized there, not rediscovered through structural Ty hashing in Compiler2.\n- A hardcoded churn threshold would be a timeout, not a proof. Exact AppliedStep telemetry gives us signal without pretending to solve bounded convergence prematurely.\n\nChecks:\n- Scheduler tests cover exact waits, coalesced follow-ups, blocked waits, and changed facts.\n- Compiler2 tests observe raw AppliedStep telemetry for blocked/coalesced work.\n- InternedConcreteTypes tests cover memoized repeat comparisons returning the same answers without rewalking structure.\n- Compiler2 trace-summary uses AppliedStep events as its daily signal.",
   "id": "fz-rh2.10.4",
   "labels": [],
   "parent": "fz-rh2.10",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 engine: exact waits, applied-step signal, and interned-type convergence",
   "type": "task",
-  "updated_at": "2026-06-07T22:53:43Z"
+  "updated_at": "2026-06-07T23:00:25Z"
 }
