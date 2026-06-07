@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 use crate::ast::{Attribute, FnDef, Item};
 use crate::compiler::source::Span;
+use crate::types::Ty;
 
 use super::code::CodeId;
 use super::namespace::{Namespace, NamespaceSymbol};
@@ -53,26 +54,20 @@ impl RootId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ActivationKey {
     pub root: RootId,
     pub function: FunctionId,
+    pub input: Vec<Ty>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExecutableNeed {
     Value,
+    TupleFields(usize),
 }
 
-impl ExecutableNeed {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Value => "value",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ExecutableKey {
     pub activation: ActivationKey,
     pub need: ExecutableNeed,

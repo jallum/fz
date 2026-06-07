@@ -14,6 +14,7 @@ use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch}
 use crate::telemetry::{Telemetry, opaque};
 use crate::type_expr::{ModuleTypeEnv, build_module_type_env_for_with_base, builtin_type_env};
 use crate::types;
+use crate::types::{ClosureTarget, ClosureTypes, Ty, Types};
 use crate::{measurements, metadata};
 
 use super::CodeId;
@@ -27,6 +28,9 @@ use super::identity::{
     RootId, RootMap,
 };
 use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
+use super::semantic::{
+    ActivationAnalysis, ActivationMap, ActivationSummary, CallSiteKey, CallSiteMap, CallSiteSummary,
+};
 
 pub struct World<'a> {
     tel: &'a dyn Telemetry,
@@ -36,6 +40,8 @@ pub struct World<'a> {
     bodies: LoweredBodyMap,
     guard_dispatches: GuardDispatchMap,
     entry_dispatches: EntryDispatchMap,
+    activations: ActivationMap,
+    callsites: CallSiteMap,
     roots: RootMap,
     namespaces: NamespaceStore,
     pub(crate) work_graph: WorkGraph,
@@ -65,6 +71,8 @@ impl<'a> World<'a> {
             bodies: LoweredBodyMap::new(),
             guard_dispatches: GuardDispatchMap::new(),
             entry_dispatches: EntryDispatchMap::new(),
+            activations: ActivationMap::new(),
+            callsites: CallSiteMap::new(),
             roots: RootMap::new(),
             namespaces: NamespaceStore::new(),
             work_graph: WorkGraph::new(),
@@ -155,6 +163,134 @@ impl<'a> World<'a> {
 
     pub fn root_revision(&self, id: RootId) -> u64 {
         self.roots.get(id).revision
+    }
+
+    pub fn activate(
+        &mut self,
+        root: RootId,
+        function: FunctionId,
+        inputs: Vec<Ty>,
+    ) -> (super::identity::ActivationKey, u64) {
+        let key = self.activation_key(root, function, &inputs);
+        let revision = self.activations.activate(key.clone(), inputs.clone());
+        let slot = self
+            .activations
+            .get(&key)
+            .expect("activations should exist after activation");
+        self.tel.execute(
+            &["fz", "compiler2", "activation", "updated"],
+            &measurements! {
+                root_id: root.as_u32() as u64,
+                function_id: function.as_u32() as u64,
+                revision: revision,
+                input_arity: inputs.len() as u64,
+            },
+            &metadata! {
+                activation: opaque(&key),
+                summary: opaque(slot.summary()),
+            },
+        );
+        (key, revision)
+    }
+
+    pub fn activation_summary(&self, key: &super::identity::ActivationKey) -> &ActivationSummary {
+        self.activations
+            .get(key)
+            .expect("activations should exist before reading semantic summaries")
+            .summary()
+    }
+
+    pub fn activation_analysis_revision(&self, key: &super::identity::ActivationKey) -> Option<u64> {
+        self.activations
+            .get(key)
+            .and_then(|slot| (slot.analysis().is_some()).then_some(slot.analysis_revision()))
+    }
+
+    pub fn activation_return(&self, key: &super::identity::ActivationKey) -> Option<Ty> {
+        self.activations
+            .get(key)
+            .and_then(|slot| (slot.return_revision() > 0).then(|| slot.summary().return_ty.clone()))
+    }
+
+    pub fn define_activation_analysis(
+        &mut self,
+        key: &super::identity::ActivationKey,
+        analysis: ActivationAnalysis,
+    ) -> u64 {
+        let revision = self.activations.define_analysis(key, analysis.clone());
+        self.tel.execute(
+            &["fz", "compiler2", "activation_analysis", "defined"],
+            &measurements! {
+                root_id: key.root.as_u32() as u64,
+                function_id: key.function.as_u32() as u64,
+                revision: revision,
+                reachable_clauses: analysis.reachable_clauses.len() as u64,
+                callsites: analysis.callsites.len() as u64,
+            },
+            &metadata! {
+                activation: opaque(key),
+                analysis: opaque(&analysis),
+            },
+        );
+        revision
+    }
+
+    pub fn define_activation_return(&mut self, key: &super::identity::ActivationKey, return_ty: Ty) -> u64 {
+        let revision = self.activations.define_return(key, return_ty.clone());
+        self.tel.execute(
+            &["fz", "compiler2", "return_type", "defined"],
+            &measurements! {
+                root_id: key.root.as_u32() as u64,
+                function_id: key.function.as_u32() as u64,
+                revision: revision,
+            },
+            &metadata! {
+                activation: opaque(key),
+                return_ty: opaque(&return_ty),
+            },
+        );
+        revision
+    }
+
+    pub fn define_callsite_summary(&mut self, key: CallSiteKey, summary: CallSiteSummary) -> u64 {
+        let revision = self.callsites.define(key.clone(), summary.clone());
+        self.tel.execute(
+            &["fz", "compiler2", "callsite", "defined"],
+            &measurements! {
+                root_id: key.activation.root.as_u32() as u64,
+                function_id: key.activation.function.as_u32() as u64,
+                callsite_id: key.callsite.as_u32() as u64,
+                revision: revision,
+                args: summary.arg_types.len() as u64,
+            },
+            &metadata! {
+                callsite: opaque(&key),
+                summary: opaque(&summary),
+            },
+        );
+        revision
+    }
+
+    pub fn root_activations(&self, root: RootId) -> Vec<super::identity::ActivationKey> {
+        self.work_graph
+            .facts()
+            .keys()
+            .filter_map(|fact| match fact {
+                FactKey::Activation(activation) if activation.root == root => Some(activation.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn root_executables(&self, root: RootId) -> Vec<super::identity::ExecutableKey> {
+        self.work_graph
+            .facts()
+            .keys()
+            .filter_map(|fact| match fact {
+                FactKey::Executable(executable) if executable.activation.root == root => Some(executable.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     pub fn reference_module(&mut self, name: impl Into<String>) -> ModuleId {
@@ -371,6 +507,27 @@ impl<'a> World<'a> {
         revision
     }
 
+    pub(crate) fn entry_dispatch(&self, function: FunctionId) -> PatternDispatchPlan {
+        self.entry_dispatches
+            .get(function)
+            .cloned()
+            .expect("entry dispatch should only be read after its fact is defined")
+    }
+
+    pub(crate) fn lowered_body(&self, function: FunctionId) -> LoweredBody {
+        match &self
+            .bodies
+            .get(function)
+            .expect("body slots should exist before reading lowered bodies")
+            .state
+        {
+            super::body::BodyState::Lowered(body) => body.clone(),
+            super::body::BodyState::Placeholder => {
+                panic!("lowered bodies should only be read after their fact is defined")
+            }
+        }
+    }
+
     pub fn prelude_head(&self) -> Namespace {
         self.namespaces.prelude_head()
     }
@@ -428,6 +585,10 @@ impl<'a> World<'a> {
 
     pub(crate) fn function_module(&self, function: FunctionId) -> ModuleId {
         self.functions.reference_for(function).module
+    }
+
+    pub(crate) fn function_arity(&self, function: FunctionId) -> usize {
+        self.functions.reference_for(function).arity
     }
 
     pub fn fact_revision(&self, key: FactKey) -> Option<u64> {
@@ -514,6 +675,123 @@ impl<'a> World<'a> {
         }
     }
 
+    fn activation_key(&self, root: RootId, function: FunctionId, inputs: &[Ty]) -> super::identity::ActivationKey {
+        let mask = self.dispatch_input_mask(function);
+        let recursive = self.function_is_recursive(function);
+        let mut t = types::new();
+        let canonical = inputs
+            .iter()
+            .map(|input| t.widen_for_recursive_spec_key(input))
+            .collect::<Vec<_>>();
+        let key_inputs = canonical
+            .iter()
+            .enumerate()
+            .map(|(slot, input)| {
+                if recursive && !mask.get(slot).copied().unwrap_or(true) {
+                    t.convergence_class(input)
+                } else {
+                    input.clone()
+                }
+            })
+            .collect();
+        super::identity::ActivationKey {
+            root,
+            function,
+            input: key_inputs,
+        }
+    }
+
+    pub(crate) fn closure_ty(&self, function: FunctionId, captures: Vec<Ty>) -> Ty {
+        let arity = self.functions.reference_for(function).arity;
+        let mut t = types::new();
+        t.closure_lit(ClosureTarget(function.as_u32()), captures, arity)
+    }
+
+    fn dispatch_input_mask(&self, function: FunctionId) -> Vec<bool> {
+        let Some(plan) = self.entry_dispatches.get(function) else {
+            return vec![true; self.function_arity(function)];
+        };
+        let mut mask = vec![false; plan.input_count];
+        for arm in &plan.matrix.arms {
+            for question in &arm.questions {
+                self.mark_subject_inputs(&plan.matrix.subjects, question.predicate.subject, &mut mask);
+            }
+        }
+        for guard in &plan.guards {
+            self.mark_guard_inputs(plan, guard, &mut mask);
+        }
+        mask
+    }
+
+    fn mark_subject_inputs(
+        &self,
+        subjects: &[crate::dispatch_matrix::Subject],
+        subject: crate::dispatch_matrix::SubjectId,
+        mask: &mut [bool],
+    ) {
+        let Some(subject) = subjects.get(subject.0 as usize) else {
+            return;
+        };
+        match &subject.source {
+            crate::dispatch_matrix::SubjectSource::Input { ordinal } => {
+                if let Some(slot) = mask.get_mut(*ordinal as usize) {
+                    *slot = true;
+                }
+            }
+            crate::dispatch_matrix::SubjectSource::Projection(projection) => {
+                self.mark_subject_inputs(subjects, projection.source, mask);
+            }
+        }
+    }
+
+    fn mark_guard_inputs(
+        &self,
+        plan: &PatternDispatchPlan,
+        guard: &crate::dispatch_matrix::pattern::PatternGuardExpr,
+        mask: &mut [bool],
+    ) {
+        use crate::dispatch_matrix::pattern::PatternGuardExpr;
+
+        match guard {
+            PatternGuardExpr::Const(_) | PatternGuardExpr::Pinned(_) => {}
+            PatternGuardExpr::Subject(subject) => self.mark_subject_inputs(&plan.matrix.subjects, *subject, mask),
+            PatternGuardExpr::Unary { expr, .. } => self.mark_guard_inputs(plan, expr, mask),
+            PatternGuardExpr::Binary { lhs, rhs, .. } => {
+                self.mark_guard_inputs(plan, lhs, mask);
+                self.mark_guard_inputs(plan, rhs, mask);
+            }
+            PatternGuardExpr::Dispatch { inputs, dispatch } => {
+                for input in inputs {
+                    self.mark_guard_inputs(plan, input, mask);
+                }
+                for guard in &dispatch.plan.guards {
+                    self.mark_guard_inputs(&dispatch.plan, guard, mask);
+                }
+            }
+        }
+    }
+
+    fn function_is_recursive(&self, function: FunctionId) -> bool {
+        let Some(slot) = self.bodies.get(function) else {
+            return false;
+        };
+        let body = match &slot.state {
+            super::body::BodyState::Lowered(body) => body,
+            super::body::BodyState::Placeholder => return false,
+        };
+        match body {
+            LoweredBody::Extern { .. } => false,
+            LoweredBody::Clauses { clauses, generated } => {
+                if generated.contains(&function) {
+                    return true;
+                }
+                clauses
+                    .iter()
+                    .any(|clause| block_mentions_function(function, &clause.body))
+            }
+        }
+    }
+
     fn qualified_module_name(&self, parent: ModuleId, local_name: &str) -> String {
         if parent.is_global() {
             local_name.to_string()
@@ -525,4 +803,17 @@ impl<'a> World<'a> {
             format!("{parent_name}.{local_name}")
         }
     }
+}
+
+fn block_mentions_function(function: FunctionId, block: &super::body::LoweredBlock) -> bool {
+    block.steps.iter().any(|step| match step {
+        super::body::LoweredStep::DirectCall {
+            callee: super::body::DirectCallee::Function(callee),
+            ..
+        } => *callee == function,
+        super::body::LoweredStep::If {
+            then_block, else_block, ..
+        } => block_mentions_function(function, then_block) || block_mentions_function(function, else_block),
+        _ => false,
+    })
 }

@@ -10,6 +10,7 @@ use crate::{measurements, metadata};
 use super::code::CodeId;
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId};
 use super::scheduler::{DriveOutcome, Scheduler};
+use super::semantic::CallSiteKey;
 use super::world::World;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -21,6 +22,7 @@ pub enum Job {
     ReifyGuardDispatch(FunctionId),
     PlanEntryDispatch(FunctionId),
     SeedRoot(RootId),
+    AnalyzeActivation(ActivationKey),
     CheckSemanticClosure(RootId),
 }
 
@@ -36,6 +38,10 @@ pub enum FactKey {
     EntryDispatch(FunctionId),
     RootEntry(RootId),
     Activation(ActivationKey),
+    ActivationAnalyzed(ActivationKey),
+    ReturnType(ActivationKey),
+    SelectedCallee(CallSiteKey),
+    ReturnNeed(CallSiteKey),
     Executable(ExecutableKey),
     SemanticClosed(RootId),
 }

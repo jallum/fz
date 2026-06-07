@@ -10,6 +10,7 @@ mod identity;
 mod jobs;
 mod namespace;
 mod scheduler;
+mod semantic;
 mod world;
 
 pub use agenda::Agenda;
@@ -29,6 +30,10 @@ pub use identity::{
 };
 pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
 pub use scheduler::{AppliedStep, DriveOutcome, FatalError, Scheduler};
+pub use semantic::{
+    ActivationAnalysis, ActivationMap, ActivationSlot, ActivationSummary, CallSiteKey, CallSiteMap, CallSiteSummary,
+    SelectedCallee,
+};
 pub use world::World;
 
 #[cfg(test)]

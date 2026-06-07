@@ -1,7 +1,8 @@
 use super::{CodeSubmission, Compiler2, DriveOutcome, ExactPattern, ExecutableNeed, Job, RootSubmission};
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
-    ActivationKey, ExecutableKey, FactKey, FunctionId, FunctionRef, LoweredBody, LoweredStep, Module, ModuleId,
+    ActivationKey, CallSiteKey, CallSiteSummary, ExecutableKey, FactKey, FunctionId, FunctionRef, LoweredBody,
+    LoweredStep, Module, ModuleId, SelectedCallee,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
@@ -20,6 +21,7 @@ type LoweredBodyDefs = Rc<RefCell<HashMap<FunctionId, Vec<LoweredBody>>>>;
 type SpanJobs = Rc<RefCell<HashMap<u64, Job>>>;
 type FunctionDefs = Rc<RefCell<Vec<FunctionDefinedRecord>>>;
 type ModuleDefs = Rc<RefCell<HashMap<ModuleId, Vec<Module>>>>;
+type CallsiteDefs = Rc<RefCell<Vec<CallsiteDefinedRecord>>>;
 
 #[test]
 fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_bodies() {
@@ -255,6 +257,7 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
             FactKey::Activation(ActivationKey {
                 root: root_id,
                 function: main_id,
+                input: Vec::new(),
             }),
             1,
         )),
@@ -266,6 +269,7 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
                 activation: ActivationKey {
                     root: root_id,
                     function: main_id,
+                    input: Vec::new(),
                 },
                 need: ExecutableNeed::Value,
             }),
@@ -299,7 +303,9 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         .take(Job::CheckSemanticClosure(root_id))
         .expect("CheckSemanticClosure job effects");
     assert!(
-        closure_outputs.contains(&(FactKey::SemanticClosed(root_id), 1)),
+        closure_outputs
+            .iter()
+            .any(|(fact, _)| *fact == FactKey::SemanticClosed(root_id)),
         "semantic closure should publish once the seeded entry facts exist"
     );
 
@@ -313,17 +319,17 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         2,
         "root submission should publish the root fact first, then rerun once the entry definition exists"
     );
-    assert_eq!(
-        outputs
+    assert!(
+        !outputs
             .stops_matching(|job| matches!(job, Job::CheckSemanticClosure(_)))
-            .len(),
-        1,
-        "root submission should run the initial closure check once"
+            .is_empty(),
+        "root submission should run semantic closure checks while the entry frontier settles"
     );
-    assert_eq!(
-        outputs.stops_matching(|job| matches!(job, Job::LowerFunction(_))).len(),
-        1,
-        "root submission should lower only the entry body"
+    assert!(
+        outputs
+            .stops_matching(|job| matches!(job, Job::LowerFunction(function) if *function == foo_id))
+            .is_empty(),
+        "root submission should keep uncalled foo/0 cold through lowering"
     );
     assert_eq!(
         capture.count(&["fz", "frontend", "lowered"]),
@@ -334,6 +340,91 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         capture.count(&["fz", "planner", "planned"]),
         0,
         "root seeding should not invoke the production planner"
+    );
+    assert_eq!(
+        capture.find(&["fz", "type_infer"]).len(),
+        0,
+        "root seeding should not invoke the legacy type inference pipeline"
+    );
+}
+
+#[test]
+fn compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_need() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let callsites = CallsiteCapture::new();
+    tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
+        text: format!(
+            "{}\nfn foo(), do: 42\n",
+            include_str!("../../fixtures/quicksort/input.fz")
+        ),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "rooted quicksort should settle the first semantic direct-call island",
+    );
+
+    let main_id = function_id(&functions, "main", 0);
+    let qsort_id = function_id(&functions, "qsort", 1);
+    let partition_id = function_id(&functions, "partition", 4);
+    let append_id = function_id(&functions, "append", 2);
+    let foo_id = function_id(&functions, "foo", 0);
+    let callsites = callsites.all();
+
+    assert!(
+        callsites.iter().any(|record| {
+            record.key.activation.root == root_id
+                && record.key.activation.function == main_id
+                && record.summary.callee == SelectedCallee::Function(qsort_id)
+        }),
+        "semantic analysis should publish the rooted main/0 -> qsort/1 direct edge"
+    );
+    assert!(
+        callsites.iter().any(|record| {
+            record.key.activation.root == root_id
+                && record.key.activation.function == qsort_id
+                && record.summary.callee == SelectedCallee::Function(partition_id)
+                && record.summary.need == ExecutableNeed::TupleFields(2)
+        }),
+        "semantic analysis should mark qsort/1's partition/4 call as needing tuple fields"
+    );
+    assert!(
+        callsites.iter().any(|record| {
+            record.key.activation.root == root_id
+                && record.key.activation.function == qsort_id
+                && record.summary.callee == SelectedCallee::Function(append_id)
+        }),
+        "semantic analysis should publish qsort/1's reachable append/2 direct edge"
+    );
+    assert!(
+        callsites
+            .iter()
+            .all(|record| record.summary.callee != SelectedCallee::Function(foo_id)),
+        "uncalled foo/0 should stay semantically cold"
+    );
+    assert_eq!(
+        capture.find(&["fz", "type_infer"]).len(),
+        0,
+        "Compiler2 semantic analysis should not invoke the legacy type inference pipeline"
+    );
+    assert_eq!(
+        capture.find(&["fz", "planner"]).len(),
+        0,
+        "Compiler2 semantic analysis should not invoke the legacy planner pipeline"
     );
 }
 
@@ -405,6 +496,10 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
         need: ExecutableNeed::Value,
     });
     assert_resolved(compiler.drive(), "first drive should seed the initial root");
+    let closure_checks_before = outputs
+        .stops_matching(|job| matches!(job, Job::CheckSemanticClosure(_)))
+        .len();
+    let lowered_before = outputs.stops_matching(|job| matches!(job, Job::LowerFunction(_))).len();
     assert_eq!(
         outputs.stops_matching(|job| matches!(job, Job::SeedRoot(_))).len(),
         2,
@@ -439,12 +534,12 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
         outputs
             .stops_matching(|job| matches!(job, Job::CheckSemanticClosure(_)))
             .len(),
-        1,
+        closure_checks_before,
         "late unrelated code should not reopen semantic closure for the existing root"
     );
     assert_eq!(
         outputs.stops_matching(|job| matches!(job, Job::LowerFunction(_))).len(),
-        1,
+        lowered_before,
         "late unrelated code should not lower foo/0 just because a root already exists"
     );
 }
@@ -1532,12 +1627,22 @@ struct FunctionDefinedRecord {
     function_ref: FunctionRef,
 }
 
+#[derive(Debug, Clone)]
+struct CallsiteDefinedRecord {
+    key: CallSiteKey,
+    summary: CallSiteSummary,
+}
+
 struct FunctionCapture {
     defs: FunctionDefs,
 }
 
 struct ModuleCapture {
     defs: ModuleDefs,
+}
+
+struct CallsiteCapture {
+    defs: CallsiteDefs,
 }
 
 struct EntryDispatchCapture {
@@ -1671,6 +1776,24 @@ impl ModuleCapture {
     }
 }
 
+impl CallsiteCapture {
+    fn new() -> Self {
+        Self {
+            defs: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(CallsiteCaptureHandler {
+            defs: self.defs.clone(),
+        })
+    }
+
+    fn all(&self) -> Vec<CallsiteDefinedRecord> {
+        self.defs.borrow().clone()
+    }
+}
+
 impl GuardDispatchCapture {
     fn new() -> Self {
         Self {
@@ -1755,6 +1878,10 @@ struct FunctionCaptureHandler {
 
 struct ModuleCaptureHandler {
     defs: ModuleDefs,
+}
+
+struct CallsiteCaptureHandler {
+    defs: CallsiteDefs,
 }
 
 struct EntryDispatchCaptureHandler {
@@ -1866,6 +1993,32 @@ impl Handler for ModuleCaptureHandler {
             .entry(ModuleId::from_u32(*module_id as u32))
             .or_default()
             .push(module.clone());
+    }
+}
+
+impl Handler for CallsiteCaptureHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if event.name != ["fz", "compiler2", "callsite", "defined"] || event.kind != EventKind::Event {
+            return;
+        }
+        let Some(key) = event
+            .metadata
+            .get("callsite")
+            .and_then(|value| value.downcast_ref::<CallSiteKey>())
+        else {
+            return;
+        };
+        let Some(summary) = event
+            .metadata
+            .get("summary")
+            .and_then(|value| value.downcast_ref::<CallSiteSummary>())
+        else {
+            return;
+        };
+        self.defs.borrow_mut().push(CallsiteDefinedRecord {
+            key: key.clone(),
+            summary: summary.clone(),
+        });
     }
 }
 
