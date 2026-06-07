@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.10.3"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-rh2.10",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 engine: exact waits, applied-step signal, and interned-type convergence",
   "type": "task",
-  "updated_at": "2026-06-07T22:49:10Z"
+  "updated_at": "2026-06-07T22:51:22Z"
 }
