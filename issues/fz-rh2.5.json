@@ -8,14 +8,15 @@
     "fz-rh2.6.1",
     "fz-rh2.7.1"
   ],
+  "closed_at": "2026-06-07T00:28:05Z",
   "created": "2026-06-06T23:37:21Z",
   "description": "Goal: make code contributions define identity without lowering bodies. Change: IndexCode creates CodeState, module/function definitions, owned expanded ClauseAst/FunctionAst, and namespace bindings. Check: quicksort plus foo defines all functions but creates no LoweredBody/Activation/Executable facts.",
   "id": "fz-rh2.5",
   "labels": [],
   "parent": "fz-rh2",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 front door: index code into owned expanded function definitions",
   "type": "task",
-  "updated_at": "2026-06-07T00:09:41Z"
+  "updated_at": "2026-06-07T00:28:05Z"
 }
