@@ -7,13 +7,13 @@
     "fz-rh2.10.3"
   ],
   "created": "2026-06-07T21:13:07Z",
-  "description": "Goal: the semantic loop should not spend time analyzing impossible activations that never survive into the closed frontier. Signal: the Compiler2 quicksort trace-summary reports zero dead transient activations (`qsort([])`, `qsort(none)`, `append(none, ...)`, `dbg(none)`-style islands), and `CheckSemanticClosure` / `AnalyzeActivation` waste budgets fall materially without changing the final frontier. Strategy: make activation admission and call propagation respect inhabitation and subsumption at the Compiler2 boundary, then tighten the root walk so only live frontier changes reopen semantic work.\n\nChange:\n- Revisit activation-key admission and propagation so bottom/empty transient shapes do not become ordinary semantic work unless semantically real.\n- Tighten `CheckSemanticClosure` / `AnalyzeActivation` interaction around changed inputs and live waits only.\n- Preserve the current closed quicksort and `Enum.reduce` frontiers while reducing rerun churn.\n\nWhy:\n- The current trace shows real work being spent on dead-end semantic islands that do not survive into the settled root closure.\n\nChecks:\n- Quicksort trace-summary reports zero analyzed activations outside the final closure.\n- Quicksort trace-summary job-family counts and elapsed totals fall to the expected budget for the rooted quicksort case.\n- The final closed activation/executable frontier remains unchanged.",
+  "description": "Goal: the work graph should wake dependents when fact values change, not when unrelated producer revision counters happen to increase. Signal: existing single-owner presence facts behave exactly as before, and tests prove multi-owner value facts aggregate by content with stable fingerprints. Strategy: replace u64-only fact contributions with FactValue, keep Presence(u64) as today's semantics, and add the lattice machinery needed for activation inputs before any activation fact starts using it.\n\nChange:\n- Introduce FactValue with Presence(u64) for existing facts and Inputs(Vec\u003cTy\u003e) for activation input facts.\n- Give FactValue a family-specific join and content fingerprint.\n- Change JobEffects outputs and FactTable replacement to aggregate values and report changes on fingerprint change.\n- Keep current facts single-owner/presence during this ticket so behavior stays green.\n\nWhy:\n- max(revision) is only honest while every fact has one owner. Activation input will be multi-owner, so the fact table must become value-aware first.\n\nChecks:\n- Scheduler/fact tests cover unchanged presence behavior, contribution retraction, and content-stable multi-owner joins.\n- Compiler2 quicksort and Enum.reduce tests remain green before activation input moves.",
   "id": "fz-rh2.10.2",
   "labels": [],
   "parent": "fz-rh2.10",
   "priority": 1,
   "status": "open",
-  "title": "Compiler2 fixpoint: prune dead transient activations and reduce root-walk churn",
+  "title": "Compiler2 facts: make fact slots value-based",
   "type": "task",
-  "updated_at": "2026-06-07T21:23:43Z"
+  "updated_at": "2026-06-07T21:39:49Z"
 }
