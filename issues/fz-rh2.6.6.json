@@ -4,14 +4,15 @@
   "blocks": [
     "fz-rh2.6.7"
   ],
+  "closed_at": "2026-06-07T14:04:15Z",
   "created": "2026-06-07T13:53:45Z",
   "description": "Goal: make the work layer read as the scheduler spine before semantic jobs grow. `work.rs` should own the shared work vocabulary and drive loop; `jobs::` should own job implementations and their private helpers.\n\nChange:\n- Keep `Job`, `FactKey`, `JobEffects`, `WorkGraph`, job metadata, and `World::drive` in the work spine.\n- Add `compiler2/jobs/mod.rs` as the dispatch surface used by the drive loop.\n- Move current source-surface jobs to `compiler2/jobs/source.rs`: `IndexCode`, `ScopeCode`, `DefineModule`, namespace/import helpers, module discovery, function indexing, and diagnostics local to source indexing/scoping.\n- Move current root jobs to `compiler2/jobs/root.rs`: `SeedRoot` and the current `CheckSemanticClosure` placeholder.\n- Preserve the rule that jobs return `JobEffects`; only the world drive loop applies effects to the work graph.\n\nShape rule:\n- Split by cohesive helper set, not mechanically one file per enum variant.\n- A one-job module is right when the job owns substantial private data/helpers (`body::lower_function`, later artifact jobs).\n- Shared surface jobs stay together while they share `define_scope`, imports, exports, and module/function definition helpers.\n- If `semantic.rs` grows large, split under `jobs/semantic/` by semantic concern (`activation`, `callsite`, `return_need`, `executable`, `closure`) rather than by rote variant count.\n\nWhy:\n- The next semantic ticket needs body and semantic job families with their own private helpers. Keeping those in `work.rs` would mix source scoping, lowering, semantic analysis, and drive mechanics in one file.\n- One-file-per-job for the current source jobs would force helper leakage or duplicate the source-surface algorithm. Family modules keep privacy and make dataflow easier to audit.\n- This is a behavior-preserving cleanup that protects the dataflow boundary before adding new facts.\n\nChecks:\n- Compiler2 telemetry-driven tests still pass with the same job span names and outcomes.\n- `cargo test --lib compiler2::` passes.\n- No lowering, semantic analysis, planner, or artifact behavior is added here.",
   "id": "fz-rh2.6.6",
   "labels": [],
   "parent": "fz-rh2.6",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 work: split job families behind the drive spine",
   "type": "task",
-  "updated_at": "2026-06-07T13:59:34Z"
+  "updated_at": "2026-06-07T14:04:15Z"
 }
