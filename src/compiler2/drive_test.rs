@@ -1,5 +1,5 @@
 use super::{CodeSubmission, Compiler2, DriveOutcome, ExactPattern, ExecutableNeed, Job, RootSubmission};
-use crate::compiler2::work::JobEffects;
+use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{ActivationKey, ExecutableKey, FactKey, FunctionId};
 use crate::diag::codes;
 use crate::telemetry::capture::OwnedEvent;

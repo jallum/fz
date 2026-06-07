@@ -8,12 +8,12 @@ use crate::{measurements, metadata};
 use super::CodeId;
 use super::code::CodeMap;
 use super::deps::ExactPattern;
+use super::drive::{FactKey, Job, JobEffects, WorkGraph};
 use super::identity::{
     ExecutableNeed, FunctionDef, FunctionId, FunctionMap, ModuleExport, ModuleId, ModuleMap, ModuleState, RootEntry,
     RootId, RootMap,
 };
 use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
-use super::work::{FactKey, Job, JobEffects, WorkGraph};
 
 pub struct World<'a> {
     tel: &'a dyn Telemetry,
