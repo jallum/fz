@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-07T13:00:41Z",
+  "description": "Goal: make the work loop report its real terminal state directly. Signal: drive returns Resolved when the agenda drains with no unresolved waiters, Unresolved with the blocked frontier when the agenda drains with missing facts, and Fatal when a job dies. Strategy: inspect the existing wait graph instead of inventing a second status mechanism; expose the unresolved frontier through the drive outcome and cover root-before-code plus later resolution in telemetry-driven tests.",
+  "id": "fz-rh2.6.4",
+  "labels": [],
+  "parent": "fz-rh2.6",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 drive: report unresolved frontier at quiescence",
+  "type": "task",
+  "updated_at": "2026-06-07T13:00:41Z"
+}
