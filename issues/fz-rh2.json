@@ -3,12 +3,12 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-06T23:37:21Z",
-  "description": "Goal: build Compiler2 side-by-side from northstar.html while keeping the current compiler as oracle. Signal: contract tests prove reachable facts, absent facts, retractions, semantic closure, and artifact boundaries. Strategy: copy/adapt only the pieces needed into the new module tree, one ticket/commit at a time.",
+  "description": "Goal: build Compiler2 side-by-side from northstar.html while keeping the current compiler as oracle. Signal: contract tests and trace runs prove reachable facts, absent facts, retractions, quiet closure boundaries, lazy pull-through, and artifact boundaries. Strategy: copy/adapt only the pieces needed into the new module tree, one ticket/commit at a time, and stop to correct the data model whenever the trace shows the engine lying about its own work.",
   "id": "fz-rh2",
   "labels": [],
   "priority": 1,
   "status": "open",
   "title": "Compiler2: build the incremental fact compiler spine",
   "type": "epic",
-  "updated_at": "2026-06-06T23:37:55Z"
+  "updated_at": "2026-06-07T21:13:08Z"
 }
