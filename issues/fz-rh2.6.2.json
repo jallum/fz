@@ -1,7 +1,8 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [
-    "fz-rh2.6.1"
+    "fz-rh2.6.1",
+    "fz-rh2.6.7"
   ],
   "blocks": [
     "fz-rh2.6.3",
@@ -16,5 +17,5 @@
   "status": "in_progress",
   "title": "Compiler2 semantic: derive direct call, type, return-need, and executable facts",
   "type": "task",
-  "updated_at": "2026-06-07T13:12:10Z"
+  "updated_at": "2026-06-07T13:54:07Z"
 }
