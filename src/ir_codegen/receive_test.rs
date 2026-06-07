@@ -77,7 +77,7 @@ fn clause_meta(bound_names: Vec<&str>) -> ReceiveClause {
 
 fn dispatch_from_rows(rows: Vec<(AstPattern, Option<Spanned<AstExpr>>)>) -> PatternDispatchPlan {
     let source_patterns = SourcePatternRows {
-        subjects: vec![Var(0)],
+        input_count: 1,
         rows: rows
             .into_iter()
             .enumerate()

@@ -1,7 +1,6 @@
 use super::*;
 use crate::ast::{BitField, BitFieldSpec, BitSize, BitType, Endian, Expr, Pattern, Spanned};
-use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, SourcePatternRows};
-use crate::fz_ir::Var;
+use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, PatternSubjectRef, SourcePatternRows};
 use crate::types::{Ty, Types};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -783,7 +782,7 @@ fn pattern_row_with_guard_preconditions(
     patterns: Vec<Pattern>,
     body_id: PatternBodyId,
     guard: Expr,
-    preconditions: Vec<(Var, Ty)>,
+    preconditions: Vec<(PatternSubjectRef, Ty)>,
 ) -> PatternRow {
     PatternRow {
         patterns: patterns.into_iter().map(sp).collect(),
@@ -832,7 +831,7 @@ fn has_region(plan: &pattern::PatternDispatchPlan, pred: impl Fn(&Region) -> boo
 #[test]
 fn pattern_dispatch_matrix_preserves_literal_outcomes_and_default() {
     let source_patterns = SourcePatternRows {
-        subjects: vec![Var(0)],
+        input_count: 1,
         rows: vec![
             pattern_row(vec![Pattern::Int(7)], 0),
             pattern_row(vec![Pattern::Atom("ok".to_string())], 1),
@@ -884,7 +883,7 @@ fn pattern_dispatch_matrix_preserves_tuple_list_projections_and_leaf_bindings() 
         Some(Box::new(sp(Pattern::Var("t".to_string())))),
     );
     let source_patterns = SourcePatternRows {
-        subjects: vec![Var(0)],
+        input_count: 1,
         rows: vec![
             pattern_row(
                 vec![Pattern::Tuple(vec![
@@ -959,7 +958,7 @@ fn pattern_dispatch_matrix_preserves_tuple_list_projections_and_leaf_bindings() 
 #[test]
 fn pattern_dispatch_matrix_preserves_map_presence_before_value_tests() {
     let source_patterns = SourcePatternRows {
-        subjects: vec![Var(0)],
+        input_count: 1,
         rows: vec![pattern_row(
             vec![Pattern::Map(vec![(
                 sp(Pattern::Atom("id".to_string())),
@@ -1004,7 +1003,7 @@ fn pattern_dispatch_matrix_preserves_map_presence_before_value_tests() {
 #[test]
 fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() {
     let source_patterns = SourcePatternRows {
-        subjects: vec![Var(0)],
+        input_count: 1,
         rows: vec![pattern_row(
             vec![Pattern::Bitstring(vec![
                 BitField {
@@ -1071,7 +1070,7 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
 #[test]
 fn pattern_dispatch_plan_carries_executable_payloads_directly() {
     let source_patterns = SourcePatternRows {
-        subjects: vec![Var(0)],
+        input_count: 1,
         rows: vec![
             pattern_row(
                 vec![Pattern::Bitstring(vec![
@@ -1153,13 +1152,13 @@ fn pattern_dispatch_matrix_preserves_pins_guards_and_preconditions_as_questions(
     let mut types = crate::types::new();
     let int = types.int();
     let source_patterns = SourcePatternRows {
-        subjects: vec![Var(0)],
+        input_count: 1,
         rows: vec![
             pattern_row_with_guard_preconditions(
                 vec![Pattern::Pinned("want".to_string())],
                 0,
                 Expr::Bool(true),
-                vec![(Var(0), int.clone())],
+                vec![(PatternSubjectRef::Input(0), int.clone())],
             ),
             pattern_row(vec![Pattern::Wildcard], 1),
         ],
@@ -1194,7 +1193,7 @@ fn pattern_dispatch_matrix_preserves_pins_guards_and_preconditions_as_questions(
 #[test]
 fn receive_policy_is_not_encoded_in_pattern_dispatch_matrix() {
     let source_patterns = SourcePatternRows {
-        subjects: vec![Var(0)],
+        input_count: 1,
         rows: vec![pattern_row(vec![Pattern::Wildcard], 0)],
     };
 

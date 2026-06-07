@@ -1,5 +1,5 @@
 use super::*;
-use crate::ast::{BitType, Endian, Expr, Pattern, Spanned};
+use crate::ast::{BitType, Endian, Pattern};
 use crate::compiler::source::Span;
 use crate::dispatch_matrix::pattern::{
     PatternBodyId, PatternRow, SourcePatternError, SourcePatternRows, collect_guard_capture_names,
@@ -17,15 +17,8 @@ use crate::types::{Ty, Types};
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap};
 
-pub(super) type BodyCb<'a, T> = &'a mut dyn FnMut(
-    &mut LowerCtx,
-    &mut T,
-    PatternBodyId,
-    Vec<MatchedBinding>,
-    Vec<(Var, Ty)>,
-    Option<Spanned<Expr>>,
-    BlockId,
-) -> Result<(), LowerError>;
+pub(super) type BodyCb<'a, T> =
+    &'a mut dyn FnMut(&mut LowerCtx, &mut T, PatternBodyId, Vec<MatchedBinding>, BlockId) -> Result<(), LowerError>;
 
 #[derive(Debug, Clone)]
 pub(crate) struct MatchedBinding {
@@ -46,6 +39,7 @@ pub(crate) fn lower_source_patterns_to_current_fn<T: Types<Ty = Ty>>(
     ctx: &mut LowerCtx,
     t: &mut T,
     source_patterns: SourcePatternRows,
+    inputs: Vec<Var>,
     fail_block: BlockId,
     body_cb: BodyCb<'_, T>,
 ) -> Result<(), LowerError> {
@@ -60,7 +54,10 @@ pub(crate) fn lower_source_patterns_to_current_fn<T: Types<Ty = Ty>>(
                 what: format!("source pattern dispatch cannot be represented: {:?}", err),
             }
         })?;
-    let mut state = PatternLowerState::default();
+    let mut state = PatternLowerState {
+        inputs,
+        ..PatternLowerState::default()
+    };
     lower_dispatch_node(ctx, t, &plan, plan.graph.root, fail_block, body_cb, &mut state)
 }
 
@@ -109,7 +106,7 @@ pub(super) fn lower_dispatch_node<T: Types<Ty = Ty>>(
                     })
                 })
                 .collect::<Result<Vec<_>, LowerError>>()?;
-            body_cb(ctx, t, outcome.body_id, bindings, Vec::new(), None, fail_block)
+            body_cb(ctx, t, outcome.body_id, bindings, fail_block)
         }
         DispatchNode::Test {
             predicate,
@@ -299,7 +296,6 @@ pub(super) fn materialize_dispatch_subject(
             .inputs
             .get(*ordinal as usize)
             .copied()
-            .or_else(|| plan.inputs.get(*ordinal as usize).and_then(|input| input.var))
             .ok_or_else(|| LowerError::Unsupported {
                 span: Span::DUMMY,
                 what: format!("dispatch input {} has no IR var", ordinal),
@@ -374,12 +370,11 @@ fn lower_pinned_var(
             span: Span::DUMMY,
             what: format!("pinned slot {:?} out of bounds", pinned),
         })?;
-    if let Some(input) = pinned.var {
+    if let Some(input) = pinned.input {
         return state
             .inputs
-            .get(input.0 as usize)
+            .get(input as usize)
             .copied()
-            .or(Some(input))
             .ok_or_else(|| LowerError::Unsupported {
                 span: pinned.span,
                 what: format!("pinned helper input {:?} out of bounds", input),
@@ -657,9 +652,8 @@ pub(crate) fn lower_guard_helper_call_to_dispatch(
     }
 
     stack.push(key);
-    let subjects: Vec<Var> = (0..arity).map(|i| Var(i as u32)).collect();
     let source_patterns = SourcePatternRows {
-        subjects,
+        input_count: arity,
         rows: fn_def
             .clauses
             .iter()
@@ -679,18 +673,18 @@ pub(crate) fn lower_guard_helper_call_to_dispatch(
     stack.pop();
     let mut plan = plan_result.map_err(|err| SourcePatternError::DispatchMatrix(format!("{err:?}")))?;
 
-    let param_input_by_name: HashMap<String, Var> = fn_def.clauses[0]
+    let param_input_by_name: HashMap<String, u32> = fn_def.clauses[0]
         .params
         .iter()
         .enumerate()
         .filter_map(|(i, pattern)| match &pattern.node {
-            Pattern::Var(name) => Some((name.clone(), Var(i as u32))),
+            Pattern::Var(name) => Some((name.clone(), i as u32)),
             _ => None,
         })
         .collect();
     for pinned in &mut plan.pinned {
         if let Some(input) = param_input_by_name.get(&pinned.name) {
-            pinned.var = Some(*input);
+            pinned.input = Some(*input);
         }
     }
 
@@ -714,7 +708,7 @@ pub(crate) fn lower_guard_helper_call_to_dispatch(
                 let id = PinnedValueId(plan.pinned.len() as u32);
                 plan.pinned.push(crate::dispatch_matrix::pattern::PatternPinnedInput {
                     name: entry.key().clone(),
-                    var: None,
+                    input: None,
                     span: clause.body.span,
                 });
                 entry.insert(id);
@@ -756,7 +750,7 @@ pub(crate) fn lower_guard_helper_call_to_dispatch(
 
 pub(crate) fn collect_dispatch_pinned_names_recursive(plan: &PatternDispatchPlan, out: &mut Vec<String>) {
     for pinned in &plan.pinned {
-        if pinned.var.is_some() {
+        if pinned.input.is_some() {
             continue;
         }
         if !out.contains(&pinned.name) {

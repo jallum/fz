@@ -2010,8 +2010,8 @@ fn build_receive_pattern_rows_one_clause_shape() {
         "fn rx() do receive do {:ping, _} -> :pong end end",
         &crate::telemetry::ConfiguredTelemetry::new(),
     );
-    let source_patterns = build_receive_pattern_rows(Var(0), &clauses);
-    assert_eq!(source_patterns.subjects, vec![Var(0)]);
+    let source_patterns = build_receive_pattern_rows(&clauses);
+    assert_eq!(source_patterns.input_count, 1);
     assert_eq!(source_patterns.rows.len(), 1);
     assert_eq!(source_patterns.rows[0].patterns.len(), 1);
     assert!(source_patterns.rows[0].preconditions.is_empty());
@@ -2029,8 +2029,8 @@ fn build_receive_pattern_rows_multi_clause_preserves_order_and_ids() {
         end end",
         &crate::telemetry::ConfiguredTelemetry::new(),
     );
-    let source_patterns = build_receive_pattern_rows(Var(7), &clauses);
-    assert_eq!(source_patterns.subjects, vec![Var(7)]);
+    let source_patterns = build_receive_pattern_rows(&clauses);
+    assert_eq!(source_patterns.input_count, 1);
     assert_eq!(source_patterns.rows.len(), 3);
     for (i, row) in source_patterns.rows.iter().enumerate() {
         assert_eq!(row.body_id, i as PatternBodyId);
@@ -2048,7 +2048,7 @@ fn build_receive_pattern_rows_carries_guard() {
         end end",
         &crate::telemetry::ConfiguredTelemetry::new(),
     );
-    let source_patterns = build_receive_pattern_rows(Var(0), &clauses);
+    let source_patterns = build_receive_pattern_rows(&clauses);
     assert_eq!(source_patterns.rows.len(), 2);
     assert!(
         source_patterns.rows[0].guard.is_some(),

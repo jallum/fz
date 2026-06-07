@@ -7,7 +7,6 @@ use super::{
 };
 use crate::ast::{BitSize, BitType, Endian, Expr, Pattern, Spanned};
 use crate::compiler::source::Span;
-use crate::fz_ir::Var;
 use std::collections::HashMap;
 
 pub(crate) mod source;
@@ -20,7 +19,7 @@ pub(crate) use source::{
 pub(crate) struct PatternDispatchPlan {
     pub(crate) matrix: DispatchMatrix,
     pub(crate) graph: DispatchGraph,
-    pub(crate) inputs: Vec<PatternInput>,
+    pub(crate) input_count: usize,
     pub(crate) subjects: Vec<Option<PatternSubjectRef>>,
     pub(crate) outcomes: Vec<PatternDispatchOutcome>,
     pub(crate) guards: Vec<PatternGuardExpr>,
@@ -40,15 +39,9 @@ impl PatternDispatchPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PatternInput {
-    pub(crate) var: Option<Var>,
-    pub(crate) span: Span,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PatternPinnedInput {
     pub(crate) name: String,
-    pub(crate) var: Option<Var>,
+    pub(crate) input: Option<u32>,
     pub(crate) span: Span,
 }
 
@@ -276,10 +269,9 @@ where
 
 struct PatternDispatchProducer {
     builder: DispatchMatrixBuilder,
-    input_by_var: HashMap<Var, u32>,
+    input_count: usize,
     subjects: HashMap<PatternSubjectRef, SubjectId>,
     guard_subject: SubjectId,
-    inputs: Vec<PatternInput>,
     pinned: Vec<PatternPinnedInput>,
     pinned_by_name: HashMap<String, PinnedValueId>,
     prepared_keys: Vec<DispatchConst>,
@@ -290,20 +282,13 @@ struct PatternDispatchProducer {
 
 impl PatternDispatchProducer {
     fn new(patterns: &SourcePatternRows) -> Result<Self, SourcePatternError> {
-        validate_source_order(patterns)?;
+        validate_source_rows(patterns)?;
         let mut builder = DispatchMatrixBuilder::new(super::Order::Source);
-        let mut input_by_var = HashMap::new();
         let mut subjects = HashMap::new();
-        let mut inputs = Vec::new();
-        for (ordinal, var) in patterns.subjects.iter().copied().enumerate() {
+        for ordinal in 0..patterns.input_count {
             let subject = builder.add_input_subject();
             let ordinal = ordinal as u32;
-            input_by_var.insert(var, ordinal);
             subjects.insert(PatternSubjectRef::Input(ordinal), subject);
-            inputs.push(PatternInput {
-                var: Some(var),
-                span: Span::DUMMY,
-            });
         }
         let guard_subject = subjects
             .get(&PatternSubjectRef::Input(0))
@@ -314,7 +299,7 @@ impl PatternDispatchProducer {
             .iter()
             .map(|name| PatternPinnedInput {
                 name: name.clone(),
-                var: None,
+                input: None,
                 span: Span::DUMMY,
             })
             .collect::<Vec<_>>();
@@ -325,10 +310,9 @@ impl PatternDispatchProducer {
             .collect();
         Ok(Self {
             builder,
-            input_by_var,
+            input_count: patterns.input_count,
             subjects,
             guard_subject,
-            inputs,
             pinned,
             pinned_by_name,
             prepared_keys: Vec::new(),
@@ -354,16 +338,12 @@ impl PatternDispatchProducer {
     {
         let mut questions = Vec::new();
         let mut bindings = Vec::new();
-        for (pattern, var) in row.patterns.iter().zip(self.input_vars_for_row()) {
-            let subject = PatternSubjectRef::Input(var);
+        for (ordinal, pattern) in row.patterns.iter().enumerate() {
+            let subject = PatternSubjectRef::Input(ordinal as u32);
             self.append_pattern(&pattern.node, pattern.span, &subject, &mut questions, &mut bindings)?;
         }
-        for (var, ty) in &row.preconditions {
-            let ordinal = *self
-                .input_by_var
-                .get(var)
-                .ok_or(SourcePatternError::UnknownSubject(*var))?;
-            let subject = self.subject_id(&PatternSubjectRef::Input(ordinal))?;
+        for (subject_ref, ty) in &row.preconditions {
+            let subject = self.subject_id(subject_ref)?;
             questions.push(RegionQuestion::type_region(subject, ty.clone()));
         }
         if let Some(guard) = &row.guard {
@@ -397,10 +377,6 @@ impl PatternDispatchProducer {
         Ok(())
     }
 
-    fn input_vars_for_row(&self) -> Vec<u32> {
-        (0..self.inputs.len() as u32).collect()
-    }
-
     fn finish(self) -> Result<PatternDispatchPlan, PatternDispatchError> {
         let subjects = self.subject_refs_by_id();
         let matrix = self.builder.build().map_err(PatternDispatchError::MatrixBuild)?;
@@ -410,7 +386,7 @@ impl PatternDispatchProducer {
         Ok(PatternDispatchPlan {
             matrix,
             graph,
-            inputs: self.inputs,
+            input_count: self.input_count,
             subjects,
             outcomes: self.outcomes,
             guards: self.guards,
@@ -638,7 +614,7 @@ impl PatternDispatchProducer {
             return Ok(id);
         }
         let id = match subject {
-            PatternSubjectRef::Input(_) => return Err(SourcePatternError::UnknownSubject(Var(u32::MAX))),
+            PatternSubjectRef::Input(_) => return Err(SourcePatternError::UnknownSubject(subject.clone())),
             PatternSubjectRef::TupleField { tuple, index } => {
                 let source = self.subject_id(tuple)?;
                 self.builder
@@ -714,7 +690,17 @@ impl PatternDispatchProducer {
     }
 }
 
-fn validate_source_order(patterns: &SourcePatternRows) -> Result<(), SourcePatternError> {
+fn validate_source_rows(patterns: &SourcePatternRows) -> Result<(), SourcePatternError> {
+    for row in &patterns.rows {
+        let actual = row.patterns.len();
+        if actual != patterns.input_count {
+            return Err(SourcePatternError::RowPatternArity {
+                expected: patterns.input_count,
+                actual,
+                body_id: row.body_id,
+            });
+        }
+    }
     for pair in patterns.rows.windows(2) {
         let previous = pair[0].body_id;
         let current = pair[1].body_id;

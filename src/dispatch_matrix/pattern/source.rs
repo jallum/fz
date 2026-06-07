@@ -2,10 +2,9 @@ use std::collections::BTreeSet;
 
 use crate::ast::{Expr, Pattern, Spanned};
 use crate::dispatch_matrix::{DispatchNode, GraphNodeId, ListRegion, Region, SubjectId};
-use crate::fz_ir::Var;
 use crate::types::Ty;
 
-use super::{PatternDispatchPlan, pattern_dispatch_from_source};
+use super::{PatternDispatchPlan, PatternSubjectRef, pattern_dispatch_from_source};
 
 /// Opaque handle into the caller's body table. Source-pattern dispatch never
 /// lowers bodies; it routes graph outcomes to caller-owned body lowering by id.
@@ -13,17 +12,17 @@ pub(crate) type PatternBodyId = u32;
 
 #[derive(Debug, Clone)]
 pub(crate) struct PatternRow {
-    /// Column patterns. `patterns.len()` must equal `SourcePatternRows::subjects.len()`.
+    /// Column patterns. `patterns.len()` must equal `SourcePatternRows::input_count`.
     pub(crate) patterns: Vec<Spanned<Pattern>>,
     /// `@spec` annotation tests evaluated at leaf-resolution time, before the guard.
-    pub(crate) preconditions: Vec<(Var, Ty)>,
+    pub(crate) preconditions: Vec<(PatternSubjectRef, Ty)>,
     pub(crate) guard: Option<Spanned<Expr>>,
     pub(crate) body_id: PatternBodyId,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct SourcePatternRows {
-    pub(crate) subjects: Vec<Var>,
+    pub(crate) input_count: usize,
     pub(crate) rows: Vec<PatternRow>,
 }
 
@@ -37,11 +36,16 @@ pub(crate) enum KnownSubjectDomain {
 pub(crate) enum SourcePatternError {
     UnsupportedGuardExpr,
     UnsupportedMapKey,
-    UnknownSubject(Var),
+    UnknownSubject(PatternSubjectRef),
     UnknownPinned(String),
     UnknownGuardVar(String),
     GuardCallCycle(String, usize),
     DispatchMatrix(String),
+    RowPatternArity {
+        expected: usize,
+        actual: usize,
+        body_id: PatternBodyId,
+    },
     NonMonotonicBodyId {
         previous: PatternBodyId,
         current: PatternBodyId,

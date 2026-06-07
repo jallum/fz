@@ -156,7 +156,7 @@ fn empty_dispatch() -> Arc<PatternDispatchPlan> {
             }],
             root: GraphNodeId(0),
         },
-        inputs: vec![],
+        input_count: 0,
         subjects: vec![],
         outcomes: vec![],
         guards: vec![],

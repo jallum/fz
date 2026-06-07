@@ -582,12 +582,12 @@ fn load_pinned_dispatch_value(
         .pinned
         .get(pinned.0 as usize)
         .ok_or_else(|| CodegenError::new(format!("pinned {:?} out of bounds", pinned)))?;
-    if let Some(var) = p.var {
+    if let Some(input) = p.input {
         return ctx
             .inputs
-            .get(var.0 as usize)
+            .get(input as usize)
             .copied()
-            .ok_or_else(|| CodegenError::new(format!("pinned helper input {:?} out of bounds", var)));
+            .ok_or_else(|| CodegenError::new(format!("pinned helper input {:?} out of bounds", input)));
     }
 
     let &idx = ctx

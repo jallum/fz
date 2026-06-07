@@ -381,8 +381,8 @@ fn load_pinned_dispatch_value(
     pinned_values: &HashMap<String, AnyValue>,
 ) -> Option<AnyValue> {
     let p = plan.pinned.get(pinned.0 as usize)?;
-    if let Some(var) = p.var {
-        return inputs.get(var.0 as usize).copied();
+    if let Some(input) = p.input {
+        return inputs.get(input as usize).copied();
     }
     pinned_values.get(&p.name).copied()
 }

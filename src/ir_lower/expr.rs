@@ -1120,7 +1120,7 @@ pub(super) fn lower_case<T: Types<Ty = Ty>>(
     ctx.terminated = false;
 
     let source_patterns = SourcePatternRows {
-        subjects: vec![sv],
+        input_count: 1,
         rows: clauses
             .iter()
             .enumerate()
@@ -1145,12 +1145,10 @@ pub(super) fn lower_case<T: Types<Ty = Ty>>(
         let saved_env_ref = &saved_env;
         let saved_order_ref = &saved_order;
         let mut cb = |ctx: &mut LowerCtx,
-                      t: &mut T,
+                      _t: &mut T,
                       body_id: PatternBodyId,
                       bindings: Vec<MatchedBinding>,
-                      _preconds: Vec<(Var, Ty)>,
-                      guard: Option<Spanned<Expr>>,
-                      fall_block: BlockId|
+                      _fall_block: BlockId|
          -> Result<(), LowerError> {
             let i = body_id as usize;
             let clause = &clauses_ref[i];
@@ -1158,13 +1156,6 @@ pub(super) fn lower_case<T: Types<Ty = Ty>>(
             ctx.env_order = saved_order_ref.clone();
             for binding in &bindings {
                 ctx.bind(&binding.name, binding.var);
-            }
-            if let Some(g) = &guard {
-                let guard_var = lower_expr(ctx, t, g, false)?;
-                let body_b = ctx.cur_mut().block(vec![]);
-                ctx.set_if_term(guard_var, body_b, fall_block);
-                ctx.cur_block = Some(body_b);
-                ctx.terminated = false;
             }
             let clause_cont = match &clause_conts_ref[i] {
                 Some(cont) => cont.clone(),
@@ -1203,7 +1194,7 @@ pub(super) fn lower_case<T: Types<Ty = Ty>>(
             ctx.terminated = true;
             Ok(())
         };
-        let result = lower_source_patterns_to_current_fn(ctx, t, source_patterns, fail_block, &mut cb);
+        let result = lower_source_patterns_to_current_fn(ctx, t, source_patterns, vec![sv], fail_block, &mut cb);
         ctx.branch_origin = prev_origin;
         result?;
     }
@@ -1443,7 +1434,7 @@ pub(super) fn lower_with<T: Types<Ty = Ty>>(
         ctx.terminated = false;
 
         let source_patterns = SourcePatternRows {
-            subjects: vec![unmatched_v],
+            input_count: 1,
             rows: else_clauses
                 .iter()
                 .enumerate()
@@ -1467,12 +1458,10 @@ pub(super) fn lower_with<T: Types<Ty = Ty>>(
             let saved_fail_env_ref = &saved_fail_env;
             let saved_fail_order_ref = &saved_fail_order;
             let mut cb = |ctx: &mut LowerCtx,
-                          t: &mut T,
+                          _t: &mut T,
                           body_id: PatternBodyId,
                           bindings: Vec<MatchedBinding>,
-                          _preconds: Vec<(Var, Ty)>,
-                          guard: Option<Spanned<Expr>>,
-                          fall_block: BlockId|
+                          _fall_block: BlockId|
              -> Result<(), LowerError> {
                 let i = body_id as usize;
                 let clause = &else_clauses[i];
@@ -1480,13 +1469,6 @@ pub(super) fn lower_with<T: Types<Ty = Ty>>(
                 ctx.env_order = saved_fail_order_ref.clone();
                 for binding in &bindings {
                     ctx.bind(&binding.name, binding.var);
-                }
-                if let Some(g) = &guard {
-                    let guard_var = lower_expr(ctx, t, g, false)?;
-                    let body_b = ctx.cur_mut().block(vec![]);
-                    ctx.set_if_term(guard_var, body_b, fall_block);
-                    ctx.cur_block = Some(body_b);
-                    ctx.terminated = false;
                 }
                 let cont = match &else_conts_ref[i] {
                     Some(cont) => cont.clone(),
@@ -1525,7 +1507,8 @@ pub(super) fn lower_with<T: Types<Ty = Ty>>(
                 ctx.terminated = true;
                 Ok(())
             };
-            let result = lower_source_patterns_to_current_fn(ctx, t, source_patterns, fail_block, &mut cb);
+            let result =
+                lower_source_patterns_to_current_fn(ctx, t, source_patterns, vec![unmatched_v], fail_block, &mut cb);
             ctx.branch_origin = prev_origin;
             result?;
         }
