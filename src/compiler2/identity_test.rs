@@ -37,7 +37,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
     }
 
     let scoped_ref = modules.reference_named("Scoped");
-    let indexed_revision = modules.index(
+    let indexed_revision = modules.index_body(
         scoped_ref,
         code_id,
         ModuleId::GLOBAL,
@@ -45,7 +45,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         Vec::new(),
         Vec::new(),
     );
-    let same_indexed_revision = modules.index(
+    let same_indexed_revision = modules.index_body(
         scoped_ref,
         code_id,
         ModuleId::GLOBAL,
@@ -89,7 +89,9 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         add_def,
         FunctionDef {
             code: code_id,
+            owner_module: math_def,
             namespace,
+            capture_params: Vec::new(),
             ast: add_ast.clone(),
         },
     );
@@ -97,7 +99,9 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         add_def,
         FunctionDef {
             code: code_id,
+            owner_module: math_def,
             namespace,
+            capture_params: Vec::new(),
             ast: add_ast.clone(),
         },
     );

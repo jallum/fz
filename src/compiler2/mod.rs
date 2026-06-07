@@ -9,6 +9,7 @@ mod facts;
 mod identity;
 mod jobs;
 mod namespace;
+mod protocol;
 mod runtime;
 mod scheduler;
 mod semantic;
@@ -26,8 +27,8 @@ pub use drive::{FactKey, Job, WorkGraph};
 pub use facts::{FactChange, FactReplace, FactSlot, FactTable};
 pub use identity::{
     ActivationKey, ExecutableKey, ExecutableNeed, Function, FunctionDef, FunctionId, FunctionMap, FunctionRef,
-    FunctionState, Module, ModuleExport, ModuleId, ModuleMap, ModuleSource, ModuleState, ModuleSurface, Root,
-    RootEntry, RootId, RootMap,
+    FunctionState, Module, ModuleExport, ModuleId, ModuleMap, ModuleSource, ModuleSourceKind, ModuleState,
+    ModuleSurface, Root, RootEntry, RootId, RootMap,
 };
 pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
 pub use scheduler::{AppliedStep, DriveOutcome, FatalError, Scheduler};

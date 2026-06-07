@@ -1,18 +1,20 @@
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use crate::ast::{FnDef, Item};
+use crate::ast::{FnDef, Item, ProtocolImplDef};
 use crate::compiler::source::Id as SourceId;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
+use crate::modules::identity::ModuleName;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
 
 use super::super::code::CodeId;
 use super::super::drive::{FactKey, Job, JobEffects};
-use super::super::identity::{ModuleExport, ModuleId};
+use super::super::identity::{ModuleExport, ModuleId, ModuleSourceKind};
 use super::super::namespace::{Namespace, NamespaceSymbol};
+use super::super::protocol::ProtocolCallbackImpl;
 use super::super::scheduler::FatalError;
 use super::super::world::World;
 
@@ -22,6 +24,7 @@ type Outputs = Vec<Output>;
 enum ScopeResult {
     Complete {
         namespace: Namespace,
+        revision_floor: u64,
         reads: Vec<FactKey>,
         outputs: Outputs,
         exports: Vec<ModuleExport>,
@@ -90,15 +93,22 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
 /// not ready, this job waits on the parent fact and schedules the parent job.
 /// When ready, it scopes the module body and publishes `ModuleDefined`.
 pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Result<JobEffects, FatalError> {
-    if let Some((code_id, items, base_namespace)) = world.module_scope(module_id) {
-        return match define_scope(world, code_id, module_id, base_namespace, &items)? {
+    if let Some((source, base_namespace)) = world.module_scope(module_id) {
+        let result = match &source.kind {
+            ModuleSourceKind::Body { items } => define_scope(world, source.code, module_id, base_namespace, items)?,
+            ModuleSourceKind::Protocol { callbacks } => {
+                define_protocol_surface(world, module_id, base_namespace, callbacks)
+            }
+        };
+        return match result {
             ScopeResult::Complete {
                 namespace,
+                revision_floor,
                 reads,
                 mut outputs,
                 exports,
             } => {
-                let revision = world.define_module(module_id, namespace, exports);
+                let revision = world.define_module(module_id, namespace, exports).max(revision_floor);
                 outputs.push((FactKey::ModuleDefined(module_id), revision));
                 Ok(JobEffects {
                     reads,
@@ -147,6 +157,15 @@ fn define_scope(
     items: &[Rc<Item>],
 ) -> Result<ScopeResult, FatalError> {
     let mut scope = namespace;
+    let local_protocols = items
+        .iter()
+        .filter_map(|item| match &**item {
+            Item::Protocol(protocol) if protocol.name.segments().len() == 1 => {
+                Some(protocol.name.last_segment().to_string())
+            }
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
     for item in items {
         match &**item {
             Item::Fn(def) => {
@@ -161,7 +180,15 @@ fn define_scope(
                 let module_id = world.reference_child_module(current_module, &module.name);
                 scope = world.bind_namespace(scope, module.name.clone(), NamespaceSymbol::Module(module_id));
             }
-            Item::Alias { .. } | Item::Import { .. } | Item::Struct(_) | Item::Protocol(_) | Item::ProtocolImpl(_) => {}
+            Item::Protocol(protocol) => {
+                let protocol_id = reference_declared_protocol_module(world, current_module, &protocol.name);
+                scope = world.bind_namespace(
+                    scope,
+                    protocol.name.last_segment().to_string(),
+                    NamespaceSymbol::Module(protocol_id),
+                );
+            }
+            Item::Alias { .. } | Item::Import { .. } | Item::Struct(_) | Item::ProtocolImpl(_) => {}
             Item::MacroCall { span, .. } => {
                 return Err(emit_job_diagnostic(
                     world,
@@ -177,6 +204,8 @@ fn define_scope(
 
     let mut reads = Vec::new();
     let mut function_plans = Vec::new();
+    let mut protocol_outputs = Vec::new();
+    let mut revision_floor = 0;
     for item in items {
         match &**item {
             Item::Alias { full_path, as_name, .. } => {
@@ -250,11 +279,22 @@ fn define_scope(
                 let module_id = world.reference_child_module(current_module, &module.name);
                 world.scope_module(module_id, scope);
             }
-            Item::Struct(_) | Item::Protocol(_) | Item::ProtocolImpl(_) | Item::MacroCall { .. } => {}
+            Item::Protocol(protocol) => {
+                let protocol_id = reference_declared_protocol_module(world, current_module, &protocol.name);
+                world.scope_module(protocol_id, scope);
+            }
+            Item::ProtocolImpl(protocol_impl) => {
+                let (mut outputs, revision) =
+                    define_protocol_impl(world, code_id, current_module, scope, &local_protocols, protocol_impl)?;
+                protocol_outputs.append(&mut outputs);
+                revision_floor = revision_floor.max(revision);
+            }
+            Item::Struct(_) | Item::MacroCall { .. } => {}
         }
     }
 
     let mut outputs = Vec::new();
+    outputs.append(&mut protocol_outputs);
     let mut exports = Vec::new();
     for (function_namespace, def) in function_plans {
         let (output, export) = index_function(world, code_id, current_module, function_namespace, &def)?;
@@ -266,6 +306,7 @@ fn define_scope(
 
     Ok(ScopeResult::Complete {
         namespace: scope,
+        revision_floor,
         reads,
         outputs,
         exports,
@@ -279,8 +320,14 @@ fn index_function(
     namespace: Namespace,
     def: &FnDef,
 ) -> Result<(Output, Option<ModuleExport>), FatalError> {
-    let (function_id, revision) =
-        world.define_function(current_module, def.name.clone(), code_id, namespace, def.clone());
+    let (function_id, revision) = world.define_function(
+        current_module,
+        current_module,
+        def.name.clone(),
+        code_id,
+        namespace,
+        def.clone(),
+    );
     let export = (!def.is_private).then(|| ModuleExport {
         name: def.name.clone(),
         arity: def.arity(),
@@ -291,6 +338,100 @@ fn index_function(
         },
     });
     Ok(((FactKey::FunctionDefined(function_id), revision), export))
+}
+
+fn define_protocol_surface(
+    world: &mut World<'_>,
+    module_id: ModuleId,
+    namespace: Namespace,
+    callbacks: &[crate::ast::ProtocolCallback],
+) -> ScopeResult {
+    let mut scope = namespace;
+    let mut exports = Vec::new();
+    let mut revision_floor = 0;
+    for callback in callbacks {
+        let function = world.reference_function(module_id, callback.name.clone(), callback.arity);
+        revision_floor = revision_floor.max(world.define_protocol_callback(function, module_id));
+        let symbol = NamespaceSymbol::Function(function);
+        scope = world.bind_namespace(scope, callback.name.clone(), symbol.clone());
+        exports.push(ModuleExport {
+            name: callback.name.clone(),
+            arity: callback.arity,
+            symbol,
+        });
+    }
+    ScopeResult::Complete {
+        namespace: scope,
+        revision_floor,
+        reads: Vec::new(),
+        outputs: Vec::new(),
+        exports,
+    }
+}
+
+fn define_protocol_impl(
+    world: &mut World<'_>,
+    code_id: CodeId,
+    current_module: ModuleId,
+    namespace: Namespace,
+    local_protocols: &HashSet<String>,
+    protocol_impl: &ProtocolImplDef,
+) -> Result<(Outputs, u64), FatalError> {
+    let protocol = reference_impl_protocol_module(world, current_module, &protocol_impl.protocol, local_protocols);
+    let target = reference_impl_target_module(world, current_module, &protocol_impl.target.path);
+    let impl_module = reference_protocol_impl_module(world, protocol, target);
+
+    let mut impl_scope = namespace;
+    let mut defs = Vec::new();
+    for item in &protocol_impl.items {
+        let Item::Fn(def) = &**item else {
+            return Err(emit_job_diagnostic(
+                world,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    "compiler2 protocol implementations only support callback functions",
+                    protocol_impl.span,
+                ),
+            ));
+        };
+        if def.is_macro {
+            return Err(emit_job_diagnostic(
+                world,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    "compiler2 protocol implementations cannot define macros",
+                    def.span,
+                ),
+            ));
+        }
+        let function = world.reference_function(impl_module, def.name.clone(), def.arity());
+        impl_scope = world.bind_namespace(impl_scope, def.name.clone(), NamespaceSymbol::Function(function));
+        defs.push(def.clone());
+    }
+
+    let mut outputs = Vec::new();
+    let mut callbacks = std::collections::HashMap::new();
+    for def in defs {
+        let function = world.reference_function(impl_module, def.name.clone(), def.arity());
+        let (_, revision) = world.define_function(
+            impl_module,
+            current_module,
+            def.name.clone(),
+            code_id,
+            impl_scope,
+            def.clone(),
+        );
+        outputs.push((FactKey::FunctionDefined(function), revision));
+        callbacks.insert(
+            (def.name.clone(), def.arity()),
+            ProtocolCallbackImpl {
+                function,
+                owner_module: current_module,
+            },
+        );
+    }
+    let revision = world.define_protocol_impl(protocol, target, callbacks);
+    Ok((outputs, revision))
 }
 
 fn emit_job_diagnostic(world: &World<'_>, diagnostic: Diagnostic) -> FatalError {
@@ -316,18 +457,111 @@ fn discover_modules(
     outputs: &mut Outputs,
 ) {
     for item in items {
-        if let Item::Module(module) = &**item {
-            let module_id = world.reference_child_module(parent_module, &module.name);
-            let revision = world.index_module(
-                module_id,
-                code_id,
-                parent_module,
-                module.name.clone(),
-                module.attrs.clone(),
-                module.items.clone(),
-            );
-            outputs.push((FactKey::ModuleIndexed(module_id), revision));
-            discover_modules(world, code_id, module_id, &module.items, outputs);
+        match &**item {
+            Item::Module(module) => {
+                let module_id = world.reference_child_module(parent_module, &module.name);
+                let revision = world.index_module_body(
+                    module_id,
+                    code_id,
+                    parent_module,
+                    module.name.clone(),
+                    module.attrs.clone(),
+                    module.items.clone(),
+                );
+                outputs.push((FactKey::ModuleIndexed(module_id), revision));
+                discover_modules(world, code_id, module_id, &module.items, outputs);
+            }
+            Item::Protocol(protocol) => {
+                let module_id = reference_declared_protocol_module(world, parent_module, &protocol.name);
+                let revision = world.index_protocol_module(
+                    module_id,
+                    code_id,
+                    parent_module,
+                    protocol.name.last_segment().to_string(),
+                    protocol.attrs.clone(),
+                    protocol.callbacks.clone(),
+                );
+                outputs.push((FactKey::ModuleIndexed(module_id), revision));
+            }
+            _ => {}
         }
     }
+}
+
+fn reference_declared_protocol_module(world: &mut World<'_>, current_module: ModuleId, name: &ModuleName) -> ModuleId {
+    world.reference_module(qualified_child_module_name(world, current_module, name))
+}
+
+fn reference_impl_protocol_module(
+    world: &mut World<'_>,
+    current_module: ModuleId,
+    name: &ModuleName,
+    local_protocols: &HashSet<String>,
+) -> ModuleId {
+    world.reference_module(qualified_impl_protocol_name(
+        world,
+        current_module,
+        name,
+        local_protocols,
+    ))
+}
+
+fn reference_impl_target_module(world: &mut World<'_>, current_module: ModuleId, name: &ModuleName) -> ModuleId {
+    world.reference_module(qualified_child_module_name(world, current_module, name))
+}
+
+fn reference_protocol_impl_module(world: &mut World<'_>, protocol: ModuleId, target: ModuleId) -> ModuleId {
+    let protocol_name = world
+        .module_name(protocol)
+        .expect("protocol modules should have reverse names");
+    let target_name = world
+        .module_name(target)
+        .expect("protocol impl targets should have reverse names");
+    let target_local = last_segment(target_name);
+    world.reference_module(format!("{protocol_name}.{target_local}"))
+}
+
+fn qualified_impl_protocol_name(
+    world: &World<'_>,
+    current_module: ModuleId,
+    name: &ModuleName,
+    local_protocols: &HashSet<String>,
+) -> String {
+    if name.segments().len() != 1 || current_module.is_global() {
+        return name.dotted();
+    }
+    let local = name.last_segment();
+    if !local_protocols.contains(local) && !same_as_current_module(world, current_module, local) {
+        return name.dotted();
+    }
+    qualify_local_child_name(world, current_module, local)
+}
+
+fn qualified_child_module_name(world: &World<'_>, current_module: ModuleId, name: &ModuleName) -> String {
+    if name.segments().len() != 1 || current_module.is_global() {
+        return name.dotted();
+    }
+    qualify_local_child_name(world, current_module, name.last_segment())
+}
+
+fn qualify_local_child_name(world: &World<'_>, current_module: ModuleId, local: &str) -> String {
+    let current_name = world
+        .module_name(current_module)
+        .expect("named scoped modules should have reverse lookups");
+    if local == last_segment(current_name) {
+        current_name.to_string()
+    } else {
+        format!("{current_name}.{local}")
+    }
+}
+
+fn same_as_current_module(world: &World<'_>, current_module: ModuleId, local: &str) -> bool {
+    let current_name = world
+        .module_name(current_module)
+        .expect("named scoped modules should have reverse lookups");
+    local == last_segment(current_name)
+}
+
+fn last_segment(name: &str) -> &str {
+    name.rsplit('.').next().unwrap_or(name)
 }

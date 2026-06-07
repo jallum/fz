@@ -25,10 +25,13 @@ use super::deps::ExactPattern;
 use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
 use super::drive::{FactKey, Job, JobEffects, WorkGraph};
 use super::identity::{
-    ExecutableNeed, FunctionDef, FunctionId, FunctionMap, ModuleExport, ModuleId, ModuleMap, ModuleState, RootEntry,
-    RootId, RootMap,
+    ExecutableNeed, FunctionDef, FunctionId, FunctionMap, ModuleExport, ModuleId, ModuleMap, ModuleSourceKind,
+    ModuleState, RootEntry, RootId, RootMap,
 };
 use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
+use super::protocol::{
+    ProtocolCallback, ProtocolCallbackImpl, ProtocolCallbackMap, ProtocolImpl, ProtocolImplKey, ProtocolImplMap,
+};
 use super::runtime::{self, RuntimeModuleCode};
 use super::semantic::{
     ActivationAnalysis, ActivationMap, ActivationSummary, CallSiteKey, CallSiteMap, CallSiteSummary,
@@ -42,6 +45,8 @@ pub struct World<'a> {
     bodies: LoweredBodyMap,
     guard_dispatches: GuardDispatchMap,
     entry_dispatches: EntryDispatchMap,
+    protocol_callbacks: ProtocolCallbackMap,
+    protocol_impls: ProtocolImplMap,
     activations: ActivationMap,
     callsites: CallSiteMap,
     roots: RootMap,
@@ -75,6 +80,8 @@ impl<'a> World<'a> {
             bodies: LoweredBodyMap::new(),
             guard_dispatches: GuardDispatchMap::new(),
             entry_dispatches: EntryDispatchMap::new(),
+            protocol_callbacks: ProtocolCallbackMap::new(),
+            protocol_impls: ProtocolImplMap::new(),
             activations: ActivationMap::new(),
             callsites: CallSiteMap::new(),
             roots: RootMap::new(),
@@ -267,7 +274,7 @@ impl<'a> World<'a> {
                 function_id: key.activation.function.as_u32() as u64,
                 callsite_id: key.callsite.as_u32() as u64,
                 revision: revision,
-                args: summary.arg_types.len() as u64,
+                input_arity: summary.input_types.len() as u64,
             },
             &metadata! {
                 callsite: opaque(&key),
@@ -308,7 +315,7 @@ impl<'a> World<'a> {
         revision
     }
 
-    pub fn index_module(
+    pub fn index_module_body(
         &mut self,
         id: ModuleId,
         code: CodeId,
@@ -317,7 +324,20 @@ impl<'a> World<'a> {
         attrs: Vec<crate::ast::Attribute>,
         items: Vec<Rc<Item>>,
     ) -> u64 {
-        self.modules.index(id, code, parent, local_name, attrs, items)
+        self.modules.index_body(id, code, parent, local_name, attrs, items)
+    }
+
+    pub fn index_protocol_module(
+        &mut self,
+        id: ModuleId,
+        code: CodeId,
+        parent: ModuleId,
+        local_name: String,
+        attrs: Vec<crate::ast::Attribute>,
+        callbacks: Vec<crate::ast::ProtocolCallback>,
+    ) -> u64 {
+        self.modules
+            .index_protocol(id, code, parent, local_name, attrs, callbacks)
     }
 
     pub fn scope_module(&mut self, id: ModuleId, base_namespace: Namespace) -> u64 {
@@ -331,6 +351,7 @@ impl<'a> World<'a> {
     pub fn define_function(
         &mut self,
         module: ModuleId,
+        owner_module: ModuleId,
         local_name: String,
         code: CodeId,
         namespace: Namespace,
@@ -339,7 +360,16 @@ impl<'a> World<'a> {
         let arity = ast.arity();
         let clauses = ast.clauses.len() as u64;
         let id = self.functions.reference(module, local_name, arity);
-        let revision = self.functions.define(id, FunctionDef { code, namespace, ast });
+        let revision = self.functions.define(
+            id,
+            FunctionDef {
+                code,
+                owner_module,
+                namespace,
+                capture_params: Vec::new(),
+                ast,
+            },
+        );
         let function = self.functions.get(id);
         let function_ref = self.functions.reference_for(id);
         self.tel.execute(
@@ -347,6 +377,7 @@ impl<'a> World<'a> {
             &measurements! {
                 code_id: code.as_u32() as u64,
                 module_id: module.as_u32() as u64,
+                owner_module_id: owner_module.as_u32() as u64,
                 function_id: id.as_u32() as u64,
                 revision: revision,
                 arity: arity as u64,
@@ -360,14 +391,78 @@ impl<'a> World<'a> {
         (id, revision)
     }
 
+    pub(crate) fn define_protocol_callback(&mut self, function: FunctionId, protocol: ModuleId) -> u64 {
+        let callback = ProtocolCallback { protocol };
+        let revision = self.protocol_callbacks.define(function, callback);
+        let function_ref = self.functions.reference_for(function);
+        self.tel.execute(
+            &["fz", "compiler2", "protocol_callback", "defined"],
+            &measurements! {
+                protocol_id: protocol.as_u32() as u64,
+                function_id: function.as_u32() as u64,
+                revision: revision,
+                arity: function_ref.arity as u64,
+            },
+            &metadata! {
+                callback: opaque(&callback),
+                function_ref: opaque(function_ref),
+            },
+        );
+        revision
+    }
+
+    pub(crate) fn protocol_callback(&self, function: FunctionId) -> Option<ProtocolCallback> {
+        self.protocol_callbacks
+            .get(function)
+            .or_else(|| self.derived_protocol_callback(function))
+    }
+
+    pub(crate) fn define_protocol_impl(
+        &mut self,
+        protocol: ModuleId,
+        target: ModuleId,
+        callbacks: HashMap<(String, usize), ProtocolCallbackImpl>,
+    ) -> u64 {
+        let key = ProtocolImplKey { protocol, target };
+        let protocol_impl = ProtocolImpl { callbacks };
+        let revision = self.protocol_impls.define(key, protocol_impl.clone());
+        self.tel.execute(
+            &["fz", "compiler2", "protocol_impl", "defined"],
+            &measurements! {
+                protocol_id: protocol.as_u32() as u64,
+                target_id: target.as_u32() as u64,
+                revision: revision,
+                callbacks: protocol_impl.callbacks.len() as u64,
+            },
+            &metadata! {
+                key: opaque(&key),
+                protocol_impl: opaque(&protocol_impl),
+            },
+        );
+        revision
+    }
+
+    pub(crate) fn protocol_impl(&self, protocol: ModuleId, target: ModuleId) -> Option<&ProtocolImpl> {
+        self.protocol_impls.impl_for(&ProtocolImplKey { protocol, target })
+    }
+
+    pub(crate) fn protocol_impls_for(&self, protocol: ModuleId) -> Vec<(ProtocolImplKey, ProtocolImpl)> {
+        self.protocol_impls
+            .impls_for_protocol(protocol)
+            .map(|(key, protocol_impl)| (*key, protocol_impl.clone()))
+            .collect()
+    }
+
     pub(crate) fn define_generated_function(
         &mut self,
         owner: FunctionId,
         namespace: Namespace,
+        capture_params: Vec<String>,
         ast: FnDef,
     ) -> (FunctionId, u64) {
+        let owner_def = self.function_definition(owner);
         let owner_module = self.functions.reference_for(owner).module;
-        let owner_code = self.function_definition(owner).code;
+        let owner_code = owner_def.code;
         let id = self
             .functions
             .reference_generated(owner, owner_module, ast.span, ast.arity());
@@ -375,7 +470,9 @@ impl<'a> World<'a> {
             id,
             super::identity::FunctionDef {
                 code: owner_code,
+                owner_module: owner_def.owner_module,
                 namespace,
+                capture_params,
                 ast: ast.clone(),
             },
         );
@@ -386,6 +483,7 @@ impl<'a> World<'a> {
             &measurements! {
                 code_id: owner_code.as_u32() as u64,
                 module_id: owner_module.as_u32() as u64,
+                owner_module_id: owner_def.owner_module.as_u32() as u64,
                 function_id: id.as_u32() as u64,
                 revision: revision,
                 arity: ast.arity() as u64,
@@ -405,7 +503,7 @@ impl<'a> World<'a> {
         let function_ref = self.functions.reference_for(function);
         let slot = self.functions.get(function);
         let def = match &slot.state {
-            super::identity::FunctionState::Defined { def } => def,
+            super::identity::FunctionState::Defined { def } => def.as_ref(),
             super::identity::FunctionState::Placeholder => {
                 panic!("lowered bodies should only be defined for known functions")
             }
@@ -440,7 +538,7 @@ impl<'a> World<'a> {
         let function_ref = self.functions.reference_for(function);
         let slot = self.functions.get(function);
         let def = match &slot.state {
-            super::identity::FunctionState::Defined { def } => def,
+            super::identity::FunctionState::Defined { def } => def.as_ref(),
             super::identity::FunctionState::Placeholder => {
                 panic!("guard dispatch should only be defined for known functions")
             }
@@ -470,7 +568,7 @@ impl<'a> World<'a> {
         let function_ref = self.functions.reference_for(function);
         let slot = self.functions.get(function);
         let def = match &slot.state {
-            super::identity::FunctionState::Defined { def } => def,
+            super::identity::FunctionState::Defined { def } => def.as_ref(),
             super::identity::FunctionState::Placeholder => {
                 panic!("entry dispatch should only be defined for known functions")
             }
@@ -537,6 +635,10 @@ impl<'a> World<'a> {
         }
     }
 
+    pub(crate) fn module_name(&self, module: ModuleId) -> Option<&str> {
+        self.modules.name(module)
+    }
+
     pub fn finish_code_index(&mut self, id: CodeId, items: Vec<Rc<Item>>) -> u64 {
         self.code.index(id, items)
     }
@@ -564,7 +666,7 @@ impl<'a> World<'a> {
 
     pub(crate) fn function_definition(&self, function: FunctionId) -> super::identity::FunctionDef {
         match &self.functions.get(function).state {
-            super::identity::FunctionState::Defined { def } => def.clone(),
+            super::identity::FunctionState::Defined { def } => def.as_ref().clone(),
             super::identity::FunctionState::Placeholder => {
                 panic!("function definitions should only be read from defined functions")
             }
@@ -573,6 +675,10 @@ impl<'a> World<'a> {
 
     pub(crate) fn function_module(&self, function: FunctionId) -> ModuleId {
         self.functions.reference_for(function).module
+    }
+
+    pub(crate) fn function_ref(&self, function: FunctionId) -> &super::identity::FunctionRef {
+        self.functions.reference_for(function)
     }
 
     pub(crate) fn function_arity(&self, function: FunctionId) -> usize {
@@ -631,7 +737,7 @@ impl<'a> World<'a> {
         &self,
         function: FunctionId,
     ) -> Result<ModuleTypeEnv, crate::type_expr::TypeExprError> {
-        let module = self.functions.reference_for(function).module;
+        let module = self.function_definition(function).owner_module;
         let mut types = types::new();
         let builtin_env = builtin_type_env(&mut types);
         if module.is_global() {
@@ -660,10 +766,10 @@ impl<'a> World<'a> {
         }
     }
 
-    pub fn module_scope(&self, module: ModuleId) -> Option<(CodeId, Vec<Rc<Item>>, Namespace)> {
+    pub fn module_scope(&self, module: ModuleId) -> Option<(super::identity::ModuleSource, Namespace)> {
         match &self.modules.get(module).state {
-            ModuleState::Scoped { source, base } => Some((source.code, source.items.clone(), *base)),
-            ModuleState::Defined { source, surface } => Some((source.code, source.items.clone(), surface.base)),
+            ModuleState::Scoped { source, base } => Some((source.clone(), *base)),
+            ModuleState::Defined { source, surface } => Some((source.clone(), surface.base)),
             _ => None,
         }
     }
@@ -830,6 +936,24 @@ impl<'a> World<'a> {
         Some(code_id)
     }
 
+    pub(crate) fn runtime_impl_target_modules(&self, receiver_ty: &Ty) -> Vec<ModuleId> {
+        let mut types = types::new();
+        let mut modules = Vec::new();
+        for module in self.runtime_modules.keys().copied() {
+            let target_ty = self.module_impl_target_ty_with(&mut types, module);
+            if types.is_subtype(receiver_ty, &target_ty) {
+                modules.push(module);
+            }
+        }
+        modules.sort_by_key(|module| module.as_u32());
+        modules
+    }
+
+    pub(crate) fn module_impl_target_ty(&self, module: ModuleId) -> Ty {
+        let mut types = types::new();
+        self.module_impl_target_ty_with(&mut types, module)
+    }
+
     fn lookup_module_path(&mut self, head: Namespace, path: &str) -> Option<ModuleId> {
         let mut segments = path.split('.');
         let first = segments.next()?;
@@ -841,6 +965,62 @@ impl<'a> World<'a> {
             module = self.reference_child_module(module, segment);
         }
         Some(module)
+    }
+
+    fn module_impl_target_ty_with<T: Types<Ty = Ty>>(&self, t: &mut T, module: ModuleId) -> Ty {
+        let name = self
+            .module_name(module)
+            .expect("impl target modules should have reverse names");
+        impl_target_ty(t, name)
+    }
+
+    fn derived_protocol_callback(&self, function: FunctionId) -> Option<ProtocolCallback> {
+        let function_ref = self.functions.reference_for(function);
+        if let Some(module) = self.runtime_modules.get(&function_ref.module)
+            && let Some(callbacks) = &module.protocol_callbacks
+            && callbacks
+                .iter()
+                .any(|(name, arity)| name == &function_ref.name && *arity == function_ref.arity)
+        {
+            return Some(ProtocolCallback {
+                protocol: function_ref.module,
+            });
+        }
+
+        let module = self.modules.get(function_ref.module);
+        let source = match &module.state {
+            ModuleState::Indexed(source) | ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. } => {
+                source
+            }
+            ModuleState::Placeholder => return None,
+        };
+        match &source.kind {
+            ModuleSourceKind::Protocol { callbacks }
+                if callbacks
+                    .iter()
+                    .any(|callback| callback.name == function_ref.name && callback.arity == function_ref.arity) =>
+            {
+                Some(ProtocolCallback {
+                    protocol: function_ref.module,
+                })
+            }
+            ModuleSourceKind::Body { .. } | ModuleSourceKind::Protocol { .. } => None,
+        }
+    }
+}
+
+fn impl_target_ty<T: Types<Ty = Ty>>(t: &mut T, module_name: &str) -> Ty {
+    match module_name.rsplit('.').next().unwrap_or(module_name) {
+        "List" => {
+            let any = t.any();
+            t.list(any)
+        }
+        "Integer" => t.int(),
+        "Float" => t.float(),
+        "Atom" => t.atom(),
+        "Binary" => t.str_t(),
+        "Map" => t.map_top(),
+        other => crate::frontend::protocols::struct_impl_target_type(t, other),
     }
 }
 

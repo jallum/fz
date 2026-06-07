@@ -122,7 +122,7 @@ pub(super) fn check_semantic_closure(world: &mut World<'_>, root_id: RootId) -> 
                 continue;
             };
 
-            let (callee, callee_revision) = world.activate(root_id, function, summary.arg_types);
+            let (callee, callee_revision) = world.activate(root_id, function, summary.input_types);
             let previous_revision = activation_revisions.insert(callee.clone(), callee_revision);
             let needs = executable_needs.entry(callee.clone()).or_default();
             let inserted_need = needs.insert(summary.need);

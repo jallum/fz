@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 
 use crate::ast::Item;
+use crate::modules::identity::ModuleName;
 use crate::modules::runtime_library;
 use crate::telemetry::Telemetry;
 
@@ -20,6 +21,7 @@ pub(crate) struct RuntimeModuleCode {
     pub(crate) name: &'static str,
     pub(crate) source: &'static str,
     pub(crate) code_id: Option<CodeId>,
+    pub(crate) protocol_callbacks: Option<Vec<(String, usize)>>,
 }
 
 pub(crate) fn bootstrap(
@@ -30,16 +32,32 @@ pub(crate) fn bootstrap(
 ) -> HashMap<ModuleId, RuntimeModuleCode> {
     let mut prelude = namespaces.prelude_head();
     let mut runtime_modules = HashMap::new();
+    let interfaces = runtime_library::interfaces(tel);
 
     for (name, source) in runtime_library::module_sources() {
         let module = modules.reference_named(name.to_string());
         prelude = namespaces.bind(prelude, name.to_string(), NamespaceSymbol::Module(module));
+        let module_name = ModuleName::from_segments(vec![name.to_string()]);
+        let protocol_callbacks = interfaces.get(&module_name).and_then(|interface| {
+            interface
+                .protocols
+                .iter()
+                .find(|protocol| protocol.name == module_name)
+                .map(|protocol| {
+                    protocol
+                        .callbacks
+                        .iter()
+                        .map(|callback| (callback.name.clone(), callback.arity))
+                        .collect::<Vec<_>>()
+                })
+        });
         runtime_modules.insert(
             module,
             RuntimeModuleCode {
                 name,
                 source,
                 code_id: None,
+                protocol_callbacks,
             },
         );
     }

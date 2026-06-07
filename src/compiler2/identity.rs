@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use std::rc::Rc;
 
-use crate::ast::{Attribute, FnDef, Item};
+use crate::ast::{Attribute, FnDef, Item, ProtocolCallback as ProtocolCallbackDef};
 use crate::compiler::source::Span;
 use crate::types::Ty;
 
@@ -138,7 +138,13 @@ pub struct ModuleSource {
     pub parent: ModuleId,
     pub local_name: String,
     pub attrs: Vec<Attribute>,
-    pub items: Vec<Rc<Item>>,
+    pub kind: ModuleSourceKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum ModuleSourceKind {
+    Body { items: Vec<Rc<Item>> },
+    Protocol { callbacks: Vec<ProtocolCallbackDef> },
 }
 
 impl ModuleSource {
@@ -148,7 +154,21 @@ impl ModuleSource {
             parent: ModuleId::GLOBAL,
             local_name: String::new(),
             attrs: Vec::new(),
-            items: Vec::new(),
+            kind: ModuleSourceKind::Body { items: Vec::new() },
+        }
+    }
+
+    pub fn items(&self) -> Option<&[Rc<Item>]> {
+        match &self.kind {
+            ModuleSourceKind::Body { items } => Some(items.as_slice()),
+            ModuleSourceKind::Protocol { .. } => None,
+        }
+    }
+
+    pub fn callbacks(&self) -> Option<&[ProtocolCallbackDef]> {
+        match &self.kind {
+            ModuleSourceKind::Body { .. } => None,
+            ModuleSourceKind::Protocol { callbacks } => Some(callbacks.as_slice()),
         }
     }
 }
@@ -177,13 +197,15 @@ pub struct Function {
 #[derive(Debug, Clone)]
 pub enum FunctionState {
     Placeholder,
-    Defined { def: FunctionDef },
+    Defined { def: Box<FunctionDef> },
 }
 
 #[derive(Debug, Clone)]
 pub struct FunctionDef {
     pub code: CodeId,
+    pub owner_module: ModuleId,
     pub namespace: Namespace,
+    pub capture_params: Vec<String>,
     pub ast: FnDef,
 }
 
@@ -291,7 +313,7 @@ impl ModuleMap {
         replace_if_changed(&mut module.state, &mut module.revision, next)
     }
 
-    pub fn index(
+    pub fn index_body(
         &mut self,
         id: ModuleId,
         code: CodeId,
@@ -306,7 +328,27 @@ impl ModuleMap {
             parent,
             local_name,
             attrs,
-            items,
+            kind: ModuleSourceKind::Body { items },
+        });
+        replace_if_changed(&mut module.state, &mut module.revision, next)
+    }
+
+    pub fn index_protocol(
+        &mut self,
+        id: ModuleId,
+        code: CodeId,
+        parent: ModuleId,
+        local_name: String,
+        attrs: Vec<Attribute>,
+        callbacks: Vec<ProtocolCallbackDef>,
+    ) -> u64 {
+        let module = &mut self.slots[id.0 as usize];
+        let next = ModuleState::Indexed(ModuleSource {
+            code,
+            parent,
+            local_name,
+            attrs,
+            kind: ModuleSourceKind::Protocol { callbacks },
         });
         replace_if_changed(&mut module.state, &mut module.revision, next)
     }
@@ -397,7 +439,7 @@ impl FunctionMap {
 
     pub fn define(&mut self, id: FunctionId, def: FunctionDef) -> u64 {
         let function = &mut self.slots[id.0 as usize];
-        let next = FunctionState::Defined { def };
+        let next = FunctionState::Defined { def: Box::new(def) };
         replace_if_changed(&mut function.state, &mut function.revision, next)
     }
 
@@ -487,7 +529,7 @@ impl ModuleSource {
         self.code == other.code
             && self.parent == other.parent
             && self.local_name == other.local_name
-            && same_items(&self.items, &other.items)
+            && self.kind.same_kind(&other.kind)
     }
 }
 
@@ -495,12 +537,32 @@ fn same_items(left: &[Rc<Item>], right: &[Rc<Item>]) -> bool {
     left.len() == right.len() && left.iter().zip(right).all(|(left, right)| Rc::ptr_eq(left, right))
 }
 
+impl ModuleSourceKind {
+    fn same_kind(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ModuleSourceKind::Body { items: left }, ModuleSourceKind::Body { items: right }) => {
+                same_items(left, right)
+            }
+            (ModuleSourceKind::Protocol { callbacks: left }, ModuleSourceKind::Protocol { callbacks: right }) => {
+                left.len() == right.len()
+                    && left.iter().zip(right).all(|(left, right)| {
+                        left.name == right.name && left.arity == right.arity && left.span == right.span
+                    })
+            }
+            _ => false,
+        }
+    }
+}
+
 impl SameState for FunctionState {
     fn same_state(&self, other: &Self) -> bool {
         match (self, other) {
             (FunctionState::Placeholder, FunctionState::Placeholder) => true,
             (FunctionState::Defined { def: left }, FunctionState::Defined { def: right }) => {
-                left.code == right.code && left.namespace == right.namespace
+                left.code == right.code
+                    && left.owner_module == right.owner_module
+                    && left.namespace == right.namespace
+                    && left.capture_params == right.capture_params
             }
             _ => false,
         }

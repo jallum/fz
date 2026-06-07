@@ -1022,10 +1022,12 @@ end</code></pre>
         <h3><span class="num">01</span>Main defines a generated reducer function</h3>
         <p>
           Source indexing defines <code>main/0</code>. Lowering <code>main/0</code> creates a
-          generated function for the reducer lambda, with a frozen namespace head and owned AST body:
+          generated function for the reducer lambda, with a frozen namespace head, owned AST body,
+          and hidden capture inputs that become leading activation inputs when the closure is applied:
         </p>
         <pre><code>FunctionDefined(main/0)
-FunctionDefined(lambda#reduce_sum/2, Generated { owner: main/0, body: FunctionAst, namespace })</code></pre>
+FunctionDefined(lambda#reduce_sum/2,
+  Generated { owner: main/0, body: FunctionAst, namespace, captures = [] })</code></pre>
         <p>
           The generated function is not analyzed merely because it exists. It becomes semantic work
           when the reachable <code>Enum.reduce/3</code> path calls it through a callable value.
@@ -1064,7 +1066,7 @@ FunctionDefined(Process.heap_alloc_stats/0)</code></pre>
         <p>
           The list literal gives the public reducer call precise argument facts:
         </p>
-        <pre><code>ArgTypes(root, Enum.reduce callsite):
+        <pre><code>CallSiteSummary(root, Enum.reduce callsite).input_types:
   enumerable = nonempty_list(int)
   acc        = int
   reducer    = closure(lambda#reduce_sum/2)</code></pre>
@@ -1073,7 +1075,8 @@ FunctionDefined(Process.heap_alloc_stats/0)</code></pre>
           it calls <code>Enumerable.reduce/3</code> with protocol-control state and a generated
           bridge reducer that turns a bare accumulator result into <code>{:cont, next_acc}</code>.
         </p>
-        <pre><code>FunctionDefined(lambda#enum_reduce_bridge/2, Generated { owner: Enum.reduce/3, ... })
+        <pre><code>FunctionDefined(lambda#enum_reduce_bridge/2,
+  Generated { owner: Enum.reduce/3, captures = [reducer], ... })
 
 Activation(root, Enumerable.reduce/3,
   [nonempty_list(int), tuple(:cont, int), closure(lambda#enum_reduce_bridge/2)])</code></pre>
@@ -1102,7 +1105,10 @@ Activation(root, Enumerable.List.reduce/3, [...])</code></pre>
   -&gt; Kernel.+/2</code></pre>
         <p>
           <code>List.reduce_cont/3</code> and <code>List.reduce_step/3</code> form a recursive SCC.
-          The control-state type is an ordinary semantic fact:
+          The bridge lambda is still just a function activation. Its callsite summary carries
+          the callee activation inputs, so the user reducer lambda sees <code>[entry, acc]</code>
+          while the bridge lambda itself sees <code>[captured reducer, entry, acc]</code>. The
+          control-state type is an ordinary semantic fact:
         </p>
         <pre><code>ControlState(int) =
   {:cont, int}

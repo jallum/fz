@@ -16,7 +16,7 @@ use crate::types::{self, ClosureTarget, ClosureTypes, Ty, Types};
 
 use super::super::body::{CallSiteId, DirectCallee, Literal, LoweredBlock, LoweredBody, LoweredStep, ValueId};
 use super::super::drive::{FactKey, Job, JobEffects};
-use super::super::identity::{ActivationKey, ExecutableNeed};
+use super::super::identity::{ActivationKey, ExecutableNeed, FunctionId, ModuleId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallSiteSummary, SelectedCallee};
 use super::super::world::World;
@@ -225,7 +225,7 @@ fn apply_step(
         } => {
             let need = return_needs.get(callsite).cloned().unwrap_or(ExecutableNeed::Value);
             let arg_types = args.iter().map(|arg| value_ty(values, *arg)).collect::<Vec<_>>();
-            let (selected, return_ty) = resolve_direct_call(
+            let (summary, return_ty) = resolve_direct_call(
                 world,
                 activation,
                 *callsite,
@@ -236,22 +236,43 @@ fn apply_step(
                 waits,
                 follow_up,
             )?;
-            let key = CallSiteKey {
-                activation: activation.clone(),
-                callsite: *callsite,
-            };
-            calls.push(CallEmission {
-                key,
-                summary: CallSiteSummary {
-                    callee: selected,
-                    arg_types,
-                    need,
-                },
-            });
+            if let Some(summary) = summary {
+                let key = CallSiteKey {
+                    activation: activation.clone(),
+                    callsite: *callsite,
+                };
+                calls.push(CallEmission { key, summary });
+            }
             values.insert(*value, return_ty);
         }
-        LoweredStep::ClosureCall { value, .. } => {
-            values.insert(*value, types::new().any());
+        LoweredStep::ClosureCall {
+            value,
+            callsite,
+            callee,
+            args,
+        } => {
+            let need = return_needs.get(callsite).cloned().unwrap_or(ExecutableNeed::Value);
+            let callee_ty = value_ty(values, *callee);
+            let arg_types = args.iter().map(|arg| value_ty(values, *arg)).collect::<Vec<_>>();
+            let (summary, return_ty) = resolve_closure_call(
+                world,
+                activation,
+                *callsite,
+                callee_ty,
+                arg_types.clone(),
+                need,
+                reads,
+                waits,
+                follow_up,
+            )?;
+            if let Some(summary) = summary {
+                let key = CallSiteKey {
+                    activation: activation.clone(),
+                    callsite: *callsite,
+                };
+                calls.push(CallEmission { key, summary });
+            }
+            values.insert(*value, return_ty);
         }
         LoweredStep::Lambda {
             value,
@@ -356,53 +377,241 @@ fn resolve_direct_call(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
-) -> Result<(SelectedCallee, Ty), FatalError> {
+) -> Result<(Option<CallSiteSummary>, Ty), FatalError> {
     let mut t = types::new();
     if arg_types.iter().any(|arg| t.is_empty(arg)) {
-        return Ok((
-            match callee {
-                DirectCallee::Function(function) => SelectedCallee::Function(*function),
-                DirectCallee::Named { name, arity } => SelectedCallee::Named {
-                    name: name.clone(),
-                    arity: *arity,
-                },
-            },
-            t.none(),
-        ));
+        return Ok((call_summary(selected_callee(callee), arg_types, _need), t.none()));
     }
 
     match callee {
         DirectCallee::Function(function) => {
-            let lowered_fact = FactKey::LoweredBody(*function);
-            if world.fact_revision(lowered_fact.clone()).is_none() {
-                waits.insert(lowered_fact.clone());
-                follow_up.insert(Job::LowerFunction(*function));
-            }
-            let dispatch_fact = FactKey::EntryDispatch(*function);
-            if world.fact_revision(dispatch_fact.clone()).is_none() {
-                waits.insert(dispatch_fact.clone());
-                follow_up.insert(Job::PlanEntryDispatch(*function));
-            }
-            if waits.contains(&lowered_fact) || waits.contains(&dispatch_fact) {
-                return Ok((SelectedCallee::Function(*function), types::new().any()));
-            }
-
-            let (activation, _) = world.activate(caller.root, *function, arg_types);
-            reads.push(FactKey::ReturnType(activation.clone()));
-            let return_ty = world
-                .activation_return(&activation)
-                .unwrap_or_else(|| world.activation_summary(&activation).return_ty.clone());
-            follow_up.insert(Job::CheckSemanticClosure(caller.root));
-            Ok((SelectedCallee::Function(*function), return_ty))
+            resolve_function_call(world, caller, *function, arg_types, _need, reads, waits, follow_up)
         }
-        DirectCallee::Named { name, arity } => Ok((
-            SelectedCallee::Named {
-                name: name.clone(),
-                arity: *arity,
-            },
+        DirectCallee::Named { .. } => Ok((
+            call_summary(selected_callee(callee), arg_types, _need),
             types::new().any(),
         )),
     }
+}
+
+fn resolve_function_call(
+    world: &mut World<'_>,
+    caller: &ActivationKey,
+    function: FunctionId,
+    input_types: Vec<Ty>,
+    need: ExecutableNeed,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Result<(Option<CallSiteSummary>, Ty), FatalError> {
+    if let Some(callback) = world.protocol_callback(function) {
+        return resolve_protocol_call(
+            world,
+            caller,
+            function,
+            callback.protocol,
+            input_types,
+            need,
+            reads,
+            waits,
+            follow_up,
+        );
+    }
+    let return_ty = activate_function_call(world, caller, function, input_types.clone(), reads, waits, follow_up);
+    Ok((
+        Some(CallSiteSummary {
+            callee: SelectedCallee::Function(function),
+            input_types,
+            need,
+        }),
+        return_ty,
+    ))
+}
+
+fn resolve_protocol_call(
+    world: &mut World<'_>,
+    caller: &ActivationKey,
+    callback_function: FunctionId,
+    protocol: ModuleId,
+    input_types: Vec<Ty>,
+    need: ExecutableNeed,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Result<(Option<CallSiteSummary>, Ty), FatalError> {
+    let protocol_fact = FactKey::ModuleDefined(protocol);
+    if world.module_defined_revision(protocol).is_none() {
+        wait_for_protocol_module(world, protocol, waits, follow_up);
+        return Ok((None, types::new().any()));
+    }
+    reads.push(protocol_fact);
+
+    let receiver_ty = input_types.first().cloned().unwrap_or_else(|| types::new().any());
+    let function_ref = world.function_ref(callback_function).clone();
+
+    let mut matches = Vec::new();
+    for (key, protocol_impl) in world.protocol_impls_for(protocol) {
+        let target_ty = world.module_impl_target_ty(key.target);
+        let t = types::new();
+        if !t.is_subtype(&receiver_ty, &target_ty) {
+            continue;
+        }
+        let callback = protocol_impl
+            .callbacks
+            .get(&(function_ref.name.clone(), function_ref.arity))
+            .copied();
+        if let Some(callback) = callback {
+            matches.push(callback);
+        }
+    }
+
+    if matches.is_empty() {
+        for module in world.runtime_impl_target_modules(&receiver_ty) {
+            if world.protocol_impl(protocol, module).is_some() {
+                continue;
+            }
+            wait_for_runtime_module(world, module, waits, follow_up);
+        }
+        return Ok((None, types::new().any()));
+    }
+
+    if matches.len() != 1 {
+        return Ok((None, types::new().any()));
+    }
+
+    let selected = matches[0];
+    let owner_fact = FactKey::ModuleDefined(selected.owner_module);
+    if world.module_defined_revision(selected.owner_module).is_none() {
+        waits.insert(owner_fact);
+        follow_up.insert(Job::DefineModule(selected.owner_module));
+        return Ok((None, types::new().any()));
+    }
+    reads.push(owner_fact);
+
+    let return_ty = activate_function_call(
+        world,
+        caller,
+        selected.function,
+        input_types.clone(),
+        reads,
+        waits,
+        follow_up,
+    );
+    Ok((
+        Some(CallSiteSummary {
+            callee: SelectedCallee::Function(selected.function),
+            input_types,
+            need,
+        }),
+        return_ty,
+    ))
+}
+
+fn resolve_closure_call(
+    world: &mut World<'_>,
+    caller: &ActivationKey,
+    _callsite: CallSiteId,
+    callee_ty: Ty,
+    arg_types: Vec<Ty>,
+    _need: ExecutableNeed,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Result<(Option<CallSiteSummary>, Ty), FatalError> {
+    let mut t = types::new();
+    if t.is_empty(&callee_ty) || arg_types.iter().any(|arg| t.is_empty(arg)) {
+        return Ok((None, t.none()));
+    }
+    let Some(parts) = t.closure_lit_parts(&callee_ty) else {
+        return Ok((None, t.any()));
+    };
+    let function = FunctionId::from_u32(parts.target.0);
+    let mut inputs = parts.captures;
+    inputs.extend(arg_types);
+    resolve_function_call(world, caller, function, inputs, _need, reads, waits, follow_up)
+}
+
+fn activate_function_call(
+    world: &mut World<'_>,
+    caller: &ActivationKey,
+    function: FunctionId,
+    arg_types: Vec<Ty>,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Ty {
+    let lowered_fact = FactKey::LoweredBody(function);
+    if world.fact_revision(lowered_fact.clone()).is_none() {
+        waits.insert(lowered_fact.clone());
+        follow_up.insert(Job::LowerFunction(function));
+    }
+    let dispatch_fact = FactKey::EntryDispatch(function);
+    if world.fact_revision(dispatch_fact.clone()).is_none() {
+        waits.insert(dispatch_fact.clone());
+        follow_up.insert(Job::PlanEntryDispatch(function));
+    }
+    if waits.contains(&lowered_fact) || waits.contains(&dispatch_fact) {
+        return types::new().any();
+    }
+
+    let (activation, _) = world.activate(caller.root, function, arg_types);
+    reads.push(FactKey::ReturnType(activation.clone()));
+    follow_up.insert(Job::CheckSemanticClosure(caller.root));
+    world
+        .activation_return(&activation)
+        .unwrap_or_else(|| world.activation_summary(&activation).return_ty.clone())
+}
+
+fn wait_for_runtime_module(
+    world: &mut World<'_>,
+    module: ModuleId,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) {
+    if let Some(code_id) = world.ensure_runtime_module(module) {
+        let indexed_fact = FactKey::CodeIndexed(code_id);
+        if world.fact_revision(indexed_fact.clone()).is_none() {
+            waits.insert(indexed_fact);
+            follow_up.insert(Job::IndexCode(code_id));
+        }
+    }
+    waits.insert(FactKey::ModuleDefined(module));
+    follow_up.insert(Job::DefineModule(module));
+}
+
+fn wait_for_protocol_module(
+    world: &mut World<'_>,
+    protocol: ModuleId,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) {
+    if let Some(code_id) = world.ensure_runtime_module(protocol) {
+        let indexed_fact = FactKey::CodeIndexed(code_id);
+        if world.fact_revision(indexed_fact.clone()).is_none() {
+            waits.insert(indexed_fact);
+            follow_up.insert(Job::IndexCode(code_id));
+        }
+    }
+    waits.insert(FactKey::ModuleDefined(protocol));
+    follow_up.insert(Job::DefineModule(protocol));
+}
+
+fn selected_callee(callee: &DirectCallee) -> Option<SelectedCallee> {
+    Some(match callee {
+        DirectCallee::Function(function) => SelectedCallee::Function(*function),
+        DirectCallee::Named { name, arity } => SelectedCallee::Named {
+            name: name.clone(),
+            arity: *arity,
+        },
+    })
+}
+
+fn call_summary(callee: Option<SelectedCallee>, input_types: Vec<Ty>, need: ExecutableNeed) -> Option<CallSiteSummary> {
+    Some(CallSiteSummary {
+        callee: callee?,
+        input_types,
+        need,
+    })
 }
 
 fn reachable_clause_ids(plan: &PatternDispatchPlan, inputs: &[Ty]) -> Vec<u32> {

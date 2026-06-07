@@ -9,6 +9,7 @@ use crate::dispatch_matrix::Region;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
 use crate::telemetry::handler::{Event, EventKind, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+use crate::types::Ty;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -23,6 +24,7 @@ type FunctionDefs = Rc<RefCell<Vec<FunctionDefinedRecord>>>;
 type ModuleDefs = Rc<RefCell<HashMap<ModuleId, Vec<Module>>>>;
 type CallsiteDefs = Rc<RefCell<Vec<CallsiteDefinedRecord>>>;
 type SemanticClosedDefs = Rc<RefCell<Vec<SemanticClosedRecord>>>;
+type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
 
 #[test]
 fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_bodies() {
@@ -502,6 +504,258 @@ fn compiler2_unused_runtime_library_stays_cold() {
         "runtime modules should not be pulled through module definition jobs"
     );
     let _ = root_id;
+}
+
+#[test]
+fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
+    use crate::types::Types;
+
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    let callsites = CallsiteCapture::new();
+    tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+    let semantic = SemanticClosedCapture::new();
+    tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
+    let returns = ReturnTypeCapture::new();
+    tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
+        text: r#"
+fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "Enum.reduce should settle runtime protocol dispatch and closure calls in one semantic closure",
+    );
+
+    let main_id = function_id(&functions, "main", 0);
+    let enum_reduce_id = function_id_in_module(&functions, &modules, "Enum", "reduce", 3);
+    let enum_map_id = function_id_in_module(&functions, &modules, "Enum", "map", 2);
+    let enum_reverse_id = function_id_in_module(&functions, &modules, "Enum", "reverse", 1);
+    let list_id = module_id(&modules, "List");
+
+    let main_generated = generated_functions_owned_by(&functions, main_id);
+    assert_eq!(
+        main_generated.len(),
+        1,
+        "lowering main/0 should mint exactly one user reducer lambda",
+    );
+    let user_reducer_id = main_generated[0].function_id;
+
+    let enum_generated = generated_functions_owned_by(&functions, enum_reduce_id);
+    assert_eq!(
+        enum_generated.len(),
+        1,
+        "lowering Enum.reduce/3 should mint exactly one bridge reducer lambda",
+    );
+    let bridge_reducer_id = enum_generated[0].function_id;
+
+    let list_impl_reduce = functions
+        .all()
+        .into_iter()
+        .find(|record| {
+            record.function_ref.name == "reduce"
+                && record.arity == 3
+                && record.owner_module_id == Some(list_id)
+                && record.module_id != list_id
+        })
+        .unwrap_or_else(|| panic!("function.defined for the selected List-backed protocol callback"));
+    let list_impl_reduce_id = list_impl_reduce.function_id;
+
+    let main_lowered = outputs
+        .take(Job::LowerFunction(main_id))
+        .expect("LowerFunction job effects for main/0");
+    assert!(
+        main_lowered.contains(&(FactKey::FunctionDefined(user_reducer_id), 1)),
+        "lowering main/0 should surface its generated reducer function through job effects",
+    );
+    let enum_lowered = outputs
+        .take(Job::LowerFunction(enum_reduce_id))
+        .expect("LowerFunction job effects for Enum.reduce/3");
+    assert!(
+        enum_lowered.contains(&(FactKey::FunctionDefined(bridge_reducer_id), 1)),
+        "lowering Enum.reduce/3 should surface its bridge reducer function through job effects",
+    );
+
+    let callsites = callsites.all();
+    assert!(
+        callsites.iter().any(|record| {
+            record.key.activation.root == root_id
+                && record.key.activation.function == enum_reduce_id
+                && record.summary.callee == SelectedCallee::Function(list_impl_reduce_id)
+        }),
+        "Enum.reduce/3 should devirtualize Enumerable.reduce/3 to the List-backed protocol callback",
+    );
+    assert!(
+        callsites.iter().any(|record| {
+            record.key.activation.root == root_id
+                && record.key.activation.function == bridge_reducer_id
+                && record.summary.callee == SelectedCallee::Function(user_reducer_id)
+        }),
+        "the bridge reducer should activate the user reducer closure directly",
+    );
+
+    let activation_ids = semantic
+        .last(root_id)
+        .activations
+        .into_iter()
+        .map(|activation| activation.function)
+        .collect::<HashSet<_>>();
+    assert!(
+        activation_ids.contains(&main_id)
+            && activation_ids.contains(&enum_reduce_id)
+            && activation_ids.contains(&list_impl_reduce_id)
+            && activation_ids.contains(&bridge_reducer_id)
+            && activation_ids.contains(&user_reducer_id),
+        "the settled root should keep the public reduce path, selected protocol impl, bridge lambda, and user reducer activation live",
+    );
+    assert!(
+        !activation_ids.contains(&enum_map_id) && !activation_ids.contains(&enum_reverse_id),
+        "unrelated Enum functions should stay outside the settled semantic closure",
+    );
+
+    let defined_modules = sorted_strings(modules.defined_names());
+    assert!(
+        !defined_modules.contains(&"Map".to_string()) && !defined_modules.contains(&"Range".to_string()),
+        "list-backed Enum.reduce should not pull unrelated runtime implementation modules through definition",
+    );
+
+    let mut t = crate::types::new();
+    let int = t.int();
+    let done = t.atom_lit("done");
+    let done_int = t.tuple(&[done, int.clone()]);
+    assert!(
+        t.is_equivalent(&returns.last_for_function(root_id, main_id).return_ty, &int),
+        "main/0 should settle to int for the reduced accumulator",
+    );
+    assert!(
+        t.is_equivalent(&returns.last_for_function(root_id, enum_reduce_id).return_ty, &int),
+        "Enum.reduce/3 should settle to int for the rooted list reducer fixture",
+    );
+    assert!(
+        t.is_equivalent(&returns.last_for_function(root_id, user_reducer_id).return_ty, &int),
+        "the user reducer lambda should settle to int under the selected list reduction path",
+    );
+    assert!(
+        t.is_equivalent(
+            &returns.last_for_function(root_id, list_impl_reduce_id).return_ty,
+            &done_int,
+        ),
+        "the selected List-backed protocol callback should settle to {{:done, int}}",
+    );
+}
+
+#[test]
+fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
+    use crate::types::Types;
+
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    let callsites = CallsiteCapture::new();
+    tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+    let semantic = SemanticClosedCapture::new();
+    tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
+    let returns = ReturnTypeCapture::new();
+    tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/enum_reduce_operator_ref.fz".to_string()),
+        text: include_str!("../type_infer/fixtures/enum_reduce_operator_ref.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "Enum.reduce operator refs should settle through the same protocol and callable path",
+    );
+
+    let main_id = function_id(&functions, "main", 0);
+    let enum_reduce_id = function_id_in_module(&functions, &modules, "Enum", "reduce", 3);
+    let enum_map_id = function_id_in_module(&functions, &modules, "Enum", "map", 2);
+    let kernel_plus_id = function_id_in_module(&functions, &modules, "Kernel", "+", 2);
+    let list_id = module_id(&modules, "List");
+    let list_impl_reduce = functions
+        .all()
+        .into_iter()
+        .find(|record| {
+            record.function_ref.name == "reduce"
+                && record.arity == 3
+                && record.owner_module_id == Some(list_id)
+                && record.module_id != list_id
+        })
+        .unwrap_or_else(|| panic!("function.defined for the selected List-backed protocol callback"));
+    let list_impl_reduce_id = list_impl_reduce.function_id;
+
+    let callsites = callsites.all();
+    assert!(
+        callsites.iter().any(|record| {
+            record.key.activation.root == root_id
+                && record.key.activation.function == enum_reduce_id
+                && record.summary.callee == SelectedCallee::Function(list_impl_reduce_id)
+        }),
+        "Enum.reduce/3 should still devirtualize through the List-backed protocol callback for operator refs",
+    );
+    assert!(
+        callsites.iter().any(|record| {
+            record.key.activation.root == root_id && record.summary.callee == SelectedCallee::Function(kernel_plus_id)
+        }),
+        "function-ref reducers should surface Kernel.+/2 as an ordinary callable edge",
+    );
+
+    let activation_ids = semantic
+        .last(root_id)
+        .activations
+        .into_iter()
+        .map(|activation| activation.function)
+        .collect::<HashSet<_>>();
+    assert!(
+        activation_ids.contains(&main_id)
+            && activation_ids.contains(&enum_reduce_id)
+            && activation_ids.contains(&list_impl_reduce_id)
+            && activation_ids.contains(&kernel_plus_id),
+        "the settled operator-ref root should keep Kernel.+/2 live alongside the selected reduce path",
+    );
+    assert!(
+        !activation_ids.contains(&enum_map_id),
+        "unrelated Enum functions should stay outside the operator-ref semantic closure",
+    );
+
+    let mut t = crate::types::new();
+    let int = t.int();
+    let tuple_int = t.tuple(&[int.clone(), int.clone()]);
+    assert!(
+        t.is_equivalent(&returns.last_for_function(root_id, main_id).return_ty, &tuple_int),
+        "main/0 should settle to {{int, int}} for the operator-ref reducer fixture",
+    );
+    assert!(
+        t.is_equivalent(&returns.last_for_function(root_id, kernel_plus_id).return_ty, &int),
+        "Kernel.+/2 should retain a concrete int activation under the operator-ref reducer fixture",
+    );
 }
 
 #[test]
@@ -999,7 +1253,7 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
 
     assert_resolved(
         compiler.drive(),
-        "rooting a local lambda should lower only the reachable entry function",
+        "rooting a local lambda should lower only the reachable owner and generated lambda bodies",
     );
 
     let main_id = function_id(&functions, "main", 0);
@@ -1028,10 +1282,17 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
             .any(|(fact, _)| *fact == FactKey::LoweredBody(generated[0])),
         "lowering main/0 should not eagerly lower the generated reducer lambda"
     );
+    let generated_outputs = outputs
+        .take(Job::LowerFunction(generated[0]))
+        .expect("LowerFunction job effects for the reached local lambda");
+    assert!(
+        generated_outputs.contains(&(FactKey::LoweredBody(generated[0]), 1)),
+        "reaching the local lambda through the rooted call should lower its body in its own job",
+    );
     assert_eq!(
         outputs.stops_matching(|job| matches!(job, Job::LowerFunction(_))).len(),
-        1,
-        "lowering a local lambda should stop at main/0 until something demands the generated body"
+        2,
+        "rooting a local lambda should lower exactly the reachable owner and generated lambda bodies",
     );
     assert_eq!(
         capture.count(&["fz", "frontend", "lowered"]),
@@ -1108,6 +1369,76 @@ fn wanted(_), do: 0
             .iter()
             .all(|step| matches!(step, LoweredStep::TupleField { .. } | LoweredStep::SplitList { .. })),
         "entry-clause lowering should keep only projection steps and not repeat matcher asserts",
+    );
+}
+
+#[test]
+fn compiler2_generated_lambda_body_binds_captures_as_leading_inputs() {
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let bodies = LoweredBodyCapture::new();
+    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let code_id = compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/lambda_capture_inputs.fz".to_string()),
+        text: "fn main(k), do: fn (x) -> x + k end\n".to_string(),
+    });
+
+    assert_resolved(compiler.drive(), "first drive should index the capture fixture");
+    assert!(
+        compiler.demand(Job::ScopeCode(code_id)),
+        "lowering still needs a defined owner function"
+    );
+    assert_resolved(compiler.drive(), "second drive should define the capture fixture");
+
+    let main_id = function_id(&functions, "main", 1);
+    assert!(
+        compiler.demand(Job::LowerFunction(main_id)),
+        "main/1 should be demandable for lowering"
+    );
+    assert_resolved(
+        compiler.drive(),
+        "lowering main/1 should mint the generated lambda definition",
+    );
+
+    let generated = generated_functions_owned_by(&functions, main_id);
+    assert_eq!(generated.len(), 1, "lowering main/1 should mint one generated lambda");
+    let lambda_id = generated[0].function_id;
+
+    assert!(
+        compiler.demand(Job::LowerFunction(lambda_id)),
+        "generated lambda should lower on demand"
+    );
+    assert_resolved(
+        compiler.drive(),
+        "lowering the generated lambda should bind captures as real inputs",
+    );
+
+    let lowered_outputs = outputs
+        .take(Job::LowerFunction(lambda_id))
+        .expect("LowerFunction job effects for generated lambda");
+    assert!(
+        lowered_outputs.contains(&(FactKey::LoweredBody(lambda_id), 1)),
+        "lowering the generated lambda should publish its lowered body fact",
+    );
+
+    let body = lowered_body(&bodies, lambda_id);
+    let LoweredBody::Clauses { clauses, .. } = body else {
+        panic!("generated lambda should lower as clauses");
+    };
+    assert_eq!(
+        clauses.len(),
+        1,
+        "the generated lambda should preserve its single source clause"
+    );
+    assert_eq!(
+        clauses[0].params.len(),
+        2,
+        "generated lambda entry params should be [captured values..., explicit args...]",
     );
 }
 
@@ -2052,6 +2383,7 @@ struct JobSpanStop {
 struct FunctionDefinedRecord {
     function_id: FunctionId,
     module_id: ModuleId,
+    owner_module_id: Option<ModuleId>,
     arity: u64,
     clauses: u64,
     owner_function_id: Option<FunctionId>,
@@ -2071,6 +2403,12 @@ struct SemanticClosedRecord {
     executables: Vec<ExecutableKey>,
 }
 
+#[derive(Debug, Clone)]
+struct ReturnTypeRecord {
+    activation: ActivationKey,
+    return_ty: Ty,
+}
+
 struct FunctionCapture {
     defs: FunctionDefs,
 }
@@ -2085,6 +2423,10 @@ struct CallsiteCapture {
 
 struct SemanticClosedCapture {
     defs: SemanticClosedDefs,
+}
+
+struct ReturnTypeCapture {
+    defs: ReturnTypeDefs,
 }
 
 struct EntryDispatchCapture {
@@ -2268,6 +2610,30 @@ impl SemanticClosedCapture {
     }
 }
 
+impl ReturnTypeCapture {
+    fn new() -> Self {
+        Self {
+            defs: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(ReturnTypeCaptureHandler {
+            defs: self.defs.clone(),
+        })
+    }
+
+    fn last_for_function(&self, root_id: crate::compiler2::RootId, function_id: FunctionId) -> ReturnTypeRecord {
+        self.defs
+            .borrow()
+            .iter()
+            .rev()
+            .find(|record| record.activation.root == root_id && record.activation.function == function_id)
+            .cloned()
+            .unwrap_or_else(|| panic!("return_type.defined for root={root_id:?} function={function_id:?}"))
+    }
+}
+
 impl GuardDispatchCapture {
     fn new() -> Self {
         Self {
@@ -2362,6 +2728,10 @@ struct SemanticClosedCaptureHandler {
     defs: SemanticClosedDefs,
 }
 
+struct ReturnTypeCaptureHandler {
+    defs: ReturnTypeDefs,
+}
+
 struct EntryDispatchCaptureHandler {
     plans: EntryDispatchMap,
 }
@@ -2423,6 +2793,10 @@ impl Handler for FunctionCaptureHandler {
         let Some(Value::U64(module_id)) = event.measurements.get("module_id") else {
             return;
         };
+        let owner_module_id = match event.measurements.get("owner_module_id") {
+            Some(Value::U64(owner_module_id)) => Some(ModuleId::from_u32(*owner_module_id as u32)),
+            _ => None,
+        };
         let Some(Value::U64(arity)) = event.measurements.get("arity") else {
             return;
         };
@@ -2443,6 +2817,7 @@ impl Handler for FunctionCaptureHandler {
         self.defs.borrow_mut().push(FunctionDefinedRecord {
             function_id: FunctionId::from_u32(*function_id as u32),
             module_id: ModuleId::from_u32(*module_id as u32),
+            owner_module_id,
             arity: *arity,
             clauses: *clauses,
             owner_function_id,
@@ -2526,6 +2901,32 @@ impl Handler for SemanticClosedCaptureHandler {
             root_id: crate::compiler2::RootId::from_u32(*root_id as u32),
             activations: activations.clone(),
             executables: executables.clone(),
+        });
+    }
+}
+
+impl Handler for ReturnTypeCaptureHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if event.name != ["fz", "compiler2", "return_type", "defined"] || event.kind != EventKind::Event {
+            return;
+        }
+        let Some(activation) = event
+            .metadata
+            .get("activation")
+            .and_then(|value| value.downcast_ref::<ActivationKey>())
+        else {
+            return;
+        };
+        let Some(return_ty) = event
+            .metadata
+            .get("return_ty")
+            .and_then(|value| value.downcast_ref::<Ty>())
+        else {
+            return;
+        };
+        self.defs.borrow_mut().push(ReturnTypeRecord {
+            activation: activation.clone(),
+            return_ty: return_ty.clone(),
         });
     }
 }
@@ -2692,6 +3093,14 @@ fn assert_resolved(outcome: DriveOutcome<Job, ExactPattern<FactKey>>, message: &
 
 fn function_id(capture: &FunctionCapture, name: &str, arity: u64) -> FunctionId {
     capture.id(name, arity)
+}
+
+fn generated_functions_owned_by(capture: &FunctionCapture, owner: FunctionId) -> Vec<FunctionDefinedRecord> {
+    capture
+        .all()
+        .into_iter()
+        .filter(|record| record.owner_function_id == Some(owner))
+        .collect()
 }
 
 fn function_id_in_module(

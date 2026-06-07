@@ -109,6 +109,11 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         let mut env = HashMap::new();
         let mut projections = Vec::new();
         let mut params = Vec::new();
+        for capture in self.def.capture_params.clone() {
+            let value = self.fresh_value();
+            params.push(value);
+            env.insert(capture, value);
+        }
         for param in &clause.params {
             let value = self.fresh_value();
             params.push(value);
@@ -414,19 +419,23 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             attrs: Vec::new(),
             span,
         };
-        let (function, revision) = self.world.define_generated_function(self.owner, self.namespace, ast);
-        self.generated.push((FactKey::FunctionDefined(function), revision));
-        self.generated_ids.push(function);
-
-        let mut captured_names = lambda_free_names(clauses)
+        let mut capture_params = lambda_free_names(clauses)
             .into_iter()
             .filter(|name| env.contains_key(name))
             .collect::<Vec<_>>();
-        captured_names.sort();
-        let captures = captured_names
-            .into_iter()
-            .map(|name| *env.get(&name).expect("captured names should resolve in the local env"))
+        capture_params.sort();
+        let captures = capture_params
+            .iter()
+            .map(|name| *env.get(name).expect("captured names should resolve in the local env"))
             .collect::<Vec<_>>();
+
+        let (function, revision) =
+            self.world
+                .define_generated_function(self.owner, self.namespace, capture_params, ast);
+        self.generated.push((FactKey::FunctionDefined(function), revision));
+        self.generated_ids.push(function);
+
+        let captures = captures.into_iter().collect::<Vec<_>>();
         let value = self.fresh_value();
         steps.push(LoweredStep::Lambda {
             value,

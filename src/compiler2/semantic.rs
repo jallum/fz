@@ -25,7 +25,7 @@ pub enum SelectedCallee {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallSiteSummary {
     pub callee: SelectedCallee,
-    pub arg_types: Vec<Ty>,
+    pub input_types: Vec<Ty>,
     pub need: ExecutableNeed,
 }
 
@@ -89,6 +89,9 @@ impl ActivationMap {
                     .cloned()
                     .zip(inputs)
                     .map(|(current, observed)| {
+                        if t.is_equivalent(&current, &observed) {
+                            return current;
+                        }
                         let next = t.refine_widen(&current, &observed);
                         if next != current {
                             changed = true;
@@ -212,7 +215,7 @@ impl CallSiteMap {
 mod tests {
     use super::*;
     use crate::compiler2::RootId;
-    use crate::types::Types;
+    use crate::types::{ClosureTypes, Types};
 
     #[test]
     fn activation_map_widens_same_key_inputs_monotonically() {
@@ -245,6 +248,32 @@ mod tests {
             t.is_equivalent(&observed.inputs[0], &expected),
             "same-key observations should widen to the stable input join: got {}",
             crate::types::ty_display(&observed.inputs[0])
+        );
+    }
+
+    #[test]
+    fn activation_map_preserves_closure_identity_for_equivalent_observations() {
+        let mut activations = ActivationMap::new();
+        let key = ActivationKey {
+            root: RootId::from_u32(0),
+            function: FunctionId::from_u32(0),
+            input: Vec::new(),
+        };
+
+        let mut t = crate::types::new();
+        let capture = t.int_lit(41);
+        let closure = t.closure_lit(crate::types::ClosureTarget(7), vec![capture], 2);
+
+        assert_eq!(activations.activate(key.clone(), vec![closure.clone()]), 1);
+        assert_eq!(activations.activate(key.clone(), vec![closure]), 1);
+
+        let observed = activations
+            .get(&key)
+            .expect("activation should exist after equivalent closure observations")
+            .summary();
+        assert!(
+            t.closure_lit_parts(&observed.inputs[0]).is_some(),
+            "equivalent closure observations should keep closure identity concrete",
         );
     }
 }

@@ -119,7 +119,7 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
     }
 
     let mut reads = vec![FactKey::FunctionDefined(function)];
-    let module = world.function_module(function);
+    let module = def.owner_module;
     if !module.is_global() {
         let module_fact = FactKey::ModuleDefined(module);
         if world.fact_revision(module_fact.clone()).is_some() {
@@ -240,11 +240,17 @@ fn entry_source_patterns(
     function: FunctionId,
     def: &FunctionDef,
 ) -> Result<SourcePatternRows, FatalError> {
+    let capture_patterns = def
+        .capture_params
+        .iter()
+        .map(|name| Spanned::new(Pattern::Var(name.clone()), def.ast.span))
+        .collect::<Vec<_>>();
+    let input_count = capture_patterns.len() + def.ast.arity();
     if def.ast.extern_abi.is_some() {
         return Ok(SourcePatternRows {
-            input_count: def.ast.arity(),
+            input_count,
             rows: vec![PatternRow {
-                patterns: (0..def.ast.arity())
+                patterns: (0..input_count)
                     .map(|_| Spanned::new(Pattern::Wildcard, def.ast.span))
                     .collect(),
                 preconditions: Vec::new(),
@@ -305,20 +311,19 @@ fn entry_source_patterns(
                     ),
                 ));
             }
-            preconditions.push((PatternSubjectRef::Input(index as u32), ty));
+            preconditions.push((PatternSubjectRef::Input((capture_patterns.len() + index) as u32), ty));
         }
+        let mut patterns = capture_patterns.clone();
+        patterns.extend(clause.params.clone());
         rows.push(PatternRow {
-            patterns: clause.params.clone(),
+            patterns,
             preconditions,
             guard: clause.guard.clone(),
             body_id: body_id as PatternBodyId,
         });
     }
 
-    Ok(SourcePatternRows {
-        input_count: def.ast.arity(),
-        rows,
-    })
+    Ok(SourcePatternRows { input_count, rows })
 }
 
 fn collect_guard_calls_in_guards(def: &FnDef) -> Result<Vec<GuardCall>, Span> {
