@@ -9,7 +9,7 @@
     "fz-rh2.8.1"
   ],
   "created": "2026-06-06T23:37:22Z",
-  "description": "Goal: stress protocol dispatch and callable reducers in the semantic fixpoint. Change: derive list receiver protocol selection, Enumerable.List.reduce activation, reducer bridge callable entry, user lambda activation, Kernel.+ edge, and public return contract. Check: Enum.reduce settles to int without any fallback and excludes map/range/unrelated Enum functions.",
+  "description": "Goal: stress runtime-library, protocol-dispatch, and callable-reducer facts in the same semantic fixpoint used by direct calls.\n\nChange:\n- Analyze `Enum.reduce/3` from lowered runtime bodies indexed as ordinary Compiler2 code.\n- Derive list receiver protocol selection for `Enumerable.reduce/3` and selected `Enumerable.List.reduce/3` implementation facts.\n- Derive reducer bridge callable facts, user lambda activation, `Kernel.+/2` edge, and the public `Enum.reduce/3` return contract.\n- Keep unrelated runtime functions and unrelated protocol implementations absent from the root semantic closure.\n\nWhy:\n- `Enum.reduce` is the first case that exercises runtime source, protocol selection, generated callable bodies, closure application, and return projection without adding a second planner loop.\n\nChecks:\n- `Enum.reduce([1,2,3,4,5], 0, fn x, acc -\u003e acc + x end)` settles to `int` without fallback.\n- The closed root includes the selected list implementation path and excludes map/range implementations plus unrelated `Enum` functions.\n- Callable entries and reducer activations are observable through telemetry/job effects, not world internals.",
   "id": "fz-rh2.7.2",
   "labels": [],
   "parent": "fz-rh2.7",
@@ -17,5 +17,5 @@
   "status": "open",
   "title": "Compiler2 semantic: prove Enum.reduce protocol and callable facts",
   "type": "task",
-  "updated_at": "2026-06-06T23:37:22Z"
+  "updated_at": "2026-06-07T13:54:48Z"
 }
