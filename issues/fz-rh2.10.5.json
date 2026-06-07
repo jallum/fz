@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.10.4"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.10.6"
+  ],
   "created": "2026-06-07T21:39:08Z",
   "description": "Goal: World::new should allocate stable runtime identities and namespace entries without lexing or parsing runtime source. Signal: the Compiler2 quicksort trace-summary reports zero pre-drive lexer/parser work, while quicksort and Enum.reduce still pull referenced runtime modules through ordinary Compiler2 jobs. Strategy: after activation/fact ownership is corrected, turn runtime bootstrap into a reference-only surface and let runtime source enter the same Code/Index/Scope/Define path as user source when demanded.\\n\\nChange:\\n- Remove eager runtime lex/parse from Compiler2 construction.\\n- Bootstrap stable runtime module/function references and namespace bindings only.\\n- Pull runtime source, protocol callbacks, imports, and impl surfaces through ordinary Compiler2 jobs on first demand.\\n\\nWhy:\\n- Runtime work before the first drive violates the pull-based model and hides real compile cost outside the work graph.\\n\\nChecks:\\n- Quicksort trace-summary reports zero pre-drive frontend work.\\n- Runtime-backed quicksort and Enum.reduce scenarios still settle through ordinary Compiler2 jobs.",
   "id": "fz-rh2.10.5",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Compiler2 runtime bootstrap: replace eager parsing with lazy surface bootstrap",
   "type": "task",
-  "updated_at": "2026-06-07T21:40:21Z"
+  "updated_at": "2026-06-07T21:40:22Z"
 }
