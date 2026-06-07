@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-07T21:13:07Z",
-  "description": "Goal: restore the northstar pull model before ABI/emission work resumes. Signal: the quicksort trace-summary shows no eager runtime lex/parse before demand, state-derived facts emit only on true revision change, dead-end bottom activations do not churn through the loop, and northstar/telemetry docs describe the corrected invariants plus the rerunnable dump/summary harnesses. Strategy: add a Compiler2-specific test-only trace summary that measures waste directly, push change detection into compiler-owned state transitions, collapse semantic churn at the activation frontier, move runtime bootstrap to reference-only lazy surfaces, then refresh docs and the trace contract so regressions are easy to see.",
+  "description": "Goal: make Compiler2 semantic convergence honest by modeling each activation input as the join of caller contributions in the work graph. Signal: the quicksort trace-summary shows no double activation, no duplicate settled publications, no dead transient activations in the final closure path, no pre-drive runtime parsing, and the docs describe activation input as a value fact rather than side-store mutation. Strategy: derive stable recursion and dispatch-key facts first, make fact slots value-aware, move activation input into multi-owner fact aggregation, collapse semantic closure into a read-only predicate, then add engine safety/signal, lazy runtime bootstrap, and docs before backend work resumes.\n\nThis epic is driven by ../five-problems.html. The central move is that Activation(root, fn, key).input is not an imperative update in ActivationMap; it is the refine_widen join of every caller-owned contribution. Once that is true, the closure walk, double activation, revision-counter fingerprint, and per-activate recursion peek stop being necessary machinery.",
   "id": "fz-rh2.10",
   "labels": [],
   "parent": "fz-rh2",
   "priority": 1,
   "status": "open",
-  "title": "Compiler2 cleanup: make the fixpoint honest, lazy, and quiet",
+  "title": "Compiler2 fixpoint: model activation inputs as fact joins",
   "type": "epic",
-  "updated_at": "2026-06-07T21:23:43Z"
+  "updated_at": "2026-06-07T21:39:49Z"
 }
