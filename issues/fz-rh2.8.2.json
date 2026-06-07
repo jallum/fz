@@ -8,7 +8,7 @@
     "fz-rh2.9"
   ],
   "created": "2026-06-06T23:37:22Z",
-  "description": "Goal: derive backend-ready ABI and emission facts from materialized closed artifacts without reopening semantic discovery.\n\nChange:\n- Add `AbiReady` and `Emitted` facts for interpreter, JIT, and AOT adapters from the materialized program.\n- Codegen consumes callable entries, return contracts, effects, extern marshal facts, and allocation-relevant facts handed over by materialization.\n- Backend adapters report unsupported or missing closed facts as fatal artifact errors; telemetry carries raw ids/facts, not formatted summaries.\n\nWhy:\n- Codegen should lower facts, not decide reachability, dispatch, return lanes, or type flow.\n\nChecks:\n- Backend attempts to ask type/callee/reachability questions are fatal.\n- Quicksort and Enum.reduce preserve the expected absence/presence and allocation contracts through telemetry plus runtime/artifact assertions.",
+  "description": "Goal: derive backend-ready ABI and emission facts from materialized closed artifacts without reopening semantic discovery. Signal: interpreter, JIT, and AOT adapters consume a settled, change-honest materialized program and never rediscover reachability, dispatch, return lanes, or type flow.\n\nBlocked on the fixpoint cleanup arc: backend work resumes only after Compiler2 closes roots honestly, prunes dead semantic churn, and removes eager runtime bootstrap work.\n\nChange:\n- Add `AbiReady` and `Emitted` facts for interpreter, JIT, and AOT adapters from the materialized program.\n- Codegen consumes callable entries, return contracts, effects, extern marshal facts, and allocation-relevant facts handed over by materialization.\n- Backend adapters report unsupported or missing closed facts as fatal artifact errors; telemetry carries raw ids/facts, not formatted summaries.\n\nWhy:\n- Codegen should lower settled facts, not decide reachability, dispatch, return lanes, or type flow.\n\nChecks:\n- Backend attempts to ask type/callee/reachability questions are fatal.\n- Quicksort and Enum.reduce preserve the expected absence/presence and allocation contracts through telemetry plus runtime/artifact assertions.",
   "id": "fz-rh2.8.2",
   "labels": [],
   "parent": "fz-rh2.8",
@@ -16,5 +16,5 @@
   "status": "open",
   "title": "Compiler2 artifacts: derive ABI and emission from closed facts",
   "type": "task",
-  "updated_at": "2026-06-07T21:13:07Z"
+  "updated_at": "2026-06-07T21:13:08Z"
 }
