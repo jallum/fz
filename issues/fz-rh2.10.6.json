@@ -7,7 +7,7 @@
     "fz-rh2.8.2"
   ],
   "created": "2026-06-07T21:39:17Z",
-  "description": "Goal: the docs should describe the corrected engine after activation input becomes a joined fact and runtime bootstrap becomes lazy. Signal: northstar.html, .agent/docs/telemetry.md, the ignored quicksort JSONL dump harness, and the trace-summary helper all agree with the code. Strategy: update docs only after the code has settled, then keep the deep trace and summary probe as durable guideposts for backend work.\\n\\nChange:\\n- Update northstar.html with activation-input fact joins, Recursive/DispatchMask facts, value-based fact aggregation, read-only semantic closure, and lazy runtime bootstrap.\\n- Update .agent/docs/telemetry.md with the Compiler2 rule: emit raw ids/facts/structures only, and emit state-derived events only when state actually changes.\\n- Document the ignored quicksort JSONL dump test and the quicksort trace-summary assertions.\\n\\nWhy:\\n- Backend work should resume against docs that match the engine rather than old closure-walk assumptions.\\n\\nChecks:\\n- Docs match the code, summary assertions, and deep JSONL trace.\\n- Harness paths and rerun commands are captured.",
+  "description": "Goal: the docs should describe the corrected engine after activation input becomes a joined fact and runtime bootstrap becomes lazy. Signal: northstar.html, .agent/docs/telemetry.md, the ignored quicksort JSONL dump harness, and the trace-summary helper all agree with the code. Strategy: update docs only after the code has settled, then keep the deep trace and summary probe as durable guideposts for backend work.\n\nChange:\n- Update northstar.html with activation-input fact joins, Recursive/DispatchMask facts, value-based fact aggregation, read-only semantic closure, and lazy runtime bootstrap.\n- Update .agent/docs/telemetry.md with the Compiler2 rule: emit raw ids/facts/structures only, and emit state-derived events only when state actually changes.\n- Document the ignored quicksort JSONL dump test and the quicksort trace-summary assertions.\n\nWhy:\n- Backend work should resume against docs that match the engine rather than old closure-walk assumptions.\n\nChecks:\n- Docs match the code, summary assertions, and deep JSONL trace.\n- Harness paths and rerun commands are captured.",
   "id": "fz-rh2.10.6",
   "labels": [],
   "parent": "fz-rh2.10",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "Compiler2 docs: publish the corrected fixpoint and telemetry contract",
   "type": "task",
-  "updated_at": "2026-06-07T21:40:22Z"
+  "updated_at": "2026-06-07T21:55:02Z"
 }
