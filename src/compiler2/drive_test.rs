@@ -1,4 +1,4 @@
-use super::{CodeSubmission, Compiler2, DriveOutcome, ExactPattern, ExecutableNeed, Job, RootSubmission};
+use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
     ActivationKey, CallSiteKey, CallSiteSummary, ExecutableKey, FactKey, FactValue, FunctionId, FunctionRef,
@@ -16,6 +16,7 @@ use std::rc::Rc;
 
 type OutputFacts = Vec<(FactKey, FactValue)>;
 type JobOutputMap = Rc<RefCell<HashMap<Job, Vec<OutputFacts>>>>;
+type AppliedSteps = Rc<RefCell<Vec<AppliedStep<Job, FactKey>>>>;
 type EntryDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternDispatchPlan>>>>;
 type GuardDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternGuardDispatch>>>>;
 type LoweredBodyDefs = Rc<RefCell<HashMap<FunctionId, Vec<LoweredBody>>>>;
@@ -196,6 +197,8 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
     tel.attach(&[], capture.handler());
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let work_graph = WorkGraphCapture::new();
+    tel.attach(&["fz", "compiler2", "work_graph", "applied"], work_graph.handler());
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
 
@@ -217,6 +220,13 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
     assert_resolved(
         compiler.drive(),
         "root submission should pull the source surface through to the entry seed",
+    );
+    assert!(
+        work_graph
+            .all()
+            .into_iter()
+            .any(|step| step.coalesced.contains(&Job::CheckSemanticClosure(root_id))),
+        "work-graph telemetry should report coalesced closure checks instead of hiding duplicate wakeups"
     );
 
     let root_submitted = capture
@@ -1326,6 +1336,8 @@ fn compiler2_submit_root_before_code_reports_unresolved_until_entry_is_defined()
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
+    let work_graph = WorkGraphCapture::new();
+    tel.attach(&["fz", "compiler2", "work_graph", "applied"], work_graph.handler());
 
     let mut compiler = Compiler2::new(&tel);
     let root_id = compiler.submit_root(RootSubmission {
@@ -1348,10 +1360,16 @@ fn compiler2_submit_root_before_code_reports_unresolved_until_entry_is_defined()
         DriveOutcome::Unresolved { waits } => {
             assert!(
                 waits.iter().any(|wait| {
-                    wait.pattern == ExactPattern(FactKey::FunctionDefined(function_id))
-                        && wait.jobs.contains(&Job::SeedRoot(root_id))
+                    wait.fact == FactKey::FunctionDefined(function_id) && wait.jobs.contains(&Job::SeedRoot(root_id))
                 }),
                 "unresolved drive should report SeedRoot waiting on the entry definition"
+            );
+            assert!(
+                work_graph
+                    .all()
+                    .into_iter()
+                    .any(|step| step.blocked.contains(&FactKey::FunctionDefined(function_id))),
+                "work-graph telemetry should carry the exact fact that blocked the seed job"
             );
         }
         other => panic!("root-before-code should finish unresolved: {other:?}"),
@@ -2670,6 +2688,10 @@ struct OutputCapture {
     stops: Rc<RefCell<Vec<JobSpanStop>>>,
 }
 
+struct WorkGraphCapture {
+    steps: AppliedSteps,
+}
+
 #[derive(Debug, Clone)]
 struct JobSpanStop {
     job: Job,
@@ -2791,6 +2813,24 @@ impl OutputCapture {
             .filter(|stop| matches(&stop.job))
             .cloned()
             .collect()
+    }
+}
+
+impl WorkGraphCapture {
+    fn new() -> Self {
+        Self {
+            steps: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(WorkGraphCaptureHandler {
+            steps: self.steps.clone(),
+        })
+    }
+
+    fn all(&self) -> Vec<AppliedStep<Job, FactKey>> {
+        self.steps.borrow().clone()
     }
 }
 
@@ -3043,6 +3083,10 @@ struct OutputCaptureHandler {
     stops: Rc<RefCell<Vec<JobSpanStop>>>,
 }
 
+struct WorkGraphCaptureHandler {
+    steps: AppliedSteps,
+}
+
 struct FunctionCaptureHandler {
     defs: FunctionDefs,
 }
@@ -3114,6 +3158,22 @@ impl Handler for OutputCaptureHandler {
             }
             EventKind::Event | EventKind::SpanException => {}
         }
+    }
+}
+
+impl Handler for WorkGraphCaptureHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if event.name != ["fz", "compiler2", "work_graph", "applied"] || event.kind != EventKind::Event {
+            return;
+        }
+        let Some(step) = event
+            .metadata
+            .get("step")
+            .and_then(|value| value.downcast_ref::<AppliedStep<Job, FactKey>>())
+        else {
+            return;
+        };
+        self.steps.borrow_mut().push(step.clone());
     }
 }
 
@@ -3437,7 +3497,7 @@ fn expr_has_binary_nested_input(expr: &PatternGuardExpr) -> bool {
     }
 }
 
-fn assert_resolved(outcome: DriveOutcome<Job, ExactPattern<FactKey>>, message: &str) {
+fn assert_resolved(outcome: DriveOutcome<Job, FactKey>, message: &str) {
     assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
 }
 

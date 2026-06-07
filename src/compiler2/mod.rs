@@ -25,7 +25,7 @@ pub use body::{
 };
 pub use code::{Code, CodeId, CodeMap, CodeState};
 pub use compiler::{CodeSubmission, Compiler2, RootSubmission};
-pub use deps::{DependencyIndex, ExactPattern, FactPattern, UnresolvedWait};
+pub use deps::{DependencyIndex, UnresolvedWait};
 pub use drive::{FactKey, Job, WorkGraph};
 pub use facts::{FactChange, FactReplace, FactSlot, FactTable, FactValue};
 pub use identity::{

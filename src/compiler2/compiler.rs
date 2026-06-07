@@ -55,7 +55,7 @@ impl<'a> Compiler2<'a> {
         self.world.demand(job)
     }
 
-    pub fn drive(&mut self) -> DriveOutcome<Job, super::ExactPattern<super::FactKey>> {
+    pub fn drive(&mut self) -> DriveOutcome<Job, super::FactKey> {
         self.world.drive()
     }
 }

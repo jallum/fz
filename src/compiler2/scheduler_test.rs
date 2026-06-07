@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 
-use super::{Agenda, DependencyIndex, ExactPattern, FactValue, Scheduler};
+use super::{Agenda, DependencyIndex, FactValue, Scheduler};
 use crate::types::{ClosureTarget, ClosureTypes, Types};
 
-type TestScheduler = Scheduler<u32, &'static str, ExactPattern<&'static str>>;
+type TestScheduler = Scheduler<u32, &'static str>;
 
 fn presence(fact: &'static str, revision: u64) -> (&'static str, FactValue) {
     (fact, FactValue::presence(revision))
@@ -29,10 +29,10 @@ fn compiler2_agenda_coalesces_and_requeues_after_pop() {
 #[test]
 fn compiler2_dependency_index_wakes_exact_waiters() {
     let mut deps = DependencyIndex::new();
-    deps.replace_waits(3_u32, HashSet::from([ExactPattern("foo")]));
+    deps.replace_waits(3_u32, HashSet::from(["foo"]));
 
-    let waiters = deps.waiters_matching(&"foo");
-    assert_eq!(waiters, vec![3], "exact-pattern waiters should wake on matching fact");
+    let waiters = deps.waiters(&"foo");
+    assert_eq!(waiters, vec![3], "exact fact waiters should wake on matching fact");
 }
 
 #[test]
@@ -57,6 +57,10 @@ fn compiler2_scheduler_replaces_contributions_and_suppresses_no_change_wakeups()
     assert!(
         subscribe.enqueued.is_empty(),
         "reads-only registration should not enqueue work"
+    );
+    assert!(
+        subscribe.coalesced.is_empty(),
+        "reads-only registration should not coalesce work"
     );
 
     let first = scheduler.complete(
@@ -153,13 +157,7 @@ fn compiler2_scheduler_wakes_waiters_when_a_matching_fact_appears() {
     let mut scheduler = TestScheduler::new();
     let waiter = 4_u32;
 
-    scheduler.complete(
-        waiter,
-        HashSet::new(),
-        HashSet::from([ExactPattern("foo")]),
-        Vec::new(),
-        Vec::new(),
-    );
+    scheduler.complete(waiter, HashSet::new(), HashSet::from(["foo"]), Vec::new(), Vec::new());
     let result = scheduler.complete(
         1_u32,
         HashSet::new(),
@@ -178,13 +176,7 @@ fn compiler2_scheduler_has_unresolved_tracks_waiter_presence_without_materializi
         "a fresh scheduler should not report unresolved waiters"
     );
 
-    scheduler.complete(
-        4_u32,
-        HashSet::new(),
-        HashSet::from([ExactPattern("foo")]),
-        Vec::new(),
-        Vec::new(),
-    );
+    scheduler.complete(4_u32, HashSet::new(), HashSet::from(["foo"]), Vec::new(), Vec::new());
     assert!(
         scheduler.has_unresolved(),
         "registering a waiter should make unresolved work observable"
@@ -222,11 +214,41 @@ fn compiler2_scheduler_complete_enqueues_follow_up_jobs_once() {
         vec![3, 4],
         "follow-up jobs should be coalesced before they hit the agenda"
     );
+    assert_eq!(
+        step.coalesced,
+        vec![3],
+        "duplicate follow-up jobs should be reported as coalesced work"
+    );
     assert_eq!(scheduler.pop(), Some(1));
     assert_eq!(scheduler.pop(), Some(2));
     assert_eq!(scheduler.pop(), Some(3));
     assert_eq!(scheduler.pop(), Some(4));
     assert_eq!(scheduler.pop(), None);
+}
+
+#[test]
+fn compiler2_scheduler_reports_blocked_exact_facts() {
+    let mut scheduler = TestScheduler::new();
+
+    let step = scheduler.complete(
+        1_u32,
+        HashSet::new(),
+        HashSet::from(["module_surface", "function_defined"]),
+        Vec::new(),
+        Vec::new(),
+    );
+
+    assert_eq!(
+        step.blocked.into_iter().collect::<HashSet<_>>(),
+        HashSet::from(["module_surface", "function_defined"]),
+        "blocked facts should be the exact keys the completed job is waiting on"
+    );
+    let unresolved = scheduler.unresolved();
+    assert_eq!(
+        unresolved.into_iter().map(|wait| wait.fact).collect::<HashSet<_>>(),
+        HashSet::from(["module_surface", "function_defined"]),
+        "unresolved waits should expose exact fact keys, not patterns"
+    );
 }
 
 #[test]

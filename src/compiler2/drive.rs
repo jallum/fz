@@ -53,9 +53,9 @@ pub enum FactKey {
     MaterializedProgram(RootId),
 }
 
-pub type WorkGraph = Scheduler<Job, FactKey, super::deps::ExactPattern<FactKey>>;
+pub type WorkGraph = Scheduler<Job, FactKey>;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct JobEffects {
     pub(crate) reads: Vec<FactKey>,
     pub(crate) waits: Vec<FactKey>,
@@ -76,10 +76,11 @@ impl JobEffects {
 impl World<'_> {
     /// Runs queued jobs until the work graph has no ready work.
     ///
-    /// Each job gets one telemetry span. A successful job closes with its raw
-    /// effects, then the world publishes those effects to the graph. A fatal
-    /// job closes its span, closes the drive span as fatal, and stops the loop.
-    pub fn drive(&mut self) -> DriveOutcome<Job, super::deps::ExactPattern<FactKey>> {
+    /// Each job gets one telemetry span. A successful job publishes its effects
+    /// to the graph, then closes with the raw effects and applied graph step. A
+    /// fatal job closes its span, closes the drive span as fatal, and stops the
+    /// loop.
+    pub fn drive(&mut self) -> DriveOutcome<Job, FactKey> {
         let mut span = self.tel().span(
             &["fz", "compiler2", "drive"],
             metadata! {
@@ -98,13 +99,14 @@ impl World<'_> {
             match result {
                 Ok(effects) => {
                     jobs_ran += 1;
+                    let step = self.complete_job(job.clone(), effects.clone());
                     job_span.stop_with(
                         &measurements! {},
                         &metadata! {
                             effects: opaque(&effects),
+                            step: opaque(&step),
                         },
                     );
-                    self.complete_job(job, effects);
                 }
                 Err(_) => {
                     job_span.stop_with(&measurements! {}, &metadata! {});

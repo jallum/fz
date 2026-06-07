@@ -22,7 +22,6 @@ use super::CodeId;
 use super::artifact::{MaterializedProgram, MaterializedProgramMap};
 use super::body::{LoweredBody, LoweredBodyMap};
 use super::code::CodeMap;
-use super::deps::ExactPattern;
 use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
 use super::drive::{FactKey, Job, JobEffects, WorkGraph};
 use super::facts::FactValue;
@@ -163,11 +162,20 @@ impl<'a> World<'a> {
         root_id
     }
 
-    pub(crate) fn complete_job(&mut self, job: Job, effects: JobEffects) {
+    pub(crate) fn complete_job(&mut self, job: Job, effects: JobEffects) -> super::AppliedStep<Job, FactKey> {
         let reads = effects.reads.into_iter().collect();
-        let waits = effects.waits.into_iter().map(ExactPattern).collect();
-        self.work_graph
-            .complete(job, reads, waits, effects.outputs, effects.follow_up);
+        let waits = effects.waits.into_iter().collect();
+        let step = self
+            .work_graph
+            .complete(job.clone(), reads, waits, effects.outputs, effects.follow_up);
+        self.tel.event(
+            &["fz", "compiler2", "work_graph", "applied"],
+            metadata! {
+                job: opaque(&job),
+                step: opaque(&step),
+            },
+        );
+        step
     }
 
     pub fn demand(&mut self, job: Job) -> bool {

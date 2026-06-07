@@ -1,38 +1,22 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
-pub trait FactPattern<F> {
-    fn matches(&self, fact: &F) -> bool;
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ExactPattern<F>(pub F);
-
-impl<F> FactPattern<F> for ExactPattern<F>
-where
-    F: PartialEq,
-{
-    fn matches(&self, fact: &F) -> bool {
-        &self.0 == fact
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnresolvedWait<J, P> {
-    pub pattern: P,
+pub struct UnresolvedWait<J, F> {
+    pub fact: F,
     pub jobs: Vec<J>,
 }
 
 #[derive(Debug)]
-pub struct DependencyIndex<J, F, P> {
+pub struct DependencyIndex<J, F> {
     reads: HashMap<J, HashSet<F>>,
     subscribers: HashMap<F, HashSet<J>>,
-    waits: HashMap<J, HashSet<P>>,
-    waiters: HashMap<P, HashSet<J>>,
+    waits: HashMap<J, HashSet<F>>,
+    waiters: HashMap<F, HashSet<J>>,
     outputs: HashMap<J, HashSet<F>>,
 }
 
-impl<J, F, P> Default for DependencyIndex<J, F, P> {
+impl<J, F> Default for DependencyIndex<J, F> {
     fn default() -> Self {
         Self {
             reads: HashMap::new(),
@@ -44,11 +28,10 @@ impl<J, F, P> Default for DependencyIndex<J, F, P> {
     }
 }
 
-impl<J, F, P> DependencyIndex<J, F, P>
+impl<J, F> DependencyIndex<J, F>
 where
     J: Clone + Eq + Hash,
     F: Clone + Eq + Hash,
-    P: Clone + Eq + Hash + FactPattern<F>,
 {
     pub fn new() -> Self {
         Self::default()
@@ -71,20 +54,20 @@ where
         }
     }
 
-    pub fn replace_waits(&mut self, job: J, next_waits: HashSet<P>) {
+    pub fn replace_waits(&mut self, job: J, next_waits: HashSet<F>) {
         if let Some(previous_waits) = self.waits.insert(job.clone(), next_waits.clone()) {
-            for pattern in previous_waits {
-                if let Some(jobs) = self.waiters.get_mut(&pattern) {
+            for fact in previous_waits {
+                if let Some(jobs) = self.waiters.get_mut(&fact) {
                     jobs.remove(&job);
                     if jobs.is_empty() {
-                        self.waiters.remove(&pattern);
+                        self.waiters.remove(&fact);
                     }
                 }
             }
         }
 
-        for pattern in next_waits {
-            self.waiters.entry(pattern).or_default().insert(job.clone());
+        for fact in next_waits {
+            self.waiters.entry(fact).or_default().insert(job.clone());
         }
     }
 
@@ -107,25 +90,22 @@ where
             .unwrap_or_default()
     }
 
-    pub fn waiters_matching(&self, key: &F) -> Vec<J> {
+    pub fn waiters(&self, key: &F) -> Vec<J> {
         self.waiters
-            .iter()
-            .filter(|(pattern, _)| pattern.matches(key))
-            .flat_map(|(_, jobs)| jobs.iter().cloned())
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect()
+            .get(key)
+            .map(|jobs| jobs.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     pub fn has_unresolved(&self) -> bool {
         !self.waiters.is_empty()
     }
 
-    pub fn unresolved(&self) -> Vec<UnresolvedWait<J, P>> {
+    pub fn unresolved(&self) -> Vec<UnresolvedWait<J, F>> {
         self.waiters
             .iter()
-            .map(|(pattern, jobs)| UnresolvedWait {
-                pattern: pattern.clone(),
+            .map(|(fact, jobs)| UnresolvedWait {
+                fact: fact.clone(),
                 jobs: jobs.iter().cloned().collect(),
             })
             .collect()

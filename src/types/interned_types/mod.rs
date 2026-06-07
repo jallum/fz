@@ -14,6 +14,7 @@ mod format;
 mod lit_set;
 mod sigs;
 
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 
 use crate::type_expr::opaque_owner_module;
@@ -27,19 +28,43 @@ use descr::Descr;
 use lit_set::{LiteralSet, closure_ret_var_id, closure_var_id};
 use sigs::{ArrowSig, ClosureLit, ListSig};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct InternedTy(u32);
 
 #[derive(Default)]
 pub struct InternedConcreteTypes {
     interner: TypeInterner,
+    comparisons: RefCell<ComparisonCache>,
 }
 
 #[derive(Default)]
 struct TypeInterner {
     arena: Vec<Descr>,
     index: HashMap<Descr, InternedTy>,
+}
+
+#[derive(Default)]
+struct ComparisonCache {
+    values: HashMap<ComparisonKey, bool>,
+    hits: usize,
+    misses: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ComparisonKey {
+    Empty(InternedTy),
+    Subtype(InternedTy, InternedTy),
+    Disjoint(InternedTy, InternedTy),
+    Equivalent(InternedTy, InternedTy),
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ComparisonCacheStats {
+    pub entries: usize,
+    pub hits: usize,
+    pub misses: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -96,6 +121,44 @@ impl InternedConcreteTypes {
 
     fn descr_inner_map(&self, m: &HashMap<String, InternedTy>) -> HashMap<String, Descr> {
         m.iter().map(|(k, v)| (k.clone(), self.descr(v).clone())).collect()
+    }
+
+    fn cached_comparison(&self, key: ComparisonKey, compute: impl FnOnce(&Self) -> bool) -> bool {
+        if let Some(result) = self.comparisons.borrow_mut().hit(key) {
+            return result;
+        }
+        let result = compute(self);
+        self.comparisons.borrow_mut().miss(key, result);
+        result
+    }
+
+    fn symmetric_key(kind: fn(InternedTy, InternedTy) -> ComparisonKey, a: InternedTy, b: InternedTy) -> ComparisonKey {
+        if a <= b { kind(a, b) } else { kind(b, a) }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn comparison_cache_stats(&self) -> ComparisonCacheStats {
+        let cache = self.comparisons.borrow();
+        ComparisonCacheStats {
+            entries: cache.values.len(),
+            hits: cache.hits,
+            misses: cache.misses,
+        }
+    }
+}
+
+impl ComparisonCache {
+    fn hit(&mut self, key: ComparisonKey) -> Option<bool> {
+        let result = self.values.get(&key).copied();
+        if result.is_some() {
+            self.hits += 1;
+        }
+        result
+    }
+
+    fn miss(&mut self, key: ComparisonKey, result: bool) {
+        self.misses += 1;
+        self.values.insert(key, result);
     }
 }
 
@@ -322,8 +385,10 @@ impl Types for InternedConcreteTypes {
     }
 
     fn is_empty(&self, a: &InternedTy) -> bool {
-        let cx = self.ctx();
-        self.descr(a).is_empty(cx)
+        self.cached_comparison(ComparisonKey::Empty(*a), |types| {
+            let cx = types.ctx();
+            types.descr(a).is_empty(cx)
+        })
     }
 
     #[cfg(test)]
@@ -333,13 +398,24 @@ impl Types for InternedConcreteTypes {
     }
 
     fn is_subtype(&self, a: &InternedTy, b: &InternedTy) -> bool {
-        let cx = self.ctx();
-        self.descr(a).is_subtype(cx, self.descr(b))
+        if a == b {
+            return true;
+        }
+        self.cached_comparison(ComparisonKey::Subtype(*a, *b), |types| {
+            let cx = types.ctx();
+            types.descr(a).is_subtype(cx, types.descr(b))
+        })
     }
 
     fn is_disjoint(&self, a: &InternedTy, b: &InternedTy) -> bool {
-        let cx = self.ctx();
-        self.descr(a).intersect(self.descr(b)).is_empty(cx)
+        if a == b {
+            return self.is_empty(a);
+        }
+        let key = Self::symmetric_key(ComparisonKey::Disjoint, *a, *b);
+        self.cached_comparison(key, |types| {
+            let cx = types.ctx();
+            types.descr(a).intersect(types.descr(b)).is_empty(cx)
+        })
     }
 
     fn is_value_disjoint(&self, a: &InternedTy, b: &InternedTy, nominals: Nominals<'_, InternedTy>) -> bool {
@@ -377,6 +453,14 @@ impl Types for InternedConcreteTypes {
         }
         let cx = self.ctx();
         qd.is_subtype(cx, kd)
+    }
+
+    fn is_equivalent(&self, a: &InternedTy, b: &InternedTy) -> bool {
+        if a == b {
+            return true;
+        }
+        let key = Self::symmetric_key(ComparisonKey::Equivalent, *a, *b);
+        self.cached_comparison(key, |types| types.is_subtype(a, b) && types.is_subtype(b, a))
     }
 
     fn kinds_overlap(&self, a: &InternedTy, b: &InternedTy) -> bool {
