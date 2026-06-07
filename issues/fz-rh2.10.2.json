@@ -6,14 +6,15 @@
   "blocks": [
     "fz-rh2.10.3"
   ],
+  "closed_at": "2026-06-07T22:07:50Z",
   "created": "2026-06-07T21:13:07Z",
   "description": "Goal: the work graph should wake dependents when fact values change, not when unrelated producer revision counters happen to increase. Signal: existing single-owner presence facts behave exactly as before, and tests prove multi-owner value facts aggregate by content with stable fingerprints. Strategy: replace u64-only fact contributions with FactValue, keep Presence(u64) as today's semantics, and add the lattice machinery needed for activation inputs before any activation fact starts using it.\n\nChange:\n- Introduce FactValue with Presence(u64) for existing facts and Inputs(Vec\u003cTy\u003e) for activation input facts.\n- Give FactValue a family-specific join and content fingerprint.\n- Change JobEffects outputs and FactTable replacement to aggregate values and report changes on fingerprint change.\n- Keep current facts single-owner/presence during this ticket so behavior stays green.\n\nWhy:\n- max(revision) is only honest while every fact has one owner. Activation input will be multi-owner, so the fact table must become value-aware first.\n\nChecks:\n- Scheduler/fact tests cover unchanged presence behavior, contribution retraction, and content-stable multi-owner joins.\n- Compiler2 quicksort and Enum.reduce tests remain green before activation input moves.",
   "id": "fz-rh2.10.2",
   "labels": [],
   "parent": "fz-rh2.10",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 facts: make fact slots value-based",
   "type": "task",
-  "updated_at": "2026-06-07T21:57:29Z"
+  "updated_at": "2026-06-07T22:07:50Z"
 }
