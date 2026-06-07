@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-06-07T15:25:58Z",
-  "description": "Goal: remove the temporary clause-head matching scaffolding from Compiler2 bodies once entry dispatch exists.\n\nChange:\n- Move function-entry matching responsibility fully into `EntryDispatch(function)` and stop treating `LoweredBody` as the source of truth for clause-head setup/guard selection.\n- Shrink or reshape the per-clause body representation so it carries clause bodies and body-local structure, not a second entry matcher.\n- Update any semantic consumers to read entry dispatch plus lowered bodies instead of clause-local rematching fields.\n\nWhy:\n- Keeping entry dispatch and clause-local rematching in parallel leaves two sources of truth and makes later retraction/convergence work noisier than it needs to be.\n- This is explicit scaffolding-removal work for the temporary body shape introduced before shared dispatch planning landed.\n\nChecks:\n- Compiler2 semantic and lowering tests continue to pass while entry dispatch remains the only entry-matching authority.\n- No semantic consumer depends on clause-local setup/guard data for function-head selection.\n\nNon-goals:\n- No new body-site dispatch support.\n- No new artifact work.",
+  "description": "Goal: remove the temporary clause-head matching and guard scaffolding left behind in Compiler2 lowered bodies once shared entry-dispatch facts are authoritative.\n\nChange:\n- Delete any `LoweredBody` fields, helpers, and tests whose only job is to reproduce function-entry clause selection or guard gating after `EntryDispatch(function)` exists.\n- Collapse semantic/body consumers onto the shared dispatch facts as the sole source of clause-entry truth.\n- Remove temporary affordances added during `fz-rh2.6.7` / `fz-rh2.6.10` that are no longer needed once entry dispatch is authoritative.\n\nWhy:\n- Keeping both shared dispatch facts and body-local clause rematching would be a correctness and maintenance trap.\n- This ticket is the explicit price of any temporary body scaffolding we tolerated while landing the new boundary.\n\nChecks:\n- Compiler2 bodies retain only local execution structure, not function-entry dispatch duplication.\n- Existing dispatch/semantic tests still pass with the duplicate clause-head machinery removed.\n- No dead helper code, no dual source of truth, no leftover transitional tests.\n\nNon-goals:\n- No new semantic features.\n- No “temporary forever” compatibility layer.",
   "id": "fz-rh2.6.11",
   "labels": [],
   "parent": "fz-rh2.6",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 cleanup: remove clause-head matching scaffolding from lowered bodies",
   "type": "task",
-  "updated_at": "2026-06-07T15:26:24Z"
+  "updated_at": "2026-06-07T15:30:55Z"
 }
