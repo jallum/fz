@@ -6,14 +6,15 @@
   "blocks": [
     "fz-rh2.10.4"
   ],
+  "closed_at": "2026-06-07T22:50:29Z",
   "created": "2026-06-07T21:13:07Z",
   "description": "Goal: activation input widening should be owned by the fact graph, not by ActivationMap or CheckSemanticClosure. Signal: AnalyzeActivation contributes callee input facts, Activation input is the refine_widen join of caller contributions, CheckSemanticClosure no longer walks and mutates the frontier, and the quicksort trace-summary shows the double activation gone. Strategy: move callee activation contributions into AnalyzeActivation outputs, make Activation input a multi-owner Inputs fact, have activation analysis subscribe to that joined input, and reduce closure checking to a read-only predicate over activation/return/analyzed facts.\n\nChange:\n- Replace world.activate side-store widening with caller-owned Activation input contributions.\n- SeedRoot contributes the root entry activation input.\n- AnalyzeActivation contributes callee activation inputs and executable needs from each resolved callsite.\n- CheckSemanticClosure reads the live root activation facts and completion facts; it does not call activate or rediscover callees by BFS.\n- Delete ActivationMap::activate widening, activation_revisions bookkeeping, closure BFS, and local output dedupe built around max revisions.\n\nWhy:\n- The caller already knows each callee and argument vector. The activation input is physically the join of those caller observations, so the work graph should own the join.\n\nChecks:\n- Quicksort first compile has no double activation and no dead transient activations outside the final closure.\n- Redefining main from qsort to foo retracts only the actual dependent activation chain.\n- Quicksort and Enum.reduce closed frontiers remain semantically correct.",
   "id": "fz-rh2.10.3",
   "labels": [],
   "parent": "fz-rh2.10",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 activations: make input a caller-contributed fact",
   "type": "task",
-  "updated_at": "2026-06-07T22:07:55Z"
+  "updated_at": "2026-06-07T22:50:29Z"
 }
