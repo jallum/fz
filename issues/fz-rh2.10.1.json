@@ -5,7 +5,7 @@
     "fz-rh2.10.2"
   ],
   "created": "2026-06-07T21:13:07Z",
-  "description": "Goal: one revision change == one publication == one defined/update event. Signal: quicksort trace emits `semantic_closed.defined` and `materialized_program.defined` once per distinct revision, and identical replays produce no duplicate state-change events. Strategy: refactor Compiler2-owned slot maps and world define helpers so change information originates at the ownership boundary; remove unconditional emit paths for semantic closures, materialized programs, activation updates, return types, callsites, and similar stateful facts.\n\nChange:\n- Introduce a Compiler2-owned state-change result at the map/world boundary instead of returning only a revision.\n- Emit `*.defined` / `*.updated` telemetry only when the underlying state actually changes.\n- Tighten tests around revision/event honesty so same-state replays stay silent.\n\nWhy:\n- Same-revision republishes make the trace lie and hide the real fixpoint churn.\n\nChecks:\n- Quicksort trace shows no repeated `semantic_closed.defined` or `materialized_program.defined` at the same revision.\n- Activation/callsite/return telemetry reflects true state changes, not mere lookups.",
+  "description": "Goal: one revision change == one publication == one defined/update event. Signal: a new Compiler2 quicksort trace-summary handler reports zero duplicate state-change emissions, and the raw quicksort trace emits `semantic_closed.defined` and `materialized_program.defined` once per distinct revision. Strategy: add a Compiler2-specific test-only telemetry summary that downcasts raw ids/facts/jobs in the handler, then refactor Compiler2-owned slot maps and world define helpers so change information originates at the ownership boundary and no-op replays stay silent.\n\nChange:\n- Add a test-only Compiler2 trace-summary handler; unlike `StatsHandler`, it counts spans, sums elapsed time, groups exact jobs, detects duplicate subject+revision emissions, counts pre-drive frontend work, and measures analyzed activations that do not survive into the final closure.\n- Introduce a Compiler2-owned state-change result at the map/world boundary instead of returning only a revision.\n- Emit `*.defined` / `*.updated` telemetry only when the underlying state actually changes.\n- Tighten tests around revision/event honesty so same-state replays stay silent and the trace summary reports zero duplicate publications.\n\nWhy:\n- Same-revision republishes make the trace lie and hide the real fixpoint churn.\n- Raw event counts alone are too blunt; this arc needs a direct measure of waste.\n\nChecks:\n- Quicksort trace-summary reports zero duplicate `semantic_closed`, `materialized_program`, and activation/callsite/return emissions.\n- The ignored JSONL dump still matches the summary view when we need a deep inspection.",
   "id": "fz-rh2.10.1",
   "labels": [],
   "parent": "fz-rh2.10",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 signal honesty: publish and emit only on real state change",
   "type": "task",
-  "updated_at": "2026-06-07T21:13:07Z"
+  "updated_at": "2026-06-07T21:23:43Z"
 }
