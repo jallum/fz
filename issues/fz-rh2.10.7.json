@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-07T23:24:33Z",
+  "description": "Goal: unresolved Compiler2 drives should emit cheap diagnostic telemetry for user-facing missing entities after the work graph reaches quiescence. Signal: an exact import like  that is used by rooted code reports the missing  through telemetry instead of only returning an unresolved  wait. Strategy: consume the existing exact unresolved wait frontier after drive, map compiler-owned function/module ids back to raw facts, and emit diagnostics without forcing provider modules or adding eager validation. This should stay outside job execution so lazy exact imports and runtime prelude scoping remain pull-based.",
+  "id": "fz-rh2.10.7",
+  "labels": [],
+  "parent": "fz-rh2.10",
+  "priority": 3,
+  "status": "open",
+  "title": "Compiler2 unresolved demand diagnostics",
+  "type": "task",
+  "updated_at": "2026-06-07T23:24:33Z"
+}
