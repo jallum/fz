@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.10.4"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-rh2.10",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 runtime bootstrap: replace eager parsing with lazy surface bootstrap",
   "type": "task",
-  "updated_at": "2026-06-07T21:55:02Z"
+  "updated_at": "2026-06-07T23:03:32Z"
 }
