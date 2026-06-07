@@ -1,24 +1,26 @@
-//! Compiler2 guard-dispatch jobs.
+//! Compiler2 guard and entry-dispatch jobs.
 //!
-//! This module reifies one named helper function at a time into the shared
-//! `dispatch_matrix::pattern::PatternGuardDispatch` shape. The job reads the
-//! frozen function definitions it transitively depends on, rejects unsupported
-//! helper bodies with diagnostics, and publishes one reusable fact keyed by
+//! This module owns the shared-dispatch layer for Compiler2. It reifies named
+//! dispatch-pure helpers into `PatternGuardDispatch`, plans ordered function
+//! entry dispatch from clause heads, and keeps both facts keyed by
 //! `FunctionId`.
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{Expr, FnDef, Spanned};
+use crate::ast::{Expr, FnDef, Pattern, Spanned};
 use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{
-    PatternGuardDispatch, PatternGuardExpr, SourcePatternError, guard_dispatch_from_fn_def,
+    PatternBodyId, PatternDispatchError, PatternGuardDispatch, PatternGuardExpr, PatternRow, PatternSubjectRef,
+    SourcePatternError, SourcePatternRows, guard_dispatch_from_fn_def,
+    pattern_dispatch_from_source_with_guard_resolver,
 };
+use crate::type_expr::parse_type_expr;
 
-use super::super::drive::{FactKey, JobEffects};
-use super::super::identity::FunctionId;
+use super::super::drive::{FactKey, Job, JobEffects};
+use super::super::identity::{FunctionDef, FunctionId};
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::scheduler::FatalError;
 use super::super::world::World;
@@ -77,6 +79,84 @@ pub(super) fn reify_guard_dispatch(world: &mut World<'_>, function: FunctionId) 
     Ok(JobEffects {
         reads,
         outputs: vec![(FactKey::GuardDispatch(function), revision)],
+        ..JobEffects::default()
+    })
+}
+
+/// Plans ordered function entry selection from clause heads and guards.
+///
+/// The job consumes the function definition plus any helper guard-dispatch
+/// facts its clause guards call. When every dependency is ready, it publishes
+/// one `EntryDispatch(function)` fact carrying the shared pattern-dispatch
+/// artifact that later semantic jobs will consume.
+pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -> Result<JobEffects, FatalError> {
+    let function_fact = FactKey::FunctionDefined(function);
+    let Some(_) = world.function_defined_revision(function) else {
+        return Ok(JobEffects::wait_on(function_fact, []));
+    };
+
+    let def = world.function_definition(function);
+    if def.ast.is_macro {
+        return Err(emit_job_diagnostic(
+            world,
+            Diagnostic::error(
+                codes::LOWER_UNSUPPORTED,
+                format!(
+                    "compiler2 cannot plan macro `{}` as runtime entry dispatch",
+                    function_label(&def.ast)
+                ),
+                def.ast.span,
+            ),
+        ));
+    }
+
+    let mut reads = vec![FactKey::FunctionDefined(function)];
+    let module = world.function_module(function);
+    if !module.is_global() {
+        let module_fact = FactKey::ModuleDefined(module);
+        if world.fact_revision(module_fact.clone()).is_some() {
+            reads.push(module_fact);
+        } else {
+            return Ok(JobEffects::wait_on(module_fact, [Job::DefineModule(module)]));
+        }
+    }
+    let mut waits = HashSet::new();
+    let mut follow_up = HashSet::new();
+    for call in collect_guard_calls_in_guards(&def.ast)
+        .map_err(|span| emit_entry_guard_error(world, function, span, "are not dispatch-pure"))?
+    {
+        let callee = resolve_guard_callee(world, def.namespace, &call)?;
+        let fact = FactKey::GuardDispatch(callee);
+        if world.fact_revision(fact.clone()).is_some() {
+            reads.push(fact);
+        } else {
+            waits.insert(fact);
+            follow_up.insert(Job::ReifyGuardDispatch(callee));
+        }
+    }
+    if !waits.is_empty() {
+        return Ok(JobEffects {
+            reads,
+            waits: waits.into_iter().collect(),
+            follow_up: follow_up.into_iter().collect(),
+            ..JobEffects::default()
+        });
+    }
+
+    let source_patterns = entry_source_patterns(world, function, &def)?;
+    let mut resolver = |name: &str, arity: usize, args: Vec<PatternGuardExpr>| {
+        let callee = resolve_guard_callee_checked(world, def.namespace, name, arity);
+        Ok(Some(PatternGuardExpr::Dispatch {
+            inputs: args,
+            dispatch: Box::new(world.guard_dispatch(callee)),
+        }))
+    };
+    let plan = pattern_dispatch_from_source_with_guard_resolver(source_patterns, &mut resolver)
+        .map_err(|error| emit_entry_dispatch_error(world, function, def.ast.span, error))?;
+    let revision = world.define_entry_dispatch(function, plan);
+    Ok(JobEffects {
+        reads,
+        outputs: vec![(FactKey::EntryDispatch(function), revision)],
         ..JobEffects::default()
     })
 }
@@ -143,6 +223,102 @@ fn build_guard_dispatch(
     stack.pop();
     cache.insert(function, dispatch.clone());
     Ok(dispatch)
+}
+
+fn entry_source_patterns(
+    world: &World<'_>,
+    function: FunctionId,
+    def: &FunctionDef,
+) -> Result<SourcePatternRows, FatalError> {
+    if def.ast.extern_abi.is_some() {
+        return Ok(SourcePatternRows {
+            input_count: def.ast.arity(),
+            rows: vec![PatternRow {
+                patterns: (0..def.ast.arity())
+                    .map(|_| Spanned::new(Pattern::Wildcard, def.ast.span))
+                    .collect(),
+                preconditions: Vec::new(),
+                guard: None,
+                body_id: 0,
+            }],
+        });
+    }
+
+    let type_env = world.function_type_env(function).map_err(|error| {
+        emit_job_diagnostic(
+            world,
+            Diagnostic::error(
+                codes::RESOLVE_TYPE_ALIAS,
+                format!(
+                    "compiler2 could not resolve type aliases for `{}`: {}",
+                    function_label(&def.ast),
+                    error.msg
+                ),
+                error.span,
+            ),
+        )
+    })?;
+    let mut types = crate::types::new();
+    let mut rows = Vec::with_capacity(def.ast.clauses.len());
+    for (body_id, clause) in def.ast.clauses.iter().enumerate() {
+        let mut preconditions = Vec::new();
+        for (index, tokens) in clause.param_annotations.iter().enumerate() {
+            let Some(tokens) = tokens else {
+                continue;
+            };
+            let (ty, consumed) = parse_type_expr(&mut types, &tokens.0, &type_env).map_err(|error| {
+                emit_job_diagnostic(
+                    world,
+                    Diagnostic::error(
+                        codes::RESOLVE_TYPE_ALIAS,
+                        format!(
+                            "compiler2 could not resolve parameter annotation {} for `{}`: {}",
+                            index + 1,
+                            function_label(&def.ast),
+                            error.msg
+                        ),
+                        error.span,
+                    ),
+                )
+            })?;
+            if consumed != tokens.0.len() {
+                return Err(emit_job_diagnostic(
+                    world,
+                    Diagnostic::error(
+                        codes::RESOLVE_TYPE_ALIAS,
+                        format!(
+                            "compiler2 found trailing tokens in parameter annotation {} for `{}`",
+                            index + 1,
+                            function_label(&def.ast)
+                        ),
+                        clause.params[index].span,
+                    ),
+                ));
+            }
+            preconditions.push((PatternSubjectRef::Input(index as u32), ty));
+        }
+        rows.push(PatternRow {
+            patterns: clause.params.clone(),
+            preconditions,
+            guard: clause.guard.clone(),
+            body_id: body_id as PatternBodyId,
+        });
+    }
+
+    Ok(SourcePatternRows {
+        input_count: def.ast.arity(),
+        rows,
+    })
+}
+
+fn collect_guard_calls_in_guards(def: &FnDef) -> Result<Vec<GuardCall>, Span> {
+    let mut calls = Vec::new();
+    for clause in &def.clauses {
+        if let Some(guard) = &clause.guard {
+            collect_guard_calls_in_expr(guard, &mut calls)?;
+        }
+    }
+    Ok(calls)
 }
 
 fn collect_guard_calls_in_fn(def: &FnDef) -> Result<Vec<GuardCall>, Span> {
@@ -218,7 +394,7 @@ fn resolve_guard_callee(world: &World<'_>, namespace: Namespace, call: &GuardCal
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
                 format!(
-                    "compiler2 guard helper calls must be expanded before reification: `{}/{}`",
+                    "compiler2 guard calls must be expanded before dispatch planning: `{}/{}`",
                     call.name, call.arity
                 ),
                 call.span,
@@ -229,7 +405,7 @@ fn resolve_guard_callee(world: &World<'_>, namespace: Namespace, call: &GuardCal
             Diagnostic::error(
                 codes::LOWER_UNBOUND,
                 format!(
-                    "compiler2 guard helper call `{}/{}` is unresolved in this namespace",
+                    "compiler2 guard call `{}/{}` is unresolved in this namespace",
                     call.name, call.arity
                 ),
                 call.span,
@@ -242,10 +418,10 @@ fn resolve_guard_callee_checked(world: &World<'_>, namespace: Namespace, name: &
     match world.lookup_callable_namespace(namespace, name, arity) {
         Some(NamespaceSymbol::Function(function)) => function,
         Some(NamespaceSymbol::Macro(_)) => {
-            panic!("guard analysis should reject macro calls before building guard dispatch")
+            panic!("guard analysis should reject macro calls before building dispatch artifacts")
         }
         Some(NamespaceSymbol::Module(_)) | None => {
-            panic!("guard analysis should reject unresolved helper calls before building guard dispatch")
+            panic!("guard analysis should reject unresolved helper calls before building dispatch artifacts")
         }
     }
 }
@@ -316,6 +492,74 @@ fn emit_guard_dispatch_error(
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
                 format!("compiler2 helper `{label}` uses an unsupported map key in a guard pattern"),
+                span,
+            ),
+        ),
+    }
+}
+
+fn emit_entry_guard_error(world: &World<'_>, function: FunctionId, span: Span, reason: &str) -> FatalError {
+    emit_job_diagnostic(
+        world,
+        Diagnostic::error(
+            codes::LOWER_UNSUPPORTED,
+            format!(
+                "compiler2 entry guards for `{}` {reason} and cannot be planned",
+                function_label(&world.function_definition(function).ast)
+            ),
+            span,
+        ),
+    )
+}
+
+fn emit_entry_dispatch_error(
+    world: &World<'_>,
+    function: FunctionId,
+    span: Span,
+    error: PatternDispatchError,
+) -> FatalError {
+    let label = function_label(&world.function_definition(function).ast);
+    match error {
+        PatternDispatchError::SourcePattern(SourcePatternError::UnsupportedGuardExpr) => {
+            emit_entry_guard_error(world, function, span, "are not dispatch-pure")
+        }
+        PatternDispatchError::SourcePattern(SourcePatternError::UnknownPinned(name))
+        | PatternDispatchError::SourcePattern(SourcePatternError::UnknownGuardVar(name)) => emit_job_diagnostic(
+            world,
+            Diagnostic::error(
+                codes::LOWER_UNBOUND,
+                format!("compiler2 entry guard for `{label}` references unknown guard name `{name}`"),
+                span,
+            ),
+        ),
+        PatternDispatchError::SourcePattern(SourcePatternError::UnsupportedMapKey) => emit_job_diagnostic(
+            world,
+            Diagnostic::error(
+                codes::LOWER_UNSUPPORTED,
+                format!("compiler2 entry dispatch for `{label}` uses an unsupported map key"),
+                span,
+            ),
+        ),
+        PatternDispatchError::SourcePattern(
+            SourcePatternError::UnknownSubject(_)
+            | SourcePatternError::RowPatternArity { .. }
+            | SourcePatternError::NonMonotonicBodyId { .. }
+            | SourcePatternError::GuardCallCycle(_, _)
+            | SourcePatternError::DispatchMatrix(_),
+        ) => panic!("compiler2 built an invalid entry-dispatch row set: {error:?}"),
+        PatternDispatchError::MatrixBuild(error) => emit_job_diagnostic(
+            world,
+            Diagnostic::error(
+                codes::LOWER_UNSUPPORTED,
+                format!("compiler2 could not build entry dispatch for `{label}`: {error:?}"),
+                span,
+            ),
+        ),
+        PatternDispatchError::Compile(error) => emit_job_diagnostic(
+            world,
+            Diagnostic::error(
+                codes::LOWER_UNSUPPORTED,
+                format!("compiler2 could not compile entry dispatch for `{label}`: {error:?}"),
                 span,
             ),
         ),

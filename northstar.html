@@ -279,7 +279,8 @@
     roots: RootMap,
 
     lowered: LoweredBodyMap,
-    dispatches: DispatchMap,
+    guard_dispatches: GuardDispatchMap,
+    entry_dispatches: EntryDispatchMap,
     facts: FactTable,
     agenda: Agenda,
     deps: DependencyIndex,
@@ -634,7 +635,7 @@ fn pop(agenda: &amp;mut Agenda) -&gt; Option&lt;JobKey&gt; {
           <tr>
             <td>Dispatch</td>
             <td>Reify dispatch-pure helpers and ordered entry matching into shared dispatch plans.</td>
-            <td>Reusable <code>PatternGuardDispatch</code> and entry-dispatch facts keyed by function or site.</td>
+            <td><code>GuardDispatch(function)</code> and <code>EntryDispatch(function)</code> facts, plus later body-site dispatch facts.</td>
             <td>Type bodies, plan executables, or emit code.</td>
           </tr>
           <tr>
@@ -676,7 +677,7 @@ fn pop(agenda: &amp;mut Agenda) -&gt; Option&lt;JobKey&gt; {
           </tr>
           <tr>
             <td><code>AnalyzeActivation</code></td>
-            <td><code>Activation</code>, <code>FunctionDefined</code>, <code>LoweredBody</code>, dispatch facts for the function body or entry.</td>
+            <td><code>Activation</code>, <code>FunctionDefined</code>, <code>LoweredBody</code>, <code>EntryDispatch(function)</code>, and any nested guard-dispatch facts it references.</td>
             <td>Pattern reachability, value types, callsite instances, argument facts, return type contribution.</td>
           </tr>
           <tr>

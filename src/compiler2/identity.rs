@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use std::rc::Rc;
 
-use crate::ast::{FnDef, Item};
+use crate::ast::{Attribute, FnDef, Item};
 use crate::compiler::source::Span;
 
 use super::code::CodeId;
@@ -138,6 +138,7 @@ pub struct ModuleSource {
     pub code: CodeId,
     pub parent: ModuleId,
     pub local_name: String,
+    pub attrs: Vec<Attribute>,
     pub items: Vec<Rc<Item>>,
 }
 
@@ -147,6 +148,7 @@ impl ModuleSource {
             code,
             parent: ModuleId::GLOBAL,
             local_name: String::new(),
+            attrs: Vec::new(),
             items: Vec::new(),
         }
     }
@@ -296,6 +298,7 @@ impl ModuleMap {
         code: CodeId,
         parent: ModuleId,
         local_name: String,
+        attrs: Vec<Attribute>,
         items: Vec<Rc<Item>>,
     ) -> u64 {
         let module = &mut self.slots[id.0 as usize];
@@ -303,6 +306,7 @@ impl ModuleMap {
             code,
             parent,
             local_name,
+            attrs,
             items,
         });
         replace_if_changed(&mut module.state, &mut module.revision, next)

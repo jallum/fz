@@ -37,8 +37,22 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
     }
 
     let scoped_ref = modules.reference_named("Scoped");
-    let indexed_revision = modules.index(scoped_ref, code_id, ModuleId::GLOBAL, "Scoped".to_string(), Vec::new());
-    let same_indexed_revision = modules.index(scoped_ref, code_id, ModuleId::GLOBAL, "Scoped".to_string(), Vec::new());
+    let indexed_revision = modules.index(
+        scoped_ref,
+        code_id,
+        ModuleId::GLOBAL,
+        "Scoped".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    let same_indexed_revision = modules.index(
+        scoped_ref,
+        code_id,
+        ModuleId::GLOBAL,
+        "Scoped".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
     assert_eq!(
         same_indexed_revision, indexed_revision,
         "replaying the same module index should not bump the revision"

@@ -316,6 +316,7 @@ fn discover_modules(
                 code_id,
                 parent_module,
                 module.name.clone(),
+                module.attrs.clone(),
                 module.items.clone(),
             );
             outputs.push((FactKey::ModuleIndexed(module_id), revision));

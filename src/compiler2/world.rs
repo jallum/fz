@@ -10,15 +10,17 @@ use std::rc::Rc;
 
 use crate::ast::FnDef;
 use crate::ast::Item;
-use crate::dispatch_matrix::pattern::PatternGuardDispatch;
+use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch};
 use crate::telemetry::{Telemetry, opaque};
+use crate::type_expr::{ModuleTypeEnv, build_module_type_env_for_with_base, builtin_type_env};
+use crate::types;
 use crate::{measurements, metadata};
 
 use super::CodeId;
 use super::body::{LoweredBody, LoweredBodyMap};
 use super::code::CodeMap;
 use super::deps::ExactPattern;
-use super::dispatch::GuardDispatchMap;
+use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
 use super::drive::{FactKey, Job, JobEffects, WorkGraph};
 use super::identity::{
     ExecutableNeed, FunctionDef, FunctionId, FunctionMap, ModuleExport, ModuleId, ModuleMap, ModuleState, RootEntry,
@@ -33,6 +35,7 @@ pub struct World<'a> {
     functions: FunctionMap,
     bodies: LoweredBodyMap,
     guard_dispatches: GuardDispatchMap,
+    entry_dispatches: EntryDispatchMap,
     roots: RootMap,
     namespaces: NamespaceStore,
     pub(crate) work_graph: WorkGraph,
@@ -61,6 +64,7 @@ impl<'a> World<'a> {
             functions: FunctionMap::new(),
             bodies: LoweredBodyMap::new(),
             guard_dispatches: GuardDispatchMap::new(),
+            entry_dispatches: EntryDispatchMap::new(),
             roots: RootMap::new(),
             namespaces: NamespaceStore::new(),
             work_graph: WorkGraph::new(),
@@ -188,9 +192,10 @@ impl<'a> World<'a> {
         code: CodeId,
         parent: ModuleId,
         local_name: String,
+        attrs: Vec<crate::ast::Attribute>,
         items: Vec<Rc<Item>>,
     ) -> u64 {
-        self.modules.index(id, code, parent, local_name, items)
+        self.modules.index(id, code, parent, local_name, attrs, items)
     }
 
     pub fn scope_module(&mut self, id: ModuleId, base_namespace: Namespace) -> u64 {
@@ -335,6 +340,45 @@ impl<'a> World<'a> {
         revision
     }
 
+    pub(crate) fn define_entry_dispatch(&mut self, function: FunctionId, plan: PatternDispatchPlan) -> u64 {
+        let def = self.function_definition(function);
+        let function_ref = self.functions.reference_for(function);
+        let module_name = if function_ref.module.is_global() {
+            "<top-level>".to_string()
+        } else {
+            self.modules
+                .name(function_ref.module)
+                .expect("named entry dispatch modules should have a reverse lookup")
+                .to_string()
+        };
+        let fq_name = if module_name == "<top-level>" {
+            function_ref.name.clone()
+        } else {
+            format!("{}.{}", module_name, function_ref.name)
+        };
+        let revision = self.entry_dispatches.define(function, plan.clone());
+        self.tel.execute(
+            &["fz", "compiler2", "entry_dispatch", "defined"],
+            &measurements! {
+                code_id: def.code.as_u32() as u64,
+                function_id: function.as_u32() as u64,
+                revision: revision,
+                arity: def.ast.arity() as u64,
+                outcomes: plan.outcomes.len() as u64,
+                guards: plan.guards.len() as u64,
+                pinned: plan.pinned.len() as u64,
+            },
+            &metadata! {
+                source_name: self.code.name(def.code).unwrap_or("<anonymous>"),
+                module_name: module_name.as_str(),
+                name: function_ref.name.as_str(),
+                fq_name: fq_name.as_str(),
+                plan: opaque(&plan),
+            },
+        );
+        revision
+    }
+
     pub fn prelude_head(&self) -> Namespace {
         self.namespaces.prelude_head()
     }
@@ -390,6 +434,10 @@ impl<'a> World<'a> {
         }
     }
 
+    pub(crate) fn function_module(&self, function: FunctionId) -> ModuleId {
+        self.functions.reference_for(function).module
+    }
+
     pub fn fact_revision(&self, key: FactKey) -> Option<u64> {
         self.work_graph.facts().get(&key)
     }
@@ -408,6 +456,39 @@ impl<'a> World<'a> {
                 NamespaceSymbol::Module(_) => false,
             })
             .cloned()
+    }
+
+    pub(crate) fn guard_dispatch(&self, function: FunctionId) -> PatternGuardDispatch {
+        self.guard_dispatches
+            .get(function)
+            .cloned()
+            .expect("guard dispatch should only be read after its fact is defined")
+    }
+
+    pub(crate) fn function_type_env(
+        &self,
+        function: FunctionId,
+    ) -> Result<ModuleTypeEnv, crate::type_expr::TypeExprError> {
+        let module = self.functions.reference_for(function).module;
+        let mut types = types::new();
+        let builtin_env = builtin_type_env(&mut types);
+        if module.is_global() {
+            return Ok(builtin_env);
+        }
+        let module_name = self
+            .modules
+            .name(module)
+            .expect("named function modules should have a reverse lookup")
+            .to_string();
+        let attrs = match &self.modules.get(module).state {
+            ModuleState::Indexed(source) | ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. } => {
+                source.attrs.clone()
+            }
+            ModuleState::Placeholder => {
+                panic!("function modules should have source metadata before resolving type env")
+            }
+        };
+        build_module_type_env_for_with_base(&mut types, &attrs, &module_name, &builtin_env).map(|(env, _, _)| env)
     }
 
     pub fn code_items(&self, id: CodeId) -> Option<&[Rc<Item>]> {

@@ -2,7 +2,8 @@ use super::{CodeSubmission, Compiler2, DriveOutcome, ExactPattern, ExecutableNee
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{ActivationKey, ExecutableKey, FactKey, FunctionId};
 use crate::diag::codes;
-use crate::dispatch_matrix::pattern::{PatternGuardDispatch, PatternGuardExpr};
+use crate::dispatch_matrix::Region;
+use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
 use crate::telemetry::capture::OwnedEvent;
 use crate::telemetry::handler::{Event, EventKind, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
@@ -12,6 +13,7 @@ use std::rc::Rc;
 
 type OutputFacts = Vec<(FactKey, u64)>;
 type JobOutputMap = Rc<RefCell<HashMap<(String, u64), Vec<OutputFacts>>>>;
+type EntryDispatchMap = Rc<RefCell<HashMap<(String, u64), Vec<PatternDispatchPlan>>>>;
 type GuardDispatchMap = Rc<RefCell<HashMap<(String, u64), Vec<PatternGuardDispatch>>>>;
 type SpanJobs = Rc<RefCell<HashMap<u64, (String, u64)>>>;
 
@@ -760,6 +762,235 @@ end
 }
 
 #[test]
+fn compiler2_entry_dispatch_plans_clause_heads_with_preconditions_and_helper_guards() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let entry_defs = EntryDispatchCapture::new();
+    tel.attach(&["fz", "compiler2", "entry_dispatch", "defined"], entry_defs.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let code_id = compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/entry_dispatch_aliases.fz".to_string()),
+        text: r#"
+defmodule Sample do
+  @type count :: integer
+
+  fn positive(n), do: n > 0
+
+  fn wanted(n :: count) when positive(n), do: {:pos, n}
+  fn wanted(0), do: :zero
+  fn wanted(_), do: :fallback
+end
+"#
+        .to_string(),
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "first drive should index module and helper definitions",
+    );
+    let module_ids = module_indexed_ids(
+        &outputs
+            .take("IndexCode", code_id.as_u32() as u64)
+            .expect("IndexCode job effects for module-scoped entry dispatch"),
+    );
+    assert!(
+        compiler.demand(Job::ScopeCode(code_id)),
+        "explicit demand should scope module contents before planning entry dispatch",
+    );
+    assert_resolved(compiler.drive(), "second drive should scope the root namespace");
+    assert!(
+        compiler.demand(Job::DefineModule(module_ids[0])),
+        "nested module entry dispatch needs the module surface defined first",
+    );
+    assert_resolved(compiler.drive(), "third drive should define module-scoped functions");
+
+    let wanted_id = function_id(&capture, "wanted", 1);
+    let positive_id = function_id(&capture, "positive", 1);
+    assert!(
+        compiler.demand(Job::PlanEntryDispatch(wanted_id)),
+        "multi-clause wanted/1 should be demandable as entry dispatch",
+    );
+    assert_resolved(
+        compiler.drive(),
+        "entry-dispatch planning should reify helper guards and publish one shared plan",
+    );
+
+    let helper_outputs = outputs
+        .take("ReifyGuardDispatch", positive_id.as_u32() as u64)
+        .expect("ReifyGuardDispatch job effects for positive/1");
+    assert!(
+        helper_outputs.contains(&(FactKey::GuardDispatch(positive_id), 1)),
+        "helper planning should automatically publish the nested guard-dispatch fact",
+    );
+    let wanted_outputs = outputs
+        .take("PlanEntryDispatch", wanted_id.as_u32() as u64)
+        .expect("PlanEntryDispatch job effects for wanted/1");
+    assert!(
+        wanted_outputs.contains(&(FactKey::EntryDispatch(wanted_id), 1)),
+        "wanted/1 should publish its entry-dispatch fact",
+    );
+
+    let plan = entry_dispatch(&entry_defs, "wanted", 1);
+    assert_eq!(
+        plan.outcomes.iter().map(|outcome| outcome.body_id).collect::<Vec<_>>(),
+        vec![0, 1, 2],
+        "entry dispatch should preserve clause outcomes in source order",
+    );
+    assert!(
+        plan_has_nested_guard_dispatch(&plan),
+        "entry guards that call helpers should inline the helper dispatch artifact",
+    );
+    assert!(
+        plan_body_has_type_question(&plan, 0),
+        "parameter annotations should surface as type questions on the planned entry arm",
+    );
+}
+
+#[test]
+fn compiler2_entry_dispatch_plans_trivial_single_clause_functions() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let entry_defs = EntryDispatchCapture::new();
+    tel.attach(&["fz", "compiler2", "entry_dispatch", "defined"], entry_defs.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let code_id = compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/entry_dispatch_single_clause.fz".to_string()),
+        text: "fn wanted(n), do: n\n".to_string(),
+    });
+
+    assert_resolved(compiler.drive(), "first drive should index the single-clause function");
+    assert!(
+        compiler.demand(Job::ScopeCode(code_id)),
+        "single-clause entry dispatch still needs a defined function surface",
+    );
+    assert_resolved(
+        compiler.drive(),
+        "second drive should define the single-clause function",
+    );
+
+    let wanted_id = function_id(&capture, "wanted", 1);
+    assert!(
+        compiler.demand(Job::PlanEntryDispatch(wanted_id)),
+        "single-clause functions should still publish entry dispatch",
+    );
+    assert_resolved(compiler.drive(), "single-clause entry dispatch should plan trivially");
+
+    let wanted_outputs = outputs
+        .take("PlanEntryDispatch", wanted_id.as_u32() as u64)
+        .expect("PlanEntryDispatch job effects for single-clause wanted/1");
+    assert!(
+        wanted_outputs.contains(&(FactKey::EntryDispatch(wanted_id), 1)),
+        "single-clause wanted/1 should publish its entry-dispatch fact",
+    );
+
+    let plan = entry_dispatch(&entry_defs, "wanted", 1);
+    assert_eq!(plan.outcomes.len(), 1, "trivial entry dispatch should have one outcome");
+    assert_eq!(plan.guards.len(), 0, "trivial entry dispatch should not invent guards");
+    assert_eq!(
+        plan.pinned.len(),
+        0,
+        "trivial entry dispatch should not invent pinned inputs"
+    );
+}
+
+#[test]
+fn compiler2_entry_dispatch_recomputes_only_the_dependent_helper_blast_radius() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let entry_defs = EntryDispatchCapture::new();
+    tel.attach(&["fz", "compiler2", "entry_dispatch", "defined"], entry_defs.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let code_id = compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/entry_dispatch_blast_radius_v1.fz".to_string()),
+        text: r#"
+fn positive(n), do: n > 0
+fn wanted(n) when positive(n), do: true
+fn wanted(_), do: false
+fn other(n) when n > 0, do: true
+fn other(_), do: false
+"#
+        .to_string(),
+    });
+
+    assert_resolved(compiler.drive(), "first drive should index helper users");
+    assert!(
+        compiler.demand(Job::ScopeCode(code_id)),
+        "scope_code should define helper users"
+    );
+    assert_resolved(compiler.drive(), "second drive should define helper users");
+
+    let positive_id = function_id(&capture, "positive", 1);
+    let wanted_id = function_id(&capture, "wanted", 1);
+    let other_id = function_id(&capture, "other", 1);
+
+    assert!(
+        compiler.demand(Job::PlanEntryDispatch(wanted_id)),
+        "wanted/1 should be demandable"
+    );
+    assert!(
+        compiler.demand(Job::PlanEntryDispatch(other_id)),
+        "other/1 should be demandable"
+    );
+    assert_resolved(compiler.drive(), "initial entry dispatch planning should resolve");
+
+    let _ = outputs
+        .take("ReifyGuardDispatch", positive_id.as_u32() as u64)
+        .expect("initial helper reification should run");
+    let _ = outputs
+        .take("PlanEntryDispatch", wanted_id.as_u32() as u64)
+        .expect("initial wanted/1 entry dispatch should run");
+    let _ = outputs
+        .take("PlanEntryDispatch", other_id.as_u32() as u64)
+        .expect("initial other/1 entry dispatch should run");
+    let _ = entry_dispatch(&entry_defs, "wanted", 1);
+    let _ = entry_dispatch(&entry_defs, "other", 1);
+
+    let code_id = compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/entry_dispatch_blast_radius_v2.fz".to_string()),
+        text: "fn positive(n), do: n >= 0\n".to_string(),
+    });
+    assert!(
+        compiler.demand(Job::ScopeCode(code_id)),
+        "redefinition code still needs to be scoped explicitly without a root",
+    );
+    assert_resolved(
+        compiler.drive(),
+        "helper redefinition should rerun only the helper and dependent entry-dispatch plan",
+    );
+
+    let helper_outputs = outputs
+        .take("ReifyGuardDispatch", positive_id.as_u32() as u64)
+        .expect("helper reification should rerun after helper redefinition");
+    assert!(
+        helper_outputs.contains(&(FactKey::GuardDispatch(positive_id), 2)),
+        "helper reification should publish a revised guard-dispatch fact",
+    );
+    let wanted_outputs = outputs
+        .take("PlanEntryDispatch", wanted_id.as_u32() as u64)
+        .expect("dependent wanted/1 entry dispatch should rerun");
+    assert!(
+        wanted_outputs.contains(&(FactKey::EntryDispatch(wanted_id), 2)),
+        "dependent wanted/1 entry dispatch should republish with a new revision",
+    );
+    assert!(
+        outputs.take("PlanEntryDispatch", other_id.as_u32() as u64).is_none(),
+        "independent other/1 entry dispatch should stay cold across helper redefinition",
+    );
+}
+
+#[test]
 fn compiler2_index_code_recurses_through_nested_modules() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -1157,6 +1388,10 @@ struct OutputCapture {
     spans: SpanJobs,
 }
 
+struct EntryDispatchCapture {
+    plans: EntryDispatchMap,
+}
+
 struct GuardDispatchCapture {
     dispatches: GuardDispatchMap,
 }
@@ -1213,9 +1448,38 @@ impl GuardDispatchCapture {
     }
 }
 
+impl EntryDispatchCapture {
+    fn new() -> Self {
+        Self {
+            plans: Rc::new(RefCell::new(HashMap::new())),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(EntryDispatchCaptureHandler {
+            plans: self.plans.clone(),
+        })
+    }
+
+    fn take(&self, name: &str, arity: u64) -> Option<PatternDispatchPlan> {
+        let key = (name.to_string(), arity);
+        let mut plans = self.plans.borrow_mut();
+        let matches = plans.get_mut(&key)?;
+        let plan = matches.pop();
+        if matches.is_empty() {
+            plans.remove(&key);
+        }
+        plan
+    }
+}
+
 struct OutputCaptureHandler {
     outputs: JobOutputMap,
     spans: SpanJobs,
+}
+
+struct EntryDispatchCaptureHandler {
+    plans: EntryDispatchMap,
 }
 
 struct GuardDispatchCaptureHandler {
@@ -1287,6 +1551,32 @@ impl Handler for GuardDispatchCaptureHandler {
     }
 }
 
+impl Handler for EntryDispatchCaptureHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if event.name != ["fz", "compiler2", "entry_dispatch", "defined"] || event.kind != EventKind::Event {
+            return;
+        }
+        let Some(Value::Str(name)) = event.metadata.get("name") else {
+            return;
+        };
+        let Some(Value::U64(arity)) = event.measurements.get("arity") else {
+            return;
+        };
+        let Some(plan) = event
+            .metadata
+            .get("plan")
+            .and_then(|value| value.downcast_ref::<PatternDispatchPlan>())
+        else {
+            return;
+        };
+        self.plans
+            .borrow_mut()
+            .entry((name.as_ref().to_string(), *arity))
+            .or_default()
+            .push(plan.clone());
+    }
+}
+
 fn job_start(capture: &Capture, job_kind: &str, id: u64) -> OwnedEvent {
     capture
         .find(&["fz", "compiler2", "job"])
@@ -1342,6 +1632,33 @@ fn guard_dispatch(capture: &GuardDispatchCapture, name: &str, arity: u64) -> Pat
     capture
         .take(name, arity)
         .unwrap_or_else(|| panic!("guard_dispatch.defined for {name}/{arity}"))
+}
+
+fn entry_dispatch(capture: &EntryDispatchCapture, name: &str, arity: u64) -> PatternDispatchPlan {
+    capture
+        .take(name, arity)
+        .unwrap_or_else(|| panic!("entry_dispatch.defined for {name}/{arity}"))
+}
+
+fn plan_has_nested_guard_dispatch(plan: &PatternDispatchPlan) -> bool {
+    plan.guards.iter().any(expr_has_nested_dispatch)
+}
+
+fn plan_body_has_type_question(plan: &PatternDispatchPlan, body_id: u32) -> bool {
+    let outcome = plan
+        .outcomes
+        .iter()
+        .find(|outcome| outcome.body_id == body_id)
+        .unwrap_or_else(|| panic!("entry-dispatch outcome for body {body_id}"));
+    let arm = plan
+        .matrix
+        .arms
+        .iter()
+        .find(|arm| arm.outcome == outcome.outcome)
+        .unwrap_or_else(|| panic!("dispatch arm for body {body_id}"));
+    arm.questions
+        .iter()
+        .any(|question| matches!(question.predicate.region, Region::Type(_)))
 }
 
 fn guard_dispatch_has_nested_dispatch(dispatch: &PatternGuardDispatch) -> bool {

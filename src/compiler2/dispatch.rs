@@ -4,36 +4,42 @@
 //! by function id. They are facts, not work queues: identity lives in the
 //! owning map, and each slot only tracks lifecycle state plus revision.
 
-use crate::dispatch_matrix::pattern::PatternGuardDispatch;
+use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch};
 
 use super::identity::FunctionId;
 
 #[derive(Debug, Clone)]
-pub(crate) struct GuardDispatchSlot {
-    pub(crate) state: GuardDispatchState,
+pub(crate) struct DispatchSlot<T> {
+    state: DispatchState<T>,
     pub(crate) revision: u64,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum GuardDispatchState {
+enum DispatchState<T> {
     Placeholder,
-    Reified(PatternGuardDispatch),
+    Defined(T),
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct GuardDispatchMap {
-    slots: Vec<GuardDispatchSlot>,
+#[derive(Debug)]
+pub(crate) struct FunctionDispatchMap<T> {
+    slots: Vec<DispatchSlot<T>>,
 }
 
-impl GuardDispatchMap {
+pub(crate) type GuardDispatchMap = FunctionDispatchMap<PatternGuardDispatch>;
+pub(crate) type EntryDispatchMap = FunctionDispatchMap<PatternDispatchPlan>;
+
+impl<T> FunctionDispatchMap<T>
+where
+    T: Clone + PartialEq,
+{
     pub(crate) fn new() -> Self {
-        Self::default()
+        Self { slots: Vec::new() }
     }
 
-    pub(crate) fn define(&mut self, id: FunctionId, dispatch: PatternGuardDispatch) -> u64 {
+    pub(crate) fn define(&mut self, id: FunctionId, value: T) -> u64 {
         self.ensure(id);
         let slot = &mut self.slots[id.as_u32() as usize];
-        let next = GuardDispatchState::Reified(dispatch);
+        let next = DispatchState::Defined(value);
         if !slot.state.same_state(&next) {
             slot.state = next;
             slot.revision += 1;
@@ -41,22 +47,35 @@ impl GuardDispatchMap {
         slot.revision
     }
 
+    pub(crate) fn get(&self, id: FunctionId) -> Option<&T> {
+        match &self.slots.get(id.as_u32() as usize)?.state {
+            DispatchState::Placeholder => None,
+            DispatchState::Defined(value) => Some(value),
+        }
+    }
+
     fn ensure(&mut self, id: FunctionId) {
         let needed = id.as_u32() as usize + 1;
         if self.slots.len() < needed {
-            self.slots.resize_with(needed, || GuardDispatchSlot {
-                state: GuardDispatchState::Placeholder,
+            self.slots.resize_with(needed, || DispatchSlot {
+                state: DispatchState::Placeholder,
                 revision: 0,
             });
         }
     }
 }
 
-impl GuardDispatchState {
+impl<T> Default for FunctionDispatchMap<T> {
+    fn default() -> Self {
+        Self { slots: Vec::new() }
+    }
+}
+
+impl<T: PartialEq> DispatchState<T> {
     fn same_state(&self, other: &Self) -> bool {
         match (self, other) {
-            (GuardDispatchState::Placeholder, GuardDispatchState::Placeholder) => true,
-            (GuardDispatchState::Reified(left), GuardDispatchState::Reified(right)) => left == right,
+            (DispatchState::Placeholder, DispatchState::Placeholder) => true,
+            (DispatchState::Defined(left), DispatchState::Defined(right)) => left == right,
             _ => false,
         }
     }
