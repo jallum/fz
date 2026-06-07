@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.10.2"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-rh2.10",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 activations: make input a caller-contributed fact",
   "type": "task",
-  "updated_at": "2026-06-07T21:39:49Z"
+  "updated_at": "2026-06-07T22:07:55Z"
 }
