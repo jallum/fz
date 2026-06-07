@@ -1,5 +1,10 @@
 use std::collections::HashMap;
 
+use crate::ast::FnDef;
+
+use super::code::CodeId;
+use super::namespace::NamespaceHead;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ModuleId(u32);
 
@@ -30,45 +35,88 @@ impl RootId {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
     state: ModuleState,
+    revision: u64,
 }
 
 impl Module {
     pub fn state(&self) -> &ModuleState {
         &self.state
     }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModuleState {
     Placeholder,
-    Defined,
+    Defined {
+        codes: Vec<CodeId>,
+        namespace: NamespaceHead,
+    },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Function {
     state: FunctionState,
+    revision: u64,
 }
 
 impl Function {
     pub fn state(&self) -> &FunctionState {
         &self.state
     }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum FunctionState {
     Placeholder,
-    Defined,
+    Defined { def: FunctionDef },
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionDef {
+    code: CodeId,
+    namespace: NamespaceHead,
+    ast: FnDef,
+}
+
+impl FunctionDef {
+    pub fn new(code: CodeId, namespace: NamespaceHead, ast: FnDef) -> Self {
+        Self { code, namespace, ast }
+    }
+
+    pub fn code(&self) -> CodeId {
+        self.code
+    }
+
+    pub fn namespace(&self) -> NamespaceHead {
+        self.namespace
+    }
+
+    pub fn ast(&self) -> &FnDef {
+        &self.ast
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Root {
     state: RootState,
+    revision: u64,
 }
 
 impl Root {
     pub fn state(&self) -> &RootState {
         &self.state
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 }
 
@@ -80,14 +128,14 @@ pub enum RootState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct FunctionKey {
-    module: ModuleId,
+    module: Option<ModuleId>,
     name: String,
     arity: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionRef {
-    pub module: ModuleId,
+    pub module: Option<ModuleId>,
     pub name: String,
     pub arity: usize,
 }
@@ -112,22 +160,35 @@ impl ModuleMap {
         let id = ModuleId(self.slots.len() as u32);
         self.slots.push(Module {
             state: ModuleState::Placeholder,
+            revision: 0,
         });
         self.names.push(Some(name.clone()));
         self.by_name.insert(name, id);
         id
     }
 
-    pub fn define_named(&mut self, name: impl Into<String>) -> ModuleId {
-        let id = self.reference_named(name);
-        self.slots[id.0 as usize].state = ModuleState::Defined;
-        id
+    pub fn define(&mut self, id: ModuleId, code: CodeId, namespace: NamespaceHead) -> u64 {
+        let module = &mut self.slots[id.0 as usize];
+        let mut codes = match &module.state {
+            ModuleState::Placeholder => Vec::new(),
+            ModuleState::Defined { codes, .. } => codes.clone(),
+        };
+        if !codes.contains(&code) {
+            codes.push(code);
+        }
+        module.state = ModuleState::Defined { codes, namespace };
+        module.revision += 1;
+        module.revision
     }
 
-    pub fn define_anonymous(&mut self) -> ModuleId {
+    pub fn define_anonymous(&mut self, code: CodeId, namespace: NamespaceHead) -> ModuleId {
         let id = ModuleId(self.slots.len() as u32);
         self.slots.push(Module {
-            state: ModuleState::Defined,
+            state: ModuleState::Defined {
+                codes: vec![code],
+                namespace,
+            },
+            revision: 1,
         });
         self.names.push(None);
         id
@@ -162,7 +223,7 @@ impl FunctionMap {
         Self::default()
     }
 
-    pub fn reference(&mut self, module: ModuleId, name: impl Into<String>, arity: usize) -> FunctionId {
+    pub fn reference(&mut self, module: Option<ModuleId>, name: impl Into<String>, arity: usize) -> FunctionId {
         let name = name.into();
         let key = FunctionKey {
             module,
@@ -175,16 +236,18 @@ impl FunctionMap {
         let id = FunctionId(self.slots.len() as u32);
         self.slots.push(Function {
             state: FunctionState::Placeholder,
+            revision: 0,
         });
         self.refs.push(FunctionRef { module, name, arity });
         self.by_key.insert(key, id);
         id
     }
 
-    pub fn define(&mut self, module: ModuleId, name: impl Into<String>, arity: usize) -> FunctionId {
-        let id = self.reference(module, name, arity);
-        self.slots[id.0 as usize].state = FunctionState::Defined;
-        id
+    pub fn define(&mut self, id: FunctionId, def: FunctionDef) -> u64 {
+        let function = &mut self.slots[id.0 as usize];
+        function.state = FunctionState::Defined { def };
+        function.revision += 1;
+        function.revision
     }
 
     pub fn get(&self, id: FunctionId) -> Option<&Function> {
@@ -224,6 +287,7 @@ impl RootMap {
         let id = RootId(self.slots.len() as u32);
         self.slots.push(Root {
             state: RootState::Placeholder,
+            revision: 0,
         });
         self.names.push(Some(name.clone()));
         self.by_name.insert(name, id);
@@ -232,7 +296,9 @@ impl RootMap {
 
     pub fn define_named(&mut self, name: impl Into<String>) -> RootId {
         let id = self.reference_named(name);
-        self.slots[id.0 as usize].state = RootState::Defined;
+        let root = &mut self.slots[id.0 as usize];
+        root.state = RootState::Defined;
+        root.revision += 1;
         id
     }
 
@@ -240,6 +306,7 @@ impl RootMap {
         let id = RootId(self.slots.len() as u32);
         self.slots.push(Root {
             state: RootState::Defined,
+            revision: 1,
         });
         self.names.push(None);
         id

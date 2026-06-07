@@ -5,10 +5,11 @@ pub struct BindingId(u32);
 
 pub type NamespaceHead = Option<BindingId>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NamespaceSymbol {
     Module(ModuleId),
-    Function(FunctionId),
+    Functions(Vec<FunctionId>),
+    Macros(Vec<FunctionId>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,11 +40,11 @@ impl NamespaceStore {
         Some(id)
     }
 
-    pub fn lookup(&self, mut head: NamespaceHead, name: &str) -> Option<NamespaceSymbol> {
+    pub fn lookup(&self, mut head: NamespaceHead, name: &str) -> Option<&NamespaceSymbol> {
         while let Some(binding_id) = head {
             let binding = &self.bindings[binding_id.0 as usize];
             if binding.name == name {
-                return Some(binding.symbol);
+                return Some(&binding.symbol);
             }
             head = binding.prev;
         }

@@ -1,4 +1,4 @@
-use super::{CodeSubmission, Compiler2, World};
+use super::{CodeState, CodeSubmission, Compiler2, FactKey, World};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 
 struct ContractCase<'a> {
@@ -32,27 +32,40 @@ fn run_contract(case: ContractCase<'_>) {
     let mut compiler = Compiler2::new();
     let mut world = World::new();
 
-    let submitted = compiler.submit_code(
-        &mut world,
-        CodeSubmission {
-            name: Some(case.source_name.to_string()),
-            text: case.source_text.to_string(),
-        },
-        &tel,
-    );
+    let submitted = compiler
+        .submit_code(
+            &mut world,
+            CodeSubmission {
+                name: Some(case.source_name.to_string()),
+                text: case.source_text.to_string(),
+            },
+            &tel,
+        )
+        .expect("compiler2 submission should index successfully");
 
     assert_eq!(world.code().len(), 1, "{} should add one code record", case.name);
     let record = world.code().get(submitted.code_id).expect("submitted code record");
     assert_eq!(
-        record.name(),
+        world.code().name(submitted.code_id),
         Some(case.source_name),
         "{} should preserve source name",
         case.name
     );
     assert_eq!(
-        record.text(),
-        case.source_text,
+        world.code().text(submitted.code_id),
+        Some(case.source_text),
         "{} should preserve source text",
+        case.name
+    );
+    assert!(
+        matches!(record.state(), CodeState::Indexed { .. }),
+        "{} should transition code into the indexed state",
+        case.name
+    );
+    assert_eq!(
+        world.scheduler().facts().get(&FactKey::CodeIndexed(submitted.code_id)),
+        Some(&record.revision()),
+        "{} should publish a CodeIndexed fact",
         case.name
     );
 
@@ -95,6 +108,12 @@ fn run_contract(case: ContractCase<'_>) {
         capture.count(&["fz", "compiler2", "code", "submitted"]),
         1,
         "{} should emit exactly one Compiler2 submission event",
+        case.name
+    );
+    assert_eq!(
+        capture.count(&["fz", "compiler2", "code", "indexed"]),
+        1,
+        "{} should emit exactly one Compiler2 indexed event",
         case.name
     );
 }
