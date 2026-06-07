@@ -123,6 +123,13 @@ pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Resul
         ));
     }
 
+    if let Some(code_id) = world.ensure_runtime_module(module_id) {
+        return Ok(JobEffects::wait_on(
+            FactKey::CodeIndexed(code_id),
+            [Job::IndexCode(code_id)],
+        ));
+    }
+
     Ok(JobEffects::wait_on(FactKey::ModuleIndexed(module_id), []))
 }
 

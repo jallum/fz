@@ -9,6 +9,7 @@ mod facts;
 mod identity;
 mod jobs;
 mod namespace;
+mod runtime;
 mod scheduler;
 mod semantic;
 mod world;

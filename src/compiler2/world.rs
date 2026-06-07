@@ -6,6 +6,7 @@
 //! legitimate state absence like "this known function is still a placeholder"
 //! or "this known code has not been indexed yet".
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::ast::FnDef;
@@ -28,6 +29,7 @@ use super::identity::{
     RootId, RootMap,
 };
 use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
+use super::runtime::{self, RuntimeModuleCode};
 use super::semantic::{
     ActivationAnalysis, ActivationMap, ActivationSummary, CallSiteKey, CallSiteMap, CallSiteSummary,
 };
@@ -44,6 +46,7 @@ pub struct World<'a> {
     callsites: CallSiteMap,
     roots: RootMap,
     namespaces: NamespaceStore,
+    runtime_modules: HashMap<ModuleId, RuntimeModuleCode>,
     pub(crate) work_graph: WorkGraph,
 }
 
@@ -56,6 +59,7 @@ impl std::fmt::Debug for World<'_> {
             .field("bodies", &self.bodies)
             .field("roots", &self.roots)
             .field("namespaces", &self.namespaces)
+            .field("runtime_modules", &self.runtime_modules)
             .field("work_graph", &self.work_graph)
             .finish()
     }
@@ -63,7 +67,7 @@ impl std::fmt::Debug for World<'_> {
 
 impl<'a> World<'a> {
     pub fn new(tel: &'a dyn Telemetry) -> Self {
-        Self {
+        let mut world = Self {
             tel,
             code: CodeMap::new(),
             modules: ModuleMap::new(),
@@ -75,8 +79,12 @@ impl<'a> World<'a> {
             callsites: CallSiteMap::new(),
             roots: RootMap::new(),
             namespaces: NamespaceStore::new(),
+            runtime_modules: HashMap::new(),
             work_graph: WorkGraph::new(),
-        }
+        };
+        world.runtime_modules =
+            runtime::bootstrap(tel, &mut world.modules, &mut world.functions, &mut world.namespaces);
+        world
     }
 
     pub fn tel(&self) -> &'a dyn Telemetry {
@@ -571,16 +579,37 @@ impl<'a> World<'a> {
         self.functions.reference_for(function).arity
     }
 
+    pub(crate) fn ensure_function_surface(&mut self, function: FunctionId) -> Vec<Job> {
+        let module = self.function_module(function);
+        if module.is_global() {
+            return Vec::new();
+        }
+        self.ensure_runtime_module(module);
+        vec![Job::DefineModule(module)]
+    }
+
+    pub(crate) fn wait_for_function_definition(&mut self, function: FunctionId) -> JobEffects {
+        JobEffects::wait_on(
+            FactKey::FunctionDefined(function),
+            self.ensure_function_surface(function),
+        )
+    }
+
     pub fn fact_revision(&self, key: FactKey) -> Option<u64> {
         self.work_graph.facts().get(&key)
     }
 
     pub(crate) fn lookup_callable_namespace(
-        &self,
+        &mut self,
         head: Namespace,
         name: &str,
         arity: usize,
     ) -> Option<NamespaceSymbol> {
+        if let Some((module_path, local_name)) = name.rsplit_once('.') {
+            let module = self.lookup_module_path(head, module_path)?;
+            let function = self.reference_function(module, local_name.to_string(), arity);
+            return Some(NamespaceSymbol::Function(function));
+        }
         self.namespaces
             .lookup_matching(head, name, |symbol| match symbol {
                 NamespaceSymbol::Function(function) | NamespaceSymbol::Macro(function) => {
@@ -782,6 +811,36 @@ impl<'a> World<'a> {
                 .expect("named parent module should have a reverse lookup");
             format!("{parent_name}.{local_name}")
         }
+    }
+
+    pub(crate) fn ensure_runtime_module(&mut self, module: ModuleId) -> Option<CodeId> {
+        let slot = self.runtime_modules.get(&module)?;
+        if let Some(code_id) = slot.code_id {
+            return Some(code_id);
+        }
+
+        let name = slot.name;
+        let source = slot.source;
+        let source_name = format!("runtime:{name}.fz");
+        let code_id = self.submit_code(Some(source_name), source.to_string());
+        self.runtime_modules
+            .get_mut(&module)
+            .expect("runtime module should still exist while recording its code id")
+            .code_id = Some(code_id);
+        Some(code_id)
+    }
+
+    fn lookup_module_path(&mut self, head: Namespace, path: &str) -> Option<ModuleId> {
+        let mut segments = path.split('.');
+        let first = segments.next()?;
+        let mut module = match self.namespaces.lookup(head, first) {
+            Some(NamespaceSymbol::Module(module)) => *module,
+            _ => return None,
+        };
+        for segment in segments {
+            module = self.reference_child_module(module, segment);
+        }
+        Some(module)
     }
 }
 

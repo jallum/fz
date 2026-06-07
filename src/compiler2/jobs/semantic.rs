@@ -43,7 +43,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     let function = activation.function;
     let function_fact = FactKey::FunctionDefined(function);
     let Some(_) = world.function_defined_revision(function) else {
-        return Ok(JobEffects::wait_on(function_fact, []));
+        return Ok(world.wait_for_function_definition(function));
     };
 
     let lowered_fact = FactKey::LoweredBody(function);

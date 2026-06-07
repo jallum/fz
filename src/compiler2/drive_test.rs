@@ -322,10 +322,11 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         "semantic closure should publish once the seeded entry facts exist"
     );
 
-    assert_eq!(
-        outputs.stops_matching(|job| matches!(job, Job::ScopeCode(_))).len(),
-        1,
-        "root submission should pull one top-level scope job for the single code input"
+    assert!(
+        !outputs
+            .stops_matching(|job| matches!(job, Job::ScopeCode(_)))
+            .is_empty(),
+        "root submission should pull the source surface work it needs"
     );
     assert_eq!(
         outputs.stops_matching(|job| matches!(job, Job::SeedRoot(_))).len(),
@@ -359,6 +360,148 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         0,
         "root seeding should not invoke the legacy type inference pipeline"
     );
+}
+
+#[test]
+fn compiler2_runtime_refs_pull_only_the_reached_runtime_modules() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    let bodies = LoweredBodyCapture::new();
+    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("runtime_refs.fz".to_string()),
+        text: "fn main(), do: dbg(Process.heap_alloc_stats())\n".to_string(),
+    });
+    assert_resolved(
+        compiler.drive(),
+        "first drive should only index the user code before any root asks for runtime work",
+    );
+
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(
+        compiler.drive(),
+        "rooted runtime refs should pull only the reached runtime modules through ordinary jobs",
+    );
+
+    let kernel_id = module_id(&modules, "Kernel");
+    let process_id = module_id(&modules, "Process");
+    let main_id = function_id(&functions, "main", 0);
+    let dbg_id = function_id_in_module(&functions, &modules, "Kernel", "dbg", 1);
+    let dbg_prim_id = function_id_in_module(&functions, &modules, "Kernel", "fz_dbg_value", 1);
+    let heap_stats_id = function_id_in_module(&functions, &modules, "Process", "heap_alloc_stats", 0);
+    let heap_stats_prim_id = function_id_in_module(&functions, &modules, "Process", "fz_process_heap_alloc_stats", 0);
+    let spawn_id = function_id_in_module(&functions, &modules, "Kernel", "spawn", 1);
+
+    assert_eq!(
+        sorted_strings(modules.defined_names()),
+        vec!["Kernel".to_string(), "Process".to_string()],
+        "runtime root should define only the reached runtime modules"
+    );
+    assert!(
+        !outputs
+            .stops_matching(|job| matches!(job, Job::DefineModule(module) if *module == kernel_id))
+            .is_empty(),
+        "Kernel should be defined through the ordinary module job"
+    );
+    assert!(
+        !outputs
+            .stops_matching(|job| matches!(job, Job::DefineModule(module) if *module == process_id))
+            .is_empty(),
+        "Process should be defined through the ordinary module job"
+    );
+
+    assert!(matches!(lowered_body(&bodies, main_id), LoweredBody::Clauses { .. }));
+    assert!(matches!(lowered_body(&bodies, dbg_id), LoweredBody::Clauses { .. }));
+    assert!(matches!(
+        lowered_body(&bodies, heap_stats_id),
+        LoweredBody::Clauses { .. }
+    ));
+    assert!(matches!(lowered_body(&bodies, dbg_prim_id), LoweredBody::Extern { .. }));
+    assert!(matches!(
+        lowered_body(&bodies, heap_stats_prim_id),
+        LoweredBody::Extern { .. }
+    ));
+    assert!(
+        bodies.take(spawn_id).is_none(),
+        "unreached Kernel.spawn/1 should stay cold even though Kernel is defined"
+    );
+    assert!(
+        functions
+            .all()
+            .into_iter()
+            .all(|record| function_fq_name(&record, &modules) != "Enum.reduce"),
+        "unreached Enum functions should stay undefined"
+    );
+    assert!(
+        capture.find(&["fz", "type_infer"]).is_empty(),
+        "runtime pull-through should still avoid the legacy type inference pipeline"
+    );
+    assert!(
+        capture.find(&["fz", "planner"]).is_empty(),
+        "runtime pull-through should still avoid the legacy planner pipeline"
+    );
+    let _ = root_id;
+}
+
+#[test]
+fn compiler2_unused_runtime_library_stays_cold() {
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    let bodies = LoweredBodyCapture::new();
+    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("no_runtime.fz".to_string()),
+        text: "fn main(), do: 42\n".to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(
+        compiler.drive(),
+        "a root that never mentions runtime names should keep runtime modules cold",
+    );
+
+    let main_id = function_id(&functions, "main", 0);
+    assert!(matches!(lowered_body(&bodies, main_id), LoweredBody::Clauses { .. }));
+    assert!(
+        modules.defined_names().is_empty(),
+        "runtime modules should not be defined when no path reaches them"
+    );
+    assert_eq!(
+        outputs.stops_matching(|job| matches!(job, Job::ScopeCode(_))).len(),
+        1,
+        "only the user code should be scoped when runtime stays cold"
+    );
+    assert_eq!(
+        outputs.stops_matching(|job| matches!(job, Job::DefineModule(_))).len(),
+        0,
+        "runtime modules should not be pulled through module definition jobs"
+    );
+    let _ = root_id;
 }
 
 #[test]
@@ -528,8 +671,8 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
         "root closure should keep append/2's recursive activation"
     );
     assert!(
-        activations.len() <= 6,
-        "quicksort should settle to a small finite recursive activation frontier"
+        activations.len() <= 12,
+        "quicksort should settle to a small finite rooted activation frontier, including reached runtime helpers"
     );
     assert!(
         !activations.iter().any(|activation| activation.function == foo_id),
@@ -844,8 +987,8 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/enum_reduce.fz".to_string()),
-        text: include_str!("../type_infer/fixtures/enum_reduce.fz").to_string(),
+        name: Some("fixtures/local_lambda.fz".to_string()),
+        text: "fn main(), do: (fn (x) -> x + 1 end).(41)\n".to_string(),
     });
     let _root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -856,13 +999,13 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
 
     assert_resolved(
         compiler.drive(),
-        "rooting enum_reduce should lower only the reachable entry function",
+        "rooting a local lambda should lower only the reachable entry function",
     );
 
     let main_id = function_id(&functions, "main", 0);
     let lower_outputs = outputs
         .take(Job::LowerFunction(main_id))
-        .expect("LowerFunction job effects for enum_reduce main/0");
+        .expect("LowerFunction job effects for local-lambda main/0");
     let generated = lower_outputs
         .iter()
         .filter_map(|(fact, _)| match fact {
@@ -872,12 +1015,12 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
         .collect::<Vec<_>>();
     assert!(
         lower_outputs.contains(&(FactKey::LoweredBody(main_id), 1)),
-        "lowering enum_reduce main/0 should publish the lowered body fact"
+        "lowering local-lambda main/0 should publish the lowered body fact"
     );
     assert_eq!(
         generated.len(),
         1,
-        "lowering enum_reduce main/0 should mint one generated lambda definition"
+        "lowering local-lambda main/0 should mint one generated lambda definition"
     );
     assert!(
         !lower_outputs
@@ -888,7 +1031,7 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
     assert_eq!(
         outputs.stops_matching(|job| matches!(job, Job::LowerFunction(_))).len(),
         1,
-        "lowering enum_reduce should stop at main/0 until something demands the lambda body"
+        "lowering a local lambda should stop at main/0 until something demands the generated body"
     );
     assert_eq!(
         capture.count(&["fz", "frontend", "lowered"]),
@@ -2551,6 +2694,35 @@ fn function_id(capture: &FunctionCapture, name: &str, arity: u64) -> FunctionId 
     capture.id(name, arity)
 }
 
+fn function_id_in_module(
+    functions: &FunctionCapture,
+    modules: &ModuleCapture,
+    module_name: &str,
+    name: &str,
+    arity: u64,
+) -> FunctionId {
+    functions
+        .all()
+        .into_iter()
+        .find(|record| {
+            record.function_ref.name == name
+                && record.arity == arity
+                && function_module_name(record, modules) == module_name
+        })
+        .map(|record| record.function_id)
+        .unwrap_or_else(|| panic!("function.defined for {module_name}.{name}/{arity}"))
+}
+
+fn module_id(capture: &ModuleCapture, name: &str) -> ModuleId {
+    capture
+        .defs
+        .borrow()
+        .keys()
+        .copied()
+        .find(|module_id| capture.qualified_name(*module_id) == name)
+        .unwrap_or_else(|| panic!("module.defined for {name}"))
+}
+
 fn function_fq_name(function: &FunctionDefinedRecord, modules: &ModuleCapture) -> String {
     if function.module_id == ModuleId::GLOBAL {
         function.function_ref.name.clone()
@@ -2575,4 +2747,9 @@ fn module_indexed_ids(outputs: &OutputFacts) -> Vec<crate::compiler2::ModuleId> 
             _ => None,
         })
         .collect()
+}
+
+fn sorted_strings(mut values: Vec<String>) -> Vec<String> {
+    values.sort();
+    values
 }

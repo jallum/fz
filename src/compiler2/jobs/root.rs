@@ -25,7 +25,9 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
 
     let function_fact = FactKey::FunctionDefined(root.function);
     let Some(_function_revision) = world.function_defined_revision(root.function) else {
-        effects.waits.push(function_fact);
+        let mut wait = world.wait_for_function_definition(root.function);
+        effects.waits.append(&mut wait.waits);
+        effects.follow_up.append(&mut wait.follow_up);
         return Ok(effects);
     };
 
@@ -47,7 +49,7 @@ pub(super) fn check_semantic_closure(world: &mut World<'_>, root_id: RootId) -> 
 
     let function_fact = FactKey::FunctionDefined(root.function);
     let Some(function_revision) = world.function_defined_revision(root.function) else {
-        return Ok(JobEffects::wait_on(function_fact, []));
+        return Ok(world.wait_for_function_definition(root.function));
     };
     reads.push(function_fact);
     revision = revision.max(function_revision);

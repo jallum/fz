@@ -38,9 +38,8 @@ struct GuardCall {
 /// definitions, rejects impure helper bodies or cycles with diagnostics, and
 /// publishes one `GuardDispatch(function)` fact when the helper is reifiable.
 pub(super) fn reify_guard_dispatch(world: &mut World<'_>, function: FunctionId) -> Result<JobEffects, FatalError> {
-    let function_fact = FactKey::FunctionDefined(function);
     let Some(_) = world.function_defined_revision(function) else {
-        return Ok(JobEffects::wait_on(function_fact, []));
+        return Ok(world.wait_for_function_definition(function));
     };
 
     let def = world.function_definition(function);
@@ -60,13 +59,23 @@ pub(super) fn reify_guard_dispatch(world: &mut World<'_>, function: FunctionId) 
 
     let mut reads = Vec::new();
     let mut waits = HashSet::new();
+    let mut follow_up = HashSet::new();
     let mut seen = HashSet::new();
     let mut stack = Vec::new();
-    collect_requirements(world, function, &mut reads, &mut waits, &mut seen, &mut stack)?;
+    collect_requirements(
+        world,
+        function,
+        &mut reads,
+        &mut waits,
+        &mut follow_up,
+        &mut seen,
+        &mut stack,
+    )?;
     if !waits.is_empty() {
         return Ok(JobEffects {
             reads,
             waits: waits.into_iter().collect(),
+            follow_up: follow_up.into_iter().collect(),
             ..JobEffects::default()
         });
     }
@@ -90,9 +99,8 @@ pub(super) fn reify_guard_dispatch(world: &mut World<'_>, function: FunctionId) 
 /// one `EntryDispatch(function)` fact carrying the shared pattern-dispatch
 /// artifact that later semantic jobs will consume.
 pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -> Result<JobEffects, FatalError> {
-    let function_fact = FactKey::FunctionDefined(function);
     let Some(_) = world.function_defined_revision(function) else {
-        return Ok(JobEffects::wait_on(function_fact, []));
+        return Ok(world.wait_for_function_definition(function));
     };
 
     let def = world.function_definition(function);
@@ -162,10 +170,11 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
 }
 
 fn collect_requirements(
-    world: &World<'_>,
+    world: &mut World<'_>,
     function: FunctionId,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
     seen: &mut HashSet<FunctionId>,
     stack: &mut Vec<FunctionId>,
 ) -> Result<(), FatalError> {
@@ -177,6 +186,7 @@ fn collect_requirements(
     }
     let Some(_) = world.function_defined_revision(function) else {
         waits.insert(FactKey::FunctionDefined(function));
+        follow_up.extend(world.ensure_function_surface(function));
         return Ok(());
     };
     reads.push(FactKey::FunctionDefined(function));
@@ -186,14 +196,14 @@ fn collect_requirements(
         .map_err(|span| emit_guard_dispatch_error(world, function, span, SourcePatternError::UnsupportedGuardExpr))?
     {
         let callee = resolve_guard_callee(world, def.namespace, &call)?;
-        collect_requirements(world, callee, reads, waits, seen, stack)?;
+        collect_requirements(world, callee, reads, waits, follow_up, seen, stack)?;
     }
     stack.pop();
     Ok(())
 }
 
 fn build_guard_dispatch(
-    world: &World<'_>,
+    world: &mut World<'_>,
     function: FunctionId,
     cache: &mut HashMap<FunctionId, PatternGuardDispatch>,
     stack: &mut Vec<FunctionId>,
@@ -386,7 +396,11 @@ fn collect_guard_calls_in_expr(expr: &Spanned<Expr>, out: &mut Vec<GuardCall>) -
     }
 }
 
-fn resolve_guard_callee(world: &World<'_>, namespace: Namespace, call: &GuardCall) -> Result<FunctionId, FatalError> {
+fn resolve_guard_callee(
+    world: &mut World<'_>,
+    namespace: Namespace,
+    call: &GuardCall,
+) -> Result<FunctionId, FatalError> {
     match world.lookup_callable_namespace(namespace, &call.name, call.arity) {
         Some(NamespaceSymbol::Function(function)) => Ok(function),
         Some(NamespaceSymbol::Macro(_)) => Err(emit_job_diagnostic(
@@ -414,7 +428,7 @@ fn resolve_guard_callee(world: &World<'_>, namespace: Namespace, call: &GuardCal
     }
 }
 
-fn resolve_guard_callee_checked(world: &World<'_>, namespace: Namespace, name: &str, arity: usize) -> FunctionId {
+fn resolve_guard_callee_checked(world: &mut World<'_>, namespace: Namespace, name: &str, arity: usize) -> FunctionId {
     match world.lookup_callable_namespace(namespace, name, arity) {
         Some(NamespaceSymbol::Function(function)) => function,
         Some(NamespaceSymbol::Macro(_)) => {

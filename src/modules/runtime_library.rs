@@ -127,6 +127,10 @@ pub fn core_prelude_module_sources() -> impl Iterator<Item = (&'static str, &'st
         .map(|source| (source.name, source.source))
 }
 
+pub(crate) fn module_sources() -> impl Iterator<Item = (&'static str, &'static str)> {
+    RUNTIME_MODULE_SOURCES.iter().map(|source| (source.name, source.source))
+}
+
 pub fn is_core_prelude_module(module: &ModuleName) -> bool {
     RUNTIME_MODULE_SOURCES
         .iter()

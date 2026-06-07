@@ -29,9 +29,8 @@ type Output = (FactKey, u64);
 /// fact keyed by `FunctionId`. It lowers only that function, plus any lambda
 /// definitions it syntactically owns, and leaves unrelated bodies cold.
 pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Result<JobEffects, FatalError> {
-    let function_fact = FactKey::FunctionDefined(function);
     let Some(_) = world.function_defined_revision(function) else {
-        return Ok(JobEffects::wait_on(function_fact, []));
+        return Ok(world.wait_for_function_definition(function));
     };
     let def = world.function_definition(function);
     if def.ast.is_macro {
@@ -183,7 +182,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             }
             Expr::FnRef { name, arity } => {
                 let value = self.fresh_value();
-                match self.world.lookup_namespace(self.namespace, name) {
+                match self.world.lookup_callable_namespace(self.namespace, name, *arity) {
                     Some(NamespaceSymbol::Function(function)) => {
                         steps.push(LoweredStep::FunctionRef { value, function });
                     }
@@ -365,23 +364,25 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
     }
 
     fn resolve_direct_callee(&mut self, name: &str, arity: usize, span: Span) -> Result<DirectCallee, FatalError> {
-        Ok(match self.world.lookup_namespace(self.namespace, name) {
-            Some(NamespaceSymbol::Function(function)) => DirectCallee::Function(function),
-            Some(NamespaceSymbol::Macro(_)) => {
-                return Err(emit_job_diagnostic(
-                    self.world,
-                    Diagnostic::error(
-                        codes::LOWER_UNSUPPORTED,
-                        format!("compiler2 lowering expected expanded macro-free call `{name}/{arity}`"),
-                        span,
-                    ),
-                ));
-            }
-            Some(NamespaceSymbol::Module(_)) | None => DirectCallee::Named {
-                name: name.to_string(),
-                arity,
+        Ok(
+            match self.world.lookup_callable_namespace(self.namespace, name, arity) {
+                Some(NamespaceSymbol::Function(function)) => DirectCallee::Function(function),
+                Some(NamespaceSymbol::Macro(_)) => {
+                    return Err(emit_job_diagnostic(
+                        self.world,
+                        Diagnostic::error(
+                            codes::LOWER_UNSUPPORTED,
+                            format!("compiler2 lowering expected expanded macro-free call `{name}/{arity}`"),
+                            span,
+                        ),
+                    ));
+                }
+                Some(NamespaceSymbol::Module(_)) | None => DirectCallee::Named {
+                    name: name.to_string(),
+                    arity,
+                },
             },
-        })
+        )
     }
 
     fn lower_lambda(
