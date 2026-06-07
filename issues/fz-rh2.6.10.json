@@ -4,6 +4,7 @@
     "fz-rh2.6.9"
   ],
   "blocks": [
+    "fz-rh2.6.11",
     "fz-rh2.6.2"
   ],
   "created": "2026-06-07T15:25:58Z",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Compiler2 dispatch: reify dispatch-pure helper functions",
   "type": "task",
-  "updated_at": "2026-06-07T15:26:23Z"
+  "updated_at": "2026-06-07T15:26:24Z"
 }
