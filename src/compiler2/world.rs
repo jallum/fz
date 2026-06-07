@@ -1,3 +1,11 @@
+//! Compiler2's owned world state.
+//!
+//! Compiler-owned identities are total here. A `CodeId`, `ModuleId`,
+//! `FunctionId`, or `RootId` that came from Compiler2 must resolve; a bad id is
+//! a bug and should panic at the lookup boundary. `Option` is reserved for
+//! legitimate state absence like "this known function is still a placeholder"
+//! or "this known code has not been indexed yet".
+
 use std::rc::Rc;
 
 use crate::ast::FnDef;
@@ -6,6 +14,7 @@ use crate::telemetry::Telemetry;
 use crate::{measurements, metadata};
 
 use super::CodeId;
+use super::body::{LoweredBody, LoweredBodyMap};
 use super::code::CodeMap;
 use super::deps::ExactPattern;
 use super::drive::{FactKey, Job, JobEffects, WorkGraph};
@@ -20,6 +29,7 @@ pub struct World<'a> {
     code: CodeMap,
     modules: ModuleMap,
     functions: FunctionMap,
+    bodies: LoweredBodyMap,
     roots: RootMap,
     namespaces: NamespaceStore,
     pub(crate) work_graph: WorkGraph,
@@ -31,6 +41,7 @@ impl std::fmt::Debug for World<'_> {
             .field("code", &self.code)
             .field("modules", &self.modules)
             .field("functions", &self.functions)
+            .field("bodies", &self.bodies)
             .field("roots", &self.roots)
             .field("namespaces", &self.namespaces)
             .field("work_graph", &self.work_graph)
@@ -45,6 +56,7 @@ impl<'a> World<'a> {
             code: CodeMap::new(),
             modules: ModuleMap::new(),
             functions: FunctionMap::new(),
+            bodies: LoweredBodyMap::new(),
             roots: RootMap::new(),
             namespaces: NamespaceStore::new(),
             work_graph: WorkGraph::new(),
@@ -131,17 +143,11 @@ impl<'a> World<'a> {
     }
 
     pub fn root_entry(&self, id: RootId) -> RootEntry {
-        self.roots
-            .get(id)
-            .map(|root| root.entry)
-            .expect("root ids should be known before reading entries")
+        self.roots.get(id).entry
     }
 
     pub fn root_revision(&self, id: RootId) -> u64 {
-        self.roots
-            .get(id)
-            .map(|root| root.revision)
-            .expect("root ids should be known before reading revisions")
+        self.roots.get(id).revision
     }
 
     pub fn reference_module(&mut self, name: impl Into<String>) -> ModuleId {
@@ -184,9 +190,7 @@ impl<'a> World<'a> {
     }
 
     pub fn scope_module(&mut self, id: ModuleId, base_namespace: Namespace) -> u64 {
-        self.modules
-            .scope(id, base_namespace)
-            .expect("modules should be indexed before scoping")
+        self.modules.scope(id, base_namespace)
     }
 
     pub fn reference_function(&mut self, module: ModuleId, name: impl Into<String>, arity: usize) -> FunctionId {
@@ -234,6 +238,60 @@ impl<'a> World<'a> {
         (id, revision)
     }
 
+    pub(crate) fn define_generated_function(
+        &mut self,
+        owner: FunctionId,
+        namespace: Namespace,
+        ast: FnDef,
+    ) -> (FunctionId, u64) {
+        let owner_module = self.functions.reference_for(owner).module;
+        let owner_code = self.function_definition(owner).code;
+        let id = self
+            .functions
+            .reference_generated(owner, owner_module, ast.span, ast.arity());
+        let revision = self.functions.define(
+            id,
+            super::identity::FunctionDef {
+                code: owner_code,
+                namespace,
+                ast: ast.clone(),
+            },
+        );
+        let module_name = if owner_module.is_global() {
+            "<top-level>".to_string()
+        } else {
+            self.modules
+                .name(owner_module)
+                .expect("generated function modules should have a reverse lookup")
+                .to_string()
+        };
+        let source_name = self.code.name(owner_code).unwrap_or("<anonymous>");
+        self.tel.execute(
+            &["fz", "compiler2", "function", "defined"],
+            &measurements! {
+                code_id: owner_code.as_u32() as u64,
+                function_id: id.as_u32() as u64,
+                revision: revision,
+                arity: ast.arity() as u64,
+                clauses: ast.clauses.len() as u64,
+                owner_function_id: owner.as_u32() as u64,
+            },
+            &metadata! {
+                source_name: source_name,
+                module_name: module_name.as_str(),
+                name: ast.name.as_str(),
+                fq_name: ast.name.as_str(),
+                kind: "generated",
+                visibility: "private",
+            },
+        );
+        (id, revision)
+    }
+
+    pub(crate) fn define_lowered_body(&mut self, function: FunctionId, body: LoweredBody) -> u64 {
+        self.bodies.define(function, body)
+    }
+
     pub fn prelude_head(&self) -> Namespace {
         self.namespaces.prelude_head()
     }
@@ -242,13 +300,12 @@ impl<'a> World<'a> {
         self.namespaces.bind(head, name, symbol)
     }
 
+    pub(crate) fn lookup_namespace(&self, head: Namespace, name: &str) -> Option<NamespaceSymbol> {
+        self.namespaces.lookup(head, name).cloned()
+    }
+
     pub fn module_exports(&self, module: ModuleId) -> Vec<ModuleExport> {
-        match self
-            .modules
-            .get(module)
-            .expect("module ids should be known before reading exports")
-            .state()
-        {
+        match &self.modules.get(module).state {
             ModuleState::Defined { surface, .. } => surface.exports.clone(),
             ModuleState::Placeholder | ModuleState::Indexed(_) | ModuleState::Scoped { .. } => {
                 panic!("module exports should only be read from defined modules")
@@ -261,11 +318,11 @@ impl<'a> World<'a> {
     }
 
     pub fn code_revision(&self, id: CodeId) -> u64 {
-        self.code.get(id).map(|code| code.revision()).unwrap_or(0)
+        self.code.get(id).revision
     }
 
     pub fn module_defined_revision(&self, module: ModuleId) -> Option<u64> {
-        if !matches!(self.modules.get(module)?.state(), ModuleState::Defined { .. }) {
+        if !matches!(&self.modules.get(module).state, ModuleState::Defined { .. }) {
             return None;
         }
         self.work_graph.facts().get(&FactKey::ModuleDefined(module))
@@ -273,7 +330,7 @@ impl<'a> World<'a> {
 
     pub fn function_defined_revision(&self, function: FunctionId) -> Option<u64> {
         if !matches!(
-            self.functions.get(function)?.state,
+            self.functions.get(function).state,
             super::identity::FunctionState::Defined { .. }
         ) {
             return None;
@@ -281,19 +338,28 @@ impl<'a> World<'a> {
         self.work_graph.facts().get(&FactKey::FunctionDefined(function))
     }
 
+    pub(crate) fn function_definition(&self, function: FunctionId) -> super::identity::FunctionDef {
+        match &self.functions.get(function).state {
+            super::identity::FunctionState::Defined { def } => def.clone(),
+            super::identity::FunctionState::Placeholder => {
+                panic!("function definitions should only be read from defined functions")
+            }
+        }
+    }
+
     pub fn fact_revision(&self, key: FactKey) -> Option<u64> {
         self.work_graph.facts().get(&key)
     }
 
     pub fn code_items(&self, id: CodeId) -> Option<&[Rc<Item>]> {
-        match self.code.get(id)?.state() {
+        match &self.code.get(id).state {
             super::code::CodeState::Indexed { items } => Some(items.as_slice()),
             super::code::CodeState::Pending => None,
         }
     }
 
     pub fn module_scope(&self, module: ModuleId) -> Option<(CodeId, Vec<Rc<Item>>, Namespace)> {
-        match self.modules.get(module)?.state() {
+        match &self.modules.get(module).state {
             ModuleState::Scoped { source, base } => Some((source.code, source.items.clone(), *base)),
             ModuleState::Defined { source, surface } => Some((source.code, source.items.clone(), surface.base)),
             _ => None,
@@ -301,19 +367,14 @@ impl<'a> World<'a> {
     }
 
     pub fn module_indexed_parent(&self, module: ModuleId) -> Option<(CodeId, ModuleId)> {
-        match self.modules.get(module)?.state() {
+        match &self.modules.get(module).state {
             ModuleState::Indexed(source) => Some((source.code, source.parent)),
             _ => None,
         }
     }
 
     fn module_definition_metadata(&self, module: ModuleId) -> (CodeId, String) {
-        match self
-            .modules
-            .get(module)
-            .expect("module ids should be known before definition")
-            .state()
-        {
+        match &self.modules.get(module).state {
             ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. } => (
                 source.code,
                 self.qualified_module_name(source.parent, &source.local_name),

@@ -36,6 +36,7 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
     };
     effects.outputs.push((FactKey::Activation(activation), revision));
     effects.outputs.push((FactKey::Executable(executable), revision));
+    effects.follow_up.push(Job::LowerFunction(root.function));
     effects.follow_up.push(Job::CheckSemanticClosure(root_id));
     Ok(effects)
 }
@@ -64,10 +65,18 @@ pub(super) fn check_semantic_closure(world: &mut World<'_>, root_id: RootId) -> 
         return Ok(JobEffects::wait_on(FactKey::Executable(executable), []));
     };
     reads.push(FactKey::Executable(executable));
+    let Some(lowered_revision) = world.fact_revision(FactKey::LoweredBody(root.function)) else {
+        return Ok(JobEffects::wait_on(
+            FactKey::LoweredBody(root.function),
+            [Job::LowerFunction(root.function)],
+        ));
+    };
+    reads.push(FactKey::LoweredBody(root.function));
     let revision = world
         .root_revision(root_id)
         .max(activation_revision)
-        .max(executable_revision);
+        .max(executable_revision)
+        .max(lowered_revision);
     Ok(JobEffects {
         reads,
         outputs: vec![(FactKey::SemanticClosed(root_id), revision)],

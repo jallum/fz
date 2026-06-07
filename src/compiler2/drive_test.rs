@@ -109,6 +109,11 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
         "indexing should close one IndexCode job span"
     );
     assert_eq!(
+        job_stops(&capture, "LowerFunction").len(),
+        0,
+        "indexing should not lower any function bodies"
+    );
+    assert_eq!(
         capture.count(&["fz", "compiler2", "fact", "published"]),
         0,
         "indexing should not emit redundant fact.published telemetry"
@@ -213,6 +218,20 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
     let main_id = function_id(&capture, "main", 0);
     let foo_id = function_id(&capture, "foo", 0);
 
+    let lower_outputs = outputs
+        .take("LowerFunction", main_id.as_u32() as u64)
+        .expect("LowerFunction job effects for main/0");
+    assert!(
+        lower_outputs.contains(&(FactKey::LoweredBody(main_id), 1)),
+        "submitting a root should lower the entry function body"
+    );
+    assert!(
+        !lower_outputs
+            .iter()
+            .any(|(fact, _)| matches!(fact, FactKey::LoweredBody(function) if *function == foo_id)),
+        "lowering the entry function should keep uncalled foo/0 cold"
+    );
+
     let seed_outputs = outputs
         .take("SeedRoot", root_id.as_u32() as u64)
         .expect("SeedRoot job effects");
@@ -287,6 +306,11 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         job_stops(&capture, "CheckSemanticClosure").len(),
         1,
         "root submission should run the initial closure check once"
+    );
+    assert_eq!(
+        job_stops(&capture, "LowerFunction").len(),
+        1,
+        "root submission should lower only the entry body"
     );
     assert_eq!(
         capture.count(&["fz", "frontend", "lowered"]),
@@ -411,6 +435,79 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
         job_stops(&capture, "CheckSemanticClosure").len(),
         1,
         "late unrelated code should not reopen semantic closure for the existing root"
+    );
+    assert_eq!(
+        job_stops(&capture, "LowerFunction").len(),
+        1,
+        "late unrelated code should not lower foo/0 just because a root already exists"
+    );
+}
+
+#[test]
+fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/enum_reduce.fz".to_string()),
+        text: include_str!("../type_infer/fixtures/enum_reduce.fz").to_string(),
+    });
+    let _root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "rooting enum_reduce should lower only the reachable entry function",
+    );
+
+    let main_id = function_id(&capture, "main", 0);
+    let lower_outputs = outputs
+        .take("LowerFunction", main_id.as_u32() as u64)
+        .expect("LowerFunction job effects for enum_reduce main/0");
+    let generated = lower_outputs
+        .iter()
+        .filter_map(|(fact, _)| match fact {
+            FactKey::FunctionDefined(function) if *function != main_id => Some(*function),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        lower_outputs.contains(&(FactKey::LoweredBody(main_id), 1)),
+        "lowering enum_reduce main/0 should publish the lowered body fact"
+    );
+    assert_eq!(
+        generated.len(),
+        1,
+        "lowering enum_reduce main/0 should mint one generated lambda definition"
+    );
+    assert!(
+        !lower_outputs
+            .iter()
+            .any(|(fact, _)| *fact == FactKey::LoweredBody(generated[0])),
+        "lowering main/0 should not eagerly lower the generated reducer lambda"
+    );
+    assert_eq!(
+        job_stops(&capture, "LowerFunction").len(),
+        1,
+        "lowering enum_reduce should stop at main/0 until something demands the lambda body"
+    );
+    assert_eq!(
+        capture.count(&["fz", "frontend", "lowered"]),
+        0,
+        "Compiler2 lowering should not invoke the old frontend lowerer"
+    );
+    assert_eq!(
+        capture.count(&["fz", "planner", "planned"]),
+        0,
+        "Compiler2 lowering should stay above the old planner"
     );
 }
 

@@ -15,18 +15,8 @@ impl CodeId {
 
 #[derive(Debug, Clone)]
 pub struct Code {
-    state: CodeState,
-    revision: u64,
-}
-
-impl Code {
-    pub fn state(&self) -> &CodeState {
-        &self.state
-    }
-
-    pub fn revision(&self) -> u64 {
-        self.revision
-    }
+    pub(crate) state: CodeState,
+    pub(crate) revision: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -69,12 +59,17 @@ impl CodeMap {
         code.revision
     }
 
-    pub fn get(&self, id: CodeId) -> Option<&Code> {
-        self.slots.get(id.0 as usize)
+    pub fn get(&self, id: CodeId) -> &Code {
+        self.slots
+            .get(id.0 as usize)
+            .expect("code ids should be known before reading code slots")
     }
 
     pub fn name(&self, id: CodeId) -> Option<&str> {
-        self.names.get(id.0 as usize).and_then(|name| name.as_deref())
+        self.names
+            .get(id.0 as usize)
+            .expect("code ids should be known before reading names")
+            .as_deref()
     }
 
     pub fn text(&self, id: CodeId) -> &str {
@@ -88,12 +83,8 @@ impl CodeMap {
         (0..self.slots.len()).map(|index| CodeId(index as u32)).collect()
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.slots.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.slots.is_empty()
     }
 }
 

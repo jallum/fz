@@ -26,9 +26,9 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         "replaying the same module definition should not bump the revision"
     );
     assert_eq!(modules.name(math_def), Some("Math"));
-    let module = modules.get(math_def).expect("defined module");
-    assert_eq!(module.revision(), math_revision);
-    match module.state() {
+    let module = modules.get(math_def);
+    assert_eq!(module.revision, math_revision);
+    match &module.state {
         ModuleState::Defined { surface, .. } => {
             assert_eq!(surface.codes, vec![code_id]);
             assert_eq!(surface.namespace, namespaces.prelude_head());
@@ -43,8 +43,8 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         same_indexed_revision, indexed_revision,
         "replaying the same module index should not bump the revision"
     );
-    let scoped_revision = modules.scope(scoped_ref, namespace).expect("scope indexed module");
-    let same_scoped_revision = modules.scope(scoped_ref, namespace).expect("rescope indexed module");
+    let scoped_revision = modules.scope(scoped_ref, namespace);
+    let same_scoped_revision = modules.scope(scoped_ref, namespace);
     assert_eq!(
         same_scoped_revision, scoped_revision,
         "replaying the same module scope should not bump the revision"
@@ -95,11 +95,27 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         add_ref, add_def,
         "function definition should fill the referenced placeholder"
     );
-    let add_ref_data = functions.reference_for(add_def).expect("function ref");
+    let add_ref_data = functions.reference_for(add_def);
     assert_eq!(add_ref_data.module, math_def);
     assert_eq!(add_ref_data.name, "add");
     assert_eq!(add_ref_data.arity, 2);
-    let function = functions.get(add_def).expect("defined function");
+    let generated = functions.reference_generated(
+        add_def,
+        math_def,
+        crate::compiler::source::Span::new(crate::compiler::source::Id(code_id.as_u32()), 5, 19),
+        1,
+    );
+    let same_generated = functions.reference_generated(
+        add_def,
+        math_def,
+        crate::compiler::source::Span::new(crate::compiler::source::Id(code_id.as_u32()), 5, 19),
+        1,
+    );
+    assert_eq!(
+        generated, same_generated,
+        "generated function identity should be stable per owner and source site"
+    );
+    let function = functions.get(add_def);
     assert_eq!(function.revision, add_revision);
     match &function.state {
         FunctionState::Defined { def } => {
@@ -109,9 +125,9 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         other => panic!("function should promote from placeholder to defined, got {other:?}"),
     }
 
-    let code_slot = code.get(code_id).expect("defined code");
+    let code_slot = code.get(code_id);
     assert!(
-        matches!(code_slot.state(), CodeState::Pending),
+        matches!(code_slot.state, CodeState::Pending),
         "new code should remain pending until indexing runs"
     );
     let indexed_code_revision = code.index(code_id, Vec::new());

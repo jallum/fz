@@ -1,4 +1,5 @@
 mod agenda;
+mod body;
 mod code;
 mod compiler;
 mod deps;
@@ -11,6 +12,10 @@ mod scheduler;
 mod world;
 
 pub use agenda::Agenda;
+pub use body::{
+    BodySlot, BodyState, CallSiteId, DirectCallee, Literal, LoweredBlock, LoweredBody, LoweredBodyMap, LoweredClause,
+    LoweredStep, ValueId,
+};
 pub use code::{Code, CodeId, CodeMap, CodeState};
 pub use compiler::{CodeSubmission, Compiler2, RootSubmission};
 pub use deps::{DependencyIndex, ExactPattern, FactPattern, UnresolvedWait};

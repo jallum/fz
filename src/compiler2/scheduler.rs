@@ -54,20 +54,12 @@ where
         }
     }
 
-    pub fn agenda(&self) -> &Agenda<J> {
-        &self.agenda
-    }
-
     pub fn pending_jobs(&self) -> usize {
         self.agenda.len()
     }
 
     pub fn facts(&self) -> &FactTable<J, F> {
         &self.facts
-    }
-
-    pub fn deps(&self) -> &DependencyIndex<J, F, P> {
-        &self.deps
     }
 
     pub fn has_unresolved(&self) -> bool {

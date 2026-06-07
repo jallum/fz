@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::ast::{FnDef, Item};
+use crate::compiler::source::Span;
 
 use super::code::CodeId;
 use super::namespace::{Namespace, NamespaceSymbol};
@@ -87,19 +88,11 @@ pub struct Root {
 
 #[derive(Debug, Clone)]
 pub struct Module {
-    state: ModuleState,
-    revision: u64,
+    pub(crate) state: ModuleState,
+    pub(crate) revision: u64,
 }
 
 impl Module {
-    pub fn state(&self) -> &ModuleState {
-        &self.state
-    }
-
-    pub fn revision(&self) -> u64 {
-        self.revision
-    }
-
     fn source(&self) -> Option<&ModuleSource> {
         match &self.state {
             ModuleState::Placeholder => None,
@@ -200,6 +193,13 @@ struct FunctionKey {
     arity: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct GeneratedFunctionKey {
+    owner: FunctionId,
+    span: Span,
+    arity: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionRef {
     pub module: ModuleId,
@@ -268,9 +268,15 @@ impl ModuleMap {
         replace_if_changed(&mut module.state, &mut module.revision, next)
     }
 
-    pub fn scope(&mut self, id: ModuleId, base_namespace: Namespace) -> Option<u64> {
-        let module = self.slots.get_mut(id.0 as usize)?;
-        let source = module.source()?.clone();
+    pub fn scope(&mut self, id: ModuleId, base_namespace: Namespace) -> u64 {
+        let module = self
+            .slots
+            .get_mut(id.0 as usize)
+            .expect("module ids should be known before scoping modules");
+        let source = module
+            .source()
+            .expect("modules should be indexed before scoping")
+            .clone();
         let next = if let ModuleState::Defined { surface, .. } = &module.state {
             let mut surface = surface.clone();
             surface.base = base_namespace;
@@ -281,7 +287,7 @@ impl ModuleMap {
                 base: base_namespace,
             }
         };
-        Some(replace_if_changed(&mut module.state, &mut module.revision, next))
+        replace_if_changed(&mut module.state, &mut module.revision, next)
     }
 
     pub fn index(
@@ -320,20 +326,17 @@ impl ModuleMap {
         id
     }
 
-    pub fn get(&self, id: ModuleId) -> Option<&Module> {
-        self.slots.get(id.0 as usize)
+    pub fn get(&self, id: ModuleId) -> &Module {
+        self.slots
+            .get(id.0 as usize)
+            .expect("module ids should be known before reading module slots")
     }
 
     pub fn name(&self, id: ModuleId) -> Option<&str> {
-        self.names.get(id.0 as usize).and_then(|name| name.as_deref())
-    }
-
-    pub fn len(&self) -> usize {
-        self.slots.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.slots.is_empty()
+        self.names
+            .get(id.0 as usize)
+            .expect("module ids should be known before reading module names")
+            .as_deref()
     }
 }
 
@@ -342,6 +345,7 @@ pub struct FunctionMap {
     slots: Vec<Function>,
     refs: Vec<FunctionRef>,
     by_key: HashMap<FunctionKey, FunctionId>,
+    generated_by_key: HashMap<GeneratedFunctionKey, FunctionId>,
 }
 
 impl FunctionMap {
@@ -369,26 +373,41 @@ impl FunctionMap {
         id
     }
 
+    pub fn reference_generated(&mut self, owner: FunctionId, module: ModuleId, span: Span, arity: usize) -> FunctionId {
+        let key = GeneratedFunctionKey { owner, span, arity };
+        if let Some(id) = self.generated_by_key.get(&key) {
+            return *id;
+        }
+        let id = FunctionId(self.slots.len() as u32);
+        self.slots.push(Function {
+            state: FunctionState::Placeholder,
+            revision: 0,
+        });
+        self.refs.push(FunctionRef {
+            module,
+            name: format!("#lambda:{}:{}-{}", owner.as_u32(), span.start, span.end),
+            arity,
+        });
+        self.generated_by_key.insert(key, id);
+        id
+    }
+
     pub fn define(&mut self, id: FunctionId, def: FunctionDef) -> u64 {
         let function = &mut self.slots[id.0 as usize];
         let next = FunctionState::Defined { def };
         replace_if_changed(&mut function.state, &mut function.revision, next)
     }
 
-    pub fn get(&self, id: FunctionId) -> Option<&Function> {
-        self.slots.get(id.0 as usize)
+    pub fn get(&self, id: FunctionId) -> &Function {
+        self.slots
+            .get(id.0 as usize)
+            .expect("function ids should be known before reading function slots")
     }
 
-    pub fn reference_for(&self, id: FunctionId) -> Option<&FunctionRef> {
-        self.refs.get(id.0 as usize)
-    }
-
-    pub fn len(&self) -> usize {
-        self.slots.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.slots.is_empty()
+    pub fn reference_for(&self, id: FunctionId) -> &FunctionRef {
+        self.refs
+            .get(id.0 as usize)
+            .expect("function ids should be known before reading reverse references")
     }
 }
 
@@ -408,14 +427,11 @@ impl RootMap {
         id
     }
 
-    pub fn get(&self, id: RootId) -> Option<&Root> {
-        self.slots.get(id.0 as usize)
+    pub fn get(&self, id: RootId) -> &Root {
+        self.slots
+            .get(id.0 as usize)
+            .expect("root ids should be known before reading root slots")
     }
-
-    pub fn len(&self) -> usize {
-        self.slots.len()
-    }
-
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
     }
