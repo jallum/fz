@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use super::super::artifact::{MaterializedCallEdge, MaterializedExecutable, MaterializedProgram};
 use super::super::body::LoweredBody;
 use super::super::drive::{FactKey, JobEffects};
+use super::super::facts::FactValue;
 use super::super::identity::{ExecutableKey, RootId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{CallSiteKey, SelectedCallee};
@@ -83,7 +84,7 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
     let revision = world.define_materialized_program(root_id, program);
     Ok(JobEffects {
         reads,
-        outputs: vec![(FactKey::MaterializedProgram(root_id), revision)],
+        outputs: vec![(FactKey::MaterializedProgram(root_id), FactValue::presence(revision))],
         ..JobEffects::default()
     })
 }

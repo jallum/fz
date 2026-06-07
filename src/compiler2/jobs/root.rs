@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::super::drive::{FactKey, Job, JobEffects};
+use super::super::facts::FactValue;
 use super::super::identity::{ExecutableKey, RootId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{SelectedCallee, SemanticClosure};
@@ -17,7 +18,7 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
     let root_revision = world.root_revision(root_id);
     let mut effects = JobEffects {
         reads: vec![root_fact.clone()],
-        outputs: vec![(root_fact, root_revision)],
+        outputs: vec![(root_fact, FactValue::presence(root_revision))],
         ..JobEffects::default()
     };
 
@@ -73,7 +74,10 @@ pub(super) fn check_semantic_closure(world: &mut World<'_>, root_id: RootId) -> 
         let activation_revision = *activation_revisions
             .get(&activation)
             .expect("queued activations should have a current revision");
-        outputs.push((FactKey::Activation(activation.clone()), activation_revision));
+        outputs.push((
+            FactKey::Activation(activation.clone()),
+            FactValue::presence(activation_revision),
+        ));
 
         let analyzed_fact = FactKey::ActivationAnalyzed(activation.clone());
         let Some(analyzed_revision) = world.fact_revision(analyzed_fact.clone()) else {
@@ -163,7 +167,10 @@ pub(super) fn check_semantic_closure(world: &mut World<'_>, root_id: RootId) -> 
                 activation: activation.clone(),
                 need,
             };
-            outputs.push((FactKey::Executable(executable.clone()), activation_revision));
+            outputs.push((
+                FactKey::Executable(executable.clone()),
+                FactValue::presence(activation_revision),
+            ));
             executables.insert(executable);
         }
     }
@@ -199,7 +206,7 @@ pub(super) fn check_semantic_closure(world: &mut World<'_>, root_id: RootId) -> 
             },
             revision,
         );
-        outputs.push((FactKey::SemanticClosed(root_id), semantic_closed));
+        outputs.push((FactKey::SemanticClosed(root_id), FactValue::presence(semantic_closed)));
         follow_up.insert(Job::MaterializeRoot(root_id));
     }
 
@@ -211,13 +218,21 @@ pub(super) fn check_semantic_closure(world: &mut World<'_>, root_id: RootId) -> 
     })
 }
 
-fn dedupe_outputs(outputs: Vec<(FactKey, u64)>) -> Vec<(FactKey, u64)> {
-    let mut deduped: HashMap<FactKey, u64> = HashMap::new();
-    for (fact, revision) in outputs {
+fn dedupe_outputs(outputs: Vec<(FactKey, FactValue)>) -> Vec<(FactKey, FactValue)> {
+    let mut deduped: HashMap<FactKey, FactValue> = HashMap::new();
+    for (fact, value) in outputs {
+        let FactValue::Presence(revision) = value else {
+            panic!("root job emits only presence facts")
+        };
         deduped
             .entry(fact)
-            .and_modify(|current| *current = (*current).max(revision))
-            .or_insert(revision);
+            .and_modify(|current| match current {
+                FactValue::Presence(current_revision) => {
+                    *current_revision = (*current_revision).max(revision);
+                }
+                FactValue::Inputs(_) => panic!("root job emits only presence facts"),
+            })
+            .or_insert(FactValue::Presence(revision));
     }
     deduped.into_iter().collect()
 }

@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::rc::Rc;
 
+use super::super::facts::FactValue;
 use crate::ast::{FnDef, Item, ProtocolImplDef};
 use crate::compiler::source::Id as SourceId;
 use crate::diag::Diagnostic;
@@ -18,7 +19,7 @@ use super::super::protocol::ProtocolCallbackImpl;
 use super::super::scheduler::FatalError;
 use super::super::world::World;
 
-type Output = (FactKey, u64);
+type Output = (FactKey, FactValue);
 type Outputs = Vec<Output>;
 
 enum ScopeResult {
@@ -55,7 +56,7 @@ pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
     discover_modules(world, code_id, ModuleId::GLOBAL, &program.items, &mut outputs);
 
     let code_revision = world.finish_code_index(code_id, program.items.clone());
-    outputs.push((FactKey::CodeIndexed(code_id), code_revision));
+    outputs.push((FactKey::CodeIndexed(code_id), FactValue::presence(code_revision)));
 
     Ok(JobEffects {
         outputs,
@@ -76,7 +77,10 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
     };
     match define_scope(world, code_id, ModuleId::GLOBAL, world.prelude_head(), &items)? {
         ScopeResult::Complete { reads, mut outputs, .. } => {
-            outputs.push((FactKey::CodeScoped(code_id), world.code_revision(code_id)));
+            outputs.push((
+                FactKey::CodeScoped(code_id),
+                FactValue::presence(world.code_revision(code_id)),
+            ));
             Ok(JobEffects {
                 reads,
                 outputs,
@@ -109,7 +113,7 @@ pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Resul
                 exports,
             } => {
                 let revision = world.define_module(module_id, namespace, exports).max(revision_floor);
-                outputs.push((FactKey::ModuleDefined(module_id), revision));
+                outputs.push((FactKey::ModuleDefined(module_id), FactValue::presence(revision)));
                 Ok(JobEffects {
                     reads,
                     outputs,
@@ -337,7 +341,10 @@ fn index_function(
             NamespaceSymbol::Function(function_id)
         },
     });
-    Ok(((FactKey::FunctionDefined(function_id), revision), export))
+    Ok((
+        (FactKey::FunctionDefined(function_id), FactValue::presence(revision)),
+        export,
+    ))
 }
 
 fn define_protocol_surface(
@@ -421,7 +428,7 @@ fn define_protocol_impl(
             impl_scope,
             def.clone(),
         );
-        outputs.push((FactKey::FunctionDefined(function), revision));
+        outputs.push((FactKey::FunctionDefined(function), FactValue::presence(revision)));
         callbacks.insert(
             (def.name.clone(), def.arity()),
             ProtocolCallbackImpl {
@@ -468,7 +475,7 @@ fn discover_modules(
                     module.attrs.clone(),
                     module.items.clone(),
                 );
-                outputs.push((FactKey::ModuleIndexed(module_id), revision));
+                outputs.push((FactKey::ModuleIndexed(module_id), FactValue::presence(revision)));
                 discover_modules(world, code_id, module_id, &module.items, outputs);
             }
             Item::Protocol(protocol) => {
@@ -481,7 +488,7 @@ fn discover_modules(
                     protocol.attrs.clone(),
                     protocol.callbacks.clone(),
                 );
-                outputs.push((FactKey::ModuleIndexed(module_id), revision));
+                outputs.push((FactKey::ModuleIndexed(module_id), FactValue::presence(revision)));
             }
             _ => {}
         }

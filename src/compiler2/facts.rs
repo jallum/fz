@@ -1,11 +1,15 @@
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
+use std::hash::Hasher;
+
+use crate::types::{Ty, Types};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactChange<F> {
     pub key: F,
-    pub old_revision: Option<u64>,
-    pub new_revision: Option<u64>,
+    pub old_fingerprint: Option<u64>,
+    pub new_fingerprint: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -16,26 +20,102 @@ pub struct FactReplace<F> {
 
 #[derive(Debug, Clone)]
 pub struct FactSlot<J> {
-    revision: Option<u64>,
-    contributions: HashMap<J, u64>,
+    value: Option<FactValue>,
+    fingerprint: Option<u64>,
+    contributions: HashMap<J, FactValue>,
 }
 
 impl<J> Default for FactSlot<J> {
     fn default() -> Self {
         Self {
-            revision: None,
+            value: None,
+            fingerprint: None,
             contributions: HashMap::new(),
         }
     }
 }
 
 impl<J> FactSlot<J> {
-    pub fn revision(&self) -> Option<u64> {
-        self.revision
+    pub fn fingerprint(&self) -> Option<u64> {
+        self.fingerprint
     }
 
-    pub fn contributions(&self) -> &HashMap<J, u64> {
+    pub fn value(&self) -> Option<&FactValue> {
+        self.value.as_ref()
+    }
+
+    pub fn contributions(&self) -> &HashMap<J, FactValue> {
         &self.contributions
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FactValue {
+    Presence(u64),
+    Inputs(Vec<Ty>),
+}
+
+impl FactValue {
+    pub fn presence(revision: u64) -> Self {
+        Self::Presence(revision)
+    }
+
+    pub fn inputs(inputs: Vec<Ty>) -> Self {
+        Self::Inputs(inputs)
+    }
+
+    fn fingerprint(&self) -> u64 {
+        match self {
+            FactValue::Presence(revision) => *revision,
+            FactValue::Inputs(inputs) => {
+                let mut hasher = DefaultHasher::new();
+                inputs.hash(&mut hasher);
+                hasher.finish()
+            }
+        }
+    }
+
+    fn join<'a>(values: impl IntoIterator<Item = &'a FactValue>) -> Option<FactValue> {
+        let mut values = values.into_iter();
+        let first = values.next()?.clone();
+        Some(match first {
+            FactValue::Presence(first) => {
+                let mut max = first;
+                for value in values {
+                    let FactValue::Presence(revision) = value else {
+                        panic!("fact contributions for one key should use one value family")
+                    };
+                    max = max.max(*revision);
+                }
+                FactValue::Presence(max)
+            }
+            FactValue::Inputs(first) => {
+                let mut joined = first;
+                let mut types = crate::types::new();
+                for value in values {
+                    let FactValue::Inputs(inputs) = value else {
+                        panic!("fact contributions for one key should use one value family")
+                    };
+                    assert_eq!(
+                        joined.len(),
+                        inputs.len(),
+                        "activation input contributions for one key should have stable arity"
+                    );
+                    joined = joined
+                        .into_iter()
+                        .zip(inputs.iter().cloned())
+                        .map(|(current, observed)| types.refine_widen(&current, &observed))
+                        .collect();
+                }
+                FactValue::Inputs(joined)
+            }
+        })
+    }
+}
+
+impl From<u64> for FactValue {
+    fn from(revision: u64) -> Self {
+        Self::Presence(revision)
     }
 }
 
@@ -59,8 +139,8 @@ where
         Self::default()
     }
 
-    pub fn get(&self, key: &F) -> Option<u64> {
-        self.slots.get(key).and_then(FactSlot::revision)
+    pub fn fingerprint(&self, key: &F) -> Option<u64> {
+        self.slots.get(key).and_then(FactSlot::fingerprint)
     }
 
     pub fn slot(&self, key: &F) -> Option<&FactSlot<J>> {
@@ -71,7 +151,7 @@ where
         &mut self,
         job: &J,
         previous_output_keys: &HashSet<F>,
-        outputs: Vec<(F, u64)>,
+        outputs: Vec<(F, FactValue)>,
     ) -> FactReplace<F> {
         let mut new_outputs = HashMap::new();
         for (key, value) in outputs {
@@ -90,7 +170,7 @@ where
         let mut changed = Vec::new();
         for key in touched {
             let mut slot = self.slots.remove(&key).unwrap_or_default();
-            let old_revision = slot.revision;
+            let old_fingerprint = slot.fingerprint;
 
             if let Some(value) = new_outputs.remove(&key) {
                 slot.contributions.insert(job.clone(), value);
@@ -98,17 +178,19 @@ where
                 slot.contributions.remove(job);
             }
 
-            let new_revision = slot.contributions.values().copied().max();
-            if let Some(revision) = new_revision {
-                slot.revision = Some(revision);
+            let new_value = FactValue::join(slot.contributions.values());
+            let new_fingerprint = new_value.as_ref().map(FactValue::fingerprint);
+            if let Some(value) = new_value {
+                slot.fingerprint = new_fingerprint;
+                slot.value = Some(value);
                 self.slots.insert(key.clone(), slot);
             }
 
-            if old_revision != new_revision {
+            if old_fingerprint != new_fingerprint {
                 changed.push(FactChange {
                     key,
-                    old_revision,
-                    new_revision,
+                    old_fingerprint,
+                    new_fingerprint,
                 });
             }
         }

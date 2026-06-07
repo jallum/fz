@@ -7,6 +7,7 @@ use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
 
 use super::super::body::{DirectCallee, LoweredBlock, LoweredBody, LoweredStep};
 use super::super::drive::{FactKey, Job, JobEffects};
+use super::super::facts::FactValue;
 use super::super::identity::FunctionId;
 use super::super::scheduler::FatalError;
 use super::super::world::World;
@@ -62,7 +63,7 @@ pub(super) fn derive_recursive(world: &mut World<'_>, function: FunctionId) -> R
     let revision = world.define_recursive(function, recursive);
     Ok(JobEffects {
         reads,
-        outputs: vec![(FactKey::Recursive(function), revision)],
+        outputs: vec![(FactKey::Recursive(function), FactValue::presence(revision))],
         ..JobEffects::default()
     })
 }
@@ -79,7 +80,7 @@ pub(super) fn derive_dispatch_mask(world: &mut World<'_>, function: FunctionId) 
     let revision = world.define_dispatch_mask(function, mask);
     Ok(JobEffects {
         reads: vec![FactKey::EntryDispatch(function)],
-        outputs: vec![(FactKey::DispatchMask(function), revision)],
+        outputs: vec![(FactKey::DispatchMask(function), FactValue::presence(revision))],
         ..JobEffects::default()
     })
 }

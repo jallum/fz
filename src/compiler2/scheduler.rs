@@ -4,7 +4,7 @@ use std::hash::Hash;
 
 use super::agenda::Agenda;
 use super::deps::{DependencyIndex, FactPattern, UnresolvedWait};
-use super::facts::{FactChange, FactTable};
+use super::facts::{FactChange, FactTable, FactValue};
 
 #[derive(Debug, Clone)]
 pub struct AppliedStep<J, F> {
@@ -83,7 +83,7 @@ where
         job: J,
         reads: HashSet<F>,
         waits: HashSet<P>,
-        outputs: Vec<(F, u64)>,
+        outputs: Vec<(F, FactValue)>,
         follow_up: Vec<J>,
     ) -> AppliedStep<J, F> {
         self.deps.replace_reads(job.clone(), reads);

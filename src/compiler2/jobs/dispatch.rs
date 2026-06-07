@@ -20,6 +20,7 @@ use crate::dispatch_matrix::pattern::{
 use crate::type_expr::parse_type_expr;
 
 use super::super::drive::{FactKey, Job, JobEffects};
+use super::super::facts::FactValue;
 use super::super::identity::{FunctionDef, FunctionId};
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::scheduler::FatalError;
@@ -87,7 +88,7 @@ pub(super) fn reify_guard_dispatch(world: &mut World<'_>, function: FunctionId) 
     let revision = world.define_guard_dispatch(function, dispatch);
     Ok(JobEffects {
         reads,
-        outputs: vec![(FactKey::GuardDispatch(function), revision)],
+        outputs: vec![(FactKey::GuardDispatch(function), FactValue::presence(revision))],
         ..JobEffects::default()
     })
 }
@@ -164,7 +165,7 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
     let revision = world.define_entry_dispatch(function, plan);
     Ok(JobEffects {
         reads,
-        outputs: vec![(FactKey::EntryDispatch(function), revision)],
+        outputs: vec![(FactKey::EntryDispatch(function), FactValue::presence(revision))],
         ..JobEffects::default()
     })
 }

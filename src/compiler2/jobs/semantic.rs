@@ -16,6 +16,7 @@ use crate::types::{self, ClosureTarget, ClosureTypes, Ty, Types};
 
 use super::super::body::{CallSiteId, DirectCallee, Literal, LoweredBlock, LoweredBody, LoweredStep, ValueId};
 use super::super::drive::{FactKey, Job, JobEffects};
+use super::super::facts::FactValue;
 use super::super::identity::{ActivationKey, ExecutableNeed, FunctionId, ModuleId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallSiteSummary, SelectedCallee};
@@ -120,12 +121,15 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
 
     for call in &analysis_calls {
         let revision = world.define_callsite_summary(call.key.clone(), call.summary.clone());
-        outputs.push((FactKey::SelectedCallee(call.key.clone()), revision));
-        outputs.push((FactKey::ReturnNeed(call.key.clone()), revision));
+        outputs.push((FactKey::SelectedCallee(call.key.clone()), FactValue::presence(revision)));
+        outputs.push((FactKey::ReturnNeed(call.key.clone()), FactValue::presence(revision)));
     }
 
     let return_revision = world.define_activation_return(activation, return_ty);
-    outputs.push((FactKey::ReturnType(activation.clone()), return_revision));
+    outputs.push((
+        FactKey::ReturnType(activation.clone()),
+        FactValue::presence(return_revision),
+    ));
 
     let analysis_revision = world.define_activation_analysis(
         activation,
@@ -134,7 +138,10 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
             callsites: analysis_calls.iter().map(|call| call.key.callsite).collect(),
         },
     );
-    outputs.push((FactKey::ActivationAnalyzed(activation.clone()), analysis_revision));
+    outputs.push((
+        FactKey::ActivationAnalyzed(activation.clone()),
+        FactValue::presence(analysis_revision),
+    ));
 
     follow_up.insert(Job::CheckSemanticClosure(activation.root));
     Ok(JobEffects {
@@ -969,13 +976,21 @@ fn unop_ty(op: UnOp, input: Ty) -> Ty {
     }
 }
 
-fn dedupe_outputs(outputs: Vec<(FactKey, u64)>) -> Vec<(FactKey, u64)> {
-    let mut deduped: HashMap<FactKey, u64> = HashMap::new();
-    for (fact, revision) in outputs {
+fn dedupe_outputs(outputs: Vec<(FactKey, FactValue)>) -> Vec<(FactKey, FactValue)> {
+    let mut deduped: HashMap<FactKey, FactValue> = HashMap::new();
+    for (fact, value) in outputs {
+        let FactValue::Presence(revision) = value else {
+            panic!("semantic job emits only presence facts")
+        };
         deduped
             .entry(fact)
-            .and_modify(|current| *current = (*current).max(revision))
-            .or_insert(revision);
+            .and_modify(|current| match current {
+                FactValue::Presence(current_revision) => {
+                    *current_revision = (*current_revision).max(revision);
+                }
+                FactValue::Inputs(_) => panic!("semantic job emits only presence facts"),
+            })
+            .or_insert(FactValue::Presence(revision));
     }
     deduped.into_iter().collect()
 }

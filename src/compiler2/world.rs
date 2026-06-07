@@ -708,7 +708,7 @@ impl<'a> World<'a> {
         if !matches!(&self.modules.get(module).state, ModuleState::Defined { .. }) {
             return None;
         }
-        self.work_graph.facts().get(&FactKey::ModuleDefined(module))
+        self.work_graph.facts().fingerprint(&FactKey::ModuleDefined(module))
     }
 
     pub fn function_defined_revision(&self, function: FunctionId) -> Option<u64> {
@@ -718,7 +718,7 @@ impl<'a> World<'a> {
         ) {
             return None;
         }
-        self.work_graph.facts().get(&FactKey::FunctionDefined(function))
+        self.work_graph.facts().fingerprint(&FactKey::FunctionDefined(function))
     }
 
     pub(crate) fn function_definition(&self, function: FunctionId) -> super::identity::FunctionDef {
@@ -759,7 +759,7 @@ impl<'a> World<'a> {
     }
 
     pub fn fact_revision(&self, key: FactKey) -> Option<u64> {
-        self.work_graph.facts().get(&key)
+        self.work_graph.facts().fingerprint(&key)
     }
 
     pub(crate) fn require_activation_key_facts(

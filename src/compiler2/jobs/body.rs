@@ -16,12 +16,13 @@ use super::super::body::{
     CallSiteId, DirectCallee, Literal, LoweredBlock, LoweredBody, LoweredClause, LoweredStep, ValueId,
 };
 use super::super::drive::{FactKey, JobEffects};
+use super::super::facts::FactValue;
 use super::super::identity::{FunctionDef, FunctionId};
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::scheduler::FatalError;
 use super::super::world::World;
 
-type Output = (FactKey, u64);
+type Output = (FactKey, FactValue);
 
 /// Lowers one demanded function into Compiler2's structured body form.
 ///
@@ -47,7 +48,7 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
     let mut lowerer = Lowerer::new(world, function, &def);
     let (body, mut outputs) = lowerer.lower()?;
     let revision = lowerer.world.define_lowered_body(function, body);
-    outputs.push((FactKey::LoweredBody(function), revision));
+    outputs.push((FactKey::LoweredBody(function), FactValue::presence(revision)));
     Ok(JobEffects {
         reads: vec![FactKey::FunctionDefined(function)],
         outputs,
@@ -432,7 +433,8 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         let (function, revision) =
             self.world
                 .define_generated_function(self.owner, self.namespace, capture_params, ast);
-        self.generated.push((FactKey::FunctionDefined(function), revision));
+        self.generated
+            .push((FactKey::FunctionDefined(function), FactValue::presence(revision)));
         self.generated_ids.push(function);
 
         let captures = captures.into_iter().collect::<Vec<_>>();

@@ -1,8 +1,8 @@
 use super::{CodeSubmission, Compiler2, DriveOutcome, ExactPattern, ExecutableNeed, Job, RootSubmission};
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
-    ActivationKey, CallSiteKey, CallSiteSummary, ExecutableKey, FactKey, FunctionId, FunctionRef, LoweredBody,
-    LoweredStep, MaterializedProgram, Module, ModuleId, SelectedCallee, SemanticClosure,
+    ActivationKey, CallSiteKey, CallSiteSummary, ExecutableKey, FactKey, FactValue, FunctionId, FunctionRef,
+    LoweredBody, LoweredStep, MaterializedProgram, Module, ModuleId, SelectedCallee, SemanticClosure,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-type OutputFacts = Vec<(FactKey, u64)>;
+type OutputFacts = Vec<(FactKey, FactValue)>;
 type JobOutputMap = Rc<RefCell<HashMap<Job, Vec<OutputFacts>>>>;
 type EntryDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternDispatchPlan>>>>;
 type GuardDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternGuardDispatch>>>>;
@@ -26,6 +26,10 @@ type CallsiteDefs = Rc<RefCell<Vec<CallsiteDefinedRecord>>>;
 type SemanticClosedDefs = Rc<RefCell<Vec<SemanticClosedRecord>>>;
 type MaterializedProgramDefs = Rc<RefCell<Vec<MaterializedProgramRecord>>>;
 type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
+
+fn presence(fact: FactKey, revision: u64) -> (FactKey, FactValue) {
+    (fact, FactValue::presence(revision))
+}
 
 #[test]
 fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_bodies() {
@@ -180,7 +184,7 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
         "top-level quicksort indexing should not discover nested modules"
     );
     assert!(
-        outputs.contains(&(FactKey::CodeIndexed(code_id), 1)),
+        outputs.contains(&presence(FactKey::CodeIndexed(code_id), 1)),
         "IndexCode outputs should include the final code-indexed fact"
     );
 }
@@ -241,7 +245,7 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         .take(Job::LowerFunction(main_id))
         .expect("LowerFunction job effects for main/0");
     assert!(
-        lower_outputs.contains(&(FactKey::LoweredBody(main_id), 1)),
+        lower_outputs.contains(&presence(FactKey::LoweredBody(main_id), 1)),
         "submitting a root should lower the entry function body"
     );
     assert!(
@@ -253,7 +257,7 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
 
     let seed_outputs = outputs.take(Job::SeedRoot(root_id)).expect("SeedRoot job effects");
     assert!(
-        seed_outputs.contains(&(FactKey::RootEntry(root_id), 1)),
+        seed_outputs.contains(&presence(FactKey::RootEntry(root_id), 1)),
         "SeedRoot should publish the root entry fact"
     );
     assert!(
@@ -273,7 +277,7 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         .take(Job::CheckSemanticClosure(root_id))
         .expect("CheckSemanticClosure job effects");
     assert!(
-        closure_outputs.contains(&(
+        closure_outputs.contains(&presence(
             FactKey::Activation(ActivationKey {
                 root: root_id,
                 function: main_id,
@@ -284,7 +288,7 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         "semantic closure should publish the entry activation"
     );
     assert!(
-        closure_outputs.contains(&(
+        closure_outputs.contains(&presence(
             FactKey::Executable(ExecutableKey {
                 activation: ActivationKey {
                     root: root_id,
@@ -583,14 +587,14 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
         .take(Job::LowerFunction(main_id))
         .expect("LowerFunction job effects for main/0");
     assert!(
-        main_lowered.contains(&(FactKey::FunctionDefined(user_reducer_id), 1)),
+        main_lowered.contains(&presence(FactKey::FunctionDefined(user_reducer_id), 1)),
         "lowering main/0 should surface its generated reducer function through job effects",
     );
     let enum_lowered = outputs
         .take(Job::LowerFunction(enum_reduce_id))
         .expect("LowerFunction job effects for Enum.reduce/3");
     assert!(
-        enum_lowered.contains(&(FactKey::FunctionDefined(bridge_reducer_id), 1)),
+        enum_lowered.contains(&presence(FactKey::FunctionDefined(bridge_reducer_id), 1)),
         "lowering Enum.reduce/3 should surface its bridge reducer function through job effects",
     );
 
@@ -1473,7 +1477,7 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
         })
         .collect::<Vec<_>>();
     assert!(
-        lower_outputs.contains(&(FactKey::LoweredBody(main_id), 1)),
+        lower_outputs.contains(&presence(FactKey::LoweredBody(main_id), 1)),
         "lowering local-lambda main/0 should publish the lowered body fact"
     );
     assert_eq!(
@@ -1491,7 +1495,7 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
         .take(Job::LowerFunction(generated[0]))
         .expect("LowerFunction job effects for the reached local lambda");
     assert!(
-        generated_outputs.contains(&(FactKey::LoweredBody(generated[0]), 1)),
+        generated_outputs.contains(&presence(FactKey::LoweredBody(generated[0]), 1)),
         "reaching the local lambda through the rooted call should lower its body in its own job",
     );
     assert_eq!(
@@ -1561,7 +1565,7 @@ fn main(), do: dbg(build([], 5))
         outputs
             .take(Job::DeriveRecursive(build_id))
             .expect("DeriveRecursive job effects for build/2")
-            .contains(&(FactKey::Recursive(build_id), 1)),
+            .contains(&presence(FactKey::Recursive(build_id), 1)),
         "the recursive fact should be published for closure-mediated recursion",
     );
     assert!(
@@ -1636,7 +1640,7 @@ fn wanted(_), do: 0
         .take(Job::LowerFunction(wanted_id))
         .expect("LowerFunction job effects for wanted/1");
     assert!(
-        lowered_outputs.contains(&(FactKey::LoweredBody(wanted_id), 1)),
+        lowered_outputs.contains(&presence(FactKey::LoweredBody(wanted_id), 1)),
         "lowering wanted/1 should publish its lowered body fact",
     );
 
@@ -1708,7 +1712,7 @@ fn compiler2_generated_lambda_body_binds_captures_as_leading_inputs() {
         .take(Job::LowerFunction(lambda_id))
         .expect("LowerFunction job effects for generated lambda");
     assert!(
-        lowered_outputs.contains(&(FactKey::LoweredBody(lambda_id), 1)),
+        lowered_outputs.contains(&presence(FactKey::LoweredBody(lambda_id), 1)),
         "lowering the generated lambda should publish its lowered body fact",
     );
 
@@ -1770,7 +1774,7 @@ end
         .take(Job::LowerFunction(main_id))
         .expect("LowerFunction job effects for main/0");
     assert!(
-        lowered_outputs.contains(&(FactKey::LoweredBody(main_id), 1)),
+        lowered_outputs.contains(&presence(FactKey::LoweredBody(main_id), 1)),
         "lowering main/0 should publish its lowered body fact",
     );
 
@@ -1835,7 +1839,7 @@ fn wanted(n), do: positive(n)
         .take(Job::ReifyGuardDispatch(positive_id))
         .expect("ReifyGuardDispatch job effects for positive/1");
     assert!(
-        positive_outputs.contains(&(FactKey::GuardDispatch(positive_id), 1)),
+        positive_outputs.contains(&presence(FactKey::GuardDispatch(positive_id), 1)),
         "positive/1 should publish its guard dispatch fact"
     );
     let positive_dispatch = guard_dispatch(&guard_defs, positive_id);
@@ -1856,7 +1860,7 @@ fn wanted(n), do: positive(n)
         .take(Job::ReifyGuardDispatch(wanted_id))
         .expect("ReifyGuardDispatch job effects for wanted/1");
     assert!(
-        wanted_outputs.contains(&(FactKey::GuardDispatch(wanted_id), 1)),
+        wanted_outputs.contains(&presence(FactKey::GuardDispatch(wanted_id), 1)),
         "wanted/1 should publish its guard dispatch fact"
     );
     let wanted_dispatch = guard_dispatch(&guard_defs, wanted_id);
@@ -1911,7 +1915,7 @@ fn wanted(_), do: false
         .take(Job::ReifyGuardDispatch(wanted_id))
         .expect("ReifyGuardDispatch job effects for destructuring wanted/1");
     assert!(
-        wanted_outputs.contains(&(FactKey::GuardDispatch(wanted_id), 1)),
+        wanted_outputs.contains(&presence(FactKey::GuardDispatch(wanted_id), 1)),
         "multi-clause wanted/1 should publish its guard dispatch fact"
     );
     let wanted_dispatch = guard_dispatch(&guard_defs, wanted_id);
@@ -2112,14 +2116,14 @@ end
         .take(Job::ReifyGuardDispatch(positive_id))
         .expect("ReifyGuardDispatch job effects for positive/1");
     assert!(
-        helper_outputs.contains(&(FactKey::GuardDispatch(positive_id), 1)),
+        helper_outputs.contains(&presence(FactKey::GuardDispatch(positive_id), 1)),
         "helper planning should automatically publish the nested guard-dispatch fact",
     );
     let wanted_outputs = outputs
         .take(Job::PlanEntryDispatch(wanted_id))
         .expect("PlanEntryDispatch job effects for wanted/1");
     assert!(
-        wanted_outputs.contains(&(FactKey::EntryDispatch(wanted_id), 1)),
+        wanted_outputs.contains(&presence(FactKey::EntryDispatch(wanted_id), 1)),
         "wanted/1 should publish its entry-dispatch fact",
     );
 
@@ -2178,7 +2182,7 @@ fn compiler2_entry_dispatch_plans_trivial_single_clause_functions() {
         .take(Job::PlanEntryDispatch(wanted_id))
         .expect("PlanEntryDispatch job effects for single-clause wanted/1");
     assert!(
-        wanted_outputs.contains(&(FactKey::EntryDispatch(wanted_id), 1)),
+        wanted_outputs.contains(&presence(FactKey::EntryDispatch(wanted_id), 1)),
         "single-clause wanted/1 should publish its entry-dispatch fact",
     );
 
@@ -2267,14 +2271,14 @@ fn other(_), do: false
         .take(Job::ReifyGuardDispatch(positive_id))
         .expect("helper reification should rerun after helper redefinition");
     assert!(
-        helper_outputs.contains(&(FactKey::GuardDispatch(positive_id), 2)),
+        helper_outputs.contains(&presence(FactKey::GuardDispatch(positive_id), 2)),
         "helper reification should publish a revised guard-dispatch fact",
     );
     let wanted_outputs = outputs
         .take(Job::PlanEntryDispatch(wanted_id))
         .expect("dependent wanted/1 entry dispatch should rerun");
     assert!(
-        wanted_outputs.contains(&(FactKey::EntryDispatch(wanted_id), 2)),
+        wanted_outputs.contains(&presence(FactKey::EntryDispatch(wanted_id), 2)),
         "dependent wanted/1 entry dispatch should republish with a new revision",
     );
     assert!(
@@ -2404,7 +2408,7 @@ end
         "nested indexing should not define modules directly"
     );
     assert!(
-        indexed_outputs.contains(&(FactKey::CodeIndexed(code_id), 1)),
+        indexed_outputs.contains(&presence(FactKey::CodeIndexed(code_id), 1)),
         "nested indexing should include the final code-indexed fact"
     );
 }

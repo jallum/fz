@@ -27,7 +27,7 @@ pub use code::{Code, CodeId, CodeMap, CodeState};
 pub use compiler::{CodeSubmission, Compiler2, RootSubmission};
 pub use deps::{DependencyIndex, ExactPattern, FactPattern, UnresolvedWait};
 pub use drive::{FactKey, Job, WorkGraph};
-pub use facts::{FactChange, FactReplace, FactSlot, FactTable};
+pub use facts::{FactChange, FactReplace, FactSlot, FactTable, FactValue};
 pub use identity::{
     ActivationKey, ExecutableKey, ExecutableNeed, Function, FunctionDef, FunctionId, FunctionMap, FunctionRef,
     FunctionState, Module, ModuleExport, ModuleId, ModuleMap, ModuleSource, ModuleSourceKind, ModuleState,

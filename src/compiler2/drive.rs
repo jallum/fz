@@ -8,6 +8,7 @@ use crate::telemetry::{TelemetryExt, opaque};
 use crate::{measurements, metadata};
 
 use super::code::CodeId;
+use super::facts::FactValue;
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId};
 use super::scheduler::{DriveOutcome, Scheduler};
 use super::semantic::CallSiteKey;
@@ -58,7 +59,7 @@ pub type WorkGraph = Scheduler<Job, FactKey, super::deps::ExactPattern<FactKey>>
 pub(crate) struct JobEffects {
     pub(crate) reads: Vec<FactKey>,
     pub(crate) waits: Vec<FactKey>,
-    pub(crate) outputs: Vec<(FactKey, u64)>,
+    pub(crate) outputs: Vec<(FactKey, FactValue)>,
     pub(crate) follow_up: Vec<Job>,
 }
 
