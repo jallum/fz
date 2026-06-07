@@ -8,13 +8,13 @@
     "fz-rh2.6.2"
   ],
   "created": "2026-06-07T15:25:58Z",
-  "description": "Goal: define the function property that replaces `defguard`-style special casing: a dispatch-pure helper can be reified into `PatternGuardExpr` plus nested dispatch plans.\n\nChange:\n- Add a Compiler2 job/fact that reads `FunctionDefined` plus frozen namespace and either publishes a compiler-owned guard reification or emits fatal diagnostics through telemetry.\n- Accept single-clause and multi-clause helpers, transitive dispatch-pure helper calls, destructuring heads, captures, and cycle detection.\n- Define the accepted subset precisely as “reifiable into `PatternGuardExpr` and nested `PatternDispatchPlan`”, not merely “referentially transparent”.\n- Cache revisions so redefining a helper retracts and republishes only dependent guard/dispatch facts.\n\nWhy:\n- “Pure” alone is too broad for matcher/codegen reuse; the useful property is reifiable guard semantics.\n- This lets Compiler2 remove any need for explicit `defguard` semantics and gives later `receive` work a sender-side matcher model for free.\n\nChecks:\n- Compiler2 integration tests cover single-clause, transitive, multi-clause, destructuring, captured-arg, cycle-rejection, and impure-rejection helper cases.\n- Tests assert through telemetry/job effects and published fact behavior, not world internals.\n\nNon-goals:\n- No function-entry dispatch yet.\n- No body-site (`case`/`with`/`receive`) dispatch planning yet.",
+  "description": "Goal: make ordered function-head selection a first-class Compiler2 fact instead of clause-local rematching inside `LoweredBody`.\n\nChange:\n- Add `EntryDispatch(function)` or equivalent compiler-owned fact compiled from clause head patterns, parameter type preconditions, and clause guards.\n- Consume dispatch-pure helper facts for guard calls and republish entry dispatch when clauses or helpers change.\n- Publish clause/body outcomes in source order; single-clause functions still publish a trivial entry dispatch so consumers do not need a separate path.\n- Keep clause selection separate from body semantics so later `case`/`with`/`receive` site planning can reuse the same machinery.\n\nWhy:\n- Compiler2 should not keep reimplementing clause dispatch in its body lowerer.\n- One entry-dispatch fact gives the same model for user code, runtime code, and later body-site dispatch planning.\n\nChecks:\n- Multi-clause functions with preconditions and helper guards publish stable entry-dispatch facts.\n- Shared-prefix factoring and clause reachability follow `dispatch_matrix` semantics.\n- Redefining a helper or clause updates only dependent entry-dispatch facts.\n\nNon-goals:\n- No body-site dispatch planning yet.\n- No semantic call/type/executable facts yet; that remains `fz-rh2.6.2`.",
   "id": "fz-rh2.6.10",
   "labels": [],
   "parent": "fz-rh2.6",
   "priority": 1,
   "status": "open",
-  "title": "Compiler2 dispatch: reify dispatch-pure helper functions",
+  "title": "Compiler2 dispatch: derive function entry plans from clause heads",
   "type": "task",
-  "updated_at": "2026-06-07T15:26:24Z"
+  "updated_at": "2026-06-07T15:27:04Z"
 }
