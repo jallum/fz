@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-07T12:08:22Z",
+  "description": "Goal: make the Compiler2 front-door implementation read as the work-graph spine instead of a pile of indexing helpers. Signal: tests observe generic job spans and world/model invariant panics, not private accessors or impossible diagnostics. Strategy: rename index to work, centralize job spans in drive, make Code/World total where ids imply state, move FnDef arity to the AST, inline one-off helpers, and keep Compiler2 tests telemetry-facing.",
+  "id": "fz-rh2.5.1",
+  "labels": [],
+  "parent": "fz-rh2.5",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 refactor: clarify work spine and model invariants",
+  "type": "task",
+  "updated_at": "2026-06-07T12:08:22Z"
+}
