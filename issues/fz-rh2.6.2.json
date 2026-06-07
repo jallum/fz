@@ -9,14 +9,15 @@
     "fz-rh2.6.3",
     "fz-rh2.7.2"
   ],
+  "closed_at": "2026-06-07T17:42:39Z",
   "created": "2026-06-06T23:37:22Z",
   "description": "# Goal\nDerive the first rooted semantic facts from Compiler2-owned entry-dispatch and lowered-body facts. Semantic work must stay inside Compiler2: no raw-AST semantics and no fallback into the legacy whole-program lower/type/plan pipeline.\n\n# Change\n- Add `AnalyzeActivation` as the first rooted semantic job over Compiler2-owned facts.\n- Extend activation identity to `{root, function, input}` and store activation-local summaries: widened observed inputs, reachable callsites, and settled return type.\n- Analyze only entry-dispatch-reachable lowered clauses, derive direct callsite summaries from lowered steps, and publish `SelectedCallee`, `ReturnNeed`, `ReturnType`, and `ActivationAnalyzed` facts.\n- Derive tuple-field executable need from local destructure shape, so `{lo, hi} = partition(...)` publishes `TupleFields(2)` on the callsite.\n- Tighten `CheckSemanticClosure` so a root closes only after its live activation and executable frontier has settled.\n- Keep root semantic inventory fact-driven: stale speculative activations retract through ordinary fact replacement instead of side indexes.\n\n# Why\n- This is the first real semantic fixpoint inside the Compiler2 work graph.\n- Entry dispatch remains the only source of clause selection; body semantics consume selected outcomes instead of rebuilding matching ad hoc.\n- Rooted semantic facts now revise and retract through the same contribution model as indexing and lowering, which is the shape later recursive convergence work will refine.\n\n# Checks\n- Quicksort plus uncalled `foo/0`, rooted at `main/0`, publishes rooted direct call edges for the reachable quicksort path and keeps `foo/0` semantically cold.\n- The rooted `partition/4` call publishes a `TupleFields(2)` return need before any artifact work exists.\n- Roots submitted before code remain unresolved until the entry definition arrives, then resolve without reseeding unrelated work.\n- No `fz.frontend.lowered`, legacy `fz.type_infer.*`, or legacy `fz.planner.*` telemetry appears.\n- Tests assert through telemetry and job effects rather than world inspection.\n\n# Non-goals\n- Recursive convergence and richer retraction policy are `fz-rh2.6.3`.\n- Protocol/runtime callable semantics and `Enum.reduce` are `fz-rh2.7.*`.\n- Body-site dispatch (`case`/`with`/`receive`) and artifact work are later tickets.",
   "id": "fz-rh2.6.2",
   "labels": [],
   "parent": "fz-rh2.6",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 semantic: derive direct-call facts from lowered bodies",
   "type": "task",
-  "updated_at": "2026-06-07T17:42:00Z"
+  "updated_at": "2026-06-07T17:42:39Z"
 }
