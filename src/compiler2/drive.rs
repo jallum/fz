@@ -18,6 +18,7 @@ pub enum Job {
     ScopeCode(CodeId),
     DefineModule(ModuleId),
     LowerFunction(FunctionId),
+    ReifyGuardDispatch(FunctionId),
     SeedRoot(RootId),
     CheckSemanticClosure(RootId),
 }
@@ -30,6 +31,7 @@ pub enum FactKey {
     ModuleDefined(ModuleId),
     FunctionDefined(FunctionId),
     LoweredBody(FunctionId),
+    GuardDispatch(FunctionId),
     RootEntry(RootId),
     Activation(ActivationKey),
     Executable(ExecutableKey),
@@ -124,6 +126,7 @@ impl Job {
             Job::ScopeCode(_) => "ScopeCode",
             Job::DefineModule(_) => "DefineModule",
             Job::LowerFunction(_) => "LowerFunction",
+            Job::ReifyGuardDispatch(_) => "ReifyGuardDispatch",
             Job::SeedRoot(_) => "SeedRoot",
             Job::CheckSemanticClosure(_) => "CheckSemanticClosure",
         }
@@ -133,7 +136,7 @@ impl Job {
         match self {
             Job::IndexCode(id) | Job::ScopeCode(id) => id.as_u32() as u64,
             Job::DefineModule(id) => id.as_u32() as u64,
-            Job::LowerFunction(id) => id.as_u32() as u64,
+            Job::LowerFunction(id) | Job::ReifyGuardDispatch(id) => id.as_u32() as u64,
             Job::SeedRoot(id) | Job::CheckSemanticClosure(id) => id.as_u32() as u64,
         }
     }

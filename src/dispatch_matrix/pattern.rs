@@ -5,14 +5,14 @@ use super::{
     DispatchMatrixError, EdgeEvidence, EdgeProjection, GuardId, OutcomeId, OutcomeMultiplicity, PinnedValueId,
     ProjectionKind, Region, RegionPredicate, RegionQuestion, SubjectId, compile_dispatch_matrix,
 };
-use crate::ast::{BitSize, BitType, Endian, Expr, Pattern, Spanned};
+use crate::ast::{BitSize, BitType, Endian, Expr, FnDef, Pattern, Spanned};
 use crate::compiler::source::Span;
 use std::collections::HashMap;
 
 pub(crate) mod source;
 pub(crate) use source::{
-    KnownSubjectDomain, PatternBodyId, PatternRow, SourcePatternError, SourcePatternRows, collect_guard_capture_names,
-    find_unreachable_rows, is_inexhaustive_with_domains,
+    KnownSubjectDomain, PatternBodyId, PatternRow, SourcePatternError, SourcePatternRows,
+    collect_bound_names_in_pattern, collect_guard_capture_names, find_unreachable_rows, is_inexhaustive_with_domains,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +137,103 @@ pub(crate) enum PatternDispatchError {
 
 pub(crate) fn prepared_key_name(index: usize) -> String {
     format!("__dispatch_key_{}", index)
+}
+
+pub(crate) fn guard_dispatch_from_fn_def<F>(
+    fn_def: &FnDef,
+    guard_call_resolver: &mut F,
+) -> Result<PatternGuardDispatch, SourcePatternError>
+where
+    F: FnMut(&str, usize, Vec<PatternGuardExpr>) -> Result<Option<PatternGuardExpr>, SourcePatternError>,
+{
+    let arity = fn_def.arity();
+    if fn_def.clauses.is_empty() || fn_def.clauses.iter().any(|clause| clause.params.len() != arity) {
+        return Err(SourcePatternError::UnsupportedGuardExpr);
+    }
+
+    let source_patterns = SourcePatternRows {
+        input_count: arity,
+        rows: fn_def
+            .clauses
+            .iter()
+            .enumerate()
+            .map(|(i, clause)| PatternRow {
+                patterns: clause.params.clone(),
+                preconditions: Vec::new(),
+                guard: clause.guard.clone(),
+                body_id: i as PatternBodyId,
+            })
+            .collect(),
+    };
+    let mut plan = pattern_dispatch_from_source_with_guard_resolver(source_patterns, guard_call_resolver)
+        .map_err(|err| SourcePatternError::DispatchMatrix(format!("{err:?}")))?;
+
+    let param_input_by_name: HashMap<String, u32> = fn_def.clauses[0]
+        .params
+        .iter()
+        .enumerate()
+        .filter_map(|(i, pattern)| match &pattern.node {
+            Pattern::Var(name) => Some((name.clone(), i as u32)),
+            _ => None,
+        })
+        .collect();
+    for pinned in &mut plan.pinned {
+        if let Some(input) = param_input_by_name.get(&pinned.name) {
+            pinned.input = Some(*input);
+        }
+    }
+
+    let mut pinned_by_name: HashMap<String, PinnedValueId> = plan
+        .pinned
+        .iter()
+        .enumerate()
+        .map(|(i, pinned)| (pinned.name.clone(), PinnedValueId(i as u32)))
+        .collect();
+    for clause in &fn_def.clauses {
+        let mut bound = std::collections::BTreeSet::new();
+        for pattern in &clause.params {
+            collect_bound_names_in_pattern(&pattern.node, &mut bound);
+        }
+        let mut captures = Vec::new();
+        collect_guard_capture_names(&clause.body.node, &bound, &mut captures);
+        for capture in captures {
+            if pinned_by_name.contains_key(&capture) {
+                continue;
+            }
+            let id = PinnedValueId(plan.pinned.len() as u32);
+            plan.pinned.push(PatternPinnedInput {
+                name: capture.clone(),
+                input: None,
+                span: clause.body.span,
+            });
+            pinned_by_name.insert(capture, id);
+        }
+    }
+
+    let mut bodies = Vec::with_capacity(fn_def.clauses.len());
+    for clause in &fn_def.clauses {
+        let outcome = plan
+            .outcomes
+            .iter()
+            .find(|outcome| outcome.body_id as usize == bodies.len())
+            .ok_or(SourcePatternError::UnsupportedGuardExpr)?;
+        let bindings = outcome
+            .bindings
+            .iter()
+            .map(|binding| (binding.name.clone(), binding.source))
+            .collect::<HashMap<_, _>>();
+        bodies.push(guard_expr_from_ast(
+            &clause.body.node,
+            &bindings,
+            &pinned_by_name,
+            guard_call_resolver,
+        )?);
+    }
+
+    Ok(PatternGuardDispatch {
+        plan: Box::new(plan),
+        bodies,
+    })
 }
 
 pub(crate) fn guard_expr_from_ast<F>(

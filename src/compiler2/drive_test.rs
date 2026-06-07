@@ -2,6 +2,7 @@ use super::{CodeSubmission, Compiler2, DriveOutcome, ExactPattern, ExecutableNee
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{ActivationKey, ExecutableKey, FactKey, FunctionId};
 use crate::diag::codes;
+use crate::dispatch_matrix::pattern::{PatternGuardDispatch, PatternGuardExpr};
 use crate::telemetry::capture::OwnedEvent;
 use crate::telemetry::handler::{Event, EventKind, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
@@ -11,6 +12,7 @@ use std::rc::Rc;
 
 type OutputFacts = Vec<(FactKey, u64)>;
 type JobOutputMap = Rc<RefCell<HashMap<(String, u64), Vec<OutputFacts>>>>;
+type GuardDispatchMap = Rc<RefCell<HashMap<(String, u64), Vec<PatternGuardDispatch>>>>;
 type SpanJobs = Rc<RefCell<HashMap<u64, (String, u64)>>>;
 
 #[test]
@@ -512,6 +514,252 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
 }
 
 #[test]
+fn compiler2_guard_dispatch_reifies_single_clause_and_transitive_helpers() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let guard_defs = GuardDispatchCapture::new();
+    tel.attach(&["fz", "compiler2", "guard_dispatch", "defined"], guard_defs.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let code_id = compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/guard_helpers.fz".to_string()),
+        text: r#"
+fn positive(n), do: n > 0
+fn wanted(n), do: positive(n)
+"#
+        .to_string(),
+    });
+
+    assert_resolved(compiler.drive(), "first drive should index helper functions");
+    assert!(
+        compiler.demand(Job::ScopeCode(code_id)),
+        "explicit demand should scope helper definitions"
+    );
+    assert_resolved(compiler.drive(), "second drive should define helper functions");
+
+    let positive_id = function_id(&capture, "positive", 1);
+    let wanted_id = function_id(&capture, "wanted", 1);
+
+    assert!(
+        compiler.demand(Job::ReifyGuardDispatch(positive_id)),
+        "dispatch-pure positive/1 should be demandable"
+    );
+    assert_resolved(compiler.drive(), "positive/1 should reify into a guard dispatch");
+    let positive_outputs = outputs
+        .take("ReifyGuardDispatch", positive_id.as_u32() as u64)
+        .expect("ReifyGuardDispatch job effects for positive/1");
+    assert!(
+        positive_outputs.contains(&(FactKey::GuardDispatch(positive_id), 1)),
+        "positive/1 should publish its guard dispatch fact"
+    );
+    let positive_dispatch = guard_dispatch(&guard_defs, "positive", 1);
+    assert!(
+        !guard_dispatch_has_nested_dispatch(&positive_dispatch),
+        "single-clause positive/1 should reify directly without nested helper dispatch"
+    );
+
+    assert!(
+        compiler.demand(Job::ReifyGuardDispatch(wanted_id)),
+        "dispatch-pure wanted/1 should be demandable"
+    );
+    assert_resolved(
+        compiler.drive(),
+        "wanted/1 should reify through its transitive helper call",
+    );
+    let wanted_outputs = outputs
+        .take("ReifyGuardDispatch", wanted_id.as_u32() as u64)
+        .expect("ReifyGuardDispatch job effects for wanted/1");
+    assert!(
+        wanted_outputs.contains(&(FactKey::GuardDispatch(wanted_id), 1)),
+        "wanted/1 should publish its guard dispatch fact"
+    );
+    let wanted_dispatch = guard_dispatch(&guard_defs, "wanted", 1);
+    assert!(
+        guard_dispatch_has_nested_dispatch(&wanted_dispatch),
+        "transitive helper calls should reify as nested guard dispatch"
+    );
+}
+
+#[test]
+fn compiler2_guard_dispatch_threads_call_arguments_and_destructuring() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let guard_defs = GuardDispatchCapture::new();
+    tel.attach(&["fz", "compiler2", "guard_dispatch", "defined"], guard_defs.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let code_id = compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/guard_destructure.fz".to_string()),
+        text: r#"
+fn positive(n), do: n > 0
+fn within(limit, n), do: positive(n + limit)
+fn wanted({:ok, {n, _}}), do: within(1, n)
+fn wanted(_), do: false
+"#
+        .to_string(),
+    });
+
+    assert_resolved(compiler.drive(), "first drive should index destructuring helpers");
+    assert!(
+        compiler.demand(Job::ScopeCode(code_id)),
+        "explicit demand should scope destructuring helpers"
+    );
+    assert_resolved(compiler.drive(), "second drive should define destructuring helpers");
+
+    let wanted_id = function_id(&capture, "wanted", 1);
+    assert!(
+        compiler.demand(Job::ReifyGuardDispatch(wanted_id)),
+        "multi-clause wanted/1 should be demandable"
+    );
+    assert_resolved(
+        compiler.drive(),
+        "wanted/1 should reify destructuring heads and threaded helper args",
+    );
+
+    let wanted_outputs = outputs
+        .take("ReifyGuardDispatch", wanted_id.as_u32() as u64)
+        .expect("ReifyGuardDispatch job effects for destructuring wanted/1");
+    assert!(
+        wanted_outputs.contains(&(FactKey::GuardDispatch(wanted_id), 1)),
+        "multi-clause wanted/1 should publish its guard dispatch fact"
+    );
+    let wanted_dispatch = guard_dispatch(&guard_defs, "wanted", 1);
+    assert_eq!(
+        wanted_dispatch.bodies.len(),
+        2,
+        "multi-clause helper reification should preserve one body per clause"
+    );
+    assert!(
+        wanted_dispatch
+            .plan
+            .outcomes
+            .iter()
+            .flat_map(|outcome| outcome.bindings.iter())
+            .any(|binding| binding.name == "n"),
+        "destructuring helper reification should preserve inner bound names"
+    );
+    assert!(
+        guard_dispatch_has_binary_nested_input(&wanted_dispatch),
+        "nested helper calls should thread computed call arguments into the nested dispatch"
+    );
+}
+
+#[test]
+fn compiler2_guard_dispatch_rejects_cycles() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let code_id = compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/guard_cycle.fz".to_string()),
+        text: r#"
+fn a(n), do: b(n)
+fn b(n), do: a(n)
+"#
+        .to_string(),
+    });
+
+    assert_resolved(compiler.drive(), "first drive should index cyclic helpers");
+    assert!(
+        compiler.demand(Job::ScopeCode(code_id)),
+        "explicit demand should scope cyclic helpers"
+    );
+    assert_resolved(compiler.drive(), "second drive should define cyclic helpers");
+
+    let a_id = function_id(&capture, "a", 1);
+    assert!(
+        compiler.demand(Job::ReifyGuardDispatch(a_id)),
+        "cyclic helper should still be demandable"
+    );
+    let outcome = compiler.drive();
+    let job = match outcome {
+        DriveOutcome::Fatal { job } => job,
+        other => panic!("cyclic helper reification should fail fatally: {other:?}"),
+    };
+    assert_eq!(
+        job,
+        Job::ReifyGuardDispatch(a_id),
+        "fatal job should be the demanded helper reification"
+    );
+
+    let diagnostic = capture.last(&["fz", "diag", "error"]).expect("cycle diagnostic");
+    assert_eq!(
+        metadata_str(&diagnostic, "code"),
+        codes::LOWER_UNSUPPORTED.0,
+        "helper cycles should surface as unsupported guard reification"
+    );
+    assert!(
+        metadata_str(&diagnostic, "message").contains("cycle detected"),
+        "cycle diagnostic should say why helper reification failed"
+    );
+}
+
+#[test]
+fn compiler2_guard_dispatch_rejects_impure_helpers() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let code_id = compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/guard_impure.fz".to_string()),
+        text: r#"
+fn bad(n) do
+  if n > 0 do
+    true
+  else
+    false
+  end
+end
+"#
+        .to_string(),
+    });
+
+    assert_resolved(compiler.drive(), "first drive should index impure helpers");
+    assert!(
+        compiler.demand(Job::ScopeCode(code_id)),
+        "explicit demand should scope impure helpers"
+    );
+    assert_resolved(compiler.drive(), "second drive should define impure helpers");
+
+    let bad_id = function_id(&capture, "bad", 1);
+    assert!(
+        compiler.demand(Job::ReifyGuardDispatch(bad_id)),
+        "impure helper should still be demandable"
+    );
+    let outcome = compiler.drive();
+    let job = match outcome {
+        DriveOutcome::Fatal { job } => job,
+        other => panic!("impure helper reification should fail fatally: {other:?}"),
+    };
+    assert_eq!(
+        job,
+        Job::ReifyGuardDispatch(bad_id),
+        "fatal job should be the demanded impure helper reification"
+    );
+
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("impure helper diagnostic");
+    assert_eq!(
+        metadata_str(&diagnostic, "code"),
+        codes::LOWER_UNSUPPORTED.0,
+        "impure helpers should surface as unsupported guard reification"
+    );
+    assert!(
+        metadata_str(&diagnostic, "message").contains("not dispatch-pure"),
+        "impure helper diagnostic should explain the rejected property"
+    );
+}
+
+#[test]
 fn compiler2_index_code_recurses_through_nested_modules() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -909,6 +1157,10 @@ struct OutputCapture {
     spans: SpanJobs,
 }
 
+struct GuardDispatchCapture {
+    dispatches: GuardDispatchMap,
+}
+
 impl OutputCapture {
     fn new() -> Self {
         Self {
@@ -936,9 +1188,38 @@ impl OutputCapture {
     }
 }
 
+impl GuardDispatchCapture {
+    fn new() -> Self {
+        Self {
+            dispatches: Rc::new(RefCell::new(HashMap::new())),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(GuardDispatchCaptureHandler {
+            dispatches: self.dispatches.clone(),
+        })
+    }
+
+    fn take(&self, name: &str, arity: u64) -> Option<PatternGuardDispatch> {
+        let key = (name.to_string(), arity);
+        let mut dispatches = self.dispatches.borrow_mut();
+        let matches = dispatches.get_mut(&key)?;
+        let dispatch = matches.pop();
+        if matches.is_empty() {
+            dispatches.remove(&key);
+        }
+        dispatch
+    }
+}
+
 struct OutputCaptureHandler {
     outputs: JobOutputMap,
     spans: SpanJobs,
+}
+
+struct GuardDispatchCaptureHandler {
+    dispatches: GuardDispatchMap,
 }
 
 impl Handler for OutputCaptureHandler {
@@ -977,6 +1258,32 @@ impl Handler for OutputCaptureHandler {
             }
             EventKind::Event | EventKind::SpanException => {}
         }
+    }
+}
+
+impl Handler for GuardDispatchCaptureHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if event.name != ["fz", "compiler2", "guard_dispatch", "defined"] || event.kind != EventKind::Event {
+            return;
+        }
+        let Some(Value::Str(name)) = event.metadata.get("name") else {
+            return;
+        };
+        let Some(Value::U64(arity)) = event.measurements.get("arity") else {
+            return;
+        };
+        let Some(dispatch) = event
+            .metadata
+            .get("dispatch")
+            .and_then(|value| value.downcast_ref::<PatternGuardDispatch>())
+        else {
+            return;
+        };
+        self.dispatches
+            .borrow_mut()
+            .entry((name.as_ref().to_string(), *arity))
+            .or_default()
+            .push(dispatch.clone());
     }
 }
 
@@ -1028,6 +1335,46 @@ fn metadata_str<'a>(event: &'a OwnedEvent, key: &str) -> &'a str {
     match event.metadata.get(key) {
         Some(Value::Str(value)) => value.as_ref(),
         other => panic!("metadata key `{key}` missing or not str: {other:?}"),
+    }
+}
+
+fn guard_dispatch(capture: &GuardDispatchCapture, name: &str, arity: u64) -> PatternGuardDispatch {
+    capture
+        .take(name, arity)
+        .unwrap_or_else(|| panic!("guard_dispatch.defined for {name}/{arity}"))
+}
+
+fn guard_dispatch_has_nested_dispatch(dispatch: &PatternGuardDispatch) -> bool {
+    dispatch.plan.guards.iter().any(expr_has_nested_dispatch) || dispatch.bodies.iter().any(expr_has_nested_dispatch)
+}
+
+fn expr_has_nested_dispatch(expr: &PatternGuardExpr) -> bool {
+    match expr {
+        PatternGuardExpr::Dispatch { .. } => true,
+        PatternGuardExpr::Unary { expr, .. } => expr_has_nested_dispatch(expr),
+        PatternGuardExpr::Binary { lhs, rhs, .. } => expr_has_nested_dispatch(lhs) || expr_has_nested_dispatch(rhs),
+        PatternGuardExpr::Const(_) | PatternGuardExpr::Subject(_) | PatternGuardExpr::Pinned(_) => false,
+    }
+}
+
+fn guard_dispatch_has_binary_nested_input(dispatch: &PatternGuardDispatch) -> bool {
+    dispatch.bodies.iter().any(expr_has_binary_nested_input)
+}
+
+fn expr_has_binary_nested_input(expr: &PatternGuardExpr) -> bool {
+    match expr {
+        PatternGuardExpr::Dispatch { inputs, dispatch } => {
+            inputs
+                .iter()
+                .any(|input| matches!(input, PatternGuardExpr::Binary { .. }))
+                || dispatch.bodies.iter().any(expr_has_binary_nested_input)
+                || dispatch.plan.guards.iter().any(expr_has_binary_nested_input)
+        }
+        PatternGuardExpr::Unary { expr, .. } => expr_has_binary_nested_input(expr),
+        PatternGuardExpr::Binary { lhs, rhs, .. } => {
+            expr_has_binary_nested_input(lhs) || expr_has_binary_nested_input(rhs)
+        }
+        PatternGuardExpr::Const(_) | PatternGuardExpr::Subject(_) | PatternGuardExpr::Pinned(_) => false,
     }
 }
 

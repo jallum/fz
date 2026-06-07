@@ -3,6 +3,7 @@ mod body;
 mod code;
 mod compiler;
 mod deps;
+mod dispatch;
 mod drive;
 mod facts;
 mod identity;

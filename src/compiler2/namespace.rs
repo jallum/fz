@@ -59,6 +59,22 @@ impl NamespaceStore {
         None
     }
 
+    pub fn lookup_matching(
+        &self,
+        mut head: Namespace,
+        name: &str,
+        mut predicate: impl FnMut(&NamespaceSymbol) -> bool,
+    ) -> Option<&NamespaceSymbol> {
+        while !head.is_end() {
+            let binding = &self.bindings[head.0 as usize - 1];
+            if binding.name == name && predicate(&binding.symbol) {
+                return Some(&binding.symbol);
+            }
+            head = binding.prev;
+        }
+        None
+    }
+
     pub fn restore(&self, savepoint: Namespace) -> Namespace {
         savepoint
     }

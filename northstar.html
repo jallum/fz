@@ -279,6 +279,7 @@
     roots: RootMap,
 
     lowered: LoweredBodyMap,
+    dispatches: DispatchMap,
     facts: FactTable,
     agenda: Agenda,
     deps: DependencyIndex,
@@ -291,6 +292,12 @@
         The output is identity plus already-expanded function AST owned by the definition, not an
         interned AST arena and not lowered IR. By the time a function AST is recorded, all relevant
         macro expansion for that function has already happened.
+      </p>
+      <p>
+        Dispatch planning is its own owned layer. A named helper that can be reified into
+        <code>PatternGuardExpr</code> plus nested <code>PatternDispatchPlan</code> becomes a
+        reusable dispatch fact; there is no separate <code>defguard</code> surface and no
+        receive-only matcher path.
       </p>
       <pre><code>enum CodeState {
     Added {
@@ -625,6 +632,12 @@ fn pop(agenda: &amp;mut Agenda) -&gt; Option&lt;JobKey&gt; {
             <td>Resolve all possible callees or decide backend representation.</td>
           </tr>
           <tr>
+            <td>Dispatch</td>
+            <td>Reify dispatch-pure helpers and ordered entry matching into shared dispatch plans.</td>
+            <td>Reusable <code>PatternGuardDispatch</code> and entry-dispatch facts keyed by function or site.</td>
+            <td>Type bodies, plan executables, or emit code.</td>
+          </tr>
+          <tr>
             <td>Semantic</td>
             <td>Analyze activations, callsites, protocol dispatch, return needs, executable specs, blocks, effects, and callable entries.</td>
             <td>Type facts and planning facts in one root-scoped fixpoint.</td>
@@ -663,7 +676,7 @@ fn pop(agenda: &amp;mut Agenda) -&gt; Option&lt;JobKey&gt; {
           </tr>
           <tr>
             <td><code>AnalyzeActivation</code></td>
-            <td><code>Activation</code>, <code>FunctionDefined</code>, <code>LoweredBody</code></td>
+            <td><code>Activation</code>, <code>FunctionDefined</code>, <code>LoweredBody</code>, dispatch facts for the function body or entry.</td>
             <td>Pattern reachability, value types, callsite instances, argument facts, return type contribution.</td>
           </tr>
           <tr>

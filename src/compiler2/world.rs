@@ -10,13 +10,15 @@ use std::rc::Rc;
 
 use crate::ast::FnDef;
 use crate::ast::Item;
-use crate::telemetry::Telemetry;
+use crate::dispatch_matrix::pattern::PatternGuardDispatch;
+use crate::telemetry::{Telemetry, opaque};
 use crate::{measurements, metadata};
 
 use super::CodeId;
 use super::body::{LoweredBody, LoweredBodyMap};
 use super::code::CodeMap;
 use super::deps::ExactPattern;
+use super::dispatch::GuardDispatchMap;
 use super::drive::{FactKey, Job, JobEffects, WorkGraph};
 use super::identity::{
     ExecutableNeed, FunctionDef, FunctionId, FunctionMap, ModuleExport, ModuleId, ModuleMap, ModuleState, RootEntry,
@@ -30,6 +32,7 @@ pub struct World<'a> {
     modules: ModuleMap,
     functions: FunctionMap,
     bodies: LoweredBodyMap,
+    guard_dispatches: GuardDispatchMap,
     roots: RootMap,
     namespaces: NamespaceStore,
     pub(crate) work_graph: WorkGraph,
@@ -57,6 +60,7 @@ impl<'a> World<'a> {
             modules: ModuleMap::new(),
             functions: FunctionMap::new(),
             bodies: LoweredBodyMap::new(),
+            guard_dispatches: GuardDispatchMap::new(),
             roots: RootMap::new(),
             namespaces: NamespaceStore::new(),
             work_graph: WorkGraph::new(),
@@ -292,6 +296,45 @@ impl<'a> World<'a> {
         self.bodies.define(function, body)
     }
 
+    pub(crate) fn define_guard_dispatch(&mut self, function: FunctionId, dispatch: PatternGuardDispatch) -> u64 {
+        let def = self.function_definition(function);
+        let function_ref = self.functions.reference_for(function);
+        let module_name = if function_ref.module.is_global() {
+            "<top-level>".to_string()
+        } else {
+            self.modules
+                .name(function_ref.module)
+                .expect("named guard dispatch modules should have a reverse lookup")
+                .to_string()
+        };
+        let fq_name = if module_name == "<top-level>" {
+            function_ref.name.clone()
+        } else {
+            format!("{}.{}", module_name, function_ref.name)
+        };
+        let revision = self.guard_dispatches.define(function, dispatch.clone());
+        self.tel.execute(
+            &["fz", "compiler2", "guard_dispatch", "defined"],
+            &measurements! {
+                code_id: def.code.as_u32() as u64,
+                function_id: function.as_u32() as u64,
+                revision: revision,
+                arity: def.ast.arity() as u64,
+                bodies: dispatch.bodies.len() as u64,
+                guards: dispatch.plan.guards.len() as u64,
+                pinned: dispatch.plan.pinned.len() as u64,
+            },
+            &metadata! {
+                source_name: self.code.name(def.code).unwrap_or("<anonymous>"),
+                module_name: module_name.as_str(),
+                name: function_ref.name.as_str(),
+                fq_name: fq_name.as_str(),
+                dispatch: opaque(&dispatch),
+            },
+        );
+        revision
+    }
+
     pub fn prelude_head(&self) -> Namespace {
         self.namespaces.prelude_head()
     }
@@ -349,6 +392,22 @@ impl<'a> World<'a> {
 
     pub fn fact_revision(&self, key: FactKey) -> Option<u64> {
         self.work_graph.facts().get(&key)
+    }
+
+    pub(crate) fn lookup_callable_namespace(
+        &self,
+        head: Namespace,
+        name: &str,
+        arity: usize,
+    ) -> Option<NamespaceSymbol> {
+        self.namespaces
+            .lookup_matching(head, name, |symbol| match symbol {
+                NamespaceSymbol::Function(function) | NamespaceSymbol::Macro(function) => {
+                    self.functions.reference_for(*function).arity == arity
+                }
+                NamespaceSymbol::Module(_) => false,
+            })
+            .cloned()
     }
 
     pub fn code_items(&self, id: CodeId) -> Option<&[Rc<Item>]> {
