@@ -7,7 +7,7 @@
     "fz-rh2.10.6"
   ],
   "created": "2026-06-07T21:39:08Z",
-  "description": "Goal: World::new should allocate stable runtime identities and namespace entries without lexing or parsing runtime source. Signal: the Compiler2 quicksort trace-summary reports zero pre-drive lexer/parser work, while quicksort and Enum.reduce still pull referenced runtime modules through ordinary Compiler2 jobs. Strategy: after activation/fact ownership is corrected, turn runtime bootstrap into a reference-only surface and let runtime source enter the same Code/Index/Scope/Define path as user source when demanded.\n\nChange:\n- Remove eager runtime lex/parse from Compiler2 construction.\n- Bootstrap stable runtime module/function references and namespace bindings only.\n- Pull runtime source, protocol callbacks, imports, and impl surfaces through ordinary Compiler2 jobs on first demand.\n\nWhy:\n- Runtime work before the first drive violates the pull-based model and hides real compile cost outside the work graph.\n\nChecks:\n- Quicksort trace-summary reports zero pre-drive frontend work.\n- Runtime-backed quicksort and Enum.reduce scenarios still settle through ordinary Compiler2 jobs.",
+  "description": "Goal: World::new should allocate stable runtime module identities and compiler-owned prelude code without lexing or parsing runtime source. Signal: Compiler2 quicksort telemetry reports zero pre-drive lexer/parser work, while quicksort and Enum.reduce still pull referenced runtime modules through ordinary Compiler2 jobs. Strategy: runtime bootstrap records module ids and source text only; `runtime.fz` is parsed by a normal source job when scoped code needs the prelude namespace, and runtime module source enters the same Code/Index/Scope/Define path as user source when demanded.\n\nChange:\n- Remove eager runtime lex/parse from Compiler2 construction.\n- Treat `runtime.fz` as compiler-owned source whose scoped namespace becomes the prelude.\n- Let exact `only:` imports bind MFA references without warming provider modules.\n- Pull runtime source, protocol callbacks, imports, and impl surfaces through ordinary Compiler2 jobs on first demand.\n\nWhy:\n- Runtime work before the first drive violates the pull-based model and hides real compile cost outside the work graph.\n\nChecks:\n- Quicksort pre-drive telemetry reports zero frontend work.\n- Runtime-backed quicksort and Enum.reduce scenarios still settle through ordinary Compiler2 jobs.\n- A root that never reaches runtime names keeps runtime modules cold.",
   "id": "fz-rh2.10.5",
   "labels": [],
   "parent": "fz-rh2.10",
@@ -15,5 +15,5 @@
   "status": "in_progress",
   "title": "Compiler2 runtime bootstrap: replace eager parsing with lazy surface bootstrap",
   "type": "task",
-  "updated_at": "2026-06-07T23:03:32Z"
+  "updated_at": "2026-06-07T23:26:36Z"
 }
