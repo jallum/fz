@@ -6,14 +6,15 @@
   "blocks": [
     "fz-rh2.6.2"
   ],
+  "closed_at": "2026-06-07T14:38:00Z",
   "created": "2026-06-07T13:54:00Z",
   "description": "Goal: introduce the function-local body layer that semantic jobs read. Expanded `FnDef` remains the definition fact; `LoweredBody(function)` becomes the semantic input fact.\n\nChange:\n- Add `Job::LowerFunction(FunctionId)` and `FactKey::LoweredBody(FunctionId)`.\n- Add a Compiler2-owned body store keyed by `FunctionId`; do not introduce a separate body id unless a later artifact boundary proves it is needed.\n- Lower each demanded function into a structured Compiler2 body: clauses, stable local value ids, stable callsite ids, tuple/list literals, destructure/setup steps, branches, returns, and generated lambda definitions. This is not a per-function slice of the old CPS IR.\n- `LowerFunction` reads `FunctionDefined(function)`, waits if the function is still a placeholder, lowers only that function, publishes `LoweredBody(function)`, and leaves unrelated functions cold.\n- Generated lambdas become compiler-owned function definitions keyed stably by owner plus source site, but they are not eagerly lowered or semantically activated.\n- `SeedRoot` follows up with `LowerFunction(entry)` and the current closure check now waits on `LoweredBody(entry)` before closing the root.\n\nWhy:\n- Type and planning rules need stable local ids, callsite shape, branch/destructure shape, and generated callable identity. That is lowering-shaped data, not source AST data.\n- Calling the legacy `lower_program` would eagerly prepend runtime source, register and lower every function, require flattened modules, normalize CPS continuations, and recreate the whole-program phase model. Compiler2 needs a per-function pull boundary.\n- A structured body is the right seam: it preserves clause shape and local facts the semantic jobs care about without importing planner/codegen concerns.\n- Keeping body facts root-independent lets multiple roots reuse lowered bodies without making those bodies semantically reachable by themselves.\n\nChecks:\n- Submitting quicksort plus uncalled `foo/0`, then rooting `main/0`, publishes `LoweredBody(main/0)` and no `LoweredBody(foo/0)`.\n- Defining a root before code still finishes unresolved, then resolves after code submission without forcing unrelated body lowering.\n- Rooting `Enum.reduce` lowers only `main/0`, mints the reducer lambda definition, and does not eagerly lower the generated lambda body.\n- Existing source/module/import behavior remains green.\n- Telemetry proves no `fz.frontend.lowered`, `fz.planner.planned`, codegen, or artifact work runs.\n\nNon-goals:\n- Recursive activation widening and root retraction stay in `fz-rh2.6.3`.\n- Protocol dispatch, runtime-library pull-through, and callable reducers stay in `fz-rh2.7.*`.\n- Artifact materialization and ABI/codegen stay in `fz-rh2.8.*`.",
   "id": "fz-rh2.6.7",
   "labels": [],
   "parent": "fz-rh2.6",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 body: lower demanded functions into owned body facts",
   "type": "task",
-  "updated_at": "2026-06-07T14:31:35Z"
+  "updated_at": "2026-06-07T14:38:00Z"
 }
