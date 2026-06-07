@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.6.8"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.6.10"
+  ],
   "created": "2026-06-07T15:25:58Z",
   "description": "Goal: make ordered function-head selection a first-class Compiler2 fact instead of clause-local rematching inside `LoweredBody`.\n\nChange:\n- Add `EntryDispatch(function)` or equivalent compiler-owned fact compiled from clause head patterns, parameter type preconditions, and clause guards.\n- Consume dispatch-pure helper facts for guard calls and republish entry dispatch when clauses or helpers change.\n- Publish clause/body outcomes in source order; single-clause functions still publish a trivial entry dispatch so consumers do not need a separate path.\n- Keep clause selection separate from body semantics so later `case`/`with`/`receive` site planning can reuse the same machinery.\n\nWhy:\n- Compiler2 should not keep reimplementing clause dispatch in its body lowerer.\n- One entry-dispatch fact gives the same model for user code, runtime code, and later body-site dispatch planning.\n\nChecks:\n- Multi-clause functions with preconditions and helper guards publish stable entry-dispatch facts.\n- Shared-prefix factoring and clause reachability follow `dispatch_matrix` semantics.\n- Redefining a helper or clause updates only dependent entry-dispatch facts.\n\nNon-goals:\n- No body-site dispatch planning yet.\n- No semantic call/type/executable facts yet; that remains `fz-rh2.6.2`.",
   "id": "fz-rh2.6.9",
