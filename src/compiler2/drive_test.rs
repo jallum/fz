@@ -518,6 +518,50 @@ fn compiler2_runtime_refs_pull_only_the_reached_runtime_modules() {
 }
 
 #[test]
+fn compiler2_analyze_activation_publishes_one_whole_callsite_fact_per_call() {
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/callsite_fact_surface.fz".to_string()),
+        text: "fn foo(), do: 42\nfn main(), do: foo()\n".to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "a direct call root should settle through one whole callsite fact per reached call",
+    );
+
+    let main_id = function_id(&functions, "main", 0);
+    let outputs = outputs
+        .take(Job::AnalyzeActivation(ActivationKey {
+            root: root_id,
+            function: main_id,
+            input: Vec::new(),
+        }))
+        .expect("AnalyzeActivation job effects for main/0");
+    let callsite_facts = outputs
+        .iter()
+        .filter(|(fact, _)| matches!(fact, FactKey::CallSiteSummary(_)))
+        .count();
+
+    assert_eq!(
+        callsite_facts, 1,
+        "an activation with one reached direct call should publish one whole callsite-summary fact",
+    );
+}
+
+#[test]
 fn compiler2_unused_runtime_library_stays_cold() {
     let tel = ConfiguredTelemetry::new();
     let outputs = OutputCapture::new();

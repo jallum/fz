@@ -127,8 +127,10 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
 
     for call in &analysis_calls {
         let revision = world.define_callsite_summary(call.key.clone(), call.summary.clone());
-        outputs.push((FactKey::SelectedCallee(call.key.clone()), FactValue::presence(revision)));
-        outputs.push((FactKey::ReturnNeed(call.key.clone()), FactValue::presence(revision)));
+        outputs.push((
+            FactKey::CallSiteSummary(call.key.clone()),
+            FactValue::presence(revision),
+        ));
         if let Some(callee_activation) = &call.callee_activation {
             outputs.push((
                 FactKey::Activation(callee_activation.key.clone()),

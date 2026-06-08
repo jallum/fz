@@ -347,8 +347,13 @@ impl<'a> World<'a> {
         self.callsites.get(key)
     }
 
-    pub(crate) fn define_semantic_closure(&mut self, root: RootId, closure: SemanticClosure, revision: u64) -> u64 {
-        let revision = self.semantic_closures.define(root, closure.clone(), revision);
+    pub(crate) fn define_semantic_closure(
+        &mut self,
+        root: RootId,
+        closure: SemanticClosure,
+        dependencies: super::semantic::DependencySnapshot,
+    ) -> u64 {
+        let revision = self.semantic_closures.define(root, closure.clone(), dependencies);
         self.tel.execute(
             &["fz", "compiler2", "semantic_closed", "defined"],
             &measurements! {

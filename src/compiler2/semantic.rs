@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::body::CallSiteId;
+use super::drive::FactKey;
 use super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::types::{Ty, Types};
 
@@ -30,12 +31,6 @@ pub struct CallSiteSummary {
     pub return_ty: Ty,
 }
 
-impl CallSiteSummary {
-    fn same_fact_surface(&self, other: &Self) -> bool {
-        self.callee == other.callee && self.input_types == other.input_types && self.need == other.need
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationAnalysis {
     pub reachable_clauses: Vec<u32>,
@@ -47,6 +42,11 @@ pub struct SemanticClosure {
     pub entry: ExecutableKey,
     pub activations: HashSet<ActivationKey>,
     pub executables: HashSet<ExecutableKey>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DependencySnapshot {
+    revisions: HashMap<FactKey, u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -70,7 +70,7 @@ pub struct CallSiteMap {
 #[derive(Debug, Clone)]
 pub struct SemanticClosureSlot {
     closure: SemanticClosure,
-    dependency_fingerprint: u64,
+    dependencies: DependencySnapshot,
     revision: u64,
 }
 
@@ -161,7 +161,7 @@ impl CallSiteMap {
     pub fn define(&mut self, key: CallSiteKey, summary: CallSiteSummary) -> u64 {
         match self.slots.get_mut(&key) {
             Some(slot) => {
-                if !slot.value.same_fact_surface(&summary) {
+                if slot.value != summary {
                     slot.revision += 1;
                 }
                 slot.value = summary;
@@ -189,26 +189,38 @@ impl CallSiteMap {
     }
 }
 
+impl DependencySnapshot {
+    pub fn record(&mut self, fact: FactKey, revision: u64) {
+        match self.revisions.get(&fact).copied() {
+            Some(existing) => {
+                assert_eq!(
+                    existing, revision,
+                    "dependency snapshots should not observe mixed revisions for one fact"
+                );
+            }
+            None => {
+                self.revisions.insert(fact, revision);
+            }
+        }
+    }
+}
+
 impl SemanticClosureMap {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn define(&mut self, root: RootId, closure: SemanticClosure, dependency_fingerprint: u64) -> u64 {
+    pub fn define(&mut self, root: RootId, closure: SemanticClosure, dependencies: DependencySnapshot) -> u64 {
         self.ensure(root);
         let slot = &mut self.slots[root.as_u32() as usize];
         let revision = match slot {
-            Some(existing)
-                if existing.closure == closure && existing.dependency_fingerprint == dependency_fingerprint =>
-            {
-                existing.revision
-            }
+            Some(existing) if existing.closure == closure && existing.dependencies == dependencies => existing.revision,
             Some(existing) => existing.revision + 1,
             None => 1,
         };
         *slot = Some(SemanticClosureSlot {
             closure,
-            dependency_fingerprint,
+            dependencies,
             revision,
         });
         revision

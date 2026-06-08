@@ -101,9 +101,7 @@ fn materialize_call_edges(
             activation: executable.activation.clone(),
             callsite: *callsite,
         };
-        if world.fact_revision(FactKey::SelectedCallee(key.clone())).is_none()
-            || world.fact_revision(FactKey::ReturnNeed(key.clone())).is_none()
-        {
+        if world.fact_revision(FactKey::CallSiteSummary(key.clone())).is_none() {
             return Ok(None);
         }
         let Some(summary) = world.callsite_summary(&key).cloned() else {
