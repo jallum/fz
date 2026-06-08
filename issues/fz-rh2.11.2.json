@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.11.1"
   ],
@@ -13,8 +13,8 @@
   "labels": [],
   "parent": "fz-rh2.11",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 data surface: maps, structs, and bitstrings through the structured pipeline",
   "type": "task",
-  "updated_at": "2026-06-08T11:49:50Z"
+  "updated_at": "2026-06-08T12:58:51Z"
 }
