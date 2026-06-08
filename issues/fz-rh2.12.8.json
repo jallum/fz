@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.12.7"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.12.9"
+  ],
   "created": "2026-06-08T20:52:15Z",
   "description": "Promote the design docs to current. Move .agent/targets/{type-naming,type-world,set-theoretic-types,protocols}.md into .agent/docs/ (they describe the now-current system); write the specs.md delta (construction seam reads TypeDefined, not a per-call ModuleTypeEnv) and the modules.md delta (NamespaceSymbol::Type; the namespace bridges type names too). The northstar Type-Naming section already landed; reconcile any drift. Verify: docs match the landed code -- present-tense, honest structures, no chronology.",
   "id": "fz-rh2.12.8",
