@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-08T20:52:15Z",
+  "description": "Promote the design docs to current. Move .agent/targets/{type-naming,type-world,set-theoretic-types,protocols}.md into .agent/docs/ (they describe the now-current system); write the specs.md delta (construction seam reads TypeDefined, not a per-call ModuleTypeEnv) and the modules.md delta (NamespaceSymbol::Type; the namespace bridges type names too). The northstar Type-Naming section already landed; reconcile any drift. Verify: docs match the landed code -- present-tense, honest structures, no chronology.",
+  "id": "fz-rh2.12.8",
+  "labels": [],
+  "parent": "fz-rh2.12",
+  "priority": 2,
+  "status": "open",
+  "title": "Promote .agent/targets -\u003e .agent/docs; specs.md/modules.md deltas; northstar reconcile",
+  "type": "task",
+  "updated_at": "2026-06-08T20:52:15Z"
+}
