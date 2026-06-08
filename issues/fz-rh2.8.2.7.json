@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-08T10:54:32Z",
+  "description": "Goal: Compiler2 should derive raw integer callable-entry return lanes for the settled Enum.reduce user reducer path.\n\nSignal:\n- cargo test --lib compiler2_abi_ready_derives_only_the_closed_enum_reduce_callable_entries -- --nocapture passes\n- cargo test --lib compiler2_emission_ready_includes_the_required_enum_reduce_callable_entries -- --nocapture passes\n\nWhy:\n- fixing fz-rh2.8.2.6 unblocked the Enum.reduce semantic path far enough to expose a backend-contract precision bug: the user reducer callable entry now resolves, but its return ABI is still ValueRef instead of RawInt.\n- this is a real artifact-contract issue, not telemetry noise or a test harness artifact.",
+  "id": "fz-rh2.8.2.7",
+  "labels": [],
+  "parent": "fz-rh2.8.2",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 artifacts: recover raw integer callable-entry lanes for Enum.reduce",
+  "type": "bug",
+  "updated_at": "2026-06-08T10:54:32Z"
+}
