@@ -309,6 +309,12 @@
           </p>
         </div>
       </div>
+      <p>
+        Today the artifact boundary stops at <code>MaterializedProgramMap</code>. The next artifact
+        arc adds <code>AbiReadyProgram</code> and <code>EmissionReadyProgram</code> above that map
+        as pure projections. They are not new semantic authorities and they do not reopen
+        reachability or type discovery.
+      </p>
     </section>
 
     <section>
@@ -458,6 +464,11 @@ enum FactValue {
             <td><code>MaterializedProgram</code></td>
             <td>One backend-owned snapshot projected from the closed semantic frontier.</td>
           </tr>
+          <tr>
+            <td>Artifact projections</td>
+            <td><code>AbiReadyProgram</code>, <code>EmissionReadyProgram</code></td>
+            <td>Next-rung facts derived mechanically from <code>MaterializedProgram</code>; they carry backend ABI and emission inventory without reopening semantics.</td>
+          </tr>
         </tbody>
       </table>
       <p>
@@ -567,6 +578,66 @@ DependencySnapshot = HashMap&lt;FactKey, u64&gt;</code></pre>
         closed frontier, clones only the reachable lowered bodies, prunes unreachable clauses, and
         freezes each live callsite to one selected callee executable. It never asks new semantic
         questions and it never reopens discovery.
+      </p>
+    </section>
+
+    <section>
+      <h2>Artifact Ladder And Fact Taxonomy</h2>
+      <p>
+        The backend handoff is a ladder, not one giant catch-all structure. Each rung owns one
+        narrower question, and each rung is derived only from the one below it.
+      </p>
+      <div class="grid">
+        <div class="card">
+          <h3><code>MaterializedProgram</code></h3>
+          <p>
+            The first backend-owned snapshot. It carries the closed executable frontier, pruned
+            lowered bodies, selected call edges, per-executable return types, per-value types,
+            effect summaries, and frozen extern marshal classes.
+          </p>
+        </div>
+        <div class="card">
+          <h3><code>AbiReadyProgram</code></h3>
+          <p>
+            The next projection. It derives ABI lanes and return contracts from
+            <code>MaterializedProgram</code> plus <code>ExecutableNeed</code>: value/param/return
+            reprs, call-edge ABI, explicit return delivery, and callable-boundary obligations.
+          </p>
+        </div>
+        <div class="card">
+          <h3><code>EmissionReadyProgram</code></h3>
+          <p>
+            The final compiler-owned handoff before adapters. It assigns a stable emission
+            inventory over Compiler2 keys for executable entries and callable entries. Dense
+            ordinals live here only as emission bookkeeping, never as semantic identity.
+          </p>
+        </div>
+      </div>
+      <p>
+        Durable Compiler2 artifact facts are:
+      </p>
+      <ul>
+        <li>selected call edges</li>
+        <li>return delivery carried by <code>ExecutableNeed</code></li>
+        <li>extern marshal classes</li>
+        <li>effect summaries</li>
+        <li>callable-boundary obligations</li>
+        <li>stable emission inventory</li>
+      </ul>
+      <p>
+        Rejected baggage stays out of Compiler2 facts:
+      </p>
+      <ul>
+        <li><code>SpecPlan</code> as a backend artifact surface</li>
+        <li><code>SpecRegistry</code> or <code>SpecId</code> as semantic identity</li>
+        <li>old <code>AbiFacts</code> sets such as <code>native_fns</code>, <code>cont_fns</code>, <code>cont_target_fns</code>, and <code>cont_extras_count</code></li>
+        <li>callable wrapper signatures as compiler facts instead of backend-local lowering details</li>
+        <li>formatted telemetry payloads instead of raw ids, facts, and opaque structures</li>
+      </ul>
+      <p>
+        This is the reason <code>fz-rh2.8.2</code> stays blocked behind the artifact-model arc:
+        backend adapter work should consume <code>EmissionReadyProgram</code>, not invent it while
+        wiring interpreter, JIT, or AOT code.
       </p>
     </section>
 
@@ -692,9 +763,10 @@ join =&gt; Inputs([list(int)]) after refine_widen + alpha normalization</code></
         <p>
           <code>MaterializeRoot(root)</code> clones only the executable bodies in the closed
           frontier, prunes unreachable clauses, and emits <code>MaterializedProgram(root)</code>.
-          Redefining uncalled <code>foo/0</code> later does not reopen the root. Redefining
-          <code>main/0</code> does, because the old callsite summaries and closed frontier are
-          replaced by new ones.
+          The next two artifact rungs then derive ABI and emission facts mechanically from that one
+          snapshot. Redefining uncalled <code>foo/0</code> later does not reopen the root.
+          Redefining <code>main/0</code> does, because the old callsite summaries and closed
+          frontier are replaced by new ones.
         </p>
       </div>
     </section>

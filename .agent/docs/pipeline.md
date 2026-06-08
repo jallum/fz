@@ -32,6 +32,18 @@ artifact  MaterializeRoot
             freeze the closed set -> MaterializedProgram
 ```
 
+Today the artifact family stops at `MaterializeRoot`. The next artifact arc
+adds two more one-way projections above it:
+
+```text
+MaterializedProgram(root)
+  -> AbiReadyProgram(root)
+  -> EmissionReadyProgram(root)
+```
+
+Those rungs are derived mechanically from the closed artifact below them. They
+do not reopen semantic discovery.
+
 ## A root's journey
 
 ```text
@@ -46,6 +58,9 @@ submit_root(main/0)
   SealSemanticClosure observes the frontier; when it settles, writes
     SemanticClosed(root) and enqueues MaterializeRoot(root)
   MaterializeRoot freezes the closed set into MaterializedProgram(root)
+  next artifact arc:
+    AbiReadyProgram(root) derives ABI lanes, return delivery, and callable-boundary facts
+    EmissionReadyProgram(root) derives stable emission inventory for backend adapters
 ```
 
 Each callee pulls its own `LowerFunction` / `PlanEntryDispatch` /
@@ -75,6 +90,48 @@ type question or discover a new callee.
 
 So semantics close, then artifacts consume; growth across that line is an error,
 not a feature.
+
+## Artifact ladder and fact taxonomy
+
+`MaterializedProgram` is the first backend-owned snapshot. It is allowed to
+carry only closed facts already proven by semantics:
+
+- pruned lowered bodies for the closed executable frontier
+- selected call edges
+- return types and per-value types
+- effect summaries
+- frozen extern marshal classes
+
+The next two planned rungs narrow the contract:
+
+- `AbiReadyProgram` derives ABI lanes, explicit return delivery, and
+  callable-boundary obligations from `MaterializedProgram` plus
+  `ExecutableNeed`.
+- `EmissionReadyProgram` assigns stable emission-local inventory over Compiler2
+  ids so interpreter/JIT/AOT adapters can enumerate executable entries and
+  callable entries without building their own registry.
+
+Things that belong in Compiler2 artifact facts:
+
+- selected call edges
+- return delivery
+- extern marshal classes
+- effect summaries
+- callable-boundary obligations
+- stable emission inventory
+
+Things that do not belong there:
+
+- old `SpecPlan` as a backend artifact surface
+- `SpecRegistry` or `SpecId` as semantic identity
+- old `AbiFacts` sets such as `native_fns`, `cont_fns`, `cont_target_fns`, and
+  `cont_extras_count`
+- backend-specific callable wrapper signatures
+- formatted telemetry payloads
+
+This is why `fz-rh2.8.2` stays blocked behind the artifact-model arc: adapter
+work should consume `EmissionReadyProgram`, not invent it while wiring backend
+entry points.
 
 ## Redefinition retracts by ownership
 
