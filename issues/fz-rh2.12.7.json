@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.12.4"
+  ],
   "blocks": [],
   "created": "2026-06-08T20:52:14Z",
   "description": "Final sever and regression guard. Remove compiler2 remaining imports of old-world naming: runtime_library::{root_type_env,interfaces}, type_expr::{ModuleTypeEnv,build_module_type_env_for_with_base}, frontend::protocols::{ProtocolRegistry,extend_interfaces}. Add the guard: a telemetry test asserting lexer.pass count == number of distinct submitted sources, so the re-lex is structurally impossible AND observably so. Note: the shared crate::type_expr / runtime_library / ModuleTypeEnv are NOT deleted -- they stay for the legacy fz frontend and die with it. Verify: full lib + matrix green, zero warnings; the guard fails if any consumer re-lexes.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Sever old-world naming imports + lexer-passes-per-compile telemetry guard",
   "type": "task",
-  "updated_at": "2026-06-08T20:52:14Z"
+  "updated_at": "2026-06-08T20:52:15Z"
 }
