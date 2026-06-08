@@ -9,14 +9,15 @@
   "blocks": [
     "fz-rh2.9"
   ],
+  "closed_at": "2026-06-08T11:38:48Z",
   "created": "2026-06-06T23:37:22Z",
   "description": "Goal: move interpreter, JIT, and AOT onto the settled Compiler2 backend handoff without rediscovering semantics. Signal: backend consumers take Compiler2-owned closed artifacts and never call back into semantic closure, type inference, old planner reachability, or old codegen fact derivation to fill missing data.\n\nGrounding from the current code:\n- Compiler2 now closes the artifact ladder as MaterializedProgram(root) -\u003e AbiReadyProgram(root) -\u003e EmissionReadyProgram(root).\n- The old interpreter still consumes Module + ModulePlan and re-runs plan_module_with_role / resolve_module_types work.\n- The old native path still consumes Module + ModulePlan, then rebuilds PlannedProgram and AbiFacts through prepare_preplanned_native / materialize_program / AbiFacts::derive before JIT/AOT codegen.\n- EmissionReadyProgram carries settled call edges, return ABI, param/value reprs, callable entries, extern marshal classes, effects, and stable emission inventory, but it is not the old Module + PlannedProgram + AbiFacts shape.\n\nStrategy: do not synthesize old semantic or planner artifacts on the side. Instead, add the minimal Compiler2-native backend lowering and move consumers over in dependency order: lower settled Compiler2 artifacts to backend IR once, switch the interpreter, switch the shared native pipeline, then switch outer entry points and delete compiler2-side fallback.\n\nDesign constraints:\n- No shims, bridges, or adapter-side planner rediscovery.\n- Old ir_lower / ir_codegen code may be referenced for durable invariants or reusable mechanics, but Compiler2 remains by-function and artifact-driven.\n- Unsupported or missing closed facts are fatal; telemetry stays raw.\n\nChecks:\n- Backend paths fail if they ask semantic/type/callee/reachability questions after the artifact boundary.\n- Quicksort, Enum.reduce, and variadic extern fixtures preserve callable-entry, return-ABI, marshal, and effect contracts through the backend handoff.\n- Compiler2-specific backend paths do not call prepare_preplanned_native, materialize_program, AbiFacts::derive, plan_module_with_role, or resolve_module_types to fill missing facts.",
   "id": "fz-rh2.8.2",
   "labels": [],
   "parent": "fz-rh2.8",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 backends: consume EmissionReadyProgram mechanically",
   "type": "epic",
-  "updated_at": "2026-06-08T03:52:01Z"
+  "updated_at": "2026-06-08T11:38:48Z"
 }
