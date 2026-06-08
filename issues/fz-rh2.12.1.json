@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.12.2"
+  ],
   "created": "2026-06-08T20:52:14Z",
   "description": "Make @type a noted scoping concern, not an out-of-band attribute table. define_scope notes each @type by minting TypeName(module,name,arity) and holding its body AST -- the same cheap note-what-is-here that already mints fn and module ids. Add NamespaceSymbol::Type(TypeName); add reference_type(module,name,arity) mirroring reference_function for use-site refs like Foo.t. Retain top-level @type the way modules already do: finish_code_index (source.rs:58) drops program.attrs while modules keep theirs (source.rs:492) -- make GLOBAL uniform. No resolution, no type-algebra here. Verify: namespace_test extended for Type; a @type becomes a referenceable identity with its body held.",
   "id": "fz-rh2.12.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Note type names: NamespaceSymbol::Type, reference_type, retain top-level @type",
   "type": "task",
-  "updated_at": "2026-06-08T20:52:14Z"
+  "updated_at": "2026-06-08T20:52:15Z"
 }
