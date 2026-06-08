@@ -9,9 +9,9 @@
   "id": "fz-rh2.12.11",
   "labels": [],
   "parent": "fz-rh2.12",
-  "priority": 2,
+  "priority": 1,
   "status": "open",
   "title": "In-house type-expr parse + namespace capture (retire the env-coupled shape parser for compiler2)",
   "type": "task",
-  "updated_at": "2026-06-08T21:33:06Z"
+  "updated_at": "2026-06-08T21:34:18Z"
 }
