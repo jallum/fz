@@ -7,7 +7,7 @@
     "fz-rh2.12.7"
   ],
   "created": "2026-06-08T20:52:14Z",
-  "description": "Re-seat the three consumers and delete function_type_env (world.rs:1157). contract.rs:46, dispatch.rs:265 (param annotations), body.rs:477 (extern types) resolve names via the in-house resolver/TypeDefined instead of function_type_env. ResolvedSpecDecl and crate::specs are unchanged downstream (shared, over hard Ty). Externs: in-house extern type resolution replaces the env-based ir_lower::lower_extern_signature. Verify: spec_ok/spec_boundary/spec_violation fixtures and the contract/dispatch drive tests stay green.",
+  "description": "Re-seat the three consumers as the demand SOURCES that pull type defs, then delete function_type_env (world.rs:1157).\n\nEach consumer -- DeriveFunctionContract (contract.rs:46), dispatch param annotations (dispatch.rs:265), extern types (body.rs:477) -- WAITS on the TypeDefined facts recorded as its references in .1, then runs the pure-read resolver (.3) against the now-present hard Ty. This is the cascade @spec to FunctionContract: the contract is itself a demanded fact, and its wait on TypeDefined is what pulls DeriveTypeDef for exactly the names the spec mentions -- the same way DeriveFunctionContract sits over its MFAs. ResolvedSpecDecl and crate::specs are unchanged downstream (shared, over hard Ty). Externs: in-house extern type resolution replaces env-based ir_lower::lower_extern_signature.\n\nVerify: spec_ok / spec_boundary / spec_violation fixtures and the contract/dispatch drive tests stay green; a contract resolves before its function body is activated (two grains: a caller reads the contract without entering the body).",
   "id": "fz-rh2.12.4",
   "labels": [],
   "parent": "fz-rh2.12",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "Re-seat contract/dispatch/extern onto the resolver; delete function_type_env",
   "type": "task",
-  "updated_at": "2026-06-08T20:52:15Z"
+  "updated_at": "2026-06-08T21:06:14Z"
 }
