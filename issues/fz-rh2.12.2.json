@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-rh2.12.1"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-rh2.12.3",
     "fz-rh2.12.6"
@@ -16,5 +14,5 @@
   "status": "open",
   "title": "DeriveTypeDef formula + TypeDefined fact + TypeName-\u003eTy store",
   "type": "task",
-  "updated_at": "2026-06-08T20:52:15Z"
+  "updated_at": "2026-06-08T23:23:06Z"
 }

@@ -3,9 +3,7 @@
   "blocked_by": [
     "fz-rh2.12.11"
   ],
-  "blocks": [
-    "fz-rh2.12.2"
-  ],
+  "blocks": [],
   "created": "2026-06-08T20:52:14Z",
   "description": "Make @type a noted scoping concern. In define_scope FIRST walk (where fns/modules/protocols are reserved so forward refs resolve), reserve each @type from the surface attrs: build TypeName{module,name,arity}, bind NamespaceSymbol::Type(TypeName) into the scope, and note its declaration -- the parsed in-house TypeDefBody (.11) plus the namespace captured at that point -- into a TypeName-\u003edecl map on World. Reserving in the first walk puts sibling/forward type names in scope, so the old build_module_type_env fixpoint is unnecessary. Add NamespaceSymbol::Type(TypeName). Retain top-level @type the way modules keep theirs: finish_code_index (source.rs:58) drops program.attrs while modules keep theirs (source.rs:492) -- make GLOBAL uniform so a top-level @type reserves into the GLOBAL scope. No reference walk, no resolution here. Verify: namespace_test extended for Type; a @type becomes a referenceable identity with its TypeDefBody + captured namespace held; a top-level @type lands in GLOBAL.",
   "id": "fz-rh2.12.1",
@@ -21,5 +19,5 @@
   "status": "open",
   "title": "Note @type declarations: TypeName, NamespaceSymbol::Type, hold body+namespace, retain top-level @type",
   "type": "task",
-  "updated_at": "2026-06-08T23:23:05Z"
+  "updated_at": "2026-06-08T23:23:06Z"
 }
