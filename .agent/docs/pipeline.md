@@ -173,6 +173,39 @@ type-inference questions after that line, the artifact contract is incomplete
 or the consumer is violating it. The fix is to publish the missing closed fact,
 not to poke back into semantic state.
 
+## Native codegen contract
+
+`NativeProgram(root)` is the last Compiler2-owned artifact before JIT/AOT
+consumption. Native codegen is allowed to ask only backend-consumption
+questions at that rung:
+
+| Old shared-native input | Compiler2-native answer |
+| --- | --- |
+| prepared `Module` | `NativeProgram.module` |
+| executable / helper inventory | `NativeProgram.entry` plus `NativeProgram.bodies[*].fn_id` and `origin` |
+| `ModulePlan.effective_returns` and `fn_effects` | `NativeBody.return_ty`, `return_abi`, and `effects` |
+| `SpecPlan.vars` type queries | `NativeBody.value_types` |
+| `PlannedProgram.callable_entries` | `NativeProgram.callable_entries` |
+| callable-constructor lookup through planner state | `NativeBody.callable_constructors` |
+| extern decls plus wire classes | `NativeProgram.module.externs` plus `NativeBody.extern_marshals` |
+| continuation / entry ABI classification | `NativeBody.entry_abi` and `NativeBodyOrigin::Continuation` |
+
+Questions that are illegal after `NativeProgram(root)`:
+
+- reading `ModulePlan`, `PlannedProgram`, `SpecPlan`, `SpecRegistry`, or
+  `AbiFacts`
+- asking reachability, callee-selection, or semantic-closure questions
+- re-deriving callable-entry obligations, return lanes, or extern marshal
+  classes from old-world planner state
+
+Current conclusion from the code:
+
+- no missing closed fact has been identified for the current
+  `compile_with_backend_prepared_impl` inputs
+- the remaining work is consumer refactoring: shared native codegen still asks
+  those questions through planner-shaped structures, even though the answers
+  already exist on `NativeProgram`
+
 ## Redefinition retracts by ownership
 
 Redefinition is not a special path; it falls out of owned-output replacement.

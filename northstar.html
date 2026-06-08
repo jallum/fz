@@ -673,6 +673,67 @@ DependencySnapshot = HashMap&lt;FactKey, u64&gt;</code></pre>
         <code>MaterializedProgram</code>, that missing information belongs as a new artifact fact
         instead of an adapter-side query back into the semantic world.
       </p>
+      <h3>Native Codegen Contract</h3>
+      <p>
+        <code>NativeProgram(root)</code> is the last Compiler2-owned artifact before JIT and AOT.
+        Shared native codegen is allowed to ask only backend-consumption questions at that rung:
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Old shared-native input</th>
+            <th>Compiler2-native answer</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>prepared <code>Module</code></td>
+            <td><code>NativeProgram.module</code></td>
+          </tr>
+          <tr>
+            <td>executable / helper inventory</td>
+            <td><code>NativeProgram.entry</code> plus <code>NativeProgram.bodies[*].fn_id</code> and <code>origin</code></td>
+          </tr>
+          <tr>
+            <td><code>ModulePlan.effective_returns</code> and <code>fn_effects</code></td>
+            <td><code>NativeBody.return_ty</code>, <code>return_abi</code>, and <code>effects</code></td>
+          </tr>
+          <tr>
+            <td><code>SpecPlan.vars</code> type queries</td>
+            <td><code>NativeBody.value_types</code></td>
+          </tr>
+          <tr>
+            <td><code>PlannedProgram.callable_entries</code></td>
+            <td><code>NativeProgram.callable_entries</code></td>
+          </tr>
+          <tr>
+            <td>callable-constructor lookup through planner state</td>
+            <td><code>NativeBody.callable_constructors</code></td>
+          </tr>
+          <tr>
+            <td>extern decls plus wire classes</td>
+            <td><code>NativeProgram.module.externs</code> plus <code>NativeBody.extern_marshals</code></td>
+          </tr>
+          <tr>
+            <td>continuation / entry ABI classification</td>
+            <td><code>NativeBody.entry_abi</code> and <code>NativeBodyOrigin::Continuation</code></td>
+          </tr>
+        </tbody>
+      </table>
+      <p>
+        Illegal questions after <code>NativeProgram(root)</code>:
+      </p>
+      <ul>
+        <li>reading <code>ModulePlan</code>, <code>PlannedProgram</code>, <code>SpecPlan</code>, <code>SpecRegistry</code>, or <code>AbiFacts</code></li>
+        <li>asking reachability, callee-selection, or semantic-closure questions</li>
+        <li>re-deriving callable-entry obligations, return lanes, or extern marshal classes from old-world planner state</li>
+      </ul>
+      <p>
+        Current conclusion from the code: no missing closed fact has been identified for the
+        current shared native driver inputs. The remaining work is consumer refactoring, because
+        shared native codegen still asks those questions through planner-shaped structures even
+        though the answers already exist on <code>NativeProgram</code>.
+      </p>
     </section>
 
     <section>

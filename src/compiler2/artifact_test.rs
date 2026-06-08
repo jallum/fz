@@ -4,7 +4,10 @@ use super::{AbiValueRepr, ActivationKey, ExecutableKey, ExecutableNeed, Function
 use crate::compiler2::artifact::{
     EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableEntry, NativeEntryAbi, NativeProgram,
 };
-use crate::fz_ir::{Block, BlockId, ExternMarshalSite, ExternTy, FnCategory, FnId, FnIr, Module, Term, Var};
+use crate::fz_ir::{
+    Block, BlockId, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnCategory, FnId, FnIr, Module, Term, Var,
+};
+use crate::types::Types as _;
 
 #[test]
 fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
@@ -106,5 +109,175 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
     assert_eq!(
         program.callable_entries[0].target, executable,
         "callable entries should point straight at the executable they expose",
+    );
+}
+
+#[test]
+fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
+    let mut types = Types::new();
+    let int = types.int();
+    let executable = ExecutableKey {
+        activation: ActivationKey {
+            root: RootId::from_u32(0),
+            function: FunctionId::from_u32(0),
+            input: vec![int],
+        },
+        need: ExecutableNeed::Value,
+    };
+    let entry_fn = FnId(0);
+    let cont_fn = FnId(1);
+    let identity_fn = FnId(2);
+
+    let mut legacy_types = crate::types::new();
+    let mut module = Module::default();
+    module.externs.push(ExternDecl {
+        id: ExternId(0),
+        fz_name: "libc::open".to_string(),
+        symbol: "open".to_string(),
+        params: vec![ExternTy::CString, ExternTy::I64],
+        variadic: true,
+        ret: ExternTy::I64,
+        ret_descr: legacy_types.any(),
+    });
+    module.extern_idx.insert(ExternId(0), 0);
+    module.fns.push(FnIr {
+        id: entry_fn,
+        name: "main".to_string(),
+        frame_schema_id: 0,
+        blocks: vec![Block {
+            id: BlockId(0),
+            params: vec![Var(0)],
+            stmts: Vec::new(),
+            terminator: Term::Return(Var(0)),
+        }],
+        entry: BlockId(0),
+        category: FnCategory::User,
+        owner_module: String::new(),
+        ignored_entry_params: vec![false],
+        physical_entry_params: Vec::new(),
+        physical_capabilities: Vec::new(),
+    });
+    module.fn_idx.insert(entry_fn, 0);
+    module.fns.push(FnIr {
+        id: cont_fn,
+        name: "main__k0".to_string(),
+        frame_schema_id: 0,
+        blocks: vec![Block {
+            id: BlockId(1),
+            params: vec![Var(1)],
+            stmts: Vec::new(),
+            terminator: Term::Return(Var(1)),
+        }],
+        entry: BlockId(1),
+        category: FnCategory::CpsCont,
+        owner_module: String::new(),
+        ignored_entry_params: vec![false],
+        physical_entry_params: Vec::new(),
+        physical_capabilities: Vec::new(),
+    });
+    module.fn_idx.insert(cont_fn, 1);
+
+    let extern_site = ExternMarshalSite {
+        block: BlockId(0),
+        stmt_idx: 0,
+        arg_idx: 0,
+    };
+    let program = NativeProgram {
+        backend_revision: 7,
+        entry: entry_fn,
+        module,
+        bodies: vec![
+            NativeBody {
+                fn_id: entry_fn,
+                origin: NativeBodyOrigin::Executable(executable.clone()),
+                entry_abi: NativeEntryAbi::Direct,
+                param_reprs: vec![AbiValueRepr::RawInt],
+                return_ty: int,
+                return_abi: ReturnAbi::Value(AbiValueRepr::RawInt),
+                value_types: HashMap::from([(Var(0), int)]),
+                callable_constructors: HashMap::from([(Var(0), vec![0])]),
+                extern_marshals: HashMap::from([(extern_site, ExternTy::CString)]),
+                effects: EffectSummary::default(),
+            },
+            NativeBody {
+                fn_id: cont_fn,
+                origin: NativeBodyOrigin::Continuation {
+                    owner: entry_fn,
+                    index: 0,
+                },
+                entry_abi: NativeEntryAbi::Continuation { extra_params: 1 },
+                param_reprs: vec![AbiValueRepr::ValueRef],
+                return_ty: int,
+                return_abi: ReturnAbi::Value(AbiValueRepr::ValueRef),
+                value_types: HashMap::from([(Var(1), int)]),
+                callable_constructors: HashMap::new(),
+                extern_marshals: HashMap::new(),
+                effects: EffectSummary::default(),
+            },
+        ],
+        callable_entries: vec![NativeCallableEntry {
+            identity_fn,
+            target_fn: entry_fn,
+            target: executable.clone(),
+            capture_count: 0,
+            param_reprs: vec![AbiValueRepr::RawInt],
+            return_ty: int,
+            return_abi: ReturnAbi::Value(AbiValueRepr::RawInt),
+        }],
+    };
+
+    assert_eq!(
+        program.entry, entry_fn,
+        "native codegen should read the root entry directly from NativeProgram instead of SpecRegistry or reachable-spec tables",
+    );
+    assert_eq!(
+        program.module.fns.len(),
+        2,
+        "native codegen should read the prepared CPS/native body inventory directly from NativeProgram.module instead of a rebuilt prepared Module shell",
+    );
+    assert_eq!(
+        program.bodies[0].return_ty, int,
+        "native codegen should read effective return types from NativeBody.return_ty instead of ModulePlan.effective_returns",
+    );
+    assert_eq!(
+        program.bodies[0].return_abi,
+        ReturnAbi::Value(AbiValueRepr::RawInt),
+        "native codegen should read return-lane contracts from NativeBody.return_abi instead of re-deriving them through planner state",
+    );
+    assert_eq!(
+        program.bodies[0].value_types.get(&Var(0)),
+        Some(&int),
+        "native codegen should read per-value type answers from NativeBody.value_types instead of SpecPlan.vars",
+    );
+    assert_eq!(
+        program.bodies[0].callable_constructors.get(&Var(0)),
+        Some(&vec![0]),
+        "native codegen should read callable-constructor obligations from NativeBody.callable_constructors instead of planner-side callable lookup",
+    );
+    assert_eq!(
+        program.callable_entries[0].target, executable,
+        "native codegen should read callable-entry inventory from NativeProgram.callable_entries instead of PlannedProgram.callable_entries",
+    );
+    assert_eq!(
+        program.module.externs[0].symbol, "open",
+        "native codegen should read extern declarations from NativeProgram.module instead of a rebuilt prepared Module input",
+    );
+    assert_eq!(
+        program.bodies[0].extern_marshals.get(&extern_site),
+        Some(&ExternTy::CString),
+        "native codegen should read concrete extern wire classes from NativeBody.extern_marshals instead of AbiFacts or planner recomputation",
+    );
+    assert_eq!(
+        program.bodies[1].entry_abi,
+        NativeEntryAbi::Continuation { extra_params: 1 },
+        "native codegen should classify continuation entries from NativeBody.entry_abi instead of cont_fns or cont_extras_count side tables",
+    );
+    assert_eq!(
+        program.bodies[1].origin,
+        NativeBodyOrigin::Continuation {
+            owner: entry_fn,
+            index: 0
+        },
+        "native codegen should recover helper ownership from NativeBody.origin instead of planner reachability metadata",
     );
 }

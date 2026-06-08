@@ -83,10 +83,15 @@ pub(crate) struct NativeProgram {
     pub backend_revision: u64,
     /// The CPS/native entry body the shared JIT/AOT pipeline should start at.
     pub entry: FnId,
-    /// Compiler2-owned CPS/native module handed to shared codegen.
+    /// Compiler2-owned CPS/native module handed to shared codegen. This
+    /// replaces the old prepared `Module` input for Compiler2-native runs.
     pub module: IrModule,
-    /// Per-body native facts that replace old planner-owned side tables.
+    /// Per-body native facts that replace old planner-owned side tables such
+    /// as `ModulePlan.effective_returns`, `SpecPlan.vars`, and continuation
+    /// classification.
     pub bodies: Vec<NativeBody>,
+    /// Closed callable-entry inventory plus callable identity bodies. This
+    /// replaces the old planner-side callable-entry lookup surface.
     pub callable_entries: Vec<NativeCallableEntry>,
 }
 
