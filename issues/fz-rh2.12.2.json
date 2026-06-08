@@ -12,6 +12,12 @@
   "id": "fz-rh2.12.2",
   "labels": [],
   "parent": "fz-rh2.12",
+  "comments": [
+    {
+      "text": "Split: REFERENCE moved to fz-rh2.12.12 (now blocks .2). DeriveTypeDef reads its wait-set from fz-rh2.12.12 recorded refs for the @type body, waits on those TypeDefined, then resolves.",
+      "timestamp": "2026-06-08T23:23:06Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "DeriveTypeDef formula + TypeDefined fact + TypeName-\u003eTy store",
