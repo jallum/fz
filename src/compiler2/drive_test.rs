@@ -1,4 +1,5 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
+use crate::compiler2::artifact::{NativeBodyOrigin, NativeProgram};
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
     AbiReadyProgram, AbiValueRepr, ActivationKey, BackendProgram, BackendStep, CallSiteId, CallSiteKey,
@@ -10,7 +11,10 @@ use crate::diag::codes;
 use crate::dispatch_matrix::Region;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
 use crate::exec::runtime::DbgCapture;
-use crate::fz_ir::ExternTy;
+use crate::fz_ir::{
+    Block as IrBlock, CallsiteId as IrCallsiteId, CallsiteIdent, Cont as IrCont, ExternTy, ExternalCallEdge,
+    FnIr as IrFn, Module as IrModule, Prim as IrPrim, ReceiveAfter, ReceiveClause, Stmt as IrStmt, Term as IrTerm,
+};
 use crate::telemetry::handler::{Event, EventKind, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use std::cell::RefCell;
@@ -32,6 +36,7 @@ type MaterializedProgramDefs = Rc<RefCell<Vec<MaterializedProgramRecord>>>;
 type AbiReadyProgramDefs = Rc<RefCell<Vec<AbiReadyProgramRecord>>>;
 type EmissionReadyProgramDefs = Rc<RefCell<Vec<EmissionReadyProgramRecord>>>;
 type BackendProgramDefs = Rc<RefCell<Vec<BackendProgramRecord>>>;
+type NativeProgramDefs = Rc<RefCell<Vec<NativeProgramRecord>>>;
 type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
 
 fn presence(fact: FactKey, revision: u64) -> (FactKey, FactValue) {
@@ -1757,8 +1762,8 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
         "backend lowering should not reopen semantic or planner discovery upstream of the artifact ladder",
     );
     assert!(
-        backend.follow_up.is_empty(),
-        "backend lowering should be the end of the current Compiler2-owned artifact ladder",
+        backend.follow_up == vec![Job::LowerNativeProgram(root_id)],
+        "backend lowering should hand off directly to the native handoff projection",
     );
     assert!(
         backend
@@ -1766,6 +1771,28 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
             .iter()
             .all(|(fact, _)| *fact == FactKey::BackendProgram(root_id)),
         "backend lowering should publish only the backend handoff fact",
+    );
+
+    let native = outputs.effects(Job::LowerNativeProgram(root_id));
+    assert_eq!(
+        native.reads,
+        vec![FactKey::BackendProgram(root_id)],
+        "native lowering should consume only the backend handoff fact",
+    );
+    assert!(
+        native.waits.is_empty(),
+        "native lowering should not reopen semantic, planner, or backend discovery work upstream of the artifact ladder",
+    );
+    assert!(
+        native.follow_up.is_empty(),
+        "native lowering should be the end of the current Compiler2-owned artifact ladder",
+    );
+    assert!(
+        native
+            .outputs
+            .iter()
+            .all(|(fact, _)| *fact == FactKey::NativeProgram(root_id)),
+        "native lowering should publish only the native handoff fact",
     );
 }
 
@@ -2009,6 +2036,276 @@ end
     assert!(
         capture.find(&["fz", "planner"]).is_empty() && capture.find(&["fz", "codegen"]).is_empty(),
         "backend lowering should not wake the legacy planner or codegen pipelines",
+    );
+}
+
+#[test]
+fn compiler2_native_program_keeps_only_the_closed_quicksort_inventory() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
+        text: format!(
+            "{}\nfn foo(), do: 42\n",
+            include_str!("../../fixtures/quicksort/input.fz")
+        ),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "native lowering should keep only the closed quicksort executable frontier: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let program = native.last(root_id).program;
+    let main_id = function_id(&functions, "main", 0);
+    let qsort_id = function_id(&functions, "qsort", 1);
+    let partition_id = function_id(&functions, "partition", 4);
+    let append_id = function_id(&functions, "append", 2);
+    let foo_id = function_id(&functions, "foo", 0);
+
+    let executable_ids = native_executable_functions(&program);
+    assert_eq!(
+        native_executable_fn(&program, main_id),
+        program.entry,
+        "the native-program entry should still point at the main/0 executable body",
+    );
+    assert!(
+        executable_ids.contains(&main_id)
+            && executable_ids.contains(&qsort_id)
+            && executable_ids.contains(&partition_id)
+            && executable_ids.contains(&append_id),
+        "native lowering should keep the closed quicksort executable frontier",
+    );
+    assert!(
+        !executable_ids.contains(&foo_id),
+        "native lowering should keep cold foo/0 out of the native handoff",
+    );
+    assert!(
+        program.callable_entries.is_empty(),
+        "quicksort should not manufacture callable-entry inventory in the native handoff",
+    );
+}
+
+#[test]
+fn compiler2_native_program_keeps_the_closed_enum_reduce_callable_entries() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
+        text: r#"
+fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "native lowering should carry only the callable entries that survive the closed Enum.reduce path: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let main_id = function_id(&functions, "main", 0);
+    let enum_reduce_id = function_id_in_module(&functions, &modules, "Enum", "reduce", 3);
+    let user_reducer_id = generated_functions_owned_by(&functions, main_id)
+        .into_iter()
+        .next()
+        .expect("generated user reducer")
+        .function_id;
+    let bridge_reducer_id = generated_functions_owned_by(&functions, enum_reduce_id)
+        .into_iter()
+        .next()
+        .expect("generated bridge reducer")
+        .function_id;
+
+    let program = native.last(root_id).program;
+    let callable_functions = program
+        .callable_entries
+        .iter()
+        .map(|entry| entry.target.activation.function)
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        callable_functions,
+        HashSet::from([user_reducer_id, bridge_reducer_id]),
+        "the native callable-entry inventory should keep exactly the user reducer and bridge reducer entries",
+    );
+
+    let used_entries = native_callable_constructor_uses(&program);
+    let expected_entries = program
+        .callable_entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            matches!(
+                entry.target.activation.function,
+                id if id == user_reducer_id || id == bridge_reducer_id
+            )
+            .then_some(index)
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        used_entries, expected_entries,
+        "native callable constructors should point at exactly the callable-entry obligations that survive the closed Enum.reduce path",
+    );
+}
+
+#[test]
+fn compiler2_native_program_preserves_variadic_extern_wrappers_and_marshals() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/variadic_open_compiler2.fz".to_string()),
+        text: r#"
+extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
+
+fn main() do
+  libc::open("x", 0, 0o644 :: integer)
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "native lowering should preserve the settled variadic extern wrapper and wire classes: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let program = native.last(root_id).program;
+    let open_id = function_id(&functions, "libc::open", 2);
+    let body = native_executable_body(&program, open_id);
+    assert_eq!(
+        program.module.externs.len(),
+        1,
+        "native lowering should publish one extern declaration for libc::open"
+    );
+    let decl = &program.module.externs[0];
+    assert_eq!(decl.symbol, "open");
+    assert_eq!(decl.params, vec![ExternTy::CString, ExternTy::I64]);
+    assert!(decl.variadic);
+    assert_eq!(decl.ret, ExternTy::I64);
+    assert_eq!(
+        sorted_extern_marshals(body),
+        vec![ExternTy::CString, ExternTy::I64, ExternTy::I64],
+        "native extern wrapper bodies should carry the exact settled C wire classes for a variadic site",
+    );
+}
+
+#[test]
+fn compiler2_native_program_revision_stays_stable_for_identical_recompute() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
+        text: format!(
+            "{}\nfn foo(), do: 42\n",
+            include_str!("../../fixtures/quicksort/input.fz")
+        ),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!("initial native lowering should settle for quicksort: {outcome:?}; diagnostic={message}");
+    }
+    assert!(
+        compiler.demand(Job::LowerNativeProgram(root_id)),
+        "explicitly re-demanding unchanged native lowering should enqueue one fresh derivation",
+    );
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "re-lowering unchanged native state should resolve without bumping the revision: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let records = native.records(root_id);
+    assert_eq!(
+        records.len(),
+        2,
+        "the native program should have one initial definition and one unchanged re-derivation",
+    );
+    assert_eq!(
+        records[0].revision, records[1].revision,
+        "identical native-program state should keep the same revision number across recomputation",
+    );
+    assert!(
+        native_programs_match(&records[0].program, &records[1].program),
+        "identical native-program recomputation should reproduce the same closed handoff facts",
     );
 }
 
@@ -4334,6 +4631,13 @@ struct BackendProgramRecord {
 }
 
 #[derive(Debug, Clone)]
+struct NativeProgramRecord {
+    root_id: crate::compiler2::RootId,
+    revision: u64,
+    program: NativeProgram,
+}
+
+#[derive(Debug, Clone)]
 struct ReturnTypeRecord {
     activation: ActivationKey,
     return_ty: Ty,
@@ -4373,6 +4677,10 @@ struct EmissionReadyProgramCapture {
 
 struct BackendProgramCapture {
     defs: BackendProgramDefs,
+}
+
+struct NativeProgramCapture {
+    defs: NativeProgramDefs,
 }
 
 struct EntryDispatchCapture {
@@ -4719,6 +5027,39 @@ impl BackendProgramCapture {
     }
 }
 
+impl NativeProgramCapture {
+    fn new() -> Self {
+        Self {
+            defs: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(NativeProgramCaptureHandler {
+            defs: self.defs.clone(),
+        })
+    }
+
+    fn last(&self, root_id: crate::compiler2::RootId) -> NativeProgramRecord {
+        self.defs
+            .borrow()
+            .iter()
+            .rev()
+            .find(|record| record.root_id == root_id)
+            .cloned()
+            .unwrap_or_else(|| panic!("native_program.defined for {root_id:?}"))
+    }
+
+    fn records(&self, root_id: crate::compiler2::RootId) -> Vec<NativeProgramRecord> {
+        self.defs
+            .borrow()
+            .iter()
+            .filter(|record| record.root_id == root_id)
+            .cloned()
+            .collect()
+    }
+}
+
 impl GuardDispatchCapture {
     fn new() -> Self {
         Self {
@@ -4835,6 +5176,10 @@ struct EmissionReadyProgramCaptureHandler {
 
 struct BackendProgramCaptureHandler {
     defs: BackendProgramDefs,
+}
+
+struct NativeProgramCaptureHandler {
+    defs: NativeProgramDefs,
 }
 
 struct EntryDispatchCaptureHandler {
@@ -5146,6 +5491,32 @@ impl Handler for BackendProgramCaptureHandler {
     }
 }
 
+impl Handler for NativeProgramCaptureHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if event.name != ["fz", "compiler2", "native_program", "defined"] || event.kind != EventKind::Event {
+            return;
+        }
+        let Some(Value::U64(root_id)) = event.measurements.get("root_id") else {
+            return;
+        };
+        let Some(Value::U64(revision)) = event.measurements.get("revision") else {
+            return;
+        };
+        let Some(program) = event
+            .metadata
+            .get("program")
+            .and_then(|value| value.downcast_ref::<NativeProgram>())
+        else {
+            return;
+        };
+        self.defs.borrow_mut().push(NativeProgramRecord {
+            root_id: crate::compiler2::RootId::from_u32(*root_id as u32),
+            revision: *revision,
+            program: program.clone(),
+        });
+    }
+}
+
 impl Handler for GuardDispatchCaptureHandler {
     fn handle(&self, event: &Event<'_, '_, '_>) {
         if event.name != ["fz", "compiler2", "guard_dispatch", "defined"] || event.kind != EventKind::Event {
@@ -5373,6 +5744,314 @@ fn backend_callable_entry_uses(program: &BackendProgram) -> HashSet<usize> {
         }
     }
     out
+}
+
+fn native_executable_functions(program: &NativeProgram) -> HashSet<FunctionId> {
+    program
+        .bodies
+        .iter()
+        .filter_map(|body| match &body.origin {
+            NativeBodyOrigin::Executable(key) => Some(key.activation.function),
+            NativeBodyOrigin::Clause { .. } | NativeBodyOrigin::Continuation { .. } => None,
+        })
+        .collect()
+}
+
+fn native_executable_fn(program: &NativeProgram, function: FunctionId) -> crate::fz_ir::FnId {
+    program
+        .bodies
+        .iter()
+        .find_map(|body| match &body.origin {
+            NativeBodyOrigin::Executable(key) if key.activation.function == function => Some(body.fn_id),
+            NativeBodyOrigin::Executable(_)
+            | NativeBodyOrigin::Clause { .. }
+            | NativeBodyOrigin::Continuation { .. } => None,
+        })
+        .unwrap_or_else(|| panic!("native executable fn for {function:?}"))
+}
+
+fn native_executable_body(program: &NativeProgram, function: FunctionId) -> &crate::compiler2::artifact::NativeBody {
+    program
+        .bodies
+        .iter()
+        .find(|body| matches!(&body.origin, NativeBodyOrigin::Executable(key) if key.activation.function == function))
+        .unwrap_or_else(|| panic!("native executable body for {function:?}"))
+}
+
+fn native_callable_constructor_uses(program: &NativeProgram) -> HashSet<usize> {
+    let mut out = HashSet::new();
+    for body in &program.bodies {
+        for entries in body.callable_constructors.values() {
+            out.extend(entries.iter().copied());
+        }
+    }
+    out
+}
+
+fn sorted_extern_marshals(body: &crate::compiler2::artifact::NativeBody) -> Vec<ExternTy> {
+    let mut marshals = body
+        .extern_marshals
+        .iter()
+        .map(|(site, ty)| (site.arg_idx, *ty))
+        .collect::<Vec<_>>();
+    marshals.sort_by_key(|(arg_idx, _)| *arg_idx);
+    marshals.into_iter().map(|(_, ty)| ty).collect()
+}
+
+fn native_programs_match(left: &NativeProgram, right: &NativeProgram) -> bool {
+    left.backend_revision == right.backend_revision
+        && left.entry == right.entry
+        && left.bodies == right.bodies
+        && left.callable_entries == right.callable_entries
+        && native_modules_match(&left.module, &right.module)
+}
+
+fn native_modules_match(left: &IrModule, right: &IrModule) -> bool {
+    left.module_path == right.module_path
+        && left.fns.len() == right.fns.len()
+        && left
+            .fns
+            .iter()
+            .zip(right.fns.iter())
+            .all(|(left, right)| native_fns_match(left, right))
+        && left.fn_idx == right.fn_idx
+        && left.atom_names == right.atom_names
+        && left.externs == right.externs
+        && left.extern_idx == right.extern_idx
+        && left.external_call_edges.len() == right.external_call_edges.len()
+        && left
+            .external_call_edges
+            .iter()
+            .zip(right.external_call_edges.iter())
+            .all(|(left, right)| native_external_call_edges_match(left, right))
+        && left.protocol_call_targets == right.protocol_call_targets
+}
+
+fn native_fns_match(left: &IrFn, right: &IrFn) -> bool {
+    left.id == right.id
+        && left.name == right.name
+        && left.frame_schema_id == right.frame_schema_id
+        && left.entry == right.entry
+        && left.category == right.category
+        && left.owner_module == right.owner_module
+        && left.ignored_entry_params == right.ignored_entry_params
+        && left.physical_entry_params == right.physical_entry_params
+        && left.physical_capabilities == right.physical_capabilities
+        && left.blocks.len() == right.blocks.len()
+        && left
+            .blocks
+            .iter()
+            .zip(right.blocks.iter())
+            .all(|(left, right)| native_blocks_match(left, right))
+}
+
+fn native_blocks_match(left: &IrBlock, right: &IrBlock) -> bool {
+    left.id == right.id
+        && left.params == right.params
+        && left.stmts.len() == right.stmts.len()
+        && left
+            .stmts
+            .iter()
+            .zip(right.stmts.iter())
+            .all(|(left, right)| native_stmts_match(left, right))
+        && native_terms_match(&left.terminator, &right.terminator)
+}
+
+fn native_stmts_match(left: &IrStmt, right: &IrStmt) -> bool {
+    match (left, right) {
+        (IrStmt::Let(left_var, left_prim), IrStmt::Let(right_var, right_prim)) => {
+            left_var == right_var && native_prims_match(left_prim, right_prim)
+        }
+    }
+}
+
+fn native_prims_match(left: &IrPrim, right: &IrPrim) -> bool {
+    match (left, right) {
+        (IrPrim::Extern(left_ident, left_extern, left_args), IrPrim::Extern(right_ident, right_extern, right_args)) => {
+            native_callsite_idents_match(left_ident, right_ident)
+                && left_extern == right_extern
+                && left_args == right_args
+        }
+        (IrPrim::MakeFnRef(left_ident, left_fn), IrPrim::MakeFnRef(right_ident, right_fn)) => {
+            native_callsite_idents_match(left_ident, right_ident) && left_fn == right_fn
+        }
+        (
+            IrPrim::MakeClosure(left_ident, left_fn, left_captured),
+            IrPrim::MakeClosure(right_ident, right_fn, right_captured),
+        ) => {
+            native_callsite_idents_match(left_ident, right_ident)
+                && left_fn == right_fn
+                && left_captured == right_captured
+        }
+        _ => left == right,
+    }
+}
+
+fn native_terms_match(left: &IrTerm, right: &IrTerm) -> bool {
+    match (left, right) {
+        (IrTerm::Goto(left_block, left_args), IrTerm::Goto(right_block, right_args)) => {
+            left_block == right_block && left_args == right_args
+        }
+        (
+            IrTerm::If {
+                cond: left_cond,
+                then_b: left_then,
+                else_b: left_else,
+                origin: left_origin,
+            },
+            IrTerm::If {
+                cond: right_cond,
+                then_b: right_then,
+                else_b: right_else,
+                origin: right_origin,
+            },
+        ) => {
+            left_cond == right_cond && left_then == right_then && left_else == right_else && left_origin == right_origin
+        }
+        (
+            IrTerm::Call {
+                ident: left_ident,
+                callee: left_callee,
+                args: left_args,
+                continuation: left_cont,
+            },
+            IrTerm::Call {
+                ident: right_ident,
+                callee: right_callee,
+                args: right_args,
+                continuation: right_cont,
+            },
+        ) => {
+            native_callsite_idents_match(left_ident, right_ident)
+                && left_callee == right_callee
+                && left_args == right_args
+                && native_conts_match(left_cont, right_cont)
+        }
+        (
+            IrTerm::TailCall {
+                ident: left_ident,
+                callee: left_callee,
+                args: left_args,
+                is_back_edge: left_back_edge,
+            },
+            IrTerm::TailCall {
+                ident: right_ident,
+                callee: right_callee,
+                args: right_args,
+                is_back_edge: right_back_edge,
+            },
+        ) => {
+            native_callsite_idents_match(left_ident, right_ident)
+                && left_callee == right_callee
+                && left_args == right_args
+                && left_back_edge == right_back_edge
+        }
+        (
+            IrTerm::CallClosure {
+                ident: left_ident,
+                closure: left_closure,
+                args: left_args,
+                continuation: left_cont,
+            },
+            IrTerm::CallClosure {
+                ident: right_ident,
+                closure: right_closure,
+                args: right_args,
+                continuation: right_cont,
+            },
+        ) => {
+            native_callsite_idents_match(left_ident, right_ident)
+                && left_closure == right_closure
+                && left_args == right_args
+                && native_conts_match(left_cont, right_cont)
+        }
+        (
+            IrTerm::TailCallClosure {
+                ident: left_ident,
+                closure: left_closure,
+                args: left_args,
+            },
+            IrTerm::TailCallClosure {
+                ident: right_ident,
+                closure: right_closure,
+                args: right_args,
+            },
+        ) => {
+            native_callsite_idents_match(left_ident, right_ident)
+                && left_closure == right_closure
+                && left_args == right_args
+        }
+        (IrTerm::Return(left_var), IrTerm::Return(right_var)) | (IrTerm::Halt(left_var), IrTerm::Halt(right_var)) => {
+            left_var == right_var
+        }
+        (
+            IrTerm::ReceiveMatched {
+                ident: left_ident,
+                clauses: left_clauses,
+                dispatch: left_dispatch,
+                after: left_after,
+                pinned: left_pinned,
+                captures: left_captures,
+            },
+            IrTerm::ReceiveMatched {
+                ident: right_ident,
+                clauses: right_clauses,
+                dispatch: right_dispatch,
+                after: right_after,
+                pinned: right_pinned,
+                captures: right_captures,
+            },
+        ) => {
+            native_callsite_idents_match(left_ident, right_ident)
+                && left_clauses.len() == right_clauses.len()
+                && left_clauses
+                    .iter()
+                    .zip(right_clauses.iter())
+                    .all(|(left, right)| native_receive_clauses_match(left, right))
+                && left_dispatch == right_dispatch
+                && native_receive_after_match(left_after.as_ref(), right_after.as_ref())
+                && left_pinned == right_pinned
+                && left_captures == right_captures
+        }
+        _ => false,
+    }
+}
+
+fn native_conts_match(left: &IrCont, right: &IrCont) -> bool {
+    left.fn_id == right.fn_id && left.captured == right.captured
+}
+
+fn native_receive_clauses_match(left: &ReceiveClause, right: &ReceiveClause) -> bool {
+    native_callsite_idents_match(&left.ident, &right.ident)
+        && left.bound_names == right.bound_names
+        && left.guard == right.guard
+        && left.body == right.body
+        && left.span == right.span
+}
+
+fn native_receive_after_match(left: Option<&ReceiveAfter>, right: Option<&ReceiveAfter>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            native_callsite_idents_match(&left.ident, &right.ident)
+                && left.timeout == right.timeout
+                && left.body == right.body
+                && left.span == right.span
+        }
+        _ => false,
+    }
+}
+
+fn native_external_call_edges_match(left: &ExternalCallEdge, right: &ExternalCallEdge) -> bool {
+    native_callsite_ids_match(&left.callsite, &right.callsite) && left.target == right.target
+}
+
+fn native_callsite_ids_match(left: &IrCallsiteId, right: &IrCallsiteId) -> bool {
+    left.caller == right.caller && left.slot == right.slot && native_callsite_idents_match(&left.ident, &right.ident)
+}
+
+fn native_callsite_idents_match(left: &CallsiteIdent, right: &CallsiteIdent) -> bool {
+    left.span() == right.span()
 }
 
 fn collect_backend_callable_entry_uses(steps: &[BackendStep], out: &mut HashSet<usize>) {

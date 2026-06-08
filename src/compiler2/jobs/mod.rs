@@ -13,6 +13,7 @@ mod backend;
 mod body;
 mod dispatch;
 mod keying;
+mod native;
 mod root;
 mod semantic;
 mod source;
@@ -34,5 +35,6 @@ pub(crate) fn run(world: &mut World<'_>, job: &Job) -> Result<JobEffects, FatalE
         Job::DeriveAbiReady(root_id) => artifact::derive_abi_ready(world, *root_id),
         Job::DeriveEmissionReady(root_id) => artifact::derive_emission_ready(world, *root_id),
         Job::LowerBackendProgram(root_id) => backend::lower_backend_program(world, *root_id),
+        Job::LowerNativeProgram(root_id) => native::lower_native_program(world, *root_id),
     }
 }

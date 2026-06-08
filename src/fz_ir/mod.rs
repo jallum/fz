@@ -91,13 +91,13 @@ impl CallsiteIdent {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BitSizeIr {
     Literal(u32),
     Var(Var),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BitFieldIr {
     pub value: Var,
     pub ty: BitType,
@@ -302,7 +302,7 @@ impl ExternArg {
 }
 
 /// One resolved `extern "C" fn` declaration stored in `Module.externs`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternDecl {
     pub id: ExternId,
     pub fz_name: String,
@@ -350,7 +350,7 @@ pub enum UnOp {
     Not,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Prim {
     Const(Const),
     BinOp(BinOp, Var, Var),
@@ -628,14 +628,14 @@ impl Prim {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     Let(Var, Prim),
 }
 
 /// First-class continuation: an IR fn to invoke with the given captured vars
 /// (plus the value(s) being returned to it, supplied by the caller at runtime).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cont {
     pub fn_id: FnId,
     pub captured: Vec<Var>,
@@ -687,7 +687,7 @@ pub enum BranchOrigin {
     ParamGuard,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Term {
     Goto(BlockId, Vec<Var>),
     If {
@@ -769,7 +769,7 @@ pub struct ContinuationProvenance {
 }
 
 /// fz-yxs — one arm of a `Term::ReceiveMatched`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ReceiveClause {
     /// Intrinsic identity for this clause outcome site. Planner discovery,
     /// reachability, and codegen use this instead of reconstructing a fresh
@@ -790,7 +790,7 @@ pub struct ReceiveClause {
 }
 
 /// fz-yxs — optional `after timeout -> body` tail clause.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ReceiveAfter {
     /// Intrinsic identity for this after-outcome site.
     pub ident: CallsiteIdent,
@@ -1035,7 +1035,7 @@ pub(crate) fn visit_term_vars(term: &Term, mut visit: impl FnMut(Var)) {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Block {
     pub id: BlockId,
     pub params: Vec<Var>,
@@ -1075,7 +1075,7 @@ pub enum FnCategory {
     ReplEntry,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FnIr {
     pub id: FnId,
     pub name: String,

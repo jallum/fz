@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use super::{AbiValueRepr, ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, ReturnAbi, RootId, Types};
-use crate::compiler2::artifact::{EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableEntry, NativeProgram};
+use crate::compiler2::artifact::{
+    EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableEntry, NativeEntryAbi, NativeProgram,
+};
 use crate::fz_ir::{Block, BlockId, ExternMarshalSite, ExternTy, FnCategory, FnId, FnIr, Module, Term, Var};
 
 #[test]
@@ -17,7 +19,7 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
         need: ExecutableNeed::Value,
     };
     let entry_fn = FnId(0);
-    let wrapper_fn = FnId(1);
+    let identity_fn = FnId(1);
 
     let mut module = Module::default();
     module.fns.push(FnIr {
@@ -54,18 +56,23 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
         bodies: vec![NativeBody {
             fn_id: entry_fn,
             origin: NativeBodyOrigin::Executable(executable.clone()),
+            entry_abi: NativeEntryAbi::Direct,
             param_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
             return_abi: ReturnAbi::Value(AbiValueRepr::RawInt),
             value_types: HashMap::from([(Var(0), int)]),
+            callable_constructors: HashMap::from([(Var(0), vec![0])]),
             extern_marshals: marshals.clone(),
             effects: EffectSummary::default(),
         }],
         callable_entries: vec![NativeCallableEntry {
-            wrapper_fn,
+            identity_fn,
             target_fn: entry_fn,
             target: executable.clone(),
             capture_count: 0,
+            param_reprs: vec![AbiValueRepr::RawInt],
+            return_ty: int,
+            return_abi: ReturnAbi::Value(AbiValueRepr::RawInt),
         }],
     };
 
@@ -79,11 +86,25 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
         "the body contract should keep executable identity on the body record instead of an external planner shell",
     );
     assert_eq!(
+        program.bodies[0].entry_abi,
+        NativeEntryAbi::Direct,
+        "the body contract should say whether a body is a direct entry or a continuation entry",
+    );
+    assert_eq!(
+        program.bodies[0].callable_constructors.get(&Var(0)),
+        Some(&vec![0]),
+        "callable-constructor vars should point at the closed callable-entry inventory instead of hiding that resolution in codegen",
+    );
+    assert_eq!(
         program.bodies[0].extern_marshals, marshals,
         "the body contract should carry concrete extern marshal classes inline for native codegen",
     );
     assert_eq!(
+        program.callable_entries[0].identity_fn, identity_fn,
+        "callable entries should carry a callable identity for closure construction sites",
+    );
+    assert_eq!(
         program.callable_entries[0].target, executable,
-        "callable-entry wrappers should point straight at the executable they expose",
+        "callable entries should point straight at the executable they expose",
     );
 }

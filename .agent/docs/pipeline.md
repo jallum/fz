@@ -46,13 +46,13 @@ MaterializedProgram(root)
   -> AbiReadyProgram(root)
   -> EmissionReadyProgram(root)
   -> BackendProgram(root)
+  -> NativeProgram(root)
 ```
 
 Those rungs are derived mechanically from the closed artifact below them. They
-do not reopen semantic discovery. Native codegen needs one further
-Compiler2-owned handoff above that ladder, `NativeProgram(root)`, but the
-lowering job for that contract is intentionally a separate step from
-`BackendProgram(root)` publication.
+do not reopen semantic discovery. `NativeProgram(root)` is intentionally a
+separate lowering step above `BackendProgram(root)`, not an adapter-side query
+back into semantic or planner state.
 
 ## A root's journey
 
@@ -71,6 +71,7 @@ submit_root(main/0)
   DeriveAbiReady(root) derives ABI lanes, return delivery, and callable-boundary facts
   DeriveEmissionReady(root) derives stable emission inventory
   LowerBackendProgram(root) derives the backend-consumable handoff
+  LowerNativeProgram(root) derives the CPS/native handoff for shared codegen
 ```
 
 Each callee pulls its own `LowerFunction` / `PlanEntryDispatch` /
@@ -125,10 +126,11 @@ The next two rungs narrow the contract:
   callable-boundary arguments name the required callable-entry inventory, and
   extern callsites carry concrete wire classes. This is the interpreter-ready
   handoff.
-- `NativeProgram` is the next native-specific handoff above `BackendProgram`:
-  a Compiler2-owned CPS/codegen-ready projection that will carry only the
-  facts native codegen actually consumes, not rebuilt `ModulePlan`,
-  `PlannedProgram`, or `AbiFacts`.
+- `NativeProgram` is the native-specific handoff above `BackendProgram`: a
+  Compiler2-owned CPS/codegen-ready projection carrying direct executable
+  bodies, clause helpers, continuations, callable-constructor metadata, and
+  extern-marshal facts instead of rebuilt `ModulePlan`, `PlannedProgram`, or
+  `AbiFacts`.
 
 Things that belong in Compiler2 artifact facts:
 
@@ -150,8 +152,7 @@ Things that do not belong there:
 - backend-specific callable wrapper signatures
 - formatted telemetry payloads
 
-This is why `fz-rh2.8.2` stays blocked behind the artifact-model arc:
-interpreter work should consume `BackendProgram`, and native work should
+Interpreter work should consume `BackendProgram`, and native work should
 consume `NativeProgram`, not invent old planner/codegen state while wiring
 JIT or AOT entry points.
 
@@ -164,6 +165,8 @@ only the settled artifact ladder below it.
 - `DeriveEmissionReady(root)` may consume only `AbiReadyProgram(root)`.
 - `LowerBackendProgram(root)` may consume only `EmissionReadyProgram(root)` plus
   the world-owned type store.
+- `LowerNativeProgram(root)` may consume only `BackendProgram(root)` plus the
+  world-owned type store.
 
 If backend code needs to ask semantic, reachability, callee-selection, or
 type-inference questions after that line, the artifact contract is incomplete

@@ -1,0 +1,1956 @@
+//! Compiler2 native-handoff lowering.
+//!
+//! This job turns one closed `BackendProgram(root)` into one CPS/native
+//! handoff. The result is still Compiler2-owned: direct executable entries,
+//! clause helpers, continuations, callable-constructor metadata, and extern
+//! marshal facts are all derived once here instead of being rediscovered by
+//! shared codegen.
+
+use std::collections::{HashMap, HashSet};
+
+use crate::compiler::source::Span;
+use crate::diag::Diagnostic;
+use crate::diag::codes;
+use crate::diag::driver::emit_through;
+use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
+use crate::dispatch_matrix::{
+    ComparisonValue, DispatchConst, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId,
+};
+use crate::fz_ir::{
+    BinOp as IrBinOp, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, ExternArg, ExternDecl, ExternId,
+    ExternMarshalSite, ExternTy, FnBuilder, FnCategory, FnId, ModuleBuilder, Prim, Term, UnOp as IrUnOp, Var,
+};
+use crate::types::Types as LegacyTypes;
+
+use super::super::artifact::{
+    AbiValueRepr, BackendBody, BackendExecutable, BackendProgram, BackendStep, EffectSummary, NativeBody,
+    NativeBodyOrigin, NativeCallableEntry, NativeEntryAbi, NativeProgram, ReturnAbi,
+};
+use super::super::body::{Literal, LoweredExtern, ValueId};
+use super::super::drive::{FactKey, Job, JobEffects};
+use super::super::facts::FactValue;
+use super::super::identity::{FunctionId, RootId};
+use super::super::scheduler::FatalError;
+use super::super::types::Ty;
+use super::super::world::World;
+
+/// Lowers one backend program into the Compiler2-owned native handoff.
+///
+/// The native handoff consumes only `BackendProgram(root)` plus compiler-owned
+/// stores. It introduces CPS/native bodies and side facts, but it does not
+/// reopen semantic closure, type inference, or planner discovery.
+pub(super) fn lower_native_program(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
+    let backend_fact = FactKey::BackendProgram(root_id);
+    let Some(_backend_revision) = world.fact_revision(backend_fact.clone()) else {
+        return Ok(JobEffects::wait_on(backend_fact, [Job::LowerBackendProgram(root_id)]));
+    };
+
+    let backend = world.backend_program(root_id);
+    let program = NativeLowerer::new(world, root_id, &backend)?.lower()?;
+    let revision = world.define_native_program(root_id, program);
+    Ok(JobEffects {
+        reads: vec![backend_fact],
+        outputs: vec![(FactKey::NativeProgram(root_id), FactValue::presence(revision))],
+        ..JobEffects::default()
+    })
+}
+
+struct NativeLowerer<'a, 'tel> {
+    world: &'a mut World<'tel>,
+    root_id: RootId,
+    program: &'a BackendProgram,
+    module: ModuleBuilder,
+    atom_ids: HashMap<String, u32>,
+    executable_fns: Vec<FnId>,
+    callable_identity_fns: HashMap<(FunctionId, usize), FnId>,
+    callable_entries: Vec<NativeCallableEntry>,
+    extern_ids: HashMap<usize, ExternId>,
+    extern_marshals: HashMap<usize, Vec<ExternTy>>,
+    extern_decls: Vec<ExternDecl>,
+    native_bodies: Vec<NativeBody>,
+    continuation_indices: HashMap<FnId, u32>,
+}
+
+impl<'a, 'tel> NativeLowerer<'a, 'tel> {
+    fn new(world: &'a mut World<'tel>, root_id: RootId, program: &'a BackendProgram) -> Result<Self, FatalError> {
+        let mut atom_ids = HashMap::new();
+        for (index, atom) in program.atom_names.iter().enumerate() {
+            atom_ids.insert(atom.clone(), index as u32);
+        }
+        for atom in ["function_clause", "match_error"] {
+            if !atom_ids.contains_key(atom) {
+                let next = atom_ids.len() as u32;
+                atom_ids.insert(atom.to_string(), next);
+            }
+        }
+
+        let mut module = ModuleBuilder::new();
+        let executable_fns = program
+            .executables
+            .iter()
+            .map(|_| module.fresh_fn_id())
+            .collect::<Vec<_>>();
+
+        let mut callable_identity_fns = HashMap::new();
+        for (function, capture_count) in collect_callable_identity_needs(program) {
+            callable_identity_fns
+                .entry((function, capture_count))
+                .or_insert_with(|| module.fresh_fn_id());
+        }
+        for entry in &program.callable_entries {
+            let function = program.executables[entry.target].key.activation.function;
+            callable_identity_fns
+                .entry((function, entry.capture_count))
+                .or_insert_with(|| module.fresh_fn_id());
+        }
+
+        let extern_marshals = collect_extern_marshals(world, root_id, program)?;
+        let mut legacy_types = crate::types::new();
+        let mut extern_ids = HashMap::new();
+        let mut extern_decls = Vec::new();
+        for (index, executable) in program.executables.iter().enumerate() {
+            let BackendBody::Extern { signature } = &executable.body else {
+                continue;
+            };
+            let id = ExternId(extern_decls.len() as u32);
+            extern_ids.insert(index, id);
+            extern_decls.push(ExternDecl {
+                id,
+                fz_name: world.function_ref(executable.key.activation.function).name.clone(),
+                symbol: signature.symbol.clone(),
+                params: signature.params.clone(),
+                variadic: signature.variadic,
+                ret: signature.ret,
+                ret_descr: legacy_types.any(),
+            });
+        }
+
+        let callable_entries = program
+            .callable_entries
+            .iter()
+            .map(|entry| {
+                let executable = &program.executables[entry.target];
+                let function = executable.key.activation.function;
+                let identity_fn = *callable_identity_fns
+                    .get(&(function, entry.capture_count))
+                    .expect("callable identity should be predeclared");
+                NativeCallableEntry {
+                    identity_fn,
+                    target_fn: executable_fns[entry.target],
+                    target: executable.key.clone(),
+                    capture_count: entry.capture_count,
+                    param_reprs: executable.param_reprs.clone(),
+                    return_ty: executable.return_ty,
+                    return_abi: executable.return_abi.clone(),
+                }
+            })
+            .collect();
+
+        Ok(Self {
+            world,
+            root_id,
+            program,
+            module,
+            atom_ids,
+            executable_fns,
+            callable_identity_fns,
+            callable_entries,
+            extern_ids,
+            extern_marshals,
+            extern_decls,
+            native_bodies: Vec::new(),
+            continuation_indices: HashMap::new(),
+        })
+    }
+
+    fn lower(mut self) -> Result<NativeProgram, FatalError> {
+        for (index, executable) in self.program.executables.iter().enumerate() {
+            match &executable.body {
+                BackendBody::Extern { signature } => self.lower_extern_executable(index, executable, signature)?,
+                BackendBody::Clauses { clauses, .. } => {
+                    if executable.entry_dispatch.is_some() {
+                        self.lower_clause_dispatch_executable(index, executable, clauses)?;
+                    } else {
+                        let [clause] = clauses.as_slice() else {
+                            return Err(incomplete_native_program(
+                                self.world,
+                                self.root_id,
+                                format!(
+                                    "backend executable {} has {} clauses but no settled entry dispatch",
+                                    index,
+                                    clauses.len()
+                                ),
+                            ));
+                        };
+                        self.lower_clause_fn(
+                            self.executable_fns[index],
+                            executable,
+                            &format!(
+                                "{}__e{}",
+                                self.world.function_ref(executable.key.activation.function).name,
+                                index
+                            ),
+                            FnCategory::User,
+                            NativeBodyOrigin::Executable(executable.key.clone()),
+                            NativeEntryAbi::Direct,
+                            clause.params.as_slice(),
+                            &clause.projections,
+                            &clause.body.steps,
+                            clause.body.result,
+                            Finish::Return,
+                        )?;
+                    }
+                }
+            }
+        }
+
+        let entry = *self
+            .executable_fns
+            .get(self.program.entry)
+            .expect("native entry executable should exist");
+        let mut module = self.module.build();
+        module.atom_names = atom_names(&self.atom_ids);
+        module.externs = self.extern_decls;
+        module.extern_idx = module
+            .externs
+            .iter()
+            .enumerate()
+            .map(|(index, decl)| (decl.id, index))
+            .collect();
+        Ok(NativeProgram {
+            backend_revision: self.program.emission_ready_revision,
+            entry,
+            module,
+            bodies: self.native_bodies,
+            callable_entries: self.callable_entries,
+        })
+    }
+
+    fn lower_extern_executable(
+        &mut self,
+        index: usize,
+        executable: &BackendExecutable,
+        signature: &LoweredExtern,
+    ) -> Result<(), FatalError> {
+        let fn_id = self.executable_fns[index];
+        let name = format!(
+            "{}__e{}",
+            self.world.function_ref(executable.key.activation.function).name,
+            index
+        );
+        let mut ctx = NativeFnCtx::new(
+            fn_id,
+            &name,
+            FnCategory::Prelude,
+            NativeBodyOrigin::Executable(executable.key.clone()),
+            NativeEntryAbi::Direct,
+            executable.param_reprs.clone(),
+            executable.return_ty,
+            executable.return_abi.clone(),
+            executable.effects,
+        );
+        let params = ctx.entry_params(executable.key.activation.input.as_slice());
+        let mut extern_args = Vec::with_capacity(params.len());
+        for (arg_index, param) in params.iter().copied().enumerate() {
+            let arg = if arg_index < signature.params.len() {
+                ExternArg::fixed(param, signature.params[arg_index])
+            } else {
+                ExternArg::auto(param)
+            };
+            extern_args.push(arg);
+        }
+        let extern_id = *self
+            .extern_ids
+            .get(&index)
+            .expect("extern executable should have a declared ExternId");
+        let marshal_plan = self.extern_marshals.get(&index).cloned().unwrap_or_default();
+        let callsite = ctx.fresh_callsite();
+        let (value, stmt_idx) = ctx.emit_let(Prim::Extern(callsite, extern_id, extern_args));
+        for (arg_index, marshal) in marshal_plan.iter().copied().enumerate() {
+            ctx.extern_marshals.insert(
+                ExternMarshalSite {
+                    block: ctx.current_block,
+                    stmt_idx,
+                    arg_idx: arg_index,
+                },
+                marshal,
+            );
+        }
+        let result = if matches!(signature.ret, ExternTy::Unit | ExternTy::Never) {
+            let (nil, _) = ctx.emit_let(Prim::Const(Const::Nil));
+            let _ = value;
+            nil
+        } else {
+            value
+        };
+        ctx.set_term(Term::Return(result));
+        self.finish_native_fn(ctx);
+        Ok(())
+    }
+
+    fn lower_clause_dispatch_executable(
+        &mut self,
+        index: usize,
+        executable: &BackendExecutable,
+        clauses: &[crate::compiler2::BackendClause],
+    ) -> Result<(), FatalError> {
+        let helper_ids = clauses.iter().map(|_| self.module.fresh_fn_id()).collect::<Vec<_>>();
+        let fn_id = self.executable_fns[index];
+        let name = format!(
+            "{}__e{}",
+            self.world.function_ref(executable.key.activation.function).name,
+            index
+        );
+        let mut ctx = NativeFnCtx::new(
+            fn_id,
+            &name,
+            FnCategory::User,
+            NativeBodyOrigin::Executable(executable.key.clone()),
+            NativeEntryAbi::Direct,
+            executable.param_reprs.clone(),
+            executable.return_ty,
+            executable.return_abi.clone(),
+            executable.effects,
+        );
+        let inputs = ctx.entry_params(executable.key.activation.input.as_slice());
+        let mut state = DispatchState::new(inputs);
+        let dispatch = executable
+            .entry_dispatch
+            .as_ref()
+            .expect("clause dispatch lowering requires a settled entry dispatch");
+        self.lower_dispatch_node(
+            &mut ctx,
+            executable,
+            dispatch,
+            dispatch.plan().graph.root,
+            &helper_ids,
+            &mut state,
+        )?;
+        self.finish_native_fn(ctx);
+
+        for (clause_index, (clause, helper_id)) in clauses.iter().zip(helper_ids.iter().copied()).enumerate() {
+            self.lower_clause_fn(
+                helper_id,
+                executable,
+                &format!(
+                    "{}__clause_{}",
+                    self.world.function_ref(executable.key.activation.function).name,
+                    clause_index
+                ),
+                FnCategory::MultiClauseCont,
+                NativeBodyOrigin::Clause {
+                    owner: executable.key.clone(),
+                    index: clause_index as u32,
+                },
+                NativeEntryAbi::Direct,
+                clause.params.as_slice(),
+                &clause.projections,
+                &clause.body.steps,
+                clause.body.result,
+                Finish::Return,
+            )?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_clause_fn(
+        &mut self,
+        fn_id: FnId,
+        executable: &BackendExecutable,
+        name: &str,
+        category: FnCategory,
+        origin: NativeBodyOrigin,
+        entry_abi: NativeEntryAbi,
+        params: &[ValueId],
+        steps: &[BackendStep],
+        tail_steps: &[BackendStep],
+        final_result: ValueId,
+        finish: Finish,
+    ) -> Result<(), FatalError> {
+        let mut ctx = NativeFnCtx::new(
+            fn_id,
+            name,
+            category,
+            origin,
+            entry_abi,
+            executable.param_reprs.clone(),
+            executable.return_ty,
+            executable.return_abi.clone(),
+            executable.effects,
+        );
+        let mut env = ValueEnv::default();
+        let entry_tys = params
+            .iter()
+            .map(|value| {
+                executable
+                    .value_types
+                    .get(value)
+                    .copied()
+                    .unwrap_or_else(|| self.world.types_mut().any())
+            })
+            .collect::<Vec<_>>();
+        let entry_vars = ctx.entry_params(entry_tys.as_slice());
+        for (value, var) in params.iter().copied().zip(entry_vars) {
+            env.insert(value, var);
+        }
+        self.lower_steps(&mut ctx, executable, env, steps, tail_steps, final_result, finish)?;
+        self.finish_native_fn(ctx);
+        Ok(())
+    }
+
+    fn finish_native_fn(&mut self, ctx: NativeFnCtx) {
+        let (fn_ir, body) = ctx.finish();
+        self.module.add_fn(fn_ir);
+        self.native_bodies.push(body);
+    }
+
+    fn lower_steps(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        mut env: ValueEnv,
+        steps: &[BackendStep],
+        tail_steps: &[BackendStep],
+        final_result: ValueId,
+        finish: Finish,
+    ) -> Result<(), FatalError> {
+        if steps.is_empty() {
+            if tail_steps.is_empty() {
+                let result = env.var(final_result).ok_or_else(|| {
+                    incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        format!(
+                            "native lowering could not resolve final result {}",
+                            final_result.as_u32()
+                        ),
+                    )
+                })?;
+                apply_finish(ctx, &env, result, finish);
+                return Ok(());
+            }
+            return self.lower_steps(ctx, executable, env, tail_steps, &[], final_result, finish);
+        }
+
+        for (index, step) in steps.iter().enumerate() {
+            let rest_current = &steps[index + 1..];
+            match step {
+                BackendStep::Const { value, literal } => {
+                    let var = lower_backend_literal(ctx, &self.atom_ids, literal)?;
+                    bind_backend_value(ctx, executable, &mut env, *value, var);
+                }
+                BackendStep::Tuple { value, items } => {
+                    let vars = env.vars(items).ok_or_else(|| {
+                        incomplete_native_program(
+                            self.world,
+                            self.root_id,
+                            "native tuple build referenced an unbound value",
+                        )
+                    })?;
+                    let (var, _) = ctx.emit_let(Prim::MakeTuple(vars));
+                    bind_backend_value(ctx, executable, &mut env, *value, var);
+                }
+                BackendStep::List { value, items, tail } => {
+                    let vars = env.vars(items).ok_or_else(|| {
+                        incomplete_native_program(
+                            self.world,
+                            self.root_id,
+                            "native list build referenced an unbound value",
+                        )
+                    })?;
+                    let tail = tail.and_then(|tail| env.var(tail));
+                    let (var, _) = ctx.emit_let(Prim::MakeList(vars, tail));
+                    bind_backend_value(ctx, executable, &mut env, *value, var);
+                }
+                BackendStep::FunctionRef { value, function } => {
+                    let identity = self.callable_identity(*function, 0);
+                    let candidates = self.callable_entry_candidates(*function, 0);
+                    let (var, _) = ctx.emit_let(Prim::MakeFnRef(ctx.fresh_callsite(), identity));
+                    if !candidates.is_empty() {
+                        ctx.callable_constructors.insert(var, candidates);
+                    }
+                    bind_backend_value(ctx, executable, &mut env, *value, var);
+                }
+                BackendStep::NamedFunctionRef { name, arity, .. } => {
+                    return Err(incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        format!("native lowering reached unresolved fn ref `{name}/{arity}`"),
+                    ));
+                }
+                BackendStep::Lambda {
+                    value,
+                    function,
+                    captures,
+                } => {
+                    let capture_vars = env.vars(captures).ok_or_else(|| {
+                        incomplete_native_program(
+                            self.world,
+                            self.root_id,
+                            "native closure build referenced an unbound capture",
+                        )
+                    })?;
+                    let capture_count = captures.len();
+                    let identity = self.callable_identity(*function, capture_count);
+                    let candidates = self.callable_entry_candidates(*function, capture_count);
+                    let prim = if capture_vars.is_empty() {
+                        Prim::MakeFnRef(ctx.fresh_callsite(), identity)
+                    } else {
+                        Prim::MakeClosure(ctx.fresh_callsite(), identity, capture_vars)
+                    };
+                    let (var, _) = ctx.emit_let(prim);
+                    if !candidates.is_empty() {
+                        ctx.callable_constructors.insert(var, candidates);
+                    }
+                    bind_backend_value(ctx, executable, &mut env, *value, var);
+                }
+                BackendStep::BinaryOp { value, op, left, right } => {
+                    let left = env
+                        .var(*left)
+                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *left))?;
+                    let right = env
+                        .var(*right)
+                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *right))?;
+                    let (var, _) = ctx.emit_let(Prim::BinOp(lower_binop(*op), left, right));
+                    bind_backend_value(ctx, executable, &mut env, *value, var);
+                }
+                BackendStep::UnaryOp { value, op, input } => {
+                    let input = env
+                        .var(*input)
+                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *input))?;
+                    let (var, _) = ctx.emit_let(Prim::UnOp(lower_unop(*op), input));
+                    bind_backend_value(ctx, executable, &mut env, *value, var);
+                }
+                BackendStep::MapIndex { value, base, key } => {
+                    let base = env
+                        .var(*base)
+                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *base))?;
+                    let key = env
+                        .var(*key)
+                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *key))?;
+                    let (var, _) = ctx.emit_let(Prim::MapGet(base, key));
+                    bind_backend_value(ctx, executable, &mut env, *value, var);
+                }
+                BackendStep::AssertLiteral { source, literal } => {
+                    let source = env
+                        .var(*source)
+                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *source))?;
+                    let expected = lower_backend_literal(ctx, &self.atom_ids, literal)?;
+                    let (matches, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, source, expected));
+                    ctx.assert_truthy(matches, self.atom_id("match_error"));
+                }
+                BackendStep::AssertTuple { source, arity } => {
+                    let source = env
+                        .var(*source)
+                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *source))?;
+                    let tuple_ty = legacy_any_tuple(*arity);
+                    let (matches, _) = ctx.emit_let(Prim::TypeTest(source, Box::new(tuple_ty)));
+                    ctx.assert_truthy(matches, self.atom_id("match_error"));
+                }
+                BackendStep::TupleField { value, source, index } => {
+                    let source = env
+                        .var(*source)
+                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *source))?;
+                    let (var, _) = ctx.emit_let(Prim::TupleField(source, *index as u32));
+                    bind_backend_value(ctx, executable, &mut env, *value, var);
+                }
+                BackendStep::AssertEmptyList { source } => {
+                    let source = env
+                        .var(*source)
+                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *source))?;
+                    let (matches, _) = ctx.emit_let(Prim::IsEmptyList(source));
+                    ctx.assert_truthy(matches, self.atom_id("match_error"));
+                }
+                BackendStep::AssertSame { source, value } => {
+                    let source = env
+                        .var(*source)
+                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *source))?;
+                    let value = env
+                        .var(*value)
+                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *value))?;
+                    let (matches, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, source, value));
+                    ctx.assert_truthy(matches, self.atom_id("match_error"));
+                }
+                BackendStep::SplitList { source, head, tail } => {
+                    let source = env
+                        .var(*source)
+                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *source))?;
+                    let (head_var, _) = ctx.emit_let(Prim::ListHead(source));
+                    bind_backend_value(ctx, executable, &mut env, *head, head_var);
+                    let (tail_var, _) = ctx.emit_let(Prim::ListTail(source));
+                    bind_backend_value(ctx, executable, &mut env, *tail, tail_var);
+                }
+                BackendStep::If {
+                    value,
+                    cond,
+                    then_block,
+                    else_block,
+                } => {
+                    let cond = env
+                        .var(*cond)
+                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *cond))?;
+                    let needs_continuation =
+                        !rest_current.is_empty() || !tail_steps.is_empty() || *value != final_result;
+                    let branch_finish = if needs_continuation {
+                        let captured = env.capture_ids(used_values_in_sequence(rest_current, tail_steps, final_result));
+                        let join_fn = self.module.fresh_fn_id();
+                        self.lower_continuation_fn(
+                            join_fn,
+                            executable,
+                            ctx.fn_id,
+                            *value,
+                            captured.clone(),
+                            rest_current,
+                            tail_steps,
+                            final_result,
+                            finish.clone(),
+                        )?;
+                        Finish::TailJoin {
+                            fn_id: join_fn,
+                            captured,
+                        }
+                    } else {
+                        finish.clone()
+                    };
+                    let then_target = self.lower_branch_fn(
+                        ctx.fn_id,
+                        executable,
+                        then_block,
+                        &env,
+                        branch_finish.clone(),
+                        "if_then",
+                    )?;
+                    let else_target =
+                        self.lower_branch_fn(ctx.fn_id, executable, else_block, &env, branch_finish, "if_else")?;
+                    let then_b = ctx.builder.block(vec![]);
+                    let else_b = ctx.builder.block(vec![]);
+                    ctx.set_term(Term::If {
+                        cond,
+                        then_b,
+                        else_b,
+                        origin: BranchOrigin::User,
+                    });
+                    ctx.current_block = then_b;
+                    let then_args = env.capture_args(&then_target.captures).ok_or(FatalError)?;
+                    ctx.set_term(Term::TailCall {
+                        ident: CallsiteIdent::from_source(Span::DUMMY),
+                        callee: then_target.fn_id,
+                        args: then_args,
+                        is_back_edge: false,
+                    });
+                    ctx.current_block = else_b;
+                    let else_args = env.capture_args(&else_target.captures).ok_or(FatalError)?;
+                    ctx.set_term(Term::TailCall {
+                        ident: CallsiteIdent::from_source(Span::DUMMY),
+                        callee: else_target.fn_id,
+                        args: else_args,
+                        is_back_edge: false,
+                    });
+                    return Ok(());
+                }
+                BackendStep::DirectCall {
+                    value, callee, args, ..
+                } => {
+                    let call_args = env.call_args(args).ok_or_else(|| {
+                        incomplete_native_program(
+                            self.world,
+                            self.root_id,
+                            "native direct call referenced an unbound argument",
+                        )
+                    })?;
+                    if rest_current.is_empty() && tail_steps.is_empty() && *value == final_result {
+                        ctx.set_term(Term::TailCall {
+                            ident: CallsiteIdent::from_source(Span::DUMMY),
+                            callee: self.executable_fns[*callee],
+                            args: call_args,
+                            is_back_edge: false,
+                        });
+                        return Ok(());
+                    }
+                    let captured = env.capture_ids(used_values_in_sequence(rest_current, tail_steps, final_result));
+                    let cont_fn = self.module.fresh_fn_id();
+                    self.lower_continuation_fn(
+                        cont_fn,
+                        executable,
+                        ctx.fn_id,
+                        *value,
+                        captured.clone(),
+                        rest_current,
+                        tail_steps,
+                        final_result,
+                        finish.clone(),
+                    )?;
+                    let captured_vars = env.capture_args(&captured).ok_or(FatalError)?;
+                    ctx.set_term(Term::Call {
+                        ident: CallsiteIdent::from_source(Span::DUMMY),
+                        callee: self.executable_fns[*callee],
+                        args: call_args,
+                        continuation: Cont {
+                            fn_id: cont_fn,
+                            captured: captured_vars,
+                        },
+                    });
+                    return Ok(());
+                }
+                BackendStep::ClosureCall {
+                    value, callee, args, ..
+                } => {
+                    let closure = env
+                        .var(*callee)
+                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *callee))?;
+                    let call_args = env.call_args(args).ok_or_else(|| {
+                        incomplete_native_program(
+                            self.world,
+                            self.root_id,
+                            "native closure call referenced an unbound argument",
+                        )
+                    })?;
+                    if rest_current.is_empty() && tail_steps.is_empty() && *value == final_result {
+                        ctx.set_term(Term::TailCallClosure {
+                            ident: CallsiteIdent::from_source(Span::DUMMY),
+                            closure,
+                            args: call_args,
+                        });
+                        return Ok(());
+                    }
+                    let captured = env.capture_ids(used_values_in_sequence(rest_current, tail_steps, final_result));
+                    let cont_fn = self.module.fresh_fn_id();
+                    self.lower_continuation_fn(
+                        cont_fn,
+                        executable,
+                        ctx.fn_id,
+                        *value,
+                        captured.clone(),
+                        rest_current,
+                        tail_steps,
+                        final_result,
+                        finish.clone(),
+                    )?;
+                    let captured_vars = env.capture_args(&captured).ok_or(FatalError)?;
+                    ctx.set_term(Term::CallClosure {
+                        ident: CallsiteIdent::from_source(Span::DUMMY),
+                        closure,
+                        args: call_args,
+                        continuation: Cont {
+                            fn_id: cont_fn,
+                            captured: captured_vars,
+                        },
+                    });
+                    return Ok(());
+                }
+            }
+        }
+        if tail_steps.is_empty() {
+            let result = env.var(final_result).ok_or_else(|| {
+                incomplete_native_program(
+                    self.world,
+                    self.root_id,
+                    format!(
+                        "native lowering could not resolve final result {}",
+                        final_result.as_u32()
+                    ),
+                )
+            })?;
+            apply_finish(ctx, &env, result, finish);
+            return Ok(());
+        }
+        self.lower_steps(ctx, executable, env, tail_steps, &[], final_result, finish)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_continuation_fn(
+        &mut self,
+        fn_id: FnId,
+        executable: &BackendExecutable,
+        owner: FnId,
+        result_value: ValueId,
+        captured: Vec<ValueId>,
+        steps: &[BackendStep],
+        tail_steps: &[BackendStep],
+        final_result: ValueId,
+        finish: Finish,
+    ) -> Result<(), FatalError> {
+        let index = self.next_continuation_index(owner);
+        let capture_tys = captured
+            .iter()
+            .map(|value| {
+                executable
+                    .value_types
+                    .get(value)
+                    .copied()
+                    .unwrap_or_else(|| self.world.types_mut().any())
+            })
+            .collect::<Vec<_>>();
+        let mut entry_tys = Vec::with_capacity(1 + capture_tys.len());
+        entry_tys.push(
+            executable
+                .value_types
+                .get(&result_value)
+                .copied()
+                .unwrap_or_else(|| self.world.types_mut().any()),
+        );
+        entry_tys.extend(capture_tys.iter().copied());
+        let mut ctx = NativeFnCtx::new(
+            fn_id,
+            &format!("k_{}_{}", owner.0, index),
+            FnCategory::CpsCont,
+            NativeBodyOrigin::Continuation { owner, index },
+            NativeEntryAbi::Continuation { extra_params: 1 },
+            executable.param_reprs.clone(),
+            executable.return_ty,
+            executable.return_abi.clone(),
+            executable.effects,
+        );
+        let mut env = ValueEnv::default();
+        let entry_vars = ctx.entry_params(entry_tys.as_slice());
+        let result_var = entry_vars[0];
+        env.insert(result_value, result_var);
+        for (value, var) in captured.into_iter().zip(entry_vars.into_iter().skip(1)) {
+            env.insert(value, var);
+        }
+        self.lower_steps(&mut ctx, executable, env, steps, tail_steps, final_result, finish)?;
+        self.finish_native_fn(ctx);
+        Ok(())
+    }
+
+    fn lower_branch_fn(
+        &mut self,
+        owner: FnId,
+        executable: &BackendExecutable,
+        block: &crate::compiler2::BackendBlock,
+        env: &ValueEnv,
+        finish: Finish,
+        label: &str,
+    ) -> Result<BranchTarget, FatalError> {
+        let index = self.next_continuation_index(owner);
+        let fn_id = self.module.fresh_fn_id();
+        let captures = env.capture_ids(
+            used_values_in_block(block)
+                .into_iter()
+                .chain(finish.capture_ids())
+                .collect(),
+        );
+        let capture_tys = captures
+            .iter()
+            .map(|value| {
+                executable
+                    .value_types
+                    .get(value)
+                    .copied()
+                    .unwrap_or_else(|| self.world.types_mut().any())
+            })
+            .collect::<Vec<_>>();
+        let mut ctx = NativeFnCtx::new(
+            fn_id,
+            &format!("{label}_{}_{}", owner.0, index),
+            FnCategory::ControlFlowCont,
+            NativeBodyOrigin::Continuation { owner, index },
+            NativeEntryAbi::Direct,
+            executable.param_reprs.clone(),
+            executable.return_ty,
+            executable.return_abi.clone(),
+            executable.effects,
+        );
+        let mut branch_env = ValueEnv::default();
+        let entry_vars = ctx.entry_params(capture_tys.as_slice());
+        for (value, var) in captures.iter().copied().zip(entry_vars) {
+            branch_env.insert(value, var);
+        }
+        self.lower_steps(
+            &mut ctx,
+            executable,
+            branch_env,
+            &block.steps,
+            &[],
+            block.result,
+            finish,
+        )?;
+        self.finish_native_fn(ctx);
+        Ok(BranchTarget { fn_id, captures })
+    }
+
+    fn lower_dispatch_node(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        dispatch: &crate::compiler2::ExecutableDispatch,
+        node_id: GraphNodeId,
+        helper_ids: &[FnId],
+        state: &mut DispatchState,
+    ) -> Result<(), FatalError> {
+        let Some(node) = dispatch.plan().graph.node(node_id).cloned() else {
+            return Err(incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!("dispatch graph node {:?} is out of bounds", node_id),
+            ));
+        };
+        match node {
+            DispatchNode::Fail => {
+                ctx.halt_with_atom(self.atom_id("function_clause"));
+                Ok(())
+            }
+            DispatchNode::Outcome { outcome, .. } => {
+                let body_id = dispatch
+                    .plan()
+                    .outcome(outcome)
+                    .map(|entry| entry.body_id)
+                    .ok_or_else(|| {
+                        incomplete_native_program(
+                            self.world,
+                            self.root_id,
+                            format!("dispatch outcome {:?} is out of bounds", outcome),
+                        )
+                    })?;
+                let Some(clause_index) = dispatch.clause_index(body_id) else {
+                    ctx.halt_with_atom(self.atom_id("function_clause"));
+                    return Ok(());
+                };
+                let args = state.inputs.clone();
+                ctx.set_term(Term::TailCall {
+                    ident: CallsiteIdent::from_source(Span::DUMMY),
+                    callee: helper_ids[clause_index],
+                    args,
+                    is_back_edge: false,
+                });
+                Ok(())
+            }
+            DispatchNode::Test {
+                predicate,
+                on_match,
+                on_miss,
+            } => {
+                let cond = self.lower_dispatch_region(
+                    ctx,
+                    executable,
+                    dispatch.plan(),
+                    predicate.subject,
+                    &predicate.region,
+                    state,
+                )?;
+                let then_b = ctx.builder.block(vec![]);
+                let else_b = ctx.builder.block(vec![]);
+                ctx.set_term(Term::If {
+                    cond,
+                    then_b,
+                    else_b,
+                    origin: BranchOrigin::ClauseDispatch,
+                });
+                let mut match_state = state.clone();
+                ctx.current_block = then_b;
+                self.lower_dispatch_node(ctx, executable, dispatch, on_match.target, helper_ids, &mut match_state)?;
+                ctx.current_block = else_b;
+                self.lower_dispatch_node(ctx, executable, dispatch, on_miss.target, helper_ids, state)
+            }
+        }
+    }
+
+    fn lower_dispatch_region(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        plan: &PatternDispatchPlan<Ty>,
+        subject: SubjectId,
+        region: &Region<Ty>,
+        state: &mut DispatchState,
+    ) -> Result<Var, FatalError> {
+        Ok(match region {
+            Region::Any => {
+                let (var, _) = ctx.emit_let(Prim::Const(Const::True));
+                var
+            }
+            Region::Never => {
+                let (var, _) = ctx.emit_let(Prim::Const(Const::False));
+                var
+            }
+            Region::Type(ty) => {
+                let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
+                let legacy_ty = legacy_type_test_ty(self.world, *ty).ok_or_else(|| {
+                    incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        "native entry-dispatch lowering does not support this type test yet",
+                    )
+                })?;
+                let (var, _) = ctx.emit_let(Prim::TypeTest(subject, Box::new(legacy_ty)));
+                var
+            }
+            Region::Equal(ComparisonValue::Const(DispatchConst::EmptyList)) | Region::List(ListRegion::Empty) => {
+                let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
+                let (var, _) = ctx.emit_let(Prim::IsEmptyList(subject));
+                var
+            }
+            Region::List(ListRegion::Cons) => {
+                let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
+                let (var, _) = ctx.emit_let(Prim::IsListCons(subject));
+                var
+            }
+            Region::TupleArity(arity) => {
+                let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
+                let tuple_ty = legacy_any_tuple(*arity as usize);
+                let (var, _) = ctx.emit_let(Prim::TypeTest(subject, Box::new(tuple_ty)));
+                var
+            }
+            Region::MapKind => {
+                let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
+                let (var, _) = ctx.emit_let(Prim::TypeTest(subject, Box::new(legacy_any_map())));
+                var
+            }
+            Region::MapKeyPresent { key } => {
+                let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
+                let key = lower_dispatch_const(ctx, &self.atom_ids, key)?;
+                let (value, _) = ctx.emit_let(Prim::MatcherMapGet(subject, key));
+                let (is_miss, _) = ctx.emit_let(Prim::IsMatcherMapMiss(value));
+                let (false_v, _) = ctx.emit_let(Prim::Const(Const::False));
+                let (var, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, is_miss, false_v));
+                var
+            }
+            Region::Equal(ComparisonValue::Const(value)) => {
+                let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
+                let expected = lower_dispatch_const(ctx, &self.atom_ids, value)?;
+                let (var, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, subject, expected));
+                var
+            }
+            Region::Guard(guard) => {
+                let expr = plan.guards.get(guard.0 as usize).ok_or_else(|| {
+                    incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        format!("dispatch guard {:?} is out of bounds", guard),
+                    )
+                })?;
+                self.lower_guard_expr(ctx, executable, plan, state, expr)?
+            }
+            Region::Equal(ComparisonValue::Pinned(_)) => {
+                return Err(incomplete_native_program(
+                    self.world,
+                    self.root_id,
+                    "native entry-dispatch lowering does not support pinned guard values yet",
+                ));
+            }
+            Region::Bitstring(_) => {
+                return Err(incomplete_native_program(
+                    self.world,
+                    self.root_id,
+                    "native entry-dispatch lowering does not support bitstring tests yet",
+                ));
+            }
+        })
+    }
+
+    fn lower_guard_expr(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        plan: &PatternDispatchPlan<Ty>,
+        state: &mut DispatchState,
+        expr: &PatternGuardExpr<Ty>,
+    ) -> Result<Var, FatalError> {
+        Ok(match expr {
+            PatternGuardExpr::Const(value) => lower_dispatch_const(ctx, &self.atom_ids, value)?,
+            PatternGuardExpr::Subject(subject) => self.dispatch_subject_var(ctx, plan, state, *subject)?,
+            PatternGuardExpr::Unary { op, expr } => {
+                let input = self.lower_guard_expr(ctx, executable, plan, state, expr)?;
+                let (var, _) = ctx.emit_let(Prim::UnOp(
+                    match op {
+                        crate::dispatch_matrix::pattern::PatternGuardUnaryOp::Not => IrUnOp::Not,
+                        crate::dispatch_matrix::pattern::PatternGuardUnaryOp::Neg => IrUnOp::Neg,
+                    },
+                    input,
+                ));
+                var
+            }
+            PatternGuardExpr::Binary { op, lhs, rhs } => {
+                let lhs = self.lower_guard_expr(ctx, executable, plan, state, lhs)?;
+                let rhs = self.lower_guard_expr(ctx, executable, plan, state, rhs)?;
+                let (var, _) = ctx.emit_let(Prim::BinOp(lower_guard_binop(*op), lhs, rhs));
+                var
+            }
+            PatternGuardExpr::Dispatch { .. } => {
+                if let PatternGuardExpr::Dispatch { inputs, dispatch } = expr {
+                    self.lower_guard_dispatch(ctx, executable, plan, state, inputs, dispatch)?
+                } else {
+                    unreachable!("dispatch arm must have matched");
+                }
+            }
+            PatternGuardExpr::Pinned(_) => {
+                return Err(incomplete_native_program(
+                    self.world,
+                    self.root_id,
+                    "native entry-dispatch lowering does not support pinned guard values yet",
+                ));
+            }
+        })
+    }
+
+    fn lower_guard_dispatch(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        parent_plan: &PatternDispatchPlan<Ty>,
+        state: &mut DispatchState,
+        inputs: &[PatternGuardExpr<Ty>],
+        dispatch: &crate::dispatch_matrix::pattern::PatternGuardDispatch<Ty>,
+    ) -> Result<Var, FatalError> {
+        let input_vars = inputs
+            .iter()
+            .map(|input| self.lower_guard_expr(ctx, executable, parent_plan, state, input))
+            .collect::<Result<Vec<_>, _>>()?;
+        let done_value = ctx.builder.fresh_var();
+        let done_b = ctx.builder.block(vec![done_value]);
+        let fail_b = ctx.builder.block(vec![]);
+        let mut dispatch_state = DispatchState {
+            inputs: input_vars,
+            values: HashMap::new(),
+        };
+        self.lower_guard_dispatch_node(
+            ctx,
+            executable,
+            &dispatch.plan,
+            &dispatch.bodies,
+            dispatch.plan.graph.root,
+            done_b,
+            fail_b,
+            &mut dispatch_state,
+        )?;
+        ctx.current_block = fail_b;
+        let (false_value, _) = ctx.emit_let(Prim::Const(Const::False));
+        ctx.set_term(Term::Goto(done_b, vec![false_value]));
+        ctx.current_block = done_b;
+        Ok(done_value)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_guard_dispatch_node(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        plan: &PatternDispatchPlan<Ty>,
+        bodies: &[PatternGuardExpr<Ty>],
+        node_id: GraphNodeId,
+        done_b: BlockId,
+        fail_b: BlockId,
+        state: &mut DispatchState,
+    ) -> Result<(), FatalError> {
+        let Some(node) = plan.graph.node(node_id).cloned() else {
+            return Err(incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!("guard dispatch graph node {:?} is out of bounds", node_id),
+            ));
+        };
+        match node {
+            DispatchNode::Fail => {
+                ctx.set_term(Term::Goto(fail_b, vec![]));
+                Ok(())
+            }
+            DispatchNode::Outcome { outcome, .. } => {
+                let outcome = plan.outcome(outcome).ok_or_else(|| {
+                    incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        format!("guard dispatch outcome {:?} is out of bounds", outcome),
+                    )
+                })?;
+                let body = bodies.get(outcome.body_id as usize).ok_or_else(|| {
+                    incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        format!("guard dispatch body {} is out of bounds", outcome.body_id),
+                    )
+                })?;
+                let value = self.lower_guard_expr(ctx, executable, plan, state, body)?;
+                ctx.set_term(Term::Goto(done_b, vec![value]));
+                Ok(())
+            }
+            DispatchNode::Test {
+                predicate,
+                on_match,
+                on_miss,
+            } => {
+                let cond =
+                    self.lower_dispatch_region(ctx, executable, plan, predicate.subject, &predicate.region, state)?;
+                let then_b = ctx.builder.block(vec![]);
+                let else_b = ctx.builder.block(vec![]);
+                ctx.set_term(Term::If {
+                    cond,
+                    then_b,
+                    else_b,
+                    origin: BranchOrigin::ClauseDispatch,
+                });
+                let mut match_state = state.clone();
+                ctx.current_block = then_b;
+                self.lower_guard_dispatch_node(
+                    ctx,
+                    executable,
+                    plan,
+                    bodies,
+                    on_match.target,
+                    done_b,
+                    fail_b,
+                    &mut match_state,
+                )?;
+                ctx.current_block = else_b;
+                self.lower_guard_dispatch_node(ctx, executable, plan, bodies, on_miss.target, done_b, fail_b, state)
+            }
+        }
+    }
+
+    fn dispatch_subject_var(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        plan: &PatternDispatchPlan<Ty>,
+        state: &mut DispatchState,
+        subject: SubjectId,
+    ) -> Result<Var, FatalError> {
+        if let Some(var) = state.values.get(&subject).copied() {
+            return Ok(var);
+        }
+        let Some(subject_data) = plan.matrix.subjects.get(subject.0 as usize) else {
+            return Err(incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!("dispatch subject {:?} is out of bounds", subject),
+            ));
+        };
+        let var = match &subject_data.source {
+            crate::dispatch_matrix::SubjectSource::Input { ordinal } => {
+                state.inputs.get(*ordinal as usize).copied().ok_or_else(|| {
+                    incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        format!("dispatch input {} has no native entry param", ordinal),
+                    )
+                })?
+            }
+            crate::dispatch_matrix::SubjectSource::Projection(projection) => match &projection.kind {
+                crate::dispatch_matrix::ProjectionKind::TupleField(index) => {
+                    let tuple = self.dispatch_subject_var(ctx, plan, state, projection.source)?;
+                    let (var, _) = ctx.emit_let(Prim::TupleField(tuple, *index));
+                    var
+                }
+                crate::dispatch_matrix::ProjectionKind::ListHead => {
+                    let list = self.dispatch_subject_var(ctx, plan, state, projection.source)?;
+                    let (var, _) = ctx.emit_let(Prim::ListHead(list));
+                    var
+                }
+                crate::dispatch_matrix::ProjectionKind::ListTail => {
+                    let list = self.dispatch_subject_var(ctx, plan, state, projection.source)?;
+                    let (var, _) = ctx.emit_let(Prim::ListTail(list));
+                    var
+                }
+                crate::dispatch_matrix::ProjectionKind::MapValue { key } => {
+                    let map = self.dispatch_subject_var(ctx, plan, state, projection.source)?;
+                    let key = lower_dispatch_const(ctx, &self.atom_ids, key)?;
+                    let (var, _) = ctx.emit_let(Prim::MapGet(map, key));
+                    var
+                }
+                crate::dispatch_matrix::ProjectionKind::BitstringField(index) => {
+                    return Err(incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        format!("native dispatch does not support bitstring field projection {}", index),
+                    ));
+                }
+            },
+        };
+        state.values.insert(subject, var);
+        Ok(var)
+    }
+
+    fn atom_id(&self, name: &str) -> u32 {
+        *self.atom_ids.get(name).expect("required atom should be interned")
+    }
+
+    fn callable_identity(&self, function: FunctionId, capture_count: usize) -> FnId {
+        *self
+            .callable_identity_fns
+            .get(&(function, capture_count))
+            .unwrap_or_else(|| panic!("callable identity for {function:?}/{capture_count}"))
+    }
+
+    fn callable_entry_candidates(&self, function: FunctionId, capture_count: usize) -> Vec<usize> {
+        self.program
+            .callable_entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                let target = &self.program.executables[entry.target];
+                (target.key.activation.function == function && entry.capture_count == capture_count).then_some(index)
+            })
+            .collect()
+    }
+
+    fn next_continuation_index(&mut self, owner: FnId) -> u32 {
+        let next = self.continuation_indices.entry(owner).or_insert(0);
+        let index = *next;
+        *next += 1;
+        index
+    }
+}
+
+#[derive(Clone)]
+enum Finish {
+    Return,
+    TailJoin { fn_id: FnId, captured: Vec<ValueId> },
+}
+
+impl Finish {
+    fn capture_ids(&self) -> Vec<ValueId> {
+        match self {
+            Self::Return => Vec::new(),
+            Self::TailJoin { captured, .. } => captured.clone(),
+        }
+    }
+}
+
+fn apply_finish(ctx: &mut NativeFnCtx, env: &ValueEnv, result: Var, finish: Finish) {
+    match finish {
+        Finish::Return => ctx.set_term(Term::Return(result)),
+        Finish::TailJoin { fn_id, captured } => {
+            let mut args = vec![result];
+            args.extend(env.capture_args(&captured).expect("join capture should be bound"));
+            ctx.set_term(Term::TailCall {
+                ident: CallsiteIdent::from_source(Span::DUMMY),
+                callee: fn_id,
+                args,
+                is_back_edge: false,
+            });
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BranchTarget {
+    fn_id: FnId,
+    captures: Vec<ValueId>,
+}
+
+#[derive(Default, Clone)]
+struct ValueEnv {
+    vars: HashMap<ValueId, Var>,
+    order: Vec<ValueId>,
+}
+
+impl ValueEnv {
+    fn insert(&mut self, value: ValueId, var: Var) {
+        if self.vars.insert(value, var).is_none() {
+            self.order.push(value);
+        }
+    }
+
+    fn var(&self, value: ValueId) -> Option<Var> {
+        self.vars.get(&value).copied()
+    }
+
+    fn vars(&self, values: &[ValueId]) -> Option<Vec<Var>> {
+        values.iter().map(|value| self.var(*value)).collect()
+    }
+
+    fn call_args(&self, args: &[crate::compiler2::BackendCallArg]) -> Option<Vec<Var>> {
+        args.iter().map(|arg| self.var(arg.value)).collect()
+    }
+
+    fn capture_ids(&self, needed: HashSet<ValueId>) -> Vec<ValueId> {
+        self.order
+            .iter()
+            .copied()
+            .filter(|value| needed.contains(value))
+            .collect()
+    }
+
+    fn capture_args(&self, captured: &[ValueId]) -> Option<Vec<Var>> {
+        captured.iter().map(|value| self.var(*value)).collect()
+    }
+}
+
+#[derive(Clone)]
+struct DispatchState {
+    inputs: Vec<Var>,
+    values: HashMap<SubjectId, Var>,
+}
+
+impl DispatchState {
+    fn new(inputs: Vec<Var>) -> Self {
+        Self {
+            inputs,
+            values: HashMap::new(),
+        }
+    }
+}
+
+struct NativeFnCtx {
+    fn_id: FnId,
+    builder: FnBuilder,
+    current_block: BlockId,
+    stmt_counts: HashMap<BlockId, usize>,
+    value_types: HashMap<Var, Ty>,
+    callable_constructors: HashMap<Var, Vec<usize>>,
+    extern_marshals: HashMap<ExternMarshalSite, ExternTy>,
+    failure_blocks: HashMap<u32, BlockId>,
+    origin: NativeBodyOrigin,
+    entry_abi: NativeEntryAbi,
+    param_reprs: Vec<AbiValueRepr>,
+    return_ty: Ty,
+    return_abi: ReturnAbi,
+    effects: EffectSummary,
+}
+
+impl NativeFnCtx {
+    fn new(
+        fn_id: FnId,
+        name: &str,
+        category: FnCategory,
+        origin: NativeBodyOrigin,
+        entry_abi: NativeEntryAbi,
+        param_reprs: Vec<AbiValueRepr>,
+        return_ty: Ty,
+        return_abi: ReturnAbi,
+        effects: EffectSummary,
+    ) -> Self {
+        let builder = FnBuilder::new(fn_id, name.to_string()).with_category(category);
+        Self {
+            fn_id,
+            builder,
+            current_block: BlockId(0),
+            stmt_counts: HashMap::new(),
+            value_types: HashMap::new(),
+            callable_constructors: HashMap::new(),
+            extern_marshals: HashMap::new(),
+            failure_blocks: HashMap::new(),
+            origin,
+            entry_abi,
+            param_reprs,
+            return_ty,
+            return_abi,
+            effects,
+        }
+    }
+
+    fn entry_params(&mut self, tys: &[Ty]) -> Vec<Var> {
+        let params = tys.iter().map(|_| self.builder.fresh_var()).collect::<Vec<_>>();
+        self.current_block = self.builder.block(params.clone());
+        for (param, ty) in params.iter().copied().zip(tys.iter().copied()) {
+            self.value_types.insert(param, ty);
+        }
+        params
+    }
+
+    fn emit_let(&mut self, prim: Prim) -> (Var, usize) {
+        let stmt_idx = self.stmt_counts.entry(self.current_block).or_insert(0);
+        let idx = *stmt_idx;
+        *stmt_idx += 1;
+        let var = self.builder.let_(self.current_block, prim);
+        (var, idx)
+    }
+
+    fn fresh_callsite(&self) -> CallsiteIdent {
+        CallsiteIdent::from_source(Span::DUMMY)
+    }
+
+    fn set_term(&mut self, term: Term) {
+        self.builder.set_terminator(self.current_block, term);
+    }
+
+    fn halt_with_atom(&mut self, atom: u32) {
+        let (reason, _) = self.emit_let(Prim::Const(Const::Atom(atom)));
+        self.set_term(Term::Halt(reason));
+    }
+
+    fn assert_truthy(&mut self, cond: Var, fail_atom: u32) {
+        let pass = self.builder.block(Vec::new());
+        let fail = if let Some(fail) = self.failure_blocks.get(&fail_atom).copied() {
+            fail
+        } else {
+            let saved = self.current_block;
+            let fail = self.builder.block(Vec::new());
+            self.current_block = fail;
+            let (reason, _) = self.emit_let(Prim::Const(Const::Atom(fail_atom)));
+            self.set_term(Term::Halt(reason));
+            self.current_block = saved;
+            self.failure_blocks.insert(fail_atom, fail);
+            fail
+        };
+        self.set_term(Term::If {
+            cond,
+            then_b: pass,
+            else_b: fail,
+            origin: BranchOrigin::PatternBind,
+        });
+        self.current_block = pass;
+    }
+
+    fn finish(self) -> (crate::fz_ir::FnIr, NativeBody) {
+        let fn_ir = self.builder.build();
+        let body = NativeBody {
+            fn_id: self.fn_id,
+            origin: self.origin,
+            entry_abi: self.entry_abi,
+            param_reprs: self.param_reprs,
+            return_ty: self.return_ty,
+            return_abi: self.return_abi,
+            value_types: self.value_types,
+            callable_constructors: self.callable_constructors,
+            extern_marshals: self.extern_marshals,
+            effects: self.effects,
+        };
+        (fn_ir, body)
+    }
+}
+
+fn bind_backend_value(
+    ctx: &mut NativeFnCtx,
+    executable: &BackendExecutable,
+    env: &mut ValueEnv,
+    value: ValueId,
+    var: Var,
+) {
+    env.insert(value, var);
+    if let Some(ty) = executable.value_types.get(&value).copied() {
+        ctx.value_types.insert(var, ty);
+    }
+}
+
+fn used_values_in_sequence(
+    steps: &[BackendStep],
+    tail_steps: &[BackendStep],
+    final_result: ValueId,
+) -> HashSet<ValueId> {
+    let mut out = HashSet::new();
+    collect_used_values(steps, &mut out);
+    collect_used_values(tail_steps, &mut out);
+    out.insert(final_result);
+    out
+}
+
+fn used_values_in_block(block: &crate::compiler2::BackendBlock) -> HashSet<ValueId> {
+    let mut out = HashSet::new();
+    collect_used_values(&block.steps, &mut out);
+    out.insert(block.result);
+    out
+}
+
+fn collect_used_values(steps: &[BackendStep], out: &mut HashSet<ValueId>) {
+    for step in steps {
+        match step {
+            BackendStep::Const { .. } | BackendStep::NamedFunctionRef { .. } => {}
+            BackendStep::Tuple { items, .. } => out.extend(items.iter().copied()),
+            BackendStep::List { items, tail, .. } => {
+                out.extend(items.iter().copied());
+                if let Some(tail) = tail {
+                    out.insert(*tail);
+                }
+            }
+            BackendStep::FunctionRef { .. } => {}
+            BackendStep::DirectCall { args, .. } | BackendStep::ClosureCall { args, .. } => {
+                for arg in args {
+                    out.insert(arg.value);
+                }
+                if let BackendStep::ClosureCall { callee, .. } = step {
+                    out.insert(*callee);
+                }
+            }
+            BackendStep::Lambda { captures, .. } => out.extend(captures.iter().copied()),
+            BackendStep::BinaryOp { left, right, .. } => {
+                out.insert(*left);
+                out.insert(*right);
+            }
+            BackendStep::UnaryOp { input, .. } => {
+                out.insert(*input);
+            }
+            BackendStep::MapIndex { base, key, .. } => {
+                out.insert(*base);
+                out.insert(*key);
+            }
+            BackendStep::If {
+                cond,
+                then_block,
+                else_block,
+                ..
+            } => {
+                out.insert(*cond);
+                out.extend(used_values_in_block(then_block));
+                out.extend(used_values_in_block(else_block));
+            }
+            BackendStep::AssertLiteral { source, .. }
+            | BackendStep::AssertTuple { source, .. }
+            | BackendStep::AssertEmptyList { source } => {
+                out.insert(*source);
+            }
+            BackendStep::TupleField { source, .. } => {
+                out.insert(*source);
+            }
+            BackendStep::AssertSame { source, value } => {
+                out.insert(*source);
+                out.insert(*value);
+            }
+            BackendStep::SplitList { source, .. } => {
+                out.insert(*source);
+            }
+        }
+    }
+}
+
+fn collect_callable_identity_needs(program: &BackendProgram) -> Vec<(FunctionId, usize)> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for entry in &program.callable_entries {
+        let function = program.executables[entry.target].key.activation.function;
+        if seen.insert((function, entry.capture_count)) {
+            out.push((function, entry.capture_count));
+        }
+    }
+    for executable in &program.executables {
+        match &executable.body {
+            BackendBody::Extern { .. } => {}
+            BackendBody::Clauses { clauses, .. } => {
+                for clause in clauses {
+                    collect_callable_identity_needs_in_steps(&clause.projections, &mut seen, &mut out);
+                    collect_callable_identity_needs_in_steps(&clause.body.steps, &mut seen, &mut out);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn collect_callable_identity_needs_in_steps(
+    steps: &[BackendStep],
+    seen: &mut HashSet<(FunctionId, usize)>,
+    out: &mut Vec<(FunctionId, usize)>,
+) {
+    for step in steps {
+        match step {
+            BackendStep::FunctionRef { function, .. } => {
+                if seen.insert((*function, 0)) {
+                    out.push((*function, 0));
+                }
+            }
+            BackendStep::Lambda { function, captures, .. } => {
+                let key = (*function, captures.len());
+                if seen.insert(key) {
+                    out.push(key);
+                }
+            }
+            BackendStep::If {
+                then_block, else_block, ..
+            } => {
+                collect_callable_identity_needs_in_steps(&then_block.steps, seen, out);
+                collect_callable_identity_needs_in_steps(&else_block.steps, seen, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_extern_marshals(
+    world: &World<'_>,
+    root_id: RootId,
+    program: &BackendProgram,
+) -> Result<HashMap<usize, Vec<ExternTy>>, FatalError> {
+    let mut out = HashMap::new();
+    for executable in &program.executables {
+        if let BackendBody::Clauses { clauses, .. } = &executable.body {
+            for clause in clauses {
+                collect_extern_marshals_in_steps(world, root_id, program, &clause.projections, &mut out)?;
+                collect_extern_marshals_in_steps(world, root_id, program, &clause.body.steps, &mut out)?;
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn collect_extern_marshals_in_steps(
+    world: &World<'_>,
+    root_id: RootId,
+    program: &BackendProgram,
+    steps: &[BackendStep],
+    out: &mut HashMap<usize, Vec<ExternTy>>,
+) -> Result<(), FatalError> {
+    for step in steps {
+        match step {
+            BackendStep::DirectCall {
+                callee,
+                extern_marshals,
+                ..
+            } if matches!(program.executables[*callee].body, BackendBody::Extern { .. }) => {
+                let signature = match &program.executables[*callee].body {
+                    BackendBody::Extern { signature } => signature,
+                    BackendBody::Clauses { .. } => unreachable!(),
+                };
+                let marshals = extern_marshals.clone().unwrap_or_else(|| signature.params.clone());
+                match out.get(callee) {
+                    Some(existing) if existing != &marshals => {
+                        return Err(incomplete_native_program(
+                            world,
+                            root_id,
+                            format!(
+                                "extern executable {} has conflicting marshal plans: {:?} vs {:?}",
+                                callee, existing, marshals
+                            ),
+                        ));
+                    }
+                    Some(_) => {}
+                    None => {
+                        out.insert(*callee, marshals);
+                    }
+                }
+            }
+            BackendStep::If {
+                then_block, else_block, ..
+            } => {
+                collect_extern_marshals_in_steps(world, root_id, program, &then_block.steps, out)?;
+                collect_extern_marshals_in_steps(world, root_id, program, &else_block.steps, out)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn lower_backend_literal(
+    ctx: &mut NativeFnCtx,
+    atom_ids: &HashMap<String, u32>,
+    literal: &Literal,
+) -> Result<Var, FatalError> {
+    Ok(match literal {
+        Literal::Int(value) => ctx.emit_let(Prim::Const(Const::Int(*value))).0,
+        Literal::Float(value) => ctx.emit_let(Prim::Const(Const::Float(*value))).0,
+        Literal::Atom(name) => {
+            ctx.emit_let(Prim::Const(Const::Atom(*atom_ids.get(name).ok_or(FatalError)?)))
+                .0
+        }
+        Literal::Bool(true) => ctx.emit_let(Prim::Const(Const::True)).0,
+        Literal::Bool(false) => ctx.emit_let(Prim::Const(Const::False)).0,
+        Literal::Nil => ctx.emit_let(Prim::Const(Const::Nil)).0,
+        Literal::Binary(bytes) => {
+            ctx.emit_let(Prim::ConstBitstring(bytes.clone(), (bytes.len() * 8) as u64))
+                .0
+        }
+    })
+}
+
+fn lower_dispatch_const(
+    ctx: &mut NativeFnCtx,
+    atom_ids: &HashMap<String, u32>,
+    value: &DispatchConst,
+) -> Result<Var, FatalError> {
+    Ok(match value {
+        DispatchConst::Int(value) => ctx.emit_let(Prim::Const(Const::Int(*value))).0,
+        DispatchConst::FloatBits(bits) => ctx.emit_let(Prim::Const(Const::Float(f64::from_bits(*bits)))).0,
+        DispatchConst::AtomName(name) => {
+            let atom = *atom_ids.get(name).ok_or(FatalError)?;
+            ctx.emit_let(Prim::Const(Const::Atom(atom))).0
+        }
+        DispatchConst::Bool(true) => ctx.emit_let(Prim::Const(Const::True)).0,
+        DispatchConst::Bool(false) => ctx.emit_let(Prim::Const(Const::False)).0,
+        DispatchConst::Nil => ctx.emit_let(Prim::Const(Const::Nil)).0,
+        DispatchConst::Utf8Binary(bytes) => {
+            ctx.emit_let(Prim::ConstBitstring(bytes.clone(), (bytes.len() * 8) as u64))
+                .0
+        }
+        DispatchConst::EmptyList => {
+            return Err(FatalError);
+        }
+    })
+}
+
+fn lower_binop(op: crate::ast::BinOp) -> IrBinOp {
+    match op {
+        crate::ast::BinOp::Add => IrBinOp::Add,
+        crate::ast::BinOp::Sub => IrBinOp::Sub,
+        crate::ast::BinOp::Mul => IrBinOp::Mul,
+        crate::ast::BinOp::Div => IrBinOp::Div,
+        crate::ast::BinOp::Rem => IrBinOp::Mod,
+        crate::ast::BinOp::Eq => IrBinOp::Eq,
+        crate::ast::BinOp::Neq => IrBinOp::Neq,
+        crate::ast::BinOp::Lt => IrBinOp::Lt,
+        crate::ast::BinOp::LtEq => IrBinOp::Le,
+        crate::ast::BinOp::Gt => IrBinOp::Gt,
+        crate::ast::BinOp::GtEq => IrBinOp::Ge,
+        crate::ast::BinOp::And => IrBinOp::And,
+        crate::ast::BinOp::Or => IrBinOp::Or,
+        other => panic!("unsupported backend binop in native lowering: {other:?}"),
+    }
+}
+
+fn lower_guard_binop(op: crate::dispatch_matrix::pattern::PatternGuardBinOp) -> IrBinOp {
+    match op {
+        crate::dispatch_matrix::pattern::PatternGuardBinOp::Add => IrBinOp::Add,
+        crate::dispatch_matrix::pattern::PatternGuardBinOp::Sub => IrBinOp::Sub,
+        crate::dispatch_matrix::pattern::PatternGuardBinOp::Mul => IrBinOp::Mul,
+        crate::dispatch_matrix::pattern::PatternGuardBinOp::Div => IrBinOp::Div,
+        crate::dispatch_matrix::pattern::PatternGuardBinOp::Rem => IrBinOp::Mod,
+        crate::dispatch_matrix::pattern::PatternGuardBinOp::Eq => IrBinOp::Eq,
+        crate::dispatch_matrix::pattern::PatternGuardBinOp::Neq => IrBinOp::Neq,
+        crate::dispatch_matrix::pattern::PatternGuardBinOp::Lt => IrBinOp::Lt,
+        crate::dispatch_matrix::pattern::PatternGuardBinOp::LtEq => IrBinOp::Le,
+        crate::dispatch_matrix::pattern::PatternGuardBinOp::Gt => IrBinOp::Gt,
+        crate::dispatch_matrix::pattern::PatternGuardBinOp::GtEq => IrBinOp::Ge,
+        crate::dispatch_matrix::pattern::PatternGuardBinOp::And => IrBinOp::And,
+        crate::dispatch_matrix::pattern::PatternGuardBinOp::Or => IrBinOp::Or,
+    }
+}
+
+fn lower_unop(op: crate::ast::UnOp) -> IrUnOp {
+    match op {
+        crate::ast::UnOp::Neg => IrUnOp::Neg,
+        crate::ast::UnOp::Not => IrUnOp::Not,
+    }
+}
+
+fn atom_names(atom_ids: &HashMap<String, u32>) -> Vec<String> {
+    let mut out = vec![String::new(); atom_ids.len()];
+    for (name, id) in atom_ids {
+        out[*id as usize] = name.clone();
+    }
+    out
+}
+
+fn legacy_any_tuple(arity: usize) -> crate::types::Ty {
+    let mut legacy_types = crate::types::new();
+    let fields = (0..arity).map(|_| legacy_types.any()).collect::<Vec<_>>();
+    legacy_types.tuple(&fields)
+}
+
+fn legacy_any_map() -> crate::types::Ty {
+    let mut legacy_types = crate::types::new();
+    legacy_types.map_top()
+}
+
+fn legacy_type_test_ty(world: &mut World<'_>, ty: Ty) -> Option<crate::types::Ty> {
+    if type_is_any(world, ty) {
+        let mut legacy_types = crate::types::new();
+        return Some(legacy_types.any());
+    }
+    if type_is_integer(world, ty) {
+        let mut legacy_types = crate::types::new();
+        return Some(legacy_types.int());
+    }
+    if type_is_float(world, ty) {
+        let mut legacy_types = crate::types::new();
+        return Some(legacy_types.float());
+    }
+    if type_is_atom(world, ty) {
+        let mut legacy_types = crate::types::new();
+        return Some(legacy_types.atom());
+    }
+    if let Some(atom) = world.types().as_atom_singleton(&ty) {
+        let mut legacy_types = crate::types::new();
+        return Some(legacy_types.atom_lit(&atom));
+    }
+    let atom_literals = world.types().atom_literals(&ty);
+    if !atom_literals.is_empty() {
+        let mut legacy_types = crate::types::new();
+        let mut atoms = atom_literals.into_iter();
+        let first = legacy_types.atom_lit(&atoms.next()?);
+        let union = atoms.fold(first, |acc, atom| {
+            let lit = legacy_types.atom_lit(&atom);
+            legacy_types.union(acc, lit)
+        });
+        return Some(union);
+    }
+    if let Some(arity) = exact_tuple_arity(world, ty) {
+        return Some(legacy_any_tuple(arity));
+    }
+    if type_is_empty_list(world, ty) {
+        let mut legacy_types = crate::types::new();
+        return Some(legacy_types.empty_list());
+    }
+    if type_is_non_empty_list(world, ty) {
+        let mut legacy_types = crate::types::new();
+        let any = legacy_types.any();
+        return Some(legacy_types.non_empty_list(any));
+    }
+    if type_is_list(world, ty) {
+        let mut legacy_types = crate::types::new();
+        let any = legacy_types.any();
+        return Some(legacy_types.list(any));
+    }
+    if type_is_map(world, ty) {
+        return Some(legacy_any_map());
+    }
+    None
+}
+
+fn type_is_any(world: &mut World<'_>, ty: Ty) -> bool {
+    let any = world.types_mut().any();
+    world.types().is_equivalent(&ty, &any)
+}
+
+fn type_is_integer(world: &mut World<'_>, ty: Ty) -> bool {
+    let int = world.types_mut().int();
+    world.types().is_equivalent(&ty, &int)
+}
+
+fn type_is_float(world: &mut World<'_>, ty: Ty) -> bool {
+    let float = world.types_mut().float();
+    world.types().is_equivalent(&ty, &float)
+}
+
+fn type_is_atom(world: &mut World<'_>, ty: Ty) -> bool {
+    let atom = world.types_mut().atom();
+    world.types().is_equivalent(&ty, &atom)
+}
+
+fn type_is_empty_list(world: &mut World<'_>, ty: Ty) -> bool {
+    let empty = world.types_mut().empty_list();
+    world.types().is_equivalent(&ty, &empty)
+}
+
+fn type_is_non_empty_list(world: &mut World<'_>, ty: Ty) -> bool {
+    let list = {
+        let types = world.types_mut();
+        let any = types.any();
+        types.non_empty_list(any)
+    };
+    world.types().is_equivalent(&ty, &list)
+}
+
+fn type_is_list(world: &mut World<'_>, ty: Ty) -> bool {
+    let list = {
+        let types = world.types_mut();
+        let any = types.any();
+        types.list(any)
+    };
+    world.types().is_equivalent(&ty, &list)
+}
+
+fn type_is_map(world: &mut World<'_>, ty: Ty) -> bool {
+    let map = world.types_mut().map_top();
+    world.types().is_equivalent(&ty, &map)
+}
+
+fn exact_tuple_arity(world: &mut World<'_>, ty: Ty) -> Option<usize> {
+    let arity = world.types().max_tuple_arity(&ty);
+    if arity == 0 {
+        return None;
+    }
+    let tuple = {
+        let types = world.types_mut();
+        let any = types.any();
+        let fields = vec![any; arity];
+        types.tuple(&fields)
+    };
+    world.types().is_equivalent(&ty, &tuple).then_some(arity)
+}
+
+fn missing_backend_value(world: &World<'_>, root_id: RootId, value: ValueId) -> FatalError {
+    incomplete_native_program(
+        world,
+        root_id,
+        format!("native lowering referenced unbound value {}", value.as_u32()),
+    )
+}
+
+fn incomplete_native_program(world: &World<'_>, root_id: RootId, message: impl Into<String>) -> FatalError {
+    let message = message.into();
+    let diagnostic = Diagnostic::error(
+        codes::ARTIFACT_INCOMPLETE_SEMANTIC_PLAN,
+        format!("compiler2 native lowering for root {}: {}", root_id.as_u32(), message),
+        Span::DUMMY,
+    );
+    emit_through(world.tel(), None, std::slice::from_ref(&diagnostic));
+    FatalError
+}

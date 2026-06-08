@@ -24,7 +24,7 @@ use crate::{measurements, metadata};
 use super::CodeId;
 use super::artifact::{
     AbiReadyProgram, AbiReadyProgramMap, BackendProgram, BackendProgramMap, EmissionReadyProgram,
-    EmissionReadyProgramMap, MaterializedProgram, MaterializedProgramMap,
+    EmissionReadyProgramMap, MaterializedProgram, MaterializedProgramMap, NativeProgram, NativeProgramMap,
 };
 use super::body::{LoweredBody, LoweredBodyMap};
 use super::code::CodeMap;
@@ -84,6 +84,7 @@ pub struct World<'a> {
     abi_ready: AbiReadyProgramMap,
     emission_ready: EmissionReadyProgramMap,
     backend: BackendProgramMap,
+    native: NativeProgramMap,
     roots: RootMap,
     namespaces: NamespaceStore,
     types: Types,
@@ -130,6 +131,7 @@ impl<'a> World<'a> {
             abi_ready: AbiReadyProgramMap::new(),
             emission_ready: EmissionReadyProgramMap::new(),
             backend: BackendProgramMap::new(),
+            native: NativeProgramMap::new(),
             roots: RootMap::new(),
             namespaces: NamespaceStore::new(),
             types: Types::new(),
@@ -494,6 +496,24 @@ impl<'a> World<'a> {
             .get(root)
             .cloned()
             .expect("backend programs should only be read after their fact is defined")
+    }
+
+    pub(crate) fn define_native_program(&mut self, root: RootId, program: NativeProgram) -> u64 {
+        let revision = self.native.define(root, program.clone());
+        self.tel.execute(
+            &["fz", "compiler2", "native_program", "defined"],
+            &measurements! {
+                root_id: root.as_u32() as u64,
+                revision: revision,
+                body_count: program.bodies.len() as u64,
+                callable_entry_count: program.callable_entries.len() as u64,
+                fn_count: program.module.fns.len() as u64,
+            },
+            &metadata! {
+                program: opaque(&program),
+            },
+        );
+        revision
     }
 
     pub fn reference_module(&mut self, name: impl Into<String>) -> ModuleId {

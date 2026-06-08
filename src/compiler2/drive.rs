@@ -31,6 +31,7 @@ pub enum Job {
     DeriveAbiReady(RootId),
     DeriveEmissionReady(RootId),
     LowerBackendProgram(RootId),
+    LowerNativeProgram(RootId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -56,6 +57,7 @@ pub enum FactKey {
     AbiReadyProgram(RootId),
     EmissionReadyProgram(RootId),
     BackendProgram(RootId),
+    NativeProgram(RootId),
 }
 
 pub type WorkGraph = Scheduler<Job, FactKey>;

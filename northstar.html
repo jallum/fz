@@ -634,8 +634,9 @@ DependencySnapshot = HashMap&lt;FactKey, u64&gt;</code></pre>
         <div class="card">
           <h3><code>NativeProgram</code></h3>
           <p>
-            The native-specific handoff above <code>BackendProgram</code>. It will carry a
-            Compiler2-owned CPS/codegen-ready projection containing only the facts shared native
+            The native-specific handoff above <code>BackendProgram</code>. It carries a
+            Compiler2-owned CPS/codegen-ready projection: direct executable bodies, clause helpers,
+            continuations, callable-constructor metadata, and extern-marshal facts shared native
             codegen actually consumes, instead of rebuilding <code>ModulePlan</code>,
             <code>PlannedProgram</code>, or <code>AbiFacts</code> on the side.
           </p>
@@ -666,8 +667,7 @@ DependencySnapshot = HashMap&lt;FactKey, u64&gt;</code></pre>
         <li>formatted telemetry payloads instead of raw ids, facts, and opaque structures</li>
       </ul>
       <p>
-        This is the reason <code>fz-rh2.8.2</code> stays blocked behind the artifact-model arc:
-        interpreter work should consume <code>BackendProgram</code>, and native work should consume
+        Interpreter work should consume <code>BackendProgram</code>, and native work should consume
         <code>NativeProgram</code>, not invent old planner/codegen state while wiring JIT or AOT.
         If a backend consumer needs semantic, reachability, or type answers after
         <code>MaterializedProgram</code>, that missing information belongs as a new artifact fact
@@ -800,9 +800,11 @@ join =&gt; Inputs([list(int)]) after refine_widen + alpha normalization</code></
           <code>DeriveAbiReady(root)</code> then makes return delivery, ABI lanes, and callable
           entries explicit without asking new semantic questions. Finally,
           <code>DeriveEmissionReady(root)</code> rewrites that closed artifact into stable emission
-          inventory, and <code>LowerBackendProgram(root)</code> attaches settled call targets,
-          callable-boundary obligations, and concrete extern wire classes to the structured bodies.
-          Redefining uncalled <code>foo/0</code> later does not reopen the root.
+          inventory, <code>LowerBackendProgram(root)</code> attaches settled call targets,
+          callable-boundary obligations, and concrete extern wire classes to the structured bodies,
+          and <code>LowerNativeProgram(root)</code> lowers that closed handoff into CPS/native
+          bodies for shared codegen. Redefining uncalled <code>foo/0</code> later does not reopen
+          the root.
           Redefining <code>main/0</code> does, because the old callsite summaries and closed
           frontier are replaced by new ones.
         </p>

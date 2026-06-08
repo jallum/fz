@@ -67,6 +67,7 @@ pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> R
     Ok(JobEffects {
         reads: vec![emission_ready_fact],
         outputs: vec![(FactKey::BackendProgram(root_id), FactValue::presence(revision))],
+        follow_up: vec![Job::LowerNativeProgram(root_id)],
         ..JobEffects::default()
     })
 }
