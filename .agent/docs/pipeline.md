@@ -200,11 +200,13 @@ Questions that are illegal after `NativeProgram(root)`:
 
 Current conclusion from the code:
 
-- no missing closed fact has been identified for the current
-  `compile_with_backend_prepared_impl` inputs
-- the remaining work is consumer refactoring: shared native codegen still asks
-  those questions through planner-shaped structures, even though the answers
-  already exist on `NativeProgram`
+- no missing closed fact has been identified for the current shared native
+  codegen inputs
+- contract tests already JIT-compile `NativeProgram(root)` through the shared
+  native backend without `prepare_preplanned_native`
+- the remaining work is the outer consumer move: expose production Compiler2
+  JIT/AOT entry points on top of `NativeProgram(root)` and retire the current
+  test-only handoff helper
 
 ## Redefinition retracts by ownership
 

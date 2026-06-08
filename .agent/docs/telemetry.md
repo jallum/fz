@@ -192,6 +192,8 @@ tests assert that:
 - `MaterializeRoot(root)` reads only `SemanticClosed(root)`
 - `DeriveAbiReady(root)` reads only `MaterializedProgram(root)`
 - `DeriveEmissionReady(root)` reads only `AbiReadyProgram(root)`
+- `LowerBackendProgram(root)` reads only `EmissionReadyProgram(root)`
+- `LowerNativeProgram(root)` reads only `BackendProgram(root)`
 
 So a backend adapter that asks semantic, type, or reachability questions after
 the artifact boundary is visible as the wrong `reads`/`waits` shape on the job
@@ -200,9 +202,11 @@ span, not just as a vague architectural complaint.
 **Compiler2 tests should observe telemetry, not world internals.** The common
 captures live in `src/compiler2/drive_test.rs` and assert on emitted
 definitions, work-graph steps, callsite summaries, semantic closure, and the
-three artifact rungs. The quicksort, `Enum.reduce`, and variadic-extern
-contracts are the fast summary probe; the ignored JSONL dump is the occasional
-deep trace.
+full artifact ladder through `NativeProgram(root)`. The quicksort,
+`Enum.reduce`, and variadic-extern contracts are the fast summary probe; the
+shared-native JIT tests prove that Compiler2-native codegen does not fall back
+to planner or type-preparation telemetry; the ignored JSONL dump is the
+occasional deep trace.
 
 Useful reruns:
 
@@ -213,6 +217,9 @@ Useful reruns:
 - `cargo test --lib compiler2_materialization_freezes_only_the_selected_enum_reduce_path -- --exact --nocapture`
 - `cargo test --lib compiler2_artifact_ladder_consumes_only_the_previous_rung -- --exact --nocapture`
 - `cargo test --lib compiler2_emission_ready_preserves_variadic_extern_inventory_and_marshals -- --exact --nocapture`
+- `cargo test --lib compiler2_native_program_jit_runs_quicksort_through_shared_codegen -- --exact --nocapture`
+- `cargo test --lib compiler2_native_program_jit_runs_enum_reduce_through_shared_codegen -- --exact --nocapture`
+- `cargo test --lib compiler2_native_program_jit_runs_variadic_extern_through_shared_codegen -- --exact --nocapture`
 - `cargo test --lib compiler2::telemetry_dump_test::dump_quicksort_compiler2_telemetry_to_jsonl -- --ignored --exact --nocapture`
 
 The ignored harness writes its log to `/tmp/fz-compiler2-quicksort.jsonl`.
