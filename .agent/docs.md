@@ -13,6 +13,11 @@ Read:
 - [pipeline](docs/pipeline.md) — source→artifact across the job families: demand from a root, lazy runtime code, the one-way artifact boundary, and retraction by fact ownership.
 - [type world](docs/type-world.md) — the World-owned interned type kernel: `Ty` as an id, one threaded `Types`, and why cheap id-equality lets facts detect change without hashing.
 - [set-theoretic types](docs/set-theoretic-types.md) — types as sets of values: axes/DNF, the two `Types` implementations behind one trait, schemes, brands/opaques, and the typing-vs-runtime predicate split.
+- [type specialization](docs/type-specialization.md) — how compiler2 types one activation (value-flow over lowered steps, return as a union over reachable clauses) and why specialization stays finite.
+- [specs](docs/specs.md) — the `@spec` contract engine: overload sets, scheme matching, application with overlap witnesses, higher-order callback evidence, and the upper-bound coverage check.
+- [protocols](docs/protocols.md) — protocols as owned facts: callback surface + domain type, impl registration, and receiver-subtype dispatch (`resolve_protocol_call`) with lazy runtime-impl loading.
+- [modules](docs/modules.md) — modules and namespaces: identity-on-reference, the Placeholder→Indexed→Scoped→Defined lifecycle, the namespace savepoint chain, two-pass scoping, and lazy runtime-library/prelude loading.
+- [externs](docs/externs.md) — the `extern "C"` FFI door: the `ExternTy` wire alphabet, marshal classes + auto-resolution, borrow-only args, C-vs-fz return ABI, runtime variadic dispatchers + symbol resolution, and resource typing.
 - [telemetry](docs/telemetry.md) — compile-time telemetry internals plus the emission contract, trace harness, and test-observability guidance.
 - [runtime telemetry](docs/runtime-telemetry.md) — the runtime event contract (`process_exited`, `dbg`) and how tests observe a run without poking process internals.
 - [parser syntax](docs/parser-syntax.md) — `src/parser` tokens→AST: Elixir surface syntax, keyword lists, no-parens calls, captures, and the desugar boundary.
