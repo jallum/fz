@@ -159,9 +159,9 @@ hands one caller-owned sink to `World`, and every job/event under
 pass existing ids in measurements and existing compiler-owned structures in
 metadata via `opaque(...)`: `Job`, `JobEffects`, `AppliedStep<Job, FactKey>`,
 `FunctionRef`, `CallSiteSummary`, `SemanticClosure`, `MaterializedProgram`,
-`AbiReadyProgram`, `EmissionReadyProgram`, `Ty`, and unresolved waits. If an
-emit site has to build a display string just for telemetry, that is the wrong
-side of the boundary. The ignored JSONL harness in
+`AbiReadyProgram`, `EmissionReadyProgram`, `BackendProgram`, `Ty`, and
+unresolved waits. If an emit site has to build a display string just for
+telemetry, that is the wrong side of the boundary. The ignored JSONL harness in
 `src/compiler2/telemetry_dump_test.rs` is the model: the handler decides how
 to render opaque values, not the compiler.
 

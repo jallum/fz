@@ -34,6 +34,9 @@ artifact  MaterializeRoot
             make ABI lanes, return delivery, and callable entries explicit -> AbiReadyProgram
           DeriveEmissionReady
             assign stable emission inventory -> EmissionReadyProgram
+          LowerBackendProgram
+            attach settled call targets, callable-boundary obligations, and extern wire classes
+            to structured function bodies -> BackendProgram
 ```
 
 The artifact family is a one-way ladder:
@@ -42,6 +45,7 @@ The artifact family is a one-way ladder:
 MaterializedProgram(root)
   -> AbiReadyProgram(root)
   -> EmissionReadyProgram(root)
+  -> BackendProgram(root)
 ```
 
 Those rungs are derived mechanically from the closed artifact below them. They
@@ -62,7 +66,8 @@ submit_root(main/0)
     SemanticClosed(root) and enqueues MaterializeRoot(root)
   MaterializeRoot freezes the closed set into MaterializedProgram(root)
   DeriveAbiReady(root) derives ABI lanes, return delivery, and callable-boundary facts
-  DeriveEmissionReady(root) derives stable emission inventory for backend adapters
+  DeriveEmissionReady(root) derives stable emission inventory
+  LowerBackendProgram(root) derives the backend-consumable handoff
 ```
 
 Each callee pulls its own `LowerFunction` / `PlanEntryDispatch` /
@@ -110,8 +115,11 @@ The next two rungs narrow the contract:
   callable-boundary obligations from `MaterializedProgram` plus
   `ExecutableNeed`.
 - `EmissionReadyProgram` assigns stable emission-local inventory over Compiler2
-  ids so interpreter/JIT/AOT adapters can enumerate executable entries and
-  callable entries without building their own registry.
+  ids.
+- `BackendProgram` keeps the same closed inventory, but rewrites each
+  structured body so direct calls point at executable inventory slots,
+  callable-boundary arguments name the required callable-entry inventory, and
+  extern callsites carry concrete wire classes.
 
 Things that belong in Compiler2 artifact facts:
 
@@ -131,9 +139,9 @@ Things that do not belong there:
 - backend-specific callable wrapper signatures
 - formatted telemetry payloads
 
-This is why `fz-rh2.8.2` stays blocked behind the artifact-model arc: adapter
-work should consume `EmissionReadyProgram`, not invent it while wiring backend
-entry points.
+This is why `fz-rh2.8.2` stays blocked behind the artifact-model arc: backend
+work should consume `BackendProgram`, not invent it while wiring interpreter,
+JIT, or AOT entry points.
 
 Backend-facing work has one hard rule after `MaterializedProgram`: it may read
 only the settled artifact ladder below it.
@@ -142,6 +150,8 @@ only the settled artifact ladder below it.
 - `DeriveAbiReady(root)` may consume only `MaterializedProgram(root)` plus the
   world-owned type store.
 - `DeriveEmissionReady(root)` may consume only `AbiReadyProgram(root)`.
+- `LowerBackendProgram(root)` may consume only `EmissionReadyProgram(root)` plus
+  the world-owned type store.
 
 If backend code needs to ask semantic, reachability, callee-selection, or
 type-inference questions after that line, the artifact contract is incomplete

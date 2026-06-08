@@ -9,6 +9,7 @@ use super::scheduler::FatalError;
 use super::world::World;
 
 mod artifact;
+mod backend;
 mod body;
 mod dispatch;
 mod keying;
@@ -32,5 +33,6 @@ pub(crate) fn run(world: &mut World<'_>, job: &Job) -> Result<JobEffects, FatalE
         Job::MaterializeRoot(root_id) => artifact::materialize_root(world, *root_id),
         Job::DeriveAbiReady(root_id) => artifact::derive_abi_ready(world, *root_id),
         Job::DeriveEmissionReady(root_id) => artifact::derive_emission_ready(world, *root_id),
+        Job::LowerBackendProgram(root_id) => backend::lower_backend_program(world, *root_id),
     }
 }

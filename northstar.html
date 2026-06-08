@@ -282,6 +282,7 @@
     artifacts: MaterializedProgramMap,
     abi_ready: AbiReadyProgramMap,
     emission_ready: EmissionReadyProgramMap,
+    backend: BackendProgramMap,
 
     work_graph: Scheduler&lt;Job, FactKey&gt;,
 }</code></pre>
@@ -314,8 +315,9 @@
       <p>
         The artifact boundary is a one-way ladder:
         <code>MaterializedProgram</code> then <code>AbiReadyProgram</code> then
-        <code>EmissionReadyProgram</code>. Those maps are pure projections. They are not new
-        semantic authorities and they do not reopen reachability or type discovery.
+        <code>EmissionReadyProgram</code> then <code>BackendProgram</code>. Those maps are pure
+        projections. They are not new semantic authorities and they do not reopen reachability or
+        type discovery.
       </p>
     </section>
 
@@ -470,8 +472,8 @@ enum FactValue {
           </tr>
           <tr>
             <td>Artifact projections</td>
-            <td><code>AbiReadyProgram</code>, <code>EmissionReadyProgram</code></td>
-            <td>Next-rung facts derived mechanically from <code>MaterializedProgram</code>; they carry backend ABI and emission inventory without reopening semantics.</td>
+            <td><code>AbiReadyProgram</code>, <code>EmissionReadyProgram</code>, <code>BackendProgram</code></td>
+            <td>Next-rung facts derived mechanically from <code>MaterializedProgram</code>; they carry backend ABI, stable inventory, and backend-ready structured bodies without reopening semantics.</td>
           </tr>
         </tbody>
       </table>
@@ -613,10 +615,19 @@ DependencySnapshot = HashMap&lt;FactKey, u64&gt;</code></pre>
         <div class="card">
           <h3><code>EmissionReadyProgram</code></h3>
           <p>
-            The final compiler-owned handoff before adapters. It assigns a stable emission
-            inventory over Compiler2 keys for executable entries and callable entries, then rewrites
-            cross-references to dense emission-local indices. Dense ordinals live here only as
-            emission bookkeeping, never as semantic identity.
+            The final closed executable inventory before backend lowering. It assigns a stable
+            emission inventory over Compiler2 keys for executable entries and callable entries, then
+            rewrites cross-references to dense emission-local indices. Dense ordinals live here
+            only as emission bookkeeping, never as semantic identity.
+          </p>
+        </div>
+        <div class="card">
+          <h3><code>BackendProgram</code></h3>
+          <p>
+            The backend-owned handoff. It keeps the same closed inventory, but rewrites each
+            structured body so direct calls point at executable inventory slots, callable-boundary
+            arguments name the required callable-entry inventory, and extern callsites carry the
+            concrete wire classes the closed path settled.
           </p>
         </div>
       </div>
@@ -630,6 +641,7 @@ DependencySnapshot = HashMap&lt;FactKey, u64&gt;</code></pre>
         <li>effect summaries</li>
         <li>callable-boundary obligations</li>
         <li>stable emission inventory</li>
+        <li>backend-ready structured bodies with settled executable targets</li>
       </ul>
       <p>
         Rejected baggage stays out of Compiler2 facts:
@@ -643,7 +655,7 @@ DependencySnapshot = HashMap&lt;FactKey, u64&gt;</code></pre>
       </ul>
       <p>
         This is the reason <code>fz-rh2.8.2</code> stays blocked behind the artifact-model arc:
-        backend adapter work should consume <code>EmissionReadyProgram</code>, not invent it while
+        backend adapter work should consume <code>BackendProgram</code>, not invent it while
         wiring interpreter, JIT, or AOT code. If a backend consumer needs semantic, reachability,
         or type answers after <code>MaterializedProgram</code>, that missing information belongs as
         a new artifact fact instead of an adapter-side query back into the semantic world.
@@ -775,7 +787,9 @@ join =&gt; Inputs([list(int)]) after refine_widen + alpha normalization</code></
           <code>DeriveAbiReady(root)</code> then makes return delivery, ABI lanes, and callable
           entries explicit without asking new semantic questions. Finally,
           <code>DeriveEmissionReady(root)</code> rewrites that closed artifact into stable emission
-          inventory. Redefining uncalled <code>foo/0</code> later does not reopen the root.
+          inventory, and <code>LowerBackendProgram(root)</code> attaches settled call targets,
+          callable-boundary obligations, and concrete extern wire classes to the structured bodies.
+          Redefining uncalled <code>foo/0</code> later does not reopen the root.
           Redefining <code>main/0</code> does, because the old callsite summaries and closed
           frontier are replaced by new ones.
         </p>

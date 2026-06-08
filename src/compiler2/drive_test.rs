@@ -1,9 +1,10 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
-    AbiReadyProgram, AbiValueRepr, ActivationKey, CallSiteId, CallSiteKey, CallSiteSummary, CallableEntry,
-    EmissionReadyProgram, ExecutableKey, FactKey, FactValue, FunctionId, FunctionRef, LoweredBody, LoweredStep,
-    MaterializedProgram, Module, ModuleId, ReturnAbi, SelectedCallee, SemanticClosure, Ty, ValueId,
+    AbiReadyProgram, AbiValueRepr, ActivationKey, BackendProgram, BackendStep, CallSiteId, CallSiteKey,
+    CallSiteSummary, CallableEntry, EmissionReadyProgram, ExecutableKey, FactKey, FactValue, FunctionId, FunctionRef,
+    LoweredBody, LoweredStep, MaterializedProgram, Module, ModuleId, ReturnAbi, SelectedCallee, SemanticClosure, Ty,
+    ValueId,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
@@ -29,6 +30,7 @@ type SemanticClosedDefs = Rc<RefCell<Vec<SemanticClosedRecord>>>;
 type MaterializedProgramDefs = Rc<RefCell<Vec<MaterializedProgramRecord>>>;
 type AbiReadyProgramDefs = Rc<RefCell<Vec<AbiReadyProgramRecord>>>;
 type EmissionReadyProgramDefs = Rc<RefCell<Vec<EmissionReadyProgramRecord>>>;
+type BackendProgramDefs = Rc<RefCell<Vec<BackendProgramRecord>>>;
 type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
 
 fn presence(fact: FactKey, revision: u64) -> (FactKey, FactValue) {
@@ -1730,16 +1732,329 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
         emission_ready.waits.is_empty(),
         "emission-ready derivation should not ask semantic, type, or reachability questions upstream of the artifact ladder",
     );
-    assert!(
-        emission_ready.follow_up.is_empty(),
-        "emission-ready derivation should be the end of the Compiler2-owned artifact ladder",
+    assert_eq!(
+        emission_ready.follow_up,
+        vec![Job::LowerBackendProgram(root_id)],
+        "emission-ready derivation should hand off directly to backend lowering",
     );
     assert!(
         emission_ready
             .outputs
             .iter()
             .all(|(fact, _)| *fact == FactKey::EmissionReadyProgram(root_id)),
-        "emission-ready derivation should publish only the final handoff fact",
+        "emission-ready derivation should publish only the emission-ready artifact fact",
+    );
+
+    let backend = outputs.effects(Job::LowerBackendProgram(root_id));
+    assert_eq!(
+        backend.reads,
+        vec![FactKey::EmissionReadyProgram(root_id)],
+        "backend lowering should consume only the emission-ready artifact fact",
+    );
+    assert!(
+        backend.waits.is_empty(),
+        "backend lowering should not reopen semantic or planner discovery upstream of the artifact ladder",
+    );
+    assert!(
+        backend.follow_up.is_empty(),
+        "backend lowering should be the end of the current Compiler2-owned artifact ladder",
+    );
+    assert!(
+        backend
+            .outputs
+            .iter()
+            .all(|(fact, _)| *fact == FactKey::BackendProgram(root_id)),
+        "backend lowering should publish only the backend handoff fact",
+    );
+}
+
+#[test]
+fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let backend = BackendProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
+        text: format!(
+            "{}\nfn foo(), do: 42\n",
+            include_str!("../../fixtures/quicksort/input.fz")
+        ),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "backend lowering should keep only the closed quicksort frontier and attach settled call targets",
+    );
+
+    let program = backend.last(root_id).program;
+    let main_id = function_id(&functions, "main", 0);
+    let qsort_id = function_id(&functions, "qsort", 1);
+    let partition_id = function_id(&functions, "partition", 4);
+    let append_id = function_id(&functions, "append", 2);
+    let foo_id = function_id(&functions, "foo", 0);
+
+    let executable_ids = program
+        .executables
+        .iter()
+        .map(|executable| executable.key.activation.function)
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        program.executables[program.entry].key.activation.function, main_id,
+        "the backend-program entry should still point at the main/0 executable inventory slot",
+    );
+    assert!(
+        executable_ids.contains(&main_id)
+            && executable_ids.contains(&qsort_id)
+            && executable_ids.contains(&partition_id)
+            && executable_ids.contains(&append_id),
+        "backend lowering should keep the closed quicksort executable frontier",
+    );
+    assert!(
+        !executable_ids.contains(&foo_id),
+        "backend lowering should keep cold foo/0 out of the backend handoff",
+    );
+    assert!(
+        program.callable_entries.is_empty(),
+        "quicksort should not manufacture callable-entry inventory in the backend handoff",
+    );
+
+    let (_, main_exec) = backend_executable(&program, main_id);
+    let call = backend_direct_call(main_exec, &program, qsort_id);
+    match call {
+        BackendStep::DirectCall { callee, args, .. } => {
+            assert_eq!(
+                program.executables[*callee].key.activation.function, qsort_id,
+                "backend direct-call steps should point at settled executable inventory indices",
+            );
+            assert!(
+                args.iter().all(|arg| arg.callable_entries.is_empty()),
+                "the main/0 quicksort call should not carry callable-boundary obligations",
+            );
+        }
+        other => panic!("expected backend direct-call step to qsort/1, got {other:?}"),
+    }
+
+    assert!(
+        capture.find(&["fz", "planner"]).is_empty() && capture.find(&["fz", "codegen"]).is_empty(),
+        "backend lowering should not wake the legacy planner or codegen pipelines",
+    );
+    assert!(
+        capture
+            .find(&["fz", "compiler2", "backend_program", "defined"])
+            .into_iter()
+            .all(|event| event.metadata.len() == 0),
+        "generic capture should not durable-copy opaque backend-program metadata",
+    );
+}
+
+#[test]
+fn compiler2_backend_program_attaches_the_closed_enum_reduce_callable_boundaries() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    let backend = BackendProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
+        text: r#"
+fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "backend lowering should carry only the callable entries that survive the closed Enum.reduce path",
+    );
+
+    let main_id = function_id(&functions, "main", 0);
+    let enum_reduce_id = function_id_in_module(&functions, &modules, "Enum", "reduce", 3);
+    let user_reducer_id = generated_functions_owned_by(&functions, main_id)
+        .into_iter()
+        .next()
+        .expect("generated user reducer")
+        .function_id;
+    let bridge_reducer_id = generated_functions_owned_by(&functions, enum_reduce_id)
+        .into_iter()
+        .next()
+        .expect("generated bridge reducer")
+        .function_id;
+
+    let program = backend.last(root_id).program;
+    let callable_functions = program
+        .callable_entries
+        .iter()
+        .map(|entry| program.executables[entry.target].key.activation.function)
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        callable_functions,
+        HashSet::from([user_reducer_id, bridge_reducer_id]),
+        "the backend callable-entry inventory should keep exactly the user reducer and bridge reducer entries",
+    );
+
+    let used_entries = backend_callable_entry_uses(&program);
+    let expected_entries = program
+        .callable_entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let function = program.executables[entry.target].key.activation.function;
+            matches!(function, id if id == user_reducer_id || id == bridge_reducer_id).then_some(index)
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        used_entries, expected_entries,
+        "backend call arguments should carry exactly the callable-entry obligations that survive the closed Enum.reduce path",
+    );
+}
+
+#[test]
+fn compiler2_backend_program_preserves_variadic_extern_wire_classes() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let backend = BackendProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/variadic_open_compiler2.fz".to_string()),
+        text: r#"
+extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
+
+fn main() do
+  libc::open("x", 0, 0o644 :: integer)
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "backend lowering should preserve the settled variadic extern signature and wire classes",
+    );
+
+    let program = backend.last(root_id).program;
+    let main_id = function_id(&functions, "main", 0);
+    let open_id = function_id(&functions, "libc::open", 2);
+    let (_, open_exec) = backend_executable(&program, open_id);
+    let (_, main_exec) = backend_executable(&program, main_id);
+
+    match &open_exec.body {
+        crate::compiler2::BackendBody::Extern { signature } => {
+            assert_eq!(signature.symbol, "open");
+            assert_eq!(signature.params, vec![ExternTy::CString, ExternTy::I64]);
+            assert!(signature.variadic);
+            assert_eq!(signature.ret, ExternTy::I64);
+        }
+        other => panic!("expected backend extern body for libc::open, got {other:?}"),
+    }
+
+    let call = backend_direct_call(main_exec, &program, open_id);
+    match call {
+        BackendStep::DirectCall {
+            callee,
+            args,
+            extern_marshals,
+            ..
+        } => {
+            assert_eq!(
+                program.executables[*callee].key.activation.function, open_id,
+                "backend extern calls should still target the settled extern executable inventory slot",
+            );
+            assert_eq!(
+                extern_marshals.as_deref(),
+                Some(&[ExternTy::CString, ExternTy::I64, ExternTy::I64][..]),
+                "backend direct-call steps should carry the exact settled C wire classes for a variadic extern site",
+            );
+            assert!(
+                args.iter().all(|arg| arg.callable_entries.is_empty()),
+                "plain variadic extern arguments should not carry callable-entry obligations",
+            );
+        }
+        other => panic!("expected backend direct-call step to libc::open/2, got {other:?}"),
+    }
+
+    assert!(
+        capture.find(&["fz", "planner"]).is_empty() && capture.find(&["fz", "codegen"]).is_empty(),
+        "backend lowering should not wake the legacy planner or codegen pipelines",
+    );
+}
+
+#[test]
+fn compiler2_backend_program_revision_stays_stable_for_identical_recompute() {
+    let tel = ConfiguredTelemetry::new();
+    let backend = BackendProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
+        text: format!(
+            "{}\nfn foo(), do: 42\n",
+            include_str!("../../fixtures/quicksort/input.fz")
+        ),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(compiler.drive(), "initial backend lowering should settle for quicksort");
+    assert!(
+        compiler.demand(Job::LowerBackendProgram(root_id)),
+        "explicitly re-demanding unchanged backend lowering should enqueue one fresh derivation",
+    );
+    assert_resolved(
+        compiler.drive(),
+        "re-lowering unchanged backend state should resolve without bumping the revision",
+    );
+
+    let records = backend.records(root_id);
+    assert_eq!(
+        records.len(),
+        2,
+        "the backend program should have one initial definition and one unchanged re-derivation",
+    );
+    assert_eq!(
+        records[0].revision, records[1].revision,
+        "identical backend-program state should keep the same revision number across recomputation",
+    );
+    assert_eq!(
+        records[0].program, records[1].program,
+        "identical backend-program recomputation should produce byte-for-byte equal program facts",
     );
 }
 
@@ -3863,6 +4178,13 @@ struct EmissionReadyProgramRecord {
 }
 
 #[derive(Debug, Clone)]
+struct BackendProgramRecord {
+    root_id: crate::compiler2::RootId,
+    revision: u64,
+    program: BackendProgram,
+}
+
+#[derive(Debug, Clone)]
 struct ReturnTypeRecord {
     activation: ActivationKey,
     return_ty: Ty,
@@ -3898,6 +4220,10 @@ struct AbiReadyProgramCapture {
 
 struct EmissionReadyProgramCapture {
     defs: EmissionReadyProgramDefs,
+}
+
+struct BackendProgramCapture {
+    defs: BackendProgramDefs,
 }
 
 struct EntryDispatchCapture {
@@ -4211,6 +4537,39 @@ impl EmissionReadyProgramCapture {
     }
 }
 
+impl BackendProgramCapture {
+    fn new() -> Self {
+        Self {
+            defs: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(BackendProgramCaptureHandler {
+            defs: self.defs.clone(),
+        })
+    }
+
+    fn last(&self, root_id: crate::compiler2::RootId) -> BackendProgramRecord {
+        self.defs
+            .borrow()
+            .iter()
+            .rev()
+            .find(|record| record.root_id == root_id)
+            .cloned()
+            .unwrap_or_else(|| panic!("backend_program.defined for {root_id:?}"))
+    }
+
+    fn records(&self, root_id: crate::compiler2::RootId) -> Vec<BackendProgramRecord> {
+        self.defs
+            .borrow()
+            .iter()
+            .filter(|record| record.root_id == root_id)
+            .cloned()
+            .collect()
+    }
+}
+
 impl GuardDispatchCapture {
     fn new() -> Self {
         Self {
@@ -4323,6 +4682,10 @@ struct AbiReadyProgramCaptureHandler {
 
 struct EmissionReadyProgramCaptureHandler {
     defs: EmissionReadyProgramDefs,
+}
+
+struct BackendProgramCaptureHandler {
+    defs: BackendProgramDefs,
 }
 
 struct EntryDispatchCaptureHandler {
@@ -4608,6 +4971,32 @@ impl Handler for EmissionReadyProgramCaptureHandler {
     }
 }
 
+impl Handler for BackendProgramCaptureHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if event.name != ["fz", "compiler2", "backend_program", "defined"] || event.kind != EventKind::Event {
+            return;
+        }
+        let Some(Value::U64(root_id)) = event.measurements.get("root_id") else {
+            return;
+        };
+        let Some(Value::U64(revision)) = event.measurements.get("revision") else {
+            return;
+        };
+        let Some(program) = event
+            .metadata
+            .get("program")
+            .and_then(|value| value.downcast_ref::<BackendProgram>())
+        else {
+            return;
+        };
+        self.defs.borrow_mut().push(BackendProgramRecord {
+            root_id: crate::compiler2::RootId::from_u32(*root_id as u32),
+            revision: *revision,
+            program: program.clone(),
+        });
+    }
+}
+
 impl Handler for GuardDispatchCaptureHandler {
     fn handle(&self, event: &Event<'_, '_, '_>) {
         if event.name != ["fz", "compiler2", "guard_dispatch", "defined"] || event.kind != EventKind::Event {
@@ -4761,6 +5150,99 @@ fn emission_ready_callable_entry(
         .enumerate()
         .find(|(_, entry)| program.executables[entry.target].key.activation.function == function)
         .unwrap_or_else(|| panic!("emission-ready callable entry for {function:?}"))
+}
+
+fn backend_executable(program: &BackendProgram, function: FunctionId) -> (usize, &crate::compiler2::BackendExecutable) {
+    program
+        .executables
+        .iter()
+        .enumerate()
+        .find(|(_, executable)| executable.key.activation.function == function)
+        .unwrap_or_else(|| panic!("backend executable for {function:?}"))
+}
+
+fn backend_direct_call<'a>(
+    executable: &'a crate::compiler2::BackendExecutable,
+    program: &'a BackendProgram,
+    callee: FunctionId,
+) -> &'a BackendStep {
+    match &executable.body {
+        crate::compiler2::BackendBody::Extern { .. } => panic!("expected clause body with a direct call"),
+        crate::compiler2::BackendBody::Clauses { clauses, .. } => {
+            for clause in clauses {
+                if let Some(found) = backend_direct_call_in_steps(&clause.projections, program, callee) {
+                    return found;
+                }
+                if let Some(found) = backend_direct_call_in_steps(&clause.body.steps, program, callee) {
+                    return found;
+                }
+            }
+            panic!("backend direct call to {callee:?} not found")
+        }
+    }
+}
+
+fn backend_direct_call_in_steps<'a>(
+    steps: &'a [BackendStep],
+    program: &'a BackendProgram,
+    callee: FunctionId,
+) -> Option<&'a BackendStep> {
+    for step in steps {
+        match step {
+            BackendStep::DirectCall { callee: target, .. }
+                if program.executables[*target].key.activation.function == callee =>
+            {
+                return Some(step);
+            }
+            BackendStep::If {
+                then_block, else_block, ..
+            } => {
+                if let Some(found) = backend_direct_call_in_steps(&then_block.steps, program, callee) {
+                    return Some(found);
+                }
+                if let Some(found) = backend_direct_call_in_steps(&else_block.steps, program, callee) {
+                    return Some(found);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn backend_callable_entry_uses(program: &BackendProgram) -> HashSet<usize> {
+    let mut out = HashSet::new();
+    for executable in &program.executables {
+        match &executable.body {
+            crate::compiler2::BackendBody::Extern { .. } => {}
+            crate::compiler2::BackendBody::Clauses { clauses, .. } => {
+                for clause in clauses {
+                    collect_backend_callable_entry_uses(&clause.projections, &mut out);
+                    collect_backend_callable_entry_uses(&clause.body.steps, &mut out);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn collect_backend_callable_entry_uses(steps: &[BackendStep], out: &mut HashSet<usize>) {
+    for step in steps {
+        match step {
+            BackendStep::DirectCall { args, .. } | BackendStep::ClosureCall { args, .. } => {
+                for arg in args {
+                    out.extend(arg.callable_entries.iter().copied());
+                }
+            }
+            BackendStep::If {
+                then_block, else_block, ..
+            } => {
+                collect_backend_callable_entry_uses(&then_block.steps, out);
+                collect_backend_callable_entry_uses(&else_block.steps, out);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn direct_call_in_body(body: LoweredBody, callee: FunctionId) -> (CallSiteId, ValueId) {

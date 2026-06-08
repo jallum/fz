@@ -3,16 +3,20 @@
 //! `MaterializedProgram` is the first backend-owned snapshot for one closed
 //! root. `AbiReadyProgram` is the next projection above it: the same closed
 //! executable frontier with ABI lanes and return contracts made explicit.
-//! `EmissionReadyProgram` is the final Compiler2-owned handoff: the closed
-//! frontier reordered into stable emission inventory with local index-based
-//! references instead of hash-map lookups over keys.
+//! `EmissionReadyProgram` is the final closed executable inventory before
+//! backend lowering. `BackendProgram` is the backend-owned handoff: the same
+//! closed inventory with direct executable references, callable-boundary
+//! obligations, and concrete extern wire classes attached to structured
+//! function bodies.
 
 use std::collections::HashMap;
 
+use crate::ast::{BinOp, UnOp};
+use crate::compiler::source::Span;
 use crate::fz_ir::ExternTy;
 
-use super::body::{CallSiteId, LoweredBody, ValueId};
-use super::identity::{ExecutableKey, RootId};
+use super::body::{CallSiteId, Literal, LoweredBody, LoweredExtern, ValueId};
+use super::identity::{ExecutableKey, FunctionId, RootId};
 use super::types::Ty;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -52,6 +56,14 @@ pub struct EmissionReadyProgram {
     pub entry: usize,
     pub executables: Vec<EmissionReadyExecutable>,
     pub callable_entries: Vec<EmissionReadyCallableEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackendProgram {
+    pub emission_ready_revision: u64,
+    pub entry: usize,
+    pub executables: Vec<BackendExecutable>,
+    pub callable_entries: Vec<BackendCallableEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -107,6 +119,148 @@ pub struct EmissionReadyCallEdge {
 pub struct EmissionReadyCallableEntry {
     pub target: usize,
     pub capture_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackendExecutable {
+    pub key: ExecutableKey,
+    pub return_ty: Ty,
+    pub return_abi: ReturnAbi,
+    pub param_reprs: Vec<AbiValueRepr>,
+    pub value_types: HashMap<ValueId, Ty>,
+    pub value_reprs: HashMap<ValueId, AbiValueRepr>,
+    pub effects: EffectSummary,
+    pub body: BackendBody,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendCallableEntry {
+    pub target: usize,
+    pub capture_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackendBody {
+    Extern {
+        signature: LoweredExtern,
+    },
+    Clauses {
+        clauses: Vec<BackendClause>,
+        generated: Vec<FunctionId>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackendClause {
+    pub span: Span,
+    pub params: Vec<ValueId>,
+    pub projections: Vec<BackendStep>,
+    pub body: BackendBlock,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackendBlock {
+    pub span: Span,
+    pub steps: Vec<BackendStep>,
+    pub result: ValueId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendCallArg {
+    pub value: ValueId,
+    pub callable_entries: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackendStep {
+    Const {
+        value: ValueId,
+        literal: Literal,
+    },
+    Tuple {
+        value: ValueId,
+        items: Vec<ValueId>,
+    },
+    List {
+        value: ValueId,
+        items: Vec<ValueId>,
+        tail: Option<ValueId>,
+    },
+    FunctionRef {
+        value: ValueId,
+        function: FunctionId,
+    },
+    NamedFunctionRef {
+        value: ValueId,
+        name: String,
+        arity: usize,
+    },
+    DirectCall {
+        value: ValueId,
+        callsite: CallSiteId,
+        callee: usize,
+        args: Vec<BackendCallArg>,
+        extern_marshals: Option<Vec<ExternTy>>,
+    },
+    ClosureCall {
+        value: ValueId,
+        callsite: CallSiteId,
+        callee: ValueId,
+        target: usize,
+        args: Vec<BackendCallArg>,
+    },
+    Lambda {
+        value: ValueId,
+        function: FunctionId,
+        captures: Vec<ValueId>,
+    },
+    BinaryOp {
+        value: ValueId,
+        op: BinOp,
+        left: ValueId,
+        right: ValueId,
+    },
+    UnaryOp {
+        value: ValueId,
+        op: UnOp,
+        input: ValueId,
+    },
+    MapIndex {
+        value: ValueId,
+        base: ValueId,
+        key: ValueId,
+    },
+    If {
+        value: ValueId,
+        cond: ValueId,
+        then_block: BackendBlock,
+        else_block: BackendBlock,
+    },
+    AssertLiteral {
+        source: ValueId,
+        literal: Literal,
+    },
+    AssertTuple {
+        source: ValueId,
+        arity: usize,
+    },
+    TupleField {
+        value: ValueId,
+        source: ValueId,
+        index: usize,
+    },
+    AssertEmptyList {
+        source: ValueId,
+    },
+    AssertSame {
+        source: ValueId,
+        value: ValueId,
+    },
+    SplitList {
+        source: ValueId,
+        head: ValueId,
+        tail: ValueId,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -178,6 +332,11 @@ pub struct EmissionReadyProgramMap {
     inner: RootProjectionMap<EmissionReadyProgram>,
 }
 
+#[derive(Debug, Default)]
+pub struct BackendProgramMap {
+    inner: RootProjectionMap<BackendProgram>,
+}
+
 impl MaterializedProgramMap {
     pub fn new() -> Self {
         Self::default()
@@ -216,6 +375,20 @@ impl EmissionReadyProgramMap {
     }
 
     pub fn get(&self, root: RootId) -> Option<&EmissionReadyProgram> {
+        self.inner.get(root)
+    }
+}
+
+impl BackendProgramMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn define(&mut self, root: RootId, program: BackendProgram) -> u64 {
+        self.inner.define(root, program)
+    }
+
+    pub fn get(&self, root: RootId) -> Option<&BackendProgram> {
         self.inner.get(root)
     }
 }

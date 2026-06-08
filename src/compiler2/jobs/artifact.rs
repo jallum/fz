@@ -213,6 +213,7 @@ pub(super) fn derive_emission_ready(world: &mut World<'_>, root_id: RootId) -> R
     Ok(JobEffects {
         reads,
         outputs: vec![(FactKey::EmissionReadyProgram(root_id), FactValue::presence(revision))],
+        follow_up: vec![Job::LowerBackendProgram(root_id)],
         ..JobEffects::default()
     })
 }

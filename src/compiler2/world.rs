@@ -23,8 +23,8 @@ use crate::{measurements, metadata};
 
 use super::CodeId;
 use super::artifact::{
-    AbiReadyProgram, AbiReadyProgramMap, EmissionReadyProgram, EmissionReadyProgramMap, MaterializedProgram,
-    MaterializedProgramMap,
+    AbiReadyProgram, AbiReadyProgramMap, BackendProgram, BackendProgramMap, EmissionReadyProgram,
+    EmissionReadyProgramMap, MaterializedProgram, MaterializedProgramMap,
 };
 use super::body::{LoweredBody, LoweredBodyMap};
 use super::code::CodeMap;
@@ -83,6 +83,7 @@ pub struct World<'a> {
     artifacts: MaterializedProgramMap,
     abi_ready: AbiReadyProgramMap,
     emission_ready: EmissionReadyProgramMap,
+    backend: BackendProgramMap,
     roots: RootMap,
     namespaces: NamespaceStore,
     types: Types,
@@ -128,6 +129,7 @@ impl<'a> World<'a> {
             artifacts: MaterializedProgramMap::new(),
             abi_ready: AbiReadyProgramMap::new(),
             emission_ready: EmissionReadyProgramMap::new(),
+            backend: BackendProgramMap::new(),
             roots: RootMap::new(),
             namespaces: NamespaceStore::new(),
             types: Types::new(),
@@ -449,6 +451,30 @@ impl<'a> World<'a> {
         let revision = self.emission_ready.define(root, program.clone());
         self.tel.execute(
             &["fz", "compiler2", "emission_ready_program", "defined"],
+            &measurements! {
+                root_id: root.as_u32() as u64,
+                revision: revision,
+                executable_count: program.executables.len() as u64,
+                callable_entry_count: program.callable_entries.len() as u64,
+            },
+            &metadata! {
+                program: opaque(&program),
+            },
+        );
+        revision
+    }
+
+    pub(crate) fn emission_ready_program(&self, root: RootId) -> EmissionReadyProgram {
+        self.emission_ready
+            .get(root)
+            .cloned()
+            .expect("emission-ready programs should only be read after their fact is defined")
+    }
+
+    pub(crate) fn define_backend_program(&mut self, root: RootId, program: BackendProgram) -> u64 {
+        let revision = self.backend.define(root, program.clone());
+        self.tel.execute(
+            &["fz", "compiler2", "backend_program", "defined"],
             &measurements! {
                 root_id: root.as_u32() as u64,
                 revision: revision,
