@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.10.8.3"
+  ],
   "blocks": [],
   "created": "2026-06-08T00:06:06Z",
   "description": "Goal: finish the type-world arc by simplifying the remaining semantic bookkeeping that still assumes partial facts or lossy dependency digests. Signal: semantic closure tracks exact dependency snapshots, callsite facts are modeled as whole facts rather than split partial ones, and the docs ticket is reduced to writing down a settled engine instead of describing moving targets.\n\nStrategy: after the local type world and exact fact revisions are in place, remove the leftover lossy closure digesting and duplicated callsite fact surfaces, then hand a quieter, more honest engine back to the docs/backend boundary.\n\nChange:\n- Replace `combined_fingerprint` and its XOR-based dependency digest with exact deduped dependency snapshots over fact keys and revisions.\n- Rework semantic-closure settling to use those exact snapshots.\n- Collapse duplicated partial callsite facts into a whole callsite-summary fact surface where downstream consumers wait on and read one logical fact.\n- Update Compiler2 traces/tests to assert the quieter fact surface and dependency behavior.\n- Refresh the docs ticket description if needed so it reflects the settled post-arc surface.\n\nWhy:\n- Interned local type ids make exact key/value tracking cheap enough that lossy digests no longer buy us anything.\n- One logical fact should be one fact key.\n- Finishing this cleanup before docs keeps the docs ticket small and factual.\n\nChecks:\n- Semantic-closure tests prove unchanged dependencies do not retrigger closure/materialization and changed dependencies do.\n- Callsite consumers wait on and read one logical fact surface.\n- Quicksort/Enum.reduce trace assertions get quieter or stay equally strong with less bookkeeping.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 closure and callsite facts: replace lossy dependency digests with exact snapshots",
   "type": "task",
-  "updated_at": "2026-06-08T00:06:06Z"
+  "updated_at": "2026-06-08T00:06:20Z"
 }
