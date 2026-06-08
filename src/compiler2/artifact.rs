@@ -1,8 +1,8 @@
-//! Compiler2's artifact-side program projection.
+//! Compiler2's artifact-side program projections.
 //!
-//! A materialized program is the closed backend handoff for one root. It owns
-//! the current entry executable, the root revision it came from, and one
-//! materialized executable body per reachable `ExecutableKey`.
+//! `MaterializedProgram` is the first backend-owned snapshot for one closed
+//! root. `AbiReadyProgram` is the next projection above it: the same closed
+//! executable frontier with ABI lanes and return contracts made explicit.
 
 use std::collections::HashMap;
 
@@ -35,6 +35,47 @@ pub struct MaterializedCallEdge {
     pub extern_marshals: Option<Vec<ExternTy>>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct AbiReadyProgram {
+    pub materialized_revision: u64,
+    pub entry: ExecutableKey,
+    pub executables: HashMap<ExecutableKey, AbiReadyExecutable>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AbiReadyExecutable {
+    pub return_ty: Ty,
+    pub return_abi: ReturnAbi,
+    pub param_reprs: Vec<AbiValueRepr>,
+    pub value_types: HashMap<ValueId, Ty>,
+    pub value_reprs: HashMap<ValueId, AbiValueRepr>,
+    pub effects: EffectSummary,
+    pub body: LoweredBody,
+    pub call_edges: HashMap<CallSiteId, AbiReadyCallEdge>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AbiReadyCallEdge {
+    pub callee: ExecutableKey,
+    pub return_ty: Ty,
+    pub return_abi: ReturnAbi,
+    pub extern_marshals: Option<Vec<ExternTy>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AbiValueRepr {
+    ValueRef,
+    RawInt,
+    RawF64,
+    RawAtom,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReturnAbi {
+    Value(AbiValueRepr),
+    TupleFields(Vec<AbiValueRepr>),
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EffectSummary {
     pub allocates: bool,
@@ -59,20 +100,30 @@ impl EffectSummary {
 }
 
 #[derive(Debug, Clone)]
-pub struct MaterializedProgramSlot {
-    pub(crate) state: MaterializedProgramState,
-    pub(crate) revision: u64,
+struct ProjectionSlot<T> {
+    state: ProjectionState<T>,
+    revision: u64,
 }
 
 #[derive(Debug, Clone)]
-pub enum MaterializedProgramState {
+enum ProjectionState<T> {
     Placeholder,
-    Defined(MaterializedProgram),
+    Defined(T),
+}
+
+#[derive(Debug)]
+struct RootProjectionMap<T> {
+    slots: Vec<ProjectionSlot<T>>,
 }
 
 #[derive(Debug, Default)]
 pub struct MaterializedProgramMap {
-    slots: Vec<MaterializedProgramSlot>,
+    inner: RootProjectionMap<MaterializedProgram>,
+}
+
+#[derive(Debug, Default)]
+pub struct AbiReadyProgramMap {
+    inner: RootProjectionMap<AbiReadyProgram>,
 }
 
 impl MaterializedProgramMap {
@@ -81,9 +132,36 @@ impl MaterializedProgramMap {
     }
 
     pub fn define(&mut self, root: RootId, program: MaterializedProgram) -> u64 {
+        self.inner.define(root, program)
+    }
+
+    pub fn get(&self, root: RootId) -> Option<&MaterializedProgram> {
+        self.inner.get(root)
+    }
+}
+
+impl AbiReadyProgramMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn define(&mut self, root: RootId, program: AbiReadyProgram) -> u64 {
+        self.inner.define(root, program)
+    }
+
+    pub fn get(&self, root: RootId) -> Option<&AbiReadyProgram> {
+        self.inner.get(root)
+    }
+}
+
+impl<T> RootProjectionMap<T>
+where
+    T: PartialEq,
+{
+    fn define(&mut self, root: RootId, value: T) -> u64 {
         self.ensure(root);
         let slot = &mut self.slots[root.as_u32() as usize];
-        let next = MaterializedProgramState::Defined(program);
+        let next = ProjectionState::Defined(value);
         if !slot.state.same_state(&next) {
             slot.state = next;
             slot.revision += 1;
@@ -91,29 +169,38 @@ impl MaterializedProgramMap {
         slot.revision
     }
 
-    pub fn get(&self, root: RootId) -> Option<&MaterializedProgram> {
+    fn get(&self, root: RootId) -> Option<&T> {
         match &self.slots.get(root.as_u32() as usize)?.state {
-            MaterializedProgramState::Placeholder => None,
-            MaterializedProgramState::Defined(program) => Some(program),
+            ProjectionState::Placeholder => None,
+            ProjectionState::Defined(value) => Some(value),
         }
     }
 
     fn ensure(&mut self, root: RootId) {
         let needed = root.as_u32() as usize + 1;
         if self.slots.len() < needed {
-            self.slots.resize_with(needed, || MaterializedProgramSlot {
-                state: MaterializedProgramState::Placeholder,
+            self.slots.resize_with(needed, || ProjectionSlot {
+                state: ProjectionState::Placeholder,
                 revision: 0,
             });
         }
     }
 }
 
-impl MaterializedProgramState {
+impl<T> Default for RootProjectionMap<T> {
+    fn default() -> Self {
+        Self { slots: Vec::new() }
+    }
+}
+
+impl<T> ProjectionState<T>
+where
+    T: PartialEq,
+{
     fn same_state(&self, other: &Self) -> bool {
         match (self, other) {
-            (MaterializedProgramState::Placeholder, MaterializedProgramState::Placeholder) => true,
-            (MaterializedProgramState::Defined(left), MaterializedProgramState::Defined(right)) => left == right,
+            (ProjectionState::Placeholder, ProjectionState::Placeholder) => true,
+            (ProjectionState::Defined(left), ProjectionState::Defined(right)) => left == right,
             _ => false,
         }
     }

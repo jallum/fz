@@ -30,5 +30,6 @@ pub(crate) fn run(world: &mut World<'_>, job: &Job) -> Result<JobEffects, FatalE
         Job::AnalyzeActivation(activation) => semantic::analyze_activation(world, activation),
         Job::SealSemanticClosure(root_id) => root::seal_semantic_closure(world, *root_id),
         Job::MaterializeRoot(root_id) => artifact::materialize_root(world, *root_id),
+        Job::DeriveAbiReady(root_id) => artifact::derive_abi_ready(world, *root_id),
     }
 }

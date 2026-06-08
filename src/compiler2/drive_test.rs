@@ -1,9 +1,9 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
-    ActivationKey, CallSiteId, CallSiteKey, CallSiteSummary, ExecutableKey, FactKey, FactValue, FunctionId,
-    FunctionRef, LoweredBody, LoweredStep, MaterializedProgram, Module, ModuleId, SelectedCallee, SemanticClosure, Ty,
-    ValueId,
+    AbiReadyProgram, AbiValueRepr, ActivationKey, CallSiteId, CallSiteKey, CallSiteSummary, ExecutableKey, FactKey,
+    FactValue, FunctionId, FunctionRef, LoweredBody, LoweredStep, MaterializedProgram, Module, ModuleId, ReturnAbi,
+    SelectedCallee, SemanticClosure, Ty, ValueId,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
@@ -27,6 +27,7 @@ type ModuleDefs = Rc<RefCell<HashMap<ModuleId, Vec<Module>>>>;
 type CallsiteDefs = Rc<RefCell<Vec<CallsiteDefinedRecord>>>;
 type SemanticClosedDefs = Rc<RefCell<Vec<SemanticClosedRecord>>>;
 type MaterializedProgramDefs = Rc<RefCell<Vec<MaterializedProgramRecord>>>;
+type AbiReadyProgramDefs = Rc<RefCell<Vec<AbiReadyProgramRecord>>>;
 type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
 
 fn presence(fact: FactKey, revision: u64) -> (FactKey, FactValue) {
@@ -1091,6 +1092,83 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
 }
 
 #[test]
+fn compiler2_abi_ready_makes_tuple_field_return_delivery_explicit_for_quicksort() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let abi_ready = AbiReadyProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "abi_ready_program", "defined"],
+        abi_ready.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
+        text: format!(
+            "{}\nfn foo(), do: 42\n",
+            include_str!("../../fixtures/quicksort/input.fz")
+        ),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "ABI-ready projection should derive tuple-field return ABI from the closed quicksort frontier",
+    );
+
+    let program = abi_ready.last(root_id).program;
+    let qsort_id = function_id(&functions, "qsort", 1);
+    let partition_id = function_id(&functions, "partition", 4);
+    let foo_id = function_id(&functions, "foo", 0);
+    let (_, qsort_plan) = abi_ready_executable(&program, qsort_id);
+    let partition_edge = qsort_plan
+        .call_edges
+        .values()
+        .find(|edge| edge.callee.activation.function == partition_id)
+        .expect("ABI-ready call edge for partition/4");
+    assert_eq!(
+        partition_edge.return_abi,
+        ReturnAbi::TupleFields(vec![AbiValueRepr::ValueRef, AbiValueRepr::ValueRef]),
+        "the partition/4 edge should carry the two-field tuple delivery contract explicitly",
+    );
+    assert!(
+        program.executables.keys().all(|key| key.activation.function != foo_id),
+        "ABI-ready projection should stay closed over the reached quicksort frontier and keep foo/0 cold",
+    );
+
+    let abi_outputs = outputs
+        .take(Job::DeriveAbiReady(root_id))
+        .expect("DeriveAbiReady job effects for quicksort root");
+    assert!(
+        abi_outputs
+            .iter()
+            .all(|(fact, _)| *fact == FactKey::AbiReadyProgram(root_id)),
+        "ABI-ready projection should publish only the ABI-ready fact",
+    );
+    assert!(
+        capture.find(&["fz", "planner"]).is_empty() && capture.find(&["fz", "codegen"]).is_empty(),
+        "deriving ABI facts should not wake the legacy planner or codegen pipelines",
+    );
+    assert!(
+        capture
+            .find(&["fz", "compiler2", "abi_ready_program", "defined"])
+            .into_iter()
+            .all(|event| event.metadata.len() == 0),
+        "generic capture should not durable-copy opaque ABI-ready metadata",
+    );
+}
+
+#[test]
 fn compiler2_materialization_projects_variadic_extern_signatures_and_callsite_marshals() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -1156,6 +1234,74 @@ end
     assert!(
         main_plan.effects.observable,
         "calling a variadic extern should make the executable plan externally observable",
+    );
+}
+
+#[test]
+fn compiler2_abi_ready_preserves_variadic_extern_marshals_and_integer_lanes() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let abi_ready = AbiReadyProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "abi_ready_program", "defined"],
+        abi_ready.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/variadic_open_compiler2.fz".to_string()),
+        text: r#"
+extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
+
+fn main() do
+  libc::open("x", 0, 0o644 :: integer)
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "ABI-ready projection should preserve extern marshals and derive raw integer lanes",
+    );
+
+    let program = abi_ready.last(root_id).program;
+    let main_id = function_id(&functions, "main", 0);
+    let open_id = function_id(&functions, "libc::open", 2);
+    let (_, open_plan) = abi_ready_executable(&program, open_id);
+    let (_, main_plan) = abi_ready_executable(&program, main_id);
+    assert_eq!(
+        open_plan.param_reprs,
+        vec![AbiValueRepr::ValueRef, AbiValueRepr::RawInt, AbiValueRepr::RawInt],
+        "variadic extern activations should expose the fixed and extra callsite lanes directly in ABI-ready form",
+    );
+    assert_eq!(
+        open_plan.return_abi,
+        ReturnAbi::Value(AbiValueRepr::RawInt),
+        "extern integer returns should be explicit raw integer ABI lanes",
+    );
+
+    let open_edge = main_plan
+        .call_edges
+        .values()
+        .find(|edge| edge.callee.activation.function == open_id)
+        .expect("ABI-ready call edge for libc::open");
+    assert_eq!(
+        open_edge.extern_marshals.as_deref(),
+        Some(&[ExternTy::CString, ExternTy::I64, ExternTy::I64][..]),
+        "ABI-ready call edges should preserve the frozen variadic marshal classes",
+    );
+    assert_eq!(
+        open_edge.return_abi,
+        ReturnAbi::Value(AbiValueRepr::RawInt),
+        "ABI-ready call edges should carry the callee return ABI explicitly",
     );
 }
 
@@ -3129,6 +3275,12 @@ struct MaterializedProgramRecord {
 }
 
 #[derive(Debug, Clone)]
+struct AbiReadyProgramRecord {
+    root_id: crate::compiler2::RootId,
+    program: AbiReadyProgram,
+}
+
+#[derive(Debug, Clone)]
 struct ReturnTypeRecord {
     activation: ActivationKey,
     return_ty: Ty,
@@ -3156,6 +3308,10 @@ struct ReturnTypeCapture {
 
 struct MaterializedProgramCapture {
     defs: MaterializedProgramDefs,
+}
+
+struct AbiReadyProgramCapture {
+    defs: AbiReadyProgramDefs,
 }
 
 struct EntryDispatchCapture {
@@ -3405,6 +3561,30 @@ impl MaterializedProgramCapture {
     }
 }
 
+impl AbiReadyProgramCapture {
+    fn new() -> Self {
+        Self {
+            defs: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(AbiReadyProgramCaptureHandler {
+            defs: self.defs.clone(),
+        })
+    }
+
+    fn last(&self, root_id: crate::compiler2::RootId) -> AbiReadyProgramRecord {
+        self.defs
+            .borrow()
+            .iter()
+            .rev()
+            .find(|record| record.root_id == root_id)
+            .cloned()
+            .unwrap_or_else(|| panic!("abi_ready_program.defined for {root_id:?}"))
+    }
+}
+
 impl GuardDispatchCapture {
     fn new() -> Self {
         Self {
@@ -3509,6 +3689,10 @@ struct ReturnTypeCaptureHandler {
 
 struct MaterializedProgramCaptureHandler {
     defs: MaterializedProgramDefs,
+}
+
+struct AbiReadyProgramCaptureHandler {
+    defs: AbiReadyProgramDefs,
 }
 
 struct EntryDispatchCaptureHandler {
@@ -3741,6 +3925,28 @@ impl Handler for MaterializedProgramCaptureHandler {
     }
 }
 
+impl Handler for AbiReadyProgramCaptureHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if event.name != ["fz", "compiler2", "abi_ready_program", "defined"] || event.kind != EventKind::Event {
+            return;
+        }
+        let Some(Value::U64(root_id)) = event.measurements.get("root_id") else {
+            return;
+        };
+        let Some(program) = event
+            .metadata
+            .get("program")
+            .and_then(|value| value.downcast_ref::<AbiReadyProgram>())
+        else {
+            return;
+        };
+        self.defs.borrow_mut().push(AbiReadyProgramRecord {
+            root_id: crate::compiler2::RootId::from_u32(*root_id as u32),
+            program: program.clone(),
+        });
+    }
+}
+
 impl Handler for GuardDispatchCaptureHandler {
     fn handle(&self, event: &Event<'_, '_, '_>) {
         if event.name != ["fz", "compiler2", "guard_dispatch", "defined"] || event.kind != EventKind::Event {
@@ -3851,6 +4057,17 @@ fn materialized_executable(
         .iter()
         .find(|(key, _)| key.activation.function == function)
         .unwrap_or_else(|| panic!("materialized executable for {function:?}"))
+}
+
+fn abi_ready_executable(
+    program: &AbiReadyProgram,
+    function: FunctionId,
+) -> (&ExecutableKey, &crate::compiler2::AbiReadyExecutable) {
+    program
+        .executables
+        .iter()
+        .find(|(key, _)| key.activation.function == function)
+        .unwrap_or_else(|| panic!("ABI-ready executable for {function:?}"))
 }
 
 fn direct_call_in_body(body: LoweredBody, callee: FunctionId) -> (CallSiteId, ValueId) {

@@ -22,7 +22,7 @@ use crate::type_expr::{ModuleTypeEnv, build_module_type_env_for_with_base, built
 use crate::{measurements, metadata};
 
 use super::CodeId;
-use super::artifact::{MaterializedProgram, MaterializedProgramMap};
+use super::artifact::{AbiReadyProgram, AbiReadyProgramMap, MaterializedProgram, MaterializedProgramMap};
 use super::body::{LoweredBody, LoweredBodyMap};
 use super::code::CodeMap;
 use super::deps::UnresolvedWait;
@@ -78,6 +78,7 @@ pub struct World<'a> {
     callsites: CallSiteMap,
     semantic_closures: SemanticClosureMap,
     artifacts: MaterializedProgramMap,
+    abi_ready: AbiReadyProgramMap,
     roots: RootMap,
     namespaces: NamespaceStore,
     types: Types,
@@ -121,6 +122,7 @@ impl<'a> World<'a> {
             callsites: CallSiteMap::new(),
             semantic_closures: SemanticClosureMap::new(),
             artifacts: MaterializedProgramMap::new(),
+            abi_ready: AbiReadyProgramMap::new(),
             roots: RootMap::new(),
             namespaces: NamespaceStore::new(),
             types: Types::new(),
@@ -395,6 +397,29 @@ impl<'a> World<'a> {
         let revision = self.artifacts.define(root, program.clone());
         self.tel.execute(
             &["fz", "compiler2", "materialized_program", "defined"],
+            &measurements! {
+                root_id: root.as_u32() as u64,
+                revision: revision,
+                executable_count: program.executables.len() as u64,
+            },
+            &metadata! {
+                program: opaque(&program),
+            },
+        );
+        revision
+    }
+
+    pub(crate) fn materialized_program(&self, root: RootId) -> MaterializedProgram {
+        self.artifacts
+            .get(root)
+            .cloned()
+            .expect("materialized programs should only be read after their fact is defined")
+    }
+
+    pub(crate) fn define_abi_ready_program(&mut self, root: RootId, program: AbiReadyProgram) -> u64 {
+        let revision = self.abi_ready.define(root, program.clone());
+        self.tel.execute(
+            &["fz", "compiler2", "abi_ready_program", "defined"],
             &measurements! {
                 root_id: root.as_u32() as u64,
                 revision: revision,

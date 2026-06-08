@@ -1,8 +1,8 @@
-//! Compiler2 artifact materialization jobs.
+//! Compiler2 artifact projection jobs.
 //!
-//! This module turns a closed semantic root into one backend-owned artifact
-//! snapshot. It does not ask semantic questions: every executable body, return
-//! type, and selected call edge must already exist in the closed fact set.
+//! This module turns a closed semantic root into backend-owned artifact
+//! projections. Each rung is derived from the one below it and never reopens
+//! semantic discovery.
 
 use std::collections::HashMap;
 
@@ -13,11 +13,14 @@ use crate::diag::driver::emit_through;
 use crate::ir_lower::extern_ty_from_name;
 use crate::parser::lexer::Tok;
 
-use super::super::artifact::{EffectSummary, MaterializedCallEdge, MaterializedExecutable, MaterializedProgram};
+use super::super::artifact::{
+    AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiValueRepr, EffectSummary, MaterializedCallEdge,
+    MaterializedExecutable, MaterializedProgram, ReturnAbi,
+};
 use super::super::body::{CallArg, CallSiteId, LoweredBlock, LoweredBody, LoweredStep};
-use super::super::drive::{FactKey, JobEffects};
+use super::super::drive::{FactKey, Job, JobEffects};
 use super::super::facts::FactValue;
-use super::super::identity::{ExecutableKey, RootId};
+use super::super::identity::{ExecutableKey, ExecutableNeed, RootId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, SelectedCallee};
 use super::super::types::Ty;
@@ -99,6 +102,38 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
     Ok(JobEffects {
         reads,
         outputs: vec![(FactKey::MaterializedProgram(root_id), FactValue::presence(revision))],
+        follow_up: vec![Job::DeriveAbiReady(root_id)],
+        ..JobEffects::default()
+    })
+}
+
+/// Derives one ABI-ready program from one materialized closed artifact.
+///
+/// This job consumes only `MaterializedProgram(root)` plus the world-owned type
+/// store. It makes ABI lanes and return delivery explicit without asking any
+/// semantic question or discovering new executable work.
+pub(super) fn derive_abi_ready(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
+    let materialized_fact = FactKey::MaterializedProgram(root_id);
+    let Some(materialized_revision) = world.fact_revision(materialized_fact.clone()) else {
+        return Ok(JobEffects::wait_on(materialized_fact, [Job::MaterializeRoot(root_id)]));
+    };
+
+    let reads = vec![materialized_fact];
+    let materialized = world.materialized_program(root_id);
+    let executables = materialized
+        .executables
+        .iter()
+        .map(|(key, executable)| (key.clone(), derive_abi_ready_executable(world, key, executable)))
+        .collect::<HashMap<_, _>>();
+    let program = AbiReadyProgram {
+        materialized_revision,
+        entry: materialized.entry,
+        executables,
+    };
+    let revision = world.define_abi_ready_program(root_id, program);
+    Ok(JobEffects {
+        reads,
+        outputs: vec![(FactKey::AbiReadyProgram(root_id), FactValue::presence(revision))],
         ..JobEffects::default()
     })
 }
@@ -407,6 +442,79 @@ fn settle_effects(
         if !changed {
             return Ok(());
         }
+    }
+}
+
+fn derive_abi_ready_executable(
+    world: &mut World<'_>,
+    key: &ExecutableKey,
+    executable: &MaterializedExecutable,
+) -> AbiReadyExecutable {
+    let param_reprs = key
+        .activation
+        .input
+        .iter()
+        .copied()
+        .map(|ty| abi_value_repr(world, ty))
+        .collect();
+    let value_reprs = executable
+        .value_types
+        .iter()
+        .map(|(value, ty)| (*value, abi_value_repr(world, *ty)))
+        .collect();
+    let call_edges = executable
+        .call_edges
+        .iter()
+        .map(|(callsite, edge)| {
+            (
+                *callsite,
+                AbiReadyCallEdge {
+                    callee: edge.callee.clone(),
+                    return_ty: edge.return_ty,
+                    return_abi: return_abi(world, edge.return_ty, edge.callee.need),
+                    extern_marshals: edge.extern_marshals.clone(),
+                },
+            )
+        })
+        .collect();
+    AbiReadyExecutable {
+        return_ty: executable.return_ty,
+        return_abi: return_abi(world, executable.return_ty, key.need),
+        param_reprs,
+        value_types: executable.value_types.clone(),
+        value_reprs,
+        effects: executable.effects,
+        body: executable.body.clone(),
+        call_edges,
+    }
+}
+
+fn return_abi(world: &mut World<'_>, return_ty: Ty, need: ExecutableNeed) -> ReturnAbi {
+    match need {
+        ExecutableNeed::Value => ReturnAbi::Value(abi_value_repr(world, return_ty)),
+        ExecutableNeed::TupleFields(arity) => ReturnAbi::TupleFields(
+            world
+                .types_mut()
+                .tuple_projections(&return_ty, arity)
+                .into_iter()
+                .map(|field| abi_value_repr(world, field))
+                .collect(),
+        ),
+    }
+}
+
+fn abi_value_repr(world: &mut World<'_>, ty: Ty) -> AbiValueRepr {
+    if world.types().is_floating(&ty) {
+        return AbiValueRepr::RawF64;
+    }
+    if world.types().is_integer(&ty) {
+        return AbiValueRepr::RawInt;
+    }
+    let atom = world.types_mut().atom();
+    if world.types().is_subtype(&ty, &atom) {
+        AbiValueRepr::RawAtom
+    } else {
+        AbiValueRepr::ValueRef
     }
 }
 
