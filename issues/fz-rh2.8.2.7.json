@@ -4,14 +4,15 @@
   "blocks": [
     "fz-rh2.8.2.4"
   ],
+  "closed_at": "2026-06-08T11:06:17Z",
   "created": "2026-06-08T10:54:32Z",
   "description": "# [BUG] Compiler2 artifacts: recover raw integer callable-entry lanes for Enum.reduce\n\nGoal: Compiler2 should preserve a raw integer callable-entry return lane inside the settled Enum.reduce user reducer callable inventory.\n\nSignal:\n- cargo test --lib compiler2_abi_ready_derives_only_the_closed_enum_reduce_callable_entries -- --nocapture passes\n- cargo test --lib compiler2_emission_ready_includes_the_required_enum_reduce_callable_entries -- --nocapture passes\n\nWhy:\n- fixing fz-rh2.8.2.6 unblocked the Enum.reduce semantic path far enough to expose a callable-entry contract mismatch.\n- Compiler2 intentionally keeps multiple specialized callable entries for one callable identity when the closed executable frontier needs them; the user reducer already had a RawInt lane, but the tests were reading the first matching entry and treating that as the whole callable inventory.\n- close this by asserting the real contract: the user reducer callable inventory includes a RawInt lane, the bridge reducer inventory stays ValueRef, and helper lookups must return all entries for a callable identity instead of an arbitrary first match.\n\n## UNBLOCKS\n\n- fz-rh2.8.2.4 Compiler2 backends: switch entry points and remove compiler2 fallback\n",
   "id": "fz-rh2.8.2.7",
   "labels": [],
   "parent": "fz-rh2.8.2",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 artifacts: recover raw integer callable-entry lanes for Enum.reduce",
   "type": "bug",
-  "updated_at": "2026-06-08T11:06:10Z"
+  "updated_at": "2026-06-08T11:06:17Z"
 }
