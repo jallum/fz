@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-08T21:15:15Z",
+  "description": "The cut-over safety gate. By here the new machinery is fully built (.1-.3, kernel via .6) but nothing live reads it -- function_type_env and the old consumers are UNTOUCHED. Prove the new path fires correctly end-to-end, in the unique window where both paths coexist and can be diffed.\n\nDrive a real fixture (quicksort, a spec_ok case). A test role-plays the soon-to-be-re-seated consumer by demanding the spec type names through the PRODUCTION demand path -- the same wait-on-TypeDefined call .4 will add to DeriveFunctionContract, no shim.\n\nPERMANENT assertions (these become the oracle and stay):\n  - DeriveTypeDef fires exactly once per referenced name; a @type no demand references stays cold.\n  - the in-house resolver turns each spec into the expected hard Ty (the worked examples).\n\nTEMPORARY cut-over scaffold (removed in .4 -- you cannot call a deleted function):\n  - for every overlapping name, the new resolver Ty EQUALS the Ty function_type_env produces. This is the behavior-identical proof; it is only possible while both paths exist, which is exactly now. .4 deletes this half when it deletes function_type_env.\n\nGreen here means .4/.5 become a near-mechanical swap: correctness is already proven, so the cut-over is just flip + delete. Nothing is disrupted at any commit up to this point.",
+  "id": "fz-rh2.12.10",
+  "labels": [],
+  "parent": "fz-rh2.12",
+  "priority": 2,
+  "status": "open",
+  "title": "Dark-launch parity proof: new name-\u003eTy path fires end-to-end with the old path untouched",
+  "type": "task",
+  "updated_at": "2026-06-08T21:15:15Z"
+}
