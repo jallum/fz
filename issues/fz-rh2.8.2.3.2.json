@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.8.2.3.1"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-rh2.8.2.3",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 native backends: lower BackendProgram to the codegen-ready handoff",
   "type": "task",
-  "updated_at": "2026-06-08T04:59:36Z"
+  "updated_at": "2026-06-08T05:15:27Z"
 }
