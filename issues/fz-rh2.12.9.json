@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-08T20:52:15Z",
+  "description": "The epic terminal -- we return to where this started. Re-run the quicksort.log trace (fz2 with telemetry) and confirm the re-lexing is gone: lexer.pass == number of sources, and the ~26ms visible re-lex plus the hidden per-call parse/env-rebuild are eliminated. Quantify what remains; close the original perf question as solved-by-construction, or re-scope any residual. Do not lose the other finding from the original investigation: file the ~47ms uninstrumented native backend tail (the codegen telemetry gap, post-drive in quicksort.log) as its own ticket. Outcome: back where we started, with updated docs and a tractable (or absent) problem.",
+  "id": "fz-rh2.12.9",
+  "labels": [],
+  "parent": "fz-rh2.12",
+  "priority": 2,
+  "status": "open",
+  "title": "Back here: re-examine quicksort.log; confirm/quantify the re-lex is gone",
+  "type": "task",
+  "updated_at": "2026-06-08T20:52:15Z"
+}
