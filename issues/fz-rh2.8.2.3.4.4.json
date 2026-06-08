@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-08T06:38:40Z",
+  "description": "Goal: close the prequel arc cleanly and hand back a smaller remaining problem. Signal: docs, tests, and ticket text all show that the remaining work in `fz-rh2.8.2.3.3` is just the outer JIT/AOT consumer switch and cleanup, if any remains.\n\nChange:\n- update docs and telemetry/test expectations to match the new native codegen boundary\n- remove temporary notes/scaffolding used while splitting the codegen seam\n- rewrite `fz-rh2.8.2.3.3` to describe only the remaining consumer move\n\nWhy:\n- this arc only pays off if it leaves the queue cleaner and the next ticket smaller than the one we paused\n\nChecks:\n- no temporary contract scaffolding is left behind without a ticket\n- `fz-rh2.8.2.3.3` is either obviously tractable or obviously obsolete by the end",
+  "id": "fz-rh2.8.2.3.4.4",
+  "labels": [],
+  "parent": "fz-rh2.8.2.3.4",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 native backends: close the seam split and shrink the remaining switch",
+  "type": "task",
+  "updated_at": "2026-06-08T06:38:40Z"
+}
