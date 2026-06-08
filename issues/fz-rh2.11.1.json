@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-rh2.11.2"
+    "fz-rh2.11.2",
+    "fz-rh2.11.3"
   ],
   "created": "2026-06-08T11:48:59Z",
   "description": "Goal: make Compiler2's structured body/control model strong enough to represent `case`/`with`/`receive` without falling back to old-world CPS helpers or positional tailness tricks.\n\nSignal:\n- Compiler2 no longer has to reject structured control because `LoweredBlock { steps, result }` is too weak a contract\n- the body/backend/native model carries explicit destinations/resumes and dispatch-owned arm identity in a way later tickets can consume mechanically\n\nChange:\n- redesign the local Compiler2 control representation around explicit control destinations/resume points, taking the useful internal idea from `../hybrid.html` but keeping it compiler2-owned and per-function\n- preserve dispatch facts, executable identity, return ABI, and callable-entry inventory\n- do not add a new whole-root artifact rung\n\nWhy:\n- today Compiler2 can lower only straight-line steps plus `If`; `case`/`with`/`receive` want an explicit control contract, not more nested block special cases",
