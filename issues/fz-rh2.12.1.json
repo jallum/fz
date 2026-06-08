@@ -11,9 +11,15 @@
   "id": "fz-rh2.12.1",
   "labels": [],
   "parent": "fz-rh2.12",
+  "comments": [
+    {
+      "text": "When wiring this in-house parser, REMOVE the module-level #![allow(dead_code)] at the top of src/compiler2/type_expr.rs -- it marks the not-yet-consumed parser from .11 and must come off once the reference walk (.1) and resolver (.3) consume it.",
+      "timestamp": "2026-06-08T21:47:29Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Note type names: NamespaceSymbol::Type, reference_type, retain top-level @type",
   "type": "task",
-  "updated_at": "2026-06-08T21:33:43Z"
+  "updated_at": "2026-06-08T21:47:29Z"
 }
