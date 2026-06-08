@@ -4,14 +4,15 @@
   "blocks": [
     "fz-rh2.10.8.2"
   ],
+  "closed_at": "2026-06-08T00:20:52Z",
   "created": "2026-06-08T00:05:33Z",
   "description": "Goal: make Compiler2 own a concrete interned type implementation locally, with no production dependency on the old-world `src/types/interned_types` module. Signal: Compiler2 has `compiler2::types::{Types, Ty}` and the full interned-type implementation plus test coverage lives under `src/compiler2/types/`.\n\nStrategy: move the full interned implementation into Compiler2 in total, rename it to the local concrete names Compiler2 actually wants, port both the focused implementation tests and the generic conformance/smoke coverage that currently exercise `InternedConcreteTypes`, and delete the now-unused old-world export surface for that implementation.\n\nChange:\n- Add `src/compiler2/types/` by bringing over the full `src/types/interned_types/*` implementation and helper modules.\n- Rename `InternedConcreteTypes` to `Types` and `InternedTy` to `Ty` within Compiler2.\n- Drop the `crate::types::Types` trait implementation at the Compiler2 boundary; Compiler2 uses inherent methods on its local `Types` directly.\n- Port `src/types/interned_types/interned_types_test.rs` into Compiler2.\n- Port the larger interned conformance/smoke coverage currently wired through `src/types/mod.rs` so the moved implementation keeps its real safety net.\n- Remove the old-world export/test wiring for the unused interned implementation once Compiler2 owns it.\n\nWhy:\n- Compiler2 should not depend on a pluggable abstraction it does not actually want.\n- The interned implementation's ids are only meaningful within one owning store, which makes it a natural Compiler2 world subsystem.\n- Pulling it in total, with tests, gives Compiler2 a concrete foundation before production code starts storing local type ids.\n\nChecks:\n- All imported type tests pass from their new Compiler2 home.\n- No Compiler2 production code imports `crate::types::InternedConcreteTypes` or `src/types/interned_types`.\n- Old-world code still builds without the unused interned export surface.",
   "id": "fz-rh2.10.8.1",
   "labels": [],
   "parent": "fz-rh2.10.8",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 types: import the interned type store and its tests in total",
   "type": "task",
-  "updated_at": "2026-06-08T00:08:14Z"
+  "updated_at": "2026-06-08T00:20:52Z"
 }
