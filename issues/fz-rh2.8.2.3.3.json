@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-rh2.8.2.3.2"
+    "fz-rh2.8.2.3.2",
+    "fz-rh2.8.2.3.4"
   ],
   "blocks": [
     "fz-rh2.8.2.4"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Compiler2 native backends: move shared codegen and JIT/AOT entry paths onto the new handoff",
   "type": "task",
-  "updated_at": "2026-06-08T04:59:36Z"
+  "updated_at": "2026-06-08T06:38:40Z"
 }
