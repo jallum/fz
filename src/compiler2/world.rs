@@ -10,8 +10,8 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
-use crate::ast::FnDef;
 use crate::ast::Item;
+use crate::ast::{Attribute, FnDef};
 use crate::compiler::source::Span;
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
@@ -40,7 +40,7 @@ use super::drive::{FactKey, Job, JobEffects, WorkGraph};
 use super::facts::FactValue;
 use super::identity::{
     ActivationKey, ExecutableNeed, FunctionDef, FunctionId, FunctionMap, ModuleExport, ModuleId, ModuleMap,
-    ModuleSourceKind, ModuleState, RootEntry, RootId, RootMap,
+    ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootMap, TypeDeclMap, TypeName,
 };
 use super::keying::{DispatchMaskMap, RecursiveMap};
 use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
@@ -76,6 +76,7 @@ pub struct World<'a> {
     code: CodeMap,
     modules: ModuleMap,
     functions: FunctionMap,
+    type_decls: TypeDeclMap,
     function_contracts: FunctionContractMap,
     bodies: LoweredBodyMap,
     guard_dispatches: GuardDispatchMap,
@@ -125,6 +126,7 @@ impl<'a> World<'a> {
             code: CodeMap::new(),
             modules: ModuleMap::new(),
             functions: FunctionMap::new(),
+            type_decls: TypeDeclMap::new(),
             function_contracts: FunctionContractMap::new(),
             bodies: LoweredBodyMap::new(),
             guard_dispatches: GuardDispatchMap::new(),
@@ -592,6 +594,30 @@ impl<'a> World<'a> {
         self.functions.reference(module, name, arity)
     }
 
+    /// Holds a `@type` declaration's unresolved decl — parsed body plus the
+    /// namespace captured at its scope — under its identity, for
+    /// `DeriveTypeDef` to read. No resolution, no type-algebra. The event is
+    /// the surface-tier signal that a type name became a referenceable identity.
+    pub fn note_type_decl(&mut self, name: TypeName, decl: NotedTypeDecl) {
+        self.tel.execute(
+            &["fz", "compiler2", "type", "noted"],
+            &measurements! {
+                module_id: name.module.as_u32() as u64,
+                arity: name.arity as u64,
+                namespace: decl.namespace.as_u32() as u64,
+            },
+            &metadata! {
+                name: name.name.clone(),
+                kind: format!("{:?}", decl.body.kind),
+            },
+        );
+        self.type_decls.note(name, decl);
+    }
+
+    pub fn type_decl(&self, name: &TypeName) -> Option<&NotedTypeDecl> {
+        self.type_decls.get(name)
+    }
+
     pub fn define_function(
         &mut self,
         module: ModuleId,
@@ -964,8 +990,8 @@ impl<'a> World<'a> {
         self.modules.named_struct_schemas()
     }
 
-    pub fn finish_code_index(&mut self, id: CodeId, items: Vec<Rc<Item>>) -> u64 {
-        self.code.index(id, items)
+    pub fn finish_code_index(&mut self, id: CodeId, items: Vec<Rc<Item>>, attrs: Vec<Attribute>) -> u64 {
+        self.code.index(id, items, attrs)
     }
 
     pub fn code_revision(&self, id: CodeId) -> u64 {
@@ -1088,7 +1114,7 @@ impl<'a> World<'a> {
                 NamespaceSymbol::Function(function) | NamespaceSymbol::Macro(function) => {
                     callable_match_score(self.function_arity(*function), self.function_variadic(*function), arity)
                 }
-                NamespaceSymbol::Module(_) => None,
+                NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) => None,
             })
             .cloned()
     }
@@ -1143,7 +1169,9 @@ impl<'a> World<'a> {
                 NamespaceSymbol::Function(function) | NamespaceSymbol::Macro(function) => {
                     self.function_arity(*function)
                 }
-                NamespaceSymbol::Module(_) => unreachable!("variadic lookup should not yield modules"),
+                NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) => {
+                    unreachable!("variadic lookup should not yield modules or types")
+                }
             })
     }
 
@@ -1252,8 +1280,18 @@ impl<'a> World<'a> {
 
     pub fn code_items(&self, id: CodeId) -> Option<&[Rc<Item>]> {
         match &self.code.get(id).state {
-            super::code::CodeState::Indexed { items } => Some(items.as_slice()),
+            super::code::CodeState::Indexed { items, .. } => Some(items.as_slice()),
             super::code::CodeState::Pending => None,
+        }
+    }
+
+    /// The root-scope attributes (top-level `@type`s) retained at indexing, so
+    /// scoping reserves them into the GLOBAL scope exactly as a module reserves
+    /// its own.
+    pub fn code_attrs(&self, id: CodeId) -> &[Attribute] {
+        match &self.code.get(id).state {
+            super::code::CodeState::Indexed { attrs, .. } => attrs.as_slice(),
+            super::code::CodeState::Pending => &[],
         }
     }
 

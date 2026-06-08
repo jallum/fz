@@ -1,4 +1,4 @@
-use super::identity::{FunctionId, ModuleId};
+use super::identity::{FunctionId, ModuleId, TypeName};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct BindingId(u32);
@@ -9,6 +9,10 @@ impl BindingId {
     pub fn is_end(self) -> bool {
         self == Self::END
     }
+
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
 }
 
 pub type Namespace = BindingId;
@@ -18,6 +22,10 @@ pub enum NamespaceSymbol {
     Module(ModuleId),
     Function(FunctionId),
     Macro(FunctionId),
+    /// A type-position name bound to its identity. Resolution (fz-rh2.12.3)
+    /// reads it; value/callable lookups filter it out, so a type and a value
+    /// of the same name never collide.
+    Type(TypeName),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

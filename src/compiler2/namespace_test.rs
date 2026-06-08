@@ -1,4 +1,35 @@
-use super::{BindingId, CodeMap, FunctionMap, ModuleMap, NamespaceStore, NamespaceSymbol};
+use super::{BindingId, CodeMap, FunctionMap, ModuleMap, NamespaceStore, NamespaceSymbol, TypeName};
+
+#[test]
+fn compiler2_namespace_type_binding_coexists_with_a_value_of_the_same_name() {
+    let mut modules = ModuleMap::new();
+    let mut functions = FunctionMap::new();
+    let mut namespaces = NamespaceStore::new();
+
+    let module = modules.reference_named("Range");
+    let type_t = TypeName {
+        module,
+        name: "t".to_string(),
+        arity: 0,
+    };
+    let value_t = functions.reference(module, "t", 0);
+
+    // Reserve the type first (deepest), then bind a value of the same name on
+    // top — exactly as `define_scope` does, so values shadow types.
+    let with_type = namespaces.bind(BindingId::END, "t", NamespaceSymbol::Type(type_t.clone()));
+    let head = namespaces.bind(with_type, "t", NamespaceSymbol::Function(value_t));
+
+    assert_eq!(
+        namespaces.lookup(head, "t"),
+        Some(&NamespaceSymbol::Function(value_t)),
+        "an unfiltered lookup resolves the value, never the shadowed type",
+    );
+    assert_eq!(
+        namespaces.lookup_matching(head, "t", |symbol| matches!(symbol, NamespaceSymbol::Type(_))),
+        Some(&NamespaceSymbol::Type(type_t)),
+        "a type-position lookup finds the type even when a value of the same name shadows it",
+    );
+}
 
 #[test]
 fn compiler2_namespace_store_shadows_and_restores_by_head() {

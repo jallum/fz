@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use super::super::facts::FactValue;
-use crate::ast::{FnDef, Item, ProtocolImplDef};
+use crate::ast::{Attribute, FnDef, Item, ProtocolImplDef};
 use crate::compiler::source::Id as SourceId;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
@@ -13,10 +13,11 @@ use crate::parser::lexer::Lexer;
 
 use super::super::code::CodeId;
 use super::super::drive::{FactKey, Job, JobEffects};
-use super::super::identity::{ModuleExport, ModuleId, ModuleSourceKind};
+use super::super::identity::{ModuleExport, ModuleId, ModuleSourceKind, NotedTypeDecl, TypeName};
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::protocol::ProtocolCallbackImpl;
 use super::super::scheduler::FatalError;
+use super::super::type_expr::parse_type_def_body;
 use super::super::world::World;
 
 type Output = (FactKey, FactValue);
@@ -55,7 +56,7 @@ pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
     let mut outputs = Vec::new();
     discover_modules(world, code_id, ModuleId::GLOBAL, &program.items, &mut outputs);
 
-    let code_revision = world.finish_code_index(code_id, program.items.clone());
+    let code_revision = world.finish_code_index(code_id, program.items.clone(), program.attrs.clone());
     outputs.push((FactKey::CodeIndexed(code_id), FactValue::presence(code_revision)));
 
     Ok(JobEffects {
@@ -87,7 +88,8 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
         reads.push(prelude_fact);
         world.prelude_head()
     };
-    match define_scope(world, code_id, ModuleId::GLOBAL, base_namespace, &items)? {
+    let attrs = world.code_attrs(code_id).to_vec();
+    match define_scope(world, code_id, ModuleId::GLOBAL, base_namespace, &items, &attrs)? {
         ScopeResult::Complete {
             namespace,
             reads: scope_reads,
@@ -120,7 +122,9 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
 pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Result<JobEffects, FatalError> {
     if let Some((source, base_namespace)) = world.module_scope(module_id) {
         let result = match &source.kind {
-            ModuleSourceKind::Body { items } => define_scope(world, source.code, module_id, base_namespace, items)?,
+            ModuleSourceKind::Body { items } => {
+                define_scope(world, source.code, module_id, base_namespace, items, &source.attrs)?
+            }
             ModuleSourceKind::Protocol { callbacks } => {
                 define_protocol_surface(world, module_id, base_namespace, callbacks)
             }
@@ -170,18 +174,48 @@ pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Resul
 
 /// Walks one scope in source order and returns the namespace it produces.
 ///
-/// The first walk reserves local functions and child modules so bodies can
-/// reference names declared later in the same scope. The second walk applies
-/// order-dependent items: aliases, imports, function definitions, and child
-/// module scope points. Imports may block until the provider module is defined.
+/// First it reserves `@type` declarations from the surface attributes — bound
+/// deepest so value names shadow a same-named type, and so sibling/forward type
+/// references resolve without a fixpoint. The first item walk then reserves
+/// local functions and child modules so bodies can reference names declared
+/// later in the same scope, after which each `@type` is noted against the
+/// fully-reserved scope. The second walk applies order-dependent items:
+/// aliases, imports, function definitions, and child module scope points.
+/// Imports may block until the provider module is defined.
 fn define_scope(
     world: &mut World<'_>,
     code_id: CodeId,
     current_module: ModuleId,
     namespace: Namespace,
     items: &[Rc<Item>],
+    attrs: &[Attribute],
 ) -> Result<ScopeResult, FatalError> {
     let mut scope = namespace;
+
+    let mut pending_types = Vec::new();
+    for attr in attrs {
+        let Attribute::TypeAlias(decl) = attr else {
+            continue;
+        };
+        let body = parse_type_def_body(&decl.body_tokens.0).map_err(|error| {
+            emit_job_diagnostic(
+                world,
+                Diagnostic::error(
+                    codes::RESOLVE_TYPE_ALIAS,
+                    format!("compiler2 could not parse `@type {}`: {}", decl.name, error.msg),
+                    error.span,
+                ),
+            )
+        })?;
+        let type_name = TypeName {
+            module: current_module,
+            name: decl.name.clone(),
+            arity: decl.params.len(),
+        };
+        scope = world.bind_namespace(scope, decl.name.clone(), NamespaceSymbol::Type(type_name.clone()));
+        pending_types.push((type_name, decl.params.clone(), body, decl.span));
+    }
+
     let local_protocols = items
         .iter()
         .filter_map(|item| match &**item {
@@ -225,6 +259,21 @@ fn define_scope(
                 ));
             }
         }
+    }
+
+    // The scope now carries every sibling type, function, and child module, so
+    // note each @type against it: that captured namespace is the resolution
+    // context DeriveTypeDef reads, replacing the per-module type-env fixpoint.
+    for (type_name, params, body, span) in pending_types {
+        world.note_type_decl(
+            type_name,
+            NotedTypeDecl {
+                params,
+                body,
+                namespace: scope,
+                span,
+            },
+        );
     }
 
     let mut reads = Vec::new();

@@ -48,7 +48,7 @@ pub use facts::{FactChange, FactReplace, FactSlot, FactTable, FactValue};
 pub use identity::{
     ActivationKey, ExecutableKey, ExecutableNeed, Function, FunctionDef, FunctionId, FunctionMap, FunctionRef,
     FunctionState, Module, ModuleExport, ModuleId, ModuleMap, ModuleSource, ModuleSourceKind, ModuleState,
-    ModuleSurface, Root, RootEntry, RootId, RootMap,
+    ModuleSurface, NotedTypeDecl, Root, RootEntry, RootId, RootMap, TypeName,
 };
 pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
 pub use scheduler::{AppliedStep, DriveOutcome, FatalError, Scheduler};

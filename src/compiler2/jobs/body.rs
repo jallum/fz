@@ -596,14 +596,16 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                             expr.span,
                         ),
                     )),
-                    Some(NamespaceSymbol::Module(_)) | None => Err(emit_job_diagnostic(
-                        self.world,
-                        Diagnostic::error(
-                            codes::LOWER_UNBOUND,
-                            format!("compiler2 lowering found unresolved value `{name}`"),
-                            expr.span,
-                        ),
-                    )),
+                    Some(NamespaceSymbol::Module(_)) | Some(NamespaceSymbol::Type(_)) | None => {
+                        Err(emit_job_diagnostic(
+                            self.world,
+                            Diagnostic::error(
+                                codes::LOWER_UNBOUND,
+                                format!("compiler2 lowering found unresolved value `{name}`"),
+                                expr.span,
+                            ),
+                        ))
+                    }
                 }
             }
             Expr::FnRef { name, arity } => {
@@ -622,7 +624,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                             ),
                         ));
                     }
-                    Some(NamespaceSymbol::Module(_)) | None => {
+                    Some(NamespaceSymbol::Module(_)) | Some(NamespaceSymbol::Type(_)) | None => {
                         steps.push(ExprStep::NamedFunctionRef {
                             value,
                             name: name.clone(),
@@ -836,7 +838,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                         ),
                     ));
                 }
-                Some(NamespaceSymbol::Module(_)) => DirectCallee::Named {
+                Some(NamespaceSymbol::Module(_)) | Some(NamespaceSymbol::Type(_)) => DirectCallee::Named {
                     name: name.to_string(),
                     arity,
                 },

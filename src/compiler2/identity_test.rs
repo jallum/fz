@@ -149,8 +149,8 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         matches!(code_slot.state, CodeState::Pending),
         "new code should remain pending until indexing runs"
     );
-    let indexed_code_revision = code.index(code_id, Vec::new());
-    let same_indexed_code_revision = code.index(code_id, Vec::new());
+    let indexed_code_revision = code.index(code_id, Vec::new(), Vec::new());
+    let same_indexed_code_revision = code.index(code_id, Vec::new(), Vec::new());
     assert_eq!(
         same_indexed_code_revision, indexed_code_revision,
         "replaying the same code index should not bump the revision"

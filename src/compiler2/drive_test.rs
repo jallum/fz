@@ -105,6 +105,56 @@ fn compiler2_runtime_prelude_does_not_run_frontend_before_drive() {
 }
 
 #[test]
+fn compiler2_notes_top_level_types_into_the_global_scope() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+
+    // Unique `tkf_` names so the assertions ignore the runtime prelude's own
+    // @types, which are noted in the same drive when the user scope pulls it.
+    let mut compiler = Compiler2::new(&tel);
+    let code_id = compiler.submit_code(CodeSubmission {
+        name: Some("types.fz".to_string()),
+        text: "@type tkf_alpha :: integer\n@type tkf_beta(a) :: {a, a}\n\nfn main(), do: 1\n".to_string(),
+    });
+    assert_resolved(compiler.drive(), "first drive should index the source");
+    assert!(
+        compiler.demand(Job::ScopeCode(code_id)),
+        "scoping the top-level code should be demandable",
+    );
+    assert_resolved(compiler.drive(), "second drive should scope and note the @types");
+
+    let mine = capture
+        .find(&["fz", "compiler2", "type", "noted"])
+        .into_iter()
+        .filter(|event| metadata_str(event, "name").starts_with("tkf_"))
+        .collect::<Vec<_>>();
+    assert_eq!(mine.len(), 2, "each top-level @type is noted exactly once");
+    for event in &mine {
+        assert_eq!(
+            measurement_u64(event, "module_id"),
+            u64::from(ModuleId::GLOBAL.as_u32()),
+            "a top-level @type is noted under the GLOBAL module",
+        );
+        assert_ne!(
+            measurement_u64(event, "namespace"),
+            0,
+            "the captured namespace is the built scope, never the empty namespace",
+        );
+    }
+    let mut by_name = mine
+        .iter()
+        .map(|event| (metadata_str(event, "name").to_string(), measurement_u64(event, "arity")))
+        .collect::<Vec<_>>();
+    by_name.sort();
+    assert_eq!(
+        by_name,
+        vec![("tkf_alpha".to_string(), 0), ("tkf_beta".to_string(), 1)],
+        "arity is part of the type identity: tkf_alpha/0 and tkf_beta/1",
+    );
+}
+
+#[test]
 fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_bodies() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();

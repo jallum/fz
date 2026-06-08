@@ -7,6 +7,7 @@ use crate::compiler::source::Span;
 
 use super::code::CodeId;
 use super::namespace::{Namespace, NamespaceSymbol};
+use super::type_expr::TypeDefBody;
 use super::types::Ty;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -229,6 +230,32 @@ pub struct FunctionRef {
     pub module: ModuleId,
     pub name: String,
     pub arity: usize,
+}
+
+/// The identity of a named type: its owning module, source name, and arity.
+///
+/// Keying on the owning `ModuleId` (not a dotted string) means `t` resolved
+/// inside `SomeModule` and `SomeModule.t` resolved from outside land on one
+/// identity, and a module alias never changes it. `t/0` and `t/1` are distinct.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TypeName {
+    pub module: ModuleId,
+    pub name: String,
+    pub arity: usize,
+}
+
+/// A `@type` declaration as noted during scoping: its formal parameters, its
+/// parsed-but-unresolved body, and the namespace in scope where it appeared.
+///
+/// `DeriveTypeDef` (fz-rh2.12.2) reads this to resolve the body to a hard `Ty`
+/// against the captured namespace — the namespace, not a `ModuleTypeEnv`, is
+/// the resolution context.
+#[derive(Debug, Clone)]
+pub struct NotedTypeDecl {
+    pub params: Vec<String>,
+    pub body: TypeDefBody,
+    pub namespace: Namespace,
+    pub span: Span,
 }
 
 #[derive(Debug, Default)]
@@ -479,6 +506,30 @@ impl FunctionMap {
         self.refs
             .get(id.0 as usize)
             .expect("function ids should be known before reading reverse references")
+    }
+}
+
+/// The noted `@type` declarations, keyed by [`TypeName`]. Populated while
+/// scoping (fz-rh2.12.1) and read by `DeriveTypeDef` (fz-rh2.12.2). A type is
+/// an identity that may be referenced before — or without ever — being
+/// declared, so a missing entry is an unresolved-frontier question, not a
+/// panic.
+#[derive(Debug, Default)]
+pub struct TypeDeclMap {
+    decls: HashMap<TypeName, NotedTypeDecl>,
+}
+
+impl TypeDeclMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn note(&mut self, name: TypeName, decl: NotedTypeDecl) {
+        self.decls.insert(name, decl);
+    }
+
+    pub fn get(&self, name: &TypeName) -> Option<&NotedTypeDecl> {
+        self.decls.get(name)
     }
 }
 

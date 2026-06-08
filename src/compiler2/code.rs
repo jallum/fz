@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use crate::ast::Item;
+use crate::ast::{Attribute, Item};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CodeId(u32);
@@ -22,7 +22,12 @@ pub struct Code {
 #[derive(Debug, Clone)]
 pub enum CodeState {
     Pending,
-    Indexed { items: Vec<Rc<Item>> },
+    /// Parsed top-level surface: the items, plus the root-scope attributes
+    /// (top-level `@type`s) that scoping reserves into the GLOBAL scope.
+    Indexed {
+        items: Vec<Rc<Item>>,
+        attrs: Vec<Attribute>,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -48,9 +53,9 @@ impl CodeMap {
         id
     }
 
-    pub fn index(&mut self, id: CodeId, items: Vec<Rc<Item>>) -> u64 {
+    pub fn index(&mut self, id: CodeId, items: Vec<Rc<Item>>, attrs: Vec<Attribute>) -> u64 {
         let code = &mut self.slots[id.0 as usize];
-        let next = CodeState::Indexed { items };
+        let next = CodeState::Indexed { items, attrs };
         if same_code_state(&code.state, &next) {
             return code.revision;
         }
@@ -91,7 +96,7 @@ impl CodeMap {
 fn same_code_state(left: &CodeState, right: &CodeState) -> bool {
     match (left, right) {
         (CodeState::Pending, CodeState::Pending) => true,
-        (CodeState::Indexed { items: left }, CodeState::Indexed { items: right }) => same_items(left, right),
+        (CodeState::Indexed { items: left, .. }, CodeState::Indexed { items: right, .. }) => same_items(left, right),
         _ => false,
     }
 }

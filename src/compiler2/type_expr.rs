@@ -15,10 +15,8 @@
 //! whole-program assumption the incremental compiler rejects, so the grammar
 //! comes in-house clean and resolution-free.
 //!
-//! Nothing on the production path calls this yet: `fz-rh2.12.1` wires the
-//! reference walk over it and `.3` the resolver, at which point the
-//! module-level `allow(dead_code)` comes off.
-#![allow(dead_code)]
+//! `parse_type_def_body` is consumed by scoping (fz-rh2.12.1); the reference
+//! walk (fz-rh2.12.12) and resolver (fz-rh2.12.3) consume the rest.
 
 use crate::compiler::source::Span;
 use crate::parser::lexer::{Tok, Token};
