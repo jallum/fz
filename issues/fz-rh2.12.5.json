@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-rh2.12.3"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-rh2.12.7"
   ],
@@ -15,5 +13,5 @@
   "status": "open",
   "title": "Protocol domain = marker: delete the eager union and interfaces() re-lex",
   "type": "task",
-  "updated_at": "2026-06-08T20:52:15Z"
+  "updated_at": "2026-06-08T21:15:22Z"
 }
