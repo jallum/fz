@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.12.2"
+  ],
   "blocks": [],
   "created": "2026-06-08T20:52:14Z",
   "description": "Make compiler2/types self-contained. erase_nominal and value_disjoint (descr.rs:496) read the brand/opaque inner from the symbol own structural axes instead of the name-keyed nominals.brand_inners/opaque_inners maps; remove the discarded-inner plumbing. The shared Types trait keeps its Nominals-bearing methods for the legacy ConcreteTypes impl; compiler2 conforms reading-from-symbol -- there is no live compiler2 pipeline caller of value_disjoint to break. Verify: compiler2 nominal conformance tests rewritten to the mint_brand arrangement; value_disjoint_soundness_table green.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Inner-in-symbol in compiler2/types; drop the Nominals leak from compiler2 use",
   "type": "task",
-  "updated_at": "2026-06-08T20:52:14Z"
+  "updated_at": "2026-06-08T20:52:15Z"
 }
