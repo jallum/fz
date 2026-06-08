@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-08T11:49:40Z",
+  "description": "Goal: prove the new surface through the same fixture oracle the old compiler uses before any replacement planning resumes.\n\nSignal:\n- a representative `fz2` fixture leg exists and exercises the new control/data surface\n- migration tickets can point at fixture-backed parity instead of one-off smoke tests\n\nChange:\n- extend the fixture/parity harness for a Compiler2-facing path once the language surface is actually supported\n- pin a representative set of `case`/`with`/`receive`/map/struct/bitstring/macro fixtures through `fz2`\n\nWhy:\n- we should not talk about cutover or scrap from hand-picked CLI tests alone; the fixture matrix is the real oracle surface",
+  "id": "fz-rh2.11.6",
+  "labels": [],
+  "parent": "fz-rh2.11",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 parity harness: add fz2 fixture coverage before cutover",
+  "type": "task",
+  "updated_at": "2026-06-08T11:49:40Z"
+}
