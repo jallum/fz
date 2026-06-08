@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.8.2"
+  ],
   "created": "2026-06-08T02:48:56Z",
   "description": "Goal: make ABI and emission readiness a Compiler2-owned artifact projection before backend adapters consume it. Signal: the artifact ladder is explicit and tested: MaterializedProgram(root) -\u003e AbiReadyProgram(root) -\u003e EmissionReadyProgram(root). Backends consume the final closed facts mechanically and never rediscover reachability, dispatch, return delivery, type flow, callable entries, or extern marshal classes.\n\nStrategy: split durable compiler facts from old-world backend implementation artifacts, then add the minimal Compiler2 facts in dependency order. We keep the current fz-rh2.8.2 adapter ticket blocked until this model is documented and backed by tests, so when this epic closes we return to fz-rh2.8.2 with a smaller, tractable problem.\n\nDesign constraints:\n- No shims, bridges, adapters, or fallback paths to old planner/codegen discovery.\n- Do not copy old SpecPlan, SpecRegistry, AbiFacts, native_fns, cont_fns, cont_target_fns, cont_extras_count, or callable wrapper signatures into Compiler2 facts.\n- Keep old-world lessons only where they express durable invariants: call edges, return delivery, extern marshal classes, effects, callable-boundary obligations, and stable emission inventory.\n- Telemetry emits raw ids/facts/structures only; handlers render or summarize.\n\nChecks:\n- Quicksort + uncalled foo proves the artifact frontier remains closed and cold functions stay cold.\n- Enum.reduce proves callable-entry obligations are explicit and sufficient.\n- Variadic extern fixtures prove marshal classes are frozen at the artifact boundary.\n- Tests fail if backend-facing work asks semantic/type/reachability questions after MaterializedProgram.\n- Docs describe the final model before fz-rh2.8.2 resumes.",
   "id": "fz-rh2.8.4",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 artifacts: settle ABI and emission-ready fact model",
   "type": "epic",
-  "updated_at": "2026-06-08T02:48:56Z"
+  "updated_at": "2026-06-08T02:50:09Z"
 }
