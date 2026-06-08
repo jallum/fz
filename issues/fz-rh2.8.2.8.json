@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-08T10:54:32Z",
+  "description": "Goal: the quicksort semantic-closure frontier should have a provable, intentional partition/4 activation shape.\n\nSignal:\n- cargo test --lib compiler2_quicksort_root_closes_with_a_finite_recursive_frontier -- --nocapture passes\n\nWhy:\n- the failure reproduces on clean HEAD at 4b98938f2, so this is pre-existing branch drift rather than fallout from fz-rh2.8.2.6.\n- we need to decide whether the current closure shape is wrong or the test expectation is stale, then make the result explicit.",
+  "id": "fz-rh2.8.2.8",
+  "labels": [],
+  "parent": "fz-rh2.8.2",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 semantics/tests: reconcile quicksort partition activation frontier",
+  "type": "bug",
+  "updated_at": "2026-06-08T10:54:32Z"
+}
