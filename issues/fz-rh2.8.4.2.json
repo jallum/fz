@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.8.4.3"
+  ],
   "created": "2026-06-08T02:49:25Z",
   "description": "Goal: publish Compiler2-owned ABI facts from a closed MaterializedProgram without reopening semantic discovery. Signal: AbiReadyProgram(root) contains all ABI lane and return-delivery facts a backend needs for the closed executable frontier.\n\nChange:\n- Add Compiler2 artifact data types such as AbiValueRepr, ReturnAbi, AbiReadyProgram, AbiReadyExecutable, and AbiReadyCallEdge.\n- Add a fact/job path from MaterializedProgram(root) to AbiReady(root).\n- Derive value, parameter, return, and call-edge ABI from existing Ty ids and ExecutableNeed.\n- Preserve extern_marshals and EffectSummary exactly from the materialized artifact.\n- Treat unsupported or missing materialized facts as fatal artifact errors; do not ask semantic maps to fill gaps.\n\nWhy:\n- Backends should consume ABI lanes and return contracts as closed facts, not recompute them from types and body shapes.\n\nChecks:\n- Quicksort proves partition/4 tuple-field return ABI is represented explicitly.\n- Variadic extern fixtures prove frozen extern marshal classes flow into AbiReadyProgram.\n- Tests assert no old planner/codegen telemetry is emitted while deriving ABI facts.\n- Telemetry carries raw root ids, fact ids, and opaque AbiReadyProgram data only.",
   "id": "fz-rh2.8.4.2",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 artifacts: derive AbiReadyProgram from MaterializedProgram",
   "type": "task",
-  "updated_at": "2026-06-08T02:49:25Z"
+  "updated_at": "2026-06-08T02:50:10Z"
 }
