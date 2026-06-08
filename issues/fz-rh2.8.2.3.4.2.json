@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.8.2.3.4.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.8.2.3.4.3"
+  ],
   "created": "2026-06-08T06:38:40Z",
   "description": "Goal: split shared native codegen at the real seam. Signal: backend emission/finalization mechanics are reusable without dragging `ModulePlan`, `PlannedProgram`, or `AbiFacts` through the Compiler2 path.\n\nChange:\n- extract the reusable native backend compilation core from the planner-shaped wrapper in `ir_codegen`\n- make the remaining planner wrapper an outer compatibility shell, not the center of the design\n- remove planner-only threading from the shared core where the backend does not truly need it\n\nWhy:\n- as long as the shared codegen core is planner-shaped, Compiler2 can only reach it by rebuilding the old world on the side\n\nChecks:\n- the extracted native codegen core has a smaller, fact-driven input surface\n- Compiler2-native tests can enter the shared native backend without calling old preparation helpers",
   "id": "fz-rh2.8.2.3.4.2",
