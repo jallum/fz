@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-08T04:59:17Z",
+  "description": "Goal: lower one closed `BackendProgram(root)` into the Compiler2-owned native handoff without reopening semantic or planner work. Signal: the lowering job consumes only `BackendProgram(root)` plus compiler-owned stores and publishes one codegen-ready artifact fact per root.\n\nChange:\n- add the lowering job and storage for the native handoff\n- lower structured backend executables, callable entries, dispatch, ABI lanes, effects, and extern marshal classes into the codegen-ready form\n- keep ownership/revision/redefinition behavior consistent with the rest of Compiler2\n\nWhy:\n- shared native codegen needs CPS/codegen-shaped bodies, but those must be derived once inside Compiler2 rather than re-synthesized by old planner helpers\n\nChecks:\n- the lowering job consumes only `BackendProgram(root)`\n- unchanged recompute keeps the same revision\n- quicksort, Enum.reduce, and variadic extern produce the expected native-handoff inventory",
+  "id": "fz-rh2.8.2.3.2",
+  "labels": [],
+  "parent": "fz-rh2.8.2.3",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 native backends: lower BackendProgram to the codegen-ready handoff",
+  "type": "task",
+  "updated_at": "2026-06-08T04:59:17Z"
+}
