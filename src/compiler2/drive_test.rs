@@ -675,6 +675,26 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
         "Enum.reduce should settle runtime protocol dispatch and closure calls in one semantic closure",
     );
 
+    let function_records = functions.all();
+    let defined_function_ids = function_records
+        .iter()
+        .map(|record| record.function_id)
+        .collect::<HashSet<_>>();
+    let lowered_functions = outputs
+        .stops_matching(|job| matches!(job, Job::LowerFunction(_)))
+        .into_iter()
+        .filter_map(|stop| match stop.job {
+            Job::LowerFunction(function) => Some(function),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        lowered_functions
+            .iter()
+            .all(|function| defined_function_ids.contains(function)),
+        "Enum.reduce should only demand lowering for real function definitions, not protocol callback placeholders",
+    );
+
     let main_id = function_id(&functions, "main", 0);
     let enum_reduce_id = function_id_in_module(&functions, &modules, "Enum", "reduce", 3);
     let enum_map_id = function_id_in_module(&functions, &modules, "Enum", "map", 2);
@@ -697,8 +717,9 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
     );
     let bridge_reducer_id = enum_generated[0].function_id;
 
-    let list_impl_reduce = functions
-        .all()
+    let list_impl_reduce = function_records
+        .iter()
+        .cloned()
         .into_iter()
         .find(|record| {
             record.function_ref.name == "reduce"

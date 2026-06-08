@@ -432,9 +432,12 @@ fn resolve_direct_call(
         ),
     };
     let mut latent_executables = Vec::new();
-    if let DirectCallee::Function(function) = callee {
+    if let Some(function) = summary.as_ref().and_then(|summary| match summary.callee {
+        SelectedCallee::Function(function) => Some(function),
+        SelectedCallee::Named { .. } => None,
+    }) {
         let runtime_activations = resolve_runtime_callable_boundary_activations(
-            world, caller, *function, &arg_types, reads, waits, follow_up,
+            world, caller, function, &arg_types, reads, waits, follow_up,
         )?;
         latent_executables.extend(runtime_activations.iter().map(|activation| ExecutableKey {
             activation: activation.key.clone(),

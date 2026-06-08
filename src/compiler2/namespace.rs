@@ -13,14 +13,14 @@ impl BindingId {
 
 pub type Namespace = BindingId;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NamespaceSymbol {
     Module(ModuleId),
     Function(FunctionId),
     Macro(FunctionId),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Binding {
     name: String,
     symbol: NamespaceSymbol,
@@ -30,6 +30,7 @@ struct Binding {
 #[derive(Debug, Default)]
 pub struct NamespaceStore {
     bindings: Vec<Binding>,
+    by_binding: std::collections::HashMap<Binding, Namespace>,
     prelude_head: Namespace,
 }
 
@@ -39,12 +40,17 @@ impl NamespaceStore {
     }
 
     pub fn bind(&mut self, head: Namespace, name: impl Into<String>, symbol: NamespaceSymbol) -> Namespace {
-        let id = BindingId(self.bindings.len() as u32 + 1);
-        self.bindings.push(Binding {
+        let binding = Binding {
             name: name.into(),
             symbol,
             prev: head,
-        });
+        };
+        if let Some(&id) = self.by_binding.get(&binding) {
+            return id;
+        }
+        let id = BindingId(self.bindings.len() as u32 + 1);
+        self.bindings.push(binding.clone());
+        self.by_binding.insert(binding, id);
         id
     }
 

@@ -44,6 +44,34 @@ fn dump_quicksort_compiler2_telemetry_to_jsonl() {
     }
 }
 
+#[test]
+#[ignore = "manual trace harness for one-off Compiler2 telemetry analysis"]
+fn dump_enum_reduce_compiler2_telemetry_to_jsonl() {
+    let path = Path::new("/tmp/fz-compiler2-enum-reduce.jsonl");
+    let tel = ConfiguredTelemetry::new();
+    tel.attach(&[], Box::new(RichJsonlBackend::new_file(path).expect("open log file")));
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
+        text: r#"
+fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
+"#
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    match compiler.drive() {
+        DriveOutcome::Resolved => {}
+        other => panic!("expected resolved Enum.reduce compilation, got {other:?}"),
+    }
+}
+
 struct RichJsonlBackend {
     writer: RefCell<Box<dyn Write>>,
     start: Instant,
