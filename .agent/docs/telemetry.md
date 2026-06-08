@@ -149,6 +149,59 @@ their own `ConfiguredTelemetry`. This is why handlers can share state through
 plain `Rc<RefCell<…>>` (the pattern `Capture` and `StatsHandler` both use: keep
 the typed object, attach a `handler()` that shares its buffer).
 
+## Compiler2 Conventions
+
+Compiler2 uses telemetry as its only observability surface. `Compiler2::new`
+hands one caller-owned sink to `World`, and every job/event under
+`[fz, compiler2, ...]` flows through that single bus.
+
+**Emit raw compiler facts, not formatted strings.** Compiler2 emission sites
+pass existing ids in measurements and existing compiler-owned structures in
+metadata via `opaque(...)`: `Job`, `JobEffects`, `AppliedStep<Job, FactKey>`,
+`FunctionRef`, `CallSiteSummary`, `SemanticClosure`, `MaterializedProgram`,
+`Ty`, and unresolved waits. If an emit site has to build a display string just
+for telemetry, that is the wrong side of the boundary. The ignored JSONL
+harness in `src/compiler2/telemetry_dump_test.rs` is the model: the handler
+decides how to render opaque values, not the compiler.
+
+**Slot revisions are the stable change signal.** Compiler2 state stores and fact
+slots bump revisions only when their aggregate value changes. Handlers and
+tests that care about "did this semantic thing actually change?" should key on
+the reported revision or the published fact/output, not on the mere existence
+of a repeated event. This matters most for joined facts like
+`FactValue::Inputs(Vec<Ty>)`, callsite summaries, semantic closure, and
+materialized programs.
+
+**Local type ids are world-owned facts.** Compiler2 `Ty` values are interned
+`u32` handles owned by `World.types`. They are valid only inside that one
+compiler world. Telemetry therefore treats them like `FunctionId` or `ModuleId`:
+cheap compiler-owned identity, never a printable semantic contract by itself.
+If a handler wants a rendered type, it must derive that rendering on its side.
+
+**Drive and job spans are the execution spine.** `World::drive()` opens one
+`[fz, compiler2, drive]` span. Each popped job opens one
+`[fz, compiler2, job]` span. Successful job spans close with raw `effects` and
+the applied `work_graph` step in metadata; unresolved drives close with the raw
+wait frontier; fatal drives close with the fatal job. There is no extra
+"job_fatal" event and no redundant "fact_published" stream.
+
+**Compiler2 tests should observe telemetry, not world internals.** The common
+captures live in `src/compiler2/drive_test.rs` and assert on emitted
+definitions, work-graph steps, callsite summaries, semantic closure, and
+materialized programs. The quicksort and `Enum.reduce` contracts are the fast
+summary probe; the ignored JSONL dump is the occasional deep trace.
+
+Useful reruns:
+
+- `cargo test --lib compiler2_ -- --nocapture`
+- `cargo test --lib compiler2_quicksort_root_closes_with_a_finite_recursive_frontier -- --exact --nocapture`
+- `cargo test --lib compiler2_materialization_projects_only_the_closed_quicksort_frontier -- --exact --nocapture`
+- `cargo test --lib compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer -- --exact --nocapture`
+- `cargo test --lib compiler2_materialization_freezes_only_the_selected_enum_reduce_path -- --exact --nocapture`
+- `cargo test --lib compiler2::telemetry_dump_test::dump_quicksort_compiler2_telemetry_to_jsonl -- --ignored --exact --nocapture`
+
+The ignored harness writes its log to `/tmp/fz-compiler2-quicksort.jsonl`.
+
 ## Codegen Regression Events
 
 Three codegen events carry stable enough fields to assert on in tests, proving

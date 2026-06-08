@@ -6,5 +6,5 @@ before touching an area where the shape of the system matters.
 Read:
 
 - [agent-docs](docs/agent-docs.md) — writing or revising `.agent/docs` guidance.
-- [compiler2 northstar](../northstar.html) — building the side-by-side incremental fact compiler: `CodeMap`, namespace heads, stable module/function identity, owned facts, the deduped agenda, semantic closure, artifact boundaries, and the worked quicksort / `Enum.reduce` examples.
-- [telemetry](docs/telemetry.md) — adding compile-time telemetry, testing compiler decisions, or measuring performance work.
+- [compiler2 northstar](../northstar.html) — the current Compiler2 world model: lazy `runtime.fz` bootstrap, namespace savepoints, local interned `Types`/`Ty`, joined activation facts, exact semantic closure, artifact boundaries, and the worked quicksort / `Enum.reduce` examples.
+- [telemetry](docs/telemetry.md) — compile-time telemetry internals plus the Compiler2 emission contract, trace harness, and test-observability guidance.

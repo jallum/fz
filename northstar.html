@@ -212,14 +212,15 @@
     <header>
       <h1>Incremental Fact Compiler</h1>
       <p class="lede">
-        The compiler is a world of stable entities and derived facts. Code indexing creates
-        module and function identity. A single deduped agenda fires small rules. Type facts,
-        reachability facts, return-demand facts, and executable-plan facts are co-derived in one
-        root-scoped semantic fixpoint.
+        The compiler is one world of stable ids, immutable source-owned definitions, and derived
+        facts. Code and runtime modules are referenced first and defined later. A single deduped
+        work graph pulls only the surfaces, activations, and artifacts that a submitted root
+        actually reaches.
       </p>
       <p class="rule">
-        Facts change. Changed facts wake rules. Rules publish owned contributions. The compiler is
-        done when the agenda is quiet, not when a phase says it has visited everything.
+        There is one fixpoint loop. Joined activation inputs, return types, direct-call summaries,
+        recursive keying facts, and semantic closure all settle in the same agenda. Materialization
+        starts only after that loop goes quiet.
       </p>
     </header>
 
@@ -229,1077 +230,596 @@
         <div class="card">
           <h3>Goal</h3>
           <p>
-            Produce an answer for a root request while processing only facts reachable from that
-            root. Definitions can exist without becoming semantic or backend work.
+            Submit code, submit a root, and derive exactly one backend-owned answer from the
+            smallest reachable semantic frontier. Unused user functions and unused runtime library
+            functions stay cold.
           </p>
         </div>
         <div class="card">
           <h3>Signal</h3>
           <p>
-            Telemetry shows code indexing, fact changes, agenda coalescing, semantic closure,
-            materialization, ABI derivation, and emission. Tests assert what did not become
-            reachable as much as what did.
+            Tests assert both presence and absence: which modules were defined, which activations
+            existed, which callsites were selected, which roots reclosed after redefinition, and
+            which functions never warmed.
           </p>
         </div>
         <div class="card">
           <h3>Strategy</h3>
           <p>
-            Build from tiny executable contracts. For each example, write the facts that should
-            appear, the jobs that should coalesce, the facts that must remain absent, and the
-            artifact boundary that must not rediscover semantics.
+            Keep stores small and facts honest. One logical fact gets one fact key. Slot revisions
+            bump only when the aggregate value changes. Everything else is a consequence of that.
           </p>
         </div>
       </div>
     </section>
 
     <section>
-      <h2>Principles</h2>
-      <ol>
-        <li><strong>Identity is stable.</strong> Referencing a module or MFA allocates an ID. Later definitions fill or replace the state behind that ID.</li>
-        <li><strong>Parsing indexes declarations.</strong> A code contribution can eagerly produce expanded function ASTs without lowering bodies or resolving internal calls.</li>
-        <li><strong>Facts are separate from entities.</strong> A function record says what code AST defines it. Root-scoped facts say how that function behaves in a particular semantic closure.</li>
-        <li><strong>Rules are the unit of work.</strong> There is no global type pass and no global planning pass. There are small rule instances keyed by the facts they can derive.</li>
-        <li><strong>Agenda entries coalesce.</strong> A rule key can be enqueued many times while pending, but it runs once. After it runs, later fact changes may enqueue it again.</li>
-        <li><strong>Derived outputs are owned.</strong> Each rule owns its contributions. When inputs change, the rule recomputes and replaces its old contributions, allowing facts to shrink after redefinition.</li>
-        <li><strong>Semantics close before artifacts.</strong> Materialization, ABI derivation, and codegen consume a closed semantic fact set. They cannot ask type questions or discover new callees.</li>
-      </ol>
+      <h2>Core Shape</h2>
+      <p>
+        The world owns all durable identity domains. Definitions live in stores. Recomputable
+        answers live in the work graph. Types are not an external service; they are one more
+        compiler-owned store.
+      </p>
+      <pre><code>struct World {
+    tel: Telemetry,
+
+    code: CodeMap,
+    modules: ModuleMap,
+    functions: FunctionMap,
+    namespaces: NamespaceStore,
+    types: Types,
+    roots: RootMap,
+
+    bodies: LoweredBodyMap,
+    guard_dispatches: GuardDispatchMap,
+    entry_dispatches: EntryDispatchMap,
+    recursive: RecursiveMap,
+    dispatch_masks: DispatchMaskMap,
+
+    activations: ActivationMap,
+    callsites: CallSiteMap,
+    semantic_closures: SemanticClosureMap,
+    artifacts: MaterializedProgramMap,
+
+    work_graph: Scheduler&lt;Job, FactKey&gt;,
+}</code></pre>
+      <div class="grid">
+        <div class="card">
+          <h3>Stable ids first</h3>
+          <p>
+            <code>CodeId</code>, <code>ModuleId</code>, <code>FunctionId</code>, and
+            <code>RootId</code> are minted immediately. Referencing a module or MFA before
+            definition creates a placeholder instead of a failure.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Local type world</h3>
+          <p>
+            <code>World.types</code> owns one compiler-local <code>Types</code> store. Every
+            <code>Ty</code> is an interned <code>u32</code> handle meaningful only inside that one
+            world. Shared helper modules talk to it through trait compatibility at the seam.
+          </p>
+        </div>
+        <div class="card">
+          <h3>No parallel phase graph</h3>
+          <p>
+            The only scheduler abstraction is the work graph. The loop reaches a fixpoint because
+            job keys coalesce, fact slots join contributions, and changed revisions wake exactly the
+            jobs that read or waited on those slots.
+          </p>
+        </div>
+      </div>
     </section>
 
     <section>
-      <h2>World Stores</h2>
+      <h2>Source, Scope, And Runtime Bootstrap</h2>
       <p>
-        Stores own durable identity. Facts describe what is currently known about those identities.
-        The stores are deliberately small; most compiler knowledge lives in fact tables.
+        Parsing and top-level discovery are eager only at the code-contribution boundary.
+        <code>IndexCode</code> parses one code submission, stores top-level items on the code
+        record, and discovers nested module ids. It does not define functions, lower bodies, or
+        pull imports.
       </p>
-      <pre><code>struct World {
-    code: CodeMap,
-    namespaces: NamespaceStore,
-    modules: ModuleMap,
-    functions: FunctionMap,
-    roots: RootMap,
-
-    lowered: LoweredBodyMap,
-    guard_dispatches: GuardDispatchMap,
-    entry_dispatches: EntryDispatchMap,
-    facts: FactTable,
-    agenda: Agenda,
-    deps: DependencyIndex,
-    telemetry: TelemetrySink,
+      <pre><code>enum Job {
+    IndexCode(CodeId),
+    ScopeCode(CodeId),
+    DefineModule(ModuleId),
+    LowerFunction(FunctionId),
+    ReifyGuardDispatch(FunctionId),
+    PlanEntryDispatch(FunctionId),
+    DeriveRecursive(FunctionId),
+    DeriveDispatchMask(FunctionId),
+    SeedRoot(RootId),
+    AnalyzeActivation(ActivationKey),
+    CheckSemanticClosure(RootId),
+    MaterializeRoot(RootId),
 }</code></pre>
+      <p>
+        <code>ScopeCode</code> then walks the parsed items in source order. The first pass reserves
+        local functions and child modules so later definitions can reference them. The second pass
+        applies order-dependent items: aliases, imports, function definitions, protocol surfaces,
+        and child-module scope points.
+      </p>
+      <p>
+        The runtime prelude is ordinary code, not a mode. <code>World::new</code> stores
+        <code>runtime:runtime.fz</code> as compiler-owned code text and creates named runtime module
+        placeholders. No lexing or parsing happens yet. The first non-runtime <code>ScopeCode</code>
+        waits on <code>CodeScoped(runtime_prelude)</code>, scopes that source into a namespace head,
+        saves the resulting <code>prelude_head</code>, and then scopes user code against it.
+      </p>
+      <pre><code>runtime.fz stored in CodeMap
+            │
+            ├─ no lexer/parser work at construction time
+            │
+first user ScopeCode(code)
+            │
+            ├─ wait on CodeScoped(runtime_prelude)
+            ├─ ScopeCode(runtime_prelude)
+            ├─ save NamespaceStore.prelude_head()
+            └─ ScopeCode(user_code) with that head as the base namespace</code></pre>
+      <p>
+        Runtime modules warm lazily too. Referencing <code>Enum.reduce/3</code> allocates ids
+        immediately. The runtime source containing <code>Enum</code> is only submitted and indexed
+        if a demanded scope, import, protocol edge, or call edge requires it.
+      </p>
+    </section>
 
-      <h3>Code And Function AST</h3>
+    <section>
+      <h2>Namespace Model</h2>
       <p>
-        Code parsing and top-level indexing are allowed to be eager for a code contribution.
-        The output is identity plus already-expanded function AST owned by the definition, not an
-        interned AST arena and not lowered IR. By the time a function AST is recorded, all relevant
-        macro expansion for that function has already happened.
+        A namespace is a linked list with integer savepoints. <code>BindingId(0)</code> is the end
+        sentinel. Pushing a binding returns a new head. Leaving a scope means restoring an older
+        head. Lookup walks backward and the first matching binding wins.
       </p>
-      <p>
-        Dispatch planning is its own owned layer. A named helper that can be reified into
-        <code>PatternGuardExpr</code> plus nested <code>PatternDispatchPlan</code> becomes a
-        reusable dispatch fact; there is no separate <code>defguard</code> surface and no
-        receive-only matcher path.
-      </p>
-      <pre><code>enum CodeState {
-    Added {
-        code: CodeId,
-        default_module: ModuleId,
-    },
-    Indexed {
-        code: CodeId,
-        modules: Vec&lt;ModuleId&gt;,
-        functions: Vec&lt;FunctionId&gt;,
-        macros: Vec&lt;FunctionId&gt;,
-    },
-    Failed,
-}
-
-enum FunctionDef {
-    Code {
-        visibility: Visibility,
-        clauses: Vec&lt;ClauseAst&gt;,
-        namespace: Namespace,
-        code: CodeId,
-    },
-    Macro {
-        visibility: Visibility,
-        clauses: Vec&lt;ClauseAst&gt;,
-        namespace: Namespace,
-        code: CodeId,
-    },
-    Intrinsic {
-        signature: Signature,
-        op: IntrinsicOp,
-    },
-    Generated {
-        owner: FunctionId,
-        body: FunctionAst,
-        namespace: Namespace,
-    },
-}</code></pre>
-
-      <p>
-        Runtime and built-in package libraries are not special code classes. They enter through
-        the same code indexing and function definition path as user code. Some definitions may be
-        intrinsic leaves, but the code that contributes them is ordinary.
-      </p>
-      <p>
-        AST handles are not part of the baseline design. Interning syntax has a cost: allocation,
-        lookup, lifetime management, and indirection. Add an AST arena only for a measured reason,
-        such as a macro-generated tree shared by many definitions. The default is direct ownership
-        by <code>FunctionDef</code>.
-      </p>
-
-      <h3>Namespaces</h3>
-      <p>
-        Name resolution is an append-only namespace chain. A namespace head is an integer
-        savepoint into that chain. Entering a scope saves the current head. Defining or importing a
-        name pushes a binding and returns the new head. Leaving the scope restores the saved head.
-        Lookup walks from the current head backward; the first matching binding wins.
-      </p>
-      <pre><code>type Namespace = Option&lt;BindingId&gt;;
+      <pre><code>type Namespace = BindingId;
 
 struct NamespaceStore {
-    bindings: Vec&lt;NamespaceBinding&gt;,
+    bindings: Vec&lt;Binding&gt;,
     prelude_head: Namespace,
 }
 
-struct NamespaceBinding {
+struct Binding {
+    name: String,
+    symbol: NamespaceSymbol,
     prev: Namespace,
-    name: Symbol,
-    value: BindingValue,
-    span: Span,
 }
 
-enum BindingValue {
+enum NamespaceSymbol {
     Module(ModuleId),
     Function(FunctionId),
     Macro(FunctionId),
-    Type(TypeId),
-    Value(LocalId),
-}
-
-fn push(ns: &amp;mut NamespaceStore, head: Namespace, binding: NamespaceBinding)
-    -&gt; Namespace
-{
-    let id = BindingId(ns.bindings.len());
-    ns.bindings.push(binding.with_prev(head));
-    Some(id)
-}
-
-fn lookup(ns: &amp;NamespaceStore, mut head: Namespace, name: Symbol, kind: BindingKind)
-    -&gt; Option&lt;BindingValue&gt;
-{
-    while let Some(id) = head {
-        let binding = &amp;ns.bindings[id];
-        if binding.name == name &amp;&amp; binding.value.kind() == kind {
-            return Some(binding.value);
-        }
-        head = binding.prev;
-    }
-    None
 }</code></pre>
       <p>
-        The prelude is not a code phase or scheduler mode. It is just the namespace head saved
-        after bootstrap definitions are installed: compiler forms, intrinsic leaves, default
-        imports, and any package-provided names that should be visible by default. User, runtime,
-        and built-in package code still enters through ordinary code indexing; visible
-        names are namespace bindings.
+        Imports and aliases are therefore ordinary scope mutations. Exact
+        <code>import ..., only:</code> clauses bind module/function references immediately without
+        forcing the provider surface. Plain <code>import</code> waits until the provider module is
+        actually defined so exports can be copied correctly and missing imports can surface as
+        diagnostics when the drive goes quiet.
       </p>
-
-      <h3>Modules And Functions</h3>
-      <p>
-        Maps own lookup and reverse lookup. The slot state does not carry its ID. Anonymous and
-        generated functions can exist without an MFA.
-      </p>
-      <pre><code>struct ModuleMap {
-    states: Vec&lt;ModuleState&gt;,
-    by_name: HashMap&lt;ModuleName, ModuleId&gt;,
-    name_of: Vec&lt;Option&lt;ModuleName&gt;&gt;,
-    rev: Vec&lt;Revision&gt;,
-}
-
-struct FunctionMap {
-    states: Vec&lt;FunctionState&gt;,
-    by_mfa: HashMap&lt;Mfa, FunctionId&gt;,
-    mfa_of: Vec&lt;Option&lt;Mfa&gt;&gt;,
-    rev: Vec&lt;Revision&gt;,
-}
-
-enum FunctionState {
-    Referenced { refs: Vec&lt;Span&gt; },
-    Defined { def: FunctionDef },
-    Failed,
-}</code></pre>
     </section>
 
     <section>
-      <h2>Facts</h2>
+      <h2>Facts And Revisions</h2>
       <p>
-        A fact key names a table slot. A rule contributes a value to one or more fact slots. The
-        aggregate value is the join of all current contributions for that key. Most slots have one
-        owner; lattice slots such as type facts may have many contributing rules.
+        A job owns contributions. A fact slot owns the current aggregate value plus a revision.
+        The revision is the wake-up signal. There is no separate fingerprint layer.
       </p>
-      <pre><code>struct FactSlot {
-    aggregate: FactValue,
-    fingerprint: Fingerprint,
-    contributions: HashMap&lt;JobKey, FactValue&gt;,
+      <pre><code>struct FactSlot&lt;Job&gt; {
+    value: Option&lt;FactValue&gt;,
+    revision: u64,
+    contributions: HashMap&lt;Job, FactValue&gt;,
 }
 
-struct FactChange {
-    key: FactKey,
-    old_fingerprint: Fingerprint,
-    new_fingerprint: Fingerprint,
+enum FactValue {
+    Presence(u64),
+    Inputs(Vec&lt;Ty&gt;),
 }</code></pre>
-
-      <h3>Fact Families</h3>
+      <p>
+        <code>Presence</code> joins by <code>max</code>. <code>Inputs</code> joins pointwise with
+        <code>Types::refine_widen</code>, then alpha-normalizes through the world-owned type store.
+        This is the whole trick: activation inputs settle by the same mechanism that tracks all
+        other fact replacement.
+      </p>
       <table>
         <thead>
           <tr>
             <th>Family</th>
-            <th>Examples</th>
+            <th>Current facts</th>
             <th>Meaning</th>
           </tr>
         </thead>
         <tbody>
           <tr>
-            <td>Definition</td>
-            <td><code>CodeIndexed</code>, <code>NamespaceBinding</code>, <code>ModuleDefined</code>, <code>FunctionDefined</code>, <code>LoweredBody</code></td>
-            <td>Root-independent facts about code, identity, and one lowered function body.</td>
+            <td>Source surface</td>
+            <td><code>CodeIndexed</code>, <code>CodeScoped</code>, <code>ModuleIndexed</code>, <code>ModuleDefined</code>, <code>FunctionDefined</code></td>
+            <td>Discovery and scope are separate. Indexing finds ids. Scoping/definition publishes the usable surface.</td>
+          </tr>
+          <tr>
+            <td>Lowering and dispatch</td>
+            <td><code>LoweredBody</code>, <code>GuardDispatch</code>, <code>EntryDispatch</code>, <code>Recursive</code>, <code>DispatchMask</code></td>
+            <td>Reusable function facts that make semantic keying and activation analysis deterministic.</td>
           </tr>
           <tr>
             <td>Root seed</td>
-            <td><code>RootEntry(root)</code>, <code>Activation(root, fn, input)</code>, <code>Executable(root, fn, input, need)</code></td>
-            <td>The semantic closure starts from a root and grows only through reachable rules.</td>
-          </tr>
-          <tr>
-            <td>Type</td>
-            <td><code>ValueType</code>, <code>ArgTypes</code>, <code>ReturnType</code>, <code>DeadArm</code>, <code>ProtocolReceiver</code></td>
-            <td>Facts usually associated with type inference. They are not a separate phase.</td>
-          </tr>
-          <tr>
-            <td>Planning</td>
-            <td><code>ReturnNeed</code>, <code>SelectedCallee</code>, <code>ReachableBlock</code>, <code>CallEdge</code>, <code>CallableEntry</code>, <code>ReturnContract</code>, <code>Effect</code></td>
-            <td>Facts usually associated with demand planning. They are co-derived with type facts.</td>
-          </tr>
-          <tr>
-            <td>Closure</td>
-            <td><code>SemanticClosed(root, epoch)</code></td>
-            <td>A fingerprinted statement that root-scoped semantic facts are quiescent and complete.</td>
-          </tr>
-          <tr>
-            <td>Artifact</td>
-            <td><code>MaterializedProgram</code>, <code>AbiReady</code>, <code>Emitted</code></td>
-            <td>Backend inputs and outputs derived only after semantic closure.</td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
-
-    <section>
-      <h2>The Agenda</h2>
-      <p>
-        The agenda is one queue plus one set. The set prevents duplicate pending work. Popping a
-        job removes it from the set, so a later fact change can enqueue it again.
-      </p>
-      <pre><code>struct Agenda {
-    queue: VecDeque&lt;JobKey&gt;,
-    queued: HashSet&lt;JobKey&gt;,
-}
-
-fn enqueue(agenda: &amp;mut Agenda, job: JobKey) {
-    if agenda.queued.insert(job) {
-        agenda.queue.push_back(job);
-    }
-}
-
-fn pop(agenda: &amp;mut Agenda) -&gt; Option&lt;JobKey&gt; {
-    let job = agenda.queue.pop_front()?;
-    agenda.queued.remove(&amp;job);
-    Some(job)
-}</code></pre>
-
-      <h3>Job Keys</h3>
-      <p>
-        Jobs name rule instances, not output facts. Several jobs may contribute to the same fact
-        family, and one job may publish several facts.
-      </p>
-      <pre><code>enum JobKey {
-    IndexCode(CodeId),
-    LowerFunction(FunctionId),
-
-    SeedRoot(RootId),
-    AnalyzeActivation(ActivationKey),
-    AnalyzeCallSite(CallSiteKey),
-    ResolveDirectCall(CallSiteKey),
-    ResolveProtocolCall(CallSiteKey),
-    DeriveReturnNeed(CallSiteKey),
-    DeriveExecutable(CallSiteKey),
-    PlanExecutable(ExecutableKey),
-    CheckSemanticClosure(RootId),
-
-    Materialize(RootId, SemanticEpoch),
-    DeriveAbi(RootId, SemanticEpoch),
-    Emit(RootId, Target, SemanticEpoch),
-}</code></pre>
-    </section>
-
-    <section>
-      <h2>Subscriptions And Waiters</h2>
-      <p>
-        A running job records what it read and what it could not read yet. Reads become
-        subscriptions. Missing required facts become waiters. When a fact changes or appears, only
-        interested jobs are enqueued.
-      </p>
-      <pre><code>struct DependencyIndex {
-    reads: HashMap&lt;JobKey, HashSet&lt;FactKey&gt;&gt;,
-    subscribers: HashMap&lt;FactKey, HashSet&lt;JobKey&gt;&gt;,
-    waits: HashMap&lt;JobKey, HashSet&lt;FactPattern&gt;&gt;,
-    waiters: HashMap&lt;FactPattern, HashSet&lt;JobKey&gt;&gt;,
-    outputs: HashMap&lt;JobKey, HashSet&lt;FactKey&gt;&gt;,
-}</code></pre>
-
-      <pre><code>while let Some(job) = agenda.pop() {
-    let outcome = track_reads_and_waits(|| run_rule(world, job));
-
-    if let Some(error) = outcome.fatal {
-        telemetry.emit_diagnostic(error, job);
-        return Fatal;
-    }
-
-    deps.replace_reads(job, outcome.reads);
-    deps.replace_waits(job, outcome.waits);
-
-    let changes = facts.replace_contributions(job, outcome.outputs);
-    deps.replace_outputs(job, changes.output_keys);
-
-    for change in changes.changed_slots {
-        for subscriber in deps.subscribers(change.key) {
-            agenda.enqueue(subscriber);
-        }
-        for waiter in deps.waiters_matching(change.key) {
-            agenda.enqueue(waiter);
-        }
-        for root in roots_touched_by(change.key) {
-            agenda.enqueue(CheckSemanticClosure(root));
-        }
-    }
-
-    for root in outcome.completed_semantic_roots {
-        agenda.enqueue(CheckSemanticClosure(root));
-    }
-}</code></pre>
-
-      <p>
-        Replacing contributions is what makes redefinition tractable. If a function body changes
-        and a rule no longer derives an old call edge, that old contribution is removed. The
-        aggregate fact changes, subscribers wake, and the blast radius propagates only as far as
-        fingerprints change.
-      </p>
-      <p>
-        Errors are not facts. If any job returns a fatal error, the engine emits a diagnostic event
-        through telemetry and stops the run. There is no separate diagnostics store to reconcile at
-        closure time.
-      </p>
-    </section>
-
-    <section>
-      <h2>Rule Strata</h2>
-      <p>
-        Strata are write boundaries, not whole-program passes. The same agenda drives them all.
-        Artifact rules are gated by <code>SemanticClosed</code>; semantic rules never wait for codegen.
-      </p>
-
-      <table>
-        <thead>
-          <tr>
-            <th>Stratum</th>
-            <th>Rules</th>
-            <th>Publishes</th>
-            <th>Cannot Do</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>Definition</td>
-            <td>Index source, expand top-level forms, allocate placeholders, define modules/functions/macros/intrinsics.</td>
-            <td>Code/module/function facts, namespace bindings, and owned expanded function AST.</td>
-            <td>Lower every body or infer semantics.</td>
-          </tr>
-          <tr>
-            <td>Body</td>
-            <td>Lower one demanded function body from its owned expanded AST and frozen namespace head.</td>
-            <td>Lowered body, local value IDs, callsite IDs, generated function definitions.</td>
-            <td>Resolve all possible callees or decide backend representation.</td>
-          </tr>
-          <tr>
-            <td>Dispatch</td>
-            <td>Reify dispatch-pure helpers and ordered entry matching into shared dispatch plans.</td>
-            <td><code>GuardDispatch(function)</code> and <code>EntryDispatch(function)</code> facts, plus later body-site dispatch facts.</td>
-            <td>Type bodies, plan executables, or emit code.</td>
+            <td><code>RootEntry</code>, <code>Activation</code>, <code>Executable</code></td>
+            <td>The root grows a frontier of demanded activations and demanded executable shapes.</td>
           </tr>
           <tr>
             <td>Semantic</td>
-            <td>Analyze activations, callsites, protocol dispatch, return needs, executable specs, blocks, effects, and callable entries.</td>
-            <td>Type facts and planning facts in one root-scoped fixpoint.</td>
-            <td>Emit code or depend on artifact facts.</td>
+            <td><code>ActivationAnalyzed</code>, <code>ReturnType</code>, <code>CallSiteSummary</code></td>
+            <td>Type and plan facts are one family. A callsite summary carries selected callee, joined input types, executable need, and return type together.</td>
+          </tr>
+          <tr>
+            <td>Closure</td>
+            <td><code>SemanticClosed</code></td>
+            <td>One root-scoped statement that the reachable frontier is complete for the current exact dependency snapshot.</td>
           </tr>
           <tr>
             <td>Artifact</td>
-            <td>Materialize, derive ABI, emit interpreter/JIT/AOT artifacts.</td>
-            <td>Executable artifacts keyed by root and semantic epoch.</td>
-            <td>Discover new semantic reachability, callee selection, types, or effects.</td>
+            <td><code>MaterializedProgram</code></td>
+            <td>One backend-owned snapshot projected from the closed semantic frontier.</td>
           </tr>
         </tbody>
       </table>
-    </section>
-
-    <section>
-      <h2>Semantic Rules</h2>
       <p>
-        This is the important collapse: type inference and demand planning are rule families in the
-        same semantic stratum. Their outputs can feed each other until the agenda is quiet.
-      </p>
-
-      <table>
-        <thead>
-          <tr>
-            <th>Rule</th>
-            <th>Reads</th>
-            <th>Publishes</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><code>SeedRoot</code></td>
-            <td><code>RootEntry(root)</code></td>
-            <td>Publishes the root entry fact and schedules the first closure walk once the entry definition exists.</td>
-          </tr>
-          <tr>
-            <td><code>AnalyzeActivation</code></td>
-            <td><code>Activation</code>, <code>FunctionDefined</code>, <code>LoweredBody</code>, <code>EntryDispatch(function)</code>, and any nested guard-dispatch facts it references.</td>
-            <td>Pattern reachability, value types, callsite instances, argument facts, return type contribution.</td>
-          </tr>
-          <tr>
-            <td><code>AnalyzeCallSite</code></td>
-            <td>Callsite form, local value types, lexical env facts.</td>
-            <td>Direct callee candidates, protocol receiver facts, callable-value facts, initial return needs.</td>
-          </tr>
-          <tr>
-            <td><code>ResolveDirectCall</code></td>
-            <td>MFA reference, argument facts, function definition state.</td>
-            <td><code>SelectedCallee</code> and callee <code>Activation</code>.</td>
-          </tr>
-          <tr>
-            <td><code>ResolveProtocolCall</code></td>
-            <td>Protocol receiver type, protocol impl registry, argument facts.</td>
-            <td>Selected implementation, protocol telemetry, implementation activation.</td>
-          </tr>
-          <tr>
-            <td><code>DeriveReturnNeed</code></td>
-            <td>Continuation shape: value use, destructure, branch test, tail return, backend root target.</td>
-            <td>Return demand such as <code>Value</code>, <code>TupleFields(n)</code>, <code>BoolTest</code>, or <code>NoValue</code>.</td>
-          </tr>
-          <tr>
-            <td><code>DeriveExecutable</code></td>
-            <td>Selected callee, argument facts, return need.</td>
-            <td><code>Executable(root, fn, input, need)</code> and caller-to-callee executable edge.</td>
-          </tr>
-          <tr>
-            <td><code>PlanExecutable</code></td>
-            <td><code>Executable</code>, lowered body, value types, return needs, selected call edges.</td>
-            <td>Reachable blocks, effects, return contracts, callable entries, extern marshal obligations.</td>
-          </tr>
-          <tr>
-            <td><code>CheckSemanticClosure</code></td>
-            <td>Root entry, activation analyses, return facts, selected callees, return needs.</td>
-            <td>Republished root-owned <code>Activation</code> / <code>Executable</code> facts and <code>SemanticClosed(root, epoch)</code> when the semantic frontier is stable.</td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
-
-    <section>
-      <h2>Closure And Artifacts</h2>
-      <p>
-        <code>SemanticClosed(root, epoch)</code> is the only semantic-to-backend handoff. The epoch
-        fingerprints the closed set and the base revisions it read, including the lowered-body
-        revisions for every closed executable. Artifact jobs are ordinary agenda jobs, but their
-        wakeup signal is the closed fact itself, not mid-fixpoint semantic churn.
-      </p>
-      <pre><code>SemanticClosed(root, epoch)
-  -&gt; MaterializedProgram(root, epoch)
-  -&gt; AbiReady(root, epoch)
-  -&gt; Emitted(root, target, epoch)</code></pre>
-
-      <p>
-        <code>MaterializedProgram</code> is a root-owned copy of the closed executable set: one
-        entry executable, one pruned lowered body per reachable <code>ExecutableKey</code>, and one
-        frozen callsite summary per reachable callsite. Materialization may clone, fold, inline
-        safe known calls, fuse blocks, and prune dead edges. It must not publish semantic facts.
-        If materialization needs a closed constituent that the closure claimed was available, the
-        compiler reports an incomplete-semantic-plan diagnostic.
+        One logical fact gets one key. There is no split <code>SelectedCallee</code> /
+        <code>ReturnNeed</code> pair anymore. Consumers read one <code>CallSiteSummary</code>
+        surface and react when that one revision changes.
       </p>
     </section>
 
     <section>
-      <h2>Redefinition</h2>
+      <h2>Work Graph</h2>
       <p>
-        Redefinition is not special. A new code contribution changes definition facts. Jobs that
-        read old fingerprints wake. They replace their owned outputs. The blast radius stops where
-        aggregate fact fingerprints stop changing.
+        The work graph is one agenda, one fact table, and one dependency index. Jobs record what
+        they read, what they could not read yet, what they output, and what follow-up jobs should
+        be enqueued.
       </p>
-      <pre><code>old FunctionDefined(foo/0) fingerprint = A
-new FunctionDefined(foo/0) fingerprint = B
+      <pre><code>struct Scheduler&lt;Job, Fact&gt; {
+    agenda: Agenda&lt;Job&gt;,
+    facts: FactTable&lt;Job, Fact&gt;,
+    deps: DependencyIndex&lt;Job, Fact&gt;,
+}
 
-changed(FunctionDefined(foo/0))
-  -&gt; wake subscribers that read foo/0's definition
-  -&gt; recompute their owned outputs
-  -&gt; wake downstream subscribers only if aggregates changed</code></pre>
+struct Agenda&lt;Job&gt; {
+    queue: VecDeque&lt;Job&gt;,
+    queued: HashSet&lt;Job&gt;,
+}</code></pre>
+      <pre><code>while let Some(job) = work_graph.pop() {
+    let effects = run(job)?;
+    let step = work_graph.complete(job, effects);
 
+    changed facts wake:
+      - subscribers that previously read them
+      - waiters that previously blocked on them
+
+    follow-up jobs are deduped into the same agenda
+}</code></pre>
       <p>
-        If <code>foo/0</code> was defined but never reachable from a root, redefining it wakes no
-        semantic work for that root. If a reachable caller starts calling <code>foo/0</code>, the
-        callsite rule derives the first activation and executable facts for <code>foo/0</code>.
+        The outer drive loop has only three outcomes:
       </p>
-    </section>
-
-    <section>
-      <h2>Worked Example: quicksort + foo</h2>
-      <p>
-        Start with <code>fixtures/quicksort/input.fz</code> and add one extra uncalled function:
-      </p>
-      <pre><code>fn foo(), do: 42</code></pre>
-      <p>
-        The stress question is whether <code>foo/0</code> becomes visible without becoming
-        reachable. It should be defined and available to future references, but it should not be
-        lowered, semantically analyzed, materialized, or emitted for <code>main/0</code>.
-      </p>
-
-      <div class="step">
-        <h3><span class="num">01</span>Indexing defines five functions</h3>
-        <p>
-          <code>IndexCode(quicksort)</code> parses the code contribution and indexes top-level function
-          declarations. It publishes function definitions with owned expanded AST:
-        </p>
-        <pre><code>FunctionDefined(append/2, clauses = Ast[...])
-FunctionDefined(partition/4, clauses = Ast[...])
-FunctionDefined(qsort/1, clauses = Ast[...])
-FunctionDefined(main/0, clauses = Ast[...])
-FunctionDefined(foo/0, clauses = Ast[...])</code></pre>
-        <p>
-          No body has been lowered yet. In particular, there is no
-          <code>LoweredBody(foo/0)</code>, no <code>Activation(root, foo/0, [])</code>, and no
-          <code>Executable(root, foo/0, [], Value)</code>.
-        </p>
+      <div class="grid">
+        <div class="card">
+          <h3><span class="ok">Resolved</span></h3>
+          <p>The agenda is empty and there are no unresolved waits.</p>
+        </div>
+        <div class="card">
+          <h3><span class="warn">Unresolved</span></h3>
+          <p>The agenda is empty but the dependency index still has exact waits. World-derived diagnostics are emitted from that frontier.</p>
+        </div>
+        <div class="card">
+          <h3><span class="warn">Fatal</span></h3>
+          <p>A job hit a coarse failure. Diagnostics already flowed through telemetry. The drive stops immediately.</p>
+        </div>
       </div>
+    </section>
 
-      <div class="step">
-        <h3><span class="num">02</span>The root seeds one semantic island</h3>
-        <p>
-          The host asks for JIT execution of <code>main/0</code>. That creates a root and enqueues
-          artifact work. Artifact work blocks on semantic closure; it does not drive semantic
-          discovery itself.
-        </p>
-        <pre><code>RootEntry(root, main/0, input = [], target = jit)
+    <section>
+      <h2>Activation Keys And The Local Type World</h2>
+      <p>
+        <code>Ty</code> is an interned <code>u32</code> id inside <code>World.types</code>. Equal
+        structure inside one world means equal ids. That lets activation keys, callsite summaries,
+        and fact joins lean on exact id equality instead of deep structural hashing.
+      </p>
+      <pre><code>#[repr(transparent)]
+struct Ty(u32);
 
-SeedRoot(root) publishes:
+struct Types {
+    interner: TypeInterner,
+    comparisons: ComparisonCache,
+}</code></pre>
+      <p>
+        Activation keying waits for two function facts:
+      </p>
+      <ul>
+        <li><code>Recursive(function)</code> tells keying whether recursive non-dispatch inputs should collapse by convergence class.</li>
+        <li><code>DispatchMask(function)</code> tells keying which entry inputs matter for dispatch at all.</li>
+      </ul>
+      <p>
+        Only after both exist does <code>World::activation_key</code> canonicalize inputs through:
+        <code>widen_for_recursive_spec_key</code>, optional convergence-class collapse, and final
+        <code>alpha_normalize_vars</code>. That is what keeps recursion finite without a second
+        hidden type loop.
+      </p>
+    </section>
+
+    <section>
+      <h2>Semantic Closure And Materialization</h2>
+      <p>
+        <code>AnalyzeActivation</code> publishes direct-call summaries, reached callee activations,
+        executable needs, a joined return type, and the set of reachable clauses for one rooted
+        activation. <code>CheckSemanticClosure</code> does not invent new semantic facts. It only
+        walks the already-published frontier, proves every reachable dependency is present, and then
+        records an exact dependency snapshot plus the closed root frontier.
+      </p>
+      <pre><code>SemanticClosed(root) depends on:
   RootEntry(root)
+  FunctionDefined(entry)
+  Activation(...)
+  Executable(...)
+  ActivationAnalyzed(...)
+  ReturnType(...)
+  LoweredBody(...)
+  CallSiteSummary(...)
 
-CheckSemanticClosure(root) then owns the root frontier:
-  Activation(root, main/0, [])
-  Executable(root, main/0, [], Value)</code></pre>
-        <p>
-          These facts enqueue semantic jobs for <code>main/0</code> only:
-        </p>
-        <pre><code>LowerFunction(main/0)
-AnalyzeActivation(root, main/0, [])
-PlanExecutable(root, main/0, [], Value)</code></pre>
-      </div>
-
-      <div class="step">
-        <h3><span class="num">03</span>Main pulls only its reachable references</h3>
-        <p>
-          <code>LowerFunction(main/0)</code> reads the owned expanded AST for <code>main/0</code> and
-          publishes a lowered body with callsites for:
-        </p>
-        <pre><code>qsort/1
-dbg/1 intrinsic
-Process.heap_alloc_stats/0
-map indexing
-Kernel.+/2</code></pre>
-        <p>
-          The list literal gives the <code>qsort/1</code> callsite a precise argument fact:
-        </p>
-        <pre><code>ValueType(root, main, literal_list) = nonempty_list(int)
-ArgTypes(root, callsite qsort) = [nonempty_list(int)]</code></pre>
-        <p>
-          <code>AnalyzeActivation(main)</code> publishes the direct call edge, and the next closure
-          walk extends the rooted frontier:
-        </p>
-        <pre><code>SelectedCallee(root, qsort callsite) = qsort/1
-Activation(root, qsort/1, [nonempty_list(int)])
-Executable(root, qsort/1, [nonempty_list(int)], Value)</code></pre>
-        <p>
-          <code>foo/0</code> is still only a definition fact. No rule has read it.
-        </p>
-      </div>
-
-      <div class="step">
-        <h3><span class="num">04</span>Recursive calls coalesce in the agenda</h3>
-        <p>
-          Lowering and analyzing <code>qsort/1</code> discovers <code>partition/4</code>,
-          <code>append/2</code>, and two recursive calls to <code>qsort/1</code>:
-        </p>
-        <pre><code>append(qsort(lo), [p | qsort(hi)])</code></pre>
-        <p>
-          Both recursive calls may try to enqueue the same canonical activation job after their
-          input shapes join to <code>list(int)</code>. The agenda keeps one pending copy:
-        </p>
-        <pre><code>enqueue(AnalyzeActivation(root, qsort/1, [list(int)]))  // inserted
-enqueue(AnalyzeActivation(root, qsort/1, [list(int)]))  // coalesced
-enqueue(AnalyzeActivation(root, qsort/1, [list(int)]))  // coalesced</code></pre>
-        <p>
-          After the job runs, a later change to an input fact can enqueue it again. Coalescing only
-          suppresses duplicate pending work; it never suppresses changed work.
-        </p>
-      </div>
-
-      <div class="step">
-        <h3><span class="num">05</span>Type and planning facts converge together</h3>
-        <p>
-          <code>partition/4</code> is the recursive type stress point. Its input-list shape drives
-          clause selection; its accumulator values should not create an unbounded product of
-          precise list instances. The type contribution joins accumulator slots to the list family
-          while preserving empty-list versus cons-list dispatch precision.
-        </p>
-        <pre><code>ReturnType(root, partition/4, [list(int), int, list(int), list(int)])
-  = tuple(list(int), list(int))</code></pre>
-        <p>
-          The destructure in <code>qsort/1</code> is a planning stress point:
-        </p>
-        <pre><code>{lo, hi} = partition(p, rest, [], [])</code></pre>
-        <p>
-          The continuation shape publishes:
-        </p>
-        <pre><code>ReturnNeed(root, partition callsite) = TupleFields(2)
-Executable(root, partition/4, [...], TupleFields(2))
-ReturnContract(root, partition executable) = tuple fields delivered separately</code></pre>
-        <p>
-          These are semantic facts derived in the same agenda drain as the return type. Codegen
-          will later consume them; it will not rediscover tuple-field delivery.
-        </p>
-      </div>
-
-      <div class="step">
-        <h3><span class="num">06</span>Runtime references are pulled by callsites</h3>
-        <p>
-          <code>Process.heap_alloc_stats/0</code>, <code>dbg/1</code>, map access, and arithmetic
-          operators enter only because <code>main/0</code> has reachable callsites using them.
-          Direct <code>dbg(x)</code> is an intrinsic effect returning <code>x</code>; it should not
-          make a runtime <code>Kernel.dbg/1</code> wrapper live unless the program takes it as a
-          function value.
-        </p>
-      </div>
-
-      <div class="step">
-        <h3><span class="num">07</span>Semantic closure excludes foo</h3>
-        <p>
-          The root closes when no root-scoped semantic jobs are queued, no required semantic
-          waiters remain unresolved, and the semantic fingerprint is stable.
-        </p>
-        <pre><code>SemanticClosed(root, epoch Q)</code></pre>
-        <p>
-          The closed semantic set includes:
-        </p>
-        <pre><code>main/0
-qsort/1
-partition/4
-append/2
-Process.heap_alloc_stats/0
-required intrinsics/operators</code></pre>
-        <p>
-          The closed semantic set does not include:
-        </p>
-        <pre><code>foo/0</code></pre>
-        <p>
-          Expected absent facts:
-        </p>
-        <pre><code>LoweredBody(foo/0)
-Activation(root, foo/0, [])
-Executable(root, foo/0, [], Value)
-ReachableBlock(root, foo/0, ...)
-MaterializedBody(root, foo/0, ...)
-NativeSymbol(root, foo/0)</code></pre>
-      </div>
-
-      <div class="step">
-        <h3><span class="num">08</span>Artifacts consume the closed set</h3>
-        <p>
-          <code>Materialize(root, Q)</code> consumes only facts reachable in
-          <code>SemanticClosed(root, Q)</code>. It may inline safe calls, fold known branches, fuse
-          blocks, and prune erased edges. It must not pull <code>foo/0</code>, because no semantic
-          fact mentions <code>foo/0</code>.
-        </p>
-        <pre><code>MaterializedProgram(root, Q)
-AbiReady(root, Q)
-Emitted(root, jit, Q)</code></pre>
-      </div>
-
-      <div class="step">
-        <h3><span class="num">09</span>Redefinition cases</h3>
-        <p>
-          If a REPL source redefines uncalled <code>foo/0</code>, only its definition fingerprint
-          changes. No root semantic subscriber read that definition, so the quicksort root remains
-          closed.
-        </p>
-        <pre><code>changed(FunctionDefined(foo/0))
-  -&gt; no quicksort-root subscribers
-  -&gt; no semantic recomputation
-  -&gt; old Emitted(root, jit, Q) remains current</code></pre>
-        <p>
-          If a later REPL source redefines <code>main/0</code> to also call <code>foo()</code>, the
-          changed <code>main/0</code> definition wakes <code>LowerFunction(main/0)</code>. The new
-          lowered body publishes a <code>foo/0</code> callsite, and the next closure walk adds:
-        </p>
-        <pre><code>SelectedCallee(root, foo callsite) = foo/0
-Activation(root, foo/0, [])
-Executable(root, foo/0, [], Value)
-LoweredBody(foo/0)
-ReturnType(root, foo/0, []) = int</code></pre>
-        <p>
-          Unchanged <code>qsort/1</code>, <code>partition/4</code>, and <code>append/2</code>
-          facts keep their fingerprints, so their downstream artifacts do not need to be rebuilt.
-        </p>
-
-        <p>
-          The more interesting variant replaces the old sort path with <code>foo()</code>:
-        </p>
-        <pre><code>fn main() do
-  x = foo()
-  dbg(x)
-end</code></pre>
-        <p>
-          In that case <code>LowerFunction(main/0)</code> replaces its old owned lowered-body
-          contribution. The old <code>qsort/1</code> callsite fact disappears and a new
-          <code>foo/0</code> callsite fact appears:
-        </p>
-        <pre><code>- CallSite(root, main, qsort callsite)
-- SelectedCallee(root, qsort callsite) = qsort/1
-- Activation(root, qsort/1, [nonempty_list(int)])
-- Executable(root, qsort/1, [nonempty_list(int)], Value)
-
-+ CallSite(root, main, foo callsite)
-+ SelectedCallee(root, foo callsite) = foo/0
-+ Activation(root, foo/0, [])
-+ Executable(root, foo/0, [], Value)</code></pre>
-        <p>
-          The old <code>qsort/1</code> semantic island then retracts from this root: downstream
-          <code>partition/4</code> and <code>append/2</code> facts lose their last root-scoped
-          owners and disappear from the new semantic epoch. Cached root-independent lowered bodies
-          may remain, but they are not part of <code>SemanticClosed(root, next_epoch)</code> and
-          are not emitted for the new root artifact.
-        </p>
-      </div>
+DependencySnapshot = HashMap&lt;FactKey, u64&gt;</code></pre>
+      <p>
+        Materialization is downstream of that one fact. <code>MaterializeRoot</code> reads the
+        closed frontier, clones only the reachable lowered bodies, prunes unreachable clauses, and
+        freezes each live callsite to one selected callee executable. It never asks new semantic
+        questions and it never reopens discovery.
+      </p>
     </section>
 
     <section>
-      <h2>Worked Example: Enum.reduce</h2>
-      <p>
-        Source: <code>fixtures/enum_list_allocations/input.fz</code>. This example exercises
-        runtime-library references, protocol dispatch, recursive list reduction, a generated
-        reducer bridge, a user lambda, closure/callable facts, and allocation-sensitive emission.
-      </p>
-      <pre><code>fn main() do
-  xs = [1, 2, 3, 4, 5]
-
-  dbg(Enum.count(xs))
-  dbg(Enum.member?(xs, 3))
-  dbg(Enum.reduce(xs, 0, fn (x, acc) -&gt; acc + x end))
-
-  stats = Process.heap_alloc_stats()
-  dbg(stats)
-end</code></pre>
+      <h2>Worked Example: Quicksort Plus <code>foo/0</code></h2>
 
       <div class="step">
-        <h3><span class="num">01</span>Main defines a generated reducer function</h3>
+        <h3><span class="num">01</span>Discovery is cheap</h3>
         <p>
-          Source indexing defines <code>main/0</code>. Lowering <code>main/0</code> creates a
-          generated function for the reducer lambda, with a frozen namespace head, owned AST body,
-          and hidden capture inputs that become leading activation inputs when the closure is applied:
-        </p>
-        <pre><code>FunctionDefined(main/0)
-FunctionDefined(lambda#reduce_sum/2,
-  Generated { owner: main/0, body: FunctionAst, namespace, captures = [] })</code></pre>
-        <p>
-          The generated function is not analyzed merely because it exists. It becomes semantic work
-          when the reachable <code>Enum.reduce/3</code> path calls it through a callable value.
+          Submit quicksort plus an extra top-level <code>fn foo(), do: 42</code>. The first drive
+          only runs <code>IndexCode</code>. It parses the source, stores the top-level items, and
+          publishes <code>CodeIndexed(code)</code>. No functions are defined yet. No bodies are
+          lowered. No activations exist.
         </p>
       </div>
 
       <div class="step">
-        <h3><span class="num">02</span>Public Enum calls pull runtime code definitions</h3>
+        <h3><span class="num">02</span>Demanding <code>main/0</code> scopes only what the root needs</h3>
         <p>
-          The lowered <code>main/0</code> body has callsites for:
-        </p>
-        <pre><code>Enum.count/1
-Enum.member?/2
-Enum.reduce/3
-Process.heap_alloc_stats/0
-dbg/1 intrinsic</code></pre>
-        <p>
-          Referencing <code>Enum.reduce/3</code> allocates or finds its <code>FunctionId</code>. If
-          the runtime source containing <code>Enum</code> has not been indexed yet, the resolver
-          waits on that source's definition facts. When indexed, it publishes the requested
-          function definitions with owned expanded AST. It does not lower unrelated runtime functions.
-        </p>
-        <pre><code>FunctionDefined(Enum.reduce/3)
-FunctionDefined(Enum.count/1)
-FunctionDefined(Enum.member?/2)
-FunctionDefined(Process.heap_alloc_stats/0)</code></pre>
-        <p>
-          Expected absent runtime facts at this point include <code>Enum.sort/1</code>,
-          <code>Enum.map/2</code>, range protocol implementations, and map protocol implementations
-          unless another reachable callsite asks for them.
-        </p>
-      </div>
-
-      <div class="step">
-        <h3><span class="num">03</span>The list receiver selects the List implementation</h3>
-        <p>
-          The list literal gives the public reducer call precise argument facts:
-        </p>
-        <pre><code>CallSiteSummary(root, Enum.reduce callsite).input_types:
-  enumerable = nonempty_list(int)
-  acc        = int
-  reducer    = closure(lambda#reduce_sum/2)</code></pre>
-        <p>
-          Lowering and analyzing public <code>Enum.reduce/3</code> discovers its wrapper shape:
-          it calls <code>Enumerable.reduce/3</code> with protocol-control state and a generated
-          bridge reducer that turns a bare accumulator result into <code>{:cont, next_acc}</code>.
-        </p>
-        <pre><code>FunctionDefined(lambda#enum_reduce_bridge/2,
-  Generated { owner: Enum.reduce/3, captures = [reducer], ... })
-
-Activation(root, Enumerable.reduce/3,
-  [nonempty_list(int), tuple(:cont, int), closure(lambda#enum_reduce_bridge/2)])</code></pre>
-        <p>
-          <code>ResolveProtocolCall</code> reads the receiver fact <code>nonempty_list(int)</code>
+          Submit root <code>{GLOBAL, main, 0, Value}</code>. The next drive scopes
+          <code>runtime:runtime.fz</code>, saves the prelude namespace head, scopes the user code,
           and publishes:
         </p>
-        <pre><code>ProtocolImpl(root, Enumerable.reduce/3, receiver = list(int)) = Enumerable.List.reduce/3
-SelectedCallee(root, Enumerable.reduce callsite) = Enumerable.List.reduce/3
+        <pre><code>FunctionDefined(main/0)
+FunctionDefined(qsort/1)
+FunctionDefined(partition/4)
+FunctionDefined(append/2)
+FunctionDefined(foo/0)
+RootEntry(root)</code></pre>
+        <p>
+          Still absent: <code>LoweredBody(foo/0)</code>, any <code>Activation(... foo ...)</code>,
+          and any runtime module surface unrelated to the root.
+        </p>
+      </div>
+
+      <div class="step">
+        <h3><span class="num">03</span>The root seed starts the first activation</h3>
+        <p>
+          <code>SeedRoot(root)</code> waits until <code>Recursive(main)</code> and
+          <code>DispatchMask(main)</code> exist, then publishes:
+        </p>
+        <pre><code>Activation(root, main/0, []) = Inputs([])
+Executable(root, main/0, [], Value)
+follow_up:
+  LowerFunction(main/0)
+  PlanEntryDispatch(main/0)
+  AnalyzeActivation(root, main/0, [])
+  CheckSemanticClosure(root)</code></pre>
+      </div>
+
+      <div class="step">
+        <h3><span class="num">04</span>Activation analysis co-derives types and plans</h3>
+        <p>
+          <code>AnalyzeActivation(root, main/0, [])</code> lowers nothing new beyond
+          <code>main/0</code>'s own body and walks only dispatch-reachable clauses. It publishes one
+          direct-call summary:
+        </p>
+        <pre><code>CallSiteSummary(root, main, qsort_call) =
+  { callee: qsort/1,
+    input_types: [nonempty_list(int)],
+    need: Value,
+    return_ty: list(int) }</code></pre>
+        <p>
+          That same job also contributes:
+        </p>
+        <pre><code>Activation(root, qsort/1, [nonempty_list(int)])
+Executable(root, qsort/1, [nonempty_list(int)], Value)
+ReturnType(root, main/0, []) = list(int)
+ActivationAnalyzed(root, main/0, [])</code></pre>
+      </div>
+
+      <div class="step">
+        <h3><span class="num">05</span>Recursive inputs settle by joined activation facts</h3>
+        <p>
+          Later analyses of <code>qsort/1</code>, <code>partition/4</code>, and
+          <code>append/2</code> may re-contribute to an existing activation with different but
+          compatible input types. Those contributions join in the <code>Activation</code> slot:
+        </p>
+        <pre><code>Activation(root, qsort/1, [nonempty_list(int)])   -- first contribution
+Activation(root, qsort/1, [list(int)])             -- later recursive contribution
+join =&gt; Inputs([list(int)]) after refine_widen + alpha normalization</code></pre>
+        <p>
+          There is no second type-fixpoint loop hiding behind this. The joined activation fact is
+          the loop.
+        </p>
+      </div>
+
+      <div class="step">
+        <h3><span class="num">06</span>Tuple-field need rides on the same callsite fact</h3>
+        <p>
+          The call from <code>qsort/1</code> to <code>partition/4</code> needs tuple-field
+          projection, so its summary carries that need directly:
+        </p>
+        <pre><code>CallSiteSummary(root, qsort, partition_call) =
+  { callee: partition/4,
+    input_types: [list(int), int, list(int), list(int)],
+    need: TupleFields(2),
+    return_ty: tuple([list(int), list(int)]) }</code></pre>
+        <p>
+          There is no separate <code>ReturnNeed</code> fact to keep in sync.
+        </p>
+      </div>
+
+      <div class="step">
+        <h3><span class="num">07</span>Closure excludes <code>foo/0</code></h3>
+        <p>
+          Once every reachable activation has <code>Activation</code>, <code>Executable</code>,
+          <code>ActivationAnalyzed</code>, <code>ReturnType</code>, <code>LoweredBody</code>, and
+          <code>CallSiteSummary</code>, <code>CheckSemanticClosure(root)</code> records the closed
+          frontier and exact dependency snapshot:
+        </p>
+        <pre><code>SemanticClosed(root)
+  activations: { main/0, qsort/1 narrow, qsort/1 widened, partition/4, append/2, ...runtime helpers... }
+  executables: same frontier shaped by ExecutableNeed</code></pre>
+        <p>
+          <code>foo/0</code> is absent from both sets because no reached callsite ever referenced
+          it.
+        </p>
+      </div>
+
+      <div class="step">
+        <h3><span class="num">08</span>Materialization freezes the closed path only</h3>
+        <p>
+          <code>MaterializeRoot(root)</code> clones only the executable bodies in the closed
+          frontier, prunes unreachable clauses, and emits <code>MaterializedProgram(root)</code>.
+          Redefining uncalled <code>foo/0</code> later does not reopen the root. Redefining
+          <code>main/0</code> does, because the old callsite summaries and closed frontier are
+          replaced by new ones.
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <h2>Worked Example: <code>Enum.reduce</code></h2>
+
+      <div class="step">
+        <h3><span class="num">01</span>Prelude scope is enough to name runtime APIs</h3>
+        <p>
+          A user function can call <code>Enum.reduce/3</code> with no eager runtime parse at
+          construction time. The first demanded scope pulls <code>runtime.fz</code>, binds the
+          prelude namespace, and lets user source resolve <code>Enum</code> as a module id.
+        </p>
+      </div>
+
+      <div class="step">
+        <h3><span class="num">02</span>The root only warms the reached runtime surfaces</h3>
+        <p>
+          When <code>main/0</code> calls <code>Enum.reduce/3</code>,
+          <code>AnalyzeActivation(root, main/0, [])</code> publishes:
+        </p>
+        <pre><code>CallSiteSummary(root, main, enum_reduce_call) =
+  { callee: Enum.reduce/3,
+    input_types: [list(int), int, reducer_closure],
+    need: Value,
+    return_ty: int }</code></pre>
+        <p>
+          That summary contributes a rooted activation for <code>Enum.reduce/3</code>. Only then
+          does the engine submit and define the runtime module surface that owns that function.
+        </p>
+      </div>
+
+      <div class="step">
+        <h3><span class="num">03</span>Protocol dispatch is still ordinary fact work</h3>
+        <p>
+          The runtime implementation can call the protocol callback
+          <code>Enumerable.reduce/3</code>, which then resolves to the concrete
+          <code>Enumerable.List.reduce/3</code> implementation because the receiver type is a list.
+          Each hop publishes one whole callsite summary and one callee activation:
+        </p>
+        <pre><code>CallSiteSummary(root, Enum.reduce, protocol_call) = Enumerable.reduce/3
+CallSiteSummary(root, Enumerable.reduce, impl_call) = Enumerable.List.reduce/3
 Activation(root, Enumerable.List.reduce/3, [...])</code></pre>
       </div>
 
       <div class="step">
-        <h3><span class="num">04</span>Reducer recursion is a semantic SCC</h3>
+        <h3><span class="num">04</span>User closures become ordinary generated functions</h3>
         <p>
-          The reachable path is:
+          The reducer lambda is lowered into a generated function id owned by the enclosing user
+          function. Its activation and return type live in the same fact families as named
+          functions:
         </p>
-        <pre><code>Enum.reduce/3
-  -&gt; Enumerable.reduce/3 protocol stub
-  -&gt; Enumerable.List.reduce/3
-  -&gt; List.reduce/3
-  -&gt; List.reduce_cont/3
-  -&gt; List.reduce_step/3
-  -&gt; lambda#enum_reduce_bridge/2
-  -&gt; lambda#reduce_sum/2
-  -&gt; Kernel.+/2</code></pre>
-        <p>
-          <code>List.reduce_cont/3</code> and <code>List.reduce_step/3</code> form a recursive SCC.
-          The bridge lambda is still just a function activation. Its callsite summary carries
-          the callee activation inputs, so the user reducer lambda sees <code>[entry, acc]</code>
-          while the bridge lambda itself sees <code>[captured reducer, entry, acc]</code>. The
-          control-state type is an ordinary semantic fact:
-        </p>
-        <pre><code>ControlState(int) =
-  {:cont, int}
-  | {:halt, int}
-  | {:suspend, int}</code></pre>
-        <p>
-          The SCC is complete when its owned contributions stop changing. It must not force
-          convergence by erasing to <code>any</code>; it must preserve enough tag precision for
-          clause selection and final return projection.
-        </p>
-      </div>
-
-      <div class="step">
-        <h3><span class="num">05</span>Callable and return facts are co-derived</h3>
-        <p>
-          The bridge reducer creates callable obligations. Those obligations are planning facts,
-          but they are discovered while type facts are still flowing:
-        </p>
-        <pre><code>CallableEntry(root, lambda#enum_reduce_bridge/2)
-CallableEntry(root, lambda#reduce_sum/2)
+        <pre><code>FunctionDefined(lambda#reduce_sum/2)
+LoweredBody(lambda#reduce_sum/2)
 Activation(root, lambda#reduce_sum/2, [int, int])
-ReturnType(root, lambda#reduce_sum/2, [int, int]) = int
-SelectedCallee(root, + callsite) = Kernel.+/2</code></pre>
-        <p>
-          The public reducer's continuation needs the unwrapped accumulator value:
-        </p>
-        <pre><code>ReturnNeed(root, Enum.reduce callsite) = Value
-ReturnContract(root, Enum.reduce/3 executable) = int</code></pre>
-        <p>
-          There is no handoff from a type fixpoint to a planner fixpoint. The callable facts,
-          protocol edge, return type, return need, selected call edge, and executable spec all
-          settle together in the same semantic agenda drain.
-        </p>
+ReturnType(root, lambda#reduce_sum/2, [int, int]) = int</code></pre>
       </div>
 
       <div class="step">
-        <h3><span class="num">06</span>Coalescing is precise, not fuzzy</h3>
+        <h3><span class="num">05</span>Unreached runtime code stays cold</h3>
         <p>
-          <code>Enum.count/1</code>, <code>Enum.member?/2</code>, and <code>Enum.reduce/3</code>
-          may all use list enumeration machinery, but their reducer/callback shapes differ. The
-          agenda coalesces identical job keys only; it does not merge merely similar function
-          names.
+          The final closure contains only the user function, the reducer lambda, and the reached
+          runtime/protocol helpers. Unrelated runtime modules such as <code>Utf8</code> or
+          unreached <code>Enum</code> helpers never become part of <code>SemanticClosed(root)</code>
+          and therefore never reach materialization.
         </p>
-        <pre><code>AnalyzeActivation(root, List.reduce_step/3, [list(int), count_state, count_reducer])
-AnalyzeActivation(root, List.reduce_step/3, [list(int), member_state, member_reducer])
-AnalyzeActivation(root, List.reduce_step/3, [list(int), sum_state, sum_reducer])</code></pre>
-        <p>
-          These are distinct if their input facts or callable facts differ. Repeated wakeups for
-          the exact same key coalesce while pending.
-        </p>
-      </div>
-
-      <div class="step">
-        <h3><span class="num">07</span>Semantic closure defines the artifact boundary</h3>
-        <p>
-          The closed semantic set includes the public <code>Enum</code> calls used by
-          <code>main/0</code>, selected <code>Enumerable.List</code> callbacks, the small
-          <code>List</code> reducer loop, reducer bridge, user lambda, <code>Kernel.+/2</code>,
-          <code>Process.heap_alloc_stats/0</code>, and required intrinsics.
-        </p>
-        <p>
-          It excludes unrelated runtime functions and unrelated protocol implementations:
-        </p>
-        <pre><code>Enum.sort/*
-Enum.map/*
-Enumerable.Range.*
-Enumerable.Map.*
-unused Kernel wrappers</code></pre>
-        <p>
-          Once <code>SemanticClosed(root, epoch E)</code> is published, artifact jobs can run.
-          Materialization reads that closure snapshot and the lowered bodies named by it. It must
-          not grow the reachable semantic set. Growth is a diagnostic.
-        </p>
-      </div>
-
-      <div class="step">
-        <h3><span class="num">08</span>Allocation contract comes from facts</h3>
-        <p>
-          ABI derivation reads callable entries and closure captures from the semantic closure and
-          materialized program. The expected native allocation story follows from those facts:
-        </p>
-        <ul>
-          <li><span class="ok">List literal:</span> five cons cells for <code>[1, 2, 3, 4, 5]</code>.</li>
-          <li><span class="ok">Public reduce wrapper:</span> one wrapper closure for the bridge if the representation requires it.</li>
-          <li><span class="ok">List walk:</span> no additional cons cells while reducing.</li>
-          <li><span class="ok">Stats snapshot:</span> no unrelated map/range runtime paths pulled in before <code>Process.heap_alloc_stats/0</code>.</li>
-        </ul>
       </div>
     </section>
 
     <section>
-      <h2>Telemetry Contract</h2>
+      <h2>Observability And Guideposts</h2>
       <p>
-        Telemetry is always emitted. Event construction must be cheap: payloads carry facts,
-        fingerprints, IDs, and already-owned lists. Handlers can count, summarize, sample, or
-        ignore those values. The compiler should not compute telemetry-only aggregates.
+        Telemetry carries raw ids, facts, and opaque structures. Formatting belongs in handlers.
+        The compiler surface emits spans for <code>drive</code> and each <code>job</code>, plus
+        state-defining events such as <code>function.defined</code>,
+        <code>callsite.defined</code>, and <code>semantic_closed.defined</code>. Tests observe
+        those events instead of poking through world internals.
       </p>
-      <table>
-        <thead>
-          <tr>
-            <th>Event</th>
-            <th>Payload</th>
-            <th>Purpose</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><code>fz.compiler.code.indexed</code></td>
-            <td>code id, module ids, function ids, code spans</td>
-            <td>Proves declaration indexing without body lowering.</td>
-          </tr>
-          <tr>
-            <td><code>fz.compiler.namespace.bound</code></td>
-            <td>binding id, previous head, name, binding value, span</td>
-            <td>Proves scope extension and default namespace construction without a prelude phase.</td>
-          </tr>
-          <tr>
-            <td><code>fz.compiler.fact.changed</code></td>
-            <td>fact key, old fingerprint, new fingerprint, owner job</td>
-            <td>Proves propagation is driven by changed facts.</td>
-          </tr>
-          <tr>
-            <td><code>fz.compiler.job.enqueued</code></td>
-            <td>job key, reason fact</td>
-            <td>Shows why work became runnable.</td>
-          </tr>
-          <tr>
-            <td><code>fz.compiler.job.coalesced</code></td>
-            <td>job key, reason fact</td>
-            <td>Proves duplicate pending work is suppressed.</td>
-          </tr>
-          <tr>
-            <td><code>fz.compiler.job.blocked</code></td>
-            <td>job key, missing fact pattern</td>
-            <td>Proves unresolved references wait instead of scanning the world.</td>
-          </tr>
-          <tr>
-            <td><code>fz.compiler.semantic.closed</code></td>
-            <td>root id, epoch, semantic fact keys, pending job keys, unresolved waiter keys</td>
-            <td>Proves the semantic fixpoint reached quiescence.</td>
-          </tr>
-          <tr>
-            <td><code>fz.compiler.materialized</code></td>
-            <td>root id, epoch, materialized body ids, pruned edge ids, unexpected growth edge ids</td>
-            <td>Proves materialization consumed the closed set and did not discover semantics.</td>
-          </tr>
-          <tr>
-            <td><code>fz.compiler.abi.ready</code></td>
-            <td>root id, epoch, native functions, continuations, closure captures</td>
-            <td>Proves backend facts exist before emission.</td>
-          </tr>
-          <tr>
-            <td><code>fz.compiler.emitted</code></td>
-            <td>root id, epoch, target, emitted function ids</td>
-            <td>Proves codegen is artifact-only.</td>
-          </tr>
-          <tr>
-            <td><code>fz.compiler.diagnostic</code></td>
-            <td>code, span, active job, root, fact context</td>
-            <td>Reports fatal missing facts, cycles, incomplete semantic plans, and backend contract violations.</td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="grid">
+        <div class="card">
+          <h3>Summary tests</h3>
+          <p>
+            <code>src/compiler2/drive_test.rs</code> is the fast contract surface. The quicksort
+            and <code>Enum.reduce</code> tests assert finite closure size, exact reached callsites,
+            absence of cold helpers, and materialization boundaries.
+          </p>
+          <p class="small">
+            Useful rerun: <code>cargo test --lib compiler2_ -- --nocapture</code>
+          </p>
+        </div>
+        <div class="card">
+          <h3>Deep trace</h3>
+          <p>
+            <code>src/compiler2/telemetry_dump_test.rs</code> is an ignored one-off harness that
+            writes the full quicksort event stream to
+            <code>/tmp/fz-compiler2-quicksort.jsonl</code> through a JSONL handler. The handler does
+            any debug formatting; emit sites do not.
+          </p>
+          <p class="small">
+            Useful rerun: <code>cargo test --lib compiler2::telemetry_dump_test::dump_quicksort_compiler2_telemetry_to_jsonl -- --ignored --exact --nocapture</code>
+          </p>
+        </div>
+        <div class="card">
+          <h3>What to watch</h3>
+          <p>
+            The important numbers are not raw event counts in isolation. They are: which jobs were
+            coalesced, which facts changed revision, which waits remained unresolved, and which
+            roots reclosed after a redefinition.
+          </p>
+        </div>
+      </div>
     </section>
 
     <section>
-      <h2>Correctness Invariants</h2>
+      <h2>North Star Checklist</h2>
       <ul>
-        <li><strong>Stable keys:</strong> every entity, fact, and job key must be deterministic and independent of scheduling order.</li>
-        <li><strong>No gratuitous interning:</strong> assign IDs to durable entities and derived facts, not to every syntax node. AST is owned directly unless sharing is proven valuable.</li>
-        <li><strong>Owned outputs:</strong> a job rerun replaces exactly the contributions it owns; no stale derived fact survives by accident.</li>
-        <li><strong>Fingerprint propagation:</strong> subscribers wake only when aggregate fact fingerprints change.</li>
-        <li><strong>Fatal stops:</strong> any job error emits diagnostic telemetry and aborts the run; closure never masks errors.</li>
-        <li><strong>No speculative specs:</strong> executable facts appear because semantic rules derive them from reachable callsites and return needs.</li>
-        <li><strong>No backend discovery:</strong> artifact jobs cannot publish semantic fact families.</li>
-        <li><strong>Uniform code:</strong> user code, runtime libraries, and built-in packages are code contributions, not scheduler special cases.</li>
-        <li><strong>Prelude is a namespace:</strong> default visibility is a saved <code>Namespace</code> after bootstrap bindings, not a compiler phase.</li>
-        <li><strong>Cheap telemetry:</strong> events carry already-owned values and lists; handlers compute summaries when needed.</li>
-        <li><strong>Absent facts matter:</strong> tests should assert that uncalled functions and unrelated runtime implementations remain absent from semantic/artifact facts.</li>
-      </ul>
-    </section>
-
-    <section>
-      <h2>Open Stress Points</h2>
-      <ul>
-        <li><strong>Retractions:</strong> define exact contribution replacement and aggregate recomputation semantics for facts with multiple owners.</li>
-        <li><strong>Closure detection:</strong> make <code>CheckSemanticClosure(root)</code> precise in the presence of blocked waiters and roots sharing facts.</li>
-        <li><strong>Protocol naming:</strong> choose stable implementation MFA names so protocol facts are debuggable and reproducible.</li>
+        <li><strong>Stable ids before meaning:</strong> modules and MFAs can be referenced before they are defined.</li>
+        <li><strong>One local type world:</strong> <code>Ty</code> is compiler-owned and never compared across worlds.</li>
+        <li><strong>One logical fact, one key:</strong> whole callsite summaries replace split partial facts.</li>
+        <li><strong>No separate type loop:</strong> activation-input joins are ordinary fact replacement.</li>
+        <li><strong>Lazy runtime bootstrap:</strong> <code>runtime.fz</code> and runtime modules warm only when demanded.</li>
+        <li><strong>Read-only closure:</strong> <code>CheckSemanticClosure</code> proves completeness; it does not rediscover semantics.</li>
+        <li><strong>Artifact isolation:</strong> materialization consumes a closed frontier and never reopens discovery.</li>
+        <li><strong>Blast radius by revision:</strong> redefinition propagates only as far as fact revisions actually change.</li>
       </ul>
     </section>
   </main>
