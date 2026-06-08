@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.11.1"
+  ],
   "blocks": [],
   "created": "2026-06-08T11:49:22Z",
   "description": "Goal: make Compiler2 lower `receive` as a first-class structured control construct that uses the existing runtime scheduler semantics and `dispatch_matrix`-owned pattern routing.\n\nSignal:\n- representative `receive` fixtures run through `fz2` on interp/JIT/AOT without reopening old-world receive lowering\n- sender-side probing, pinned names, prepared dispatch keys, and after-clauses are carried by Compiler2-owned facts into backend/native consumers\n\nChange:\n- add Compiler2 lowering/model support for `receive do ... after ... end`\n- use old-world receive code only as shape inspiration for invariants like pinned/capture threading and dispatch execution contracts\n- preserve existing backend runtime intrinsics for send/spawn/self; only the missing structured receive surface is added\n\nWhy:\n- backend runtime support already exists, but `fz2` still cannot compile the language construct that reaches it",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 selective receive: lower receive through dispatch_matrix and runtime facts",
   "type": "task",
-  "updated_at": "2026-06-08T11:49:22Z"
+  "updated_at": "2026-06-08T11:49:50Z"
 }
