@@ -205,9 +205,10 @@ definitions, work-graph steps, callsite summaries, semantic closure, and the
 full artifact ladder through `NativeProgram(root)`. The quicksort,
 `Enum.reduce`, and variadic-extern contracts are the fast summary probe; the
 shared-native JIT tests plus the `Compiler2::compile_root_jit` /
-`compile_root_aot` front-door tests prove that Compiler2-native codegen does
-not fall back to planner or type-preparation telemetry; the ignored JSONL dump
-is the occasional deep trace.
+`run_root_jit` / `compile_root_aot` front-door tests prove that
+Compiler2-native codegen and runtime setup do not fall back to planner or
+type-preparation telemetry; `tests/fz2_cli.rs` extends that proof to the real
+`fz2` binary surface. The ignored JSONL dump is the occasional deep trace.
 
 Useful reruns:
 
@@ -222,7 +223,9 @@ Useful reruns:
 - `cargo test --lib compiler2_native_program_jit_runs_enum_reduce_through_shared_codegen -- --exact --nocapture`
 - `cargo test --lib compiler2_native_program_jit_runs_variadic_extern_through_shared_codegen -- --exact --nocapture`
 - `cargo test --lib compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare -- --exact --nocapture`
+- `cargo test --lib compiler2_run_root_jit_executes_resources_without_legacy_prepare -- --exact --nocapture`
 - `cargo test --lib compiler2_compile_root_aot_consumes_native_program_without_legacy_prepare -- --exact --nocapture`
+- `cargo test --test fz2_cli -- --nocapture`
 - `cargo test --lib compiler2::telemetry_dump_test::dump_quicksort_compiler2_telemetry_to_jsonl -- --ignored --exact --nocapture`
 
 The ignored harness writes its log to `/tmp/fz-compiler2-quicksort.jsonl`.

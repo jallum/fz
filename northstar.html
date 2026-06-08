@@ -730,11 +730,13 @@ DependencySnapshot = HashMap&lt;FactKey, u64&gt;</code></pre>
       </ul>
       <p>
         Current conclusion from the code: no missing closed fact has been identified for the
-        current shared native codegen inputs. <code>Compiler2::compile_root_jit</code> and
-        <code>Compiler2::compile_root_aot</code> now consume <code>NativeProgram(root)</code>
-        through the shared backend without <code>prepare_preplanned_native</code>. The remaining
-        work is above this seam: switch the outer app/CLI entry points onto these
-        Compiler2-native front doors and remove the old fallback plumbing.
+        current shared native codegen inputs. <code>Compiler2::compile_root_jit</code>,
+        <code>run_root_jit</code>, and <code>compile_root_aot</code> now consume
+        <code>NativeProgram(root)</code> through the shared backend without
+        <code>prepare_preplanned_native</code>. <code>fz2</code> is the side-by-side outer shell
+        for those front doors. The remaining work above this seam is cutover:
+        switch or retire the old <code>fz</code> surface and remove the fallback plumbing once
+        parity is proven.
       </p>
     </section>
 

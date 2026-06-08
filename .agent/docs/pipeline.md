@@ -202,11 +202,14 @@ Current conclusion from the code:
 
 - no missing closed fact has been identified for the current shared native
   codegen inputs
-- `Compiler2::compile_root_jit` and `Compiler2::compile_root_aot` now consume
-  `NativeProgram(root)` through the shared native backend without
+- `Compiler2::compile_root_jit`, `run_root_jit`, and `compile_root_aot` now
+  consume `NativeProgram(root)` through the shared native backend without
   `prepare_preplanned_native`
-- the remaining work is above this seam: switch the outer app/CLI entry points
-  onto these Compiler2-native front doors and remove the old fallback plumbing
+- `fz2` is now the side-by-side outer shell for those front doors: `fz2 run`,
+  `fz2 interp`, and `fz2 build` submit source directly to Compiler2, seed
+  `main/0`, and never reopen old planner or type-infer work
+- the remaining work above this seam is cutover: switch or retire the old `fz`
+  surface and remove the fallback plumbing once parity is proven
 
 ## Redefinition retracts by ownership
 

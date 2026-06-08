@@ -2,6 +2,7 @@ use crate::telemetry::Telemetry;
 
 use super::ExecutableNeed;
 use super::Job;
+use super::NativeProgram;
 use super::code::CodeId;
 use super::identity::RootId;
 use super::scheduler::DriveOutcome;
@@ -59,6 +60,11 @@ impl<'a> Compiler2<'a> {
         self.world.drive()
     }
 
+    fn native_program_for_root(&mut self, root: RootId) -> Result<NativeProgram, String> {
+        self.drive_root_to(root, Job::LowerNativeProgram(root))?;
+        Ok(self.world.native_program(root))
+    }
+
     fn drive_root_to(&mut self, root: RootId, job: Job) -> Result<(), String> {
         self.world.demand(job);
         match self.world.drive() {
@@ -92,8 +98,7 @@ impl<'a> Compiler2<'a> {
         &mut self,
         root: RootId,
     ) -> Result<(crate::ir_codegen::CompiledModule, crate::fz_ir::FnId), String> {
-        self.drive_root_to(root, Job::LowerNativeProgram(root))?;
-        let program = self.world.native_program(root);
+        let program = self.native_program_for_root(root)?;
         let entry = program.entry;
         let tel = self.world.tel();
         let mut legacy_types = crate::types::new();
@@ -107,11 +112,29 @@ impl<'a> Compiler2<'a> {
         Ok((compiled, entry))
     }
 
+    /// Drives one root to `NativeProgram`, JIT-compiles it, and runs the
+    /// result through the shared runtime with the native module attached.
+    pub fn run_root_jit(&mut self, root: RootId) -> Result<(), String> {
+        let program = self.native_program_for_root(root)?;
+        let tel = self.world.tel();
+        let mut legacy_types = crate::types::new();
+        let compiled = crate::ir_codegen::compile_with_backend_native_program(
+            &mut legacy_types,
+            &program,
+            crate::ir_codegen::JitBackend::new(),
+            tel,
+        )
+        .map_err(|err| format!("compiler2 root {} JIT compile failed: {err}", root.as_u32()))?;
+        let mut runtime = crate::exec::runtime::Runtime::new(&compiled, 1, tel).with_module(&program.module);
+        let _root_pid = runtime.spawn(program.entry);
+        runtime.run_until_idle();
+        Ok(())
+    }
+
     /// Drives one root to `NativeProgram` and emits an AOT object through the
     /// shared native backend.
     pub fn compile_root_aot(&mut self, root: RootId, obj_name: &str) -> Result<crate::ir_codegen::AotArtifact, String> {
-        self.drive_root_to(root, Job::LowerNativeProgram(root))?;
-        let program = self.world.native_program(root);
+        let program = self.native_program_for_root(root)?;
         let tel = self.world.tel();
         let mut legacy_types = crate::types::new();
         crate::ir_codegen::compile_with_backend_native_program(

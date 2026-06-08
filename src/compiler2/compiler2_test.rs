@@ -1,5 +1,8 @@
 use super::{CodeSubmission, Compiler2, DriveOutcome, Job};
 use crate::exec::runtime::DbgCapture;
+use crate::ir_interp::{
+    tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
+};
 use crate::telemetry::handler::{Event, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind, Value};
 use std::cell::RefCell;
@@ -398,6 +401,59 @@ end
             "Compiler2 AOT front door should not reopen legacy planning or type inference",
         );
     }
+}
+
+#[test]
+fn compiler2_run_root_jit_executes_resources_without_legacy_prepare() {
+    let _lock = tests_support_lock().lock().unwrap();
+    tests_support_dtor_reset();
+
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/compiler2_run_root_jit_resource.fz".to_string()),
+        text: r#"
+extern "C" fn _resource_test_dtor(integer) :: nil
+
+fn main() do
+  make_resource(42, fn (x) -> _resource_test_dtor(x) end)
+  0
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(super::RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: super::ExecutableNeed::Value,
+    });
+
+    compiler
+        .run_root_jit(root_id)
+        .unwrap_or_else(|error| panic!("resource fixture should run through Compiler2 JIT: {error}"));
+
+    assert_eq!(
+        tests_support_dtor_fired(),
+        1,
+        "Compiler2 JIT run should drain exactly one resource destructor",
+    );
+    assert_eq!(
+        tests_support_dtor_last_payload(),
+        42,
+        "Compiler2 JIT run should pass the resource payload into the destructor body",
+    );
+    assert!(
+        capture.find(&["fz", "runtime", "dtor_drain_failed"]).is_empty(),
+        "Compiler2 JIT run should complete the runtime destructor drain cleanly",
+    );
+    assert_no_legacy_planner_or_type_infer(
+        &capture,
+        "Compiler2 JIT run should not reopen the legacy planner or type inference",
+    );
 }
 
 #[derive(Debug, Clone)]

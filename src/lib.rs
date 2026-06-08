@@ -53,10 +53,10 @@ use modules::interface::{render_interfaces, validate_public_export_specs};
 use modules::pipeline::{CompileMode, PipelineError, link_error_diagnostic};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs::{self, read_to_string, remove_file};
+use std::fs::read_to_string;
 use std::io::{IsTerminal, Read, stdin};
-use std::path::{Path, PathBuf};
-use std::process::{Command, exit};
+use std::path::Path;
+use std::process::exit;
 use std::rc::Rc;
 use telemetry::{
     ConfiguredTelemetry, DiagRenderer, Event, Handler, JsonlBackend, StatsHandler, Telemetry, next_compile_nonce,
@@ -362,48 +362,29 @@ fn run_build(tel: &dyn Telemetry, args: &[String]) {
     // build continued, masking the rejection.
     report_or_exit_through(tel, artifact.diagnostics.as_slice());
 
-    // Write the object next to the output, then invoke cc.
-    let obj_temp = PathBuf::from(format!("{}.o", out_path));
-    fs::write(&obj_temp, &artifact.object).unwrap_or_else(|e| {
-        tel.event(
-            &["fz", "build", "write_obj_failed"],
-            metadata! { path: obj_temp.display().to_string(), error: e.to_string() },
-        );
-        exit(1);
-    });
-
-    let runtime_archive = aot_link::resolve_runtime_archive().unwrap_or_else(|e| {
-        tel.event(
-            &["fz", "build", "runtime_archive_failed"],
-            metadata! { error: e.to_string() },
-        );
-        exit(1);
-    });
-
-    let mut cc = Command::new("cc");
-    cc.arg("-o").arg(&out_path).arg(&obj_temp).arg(&runtime_archive.path);
-    if cfg!(target_os = "macos") {
-        cc.arg("-Wl,-undefined,dynamic_lookup");
-    }
-    tel.event(
-        &["fz", "build", "linking"],
-        metadata! {
-            output: out_path.clone(),
-            runtime_archive: runtime_archive.path.display().to_string(),
-            runtime_archive_source: runtime_archive.source.as_str(),
-        },
-    );
-    let status = cc.status().unwrap_or_else(|e| {
-        tel.event(&["fz", "build", "cc_failed"], metadata! { error: e.to_string() });
-        exit(1);
-    });
-    if !status.success() {
-        tel.event(&["fz", "build", "cc_exit"], metadata! { status: status.to_string() });
+    if let Err(error) = aot_link::link_aot_artifact(&artifact, Path::new(&out_path)) {
+        match error {
+            aot_link::LinkAotError::WriteObject { path, error } => {
+                tel.event(
+                    &["fz", "build", "write_obj_failed"],
+                    metadata! { path: path.display().to_string(), error: error.to_string() },
+                );
+            }
+            aot_link::LinkAotError::RuntimeArchive(error) => {
+                tel.event(
+                    &["fz", "build", "runtime_archive_failed"],
+                    metadata! { error: error.to_string() },
+                );
+            }
+            aot_link::LinkAotError::InvokeCc { error } => {
+                tel.event(&["fz", "build", "cc_failed"], metadata! { error: error.to_string() });
+            }
+            aot_link::LinkAotError::CcExit { status } => {
+                tel.event(&["fz", "build", "cc_exit"], metadata! { status: status.to_string() });
+            }
+        }
         exit(1);
     }
-    tel.event(&["fz", "build", "linked"], metadata! { output: out_path.clone() });
-    // Drop the intermediate .o on success.
-    let _ = remove_file(&obj_temp);
 }
 
 /// `fz interp <src.fz>` — run a program through the rebuilt IR interpreter

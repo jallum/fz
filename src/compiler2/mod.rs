@@ -1,6 +1,7 @@
 mod agenda;
 mod artifact;
 mod body;
+mod cli;
 mod code;
 mod compiler;
 mod deps;
@@ -32,6 +33,7 @@ pub use body::{
     BodySlot, BodyState, CallSiteId, DirectCallee, Literal, LoweredBlock, LoweredBody, LoweredBodyMap, LoweredClause,
     LoweredExtern, LoweredStep, ValueId,
 };
+pub use cli::run as run_cli;
 pub use code::{Code, CodeId, CodeMap, CodeState};
 pub use compiler::{CodeSubmission, Compiler2, RootSubmission};
 pub use deps::{DependencyIndex, UnresolvedWait};
