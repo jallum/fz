@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-rh2.8.2.2"
+    "fz-rh2.8.2.2",
+    "fz-rh2.8.2.3"
   ],
   "created": "2026-06-08T03:52:12Z",
   "description": "Goal: lower settled Compiler2 artifacts into a backend-consumable IR without planner fallback. Signal: each emission-ready executable lowers once, by function, from EmissionReadyProgram into backend IR inventory with stable cross-references and no semantic rediscovery.\n\nChange:\n- Add a Compiler2-native backend lowering module tree that consumes EmissionReadyProgram(root) only.\n- Lower EmissionReadyExecutable/LoweredBody, call edges, callable entries, return ABI, param/value reprs, extern marshal classes, and effect facts into a backend IR surface shared by downstream consumers.\n- Reuse old-world lowering mechanics only where they express durable backend structure; do not synthesize SpecPlan, SpecRegistry, PlannedProgram, or AbiFacts.\n- Add contract tests for quicksort, Enum.reduce, and variadic extern lowering.\n\nWhy:\n- Interpreter/JIT/AOT cannot consume EmissionReadyProgram mechanically until Compiler2 owns the last lowering step into backend IR.\n\nChecks:\n- Compiler2 backend lowering does not call semantic closure, planner reachability, prepare_preplanned_native, materialize_program, or AbiFacts::derive.\n- Lowered backend IR preserves the settled callable-entry, return-ABI, and extern-marshal contracts from EmissionReadyProgram.",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Compiler2 backends: lower EmissionReadyProgram to backend IR",
   "type": "task",
-  "updated_at": "2026-06-08T03:52:42Z"
+  "updated_at": "2026-06-08T03:52:46Z"
 }

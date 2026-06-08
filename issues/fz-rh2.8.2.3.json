@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.8.2.1"
+  ],
   "blocks": [],
   "created": "2026-06-08T03:52:30Z",
   "description": "Goal: move the shared native pipeline onto Compiler2-owned backend artifacts. Signal: JIT and AOT consume Compiler2 backend IR plus settled emission facts directly and never rebuild PlannedProgram or AbiFacts on the side.\n\nChange:\n- Teach the shared native codegen path to consume the backend IR and emission facts produced by Compiler2.\n- Remove Compiler2 dependence on prepare_preplanned_native, materialize_program, AbiFacts::derive, and old planner callable-entry/native/continuation inventories.\n- Feed callable entries, return ABI, param/value reprs, extern marshal classes, and effects from Compiler2 artifacts into the shared JIT/AOT driver.\n- Add JIT/AOT contract tests for quicksort, Enum.reduce, and variadic extern through the Compiler2 path.\n\nWhy:\n- Native codegen is the heaviest backend consumer and the main place old planner/codegen fact synthesis still hides.\n\nChecks:\n- Compiler2 JIT/AOT paths do not call prepare_preplanned_native, materialize_program, or AbiFacts::derive.\n- Native runs preserve the settled callable-entry, marshal, return-lane, and effect contracts from EmissionReadyProgram.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 backends: run JIT and AOT from Compiler2 artifacts",
   "type": "task",
-  "updated_at": "2026-06-08T03:52:30Z"
+  "updated_at": "2026-06-08T03:52:46Z"
 }
