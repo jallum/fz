@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-08T20:50:22Z",
+  "description": "Goal: compiler2 owns its type world end-to-end. A type name is an identity resolved to a hard Ty by a DEMANDED fact, exactly like an MFA; once a hard Ty is in hand, only the shared no-risk algebra (crate::types) and spec engine (crate::specs) are used. Sever compiler2`s reincorporation of old-world naming — the per-call ModuleTypeEnv rebuilt by re-lexing runtime source (function_type_env -\u003e runtime_library::{root_type_env,interfaces}), the eager protocol-domain union, and the name-keyed Nominals leak. None of these match the northstar; they were copied in wholesale.\n\nSignal: (1) the drive`s lexer.pass count equals the number of distinct sources — the ~117 redundant re-lexes/compile that quicksort.log exposed are structurally gone and observably so; (2) the 150 compiler2 drive_test oracles stay green (reached frontier, Enumerable dispatch selection, unused_runtime_library_stays_cold, JIT/interp runs); (3) DeriveTypeDef (the expensive type-algebra) runs only for type names a reached consumer actually reads — a @type no reached spec references stays cold like an uncalled function.\n\nStrategy: one decision in the right place — type names ride the namespace + fact rails that already carry MFAs (reference_type mirrors reference_function; DeriveTypeDef mirrors DeriveFunctionContract; the work graph is the fixpoint). That makes the redundant work unrepresentable, so the inches are mostly deletions. The shared kernel (crate::type_expr, runtime_library, ModuleTypeEnv) is UNTOUCHED — it stays for the retiring legacy fz frontend and dies with it. Boundary discriminator: do we have the hard Ty yet? Before = in-house; after = shared.\n\nDesign captured present-tense in .agent/targets/{type-naming,type-world,set-theoretic-types,protocols}.md and the northstar \"Type Naming And The Surface Tier\" section; promoted to .agent/docs/ at the end.\n\nLaces into fz-rh2 as a blocker of fz-rh2.9 (old compiler scrap): compiler2 must stand alone on in-house naming before the old world is scrapped. Terminal child returns to the original quicksort.log perf question — by then solved by construction.",
+  "id": "fz-rh2.12",
+  "labels": [],
+  "parent": "fz-rh2",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 type naming: bring name→Ty in-house as demanded facts",
+  "type": "epic",
+  "updated_at": "2026-06-08T20:50:22Z"
+}
