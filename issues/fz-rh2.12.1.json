@@ -1,5 +1,5 @@
 {
-  "assignee": "Jason Allum",
+  "assignee": "",
   "blocked_by": [
     "fz-rh2.12.11"
   ],
@@ -12,7 +12,7 @@
   "labels": [],
   "parent": "fz-rh2.12",
   "priority": 1,
-  "status": "in_progress",
+  "status": "open",
   "title": "Note type names: NamespaceSymbol::Type, reference_type, retain top-level @type",
   "type": "task",
   "updated_at": "2026-06-08T21:33:06Z"
