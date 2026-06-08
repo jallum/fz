@@ -7,7 +7,7 @@
     "fz-rh2.12.2"
   ],
   "created": "2026-06-08T20:52:14Z",
-  "description": "Index NOTES type names; it never resolves them. Two halves, one index-time walk, one commit.\n\nDEFINE -- define_scope mints TypeName(module,name,arity) for each @type and holds its body AST, the same cheap note-what-is-here that already mints fn and module ids. Add NamespaceSymbol::Type(TypeName).\n\nREFERENCE -- walk every type-position in the indexed surface (@spec args and returns, param annotations, extern bodies, @type bodies, x-is-T tests) and call reference_type(module,name,arity), mirroring reference_function: mint the identity and record it as an upstream dep of the consumer it feeds (the function whose contract or body names it). This recorded reference set IS that consumer later wait-set. Nothing resolves here; no type-algebra.\n\nRetain top-level @type the way modules already do: finish_code_index (source.rs:58) drops program.attrs while modules keep theirs (source.rs:492) -- make GLOBAL uniform.\n\nVerify: namespace_test extended for Type; a @type becomes a referenceable identity with its body held; a @spec naming Foo.t records Foo.t as a dep of that function with nothing resolved.",
+  "description": "Index NOTES type names; it never resolves them. Runs over the in-house type-expr from .11. Two halves, one index-time activity, one commit.\n\nDEFINE -- when building a scope (define_scope), reserve each @type in the FIRST walk: mint TypeName(module,name,arity), bind NamespaceSymbol::Type(TypeName), and hold its body type-expr together with the namespace captured at that point. Reserving in the first walk means sibling/forward type references are in scope -- no fixpoint. Add NamespaceSymbol::Type(TypeName).\n\nREFERENCE -- walk every type-position in the indexed surface (@spec args/returns, param annotations, extern bodies, @type bodies, x-is-T tests) over the in-house type-expr, and resolve each name against the namespace captured at that declaration point: a Type binding -\u003e reference_type(module,name,arity) (mirroring reference_function), recorded as an upstream dep of the consumer it feeds (the function whose contract/body names it, or the @type being defined). That recorded reference set IS the consumer later wait-set. An unbound lowercase name is a free type var (not referenced). Nothing resolves to Ty here; no type-algebra.\n\nRetain top-level @type the way modules already do: finish_code_index (source.rs:58) drops program.attrs while modules keep theirs (source.rs:492) -- make GLOBAL uniform, so a top-level @type reserves into the GLOBAL scope.\n\nVerify: namespace_test extended for Type; a @type becomes a referenceable identity with its body + captured namespace held; a @spec naming Foo.t records Foo.t as a dep of that function with nothing resolved; a free type var in a spec is not referenced.",
   "id": "fz-rh2.12.1",
   "labels": [],
   "parent": "fz-rh2.12",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "Note type names: NamespaceSymbol::Type, reference_type, retain top-level @type",
   "type": "task",
-  "updated_at": "2026-06-08T21:33:06Z"
+  "updated_at": "2026-06-08T21:33:43Z"
 }
