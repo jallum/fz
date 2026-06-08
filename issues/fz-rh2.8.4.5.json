@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.8.4.4"
+  ],
   "blocks": [],
   "created": "2026-06-08T02:49:53Z",
   "description": "Goal: finish the prequel epic with docs and tests that make fz-rh2.8.2 a mechanical adapter-consumption problem. Signal: the documented contract matches the implemented MaterializedProgram -\u003e AbiReadyProgram -\u003e EmissionReadyProgram path, and fz-rh2.8.2 no longer needs to decide the data model.\n\nChange:\n- Update northstar.html, .agent/docs/pipeline.md, and .agent/docs/telemetry.md with the final artifact/ABI/emission facts and raw telemetry expectations.\n- Add or update contract tests proving backend-facing work fails if it asks semantic/type/reachability questions after MaterializedProgram.\n- Update fz-rh2.8.2 ticket text, if necessary, to consume EmissionReadyProgram rather than invent AbiReady/Emitted facts.\n- Remove any temporary fixture/helper introduced during this epic that is not meant to remain.\n\nWhy:\n- The next ticket should wire consumers to settled facts. It should not reopen architectural questions already answered here.\n\nChecks:\n- Quicksort, Enum.reduce, and variadic extern artifact tests cover the final contract.\n- Docs and tests agree on names, fact order, and telemetry surface.\n- `bw show fz-rh2.8.2` describes adapter integration against EmissionReadyProgram.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 artifacts: close docs and adapter handoff contract",
   "type": "task",
-  "updated_at": "2026-06-08T02:49:53Z"
+  "updated_at": "2026-06-08T02:50:16Z"
 }
