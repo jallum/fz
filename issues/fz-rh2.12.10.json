@@ -13,9 +13,9 @@
   "id": "fz-rh2.12.10",
   "labels": [],
   "parent": "fz-rh2.12",
-  "priority": 2,
+  "priority": 1,
   "status": "open",
   "title": "Dark-launch parity proof: new name-\u003eTy path fires end-to-end with the old path untouched",
   "type": "task",
-  "updated_at": "2026-06-08T21:15:22Z"
+  "updated_at": "2026-06-08T21:15:56Z"
 }
