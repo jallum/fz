@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.8.4.2"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.8.4.4"
+  ],
   "created": "2026-06-08T02:49:33Z",
   "description": "Goal: make callable-boundary obligations explicit Compiler2 artifact facts. Signal: every callable value that survives to a closed callable boundary has a declared callable entry target, and unused callable syntax creates no backend obligation.\n\nChange:\n- Walk pruned materialized bodies/AbiReady executables to find closed FunctionRef, Lambda, and ClosureCall usage that requires a callable entry.\n- Derive callable-entry obligations from closed use and settled types, not from raw syntax and not from old callable_entry_targets.\n- Represent obligations with Compiler2 ids and Ty handles, aligned with ExecutableKey/ExecutableNeed where a concrete executable target is known.\n- Fatal if a callable boundary needs an entry that cannot be resolved from closed facts.\n\nWhy:\n- Callable entries are representation obligations created by surviving executable use. They are not semantic reachability discovery and they should not be selected by backend fallback code.\n\nChecks:\n- Enum.reduce proves the reducer callable entry is present and sufficient.\n- Quicksort plus uncalled foo proves cold functions and unused callable values do not create entries.\n- A focused negative test proves an unresolved opaque callable boundary is fatal.\n- Telemetry emits existing ids/facts/opaque obligations only; no formatted planned-target strings.",
   "id": "fz-rh2.8.4.3",
