@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-08T11:38:48Z",
   "created": "2026-06-06T23:37:22Z",
   "description": "Goal: consume settled Compiler2 closure facts mechanically. Signal: materialization, ABI, interpreter/JIT/AOT adapters never publish semantic facts or discover reachability, and backend work resumes only after the fixpoint-cleanup arc makes the closure boundary honest, quieter, and lazy.",
   "id": "fz-rh2.8",
   "labels": [],
   "parent": "fz-rh2",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 artifact boundary and backend adapters",
   "type": "epic",
-  "updated_at": "2026-06-07T21:13:08Z"
+  "updated_at": "2026-06-08T11:38:48Z"
 }
