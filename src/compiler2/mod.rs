@@ -23,12 +23,12 @@ pub use artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiReadyProgramMap, AbiValueRepr, BackendBlock, BackendBody,
     BackendCallArg, BackendCallableEntry, BackendClause, BackendExecutable, BackendProgram, BackendProgramMap,
     BackendStep, CallableEntry, EmissionReadyCallEdge, EmissionReadyCallableEntry, EmissionReadyExecutable,
-    EmissionReadyProgram, EmissionReadyProgramMap, MaterializedCallEdge, MaterializedExecutable, MaterializedProgram,
-    MaterializedProgramMap, ReturnAbi,
+    EmissionReadyProgram, EmissionReadyProgramMap, ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable,
+    MaterializedProgram, MaterializedProgramMap, ReturnAbi,
 };
 pub use body::{
     BodySlot, BodyState, CallSiteId, DirectCallee, Literal, LoweredBlock, LoweredBody, LoweredBodyMap, LoweredClause,
-    LoweredStep, ValueId,
+    LoweredExtern, LoweredStep, ValueId,
 };
 pub use code::{Code, CodeId, CodeMap, CodeState};
 pub use compiler::{CodeSubmission, Compiler2, RootSubmission};

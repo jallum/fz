@@ -617,8 +617,9 @@ DependencySnapshot = HashMap&lt;FactKey, u64&gt;</code></pre>
           <p>
             The final closed executable inventory before backend lowering. It assigns a stable
             emission inventory over Compiler2 keys for executable entries and callable entries, then
-            rewrites cross-references to dense emission-local indices. Dense ordinals live here
-            only as emission bookkeeping, never as semantic identity.
+            rewrites cross-references to dense emission-local indices. It also carries the settled
+            clause-entry dispatch each reachable executable needs at runtime. Dense ordinals live
+            here only as emission bookkeeping, never as semantic identity.
           </p>
         </div>
         <div class="card">
@@ -640,6 +641,7 @@ DependencySnapshot = HashMap&lt;FactKey, u64&gt;</code></pre>
         <li>extern marshal classes</li>
         <li>effect summaries</li>
         <li>callable-boundary obligations</li>
+        <li>settled clause-entry dispatch</li>
         <li>stable emission inventory</li>
         <li>backend-ready structured bodies with settled executable targets</li>
       </ul>

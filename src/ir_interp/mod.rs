@@ -38,6 +38,7 @@ use fz_runtime::procbin::mso_drop_all_deferred;
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
 use fz_runtime::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
 
+mod backend;
 mod binop;
 mod dispatch_exec;
 mod extern_call;
@@ -49,6 +50,7 @@ mod value;
 #[cfg(test)]
 mod ir_interp_test;
 
+pub(crate) use backend::run_backend_main;
 use binop::*;
 use dispatch_exec::*;
 use extern_call::*;
@@ -169,20 +171,9 @@ impl IrInterpRuntime {
         }
     }
 
-    /// The process running in the current quantum. Call sites that allocate or
-    /// touch the running process read this instead of the global
-    /// `CURRENT_PROCESS` thread-local.
-    #[inline]
-    pub(crate) fn cur_proc(&self) -> *mut Process {
-        debug_assert!(!self.current_proc.is_null(), "cur_proc outside a quantum");
-        self.current_proc
-    }
-
-    pub(crate) fn fresh_with_root(module: &Module) -> Self {
+    pub(crate) fn fresh_with_atoms(atom_names: Vec<String>) -> Self {
         let mut runtime = Self::fresh();
-        // Seed the interpreter's shared node from the program module's atoms;
-        // every task clones this Rc.
-        runtime.node = Rc::new(Node::new(module.atom_names.clone(), Vec::new()));
+        runtime.node = Rc::new(Node::new(atom_names, Vec::new()));
         let user_schemas = runtime.schemas();
         let (bs_tuple_arity1_schema, bs_tuple_arity3_schema) = runtime.register_bitstring_tuple_schemas();
         let consts = CompiledModuleConsts {
@@ -199,6 +190,19 @@ impl IrInterpRuntime {
         ));
         runtime.insert_task(1, process);
         runtime
+    }
+
+    /// The process running in the current quantum. Call sites that allocate or
+    /// touch the running process read this instead of the global
+    /// `CURRENT_PROCESS` thread-local.
+    #[inline]
+    pub(crate) fn cur_proc(&self) -> *mut Process {
+        debug_assert!(!self.current_proc.is_null(), "cur_proc outside a quantum");
+        self.current_proc
+    }
+
+    pub(crate) fn fresh_with_root(module: &Module) -> Self {
+        Self::fresh_with_atoms(module.atom_names.clone())
     }
 
     fn schemas(&self) -> Rc<RefCell<SchemaRegistry>> {

@@ -6,10 +6,14 @@
 //! required callable-entry inventory, and every extern callsite carries its
 //! concrete wire classes.
 
+use std::collections::HashSet;
+
 use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
+use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
+use crate::dispatch_matrix::{ComparisonValue, DispatchConst, DispatchNode, ProjectionKind, Region, SubjectSource};
 
 use super::super::artifact::{
     BackendBlock, BackendBody, BackendCallArg, BackendCallableEntry, BackendClause, BackendExecutable, BackendProgram,
@@ -37,7 +41,6 @@ pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> R
         ));
     };
 
-    let reads = vec![emission_ready_fact];
     let emission_ready = world.emission_ready_program(root_id);
     let mut lowerer = BackendLowerer::new(world, root_id, &emission_ready);
     let executables = emission_ready
@@ -56,12 +59,13 @@ pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> R
     let program = BackendProgram {
         emission_ready_revision,
         entry: emission_ready.entry,
+        atom_names: collect_backend_atom_names(lowerer.world, &executables),
         executables,
         callable_entries,
     };
     let revision = world.define_backend_program(root_id, program);
     Ok(JobEffects {
-        reads,
+        reads: vec![emission_ready_fact],
         outputs: vec![(FactKey::BackendProgram(root_id), FactValue::presence(revision))],
         ..JobEffects::default()
     })
@@ -92,6 +96,7 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
     ) -> Result<BackendExecutable, FatalError> {
         Ok(BackendExecutable {
             key: executable.key.clone(),
+            entry_dispatch: executable.entry_dispatch.clone(),
             return_ty: executable.return_ty,
             return_abi: executable.return_abi.clone(),
             param_reprs: executable.param_reprs.clone(),
@@ -434,6 +439,211 @@ enum CallableResolution {
     NotCallable,
     Opaque,
     Resolved(Vec<usize>),
+}
+
+fn collect_backend_atom_names(world: &mut World<'_>, executables: &[BackendExecutable]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut atoms = Vec::new();
+    for name in ["nil", "true", "false"] {
+        push_atom(&mut seen, &mut atoms, name);
+    }
+    for executable in executables {
+        collect_executable_atoms(world, executable, &mut seen, &mut atoms);
+    }
+    atoms
+}
+
+fn collect_executable_atoms(
+    world: &mut World<'_>,
+    executable: &BackendExecutable,
+    seen: &mut HashSet<String>,
+    atoms: &mut Vec<String>,
+) {
+    match &executable.body {
+        BackendBody::Extern { .. } => {}
+        BackendBody::Clauses { clauses, .. } => {
+            if let Some(dispatch) = &executable.entry_dispatch {
+                collect_dispatch_atoms(world, dispatch.plan(), seen, atoms);
+            }
+            for clause in clauses {
+                collect_step_atoms(world, &clause.projections, seen, atoms);
+                collect_block_atoms(world, &clause.body, seen, atoms);
+            }
+        }
+    }
+}
+
+fn collect_block_atoms(
+    world: &mut World<'_>,
+    block: &BackendBlock,
+    seen: &mut HashSet<String>,
+    atoms: &mut Vec<String>,
+) {
+    collect_step_atoms(world, &block.steps, seen, atoms);
+}
+
+fn collect_step_atoms(
+    world: &mut World<'_>,
+    steps: &[BackendStep],
+    seen: &mut HashSet<String>,
+    atoms: &mut Vec<String>,
+) {
+    for step in steps {
+        match step {
+            BackendStep::Const { literal, .. } | BackendStep::AssertLiteral { literal, .. } => {
+                collect_literal_atoms(literal, seen, atoms);
+            }
+            BackendStep::If {
+                then_block, else_block, ..
+            } => {
+                collect_block_atoms(world, then_block, seen, atoms);
+                collect_block_atoms(world, else_block, seen, atoms);
+            }
+            BackendStep::Tuple { .. }
+            | BackendStep::List { .. }
+            | BackendStep::FunctionRef { .. }
+            | BackendStep::NamedFunctionRef { .. }
+            | BackendStep::DirectCall { .. }
+            | BackendStep::ClosureCall { .. }
+            | BackendStep::Lambda { .. }
+            | BackendStep::BinaryOp { .. }
+            | BackendStep::UnaryOp { .. }
+            | BackendStep::MapIndex { .. }
+            | BackendStep::AssertTuple { .. }
+            | BackendStep::TupleField { .. }
+            | BackendStep::AssertEmptyList { .. }
+            | BackendStep::AssertSame { .. }
+            | BackendStep::SplitList { .. } => {}
+        }
+    }
+}
+
+fn collect_literal_atoms(literal: &super::super::body::Literal, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
+    if let super::super::body::Literal::Atom(name) = literal {
+        push_atom(seen, atoms, name);
+    }
+}
+
+fn collect_dispatch_atoms(
+    world: &mut World<'_>,
+    plan: &PatternDispatchPlan<Ty>,
+    seen: &mut HashSet<String>,
+    atoms: &mut Vec<String>,
+) {
+    for prepared in &plan.prepared_keys {
+        collect_dispatch_const_atoms(prepared, seen, atoms);
+    }
+    for subject in &plan.matrix.subjects {
+        match &subject.source {
+            SubjectSource::Input { .. } => {}
+            SubjectSource::Projection(projection) => {
+                if let ProjectionKind::MapValue { key } = &projection.kind {
+                    collect_dispatch_const_atoms(key, seen, atoms);
+                }
+            }
+        }
+    }
+    for guard in &plan.guards {
+        collect_guard_atoms(world, guard, seen, atoms);
+    }
+    collect_dispatch_graph_atoms(world, plan, plan.graph.root, seen, atoms);
+}
+
+fn collect_dispatch_graph_atoms(
+    world: &mut World<'_>,
+    plan: &PatternDispatchPlan<Ty>,
+    node_id: crate::dispatch_matrix::GraphNodeId,
+    seen: &mut HashSet<String>,
+    atoms: &mut Vec<String>,
+) {
+    let Some(node) = plan.graph.node(node_id) else {
+        return;
+    };
+    match node {
+        DispatchNode::Fail | DispatchNode::Outcome { .. } => {}
+        DispatchNode::Test {
+            predicate,
+            on_match,
+            on_miss,
+        } => {
+            collect_region_atoms(world, &predicate.region, seen, atoms);
+            collect_dispatch_graph_atoms(world, plan, on_match.target, seen, atoms);
+            collect_dispatch_graph_atoms(world, plan, on_miss.target, seen, atoms);
+        }
+    }
+}
+
+fn collect_region_atoms(
+    world: &mut World<'_>,
+    region: &Region<Ty>,
+    seen: &mut HashSet<String>,
+    atoms: &mut Vec<String>,
+) {
+    match region {
+        Region::Equal(ComparisonValue::Const(value)) | Region::MapKeyPresent { key: value } => {
+            collect_dispatch_const_atoms(value, seen, atoms);
+        }
+        Region::Type(ty) => {
+            for atom in world.types().atom_literals(ty) {
+                push_atom(seen, atoms, &atom);
+            }
+        }
+        Region::Equal(ComparisonValue::Pinned(_))
+        | Region::TupleArity(_)
+        | Region::List(_)
+        | Region::MapKind
+        | Region::Bitstring(_)
+        | Region::Guard(_)
+        | Region::Any
+        | Region::Never => {}
+    }
+}
+
+fn collect_guard_atoms(
+    world: &mut World<'_>,
+    expr: &PatternGuardExpr<Ty>,
+    seen: &mut HashSet<String>,
+    atoms: &mut Vec<String>,
+) {
+    match expr {
+        PatternGuardExpr::Const(value) => collect_dispatch_const_atoms(value, seen, atoms),
+        PatternGuardExpr::Unary { expr, .. } => collect_guard_atoms(world, expr, seen, atoms),
+        PatternGuardExpr::Binary { lhs, rhs, .. } => {
+            collect_guard_atoms(world, lhs, seen, atoms);
+            collect_guard_atoms(world, rhs, seen, atoms);
+        }
+        PatternGuardExpr::Dispatch { inputs, dispatch } => {
+            for input in inputs {
+                collect_guard_atoms(world, input, seen, atoms);
+            }
+            collect_guard_dispatch_atoms(world, dispatch, seen, atoms);
+        }
+        PatternGuardExpr::Subject(_) | PatternGuardExpr::Pinned(_) => {}
+    }
+}
+
+fn collect_guard_dispatch_atoms(
+    world: &mut World<'_>,
+    dispatch: &PatternGuardDispatch<Ty>,
+    seen: &mut HashSet<String>,
+    atoms: &mut Vec<String>,
+) {
+    collect_dispatch_atoms(world, &dispatch.plan, seen, atoms);
+    for body in &dispatch.bodies {
+        collect_guard_atoms(world, body, seen, atoms);
+    }
+}
+
+fn collect_dispatch_const_atoms(value: &DispatchConst, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
+    if let DispatchConst::AtomName(name) = value {
+        push_atom(seen, atoms, name);
+    }
+}
+
+fn push_atom(seen: &mut HashSet<String>, atoms: &mut Vec<String>, name: &str) {
+    if seen.insert(name.to_string()) {
+        atoms.push(name.to_string());
+    }
 }
 
 fn incomplete_backend_program(world: &World<'_>, root_id: RootId, message: impl Into<String>) -> FatalError {

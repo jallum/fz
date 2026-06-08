@@ -16,7 +16,7 @@ use crate::parser::lexer::Tok;
 use super::super::artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiValueRepr, CallableEntry, EffectSummary,
     EmissionReadyCallEdge, EmissionReadyCallableEntry, EmissionReadyExecutable, EmissionReadyProgram,
-    MaterializedCallEdge, MaterializedExecutable, MaterializedProgram, ReturnAbi,
+    ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable, MaterializedProgram, ReturnAbi,
 };
 use super::super::body::{CallArg, CallSiteId, LoweredBlock, LoweredBody, LoweredStep, ValueId};
 use super::super::drive::{FactKey, Job, JobEffects};
@@ -61,6 +61,9 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
             || world
                 .fact_revision(FactKey::LoweredBody(executable.activation.function))
                 .is_none()
+            || world
+                .fact_revision(FactKey::EntryDispatch(executable.activation.function))
+                .is_none()
         {
             return Ok(wait_for_fresh_closure(root_id));
         }
@@ -83,6 +86,7 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
         executables.insert(
             executable.clone(),
             MaterializedExecutable {
+                entry_dispatch: materialize_entry_dispatch(world, executable, &analysis),
                 return_ty,
                 value_types: analysis.value_types,
                 effects,
@@ -280,6 +284,20 @@ fn materialize_call_edges(
         );
     }
     Ok(Some(call_edges))
+}
+
+fn materialize_entry_dispatch(
+    world: &World<'_>,
+    executable: &ExecutableKey,
+    analysis: &ActivationAnalysis,
+) -> Option<ExecutableDispatch> {
+    match world.lowered_body(executable.activation.function) {
+        LoweredBody::Extern { .. } => None,
+        LoweredBody::Clauses { .. } => Some(ExecutableDispatch::new(
+            world.entry_dispatch(executable.activation.function),
+            analysis.reachable_clauses.clone(),
+        )),
+    }
 }
 
 fn prune_lowered_body(body: LoweredBody, reachable_clauses: &[u32]) -> LoweredBody {
@@ -558,6 +576,7 @@ fn derive_abi_ready_executable(
         })
         .collect();
     AbiReadyExecutable {
+        entry_dispatch: executable.entry_dispatch.clone(),
         return_ty: executable.return_ty,
         return_abi: return_abi(world, executable.return_ty, key.need),
         param_reprs,
@@ -603,6 +622,7 @@ fn derive_emission_ready_executable(
     call_edges.sort_by_key(|edge| edge.callsite.as_u32());
     Ok(EmissionReadyExecutable {
         key,
+        entry_dispatch: executable.entry_dispatch.clone(),
         return_ty: executable.return_ty,
         return_abi: executable.return_abi.clone(),
         param_reprs: executable.param_reprs.clone(),

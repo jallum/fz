@@ -5,14 +5,15 @@
 //! executable frontier with ABI lanes and return contracts made explicit.
 //! `EmissionReadyProgram` is the final closed executable inventory before
 //! backend lowering. `BackendProgram` is the backend-owned handoff: the same
-//! closed inventory with direct executable references, callable-boundary
-//! obligations, and concrete extern wire classes attached to structured
-//! function bodies.
+//! closed inventory with settled clause-entry dispatch, direct executable
+//! references, callable-boundary obligations, and concrete extern wire classes
+//! attached to structured function bodies.
 
 use std::collections::HashMap;
 
 use crate::ast::{BinOp, UnOp};
 use crate::compiler::source::Span;
+use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::fz_ir::ExternTy;
 
 use super::body::{CallSiteId, Literal, LoweredBody, LoweredExtern, ValueId};
@@ -28,6 +29,7 @@ pub struct MaterializedProgram {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MaterializedExecutable {
+    pub entry_dispatch: Option<ExecutableDispatch>,
     pub return_ty: Ty,
     pub value_types: HashMap<ValueId, Ty>,
     pub effects: EffectSummary,
@@ -62,12 +64,14 @@ pub struct EmissionReadyProgram {
 pub struct BackendProgram {
     pub emission_ready_revision: u64,
     pub entry: usize,
+    pub atom_names: Vec<String>,
     pub executables: Vec<BackendExecutable>,
     pub callable_entries: Vec<BackendCallableEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbiReadyExecutable {
+    pub entry_dispatch: Option<ExecutableDispatch>,
     pub return_ty: Ty,
     pub return_abi: ReturnAbi,
     pub param_reprs: Vec<AbiValueRepr>,
@@ -98,6 +102,7 @@ pub struct CallableEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EmissionReadyExecutable {
     pub key: ExecutableKey,
+    pub entry_dispatch: Option<ExecutableDispatch>,
     pub return_ty: Ty,
     pub return_abi: ReturnAbi,
     pub param_reprs: Vec<AbiValueRepr>,
@@ -124,6 +129,7 @@ pub struct EmissionReadyCallableEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackendExecutable {
     pub key: ExecutableKey,
+    pub entry_dispatch: Option<ExecutableDispatch>,
     pub return_ty: Ty,
     pub return_abi: ReturnAbi,
     pub param_reprs: Vec<AbiValueRepr>,
@@ -148,6 +154,26 @@ pub enum BackendBody {
         clauses: Vec<BackendClause>,
         generated: Vec<FunctionId>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExecutableDispatch {
+    plan: PatternDispatchPlan<Ty>,
+    clause_ids: Vec<u32>,
+}
+
+impl ExecutableDispatch {
+    pub(crate) fn new(plan: PatternDispatchPlan<Ty>, clause_ids: Vec<u32>) -> Self {
+        Self { plan, clause_ids }
+    }
+
+    pub(crate) fn plan(&self) -> &PatternDispatchPlan<Ty> {
+        &self.plan
+    }
+
+    pub(crate) fn clause_index(&self, body_id: u32) -> Option<usize> {
+        self.clause_ids.iter().position(|candidate| *candidate == body_id)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

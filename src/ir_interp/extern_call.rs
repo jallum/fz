@@ -1,4 +1,5 @@
 use super::*;
+use crate::compiler2::LoweredExtern;
 use crate::fz_ir::{BlockId, ExternArg, ExternId, ExternMarshalSite, ExternTy, Module};
 use crate::ir_planner::SpecPlan;
 use crate::telemetry::Telemetry;
@@ -113,6 +114,155 @@ fn call_variadic_extern(
             "unsupported variadic extern shape: {}",
             format_extern_shape(decl.ret, fixed, variadic)
         )),
+    }
+}
+
+pub(super) fn call_lowered_extern(
+    runtime: &mut IrInterpRuntime,
+    tel: &dyn Telemetry,
+    signature: &LoweredExtern,
+    marshals: Option<&[ExternTy]>,
+    args: &[AnyValue],
+) -> Result<AnyValue, String> {
+    match signature.symbol.as_str() {
+        "fz_panic" => {
+            if args.len() != 1 {
+                return Err(format!("fz_panic/1 got {} args", args.len()));
+            }
+            return Err(format!("fz panic: {}", args[0].render(runtime.cur_proc())));
+        }
+        "fz_process_heap_alloc_stats" => {
+            if !args.is_empty() {
+                return Err(format!("fz_process_heap_alloc_stats/0 got {} args", args.len()));
+            }
+            return interp_value_from_extern_ref_word(fz_process_heap_alloc_stats(runtime.cur_proc()));
+        }
+        "fz_dbg_value" => {
+            if args.len() != 1 {
+                return Err(format!("fz_dbg_value/1 got {} args", args.len()));
+            }
+            let ref_word = args[0].extern_arg_ref_word(runtime.cur_proc())?;
+            let out = fz_dbg_value(runtime.cur_proc(), ref_word);
+            return interp_value_from_extern_ref_word(out);
+        }
+        "fz_binary_concat" => {
+            if args.len() != 2 {
+                return Err(format!("fz_binary_concat/2 got {} args", args.len()));
+            }
+            let left_ref = args[0].extern_arg_ref_word(runtime.cur_proc())?;
+            let right_ref = args[1].extern_arg_ref_word(runtime.cur_proc())?;
+            return interp_value_from_extern_ref_word(fz_binary_concat(runtime.cur_proc(), left_ref, right_ref));
+        }
+        "fz_map_count" => {
+            if args.len() != 1 {
+                return Err(format!("fz_map_count/1 got {} args", args.len()));
+            }
+            let ref_word = args[0].extern_arg_ref_word(runtime.cur_proc())?;
+            return Ok(AnyValue::Int(fz_map_count(ref_word)));
+        }
+        "fz_map_entry_key" => {
+            if args.len() != 2 {
+                return Err(format!("fz_map_entry_key/2 got {} args", args.len()));
+            }
+            let map_ref = args[0].extern_arg_ref_word(runtime.cur_proc())?;
+            let index = args[1]
+                .as_i64()
+                .ok_or_else(|| "fz_map_entry_key/2 index must be integer".to_string())?;
+            return interp_value_from_extern_ref_word(fz_map_entry_key(map_ref, index));
+        }
+        "fz_map_entry_value" => {
+            if args.len() != 2 {
+                return Err(format!("fz_map_entry_value/2 got {} args", args.len()));
+            }
+            let map_ref = args[0].extern_arg_ref_word(runtime.cur_proc())?;
+            let index = args[1]
+                .as_i64()
+                .ok_or_else(|| "fz_map_entry_value/2 index must be integer".to_string())?;
+            return interp_value_from_extern_ref_word(fz_map_entry_value(map_ref, index));
+        }
+        "fz_spawn" | "fz_spawn_opt" | "fz_send" | "fz_self" | "fz_make_resource" => {
+            let _ = tel;
+            return Err(format!(
+                "compiler2 backend interpreter does not support runtime extern `{}` yet",
+                signature.symbol
+            ));
+        }
+        _ => {}
+    }
+
+    if signature.variadic {
+        let arg_tys = marshals.ok_or_else(|| {
+            format!(
+                "variadic extern `{}` has unresolved marshal metadata in backend execution",
+                signature.symbol
+            )
+        })?;
+        if arg_tys.len() != args.len() {
+            return Err(format!(
+                "variadic extern `{}` expected {} marshal classes but saw {} args",
+                signature.symbol,
+                arg_tys.len(),
+                args.len()
+            ));
+        }
+        let fixed_count = signature.params.len();
+        let fixed = &arg_tys[..fixed_count];
+        let variadic = &arg_tys[fixed_count..];
+        let cname = CString::new(signature.symbol.as_str()).map_err(|e| format!("bad symbol name: {e}"))?;
+        let fp = unsafe { fz_extern_symbol_addr(cname.as_ptr()) };
+        if fp == 0 {
+            return Err(format!("dlsym: symbol `{}` not found", signature.symbol));
+        }
+        let raw_args: Vec<u64> = args
+            .iter()
+            .zip(arg_tys.iter().copied())
+            .map(|(value, ty)| marshal_arg(runtime.cur_proc(), *value, ty))
+            .collect::<Result<_, _>>()?;
+        let ret = match (signature.ret, fixed, variadic) {
+            (ExternTy::I64, [ExternTy::CString, ExternTy::I64], [ExternTy::I64]) => unsafe {
+                fz_call_var_i64_cstring_i64_i64_to_i64(
+                    fp,
+                    raw_args[0] as *const c_char,
+                    raw_args[1] as i64,
+                    raw_args[2] as i64,
+                ) as u64
+            },
+            (ExternTy::I64, [ExternTy::CString], [ExternTy::I64]) => unsafe {
+                fz_call_var_i64_cstring_i64_to_i64(fp, raw_args[0] as *const c_char, raw_args[1] as i64) as u64
+            },
+            _ => {
+                return Err(format!(
+                    "unsupported variadic extern shape: {}",
+                    format_extern_shape(signature.ret, fixed, variadic)
+                ));
+            }
+        };
+        return match signature.ret {
+            ExternTy::I64 => Ok(AnyValue::Int(ret as i64)),
+            ExternTy::F64 => Ok(AnyValue::Float(f64::from_bits(ret))),
+            ExternTy::Any | ExternTy::Binary | ExternTy::CString => interp_value_from_extern_ref_word(ret),
+            ExternTy::Unit | ExternTy::Never => Ok(interp_nil_value()),
+        };
+    }
+
+    let fp = resolve_symbol(&signature.symbol)?;
+    let raw_args: Vec<u64> = args
+        .iter()
+        .zip(signature.params.iter().copied())
+        .map(|(value, ty)| marshal_arg(runtime.cur_proc(), *value, ty))
+        .collect::<Result<_, _>>()?;
+    let returns_value = !matches!(signature.ret, ExternTy::Unit | ExternTy::Never);
+    let ret = if returns_value {
+        unsafe { dispatch_fn_returning(fp, &raw_args) }
+    } else {
+        unsafe { dispatch_fn_void(fp, &raw_args) };
+        0
+    };
+    match signature.ret {
+        ExternTy::I64 => Ok(AnyValue::Int(ret as i64)),
+        ExternTy::F64 => Ok(AnyValue::Float(f64::from_bits(ret))),
+        ExternTy::Any | ExternTy::Binary | ExternTy::CString => interp_value_from_extern_ref_word(ret),
+        ExternTy::Unit | ExternTy::Never => Ok(interp_nil_value()),
     }
 }
 

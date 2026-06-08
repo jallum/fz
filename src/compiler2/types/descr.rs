@@ -216,6 +216,10 @@ impl Descr {
             .flatten()
     }
 
+    pub(super) fn atom_literals(&self) -> Option<Vec<String>> {
+        (!self.atoms.cofinite).then(|| self.atoms.set.iter().cloned().collect())
+    }
+
     pub(super) fn as_opaque_singleton(&self) -> Option<&str> {
         (!self.opaques.cofinite && self.opaques.set.len() == 1)
             .then(|| self.opaques.set.iter().next().map(String::as_str))

@@ -58,4 +58,30 @@ impl<'a> Compiler2<'a> {
     pub fn drive(&mut self) -> DriveOutcome<Job, super::FactKey> {
         self.world.drive()
     }
+
+    /// Drives one root to `BackendProgram` and runs it through the shared
+    /// interpreter runtime without reopening the legacy planner pipeline.
+    pub fn run_root_interp(&mut self, root: RootId) -> Result<i64, String> {
+        self.world.demand(Job::LowerBackendProgram(root));
+        match self.world.drive() {
+            DriveOutcome::Resolved => {}
+            DriveOutcome::Unresolved { waits } => {
+                return Err(format!(
+                    "compiler2 root {} stayed unresolved: {:?}",
+                    root.as_u32(),
+                    waits
+                ));
+            }
+            DriveOutcome::Fatal { job } => {
+                return Err(format!(
+                    "compiler2 root {} failed before interpretation: {:?}",
+                    root.as_u32(),
+                    job
+                ));
+            }
+        }
+        let program = self.world.backend_program(root);
+        let tel = self.world.tel();
+        crate::ir_interp::run_backend_main(self.world.types_mut(), tel, &program)
+    }
 }

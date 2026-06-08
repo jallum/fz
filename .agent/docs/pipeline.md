@@ -115,7 +115,8 @@ The next two rungs narrow the contract:
   callable-boundary obligations from `MaterializedProgram` plus
   `ExecutableNeed`.
 - `EmissionReadyProgram` assigns stable emission-local inventory over Compiler2
-  ids.
+  ids and carries forward the settled clause-entry dispatch each reachable
+  executable needs at runtime.
 - `BackendProgram` keeps the same closed inventory, but rewrites each
   structured body so direct calls point at executable inventory slots,
   callable-boundary arguments name the required callable-entry inventory, and
@@ -128,6 +129,7 @@ Things that belong in Compiler2 artifact facts:
 - extern marshal classes
 - effect summaries
 - callable-boundary obligations
+- settled clause-entry dispatch
 - stable emission inventory
 
 Things that do not belong there:

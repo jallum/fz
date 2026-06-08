@@ -523,6 +523,10 @@ impl Types {
         self.descr(a).as_atom_singleton().map(String::from)
     }
 
+    pub(crate) fn atom_literals(&self, a: &Ty) -> Vec<String> {
+        self.descr(a).atom_literals().unwrap_or_default()
+    }
+
     pub fn arrow_join_return(&mut self, a: &Ty) -> Ty {
         let d = {
             let cx = self.ctx();

@@ -478,6 +478,7 @@ impl<'a> World<'a> {
             &measurements! {
                 root_id: root.as_u32() as u64,
                 revision: revision,
+                atom_count: program.atom_names.len() as u64,
                 executable_count: program.executables.len() as u64,
                 callable_entry_count: program.callable_entries.len() as u64,
             },
@@ -486,6 +487,13 @@ impl<'a> World<'a> {
             },
         );
         revision
+    }
+
+    pub(crate) fn backend_program(&self, root: RootId) -> BackendProgram {
+        self.backend
+            .get(root)
+            .cloned()
+            .expect("backend programs should only be read after their fact is defined")
     }
 
     pub fn reference_module(&mut self, name: impl Into<String>) -> ModuleId {

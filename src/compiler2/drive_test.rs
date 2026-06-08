@@ -9,6 +9,7 @@ use crate::compiler2::{
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
+use crate::exec::runtime::DbgCapture;
 use crate::fz_ir::ExternTy;
 use crate::telemetry::handler::{Event, EventKind, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
@@ -2008,6 +2009,154 @@ end
     assert!(
         capture.find(&["fz", "planner"]).is_empty() && capture.find(&["fz", "codegen"]).is_empty(),
         "backend lowering should not wake the legacy planner or codegen pipelines",
+    );
+}
+
+#[test]
+fn compiler2_interp_runs_quicksort_from_backend_artifacts() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
+        text: format!(
+            "{}\nfn foo(), do: 42\nfn entry() do\n  dbg(qsort([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5]))\n  42\nend\n",
+            include_str!("../../fixtures/quicksort/input.fz")
+        ),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "entry".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let halt = compiler
+        .run_root_interp(root_id)
+        .expect("Compiler2 backend interpreter should run quicksort entry/0");
+
+    assert_eq!(
+        halt, 42,
+        "quicksort entry/0 should halt with its explicit scalar result"
+    );
+    assert_eq!(
+        dbg.lines().first().map(String::as_str),
+        Some("[1, 1, 2, 3, 3, 4, 5, 5, 5, 6, 9]"),
+        "quicksort should emit the sorted list through the shared runtime dbg hook",
+    );
+    assert_eq!(dbg.lines().len(), 1, "quicksort entry/0 should emit one dbg line");
+    assert!(
+        capture.find(&["fz", "type_infer"]).is_empty()
+            && capture.find(&["fz", "planner"]).is_empty()
+            && capture.find(&["fz", "codegen"]).is_empty(),
+        "Compiler2 interpreter runs should not reopen legacy type inference, planning, or codegen",
+    );
+}
+
+#[test]
+fn compiler2_interp_runs_enum_reduce_from_backend_artifacts() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
+        text: r#"
+fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let halt = compiler
+        .run_root_interp(root_id)
+        .expect("Compiler2 backend interpreter should run Enum.reduce main/0");
+
+    assert_eq!(halt, 15, "Enum.reduce should produce the folded integer result");
+    assert!(
+        capture.find(&["fz", "type_infer"]).is_empty()
+            && capture.find(&["fz", "planner"]).is_empty()
+            && capture.find(&["fz", "codegen"]).is_empty(),
+        "Compiler2 interpreter runs should not reopen legacy type inference, planning, or codegen",
+    );
+}
+
+#[test]
+fn compiler2_interp_runs_variadic_extern_from_backend_artifacts() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/variadic_printf_compiler2.fz".to_string()),
+        text: r#"
+extern "C" fn libc::printf(fmt :: cstring, ...) :: integer
+
+fn main() do
+  libc::printf("%d", 7)
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let halt = compiler
+        .run_root_interp(root_id)
+        .expect("Compiler2 backend interpreter should run variadic printf main/0");
+
+    assert_eq!(halt, 1, "printf(\"%d\", 7) should report one printed character");
+    assert!(
+        capture.find(&["fz", "type_infer"]).is_empty()
+            && capture.find(&["fz", "planner"]).is_empty()
+            && capture.find(&["fz", "codegen"]).is_empty(),
+        "Compiler2 interpreter runs should not reopen legacy type inference, planning, or codegen",
+    );
+}
+
+#[test]
+fn compiler2_interp_honors_typed_entry_dispatch_from_backend_artifacts() {
+    let tel = ConfiguredTelemetry::new();
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/typed_dispatch_backend_interp.fz".to_string()),
+        text: r#"
+fn check(x :: integer), do: 10
+fn check(_), do: 2
+fn main(), do: check(42) + check(:foo)
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let halt = compiler
+        .run_root_interp(root_id)
+        .expect("Compiler2 backend interpreter should honor typed entry dispatch");
+
+    assert_eq!(
+        halt, 12,
+        "typed entry dispatch should select the integer clause only for integer activations"
     );
 }
 
