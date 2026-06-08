@@ -4,6 +4,7 @@
     "fz-rh2.12.2"
   ],
   "blocks": [
+    "fz-rh2.12.10",
     "fz-rh2.12.7"
   ],
   "created": "2026-06-08T20:52:14Z",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Inner-in-symbol in compiler2/types; drop the Nominals leak from compiler2 use",
   "type": "task",
-  "updated_at": "2026-06-08T20:52:15Z"
+  "updated_at": "2026-06-08T21:15:22Z"
 }
