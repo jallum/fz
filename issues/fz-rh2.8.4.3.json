@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.8.4.2"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-rh2.8.4",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 artifacts: derive callable-entry obligations from closed use",
   "type": "task",
-  "updated_at": "2026-06-08T02:50:10Z"
+  "updated_at": "2026-06-08T03:06:53Z"
 }
