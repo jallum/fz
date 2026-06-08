@@ -22,7 +22,10 @@ use crate::type_expr::{ModuleTypeEnv, build_module_type_env_for_with_base, built
 use crate::{measurements, metadata};
 
 use super::CodeId;
-use super::artifact::{AbiReadyProgram, AbiReadyProgramMap, MaterializedProgram, MaterializedProgramMap};
+use super::artifact::{
+    AbiReadyProgram, AbiReadyProgramMap, EmissionReadyProgram, EmissionReadyProgramMap, MaterializedProgram,
+    MaterializedProgramMap,
+};
 use super::body::{LoweredBody, LoweredBodyMap};
 use super::code::CodeMap;
 use super::deps::UnresolvedWait;
@@ -79,6 +82,7 @@ pub struct World<'a> {
     semantic_closures: SemanticClosureMap,
     artifacts: MaterializedProgramMap,
     abi_ready: AbiReadyProgramMap,
+    emission_ready: EmissionReadyProgramMap,
     roots: RootMap,
     namespaces: NamespaceStore,
     types: Types,
@@ -123,6 +127,7 @@ impl<'a> World<'a> {
             semantic_closures: SemanticClosureMap::new(),
             artifacts: MaterializedProgramMap::new(),
             abi_ready: AbiReadyProgramMap::new(),
+            emission_ready: EmissionReadyProgramMap::new(),
             roots: RootMap::new(),
             namespaces: NamespaceStore::new(),
             types: Types::new(),
@@ -424,6 +429,31 @@ impl<'a> World<'a> {
                 root_id: root.as_u32() as u64,
                 revision: revision,
                 executable_count: program.executables.len() as u64,
+                callable_entry_count: program.callable_entries.len() as u64,
+            },
+            &metadata! {
+                program: opaque(&program),
+            },
+        );
+        revision
+    }
+
+    pub(crate) fn abi_ready_program(&self, root: RootId) -> AbiReadyProgram {
+        self.abi_ready
+            .get(root)
+            .cloned()
+            .expect("ABI-ready programs should only be read after their fact is defined")
+    }
+
+    pub(crate) fn define_emission_ready_program(&mut self, root: RootId, program: EmissionReadyProgram) -> u64 {
+        let revision = self.emission_ready.define(root, program.clone());
+        self.tel.execute(
+            &["fz", "compiler2", "emission_ready_program", "defined"],
+            &measurements! {
+                root_id: root.as_u32() as u64,
+                revision: revision,
+                executable_count: program.executables.len() as u64,
+                callable_entry_count: program.callable_entries.len() as u64,
             },
             &metadata! {
                 program: opaque(&program),

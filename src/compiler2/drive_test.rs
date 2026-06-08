@@ -2,8 +2,8 @@ use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
     AbiReadyProgram, AbiValueRepr, ActivationKey, CallSiteId, CallSiteKey, CallSiteSummary, CallableEntry,
-    ExecutableKey, FactKey, FactValue, FunctionId, FunctionRef, LoweredBody, LoweredStep, MaterializedProgram, Module,
-    ModuleId, ReturnAbi, SelectedCallee, SemanticClosure, Ty, ValueId,
+    EmissionReadyProgram, ExecutableKey, FactKey, FactValue, FunctionId, FunctionRef, LoweredBody, LoweredStep,
+    MaterializedProgram, Module, ModuleId, ReturnAbi, SelectedCallee, SemanticClosure, Ty, ValueId,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
@@ -28,6 +28,7 @@ type CallsiteDefs = Rc<RefCell<Vec<CallsiteDefinedRecord>>>;
 type SemanticClosedDefs = Rc<RefCell<Vec<SemanticClosedRecord>>>;
 type MaterializedProgramDefs = Rc<RefCell<Vec<MaterializedProgramRecord>>>;
 type AbiReadyProgramDefs = Rc<RefCell<Vec<AbiReadyProgramRecord>>>;
+type EmissionReadyProgramDefs = Rc<RefCell<Vec<EmissionReadyProgramRecord>>>;
 type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
 
 fn presence(fact: FactKey, revision: u64) -> (FactKey, FactValue) {
@@ -1401,6 +1402,249 @@ fn main(), do: apply(&missing/1, 42)
     assert!(
         metadata_str(&diagnostic, "message").contains("missing/1"),
         "the fatal should identify the unresolved named callable boundary",
+    );
+}
+
+#[test]
+fn compiler2_emission_ready_projects_only_the_closed_quicksort_inventory() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let emission_ready = EmissionReadyProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "emission_ready_program", "defined"],
+        emission_ready.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
+        text: format!(
+            "{}\nfn foo(), do: 42\n",
+            include_str!("../../fixtures/quicksort/input.fz")
+        ),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "emission-ready projection should publish only the closed quicksort executable inventory",
+    );
+
+    let program = emission_ready.last(root_id).program;
+    let main_id = function_id(&functions, "main", 0);
+    let qsort_id = function_id(&functions, "qsort", 1);
+    let partition_id = function_id(&functions, "partition", 4);
+    let append_id = function_id(&functions, "append", 2);
+    let foo_id = function_id(&functions, "foo", 0);
+    let executable_ids = program
+        .executables
+        .iter()
+        .map(|executable| executable.key.activation.function)
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        program.executables[program.entry].key.activation.function, main_id,
+        "the emission-ready entry should point at the main/0 executable inventory slot",
+    );
+    assert!(
+        executable_ids.contains(&main_id)
+            && executable_ids.contains(&qsort_id)
+            && executable_ids.contains(&partition_id)
+            && executable_ids.contains(&append_id),
+        "emission inventory should keep the closed quicksort executable frontier",
+    );
+    assert!(
+        !executable_ids.contains(&foo_id),
+        "emission inventory should keep uncalled foo/0 out of the backend handoff",
+    );
+    assert!(
+        program.callable_entries.is_empty(),
+        "quicksort should not produce callable-entry inventory",
+    );
+
+    let (_, main_exec) = emission_ready_executable(&program, main_id);
+    let qsort_edge = main_exec
+        .call_edges
+        .iter()
+        .find(|edge| program.executables[edge.callee].key.activation.function == qsort_id)
+        .expect("emission-ready main/0 -> qsort/1 call edge");
+    assert_eq!(
+        program.executables[qsort_edge.callee].key.activation.function, qsort_id,
+        "emission-ready call edges should resolve through executable inventory ids",
+    );
+
+    let emission_outputs = outputs
+        .take(Job::DeriveEmissionReady(root_id))
+        .expect("DeriveEmissionReady job effects for quicksort root");
+    assert!(
+        emission_outputs
+            .iter()
+            .all(|(fact, _)| *fact == FactKey::EmissionReadyProgram(root_id)),
+        "emission-ready projection should publish only the emission-ready fact",
+    );
+    assert!(
+        capture.find(&["fz", "planner"]).is_empty() && capture.find(&["fz", "codegen"]).is_empty(),
+        "deriving emission inventory should not wake the legacy planner or codegen pipelines",
+    );
+    assert!(
+        capture
+            .find(&["fz", "compiler2", "emission_ready_program", "defined"])
+            .into_iter()
+            .all(|event| event.metadata.len() == 0),
+        "generic capture should not durable-copy opaque emission-ready metadata",
+    );
+}
+
+#[test]
+fn compiler2_emission_ready_includes_the_required_enum_reduce_callable_entries() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    let emission_ready = EmissionReadyProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "emission_ready_program", "defined"],
+        emission_ready.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
+        text: r#"
+fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "emission-ready projection should inventory the surviving Enum.reduce callable entries",
+    );
+
+    let main_id = function_id(&functions, "main", 0);
+    let enum_reduce_id = function_id_in_module(&functions, &modules, "Enum", "reduce", 3);
+    let user_reducer_id = generated_functions_owned_by(&functions, main_id)
+        .into_iter()
+        .next()
+        .expect("generated user reducer")
+        .function_id;
+    let bridge_reducer_id = generated_functions_owned_by(&functions, enum_reduce_id)
+        .into_iter()
+        .next()
+        .expect("generated bridge reducer")
+        .function_id;
+
+    let program = emission_ready.last(root_id).program;
+    let callable_functions = program
+        .callable_entries
+        .iter()
+        .map(|entry| program.executables[entry.target].key.activation.function)
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        callable_functions,
+        HashSet::from([user_reducer_id, bridge_reducer_id]),
+        "the emission-ready callable inventory should contain exactly the user reducer and bridge reducer entries",
+    );
+
+    let (_, user_entry) = emission_ready_callable_entry(&program, user_reducer_id);
+    assert_eq!(
+        user_entry.capture_count, 0,
+        "the user reducer should stay a zero-capture callable entry",
+    );
+    assert_eq!(
+        program.executables[user_entry.target].key.activation.input.len(),
+        2,
+        "the user reducer executable inventory slot should specialize over its two runtime call arguments",
+    );
+    assert_eq!(
+        program.executables[user_entry.target].return_abi,
+        ReturnAbi::Value(AbiValueRepr::RawInt),
+        "the user reducer executable should return a raw integer lane",
+    );
+
+    let (_, bridge_entry) = emission_ready_callable_entry(&program, bridge_reducer_id);
+    assert_eq!(
+        bridge_entry.capture_count, 1,
+        "the bridge reducer should keep its captured reducer in the callable-entry inventory",
+    );
+    assert_eq!(
+        program.executables[bridge_entry.target].key.activation.input.len(),
+        3,
+        "the bridge reducer executable inventory slot should include one capture plus two runtime args",
+    );
+    assert_eq!(
+        program.executables[bridge_entry.target].return_abi,
+        ReturnAbi::Value(AbiValueRepr::ValueRef),
+        "the bridge reducer executable should return the tagged reduce-step tuple as a value reference",
+    );
+}
+
+#[test]
+fn compiler2_emission_ready_revision_stays_stable_for_identical_recompute() {
+    let tel = ConfiguredTelemetry::new();
+    let emission_ready = EmissionReadyProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "emission_ready_program", "defined"],
+        emission_ready.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
+        text: format!(
+            "{}\nfn foo(), do: 42\n",
+            include_str!("../../fixtures/quicksort/input.fz")
+        ),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "initial emission-ready derivation should settle for quicksort",
+    );
+    assert!(
+        compiler.demand(Job::DeriveEmissionReady(root_id)),
+        "explicitly re-demanding unchanged emission inventory should enqueue one fresh derivation",
+    );
+    assert_resolved(
+        compiler.drive(),
+        "re-deriving unchanged emission inventory should resolve without bumping the revision",
+    );
+
+    let records = emission_ready.records(root_id);
+    assert_eq!(
+        records.len(),
+        2,
+        "the emission-ready program should have one initial definition and one unchanged re-derivation",
+    );
+    assert_eq!(
+        records[0].revision, records[1].revision,
+        "identical emission-ready state should keep the same revision number across recomputation",
+    );
+    assert_eq!(
+        records[0].program, records[1].program,
+        "identical emission-ready recomputation should produce byte-for-byte equal program facts",
     );
 }
 
@@ -3448,6 +3692,13 @@ struct AbiReadyProgramRecord {
 }
 
 #[derive(Debug, Clone)]
+struct EmissionReadyProgramRecord {
+    root_id: crate::compiler2::RootId,
+    revision: u64,
+    program: EmissionReadyProgram,
+}
+
+#[derive(Debug, Clone)]
 struct ReturnTypeRecord {
     activation: ActivationKey,
     return_ty: Ty,
@@ -3479,6 +3730,10 @@ struct MaterializedProgramCapture {
 
 struct AbiReadyProgramCapture {
     defs: AbiReadyProgramDefs,
+}
+
+struct EmissionReadyProgramCapture {
+    defs: EmissionReadyProgramDefs,
 }
 
 struct EntryDispatchCapture {
@@ -3752,6 +4007,39 @@ impl AbiReadyProgramCapture {
     }
 }
 
+impl EmissionReadyProgramCapture {
+    fn new() -> Self {
+        Self {
+            defs: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(EmissionReadyProgramCaptureHandler {
+            defs: self.defs.clone(),
+        })
+    }
+
+    fn last(&self, root_id: crate::compiler2::RootId) -> EmissionReadyProgramRecord {
+        self.defs
+            .borrow()
+            .iter()
+            .rev()
+            .find(|record| record.root_id == root_id)
+            .cloned()
+            .unwrap_or_else(|| panic!("emission_ready_program.defined for {root_id:?}"))
+    }
+
+    fn records(&self, root_id: crate::compiler2::RootId) -> Vec<EmissionReadyProgramRecord> {
+        self.defs
+            .borrow()
+            .iter()
+            .filter(|record| record.root_id == root_id)
+            .cloned()
+            .collect()
+    }
+}
+
 impl GuardDispatchCapture {
     fn new() -> Self {
         Self {
@@ -3860,6 +4148,10 @@ struct MaterializedProgramCaptureHandler {
 
 struct AbiReadyProgramCaptureHandler {
     defs: AbiReadyProgramDefs,
+}
+
+struct EmissionReadyProgramCaptureHandler {
+    defs: EmissionReadyProgramDefs,
 }
 
 struct EntryDispatchCaptureHandler {
@@ -4114,6 +4406,32 @@ impl Handler for AbiReadyProgramCaptureHandler {
     }
 }
 
+impl Handler for EmissionReadyProgramCaptureHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if event.name != ["fz", "compiler2", "emission_ready_program", "defined"] || event.kind != EventKind::Event {
+            return;
+        }
+        let Some(Value::U64(root_id)) = event.measurements.get("root_id") else {
+            return;
+        };
+        let Some(Value::U64(revision)) = event.measurements.get("revision") else {
+            return;
+        };
+        let Some(program) = event
+            .metadata
+            .get("program")
+            .and_then(|value| value.downcast_ref::<EmissionReadyProgram>())
+        else {
+            return;
+        };
+        self.defs.borrow_mut().push(EmissionReadyProgramRecord {
+            root_id: crate::compiler2::RootId::from_u32(*root_id as u32),
+            revision: *revision,
+            program: program.clone(),
+        });
+    }
+}
+
 impl Handler for GuardDispatchCaptureHandler {
     fn handle(&self, event: &Event<'_, '_, '_>) {
         if event.name != ["fz", "compiler2", "guard_dispatch", "defined"] || event.kind != EventKind::Event {
@@ -4243,6 +4561,30 @@ fn abi_ready_callable_entry(program: &AbiReadyProgram, function: FunctionId) -> 
         .iter()
         .find(|entry| entry.target.activation.function == function)
         .unwrap_or_else(|| panic!("ABI-ready callable entry for {function:?}"))
+}
+
+fn emission_ready_executable(
+    program: &EmissionReadyProgram,
+    function: FunctionId,
+) -> (usize, &crate::compiler2::EmissionReadyExecutable) {
+    program
+        .executables
+        .iter()
+        .enumerate()
+        .find(|(_, executable)| executable.key.activation.function == function)
+        .unwrap_or_else(|| panic!("emission-ready executable for {function:?}"))
+}
+
+fn emission_ready_callable_entry(
+    program: &EmissionReadyProgram,
+    function: FunctionId,
+) -> (usize, &crate::compiler2::EmissionReadyCallableEntry) {
+    program
+        .callable_entries
+        .iter()
+        .enumerate()
+        .find(|(_, entry)| program.executables[entry.target].key.activation.function == function)
+        .unwrap_or_else(|| panic!("emission-ready callable entry for {function:?}"))
 }
 
 fn direct_call_in_body(body: LoweredBody, callee: FunctionId) -> (CallSiteId, ValueId) {

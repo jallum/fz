@@ -29,6 +29,7 @@ pub enum Job {
     SealSemanticClosure(RootId),
     MaterializeRoot(RootId),
     DeriveAbiReady(RootId),
+    DeriveEmissionReady(RootId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -52,6 +53,7 @@ pub enum FactKey {
     SemanticClosed(RootId),
     MaterializedProgram(RootId),
     AbiReadyProgram(RootId),
+    EmissionReadyProgram(RootId),
 }
 
 pub type WorkGraph = Scheduler<Job, FactKey>;

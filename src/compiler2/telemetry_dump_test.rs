@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
 
-use crate::compiler2::artifact::MaterializedProgram;
+use crate::compiler2::artifact::{EmissionReadyProgram, MaterializedProgram};
 use crate::compiler2::drive::{FactKey, Job, JobEffects};
 use crate::compiler2::protocol::{ProtocolCallback, ProtocolImpl, ProtocolImplKey};
 use crate::compiler2::semantic::{ActivationAnalysis, CallSiteSummary, SemanticClosure};
@@ -197,6 +197,7 @@ fn opaque_debug(value: &Value<'_>) -> Option<(&'static str, String)> {
     try_debug!(Ty);
     try_debug!(SemanticClosure);
     try_debug!(MaterializedProgram);
+    try_debug!(EmissionReadyProgram);
     try_debug!(LoweredBody);
     try_debug!(PatternGuardDispatch<Ty>);
     try_debug!(PatternDispatchPlan<Ty>);

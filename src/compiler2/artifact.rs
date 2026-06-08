@@ -3,6 +3,9 @@
 //! `MaterializedProgram` is the first backend-owned snapshot for one closed
 //! root. `AbiReadyProgram` is the next projection above it: the same closed
 //! executable frontier with ABI lanes and return contracts made explicit.
+//! `EmissionReadyProgram` is the final Compiler2-owned handoff: the closed
+//! frontier reordered into stable emission inventory with local index-based
+//! references instead of hash-map lookups over keys.
 
 use std::collections::HashMap;
 
@@ -44,6 +47,14 @@ pub struct AbiReadyProgram {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct EmissionReadyProgram {
+    pub abi_ready_revision: u64,
+    pub entry: usize,
+    pub executables: Vec<EmissionReadyExecutable>,
+    pub callable_entries: Vec<EmissionReadyCallableEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct AbiReadyExecutable {
     pub return_ty: Ty,
     pub return_abi: ReturnAbi,
@@ -70,6 +81,32 @@ pub struct CallableEntry {
     pub param_reprs: Vec<AbiValueRepr>,
     pub return_ty: Ty,
     pub return_abi: ReturnAbi,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EmissionReadyExecutable {
+    pub key: ExecutableKey,
+    pub return_ty: Ty,
+    pub return_abi: ReturnAbi,
+    pub param_reprs: Vec<AbiValueRepr>,
+    pub value_types: HashMap<ValueId, Ty>,
+    pub value_reprs: HashMap<ValueId, AbiValueRepr>,
+    pub effects: EffectSummary,
+    pub body: LoweredBody,
+    pub call_edges: Vec<EmissionReadyCallEdge>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmissionReadyCallEdge {
+    pub callsite: CallSiteId,
+    pub callee: usize,
+    pub extern_marshals: Option<Vec<ExternTy>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmissionReadyCallableEntry {
+    pub target: usize,
+    pub capture_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -136,6 +173,11 @@ pub struct AbiReadyProgramMap {
     inner: RootProjectionMap<AbiReadyProgram>,
 }
 
+#[derive(Debug, Default)]
+pub struct EmissionReadyProgramMap {
+    inner: RootProjectionMap<EmissionReadyProgram>,
+}
+
 impl MaterializedProgramMap {
     pub fn new() -> Self {
         Self::default()
@@ -160,6 +202,20 @@ impl AbiReadyProgramMap {
     }
 
     pub fn get(&self, root: RootId) -> Option<&AbiReadyProgram> {
+        self.inner.get(root)
+    }
+}
+
+impl EmissionReadyProgramMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn define(&mut self, root: RootId, program: EmissionReadyProgram) -> u64 {
+        self.inner.define(root, program)
+    }
+
+    pub fn get(&self, root: RootId) -> Option<&EmissionReadyProgram> {
         self.inner.get(root)
     }
 }

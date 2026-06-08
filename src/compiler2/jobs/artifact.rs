@@ -15,6 +15,7 @@ use crate::parser::lexer::Tok;
 
 use super::super::artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiValueRepr, CallableEntry, EffectSummary,
+    EmissionReadyCallEdge, EmissionReadyCallableEntry, EmissionReadyExecutable, EmissionReadyProgram,
     MaterializedCallEdge, MaterializedExecutable, MaterializedProgram, ReturnAbi,
 };
 use super::super::body::{CallArg, CallSiteId, LoweredBlock, LoweredBody, LoweredStep, ValueId};
@@ -136,6 +137,82 @@ pub(super) fn derive_abi_ready(world: &mut World<'_>, root_id: RootId) -> Result
     Ok(JobEffects {
         reads,
         outputs: vec![(FactKey::AbiReadyProgram(root_id), FactValue::presence(revision))],
+        follow_up: vec![Job::DeriveEmissionReady(root_id)],
+        ..JobEffects::default()
+    })
+}
+
+/// Derives one emission-ready inventory from one ABI-ready closed artifact.
+///
+/// This job consumes only `AbiReadyProgram(root)`. It assigns stable
+/// emission-local executable indices, rewrites executable cross-references to
+/// those indices, and preserves Compiler2 keys only as descriptive inventory
+/// payload.
+pub(super) fn derive_emission_ready(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
+    let abi_ready_fact = FactKey::AbiReadyProgram(root_id);
+    let Some(abi_ready_revision) = world.fact_revision(abi_ready_fact.clone()) else {
+        return Ok(JobEffects::wait_on(abi_ready_fact, [Job::DeriveAbiReady(root_id)]));
+    };
+
+    let reads = vec![abi_ready_fact];
+    let abi_ready = world.abi_ready_program(root_id);
+
+    let mut executable_keys = abi_ready.executables.keys().cloned().collect::<Vec<_>>();
+    executable_keys.sort_by(compare_executable_keys);
+
+    let executable_index = executable_keys
+        .iter()
+        .enumerate()
+        .map(|(index, key)| (key.clone(), index))
+        .collect::<HashMap<_, _>>();
+
+    let executables = executable_keys
+        .into_iter()
+        .map(|key| derive_emission_ready_executable(world, root_id, &abi_ready, &executable_index, key))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut callable_entries = abi_ready
+        .callable_entries
+        .iter()
+        .map(|entry| {
+            Ok(EmissionReadyCallableEntry {
+                target: executable_index.get(&entry.target).copied().ok_or_else(|| {
+                    incomplete_semantic_plan(
+                        world,
+                        root_id,
+                        format!(
+                            "callable entry target {:?} is missing from the ABI-ready executable inventory",
+                            entry.target
+                        ),
+                    )
+                })?,
+                capture_count: entry.capture_count,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    callable_entries.sort_by(compare_emission_callable_entries);
+
+    let entry = executable_index.get(&abi_ready.entry).copied().ok_or_else(|| {
+        incomplete_semantic_plan(
+            world,
+            root_id,
+            format!(
+                "root entry {:?} is missing from the ABI-ready executable inventory",
+                abi_ready.entry
+            ),
+        )
+    })?;
+
+    let program = EmissionReadyProgram {
+        abi_ready_revision,
+        entry,
+        executables,
+        callable_entries,
+    };
+    let revision = world.define_emission_ready_program(root_id, program);
+    Ok(JobEffects {
+        reads,
+        outputs: vec![(FactKey::EmissionReadyProgram(root_id), FactValue::presence(revision))],
         ..JobEffects::default()
     })
 }
@@ -491,6 +568,51 @@ fn derive_abi_ready_executable(
     }
 }
 
+fn derive_emission_ready_executable(
+    world: &World<'_>,
+    root_id: RootId,
+    abi_ready: &AbiReadyProgram,
+    executable_index: &HashMap<ExecutableKey, usize>,
+    key: ExecutableKey,
+) -> Result<EmissionReadyExecutable, FatalError> {
+    let executable = abi_ready
+        .executables
+        .get(&key)
+        .expect("sorted executable keys should resolve in the ABI-ready program");
+    let mut call_edges = executable
+        .call_edges
+        .iter()
+        .map(|(callsite, edge)| {
+            Ok(EmissionReadyCallEdge {
+                callsite: *callsite,
+                callee: executable_index.get(&edge.callee).copied().ok_or_else(|| {
+                    incomplete_semantic_plan(
+                        world,
+                        root_id,
+                        format!(
+                            "ABI-ready call edge {:?} -> {:?} points outside the executable inventory",
+                            key, edge.callee
+                        ),
+                    )
+                })?,
+                extern_marshals: edge.extern_marshals.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    call_edges.sort_by_key(|edge| edge.callsite.as_u32());
+    Ok(EmissionReadyExecutable {
+        key,
+        return_ty: executable.return_ty,
+        return_abi: executable.return_abi.clone(),
+        param_reprs: executable.param_reprs.clone(),
+        value_types: executable.value_types.clone(),
+        value_reprs: executable.value_reprs.clone(),
+        effects: executable.effects,
+        body: executable.body.clone(),
+        call_edges,
+    })
+}
+
 fn derive_callable_entries(
     world: &mut World<'_>,
     root_id: RootId,
@@ -813,6 +935,39 @@ fn compare_callable_entries(left: &CallableEntry, right: &CallableEntry) -> std:
         .cmp(&right.target.activation.function.as_u32())
         .then_with(|| left.capture_count.cmp(&right.capture_count))
         .then_with(|| left.target.activation.input.cmp(&right.target.activation.input))
+}
+
+fn compare_executable_keys(left: &ExecutableKey, right: &ExecutableKey) -> std::cmp::Ordering {
+    left.activation
+        .root
+        .as_u32()
+        .cmp(&right.activation.root.as_u32())
+        .then_with(|| {
+            left.activation
+                .function
+                .as_u32()
+                .cmp(&right.activation.function.as_u32())
+        })
+        .then_with(|| left.activation.input.cmp(&right.activation.input))
+        .then_with(|| compare_executable_needs(left.need, right.need))
+}
+
+fn compare_executable_needs(left: ExecutableNeed, right: ExecutableNeed) -> std::cmp::Ordering {
+    match (left, right) {
+        (ExecutableNeed::Value, ExecutableNeed::Value) => std::cmp::Ordering::Equal,
+        (ExecutableNeed::Value, ExecutableNeed::TupleFields(_)) => std::cmp::Ordering::Less,
+        (ExecutableNeed::TupleFields(_), ExecutableNeed::Value) => std::cmp::Ordering::Greater,
+        (ExecutableNeed::TupleFields(left), ExecutableNeed::TupleFields(right)) => left.cmp(&right),
+    }
+}
+
+fn compare_emission_callable_entries(
+    left: &EmissionReadyCallableEntry,
+    right: &EmissionReadyCallableEntry,
+) -> std::cmp::Ordering {
+    left.target
+        .cmp(&right.target)
+        .then_with(|| left.capture_count.cmp(&right.capture_count))
 }
 
 fn has_capture_prefix(input: &[Ty], captures: &[Ty]) -> bool {
