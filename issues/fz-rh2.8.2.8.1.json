@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-08T11:36:42Z",
   "created": "2026-06-08T11:32:40Z",
   "description": "# Compiler2 semantics/tests: make quicksort frontier contract explicit\n\nGoal: the quicksort semantic-closure contract should describe the real recursive activation frontier, not an obsolete one.\n\nSignal:\n- `cargo test --lib compiler2::drive_test::compiler2_quicksort_root_closes_with_a_finite_recursive_frontier -- --exact --nocapture` passes\n- the test explains why `partition/4` keeps two stable activations while `append/2` collapses only its non-dispatch recursion\n\nWhy:\n- telemetry shows Compiler2 already converges to two stable `partition/4` activation keys\n- `partition/4` dispatch depends on recursive pivot/rest slots, so flattening it to one activation would contradict current keying semantics rather than prove a bug\n\nChange:\n- tighten the frontier test to assert the real `partition/4` contract\n- keep the assertion focused on semantic meaning, not raw type-id accidents\n- close `fz-rh2.8.2.8` if the only issue is the stale test contract",
   "id": "fz-rh2.8.2.8.1",
   "labels": [],
   "parent": "fz-rh2.8.2.8",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 semantics/tests: make quicksort frontier contract explicit",
   "type": "task",
-  "updated_at": "2026-06-08T11:33:03Z"
+  "updated_at": "2026-06-08T11:36:42Z"
 }
