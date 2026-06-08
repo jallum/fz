@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.8.2.1"
+  ],
   "blocks": [],
   "created": "2026-06-08T03:52:20Z",
   "description": "Goal: run the IR interpreter from Compiler2-owned backend artifacts instead of old planner state. Signal: the Compiler2 interpreter path consumes the new backend IR + emission facts directly and never re-runs plan_module_with_role or resolve_module_types to fill gaps.\n\nChange:\n- Add a Compiler2 interpreter entry path that consumes the backend IR produced by fz-rh2.8.2.1.\n- Remove Compiler2 interpreter dependence on ModulePlan planning/type-resolution fallback.\n- Thread callable-entry, return-ABI, and extern facts from Compiler2 artifacts into the interpreter code image/runtime seam.\n- Add runtime tests for quicksort, Enum.reduce, and variadic extern via the Compiler2 interpreter path.\n\nWhy:\n- The interpreter is the smallest full consumer of the backend handoff and proves the lowered artifact surface is executable without planner rediscovery.\n\nChecks:\n- Compiler2 interpreter runs do not call plan_module_with_role or resolve_module_types.\n- Runtime behavior matches the existing fixtures and artifact contracts.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 backends: run the interpreter from Compiler2 artifacts",
   "type": "task",
-  "updated_at": "2026-06-08T03:52:20Z"
+  "updated_at": "2026-06-08T03:52:42Z"
 }
