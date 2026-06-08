@@ -6,11 +6,10 @@
 
 use std::collections::HashMap;
 
-use crate::types::Ty;
-
 use super::body::{CallSiteId, LoweredBody};
 use super::identity::{ExecutableKey, ExecutableNeed, RootId};
 use super::semantic::SelectedCallee;
+use super::types::Ty;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MaterializedProgram {

@@ -6,10 +6,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::types::{Ty, Types};
-
 use super::body::CallSiteId;
 use super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
+use super::types::{Ty, Types};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CallSiteKey {
@@ -95,14 +94,13 @@ impl ActivationMap {
         self.slots.get(key)
     }
 
-    pub fn define_return(&mut self, key: &ActivationKey, return_ty: Ty) -> u64 {
+    pub fn define_return(&mut self, types: &mut Types, key: &ActivationKey, return_ty: Ty) -> u64 {
         let slot = self.slots.entry(key.clone()).or_insert_with(ActivationSlot::new);
         match &slot.return_ty {
             Some(current) => {
                 let next = if current == &return_ty {
-                    current.clone()
+                    *current
                 } else {
-                    let mut types = crate::types::new();
                     types.refine_widen(current, &return_ty)
                 };
                 if &next != current {

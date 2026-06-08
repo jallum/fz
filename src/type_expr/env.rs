@@ -86,9 +86,9 @@ where
 /// Opaque names declared via the empty path are unqualified, which means
 /// they have no module owner for visibility purposes (see fz-swt.6).
 #[cfg(test)]
-pub fn build_module_type_env<T>(t: &mut T, attrs: &[Attribute]) -> Result<ModuleTypeEnv, TypeExprError>
+pub fn build_module_type_env<T>(t: &mut T, attrs: &[Attribute]) -> Result<ModuleTypeEnv<T::Ty>, TypeExprError>
 where
-    T: Types<Ty = Ty>,
+    T: Types,
 {
     build_module_type_env_for_with_base(t, attrs, "", &ModuleTypeEnv::new()).map(|(env, _o, _b)| env)
 }
@@ -106,10 +106,10 @@ pub fn build_module_type_env_for_with_base<T>(
     t: &mut T,
     attrs: &[Attribute],
     module_path: &str,
-    base_env: &ModuleTypeEnv,
-) -> Result<(ModuleTypeEnv, OpaqueInnerTypes, BrandInnerTypes), TypeExprError>
+    base_env: &ModuleTypeEnv<T::Ty>,
+) -> Result<ModuleTypeBuild<T::Ty>, TypeExprError>
 where
-    T: Types<Ty = Ty>,
+    T: Types,
 {
     let mut pending: HashMap<String, &TypeAliasDecl> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
@@ -136,7 +136,7 @@ where
     if pending.is_empty() && param_aliases.is_empty() {
         return Ok((base_env.clone(), OpaqueInnerTypes::new(), BrandInnerTypes::new()));
     }
-    let mut env: ModuleTypeEnv = base_env.clone();
+    let mut env: ModuleTypeEnv<T::Ty> = base_env.clone();
     let mut resolved: HashSet<String> = HashSet::new();
     for decl in param_aliases {
         env.insert_param_alias(
@@ -151,11 +151,11 @@ where
     // fz-swt.8 — Side map: qualified opaque tag → inner T parsed from
     // the body following `opaque`. Populated alongside `env` so the
     // planner's `.value` lowering can look up T without re-parsing.
-    let mut opaque_inners: OpaqueInnerTypes = OpaqueInnerTypes::new();
+    let mut opaque_inners: OpaqueInnerTypes<T::Ty> = OpaqueInnerTypes::new();
     // fz-axu.3 (K2) — parallel side map: qualified brand tag → inner T
     // parsed from the body following `refines`. Consumed by K4's
     // is_subtype rule and K5 erasure.
-    let mut brand_inners: BrandInnerTypes = BrandInnerTypes::new();
+    let mut brand_inners: BrandInnerTypes<T::Ty> = BrandInnerTypes::new();
     // Fixed-point resolve: keep walking until no progress.
     loop {
         let mut progressed = false;
@@ -351,7 +351,7 @@ fn validate_type_alias_params(decl: &TypeAliasDecl) -> Result<(), TypeExprError>
     Ok(())
 }
 
-fn validate_param_aliases<T: Types<Ty = Ty>>(t: &mut T, env: &ModuleTypeEnv) -> Result<(), TypeExprError> {
+fn validate_param_aliases<T: Types>(t: &mut T, env: &ModuleTypeEnv<T::Ty>) -> Result<(), TypeExprError> {
     for ((name, arity), alias) in env.param_aliases() {
         let mut local = env.clone();
         for (idx, param) in alias.params.iter().enumerate() {
@@ -403,10 +403,10 @@ fn starts_with_resource_constructor(toks: &[Token]) -> bool {
 /// the per-program `opaque_inners` side map so the planner's `.value`
 /// accessor sees the user's intended payload type rather than the
 /// unqualified built-in `"resource"` opaque.
-fn parse_resource_payload_type<T: Types<Ty = Ty>>(
+fn parse_resource_payload_type<T: Types>(
     t: &mut T,
     toks: &[Token],
-    env: &ModuleTypeEnv,
+    env: &ModuleTypeEnv<T::Ty>,
 ) -> Result<T::Ty, TypeExprError> {
     // Drop the leading `resource (` and the trailing `)`. Caller has
     // already verified the shape via `starts_with_resource_constructor`, so the

@@ -1,12 +1,23 @@
 use std::collections::HashSet;
 
-use super::{Agenda, DependencyIndex, FactValue, Scheduler};
-use crate::types::{ClosureTarget, ClosureTypes, Types};
+use super::{Agenda, AppliedStep, ClosureTarget, DependencyIndex, FactValue, Scheduler, Types};
 
 type TestScheduler = Scheduler<u32, &'static str>;
 
 fn presence(fact: &'static str, revision: u64) -> (&'static str, FactValue) {
     (fact, FactValue::presence(revision))
+}
+
+fn complete(
+    scheduler: &mut TestScheduler,
+    types: &mut Types,
+    job: u32,
+    reads: HashSet<&'static str>,
+    waits: HashSet<&'static str>,
+    outputs: Vec<(&'static str, FactValue)>,
+    follow_up: Vec<u32>,
+) -> AppliedStep<u32, &'static str> {
+    scheduler.complete(types, job, reads, waits, outputs, follow_up)
 }
 
 #[test]
@@ -38,12 +49,15 @@ fn compiler2_dependency_index_wakes_exact_waiters() {
 #[test]
 fn compiler2_scheduler_replaces_contributions_and_suppresses_no_change_wakeups() {
     let mut scheduler = TestScheduler::new();
+    let mut types = Types::new();
 
     let subscriber = 2_u32;
     let writer = 1_u32;
     let fact = "foo";
 
-    let subscribe = scheduler.complete(
+    let subscribe = complete(
+        &mut scheduler,
+        &mut types,
         subscriber,
         HashSet::from([fact]),
         HashSet::new(),
@@ -63,19 +77,22 @@ fn compiler2_scheduler_replaces_contributions_and_suppresses_no_change_wakeups()
         "reads-only registration should not coalesce work"
     );
 
-    let first = scheduler.complete(
+    let first = complete(
+        &mut scheduler,
+        &mut types,
         writer,
         HashSet::new(),
         HashSet::new(),
         vec![presence(fact, 1)],
         Vec::new(),
     );
-    let first_enqueued = first.enqueued;
-    assert_eq!(first_enqueued, vec![subscriber]);
+    assert_eq!(first.enqueued, vec![subscriber]);
     assert_eq!(scheduler.facts().fingerprint(&fact), Some(1));
     assert_eq!(scheduler.pop(), Some(subscriber));
 
-    let second = scheduler.complete(
+    let second = complete(
+        &mut scheduler,
+        &mut types,
         writer,
         HashSet::new(),
         HashSet::new(),
@@ -86,45 +103,52 @@ fn compiler2_scheduler_replaces_contributions_and_suppresses_no_change_wakeups()
         second.enqueued.is_empty(),
         "no-change writes should not wake subscribers"
     );
-    let second_changed = second.changed;
     assert!(
-        second_changed.is_empty(),
+        second.changed.is_empty(),
         "same aggregate revision should suppress changes"
     );
 
-    let third = scheduler.complete(
+    let third = complete(
+        &mut scheduler,
+        &mut types,
         writer,
         HashSet::new(),
         HashSet::new(),
         vec![presence(fact, 9)],
         Vec::new(),
     );
-    let third_enqueued = third.enqueued;
-    assert_eq!(third_enqueued, vec![subscriber]);
+    assert_eq!(third.enqueued, vec![subscriber]);
     assert_eq!(scheduler.facts().fingerprint(&fact), Some(9));
 }
 
 #[test]
 fn compiler2_scheduler_retracts_old_outputs_and_recomputes_aggregate() {
     let mut scheduler = TestScheduler::new();
+    let mut types = Types::new();
     let fact = "foo";
     let subscriber = 9_u32;
 
-    scheduler.complete(
+    complete(
+        &mut scheduler,
+        &mut types,
         subscriber,
         HashSet::from([fact]),
         HashSet::new(),
         Vec::new(),
         Vec::new(),
     );
-    scheduler.complete(
+    complete(
+        &mut scheduler,
+        &mut types,
         1_u32,
         HashSet::new(),
         HashSet::new(),
         vec![presence(fact, 5)],
         Vec::new(),
     );
-    scheduler.complete(
+    complete(
+        &mut scheduler,
+        &mut types,
         2_u32,
         HashSet::new(),
         HashSet::new(),
@@ -134,31 +158,48 @@ fn compiler2_scheduler_retracts_old_outputs_and_recomputes_aggregate() {
     assert_eq!(scheduler.facts().fingerprint(&fact), Some(7));
     let _ = scheduler.pop();
 
-    let retracted = scheduler.complete(2_u32, HashSet::new(), HashSet::new(), Vec::new(), Vec::new());
-    let changed = retracted.changed;
-    let enqueued = retracted.enqueued;
+    let retracted = complete(
+        &mut scheduler,
+        &mut types,
+        2_u32,
+        HashSet::new(),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+    );
     assert_eq!(scheduler.facts().fingerprint(&fact), Some(5));
-    assert_eq!(changed.len(), 1, "retraction should change the aggregate");
+    assert_eq!(retracted.changed.len(), 1, "retraction should change the aggregate");
     assert_eq!(
-        changed[0].old_fingerprint,
+        retracted.changed[0].old_fingerprint,
         Some(7),
         "old fingerprint should reflect the old aggregate"
     );
     assert_eq!(
-        changed[0].new_fingerprint,
+        retracted.changed[0].new_fingerprint,
         Some(5),
         "new fingerprint should reflect the recomputed aggregate"
     );
-    assert_eq!(enqueued, vec![subscriber]);
+    assert_eq!(retracted.enqueued, vec![subscriber]);
 }
 
 #[test]
 fn compiler2_scheduler_wakes_waiters_when_a_matching_fact_appears() {
     let mut scheduler = TestScheduler::new();
+    let mut types = Types::new();
     let waiter = 4_u32;
 
-    scheduler.complete(waiter, HashSet::new(), HashSet::from(["foo"]), Vec::new(), Vec::new());
-    let result = scheduler.complete(
+    complete(
+        &mut scheduler,
+        &mut types,
+        waiter,
+        HashSet::new(),
+        HashSet::from(["foo"]),
+        Vec::new(),
+        Vec::new(),
+    );
+    let result = complete(
+        &mut scheduler,
+        &mut types,
         1_u32,
         HashSet::new(),
         HashSet::new(),
@@ -171,18 +212,29 @@ fn compiler2_scheduler_wakes_waiters_when_a_matching_fact_appears() {
 #[test]
 fn compiler2_scheduler_has_unresolved_tracks_waiter_presence_without_materializing_frontier() {
     let mut scheduler = TestScheduler::new();
+    let mut types = Types::new();
     assert!(
         !scheduler.has_unresolved(),
         "a fresh scheduler should not report unresolved waiters"
     );
 
-    scheduler.complete(4_u32, HashSet::new(), HashSet::from(["foo"]), Vec::new(), Vec::new());
+    complete(
+        &mut scheduler,
+        &mut types,
+        4_u32,
+        HashSet::new(),
+        HashSet::from(["foo"]),
+        Vec::new(),
+        Vec::new(),
+    );
     assert!(
         scheduler.has_unresolved(),
         "registering a waiter should make unresolved work observable"
     );
 
-    scheduler.complete(
+    complete(
+        &mut scheduler,
+        &mut types,
         1_u32,
         HashSet::new(),
         HashSet::new(),
@@ -194,7 +246,15 @@ fn compiler2_scheduler_has_unresolved_tracks_waiter_presence_without_materializi
         Some(4_u32),
         "publishing the waited-for fact should enqueue the blocked job to rerun"
     );
-    scheduler.complete(4_u32, HashSet::new(), HashSet::new(), Vec::new(), Vec::new());
+    complete(
+        &mut scheduler,
+        &mut types,
+        4_u32,
+        HashSet::new(),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+    );
     assert!(
         !scheduler.has_unresolved(),
         "once the waited-for fact appears and the waiter reruns, unresolved should clear"
@@ -204,10 +264,19 @@ fn compiler2_scheduler_has_unresolved_tracks_waiter_presence_without_materializi
 #[test]
 fn compiler2_scheduler_complete_enqueues_follow_up_jobs_once() {
     let mut scheduler = TestScheduler::new();
+    let mut types = Types::new();
     assert!(scheduler.enqueue(1));
     assert!(scheduler.enqueue(2));
 
-    let step = scheduler.complete(1, HashSet::new(), HashSet::new(), Vec::new(), vec![3, 3, 4]);
+    let step = complete(
+        &mut scheduler,
+        &mut types,
+        1,
+        HashSet::new(),
+        HashSet::new(),
+        Vec::new(),
+        vec![3, 3, 4],
+    );
 
     assert_eq!(
         step.enqueued,
@@ -229,8 +298,11 @@ fn compiler2_scheduler_complete_enqueues_follow_up_jobs_once() {
 #[test]
 fn compiler2_scheduler_reports_blocked_exact_facts() {
     let mut scheduler = TestScheduler::new();
+    let mut types = Types::new();
 
-    let step = scheduler.complete(
+    let step = complete(
+        &mut scheduler,
+        &mut types,
         1_u32,
         HashSet::new(),
         HashSet::from(["module_surface", "function_defined"]),
@@ -254,10 +326,13 @@ fn compiler2_scheduler_reports_blocked_exact_facts() {
 #[test]
 fn compiler2_scheduler_joins_input_values_and_wakes_only_when_join_changes() {
     let mut scheduler = TestScheduler::new();
+    let mut types = Types::new();
     let subscriber = 9_u32;
     let fact = "activation";
 
-    scheduler.complete(
+    complete(
+        &mut scheduler,
+        &mut types,
         subscriber,
         HashSet::from([fact]),
         HashSet::new(),
@@ -265,17 +340,19 @@ fn compiler2_scheduler_joins_input_values_and_wakes_only_when_join_changes() {
         Vec::new(),
     );
 
-    let mut types = crate::types::new();
     let int = types.int();
     let empty = types.empty_list();
-    let non_empty_int = types.non_empty_list(int.clone());
+    let non_empty_int = types.non_empty_list(int);
     let list_int = types.list(int);
+    let empty_inputs = FactValue::inputs(&mut types, vec![empty]);
 
-    let first = scheduler.complete(
+    let first = complete(
+        &mut scheduler,
+        &mut types,
         1_u32,
         HashSet::new(),
         HashSet::new(),
-        vec![(fact, FactValue::inputs(vec![empty]))],
+        vec![(fact, empty_inputs)],
         Vec::new(),
     );
     assert_eq!(
@@ -285,11 +362,14 @@ fn compiler2_scheduler_joins_input_values_and_wakes_only_when_join_changes() {
     );
     assert_eq!(scheduler.pop(), Some(subscriber));
 
-    let second = scheduler.complete(
+    let widened_inputs = FactValue::inputs(&mut types, vec![non_empty_int]);
+    let second = complete(
+        &mut scheduler,
+        &mut types,
         2_u32,
         HashSet::new(),
         HashSet::new(),
-        vec![(fact, FactValue::inputs(vec![non_empty_int.clone()]))],
+        vec![(fact, widened_inputs)],
         Vec::new(),
     );
     assert_eq!(
@@ -297,18 +377,22 @@ fn compiler2_scheduler_joins_input_values_and_wakes_only_when_join_changes() {
         vec![subscriber],
         "a contribution that widens the aggregate input should wake the subscriber"
     );
+    let expected = FactValue::inputs(&mut types, vec![list_int]);
     assert_eq!(
         scheduler.facts().slot(&fact).and_then(|slot| slot.value()),
-        Some(&FactValue::inputs(vec![list_int])),
+        Some(&expected),
         "activation-input slots should aggregate caller inputs with refine_widen"
     );
     assert_eq!(scheduler.pop(), Some(subscriber));
 
-    let third = scheduler.complete(
+    let stable_inputs = FactValue::inputs(&mut types, vec![non_empty_int]);
+    let third = complete(
+        &mut scheduler,
+        &mut types,
         2_u32,
         HashSet::new(),
         HashSet::new(),
-        vec![(fact, FactValue::inputs(vec![non_empty_int]))],
+        vec![(fact, stable_inputs)],
         Vec::new(),
     );
     assert!(
@@ -324,23 +408,29 @@ fn compiler2_scheduler_joins_input_values_and_wakes_only_when_join_changes() {
 #[test]
 fn compiler2_scheduler_preserves_equal_callable_input_identity() {
     let mut scheduler = TestScheduler::new();
+    let mut types = Types::new();
     let fact = "activation";
 
-    let mut types = crate::types::new();
     let reducer = types.fn_ref_lit(ClosureTarget(42), 2);
+    let first_inputs = FactValue::inputs(&mut types, vec![reducer]);
 
-    scheduler.complete(
+    complete(
+        &mut scheduler,
+        &mut types,
         1_u32,
         HashSet::new(),
         HashSet::new(),
-        vec![(fact, FactValue::inputs(vec![reducer.clone()]))],
+        vec![(fact, first_inputs)],
         Vec::new(),
     );
-    scheduler.complete(
+    let second_inputs = FactValue::inputs(&mut types, vec![reducer]);
+    complete(
+        &mut scheduler,
+        &mut types,
         2_u32,
         HashSet::new(),
         HashSet::new(),
-        vec![(fact, FactValue::inputs(vec![reducer]))],
+        vec![(fact, second_inputs)],
         Vec::new(),
     );
 

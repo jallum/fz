@@ -10,7 +10,7 @@ use crate::compiler2::protocol::{ProtocolCallback, ProtocolImpl, ProtocolImplKey
 use crate::compiler2::semantic::{ActivationAnalysis, CallSiteSummary, SemanticClosure};
 use crate::compiler2::{
     ActivationKey, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Function, FunctionRef, LoweredBody, Module,
-    Root, RootSubmission, UnresolvedWait,
+    Root, RootSubmission, Ty, UnresolvedWait,
 };
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch};
 use crate::telemetry::handler::{Event, EventKind, Handler};
@@ -194,12 +194,12 @@ fn opaque_debug(value: &Value<'_>) -> Option<(&'static str, String)> {
     try_debug!(ActivationKey);
     try_debug!(ActivationAnalysis);
     try_debug!(CallSiteSummary);
-    try_debug!(crate::types::Ty);
+    try_debug!(Ty);
     try_debug!(SemanticClosure);
     try_debug!(MaterializedProgram);
     try_debug!(LoweredBody);
-    try_debug!(PatternGuardDispatch);
-    try_debug!(PatternDispatchPlan);
+    try_debug!(PatternGuardDispatch<Ty>);
+    try_debug!(PatternDispatchPlan<Ty>);
     try_debug!(ProtocolCallback);
     try_debug!(ProtocolImplKey);
     try_debug!(ProtocolImpl);

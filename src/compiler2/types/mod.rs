@@ -18,6 +18,10 @@ use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 
 use crate::type_expr::opaque_owner_module;
+use crate::types::{
+    ClosureTypes as SharedClosureTypes, RenderTypes as SharedRenderTypes, Types as SharedTypes,
+    VisibilityTypes as SharedVisibilityTypes,
+};
 
 pub use crate::types::{
     CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, Nominals, OpaqueVisibilityError, Sigma,
@@ -660,6 +664,319 @@ impl Types {
 
     pub fn display_for_diag(&self, a: &Ty) -> String {
         format::display_for_diag(self.ctx(), self.descr(a))
+    }
+}
+
+impl SharedTypes for Types {
+    type Ty = Ty;
+
+    fn any(&mut self) -> Self::Ty {
+        Types::any(self)
+    }
+
+    fn none(&mut self) -> Self::Ty {
+        Types::none(self)
+    }
+
+    fn nil(&mut self) -> Self::Ty {
+        Types::nil(self)
+    }
+
+    fn bool(&mut self) -> Self::Ty {
+        Types::bool(self)
+    }
+
+    fn int(&mut self) -> Self::Ty {
+        Types::int(self)
+    }
+
+    fn int_lit(&mut self, n: i64) -> Self::Ty {
+        Types::int_lit(self, n)
+    }
+
+    fn float(&mut self) -> Self::Ty {
+        Types::float(self)
+    }
+
+    fn float_lit(&mut self, f: f64) -> Self::Ty {
+        Types::float_lit(self, f)
+    }
+
+    fn atom(&mut self) -> Self::Ty {
+        Types::atom(self)
+    }
+
+    fn atom_lit(&mut self, name: &str) -> Self::Ty {
+        Types::atom_lit(self, name)
+    }
+
+    fn type_var(&mut self, id: TypeVarId) -> Self::Ty {
+        Types::type_var(self, id)
+    }
+
+    fn resource(&mut self, payload: Self::Ty) -> Self::Ty {
+        Types::resource(self, payload)
+    }
+
+    fn arrow(&mut self, args: &[Self::Ty], ret: Self::Ty) -> Self::Ty {
+        Types::arrow(self, args, ret)
+    }
+
+    fn tuple(&mut self, elems: &[Self::Ty]) -> Self::Ty {
+        Types::tuple(self, elems)
+    }
+
+    fn empty_list(&mut self) -> Self::Ty {
+        Types::empty_list(self)
+    }
+
+    fn list(&mut self, elem: Self::Ty) -> Self::Ty {
+        Types::list(self, elem)
+    }
+
+    fn non_empty_list(&mut self, elem: Self::Ty) -> Self::Ty {
+        Types::non_empty_list(self, elem)
+    }
+
+    fn map(&mut self, fields: &[(MapKey, Self::Ty)]) -> Self::Ty {
+        Types::map(self, fields)
+    }
+
+    fn str_t(&mut self) -> Self::Ty {
+        Types::str_t(self)
+    }
+
+    fn map_top(&mut self) -> Self::Ty {
+        Types::map_top(self)
+    }
+
+    fn mint_brand(&mut self, inner: Self::Ty, name: &str) -> Self::Ty {
+        Types::mint_brand(self, inner, name)
+    }
+
+    fn opaque_of(&mut self, name: &str) -> Self::Ty {
+        Types::opaque_of(self, name)
+    }
+
+    fn brand_of(&mut self, name: &str) -> Self::Ty {
+        Types::brand_of(self, name)
+    }
+
+    fn list_element_type(&mut self, a: &Self::Ty) -> Self::Ty {
+        Types::list_element_type(self, a)
+    }
+
+    fn has_list_shape(&self, a: &Self::Ty) -> bool {
+        Types::has_list_shape(self, a)
+    }
+
+    fn resource_payload_type(&mut self, a: &Self::Ty) -> Option<Self::Ty> {
+        Types::resource_payload_type(self, a)
+    }
+
+    fn mint_owned_resource_aliases(
+        &mut self,
+        a: Self::Ty,
+        owner: &str,
+        opaque_inners: &HashMap<String, Self::Ty>,
+    ) -> Self::Ty {
+        Types::mint_owned_resource_aliases(self, a, owner, opaque_inners)
+    }
+
+    fn tuple_projections(&mut self, a: &Self::Ty, arity: usize) -> Vec<Self::Ty> {
+        Types::tuple_projections(self, a, arity)
+    }
+
+    fn tuple_field_type(&mut self, a: &Self::Ty, index: usize) -> Self::Ty {
+        Types::tuple_field_type(self, a, index)
+    }
+
+    fn max_tuple_arity(&self, a: &Self::Ty) -> usize {
+        Types::max_tuple_arity(self, a)
+    }
+
+    fn refine_map_field(&mut self, a: &Self::Ty, key: &MapKey, v: &Self::Ty) -> Self::Ty {
+        Types::refine_map_field(self, a, key, v)
+    }
+
+    fn map_field_lookup(&mut self, a: &Self::Ty, key: &MapKey) -> Option<Self::Ty> {
+        Types::map_field_lookup(self, a, key)
+    }
+
+    fn map_known_keys(&self, a: &Self::Ty) -> Vec<MapKey> {
+        Types::map_known_keys(self, a)
+    }
+
+    fn widen_for_recursive_spec_key(&mut self, a: &Self::Ty) -> Self::Ty {
+        Types::widen_for_recursive_spec_key(self, a)
+    }
+
+    fn alpha_normalize_vars(&mut self, a: &Self::Ty) -> Self::Ty {
+        Types::alpha_normalize_vars(self, a)
+    }
+
+    fn refine_widen(&mut self, a: &Self::Ty, b: &Self::Ty) -> Self::Ty {
+        Types::refine_widen(self, a, b)
+    }
+
+    fn convergence_class(&mut self, a: &Self::Ty) -> Self::Ty {
+        Types::convergence_class(self, a)
+    }
+
+    fn union(&mut self, a: Self::Ty, b: Self::Ty) -> Self::Ty {
+        Types::union(self, a, b)
+    }
+
+    fn intersect(&mut self, a: Self::Ty, b: Self::Ty) -> Self::Ty {
+        Types::intersect(self, a, b)
+    }
+
+    #[cfg(test)]
+    fn complement(&mut self, a: Self::Ty) -> Self::Ty {
+        Types::complement(self, a)
+    }
+
+    fn difference(&mut self, a: Self::Ty, b: Self::Ty) -> Self::Ty {
+        Types::difference(self, a, b)
+    }
+
+    fn is_empty(&self, a: &Self::Ty) -> bool {
+        Types::is_empty(self, a)
+    }
+
+    #[cfg(test)]
+    fn is_top(&self, a: &Self::Ty) -> bool {
+        Types::is_top(self, a)
+    }
+
+    fn is_subtype(&self, a: &Self::Ty, b: &Self::Ty) -> bool {
+        Types::is_subtype(self, a, b)
+    }
+
+    fn is_disjoint(&self, a: &Self::Ty, b: &Self::Ty) -> bool {
+        Types::is_disjoint(self, a, b)
+    }
+
+    fn is_value_disjoint(&self, a: &Self::Ty, b: &Self::Ty, nominals: Nominals<'_, Self::Ty>) -> bool {
+        Types::is_value_disjoint(self, a, b, nominals)
+    }
+
+    fn key_var_count(&self, key: &[Self::Ty]) -> usize {
+        Types::key_var_count(self, key)
+    }
+
+    fn key_subsumes_with(&self, query: &Self::Ty, key: &Self::Ty, sigma: &mut Sigma<Self::Ty>) -> bool {
+        Types::key_subsumes_with(self, query, key, sigma)
+    }
+
+    fn kinds_overlap(&self, a: &Self::Ty, b: &Self::Ty) -> bool {
+        Types::kinds_overlap(self, a, b)
+    }
+
+    fn opaque_singleton(&self, a: &Self::Ty) -> Option<String> {
+        Types::opaque_singleton(self, a)
+    }
+
+    #[cfg(test)]
+    fn brand_singleton(&self, a: &Self::Ty) -> Option<String> {
+        Types::brand_singleton(self, a)
+    }
+
+    fn is_singleton_lit(&self, a: &Self::Ty) -> bool {
+        Types::is_singleton_lit(self, a)
+    }
+
+    fn as_int_singleton(&self, a: &Self::Ty) -> Option<i64> {
+        Types::as_int_singleton(self, a)
+    }
+
+    fn as_float_singleton(&self, a: &Self::Ty) -> Option<f64> {
+        Types::as_float_singleton(self, a)
+    }
+
+    fn as_atom_singleton(&self, a: &Self::Ty) -> Option<String> {
+        Types::as_atom_singleton(self, a)
+    }
+
+    fn arrow_join_return(&mut self, a: &Self::Ty) -> Self::Ty {
+        Types::arrow_join_return(self, a)
+    }
+
+    #[cfg(test)]
+    fn tuple_lit_elems(&self, a: &Self::Ty) -> Option<Vec<Self::Ty>> {
+        Types::tuple_lit_elems(self, a)
+    }
+
+    fn instantiate(&mut self, a: &Self::Ty, sigma: &Sigma<Self::Ty>) -> Self::Ty {
+        Types::instantiate(self, a, sigma)
+    }
+
+    fn collect_instantiation_subst(&mut self, pattern: &Self::Ty, witness: &Self::Ty, sigma: &mut Sigma<Self::Ty>) {
+        Types::collect_instantiation_subst(self, pattern, witness, sigma)
+    }
+
+    fn is_integer(&self, a: &Self::Ty) -> bool {
+        Types::is_integer(self, a)
+    }
+
+    fn is_floating(&self, a: &Self::Ty) -> bool {
+        Types::is_floating(self, a)
+    }
+
+    fn is_nil(&self, a: &Self::Ty) -> bool {
+        Types::is_nil(self, a)
+    }
+
+    #[cfg(test)]
+    fn is_bool(&self, a: &Self::Ty) -> bool {
+        Types::is_bool(self, a)
+    }
+
+    #[cfg(test)]
+    fn is_atom_type(&self, a: &Self::Ty) -> bool {
+        Types::is_atom_type(self, a)
+    }
+
+    fn has_vars(&self, a: &Self::Ty) -> bool {
+        Types::has_vars(self, a)
+    }
+}
+
+impl SharedClosureTypes for Types {
+    fn fn_ref_lit(&mut self, target: ClosureTarget, n_args: usize) -> Self::Ty {
+        Types::fn_ref_lit(self, target, n_args)
+    }
+
+    fn closure_lit(&mut self, target: ClosureTarget, captures: Vec<Self::Ty>, n_args: usize) -> Self::Ty {
+        Types::closure_lit(self, target, captures, n_args)
+    }
+
+    fn closure_lit_parts(&self, a: &Self::Ty) -> Option<ClosureLitInfo<Self::Ty>> {
+        Types::closure_lit_parts(self, a)
+    }
+
+    fn callable_clauses(&mut self, a: &Self::Ty) -> Option<Vec<CallableClause<Self::Ty>>> {
+        Types::callable_clauses(self, a)
+    }
+
+    fn erase_closure_identity(&mut self, a: &Self::Ty) -> Self::Ty {
+        Types::erase_closure_identity(self, a)
+    }
+}
+
+impl SharedVisibilityTypes for Types {
+    fn check_opaque_visibility(&self, a: &Self::Ty, using_module: &str) -> Result<(), OpaqueVisibilityError> {
+        Types::check_opaque_visibility(self, a, using_module)
+    }
+}
+
+impl SharedRenderTypes for Types {
+    fn display(&self, a: &Self::Ty) -> String {
+        Types::display(self, a)
+    }
+
+    fn display_for_diag(&self, a: &Self::Ty) -> String {
+        Types::display_for_diag(self, a)
     }
 }
 

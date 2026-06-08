@@ -5,6 +5,7 @@ use std::hash::Hash;
 use super::agenda::Agenda;
 use super::deps::{DependencyIndex, UnresolvedWait};
 use super::facts::{FactChange, FactTable, FactValue};
+use super::types::Types;
 
 #[derive(Debug, Clone)]
 pub struct AppliedStep<J, F> {
@@ -80,6 +81,7 @@ where
 
     pub fn complete(
         &mut self,
+        types: &mut Types,
         job: J,
         reads: HashSet<F>,
         waits: HashSet<F>,
@@ -91,7 +93,9 @@ where
         self.deps.replace_waits(job.clone(), waits);
 
         let previous_output_keys = self.deps.output_keys(&job);
-        let replaced = self.facts.replace_contributions(&job, &previous_output_keys, outputs);
+        let replaced = self
+            .facts
+            .replace_contributions(types, &job, &previous_output_keys, outputs);
         self.deps.replace_outputs(job.clone(), replaced.output_keys);
 
         let mut enqueued = Vec::new();

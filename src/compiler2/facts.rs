@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::hash::Hasher;
 
-use crate::types::{Ty, Types};
+use super::{Ty, Types};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactChange<F> {
@@ -60,8 +60,7 @@ impl FactValue {
         Self::Presence(revision)
     }
 
-    pub fn inputs(inputs: Vec<Ty>) -> Self {
-        let mut types = crate::types::new();
+    pub fn inputs(types: &mut Types, inputs: Vec<Ty>) -> Self {
         Self::Inputs(
             inputs
                 .into_iter()
@@ -81,7 +80,7 @@ impl FactValue {
         }
     }
 
-    pub(crate) fn join<'a>(values: impl IntoIterator<Item = &'a FactValue>) -> Option<FactValue> {
+    pub(crate) fn join<'a>(types: &mut Types, values: impl IntoIterator<Item = &'a FactValue>) -> Option<FactValue> {
         let mut values = values.into_iter();
         let first = values.next()?.clone();
         Some(match first {
@@ -97,7 +96,6 @@ impl FactValue {
             }
             FactValue::Inputs(first) => {
                 let mut joined = first;
-                let mut types = crate::types::new();
                 for value in values {
                     let FactValue::Inputs(inputs) = value else {
                         panic!("fact contributions for one key should use one value family")
@@ -119,7 +117,7 @@ impl FactValue {
                         })
                         .collect();
                 }
-                FactValue::inputs(joined)
+                FactValue::inputs(types, joined)
             }
         })
     }
@@ -161,6 +159,7 @@ where
 
     pub fn replace_contributions(
         &mut self,
+        types: &mut Types,
         job: &J,
         previous_output_keys: &HashSet<F>,
         outputs: Vec<(F, FactValue)>,
@@ -190,7 +189,7 @@ where
                 slot.contributions.remove(job);
             }
 
-            let new_value = FactValue::join(slot.contributions.values());
+            let new_value = FactValue::join(types, slot.contributions.values());
             let new_fingerprint = new_value.as_ref().map(FactValue::fingerprint);
             if let Some(value) = new_value {
                 slot.fingerprint = new_fingerprint;

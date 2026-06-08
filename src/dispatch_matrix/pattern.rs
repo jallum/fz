@@ -7,6 +7,7 @@ use super::{
 };
 use crate::ast::{BitSize, BitType, Endian, Expr, FnDef, Pattern, Spanned};
 use crate::compiler::source::Span;
+use crate::types::Ty as DefaultTy;
 use std::collections::HashMap;
 
 pub(crate) mod source;
@@ -16,19 +17,19 @@ pub(crate) use source::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PatternDispatchPlan {
-    pub(crate) matrix: DispatchMatrix,
-    pub(crate) graph: DispatchGraph,
+pub(crate) struct PatternDispatchPlan<TypeHandle = DefaultTy> {
+    pub(crate) matrix: DispatchMatrix<TypeHandle>,
+    pub(crate) graph: DispatchGraph<TypeHandle>,
     pub(crate) input_count: usize,
     pub(crate) subjects: Vec<Option<PatternSubjectRef>>,
     pub(crate) outcomes: Vec<PatternDispatchOutcome>,
-    pub(crate) guards: Vec<PatternGuardExpr>,
+    pub(crate) guards: Vec<PatternGuardExpr<TypeHandle>>,
     pub(crate) pinned: Vec<PatternPinnedInput>,
     pub(crate) prepared_keys: Vec<DispatchConst>,
     pub(crate) bitstring_direct_bindings: HashMap<SubjectId, Vec<String>>,
 }
 
-impl PatternDispatchPlan {
+impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
     pub(crate) fn outcome(&self, id: OutcomeId) -> Option<&PatternDispatchOutcome> {
         self.outcomes.iter().find(|entry| entry.outcome == id)
     }
@@ -80,29 +81,29 @@ pub(crate) enum PatternSubjectRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PatternGuardExpr {
+pub(crate) enum PatternGuardExpr<TypeHandle = DefaultTy> {
     Const(DispatchConst),
     Subject(SubjectId),
     Pinned(PinnedValueId),
     Unary {
         op: PatternGuardUnaryOp,
-        expr: Box<PatternGuardExpr>,
+        expr: Box<PatternGuardExpr<TypeHandle>>,
     },
     Binary {
         op: PatternGuardBinOp,
-        lhs: Box<PatternGuardExpr>,
-        rhs: Box<PatternGuardExpr>,
+        lhs: Box<PatternGuardExpr<TypeHandle>>,
+        rhs: Box<PatternGuardExpr<TypeHandle>>,
     },
     Dispatch {
-        inputs: Vec<PatternGuardExpr>,
-        dispatch: Box<PatternGuardDispatch>,
+        inputs: Vec<PatternGuardExpr<TypeHandle>>,
+        dispatch: Box<PatternGuardDispatch<TypeHandle>>,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PatternGuardDispatch {
-    pub(crate) plan: Box<PatternDispatchPlan>,
-    pub(crate) bodies: Vec<PatternGuardExpr>,
+pub(crate) struct PatternGuardDispatch<TypeHandle = DefaultTy> {
+    pub(crate) plan: Box<PatternDispatchPlan<TypeHandle>>,
+    pub(crate) bodies: Vec<PatternGuardExpr<TypeHandle>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,12 +140,17 @@ pub(crate) fn prepared_key_name(index: usize) -> String {
     format!("__dispatch_key_{}", index)
 }
 
-pub(crate) fn guard_dispatch_from_fn_def<F>(
+pub(crate) fn guard_dispatch_from_fn_def<F, TypeHandle>(
     fn_def: &FnDef,
     guard_call_resolver: &mut F,
-) -> Result<PatternGuardDispatch, SourcePatternError>
+) -> Result<PatternGuardDispatch<TypeHandle>, SourcePatternError>
 where
-    F: FnMut(&str, usize, Vec<PatternGuardExpr>) -> Result<Option<PatternGuardExpr>, SourcePatternError>,
+    F: FnMut(
+        &str,
+        usize,
+        Vec<PatternGuardExpr<TypeHandle>>,
+    ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
+    TypeHandle: Clone + PartialEq + Eq,
 {
     let arity = fn_def.arity();
     if fn_def.clauses.is_empty() || fn_def.clauses.iter().any(|clause| clause.params.len() != arity) {
@@ -236,14 +242,18 @@ where
     })
 }
 
-pub(crate) fn guard_expr_from_ast<F>(
+pub(crate) fn guard_expr_from_ast<F, TypeHandle>(
     expr: &Expr,
     bindings: &HashMap<String, SubjectId>,
     pinned_by_name: &HashMap<String, PinnedValueId>,
     guard_call_resolver: &mut F,
-) -> Result<PatternGuardExpr, SourcePatternError>
+) -> Result<PatternGuardExpr<TypeHandle>, SourcePatternError>
 where
-    F: FnMut(&str, usize, Vec<PatternGuardExpr>) -> Result<Option<PatternGuardExpr>, SourcePatternError>,
+    F: FnMut(
+        &str,
+        usize,
+        Vec<PatternGuardExpr<TypeHandle>>,
+    ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
 {
     Ok(match expr {
         Expr::Int(value) => PatternGuardExpr::Const(DispatchConst::Int(*value)),
@@ -340,22 +350,27 @@ where
     })
 }
 
-pub(crate) fn pattern_dispatch_from_source(
-    patterns: SourcePatternRows,
-) -> Result<PatternDispatchPlan, PatternDispatchError> {
+pub(crate) fn pattern_dispatch_from_source<TypeHandle: Clone + PartialEq + Eq>(
+    patterns: SourcePatternRows<TypeHandle>,
+) -> Result<PatternDispatchPlan<TypeHandle>, PatternDispatchError> {
     let mut resolver = |_name: &str,
                         _arity: usize,
-                        _args: Vec<PatternGuardExpr>|
-     -> Result<Option<PatternGuardExpr>, SourcePatternError> { Ok(None) };
+                        _args: Vec<PatternGuardExpr<TypeHandle>>|
+     -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError> { Ok(None) };
     pattern_dispatch_from_source_with_guard_resolver(patterns, &mut resolver)
 }
 
-pub(crate) fn pattern_dispatch_from_source_with_guard_resolver<F>(
-    patterns: SourcePatternRows,
+pub(crate) fn pattern_dispatch_from_source_with_guard_resolver<F, TypeHandle>(
+    patterns: SourcePatternRows<TypeHandle>,
     guard_call_resolver: &mut F,
-) -> Result<PatternDispatchPlan, PatternDispatchError>
+) -> Result<PatternDispatchPlan<TypeHandle>, PatternDispatchError>
 where
-    F: FnMut(&str, usize, Vec<PatternGuardExpr>) -> Result<Option<PatternGuardExpr>, SourcePatternError>,
+    F: FnMut(
+        &str,
+        usize,
+        Vec<PatternGuardExpr<TypeHandle>>,
+    ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
+    TypeHandle: Clone + PartialEq + Eq,
 {
     let mut producer = PatternDispatchProducer::new(&patterns).map_err(PatternDispatchError::SourcePattern)?;
     producer
@@ -364,8 +379,8 @@ where
     producer.finish()
 }
 
-struct PatternDispatchProducer {
-    builder: DispatchMatrixBuilder,
+struct PatternDispatchProducer<TypeHandle = DefaultTy> {
+    builder: DispatchMatrixBuilder<TypeHandle>,
     input_count: usize,
     subjects: HashMap<PatternSubjectRef, SubjectId>,
     guard_subject: SubjectId,
@@ -373,14 +388,14 @@ struct PatternDispatchProducer {
     pinned_by_name: HashMap<String, PinnedValueId>,
     prepared_keys: Vec<DispatchConst>,
     outcomes: Vec<PatternDispatchOutcome>,
-    guards: Vec<PatternGuardExpr>,
+    guards: Vec<PatternGuardExpr<TypeHandle>>,
     bitstring_direct_bindings: HashMap<SubjectId, Vec<String>>,
 }
 
-impl PatternDispatchProducer {
-    fn new(patterns: &SourcePatternRows) -> Result<Self, SourcePatternError> {
+impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
+    fn new(patterns: &SourcePatternRows<TypeHandle>) -> Result<Self, SourcePatternError> {
         validate_source_rows(patterns)?;
-        let mut builder = DispatchMatrixBuilder::new(super::Order::Source);
+        let mut builder = DispatchMatrixBuilder::typed(super::Order::Source);
         let mut subjects = HashMap::new();
         for ordinal in 0..patterns.input_count {
             let subject = builder.add_input_subject();
@@ -419,9 +434,17 @@ impl PatternDispatchProducer {
         })
     }
 
-    fn add_rows<F>(&mut self, rows: Vec<PatternRow>, guard_call_resolver: &mut F) -> Result<(), SourcePatternError>
+    fn add_rows<F>(
+        &mut self,
+        rows: Vec<PatternRow<TypeHandle>>,
+        guard_call_resolver: &mut F,
+    ) -> Result<(), SourcePatternError>
     where
-        F: FnMut(&str, usize, Vec<PatternGuardExpr>) -> Result<Option<PatternGuardExpr>, SourcePatternError>,
+        F: FnMut(
+            &str,
+            usize,
+            Vec<PatternGuardExpr<TypeHandle>>,
+        ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
     {
         for row in rows {
             self.add_row(row, guard_call_resolver)?;
@@ -429,11 +452,15 @@ impl PatternDispatchProducer {
         Ok(())
     }
 
-    fn add_row<F>(&mut self, row: PatternRow, guard_call_resolver: &mut F) -> Result<(), SourcePatternError>
+    fn add_row<F>(&mut self, row: PatternRow<TypeHandle>, guard_call_resolver: &mut F) -> Result<(), SourcePatternError>
     where
-        F: FnMut(&str, usize, Vec<PatternGuardExpr>) -> Result<Option<PatternGuardExpr>, SourcePatternError>,
+        F: FnMut(
+            &str,
+            usize,
+            Vec<PatternGuardExpr<TypeHandle>>,
+        ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
     {
-        let mut questions = Vec::new();
+        let mut questions: Vec<RegionQuestion<TypeHandle>> = Vec::new();
         let mut bindings = Vec::new();
         for (ordinal, pattern) in row.patterns.iter().enumerate() {
             let subject = PatternSubjectRef::Input(ordinal as u32);
@@ -474,7 +501,7 @@ impl PatternDispatchProducer {
         Ok(())
     }
 
-    fn finish(self) -> Result<PatternDispatchPlan, PatternDispatchError> {
+    fn finish(self) -> Result<PatternDispatchPlan<TypeHandle>, PatternDispatchError> {
         let subjects = self.subject_refs_by_id();
         let matrix = self.builder.build().map_err(PatternDispatchError::MatrixBuild)?;
         let graph = compile_dispatch_matrix(&matrix, DispatchCompileOptions::closed())
@@ -498,7 +525,7 @@ impl PatternDispatchProducer {
         pattern: &Pattern,
         span: Span,
         subject: &PatternSubjectRef,
-        questions: &mut Vec<RegionQuestion>,
+        questions: &mut Vec<RegionQuestion<TypeHandle>>,
         bindings: &mut Vec<PatternDispatchBinding>,
     ) -> Result<(), SourcePatternError> {
         match pattern {
@@ -589,7 +616,7 @@ impl PatternDispatchProducer {
         elems: &[Spanned<Pattern>],
         tail: Option<&Spanned<Pattern>>,
         subject: &PatternSubjectRef,
-        questions: &mut Vec<RegionQuestion>,
+        questions: &mut Vec<RegionQuestion<TypeHandle>>,
         bindings: &mut Vec<PatternDispatchBinding>,
     ) -> Result<(), SourcePatternError> {
         if elems.is_empty() {
@@ -623,7 +650,7 @@ impl PatternDispatchProducer {
         &mut self,
         subject: &PatternSubjectRef,
         fields: &[crate::ast::BitField<Spanned<Pattern>>],
-    ) -> Result<RegionQuestion, SourcePatternError> {
+    ) -> Result<RegionQuestion<TypeHandle>, SourcePatternError> {
         let subject_id = self.subject_id(subject)?;
         let mut binding_subjects = HashMap::new();
         let mut projections = Vec::new();
@@ -683,7 +710,7 @@ impl PatternDispatchProducer {
         &mut self,
         subject: &PatternSubjectRef,
         value: DispatchConst,
-        questions: &mut Vec<RegionQuestion>,
+        questions: &mut Vec<RegionQuestion<TypeHandle>>,
     ) -> Result<(), SourcePatternError> {
         let subject = self.subject_id(subject)?;
         questions.push(RegionQuestion::equality(subject, ComparisonValue::Const(value)));
@@ -787,7 +814,7 @@ impl PatternDispatchProducer {
     }
 }
 
-fn validate_source_rows(patterns: &SourcePatternRows) -> Result<(), SourcePatternError> {
+fn validate_source_rows<TypeHandle>(patterns: &SourcePatternRows<TypeHandle>) -> Result<(), SourcePatternError> {
     for row in &patterns.rows {
         let actual = row.patterns.len();
         if actual != patterns.input_count {

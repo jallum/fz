@@ -388,7 +388,7 @@ fn protocol_dispatch_matrix_for_receiver<T: Types<Ty = Ty>>(
         ProtocolImplSelection::NoLocalArms => Ok(None),
         ProtocolImplSelection::StaticDirect => Ok(Some(ProtocolDispatchMatrixSelection::StaticDirect)),
         ProtocolImplSelection::Matrix { arms, fully_covered } => {
-            let mut builder = DispatchMatrixBuilder::new(crate::dispatch_matrix::Order::Specificity);
+            let mut builder = DispatchMatrixBuilder::typed(crate::dispatch_matrix::Order::Specificity);
             let receiver = builder.add_input_subject();
             let mut direct_outcomes = Vec::new();
             for arm in arms {

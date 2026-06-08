@@ -7,6 +7,7 @@
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch};
 
 use super::identity::FunctionId;
+use super::types::Ty;
 
 #[derive(Debug, Clone)]
 pub(crate) struct DispatchSlot<T> {
@@ -25,8 +26,8 @@ pub(crate) struct FunctionDispatchMap<T> {
     slots: Vec<DispatchSlot<T>>,
 }
 
-pub(crate) type GuardDispatchMap = FunctionDispatchMap<PatternGuardDispatch>;
-pub(crate) type EntryDispatchMap = FunctionDispatchMap<PatternDispatchPlan>;
+pub(crate) type GuardDispatchMap = FunctionDispatchMap<PatternGuardDispatch<Ty>>;
+pub(crate) type EntryDispatchMap = FunctionDispatchMap<PatternDispatchPlan<Ty>>;
 
 impl<T> FunctionDispatchMap<T>
 where

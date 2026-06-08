@@ -45,7 +45,7 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
     let entry_activation = world.activation_key(root_id, root.function, &[]);
     effects.outputs.push((
         FactKey::Activation(entry_activation.clone()),
-        FactValue::inputs(Vec::new()),
+        FactValue::inputs(world.types_mut(), Vec::new()),
     ));
     effects.outputs.push((
         FactKey::Executable(ExecutableKey {

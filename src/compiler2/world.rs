@@ -18,8 +18,6 @@ use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch}
 use crate::modules::runtime_library;
 use crate::telemetry::{Telemetry, opaque};
 use crate::type_expr::{ModuleTypeEnv, build_module_type_env_for_with_base, builtin_type_env};
-use crate::types;
-use crate::types::{ClosureTarget, ClosureTypes, Ty, Types};
 use crate::{measurements, metadata};
 
 use super::CodeId;
@@ -43,6 +41,7 @@ use super::runtime::{self, RuntimeModuleCode};
 use super::semantic::{
     ActivationAnalysis, ActivationMap, CallSiteKey, CallSiteMap, CallSiteSummary, SemanticClosure, SemanticClosureMap,
 };
+use super::types::{ClosureTarget, Ty, Types};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum UnresolvedIssueKey {
@@ -74,6 +73,7 @@ pub struct World<'a> {
     artifacts: MaterializedProgramMap,
     roots: RootMap,
     namespaces: NamespaceStore,
+    types: Types,
     runtime_prelude: CodeId,
     runtime_modules: HashMap<ModuleId, RuntimeModuleCode>,
     reported_unresolved: HashSet<UnresolvedIssueKey>,
@@ -116,6 +116,7 @@ impl<'a> World<'a> {
             artifacts: MaterializedProgramMap::new(),
             roots: RootMap::new(),
             namespaces: NamespaceStore::new(),
+            types: Types::new(),
             runtime_prelude: CodeId::ZERO,
             runtime_modules: HashMap::new(),
             reported_unresolved: HashSet::new(),
@@ -131,6 +132,14 @@ impl<'a> World<'a> {
 
     pub fn tel(&self) -> &'a dyn Telemetry {
         self.tel
+    }
+
+    pub(crate) fn types(&self) -> &Types {
+        &self.types
+    }
+
+    pub(crate) fn types_mut(&mut self) -> &mut Types {
+        &mut self.types
     }
 
     pub fn submit_code(&mut self, name: Option<String>, text: String) -> CodeId {
@@ -190,9 +199,14 @@ impl<'a> World<'a> {
     pub(crate) fn complete_job(&mut self, job: Job, effects: JobEffects) -> super::AppliedStep<Job, FactKey> {
         let reads = effects.reads.into_iter().collect();
         let waits = effects.waits.into_iter().collect();
-        let step = self
-            .work_graph
-            .complete(job.clone(), reads, waits, effects.outputs, effects.follow_up);
+        let step = self.work_graph.complete(
+            &mut self.types,
+            job.clone(),
+            reads,
+            waits,
+            effects.outputs,
+            effects.follow_up,
+        );
         self.tel.event(
             &["fz", "compiler2", "work_graph", "applied"],
             metadata! {
@@ -241,7 +255,7 @@ impl<'a> World<'a> {
         self.roots.get(id).revision
     }
 
-    pub(crate) fn activation_key(&self, root: RootId, function: FunctionId, inputs: &[Ty]) -> ActivationKey {
+    pub(crate) fn activation_key(&mut self, root: RootId, function: FunctionId, inputs: &[Ty]) -> ActivationKey {
         self.canonical_activation_key(root, function, inputs)
     }
 
@@ -287,9 +301,8 @@ impl<'a> World<'a> {
     }
 
     pub fn define_activation_return(&mut self, key: &ActivationKey, return_ty: Ty) -> u64 {
-        let mut types = types::new();
-        let return_ty = types.alpha_normalize_vars(&return_ty);
-        let revision = self.activations.define_return(key, return_ty.clone());
+        let return_ty = self.types.alpha_normalize_vars(&return_ty);
+        let revision = self.activations.define_return(&mut self.types, key, return_ty);
         self.tel.execute(
             &["fz", "compiler2", "return_type", "defined"],
             &measurements! {
@@ -306,13 +319,12 @@ impl<'a> World<'a> {
     }
 
     pub fn define_callsite_summary(&mut self, key: CallSiteKey, mut summary: CallSiteSummary) -> u64 {
-        let mut types = types::new();
         summary.input_types = summary
             .input_types
             .into_iter()
-            .map(|input| types.alpha_normalize_vars(&input))
+            .map(|input| self.types.alpha_normalize_vars(&input))
             .collect();
-        summary.return_ty = types.alpha_normalize_vars(&summary.return_ty);
+        summary.return_ty = self.types.alpha_normalize_vars(&summary.return_ty);
         let revision = self.callsites.define(key.clone(), summary.clone());
         self.tel.execute(
             &["fz", "compiler2", "callsite", "defined"],
@@ -624,7 +636,7 @@ impl<'a> World<'a> {
         revision
     }
 
-    pub(crate) fn define_guard_dispatch(&mut self, function: FunctionId, dispatch: PatternGuardDispatch) -> u64 {
+    pub(crate) fn define_guard_dispatch(&mut self, function: FunctionId, dispatch: PatternGuardDispatch<Ty>) -> u64 {
         let revision = self.guard_dispatches.define(function, dispatch.clone());
         let function_ref = self.functions.reference_for(function);
         let slot = self.functions.get(function);
@@ -654,7 +666,7 @@ impl<'a> World<'a> {
         revision
     }
 
-    pub(crate) fn define_entry_dispatch(&mut self, function: FunctionId, plan: PatternDispatchPlan) -> u64 {
+    pub(crate) fn define_entry_dispatch(&mut self, function: FunctionId, plan: PatternDispatchPlan<Ty>) -> u64 {
         let revision = self.entry_dispatches.define(function, plan.clone());
         let function_ref = self.functions.reference_for(function);
         let slot = self.functions.get(function);
@@ -692,7 +704,7 @@ impl<'a> World<'a> {
         self.dispatch_masks.define(function, mask)
     }
 
-    pub(crate) fn entry_dispatch(&self, function: FunctionId) -> PatternDispatchPlan {
+    pub(crate) fn entry_dispatch(&self, function: FunctionId) -> PatternDispatchPlan<Ty> {
         self.entry_dispatches
             .get(function)
             .cloned()
@@ -865,7 +877,7 @@ impl<'a> World<'a> {
             .cloned()
     }
 
-    pub(crate) fn guard_dispatch(&self, function: FunctionId) -> PatternGuardDispatch {
+    pub(crate) fn guard_dispatch(&self, function: FunctionId) -> PatternGuardDispatch<Ty> {
         self.guard_dispatches
             .get(function)
             .cloned()
@@ -873,12 +885,11 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn function_type_env(
-        &self,
+        &mut self,
         function: FunctionId,
-    ) -> Result<ModuleTypeEnv, crate::type_expr::TypeExprError> {
+    ) -> Result<ModuleTypeEnv<Ty>, crate::type_expr::TypeExprError> {
         let module = self.function_definition(function).owner_module;
-        let mut types = types::new();
-        let builtin_env = builtin_type_env(&mut types);
+        let builtin_env = builtin_type_env(&mut self.types);
         if module.is_global() {
             return Ok(builtin_env);
         }
@@ -895,7 +906,7 @@ impl<'a> World<'a> {
                 panic!("function modules should have source metadata before resolving type env")
             }
         };
-        build_module_type_env_for_with_base(&mut types, &attrs, &module_name, &builtin_env).map(|(env, _, _)| env)
+        build_module_type_env_for_with_base(&mut self.types, &attrs, &module_name, &builtin_env).map(|(env, _, _)| env)
     }
 
     pub fn code_items(&self, id: CodeId) -> Option<&[Rc<Item>]> {
@@ -930,7 +941,7 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn canonical_activation_key(
-        &self,
+        &mut self,
         root: RootId,
         function: FunctionId,
         inputs: &[Ty],
@@ -943,25 +954,24 @@ impl<'a> World<'a> {
             .recursive
             .get(function)
             .expect("activation keying should wait for recursive facts before activation");
-        let mut t = types::new();
         let canonical = inputs
             .iter()
-            .map(|input| t.widen_for_recursive_spec_key(input))
+            .map(|input| self.types.widen_for_recursive_spec_key(input))
             .collect::<Vec<_>>();
         let key_inputs = canonical
             .iter()
             .enumerate()
             .map(|(slot, input)| {
                 if recursive && !mask.get(slot).copied().unwrap_or(true) {
-                    t.convergence_class(input)
+                    self.types.convergence_class(input)
                 } else {
-                    input.clone()
+                    *input
                 }
             })
             .collect::<Vec<_>>();
         let key_inputs = key_inputs
             .into_iter()
-            .map(|input| t.alpha_normalize_vars(&input))
+            .map(|input| self.types.alpha_normalize_vars(&input))
             .collect();
         super::identity::ActivationKey {
             root,
@@ -970,10 +980,10 @@ impl<'a> World<'a> {
         }
     }
 
-    pub(crate) fn closure_ty(&self, function: FunctionId, captures: Vec<Ty>) -> Ty {
+    pub(crate) fn closure_ty(&mut self, function: FunctionId, captures: Vec<Ty>) -> Ty {
         let arity = self.functions.reference_for(function).arity;
-        let mut t = types::new();
-        t.closure_lit(ClosureTarget(function.as_u32()), captures, arity)
+        self.types
+            .closure_lit(ClosureTarget(function.as_u32()), captures, arity)
     }
 
     fn qualified_module_name(&self, parent: ModuleId, local_name: &str) -> String {
@@ -1005,12 +1015,12 @@ impl<'a> World<'a> {
         Some(code_id)
     }
 
-    pub(crate) fn runtime_impl_target_modules(&self, receiver_ty: &Ty) -> Vec<ModuleId> {
-        let mut types = types::new();
+    pub(crate) fn runtime_impl_target_modules(&mut self, receiver_ty: &Ty) -> Vec<ModuleId> {
         let mut modules = Vec::new();
-        for module in self.runtime_modules.keys().copied() {
-            let target_ty = self.module_impl_target_ty_with(&mut types, module);
-            if types.is_subtype(receiver_ty, &target_ty) {
+        let runtime_modules = self.runtime_modules.keys().copied().collect::<Vec<_>>();
+        for module in runtime_modules {
+            let target_ty = self.module_impl_target_ty(module);
+            if self.types.is_subtype(receiver_ty, &target_ty) {
                 modules.push(module);
             }
         }
@@ -1018,9 +1028,8 @@ impl<'a> World<'a> {
         modules
     }
 
-    pub(crate) fn module_impl_target_ty(&self, module: ModuleId) -> Ty {
-        let mut types = types::new();
-        self.module_impl_target_ty_with(&mut types, module)
+    pub(crate) fn module_impl_target_ty(&mut self, module: ModuleId) -> Ty {
+        self.module_impl_target_ty_with(module)
     }
 
     fn lookup_module_path(&mut self, head: Namespace, path: &str) -> Option<ModuleId> {
@@ -1036,11 +1045,12 @@ impl<'a> World<'a> {
         Some(module)
     }
 
-    fn module_impl_target_ty_with<T: Types<Ty = Ty>>(&self, t: &mut T, module: ModuleId) -> Ty {
+    fn module_impl_target_ty_with(&mut self, module: ModuleId) -> Ty {
         let name = self
             .module_name(module)
-            .expect("impl target modules should have reverse names");
-        impl_target_ty(t, name)
+            .expect("impl target modules should have reverse names")
+            .to_string();
+        impl_target_ty(&mut self.types, &name)
     }
 
     fn derived_protocol_callback(&self, function: FunctionId) -> Option<ProtocolCallback> {
@@ -1138,7 +1148,7 @@ impl<'a> World<'a> {
     }
 }
 
-fn impl_target_ty<T: Types<Ty = Ty>>(t: &mut T, module_name: &str) -> Ty {
+fn impl_target_ty<T: crate::types::Types<Ty = Ty>>(t: &mut T, module_name: &str) -> Ty {
     match module_name.rsplit('.').next().unwrap_or(module_name) {
         "List" => {
             let any = t.any();

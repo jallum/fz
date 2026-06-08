@@ -10,6 +10,7 @@ use super::super::drive::{FactKey, Job, JobEffects};
 use super::super::facts::FactValue;
 use super::super::identity::FunctionId;
 use super::super::scheduler::FatalError;
+use super::super::types::Ty;
 use super::super::world::World;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,7 +216,7 @@ fn collect_step_edges(steps: &[LoweredStep], edges: &mut Vec<StaticEdge>) {
     }
 }
 
-fn dispatch_input_mask(plan: &PatternDispatchPlan) -> Vec<bool> {
+fn dispatch_input_mask(plan: &PatternDispatchPlan<Ty>) -> Vec<bool> {
     let mut mask = vec![false; plan.input_count];
     for arm in &plan.matrix.arms {
         for question in &arm.questions {
@@ -248,7 +249,7 @@ fn mark_subject_inputs(
     }
 }
 
-fn mark_guard_inputs(plan: &PatternDispatchPlan, guard: &PatternGuardExpr, mask: &mut [bool]) {
+fn mark_guard_inputs(plan: &PatternDispatchPlan<Ty>, guard: &PatternGuardExpr<Ty>, mask: &mut [bool]) {
     match guard {
         PatternGuardExpr::Const(_) | PatternGuardExpr::Pinned(_) => {}
         PatternGuardExpr::Subject(subject) => mark_subject_inputs(&plan.matrix.subjects, *subject, mask),

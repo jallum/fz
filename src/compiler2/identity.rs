@@ -4,10 +4,10 @@ use std::rc::Rc;
 
 use crate::ast::{Attribute, FnDef, Item, ProtocolCallback as ProtocolCallbackDef};
 use crate::compiler::source::Span;
-use crate::types::Ty;
 
 use super::code::CodeId;
 use super::namespace::{Namespace, NamespaceSymbol};
+use super::types::Ty;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ModuleId(u32);

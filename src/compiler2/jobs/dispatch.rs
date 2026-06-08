@@ -24,6 +24,7 @@ use super::super::facts::FactValue;
 use super::super::identity::{FunctionDef, FunctionId};
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::scheduler::FatalError;
+use super::super::types::Ty;
 use super::super::world::World;
 
 #[derive(Debug, Clone)]
@@ -153,7 +154,7 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
     }
 
     let source_patterns = entry_source_patterns(world, function, &def)?;
-    let mut resolver = |name: &str, arity: usize, args: Vec<PatternGuardExpr>| {
+    let mut resolver = |name: &str, arity: usize, args: Vec<PatternGuardExpr<Ty>>| {
         let callee = resolve_guard_callee_checked(world, def.namespace, name, arity);
         Ok(Some(PatternGuardExpr::Dispatch {
             inputs: args,
@@ -206,9 +207,9 @@ fn collect_requirements(
 fn build_guard_dispatch(
     world: &mut World<'_>,
     function: FunctionId,
-    cache: &mut HashMap<FunctionId, PatternGuardDispatch>,
+    cache: &mut HashMap<FunctionId, PatternGuardDispatch<Ty>>,
     stack: &mut Vec<FunctionId>,
-) -> Result<PatternGuardDispatch, SourcePatternError> {
+) -> Result<PatternGuardDispatch<Ty>, SourcePatternError> {
     if let Some(dispatch) = cache.get(&function) {
         return Ok(dispatch.clone());
     }
@@ -222,7 +223,7 @@ fn build_guard_dispatch(
 
     let def = world.function_definition(function);
     stack.push(function);
-    let mut resolver = |name: &str, arity: usize, args: Vec<PatternGuardExpr>| {
+    let mut resolver = |name: &str, arity: usize, args: Vec<PatternGuardExpr<Ty>>| {
         let callee = resolve_guard_callee_checked(world, def.namespace, name, arity);
         let dispatch = build_guard_dispatch(world, callee, cache, stack)?;
         Ok(Some(PatternGuardExpr::Dispatch {
@@ -237,10 +238,10 @@ fn build_guard_dispatch(
 }
 
 fn entry_source_patterns(
-    world: &World<'_>,
+    world: &mut World<'_>,
     function: FunctionId,
     def: &FunctionDef,
-) -> Result<SourcePatternRows, FatalError> {
+) -> Result<SourcePatternRows<Ty>, FatalError> {
     let capture_patterns = def
         .capture_params
         .iter()
@@ -275,7 +276,6 @@ fn entry_source_patterns(
             ),
         )
     })?;
-    let mut types = crate::types::new();
     let mut rows = Vec::with_capacity(def.ast.clauses.len());
     for (body_id, clause) in def.ast.clauses.iter().enumerate() {
         let mut preconditions = Vec::new();
@@ -283,7 +283,7 @@ fn entry_source_patterns(
             let Some(tokens) = tokens else {
                 continue;
             };
-            let (ty, consumed) = parse_type_expr(&mut types, &tokens.0, &type_env).map_err(|error| {
+            let (ty, consumed) = parse_type_expr(world.types_mut(), &tokens.0, &type_env).map_err(|error| {
                 emit_job_diagnostic(
                     world,
                     Diagnostic::error(

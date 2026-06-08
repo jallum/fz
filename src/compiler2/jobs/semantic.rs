@@ -12,7 +12,6 @@ use crate::dispatch_matrix::{
     ComparisonValue, DispatchConst, DispatchNode, EdgeEvidence, GraphNodeId, ListRegion, Region, RegionPredicate,
     SubjectId, SubjectSource,
 };
-use crate::types::{self, ClosureTarget, ClosureTypes, Ty, Types};
 
 use super::super::body::{CallSiteId, DirectCallee, Literal, LoweredBlock, LoweredBody, LoweredStep, ValueId};
 use super::super::drive::{FactKey, Job, JobEffects};
@@ -20,8 +19,10 @@ use super::super::facts::FactValue;
 use super::super::identity::{ActivationKey, ExecutableNeed, FunctionId, ModuleId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallSiteSummary, SelectedCallee};
+use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::World;
 
+type DispatchPlan = PatternDispatchPlan<Ty>;
 type ValueTypes = HashMap<ValueId, Ty>;
 
 #[derive(Debug, Clone)]
@@ -71,13 +72,13 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
 
     let entry_dispatch = world.entry_dispatch(function);
     let lowered_body = world.lowered_body(function);
-    let reachable_clauses = reachable_clause_ids(&entry_dispatch, &inputs);
+    let reachable_clauses = reachable_clause_ids(world, &entry_dispatch, &inputs);
 
     let mut analysis_calls = Vec::new();
-    let mut return_ty = types::new().none();
+    let mut return_ty = none_ty(world);
     match lowered_body {
         LoweredBody::Extern { .. } => {
-            return_ty = types::new().any();
+            return_ty = any_ty(world);
         }
         LoweredBody::Clauses { clauses, .. } => {
             for clause_id in &reachable_clauses {
@@ -106,11 +107,10 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
                     &mut waits,
                     &mut follow_up,
                 )?;
-                let mut t = types::new();
-                return_ty = if t.is_empty(&return_ty) {
+                return_ty = if world.types().is_empty(&return_ty) {
                     clause_return
                 } else {
-                    t.union(return_ty, clause_return)
+                    world.types_mut().union(return_ty, clause_return)
                 };
             }
         }
@@ -132,7 +132,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         if let Some(callee_activation) = &call.callee_activation {
             outputs.push((
                 FactKey::Activation(callee_activation.key.clone()),
-                FactValue::inputs(call.summary.input_types.clone()),
+                FactValue::inputs(world.types_mut(), call.summary.input_types.clone()),
             ));
             outputs.push((
                 FactKey::Executable(super::super::identity::ExecutableKey {
@@ -169,7 +169,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     follow_up.insert(Job::CheckSemanticClosure(activation.root));
     Ok(JobEffects {
         reads,
-        outputs: dedupe_outputs(outputs),
+        outputs: dedupe_outputs(world.types_mut(), outputs),
         follow_up: follow_up.into_iter().collect(),
         ..JobEffects::default()
     })
@@ -186,7 +186,7 @@ fn analyze_block(
     follow_up: &mut HashSet<Job>,
 ) -> Result<Ty, FatalError> {
     apply_steps(world, &block.steps, values, calls, activation, reads, waits, follow_up)?;
-    Ok(values.get(&block.result).cloned().unwrap_or_else(|| types::new().any()))
+    Ok(values.get(&block.result).cloned().unwrap_or_else(|| any_ty(world)))
 }
 
 fn apply_steps(
@@ -229,23 +229,27 @@ fn apply_step(
 ) -> Result<(), FatalError> {
     match step {
         LoweredStep::Const { value, literal } => {
-            values.insert(*value, literal_ty(literal));
+            values.insert(*value, literal_ty(world, literal));
         }
         LoweredStep::Tuple { value, items } => {
-            let mut t = types::new();
-            let items = items.iter().map(|item| value_ty(values, *item)).collect::<Vec<_>>();
-            values.insert(*value, t.tuple(&items));
+            let items = items
+                .iter()
+                .map(|item| value_ty(world, values, *item))
+                .collect::<Vec<_>>();
+            values.insert(*value, world.types_mut().tuple(&items));
         }
         LoweredStep::List { value, items, tail } => {
-            values.insert(*value, list_ty(values, items, *tail));
+            values.insert(*value, list_ty(world, values, items, *tail));
         }
         LoweredStep::FunctionRef { value, function } => {
             let arity = world.function_arity(*function);
-            let mut t = types::new();
-            values.insert(*value, t.fn_ref_lit(ClosureTarget(function.as_u32()), arity));
+            values.insert(
+                *value,
+                world.types_mut().fn_ref_lit(ClosureTarget(function.as_u32()), arity),
+            );
         }
         LoweredStep::NamedFunctionRef { value, .. } => {
-            values.insert(*value, types::new().any());
+            values.insert(*value, any_ty(world));
         }
         LoweredStep::DirectCall {
             value,
@@ -254,7 +258,7 @@ fn apply_step(
             args,
         } => {
             let need = return_needs.get(callsite).cloned().unwrap_or(ExecutableNeed::Value);
-            let arg_types = args.iter().map(|arg| value_ty(values, *arg)).collect::<Vec<_>>();
+            let arg_types = args.iter().map(|arg| value_ty(world, values, *arg)).collect::<Vec<_>>();
             let (emission, return_ty) = resolve_direct_call(
                 world,
                 activation,
@@ -278,8 +282,8 @@ fn apply_step(
             args,
         } => {
             let need = return_needs.get(callsite).cloned().unwrap_or(ExecutableNeed::Value);
-            let callee_ty = value_ty(values, *callee);
-            let arg_types = args.iter().map(|arg| value_ty(values, *arg)).collect::<Vec<_>>();
+            let callee_ty = value_ty(world, values, *callee);
+            let arg_types = args.iter().map(|arg| value_ty(world, values, *arg)).collect::<Vec<_>>();
             let (emission, return_ty) = resolve_closure_call(
                 world,
                 activation,
@@ -301,20 +305,23 @@ fn apply_step(
             function,
             captures,
         } => {
-            let captures = captures.iter().map(|capture| value_ty(values, *capture)).collect();
+            let captures = captures
+                .iter()
+                .map(|capture| value_ty(world, values, *capture))
+                .collect();
             values.insert(*value, world.closure_ty(*function, captures));
         }
         LoweredStep::BinaryOp { value, op, left, right } => {
-            let left = value_ty(values, *left);
-            let right = value_ty(values, *right);
-            values.insert(*value, binop_ty(*op, left, right));
+            let left = value_ty(world, values, *left);
+            let right = value_ty(world, values, *right);
+            values.insert(*value, binop_ty(world, *op, left, right));
         }
         LoweredStep::UnaryOp { value, op, input } => {
-            let input = value_ty(values, *input);
-            values.insert(*value, unop_ty(*op, input));
+            let input = value_ty(world, values, *input);
+            values.insert(*value, unop_ty(world, *op, input));
         }
         LoweredStep::MapIndex { value, .. } => {
-            values.insert(*value, types::new().any());
+            values.insert(*value, any_ty(world));
         }
         LoweredStep::If {
             value,
@@ -344,45 +351,44 @@ fn apply_step(
                 waits,
                 follow_up,
             )?;
-            let mut t = types::new();
-            values.insert(*value, t.union(then_ty, else_ty));
+            values.insert(*value, world.types_mut().union(then_ty, else_ty));
         }
         LoweredStep::AssertLiteral { source, literal } => {
-            let mut t = types::new();
-            let refined = t.intersect(value_ty(values, *source), literal_ty(literal));
+            let source_ty = value_ty(world, values, *source);
+            let literal_ty = literal_ty(world, literal);
+            let refined = world.types_mut().intersect(source_ty, literal_ty);
             values.insert(*source, refined);
         }
         LoweredStep::AssertTuple { source, arity } => {
-            let mut t = types::new();
-            let any = t.any();
-            let fields = t.repeat(any, *arity);
-            let tuple = t.tuple(&fields);
-            let refined = t.intersect(value_ty(values, *source), tuple);
+            let any = world.types_mut().any();
+            let fields = world.types_mut().repeat(any, *arity);
+            let tuple = world.types_mut().tuple(&fields);
+            let source_ty = value_ty(world, values, *source);
+            let refined = world.types_mut().intersect(source_ty, tuple);
             values.insert(*source, refined);
         }
         LoweredStep::TupleField { value, source, index } => {
-            let mut t = types::new();
-            let source = value_ty(values, *source);
-            values.insert(*value, t.tuple_field_type(&source, *index));
+            let source = value_ty(world, values, *source);
+            values.insert(*value, world.types_mut().tuple_field_type(&source, *index));
         }
         LoweredStep::AssertEmptyList { source } => {
-            let mut t = types::new();
-            let empty = t.empty_list();
-            let refined = t.intersect(value_ty(values, *source), empty);
+            let empty = world.types_mut().empty_list();
+            let source_ty = value_ty(world, values, *source);
+            let refined = world.types_mut().intersect(source_ty, empty);
             values.insert(*source, refined);
         }
         LoweredStep::AssertSame { source, value } => {
-            let mut t = types::new();
-            let both = t.intersect(value_ty(values, *source), value_ty(values, *value));
-            values.insert(*source, both.clone());
+            let source_ty = value_ty(world, values, *source);
+            let value_ty = value_ty(world, values, *value);
+            let both = world.types_mut().intersect(source_ty, value_ty);
+            values.insert(*source, both);
             values.insert(*value, both);
         }
         LoweredStep::SplitList { source, head, tail } => {
-            let source_ty = value_ty(values, *source);
-            let mut t = types::new();
-            let elem = t.list_element_type(&source_ty);
-            let tail_ty = t.list(elem.clone());
-            values.insert(*head, elem.clone());
+            let source_ty = value_ty(world, values, *source);
+            let elem = world.types_mut().list_element_type(&source_ty);
+            let tail_ty = world.types_mut().list(elem);
+            values.insert(*head, elem);
             values.insert(*tail, tail_ty);
         }
     }
@@ -400,9 +406,9 @@ fn resolve_direct_call(
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
 ) -> Result<(Option<CallEmission>, Ty), FatalError> {
-    let mut t = types::new();
-    if arg_types.iter().any(|arg| t.is_empty(arg)) {
-        let summary = call_summary(selected_callee(callee), arg_types, need, t.none());
+    if arg_types.iter().any(|arg| world.types().is_empty(arg)) {
+        let none = none_ty(world);
+        let summary = call_summary(selected_callee(callee), arg_types, need, none);
         return Ok((
             summary.map(|summary| CallEmission {
                 key: CallSiteKey {
@@ -412,7 +418,7 @@ fn resolve_direct_call(
                 summary,
                 callee_activation: None,
             }),
-            t.none(),
+            none,
         ));
     }
 
@@ -421,9 +427,9 @@ fn resolve_direct_call(
             resolve_function_call(world, caller, *function, arg_types, need, reads, waits, follow_up)?
         }
         DirectCallee::Named { .. } => (
-            call_summary(selected_callee(callee), arg_types, need, types::new().any()),
+            call_summary(selected_callee(callee), arg_types, need, any_ty(world)),
             None,
-            types::new().any(),
+            any_ty(world),
         ),
     };
     Ok((
@@ -463,19 +469,19 @@ fn resolve_function_call(
         );
     }
     if wait_for_unresolved_function_module(world, function, waits, follow_up) {
-        return Ok((None, None, types::new().any()));
+        return Ok((None, None, any_ty(world)));
     }
     let Some((activation, already_present, return_ty)) =
         prepare_function_call(world, caller, function, input_types.clone(), reads, waits, follow_up)
     else {
-        return Ok((None, None, types::new().any()));
+        return Ok((None, None, any_ty(world)));
     };
     Ok((
         Some(CallSiteSummary {
             callee: SelectedCallee::Function(function),
             input_types,
             need,
-            return_ty: return_ty.clone(),
+            return_ty,
         }),
         Some(ActivationContribution {
             key: activation,
@@ -499,18 +505,17 @@ fn resolve_protocol_call(
     let protocol_fact = FactKey::ModuleDefined(protocol);
     if world.module_defined_revision(protocol).is_none() {
         wait_for_protocol_module(world, protocol, waits, follow_up);
-        return Ok((None, None, types::new().any()));
+        return Ok((None, None, any_ty(world)));
     }
     reads.push(protocol_fact);
 
-    let receiver_ty = input_types.first().cloned().unwrap_or_else(|| types::new().any());
+    let receiver_ty = input_types.first().cloned().unwrap_or_else(|| any_ty(world));
     let function_ref = world.function_ref(callback_function).clone();
 
     let mut matches = Vec::new();
     for (key, protocol_impl) in world.protocol_impls_for(protocol) {
         let target_ty = world.module_impl_target_ty(key.target);
-        let t = types::new();
-        if !t.is_subtype(&receiver_ty, &target_ty) {
+        if !world.types().is_subtype(&receiver_ty, &target_ty) {
             continue;
         }
         let callback = protocol_impl
@@ -529,11 +534,11 @@ fn resolve_protocol_call(
             }
             wait_for_runtime_module(world, module, waits, follow_up);
         }
-        return Ok((None, None, types::new().any()));
+        return Ok((None, None, any_ty(world)));
     }
 
     if matches.len() != 1 {
-        return Ok((None, None, types::new().any()));
+        return Ok((None, None, any_ty(world)));
     }
 
     let selected = matches[0];
@@ -541,7 +546,7 @@ fn resolve_protocol_call(
     if world.module_defined_revision(selected.owner_module).is_none() {
         waits.insert(owner_fact);
         follow_up.insert(Job::DefineModule(selected.owner_module));
-        return Ok((None, None, types::new().any()));
+        return Ok((None, None, any_ty(world)));
     }
     reads.push(owner_fact);
 
@@ -554,14 +559,14 @@ fn resolve_protocol_call(
         waits,
         follow_up,
     ) else {
-        return Ok((None, None, types::new().any()));
+        return Ok((None, None, any_ty(world)));
     };
     Ok((
         Some(CallSiteSummary {
             callee: SelectedCallee::Function(selected.function),
             input_types,
             need,
-            return_ty: return_ty.clone(),
+            return_ty,
         }),
         Some(ActivationContribution {
             key: activation,
@@ -582,12 +587,11 @@ fn resolve_closure_call(
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
 ) -> Result<(Option<CallEmission>, Ty), FatalError> {
-    let mut t = types::new();
-    if t.is_empty(&callee_ty) || arg_types.iter().any(|arg| t.is_empty(arg)) {
-        return Ok((None, t.none()));
+    if world.types().is_empty(&callee_ty) || arg_types.iter().any(|arg| world.types().is_empty(arg)) {
+        return Ok((None, none_ty(world)));
     }
-    let Some(parts) = t.closure_lit_parts(&callee_ty) else {
-        return Ok((None, t.any()));
+    let Some(parts) = world.types().closure_lit_parts(&callee_ty) else {
+        return Ok((None, any_ty(world)));
     };
     let function = FunctionId::from_u32(parts.target.0);
     let mut inputs = parts.captures;
@@ -624,9 +628,7 @@ fn prepare_function_call(
     let already_present = world.fact_revision(FactKey::Activation(activation.clone())).is_some();
     reads.push(FactKey::ReturnType(activation.clone()));
     follow_up.insert(Job::CheckSemanticClosure(caller.root));
-    let return_ty = world
-        .activation_return(&activation)
-        .unwrap_or_else(|| types::new().none());
+    let return_ty = world.activation_return(&activation).unwrap_or_else(|| none_ty(world));
     Some((activation, already_present, return_ty))
 }
 
@@ -706,10 +708,10 @@ fn call_summary(
     })
 }
 
-fn reachable_clause_ids(plan: &PatternDispatchPlan, inputs: &[Ty]) -> Vec<u32> {
+fn reachable_clause_ids(world: &mut World<'_>, plan: &DispatchPlan, inputs: &[Ty]) -> Vec<u32> {
     let mut subjects = HashMap::new();
     for ordinal in 0..plan.input_count {
-        let input = inputs.get(ordinal).cloned().unwrap_or_else(|| types::new().any());
+        let input = inputs.get(ordinal).cloned().unwrap_or_else(|| any_ty(world));
         let Some(subject_id) = plan.matrix.subjects.iter().find_map(|subject| match subject.source {
             SubjectSource::Input { ordinal: input_ordinal } if input_ordinal as usize == ordinal => Some(subject.id),
             _ => None,
@@ -719,7 +721,7 @@ fn reachable_clause_ids(plan: &PatternDispatchPlan, inputs: &[Ty]) -> Vec<u32> {
         subjects.insert(subject_id, input);
     }
     let mut outcomes = HashSet::new();
-    collect_reachable_outcomes(plan, plan.graph.root, &subjects, &mut outcomes);
+    collect_reachable_outcomes(world, plan, plan.graph.root, &subjects, &mut outcomes);
     let mut reachable = plan
         .outcomes
         .iter()
@@ -731,7 +733,8 @@ fn reachable_clause_ids(plan: &PatternDispatchPlan, inputs: &[Ty]) -> Vec<u32> {
 }
 
 fn collect_reachable_outcomes(
-    plan: &PatternDispatchPlan,
+    world: &mut World<'_>,
+    plan: &DispatchPlan,
     node_id: GraphNodeId,
     subjects: &HashMap<SubjectId, Ty>,
     outcomes: &mut HashSet<crate::dispatch_matrix::OutcomeId>,
@@ -752,78 +755,77 @@ fn collect_reachable_outcomes(
             let source = subjects
                 .get(&predicate.subject)
                 .cloned()
-                .unwrap_or_else(|| types::new().any());
-            if branch_possible(predicate, &source, true) {
+                .unwrap_or_else(|| any_ty(world));
+            if branch_possible(world, predicate, &source, true) {
                 let mut next = subjects.clone();
-                apply_evidence(plan, &mut next, &source, predicate, &on_match.evidence, true);
-                collect_reachable_outcomes(plan, on_match.target, &next, outcomes);
+                apply_evidence(world, plan, &mut next, &source, predicate, &on_match.evidence, true);
+                collect_reachable_outcomes(world, plan, on_match.target, &next, outcomes);
             }
-            if branch_possible(predicate, &source, false) {
+            if branch_possible(world, predicate, &source, false) {
                 let mut next = subjects.clone();
-                apply_evidence(plan, &mut next, &source, predicate, &on_miss.evidence, false);
-                collect_reachable_outcomes(plan, on_miss.target, &next, outcomes);
+                apply_evidence(world, plan, &mut next, &source, predicate, &on_miss.evidence, false);
+                collect_reachable_outcomes(world, plan, on_miss.target, &next, outcomes);
             }
         }
     }
 }
 
-fn branch_possible(predicate: &RegionPredicate, source: &Ty, is_match: bool) -> bool {
-    let mut t = types::new();
+fn branch_possible(world: &mut World<'_>, predicate: &RegionPredicate<Ty>, source: &Ty, is_match: bool) -> bool {
     match &predicate.region {
         Region::Type(ty) => {
             if is_match {
-                let overlap = t.intersect(source.clone(), ty.clone());
-                !t.is_empty(&overlap)
+                let overlap = world.types_mut().intersect(*source, *ty);
+                !world.types().is_empty(&overlap)
             } else {
-                !t.is_subtype(source, ty)
+                !world.types().is_subtype(source, ty)
             }
         }
         Region::Equal(value) => {
-            let target = comparison_ty(value);
+            let target = comparison_ty(world, value);
             if is_match {
-                let overlap = t.intersect(source.clone(), target);
-                !t.is_empty(&overlap)
+                let overlap = world.types_mut().intersect(*source, target);
+                !world.types().is_empty(&overlap)
             } else {
-                !t.is_subtype(source, &target)
+                !world.types().is_subtype(source, &target)
             }
         }
         Region::TupleArity(arity) => {
-            let any = t.any();
-            let fields = t.repeat(any, *arity as usize);
-            let tuple = t.tuple(&fields);
+            let any = world.types_mut().any();
+            let fields = world.types_mut().repeat(any, *arity as usize);
+            let tuple = world.types_mut().tuple(&fields);
             if is_match {
-                let overlap = t.intersect(source.clone(), tuple);
-                !t.is_empty(&overlap)
+                let overlap = world.types_mut().intersect(*source, tuple);
+                !world.types().is_empty(&overlap)
             } else {
-                !t.is_subtype(source, &tuple)
+                !world.types().is_subtype(source, &tuple)
             }
         }
         Region::List(ListRegion::Empty) => {
-            let empty = t.empty_list();
+            let empty = world.types_mut().empty_list();
             if is_match {
-                let overlap = t.intersect(source.clone(), empty);
-                !t.is_empty(&overlap)
+                let overlap = world.types_mut().intersect(*source, empty);
+                !world.types().is_empty(&overlap)
             } else {
-                !t.is_subtype(source, &empty)
+                !world.types().is_subtype(source, &empty)
             }
         }
         Region::List(ListRegion::Cons) => {
-            let any = t.any();
-            let cons = t.non_empty_list(any);
+            let any = world.types_mut().any();
+            let cons = world.types_mut().non_empty_list(any);
             if is_match {
-                let overlap = t.intersect(source.clone(), cons);
-                !t.is_empty(&overlap)
+                let overlap = world.types_mut().intersect(*source, cons);
+                !world.types().is_empty(&overlap)
             } else {
-                !t.is_subtype(source, &cons)
+                !world.types().is_subtype(source, &cons)
             }
         }
         Region::MapKind => {
-            let map = t.map_top();
+            let map = world.types_mut().map_top();
             if is_match {
-                let overlap = t.intersect(source.clone(), map);
-                !t.is_empty(&overlap)
+                let overlap = world.types_mut().intersect(*source, map);
+                !world.types().is_empty(&overlap)
             } else {
-                !t.is_subtype(source, &map)
+                !world.types().is_subtype(source, &map)
             }
         }
         Region::Guard(_) => true,
@@ -832,50 +834,52 @@ fn branch_possible(predicate: &RegionPredicate, source: &Ty, is_match: bool) -> 
 }
 
 fn apply_evidence(
-    plan: &PatternDispatchPlan,
+    world: &mut World<'_>,
+    plan: &DispatchPlan,
     subjects: &mut HashMap<SubjectId, Ty>,
     source: &Ty,
-    predicate: &RegionPredicate,
-    evidence: &EdgeEvidence,
+    predicate: &RegionPredicate<Ty>,
+    evidence: &EdgeEvidence<Ty>,
     is_match: bool,
 ) {
-    let mut t = types::new();
     let refined = match &predicate.region {
-        Region::Type(ty) if is_match => t.intersect(source.clone(), ty.clone()),
-        Region::Equal(value) if is_match => t.intersect(source.clone(), comparison_ty(value)),
+        Region::Type(ty) if is_match => world.types_mut().intersect(*source, *ty),
+        Region::Equal(value) if is_match => {
+            let target = comparison_ty(world, value);
+            world.types_mut().intersect(*source, target)
+        }
         Region::TupleArity(arity) if is_match => {
-            let any = t.any();
-            let fields = t.repeat(any, *arity as usize);
-            let tuple = t.tuple(&fields);
-            t.intersect(source.clone(), tuple)
+            let any = world.types_mut().any();
+            let fields = world.types_mut().repeat(any, *arity as usize);
+            let tuple = world.types_mut().tuple(&fields);
+            world.types_mut().intersect(*source, tuple)
         }
         Region::List(ListRegion::Empty) if is_match => {
-            let empty = t.empty_list();
-            t.intersect(source.clone(), empty)
+            let empty = world.types_mut().empty_list();
+            world.types_mut().intersect(*source, empty)
         }
         Region::List(ListRegion::Cons) if is_match => {
-            let any = t.any();
-            let cons = t.non_empty_list(any);
-            t.intersect(source.clone(), cons)
+            let any = world.types_mut().any();
+            let cons = world.types_mut().non_empty_list(any);
+            world.types_mut().intersect(*source, cons)
         }
-        _ => source.clone(),
+        _ => *source,
     };
-    subjects.insert(predicate.subject, refined.clone());
+    subjects.insert(predicate.subject, refined);
 
     for projection in &evidence.projections {
-        let base = subjects
-            .get(&projection.source)
-            .cloned()
-            .unwrap_or_else(|| source.clone());
+        let base = subjects.get(&projection.source).cloned().unwrap_or(*source);
         let projected = match &projection.kind {
-            crate::dispatch_matrix::ProjectionKind::TupleField(index) => t.tuple_field_type(&base, *index as usize),
-            crate::dispatch_matrix::ProjectionKind::ListHead => t.list_element_type(&base),
-            crate::dispatch_matrix::ProjectionKind::ListTail => {
-                let elem = t.list_element_type(&base);
-                t.list(elem)
+            crate::dispatch_matrix::ProjectionKind::TupleField(index) => {
+                world.types_mut().tuple_field_type(&base, *index as usize)
             }
-            crate::dispatch_matrix::ProjectionKind::MapValue { .. } => t.any(),
-            crate::dispatch_matrix::ProjectionKind::BitstringField(_) => t.any(),
+            crate::dispatch_matrix::ProjectionKind::ListHead => world.types_mut().list_element_type(&base),
+            crate::dispatch_matrix::ProjectionKind::ListTail => {
+                let elem = world.types_mut().list_element_type(&base);
+                world.types_mut().list(elem)
+            }
+            crate::dispatch_matrix::ProjectionKind::MapValue { .. } => any_ty(world),
+            crate::dispatch_matrix::ProjectionKind::BitstringField(_) => any_ty(world),
         };
         subjects.insert(projection.result, projected);
     }
@@ -931,95 +935,91 @@ fn tuple_destructure_arity(value: ValueId, later_steps: &[LoweredStep]) -> Optio
     None
 }
 
-fn value_ty(values: &ValueTypes, value: ValueId) -> Ty {
-    values.get(&value).cloned().unwrap_or_else(|| types::new().any())
+fn value_ty(world: &mut World<'_>, values: &ValueTypes, value: ValueId) -> Ty {
+    values.get(&value).cloned().unwrap_or_else(|| any_ty(world))
 }
 
-fn literal_ty(literal: &Literal) -> Ty {
-    let mut t = types::new();
+fn literal_ty(world: &mut World<'_>, literal: &Literal) -> Ty {
     match literal {
-        Literal::Int(value) => t.int_lit(*value),
-        Literal::Float(value) => t.float_lit(*value),
-        Literal::Binary(_) => t.str_t(),
-        Literal::Atom(name) => t.atom_lit(name),
-        Literal::Bool(value) => t.bool_lit(*value),
-        Literal::Nil => t.nil(),
+        Literal::Int(value) => world.types_mut().int_lit(*value),
+        Literal::Float(value) => world.types_mut().float_lit(*value),
+        Literal::Binary(_) => world.types_mut().str_t(),
+        Literal::Atom(name) => world.types_mut().atom_lit(name),
+        Literal::Bool(value) => world.types_mut().bool_lit(*value),
+        Literal::Nil => world.types_mut().nil(),
     }
 }
 
-fn comparison_ty(value: &ComparisonValue) -> Ty {
+fn comparison_ty(world: &mut World<'_>, value: &ComparisonValue) -> Ty {
     match value {
-        ComparisonValue::Const(value) => dispatch_const_ty(value),
-        ComparisonValue::Pinned(_) => types::new().any(),
+        ComparisonValue::Const(value) => dispatch_const_ty(world, value),
+        ComparisonValue::Pinned(_) => any_ty(world),
     }
 }
 
-fn dispatch_const_ty(value: &DispatchConst) -> Ty {
-    let mut t = types::new();
+fn dispatch_const_ty(world: &mut World<'_>, value: &DispatchConst) -> Ty {
     match value {
-        DispatchConst::Int(value) => t.int_lit(*value),
-        DispatchConst::FloatBits(value) => t.float_lit(f64::from_bits(*value)),
-        DispatchConst::AtomName(name) => t.atom_lit(name),
-        DispatchConst::Bool(value) => t.bool_lit(*value),
-        DispatchConst::Nil | DispatchConst::EmptyList => t.empty_list(),
-        DispatchConst::Utf8Binary(_) => t.str_t(),
+        DispatchConst::Int(value) => world.types_mut().int_lit(*value),
+        DispatchConst::FloatBits(value) => world.types_mut().float_lit(f64::from_bits(*value)),
+        DispatchConst::AtomName(name) => world.types_mut().atom_lit(name),
+        DispatchConst::Bool(value) => world.types_mut().bool_lit(*value),
+        DispatchConst::Nil | DispatchConst::EmptyList => world.types_mut().empty_list(),
+        DispatchConst::Utf8Binary(_) => world.types_mut().str_t(),
     }
 }
 
-fn list_ty(values: &ValueTypes, items: &[ValueId], tail: Option<ValueId>) -> Ty {
-    let mut t = types::new();
-    let mut elem_ty = t.none();
+fn list_ty(world: &mut World<'_>, values: &ValueTypes, items: &[ValueId], tail: Option<ValueId>) -> Ty {
+    let mut elem_ty = none_ty(world);
     for item in items {
-        let item_ty = value_ty(values, *item);
-        elem_ty = if t.is_empty(&elem_ty) {
+        let item_ty = value_ty(world, values, *item);
+        elem_ty = if world.types().is_empty(&elem_ty) {
             item_ty
         } else {
-            t.union(elem_ty, item_ty)
+            world.types_mut().union(elem_ty, item_ty)
         };
     }
     match tail {
         Some(tail) => {
-            let tail_ty = value_ty(values, tail);
-            if t.has_list_shape(&tail_ty) {
-                let tail_elem = t.list_element_type(&tail_ty);
-                let elem_ty = if t.is_empty(&elem_ty) {
+            let tail_ty = value_ty(world, values, tail);
+            if world.types().has_list_shape(&tail_ty) {
+                let tail_elem = world.types_mut().list_element_type(&tail_ty);
+                let elem_ty = if world.types().is_empty(&elem_ty) {
                     tail_elem
                 } else {
-                    t.union(elem_ty, tail_elem)
+                    world.types_mut().union(elem_ty, tail_elem)
                 };
-                t.list(elem_ty)
-            } else if t.is_empty(&elem_ty) {
-                let any = t.any();
-                t.list(any)
+                world.types_mut().list(elem_ty)
+            } else if world.types().is_empty(&elem_ty) {
+                let any = any_ty(world);
+                world.types_mut().list(any)
             } else {
-                t.non_empty_list(elem_ty)
+                world.types_mut().non_empty_list(elem_ty)
             }
         }
         None => {
             if items.is_empty() {
-                t.empty_list()
-            } else if t.is_empty(&elem_ty) {
-                let any = t.any();
-                t.list(any)
+                world.types_mut().empty_list()
+            } else if world.types().is_empty(&elem_ty) {
+                let any = any_ty(world);
+                world.types_mut().list(any)
             } else {
-                t.non_empty_list(elem_ty)
+                world.types_mut().non_empty_list(elem_ty)
             }
         }
     }
 }
 
-fn binop_ty(op: BinOp, left: Ty, right: Ty) -> Ty {
-    let mut t = types::new();
+fn binop_ty(world: &mut World<'_>, op: BinOp, left: Ty, right: Ty) -> Ty {
     match op {
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
-            let int = t.int();
-            let float = t.float();
-            if t.is_subtype(&left, &int) && t.is_subtype(&right, &int) {
-                t.int()
-            } else if t.is_subtype(&left, &float) || t.is_subtype(&right, &float) {
-                t.float()
+            let int = world.types_mut().int();
+            let float = world.types_mut().float();
+            if world.types().is_subtype(&left, &int) && world.types().is_subtype(&right, &int) {
+                world.types_mut().int()
+            } else if world.types().is_subtype(&left, &float) || world.types().is_subtype(&right, &float) {
+                world.types_mut().float()
             } else {
-                t.any()
+                any_ty(world)
             }
         }
         BinOp::Eq
@@ -1031,46 +1031,53 @@ fn binop_ty(op: BinOp, left: Ty, right: Ty) -> Ty {
         | BinOp::And
         | BinOp::Or
         | BinOp::In
-        | BinOp::NotIn => t.bool(),
+        | BinOp::NotIn => world.types_mut().bool(),
         BinOp::Pipe
         | BinOp::Cons
         | BinOp::ListConcat
         | BinOp::ListSubtract
         | BinOp::BinConcat
         | BinOp::Range
-        | BinOp::RangeStep => t.any(),
+        | BinOp::RangeStep => any_ty(world),
     }
 }
 
-fn unop_ty(op: UnOp, input: Ty) -> Ty {
-    let mut t = types::new();
+fn unop_ty(world: &mut World<'_>, op: UnOp, input: Ty) -> Ty {
     match op {
-        UnOp::Not => t.bool(),
+        UnOp::Not => world.types_mut().bool(),
         UnOp::Neg => {
-            let int = t.int();
-            let float = t.float();
-            if t.is_subtype(&input, &int) {
-                t.int()
-            } else if t.is_subtype(&input, &float) {
-                t.float()
+            let int = world.types_mut().int();
+            let float = world.types_mut().float();
+            if world.types().is_subtype(&input, &int) {
+                world.types_mut().int()
+            } else if world.types().is_subtype(&input, &float) {
+                world.types_mut().float()
             } else {
-                t.any()
+                any_ty(world)
             }
         }
     }
 }
 
-fn dedupe_outputs(outputs: Vec<(FactKey, FactValue)>) -> Vec<(FactKey, FactValue)> {
+fn dedupe_outputs(types: &mut Types, outputs: Vec<(FactKey, FactValue)>) -> Vec<(FactKey, FactValue)> {
     let mut deduped: HashMap<FactKey, FactValue> = HashMap::new();
     for (fact, value) in outputs {
         deduped
             .entry(fact)
             .and_modify(|current| {
-                let joined = FactValue::join([&*current, &value])
+                let joined = FactValue::join(types, [&*current, &value])
                     .expect("deduping one current value with one new value should produce a value");
                 *current = joined;
             })
             .or_insert(value);
     }
     deduped.into_iter().collect()
+}
+
+fn any_ty(world: &mut World<'_>) -> Ty {
+    world.types_mut().any()
+}
+
+fn none_ty(world: &mut World<'_>) -> Ty {
+    world.types_mut().none()
 }

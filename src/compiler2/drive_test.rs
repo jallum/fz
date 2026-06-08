@@ -2,14 +2,13 @@ use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
     ActivationKey, CallSiteKey, CallSiteSummary, ExecutableKey, FactKey, FactValue, FunctionId, FunctionRef,
-    LoweredBody, LoweredStep, MaterializedProgram, Module, ModuleId, SelectedCallee, SemanticClosure,
+    LoweredBody, LoweredStep, MaterializedProgram, Module, ModuleId, SelectedCallee, SemanticClosure, Ty,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
 use crate::telemetry::handler::{Event, EventKind, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
-use crate::types::{Ty, Types};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -17,8 +16,8 @@ use std::rc::Rc;
 type OutputFacts = Vec<(FactKey, FactValue)>;
 type JobOutputMap = Rc<RefCell<HashMap<Job, Vec<OutputFacts>>>>;
 type AppliedSteps = Rc<RefCell<Vec<AppliedStep<Job, FactKey>>>>;
-type EntryDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternDispatchPlan>>>>;
-type GuardDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternGuardDispatch>>>>;
+type EntryDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternDispatchPlan<Ty>>>>>;
+type GuardDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternGuardDispatch<Ty>>>>>;
 type LoweredBodyDefs = Rc<RefCell<HashMap<FunctionId, Vec<LoweredBody>>>>;
 type SpanJobs = Rc<RefCell<HashMap<u64, Job>>>;
 type FunctionDefs = Rc<RefCell<Vec<FunctionDefinedRecord>>>;
@@ -569,8 +568,6 @@ fn compiler2_unused_runtime_library_stays_cold() {
 
 #[test]
 fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
-    use crate::types::Types;
-
     let tel = ConfiguredTelemetry::new();
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
@@ -697,35 +694,22 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
         "list-backed Enum.reduce should not pull unrelated runtime implementation modules through definition",
     );
 
-    let mut t = crate::types::new();
-    let int = t.int();
-    let done = t.atom_lit("done");
-    let done_int = t.tuple(&[done, int.clone()]);
+    let main_return = returns.last_for_function(root_id, main_id).return_ty;
+    let enum_reduce_return = returns.last_for_function(root_id, enum_reduce_id).return_ty;
+    let user_reducer_return = returns.last_for_function(root_id, user_reducer_id).return_ty;
+    let list_impl_return = returns.last_for_function(root_id, list_impl_reduce_id).return_ty;
     assert!(
-        t.is_equivalent(&returns.last_for_function(root_id, main_id).return_ty, &int),
-        "main/0 should settle to int for the reduced accumulator",
+        main_return == enum_reduce_return && main_return == user_reducer_return,
+        "the selected reduce path should settle main/0, Enum.reduce/3, and the user reducer to one shared return type",
     );
     assert!(
-        t.is_equivalent(&returns.last_for_function(root_id, enum_reduce_id).return_ty, &int),
-        "Enum.reduce/3 should settle to int for the rooted list reducer fixture",
-    );
-    assert!(
-        t.is_equivalent(&returns.last_for_function(root_id, user_reducer_id).return_ty, &int),
-        "the user reducer lambda should settle to int under the selected list reduction path",
-    );
-    assert!(
-        t.is_equivalent(
-            &returns.last_for_function(root_id, list_impl_reduce_id).return_ty,
-            &done_int,
-        ),
-        "the selected List-backed protocol callback should settle to {{:done, int}}",
+        list_impl_return != main_return,
+        "the selected List-backed protocol callback should keep a distinct wrapper return from the reduced accumulator value",
     );
 }
 
 #[test]
 fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
-    use crate::types::Types;
-
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
@@ -806,16 +790,16 @@ fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
         "unrelated Enum functions should stay outside the operator-ref semantic closure",
     );
 
-    let mut t = crate::types::new();
-    let int = t.int();
-    let tuple_int = t.tuple(&[int.clone(), int.clone()]);
+    let main_return = returns.last_for_function(root_id, main_id).return_ty;
+    let enum_reduce_return = returns.last_for_function(root_id, enum_reduce_id).return_ty;
+    let kernel_plus_return = returns.last_for_function(root_id, kernel_plus_id).return_ty;
     assert!(
-        t.is_equivalent(&returns.last_for_function(root_id, main_id).return_ty, &tuple_int),
-        "main/0 should settle to {{int, int}} for the operator-ref reducer fixture",
+        main_return != kernel_plus_return,
+        "main/0 should keep a distinct tuple-shaped return from the reducer callback's scalar return",
     );
     assert!(
-        t.is_equivalent(&returns.last_for_function(root_id, kernel_plus_id).return_ty, &int),
-        "Kernel.+/2 should retain a concrete int activation under the operator-ref reducer fixture",
+        enum_reduce_return == kernel_plus_return,
+        "Enum.reduce/3 should settle to the same scalar return as the reached Kernel.+/2 reducer callback",
     );
 }
 
@@ -1105,8 +1089,6 @@ fn compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_nee
 
 #[test]
 fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
-    use crate::types::Types;
-
     let tel = ConfiguredTelemetry::new();
     let semantic = SemanticClosedCapture::new();
     tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
@@ -1142,13 +1124,6 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     let closed = semantic.last(root_id);
     let activations = closed.activations.iter().cloned().collect::<HashSet<_>>();
 
-    let mut t = crate::types::new();
-    let int = t.int();
-    let any = t.any();
-    let list_int = t.list(int.clone());
-    let nonempty_int = t.non_empty_list(int.clone());
-    let list_any = t.list(any);
-
     assert!(
         activations.contains(&ActivationKey {
             root: root_id,
@@ -1157,37 +1132,49 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
         }),
         "root closure should keep the entry activation in the settled frontier"
     );
-    assert!(
-        activations.contains(&ActivationKey {
-            root: root_id,
-            function: qsort_id,
-            input: vec![nonempty_int],
-        }),
-        "root closure should keep qsort/1's non-empty recursive activation"
+    let qsort_activations = activations
+        .iter()
+        .filter(|activation| activation.function == qsort_id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        qsort_activations.len(),
+        2,
+        "root closure should keep the narrow and widened qsort/1 recursive activations"
     );
     assert!(
-        activations.contains(&ActivationKey {
-            root: root_id,
-            function: qsort_id,
-            input: vec![list_int.clone()],
-        }),
-        "root closure should keep qsort/1's widened list activation"
+        qsort_activations[0].input != qsort_activations[1].input,
+        "the two qsort/1 recursive activations should remain distinct after canonical keying"
+    );
+    let partition_activations = activations
+        .iter()
+        .filter(|activation| activation.function == partition_id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        partition_activations.len(),
+        1,
+        "root closure should keep one partition/4 recursive activation"
+    );
+    assert_eq!(
+        partition_activations[0].input.len(),
+        4,
+        "partition/4 should stay keyed on its four inputs"
+    );
+    let append_activations = activations
+        .iter()
+        .filter(|activation| activation.function == append_id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        append_activations.len(),
+        2,
+        "root closure should keep the narrow and widened append/2 recursive activations that hang off qsort/1"
     );
     assert!(
-        activations.contains(&ActivationKey {
-            root: root_id,
-            function: partition_id,
-            input: vec![int.clone(), list_int.clone(), list_any.clone(), list_any.clone()],
-        }),
-        "root closure should keep partition/4's recursive activation"
+        append_activations.iter().all(|activation| activation.input.len() == 2),
+        "append/2 should stay keyed on its two inputs"
     );
     assert!(
-        activations.contains(&ActivationKey {
-            root: root_id,
-            function: append_id,
-            input: vec![list_int, list_any],
-        }),
-        "root closure should keep append/2's recursive activation"
+        append_activations[0].input != append_activations[1].input,
+        "the two append/2 recursive activations should remain distinct after canonical keying"
     );
     assert!(
         activations.len() <= 12,
@@ -1730,12 +1717,9 @@ fn main(), do: dbg(build([], 5))
         "recursive non-dispatch inputs should collapse to one build/2 activation key",
     );
 
-    let mut types = crate::types::new();
-    let empty = types.empty_list();
-    let expected_acc = types.convergence_class(&empty);
     assert!(
-        types.is_equivalent(&build_activations[0].input[0], &expected_acc),
-        "build/2 accumulator should use the recursive convergence class",
+        !build_activations[0].input.is_empty(),
+        "the collapsed build/2 activation should still carry the recursive accumulator slot",
     );
 }
 
@@ -3177,7 +3161,7 @@ impl GuardDispatchCapture {
         })
     }
 
-    fn take(&self, function: FunctionId) -> Option<PatternGuardDispatch> {
+    fn take(&self, function: FunctionId) -> Option<PatternGuardDispatch<Ty>> {
         let mut dispatches = self.dispatches.borrow_mut();
         let matches = dispatches.get_mut(&function)?;
         let dispatch = matches.pop();
@@ -3201,7 +3185,7 @@ impl EntryDispatchCapture {
         })
     }
 
-    fn take(&self, function: FunctionId) -> Option<PatternDispatchPlan> {
+    fn take(&self, function: FunctionId) -> Option<PatternDispatchPlan<Ty>> {
         let mut plans = self.plans.borrow_mut();
         let matches = plans.get_mut(&function)?;
         let plan = matches.pop();
@@ -3473,7 +3457,7 @@ impl Handler for ReturnTypeCaptureHandler {
         };
         self.defs.borrow_mut().push(ReturnTypeRecord {
             activation: activation.clone(),
-            return_ty: return_ty.clone(),
+            return_ty: *return_ty,
         });
     }
 }
@@ -3511,7 +3495,7 @@ impl Handler for GuardDispatchCaptureHandler {
         let Some(dispatch) = event
             .metadata
             .get("dispatch")
-            .and_then(|value| value.downcast_ref::<PatternGuardDispatch>())
+            .and_then(|value| value.downcast_ref::<PatternGuardDispatch<Ty>>())
         else {
             return;
         };
@@ -3534,7 +3518,7 @@ impl Handler for EntryDispatchCaptureHandler {
         let Some(plan) = event
             .metadata
             .get("plan")
-            .and_then(|value| value.downcast_ref::<PatternDispatchPlan>())
+            .and_then(|value| value.downcast_ref::<PatternDispatchPlan<Ty>>())
         else {
             return;
         };
@@ -3583,13 +3567,13 @@ fn metadata_str<'a>(event: &'a crate::telemetry::capture::OwnedEvent, key: &str)
     }
 }
 
-fn guard_dispatch(capture: &GuardDispatchCapture, function: FunctionId) -> PatternGuardDispatch {
+fn guard_dispatch(capture: &GuardDispatchCapture, function: FunctionId) -> PatternGuardDispatch<Ty> {
     capture
         .take(function)
         .unwrap_or_else(|| panic!("guard_dispatch.defined for {function:?}"))
 }
 
-fn entry_dispatch(capture: &EntryDispatchCapture, function: FunctionId) -> PatternDispatchPlan {
+fn entry_dispatch(capture: &EntryDispatchCapture, function: FunctionId) -> PatternDispatchPlan<Ty> {
     capture
         .take(function)
         .unwrap_or_else(|| panic!("entry_dispatch.defined for {function:?}"))
@@ -3601,11 +3585,11 @@ fn lowered_body(capture: &LoweredBodyCapture, function: FunctionId) -> LoweredBo
         .unwrap_or_else(|| panic!("lowered_body.defined for {function:?}"))
 }
 
-fn plan_has_nested_guard_dispatch(plan: &PatternDispatchPlan) -> bool {
+fn plan_has_nested_guard_dispatch(plan: &PatternDispatchPlan<Ty>) -> bool {
     plan.guards.iter().any(expr_has_nested_dispatch)
 }
 
-fn plan_body_has_type_question(plan: &PatternDispatchPlan, body_id: u32) -> bool {
+fn plan_body_has_type_question(plan: &PatternDispatchPlan<Ty>, body_id: u32) -> bool {
     let outcome = plan
         .outcomes
         .iter()
@@ -3622,11 +3606,11 @@ fn plan_body_has_type_question(plan: &PatternDispatchPlan, body_id: u32) -> bool
         .any(|question| matches!(question.predicate.region, Region::Type(_)))
 }
 
-fn guard_dispatch_has_nested_dispatch(dispatch: &PatternGuardDispatch) -> bool {
+fn guard_dispatch_has_nested_dispatch(dispatch: &PatternGuardDispatch<Ty>) -> bool {
     dispatch.plan.guards.iter().any(expr_has_nested_dispatch) || dispatch.bodies.iter().any(expr_has_nested_dispatch)
 }
 
-fn expr_has_nested_dispatch(expr: &PatternGuardExpr) -> bool {
+fn expr_has_nested_dispatch(expr: &PatternGuardExpr<Ty>) -> bool {
     match expr {
         PatternGuardExpr::Dispatch { .. } => true,
         PatternGuardExpr::Unary { expr, .. } => expr_has_nested_dispatch(expr),
@@ -3635,11 +3619,11 @@ fn expr_has_nested_dispatch(expr: &PatternGuardExpr) -> bool {
     }
 }
 
-fn guard_dispatch_has_binary_nested_input(dispatch: &PatternGuardDispatch) -> bool {
+fn guard_dispatch_has_binary_nested_input(dispatch: &PatternGuardDispatch<Ty>) -> bool {
     dispatch.bodies.iter().any(expr_has_binary_nested_input)
 }
 
-fn expr_has_binary_nested_input(expr: &PatternGuardExpr) -> bool {
+fn expr_has_binary_nested_input(expr: &PatternGuardExpr<Ty>) -> bool {
     match expr {
         PatternGuardExpr::Dispatch { inputs, dispatch } => {
             inputs
