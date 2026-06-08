@@ -1649,6 +1649,101 @@ fn compiler2_emission_ready_revision_stays_stable_for_identical_recompute() {
 }
 
 #[test]
+fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
+        text: format!(
+            "{}\nfn foo(), do: 42\n",
+            include_str!("../../fixtures/quicksort/input.fz")
+        ),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "artifact projection should settle as a one-way ladder over the closed quicksort root",
+    );
+
+    let materialize = outputs.effects(Job::MaterializeRoot(root_id));
+    assert_eq!(
+        materialize.reads,
+        vec![FactKey::SemanticClosed(root_id)],
+        "materialization should consume only the closed semantic root fact",
+    );
+    assert!(
+        materialize.waits.is_empty(),
+        "materialization should not stay blocked once the closure is sealed",
+    );
+    assert_eq!(
+        materialize.follow_up,
+        vec![Job::DeriveAbiReady(root_id)],
+        "materialization should hand off directly to the ABI-ready projection",
+    );
+    assert!(
+        materialize
+            .outputs
+            .iter()
+            .all(|(fact, _)| *fact == FactKey::MaterializedProgram(root_id)),
+        "materialization should publish only the materialized artifact fact",
+    );
+
+    let abi_ready = outputs.effects(Job::DeriveAbiReady(root_id));
+    assert_eq!(
+        abi_ready.reads,
+        vec![FactKey::MaterializedProgram(root_id)],
+        "ABI-ready derivation should consume only the materialized artifact fact",
+    );
+    assert!(
+        abi_ready.waits.is_empty(),
+        "ABI-ready derivation should not reopen semantic or reachability work",
+    );
+    assert_eq!(
+        abi_ready.follow_up,
+        vec![Job::DeriveEmissionReady(root_id)],
+        "ABI-ready derivation should hand off directly to emission-ready inventory",
+    );
+    assert!(
+        abi_ready
+            .outputs
+            .iter()
+            .all(|(fact, _)| *fact == FactKey::AbiReadyProgram(root_id)),
+        "ABI-ready derivation should publish only the ABI-ready artifact fact",
+    );
+
+    let emission_ready = outputs.effects(Job::DeriveEmissionReady(root_id));
+    assert_eq!(
+        emission_ready.reads,
+        vec![FactKey::AbiReadyProgram(root_id)],
+        "emission-ready derivation should consume only the ABI-ready artifact fact",
+    );
+    assert!(
+        emission_ready.waits.is_empty(),
+        "emission-ready derivation should not ask semantic, type, or reachability questions upstream of the artifact ladder",
+    );
+    assert!(
+        emission_ready.follow_up.is_empty(),
+        "emission-ready derivation should be the end of the Compiler2-owned artifact ladder",
+    );
+    assert!(
+        emission_ready
+            .outputs
+            .iter()
+            .all(|(fact, _)| *fact == FactKey::EmissionReadyProgram(root_id)),
+        "emission-ready derivation should publish only the final handoff fact",
+    );
+}
+
+#[test]
 fn compiler2_abi_ready_preserves_variadic_extern_marshals_and_integer_lanes() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
@@ -1713,6 +1808,74 @@ end
         open_edge.return_abi,
         ReturnAbi::Value(AbiValueRepr::RawInt),
         "ABI-ready call edges should carry the callee return ABI explicitly",
+    );
+}
+
+#[test]
+fn compiler2_emission_ready_preserves_variadic_extern_inventory_and_marshals() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let emission_ready = EmissionReadyProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "emission_ready_program", "defined"],
+        emission_ready.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/variadic_open_compiler2.fz".to_string()),
+        text: r#"
+extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
+
+fn main() do
+  libc::open("x", 0, 0o644 :: integer)
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "emission-ready projection should preserve the frozen variadic extern contract all the way to the final handoff",
+    );
+
+    let program = emission_ready.last(root_id).program;
+    let main_id = function_id(&functions, "main", 0);
+    let open_id = function_id(&functions, "libc::open", 2);
+    let (_, open_exec) = emission_ready_executable(&program, open_id);
+    let (_, main_exec) = emission_ready_executable(&program, main_id);
+    assert_eq!(
+        open_exec.param_reprs,
+        vec![AbiValueRepr::ValueRef, AbiValueRepr::RawInt, AbiValueRepr::RawInt],
+        "emission-ready inventory should preserve the fixed and variadic ABI lanes for libc::open",
+    );
+    assert_eq!(
+        open_exec.return_abi,
+        ReturnAbi::Value(AbiValueRepr::RawInt),
+        "emission-ready inventory should preserve the raw integer return lane for libc::open",
+    );
+
+    let open_edge = main_exec
+        .call_edges
+        .iter()
+        .find(|edge| program.executables[edge.callee].key.activation.function == open_id)
+        .expect("emission-ready call edge for libc::open");
+    assert_eq!(
+        open_edge.extern_marshals.as_deref(),
+        Some(&[ExternTy::CString, ExternTy::I64, ExternTy::I64][..]),
+        "emission-ready call edges should preserve the frozen C marshal classes for a variadic extern callsite",
+    );
+    assert_eq!(
+        program.executables[open_edge.callee].return_abi,
+        ReturnAbi::Value(AbiValueRepr::RawInt),
+        "emission-ready call edges should resolve through the callee inventory slot instead of re-deriving ABI",
     );
 }
 
@@ -3653,6 +3816,7 @@ struct WorkGraphCapture {
 struct JobSpanStop {
     job: Job,
     effects_present: bool,
+    effects: Option<JobEffects>,
 }
 
 #[derive(Debug, Clone)]
@@ -3779,9 +3943,16 @@ impl OutputCapture {
         self.stops
             .borrow()
             .iter()
+            .rev()
             .find(|stop| stop.job == job)
             .cloned()
             .unwrap_or_else(|| panic!("job stop event for {job:?}"))
+    }
+
+    fn effects(&self, job: Job) -> JobEffects {
+        self.stop(job.clone())
+            .effects
+            .unwrap_or_else(|| panic!("job effects for {job:?}"))
     }
 
     fn stops_matching(&self, mut matches: impl FnMut(&Job) -> bool) -> Vec<JobSpanStop> {
@@ -4185,6 +4356,11 @@ impl Handler for OutputCaptureHandler {
                 self.stops.borrow_mut().push(JobSpanStop {
                     job: job.clone(),
                     effects_present: event.metadata.get("effects").is_some(),
+                    effects: event
+                        .metadata
+                        .get("effects")
+                        .and_then(|value| value.downcast_ref::<JobEffects>())
+                        .cloned(),
                 });
                 let Some(effects) = event
                     .metadata

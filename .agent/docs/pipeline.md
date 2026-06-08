@@ -30,10 +30,13 @@ semantic  SeedRoot, AnalyzeActivation, SealSemanticClosure
             the root-scoped type+demand fixpoint -> SemanticClosed
 artifact  MaterializeRoot
             freeze the closed set -> MaterializedProgram
+          DeriveAbiReady
+            make ABI lanes, return delivery, and callable entries explicit -> AbiReadyProgram
+          DeriveEmissionReady
+            assign stable emission inventory -> EmissionReadyProgram
 ```
 
-Today the artifact family stops at `MaterializeRoot`. The next artifact arc
-adds two more one-way projections above it:
+The artifact family is a one-way ladder:
 
 ```text
 MaterializedProgram(root)
@@ -58,9 +61,8 @@ submit_root(main/0)
   SealSemanticClosure observes the frontier; when it settles, writes
     SemanticClosed(root) and enqueues MaterializeRoot(root)
   MaterializeRoot freezes the closed set into MaterializedProgram(root)
-  next artifact arc:
-    AbiReadyProgram(root) derives ABI lanes, return delivery, and callable-boundary facts
-    EmissionReadyProgram(root) derives stable emission inventory for backend adapters
+  DeriveAbiReady(root) derives ABI lanes, return delivery, and callable-boundary facts
+  DeriveEmissionReady(root) derives stable emission inventory for backend adapters
 ```
 
 Each callee pulls its own `LowerFunction` / `PlanEntryDispatch` /
@@ -102,7 +104,7 @@ carry only closed facts already proven by semantics:
 - effect summaries
 - frozen extern marshal classes
 
-The next two planned rungs narrow the contract:
+The next two rungs narrow the contract:
 
 - `AbiReadyProgram` derives ABI lanes, explicit return delivery, and
   callable-boundary obligations from `MaterializedProgram` plus
@@ -132,6 +134,19 @@ Things that do not belong there:
 This is why `fz-rh2.8.2` stays blocked behind the artifact-model arc: adapter
 work should consume `EmissionReadyProgram`, not invent it while wiring backend
 entry points.
+
+Backend-facing work has one hard rule after `MaterializedProgram`: it may read
+only the settled artifact ladder below it.
+
+- `MaterializeRoot(root)` may consume only `SemanticClosed(root)`.
+- `DeriveAbiReady(root)` may consume only `MaterializedProgram(root)` plus the
+  world-owned type store.
+- `DeriveEmissionReady(root)` may consume only `AbiReadyProgram(root)`.
+
+If backend code needs to ask semantic, reachability, callee-selection, or
+type-inference questions after that line, the artifact contract is incomplete
+or the consumer is violating it. The fix is to publish the missing closed fact,
+not to poke back into semantic state.
 
 ## Redefinition retracts by ownership
 

@@ -159,10 +159,11 @@ hands one caller-owned sink to `World`, and every job/event under
 pass existing ids in measurements and existing compiler-owned structures in
 metadata via `opaque(...)`: `Job`, `JobEffects`, `AppliedStep<Job, FactKey>`,
 `FunctionRef`, `CallSiteSummary`, `SemanticClosure`, `MaterializedProgram`,
-`Ty`, and unresolved waits. If an emit site has to build a display string just
-for telemetry, that is the wrong side of the boundary. The ignored JSONL
-harness in `src/compiler2/telemetry_dump_test.rs` is the model: the handler
-decides how to render opaque values, not the compiler.
+`AbiReadyProgram`, `EmissionReadyProgram`, `Ty`, and unresolved waits. If an
+emit site has to build a display string just for telemetry, that is the wrong
+side of the boundary. The ignored JSONL harness in
+`src/compiler2/telemetry_dump_test.rs` is the model: the handler decides how
+to render opaque values, not the compiler.
 
 **Slot revisions are the stable change signal.** Compiler2 state stores and fact
 slots bump revisions only when their aggregate value changes. Handlers and
@@ -185,11 +186,23 @@ the applied `work_graph` step in metadata; unresolved drives close with the raw
 wait frontier; fatal drives close with the fatal job. There is no extra
 "job_fatal" event and no redundant "fact_published" stream.
 
+Artifact jobs lean on that raw `JobEffects` payload as a contract surface. The
+tests assert that:
+
+- `MaterializeRoot(root)` reads only `SemanticClosed(root)`
+- `DeriveAbiReady(root)` reads only `MaterializedProgram(root)`
+- `DeriveEmissionReady(root)` reads only `AbiReadyProgram(root)`
+
+So a backend adapter that asks semantic, type, or reachability questions after
+the artifact boundary is visible as the wrong `reads`/`waits` shape on the job
+span, not just as a vague architectural complaint.
+
 **Compiler2 tests should observe telemetry, not world internals.** The common
 captures live in `src/compiler2/drive_test.rs` and assert on emitted
-definitions, work-graph steps, callsite summaries, semantic closure, and
-materialized programs. The quicksort and `Enum.reduce` contracts are the fast
-summary probe; the ignored JSONL dump is the occasional deep trace.
+definitions, work-graph steps, callsite summaries, semantic closure, and the
+three artifact rungs. The quicksort, `Enum.reduce`, and variadic-extern
+contracts are the fast summary probe; the ignored JSONL dump is the occasional
+deep trace.
 
 Useful reruns:
 
@@ -198,6 +211,8 @@ Useful reruns:
 - `cargo test --lib compiler2_materialization_projects_only_the_closed_quicksort_frontier -- --exact --nocapture`
 - `cargo test --lib compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer -- --exact --nocapture`
 - `cargo test --lib compiler2_materialization_freezes_only_the_selected_enum_reduce_path -- --exact --nocapture`
+- `cargo test --lib compiler2_artifact_ladder_consumes_only_the_previous_rung -- --exact --nocapture`
+- `cargo test --lib compiler2_emission_ready_preserves_variadic_extern_inventory_and_marshals -- --exact --nocapture`
 - `cargo test --lib compiler2::telemetry_dump_test::dump_quicksort_compiler2_telemetry_to_jsonl -- --ignored --exact --nocapture`
 
 The ignored harness writes its log to `/tmp/fz-compiler2-quicksort.jsonl`.

@@ -280,6 +280,8 @@
     callsites: CallSiteMap,
     semantic_closures: SemanticClosureMap,
     artifacts: MaterializedProgramMap,
+    abi_ready: AbiReadyProgramMap,
+    emission_ready: EmissionReadyProgramMap,
 
     work_graph: Scheduler&lt;Job, FactKey&gt;,
 }</code></pre>
@@ -310,10 +312,10 @@
         </div>
       </div>
       <p>
-        Today the artifact boundary stops at <code>MaterializedProgramMap</code>. The next artifact
-        arc adds <code>AbiReadyProgram</code> and <code>EmissionReadyProgram</code> above that map
-        as pure projections. They are not new semantic authorities and they do not reopen
-        reachability or type discovery.
+        The artifact boundary is a one-way ladder:
+        <code>MaterializedProgram</code> then <code>AbiReadyProgram</code> then
+        <code>EmissionReadyProgram</code>. Those maps are pure projections. They are not new
+        semantic authorities and they do not reopen reachability or type discovery.
       </p>
     </section>
 
@@ -338,6 +340,8 @@
     AnalyzeActivation(ActivationKey),
     SealSemanticClosure(RootId),
     MaterializeRoot(RootId),
+    DeriveAbiReady(RootId),
+    DeriveEmissionReady(RootId),
 }</code></pre>
       <p>
         <code>ScopeCode</code> then walks the parsed items in source order. The first pass reserves
@@ -554,7 +558,7 @@ struct Types {
     </section>
 
     <section>
-      <h2>Semantic Closure And Materialization</h2>
+      <h2>Semantic Closure And Artifact Projection</h2>
       <p>
         <code>AnalyzeActivation</code> publishes direct-call summaries, reached callee activations,
         executable needs, a joined return type, and the set of reachable clauses for one rooted
@@ -576,8 +580,10 @@ DependencySnapshot = HashMap&lt;FactKey, u64&gt;</code></pre>
       <p>
         Materialization is downstream of that one fact. <code>MaterializeRoot</code> reads the
         closed frontier, clones only the reachable lowered bodies, prunes unreachable clauses, and
-        freezes each live callsite to one selected callee executable. It never asks new semantic
-        questions and it never reopens discovery.
+        freezes each live callsite to one selected callee executable. Then
+        <code>DeriveAbiReady</code> reads only <code>MaterializedProgram</code> and
+        <code>DeriveEmissionReady</code> reads only <code>AbiReadyProgram</code>. No rung asks new
+        semantic questions and no rung reopens discovery.
       </p>
     </section>
 
@@ -608,8 +614,9 @@ DependencySnapshot = HashMap&lt;FactKey, u64&gt;</code></pre>
           <h3><code>EmissionReadyProgram</code></h3>
           <p>
             The final compiler-owned handoff before adapters. It assigns a stable emission
-            inventory over Compiler2 keys for executable entries and callable entries. Dense
-            ordinals live here only as emission bookkeeping, never as semantic identity.
+            inventory over Compiler2 keys for executable entries and callable entries, then rewrites
+            cross-references to dense emission-local indices. Dense ordinals live here only as
+            emission bookkeeping, never as semantic identity.
           </p>
         </div>
       </div>
@@ -637,7 +644,9 @@ DependencySnapshot = HashMap&lt;FactKey, u64&gt;</code></pre>
       <p>
         This is the reason <code>fz-rh2.8.2</code> stays blocked behind the artifact-model arc:
         backend adapter work should consume <code>EmissionReadyProgram</code>, not invent it while
-        wiring interpreter, JIT, or AOT code.
+        wiring interpreter, JIT, or AOT code. If a backend consumer needs semantic, reachability,
+        or type answers after <code>MaterializedProgram</code>, that missing information belongs as
+        a new artifact fact instead of an adapter-side query back into the semantic world.
       </p>
     </section>
 
@@ -759,12 +768,14 @@ join =&gt; Inputs([list(int)]) after refine_widen + alpha normalization</code></
       </div>
 
       <div class="step">
-        <h3><span class="num">08</span>Materialization freezes the closed path only</h3>
+        <h3><span class="num">08</span>The artifact ladder freezes and inventories the closed path only</h3>
         <p>
           <code>MaterializeRoot(root)</code> clones only the executable bodies in the closed
           frontier, prunes unreachable clauses, and emits <code>MaterializedProgram(root)</code>.
-          The next two artifact rungs then derive ABI and emission facts mechanically from that one
-          snapshot. Redefining uncalled <code>foo/0</code> later does not reopen the root.
+          <code>DeriveAbiReady(root)</code> then makes return delivery, ABI lanes, and callable
+          entries explicit without asking new semantic questions. Finally,
+          <code>DeriveEmissionReady(root)</code> rewrites that closed artifact into stable emission
+          inventory. Redefining uncalled <code>foo/0</code> later does not reopen the root.
           Redefining <code>main/0</code> does, because the old callsite summaries and closed
           frontier are replaced by new ones.
         </p>
@@ -843,16 +854,18 @@ ReturnType(root, lambda#reduce_sum/2, [int, int]) = int</code></pre>
         Telemetry carries raw ids, facts, and opaque structures. Formatting belongs in handlers.
         The compiler surface emits spans for <code>drive</code> and each <code>job</code>, plus
         state-defining events such as <code>function.defined</code>,
-        <code>callsite.defined</code>, and <code>semantic_closed.defined</code>. Tests observe
-        those events instead of poking through world internals.
+        <code>callsite.defined</code>, <code>semantic_closed.defined</code>,
+        <code>materialized_program.defined</code>, <code>abi_ready_program.defined</code>, and
+        <code>emission_ready_program.defined</code>. Tests observe those events instead of poking
+        through world internals.
       </p>
       <div class="grid">
         <div class="card">
           <h3>Summary tests</h3>
           <p>
-            <code>src/compiler2/drive_test.rs</code> is the fast contract surface. The quicksort
-            and <code>Enum.reduce</code> tests assert finite closure size, exact reached callsites,
-            absence of cold helpers, and materialization boundaries.
+            <code>src/compiler2/drive_test.rs</code> is the fast contract surface. The quicksort,
+            <code>Enum.reduce</code>, and variadic-extern tests assert finite closure size, exact
+            reached callsites, absence of cold helpers, and the one-way artifact ladder.
           </p>
           <p class="small">
             Useful rerun: <code>cargo test --lib compiler2_ -- --nocapture</code>
