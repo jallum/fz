@@ -7,14 +7,15 @@
   "blocks": [
     "fz-rh2.8.2.4"
   ],
+  "closed_at": "2026-06-08T09:42:32Z",
   "created": "2026-06-08T04:59:27Z",
   "description": "Goal: make the production Compiler2 JIT/AOT entry points consume `NativeProgram(root)` end-to-end. Signal: Compiler2-native JIT/AOT runs execute through the shared native path without `prepare_preplanned_native`, `materialize_program`, `AbiFacts::derive`, `plan_module_with_role`, or `resolve_module_types`, and the temporary test-only native consumer seam is gone.\n\nChange:\n- add production Compiler2 JIT/AOT front doors that demand `LowerNativeProgram(root)` and hand `NativeProgram(root)` to shared native codegen\n- fold the current test-only `compile_with_backend_native_program` / `prepare_native_codegen_surface_from_compiler2` path into the real native consumer entry, or delete it if the public path makes it redundant\n- remove the remaining Compiler2-side dependence on old native-preparation helpers while wiring the outer consumer switch\n\nWhy:\n- the native codegen seam is already carved and the lowerers already consume Compiler2-native facts; the remaining work should now be only the public consumer move and cleanup\n\nChecks:\n- Compiler2 JIT and AOT contract tests pass for quicksort, `Enum.reduce`, and variadic externs\n- telemetry/assertions prove the forbidden old-world helpers were not used\n- no temporary Compiler2-native test-only consumer path remains once the production entry points exist",
   "id": "fz-rh2.8.2.3.3",
   "labels": [],
   "parent": "fz-rh2.8.2.3",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 native backends: move shared codegen and JIT/AOT entry paths onto the new handoff",
   "type": "task",
-  "updated_at": "2026-06-08T09:30:26Z"
+  "updated_at": "2026-06-08T09:42:32Z"
 }
