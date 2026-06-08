@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-08T02:49:17Z",
+  "description": "Goal: make the backend fact boundary explicit before adding code. Signal: docs and ticket text classify old-world backend fields as durable Compiler2 facts, derived emission-local facts, or rejected backend baggage.\n\nChange:\n- Update northstar.html and .agent/docs/pipeline.md with the artifact ladder: MaterializedProgram -\u003e AbiReadyProgram -\u003e EmissionReadyProgram.\n- Document the accepted durable facts: selected call edges, return delivery, extern marshal classes, effects, callable-boundary obligations, stable emission inventory.\n- Document rejected old-world shapes: SpecPlan as a compiler artifact, SpecRegistry/SpecId as semantic identity, AbiFacts native/continuation sets, cont extras, callable wrapper signatures, and formatted telemetry.\n- Record that fz-rh2.8.2 resumes only after this epic makes backend consumption mechanical.\n\nWhy:\n- Without the taxonomy, the next implementation can accidentally make old CPS/codegen details look like compiler facts.\n\nChecks:\n- Docs point at current Compiler2 MaterializedProgram/ExecutableNeed facts and describe no behavior that code cannot eventually prove.\n- The future implementation tickets are grounded in this taxonomy.\n- No code changes are made in this ticket unless needed to keep docs truthful.",
+  "id": "fz-rh2.8.4.1",
+  "labels": [],
+  "parent": "fz-rh2.8.4",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 artifacts: publish ABI and emission fact taxonomy",
+  "type": "task",
+  "updated_at": "2026-06-08T02:49:17Z"
+}
