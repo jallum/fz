@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.11.6"
+  ],
   "created": "2026-06-08T11:49:30Z",
   "description": "Goal: stop losing ordinary surface programs at the Compiler2 source boundary once control/data lowering is ready.\n\nSignal:\n- representative fixtures that currently fail on leftover macros or capture sugar (`\u0026(\u00261 + \u00262)`, `defmacro` call sites that should already be expanded) run through `fz2`\n- Compiler2 indexing/lowering no longer expects user code to already have skipped macro expansion by magic\n\nChange:\n- provide Compiler2 with expanded macro-free function/item bodies, or desugar the remaining surface forms (`Capture`, `CaptureArg`) before body lowering\n- keep the ownership boundary honest: Compiler2 receives compiler-owned AST/facts, not old-world runtime execution artifacts\n\nWhy:\n- even after control/data support lands, real fixtures like `macro_inc` and `lambda_sugars` will still fail unless the frontend surface into Compiler2 is completed",
   "id": "fz-rh2.11.5",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 frontend surface: feed expanded macro-free bodies and capture sugar",
   "type": "task",
-  "updated_at": "2026-06-08T11:49:30Z"
+  "updated_at": "2026-06-08T11:49:50Z"
 }
