@@ -18,11 +18,15 @@
     {
       "text": "Grounding from code review:\n- Old interpreter path still consumes `fz_ir::Module + ModulePlan` through `ir_interp::run_main_with_plan`, and `CodeImage::from_plan` still re-runs `resolve_module_types`.\n- Old native path still consumes `Module + ModulePlan`, then rebuilds `PlannedProgram + AbiFacts` through `ir_codegen::driver::prepare_preplanned_native`, which calls `lower_destinations`, `resolve_module_types`, `materialize_program`, and `AbiFacts::derive` before JIT/AOT.\n- Compiler2 final artifact is `EmissionReadyProgram`, which carries settled call edges, return ABI, param/value reprs, callable entries, extern marshal classes, effects, and stable inventory, but not old `ModulePlan`, `PlannedProgram`, or `AbiFacts`.\n- Compiler2 lowered bodies (`compiler2/body.rs`) are expression/block-oriented and stop above old CPS `fz_ir::FnIr`; they therefore need one more Compiler2-owned lowering step before interpreter/JIT/AOT can consume them mechanically.\n- `fz_ir` remains a plausible backend IR target because both interpreter and native codegen already share it, but the lowering source of truth must be Compiler2 artifacts, not AST/frontend/planner state.\n\nInitial shape to evaluate next:\n1. Add a Compiler2-native backend lowering module that consumes only `EmissionReadyProgram` and lowers each executable once into backend IR / inventory.\n2. Keep old `ir_lower` nearby only as a mechanics reference (builder patterns, CPS invariants, runtime-call shapes), not as a source of planner or frontend fallback.\n3. Once the backend IR projection exists, switch interpreter first, then the shared native path.",
       "timestamp": "2026-06-08T03:53:50Z"
+    },
+    {
+      "text": "Implemented as a Compiler2-owned structured backend handoff, not a revival of old planner/CPS artifacts.\n\nGrounding from code:\n- New artifact rung: BackendProgram(root) derived only from EmissionReadyProgram(root) plus the world-owned type store.\n- BackendProgram keeps the closed executable inventory, but rewrites bodies so direct calls point at settled executable indices, callable-boundary arguments carry the required callable-entry inventory, and direct calls to extern executables carry the settled wire classes.\n- This avoids reintroducing ModulePlan / SpecPlan / PlannedProgram / AbiFacts and also avoids forcing extern marshalling or callable-boundary facts into old-world shapes that do not fit them cleanly.\n- The result is still by-function and structured-by-clause, so interpreter/JIT/AOT can consume it mechanically in later tickets without reopening semantic discovery.\n\nCoverage landed here:\n- quicksort backend inventory stays closed over the reached frontier and keeps foo/0 cold\n- Enum.reduce backend call arguments carry exactly the surviving callable-entry obligations\n- variadic extern backend calls preserve the settled wire classes\n- identical recompute keeps BackendProgram revision stable",
+      "timestamp": "2026-06-08T04:16:52Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "Compiler2 backends: lower EmissionReadyProgram to backend IR",
   "type": "task",
-  "updated_at": "2026-06-08T03:53:50Z"
+  "updated_at": "2026-06-08T04:16:52Z"
 }
