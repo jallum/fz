@@ -516,6 +516,13 @@ impl<'a> World<'a> {
         revision
     }
 
+    pub(crate) fn native_program(&self, root: RootId) -> NativeProgram {
+        self.native
+            .get(root)
+            .cloned()
+            .expect("native programs should only be read after their fact is defined")
+    }
+
     pub fn reference_module(&mut self, name: impl Into<String>) -> ModuleId {
         self.modules.reference_named(name)
     }

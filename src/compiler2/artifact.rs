@@ -520,6 +520,13 @@ impl NativeProgramMap {
         slot.revision
     }
 
+    pub fn get(&self, root: RootId) -> Option<&NativeProgram> {
+        match &self.slots.get(root.as_u32() as usize)?.state {
+            ProjectionState::Placeholder => None,
+            ProjectionState::Defined(value) => Some(value),
+        }
+    }
+
     fn ensure(&mut self, root: RootId) {
         let needed = root.as_u32() as usize + 1;
         if self.slots.len() < needed {

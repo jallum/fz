@@ -202,11 +202,11 @@ Current conclusion from the code:
 
 - no missing closed fact has been identified for the current shared native
   codegen inputs
-- contract tests already JIT-compile `NativeProgram(root)` through the shared
-  native backend without `prepare_preplanned_native`
-- the remaining work is the outer consumer move: expose production Compiler2
-  JIT/AOT entry points on top of `NativeProgram(root)` and retire the current
-  test-only handoff helper
+- `Compiler2::compile_root_jit` and `Compiler2::compile_root_aot` now consume
+  `NativeProgram(root)` through the shared native backend without
+  `prepare_preplanned_native`
+- the remaining work is above this seam: switch the outer app/CLI entry points
+  onto these Compiler2-native front doors and remove the old fallback plumbing
 
 ## Redefinition retracts by ownership
 

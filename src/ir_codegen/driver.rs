@@ -3,7 +3,6 @@ use super::abi_facts::AbiFacts;
 use super::invariants::{assert_no_new_call_shapes, emit_and_assert_spec_dispatch_coverage, snapshot_call_shapes};
 use super::receive::{DispatchRuntimeHelpers, declare_receive_dispatch, emit_receive_dispatch_body};
 use super::*;
-#[cfg(test)]
 use crate::diag::Diagnostics;
 use crate::fz_ir::{BlockId, CallsiteId, CallsiteIdent, EmitSlot, FnId, Module, Prim, SpecId, Stmt, Term};
 use crate::ir_dest::{lower_destinations, verify_module};
@@ -1521,7 +1520,6 @@ pub(crate) fn compile_with_backend_prepared<
     compile_with_backend_surface(t, &surface, backend, tel)
 }
 
-#[cfg(test)]
 pub(crate) fn compile_with_backend_native_program<
     B: Backend,
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
@@ -1531,7 +1529,7 @@ pub(crate) fn compile_with_backend_native_program<
     backend: B,
     tel: &dyn Telemetry,
 ) -> Result<B::Output, CodegenError> {
-    let surface = prepare_native_codegen_surface_from_compiler2(t, program);
+    let surface = prepare_native_codegen_surface_from_native_program(t, program);
     compile_with_backend_surface(t, &surface, backend, tel)
 }
 
@@ -1639,7 +1637,6 @@ where
     }
 }
 
-#[cfg(test)]
 fn synthetic_codegen_spec_key(body: &crate::compiler2::NativeBody) -> SpecKey {
     let mut key = SpecKey::value(body.fn_id, Vec::new());
     key.demand = match &body.return_abi {
@@ -1651,7 +1648,6 @@ fn synthetic_codegen_spec_key(body: &crate::compiler2::NativeBody) -> SpecKey {
     key
 }
 
-#[cfg(test)]
 fn build_codegen_spec_plan(any: Ty, body: &crate::compiler2::NativeBody, function: &crate::fz_ir::FnIr) -> SpecPlan {
     SpecPlan {
         vars: body.value_types.keys().copied().map(|var| (var, any.clone())).collect(),
@@ -1661,7 +1657,6 @@ fn build_codegen_spec_plan(any: Ty, body: &crate::compiler2::NativeBody, functio
     }
 }
 
-#[cfg(test)]
 fn build_codegen_return_repr(body: &crate::compiler2::NativeBody) -> ArgRepr {
     match &body.return_abi {
         crate::compiler2::ReturnAbi::Value(repr) => arg_repr_from_compiler2(*repr),
@@ -1669,7 +1664,6 @@ fn build_codegen_return_repr(body: &crate::compiler2::NativeBody) -> ArgRepr {
     }
 }
 
-#[cfg(test)]
 fn build_codegen_callable_entries(
     program: &crate::compiler2::NativeProgram,
 ) -> BTreeMap<u32, NativeCallableEntrySurface> {
@@ -1688,7 +1682,6 @@ fn build_codegen_callable_entries(
     entries
 }
 
-#[cfg(test)]
 fn build_codegen_cont_extras(program: &crate::compiler2::NativeProgram) -> HashMap<FnId, usize> {
     program
         .bodies
@@ -1700,7 +1693,6 @@ fn build_codegen_cont_extras(program: &crate::compiler2::NativeProgram) -> HashM
         .collect()
 }
 
-#[cfg(test)]
 fn build_codegen_closure_capture_counts(program: &crate::compiler2::NativeProgram) -> HashMap<FnId, usize> {
     let mut counts = HashMap::new();
     for entry in &program.callable_entries {
@@ -1709,7 +1701,6 @@ fn build_codegen_closure_capture_counts(program: &crate::compiler2::NativeProgra
     counts
 }
 
-#[cfg(test)]
 fn collect_codegen_mid_flight_cont_keys(
     program: &crate::compiler2::NativeProgram,
     param_reprs: &[Vec<ArgRepr>],
@@ -1749,8 +1740,7 @@ fn collect_codegen_mid_flight_cont_keys(
     out
 }
 
-#[cfg(test)]
-fn prepare_native_codegen_surface_from_compiler2<'a>(
+fn prepare_native_codegen_surface_from_native_program<'a>(
     t: &mut impl Types<Ty = Ty>,
     program: &'a crate::compiler2::NativeProgram,
 ) -> NativeCodegenSurface<'a> {

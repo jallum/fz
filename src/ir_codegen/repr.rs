@@ -95,7 +95,6 @@ impl ArgRepr {
     }
 }
 
-#[cfg(test)]
 pub(crate) fn arg_repr_from_compiler2(repr: crate::compiler2::AbiValueRepr) -> ArgRepr {
     match repr {
         crate::compiler2::AbiValueRepr::ValueRef => ArgRepr::ValueRef,

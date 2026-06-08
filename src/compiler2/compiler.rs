@@ -59,29 +59,67 @@ impl<'a> Compiler2<'a> {
         self.world.drive()
     }
 
+    fn drive_root_to(&mut self, root: RootId, job: Job) -> Result<(), String> {
+        self.world.demand(job);
+        match self.world.drive() {
+            DriveOutcome::Resolved => Ok(()),
+            DriveOutcome::Unresolved { waits } => Err(format!(
+                "compiler2 root {} stayed unresolved: {:?}",
+                root.as_u32(),
+                waits
+            )),
+            DriveOutcome::Fatal { job } => Err(format!(
+                "compiler2 root {} failed before backend execution: {:?}",
+                root.as_u32(),
+                job
+            )),
+        }
+    }
+
     /// Drives one root to `BackendProgram` and runs it through the shared
     /// interpreter runtime without reopening the legacy planner pipeline.
     pub fn run_root_interp(&mut self, root: RootId) -> Result<i64, String> {
-        self.world.demand(Job::LowerBackendProgram(root));
-        match self.world.drive() {
-            DriveOutcome::Resolved => {}
-            DriveOutcome::Unresolved { waits } => {
-                return Err(format!(
-                    "compiler2 root {} stayed unresolved: {:?}",
-                    root.as_u32(),
-                    waits
-                ));
-            }
-            DriveOutcome::Fatal { job } => {
-                return Err(format!(
-                    "compiler2 root {} failed before interpretation: {:?}",
-                    root.as_u32(),
-                    job
-                ));
-            }
-        }
+        self.drive_root_to(root, Job::LowerBackendProgram(root))?;
         let program = self.world.backend_program(root);
         let tel = self.world.tel();
         crate::ir_interp::run_backend_main(self.world.types_mut(), tel, &program)
+    }
+
+    /// Drives one root to `NativeProgram` and JIT-compiles it through the
+    /// shared native backend. The returned `FnId` is the root entry the
+    /// runtime should spawn.
+    pub fn compile_root_jit(
+        &mut self,
+        root: RootId,
+    ) -> Result<(crate::ir_codegen::CompiledModule, crate::fz_ir::FnId), String> {
+        self.drive_root_to(root, Job::LowerNativeProgram(root))?;
+        let program = self.world.native_program(root);
+        let entry = program.entry;
+        let tel = self.world.tel();
+        let mut legacy_types = crate::types::new();
+        let compiled = crate::ir_codegen::compile_with_backend_native_program(
+            &mut legacy_types,
+            &program,
+            crate::ir_codegen::JitBackend::new(),
+            tel,
+        )
+        .map_err(|err| format!("compiler2 root {} JIT compile failed: {err}", root.as_u32()))?;
+        Ok((compiled, entry))
+    }
+
+    /// Drives one root to `NativeProgram` and emits an AOT object through the
+    /// shared native backend.
+    pub fn compile_root_aot(&mut self, root: RootId, obj_name: &str) -> Result<crate::ir_codegen::AotArtifact, String> {
+        self.drive_root_to(root, Job::LowerNativeProgram(root))?;
+        let program = self.world.native_program(root);
+        let tel = self.world.tel();
+        let mut legacy_types = crate::types::new();
+        crate::ir_codegen::compile_with_backend_native_program(
+            &mut legacy_types,
+            &program,
+            crate::ir_codegen::AotBackend::new(obj_name),
+            tel,
+        )
+        .map_err(|err| format!("compiler2 root {} AOT compile failed: {err}", root.as_u32()))
     }
 }

@@ -1,4 +1,5 @@
 use super::{CodeSubmission, Compiler2, DriveOutcome, Job};
+use crate::exec::runtime::DbgCapture;
 use crate::telemetry::handler::{Event, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind, Value};
 use std::cell::RefCell;
@@ -228,6 +229,175 @@ fn run_contract(case: ContractCase<'_>) {
         "{} should accept an explicit define-code demand after indexing",
         case.name
     );
+}
+
+fn assert_no_legacy_planner_or_type_infer(capture: &Capture, context: &str) {
+    assert!(
+        capture.find(&["fz", "type_infer"]).is_empty() && capture.find(&["fz", "planner"]).is_empty(),
+        "{context}",
+    );
+}
+
+struct NativeEntryCase<'a> {
+    name: &'a str,
+    source_name: &'a str,
+    source_text: String,
+    root_name: &'a str,
+    expected_halt: i64,
+    expected_dbg: Option<&'a str>,
+}
+
+#[test]
+fn compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare() {
+    let quicksort = format!(
+        "{}\nfn foo(), do: 42\nfn entry() do\n  dbg(qsort([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5]))\n  42\nend\n",
+        include_str!("../../fixtures/quicksort/input.fz")
+    );
+    let cases = [
+        NativeEntryCase {
+            name: "quicksort",
+            source_name: "fixtures/quicksort_compiler2_jit.fz",
+            source_text: quicksort,
+            root_name: "entry",
+            expected_halt: 42,
+            expected_dbg: Some("[1, 1, 2, 3, 3, 4, 5, 5, 5, 6, 9]"),
+        },
+        NativeEntryCase {
+            name: "enum_reduce",
+            source_name: "fixtures/enum_reduce_compiler2_jit.fz",
+            source_text: r#"
+fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
+"#
+            .to_string(),
+            root_name: "main",
+            expected_halt: 15,
+            expected_dbg: None,
+        },
+        NativeEntryCase {
+            name: "variadic_extern",
+            source_name: "fixtures/variadic_open_compiler2_jit.fz",
+            source_text: r#"
+extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
+
+fn main() do
+  libc::open("/fz_compiler2_missing_9cc0c1d0", 0, 0o644 :: integer)
+end
+"#
+            .to_string(),
+            root_name: "main",
+            expected_halt: -1,
+            expected_dbg: None,
+        },
+    ];
+
+    for case in cases {
+        let tel = ConfiguredTelemetry::new();
+        let capture = Capture::new();
+        tel.attach(&[], capture.handler());
+        let dbg = DbgCapture::new();
+        tel.attach(&[], dbg.handler());
+        let mut compiler = Compiler2::new(&tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some(case.source_name.to_string()),
+            text: case.source_text,
+        });
+        let root_id = compiler.submit_root(super::RootSubmission {
+            module_name: None,
+            name: case.root_name.to_string(),
+            arity: 0,
+            need: super::ExecutableNeed::Value,
+        });
+
+        let (compiled, entry) = compiler
+            .compile_root_jit(root_id)
+            .unwrap_or_else(|err| panic!("{} should JIT-compile through NativeProgram: {err}", case.name));
+        assert_eq!(
+            compiled.run(&tel, entry),
+            case.expected_halt,
+            "{} should preserve the Compiler2-native JIT result",
+            case.name
+        );
+        if let Some(expected_dbg) = case.expected_dbg {
+            assert_eq!(
+                dbg.lines().first().map(String::as_str),
+                Some(expected_dbg),
+                "{} should preserve dbg output through the Compiler2 JIT front door",
+                case.name
+            );
+        }
+        assert_no_legacy_planner_or_type_infer(
+            &capture,
+            "Compiler2 JIT front door should not reopen legacy planning or type inference",
+        );
+    }
+}
+
+#[test]
+fn compiler2_compile_root_aot_consumes_native_program_without_legacy_prepare() {
+    let cases = [
+        (
+            "quicksort",
+            "fixtures/quicksort_compiler2_aot.fz",
+            include_str!("../../fixtures/quicksort/input.fz").to_string(),
+            "quicksort_compiler2",
+        ),
+        (
+            "enum_reduce",
+            "fixtures/enum_reduce_compiler2_aot.fz",
+            r#"
+fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
+"#
+            .to_string(),
+            "enum_reduce_compiler2",
+        ),
+        (
+            "variadic_extern",
+            "fixtures/variadic_open_compiler2_aot.fz",
+            r#"
+extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
+
+fn main() do
+  libc::open("/fz_compiler2_missing_9cc0c1d0", 0, 0o644 :: integer)
+end
+"#
+            .to_string(),
+            "variadic_open_compiler2",
+        ),
+    ];
+
+    for (name, source_name, source_text, obj_name) in cases {
+        let tel = ConfiguredTelemetry::new();
+        let capture = Capture::new();
+        tel.attach(&[], capture.handler());
+        let mut compiler = Compiler2::new(&tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some(source_name.to_string()),
+            text: source_text,
+        });
+        let root_id = compiler.submit_root(super::RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: super::ExecutableNeed::Value,
+        });
+
+        let artifact = compiler
+            .compile_root_aot(root_id, obj_name)
+            .unwrap_or_else(|err| panic!("{name} should AOT-compile through NativeProgram: {err}"));
+        assert!(
+            !artifact.object.is_empty(),
+            "{name} should produce a non-empty AOT object through the Compiler2 front door",
+        );
+        assert_eq!(
+            artifact.main_symbol.as_deref(),
+            Some("main"),
+            "{name} should preserve the C-callable main symbol through the Compiler2 AOT front door",
+        );
+        assert_no_legacy_planner_or_type_infer(
+            &capture,
+            "Compiler2 AOT front door should not reopen legacy planning or type inference",
+        );
+    }
 }
 
 #[derive(Debug, Clone)]

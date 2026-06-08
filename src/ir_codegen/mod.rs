@@ -106,7 +106,6 @@ pub(crate) fn compile_with_backend_prepared<
     )
 }
 
-#[cfg(test)]
 pub(crate) fn compile_with_backend_native_program<
     B: Backend,
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,

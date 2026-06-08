@@ -730,11 +730,11 @@ DependencySnapshot = HashMap&lt;FactKey, u64&gt;</code></pre>
       </ul>
       <p>
         Current conclusion from the code: no missing closed fact has been identified for the
-        current shared native codegen inputs. Contract tests already JIT-compile
-        <code>NativeProgram(root)</code> through the shared backend without
-        <code>prepare_preplanned_native</code>. The remaining work is the outer consumer move:
-        expose production Compiler2 JIT/AOT entry points on top of
-        <code>NativeProgram(root)</code> and retire the current test-only handoff helper.
+        current shared native codegen inputs. <code>Compiler2::compile_root_jit</code> and
+        <code>Compiler2::compile_root_aot</code> now consume <code>NativeProgram(root)</code>
+        through the shared backend without <code>prepare_preplanned_native</code>. The remaining
+        work is above this seam: switch the outer app/CLI entry points onto these
+        Compiler2-native front doors and remove the old fallback plumbing.
       </p>
     </section>
 
