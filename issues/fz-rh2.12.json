@@ -13,11 +13,15 @@
     {
       "text": "Sequencing (one decision -\u003e mostly deletions; the work graph is the fixpoint):\n\n```mermaid\ngraph LR\n    1[\".1 note names + reference_type\"] --\u003e 2[\".2 DeriveTypeDef + TypeDefined\"]\n    2 --\u003e 3[\".3 in-house resolver\"]\n    2 --\u003e 6[\".6 inner-in-symbol kernel\"]\n    3 --\u003e 4[\".4 re-seat consumers; delete function_type_env\"]\n    3 --\u003e 5[\".5 protocol domain = marker\"]\n    4 --\u003e 7[\".7 sever + lexer-pass guard\"]\n    5 --\u003e 7\n    6 --\u003e 7\n    7 --\u003e 8[\".8 promote docs\"]\n    8 --\u003e 9[\".9 back here: re-examine quicksort.log\"]\n    9 -.lace.-\u003e RH29[\"fz-rh2.9 scrap old compiler\"]\n```\n\nBoundary: in-house = name -\u003e hard Ty (.1-.5); shared/untouched = the algebra and spec engine over hard Ty, plus the whole legacy crate::type_expr / runtime_library / ModuleTypeEnv (kept for the retiring fz frontend). Removes more than it adds.",
       "timestamp": "2026-06-08T20:52:30Z"
+    },
+    {
+      "text": "Design refinement (from the @spec to FunctionContract parity discussion):\n\nThe lifecycle is Note / Reference / Resolve, and the reference/resolve split is the load-bearing invariant -- it is what makes the re-lex structurally unrepresentable rather than merely removed.\n\n  - Reference is an INDEX-time walk (.1): every type-position name is minted and recorded as its consumer dep. The recorded set IS the consumer wait-set.\n  - Resolve is split across the consumer and the resolver: the CONSUMER (.4) is the demand source -- it waits on its recorded TypeDefined, then calls a PURE-READ resolver (.3) that never blocks, demands, or mints.\n\nSo a type name rides one tier below the function that names it: a @spec referencing SomeModule.t pulls DeriveTypeDef only because DeriveFunctionContract waited on TypeDefined -- and a @type no reached consumer references stays cold (epic signal 3, gated in .2). DeriveFunctionContract over MFAs is the exact template.\n\nUnchanged by this: the DAG, the inch boundaries, the lace into fz-rh2.9, and the two-grains contract/body split (already existing compiler2 structure -- a caller reads the contract without entering the body).",
+      "timestamp": "2026-06-08T21:06:24Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 type naming: bring name→Ty in-house as demanded facts",
   "type": "epic",
-  "updated_at": "2026-06-08T20:52:58Z"
+  "updated_at": "2026-06-08T21:06:24Z"
 }
