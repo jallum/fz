@@ -1332,11 +1332,11 @@ pub struct Module {
     pub struct_schemas: BTreeMap<String, Vec<String>>,
     /// Resolved declared `@spec` overload sets keyed by IR function id. Used by
     /// call typing for source-level polymorphic contracts.
-    pub declared_specs: HashMap<FnId, ResolvedSpecSet>,
+    pub(crate) declared_specs: HashMap<FnId, ResolvedSpecSet>,
     /// Function correspondence keyed by IR function id. Declared source
     /// functions contribute structural groups directly from `@spec`; CPS
     /// continuations contribute synthesized groups from lowering provenance.
-    pub function_correspondence: HashMap<FnId, Vec<StructuralCorrespondenceGroup>>,
+    pub(crate) function_correspondence: HashMap<FnId, Vec<StructuralCorrespondenceGroup>>,
     /// Continuation provenance keyed by synthesized continuation FnId. This is
     /// the durable IR-owned record of how lowering split a non-tail call or
     /// matcher body, from which planner-facing correspondence can be derived

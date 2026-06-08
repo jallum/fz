@@ -53,6 +53,8 @@ pub use types::{
 pub use world::World;
 
 #[cfg(test)]
+mod artifact_test;
+#[cfg(test)]
 mod code_test;
 #[cfg(test)]
 mod compiler2_test;

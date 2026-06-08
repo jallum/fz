@@ -4,17 +4,20 @@
 //! root. `AbiReadyProgram` is the next projection above it: the same closed
 //! executable frontier with ABI lanes and return contracts made explicit.
 //! `EmissionReadyProgram` is the final closed executable inventory before
-//! backend lowering. `BackendProgram` is the backend-owned handoff: the same
-//! closed inventory with settled clause-entry dispatch, direct executable
-//! references, callable-boundary obligations, and concrete extern wire classes
-//! attached to structured function bodies.
+//! backend lowering. `BackendProgram` is the interpreter-ready handoff: the
+//! same closed inventory with settled clause-entry dispatch, direct
+//! executable references, callable-boundary obligations, and concrete extern
+//! wire classes attached to structured function bodies. Native codegen needs
+//! one more Compiler2-owned projection above that: `NativeProgram`, a
+//! codegen-ready CPS/native handoff that carries only backend-consumption
+//! facts and never rebuilds `ModulePlan`, `PlannedProgram`, or `AbiFacts`.
 
 use std::collections::HashMap;
 
 use crate::ast::{BinOp, UnOp};
 use crate::compiler::source::Span;
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
-use crate::fz_ir::ExternTy;
+use crate::fz_ir::{ExternMarshalSite, ExternTy, FnId, Module as IrModule, Var};
 
 use super::body::{CallSiteId, Literal, LoweredBody, LoweredExtern, ValueId};
 use super::identity::{ExecutableKey, FunctionId, RootId};
@@ -67,6 +70,68 @@ pub struct BackendProgram {
     pub atom_names: Vec<String>,
     pub executables: Vec<BackendExecutable>,
     pub callable_entries: Vec<BackendCallableEntry>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct NativeProgram {
+    /// Revision of the `BackendProgram(root)` snapshot this native handoff
+    /// was derived from.
+    pub backend_revision: u64,
+    /// The CPS/native entry body the shared JIT/AOT pipeline should start at.
+    pub entry: FnId,
+    /// Compiler2-owned CPS/native module handed to shared codegen.
+    pub module: IrModule,
+    /// Per-body native facts that replace old planner-owned side tables.
+    pub bodies: Vec<NativeBody>,
+    pub callable_entries: Vec<NativeCallableEntry>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NativeBodyOrigin {
+    Executable(ExecutableKey),
+    CallableEntry {
+        target: ExecutableKey,
+        capture_count: usize,
+    },
+    Continuation {
+        owner: ExecutableKey,
+        index: u32,
+    },
+    MidFlightContinuation {
+        callee: ExecutableKey,
+        index: u32,
+    },
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct NativeBody {
+    /// Body identity inside `module`.
+    pub fn_id: FnId,
+    /// Why this CPS/native body exists.
+    pub origin: NativeBodyOrigin,
+    /// ABI lanes at the entry seam.
+    pub param_reprs: Vec<AbiValueRepr>,
+    pub return_ty: Ty,
+    pub return_abi: ReturnAbi,
+    /// Final per-value types after Compiler2 lowering into CPS/native form.
+    pub value_types: HashMap<Var, Ty>,
+    /// Concrete extern marshal classes keyed by CPS/native extern site.
+    pub extern_marshals: HashMap<ExternMarshalSite, ExternTy>,
+    pub effects: EffectSummary,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeCallableEntry {
+    /// Wrapper function exposed through static closure/code-pointer seams.
+    pub wrapper_fn: FnId,
+    /// Direct executable-entry body the wrapper forwards to.
+    pub target_fn: FnId,
+    pub target: ExecutableKey,
+    pub capture_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]

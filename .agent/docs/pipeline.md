@@ -49,7 +49,10 @@ MaterializedProgram(root)
 ```
 
 Those rungs are derived mechanically from the closed artifact below them. They
-do not reopen semantic discovery.
+do not reopen semantic discovery. Native codegen needs one further
+Compiler2-owned handoff above that ladder, `NativeProgram(root)`, but the
+lowering job for that contract is intentionally a separate step from
+`BackendProgram(root)` publication.
 
 ## A root's journey
 
@@ -120,7 +123,12 @@ The next two rungs narrow the contract:
 - `BackendProgram` keeps the same closed inventory, but rewrites each
   structured body so direct calls point at executable inventory slots,
   callable-boundary arguments name the required callable-entry inventory, and
-  extern callsites carry concrete wire classes.
+  extern callsites carry concrete wire classes. This is the interpreter-ready
+  handoff.
+- `NativeProgram` is the next native-specific handoff above `BackendProgram`:
+  a Compiler2-owned CPS/codegen-ready projection that will carry only the
+  facts native codegen actually consumes, not rebuilt `ModulePlan`,
+  `PlannedProgram`, or `AbiFacts`.
 
 Things that belong in Compiler2 artifact facts:
 
@@ -131,6 +139,7 @@ Things that belong in Compiler2 artifact facts:
 - callable-boundary obligations
 - settled clause-entry dispatch
 - stable emission inventory
+- native-codegen handoff facts derived from `BackendProgram`
 
 Things that do not belong there:
 
@@ -141,9 +150,10 @@ Things that do not belong there:
 - backend-specific callable wrapper signatures
 - formatted telemetry payloads
 
-This is why `fz-rh2.8.2` stays blocked behind the artifact-model arc: backend
-work should consume `BackendProgram`, not invent it while wiring interpreter,
-JIT, or AOT entry points.
+This is why `fz-rh2.8.2` stays blocked behind the artifact-model arc:
+interpreter work should consume `BackendProgram`, and native work should
+consume `NativeProgram`, not invent old planner/codegen state while wiring
+JIT or AOT entry points.
 
 Backend-facing work has one hard rule after `MaterializedProgram`: it may read
 only the settled artifact ladder below it.
