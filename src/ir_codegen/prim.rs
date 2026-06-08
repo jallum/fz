@@ -2106,9 +2106,11 @@ fn emit_callable_entry_selected(
     let span = mk_ident.span();
     let closure_fn_name = env.module.fn_by_id(fn_id).name.clone();
     let callable_entry_spec_key = env
-        .spec_keys
+        .surface
+        .body_slots
         .get(selection.spec_id as usize)
-        .map(|key| format!("{key:?}"))
+        .and_then(Option::as_ref)
+        .map(|body| format!("{:?}", body.spec_key))
         .unwrap_or_else(|| "<missing spec key>".to_string());
     let mut planned_targets = env
         .fn_types
@@ -2157,9 +2159,11 @@ fn resolve_callable_entry_sid<T: Types<Ty = Ty> + ClosureTypes>(
 ) -> Result<u32, CodegenError> {
     let selection = select_callable_entry_target(
         t,
-        env.spec_registry,
         env.fn_types,
-        |sid| env.callable_entry_fn_ids.contains_key(&sid.0),
+        |t, key| {
+            env.body_id_for_key(t, key)
+                .filter(|sid| env.callable_entry_fn_ids.contains_key(sid))
+        },
         fn_id,
         captured,
         block_env,

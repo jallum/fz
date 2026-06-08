@@ -671,7 +671,7 @@ pub(crate) fn resolve_tcc_body<T: Types<Ty = Ty> + ClosureTypes>(
     args: &[Var],
     ft: &SpecPlan,
     module: &Module,
-    spec_registry: &SpecRegistry,
+    mut resolve_body_id: impl FnMut(&T, &SpecKey) -> Option<u32>,
 ) -> Option<(FnId, u32)> {
     let (fn_id, captures) = if let Some(ClosureLitInfo { target, captures, .. }) =
         ft.vars.get(closure).and_then(|ty| t.closure_lit_parts(ty))
@@ -696,5 +696,5 @@ pub(crate) fn resolve_tcc_body<T: Types<Ty = Ty> + ClosureTypes>(
     }
     key.truncate(np);
     let key = SpecKey::value(fn_id, key_slots_from_tys(key));
-    Some((fn_id, spec_registry.resolve_spec_key(t, &key)?.0))
+    Some((fn_id, resolve_body_id(&*t, &key)?))
 }
