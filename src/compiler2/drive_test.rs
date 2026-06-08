@@ -2649,6 +2649,152 @@ fn compiler2_native_program_jit_runs_quicksort_through_shared_codegen() {
 }
 
 #[test]
+fn compiler2_native_program_jit_runs_spawn_then_receive_through_shared_codegen() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/compiler2_spawn_then_receive.fz".to_string()),
+        text: r#"
+fn child(), do: send(1, 42)
+
+fn main() do
+  spawn(child)
+  receive do
+    x -> x
+  end
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "Compiler2 native lowering should settle spawn+receive before shared codegen consumes it: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let program = native.last(root_id).program;
+    let child_id = function_id(&functions, "child", 0);
+    let spawn_id = function_id(&functions, "spawn", 1);
+    let fz_spawn_id = function_id(&functions, "fz_spawn", 1);
+    assert_eq!(
+        native_executable_body(&program, spawn_id).param_reprs,
+        vec![AbiValueRepr::ValueRef],
+        "spawn/1 should accept callable values through the boxed closure-ref lane",
+    );
+    assert_eq!(
+        native_executable_body(&program, fz_spawn_id).param_reprs,
+        vec![AbiValueRepr::ValueRef],
+        "fz_spawn/1 should preserve the boxed closure-ref lane at the extern seam",
+    );
+    let callable_targets = native_callable_constructor_uses(&program)
+        .into_iter()
+        .map(|target_fn| {
+            program
+                .callable_entries
+                .iter()
+                .find(|entry| entry.target_fn.0 as usize == target_fn)
+                .unwrap_or_else(|| {
+                    panic!("native callable constructor target fn {target_fn} missing from callable entries")
+                })
+                .target
+                .activation
+                .function
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        callable_targets,
+        HashSet::from([child_id]),
+        "native callable constructors should resolve to the one closed callable-entry target for child/0",
+    );
+
+    let compiled = jit_compile_native_program(&program, &tel);
+    assert_eq!(
+        compiled.run(&tel, program.entry),
+        42,
+        "shared native codegen should preserve Compiler2 spawn/receive behavior through the callable-entry seam",
+    );
+    assert_no_legacy_planner_or_type_infer(
+        &capture,
+        "Compiler2-native spawn/receive JIT should not reopen legacy planning or type inference",
+    );
+}
+
+#[test]
+fn compiler2_native_program_jit_runs_spawn_receive_and_assert_through_shared_codegen() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/compiler2_spawn_receive_assert.fz".to_string()),
+        text: r#"
+fn child(), do: send(1, 42)
+
+fn main() do
+  spawn(child)
+  got = receive do
+    x -> x
+  end
+  assert(got == 42, "parent blocks on receive until the child sends")
+  0
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "Compiler2 native lowering should settle spawn+receive+assert before shared codegen consumes it: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let program = native.last(root_id).program;
+    let compiled = jit_compile_native_program(&program, &tel);
+    assert_eq!(
+        compiled.run(&tel, program.entry),
+        0,
+        "shared native codegen should preserve Compiler2 spawn/receive/assert behavior through the continuation seam",
+    );
+    assert_no_legacy_planner_or_type_infer(
+        &capture,
+        "Compiler2-native spawn/receive/assert JIT should not reopen legacy planning or type inference",
+    );
+}
+
+#[test]
 fn compiler2_native_program_jit_runs_enum_reduce_through_shared_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -3108,6 +3254,35 @@ end
         dbg.lines().as_slice(),
         ["7"],
         "spawn/2 should still enqueue the child even though the backend interpreter ignores the heap hint",
+    );
+}
+
+#[test]
+fn compiler2_interp_runs_selective_receive_with_make_ref_from_backend_artifacts() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/receive_selective_refs/input.fz".to_string()),
+        text: include_str!("../../fixtures/receive_selective_refs/input.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.run_root_interp(root_id).unwrap_or_else(|error| {
+        panic!("Compiler2 backend interpreter should run selective receive over make_ref identities: {error}");
+    });
+
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["3"],
+        "selective receive should keep sender-side misses/hits and receiver scan order intact",
     );
 }
 
@@ -6891,6 +7066,14 @@ fn collect_backend_callable_entry_uses(
                 collect_backend_callable_entry_uses(entries, *arm_entry, out);
             }
             collect_backend_callable_entry_uses(entries, dispatch.miss_entry, out);
+        }
+        BackendTail::Receive(receive) => {
+            for clause in &receive.clauses {
+                collect_backend_callable_entry_uses(entries, clause.entry, out);
+            }
+            if let Some(after) = &receive.after {
+                collect_backend_callable_entry_uses(entries, after.entry, out);
+            }
         }
         BackendTail::Value { .. } | BackendTail::Halt { .. } => {}
     }

@@ -106,8 +106,11 @@ That makes local control explicit instead of positional.
 
 - `ControlEntryOrigin::Clause` is a clause body entry.
 - `ControlEntryOrigin::Branch` is a compiler-made join/arm entry.
-- `ControlEntryOrigin::Resume { value }` is where a non-tail call delivers its
-  result before more work continues.
+- `ControlEntryOrigin::CallResume { value }` is where a non-tail call delivers
+  its result before more work continues.
+- `ControlEntryOrigin::LocalResume { value }` is where local control like
+  `receive`, `if`, or `dispatch` delivers a value without creating a callable
+  continuation boundary.
 
 So a non-tail direct call is not "call, then keep walking the remaining steps."
 It is:
@@ -118,7 +121,7 @@ entry N:
   tail = DirectCall { ..., dest: Deliver(resume_k) }
 
 entry resume_k:
-  origin = Resume { value: v }
+  origin = CallResume { value: v }
   captures = [...]
   steps...
   tail = ...
@@ -127,6 +130,9 @@ entry resume_k:
 The backend and native jobs preserve this shape mechanically. They derive ABI
 for resume entries, clause-entry helpers, and continuations from the same entry
 graph instead of rebuilding hidden CPS structure from "tail position" guesses.
+The backend interpreter preserves the same distinction: tail calls can park on
+`receive`, and blocked tasks keep an explicit backend continuation stack so a
+woken callee can still deliver into the caller's resume entry later.
 
 ## The artifact boundary is one-way
 

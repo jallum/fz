@@ -130,6 +130,7 @@ pub struct LoweredClause {
 pub struct LoweredEntry {
     pub span: Span,
     pub origin: ControlEntryOrigin,
+    pub params: Vec<ValueId>,
     pub captures: Vec<ValueId>,
     pub steps: Vec<LoweredStep>,
     pub tail: LoweredTail,
@@ -139,14 +140,16 @@ pub struct LoweredEntry {
 pub enum ControlEntryOrigin {
     Clause,
     Branch,
-    Resume { value: ValueId },
+    Receive,
+    CallResume { value: ValueId },
+    LocalResume { value: ValueId },
 }
 
 impl ControlEntryOrigin {
     pub fn input_value(&self) -> Option<ValueId> {
         match self {
-            Self::Clause | Self::Branch => None,
-            Self::Resume { value } => Some(*value),
+            Self::Clause | Self::Branch | Self::Receive => None,
+            Self::CallResume { value } | Self::LocalResume { value } => Some(*value),
         }
     }
 }
@@ -158,10 +161,38 @@ pub enum ControlDestination {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct DispatchBindings {
+    pub pinned: Vec<ValueId>,
+    pub prepared: Vec<ValueId>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ControlDispatch {
     pub(crate) plan: PatternDispatchPlan<Ty>,
     pub(crate) arm_entries: Vec<ControlEntryId>,
     pub(crate) miss_entry: ControlEntryId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReceiveClause {
+    pub span: Span,
+    pub entry: ControlEntryId,
+    pub bound_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReceiveAfter {
+    pub span: Span,
+    pub timeout: ValueId,
+    pub entry: ControlEntryId,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoweredReceive {
+    pub bindings: DispatchBindings,
+    pub clauses: Vec<ReceiveClause>,
+    pub after: Option<ReceiveAfter>,
+    pub(crate) dispatch: PatternDispatchPlan<Ty>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -191,9 +222,10 @@ pub enum LoweredTail {
     },
     Dispatch {
         inputs: Vec<ValueId>,
-        pinned: Vec<ValueId>,
+        bindings: DispatchBindings,
         dispatch: Box<ControlDispatch>,
     },
+    Receive(Box<LoweredReceive>),
     Halt {
         atom: String,
     },

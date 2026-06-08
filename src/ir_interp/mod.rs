@@ -76,10 +76,38 @@ pub(super) struct InterpContinuation {
 
 /// Per-task resume state: fn to call, args, selected spec, and after-chain.
 type ResumeEntry = (FnId, Vec<AnyValue>, Option<SpecKey>, Vec<InterpContinuation>);
-type BackendResumeEntry = (usize, Vec<AnyValue>);
+#[derive(Clone)]
+struct BackendContinuation {
+    executable: usize,
+    entry: crate::compiler2::ControlEntryId,
+    env: HashMap<crate::compiler2::ValueId, AnyValue>,
+}
+
+enum BackendResumeEntry {
+    Executable {
+        executable: usize,
+        args: Vec<AnyValue>,
+        continuations: Vec<BackendContinuation>,
+    },
+    Entry {
+        executable: usize,
+        entry: crate::compiler2::ControlEntryId,
+        env: HashMap<crate::compiler2::ValueId, AnyValue>,
+        continuations: Vec<BackendContinuation>,
+    },
+}
 
 /// fz-yxs/fz-2v3 — value type for selective-receive park records.
 type InterpParked = (ParkRecord, Vec<InterpContinuation>);
+
+struct BackendParkRecord {
+    executable: usize,
+    clauses: Vec<crate::compiler2::ReceiveClause>,
+    dispatch: crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
+    bindings: crate::compiler2::DispatchBindings,
+    env: HashMap<crate::compiler2::ValueId, AnyValue>,
+    continuations: Vec<BackendContinuation>,
+}
 
 /// Immutable IR interpreter code generation.
 ///
@@ -146,6 +174,7 @@ pub(crate) struct IrInterpRuntime {
     resume: HashMap<u32, ResumeEntry>,
     backend_resume: HashMap<u32, BackendResumeEntry>,
     parked: HashMap<u32, InterpParked>,
+    backend_parked: HashMap<u32, BackendParkRecord>,
     /// Node-global state (the atom table) shared by every task in this
     /// interpreter instance, seeded from the program module's atoms.
     node: Rc<Node>,
@@ -169,6 +198,7 @@ impl IrInterpRuntime {
             resume: HashMap::new(),
             backend_resume: HashMap::new(),
             parked: HashMap::new(),
+            backend_parked: HashMap::new(),
             node: Rc::new(Node::empty()),
             current_proc: std::ptr::null_mut(),
         }

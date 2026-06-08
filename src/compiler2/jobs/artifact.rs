@@ -437,6 +437,14 @@ fn collect_reachable_entries(
             }
             collect_reachable_entries(entries, dispatch.miss_entry, reachable_entries, order, out);
         }
+        LoweredTail::Receive(receive) => {
+            for clause in &receive.clauses {
+                collect_reachable_entries(entries, clause.entry, reachable_entries, order, out);
+            }
+            if let Some(after) = &receive.after {
+                collect_reachable_entries(entries, after.entry, reachable_entries, order, out);
+            }
+        }
         LoweredTail::Halt { .. } => {}
     }
 }
@@ -481,6 +489,14 @@ fn reindex_entries(
                 }
                 dispatch.miss_entry = ids[&dispatch.miss_entry];
             }
+            LoweredTail::Receive(receive) => {
+                for clause in &mut receive.clauses {
+                    clause.entry = ids[&clause.entry];
+                }
+                if let Some(after) = &mut receive.after {
+                    after.entry = ids[&after.entry];
+                }
+            }
             LoweredTail::Halt { .. } => {}
         }
     }
@@ -513,6 +529,7 @@ fn collect_tail_call_args(tail: &LoweredTail, out: &mut HashMap<CallSiteId, Vec<
         LoweredTail::Value { .. }
         | LoweredTail::If { .. }
         | LoweredTail::Dispatch { .. }
+        | LoweredTail::Receive(_)
         | LoweredTail::Halt { .. } => {}
     }
 }
@@ -681,6 +698,7 @@ fn tail_effects(tail: &LoweredTail, call_edges: &HashMap<CallSiteId, Materialize
         | LoweredTail::DirectCall { .. }
         | LoweredTail::If { .. }
         | LoweredTail::Dispatch { .. }
+        | LoweredTail::Receive(_)
         | LoweredTail::Halt { .. } => {}
         LoweredTail::ClosureCall { .. } => {}
     }
@@ -1100,6 +1118,62 @@ fn resolve_entry_return_abi(
                 Some(current) => widen_return_abi(current, miss_abi),
             }
         }
+        LoweredTail::Receive(receive) => {
+            let mut widened = None;
+            for clause in &receive.clauses {
+                let Some(clause_abi) = resolve_entry_return_abi(
+                    world,
+                    root_id,
+                    executable,
+                    plan,
+                    entries,
+                    clause.entry,
+                    return_abis,
+                    seen,
+                )?
+                else {
+                    return Ok(None);
+                };
+                widened = Some(match widened {
+                    None => clause_abi,
+                    Some(current) if current == clause_abi => current,
+                    Some(current) => widen_return_abi(current, clause_abi).ok_or_else(|| {
+                        incomplete_semantic_plan(
+                            world,
+                            root_id,
+                            format!("receive clause returns disagree for entry {}", entry_id.as_u32()),
+                        )
+                    })?,
+                });
+            }
+            if let Some(after) = &receive.after {
+                let Some(after_abi) = resolve_entry_return_abi(
+                    world,
+                    root_id,
+                    executable,
+                    plan,
+                    entries,
+                    after.entry,
+                    return_abis,
+                    seen,
+                )?
+                else {
+                    return Ok(None);
+                };
+                widened = Some(match widened {
+                    None => after_abi,
+                    Some(current) if current == after_abi => current,
+                    Some(current) => widen_return_abi(current, after_abi).ok_or_else(|| {
+                        incomplete_semantic_plan(
+                            world,
+                            root_id,
+                            format!("receive branches disagree for entry {}", entry_id.as_u32()),
+                        )
+                    })?,
+                });
+            }
+            widened
+        }
         LoweredTail::Halt { .. } => Some(plan.result_abi.clone()),
     };
     seen.remove(&entry_id);
@@ -1273,7 +1347,9 @@ fn resume_values(body: &LoweredBody) -> HashMap<ControlEntryId, ValueId> {
     let mut values = HashMap::new();
     if let LoweredBody::Clauses { entries, .. } = body {
         for (index, entry) in entries.iter().enumerate() {
-            if let super::super::body::ControlEntryOrigin::Resume { value } = entry.origin {
+            if let super::super::body::ControlEntryOrigin::CallResume { value }
+            | super::super::body::ControlEntryOrigin::LocalResume { value } = entry.origin
+            {
                 values.insert(ControlEntryId::from_u32(index as u32), value);
             }
         }
@@ -1314,7 +1390,7 @@ fn record_delivery(tail: &LoweredTail, deliveries: &mut HashMap<ControlEntryId, 
             .or_default()
             .push(DeliverySource::Call(*callsite)),
         LoweredTail::Value { .. } | LoweredTail::DirectCall { .. } | LoweredTail::ClosureCall { .. } => {}
-        LoweredTail::If { .. } | LoweredTail::Dispatch { .. } | LoweredTail::Halt { .. } => {}
+        LoweredTail::If { .. } | LoweredTail::Dispatch { .. } | LoweredTail::Receive(_) | LoweredTail::Halt { .. } => {}
     }
 }
 
@@ -1518,6 +1594,7 @@ fn callable_entries_in_tail(
         LoweredTail::Value { .. }
         | LoweredTail::If { .. }
         | LoweredTail::Dispatch { .. }
+        | LoweredTail::Receive(_)
         | LoweredTail::Halt { .. } => Ok(()),
     }
 }

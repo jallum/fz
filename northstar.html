@@ -765,16 +765,22 @@ DependencySnapshot = HashMap&lt;FactKey, u64&gt;</code></pre>
   tail = DirectCall { ..., dest: Deliver(resume_k) }
 
 entry resume_k:
-  origin = Resume { value: v }
+  origin = CallResume { value: v }
   captures = [...]
   steps...
   tail = ...</code></pre>
       <p>
         Clause bodies use <code>ControlEntryOrigin::Clause</code>. Compiler-made
-        joins and branch arms use <code>Branch</code>. Resume points use
-        <code>Resume { value }</code>. The important part is that backend and
-        native lowering now consume this explicit control graph mechanically
-        instead of trying to recover it later from positional tailness.
+        joins and branch arms use <code>Branch</code>. Non-tail calls deliver
+        into <code>CallResume { value }</code>. Local control that moves a value
+        without crossing a callable boundary, like <code>receive</code> arms,
+        delivers into <code>LocalResume { value }</code>. The important part is
+        that backend and native lowering now consume this explicit control graph
+        mechanically instead of trying to recover it later from positional
+        tailness. The backend interpreter preserves the same model: a direct
+        tail call may park on <code>receive</code>, and the blocked task keeps a
+        backend continuation stack so the eventual wake can still deliver back
+        into the caller's resume entry.
       </p>
 
       <div class="step">

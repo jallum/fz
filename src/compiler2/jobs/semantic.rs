@@ -525,7 +525,7 @@ fn analyze_tail(
                 world,
                 entries,
                 *then_entry,
-                &entry_scope(entries, *then_entry, values, None),
+                &entry_scope(entries, *then_entry, values, None, &[]),
                 reachable_entries,
                 value_types,
                 calls,
@@ -538,7 +538,7 @@ fn analyze_tail(
                 world,
                 entries,
                 *else_entry,
-                &entry_scope(entries, *else_entry, values, None),
+                &entry_scope(entries, *else_entry, values, None, &[]),
                 reachable_entries,
                 value_types,
                 calls,
@@ -565,7 +565,7 @@ fn analyze_tail(
                     world,
                     entries,
                     arm_entry,
-                    &entry_scope(entries, arm_entry, values, None),
+                    &entry_scope(entries, arm_entry, values, None, &[]),
                     reachable_entries,
                     value_types,
                     calls,
@@ -583,7 +583,7 @@ fn analyze_tail(
                 world,
                 entries,
                 dispatch.miss_entry,
-                &entry_scope(entries, dispatch.miss_entry, values, None),
+                &entry_scope(entries, dispatch.miss_entry, values, None, &[]),
                 reachable_entries,
                 value_types,
                 calls,
@@ -596,6 +596,55 @@ fn analyze_tail(
                 None => miss_ty,
                 Some(current) => world.types_mut().union(current, miss_ty),
             })
+        }
+        LoweredTail::Receive(receive) => {
+            let any = world.types_mut().any();
+            let mut merged = None;
+            for clause in &receive.clauses {
+                let clause_entry = &entries[clause.entry.as_u32() as usize];
+                let clause_params = clause_entry
+                    .params
+                    .iter()
+                    .map(|param| (*param, any))
+                    .collect::<Vec<_>>();
+                let clause_ty = analyze_entry(
+                    world,
+                    entries,
+                    clause.entry,
+                    &entry_scope(entries, clause.entry, values, None, &clause_params),
+                    reachable_entries,
+                    value_types,
+                    calls,
+                    activation,
+                    reads,
+                    waits,
+                    follow_up,
+                )?;
+                merged = Some(match merged {
+                    None => clause_ty,
+                    Some(current) => world.types_mut().union(current, clause_ty),
+                });
+            }
+            if let Some(after) = &receive.after {
+                let after_ty = analyze_entry(
+                    world,
+                    entries,
+                    after.entry,
+                    &entry_scope(entries, after.entry, values, None, &[]),
+                    reachable_entries,
+                    value_types,
+                    calls,
+                    activation,
+                    reads,
+                    waits,
+                    follow_up,
+                )?;
+                merged = Some(match merged {
+                    None => after_ty,
+                    Some(current) => world.types_mut().union(current, after_ty),
+                });
+            }
+            Ok(merged.unwrap_or_else(|| world.types_mut().none()))
         }
         LoweredTail::Halt { .. } => Ok(world.types_mut().none()),
     }
@@ -623,7 +672,7 @@ fn deliver_tail_value(
             world,
             entries,
             *entry_id,
-            &entry_scope(entries, *entry_id, values, Some((value, delivered_ty))),
+            &entry_scope(entries, *entry_id, values, Some((value, delivered_ty)), &[]),
             reachable_entries,
             value_types,
             calls,
@@ -640,6 +689,7 @@ fn entry_scope(
     entry_id: super::super::body::ControlEntryId,
     values: &ValueTypes,
     delivered: Option<(ValueId, Ty)>,
+    params: &[(ValueId, Ty)],
 ) -> ValueTypes {
     let entry = &entries[entry_id.as_u32() as usize];
     let mut scope = HashMap::new();
@@ -647,6 +697,9 @@ fn entry_scope(
         && let Some(input) = entry.origin.input_value()
     {
         scope.insert(input, ty);
+    }
+    for (param, ty) in params {
+        scope.insert(*param, *ty);
     }
     for capture in &entry.captures {
         if let Some(ty) = values.get(capture).copied() {
@@ -1495,6 +1548,14 @@ fn collect_entry_callsite_needs(
                 let _ = collect_entry_callsite_needs(entries, *arm_entry, outgoing_need, out);
             }
             let _ = collect_entry_callsite_needs(entries, dispatch.miss_entry, outgoing_need, out);
+        }
+        LoweredTail::Receive(receive) => {
+            for clause in &receive.clauses {
+                let _ = collect_entry_callsite_needs(entries, clause.entry, outgoing_need, out);
+            }
+            if let Some(after) = &receive.after {
+                let _ = collect_entry_callsite_needs(entries, after.entry, outgoing_need, out);
+            }
         }
         LoweredTail::Halt { .. } => {}
     }

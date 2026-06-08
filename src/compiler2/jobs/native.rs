@@ -7,19 +7,23 @@
 //! shared codegen.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
-use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
+use crate::dispatch_matrix::pattern::{
+    PatternDispatchOutcome, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr, prepared_key_name,
+};
 use crate::dispatch_matrix::{
-    ComparisonValue, DispatchConst, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId,
+    ComparisonValue, DispatchConst, DispatchEdge, DispatchGraph, DispatchMatrix, DispatchNode, EdgeEvidence,
+    GraphNodeId, ListRegion, Proof, Region, RegionPredicate, RegionQuestion, SubjectId,
 };
 use crate::fz_ir::{
     BinOp as IrBinOp, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, ExternArg, ExternDecl, ExternId,
-    ExternMarshalSite, ExternTy, FnBuilder, FnCategory, FnId, InitTokenId, ModuleBuilder, Prim, Term, UnOp as IrUnOp,
-    Var,
+    ExternMarshalSite, ExternTy, FnBuilder, FnCategory, FnId, InitTokenId, ModuleBuilder, Prim, ReceiveAfter,
+    ReceiveClause, Term, UnOp as IrUnOp, Var,
 };
 use crate::type_expr::ResolvedSpecDecl;
 use crate::types::Types as LegacyTypes;
@@ -960,7 +964,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             }
             BackendTail::Dispatch {
                 inputs,
-                pinned,
+                bindings,
                 dispatch,
             } => {
                 let input_vars = env.vars(inputs).ok_or_else(|| {
@@ -970,7 +974,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         "native local dispatch referenced an unbound input value",
                     )
                 })?;
-                let pinned_vars = env.vars(pinned).ok_or_else(|| {
+                let pinned_vars = env.vars(&bindings.pinned).ok_or_else(|| {
                     incomplete_native_program(
                         self.world,
                         self.root_id,
@@ -990,6 +994,55 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     dispatch.plan.graph.root,
                     &mut state,
                 )
+            }
+            BackendTail::Receive(receive) => {
+                let bindings = &receive.bindings;
+                let dispatch = &receive.dispatch;
+                let clauses = &receive.clauses;
+                let after = receive.after.as_ref();
+                let captures = self.receive_capture_vars(entries, clauses, after, env)?;
+                let clauses = clauses
+                    .iter()
+                    .map(|clause| {
+                        Ok(ReceiveClause {
+                            ident: CallsiteIdent::from_source(clause.span),
+                            bound_names: clause.bound_names.clone(),
+                            guard: None,
+                            body: *entry_fns
+                                .get(&clause.entry)
+                                .expect("receive clause entry should have a helper fn"),
+                            span: clause.span,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, FatalError>>()?;
+                let after = after
+                    .map(|after| {
+                        Ok(ReceiveAfter {
+                            ident: CallsiteIdent::from_source(after.span),
+                            timeout: env.var(after.timeout).ok_or_else(|| {
+                                incomplete_native_program(
+                                    self.world,
+                                    self.root_id,
+                                    "native receive referenced an unbound after timeout",
+                                )
+                            })?,
+                            body: *entry_fns
+                                .get(&after.entry)
+                                .expect("receive after entry should have a helper fn"),
+                            span: after.span,
+                        })
+                    })
+                    .transpose()?;
+                let pinned = self.receive_pinned_vars(env, bindings, dispatch)?;
+                ctx.set_term(Term::ReceiveMatched {
+                    ident: CallsiteIdent::from_source(Span::DUMMY),
+                    clauses,
+                    dispatch: Arc::new(legacy_receive_dispatch_plan(self.world, self.root_id, dispatch)?),
+                    after,
+                    pinned,
+                    captures,
+                });
+                Ok(())
             }
             BackendTail::Halt { atom } => {
                 ctx.halt_with_atom(self.atom_id(atom));
@@ -1033,17 +1086,15 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         executable: &BackendExecutable,
         entry: &BackendEntry,
     ) -> (Vec<Ty>, Vec<AbiValueRepr>, NativeEntryAbi) {
-        let capture_tys = entry
-            .captures
-            .iter()
-            .map(|value| {
-                executable
-                    .value_types
-                    .get(value)
-                    .copied()
-                    .unwrap_or_else(|| self.world.types_mut().any())
-            })
-            .collect::<Vec<_>>();
+        let mut capture_tys = Vec::with_capacity(entry.params.len() + entry.captures.len());
+        for value in entry.params.iter().chain(entry.captures.iter()) {
+            let ty = executable
+                .value_types
+                .get(value)
+                .copied()
+                .unwrap_or_else(|| self.world.types_mut().any());
+            capture_tys.push(ty);
+        }
         match entry.origin.clone() {
             BackendEntryOrigin::Clause => panic!("clause entries are lowered through their owning clause"),
             BackendEntryOrigin::Branch => {
@@ -1054,7 +1105,19 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     .collect::<Vec<_>>();
                 (capture_tys, param_reprs, NativeEntryAbi::Direct)
             }
-            BackendEntryOrigin::Resume { value, return_abi } => {
+            BackendEntryOrigin::Receive => {
+                let param_reprs = capture_tys
+                    .iter()
+                    .copied()
+                    .map(|ty| abi_value_repr(self.world, ty))
+                    .collect::<Vec<_>>();
+                (
+                    capture_tys,
+                    param_reprs,
+                    NativeEntryAbi::Continuation { extra_params: 0 },
+                )
+            }
+            BackendEntryOrigin::CallResume { value, return_abi } => {
                 let result_ty = executable
                     .value_types
                     .get(&value)
@@ -1065,6 +1128,18 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 entry_tys.extend(capture_tys.iter().copied());
                 param_reprs.extend(capture_tys.iter().copied().map(|ty| abi_value_repr(self.world, ty)));
                 (entry_tys, param_reprs, NativeEntryAbi::Continuation { extra_params })
+            }
+            BackendEntryOrigin::LocalResume { value } => {
+                let result_ty = executable
+                    .value_types
+                    .get(&value)
+                    .copied()
+                    .unwrap_or_else(|| self.world.types_mut().any());
+                let mut entry_tys = vec![result_ty];
+                let mut param_reprs = vec![abi_value_repr(self.world, result_ty)];
+                entry_tys.extend(capture_tys.iter().copied());
+                param_reprs.extend(capture_tys.iter().copied().map(|ty| abi_value_repr(self.world, ty)));
+                (entry_tys, param_reprs, NativeEntryAbi::Direct)
             }
         }
     }
@@ -1078,8 +1153,20 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         env: &mut ValueEnv,
     ) -> Result<usize, FatalError> {
         match &entry.origin {
-            BackendEntryOrigin::Clause | BackendEntryOrigin::Branch => Ok(0),
-            BackendEntryOrigin::Resume { value, return_abi } => match return_abi {
+            BackendEntryOrigin::Clause => Ok(0),
+            BackendEntryOrigin::Branch => {
+                for (value, var) in entry.params.iter().copied().zip(entry_vars.iter().copied()) {
+                    bind_backend_value(ctx, executable, env, value, var);
+                }
+                Ok(entry.params.len())
+            }
+            BackendEntryOrigin::Receive => {
+                for (value, var) in entry.params.iter().copied().zip(entry_vars.iter().copied()) {
+                    bind_backend_value(ctx, executable, env, value, var);
+                }
+                Ok(entry.params.len())
+            }
+            BackendEntryOrigin::CallResume { value, return_abi } => match return_abi {
                 ReturnAbi::Value(_) => {
                     let var = *entry_vars
                         .first()
@@ -1094,6 +1181,13 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     Ok(reprs.len())
                 }
             },
+            BackendEntryOrigin::LocalResume { value } => {
+                let var = *entry_vars
+                    .first()
+                    .expect("local resume should receive its delivered value as the first entry param");
+                bind_backend_value(ctx, executable, env, *value, var);
+                Ok(1)
+            }
         }
     }
 
@@ -1140,6 +1234,79 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         })
     }
 
+    fn receive_pinned_vars(
+        &mut self,
+        env: &ValueEnv,
+        bindings: &super::super::body::DispatchBindings,
+        dispatch: &PatternDispatchPlan<Ty>,
+    ) -> Result<Vec<(String, Var)>, FatalError> {
+        let mut pinned = Vec::new();
+        for (index, value_id) in bindings.pinned.iter().copied().enumerate() {
+            let Some(pin) = dispatch.pinned.get(index) else {
+                return Err(incomplete_native_program(
+                    self.world,
+                    self.root_id,
+                    format!("receive pinned binding {} is out of bounds", index),
+                ));
+            };
+            if pin.input.is_none() {
+                let var = env.var(value_id).ok_or_else(|| {
+                    incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        "native receive referenced an unbound pinned value",
+                    )
+                })?;
+                pinned.push((pin.name.clone(), var));
+            }
+        }
+        for (index, value_id) in bindings.prepared.iter().copied().enumerate() {
+            let var = env.var(value_id).ok_or_else(|| {
+                incomplete_native_program(
+                    self.world,
+                    self.root_id,
+                    "native receive referenced an unbound prepared dispatch value",
+                )
+            })?;
+            pinned.push((prepared_key_name(index), var));
+        }
+        Ok(pinned)
+    }
+
+    fn receive_capture_vars(
+        &mut self,
+        entries: &[BackendEntry],
+        clauses: &[super::super::body::ReceiveClause],
+        after: Option<&super::super::body::ReceiveAfter>,
+        env: &ValueEnv,
+    ) -> Result<Vec<Var>, FatalError> {
+        let mut iter = clauses
+            .iter()
+            .map(|clause| clause.entry)
+            .chain(after.iter().map(|after| after.entry));
+        let capture_ids = iter
+            .next()
+            .map(|entry_id| entries[entry_id.as_u32() as usize].captures.clone())
+            .unwrap_or_default();
+        for entry_id in iter {
+            let entry_captures = &entries[entry_id.as_u32() as usize].captures;
+            if *entry_captures != capture_ids {
+                return Err(incomplete_native_program(
+                    self.world,
+                    self.root_id,
+                    "receive entries did not settle on one shared capture layout",
+                ));
+            }
+        }
+        env.capture_args(&capture_ids).ok_or_else(|| {
+            incomplete_native_program(
+                self.world,
+                self.root_id,
+                "native receive could not resolve capture values",
+            )
+        })
+    }
+
     fn entry_call_args_from_value(
         &mut self,
         ctx: &mut NativeFnCtx,
@@ -1152,10 +1319,11 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
     ) -> Result<Vec<Var>, FatalError> {
         let entry = &entries[entry_id.as_u32() as usize];
         let mut args = match &entry.origin {
-            BackendEntryOrigin::Clause | BackendEntryOrigin::Branch => Vec::new(),
-            BackendEntryOrigin::Resume { return_abi, .. } => {
+            BackendEntryOrigin::Clause | BackendEntryOrigin::Branch | BackendEntryOrigin::Receive => Vec::new(),
+            BackendEntryOrigin::CallResume { return_abi, .. } => {
                 self.delivered_args_for_abi(ctx, executable, value_id, value_var, return_abi)?
             }
+            BackendEntryOrigin::LocalResume { .. } => vec![value_var],
         };
         args.extend(self.entry_capture_args(entries, entry_id, env)?);
         Ok(args)
@@ -1744,7 +1912,10 @@ fn entry_name(base: &str, entry_id: ControlEntryId, origin: &BackendEntryOrigin)
     match origin {
         BackendEntryOrigin::Clause => panic!("clause entries are named by their owning clause"),
         BackendEntryOrigin::Branch => format!("{base}__branch_{}", entry_id.as_u32()),
-        BackendEntryOrigin::Resume { .. } => format!("{base}__resume_{}", entry_id.as_u32()),
+        BackendEntryOrigin::Receive => format!("{base}__receive_{}", entry_id.as_u32()),
+        BackendEntryOrigin::CallResume { .. } | BackendEntryOrigin::LocalResume { .. } => {
+            format!("{base}__resume_{}", entry_id.as_u32())
+        }
     }
 }
 
@@ -1752,7 +1923,9 @@ fn entry_category(origin: &BackendEntryOrigin) -> FnCategory {
     match origin {
         BackendEntryOrigin::Clause => panic!("clause entries are named by their owning clause"),
         BackendEntryOrigin::Branch => FnCategory::ControlFlowCont,
-        BackendEntryOrigin::Resume { .. } => FnCategory::CpsCont,
+        BackendEntryOrigin::Receive => FnCategory::CpsCont,
+        BackendEntryOrigin::CallResume { .. } => FnCategory::CpsCont,
+        BackendEntryOrigin::LocalResume { .. } => FnCategory::ControlFlowCont,
     }
 }
 
@@ -2303,6 +2476,225 @@ fn lower_bit_size_ir(
         Some(super::super::body::LoweredBitSize::Value(value)) => {
             Some(BitSizeIr::Var(env.var(*value).ok_or(FatalError)?))
         }
+    })
+}
+
+fn legacy_receive_dispatch_plan(
+    world: &mut World<'_>,
+    root_id: RootId,
+    plan: &PatternDispatchPlan<Ty>,
+) -> Result<crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::types::Ty>, FatalError> {
+    Ok(crate::dispatch_matrix::pattern::PatternDispatchPlan {
+        matrix: legacy_dispatch_matrix(world, root_id, &plan.matrix)?,
+        graph: legacy_dispatch_graph(world, root_id, &plan.graph)?,
+        input_count: plan.input_count,
+        subjects: plan.subjects.clone(),
+        outcomes: plan
+            .outcomes
+            .iter()
+            .map(|outcome| PatternDispatchOutcome {
+                outcome: outcome.outcome,
+                body_id: outcome.body_id,
+                bindings: outcome.bindings.clone(),
+                span: outcome.span,
+            })
+            .collect(),
+        guards: plan
+            .guards
+            .iter()
+            .map(|guard| legacy_pattern_guard_expr(world, root_id, guard))
+            .collect::<Result<Vec<_>, _>>()?,
+        pinned: plan.pinned.clone(),
+        prepared_keys: plan.prepared_keys.clone(),
+        bitstring_direct_bindings: plan.bitstring_direct_bindings.clone(),
+    })
+}
+
+fn legacy_dispatch_matrix(
+    world: &mut World<'_>,
+    root_id: RootId,
+    matrix: &DispatchMatrix<Ty>,
+) -> Result<DispatchMatrix<crate::types::Ty>, FatalError> {
+    Ok(DispatchMatrix {
+        subjects: matrix.subjects.clone(),
+        outcomes: matrix.outcomes.clone(),
+        arms: matrix
+            .arms
+            .iter()
+            .map(|arm| {
+                Ok(crate::dispatch_matrix::DispatchArm {
+                    id: arm.id,
+                    questions: arm
+                        .questions
+                        .iter()
+                        .map(|question| legacy_region_question(world, root_id, question))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    evidence: legacy_edge_evidence(world, root_id, &arm.evidence)?,
+                    outcome: arm.outcome,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        order: matrix.order.clone(),
+    })
+}
+
+fn legacy_dispatch_graph(
+    world: &mut World<'_>,
+    root_id: RootId,
+    graph: &DispatchGraph<Ty>,
+) -> Result<DispatchGraph<crate::types::Ty>, FatalError> {
+    Ok(DispatchGraph {
+        nodes: graph
+            .nodes
+            .iter()
+            .map(|node| legacy_dispatch_node(world, root_id, node))
+            .collect::<Result<Vec<_>, _>>()?,
+        root: graph.root,
+    })
+}
+
+fn legacy_dispatch_node(
+    world: &mut World<'_>,
+    root_id: RootId,
+    node: &DispatchNode<Ty>,
+) -> Result<DispatchNode<crate::types::Ty>, FatalError> {
+    Ok(match node {
+        DispatchNode::Fail => DispatchNode::Fail,
+        DispatchNode::Outcome { outcome, evidence } => DispatchNode::Outcome {
+            outcome: *outcome,
+            evidence: legacy_edge_evidence(world, root_id, evidence)?,
+        },
+        DispatchNode::Test {
+            predicate,
+            on_match,
+            on_miss,
+        } => DispatchNode::Test {
+            predicate: legacy_region_predicate(world, root_id, predicate)?,
+            on_match: legacy_dispatch_edge(world, root_id, on_match)?,
+            on_miss: legacy_dispatch_edge(world, root_id, on_miss)?,
+        },
+    })
+}
+
+fn legacy_dispatch_edge(
+    world: &mut World<'_>,
+    root_id: RootId,
+    edge: &DispatchEdge<Ty>,
+) -> Result<DispatchEdge<crate::types::Ty>, FatalError> {
+    Ok(DispatchEdge {
+        target: edge.target,
+        evidence: legacy_edge_evidence(world, root_id, &edge.evidence)?,
+    })
+}
+
+fn legacy_region_question(
+    world: &mut World<'_>,
+    root_id: RootId,
+    question: &RegionQuestion<Ty>,
+) -> Result<RegionQuestion<crate::types::Ty>, FatalError> {
+    Ok(RegionQuestion {
+        predicate: legacy_region_predicate(world, root_id, &question.predicate)?,
+        match_evidence: legacy_edge_evidence(world, root_id, &question.match_evidence)?,
+        miss_evidence: legacy_edge_evidence(world, root_id, &question.miss_evidence)?,
+    })
+}
+
+fn legacy_edge_evidence(
+    world: &mut World<'_>,
+    root_id: RootId,
+    evidence: &EdgeEvidence<Ty>,
+) -> Result<EdgeEvidence<crate::types::Ty>, FatalError> {
+    Ok(EdgeEvidence {
+        proofs: evidence
+            .proofs
+            .iter()
+            .map(|proof| {
+                Ok(Proof {
+                    predicate: legacy_region_predicate(world, root_id, &proof.predicate)?,
+                    sense: proof.sense,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        projections: evidence.projections.clone(),
+    })
+}
+
+fn legacy_region_predicate(
+    world: &mut World<'_>,
+    root_id: RootId,
+    predicate: &RegionPredicate<Ty>,
+) -> Result<RegionPredicate<crate::types::Ty>, FatalError> {
+    Ok(RegionPredicate {
+        subject: predicate.subject,
+        region: legacy_region(world, root_id, &predicate.region)?,
+    })
+}
+
+fn legacy_region(
+    world: &mut World<'_>,
+    root_id: RootId,
+    region: &Region<Ty>,
+) -> Result<Region<crate::types::Ty>, FatalError> {
+    Ok(match region {
+        Region::Any => Region::Any,
+        Region::Never => Region::Never,
+        Region::Type(ty) => Region::Type(legacy_type_test_ty(world, *ty).ok_or_else(|| {
+            incomplete_native_program(
+                world,
+                root_id,
+                "native receive cannot translate one dispatch type test".to_string(),
+            )
+        })?),
+        Region::Equal(value) => Region::Equal(value.clone()),
+        Region::TupleArity(arity) => Region::TupleArity(*arity),
+        Region::List(region) => Region::List(*region),
+        Region::MapKind => Region::MapKind,
+        Region::MapKeyPresent { key } => Region::MapKeyPresent { key: key.clone() },
+        Region::Bitstring(shape) => Region::Bitstring(shape.clone()),
+        Region::Guard(id) => Region::Guard(*id),
+    })
+}
+
+fn legacy_pattern_guard_expr(
+    world: &mut World<'_>,
+    root_id: RootId,
+    expr: &PatternGuardExpr<Ty>,
+) -> Result<PatternGuardExpr<crate::types::Ty>, FatalError> {
+    Ok(match expr {
+        PatternGuardExpr::Const(value) => PatternGuardExpr::Const(value.clone()),
+        PatternGuardExpr::Subject(subject) => PatternGuardExpr::Subject(*subject),
+        PatternGuardExpr::Pinned(pinned) => PatternGuardExpr::Pinned(*pinned),
+        PatternGuardExpr::Unary { op, expr } => PatternGuardExpr::Unary {
+            op: *op,
+            expr: Box::new(legacy_pattern_guard_expr(world, root_id, expr)?),
+        },
+        PatternGuardExpr::Binary { op, lhs, rhs } => PatternGuardExpr::Binary {
+            op: *op,
+            lhs: Box::new(legacy_pattern_guard_expr(world, root_id, lhs)?),
+            rhs: Box::new(legacy_pattern_guard_expr(world, root_id, rhs)?),
+        },
+        PatternGuardExpr::Dispatch { inputs, dispatch } => PatternGuardExpr::Dispatch {
+            inputs: inputs
+                .iter()
+                .map(|input| legacy_pattern_guard_expr(world, root_id, input))
+                .collect::<Result<Vec<_>, _>>()?,
+            dispatch: Box::new(legacy_pattern_guard_dispatch(world, root_id, dispatch)?),
+        },
+    })
+}
+
+fn legacy_pattern_guard_dispatch(
+    world: &mut World<'_>,
+    root_id: RootId,
+    dispatch: &PatternGuardDispatch<Ty>,
+) -> Result<PatternGuardDispatch<crate::types::Ty>, FatalError> {
+    Ok(PatternGuardDispatch {
+        plan: Box::new(legacy_receive_dispatch_plan(world, root_id, &dispatch.plan)?),
+        bodies: dispatch
+            .bodies
+            .iter()
+            .map(|body| legacy_pattern_guard_expr(world, root_id, body))
+            .collect::<Result<Vec<_>, _>>()?,
     })
 }
 

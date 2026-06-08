@@ -19,13 +19,13 @@ use crate::compiler::source::Span;
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::fz_ir::{
     Block as IrBlock, BlockId, CallsiteId as IrCallsiteId, CallsiteIdent, Cont as IrCont, ExternMarshalSite, ExternTy,
-    ExternalCallEdge, FnId, FnIr as IrFn, Module as IrModule, Prim as IrPrim, ReceiveAfter, ReceiveClause,
-    Stmt as IrStmt, Term as IrTerm, Var,
+    ExternalCallEdge, FnId, FnIr as IrFn, Module as IrModule, Prim as IrPrim, ReceiveAfter as IrReceiveAfter,
+    ReceiveClause as IrReceiveClause, Stmt as IrStmt, Term as IrTerm, Var,
 };
 
 use super::body::{
-    CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, Literal, LoweredBitField, LoweredBitFieldSpec,
-    LoweredBody, LoweredExtern, ValueId,
+    CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, Literal, LoweredBitField,
+    LoweredBitFieldSpec, LoweredBody, LoweredExtern, ReceiveAfter, ReceiveClause, ValueId,
 };
 use super::identity::{ExecutableKey, FunctionId, RootId};
 use super::types::Ty;
@@ -279,23 +279,34 @@ pub struct BackendClause {
 pub struct BackendEntry {
     pub span: Span,
     pub origin: BackendEntryOrigin,
+    pub params: Vec<ValueId>,
     pub captures: Vec<ValueId>,
     pub steps: Vec<BackendStep>,
     pub tail: BackendTail,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackendReceive {
+    pub bindings: DispatchBindings,
+    pub clauses: Vec<ReceiveClause>,
+    pub after: Option<ReceiveAfter>,
+    pub(crate) dispatch: PatternDispatchPlan<Ty>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendEntryOrigin {
     Clause,
     Branch,
-    Resume { value: ValueId, return_abi: ReturnAbi },
+    Receive,
+    CallResume { value: ValueId, return_abi: ReturnAbi },
+    LocalResume { value: ValueId },
 }
 
 impl BackendEntryOrigin {
     pub fn input_value(&self) -> Option<ValueId> {
         match self {
-            Self::Clause | Self::Branch => None,
-            Self::Resume { value, .. } => Some(*value),
+            Self::Clause | Self::Branch | Self::Receive => None,
+            Self::CallResume { value, .. } | Self::LocalResume { value } => Some(*value),
         }
     }
 }
@@ -335,9 +346,10 @@ pub enum BackendTail {
     },
     Dispatch {
         inputs: Vec<ValueId>,
-        pinned: Vec<ValueId>,
+        bindings: DispatchBindings,
         dispatch: Box<ControlDispatch>,
     },
+    Receive(Box<BackendReceive>),
     Halt {
         atom: String,
     },
@@ -914,7 +926,7 @@ fn native_conts_equal(left: &IrCont, right: &IrCont) -> bool {
     left.fn_id == right.fn_id && left.captured == right.captured
 }
 
-fn native_receive_clauses_equal(left: &ReceiveClause, right: &ReceiveClause) -> bool {
+fn native_receive_clauses_equal(left: &IrReceiveClause, right: &IrReceiveClause) -> bool {
     native_callsite_idents_equal(&left.ident, &right.ident)
         && left.bound_names == right.bound_names
         && left.guard == right.guard
@@ -922,7 +934,7 @@ fn native_receive_clauses_equal(left: &ReceiveClause, right: &ReceiveClause) -> 
         && left.span == right.span
 }
 
-fn native_receive_after_equal(left: Option<&ReceiveAfter>, right: Option<&ReceiveAfter>) -> bool {
+fn native_receive_after_equal(left: Option<&IrReceiveAfter>, right: Option<&IrReceiveAfter>) -> bool {
     match (left, right) {
         (None, None) => true,
         (Some(left), Some(right)) => {

@@ -11,8 +11,8 @@ use super::value::{
 };
 use super::*;
 use crate::compiler2::{
-    BackendBody, BackendEntry, BackendExecutable, BackendProgram, BackendStep, BackendTail, ControlDestination,
-    ExecutableDispatch, ValueId,
+    BackendBody, BackendEntry, BackendExecutable, BackendProgram, BackendStep as ProgramStep, BackendTail,
+    ControlDestination, ExecutableDispatch, ValueId,
 };
 use crate::compiler2::{ExecutableNeed, FunctionId};
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
@@ -29,6 +29,13 @@ use fz_runtime::ir_runtime::{
 };
 use fz_runtime::procbin::mso_drop_all_deferred;
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Process, ProcessState};
+
+enum BackendRunStep {
+    Done(AnyValue),
+    Blocked,
+}
+
+type DispatchMatch = (u32, Vec<(String, AnyValue)>);
 
 /// Runs one closed Compiler2 backend program through the shared interpreter
 /// runtime without reopening planner or type-resolution work.
@@ -62,16 +69,58 @@ pub(crate) fn run_backend_main(
 
 impl IrInterpRuntime {
     fn enqueue_backend_entry(&mut self, pid: u32, executable: usize, args: Vec<AnyValue>) -> Result<(), String> {
+        self.enqueue_backend_executable(pid, executable, args, Vec::new())
+    }
+
+    fn enqueue_backend_executable(
+        &mut self,
+        pid: u32,
+        executable: usize,
+        args: Vec<AnyValue>,
+        continuations: Vec<BackendContinuation>,
+    ) -> Result<(), String> {
         if !self.tasks.contains_key(&pid) {
             return Err(format!("enqueue_backend_entry: unknown pid {}", pid));
         }
-        self.backend_resume.insert(pid, (executable, args));
+        self.backend_resume.insert(
+            pid,
+            BackendResumeEntry::Executable {
+                executable,
+                args,
+                continuations,
+            },
+        );
         self.run_queue.push_back(pid);
         self.set_process_state(pid, ProcessState::Ready);
         Ok(())
     }
 
-    fn take_backend_resume(&mut self, pid: u32) -> Option<(usize, Vec<AnyValue>)> {
+    fn enqueue_backend_local_entry(
+        &mut self,
+        pid: u32,
+        executable: usize,
+        entry: crate::compiler2::ControlEntryId,
+        env: HashMap<ValueId, AnyValue>,
+        continuations: Vec<BackendContinuation>,
+    ) -> Result<(), String> {
+        if !self.tasks.contains_key(&pid) {
+            return Err(format!("enqueue_backend_local_entry: unknown pid {}", pid));
+        }
+        self.backend_resume.insert(
+            pid,
+            BackendResumeEntry::Entry {
+                executable,
+                entry,
+                env,
+                continuations,
+            },
+        );
+        self.run_queue.push_back(pid);
+        self.set_process_state(pid, ProcessState::Ready);
+        Ok(())
+    }
+
+    fn take_backend_resume(&mut self, pid: u32) -> Option<BackendResumeEntry> {
         self.backend_resume.remove(&pid)
     }
 
@@ -93,8 +142,47 @@ impl IrInterpRuntime {
         Ok(pid)
     }
 
-    pub(super) fn send_opaque(&mut self, tel: &dyn Telemetry, receiver_pid: u32, msg: AnyValue) -> Result<(), String> {
+    pub(super) fn send_opaque(
+        &mut self,
+        types: &mut crate::compiler2::Types,
+        tel: &dyn Telemetry,
+        program: &BackendProgram,
+        module: &Module,
+        receiver_pid: u32,
+        msg: AnyValue,
+    ) -> Result<(), String> {
         let sender_heap = &unsafe { &*self.cur_proc() }.heap as *const Heap;
+        if let Some(park) = self.backend_parked.remove(&receiver_pid) {
+            if let Some((clause_index, bound_values)) = try_match_backend_receive(
+                self,
+                types,
+                module,
+                &park.clauses,
+                &park.dispatch,
+                msg,
+                &park.bindings,
+                &park.env,
+            )? {
+                let executable = program
+                    .executables
+                    .get(park.executable)
+                    .ok_or_else(|| format!("backend parked executable {} is out of bounds", park.executable))?;
+                let BackendBody::Clauses { entries, .. } = &executable.body else {
+                    return Err(format!(
+                        "backend parked executable {} is not clause-backed",
+                        park.executable
+                    ));
+                };
+                let clause = park
+                    .clauses
+                    .get(clause_index)
+                    .ok_or_else(|| format!("backend parked receive clause {} is out of bounds", clause_index))?;
+                let env = delivered_env(entries, &park.env, clause.entry, None, &bound_values)?;
+                self.enqueue_backend_local_entry(receiver_pid, park.executable, clause.entry, env, park.continuations)?;
+                return Ok(());
+            }
+            self.backend_parked.insert(receiver_pid, park);
+        }
         let msg_ref = msg.as_any_value_ref(self.cur_proc())?;
         let Some(task) = self.tasks.get_mut(&receiver_pid) else {
             tel.event(
@@ -106,16 +194,7 @@ impl IrInterpRuntime {
 
         let mut forwarding = HashMap::new();
         let copied = deep_copy_any_value_ref(msg_ref, unsafe { &*sender_heap }, &mut task.heap, &mut forwarding);
-        if task.state == ProcessState::Blocked {
-            let copied_msg = AnyValue::from_any_value_ref(copied).expect("copied backend interpreter message ref");
-            if let Some(entry) = self.resume.get_mut(&receiver_pid) {
-                entry.1.insert(0, copied_msg);
-            }
-            task.state = ProcessState::Ready;
-            self.run_queue.push_back(receiver_pid);
-        } else {
-            task.mailbox.push_back(copied);
-        }
+        task.mailbox.push_back(copied);
         Ok(())
     }
 }
@@ -137,7 +216,7 @@ fn drive_backend_until_idle(
     };
 
     while let Some(pid) = runtime.pop_runnable() {
-        let (executable, args) = runtime
+        let resume = runtime
             .take_backend_resume(pid)
             .expect("backend pid in run queue with no backend resume");
         let proc_ptr = runtime
@@ -150,22 +229,109 @@ fn drive_backend_until_idle(
             (*proc_ptr).heap.set_owner(proc_ptr);
         }
         runtime.current_proc = proc_ptr;
-        let value = run_backend_executable(runtime, types, tel, program, module, executable, args)?;
-        completions.push((pid, value));
-        unsafe {
-            mso_drop_all_deferred(&mut (*proc_ptr).heap);
+        match run_backend_resume(runtime, types, tel, program, module, resume)? {
+            BackendRunStep::Done(value) => {
+                completions.push((pid, value));
+                unsafe {
+                    mso_drop_all_deferred(&mut (*proc_ptr).heap);
+                }
+                if let Err(e) = drain_pending_dtors_backend(runtime, types, tel, program, module) {
+                    tel.event(&["fz", "runtime", "dtor_drain_failed"], crate::metadata! { error: e });
+                }
+                unsafe {
+                    (*proc_ptr).halt_value = value_to_halt(proc_ptr, value);
+                    ExitRecord::emit(tel, pid, &*proc_ptr);
+                }
+                runtime.set_process_state(pid, ProcessState::Exited);
+            }
+            BackendRunStep::Blocked => {
+                runtime.set_process_state(pid, ProcessState::Blocked);
+            }
         }
-        if let Err(e) = drain_pending_dtors_backend(runtime, types, tel, program, module) {
-            tel.event(&["fz", "runtime", "dtor_drain_failed"], crate::metadata! { error: e });
-        }
-        unsafe {
-            (*proc_ptr).halt_value = value_to_halt(proc_ptr, value);
-            ExitRecord::emit(tel, pid, &*proc_ptr);
-        }
-        runtime.set_process_state(pid, ProcessState::Exited);
     }
 
     Ok(completions)
+}
+
+fn run_backend_resume(
+    runtime: &mut IrInterpRuntime,
+    types: &mut crate::compiler2::Types,
+    tel: &dyn Telemetry,
+    program: &BackendProgram,
+    module: &Module,
+    resume: BackendResumeEntry,
+) -> Result<BackendRunStep, String> {
+    match resume {
+        BackendResumeEntry::Executable {
+            executable,
+            args,
+            continuations,
+        } => run_backend_executable(runtime, types, tel, program, module, executable, args, continuations),
+        BackendResumeEntry::Entry {
+            executable,
+            entry,
+            env,
+            continuations,
+        } => {
+            let executable_ref = program
+                .executables
+                .get(executable)
+                .ok_or_else(|| format!("backend executable {} is out of bounds", executable))?;
+            let BackendBody::Clauses { entries, .. } = &executable_ref.body else {
+                return Err(format!("backend executable {} is not clause-backed", executable));
+            };
+            eval_entry(
+                runtime,
+                types,
+                tel,
+                program,
+                module,
+                executable,
+                executable_ref,
+                entries,
+                entry,
+                env,
+                continuations,
+            )
+        }
+    }
+}
+
+fn continue_backend_value(
+    runtime: &mut IrInterpRuntime,
+    types: &mut crate::compiler2::Types,
+    tel: &dyn Telemetry,
+    program: &BackendProgram,
+    module: &Module,
+    value: AnyValue,
+    mut continuations: Vec<BackendContinuation>,
+) -> Result<BackendRunStep, String> {
+    let Some(frame) = continuations.pop() else {
+        return Ok(BackendRunStep::Done(value));
+    };
+    let executable = program
+        .executables
+        .get(frame.executable)
+        .ok_or_else(|| format!("backend continuation executable {} is out of bounds", frame.executable))?;
+    let BackendBody::Clauses { entries, .. } = &executable.body else {
+        return Err(format!(
+            "backend continuation executable {} is not clause-backed",
+            frame.executable
+        ));
+    };
+    eval_entry(
+        runtime,
+        types,
+        tel,
+        program,
+        module,
+        frame.executable,
+        executable,
+        entries,
+        frame.entry,
+        delivered_env(entries, &frame.env, frame.entry, Some(value), &[])?,
+        continuations,
+    )
 }
 
 fn run_backend_executable(
@@ -176,14 +342,16 @@ fn run_backend_executable(
     module: &Module,
     executable_index: usize,
     args: Vec<AnyValue>,
-) -> Result<AnyValue, String> {
+    continuations: Vec<BackendContinuation>,
+) -> Result<BackendRunStep, String> {
     let executable = program
         .executables
         .get(executable_index)
         .ok_or_else(|| format!("backend executable {} is out of bounds", executable_index))?;
     match &executable.body {
         BackendBody::Extern { signature } => {
-            call_lowered_extern(runtime, types, tel, program, module, signature, None, &args)
+            let value = call_lowered_extern(runtime, types, tel, program, module, signature, None, &args)?;
+            continue_backend_value(runtime, types, tel, program, module, value, continuations)
         }
         BackendBody::Clauses { clauses, entries, .. } => {
             let dispatch = executable
@@ -227,10 +395,12 @@ fn run_backend_executable(
                 tel,
                 program,
                 module,
+                executable_index,
                 executable,
                 entries,
                 clause.entry,
                 env,
+                continuations,
             )
         }
     }
@@ -255,6 +425,17 @@ fn select_dispatch_body(
     args: &[AnyValue],
     pinned: &HashMap<String, AnyValue>,
 ) -> Result<Option<u32>, String> {
+    Ok(select_dispatch_match(runtime, types, module, plan, args, pinned)?.map(|(body_id, _)| body_id))
+}
+
+fn select_dispatch_match(
+    runtime: &mut IrInterpRuntime,
+    types: &mut crate::compiler2::Types,
+    module: &Module,
+    plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
+    args: &[AnyValue],
+    pinned: &HashMap<String, AnyValue>,
+) -> Result<Option<DispatchMatch>, String> {
     let mut state = DispatchExecState::default();
     let mut type_match =
         |runtime: &mut IrInterpRuntime, module: &Module, want: &crate::compiler2::Ty, value: AnyValue| {
@@ -262,9 +443,15 @@ fn select_dispatch_body(
             let overlap = types.intersect(have, *want);
             Some(!types.is_empty(&overlap))
         };
-    let selected = execute_dispatch_inputs(runtime, module, plan, args, pinned, &mut state, &mut type_match)
-        .map(|(body_id, _)| body_id);
-    Ok(selected)
+    Ok(execute_dispatch_inputs(
+        runtime,
+        module,
+        plan,
+        args,
+        pinned,
+        &mut state,
+        &mut type_match,
+    ))
 }
 
 fn eval_entry(
@@ -273,11 +460,13 @@ fn eval_entry(
     tel: &dyn Telemetry,
     program: &BackendProgram,
     module: &Module,
+    executable_index: usize,
     executable: &BackendExecutable,
     entries: &[BackendEntry],
     entry_id: crate::compiler2::ControlEntryId,
     mut env: HashMap<ValueId, AnyValue>,
-) -> Result<AnyValue, String> {
+    continuations: Vec<BackendContinuation>,
+) -> Result<BackendRunStep, String> {
     let entry = entries
         .get(entry_id.as_u32() as usize)
         .ok_or_else(|| format!("backend entry {} is out of bounds", entry_id.as_u32()))?;
@@ -286,17 +475,21 @@ fn eval_entry(
         BackendTail::Value { value, dest } => {
             let result = env_get(&env, *value)?;
             match dest {
-                ControlDestination::Return => Ok(result),
+                ControlDestination::Return => {
+                    continue_backend_value(runtime, types, tel, program, module, result, continuations)
+                }
                 ControlDestination::Deliver(target) => eval_entry(
                     runtime,
                     types,
                     tel,
                     program,
                     module,
+                    executable_index,
                     executable,
                     entries,
                     *target,
-                    delivered_env(entries, &env, *target, Some(result))?,
+                    delivered_env(entries, &env, *target, Some(result), &[])?,
+                    continuations,
                 ),
             }
         }
@@ -306,33 +499,20 @@ fn eval_entry(
             extern_marshals,
             dest,
             ..
-        } => {
-            let result = eval_direct_call(
-                runtime,
-                types,
-                tel,
-                program,
-                module,
-                *callee,
-                args,
-                extern_marshals.as_deref(),
-                &env,
-            )?;
-            match dest {
-                ControlDestination::Return => Ok(result),
-                ControlDestination::Deliver(target) => eval_entry(
-                    runtime,
-                    types,
-                    tel,
-                    program,
-                    module,
-                    executable,
-                    entries,
-                    *target,
-                    delivered_env(entries, &env, *target, Some(result))?,
-                ),
-            }
-        }
+        } => eval_direct_call(
+            runtime,
+            types,
+            tel,
+            program,
+            module,
+            *callee,
+            args,
+            extern_marshals.as_deref(),
+            env,
+            executable_index,
+            dest.clone(),
+            continuations,
+        ),
         BackendTail::ClosureCall {
             target,
             callee,
@@ -342,21 +522,19 @@ fn eval_entry(
         } => {
             let mut call_args = closure_captures(runtime.cur_proc(), env_get(&env, *callee)?)?;
             call_args.extend(eval_call_args(&env, args)?);
-            let result = run_backend_executable(runtime, types, tel, program, module, *target, call_args)?;
-            match dest {
-                ControlDestination::Return => Ok(result),
-                ControlDestination::Deliver(target) => eval_entry(
-                    runtime,
-                    types,
-                    tel,
-                    program,
-                    module,
-                    executable,
-                    entries,
-                    *target,
-                    delivered_env(entries, &env, *target, Some(result))?,
-                ),
-            }
+            let continuations = match dest {
+                ControlDestination::Return => continuations,
+                ControlDestination::Deliver(target) => {
+                    let mut continuations = continuations;
+                    continuations.push(BackendContinuation {
+                        executable: executable_index,
+                        entry: *target,
+                        env,
+                    });
+                    continuations
+                }
+            };
+            run_backend_executable(runtime, types, tel, program, module, *target, call_args, continuations)
         }
         BackendTail::If {
             cond,
@@ -374,19 +552,21 @@ fn eval_entry(
                 tel,
                 program,
                 module,
+                executable_index,
                 executable,
                 entries,
                 target,
-                delivered_env(entries, &env, target, None)?,
+                delivered_env(entries, &env, target, None, &[])?,
+                continuations,
             )
         }
         BackendTail::Dispatch {
             inputs,
-            pinned,
+            bindings,
             dispatch,
         } => {
             let input_values = env_values(&env, inputs)?;
-            let pinned_values = local_dispatch_pinned(&env, pinned, &dispatch.plan)?;
+            let pinned_values = local_dispatch_pinned(&env, bindings, &dispatch.plan)?;
             let target =
                 match select_dispatch_body(runtime, types, module, &dispatch.plan, &input_values, &pinned_values)? {
                     Some(body_id) => *dispatch
@@ -401,14 +581,114 @@ fn eval_entry(
                 tel,
                 program,
                 module,
+                executable_index,
                 executable,
                 entries,
                 target,
-                delivered_env(entries, &env, target, None)?,
+                delivered_env(entries, &env, target, None, &[])?,
+                continuations,
             )
+        }
+        BackendTail::Receive(receive) => {
+            let bindings = &receive.bindings;
+            let dispatch = &receive.dispatch;
+            let clauses = &receive.clauses;
+            let after = receive.after.as_ref();
+            let mailbox_len = unsafe { &mut *runtime.cur_proc() }.mailbox.len();
+            let mut hit = None;
+            for mb_idx in 0..mailbox_len {
+                let msg = {
+                    let proc = unsafe { &mut *runtime.cur_proc() };
+                    AnyValue::from_any_value_ref(proc.mailbox[mb_idx])?
+                };
+                if let Some((clause_index, bound_values)) =
+                    try_match_backend_receive(runtime, types, module, clauses, dispatch, msg, bindings, &env)?
+                {
+                    hit = Some((mb_idx, clause_index, bound_values));
+                    break;
+                }
+            }
+            if let Some((mb_idx, clause_index, bound_values)) = hit {
+                unsafe { &mut *runtime.cur_proc() }.mailbox.remove(mb_idx);
+                let clause = clauses
+                    .get(clause_index)
+                    .ok_or_else(|| format!("backend receive clause {} is out of bounds", clause_index))?;
+                return eval_entry(
+                    runtime,
+                    types,
+                    tel,
+                    program,
+                    module,
+                    executable_index,
+                    executable,
+                    entries,
+                    clause.entry,
+                    delivered_env(entries, &env, clause.entry, None, &bound_values)?,
+                    continuations,
+                );
+            }
+            if let Some(after) = after
+                && env_get(&env, after.timeout)?.as_i64() == Some(0)
+            {
+                return eval_entry(
+                    runtime,
+                    types,
+                    tel,
+                    program,
+                    module,
+                    executable_index,
+                    executable,
+                    entries,
+                    after.entry,
+                    delivered_env(entries, &env, after.entry, None, &[])?,
+                    continuations,
+                );
+            }
+            runtime.backend_parked.insert(
+                unsafe { &*runtime.cur_proc() }.pid,
+                BackendParkRecord {
+                    executable: executable_index,
+                    clauses: receive.clauses.clone(),
+                    dispatch: receive.dispatch.clone(),
+                    bindings: receive.bindings.clone(),
+                    env,
+                    continuations,
+                },
+            );
+            Ok(BackendRunStep::Blocked)
         }
         BackendTail::Halt { atom } => Err(atom.clone()),
     }
+}
+
+fn try_match_backend_receive(
+    runtime: &mut IrInterpRuntime,
+    types: &mut crate::compiler2::Types,
+    module: &Module,
+    clauses: &[crate::compiler2::ReceiveClause],
+    dispatch: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
+    msg: AnyValue,
+    bindings: &crate::compiler2::DispatchBindings,
+    env: &HashMap<ValueId, AnyValue>,
+) -> Result<Option<(usize, Vec<AnyValue>)>, String> {
+    let pinned = local_dispatch_pinned(env, bindings, dispatch)?;
+    let Some((body_id, binds)) = select_dispatch_match(runtime, types, module, dispatch, &[msg], &pinned)? else {
+        return Ok(None);
+    };
+    let clause_index = body_id as usize;
+    let clause = clauses
+        .get(clause_index)
+        .ok_or_else(|| format!("backend receive clause {} is out of bounds", clause_index))?;
+    let mut bound_values = Vec::with_capacity(clause.bound_names.len());
+    for name in &clause.bound_names {
+        let Some((_, value)) = binds.iter().rev().find(|(binding, _)| binding == name) else {
+            return Err(format!(
+                "backend receive binding `{name}` missing from dispatch outcome"
+            ));
+        };
+        bound_values.push(*value);
+    }
+    Ok(Some((clause_index, bound_values)))
 }
 
 fn eval_steps(
@@ -418,19 +698,19 @@ fn eval_steps(
     _program: &BackendProgram,
     module: &Module,
     _executable: &BackendExecutable,
-    steps: &[BackendStep],
+    steps: &[ProgramStep],
     env: &mut HashMap<ValueId, AnyValue>,
 ) -> Result<(), String> {
     for step in steps {
         match step {
-            BackendStep::Const { value, literal } => {
+            ProgramStep::Const { value, literal } => {
                 env.insert(*value, literal_value(runtime, literal)?);
             }
-            BackendStep::Tuple { value, items } => {
+            ProgramStep::Tuple { value, items } => {
                 let tuple = make_tuple(runtime, env_values(env, items)?)?;
                 env.insert(*value, tuple);
             }
-            BackendStep::List { value, items, tail } => {
+            ProgramStep::List { value, items, tail } => {
                 let tail = tail.map_or(Ok(interp_empty_list_value()), |tail| env_get(env, tail))?;
                 let mut acc = tail;
                 for item in items.iter().rev() {
@@ -438,7 +718,7 @@ fn eval_steps(
                 }
                 env.insert(*value, acc);
             }
-            BackendStep::Map { value, entries } => {
+            ProgramStep::Map { value, entries } => {
                 let mut map_bits = if entries.is_empty() {
                     fz_map_empty(runtime.cur_proc())
                 } else {
@@ -455,7 +735,7 @@ fn eval_steps(
                 }
                 env.insert(*value, interp_value_from_ref_word(map_bits, "backend map")?);
             }
-            BackendStep::MapUpdate { value, base, entries } => {
+            ProgramStep::MapUpdate { value, base, entries } => {
                 let base = env_get(env, *base)?;
                 let mut map_bits = base.value(runtime.cur_proc())?.ref_word().raw_word();
                 for (key, item) in entries {
@@ -469,7 +749,7 @@ fn eval_steps(
                 }
                 env.insert(*value, interp_value_from_ref_word(map_bits, "backend map update")?);
             }
-            BackendStep::Struct {
+            ProgramStep::Struct {
                 value,
                 module_name,
                 fields,
@@ -494,7 +774,7 @@ fn eval_steps(
                 let struct_ref = AnyValueRef::from_heap_object(ValueKind::STRUCT, ptr).expect("backend struct ref");
                 env.insert(*value, AnyValue::Ref(struct_ref));
             }
-            BackendStep::Bitstring { value, fields } => {
+            ProgramStep::Bitstring { value, fields } => {
                 fz_bs_begin(runtime.cur_proc());
                 for field in fields {
                     let item = env_get(env, field.value)?;
@@ -515,15 +795,15 @@ fn eval_steps(
                     interp_value_from_ref_word(fz_bs_finalize(runtime.cur_proc()), "backend bitstring")?,
                 );
             }
-            BackendStep::FunctionRef { value, function } => {
+            ProgramStep::FunctionRef { value, function } => {
                 env.insert(*value, AnyValue::FnRef(FnId(function.as_u32())));
             }
-            BackendStep::NamedFunctionRef { name, arity, .. } => {
+            ProgramStep::NamedFunctionRef { name, arity, .. } => {
                 return Err(format!(
                     "backend interpreter reached unresolved fn ref `{name}/{arity}`"
                 ));
             }
-            BackendStep::Lambda {
+            ProgramStep::Lambda {
                 value,
                 function,
                 captures,
@@ -531,7 +811,7 @@ fn eval_steps(
                 let closure = make_closure(runtime, function.as_u32(), env_values(env, captures)?)?;
                 env.insert(*value, closure);
             }
-            BackendStep::BinaryOp { value, op, left, right } => {
+            ProgramStep::BinaryOp { value, op, left, right } => {
                 let result = eval_binop(
                     runtime.cur_proc(),
                     backend_binop(*op)?,
@@ -540,20 +820,20 @@ fn eval_steps(
                 )?;
                 env.insert(*value, result);
             }
-            BackendStep::UnaryOp { value, op, input } => {
+            ProgramStep::UnaryOp { value, op, input } => {
                 let result = eval_unop(backend_unop(*op)?, env_get(env, *input)?)?;
                 env.insert(*value, result);
             }
-            BackendStep::MapIndex { value, base, key } => {
+            ProgramStep::MapIndex { value, base, key } => {
                 let result = interp_map_get(runtime.cur_proc(), env_get(env, *base)?, env_get(env, *key)?)?;
                 env.insert(*value, result);
             }
-            BackendStep::FieldAccess { value, base, field } => {
+            ProgramStep::FieldAccess { value, base, field } => {
                 let base = env_get(env, *base)?;
                 let result = interp_struct_field(runtime, module, base, field)?;
                 env.insert(*value, result);
             }
-            BackendStep::AssertLiteral { source, literal } => {
+            ProgramStep::AssertLiteral { source, literal } => {
                 let actual = env_get(env, *source)?;
                 let expected = literal_value(runtime, literal)?;
                 if !interp_value_eq(runtime.cur_proc(), actual, expected)? {
@@ -563,12 +843,12 @@ fn eval_steps(
                     ));
                 }
             }
-            BackendStep::AssertStruct { source, module_name } => {
+            ProgramStep::AssertStruct { source, module_name } => {
                 if !is_named_struct(runtime, module, env_get(env, *source)?, module_name)? {
                     return Err(format!("match_error: expected struct {module_name}"));
                 }
             }
-            BackendStep::RequireMapValue { value, source, key } => {
+            ProgramStep::RequireMapValue { value, source, key } => {
                 let key = literal_value(runtime, key)?;
                 let result = matcher_map_get(runtime, env_get(env, *source)?, key)?;
                 if matches!(result, AnyValue::Null) {
@@ -576,12 +856,12 @@ fn eval_steps(
                 }
                 env.insert(*value, result);
             }
-            BackendStep::AssertTuple { source, arity } => {
+            ProgramStep::AssertTuple { source, arity } => {
                 if !is_tuple_arity(runtime, env_get(env, *source)?, *arity)? {
                     return Err(format!("match_error: expected tuple arity {}", arity));
                 }
             }
-            BackendStep::TupleField { value, source, index } => {
+            ProgramStep::TupleField { value, source, index } => {
                 let source = env_get(env, *source)?;
                 let field = with_value_ref(runtime.cur_proc(), source, "backend tuple field", |struct_ref| {
                     fz_struct_get_field_ref(runtime.cur_proc(), struct_ref, (*index as u32) * 8)
@@ -589,24 +869,24 @@ fn eval_steps(
                 .and_then(|ref_word| interp_value_from_ref_word(ref_word, "backend tuple field"))?;
                 env.insert(*value, field);
             }
-            BackendStep::AssertEmptyList { source } => {
+            ProgramStep::AssertEmptyList { source } => {
                 if !env_get(env, *source)?.is_empty_list() {
                     return Err("match_error: expected empty list".to_string());
                 }
             }
-            BackendStep::AssertSame { source, value } => {
+            ProgramStep::AssertSame { source, value } => {
                 if !interp_value_eq(runtime.cur_proc(), env_get(env, *source)?, env_get(env, *value)?)? {
                     return Err("match_error: pinned value mismatch".to_string());
                 }
             }
-            BackendStep::SplitList { source, head, tail } => {
+            ProgramStep::SplitList { source, head, tail } => {
                 let source = env_get(env, *source)?;
                 let head_value = interp_list_head(runtime.cur_proc(), source)?;
                 let tail_value = interp_list_tail(runtime.cur_proc(), source)?;
                 env.insert(*head, head_value);
                 env.insert(*tail, tail_value);
             }
-            BackendStep::BitstringInit { reader, source } => {
+            ProgramStep::BitstringInit { reader, source } => {
                 let source = env_get(env, *source)?;
                 let source_ref = source.as_ref_word(runtime.cur_proc())?;
                 let reader_ref = fz_runtime::ir_runtime::fz_bs_reader_init_ref(runtime.cur_proc(), source_ref);
@@ -615,7 +895,7 @@ fn eval_steps(
                     interp_value_from_ref_word(reader_ref, "backend bitstring reader")?,
                 );
             }
-            BackendStep::BitstringRead {
+            ProgramStep::BitstringRead {
                 ok,
                 value,
                 next_reader,
@@ -666,7 +946,7 @@ fn eval_steps(
                     );
                 }
             }
-            BackendStep::AssertBitstringDone { reader } => {
+            ProgramStep::AssertBitstringDone { reader } => {
                 let reader = env_get(env, *reader)?;
                 let bit_len = interp_struct_field_from_tagged_bits(
                     runtime.cur_proc(),
@@ -694,11 +974,23 @@ fn delivered_env(
     env: &HashMap<ValueId, AnyValue>,
     entry_id: crate::compiler2::ControlEntryId,
     delivered: Option<AnyValue>,
+    params: &[AnyValue],
 ) -> Result<HashMap<ValueId, AnyValue>, String> {
     let entry = entries
         .get(entry_id.as_u32() as usize)
         .ok_or_else(|| format!("backend entry {} is out of bounds", entry_id.as_u32()))?;
     let mut next = HashMap::new();
+    if entry.params.len() != params.len() {
+        return Err(format!(
+            "backend entry {} expected {} delivered param(s), got {}",
+            entry_id.as_u32(),
+            entry.params.len(),
+            params.len()
+        ));
+    }
+    for (param, value) in entry.params.iter().copied().zip(params.iter().copied()) {
+        next.insert(param, value);
+    }
     if let Some(value) = entry.origin.input_value() {
         let delivered = delivered.ok_or_else(|| {
             format!(
@@ -723,13 +1015,28 @@ fn eval_direct_call(
     callee: usize,
     args: &[crate::compiler2::BackendCallArg],
     extern_marshals: Option<&[crate::fz_ir::ExternTy]>,
-    env: &HashMap<ValueId, AnyValue>,
-) -> Result<AnyValue, String> {
+    env: HashMap<ValueId, AnyValue>,
+    executable_index: usize,
+    dest: ControlDestination,
+    continuations: Vec<BackendContinuation>,
+) -> Result<BackendRunStep, String> {
     let executable = program
         .executables
         .get(callee)
         .ok_or_else(|| format!("backend direct callee {} is out of bounds", callee))?;
-    let call_args = eval_call_args(env, args)?;
+    let call_args = eval_call_args(&env, args)?;
+    let continuations = match dest {
+        ControlDestination::Return => continuations,
+        ControlDestination::Deliver(target) => {
+            let mut continuations = continuations;
+            continuations.push(BackendContinuation {
+                executable: executable_index,
+                entry: target,
+                env,
+            });
+            continuations
+        }
+    };
     match &executable.body {
         BackendBody::Extern { signature } => call_lowered_extern(
             runtime,
@@ -740,8 +1047,11 @@ fn eval_direct_call(
             signature,
             extern_marshals,
             &call_args,
-        ),
-        BackendBody::Clauses { .. } => run_backend_executable(runtime, types, tel, program, module, callee, call_args),
+        )
+        .and_then(|value| continue_backend_value(runtime, types, tel, program, module, value, continuations)),
+        BackendBody::Clauses { .. } => {
+            run_backend_executable(runtime, types, tel, program, module, callee, call_args, continuations)
+        }
     }
 }
 
@@ -758,17 +1068,23 @@ fn env_values(env: &HashMap<ValueId, AnyValue>, values: &[ValueId]) -> Result<Ve
 
 fn local_dispatch_pinned(
     env: &HashMap<ValueId, AnyValue>,
-    pinned_values: &[ValueId],
+    bindings: &crate::compiler2::DispatchBindings,
     plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
 ) -> Result<HashMap<String, AnyValue>, String> {
     let mut pinned = HashMap::new();
-    for (index, value_id) in pinned_values.iter().copied().enumerate() {
+    for (index, value_id) in bindings.pinned.iter().copied().enumerate() {
         let Some(pin) = plan.pinned.get(index) else {
             return Err(format!("backend local dispatch pinned {} is out of bounds", index));
         };
         if pin.input.is_none() {
             pinned.insert(pin.name.clone(), env_get(env, value_id)?);
         }
+    }
+    for (index, value_id) in bindings.prepared.iter().copied().enumerate() {
+        pinned.insert(
+            crate::dispatch_matrix::pattern::prepared_key_name(index),
+            env_get(env, value_id)?,
+        );
     }
     Ok(pinned)
 }
@@ -872,7 +1188,7 @@ fn drain_pending_dtors_backend(
             resolve_backend_callable_executable(runtime, types, module, program, fn_id, &captures, &[payload])?;
         let mut args = captures;
         args.push(payload);
-        let _ = run_backend_executable(runtime, types, tel, program, module, target, args)?;
+        let _ = run_backend_executable(runtime, types, tel, program, module, target, args, Vec::new())?;
     }
     Ok(())
 }

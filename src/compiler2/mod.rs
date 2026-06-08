@@ -25,7 +25,7 @@ pub(crate) use artifact::NativeEntryAbi;
 pub use artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiReadyProgramMap, AbiValueRepr, BackendBody,
     BackendCallArg, BackendCallableEntry, BackendClause, BackendEntry, BackendEntryOrigin, BackendExecutable,
-    BackendProgram, BackendProgramMap, BackendStep, BackendTail, CallableEntry, EmissionReadyCallEdge,
+    BackendProgram, BackendProgramMap, BackendReceive, BackendStep, BackendTail, CallableEntry, EmissionReadyCallEdge,
     EmissionReadyCallableEntry, EmissionReadyExecutable, EmissionReadyProgram, EmissionReadyProgramMap,
     ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable, MaterializedProgram, MaterializedProgramMap,
     ReturnAbi,
@@ -33,8 +33,9 @@ pub use artifact::{
 pub(crate) use artifact::{NativeBody, NativeProgram};
 pub use body::{
     BodySlot, BodyState, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin,
-    DirectCallee, Literal, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredBodyMap,
-    LoweredClause, LoweredEntry, LoweredExtern, LoweredStep, LoweredTail, ValueId,
+    DirectCallee, DispatchBindings, Literal, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody,
+    LoweredBodyMap, LoweredClause, LoweredEntry, LoweredExtern, LoweredReceive, LoweredStep, LoweredTail, ReceiveAfter,
+    ReceiveClause, ValueId,
 };
 pub use cli::run as run_cli;
 pub use code::{Code, CodeId, CodeMap, CodeState};

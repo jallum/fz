@@ -6,7 +6,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{BitField, BitSize, Expr, FnClause, FnDef, LambdaClause, MatchClause, Pattern, Spanned, WithBinding};
+use crate::ast::{
+    AfterClause, BitField, BitSize, Expr, FnClause, FnDef, LambdaClause, MatchClause, Pattern, Spanned, WithBinding,
+};
 use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
@@ -19,8 +21,8 @@ use crate::ir_lower::{extern_symbol_from_name, lower_extern_signature};
 
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DirectCallee,
-    Literal, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause, LoweredEntry,
-    LoweredExtern, LoweredStep, LoweredTail, ValueId,
+    DispatchBindings, Literal, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause,
+    LoweredEntry, LoweredExtern, LoweredStep, LoweredTail, ReceiveAfter, ReceiveClause, ValueId,
 };
 use super::super::drive::{FactKey, Job, JobEffects};
 use super::super::facts::FactValue;
@@ -52,6 +54,31 @@ struct ExprDispatch {
     plan: crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>,
     arm_blocks: Vec<ExprBlock>,
     miss_block: ExprBlock,
+}
+
+#[derive(Debug, Clone)]
+struct ExprReceiveClause {
+    span: Span,
+    bound_names: Vec<String>,
+    params: Vec<ValueId>,
+    body: ExprBlock,
+}
+
+#[derive(Debug, Clone)]
+struct ExprReceiveAfter {
+    span: Span,
+    timeout: ValueId,
+    body: ExprBlock,
+}
+
+#[derive(Debug, Clone)]
+struct ExprReceive {
+    value: ValueId,
+    bindings: DispatchBindings,
+    dispatch: crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>,
+    clauses: Vec<ExprReceiveClause>,
+    after: Option<ExprReceiveAfter>,
+    captures: Vec<ValueId>,
 }
 
 #[derive(Debug, Clone)]
@@ -143,9 +170,10 @@ enum ExprStep {
     Dispatch {
         value: ValueId,
         inputs: Vec<ValueId>,
-        pinned: Vec<ValueId>,
+        bindings: DispatchBindings,
         dispatch: Box<ExprDispatch>,
     },
+    Receive(Box<ExprReceive>),
     Halt {
         atom: String,
     },
@@ -306,6 +334,18 @@ fn collect_local_dispatch_requirements(
                 collect_local_dispatch_requirements(world, namespace, body, reads, waits, follow_up)?;
             }
         }
+        Expr::Receive { clauses, after } => {
+            for clause in clauses {
+                if let Some(guard) = &clause.guard {
+                    collect_local_guard_requirements(world, namespace, guard, reads, waits, follow_up)?;
+                }
+                collect_local_dispatch_requirements(world, namespace, &clause.body, reads, waits, follow_up)?;
+            }
+            if let Some(after) = after {
+                collect_local_dispatch_requirements(world, namespace, &after.timeout, reads, waits, follow_up)?;
+                collect_local_dispatch_requirements(world, namespace, &after.body, reads, waits, follow_up)?;
+            }
+        }
         Expr::Match(_, rhs)
         | Expr::Ascribe(rhs, _)
         | Expr::UnOp(_, rhs)
@@ -362,8 +402,7 @@ fn collect_local_dispatch_requirements(
             }
         }
         Expr::Lambda(_) => {}
-        Expr::Receive { .. }
-        | Expr::CaptureArg(_)
+        Expr::CaptureArg(_)
         | Expr::FnRef { .. }
         | Expr::Var(_)
         | Expr::Int(_)
@@ -770,17 +809,16 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             Expr::With(bindings, body, else_clauses) => {
                 self.lower_with(expr.span, bindings, body, else_clauses, env, steps)
             }
+            Expr::Receive { clauses, after } => self.lower_receive(expr.span, clauses, after.as_deref(), env, steps),
             Expr::Lambda(clauses) => self.lower_lambda(expr.span, clauses, env, steps),
-            Expr::Capture(_) | Expr::CaptureArg(_) | Expr::Receive { .. } | Expr::Quote(_) | Expr::Unquote(_) => {
-                Err(emit_job_diagnostic(
-                    self.world,
-                    Diagnostic::error(
-                        codes::LOWER_UNSUPPORTED,
-                        format!("compiler2 does not lower `{}` yet", expr_name(&expr.node)),
-                        expr.span,
-                    ),
-                ))
-            }
+            Expr::Capture(_) | Expr::CaptureArg(_) | Expr::Quote(_) | Expr::Unquote(_) => Err(emit_job_diagnostic(
+                self.world,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    format!("compiler2 does not lower `{}` yet", expr_name(&expr.node)),
+                    expr.span,
+                ),
+            )),
         }
     }
 
@@ -994,7 +1032,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
     ) -> Result<ValueId, FatalError> {
         let subject_value = self.lower_expr(subject, env, steps)?;
         let plan = self.compile_match_dispatch("case", span, match_rows(clauses))?;
-        let pinned = self.lower_dispatch_pins(&plan, &[subject_value], env, span)?;
+        let bindings = self.lower_dispatch_bindings(&plan, &[subject_value], env, steps, span)?;
         let arm_blocks = clauses
             .iter()
             .map(|clause| self.lower_match_clause_block(subject_value, clause, env.clone()))
@@ -1003,7 +1041,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         steps.push(ExprStep::Dispatch {
             value,
             inputs: vec![subject_value],
-            pinned,
+            bindings,
             dispatch: Box::new(ExprDispatch {
                 plan,
                 arm_blocks,
@@ -1061,7 +1099,10 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         steps.push(ExprStep::Dispatch {
             value,
             inputs: vec![cond_value],
-            pinned: Vec::new(),
+            bindings: DispatchBindings {
+                pinned: Vec::new(),
+                prepared: Vec::new(),
+            },
             dispatch: Box::new(ExprDispatch {
                 plan: self.compile_bool_true_dispatch(span)?,
                 arm_blocks: vec![arm_block],
@@ -1105,12 +1146,12 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                     self.lower_match_success_block(matched, pattern, rest, body, else_clauses, env.clone(), span)?;
                 let miss_block = self.lower_with_fail_block(span, matched, else_clauses, env.clone())?;
                 let plan = self.compile_single_pattern_dispatch("with", pattern, span)?;
-                let pinned = self.lower_dispatch_pins(&plan, &[matched], &env, pattern.span)?;
+                let bindings = self.lower_dispatch_bindings(&plan, &[matched], &env, &mut steps, pattern.span)?;
                 let value = self.fresh_value();
                 steps.push(ExprStep::Dispatch {
                     value,
                     inputs: vec![matched],
-                    pinned,
+                    bindings,
                     dispatch: Box::new(ExprDispatch {
                         plan,
                         arm_blocks: vec![success_block],
@@ -1162,7 +1203,8 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             });
         }
         let plan = self.compile_match_dispatch("with else", span, match_rows(else_clauses))?;
-        let pinned = self.lower_dispatch_pins(&plan, &[failed], &env, span)?;
+        let mut steps = Vec::new();
+        let bindings = self.lower_dispatch_bindings(&plan, &[failed], &env, &mut steps, span)?;
         let arm_blocks = else_clauses
             .iter()
             .map(|clause| self.lower_match_clause_block(failed, clause, env.clone()))
@@ -1170,18 +1212,65 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         let value = self.fresh_value();
         Ok(ExprBlock {
             span,
-            steps: vec![ExprStep::Dispatch {
-                value,
-                inputs: vec![failed],
-                pinned,
-                dispatch: Box::new(ExprDispatch {
-                    plan,
-                    arm_blocks,
-                    miss_block: self.halt_block(span, "with_clause"),
-                }),
-            }],
+            steps: {
+                steps.push(ExprStep::Dispatch {
+                    value,
+                    inputs: vec![failed],
+                    bindings,
+                    dispatch: Box::new(ExprDispatch {
+                        plan,
+                        arm_blocks,
+                        miss_block: self.halt_block(span, "with_clause"),
+                    }),
+                });
+                steps
+            },
             result: value,
         })
+    }
+
+    fn lower_receive(
+        &mut self,
+        span: Span,
+        clauses: &[MatchClause],
+        after: Option<&AfterClause>,
+        env: &mut HashMap<String, ValueId>,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        if clauses.is_empty() && after.is_none() {
+            return Err(emit_job_diagnostic(
+                self.world,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    "compiler2 does not lower `receive` with no clauses and no `after`".to_string(),
+                    span,
+                ),
+            ));
+        }
+
+        let timeout = after
+            .map(|after| self.lower_expr(&after.timeout, env, steps))
+            .transpose()?;
+        let plan = self.compile_match_dispatch("receive", span, match_rows(clauses))?;
+        let bindings = self.lower_dispatch_bindings(&plan, &[], env, steps, span)?;
+        let captures = self.receive_capture_values(clauses, after, env);
+        let clauses = clauses
+            .iter()
+            .map(|clause| self.lower_receive_clause(clause, env.clone()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let after = after
+            .map(|after| self.lower_receive_after(after, timeout.expect("receive after should have a timeout"), env))
+            .transpose()?;
+        let value = self.fresh_value();
+        steps.push(ExprStep::Receive(Box::new(ExprReceive {
+            value,
+            bindings,
+            dispatch: plan,
+            clauses,
+            after,
+            captures,
+        })));
+        Ok(value)
     }
 
     fn lower_match_clause_block(
@@ -1256,14 +1345,16 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         .map_err(|error| emit_local_dispatch_error(self.world, "cond", span, error))
     }
 
-    fn lower_dispatch_pins(
+    fn lower_dispatch_bindings(
         &mut self,
         plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>,
         inputs: &[ValueId],
         env: &HashMap<String, ValueId>,
+        steps: &mut Vec<ExprStep>,
         span: Span,
-    ) -> Result<Vec<ValueId>, FatalError> {
-        plan.pinned
+    ) -> Result<DispatchBindings, FatalError> {
+        let pinned = plan
+            .pinned
             .iter()
             .map(|pinned| {
                 if let Some(input) = pinned.input {
@@ -1289,7 +1380,118 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                     )
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        let prepared = plan
+            .prepared_keys
+            .iter()
+            .map(|key| self.materialize_dispatch_const(key, steps, span))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(DispatchBindings { pinned, prepared })
+    }
+
+    fn materialize_dispatch_const(
+        &mut self,
+        key: &crate::dispatch_matrix::DispatchConst,
+        steps: &mut Vec<ExprStep>,
+        span: Span,
+    ) -> Result<ValueId, FatalError> {
+        let value = self.fresh_value();
+        match key {
+            crate::dispatch_matrix::DispatchConst::Int(n) => steps.push(ExprStep::Const {
+                value,
+                literal: Literal::Int(*n),
+            }),
+            crate::dispatch_matrix::DispatchConst::FloatBits(bits) => steps.push(ExprStep::Const {
+                value,
+                literal: Literal::Float(f64::from_bits(*bits)),
+            }),
+            crate::dispatch_matrix::DispatchConst::Utf8Binary(bytes) => steps.push(ExprStep::Const {
+                value,
+                literal: Literal::Binary(bytes.clone()),
+            }),
+            crate::dispatch_matrix::DispatchConst::AtomName(name) => steps.push(ExprStep::Const {
+                value,
+                literal: Literal::Atom(name.clone()),
+            }),
+            crate::dispatch_matrix::DispatchConst::Bool(flag) => steps.push(ExprStep::Const {
+                value,
+                literal: Literal::Bool(*flag),
+            }),
+            crate::dispatch_matrix::DispatchConst::Nil => steps.push(ExprStep::Const {
+                value,
+                literal: Literal::Nil,
+            }),
+            crate::dispatch_matrix::DispatchConst::EmptyList => {
+                return Err(emit_job_diagnostic(
+                    self.world,
+                    Diagnostic::error(
+                        codes::LOWER_UNSUPPORTED,
+                        "compiler2 local dispatch does not materialize an empty-list prepared key".to_string(),
+                        span,
+                    ),
+                ));
+            }
+        }
+        Ok(value)
+    }
+
+    fn receive_capture_values(
+        &mut self,
+        clauses: &[MatchClause],
+        after: Option<&AfterClause>,
+        env: &HashMap<String, ValueId>,
+    ) -> Vec<ValueId> {
+        let mut free = HashSet::new();
+        let mut bound = HashSet::new();
+        collect_match_clause_free_names(clauses, &mut bound, &mut free);
+        if let Some(after) = after {
+            collect_expr_free_names(&after.timeout.node, &mut HashSet::new(), &mut free);
+            collect_expr_free_names(&after.body.node, &mut HashSet::new(), &mut free);
+        }
+        let mut captures = free
+            .into_iter()
+            .filter_map(|name| env.get(&name).copied())
+            .collect::<Vec<_>>();
+        captures.sort_by_key(|value| value.as_u32());
+        captures.dedup();
+        captures
+    }
+
+    fn lower_receive_clause(
+        &mut self,
+        clause: &MatchClause,
+        mut env: HashMap<String, ValueId>,
+    ) -> Result<ExprReceiveClause, FatalError> {
+        let mut bound_names = Vec::new();
+        collect_pattern_bound_names(&clause.pattern.node, &mut bound_names);
+        let params = bound_names
+            .iter()
+            .map(|name| {
+                let value = self.fresh_value();
+                env.insert(name.clone(), value);
+                value
+            })
+            .collect::<Vec<_>>();
+        let body = self.lower_expr_as_block(&clause.body, env)?;
+        Ok(ExprReceiveClause {
+            span: clause.span,
+            bound_names,
+            params,
+            body,
+        })
+    }
+
+    fn lower_receive_after(
+        &mut self,
+        after: &AfterClause,
+        timeout: ValueId,
+        env: &HashMap<String, ValueId>,
+    ) -> Result<ExprReceiveAfter, FatalError> {
+        Ok(ExprReceiveAfter {
+            span: after.span,
+            timeout,
+            body: self.lower_expr_as_block(&after.body, env.clone())?,
+        })
     }
 
     fn halt_block(&mut self, span: Span, atom: &str) -> ExprBlock {
@@ -1374,6 +1576,8 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 clause.body,
                 ControlEntryOrigin::Clause,
                 ControlDestination::Return,
+                Vec::new(),
+                Vec::new(),
                 &mut entries,
             );
             let mut bound = clause.params.iter().copied().collect::<HashSet<_>>();
@@ -1398,6 +1602,8 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         block: ExprBlock,
         origin: ControlEntryOrigin,
         dest: ControlDestination,
+        params: Vec<ValueId>,
+        captures: Vec<ValueId>,
         entries: &mut Vec<LoweredEntry>,
     ) -> ControlEntryId {
         let (steps, tail) = self.plan_steps(&block, dest, entries);
@@ -1405,7 +1611,8 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         entries.push(LoweredEntry {
             span: block.span,
             origin,
-            captures: Vec::new(),
+            params,
+            captures,
             steps,
             tail,
         });
@@ -1436,8 +1643,10 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                                 steps: block.steps[index + 1..].to_vec(),
                                 result: block.result,
                             },
-                            ControlEntryOrigin::Resume { value: *value },
+                            ControlEntryOrigin::CallResume { value: *value },
                             dest,
+                            Vec::new(),
+                            Vec::new(),
                             entries,
                         );
                         ControlDestination::Deliver(resume)
@@ -1468,8 +1677,10 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                                 steps: block.steps[index + 1..].to_vec(),
                                 result: block.result,
                             },
-                            ControlEntryOrigin::Resume { value: *value },
+                            ControlEntryOrigin::CallResume { value: *value },
                             dest,
+                            Vec::new(),
+                            Vec::new(),
                             entries,
                         );
                         ControlDestination::Deliver(resume)
@@ -1500,8 +1711,10 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                                 steps: block.steps[index + 1..].to_vec(),
                                 result: block.result,
                             },
-                            ControlEntryOrigin::Resume { value: *value },
+                            ControlEntryOrigin::LocalResume { value: *value },
                             dest,
+                            Vec::new(),
+                            Vec::new(),
                             entries,
                         );
                         ControlDestination::Deliver(resume)
@@ -1510,10 +1723,18 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                         then_block.clone(),
                         ControlEntryOrigin::Branch,
                         branch_dest.clone(),
+                        Vec::new(),
+                        Vec::new(),
                         entries,
                     );
-                    let else_entry =
-                        self.plan_block(else_block.clone(), ControlEntryOrigin::Branch, branch_dest, entries);
+                    let else_entry = self.plan_block(
+                        else_block.clone(),
+                        ControlEntryOrigin::Branch,
+                        branch_dest,
+                        Vec::new(),
+                        Vec::new(),
+                        entries,
+                    );
                     return (
                         lowered,
                         LoweredTail::If {
@@ -1526,7 +1747,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 ExprStep::Dispatch {
                     value,
                     inputs,
-                    pinned,
+                    bindings,
                     dispatch,
                 } => {
                     let branch_dest = if index + 1 == block.steps.len() && *value == block.result {
@@ -1538,8 +1759,10 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                                 steps: block.steps[index + 1..].to_vec(),
                                 result: block.result,
                             },
-                            ControlEntryOrigin::Resume { value: *value },
+                            ControlEntryOrigin::LocalResume { value: *value },
                             dest,
+                            Vec::new(),
+                            Vec::new(),
                             entries,
                         );
                         ControlDestination::Deliver(resume)
@@ -1548,25 +1771,97 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                         .arm_blocks
                         .iter()
                         .cloned()
-                        .map(|arm| self.plan_block(arm, ControlEntryOrigin::Branch, branch_dest.clone(), entries))
+                        .map(|arm| {
+                            self.plan_block(
+                                arm,
+                                ControlEntryOrigin::Branch,
+                                branch_dest.clone(),
+                                Vec::new(),
+                                Vec::new(),
+                                entries,
+                            )
+                        })
                         .collect::<Vec<_>>();
                     let miss_entry = self.plan_block(
                         dispatch.miss_block.clone(),
                         ControlEntryOrigin::Branch,
                         branch_dest,
+                        Vec::new(),
+                        Vec::new(),
                         entries,
                     );
                     return (
                         lowered,
                         LoweredTail::Dispatch {
                             inputs: inputs.clone(),
-                            pinned: pinned.clone(),
+                            bindings: bindings.clone(),
                             dispatch: Box::new(ControlDispatch {
                                 plan: dispatch.plan.clone(),
                                 arm_entries,
                                 miss_entry,
                             }),
                         },
+                    );
+                }
+                ExprStep::Receive(receive) => {
+                    let value = receive.value;
+                    let bindings = &receive.bindings;
+                    let dispatch = &receive.dispatch;
+                    let clauses = &receive.clauses;
+                    let after = &receive.after;
+                    let captures = &receive.captures;
+                    let branch_dest = if index + 1 == block.steps.len() && value == block.result {
+                        dest
+                    } else {
+                        let resume = self.plan_block(
+                            ExprBlock {
+                                span: block.span,
+                                steps: block.steps[index + 1..].to_vec(),
+                                result: block.result,
+                            },
+                            ControlEntryOrigin::LocalResume { value },
+                            dest,
+                            Vec::new(),
+                            Vec::new(),
+                            entries,
+                        );
+                        ControlDestination::Deliver(resume)
+                    };
+                    let clauses = clauses
+                        .iter()
+                        .map(|clause| ReceiveClause {
+                            span: clause.span,
+                            bound_names: clause.bound_names.clone(),
+                            entry: self.plan_block(
+                                clause.body.clone(),
+                                ControlEntryOrigin::Receive,
+                                branch_dest.clone(),
+                                clause.params.clone(),
+                                captures.clone(),
+                                entries,
+                            ),
+                        })
+                        .collect::<Vec<_>>();
+                    let after = after.as_ref().map(|after| ReceiveAfter {
+                        span: after.span,
+                        timeout: after.timeout,
+                        entry: self.plan_block(
+                            after.body.clone(),
+                            ControlEntryOrigin::Receive,
+                            branch_dest,
+                            Vec::new(),
+                            captures.clone(),
+                            entries,
+                        ),
+                    });
+                    return (
+                        lowered,
+                        LoweredTail::Receive(Box::new(super::super::body::LoweredReceive {
+                            bindings: bindings.clone(),
+                            dispatch: dispatch.clone(),
+                            clauses,
+                            after,
+                        })),
                     );
                 }
                 ExprStep::Halt { atom } => {
@@ -2044,6 +2339,7 @@ fn lower_projection_step(step: &ExprStep) -> LoweredStep {
         | ExprStep::ClosureCall { .. }
         | ExprStep::If { .. }
         | ExprStep::Dispatch { .. }
+        | ExprStep::Receive(_)
         | ExprStep::Halt { .. } => {
             panic!("control steps should be lowered into tails before projection conversion")
         }
@@ -2123,6 +2419,7 @@ fn entry_captures(
 
     let entry = &entries[entry_id.as_u32() as usize];
     let mut bound = clause_bounds.get(&entry_id).cloned().unwrap_or_default();
+    bound.extend(entry.params.iter().copied());
     if let Some(value) = entry.origin.input_value() {
         bound.insert(value);
     }
@@ -2138,6 +2435,12 @@ fn entry_captures(
     }
     needed.retain(|value| !bound.contains(value));
     let mut ordered = needed.into_iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|value| value.as_u32());
+    for capture in &entry.captures {
+        if !ordered.contains(capture) {
+            ordered.push(*capture);
+        }
+    }
     ordered.sort_by_key(|value| value.as_u32());
     memo.insert(entry_id, ordered.clone());
     ordered
@@ -2164,9 +2467,19 @@ fn used_values_in_entry(entry: &LoweredEntry) -> HashSet<ValueId> {
         LoweredTail::If { cond, .. } => {
             out.insert(*cond);
         }
-        LoweredTail::Dispatch { inputs, pinned, .. } => {
+        LoweredTail::Dispatch { inputs, bindings, .. } => {
             out.extend(inputs.iter().copied());
-            out.extend(pinned.iter().copied());
+            out.extend(bindings.pinned.iter().copied());
+            out.extend(bindings.prepared.iter().copied());
+        }
+        LoweredTail::Receive(receive) => {
+            let bindings = &receive.bindings;
+            let after = &receive.after;
+            out.extend(bindings.pinned.iter().copied());
+            out.extend(bindings.prepared.iter().copied());
+            if let Some(after) = after {
+                out.insert(after.timeout);
+            }
         }
         LoweredTail::Halt { .. } => {}
     }
@@ -2268,6 +2581,13 @@ fn child_entries(tail: LoweredTail) -> Vec<ControlEntryId> {
             children.push(dispatch.miss_entry);
             children
         }
+        LoweredTail::Receive(receive) => {
+            let mut children = receive.clauses.iter().map(|clause| clause.entry).collect::<Vec<_>>();
+            if let Some(after) = &receive.after {
+                children.push(after.entry);
+            }
+            children
+        }
         LoweredTail::Halt { .. } => Vec::new(),
     }
 }
@@ -2285,6 +2605,52 @@ fn lambda_free_names(clauses: &[LambdaClause]) -> HashSet<String> {
         collect_expr_free_names(&clause.body.node, &mut bound, &mut free);
     }
     free
+}
+
+fn collect_pattern_bound_names(pattern: &Pattern, out: &mut Vec<String>) {
+    match pattern {
+        Pattern::Var(name) => out.push(name.clone()),
+        Pattern::As(name, inner) => {
+            out.push(name.clone());
+            collect_pattern_bound_names(&inner.node, out);
+        }
+        Pattern::Tuple(items) => {
+            for item in items {
+                collect_pattern_bound_names(&item.node, out);
+            }
+        }
+        Pattern::List(items, tail) => {
+            for item in items {
+                collect_pattern_bound_names(&item.node, out);
+            }
+            if let Some(tail) = tail {
+                collect_pattern_bound_names(&tail.node, out);
+            }
+        }
+        Pattern::Map(entries) => {
+            for (_, value) in entries {
+                collect_pattern_bound_names(&value.node, out);
+            }
+        }
+        Pattern::Struct { fields, .. } => {
+            for (_, value) in fields {
+                collect_pattern_bound_names(&value.node, out);
+            }
+        }
+        Pattern::Bitstring(fields) => {
+            for field in fields {
+                collect_pattern_bound_names(&field.value.node, out);
+            }
+        }
+        Pattern::Wildcard
+        | Pattern::Int(_)
+        | Pattern::Float(_)
+        | Pattern::Binary(_)
+        | Pattern::Atom(_)
+        | Pattern::Bool(_)
+        | Pattern::Nil
+        | Pattern::Pinned(_) => {}
+    }
 }
 
 fn bind_pattern_names(pattern: &Pattern, bound: &mut HashSet<String>) {

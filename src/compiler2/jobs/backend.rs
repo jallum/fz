@@ -178,6 +178,7 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
         Ok(BackendEntry {
             span: entry.span,
             origin: lower_entry_origin(entry_index, entry, resume_abis),
+            params: entry.params.clone(),
             captures: entry.captures.clone(),
             steps: entry
                 .steps
@@ -394,13 +395,19 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
             },
             LoweredTail::Dispatch {
                 inputs,
-                pinned,
+                bindings,
                 dispatch,
             } => BackendTail::Dispatch {
                 inputs: inputs.clone(),
-                pinned: pinned.clone(),
+                bindings: bindings.clone(),
                 dispatch: dispatch.clone(),
             },
+            LoweredTail::Receive(receive) => BackendTail::Receive(Box::new(super::super::artifact::BackendReceive {
+                bindings: receive.bindings.clone(),
+                dispatch: receive.dispatch.clone(),
+                clauses: receive.clauses.clone(),
+                after: receive.after.clone(),
+            })),
             LoweredTail::Halt { atom } => BackendTail::Halt { atom: atom.clone() },
         })
     }
@@ -536,12 +543,14 @@ fn lower_entry_origin(
     match entry.origin {
         ControlEntryOrigin::Clause => BackendEntryOrigin::Clause,
         ControlEntryOrigin::Branch => BackendEntryOrigin::Branch,
-        ControlEntryOrigin::Resume { value } => BackendEntryOrigin::Resume {
+        ControlEntryOrigin::Receive => BackendEntryOrigin::Receive,
+        ControlEntryOrigin::CallResume { value } => BackendEntryOrigin::CallResume {
             value,
             return_abi: resume_abis[entry_index]
                 .clone()
                 .unwrap_or_else(|| panic!("resume entry {entry_index} should have a settled input ABI: {entry:?}")),
         },
+        ControlEntryOrigin::LocalResume { value } => BackendEntryOrigin::LocalResume { value },
     }
 }
 
@@ -566,17 +575,17 @@ fn entry_input_abis(
     }
     let mut out = vec![None; entries.len()];
     for (index, entry) in entries.iter().enumerate() {
-        if let ControlEntryOrigin::Resume { value } = entry.origin
+        if let ControlEntryOrigin::CallResume { value } = entry.origin
             && let Some(need) = needs[index]
         {
             out[index] = Some(return_abi_for_resume_input(world, executable, value, need));
         }
     }
     for entry in entries {
-        publish_entry_input_abis(world, root_id, program, executable, entry, &needs, &mut out)?;
+        publish_entry_input_abis(world, root_id, program, executable, entries, entry, &needs, &mut out)?;
     }
     for (index, entry) in entries.iter().enumerate() {
-        if let ControlEntryOrigin::Resume { value } = entry.origin
+        if let ControlEntryOrigin::CallResume { value } = entry.origin
             && out[index].is_none()
         {
             out[index] = Some(return_abi_for_resume_input(
@@ -635,15 +644,28 @@ fn collect_entry_input_need(
         }
         LoweredTail::Dispatch {
             inputs,
-            pinned,
+            bindings,
             dispatch,
         } => {
             used_values.extend(inputs.iter().copied());
-            used_values.extend(pinned.iter().copied());
+            used_values.extend(bindings.pinned.iter().copied());
+            used_values.extend(bindings.prepared.iter().copied());
             for arm_entry in &dispatch.arm_entries {
                 let _ = collect_entry_input_need(world, executable, entries, *arm_entry, outgoing_need.clone(), out);
             }
             let _ = collect_entry_input_need(world, executable, entries, dispatch.miss_entry, outgoing_need, out);
+        }
+        LoweredTail::Receive(receive) => {
+            let bindings = &receive.bindings;
+            used_values.extend(bindings.pinned.iter().copied());
+            used_values.extend(bindings.prepared.iter().copied());
+            for clause in &receive.clauses {
+                let _ = collect_entry_input_need(world, executable, entries, clause.entry, outgoing_need.clone(), out);
+            }
+            if let Some(after) = &receive.after {
+                used_values.insert(after.timeout);
+                let _ = collect_entry_input_need(world, executable, entries, after.entry, outgoing_need, out);
+            }
         }
         LoweredTail::Halt { .. } => {}
     }
@@ -698,7 +720,7 @@ fn collect_entry_input_need(
             .map(ExecutableNeed::TupleFields)
             .or_else(|| used_values.contains(&value).then_some(ExecutableNeed::Value))
     });
-    if matches!(entry.origin, ControlEntryOrigin::Resume { .. }) {
+    if matches!(entry.origin, ControlEntryOrigin::CallResume { .. }) {
         out[entry_id.as_u32() as usize] = input_need;
     }
     input_need.unwrap_or(ExecutableNeed::Value)
@@ -805,20 +827,31 @@ fn publish_entry_input_abis(
     root_id: RootId,
     program: &super::super::artifact::EmissionReadyProgram,
     executable: &super::super::artifact::EmissionReadyExecutable,
+    entries: &[LoweredEntry],
     entry: &LoweredEntry,
     needs: &[Option<ExecutableNeed>],
     out: &mut [Option<ReturnAbi>],
 ) -> Result<(), FatalError> {
     match &entry.tail {
         LoweredTail::Value { value, dest } => {
-            if let ControlDestination::Deliver(target) = dest {
+            if let ControlDestination::Deliver(target) = dest
+                && matches!(
+                    entries[target.as_u32() as usize].origin,
+                    ControlEntryOrigin::CallResume { .. }
+                )
+            {
                 let need = needs[target.as_u32() as usize].unwrap_or(ExecutableNeed::Value);
                 let abi = return_abi_for_resume_input(world, executable, *value, need);
                 merge_resume_abi(world, root_id, *target, abi, out)?;
             }
         }
         LoweredTail::DirectCall { callsite, dest, .. } | LoweredTail::ClosureCall { callsite, dest, .. } => {
-            if let ControlDestination::Deliver(target) = dest {
+            if let ControlDestination::Deliver(target) = dest
+                && matches!(
+                    entries[target.as_u32() as usize].origin,
+                    ControlEntryOrigin::CallResume { .. }
+                )
+            {
                 let edge = call_edge(executable, *callsite).ok_or_else(|| {
                     incomplete_backend_program(
                         world,
@@ -833,7 +866,7 @@ fn publish_entry_input_abis(
                 merge_resume_abi(world, root_id, *target, abi, out)?;
             }
         }
-        LoweredTail::If { .. } | LoweredTail::Dispatch { .. } | LoweredTail::Halt { .. } => {}
+        LoweredTail::If { .. } | LoweredTail::Dispatch { .. } | LoweredTail::Receive(_) | LoweredTail::Halt { .. } => {}
     }
     Ok(())
 }
@@ -1029,6 +1062,7 @@ fn collect_step_atoms(
 fn collect_tail_atoms(world: &mut World<'_>, tail: &BackendTail, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
     match tail {
         BackendTail::Dispatch { dispatch, .. } => collect_dispatch_atoms(world, &dispatch.plan, seen, atoms),
+        BackendTail::Receive(receive) => collect_dispatch_atoms(world, &receive.dispatch, seen, atoms),
         BackendTail::Halt { atom } => push_atom(seen, atoms, atom),
         BackendTail::Value { .. }
         | BackendTail::DirectCall { .. }

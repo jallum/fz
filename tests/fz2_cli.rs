@@ -239,6 +239,51 @@ fn build_executes_case_and_with_fixtures() {
 }
 
 #[test]
+fn run_and_interp_execute_receive_fixtures() {
+    for fixture in [
+        "fixtures/concurrency_ping_pong/input.fz",
+        "fixtures/receive_selective_refs/input.fz",
+        "fixtures/receive_float_pattern/input.fz",
+    ] {
+        let expected = fixture_expected_stdout(fixture);
+        for command in ["run", "interp"] {
+            let out = run_fz2(&[OsStr::new(command), OsStr::new(fixture)]);
+            assert_successful_stdout(&out, &expected, &format!("fz2 {command} {fixture}"));
+        }
+    }
+}
+
+#[test]
+fn build_executes_receive_fixtures() {
+    for fixture in [
+        "fixtures/concurrency_ping_pong/input.fz",
+        "fixtures/receive_selective_refs/input.fz",
+        "fixtures/receive_float_pattern/input.fz",
+    ] {
+        let expected = fixture_expected_stdout(fixture);
+        let out_bin = unique_temp_path("fz2_receive_fixture_build", ".bin");
+        let build = run_fz2(&[
+            OsStr::new("build"),
+            OsStr::new(fixture),
+            OsStr::new("-o"),
+            out_bin.as_os_str(),
+        ]);
+        assert!(
+            build.status.success(),
+            "fz2 build {fixture} should succeed; stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&build.stdout),
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let run = Command::new(&out_bin)
+            .output()
+            .unwrap_or_else(|error| panic!("run built binary for {fixture}: {error}"));
+        assert_successful_stdout(&run, &expected, &format!("fz2 build/run {fixture}"));
+        let _ = remove_file(&out_bin);
+        let _ = remove_file(out_bin.with_extension("bin.o"));
+    }
+}
+
+#[test]
 fn run_interp_and_build_execute_cond_source() {
     let source_path = unique_temp_path("fz2_cond", ".fz");
     write(
