@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.12.3"
+  ],
   "blocks": [],
   "created": "2026-06-08T20:52:14Z",
   "description": "Re-seat the three consumers and delete function_type_env (world.rs:1157). contract.rs:46, dispatch.rs:265 (param annotations), body.rs:477 (extern types) resolve names via the in-house resolver/TypeDefined instead of function_type_env. ResolvedSpecDecl and crate::specs are unchanged downstream (shared, over hard Ty). Externs: in-house extern type resolution replaces the env-based ir_lower::lower_extern_signature. Verify: spec_ok/spec_boundary/spec_violation fixtures and the contract/dispatch drive tests stay green.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Re-seat contract/dispatch/extern onto the resolver; delete function_type_env",
   "type": "task",
-  "updated_at": "2026-06-08T20:52:14Z"
+  "updated_at": "2026-06-08T20:52:15Z"
 }
