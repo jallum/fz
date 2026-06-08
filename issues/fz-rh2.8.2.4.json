@@ -9,14 +9,15 @@
     "fz-rh2.8.2.7"
   ],
   "blocks": [],
+  "closed_at": "2026-06-08T11:38:43Z",
   "created": "2026-06-08T03:52:37Z",
   "description": "Goal: make the production-facing Compiler2 backend path the real one and remove temporary compiler2-side fallback. Signal: CLI/test/support entry points that opt into Compiler2 consume the new interpreter/JIT/AOT paths, and no Compiler2 path quietly falls back to old planner/codegen discovery.\n\nChange:\n- Switch Compiler2-facing entry points, helpers, and test support onto the new interpreter/JIT/AOT consumers.\n- Remove temporary compiler2-only dual-path helpers or leftover fallback hooks added during migration.\n- Update docs and regression harnesses to point at the new backend path and rerun surface.\n\nWhy:\n- Until the outer entry points switch, the backend migration stays theoretical and dead fallback code can keep architectural regressions hidden.\n\nChecks:\n- Compiler2 entry points use the new backend consumers end-to-end.\n- No Compiler2 path reaches back into old planner/codegen discovery helpers to fill missing facts.",
   "id": "fz-rh2.8.2.4",
   "labels": [],
   "parent": "fz-rh2.8.2",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 backends: switch entry points and remove compiler2 fallback",
   "type": "task",
-  "updated_at": "2026-06-08T10:54:37Z"
+  "updated_at": "2026-06-08T11:38:43Z"
 }
