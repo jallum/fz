@@ -8,6 +8,7 @@
 //! backend.
 
 use super::{ArgRepr, MidFlightArgShape};
+use crate::compiler2::NativeBody;
 use crate::diag::Diagnostics;
 use crate::frontend::spec_registry::SpecRegistry;
 use crate::fz_ir::{FnId, FnIr, Module};
@@ -15,9 +16,10 @@ use crate::ir_planner::{SpecPlan, fn_types::SpecKey};
 use crate::types::{Ty, Types};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeCallableEntrySurface {
     pub capture_count: usize,
+    pub capture_key: Vec<crate::types::KeySlot>,
 }
 
 pub(crate) struct NativeCodegenSurface<'a> {
@@ -47,8 +49,9 @@ pub(crate) struct NativeCodegenBody<'a> {
     pub codegen_id: u32,
     pub fn_idx: usize,
     pub fn_id: FnId,
-    pub spec_key: &'a SpecKey,
-    pub spec_plan: &'a SpecPlan,
+    pub spec_key: SpecKey,
+    pub spec_plan: SpecPlan,
+    pub native_body: Option<&'a NativeBody>,
     pub body: &'a FnIr,
     pub display_name: String,
     pub reachable: bool,
@@ -63,11 +66,18 @@ impl<'a> NativeCodegenSurface<'a> {
     }
 
     pub(crate) fn body_key(&self, codegen_id: u32) -> &SpecKey {
-        self.body(codegen_id).spec_key
+        &self.body(codegen_id).spec_key
     }
 
     pub(crate) fn body_fn_id(&self, codegen_id: u32) -> FnId {
         self.body(codegen_id).fn_id
+    }
+
+    pub(crate) fn body_id_for_fn(&self, fn_id: FnId) -> Option<u32> {
+        self.body_slots
+            .get(fn_id.0 as usize)
+            .and_then(Option::as_ref)
+            .map(|body| body.codegen_id)
     }
 
     pub(crate) fn body_id_for_key<T: Types<Ty = Ty>>(&self, t: &T, key: &SpecKey) -> Option<u32> {

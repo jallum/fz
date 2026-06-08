@@ -1,6 +1,7 @@
 //! CodegenEnv (immutable per-module ctx) and CodegenCache (per-fn caches).
 
 use super::*;
+use crate::compiler2::NativeBody;
 use crate::fz_ir::{BlockId, ExternId, FnId, Module, Var};
 use crate::ir_planner::SpecPlan;
 use crate::telemetry::Telemetry;
@@ -61,6 +62,14 @@ impl<'a> CodegenEnv<'a> {
         key: &crate::ir_planner::fn_types::SpecKey,
     ) -> Option<u32> {
         self.surface.body_id_for_key(t, key)
+    }
+
+    pub(super) fn body_id_for_fn(&self, fn_id: FnId) -> Option<u32> {
+        self.surface.body_id_for_fn(fn_id)
+    }
+
+    pub(super) fn active_native_body(&self) -> Option<&NativeBody> {
+        self.surface.body(self.active_spec_id).native_body
     }
 }
 

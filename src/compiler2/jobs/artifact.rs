@@ -26,6 +26,7 @@ use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, SelectedCallee};
 use super::super::types::Ty;
 use super::super::world::World;
+use super::semantic::executable_callsite_needs;
 
 /// Materializes one closed root into a backend-owned program snapshot.
 ///
@@ -230,6 +231,8 @@ fn materialize_call_edges(
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
 ) -> Result<Option<HashMap<CallSiteId, MaterializedCallEdge>>, FatalError> {
     let mut call_edges = HashMap::new();
+    let lowered_body = world.lowered_body(executable.activation.function);
+    let callsite_needs = executable_callsite_needs(&lowered_body, &analysis.reachable_clauses, executable.need);
     for callsite in &analysis.callsites {
         let key = CallSiteKey {
             activation: executable.activation.clone(),
@@ -248,9 +251,10 @@ fn materialize_call_edges(
                 "materialization cannot lower unresolved named call targets",
             ));
         };
+        let need = callsite_needs.get(callsite).copied().unwrap_or(ExecutableNeed::Value);
         let callee = ExecutableKey {
             activation: world.activation_key(root_id, function, &summary.input_types),
-            need: summary.need,
+            need,
         };
         let extern_marshals = if let LoweredBody::Extern { signature } = world.lowered_body(function) {
             let Some(args) = callsite_args.get(callsite) else {

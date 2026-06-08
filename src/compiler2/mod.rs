@@ -19,6 +19,7 @@ mod types;
 mod world;
 
 pub use agenda::Agenda;
+pub(crate) use artifact::NativeBody;
 pub use artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiReadyProgramMap, AbiValueRepr, BackendBlock, BackendBody,
     BackendCallArg, BackendCallableEntry, BackendClause, BackendExecutable, BackendProgram, BackendProgramMap,
@@ -26,6 +27,8 @@ pub use artifact::{
     EmissionReadyProgram, EmissionReadyProgramMap, ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable,
     MaterializedProgram, MaterializedProgramMap, ReturnAbi,
 };
+#[cfg(test)]
+pub(crate) use artifact::{NativeEntryAbi, NativeProgram};
 pub use body::{
     BodySlot, BodyState, CallSiteId, DirectCallee, Literal, LoweredBlock, LoweredBody, LoweredBodyMap, LoweredClause,
     LoweredExtern, LoweredStep, ValueId,

@@ -209,6 +209,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             .get(self.program.entry)
             .expect("native entry executable should exist");
         let mut module = self.module.build();
+        annotate_back_edges(&mut module);
         module.atom_names = atom_names(&self.atom_ids);
         module.externs = self.extern_decls;
         module.extern_idx = module
@@ -595,7 +596,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     let branch_finish = if needs_continuation {
                         let captured = env.capture_ids(used_values_in_sequence(rest_current, tail_steps, final_result));
                         let join_fn = self.module.fresh_fn_id();
-                        self.lower_continuation_fn(
+                        self.lower_join_fn(
                             join_fn,
                             executable,
                             ctx.fn_id,
@@ -675,6 +676,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         executable,
                         ctx.fn_id,
                         *value,
+                        self.program.executables[*callee].return_abi.clone(),
                         captured.clone(),
                         rest_current,
                         tail_steps,
@@ -694,7 +696,11 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     return Ok(());
                 }
                 BackendStep::ClosureCall {
-                    value, callee, args, ..
+                    value,
+                    callee,
+                    target,
+                    args,
+                    ..
                 } => {
                     let closure = env
                         .var(*callee)
@@ -706,6 +712,8 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                             "native closure call referenced an unbound argument",
                         )
                     })?;
+                    let target_fn = self.executable_fns[*target];
+                    ctx.closure_call_targets.insert(ctx.current_block, target_fn);
                     if rest_current.is_empty() && tail_steps.is_empty() && *value == final_result {
                         ctx.set_term(Term::TailCallClosure {
                             ident: CallsiteIdent::from_source(Span::DUMMY),
@@ -721,6 +729,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         executable,
                         ctx.fn_id,
                         *value,
+                        self.program.executables[*target].return_abi.clone(),
                         captured.clone(),
                         rest_current,
                         tail_steps,
@@ -765,6 +774,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         executable: &BackendExecutable,
         owner: FnId,
         result_value: ValueId,
+        result_abi: ReturnAbi,
         captured: Vec<ValueId>,
         steps: &[BackendStep],
         tail_steps: &[BackendStep],
@@ -772,6 +782,80 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         finish: Finish,
     ) -> Result<(), FatalError> {
         let index = self.next_continuation_index(owner);
+        let result_ty = executable
+            .value_types
+            .get(&result_value)
+            .copied()
+            .unwrap_or_else(|| self.world.types_mut().any());
+        let capture_tys = captured
+            .iter()
+            .map(|value| {
+                executable
+                    .value_types
+                    .get(value)
+                    .copied()
+                    .unwrap_or_else(|| self.world.types_mut().any())
+            })
+            .collect::<Vec<_>>();
+        let (mut entry_tys, mut param_reprs) = continuation_result_entry(self.world, result_ty, &result_abi);
+        entry_tys.extend(capture_tys.iter().copied());
+        param_reprs.extend(capture_tys.iter().copied().map(|ty| abi_value_repr(self.world, ty)));
+        let extra_params = param_reprs.len() - capture_tys.len();
+        let mut ctx = NativeFnCtx::new(
+            fn_id,
+            &format!("k_{}_{}", owner.0, index),
+            FnCategory::CpsCont,
+            NativeBodyOrigin::Continuation { owner, index },
+            NativeEntryAbi::Continuation { extra_params },
+            param_reprs,
+            executable.return_ty,
+            executable.return_abi.clone(),
+            executable.effects,
+        );
+        let mut env = ValueEnv::default();
+        let entry_vars = ctx.entry_params(entry_tys.as_slice());
+        let capture_offset = match result_abi {
+            ReturnAbi::Value(_) => {
+                bind_backend_value(&mut ctx, executable, &mut env, result_value, entry_vars[0]);
+                1
+            }
+            ReturnAbi::TupleFields(_) => {
+                let tuple_fields = entry_vars.iter().copied().take(extra_params).collect::<Vec<_>>();
+                let (result_var, _) = ctx.emit_let(Prim::MakeTuple(tuple_fields));
+                bind_backend_value(&mut ctx, executable, &mut env, result_value, result_var);
+                extra_params
+            }
+        };
+        for (value, var) in captured
+            .into_iter()
+            .zip(entry_vars.iter().copied().skip(capture_offset))
+        {
+            env.insert(value, var);
+        }
+        self.lower_steps(&mut ctx, executable, env, steps, tail_steps, final_result, finish)?;
+        self.finish_native_fn(ctx);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_join_fn(
+        &mut self,
+        fn_id: FnId,
+        executable: &BackendExecutable,
+        owner: FnId,
+        result_value: ValueId,
+        captured: Vec<ValueId>,
+        steps: &[BackendStep],
+        tail_steps: &[BackendStep],
+        final_result: ValueId,
+        finish: Finish,
+    ) -> Result<(), FatalError> {
+        let index = self.next_continuation_index(owner);
+        let result_ty = executable
+            .value_types
+            .get(&result_value)
+            .copied()
+            .unwrap_or_else(|| self.world.types_mut().any());
         let capture_tys = captured
             .iter()
             .map(|value| {
@@ -783,30 +867,28 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             })
             .collect::<Vec<_>>();
         let mut entry_tys = Vec::with_capacity(1 + capture_tys.len());
-        entry_tys.push(
-            executable
-                .value_types
-                .get(&result_value)
-                .copied()
-                .unwrap_or_else(|| self.world.types_mut().any()),
-        );
+        entry_tys.push(result_ty);
         entry_tys.extend(capture_tys.iter().copied());
+        let param_reprs = entry_tys
+            .iter()
+            .copied()
+            .map(|ty| abi_value_repr(self.world, ty))
+            .collect();
         let mut ctx = NativeFnCtx::new(
             fn_id,
             &format!("k_{}_{}", owner.0, index),
             FnCategory::CpsCont,
             NativeBodyOrigin::Continuation { owner, index },
-            NativeEntryAbi::Continuation { extra_params: 1 },
-            executable.param_reprs.clone(),
+            NativeEntryAbi::Direct,
+            param_reprs,
             executable.return_ty,
             executable.return_abi.clone(),
             executable.effects,
         );
         let mut env = ValueEnv::default();
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
-        let result_var = entry_vars[0];
-        env.insert(result_value, result_var);
-        for (value, var) in captured.into_iter().zip(entry_vars.into_iter().skip(1)) {
+        bind_backend_value(&mut ctx, executable, &mut env, result_value, entry_vars[0]);
+        for (value, var) in captured.into_iter().zip(entry_vars.iter().copied().skip(1)) {
             env.insert(value, var);
         }
         self.lower_steps(&mut ctx, executable, env, steps, tail_steps, final_result, finish)?;
@@ -841,13 +923,18 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     .unwrap_or_else(|| self.world.types_mut().any())
             })
             .collect::<Vec<_>>();
+        let param_reprs = capture_tys
+            .iter()
+            .copied()
+            .map(|ty| abi_value_repr(self.world, ty))
+            .collect();
         let mut ctx = NativeFnCtx::new(
             fn_id,
             &format!("{label}_{}_{}", owner.0, index),
             FnCategory::ControlFlowCont,
             NativeBodyOrigin::Continuation { owner, index },
             NativeEntryAbi::Direct,
-            executable.param_reprs.clone(),
+            param_reprs,
             executable.return_ty,
             executable.return_abi.clone(),
             executable.effects,
@@ -1274,10 +1361,10 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         self.program
             .callable_entries
             .iter()
-            .enumerate()
-            .filter_map(|(index, entry)| {
+            .filter_map(|entry| {
                 let target = &self.program.executables[entry.target];
-                (target.key.activation.function == function && entry.capture_count == capture_count).then_some(index)
+                (target.key.activation.function == function && entry.capture_count == capture_count)
+                    .then_some(self.executable_fns[entry.target].0 as usize)
             })
             .collect()
     }
@@ -1287,6 +1374,122 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         let index = *next;
         *next += 1;
         index
+    }
+}
+
+fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
+    let mut graph: HashMap<FnId, HashSet<FnId>> = HashMap::new();
+    for function in &module.fns {
+        let entry = graph.entry(function.id).or_default();
+        for block in &function.blocks {
+            if let Term::TailCall { callee, .. } = &block.terminator {
+                entry.insert(*callee);
+            }
+        }
+    }
+
+    let scc_of = {
+        let mut index_counter = 0usize;
+        let mut stack = Vec::new();
+        let mut on_stack = HashSet::new();
+        let mut index = HashMap::new();
+        let mut lowlink = HashMap::new();
+        let mut scc_of = HashMap::new();
+        let mut scc_count = 0usize;
+        let all_fns = module.fns.iter().map(|function| function.id).collect::<Vec<_>>();
+
+        fn strongconnect(
+            function: FnId,
+            graph: &HashMap<FnId, HashSet<FnId>>,
+            index_counter: &mut usize,
+            stack: &mut Vec<FnId>,
+            on_stack: &mut HashSet<FnId>,
+            index: &mut HashMap<FnId, usize>,
+            lowlink: &mut HashMap<FnId, usize>,
+            scc_of: &mut HashMap<FnId, usize>,
+            scc_count: &mut usize,
+        ) {
+            let function_index = *index_counter;
+            index.insert(function, function_index);
+            lowlink.insert(function, function_index);
+            *index_counter += 1;
+            stack.push(function);
+            on_stack.insert(function);
+
+            if let Some(neighbors) = graph.get(&function) {
+                for neighbor in neighbors.iter().copied().collect::<Vec<_>>() {
+                    if !index.contains_key(&neighbor) {
+                        strongconnect(
+                            neighbor,
+                            graph,
+                            index_counter,
+                            stack,
+                            on_stack,
+                            index,
+                            lowlink,
+                            scc_of,
+                            scc_count,
+                        );
+                        let neighbor_lowlink = lowlink[&neighbor];
+                        let function_lowlink = lowlink.get_mut(&function).expect("function lowlink");
+                        if neighbor_lowlink < *function_lowlink {
+                            *function_lowlink = neighbor_lowlink;
+                        }
+                    } else if on_stack.contains(&neighbor) {
+                        let neighbor_index = index[&neighbor];
+                        let function_lowlink = lowlink.get_mut(&function).expect("function lowlink");
+                        if neighbor_index < *function_lowlink {
+                            *function_lowlink = neighbor_index;
+                        }
+                    }
+                }
+            }
+
+            if lowlink[&function] == index[&function] {
+                let scc_id = *scc_count;
+                *scc_count += 1;
+                loop {
+                    let member = stack.pop().expect("SCC stack member");
+                    on_stack.remove(&member);
+                    scc_of.insert(member, scc_id);
+                    if member == function {
+                        break;
+                    }
+                }
+            }
+        }
+
+        for function in &all_fns {
+            if !index.contains_key(function) {
+                strongconnect(
+                    *function,
+                    &graph,
+                    &mut index_counter,
+                    &mut stack,
+                    &mut on_stack,
+                    &mut index,
+                    &mut lowlink,
+                    &mut scc_of,
+                    &mut scc_count,
+                );
+            }
+        }
+        scc_of
+    };
+
+    for function in &mut module.fns {
+        let caller_scc = scc_of.get(&function.id).copied().unwrap_or(usize::MAX);
+        for block in &mut function.blocks {
+            if let Term::TailCall {
+                callee, is_back_edge, ..
+            } = &mut block.terminator
+            {
+                let callee_scc = scc_of.get(callee).copied().unwrap_or(usize::MAX);
+                if callee_scc == caller_scc {
+                    *is_back_edge = true;
+                }
+            }
+        }
     }
 }
 
@@ -1387,6 +1590,7 @@ struct NativeFnCtx {
     stmt_counts: HashMap<BlockId, usize>,
     value_types: HashMap<Var, Ty>,
     callable_constructors: HashMap<Var, Vec<usize>>,
+    closure_call_targets: HashMap<BlockId, FnId>,
     extern_marshals: HashMap<ExternMarshalSite, ExternTy>,
     failure_blocks: HashMap<u32, BlockId>,
     origin: NativeBodyOrigin,
@@ -1417,6 +1621,7 @@ impl NativeFnCtx {
             stmt_counts: HashMap::new(),
             value_types: HashMap::new(),
             callable_constructors: HashMap::new(),
+            closure_call_targets: HashMap::new(),
             extern_marshals: HashMap::new(),
             failure_blocks: HashMap::new(),
             origin,
@@ -1492,6 +1697,7 @@ impl NativeFnCtx {
             return_abi: self.return_abi,
             value_types: self.value_types,
             callable_constructors: self.callable_constructors,
+            closure_call_targets: self.closure_call_targets,
             extern_marshals: self.extern_marshals,
             effects: self.effects,
         };
@@ -1877,6 +2083,35 @@ fn legacy_type_test_ty(world: &mut World<'_>, ty: Ty) -> Option<crate::types::Ty
 fn type_is_any(world: &mut World<'_>, ty: Ty) -> bool {
     let any = world.types_mut().any();
     world.types().is_equivalent(&ty, &any)
+}
+
+fn abi_value_repr(world: &mut World<'_>, ty: Ty) -> AbiValueRepr {
+    if world.types().is_floating(&ty) {
+        return AbiValueRepr::RawF64;
+    }
+    if world.types().is_integer(&ty) {
+        return AbiValueRepr::RawInt;
+    }
+    let atom = world.types_mut().atom();
+    if world.types().is_subtype(&ty, &atom) {
+        AbiValueRepr::RawAtom
+    } else {
+        AbiValueRepr::ValueRef
+    }
+}
+
+fn continuation_result_entry(
+    world: &mut World<'_>,
+    result_ty: Ty,
+    result_abi: &ReturnAbi,
+) -> (Vec<Ty>, Vec<AbiValueRepr>) {
+    match result_abi {
+        ReturnAbi::Value(repr) => (vec![result_ty], vec![*repr]),
+        ReturnAbi::TupleFields(reprs) => (
+            world.types_mut().tuple_projections(&result_ty, reprs.len()),
+            reprs.clone(),
+        ),
+    }
 }
 
 fn type_is_integer(world: &mut World<'_>, ty: Ty) -> bool {

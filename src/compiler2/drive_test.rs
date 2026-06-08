@@ -1,5 +1,5 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
-use crate::compiler2::artifact::{NativeBodyOrigin, NativeProgram};
+use crate::compiler2::artifact::{NativeBodyOrigin, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
     AbiReadyProgram, AbiValueRepr, ActivationKey, BackendProgram, BackendStep, CallSiteId, CallSiteKey,
@@ -15,6 +15,7 @@ use crate::fz_ir::{
     Block as IrBlock, CallsiteId as IrCallsiteId, CallsiteIdent, Cont as IrCont, ExternTy, ExternalCallEdge,
     FnIr as IrFn, Module as IrModule, Prim as IrPrim, ReceiveAfter, ReceiveClause, Stmt as IrStmt, Term as IrTerm,
 };
+use crate::ir_codegen::{JitBackend, compile_with_backend_native_program};
 use crate::telemetry::handler::{Event, EventKind, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use std::cell::RefCell;
@@ -38,6 +39,19 @@ type EmissionReadyProgramDefs = Rc<RefCell<Vec<EmissionReadyProgramRecord>>>;
 type BackendProgramDefs = Rc<RefCell<Vec<BackendProgramRecord>>>;
 type NativeProgramDefs = Rc<RefCell<Vec<NativeProgramRecord>>>;
 type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
+
+fn jit_compile_native_program(program: &NativeProgram, tel: &ConfiguredTelemetry) -> crate::ir_codegen::CompiledModule {
+    let mut legacy_types = crate::types::new();
+    compile_with_backend_native_program(&mut legacy_types, program, JitBackend::new(), tel)
+        .expect("shared native codegen should compile a Compiler2 native program")
+}
+
+fn assert_no_legacy_planner_or_type_infer(capture: &Capture, context: &str) {
+    assert!(
+        capture.find(&["fz", "type_infer"]).is_empty() && capture.find(&["fz", "planner"]).is_empty(),
+        "{context}",
+    );
+}
 
 fn presence(fact: FactKey, revision: u64) -> (FactKey, FactValue) {
     (fact, FactValue::presence(revision))
@@ -362,10 +376,10 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         "semantic closure should read activation facts rather than publish them"
     );
     assert!(
-        !closure_outputs
+        closure_outputs
             .iter()
             .any(|(fact, _)| matches!(fact, FactKey::Executable(_))),
-        "semantic closure should read executable facts rather than publish them"
+        "semantic closure should publish the executable frontier it derives from activation-local facts"
     );
     assert!(
         !closure_outputs.iter().any(|(fact, _)| {
@@ -2106,6 +2120,69 @@ fn compiler2_native_program_keeps_only_the_closed_quicksort_inventory() {
 }
 
 #[test]
+fn compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee_return_abi() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
+        text: format!(
+            "{}\nfn foo(), do: 42\n",
+            include_str!("../../fixtures/quicksort/input.fz")
+        ),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "native lowering should preserve tuple-field call contracts in quicksort continuations: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let program = native.last(root_id).program;
+    let qsort_clause_1 = program
+        .module
+        .fn_by_name("qsort__clause_1")
+        .expect("qsort recursive clause")
+        .id;
+    let tuple_field_cont = program
+        .bodies
+        .iter()
+        .find(|body| {
+            body.origin
+                == NativeBodyOrigin::Continuation {
+                    owner: qsort_clause_1,
+                    index: 0,
+                }
+        })
+        .expect("qsort tuple-field continuation");
+    assert_eq!(
+        tuple_field_cont.entry_abi,
+        NativeEntryAbi::Continuation { extra_params: 2 },
+        "the continuation fed by partition/4's tuple-field executable should accept both returned fields explicitly",
+    );
+    assert_eq!(
+        tuple_field_cont.param_reprs,
+        vec![AbiValueRepr::ValueRef, AbiValueRepr::ValueRef, AbiValueRepr::RawInt],
+        "the tuple-field continuation should expose both field lanes before its captured pivot",
+    );
+}
+
+#[test]
 fn compiler2_native_program_keeps_the_closed_enum_reduce_callable_entries() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -2172,13 +2249,12 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
     let expected_entries = program
         .callable_entries
         .iter()
-        .enumerate()
-        .filter_map(|(index, entry)| {
+        .filter_map(|entry| {
             matches!(
                 entry.target.activation.function,
                 id if id == user_reducer_id || id == bridge_reducer_id
             )
-            .then_some(index)
+            .then_some(entry.target_fn.0 as usize)
         })
         .collect::<HashSet<_>>();
     assert_eq!(
@@ -2306,6 +2382,207 @@ fn compiler2_native_program_revision_stays_stable_for_identical_recompute() {
     assert!(
         native_programs_match(&records[0].program, &records[1].program),
         "identical native-program recomputation should reproduce the same closed handoff facts",
+    );
+}
+
+#[test]
+fn compiler2_native_program_jit_runs_quicksort_through_shared_codegen() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
+        text: format!(
+            "{}\nfn foo(), do: 42\nfn entry() do\n  dbg(qsort([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5]))\n  42\nend\n",
+            include_str!("../../fixtures/quicksort/input.fz")
+        ),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "entry".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "Compiler2 native lowering should settle before shared codegen consumes quicksort: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let program = native.last(root_id).program;
+    let compiled = jit_compile_native_program(&program, &tel);
+    let halt = compiled.run(&tel, program.entry);
+    assert_eq!(
+        halt, 42,
+        "shared native codegen should preserve the Compiler2 quicksort entry result"
+    );
+    assert_eq!(
+        dbg.lines().first().map(String::as_str),
+        Some("[1, 1, 2, 3, 3, 4, 5, 5, 5, 6, 9]"),
+        "shared native codegen should preserve Compiler2 quicksort dbg output",
+    );
+    assert_no_legacy_planner_or_type_infer(
+        &capture,
+        "Compiler2-native quicksort JIT should not reopen legacy planning or type inference",
+    );
+}
+
+#[test]
+fn compiler2_native_program_jit_runs_enum_reduce_through_shared_codegen() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
+        text: r#"
+fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "Compiler2 native lowering should settle before shared codegen consumes Enum.reduce: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let program = native.last(root_id).program;
+    let compiled = jit_compile_native_program(&program, &tel);
+    assert_eq!(
+        compiled.run(&tel, program.entry),
+        15,
+        "shared native codegen should preserve the closed Enum.reduce result from Compiler2",
+    );
+    assert_no_legacy_planner_or_type_infer(
+        &capture,
+        "Compiler2-native Enum.reduce JIT should not reopen legacy planning or type inference",
+    );
+}
+
+#[test]
+fn compiler2_native_program_jit_runs_variadic_extern_through_shared_codegen() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/variadic_open_compiler2_jit.fz".to_string()),
+        text: r#"
+extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
+
+fn main() do
+  libc::open("/fz_compiler2_missing_9cc0c1d0", 0, 0o644 :: integer)
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "Compiler2 native lowering should settle before shared codegen consumes variadic externs: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let program = native.last(root_id).program;
+    let compiled = jit_compile_native_program(&program, &tel);
+    assert_eq!(
+        compiled.run(&tel, program.entry),
+        -1,
+        "shared native codegen should preserve Compiler2 variadic extern calls and return the libc open error sentinel for a missing path",
+    );
+    assert_no_legacy_planner_or_type_infer(
+        &capture,
+        "Compiler2-native variadic extern JIT should not reopen legacy planning or type inference",
+    );
+}
+
+#[test]
+fn compiler2_native_program_jit_keeps_tail_recursion_bounded() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/tail_recursion/input.fz".to_string()),
+        text: r#"
+fn count(0, acc), do: acc
+fn count(n, acc), do: count(n - 1, acc + 1)
+fn main(), do: count(100000, 0)
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "Compiler2 native lowering should settle before shared codegen consumes tail recursion: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let program = native.last(root_id).program;
+    let compiled = jit_compile_native_program(&program, &tel);
+    assert_eq!(
+        compiled.run(&tel, program.entry),
+        100_000,
+        "shared native codegen should preserve Compiler2 tail recursion without stack growth",
+    );
+    assert_no_legacy_planner_or_type_infer(
+        &capture,
+        "Compiler2-native tail-recursive JIT should not reopen legacy planning or type inference",
     );
 }
 
@@ -2754,6 +3031,8 @@ fn compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_nee
     tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
     let callsites = CallsiteCapture::new();
     tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+    let semantic = SemanticClosedCapture::new();
+    tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
@@ -2781,6 +3060,7 @@ fn compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_nee
     let append_id = function_id(&functions, "append", 2);
     let foo_id = function_id(&functions, "foo", 0);
     let callsites = callsites.all();
+    let closed = semantic.last(root_id);
 
     assert!(
         callsites.iter().any(|record| {
@@ -2795,9 +3075,16 @@ fn compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_nee
             record.key.activation.root == root_id
                 && record.key.activation.function == qsort_id
                 && record.summary.callee == SelectedCallee::Function(partition_id)
-                && record.summary.need == ExecutableNeed::TupleFields(2)
         }),
-        "semantic analysis should mark qsort/1's partition/4 call as needing tuple fields"
+        "semantic analysis should publish qsort/1's reachable partition/4 direct edge"
+    );
+    assert!(
+        closed
+            .executables
+            .iter()
+            .any(|executable| executable.activation.function == partition_id
+                && executable.need == ExecutableNeed::TupleFields(2)),
+        "the closed executable frontier should keep partition/4 under tuple-fields demand"
     );
     assert!(
         callsites.iter().any(|record| {

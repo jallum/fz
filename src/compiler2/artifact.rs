@@ -18,7 +18,7 @@ use crate::ast::{BinOp, UnOp};
 use crate::compiler::source::Span;
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::fz_ir::{
-    Block as IrBlock, CallsiteId as IrCallsiteId, CallsiteIdent, Cont as IrCont, ExternMarshalSite, ExternTy,
+    Block as IrBlock, BlockId, CallsiteId as IrCallsiteId, CallsiteIdent, Cont as IrCont, ExternMarshalSite, ExternTy,
     ExternalCallEdge, FnId, FnIr as IrFn, Module as IrModule, Prim as IrPrim, ReceiveAfter, ReceiveClause,
     Stmt as IrStmt, Term as IrTerm, Var,
 };
@@ -125,6 +125,12 @@ pub(crate) struct NativeBody {
     /// Callable-constructor vars mapped to the closed callable-entry
     /// inventory they may materialize.
     pub callable_constructors: HashMap<Var, Vec<usize>>,
+    /// Direct closure-call targets keyed by the owning CPS/native block.
+    ///
+    /// Compiler2-native lowering already knows the executable frontier, so a
+    /// `CallClosure` / `TailCallClosure` does not need shared codegen to
+    /// rediscover its body through planner facts.
+    pub closure_call_targets: HashMap<BlockId, FnId>,
     /// Concrete extern marshal classes keyed by CPS/native extern site.
     pub extern_marshals: HashMap<ExternMarshalSite, ExternTy>,
     pub effects: EffectSummary,

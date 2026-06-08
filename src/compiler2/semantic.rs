@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::body::{CallSiteId, ValueId};
 use super::drive::FactKey;
-use super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
+use super::identity::{ActivationKey, ExecutableKey, FunctionId, RootId};
 use super::types::{Ty, Types};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -27,7 +27,6 @@ pub enum SelectedCallee {
 pub struct CallSiteSummary {
     pub callee: SelectedCallee,
     pub input_types: Vec<Ty>,
-    pub need: ExecutableNeed,
     pub return_ty: Ty,
 }
 

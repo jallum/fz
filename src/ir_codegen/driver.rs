@@ -3,6 +3,8 @@ use super::abi_facts::AbiFacts;
 use super::invariants::{assert_no_new_call_shapes, emit_and_assert_spec_dispatch_coverage, snapshot_call_shapes};
 use super::receive::{DispatchRuntimeHelpers, declare_receive_dispatch, emit_receive_dispatch_body};
 use super::*;
+#[cfg(test)]
+use crate::diag::Diagnostics;
 use crate::fz_ir::{BlockId, CallsiteId, CallsiteIdent, EmitSlot, FnId, Module, Prim, SpecId, Stmt, Term};
 use crate::ir_dest::{lower_destinations, verify_module};
 use crate::ir_extern_marshal::resolve_module_types;
@@ -108,7 +110,7 @@ fn build_per_spec_schemas<T: Types<Ty = Ty>>(t: &mut T, body_slots: &[Option<Nat
             continue;
         };
         let f = body_slot.body;
-        let ft = body_slot.spec_plan;
+        let ft = &body_slot.spec_plan;
         let entry_block = f.block(f.entry);
         let mut kinds: Vec<FieldKind> = entry_block.params.iter().map(|_| FieldKind::AnyValue).collect();
         let any = t.any();
@@ -585,7 +587,7 @@ fn build_fn_sigs(module: &Module, surface: &NativeCodegenSurface<'_>) -> Vec<Sig
             Some(body_slot) => {
                 let f = &module.fns[body_slot.fn_idx];
                 let is_native = surface.native_abi_fns.contains(&f.id);
-                let demand_abi = DemandAbi::new(body_slot.spec_key);
+                let demand_abi = DemandAbi::new(&body_slot.spec_key);
                 build_fn_signature(
                     &surface.param_reprs[body_slot.codegen_id as usize],
                     is_native,
@@ -1519,6 +1521,20 @@ pub(crate) fn compile_with_backend_prepared<
     compile_with_backend_surface(t, &surface, backend, tel)
 }
 
+#[cfg(test)]
+pub(crate) fn compile_with_backend_native_program<
+    B: Backend,
+    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
+>(
+    t: &mut T,
+    program: &crate::compiler2::NativeProgram,
+    backend: B,
+    tel: &dyn Telemetry,
+) -> Result<B::Output, CodegenError> {
+    let surface = prepare_native_codegen_surface_from_compiler2(t, program);
+    compile_with_backend_surface(t, &surface, backend, tel)
+}
+
 fn prepare_native_codegen_surface<'a, T>(
     t: &mut T,
     working: &'a Module,
@@ -1580,8 +1596,9 @@ where
             codegen_id: sid as u32,
             fn_idx,
             fn_id: planned_body.fn_id,
-            spec_key: &spec_keys[sid],
-            spec_plan: &planned_body.spec_plan,
+            spec_key: spec_keys[sid].clone(),
+            spec_plan: planned_body.spec_plan.clone(),
+            native_body: None,
             body: &planned_body.body,
             display_name,
             reachable: reachable.contains(&(sid as u32)),
@@ -1596,6 +1613,7 @@ where
                 sid,
                 NativeCallableEntrySurface {
                     capture_count: entry.capture_count,
+                    capture_key: spec_keys[sid as usize].input[..entry.capture_count].to_vec(),
                 },
             )
         })
@@ -1617,6 +1635,204 @@ where
         cont_fns: abi_facts.cont_fns.clone(),
         closure_capture_counts: abi_facts.closure_capture_counts.clone(),
         cont_extras_count: abi_facts.cont_extras_count.clone(),
+        fn_halt_kinds,
+    }
+}
+
+#[cfg(test)]
+fn synthetic_codegen_spec_key(body: &crate::compiler2::NativeBody) -> SpecKey {
+    let mut key = SpecKey::value(body.fn_id, Vec::new());
+    key.demand = match &body.return_abi {
+        crate::compiler2::ReturnAbi::Value(_) => crate::ir_planner::fn_types::ReturnDemand::value(),
+        crate::compiler2::ReturnAbi::TupleFields(fields) => {
+            crate::ir_planner::fn_types::ReturnDemand::tuple_fields(fields.len())
+        }
+    };
+    key
+}
+
+#[cfg(test)]
+fn build_codegen_spec_plan(any: Ty, body: &crate::compiler2::NativeBody, function: &crate::fz_ir::FnIr) -> SpecPlan {
+    SpecPlan {
+        vars: body.value_types.keys().copied().map(|var| (var, any.clone())).collect(),
+        reachable_blocks: function.blocks.iter().map(|block| block.id).collect(),
+        extern_marshals: body.extern_marshals.clone(),
+        ..SpecPlan::default()
+    }
+}
+
+#[cfg(test)]
+fn build_codegen_return_repr(body: &crate::compiler2::NativeBody) -> ArgRepr {
+    match &body.return_abi {
+        crate::compiler2::ReturnAbi::Value(repr) => arg_repr_from_compiler2(*repr),
+        crate::compiler2::ReturnAbi::TupleFields(_) => ArgRepr::ValueRef,
+    }
+}
+
+#[cfg(test)]
+fn build_codegen_callable_entries(
+    program: &crate::compiler2::NativeProgram,
+) -> BTreeMap<u32, NativeCallableEntrySurface> {
+    let mut entries = BTreeMap::new();
+    for entry in &program.callable_entries {
+        let codegen_id = entry.target_fn.0;
+        let capture_key = std::iter::repeat_n(None, entry.capture_count).collect();
+        let next = NativeCallableEntrySurface {
+            capture_count: entry.capture_count,
+            capture_key,
+        };
+        if let Some(previous) = entries.insert(codegen_id, next.clone()) {
+            debug_assert_eq!(previous, next);
+        }
+    }
+    entries
+}
+
+#[cfg(test)]
+fn build_codegen_cont_extras(program: &crate::compiler2::NativeProgram) -> HashMap<FnId, usize> {
+    program
+        .bodies
+        .iter()
+        .filter_map(|body| match body.entry_abi {
+            crate::compiler2::NativeEntryAbi::Continuation { extra_params } => Some((body.fn_id, extra_params)),
+            crate::compiler2::NativeEntryAbi::Direct => None,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn build_codegen_closure_capture_counts(program: &crate::compiler2::NativeProgram) -> HashMap<FnId, usize> {
+    let mut counts = HashMap::new();
+    for entry in &program.callable_entries {
+        counts.insert(entry.target_fn, entry.capture_count);
+    }
+    counts
+}
+
+#[cfg(test)]
+fn collect_codegen_mid_flight_cont_keys(
+    program: &crate::compiler2::NativeProgram,
+    param_reprs: &[Vec<ArgRepr>],
+    closure_capture_counts: &HashMap<FnId, usize>,
+) -> Vec<(u32, Vec<MidFlightArgShape>)> {
+    let mut keys = HashSet::new();
+    for function in &program.module.fns {
+        for block in &function.blocks {
+            let Term::TailCall {
+                callee,
+                args,
+                is_back_edge: true,
+                ..
+            } = &block.terminator
+            else {
+                continue;
+            };
+            let callee_sid = callee.0;
+            let Some(callee_reprs) = param_reprs.get(callee_sid as usize) else {
+                continue;
+            };
+            let mut arg_shapes = callee_reprs
+                .iter()
+                .take(args.len())
+                .copied()
+                .map(MidFlightArgShape::Value)
+                .collect::<Vec<_>>();
+            if closure_capture_counts.contains_key(callee) {
+                arg_shapes.push(MidFlightArgShape::HeapRef);
+            }
+            arg_shapes.push(MidFlightArgShape::HeapRef);
+            keys.insert((callee_sid, arg_shapes));
+        }
+    }
+    let mut out = keys.into_iter().collect::<Vec<_>>();
+    out.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.len().cmp(&right.1.len())));
+    out
+}
+
+#[cfg(test)]
+fn prepare_native_codegen_surface_from_compiler2<'a>(
+    t: &mut impl Types<Ty = Ty>,
+    program: &'a crate::compiler2::NativeProgram,
+) -> NativeCodegenSurface<'a> {
+    let max_fn_id = program
+        .module
+        .fns
+        .iter()
+        .map(|function| function.id.0 as usize)
+        .max()
+        .unwrap_or(0);
+    let mut body_slots = (0..=max_fn_id).map(|_| None).collect::<Vec<_>>();
+    let mut return_tys = Vec::with_capacity(max_fn_id + 1);
+    let mut param_reprs = Vec::with_capacity(max_fn_id + 1);
+    let mut return_reprs = Vec::with_capacity(max_fn_id + 1);
+    let any = t.any();
+    return_tys.resize(max_fn_id + 1, any.clone());
+    param_reprs.resize(max_fn_id + 1, Vec::new());
+    return_reprs.resize(max_fn_id + 1, ArgRepr::ValueRef);
+
+    for body in &program.bodies {
+        let codegen_id = body.fn_id.0 as usize;
+        let function = program.module.fn_by_id(body.fn_id);
+        let fn_idx = *program
+            .module
+            .fn_idx
+            .get(&body.fn_id)
+            .expect("Compiler2 native body must exist in the native module");
+        body_slots[codegen_id] = Some(NativeCodegenBody {
+            codegen_id: body.fn_id.0,
+            fn_idx,
+            fn_id: body.fn_id,
+            spec_key: synthetic_codegen_spec_key(body),
+            spec_plan: build_codegen_spec_plan(any.clone(), body, function),
+            native_body: Some(body),
+            body: function,
+            display_name: function.name.clone(),
+            reachable: true,
+        });
+        return_tys[codegen_id] = any.clone();
+        param_reprs[codegen_id] = body.param_reprs.iter().copied().map(arg_repr_from_compiler2).collect();
+        return_reprs[codegen_id] = build_codegen_return_repr(body);
+    }
+
+    let closure_capture_counts = build_codegen_closure_capture_counts(program);
+    let cont_extras_count = build_codegen_cont_extras(program);
+    let native_abi_fns = program
+        .module
+        .fns
+        .iter()
+        .map(|function| function.id)
+        .collect::<HashSet<_>>();
+    let cont_fns = program
+        .bodies
+        .iter()
+        .filter_map(|body| match body.entry_abi {
+            crate::compiler2::NativeEntryAbi::Continuation { .. } => Some(body.fn_id),
+            crate::compiler2::NativeEntryAbi::Direct => None,
+        })
+        .collect::<HashSet<_>>();
+    let cont_target_fns = native_abi_fns.clone();
+    let fn_halt_kinds = program
+        .bodies
+        .iter()
+        .map(|body| (body.fn_id.0, build_codegen_return_repr(body).halt_kind()))
+        .collect();
+
+    NativeCodegenSurface {
+        module: &program.module,
+        diagnostics: Diagnostics::new(),
+        main_fn_id: Some(program.entry),
+        body_slots,
+        body_registry: SpecRegistry::new(),
+        callable_entries: build_codegen_callable_entries(program),
+        mid_flight_cont_keys: collect_codegen_mid_flight_cont_keys(program, &param_reprs, &closure_capture_counts),
+        return_tys,
+        param_reprs,
+        return_reprs,
+        native_abi_fns,
+        cont_target_fns,
+        cont_fns,
+        closure_capture_counts,
+        cont_extras_count,
         fn_halt_kinds,
     }
 }
@@ -1703,7 +1919,7 @@ pub(crate) fn compile_with_backend_surface<
             backend.module_mut().clear_context(&mut ctx);
             continue;
         }
-        let ft = body_slot.spec_plan;
+        let ft = &body_slot.spec_plan;
         let f = body_slot.body;
         debug_assert_eq!(body_slot.fn_id, f.id);
         debug_assert_eq!(body_slot.spec_key.fn_id, f.id);
@@ -1713,7 +1929,9 @@ pub(crate) fn compile_with_backend_surface<
             ctx.set_disasm(true);
         }
         #[cfg(debug_assertions)]
-        emit_and_assert_spec_dispatch_coverage(tel, f, ft, sid, body_slot.spec_key);
+        if body_slot.native_body.is_none() {
+            emit_and_assert_spec_dispatch_coverage(tel, f, ft, sid, &body_slot.spec_key);
+        }
         let display_name = &body_slot.display_name;
         let cg_env = CodegenEnv {
             telemetry: tel,

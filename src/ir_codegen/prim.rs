@@ -1,13 +1,14 @@
 //! Primitive lowering helpers for codegen.
 
 use super::*;
+use crate::frontend::spec_registry::{BestCoverCandidate, best_covering_candidate};
 use crate::fz_ir::{
     BinOp, BitSizeIr, BlockId, CallsiteIdent, Const, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternTy,
     FnId, Prim, UnOp, Var,
 };
 use crate::ir_planner::SpecPlan;
 use crate::ir_planner::planned::{PlannedCallableEntrySelection, select_callable_entry_target};
-use crate::types::{Descr, ty_descr};
+use crate::types::{Descr, key_slot_var_count, ty_descr};
 use cranelift_codegen::ir::{
     self, BlockArg, InstBuilder, MemFlags,
     condcodes::{FloatCC, IntCC},
@@ -961,7 +962,11 @@ fn emit_variadic_extern_call<M: cranelift_module::Module>(
             stmt_idx,
             arg_idx,
         };
-        let Some(&ty) = env.fn_types.extern_marshals.get(&site) else {
+        let Some(&ty) = env
+            .active_native_body()
+            .map(|body| body.extern_marshals.get(&site))
+            .unwrap_or_else(|| env.fn_types.extern_marshals.get(&site))
+        else {
             return Err(CodegenError::new(format!(
                 "variadic extern `{}` has unresolved marshal metadata at {:?}",
                 decl.symbol, site
@@ -1272,10 +1277,10 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             lower_collection_prim(body, t, env, var_env, prim, dest_var, block_id, block_env)
         }
         Prim::MakeFnRef(mk_ident, fn_id) => {
-            lower_make_fn_ref(body, t, env, mk_ident, *fn_id, block_id, stmt_idx, block_env)
+            lower_make_fn_ref(body, t, env, dest_var, mk_ident, *fn_id, block_id, stmt_idx, block_env)
         }
         Prim::MakeClosure(mk_ident, fn_id, captured) => lower_make_closure(
-            body, t, env, var_env, mk_ident, *fn_id, captured, block_id, stmt_idx, block_env,
+            body, t, env, var_env, dest_var, mk_ident, *fn_id, captured, block_id, stmt_idx, block_env,
         ),
         // lower_program erases all Prim::Brand before returning.
         // Reaching codegen with one means brand erasure didn't run (or
@@ -2104,7 +2109,13 @@ fn emit_callable_entry_selected(
     selection: &PlannedCallableEntrySelection,
 ) {
     let span = mk_ident.span();
-    let closure_fn_name = env.module.fn_by_id(fn_id).name.clone();
+    let closure_fn_name = env
+        .module
+        .fns
+        .iter()
+        .find(|function| function.id == fn_id)
+        .map(|function| function.name.clone())
+        .unwrap_or_else(|| format!("fn_{}", fn_id.0));
     let callable_entry_spec_key = env
         .surface
         .body_slots
@@ -2149,6 +2160,7 @@ fn emit_callable_entry_selected(
 fn resolve_callable_entry_sid<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     env: &CodegenEnv<'_>,
+    dest_var: Var,
     mk_ident: &CallsiteIdent,
     fn_id: FnId,
     captured: &[Var],
@@ -2157,24 +2169,77 @@ fn resolve_callable_entry_sid<T: Types<Ty = Ty> + ClosureTypes>(
     block_env: Option<&HashMap<Var, Ty>>,
     selection_kind: &'static str,
 ) -> Result<u32, CodegenError> {
-    let selection = select_callable_entry_target(
-        t,
-        env.fn_types,
-        |t, key| {
-            env.body_id_for_key(t, key)
-                .filter(|sid| env.callable_entry_fn_ids.contains_key(sid))
-        },
-        fn_id,
-        captured,
-        block_env,
-    )
-    .ok_or_else(|| {
-        CodegenError::new(format!(
-            "callable value for FnId({}) with {} captures survived planning without a site-specific callable entry",
-            fn_id.0,
-            captured.len()
-        ))
-    })?;
+    let selection = if let Some(native_body) = env.active_native_body() {
+        let mut capture_tys = Vec::with_capacity(captured.len());
+        for var in captured {
+            let ty = block_env
+                .and_then(|env| env.get(var))
+                .or_else(|| env.fn_types.vars.get(var))
+                .cloned()
+                .unwrap_or_else(|| t.any());
+            let erased = t.erase_closure_identity(&ty);
+            capture_tys.push(t.alpha_normalize_vars(&erased));
+        }
+        let candidates = native_body
+            .callable_constructors
+            .get(&dest_var)
+            .ok_or_else(|| {
+                CodegenError::new(format!(
+                    "native callable constructor Var({}) has no settled callable-entry candidates",
+                    dest_var.0
+                ))
+            })?
+            .iter()
+            .copied()
+            .map(|sid| sid as u32)
+            .filter(|sid| env.callable_entry_fn_ids.contains_key(sid))
+            .collect::<Vec<_>>();
+        let candidate_count = candidates.len();
+        let selected_sid = best_covering_candidate(
+            &*t,
+            &capture_tys,
+            candidates.iter().filter_map(|sid| {
+                let entry = env.surface.callable_entries.get(sid)?;
+                Some(BestCoverCandidate {
+                    id: *sid,
+                    key: entry.capture_key.as_slice(),
+                    key_var_count: key_slot_var_count(&*t, entry.capture_key.as_slice()),
+                    precedence: *sid,
+                })
+            }),
+        )
+        .ok_or_else(|| {
+            CodegenError::new(format!(
+                "native callable value for FnId({}) with {} captures has no settled callable entry",
+                fn_id.0,
+                captured.len()
+            ))
+        })?;
+        PlannedCallableEntrySelection {
+            spec_id: selected_sid,
+            target_key: env.body_key(selected_sid).clone(),
+            candidate_count,
+        }
+    } else {
+        select_callable_entry_target(
+            t,
+            env.fn_types,
+            |t, key| {
+                env.body_id_for_key(t, key)
+                    .filter(|sid| env.callable_entry_fn_ids.contains_key(sid))
+            },
+            fn_id,
+            captured,
+            block_env,
+        )
+        .ok_or_else(|| {
+            CodegenError::new(format!(
+                "callable value for FnId({}) with {} captures survived planning without a site-specific callable entry",
+                fn_id.0,
+                captured.len()
+            ))
+        })?
+    };
     emit_callable_entry_selected(
         env,
         mk_ident,
@@ -2195,6 +2260,7 @@ pub(crate) fn lower_make_fn_ref<M: cranelift_module::Module, T: Types<Ty = Ty> +
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
+    dest_var: Var,
     mk_ident: &CallsiteIdent,
     fn_id: FnId,
     block_id: BlockId,
@@ -2204,6 +2270,7 @@ pub(crate) fn lower_make_fn_ref<M: cranelift_module::Module, T: Types<Ty = Ty> +
     let cl_sid = resolve_callable_entry_sid(
         t,
         env,
+        dest_var,
         mk_ident,
         fn_id,
         &[],
@@ -2228,6 +2295,7 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module, T: Types<Ty = Ty> 
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
+    dest_var: Var,
     mk_ident: &CallsiteIdent,
     fn_id: FnId,
     captured: &[Var],
@@ -2244,6 +2312,7 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module, T: Types<Ty = Ty> 
     let cl_sid = resolve_callable_entry_sid(
         t,
         env,
+        dest_var,
         mk_ident,
         fn_id,
         captured,

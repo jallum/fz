@@ -7,6 +7,7 @@ use super::super::identity::{ExecutableKey, RootId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{CallSiteKey, DependencySnapshot, SelectedCallee, SemanticClosure};
 use super::super::world::World;
+use super::semantic::executable_callsite_needs;
 
 /// Seeds one semantic root once its entry definition exists.
 ///
@@ -61,10 +62,10 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
 
 /// Seals a root's semantic closure once its activation frontier has settled.
 ///
-/// This reads the activation, executable, analysis, and callsite facts that
-/// `analyze_activation` publishes and assembles the reachable set. It never
-/// activates a callee or invents a fact: discovery happens in the analysis
-/// jobs, and this seals `SemanticClosed` only when nothing is still pending.
+/// This reads the activation, analysis, and callsite facts that
+/// `analyze_activation` publishes, derives executable-specific call edges from
+/// the executable frontier itself, and seals `SemanticClosed` once that
+/// frontier stops growing.
 pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let root = world.root_entry(root_id);
     let mut reads = Vec::new();
@@ -121,12 +122,6 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
         waits.insert(entry_activation_fact);
         follow_up.insert(Job::SeedRoot(root_id));
     }
-    let entry_executable_fact = FactKey::Executable(entry.clone());
-    if world.fact_revision(entry_executable_fact.clone()).is_none() {
-        waits.insert(entry_executable_fact);
-        follow_up.insert(Job::SeedRoot(root_id));
-    }
-
     let mut activations = HashSet::new();
     let mut executables = HashSet::new();
     let mut pending = VecDeque::new();
@@ -138,16 +133,13 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
         let activation = executable.activation.clone();
         let activation_fact = FactKey::Activation(activation.clone());
         let activation_ready = read_fact(world, activation_fact, &mut reads, &mut dependencies, &mut waits);
-
-        let executable_fact = FactKey::Executable(executable.clone());
-        let executable_ready = read_fact(world, executable_fact, &mut reads, &mut dependencies, &mut waits);
-        if !activation_ready || !executable_ready {
+        if !activation_ready {
             continue;
         }
-        executables.insert(executable);
-        if !activations.insert(activation.clone()) {
+        if !executables.insert(executable.clone()) {
             continue;
         }
+        activations.insert(activation.clone());
 
         let analyzed_fact = FactKey::ActivationAnalyzed(activation.clone());
         let Some(analyzed_revision) = world.fact_revision(analyzed_fact.clone()) else {
@@ -180,6 +172,9 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
         reads.push(lowered_fact.clone());
         dependencies.record(lowered_fact, lowered_revision);
 
+        let lowered_body = world.lowered_body(activation.function);
+        let callsite_needs = executable_callsite_needs(&lowered_body, &analysis.reachable_clauses, executable.need);
+
         for callsite in analysis.callsites {
             let key = CallSiteKey {
                 activation: activation.clone(),
@@ -200,30 +195,38 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
             if !world.require_activation_key_facts(function, &mut reads, &mut waits, &mut follow_up) {
                 continue;
             }
+            let need = callsite_needs
+                .get(&callsite)
+                .copied()
+                .unwrap_or(super::super::identity::ExecutableNeed::Value);
             let callee_activation = world.activation_key(root_id, function, &summary.input_types);
             let callee_executable = ExecutableKey {
                 activation: callee_activation.clone(),
-                need: summary.need,
+                need,
             };
-            let activation_ready = read_fact(
+            let callee_activation_ready = read_fact(
                 world,
                 FactKey::Activation(callee_activation.clone()),
                 &mut reads,
                 &mut dependencies,
                 &mut waits,
             );
-            let executable_ready = read_fact(
-                world,
-                FactKey::Executable(callee_executable.clone()),
-                &mut reads,
-                &mut dependencies,
-                &mut waits,
-            );
-            if activation_ready && executable_ready {
+            if !callee_activation_ready {
+                follow_up.insert(Job::AnalyzeActivation(callee_activation));
+                continue;
+            }
+            if !executables.contains(&callee_executable) {
                 pending.push_back(callee_executable);
             }
         }
     }
+
+    outputs.extend(
+        executables
+            .iter()
+            .cloned()
+            .map(|executable| (FactKey::Executable(executable), FactValue::presence(1))),
+    );
 
     if waits.is_empty() {
         let semantic_closed = world.define_semantic_closure(

@@ -13,7 +13,9 @@ use crate::dispatch_matrix::{
     SubjectId, SubjectSource,
 };
 
-use super::super::body::{CallSiteId, DirectCallee, Literal, LoweredBlock, LoweredBody, LoweredStep, ValueId};
+use super::super::body::{
+    CallSiteId, DirectCallee, Literal, LoweredBlock, LoweredBody, LoweredClause, LoweredStep, ValueId,
+};
 use super::super::drive::{FactKey, Job, JobEffects};
 use super::super::facts::FactValue;
 use super::super::identity::{ActivationKey, ExecutableNeed, FunctionId, ModuleId};
@@ -139,13 +141,6 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
                 FactKey::Activation(callee_activation.key.clone()),
                 FactValue::inputs(world.types_mut(), call.summary.input_types.clone()),
             ));
-            outputs.push((
-                FactKey::Executable(super::super::identity::ExecutableKey {
-                    activation: callee_activation.key.clone(),
-                    need: call.summary.need,
-                }),
-                FactValue::presence(1),
-            ));
             if !callee_activation.already_present {
                 follow_up.insert(Job::AnalyzeActivation(callee_activation.key.clone()));
             }
@@ -205,19 +200,8 @@ fn apply_steps(
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
 ) -> Result<(), FatalError> {
-    let return_needs = block_return_needs(steps);
     for step in steps {
-        apply_step(
-            world,
-            step,
-            values,
-            calls,
-            activation,
-            &return_needs,
-            reads,
-            waits,
-            follow_up,
-        )?;
+        apply_step(world, step, values, calls, activation, reads, waits, follow_up)?;
     }
     Ok(())
 }
@@ -228,7 +212,6 @@ fn apply_step(
     values: &mut ValueTypes,
     calls: &mut Vec<CallEmission>,
     activation: &ActivationKey,
-    return_needs: &HashMap<CallSiteId, ExecutableNeed>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
@@ -263,7 +246,6 @@ fn apply_step(
             callee,
             args,
         } => {
-            let need = return_needs.get(callsite).cloned().unwrap_or(ExecutableNeed::Value);
             let arg_types = args
                 .iter()
                 .map(|arg| value_ty(world, values, arg.value))
@@ -274,7 +256,6 @@ fn apply_step(
                 *callsite,
                 callee,
                 arg_types.clone(),
-                need,
                 reads,
                 waits,
                 follow_up,
@@ -290,7 +271,6 @@ fn apply_step(
             callee,
             args,
         } => {
-            let need = return_needs.get(callsite).cloned().unwrap_or(ExecutableNeed::Value);
             let callee_ty = value_ty(world, values, *callee);
             let arg_types = args
                 .iter()
@@ -302,7 +282,6 @@ fn apply_step(
                 *callsite,
                 callee_ty,
                 arg_types.clone(),
-                need,
                 reads,
                 waits,
                 follow_up,
@@ -413,14 +392,13 @@ fn resolve_direct_call(
     callsite: CallSiteId,
     callee: &DirectCallee,
     arg_types: Vec<Ty>,
-    need: ExecutableNeed,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
 ) -> Result<(Option<CallEmission>, Ty), FatalError> {
     if arg_types.iter().any(|arg| world.types().is_empty(arg)) {
         let none = none_ty(world);
-        let summary = call_summary(selected_callee(callee), arg_types, need, none);
+        let summary = call_summary(selected_callee(callee), arg_types, none);
         return Ok((
             summary.map(|summary| CallEmission {
                 key: CallSiteKey {
@@ -436,10 +414,10 @@ fn resolve_direct_call(
 
     let (summary, callee_activation, return_ty) = match callee {
         DirectCallee::Function(function) => {
-            resolve_function_call(world, caller, *function, arg_types, need, reads, waits, follow_up)?
+            resolve_function_call(world, caller, *function, arg_types, reads, waits, follow_up)?
         }
         DirectCallee::Named { .. } => (
-            call_summary(selected_callee(callee), arg_types, need, any_ty(world)),
+            call_summary(selected_callee(callee), arg_types, any_ty(world)),
             None,
             any_ty(world),
         ),
@@ -476,7 +454,6 @@ fn resolve_function_call(
     caller: &ActivationKey,
     function: FunctionId,
     input_types: Vec<Ty>,
-    need: ExecutableNeed,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
@@ -488,7 +465,6 @@ fn resolve_function_call(
             function,
             callback.protocol,
             input_types,
-            need,
             reads,
             waits,
             follow_up,
@@ -506,7 +482,6 @@ fn resolve_function_call(
         Some(CallSiteSummary {
             callee: SelectedCallee::Function(function),
             input_types,
-            need,
             return_ty,
         }),
         Some(ActivationContribution {
@@ -523,7 +498,6 @@ fn resolve_protocol_call(
     callback_function: FunctionId,
     protocol: ModuleId,
     input_types: Vec<Ty>,
-    need: ExecutableNeed,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
@@ -591,7 +565,6 @@ fn resolve_protocol_call(
         Some(CallSiteSummary {
             callee: SelectedCallee::Function(selected.function),
             input_types,
-            need,
             return_ty,
         }),
         Some(ActivationContribution {
@@ -608,7 +581,6 @@ fn resolve_closure_call(
     callsite: CallSiteId,
     callee_ty: Ty,
     arg_types: Vec<Ty>,
-    need: ExecutableNeed,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
@@ -623,7 +595,7 @@ fn resolve_closure_call(
     let mut inputs = parts.captures;
     inputs.extend(arg_types);
     let (summary, callee_activation, return_ty) =
-        resolve_function_call(world, caller, function, inputs, need, reads, waits, follow_up)?;
+        resolve_function_call(world, caller, function, inputs, reads, waits, follow_up)?;
     Ok((
         summary.map(|summary| CallEmission {
             key: CallSiteKey {
@@ -720,16 +692,10 @@ fn selected_callee(callee: &DirectCallee) -> Option<SelectedCallee> {
     })
 }
 
-fn call_summary(
-    callee: Option<SelectedCallee>,
-    input_types: Vec<Ty>,
-    need: ExecutableNeed,
-    return_ty: Ty,
-) -> Option<CallSiteSummary> {
+fn call_summary(callee: Option<SelectedCallee>, input_types: Vec<Ty>, return_ty: Ty) -> Option<CallSiteSummary> {
     Some(CallSiteSummary {
         callee: callee?,
         input_types,
-        need,
         return_ty,
     })
 }
@@ -917,48 +883,120 @@ fn apply_evidence(
     }
 }
 
-fn block_return_needs(steps: &[LoweredStep]) -> HashMap<CallSiteId, ExecutableNeed> {
+pub(super) fn executable_callsite_needs(
+    body: &LoweredBody,
+    reachable_clauses: &[u32],
+    executable_need: ExecutableNeed,
+) -> HashMap<CallSiteId, ExecutableNeed> {
     let mut needs = HashMap::new();
-    for (index, step) in steps.iter().enumerate() {
-        let LoweredStep::DirectCall { value, callsite, .. } = step else {
-            continue;
-        };
-        if let Some(arity) = tuple_destructure_arity(*value, &steps[index + 1..]) {
-            needs.insert(*callsite, ExecutableNeed::TupleFields(arity));
-        } else {
-            needs.insert(*callsite, ExecutableNeed::Value);
-        }
+    let LoweredBody::Clauses { clauses, .. } = body else {
+        return needs;
+    };
+    for clause_id in reachable_clauses {
+        collect_clause_callsite_needs(&clauses[*clause_id as usize], executable_need, &mut needs);
     }
     needs
 }
 
-fn tuple_destructure_arity(value: ValueId, later_steps: &[LoweredStep]) -> Option<usize> {
-    for step in later_steps {
+fn collect_clause_callsite_needs(
+    clause: &LoweredClause,
+    executable_need: ExecutableNeed,
+    out: &mut HashMap<CallSiteId, ExecutableNeed>,
+) {
+    let mut tuple_demands = HashMap::new();
+    if let ExecutableNeed::TupleFields(arity) = executable_need {
+        tuple_demands.insert(clause.body.result, arity);
+    }
+    collect_steps_callsite_needs_reverse(&clause.body.steps, &mut tuple_demands, out);
+    collect_steps_callsite_needs_reverse(&clause.projections, &mut tuple_demands, out);
+}
+
+fn collect_block_callsite_needs(
+    block: &LoweredBlock,
+    block_need: ExecutableNeed,
+    out: &mut HashMap<CallSiteId, ExecutableNeed>,
+) {
+    let mut tuple_demands = HashMap::new();
+    if let ExecutableNeed::TupleFields(arity) = block_need {
+        tuple_demands.insert(block.result, arity);
+    }
+    collect_steps_callsite_needs_reverse(&block.steps, &mut tuple_demands, out);
+}
+
+fn collect_steps_callsite_needs_reverse(
+    steps: &[LoweredStep],
+    tuple_demands: &mut HashMap<ValueId, usize>,
+    out: &mut HashMap<CallSiteId, ExecutableNeed>,
+) {
+    for step in steps.iter().rev() {
         match step {
-            LoweredStep::AssertTuple { source, arity } if *source == value => {
-                return Some(*arity);
+            LoweredStep::AssertTuple { source, arity } => {
+                tuple_demands.insert(*source, *arity);
             }
-            LoweredStep::AssertTuple { .. } => {}
-            LoweredStep::Const { .. }
-            | LoweredStep::Tuple { .. }
-            | LoweredStep::List { .. }
-            | LoweredStep::FunctionRef { .. }
-            | LoweredStep::NamedFunctionRef { .. }
-            | LoweredStep::DirectCall { .. }
-            | LoweredStep::ClosureCall { .. }
-            | LoweredStep::Lambda { .. }
-            | LoweredStep::BinaryOp { .. }
-            | LoweredStep::UnaryOp { .. }
-            | LoweredStep::MapIndex { .. }
-            | LoweredStep::AssertLiteral { .. }
+            LoweredStep::DirectCall { value, callsite, .. } | LoweredStep::ClosureCall { value, callsite, .. } => {
+                let need = tuple_demands
+                    .remove(value)
+                    .map(ExecutableNeed::TupleFields)
+                    .unwrap_or(ExecutableNeed::Value);
+                record_callsite_need(out, *callsite, need);
+            }
+            LoweredStep::If {
+                value,
+                then_block,
+                else_block,
+                ..
+            } => {
+                let branch_need = tuple_demands
+                    .remove(value)
+                    .map(ExecutableNeed::TupleFields)
+                    .unwrap_or(ExecutableNeed::Value);
+                collect_block_callsite_needs(then_block, branch_need, out);
+                collect_block_callsite_needs(else_block, branch_need, out);
+            }
+            LoweredStep::Const { value, .. }
+            | LoweredStep::Tuple { value, .. }
+            | LoweredStep::List { value, .. }
+            | LoweredStep::FunctionRef { value, .. }
+            | LoweredStep::NamedFunctionRef { value, .. }
+            | LoweredStep::Lambda { value, .. }
+            | LoweredStep::BinaryOp { value, .. }
+            | LoweredStep::UnaryOp { value, .. }
+            | LoweredStep::MapIndex { value, .. }
+            | LoweredStep::TupleField { value, .. } => {
+                tuple_demands.remove(value);
+            }
+            LoweredStep::SplitList { head, tail, .. } => {
+                tuple_demands.remove(head);
+                tuple_demands.remove(tail);
+            }
+            LoweredStep::AssertLiteral { .. }
             | LoweredStep::AssertEmptyList { .. }
-            | LoweredStep::AssertSame { .. }
-            | LoweredStep::TupleField { .. }
-            | LoweredStep::SplitList { .. } => {}
-            LoweredStep::If { .. } => {}
+            | LoweredStep::AssertSame { .. } => {}
         }
     }
-    None
+}
+
+fn record_callsite_need(out: &mut HashMap<CallSiteId, ExecutableNeed>, callsite: CallSiteId, observed: ExecutableNeed) {
+    use std::collections::hash_map::Entry;
+
+    match out.entry(callsite) {
+        Entry::Vacant(entry) => {
+            entry.insert(observed);
+        }
+        Entry::Occupied(mut entry) => match (*entry.get(), observed) {
+            (ExecutableNeed::Value, ExecutableNeed::Value)
+            | (ExecutableNeed::TupleFields(_), ExecutableNeed::Value) => {}
+            (ExecutableNeed::Value, tuple_fields @ ExecutableNeed::TupleFields(_)) => {
+                entry.insert(tuple_fields);
+            }
+            (ExecutableNeed::TupleFields(existing), ExecutableNeed::TupleFields(observed)) => {
+                assert_eq!(
+                    existing, observed,
+                    "one callsite cannot require two different tuple-field return arities"
+                );
+            }
+        },
+    }
 }
 
 fn value_ty(world: &mut World<'_>, values: &ValueTypes, value: ValueId) -> Ty {

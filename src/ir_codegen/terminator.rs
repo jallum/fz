@@ -31,6 +31,21 @@ fn resolve_cont_sid<T: Types<Ty = Ty> + ClosureTypes>(
     caller_fn_id: FnId,
     blk: &fz_ir::Block,
 ) -> u32 {
+    if env.active_native_body().is_some() {
+        let cont_fn_id = match &blk.terminator {
+            Term::Call { continuation, .. } | Term::CallClosure { continuation, .. } => continuation.fn_id,
+            _ => panic!(
+                "resolve_cont_sid called on non-call-shape native terminator {:?}",
+                blk.terminator
+            ),
+        };
+        return env.body_id_for_fn(cont_fn_id).unwrap_or_else(|| {
+            panic!(
+                "native continuation fn {} has no registered codegen body id",
+                cont_fn_id.0
+            )
+        });
+    }
     let term_ident = blk
         .terminator
         .ident()
@@ -97,6 +112,18 @@ fn resolve_callee_sid<T: Types<Ty = Ty> + ClosureTypes>(
     blk: &fz_ir::Block,
     slot: EmitSlot,
 ) -> u32 {
+    if env.active_native_body().is_some() {
+        let callee_fn_id = match (&blk.terminator, slot) {
+            (Term::Call { callee, .. } | Term::TailCall { callee, .. }, EmitSlot::Direct) => *callee,
+            _ => panic!(
+                "resolve_callee_sid called with {:?} on native terminator {:?}",
+                slot, blk.terminator
+            ),
+        };
+        return env
+            .body_id_for_fn(callee_fn_id)
+            .unwrap_or_else(|| panic!("native callee fn {} has no registered codegen body id", callee_fn_id.0));
+    }
     let term_ident = blk
         .terminator
         .ident()
@@ -119,6 +146,11 @@ fn resolve_callee_sid<T: Types<Ty = Ty> + ClosureTypes>(
             cid, target
         )
     })
+}
+
+fn resolve_native_closure_sid(env: &CodegenEnv<'_>, block_id: BlockId) -> Option<u32> {
+    let target_fn = env.active_native_body()?.closure_call_targets.get(&block_id).copied()?;
+    env.body_id_for_fn(target_fn)
 }
 
 fn callee_is_native(env: &CodegenEnv<'_>, id: u32) -> bool {
@@ -381,7 +413,7 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
             args,
             ident: _,
         } => emit_tail_call_closure(
-            body, t, env, var_env, is_native, is_cont_fn, frame_ptr, host_ctx, cont_param, closure, args,
+            body, t, env, var_env, blk, is_native, is_cont_fn, frame_ptr, host_ctx, cont_param, closure, args,
         ),
         Term::ReceiveMatched {
             clauses,
@@ -538,7 +570,9 @@ fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureType
                 sig.returns.push(AbiParam::new(types::I64));
                 let sigref = body.b.import_signature(sig);
                 cont_args.push(cont_val);
-                body.b.ins().return_call_indirect(sigref, code, &cont_args);
+                let call_inst = body.b.ins().call_indirect(sigref, code, &cont_args);
+                let result = body.b.inst_results(call_inst)[0];
+                body.b.ins().return_(&[result]);
                 return Ok(());
             }
             // Native Term::Return (see docs/cps-in-clif.md §2.1): read
@@ -571,7 +605,9 @@ fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureType
             let mut cont_args = Vec::with_capacity(2);
             body.push_binding_as_abi_arg(&mut cont_args, binding, my_return_repr);
             cont_args.push(cont_val);
-            body.b.ins().return_call_indirect(sigref, code, &cont_args);
+            let call_inst = body.b.ins().call_indirect(sigref, code, &cont_args);
+            let result = body.b.inst_results(call_inst)[0];
+            body.b.ins().return_(&[result]);
         } else if cont_ptr_known_null {
             let value = *var_env.get(&v.0).expect("unbound return val");
             // This fn is never a cont target; cont_ptr is statically
@@ -703,8 +739,10 @@ fn emit_native_call_with_cont<M: cranelift_module::Module, T: Types<Ty = Ty> + C
     let cont_captures_callable = continuation
         .captured
         .iter()
-        .any(|cv| capture_forces_heap_continuation(t, fn_types, block_env, cv));
-    let cont_can_use_lazy_descriptor = !closure_capture_counts.contains_key(&callee_fn_id) && !cont_captures_callable;
+        .any(|cv| capture_forces_heap_continuation(t, env, fn_types, block_env, cv));
+    let cont_can_use_lazy_descriptor = env.active_native_body().is_none()
+        && !closure_capture_counts.contains_key(&callee_fn_id)
+        && !cont_captures_callable;
     let continuation_plan = if cont_is_native {
         let payload = ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, &continuation.captured);
         Some(plan_closure_shaped_continuation(
@@ -1079,6 +1117,7 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
 
 fn capture_forces_heap_continuation<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
+    env: &CodegenEnv<'_>,
     fn_types: &SpecPlan,
     block_env: Option<&HashMap<Var, Ty>>,
     cv: &Var,
@@ -1086,6 +1125,17 @@ fn capture_forces_heap_continuation<T: Types<Ty = Ty> + ClosureTypes>(
     let ty = block_env.and_then(|env| env.get(cv)).or_else(|| fn_types.vars.get(cv));
     if ty.is_none_or(|ty| t.callable_clauses(ty).is_none()) {
         return false;
+    }
+    if let Some(native_body) = env.active_native_body() {
+        let Some(candidates) = native_body.callable_constructors.get(cv) else {
+            return true;
+        };
+        return candidates.iter().any(|candidate| {
+            env.surface
+                .callable_entries
+                .get(&(*candidate as u32))
+                .is_none_or(|entry| entry.capture_count > 0)
+        });
     }
     !matches!(
         fn_types.callable_capabilities.get(cv),
@@ -1132,16 +1182,24 @@ fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
         // at [K..., arg_descrs...] and call it directly with the body's
         // narrow ABI. Opaque / polymorphic closures fall through to the
         // all-ValueRef indirect seam below.
-        let lit_resolved: Option<(u32, FuncId, usize)> = (|| {
-            let (body_fn_id, body_sid) =
-                resolve_tcc_body(t, closure, args, fn_types, module, |t, key| env.body_id_for_key(t, key))?;
-            let body_fid = *fn_ids.get(&body_sid)?;
+        let lit_resolved: Option<(u32, FuncId, usize)> = if let Some(body_sid) = resolve_native_closure_sid(env, blk.id)
+        {
+            let body_fn_id = spec_fn_id(env, body_sid);
+            let body_fid = *fn_ids.get(&body_sid).expect("native closure target fn_id missing");
             let n_caps = closure_capture_counts.get(&body_fn_id).copied().unwrap_or(0);
             Some((body_sid, body_fid, n_caps))
-        })();
+        } else {
+            (|| {
+                let (body_fn_id, body_sid) =
+                    resolve_tcc_body(t, closure, args, fn_types, module, |t, key| env.body_id_for_key(t, key))?;
+                let body_fid = *fn_ids.get(&body_sid)?;
+                let n_caps = closure_capture_counts.get(&body_fn_id).copied().unwrap_or(0);
+                Some((body_sid, body_fid, n_caps))
+            })()
+        };
         let cont_payload = ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, &continuation.captured);
         let cont_is_native = callee_is_native(env, continuation.fn_id.0);
-        let can_use_lazy_cont = is_native && cont_is_native;
+        let can_use_lazy_cont = is_native && cont_is_native && env.active_native_body().is_none();
         let continuation_plan = plan_closure_shaped_continuation(cont_payload, can_use_lazy_cont);
         let cf = continuation_plan.emit_value(body, runtime, env.return_reprs, is_cont_fn, cont_param, frame_ptr);
         let continuation_storage = if continuation_plan.uses_lazy_descriptor() {
@@ -1232,6 +1290,7 @@ fn emit_tail_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + Closu
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
+    blk: &fz_ir::Block,
     is_native: bool,
     is_cont_fn: bool,
     frame_ptr: Option<ir::Value>,
@@ -1278,13 +1337,21 @@ fn emit_tail_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + Closu
             }
         };
 
-        let lit_resolved: Option<(u32, FuncId, usize)> = (|| {
-            let (body_fn_id, body_sid) =
-                resolve_tcc_body(t, closure, args, fn_types, module, |t, key| env.body_id_for_key(t, key))?;
-            let body_fid = *fn_ids.get(&body_sid)?;
+        let lit_resolved: Option<(u32, FuncId, usize)> = if let Some(body_sid) = resolve_native_closure_sid(env, blk.id)
+        {
+            let body_fn_id = spec_fn_id(env, body_sid);
+            let body_fid = *fn_ids.get(&body_sid).expect("native closure target fn_id missing");
             let n_caps = closure_capture_counts.get(&body_fn_id).copied().unwrap_or(0);
             Some((body_sid, body_fid, n_caps))
-        })();
+        } else {
+            (|| {
+                let (body_fn_id, body_sid) =
+                    resolve_tcc_body(t, closure, args, fn_types, module, |t, key| env.body_id_for_key(t, key))?;
+                let body_fid = *fn_ids.get(&body_sid)?;
+                let n_caps = closure_capture_counts.get(&body_fn_id).copied().unwrap_or(0);
+                Some((body_sid, body_fid, n_caps))
+            })()
+        };
         env.telemetry.execute(
             &["fz", "codegen", "closure_call_lowered"],
             &measurements! {
@@ -1498,6 +1565,11 @@ fn build_park_record<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
     });
     let any = t.any();
     let resolve_body_sid = |t: &mut T, body: FnId| -> u32 {
+        if env.active_native_body().is_some() {
+            return env
+                .body_id_for_fn(body)
+                .unwrap_or_else(|| panic!("native receive outcome fn {} has no registered codegen body id", body.0));
+        }
         let body_fn = env.module.fn_by_id(body);
         let np = body_fn.block(body_fn.entry).params.len();
         let key = receive_outcome_spec_key(&any, np);
