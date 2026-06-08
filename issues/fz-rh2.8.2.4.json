@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-rh2.8.2.2",
-    "fz-rh2.8.2.3"
+    "fz-rh2.8.2.3",
+    "fz-rh2.8.2.5"
   ],
   "blocks": [],
   "created": "2026-06-08T03:52:37Z",
@@ -14,5 +15,5 @@
   "status": "open",
   "title": "Compiler2 backends: switch entry points and remove compiler2 fallback",
   "type": "task",
-  "updated_at": "2026-06-08T03:52:56Z"
+  "updated_at": "2026-06-08T04:54:17Z"
 }

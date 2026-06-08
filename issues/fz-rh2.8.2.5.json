@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.8.2.4"
+  ],
   "created": "2026-06-08T04:54:12Z",
   "description": "Goal: make the Compiler2 backend interpreter handle the runtime intrinsics needed for spawned/message-passing/resource programs instead of erroring at the extern seam.\n\nSignal: Compiler2 interpreter runs can execute programs that reach `fz_spawn`, `fz_spawn_opt`, `fz_send`, `fz_self`, and `fz_make_resource` through `BackendProgram` without falling back to old planner state or returning \"not supported yet\" errors.\n\nChange:\n- extend `call_lowered_extern` for the Compiler2 backend path to reuse the existing interpreter runtime hooks for scheduler/resource intrinsics\n- add Compiler2 backend-interpreter tests that cover spawn/send/self and resource creation\n- keep the artifact contract unchanged: the interpreter still consumes only `BackendProgram` + runtime state\n\nWhy:\n- `fz-rh2.8.2.2` proves the backend artifact path for quicksort, Enum.reduce, and variadic externs, but the general entry-point switch remains blocked until the backend interpreter can run the runtime-graph programs that depend on these intrinsics\n\nChecks:\n- Compiler2 backend interpreter tests cover spawn/send/self/resource behavior\n- no legacy planner/type-resolution fallback is reintroduced",
   "id": "fz-rh2.8.2.5",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 backends: support scheduler and resource runtime intrinsics in backend interp",
   "type": "task",
-  "updated_at": "2026-06-08T04:54:12Z"
+  "updated_at": "2026-06-08T04:54:17Z"
 }
