@@ -4,14 +4,15 @@
   "blocks": [
     "fz-rh2.8.2.4"
   ],
+  "closed_at": "2026-06-08T10:55:00Z",
   "created": "2026-06-08T10:25:03Z",
   "description": "Goal: stop Compiler2 semantic analysis from exploding on the Enum.reduce backend-interpreter path.\n\nSignal: `compiler2_interp_runs_enum_reduce_from_backend_artifacts` finishes quickly and returns 15, and the broader `compiler2_interp_` backend-interpreter slice no longer hangs.\n\nChange:\n- trace the recursive activation creation path triggered by Enum.reduce protocol/callable dispatch\n- make `prepare_function_call -\u003e activation_key -\u003e widen_for_recursive_spec_key` converge without runaway cloning/intern churn\n- keep the backend artifact/runtime seam unchanged; fix the semantic/type-key source of the blow-up\n\nWhy:\n- validating `fz-rh2.8.2.5` showed the runtime intrinsic path is working, but Enum.reduce still hangs inside Compiler2 semantic analysis before backend execution\n- a live sample pinned the hot path in `analyze_activation`, `prepare_function_call`, and `widen_for_recursive_spec_key`\n\nChecks:\n- `cargo test --lib compiler2_interp_runs_enum_reduce_from_backend_artifacts -- --nocapture` passes\n- `cargo test --lib compiler2_interp_ -- --nocapture --test-threads=1` completes\n- sampling no longer shows unbounded time in `widen_for_recursive_spec_key`",
   "id": "fz-rh2.8.2.6",
   "labels": [],
   "parent": "fz-rh2.8.2",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 semantics: make recursive activation-key widening converge for Enum.reduce",
   "type": "bug",
-  "updated_at": "2026-06-08T10:37:34Z"
+  "updated_at": "2026-06-08T10:55:00Z"
 }
