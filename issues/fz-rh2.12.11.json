@@ -13,11 +13,15 @@
     {
       "text": "DECISION (settled): new in-house syntactic TypeExpr enum. Names stay bare Named{path,args}; structure via Tuple/List/Union/Arrow/Resource/StructRecord; NO Var, NO env at parse. resolve(TypeExpr, captured_namespace, \u0026facts) -\u003e crate::specs::ResolvedSpec (Ty + ResolvedTypeShape): a name bound as Type -\u003e TypeName -\u003e TypeDefined -\u003e Ty; an unbound lowercase name -\u003e free Var; a builtin -\u003e scalar. Keeps syntactic and resolved layers separate; specs stays an output, not a dependency.",
       "timestamp": "2026-06-08T21:36:20Z"
+    },
+    {
+      "text": "Commit boundary: .11 lands the env-free parser (TypeExpr/TypeDefBody + parser + 14 tests). The verify-line property \"no ModuleTypeEnv on the compiler2 path\" is the epic END-STATE, not provable here -- function_type_env still exists until .4 deletes it, and .7 guards it. Namespace CAPTURE wiring lands in .1 (functions already capture via FunctionDef.namespace; @types capture when reserved in the first define_scope walk).",
+      "timestamp": "2026-06-08T21:47:29Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "In-house type-expr parse + namespace capture (retire the env-coupled shape parser for compiler2)",
   "type": "task",
-  "updated_at": "2026-06-08T21:36:20Z"
+  "updated_at": "2026-06-08T21:47:29Z"
 }
