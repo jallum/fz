@@ -9,9 +9,15 @@
   "id": "fz-rh2.12.11",
   "labels": [],
   "parent": "fz-rh2.12",
+  "comments": [
+    {
+      "text": "DECISION (settled): new in-house syntactic TypeExpr enum. Names stay bare Named{path,args}; structure via Tuple/List/Union/Arrow/Resource/StructRecord; NO Var, NO env at parse. resolve(TypeExpr, captured_namespace, \u0026facts) -\u003e crate::specs::ResolvedSpec (Ty + ResolvedTypeShape): a name bound as Type -\u003e TypeName -\u003e TypeDefined -\u003e Ty; an unbound lowercase name -\u003e free Var; a builtin -\u003e scalar. Keeps syntactic and resolved layers separate; specs stays an output, not a dependency.",
+      "timestamp": "2026-06-08T21:36:20Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "In-house type-expr parse + namespace capture (retire the env-coupled shape parser for compiler2)",
   "type": "task",
-  "updated_at": "2026-06-08T21:34:18Z"
+  "updated_at": "2026-06-08T21:36:20Z"
 }
