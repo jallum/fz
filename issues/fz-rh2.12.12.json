@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-08T23:23:05Z",
+  "description": "Record type-name references as consumer deps -- the second half of noting. Walk every type-position in the indexed surface (@spec args/results, param annotations, extern signatures, @type bodies, x-is-T guards), parse each with the in-house type-expr (.11), and classify each Name against the namespace captured at that declaration point: a NamespaceSymbol::Type binding -\u003e reference_type(module,name,arity) (the TypeName identity), recorded as an upstream dep of the consumer it feeds -- the FunctionId whose contract/body names it, or the TypeName whose @type body names it. An unbound lowercase name is a free type var (not referenced); a builtin is a scalar (not referenced). That recorded reference set IS each consumer later wait-set: DeriveTypeDef (.2) reads a type body refs to know its waits; the re-seated consumers (.4) read a function refs. Add world.reference_type and the consumer-\u003e[TypeName] dep store. Nothing resolves to Ty; no type-algebra. Verify: a @spec naming Foo.t records Foo.t as a dep of that function with nothing resolved; a @type body naming Bar.t records it as a dep of that type; a free type var is not referenced.",
+  "id": "fz-rh2.12.12",
+  "labels": [],
+  "parent": "fz-rh2.12",
+  "priority": 2,
+  "status": "open",
+  "title": "Reference walk: reference_type over type-positions; record consumer type-name deps",
+  "type": "task",
+  "updated_at": "2026-06-08T23:23:05Z"
+}
