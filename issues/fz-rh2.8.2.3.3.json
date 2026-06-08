@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.8.2.3.2"
+  ],
   "blocks": [],
   "created": "2026-06-08T04:59:27Z",
   "description": "Goal: make the shared native driver and Compiler2 JIT/AOT entry points consume the new Compiler2-owned native handoff end-to-end. Signal: Compiler2 JIT/AOT runs execute through the shared native path without `prepare_preplanned_native`, `materialize_program`, `AbiFacts::derive`, `plan_module_with_role`, or `resolve_module_types`.\n\nChange:\n- teach the shared native codegen path to read the new handoff instead of old planner-owned artifacts\n- add Compiler2 JIT/AOT entry helpers and contract tests for quicksort, Enum.reduce, and variadic extern\n- remove Compiler2-side dependence on old native-preparation helpers\n\nWhy:\n- once the handoff exists, the backend consumer should become mechanical and the old planner/codegen preparation path should stop being reachable from Compiler2\n\nChecks:\n- Compiler2 JIT/AOT contract tests pass\n- telemetry/assertions prove the forbidden old-world helpers were not used\n- callable-entry, marshal, return-lane, and effect contracts survive to native execution",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 native backends: move shared codegen and JIT/AOT entry paths onto the new handoff",
   "type": "task",
-  "updated_at": "2026-06-08T04:59:27Z"
+  "updated_at": "2026-06-08T04:59:36Z"
 }
