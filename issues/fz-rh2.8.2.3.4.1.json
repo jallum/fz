@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.8.2.3.4.2"
+  ],
   "created": "2026-06-08T06:38:40Z",
   "description": "Goal: publish the exact Compiler2-native native-codegen contract before more code moves. Signal: docs and tests name the facts that native codegen may consume after `NativeProgram(root)` and the old planner/codegen facts that are no longer part of that contract.\n\nChange:\n- document the Compiler2-native codegen boundary in the northstar and agent docs\n- map the current old-world codegen inputs to the Compiler2 facts that replace them, or record the missing native fact if one is genuinely absent\n- restate `fz-rh2.8.2.3.3` in terms of the post-refactor consumer switch we actually want\n\nWhy:\n- without a precise contract, the next refactor will drift into reconstructing old planner state under new names\n\nChecks:\n- docs cite the real current code paths and artifacts\n- tests/notes capture which native-codegen questions are legal after `NativeProgram(root)` and which are fatal",
   "id": "fz-rh2.8.2.3.4.1",
