@@ -1,9 +1,9 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
-    AbiReadyProgram, AbiValueRepr, ActivationKey, CallSiteId, CallSiteKey, CallSiteSummary, ExecutableKey, FactKey,
-    FactValue, FunctionId, FunctionRef, LoweredBody, LoweredStep, MaterializedProgram, Module, ModuleId, ReturnAbi,
-    SelectedCallee, SemanticClosure, Ty, ValueId,
+    AbiReadyProgram, AbiValueRepr, ActivationKey, CallSiteId, CallSiteKey, CallSiteSummary, CallableEntry,
+    ExecutableKey, FactKey, FactValue, FunctionId, FunctionRef, LoweredBody, LoweredStep, MaterializedProgram, Module,
+    ModuleId, ReturnAbi, SelectedCallee, SemanticClosure, Ty, ValueId,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
@@ -1145,6 +1145,10 @@ fn compiler2_abi_ready_makes_tuple_field_return_delivery_explicit_for_quicksort(
         program.executables.keys().all(|key| key.activation.function != foo_id),
         "ABI-ready projection should stay closed over the reached quicksort frontier and keep foo/0 cold",
     );
+    assert!(
+        program.callable_entries.is_empty(),
+        "quicksort plus an uncalled foo/0 should not manufacture callable-entry obligations",
+    );
 
     let abi_outputs = outputs
         .take(Job::DeriveAbiReady(root_id))
@@ -1165,6 +1169,122 @@ fn compiler2_abi_ready_makes_tuple_field_return_delivery_explicit_for_quicksort(
             .into_iter()
             .all(|event| event.metadata.len() == 0),
         "generic capture should not durable-copy opaque ABI-ready metadata",
+    );
+}
+
+#[test]
+fn compiler2_abi_ready_derives_only_the_closed_enum_reduce_callable_entries() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    let abi_ready = AbiReadyProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "abi_ready_program", "defined"],
+        abi_ready.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
+        text: r#"
+fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "ABI-ready projection should publish only the reducer callable entries that survive the settled Enum.reduce path: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let main_id = function_id(&functions, "main", 0);
+    let enum_reduce_id = function_id_in_module(&functions, &modules, "Enum", "reduce", 3);
+    let user_reducer_id = generated_functions_owned_by(&functions, main_id)
+        .into_iter()
+        .next()
+        .expect("generated user reducer")
+        .function_id;
+    let bridge_reducer_id = generated_functions_owned_by(&functions, enum_reduce_id)
+        .into_iter()
+        .next()
+        .expect("generated bridge reducer")
+        .function_id;
+
+    let program = abi_ready.last(root_id).program;
+    let callable_functions = program
+        .callable_entries
+        .iter()
+        .map(|entry| entry.target.activation.function)
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        callable_functions,
+        HashSet::from([user_reducer_id, bridge_reducer_id]),
+        "the settled Enum.reduce path should need one callable entry for the bridge reducer and one for the user reducer",
+    );
+
+    let user_entry = abi_ready_callable_entry(&program, user_reducer_id);
+    assert_eq!(
+        user_entry.capture_count, 0,
+        "the user reducer should stay a thin zero-capture callable value",
+    );
+    assert_eq!(
+        user_entry.target.need,
+        ExecutableNeed::Value,
+        "callable entries should always target value-return executables",
+    );
+    assert_eq!(
+        user_entry.target.activation.input.len(),
+        2,
+        "the user reducer entry should specialize over its two runtime call arguments",
+    );
+    assert_eq!(
+        user_entry.return_abi,
+        ReturnAbi::Value(AbiValueRepr::RawInt),
+        "the user reducer entry should expose the accumulator as a raw integer return lane",
+    );
+    assert!(
+        program.executables.contains_key(&user_entry.target),
+        "callable-entry targets must already exist in the closed executable frontier",
+    );
+
+    let bridge_entry = abi_ready_callable_entry(&program, bridge_reducer_id);
+    assert_eq!(
+        bridge_entry.capture_count, 1,
+        "the bridge reducer should keep the captured user reducer in its callable-entry contract",
+    );
+    assert_eq!(
+        bridge_entry.target.need,
+        ExecutableNeed::Value,
+        "bridge reducer callable entries should still target value-return executables",
+    );
+    assert_eq!(
+        bridge_entry.target.activation.input.len(),
+        3,
+        "the bridge reducer entry should include one captured reducer plus two runtime call arguments",
+    );
+    assert_eq!(
+        bridge_entry.return_abi,
+        ReturnAbi::Value(AbiValueRepr::ValueRef),
+        "the bridge reducer returns the tagged reduce-step tuple as an ordinary value reference",
+    );
+    assert!(
+        program.executables.contains_key(&bridge_entry.target),
+        "bridge callable-entry targets must already exist in the closed executable frontier",
     );
 }
 
@@ -1234,6 +1354,53 @@ end
     assert!(
         main_plan.effects.observable,
         "calling a variadic extern should make the executable plan externally observable",
+    );
+}
+
+#[test]
+fn compiler2_abi_ready_fails_for_unresolved_named_function_refs_at_callable_boundaries() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/unresolved_callable_boundary.fz".to_string()),
+        text: r#"
+fn apply(f, x), do: f.(x)
+
+fn main(), do: apply(&missing/1, 42)
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let job = match compiler.drive() {
+        DriveOutcome::Fatal { job } => job,
+        other => panic!("unresolved callable-boundary fn refs should fail during ABI-ready derivation: {other:?}"),
+    };
+    assert_eq!(
+        job,
+        Job::DeriveAbiReady(root_id),
+        "the fatal should surface when ABI-ready tries to name a callable entry from the closed facts",
+    );
+
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("callable-boundary diagnostic");
+    assert_eq!(
+        metadata_str(&diagnostic, "code"),
+        codes::ARTIFACT_INCOMPLETE_SEMANTIC_PLAN.0,
+        "unresolved callable-boundary failures should surface as incomplete closed-artifact facts",
+    );
+    assert!(
+        metadata_str(&diagnostic, "message").contains("missing/1"),
+        "the fatal should identify the unresolved named callable boundary",
     );
 }
 
@@ -4068,6 +4235,14 @@ fn abi_ready_executable(
         .iter()
         .find(|(key, _)| key.activation.function == function)
         .unwrap_or_else(|| panic!("ABI-ready executable for {function:?}"))
+}
+
+fn abi_ready_callable_entry(program: &AbiReadyProgram, function: FunctionId) -> &CallableEntry {
+    program
+        .callable_entries
+        .iter()
+        .find(|entry| entry.target.activation.function == function)
+        .unwrap_or_else(|| panic!("ABI-ready callable entry for {function:?}"))
 }
 
 fn direct_call_in_body(body: LoweredBody, callee: FunctionId) -> (CallSiteId, ValueId) {

@@ -20,8 +20,8 @@ mod world;
 
 pub use agenda::Agenda;
 pub use artifact::{
-    AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiReadyProgramMap, AbiValueRepr, MaterializedCallEdge,
-    MaterializedExecutable, MaterializedProgram, MaterializedProgramMap, ReturnAbi,
+    AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiReadyProgramMap, AbiValueRepr, CallableEntry,
+    MaterializedCallEdge, MaterializedExecutable, MaterializedProgram, MaterializedProgramMap, ReturnAbi,
 };
 pub use body::{
     BodySlot, BodyState, CallSiteId, DirectCallee, Literal, LoweredBlock, LoweredBody, LoweredBodyMap, LoweredClause,

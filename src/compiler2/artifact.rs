@@ -40,6 +40,7 @@ pub struct AbiReadyProgram {
     pub materialized_revision: u64,
     pub entry: ExecutableKey,
     pub executables: HashMap<ExecutableKey, AbiReadyExecutable>,
+    pub callable_entries: Vec<CallableEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,6 +61,15 @@ pub struct AbiReadyCallEdge {
     pub return_ty: Ty,
     pub return_abi: ReturnAbi,
     pub extern_marshals: Option<Vec<ExternTy>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableEntry {
+    pub target: ExecutableKey,
+    pub capture_count: usize,
+    pub param_reprs: Vec<AbiValueRepr>,
+    pub return_ty: Ty,
+    pub return_abi: ReturnAbi,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
