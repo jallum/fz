@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-08T11:49:15Z",
+  "description": "Goal: lower source control constructs that choose among user arms into Compiler2-owned structured control facts driven by `dispatch_matrix`.\n\nSignal:\n- representative fixtures using `case` and `with` run through `fz2`\n- no Compiler2 path reopens old `ir_lower` matcher helpers or planner-side dispatch machinery\n\nChange:\n- compile clause rows into `dispatch_matrix` plans inside Compiler2\n- lower per-arm bodies and failure paths (`case_clause`, `with_clause`) against the explicit structured control model from `fz-rh2.11.1`\n- cover `cond` in the same design, even if current fixture surface for it is thin\n\nWhy:\n- `case` and `with` are ordinary language surface in the fixture corpus, and `dispatch_matrix` already owns the hard part: arm selection and bindings",
+  "id": "fz-rh2.11.3",
+  "labels": [],
+  "parent": "fz-rh2.11",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 control lowering: lower case/with/cond through dispatch_matrix",
+  "type": "task",
+  "updated_at": "2026-06-08T11:49:15Z"
+}
