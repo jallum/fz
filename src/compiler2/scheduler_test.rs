@@ -87,7 +87,12 @@ fn compiler2_scheduler_replaces_contributions_and_suppresses_no_change_wakeups()
         Vec::new(),
     );
     assert_eq!(first.enqueued, vec![subscriber]);
-    assert_eq!(scheduler.facts().fingerprint(&fact), Some(1));
+    assert_eq!(scheduler.facts().revision(&fact), Some(1));
+    assert_eq!(
+        scheduler.facts().slot(&fact).and_then(|slot| slot.value()),
+        Some(&FactValue::presence(1)),
+        "presence facts should still store the aggregate publisher revision as their value",
+    );
     assert_eq!(scheduler.pop(), Some(subscriber));
 
     let second = complete(
@@ -118,7 +123,12 @@ fn compiler2_scheduler_replaces_contributions_and_suppresses_no_change_wakeups()
         Vec::new(),
     );
     assert_eq!(third.enqueued, vec![subscriber]);
-    assert_eq!(scheduler.facts().fingerprint(&fact), Some(9));
+    assert_eq!(scheduler.facts().revision(&fact), Some(2));
+    assert_eq!(
+        scheduler.facts().slot(&fact).and_then(|slot| slot.value()),
+        Some(&FactValue::presence(9)),
+        "slot revision should track aggregate changes even when the fact payload itself is a publisher revision",
+    );
 }
 
 #[test]
@@ -155,7 +165,7 @@ fn compiler2_scheduler_retracts_old_outputs_and_recomputes_aggregate() {
         vec![presence(fact, 7)],
         Vec::new(),
     );
-    assert_eq!(scheduler.facts().fingerprint(&fact), Some(7));
+    assert_eq!(scheduler.facts().revision(&fact), Some(2));
     let _ = scheduler.pop();
 
     let retracted = complete(
@@ -167,17 +177,17 @@ fn compiler2_scheduler_retracts_old_outputs_and_recomputes_aggregate() {
         Vec::new(),
         Vec::new(),
     );
-    assert_eq!(scheduler.facts().fingerprint(&fact), Some(5));
+    assert_eq!(scheduler.facts().revision(&fact), Some(3));
     assert_eq!(retracted.changed.len(), 1, "retraction should change the aggregate");
     assert_eq!(
-        retracted.changed[0].old_fingerprint,
-        Some(7),
-        "old fingerprint should reflect the old aggregate"
+        retracted.changed[0].old_revision,
+        Some(2),
+        "old revision should reflect the prior settled aggregate change"
     );
     assert_eq!(
-        retracted.changed[0].new_fingerprint,
-        Some(5),
-        "new fingerprint should reflect the recomputed aggregate"
+        retracted.changed[0].new_revision,
+        Some(3),
+        "new revision should bump once when the aggregate recomputes after a retraction"
     );
     assert_eq!(retracted.enqueued, vec![subscriber]);
 }

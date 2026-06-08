@@ -1,15 +1,13 @@
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
-use std::hash::Hasher;
 
 use super::{Ty, Types};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactChange<F> {
     pub key: F,
-    pub old_fingerprint: Option<u64>,
-    pub new_fingerprint: Option<u64>,
+    pub old_revision: Option<u64>,
+    pub new_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -21,7 +19,7 @@ pub struct FactReplace<F> {
 #[derive(Debug, Clone)]
 pub struct FactSlot<J> {
     value: Option<FactValue>,
-    fingerprint: Option<u64>,
+    revision: u64,
     contributions: HashMap<J, FactValue>,
 }
 
@@ -29,15 +27,15 @@ impl<J> Default for FactSlot<J> {
     fn default() -> Self {
         Self {
             value: None,
-            fingerprint: None,
+            revision: 0,
             contributions: HashMap::new(),
         }
     }
 }
 
 impl<J> FactSlot<J> {
-    pub fn fingerprint(&self) -> Option<u64> {
-        self.fingerprint
+    pub fn revision(&self) -> Option<u64> {
+        self.value.as_ref().map(|_| self.revision)
     }
 
     pub fn value(&self) -> Option<&FactValue> {
@@ -67,17 +65,6 @@ impl FactValue {
                 .map(|input| types.alpha_normalize_vars(&input))
                 .collect(),
         )
-    }
-
-    fn fingerprint(&self) -> u64 {
-        match self {
-            FactValue::Presence(revision) => *revision,
-            FactValue::Inputs(inputs) => {
-                let mut hasher = DefaultHasher::new();
-                inputs.hash(&mut hasher);
-                hasher.finish()
-            }
-        }
     }
 
     pub(crate) fn join<'a>(types: &mut Types, values: impl IntoIterator<Item = &'a FactValue>) -> Option<FactValue> {
@@ -149,8 +136,8 @@ where
         Self::default()
     }
 
-    pub fn fingerprint(&self, key: &F) -> Option<u64> {
-        self.slots.get(key).and_then(FactSlot::fingerprint)
+    pub fn revision(&self, key: &F) -> Option<u64> {
+        self.slots.get(key).and_then(FactSlot::revision)
     }
 
     pub fn slot(&self, key: &F) -> Option<&FactSlot<J>> {
@@ -181,7 +168,7 @@ where
         let mut changed = Vec::new();
         for key in touched {
             let mut slot = self.slots.remove(&key).unwrap_or_default();
-            let old_fingerprint = slot.fingerprint;
+            let old_revision = slot.revision();
 
             if let Some(value) = new_outputs.remove(&key) {
                 slot.contributions.insert(job.clone(), value);
@@ -190,18 +177,18 @@ where
             }
 
             let new_value = FactValue::join(types, slot.contributions.values());
-            let new_fingerprint = new_value.as_ref().map(FactValue::fingerprint);
-            if let Some(value) = new_value {
-                slot.fingerprint = new_fingerprint;
-                slot.value = Some(value);
-                self.slots.insert(key.clone(), slot);
+            if slot.value != new_value {
+                slot.revision += 1;
             }
+            slot.value = new_value;
+            let new_revision = slot.revision();
+            self.slots.insert(key.clone(), slot);
 
-            if old_fingerprint != new_fingerprint {
+            if old_revision != new_revision {
                 changed.push(FactChange {
                     key,
-                    old_fingerprint,
-                    new_fingerprint,
+                    old_revision,
+                    new_revision,
                 });
             }
         }

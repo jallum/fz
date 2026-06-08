@@ -71,18 +71,18 @@ pub(super) fn check_semantic_closure(world: &mut World<'_>, root_id: RootId) -> 
     let mut dependencies = Vec::new();
 
     let root_fact = FactKey::RootEntry(root_id);
-    if let Some(root_fingerprint) = world.fact_revision(root_fact.clone()) {
+    if let Some(root_revision) = world.fact_revision(root_fact.clone()) {
         reads.push(root_fact.clone());
-        dependencies.push((root_fact, root_fingerprint));
+        dependencies.push((root_fact, root_revision));
     } else {
         waits.insert(root_fact);
         follow_up.insert(Job::SeedRoot(root_id));
     }
 
     let function_fact = FactKey::FunctionDefined(root.function);
-    let function_ready = if let Some(function_fingerprint) = world.function_defined_revision(root.function) {
+    let function_ready = if let Some(function_revision) = world.function_defined_revision(root.function) {
         reads.push(function_fact.clone());
-        dependencies.push((function_fact, function_fingerprint));
+        dependencies.push((function_fact, function_revision));
         true
     } else {
         let wait = world.wait_for_function_definition(root.function);
@@ -255,9 +255,9 @@ fn read_fact(
     dependencies: &mut Vec<(FactKey, u64)>,
     waits: &mut HashSet<FactKey>,
 ) -> bool {
-    if let Some(fingerprint) = world.fact_revision(fact.clone()) {
+    if let Some(revision) = world.fact_revision(fact.clone()) {
         reads.push(fact.clone());
-        dependencies.push((fact, fingerprint));
+        dependencies.push((fact, revision));
         true
     } else {
         waits.insert(fact);

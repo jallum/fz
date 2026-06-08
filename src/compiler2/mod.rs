@@ -53,6 +53,8 @@ mod compiler2_test;
 #[cfg(test)]
 mod drive_test;
 #[cfg(test)]
+mod facts_test;
+#[cfg(test)]
 mod identity_test;
 #[cfg(test)]
 mod namespace_test;
