@@ -28,7 +28,7 @@ pub(crate) fn run(world: &mut World<'_>, job: &Job) -> Result<JobEffects, FatalE
         Job::DeriveDispatchMask(function_id) => keying::derive_dispatch_mask(world, *function_id),
         Job::SeedRoot(root_id) => root::seed_root(world, *root_id),
         Job::AnalyzeActivation(activation) => semantic::analyze_activation(world, activation),
-        Job::CheckSemanticClosure(root_id) => root::check_semantic_closure(world, *root_id),
+        Job::SealSemanticClosure(root_id) => root::seal_semantic_closure(world, *root_id),
         Job::MaterializeRoot(root_id) => artifact::materialize_root(world, *root_id),
     }
 }

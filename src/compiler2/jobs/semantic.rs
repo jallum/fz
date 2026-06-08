@@ -67,7 +67,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
 
     let mut reads = vec![activation_fact, function_fact, lowered_fact, dispatch_fact];
     let mut waits = HashSet::new();
-    let mut follow_up = HashSet::from([Job::CheckSemanticClosure(activation.root)]);
+    let mut follow_up = HashSet::from([Job::SealSemanticClosure(activation.root)]);
     let mut outputs = Vec::new();
 
     let entry_dispatch = world.entry_dispatch(function);
@@ -75,10 +75,11 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     let reachable_clauses = reachable_clause_ids(world, &entry_dispatch, &inputs);
 
     let mut analysis_calls = Vec::new();
+    let mut value_types = HashMap::new();
     let mut return_ty = none_ty(world);
     match lowered_body {
-        LoweredBody::Extern { .. } => {
-            return_ty = any_ty(world);
+        LoweredBody::Extern { signature } => {
+            return_ty = signature.return_ty;
         }
         LoweredBody::Clauses { clauses, .. } => {
             for clause_id in &reachable_clauses {
@@ -97,6 +98,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
                     &mut waits,
                     &mut follow_up,
                 )?;
+                merge_value_types(world, &mut value_types, &values);
                 let clause_return = analyze_block(
                     world,
                     &clause.body,
@@ -107,6 +109,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
                     &mut waits,
                     &mut follow_up,
                 )?;
+                merge_value_types(world, &mut value_types, &values);
                 return_ty = if world.types().is_empty(&return_ty) {
                     clause_return
                 } else {
@@ -146,7 +149,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
             if !callee_activation.already_present {
                 follow_up.insert(Job::AnalyzeActivation(callee_activation.key.clone()));
             }
-            follow_up.insert(Job::CheckSemanticClosure(activation.root));
+            follow_up.insert(Job::SealSemanticClosure(activation.root));
         }
     }
 
@@ -161,6 +164,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         ActivationAnalysis {
             reachable_clauses: reachable_clauses.clone(),
             callsites: analysis_calls.iter().map(|call| call.key.callsite).collect(),
+            value_types,
         },
     );
     outputs.push((
@@ -168,7 +172,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         FactValue::presence(analysis_revision),
     ));
 
-    follow_up.insert(Job::CheckSemanticClosure(activation.root));
+    follow_up.insert(Job::SealSemanticClosure(activation.root));
     Ok(JobEffects {
         reads,
         outputs: dedupe_outputs(world.types_mut(), outputs),
@@ -260,7 +264,10 @@ fn apply_step(
             args,
         } => {
             let need = return_needs.get(callsite).cloned().unwrap_or(ExecutableNeed::Value);
-            let arg_types = args.iter().map(|arg| value_ty(world, values, *arg)).collect::<Vec<_>>();
+            let arg_types = args
+                .iter()
+                .map(|arg| value_ty(world, values, arg.value))
+                .collect::<Vec<_>>();
             let (emission, return_ty) = resolve_direct_call(
                 world,
                 activation,
@@ -285,7 +292,10 @@ fn apply_step(
         } => {
             let need = return_needs.get(callsite).cloned().unwrap_or(ExecutableNeed::Value);
             let callee_ty = value_ty(world, values, *callee);
-            let arg_types = args.iter().map(|arg| value_ty(world, values, *arg)).collect::<Vec<_>>();
+            let arg_types = args
+                .iter()
+                .map(|arg| value_ty(world, values, arg.value))
+                .collect::<Vec<_>>();
             let (emission, return_ty) = resolve_closure_call(
                 world,
                 activation,
@@ -445,6 +455,20 @@ fn resolve_direct_call(
         }),
         return_ty,
     ))
+}
+
+fn merge_value_types(world: &mut World<'_>, merged: &mut ValueTypes, observed: &ValueTypes) {
+    for (&value, &ty) in observed {
+        match merged.get(&value).copied() {
+            Some(current) if current != ty => {
+                merged.insert(value, world.types_mut().union(current, ty));
+            }
+            Some(_) => {}
+            None => {
+                merged.insert(value, ty);
+            }
+        }
+    }
 }
 
 fn resolve_function_call(
@@ -629,7 +653,7 @@ fn prepare_function_call(
     let activation = world.activation_key(caller.root, function, &arg_types);
     let already_present = world.fact_revision(FactKey::Activation(activation.clone())).is_some();
     reads.push(FactKey::ReturnType(activation.clone()));
-    follow_up.insert(Job::CheckSemanticClosure(caller.root));
+    follow_up.insert(Job::SealSemanticClosure(caller.root));
     let return_ty = world.activation_return(&activation).unwrap_or_else(|| none_ty(world));
     Some((activation, already_present, return_ty))
 }

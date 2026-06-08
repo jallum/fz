@@ -6,6 +6,7 @@
 //! legitimate state absence like "this known function is still a placeholder"
 //! or "this known code has not been indexed yet".
 
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -53,6 +54,12 @@ enum UnresolvedIssueKey {
 struct UnresolvedIssue {
     key: UnresolvedIssueKey,
     diagnostic: Diagnostic,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum CallableMatchScore {
+    VariadicPrefix(usize),
+    Exact,
 }
 
 pub struct World<'a> {
@@ -281,7 +288,10 @@ impl<'a> World<'a> {
         self.activations.get(key).and_then(|slot| slot.return_ty().cloned())
     }
 
-    pub fn define_activation_analysis(&mut self, key: &ActivationKey, analysis: ActivationAnalysis) -> u64 {
+    pub fn define_activation_analysis(&mut self, key: &ActivationKey, mut analysis: ActivationAnalysis) -> u64 {
+        for ty in analysis.value_types.values_mut() {
+            *ty = self.types.alpha_normalize_vars(ty);
+        }
         let revision = self.activations.define_analysis(key, analysis.clone());
         self.tel.execute(
             &["fz", "compiler2", "activation_analysis", "defined"],
@@ -291,6 +301,7 @@ impl<'a> World<'a> {
                 revision: revision,
                 reachable_clauses: analysis.reachable_clauses.len() as u64,
                 callsites: analysis.callsites.len() as u64,
+                values: analysis.value_types.len() as u64,
             },
             &metadata! {
                 activation: opaque(key),
@@ -372,6 +383,12 @@ impl<'a> World<'a> {
             .get(root)
             .cloned()
             .expect("semantic closures should only be read after their fact is defined")
+    }
+
+    pub(crate) fn semantic_closure_dependencies(&self, root: RootId) -> &super::semantic::DependencySnapshot {
+        self.semantic_closures
+            .dependencies(root)
+            .expect("semantic closure dependencies should only be read after their fact is defined")
     }
 
     pub(crate) fn define_materialized_program(&mut self, root: RootId, program: MaterializedProgram) -> u64 {
@@ -617,7 +634,7 @@ impl<'a> World<'a> {
             }
         };
         let (clauses, generated, arity) = match &body {
-            LoweredBody::Extern { arity, .. } => (0_u64, 0_u64, *arity as u64),
+            LoweredBody::Extern { signature } => (0_u64, 0_u64, signature.params.len() as u64),
             LoweredBody::Clauses { clauses, generated } => {
                 (clauses.len() as u64, generated.len() as u64, def.ast.arity() as u64)
             }
@@ -813,6 +830,13 @@ impl<'a> World<'a> {
         self.functions.reference_for(function).arity
     }
 
+    pub(crate) fn function_variadic(&self, function: FunctionId) -> bool {
+        match &self.functions.get(function).state {
+            super::identity::FunctionState::Defined { def } => def.ast.variadic,
+            super::identity::FunctionState::Placeholder => false,
+        }
+    }
+
     pub(crate) fn ensure_function_surface(&mut self, function: FunctionId) -> Vec<Job> {
         let module = self.function_module(function);
         if module.is_global() {
@@ -869,17 +893,70 @@ impl<'a> World<'a> {
     ) -> Option<NamespaceSymbol> {
         if let Some((module_path, local_name)) = name.rsplit_once('.') {
             let module = self.lookup_module_path(head, module_path)?;
-            let function = self.reference_function(module, local_name.to_string(), arity);
-            return Some(NamespaceSymbol::Function(function));
+            return self.lookup_module_callable(module, local_name, arity);
         }
         self.namespaces
-            .lookup_matching(head, name, |symbol| match symbol {
+            .lookup_best_matching(head, name, |symbol| match symbol {
                 NamespaceSymbol::Function(function) | NamespaceSymbol::Macro(function) => {
-                    self.functions.reference_for(*function).arity == arity
+                    callable_match_score(self.function_arity(*function), self.function_variadic(*function), arity)
                 }
-                NamespaceSymbol::Module(_) => false,
+                NamespaceSymbol::Module(_) => None,
             })
             .cloned()
+    }
+
+    fn lookup_module_callable(&mut self, module: ModuleId, name: &str, arity: usize) -> Option<NamespaceSymbol> {
+        if self.module_defined_revision(module).is_none() {
+            return Some(NamespaceSymbol::Function(self.reference_function(
+                module,
+                name.to_string(),
+                arity,
+            )));
+        }
+        let mut best = None;
+        for export in self.module_exports(module) {
+            if export.name != name {
+                continue;
+            }
+            let Some(score) = callable_match_score(export.arity, export.variadic, arity) else {
+                continue;
+            };
+            let replace = best
+                .as_ref()
+                .is_none_or(|(current, _): &(CallableMatchScore, NamespaceSymbol)| score > *current);
+            if replace {
+                best = Some((score, export.symbol));
+            }
+        }
+        best.map(|(_, symbol)| symbol)
+    }
+
+    pub(crate) fn min_variadic_arity(&mut self, head: Namespace, name: &str) -> Option<usize> {
+        if let Some((module_path, local_name)) = name.rsplit_once('.') {
+            let module = self.lookup_module_path(head, module_path)?;
+            self.module_defined_revision(module)?;
+            return self
+                .module_exports(module)
+                .into_iter()
+                .filter(|export| export.name == local_name && export.variadic)
+                .map(|export| export.arity)
+                .min();
+        }
+        self.namespaces
+            .lookup_best_matching(head, name, |symbol| match symbol {
+                NamespaceSymbol::Function(function) | NamespaceSymbol::Macro(function)
+                    if self.function_variadic(*function) =>
+                {
+                    Some(Reverse(self.function_arity(*function)))
+                }
+                _ => None,
+            })
+            .map(|symbol| match symbol {
+                NamespaceSymbol::Function(function) | NamespaceSymbol::Macro(function) => {
+                    self.function_arity(*function)
+                }
+                NamespaceSymbol::Module(_) => unreachable!("variadic lookup should not yield modules"),
+            })
     }
 
     pub(crate) fn guard_dispatch(&self, function: FunctionId) -> PatternGuardDispatch<Ty> {
@@ -1151,6 +1228,16 @@ impl<'a> World<'a> {
             ),
         })
     }
+}
+
+fn callable_match_score(fixed_arity: usize, variadic: bool, actual_arity: usize) -> Option<CallableMatchScore> {
+    if fixed_arity == actual_arity {
+        return Some(CallableMatchScore::Exact);
+    }
+    if variadic && fixed_arity <= actual_arity {
+        return Some(CallableMatchScore::VariadicPrefix(fixed_arity));
+    }
+    None
 }
 
 fn impl_target_ty<T: crate::types::Types<Ty = Ty>>(t: &mut T, module_name: &str) -> Ty {

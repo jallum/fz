@@ -1,12 +1,14 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
-    ActivationKey, CallSiteKey, CallSiteSummary, ExecutableKey, FactKey, FactValue, FunctionId, FunctionRef,
-    LoweredBody, LoweredStep, MaterializedProgram, Module, ModuleId, SelectedCallee, SemanticClosure, Ty,
+    ActivationKey, CallSiteId, CallSiteKey, CallSiteSummary, ExecutableKey, FactKey, FactValue, FunctionId,
+    FunctionRef, LoweredBody, LoweredStep, MaterializedProgram, Module, ModuleId, SelectedCallee, SemanticClosure, Ty,
+    ValueId,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
+use crate::fz_ir::ExternTy;
 use crate::telemetry::handler::{Event, EventKind, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use std::cell::RefCell;
@@ -269,7 +271,7 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         work_graph
             .all()
             .into_iter()
-            .any(|step| step.coalesced.contains(&Job::CheckSemanticClosure(root_id))),
+            .any(|step| step.coalesced.contains(&Job::SealSemanticClosure(root_id))),
         "work-graph telemetry should report coalesced closure checks instead of hiding duplicate wakeups"
     );
 
@@ -341,8 +343,8 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
     );
 
     let closure_outputs = outputs
-        .take(Job::CheckSemanticClosure(root_id))
-        .expect("CheckSemanticClosure job effects");
+        .take(Job::SealSemanticClosure(root_id))
+        .expect("SealSemanticClosure job effects");
     assert!(
         !closure_outputs
             .iter()
@@ -395,7 +397,7 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
     );
     assert!(
         !outputs
-            .stops_matching(|job| matches!(job, Job::CheckSemanticClosure(_)))
+            .stops_matching(|job| matches!(job, Job::SealSemanticClosure(_)))
             .is_empty(),
         "root submission should run semantic closure checks while the entry frontier settles"
     );
@@ -856,6 +858,8 @@ fn compiler2_materialization_projects_only_the_closed_quicksort_frontier() {
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let bodies = LoweredBodyCapture::new();
+    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
     let materialized = MaterializedProgramCapture::new();
     tel.attach(
         &["fz", "compiler2", "materialized_program", "defined"],
@@ -908,6 +912,36 @@ fn compiler2_materialization_projects_only_the_closed_quicksort_frontier() {
     assert!(
         !executable_ids.contains(&foo_id),
         "materialization should keep uncalled foo/0 out of the backend snapshot",
+    );
+
+    let (_, main_plan) = materialized_executable(&program, main_id);
+    let (main_callsite, main_call_value) = direct_call_in_body(lowered_body(&bodies, main_id), qsort_id);
+    let qsort_edge = main_plan
+        .call_edges
+        .get(&main_callsite)
+        .unwrap_or_else(|| panic!("materialized call edge for main/0 -> qsort/1 at {main_callsite:?}"));
+    assert_eq!(
+        qsort_edge.callee.activation.function, qsort_id,
+        "materialization should freeze main/0's qsort/1 call to an exact executable key",
+    );
+    assert!(
+        program.executables.contains_key(&qsort_edge.callee),
+        "materialized direct-call edges should point at a reachable executable plan",
+    );
+    assert_eq!(
+        main_plan.value_types.get(&main_call_value),
+        Some(&qsort_edge.return_ty),
+        "materialization should retain the settled type of a direct-call result value",
+    );
+    assert!(
+        main_plan.effects.observable && main_plan.effects.reads_allocation_stats,
+        "main/0's executable effects should include dbg/heap-alloc observation through the closed call graph",
+    );
+
+    let (_, qsort_plan) = materialized_executable(&program, qsort_id);
+    assert!(
+        qsort_plan.effects.allocates && !qsort_plan.effects.observable,
+        "qsort/1 should remain allocation-heavy but locally unobservable in the materialized plan",
     );
 
     let materialize_outputs = outputs
@@ -1018,8 +1052,8 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
     assert!(
         enum_reduce_edges
             .values()
-            .any(|edge| edge.callee == SelectedCallee::Function(list_impl_reduce_id)),
-        "materialization should freeze Enum.reduce/3's protocol call to the selected List-backed callback",
+            .any(|edge| edge.callee.activation.function == list_impl_reduce_id),
+        "materialization should freeze Enum.reduce/3's protocol call to the selected List-backed callback executable",
     );
 
     let bridge_edges = &program
@@ -1032,8 +1066,13 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
     assert!(
         bridge_edges
             .values()
-            .any(|edge| edge.callee == SelectedCallee::Function(user_reducer_id)),
-        "materialization should freeze the bridge reducer call to the user reducer executable",
+            .any(|edge| edge.callee.activation.function == user_reducer_id),
+        "materialization should freeze the bridge reducer call to the exact user reducer executable",
+    );
+    let (_, bridge_plan) = materialized_executable(&program, bridge_reducer_id);
+    assert!(
+        !bridge_plan.effects.calls_opaque,
+        "once the reducer closure target is known, the bridge lambda should not carry an opaque-call effect",
     );
 
     let materialize_outputs = outputs
@@ -1048,6 +1087,180 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
     assert!(
         capture.find(&["fz", "planner"]).is_empty(),
         "Compiler2 materialization should not invoke the legacy planner pipeline",
+    );
+}
+
+#[test]
+fn compiler2_materialization_projects_variadic_extern_signatures_and_callsite_marshals() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let materialized = MaterializedProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "materialized_program", "defined"],
+        materialized.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/variadic_open_compiler2.fz".to_string()),
+        text: r#"
+extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
+
+fn main() do
+  libc::open("x", 0, 0o644 :: integer)
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "variadic extern calls should settle to a backend-ready executable and callsite marshal plan",
+    );
+
+    let program = materialized.last(root_id).program;
+    let main_id = function_id(&functions, "main", 0);
+    let open_id = function_id(&functions, "libc::open", 2);
+    let (_, open_plan) = materialized_executable(&program, open_id);
+    let (_, main_plan) = materialized_executable(&program, main_id);
+
+    match &open_plan.body {
+        LoweredBody::Extern { signature } => {
+            assert_eq!(signature.symbol, "open");
+            assert_eq!(signature.params, vec![ExternTy::CString, ExternTy::I64]);
+            assert!(signature.variadic);
+            assert_eq!(signature.ret, ExternTy::I64);
+        }
+        other => panic!("expected variadic extern body for libc::open, got {other:?}"),
+    }
+
+    let open_edge = main_plan
+        .call_edges
+        .values()
+        .find(|edge| edge.callee.activation.function == open_id)
+        .expect("materialized call edge for libc::open");
+    assert_eq!(
+        open_edge.extern_marshals.as_deref(),
+        Some(&[ExternTy::CString, ExternTy::I64, ExternTy::I64][..]),
+        "materialization should freeze the exact C marshal classes for a variadic extern callsite",
+    );
+    assert!(
+        main_plan.effects.observable,
+        "calling a variadic extern should make the executable plan externally observable",
+    );
+}
+
+#[test]
+fn compiler2_materialization_resolves_auto_variadic_marshals_from_value_types() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let materialized = MaterializedProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "materialized_program", "defined"],
+        materialized.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/variadic_printf_compiler2.fz".to_string()),
+        text: r#"
+extern "C" fn libc::printf(fmt :: cstring, ...) :: integer
+
+fn main() do
+  libc::printf("%d", 7)
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "materialization should resolve auto variadic marshal classes from settled caller value types",
+    );
+
+    let program = materialized.last(root_id).program;
+    let main_id = function_id(&functions, "main", 0);
+    let printf_id = function_id(&functions, "libc::printf", 1);
+    let (_, main_plan) = materialized_executable(&program, main_id);
+    let printf_edge = main_plan
+        .call_edges
+        .values()
+        .find(|edge| edge.callee.activation.function == printf_id)
+        .expect("materialized call edge for libc::printf");
+    assert_eq!(
+        printf_edge.extern_marshals.as_deref(),
+        Some(&[ExternTy::CString, ExternTy::I64][..]),
+        "a variadic extra integer should resolve to the I64 marshal class without an explicit ascription",
+    );
+}
+
+#[test]
+fn compiler2_variadic_extern_too_few_args_is_a_lower_diagnostic() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/variadic_open_too_few_compiler2.fz".to_string()),
+        text: r#"
+extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
+
+fn main() do
+  libc::open("x")
+end
+"#
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    let main_id = function_id(&functions, "main", 0);
+    let job = match outcome {
+        DriveOutcome::Fatal { job } => job,
+        other => panic!("too-few variadic args should fail during lowering: {other:?}"),
+    };
+    assert_eq!(
+        job,
+        Job::LowerFunction(main_id),
+        "the direct caller should fail while lowering the impossible variadic call",
+    );
+
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("variadic arity diagnostic");
+    assert_eq!(
+        metadata_str(&diagnostic, "code"),
+        codes::LOWER_UNSUPPORTED.0,
+        "too-few variadic args should surface as an unsupported lowering case",
+    );
+    assert!(
+        metadata_str(&diagnostic, "message").contains("at least 2 arg(s)")
+            && metadata_str(&diagnostic, "message").contains("provides 1"),
+        "variadic arity diagnostic should explain the fixed prefix the call failed to satisfy",
     );
 }
 
@@ -1557,7 +1770,7 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
     });
     assert_resolved(compiler.drive(), "first drive should seed the initial root");
     let closure_checks_before = outputs
-        .stops_matching(|job| matches!(job, Job::CheckSemanticClosure(_)))
+        .stops_matching(|job| matches!(job, Job::SealSemanticClosure(_)))
         .len();
     let lowered_before = outputs.stops_matching(|job| matches!(job, Job::LowerFunction(_))).len();
     let seed_stops_before = outputs.stops_matching(|job| matches!(job, Job::SeedRoot(_))).len();
@@ -1592,7 +1805,7 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
     );
     assert_eq!(
         outputs
-            .stops_matching(|job| matches!(job, Job::CheckSemanticClosure(_)))
+            .stops_matching(|job| matches!(job, Job::SealSemanticClosure(_)))
             .len(),
         closure_checks_before,
         "late unrelated code should not reopen semantic closure for the existing root"
@@ -3627,6 +3840,59 @@ fn lowered_body(capture: &LoweredBodyCapture, function: FunctionId) -> LoweredBo
     capture
         .take(function)
         .unwrap_or_else(|| panic!("lowered_body.defined for {function:?}"))
+}
+
+fn materialized_executable(
+    program: &MaterializedProgram,
+    function: FunctionId,
+) -> (&ExecutableKey, &crate::compiler2::MaterializedExecutable) {
+    program
+        .executables
+        .iter()
+        .find(|(key, _)| key.activation.function == function)
+        .unwrap_or_else(|| panic!("materialized executable for {function:?}"))
+}
+
+fn direct_call_in_body(body: LoweredBody, callee: FunctionId) -> (CallSiteId, ValueId) {
+    match body {
+        LoweredBody::Extern { .. } => panic!("expected clause body with a direct call"),
+        LoweredBody::Clauses { clauses, .. } => {
+            for clause in clauses {
+                if let Some(found) = direct_call_in_steps(&clause.projections, callee) {
+                    return found;
+                }
+                if let Some(found) = direct_call_in_steps(&clause.body.steps, callee) {
+                    return found;
+                }
+            }
+            panic!("direct call to {callee:?} not found in lowered body")
+        }
+    }
+}
+
+fn direct_call_in_steps(steps: &[LoweredStep], callee: FunctionId) -> Option<(CallSiteId, ValueId)> {
+    for step in steps {
+        match step {
+            LoweredStep::DirectCall {
+                value,
+                callsite,
+                callee: crate::compiler2::DirectCallee::Function(function),
+                ..
+            } if *function == callee => return Some((*callsite, *value)),
+            LoweredStep::If {
+                then_block, else_block, ..
+            } => {
+                if let Some(found) = direct_call_in_steps(&then_block.steps, callee) {
+                    return Some(found);
+                }
+                if let Some(found) = direct_call_in_steps(&else_block.steps, callee) {
+                    return Some(found);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn plan_has_nested_guard_dispatch(plan: &PatternDispatchPlan<Ty>) -> bool {

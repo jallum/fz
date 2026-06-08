@@ -11,9 +11,11 @@ use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
+use crate::ir_lower::{extern_symbol_from_name, extern_ty_from_name, lower_extern_ret_ty};
 
 use super::super::body::{
-    CallSiteId, DirectCallee, Literal, LoweredBlock, LoweredBody, LoweredClause, LoweredStep, ValueId,
+    CallArg, CallSiteId, DirectCallee, Literal, LoweredBlock, LoweredBody, LoweredClause, LoweredExtern, LoweredStep,
+    ValueId,
 };
 use super::super::drive::{FactKey, JobEffects};
 use super::super::facts::FactValue;
@@ -83,10 +85,43 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
 
     fn lower(&mut self) -> Result<(LoweredBody, Vec<Output>), FatalError> {
         if let Some(abi) = self.def.ast.extern_abi.clone() {
+            let type_env = self.world.function_type_env(self.owner).map_err(|error| {
+                emit_job_diagnostic(
+                    self.world,
+                    Diagnostic::error(
+                        codes::RESOLVE_TYPE_ALIAS,
+                        format!(
+                            "compiler2 could not resolve extern return type for `{}`: {}",
+                            self.def.ast.name, error.msg
+                        ),
+                        error.span,
+                    ),
+                )
+            })?;
+            let params = self
+                .def
+                .ast
+                .extern_params
+                .iter()
+                .map(|name| extern_ty_from_name(name).unwrap_or(crate::fz_ir::ExternTy::Any))
+                .collect();
+            let (ret, return_ty) =
+                lower_extern_ret_ty(self.world.types_mut(), &self.def.ast, &type_env).map_err(|error| {
+                    emit_job_diagnostic(
+                        self.world,
+                        Diagnostic::error(codes::LOWER_UNSUPPORTED, error.to_string(), self.def.ast.name_span),
+                    )
+                })?;
             return Ok((
                 LoweredBody::Extern {
-                    abi,
-                    arity: self.def.ast.arity(),
+                    signature: LoweredExtern {
+                        abi,
+                        symbol: extern_symbol_from_name(&self.def.ast.name).to_string(),
+                        params,
+                        variadic: self.def.ast.variadic,
+                        ret,
+                        return_ty,
+                    },
                 },
                 Vec::new(),
             ));
@@ -246,10 +281,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 Ok(value)
             }
             Expr::Call(target, args) => {
-                let mut lowered_args = Vec::with_capacity(args.len());
-                for arg in args {
-                    lowered_args.push(self.lower_expr(arg, env, steps)?);
-                }
+                let lowered_args = self.lower_call_args(args, env, steps)?;
                 let callsite = self.fresh_callsite();
                 if let Some(name) = direct_call_name(target, env) {
                     let value = self.fresh_value();
@@ -273,10 +305,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             }
             Expr::ClosureCall(target, args) => {
                 let callee = self.lower_expr(target, env, steps)?;
-                let mut lowered_args = Vec::with_capacity(args.len());
-                for arg in args {
-                    lowered_args.push(self.lower_expr(arg, env, steps)?);
-                }
+                let lowered_args = self.lower_call_args(args, env, steps)?;
                 let value = self.fresh_value();
                 steps.push(LoweredStep::ClosureCall {
                     value,
@@ -383,12 +412,53 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                         ),
                     ));
                 }
-                Some(NamespaceSymbol::Module(_)) | None => DirectCallee::Named {
+                Some(NamespaceSymbol::Module(_)) => DirectCallee::Named {
                     name: name.to_string(),
                     arity,
                 },
+                None => {
+                    if let Some(fixed_arity) = self.world.min_variadic_arity(self.namespace, name)
+                        && arity < fixed_arity
+                    {
+                        return Err(emit_job_diagnostic(
+                            self.world,
+                            Diagnostic::error(
+                                codes::LOWER_UNSUPPORTED,
+                                format!(
+                                    "variadic fn `{}` expects at least {} arg(s), but this call provides {}",
+                                    name, fixed_arity, arity
+                                ),
+                                span,
+                            ),
+                        ));
+                    }
+                    DirectCallee::Named {
+                        name: name.to_string(),
+                        arity,
+                    }
+                }
             },
         )
+    }
+
+    fn lower_call_args(
+        &mut self,
+        args: &[Spanned<Expr>],
+        env: &mut HashMap<String, ValueId>,
+        steps: &mut Vec<LoweredStep>,
+    ) -> Result<Vec<CallArg>, FatalError> {
+        let mut lowered = Vec::with_capacity(args.len());
+        for arg in args {
+            let (expr, ascription) = match &arg.node {
+                Expr::Ascribe(inner, ty) => (inner.as_ref(), Some(ty.clone())),
+                _ => (arg, None),
+            };
+            lowered.push(CallArg {
+                value: self.lower_expr(expr, env, steps)?,
+                ascription,
+            });
+        }
+        Ok(lowered)
     }
 
     fn lower_lambda(

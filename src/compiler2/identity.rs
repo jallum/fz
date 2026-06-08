@@ -185,6 +185,7 @@ pub struct ModuleSurface {
 pub struct ModuleExport {
     pub name: String,
     pub arity: usize,
+    pub variadic: bool,
     pub symbol: NamespaceSymbol,
 }
 

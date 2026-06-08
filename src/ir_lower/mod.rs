@@ -103,7 +103,8 @@ use cps::{
 };
 use ctx::LowerCtx;
 use expr::{bind_param_topname, lower_expr, lower_fn, lower_pattern_bind};
-use extern_table::{ExternTable, extern_symbol_from_name, extern_ty_from_name};
+use extern_table::ExternTable;
+pub(crate) use extern_table::{extern_symbol_from_name, extern_ty_from_name};
 use lambda::{collect_pattern_bound_names, collect_pattern_pinned_names, lower_lambda};
 use param_guards::emit_param_type_guards;
 use pattern_dispatch::{
@@ -1138,11 +1139,11 @@ fn debug_assert_unique_conts(module: &Module) {
 /// (semantic type for the type system).
 ///
 /// `type_env` is consulted for named type references (e.g. `pid`).
-pub(super) fn lower_extern_ret_ty<T: Types<Ty = Ty>>(
+pub(crate) fn lower_extern_ret_ty<T: Types>(
     t: &mut T,
     fn_def: &FnDef,
-    type_env: &ModuleTypeEnv,
-) -> Result<(ExternTy, Ty), LowerError> {
+    type_env: &ModuleTypeEnv<T::Ty>,
+) -> Result<(ExternTy, T::Ty), LowerError> {
     let tokens = &fn_def.extern_ret_tokens.0;
 
     // Try to resolve via parse_type_expr first (handles named types like `pid`).
@@ -1176,7 +1177,7 @@ pub(super) fn lower_extern_ret_ty<T: Types<Ty = Ty>>(
 /// Opaque types erase to Any (they are fz tagged values at runtime).
 /// Float-only types get the F64 wire. Nil-only → Unit. Never → Never.
 /// Everything else → Any (opaque u64 fz value).
-pub(super) fn ty_to_extern_ty<T: Types>(t: &mut T, d: &T::Ty) -> ExternTy {
+pub(crate) fn ty_to_extern_ty<T: Types>(t: &mut T, d: &T::Ty) -> ExternTy {
     if t.is_empty(d) {
         return ExternTy::Never;
     }

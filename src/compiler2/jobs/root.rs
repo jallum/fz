@@ -55,12 +55,17 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
     effects.follow_up.push(Job::LowerFunction(root.function));
     effects.follow_up.push(Job::PlanEntryDispatch(root.function));
     effects.follow_up.push(Job::AnalyzeActivation(entry_activation));
-    effects.follow_up.push(Job::CheckSemanticClosure(root_id));
+    effects.follow_up.push(Job::SealSemanticClosure(root_id));
     Ok(effects)
 }
 
-/// Checks whether one root's current activation facts have settled.
-pub(super) fn check_semantic_closure(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
+/// Seals a root's semantic closure once its activation frontier has settled.
+///
+/// This reads the activation, executable, analysis, and callsite facts that
+/// `analyze_activation` publishes and assembles the reachable set. It never
+/// activates a callee or invents a fact: discovery happens in the analysis
+/// jobs, and this seals `SemanticClosed` only when nothing is still pending.
+pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let root = world.root_entry(root_id);
     let mut reads = Vec::new();
     let mut waits = HashSet::new();

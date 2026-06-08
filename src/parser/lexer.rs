@@ -112,7 +112,7 @@ impl fmt::Display for Tok {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub tok: Tok,
     pub span: Span,

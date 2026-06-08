@@ -350,6 +350,7 @@ fn index_function(
     let export = (!def.is_private).then(|| ModuleExport {
         name: def.name.clone(),
         arity: def.arity(),
+        variadic: def.variadic,
         symbol: if def.is_macro {
             NamespaceSymbol::Macro(function_id)
         } else {
@@ -379,6 +380,7 @@ fn define_protocol_surface(
         exports.push(ModuleExport {
             name: callback.name.clone(),
             arity: callback.arity,
+            variadic: false,
             symbol,
         });
     }

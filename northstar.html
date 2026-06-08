@@ -330,7 +330,7 @@
     DeriveDispatchMask(FunctionId),
     SeedRoot(RootId),
     AnalyzeActivation(ActivationKey),
-    CheckSemanticClosure(RootId),
+    SealSemanticClosure(RootId),
     MaterializeRoot(RootId),
 }</code></pre>
       <p>
@@ -547,7 +547,7 @@ struct Types {
       <p>
         <code>AnalyzeActivation</code> publishes direct-call summaries, reached callee activations,
         executable needs, a joined return type, and the set of reachable clauses for one rooted
-        activation. <code>CheckSemanticClosure</code> does not invent new semantic facts. It only
+        activation. <code>SealSemanticClosure</code> does not invent new semantic facts. It only
         walks the already-published frontier, proves every reachable dependency is present, and then
         records an exact dependency snapshot plus the closed root frontier.
       </p>
@@ -614,7 +614,7 @@ follow_up:
   LowerFunction(main/0)
   PlanEntryDispatch(main/0)
   AnalyzeActivation(root, main/0, [])
-  CheckSemanticClosure(root)</code></pre>
+  SealSemanticClosure(root)</code></pre>
       </div>
 
       <div class="step">
@@ -675,7 +675,7 @@ join =&gt; Inputs([list(int)]) after refine_widen + alpha normalization</code></
         <p>
           Once every reachable activation has <code>Activation</code>, <code>Executable</code>,
           <code>ActivationAnalyzed</code>, <code>ReturnType</code>, <code>LoweredBody</code>, and
-          <code>CallSiteSummary</code>, <code>CheckSemanticClosure(root)</code> records the closed
+          <code>CallSiteSummary</code>, <code>SealSemanticClosure(root)</code> records the closed
           frontier and exact dependency snapshot:
         </p>
         <pre><code>SemanticClosed(root)
@@ -817,7 +817,7 @@ ReturnType(root, lambda#reduce_sum/2, [int, int]) = int</code></pre>
         <li><strong>One logical fact, one key:</strong> whole callsite summaries replace split partial facts.</li>
         <li><strong>No separate type loop:</strong> activation-input joins are ordinary fact replacement.</li>
         <li><strong>Lazy runtime bootstrap:</strong> <code>runtime.fz</code> and runtime modules warm only when demanded.</li>
-        <li><strong>Read-only closure:</strong> <code>CheckSemanticClosure</code> proves completeness; it does not rediscover semantics.</li>
+        <li><strong>Read-only closure:</strong> <code>SealSemanticClosure</code> proves completeness; it does not rediscover semantics.</li>
         <li><strong>Artifact isolation:</strong> materialization consumes a closed frontier and never reopens discovery.</li>
         <li><strong>Blast radius by revision:</strong> redefinition propagates only as far as fact revisions actually change.</li>
       </ul>

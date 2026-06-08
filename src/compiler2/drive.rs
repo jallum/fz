@@ -26,7 +26,7 @@ pub enum Job {
     DeriveDispatchMask(FunctionId),
     SeedRoot(RootId),
     AnalyzeActivation(ActivationKey),
-    CheckSemanticClosure(RootId),
+    SealSemanticClosure(RootId),
     MaterializeRoot(RootId),
 }
 

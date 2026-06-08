@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::body::CallSiteId;
+use super::body::{CallSiteId, ValueId};
 use super::drive::FactKey;
 use super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::types::{Ty, Types};
@@ -35,6 +35,7 @@ pub struct CallSiteSummary {
 pub struct ActivationAnalysis {
     pub reachable_clauses: Vec<u32>,
     pub callsites: Vec<CallSiteId>,
+    pub value_types: HashMap<ValueId, Ty>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,6 +204,10 @@ impl DependencySnapshot {
             }
         }
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&FactKey, &u64)> {
+        self.revisions.iter()
+    }
 }
 
 impl SemanticClosureMap {
@@ -230,6 +235,12 @@ impl SemanticClosureMap {
         self.slots
             .get(root.as_u32() as usize)
             .and_then(|slot| slot.as_ref().map(|slot| &slot.closure))
+    }
+
+    pub fn dependencies(&self, root: RootId) -> Option<&DependencySnapshot> {
+        self.slots
+            .get(root.as_u32() as usize)
+            .and_then(|slot| slot.as_ref().map(|slot| &slot.dependencies))
     }
 
     pub fn revision(&self, root: RootId) -> Option<u64> {

@@ -6,9 +6,10 @@
 
 use std::collections::HashMap;
 
-use super::body::{CallSiteId, LoweredBody};
-use super::identity::{ExecutableKey, ExecutableNeed, RootId};
-use super::semantic::SelectedCallee;
+use crate::fz_ir::ExternTy;
+
+use super::body::{CallSiteId, LoweredBody, ValueId};
+use super::identity::{ExecutableKey, RootId};
 use super::types::Ty;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,16 +22,40 @@ pub struct MaterializedProgram {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MaterializedExecutable {
     pub return_ty: Ty,
+    pub value_types: HashMap<ValueId, Ty>,
+    pub effects: EffectSummary,
     pub body: LoweredBody,
     pub call_edges: HashMap<CallSiteId, MaterializedCallEdge>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaterializedCallEdge {
-    pub callee: SelectedCallee,
-    pub input_types: Vec<Ty>,
-    pub need: ExecutableNeed,
+    pub callee: ExecutableKey,
     pub return_ty: Ty,
+    pub extern_marshals: Option<Vec<ExternTy>>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EffectSummary {
+    pub allocates: bool,
+    pub observable: bool,
+    pub reads_allocation_stats: bool,
+    pub scheduler_visible: bool,
+    pub halts: bool,
+    pub calls_opaque: bool,
+}
+
+impl EffectSummary {
+    pub fn union_with(&mut self, other: EffectSummary) -> bool {
+        let before = *self;
+        self.allocates |= other.allocates;
+        self.observable |= other.observable;
+        self.reads_allocation_stats |= other.reads_allocation_stats;
+        self.scheduler_visible |= other.scheduler_visible;
+        self.halts |= other.halts;
+        self.calls_opaque |= other.calls_opaque;
+        *self != before
+    }
 }
 
 #[derive(Debug, Clone)]

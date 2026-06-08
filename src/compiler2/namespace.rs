@@ -75,6 +75,30 @@ impl NamespaceStore {
         None
     }
 
+    pub fn lookup_best_matching<T: Ord>(
+        &self,
+        mut head: Namespace,
+        name: &str,
+        mut score: impl FnMut(&NamespaceSymbol) -> Option<T>,
+    ) -> Option<&NamespaceSymbol> {
+        let mut best = None;
+        while !head.is_end() {
+            let binding = &self.bindings[head.0 as usize - 1];
+            if binding.name == name
+                && let Some(candidate) = score(&binding.symbol)
+            {
+                let replace = best
+                    .as_ref()
+                    .is_none_or(|(current, _): &(T, &NamespaceSymbol)| candidate > *current);
+                if replace {
+                    best = Some((candidate, &binding.symbol));
+                }
+            }
+            head = binding.prev;
+        }
+        best.map(|(_, symbol)| symbol)
+    }
+
     pub fn restore(&self, savepoint: Namespace) -> Namespace {
         savepoint
     }

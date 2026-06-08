@@ -4,10 +4,12 @@
 //! pattern/destructure steps, and compiler-generated lambda definitions, but
 //! it stops above old-world CPS IR and planner concerns.
 
-use crate::ast::{BinOp, UnOp};
+use crate::ast::{BinOp, TypeExprBody, UnOp};
 use crate::compiler::source::Span;
+use crate::fz_ir::ExternTy;
 
 use super::identity::FunctionId;
+use super::types::Ty;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ValueId(u32);
@@ -36,6 +38,12 @@ impl CallSiteId {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct CallArg {
+    pub value: ValueId,
+    pub ascription: Option<TypeExprBody>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Int(i64),
     Float(f64),
@@ -52,10 +60,19 @@ pub enum DirectCallee {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct LoweredExtern {
+    pub abi: String,
+    pub symbol: String,
+    pub params: Vec<ExternTy>,
+    pub variadic: bool,
+    pub ret: ExternTy,
+    pub return_ty: Ty,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum LoweredBody {
     Extern {
-        abi: String,
-        arity: usize,
+        signature: LoweredExtern,
     },
     Clauses {
         clauses: Vec<LoweredClause>,
@@ -106,13 +123,13 @@ pub enum LoweredStep {
         value: ValueId,
         callsite: CallSiteId,
         callee: DirectCallee,
-        args: Vec<ValueId>,
+        args: Vec<CallArg>,
     },
     ClosureCall {
         value: ValueId,
         callsite: CallSiteId,
         callee: ValueId,
-        args: Vec<ValueId>,
+        args: Vec<CallArg>,
     },
     Lambda {
         value: ValueId,

@@ -11,7 +11,7 @@ use std::rc::Rc;
 /// A `Vec<Token>` representing a type expression whose resolution is deferred
 /// until the full module type environment is available. Used in five AST fields
 /// that are parsed eagerly but resolved later via `parse_type_expr`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TypeExprBody(pub Vec<Token>);
 
 /// Wraps an AST node with the source span that produced it. Every Expr
