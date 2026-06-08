@@ -3416,19 +3416,31 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
         qsort_activations[0].input != qsort_activations[1].input,
         "the two qsort/1 recursive activations should remain distinct after canonical keying"
     );
-    let partition_activations = activations
+    let mut partition_activations = activations
         .iter()
         .filter(|activation| activation.function == partition_id)
+        .cloned()
         .collect::<Vec<_>>();
+    partition_activations.sort_by(|left, right| left.input.cmp(&right.input));
     assert_eq!(
         partition_activations.len(),
-        1,
-        "root closure should keep one partition/4 recursive activation"
+        2,
+        "root closure should keep the narrow and widened partition/4 recursive activations because pivot/rest participate in dispatch"
+    );
+    assert!(
+        partition_activations
+            .iter()
+            .all(|activation| activation.input.len() == 4),
+        "partition/4 should stay keyed on its four inputs"
+    );
+    assert!(
+        partition_activations[0].input[..2] != partition_activations[1].input[..2],
+        "partition/4 should preserve distinct dispatch-driven pivot/rest keys"
     );
     assert_eq!(
-        partition_activations[0].input.len(),
-        4,
-        "partition/4 should stay keyed on its four inputs"
+        partition_activations[0].input[2..],
+        partition_activations[1].input[2..],
+        "partition/4 should collapse only the recursive accumulator slots after canonical keying"
     );
     let append_activations = activations
         .iter()
@@ -3448,7 +3460,7 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
         "the two append/2 recursive activations should remain distinct after canonical keying"
     );
     assert!(
-        activations.len() <= 12,
+        activations.len() <= 13,
         "quicksort should settle to a small finite rooted activation frontier, including reached runtime helpers"
     );
     assert!(
