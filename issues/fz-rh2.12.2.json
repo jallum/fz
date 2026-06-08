@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.12.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.12.3"
+  ],
   "created": "2026-06-08T20:52:14Z",
   "description": "Add the demanded formula. FactKey::TypeDefined(TypeName) carrying Presence, plus a TypeName-\u003eTy typed store like FunctionContractMap. Job::DeriveTypeDef resolves ONE type name body to a hard Ty, minting nominal types inner-in-symbol via mint_brand(inner,name). Sibling and cross-module refs resolve by reading TypeDefined and waiting/demanding -- the work graph is the fixpoint, so build_module_type_env loop is not ported. DeriveTypeDef is strictly PULLED, never queued at note time: a @type no reached consumer reads stays cold like an uncalled function. Verify: drive test that a referenced @type publishes TypeDefined once and an unreferenced one stays cold.",
   "id": "fz-rh2.12.2",
