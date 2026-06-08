@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-rh2.12.1"
@@ -16,7 +16,7 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "In-house type-expr parse + namespace capture (retire the env-coupled shape parser for compiler2)",
   "type": "task",
   "updated_at": "2026-06-08T21:36:20Z"
