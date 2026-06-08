@@ -5,13 +5,14 @@ use std::slice::from_ref;
 
 use crate::ast::{Attribute, SpecDecl, TypeAliasDecl, TypeExprBody};
 use crate::compiler::source::Span;
+use crate::frontend::protocols::PROTOCOL_ELEM_VAR;
 use crate::parser::lexer::Lexer;
 use crate::specs::{
     ResolvedSpec, ResolvedSpecSet, StructuralCorrespondenceGroup, StructuralOccurrence, StructuralPathStep,
     spec_set_correspondence_groups,
 };
 use crate::telemetry::Telemetry;
-use crate::types::{DefaultTypes, Ty, TypeVarId, Types};
+use crate::types::{ClosureTypes, DefaultTypes, Ty, TypeVarId, Types};
 
 fn parse_one<T: Types<Ty = Ty>>(t: &mut T, src: &str, tel: &dyn Telemetry) -> Result<T::Ty, TypeExprError> {
     parse_one_with(t, src, &ModuleTypeEnv::new(), tel)
@@ -874,6 +875,52 @@ fn resolved_spec_retains_structural_shape_for_higher_order_parametricity() {
         ]
     );
     assert_eq!(resolved.result_shape, ResolvedTypeShape::Var(TypeVarId(1)));
+}
+
+#[test]
+fn protocol_domain_with_free_var_preserves_element_parametricity_in_resolved_types() {
+    let mut ct = crate::types::new();
+    let mut env = ModuleTypeEnv::new();
+    let bare = {
+        let any = ct.any();
+        ct.list(any)
+    };
+    let template = {
+        let elem = ct.type_var(PROTOCOL_ELEM_VAR);
+        ct.list(elem)
+    };
+    env.insert("Enumerable.t".to_string(), bare);
+    env.insert_protocol_domain("Enumerable.t".to_string(), template);
+
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let toks = |src: &str| Lexer::with_source_name(src, "<test>").tokenize(&tel).expect("lex");
+    let spec = SpecDecl {
+        name: "reduce".to_string(),
+        param_body_tokens: vec![
+            TypeExprBody(toks("Enumerable.t(a)")),
+            TypeExprBody(toks("b")),
+            TypeExprBody(toks("(a, b) -> b")),
+        ],
+        result_body_tokens: TypeExprBody(toks("b")),
+        constraints: vec![],
+    };
+
+    let resolved = resolve_spec_decl(&mut ct, &spec, &env).unwrap();
+    let entry = ct.type_var(TypeVarId(0));
+    let expected_enumerable = ct.list(entry.clone());
+    assert!(
+        ct.is_equivalent(&resolved.params[0], &expected_enumerable),
+        "Enumerable.t(a) should preserve the element slot in the resolved type: got {}",
+        ct.display(&resolved.params[0]),
+    );
+    let reducer = ct
+        .callable_clauses(&resolved.params[2])
+        .expect("resolved reducer surface");
+    let reducer = reducer.into_iter().next().expect("resolved reducer clause");
+    assert!(
+        ct.is_equivalent(&reducer.args[0], &entry),
+        "the reducer entry arg should share the same element variable as Enumerable.t(a)",
+    );
 }
 
 #[test]

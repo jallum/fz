@@ -147,12 +147,15 @@ pub(crate) fn func_clause_empty(cx: TyCtx<'_>, c: &Conj<ArrowSig>, memo: &mut Me
                 continue;
             }
             found_matching_pos = true;
-            let all_subset = pos_lit
+            // The clause is empty only when the positive capture space is
+            // fully covered by the negated capture space: P \ N = empty iff
+            // P ⊆ N.
+            let pos_subset_of_neg = pos_lit
                 .captures
                 .iter()
                 .zip(&neg_lit.captures)
-                .all(|(pc, nc)| cx.descr(nc).diff(cx.descr(pc)).is_empty_memo(cx, memo));
-            if all_subset {
+                .all(|(pc, nc)| cx.descr(pc).diff(cx.descr(nc)).is_empty_memo(cx, memo));
+            if pos_subset_of_neg {
                 return true;
             }
         }

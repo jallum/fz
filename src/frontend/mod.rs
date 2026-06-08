@@ -20,7 +20,7 @@ use crate::measurements;
 use crate::metadata;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
-use crate::telemetry::value::opaque;
+use crate::telemetry::opaque;
 use crate::telemetry::{Telemetry, next_compile_nonce};
 use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Ty, Types};
 use std::collections::{HashMap, HashSet};
@@ -394,8 +394,9 @@ fn repl_entry_fn_def(entry_name: &str, input_frame: &[String], output_frame: &[S
         is_private: false,
         variadic: false,
         extern_abi: None,
-        extern_params: vec![],
+        extern_param_tokens: vec![],
         extern_ret_tokens: TypeExprBody(vec![]),
+        extern_constraints: vec![],
         attrs: vec![],
         span: Span::DUMMY,
     }

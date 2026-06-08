@@ -24,6 +24,7 @@ use crate::frontend::protocols::ProtocolRegistry;
 use crate::modules::identity::{Mfa, ModuleName};
 use crate::modules::interface::ModuleInterface;
 use crate::specs::{ResolvedSpecSet, StructuralCorrespondenceGroup};
+use crate::type_expr::ResolvedSpecDecl;
 use crate::types::{KeySlot, Nominals, Ty, ty_display};
 use fz_runtime::heap::Schema;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -315,6 +316,10 @@ pub struct ExternDecl {
     /// `Prim::Extern` calls their declared return type instead of `any`.
     /// Defaults to the `any` Ty when no return type is declared.
     pub ret_descr: Ty,
+    /// Full semantic extern contract so later phases can instantiate the
+    /// return from the actual arg types instead of falling back to a widened
+    /// bound.
+    pub semantic_contract: ResolvedSpecDecl<Ty>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

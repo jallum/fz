@@ -13,6 +13,7 @@ use crate::fz_ir::{
 };
 use crate::modules::identity::ModuleName;
 use crate::parser::lexer::Tok;
+use crate::type_expr::ResolvedSpecDecl;
 use crate::types::{Ty, Types};
 use std::collections::HashMap;
 use std::mem::discriminant;
@@ -1000,6 +1001,11 @@ fn ensure_kernel_dbg_extern<T: Types<Ty = Ty>>(ctx: &mut LowerCtx, t: &mut T) ->
         variadic: false,
         ret: ExternTy::Any,
         ret_descr: t.any(),
+        semantic_contract: ResolvedSpecDecl {
+            params: vec![t.any()],
+            result: t.any(),
+            constraints: HashMap::new(),
+        },
     });
     ctx.externs.insert("fz_dbg_value".to_string(), eid);
     eid

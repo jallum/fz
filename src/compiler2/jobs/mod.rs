@@ -11,6 +11,7 @@ use super::world::World;
 mod artifact;
 mod backend;
 mod body;
+mod contract;
 mod dispatch;
 mod keying;
 mod native;
@@ -23,6 +24,7 @@ pub(crate) fn run(world: &mut World<'_>, job: &Job) -> Result<JobEffects, FatalE
         Job::IndexCode(code_id) => source::index_code(world, *code_id),
         Job::ScopeCode(code_id) => source::scope_code(world, *code_id),
         Job::DefineModule(module_id) => source::define_module(world, *module_id),
+        Job::DeriveFunctionContract(function_id) => contract::derive_function_contract(world, *function_id),
         Job::LowerFunction(function_id) => body::lower_function(world, *function_id),
         Job::ReifyGuardDispatch(function_id) => dispatch::reify_guard_dispatch(world, *function_id),
         Job::PlanEntryDispatch(function_id) => dispatch::plan_entry_dispatch(world, *function_id),

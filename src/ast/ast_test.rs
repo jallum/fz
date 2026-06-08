@@ -30,7 +30,7 @@ fn fn_def_arity_uses_first_clause_for_regular_functions() {
 fn fn_def_arity_uses_extern_params_for_extern_functions() {
     let mut def = fn_def(Vec::new());
     def.extern_abi = Some("C".to_string());
-    def.extern_params = vec!["cstring".to_string(), "integer".to_string()];
+    def.extern_param_tokens = vec![TypeExprBody(Vec::new()), TypeExprBody(Vec::new())];
 
     assert_eq!(def.arity(), 2);
 }
@@ -51,8 +51,9 @@ fn fn_def(clauses: Vec<FnClause>) -> FnDef {
         is_macro: false,
         is_private: false,
         extern_abi: None,
-        extern_params: Vec::new(),
+        extern_param_tokens: Vec::new(),
         extern_ret_tokens: TypeExprBody(Vec::new()),
+        extern_constraints: Vec::new(),
         variadic: false,
         attrs: Vec::new(),
         span: Span::DUMMY,

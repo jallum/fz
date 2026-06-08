@@ -84,17 +84,17 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
     },
 ];
 
-pub struct RuntimeRootTypes {
-    pub env: ModuleTypeEnv,
-    pub opaque_inners: OpaqueInnerTypes,
-    pub brand_inners: BrandInnerTypes,
+pub struct RuntimeRootTypes<TypeHandle = Ty> {
+    pub env: ModuleTypeEnv<TypeHandle>,
+    pub opaque_inners: OpaqueInnerTypes<TypeHandle>,
+    pub brand_inners: BrandInnerTypes<TypeHandle>,
 }
 
 pub fn prelude_source() -> &'static str {
     RUNTIME_PRELUDE_FZ
 }
 
-pub fn root_type_env<T: Types<Ty = Ty>>(t: &mut T, tel: &dyn Telemetry) -> RuntimeRootTypes {
+pub fn root_type_env<T: Types>(t: &mut T, tel: &dyn Telemetry) -> RuntimeRootTypes<T::Ty> {
     let toks = Lexer::with_source_name(prelude_source(), "runtime:runtime.fz")
         .tokenize(tel)
         .expect("runtime.fz lex error (bug in built-in prelude)");
@@ -104,7 +104,7 @@ pub fn root_type_env<T: Types<Ty = Ty>>(t: &mut T, tel: &dyn Telemetry) -> Runti
     root_type_env_from_attrs(t, &attrs)
 }
 
-pub fn root_type_env_from_attrs<T: Types<Ty = Ty>>(t: &mut T, attrs: &[Attribute]) -> RuntimeRootTypes {
+pub fn root_type_env_from_attrs<T: Types>(t: &mut T, attrs: &[Attribute]) -> RuntimeRootTypes<T::Ty> {
     let builtin_env = builtin_type_env(t);
     let (env, declared_opaque_inners, declared_brand_inners) =
         build_module_type_env_for_with_base(t, attrs, "", &builtin_env)
@@ -465,7 +465,7 @@ fn collect_primitive_contract_names(items: &[Rc<Item>], names: &mut Vec<String>)
         if let Item::Fn(def) = &**item
             && def.extern_abi.is_some()
         {
-            let arity = def.extern_params.len();
+            let arity = def.extern_param_tokens.len();
             names.push(format!("{}/{}", def.name, arity));
         }
         if let Item::Module(module) = &**item {

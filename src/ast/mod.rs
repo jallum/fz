@@ -438,12 +438,14 @@ pub struct FnDef {
     pub is_private: bool,
     /// `Some("C")` for `extern "C" fn` declarations; `None` for regular fns.
     pub extern_abi: Option<String>,
-    /// Per-parameter type name strings for `extern "C" fn` declarations.
-    /// `extern_params.len()` gives the arity. Empty for regular fns.
-    pub extern_params: Vec<String>,
+    /// Per-parameter type-expression bodies for `extern "C" fn` declarations.
+    /// `extern_param_tokens.len()` gives the arity. Empty for regular fns.
+    pub extern_param_tokens: Vec<TypeExprBody>,
     /// Raw return-type tokens from `:: RetType`. Empty for regular fns.
     /// Kept as tokens because lowering consults the type_env alias table.
     pub extern_ret_tokens: TypeExprBody,
+    /// Optional constrained type variables from `when t: Bound`.
+    pub extern_constraints: Vec<(String, TypeExprBody)>,
     /// True for `extern "C" fn name(fixed, ...)` declarations.
     #[allow(dead_code)] // Read by fz-zar.B; fz-zar.A only records it.
     pub variadic: bool,
@@ -462,13 +464,23 @@ impl FnDef {
     /// declarations have no clauses, so their parameter list owns the arity.
     pub fn arity(&self) -> usize {
         if self.extern_abi.is_some() {
-            self.extern_params.len()
+            self.extern_param_tokens.len()
         } else {
             self.clauses
                 .first()
                 .map(|clause| clause.params.len())
                 .expect("functions should have at least one clause")
         }
+    }
+
+    pub fn extern_contract_decl(&self) -> Option<SpecDecl> {
+        self.extern_abi.as_ref()?;
+        Some(SpecDecl {
+            name: self.name.clone(),
+            param_body_tokens: self.extern_param_tokens.clone(),
+            result_body_tokens: self.extern_ret_tokens.clone(),
+            constraints: self.extern_constraints.clone(),
+        })
     }
 
     /// Returns the first `@doc` string attached to this fn, if any.

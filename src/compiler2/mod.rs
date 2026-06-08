@@ -4,6 +4,7 @@ mod body;
 mod cli;
 mod code;
 mod compiler;
+mod contract;
 mod deps;
 mod dispatch;
 mod drive;
@@ -32,11 +33,13 @@ pub use artifact::{
 pub(crate) use artifact::{NativeBody, NativeProgram};
 pub use body::{
     BodySlot, BodyState, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, DirectCallee, Literal,
-    LoweredBody, LoweredBodyMap, LoweredClause, LoweredEntry, LoweredExtern, LoweredStep, LoweredTail, ValueId,
+    LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredBodyMap, LoweredClause, LoweredEntry,
+    LoweredExtern, LoweredStep, LoweredTail, ValueId,
 };
 pub use cli::run as run_cli;
 pub use code::{Code, CodeId, CodeMap, CodeState};
 pub use compiler::{CodeSubmission, Compiler2, RootSubmission};
+pub use contract::{FunctionContract, FunctionContractMap};
 pub use deps::{DependencyIndex, UnresolvedWait};
 pub use drive::{FactKey, Job, WorkGraph};
 pub use facts::{FactChange, FactReplace, FactSlot, FactTable, FactValue};
@@ -63,6 +66,8 @@ mod artifact_test;
 mod code_test;
 #[cfg(test)]
 mod compiler2_test;
+#[cfg(test)]
+mod contract_test;
 #[cfg(test)]
 mod drive_test;
 #[cfg(test)]

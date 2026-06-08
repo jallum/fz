@@ -71,6 +71,34 @@ fn opaque_round_trip_downcasts_during_event_lifetime() {
     assert_eq!(v.tag(), "opaque");
     assert_eq!(v.downcast_ref::<usize>(), Some(&42usize));
     assert!(v.downcast_ref::<String>().is_none());
+    let opaque = match v {
+        Value::Opaque(opaque) => opaque,
+        other => panic!("expected opaque value, got {other:?}"),
+    };
+    assert_eq!(opaque.type_name(), std::any::type_name::<usize>());
+    assert!(
+        opaque.debug_value().is_none(),
+        "plain opaque values should stay debug-free"
+    );
+}
+
+#[test]
+fn opaque_debug_retains_borrowed_debug_rendering() {
+    let n = 42usize;
+    let v = Value::opaque_debug(&n);
+    let opaque = match v {
+        Value::Opaque(opaque) => opaque,
+        other => panic!("expected opaque value, got {other:?}"),
+    };
+    assert_eq!(
+        format!(
+            "{:?}",
+            opaque
+                .debug_value()
+                .expect("opaque_debug should preserve a borrowed debug formatter")
+        ),
+        "42"
+    );
 }
 
 #[test]

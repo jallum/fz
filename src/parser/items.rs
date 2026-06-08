@@ -140,8 +140,9 @@ impl Parser {
                             is_macro,
                             is_private,
                             extern_abi: None,
-                            extern_params: vec![],
+                            extern_param_tokens: vec![],
                             extern_ret_tokens: TypeExprBody(vec![]),
+                            extern_constraints: vec![],
                             variadic: false,
                             attrs,
                             span: start.merge(clause_span),
@@ -600,28 +601,37 @@ impl Parser {
             first
         };
         self.expect(&Tok::LParen, "`(`")?;
-        // Extern param types are identifiers. Two accepted shapes per param:
-        //   - bare type:        `cstring`
-        //   - named:            `path :: cstring`  (the name is documentation
-        //                                          only — it's discarded)
-        // The collected `params` Vec holds the *type* name for each slot.
-        // Type expressions that themselves contain brackets
-        // still capture the first ident as the type — the depth counter avoids
-        // bracketed inner idents overriding the outer type.
         let mut variadic = false;
-        let extern_params: Vec<String> = if matches!(self.peek(), Tok::RParen) {
+        let extern_param_tokens: Vec<TypeExprBody> = if matches!(self.peek(), Tok::RParen) {
             vec![]
         } else {
-            let mut params: Vec<String> = Vec::new();
-            let mut depth = 0usize;
-            let mut current_name: Option<String> = None;
-            let mut after_dbl_colon = false;
+            let mut params = Vec::new();
             loop {
-                match self.peek() {
-                    Tok::Ellipsis if depth == 0 => {
-                        if current_name.is_some() {
-                            return self.err("expected `,` before extern variadic `...`");
-                        }
+                if matches!(self.peek(), Tok::Ellipsis) {
+                    if params.is_empty() {
+                        return self.err("extern variadic `...` must follow at least one fixed parameter");
+                    }
+                    variadic = true;
+                    self.bump();
+                    self.skip_newlines();
+                    if !matches!(self.peek(), Tok::RParen) {
+                        return self.err("extern variadic `...` must be the final parameter");
+                    }
+                    break;
+                }
+                let tokens = self.collect_spec_param_type_tokens();
+                if tokens.is_empty() {
+                    return self.err("expected extern parameter type");
+                }
+                let body = match strip_extern_param_name(tokens) {
+                    Ok(body) => body,
+                    Err(msg) => return self.err(msg),
+                };
+                params.push(TypeExprBody(body));
+                if matches!(self.peek(), Tok::Comma) {
+                    self.bump();
+                    self.skip_newlines();
+                    if matches!(self.peek(), Tok::Ellipsis) {
                         variadic = true;
                         self.bump();
                         self.skip_newlines();
@@ -630,61 +640,40 @@ impl Parser {
                         }
                         break;
                     }
-                    Tok::LParen | Tok::LBrace | Tok::LBrack => {
-                        depth += 1;
-                        self.bump();
-                    }
-                    Tok::RParen | Tok::RBrace | Tok::RBrack if depth > 0 => {
-                        depth -= 1;
-                        self.bump();
-                    }
-                    Tok::RParen => {
-                        params.push(current_name.take().unwrap_or_default());
-                        break;
-                    }
-                    Tok::Comma if depth == 0 => {
-                        params.push(current_name.take().unwrap_or_default());
-                        after_dbl_colon = false;
-                        self.bump();
-                    }
-                    Tok::ColonColon if depth == 0 => {
-                        // fz-y3k — named-typed param: `<name> :: <type>`. The
-                        // ident we already captured is the param name; the
-                        // next top-level ident is the type and overrides.
-                        after_dbl_colon = true;
-                        self.bump();
-                    }
-                    Tok::Eof | Tok::Newline => {
-                        return self.err("unexpected end of extern parameter list");
-                    }
-                    Tok::Nil => {
-                        if depth == 0 && (current_name.is_none() || after_dbl_colon) {
-                            current_name = Some("nil".into());
-                            after_dbl_colon = false;
-                        }
-                        self.bump();
-                    }
-                    Tok::Ident(n) | Tok::Upper(n) => {
-                        let name = n.clone();
-                        if depth == 0 && (current_name.is_none() || after_dbl_colon) {
-                            current_name = Some(name);
-                            after_dbl_colon = false;
-                        }
-                        self.bump();
-                    }
-                    _ => {
-                        self.bump();
-                    }
+                    continue;
                 }
+                break;
             }
             params
         };
         self.expect(&Tok::RParen, "`)`")?;
         self.expect(&Tok::ColonColon, "`::`")?;
-        let mut extern_ret_tokens = Vec::new();
-        while !matches!(self.peek(), Tok::Newline | Tok::Eof) {
-            extern_ret_tokens.push(self.toks[self.pos].clone());
-            self.bump();
+        let extern_ret_tokens = self.collect_type_body_tokens();
+        if extern_ret_tokens.is_empty() {
+            return self.err("expected extern return type after `::`");
+        }
+        let mut extern_constraints = Vec::new();
+        if self.eat(&Tok::When) {
+            loop {
+                let var = match self.bump() {
+                    Tok::Ident(n) | Tok::KwKey(n) => n,
+                    other => {
+                        return self.err(format!("expected type variable after `when`, got {:?}", other));
+                    }
+                };
+                if !matches!(self.toks[self.pos - 1].tok, Tok::KwKey(_)) {
+                    self.expect(&Tok::Colon, "`:`")?;
+                }
+                let toks = self.collect_spec_param_type_tokens();
+                if toks.is_empty() {
+                    return self.err(format!("expected constraint type expression after `{}:`", var));
+                }
+                extern_constraints.push((var, TypeExprBody(toks)));
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+                self.skip_newlines();
+            }
         }
         let span = self.finish(start);
         Ok(FnDef {
@@ -694,8 +683,9 @@ impl Parser {
             is_macro: false,
             is_private: false,
             extern_abi: Some(abi),
-            extern_params,
+            extern_param_tokens,
             extern_ret_tokens: TypeExprBody(extern_ret_tokens),
+            extern_constraints,
             variadic,
             attrs: vec![],
             span,
@@ -1033,6 +1023,25 @@ enum TypeTokenBoundary {
     SpecParam,
     FnParam,
     TypeBody,
+}
+
+fn strip_extern_param_name(tokens: Vec<Token>) -> Result<Vec<Token>, String> {
+    let mut depth = 0i32;
+    for (index, token) in tokens.iter().enumerate() {
+        match token.tok {
+            Tok::LParen | Tok::LBrack | Tok::LBrace => depth += 1,
+            Tok::RParen | Tok::RBrack | Tok::RBrace => depth -= 1,
+            Tok::ColonColon if depth == 0 => {
+                let body = tokens[index + 1..].to_vec();
+                if body.is_empty() {
+                    return Err("expected extern parameter type after `::`".to_string());
+                }
+                return Ok(body);
+            }
+            _ => {}
+        }
+    }
+    Ok(tokens)
 }
 
 impl TypeTokenBoundary {

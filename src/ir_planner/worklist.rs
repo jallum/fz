@@ -18,7 +18,7 @@ use crate::specs::{
     resolve_closure_return,
 };
 use crate::telemetry::Telemetry;
-use crate::telemetry::value::opaque;
+use crate::telemetry::opaque;
 use crate::type_infer::{
     TypeInferActivationEdgeFact, TypeInferActivationFact, TypeInferActivationId, TypeInferDeadArmFact,
     TypeInferReturnState, TypeInferStatus, infer_from_entry,

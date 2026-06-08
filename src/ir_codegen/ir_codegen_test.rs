@@ -2888,8 +2888,8 @@ fn typed_send_literal_boxes_message_at_kernel_boundary() {
         caller_ir
     );
 
-    let send_ir = compiled_ir_body_matching(src, "typed Kernel.send(int, int)", |body| {
-        body.contains("@spec   Kernel.send(int, int) -> any") && body.contains("@fz_box_int_for_any")
+    let send_ir = compiled_ir_body_matching(src, "typed Kernel.send boundary", |body| {
+        body.contains("@fz_box_int_for_any") && body.contains("@fz_send_ref")
     });
     let send_ir = send_ir.as_str();
     assert!(

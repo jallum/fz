@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use std::rc::Rc;
 
@@ -383,6 +383,31 @@ impl ModuleMap {
             .get(id.0 as usize)
             .expect("module ids should be known before reading module names")
             .as_deref()
+    }
+
+    pub fn named_struct_schemas(&self) -> BTreeMap<String, Vec<String>> {
+        let mut out = BTreeMap::new();
+        for (index, name) in self.names.iter().enumerate() {
+            let Some(name) = name else {
+                continue;
+            };
+            let module = &self.slots[index];
+            let Some(fields) = (match &module.state {
+                ModuleState::Placeholder => None,
+                ModuleState::Indexed(source)
+                | ModuleState::Scoped { source, .. }
+                | ModuleState::Defined { source, .. } => source.items().and_then(|items| {
+                    items.iter().find_map(|item| match &**item {
+                        Item::Struct(def) => Some(def.fields.clone()),
+                        _ => None,
+                    })
+                }),
+            }) else {
+                continue;
+            };
+            out.insert(name.clone(), fields);
+        }
+        out
     }
 }
 

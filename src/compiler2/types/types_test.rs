@@ -687,6 +687,60 @@ macro_rules! semantic_helper_conformance_tests {
                 let widened = t.refine_widen(&int, &any);
                 assert!(t.is_equivalent(&widened, &any));
             }
+
+            #[test]
+            fn widen_for_recursive_spec_key_preserves_list_element_shape() {
+                let mut t = $ctor;
+                let one = t.int_lit(1);
+                let two = t.int_lit(2);
+                let elems = t.union(one, two);
+                let list = t.non_empty_list(elems);
+                let widened = t.widen_for_recursive_spec_key(&list);
+                let int = t.int();
+                let expected = t.non_empty_list(int);
+                assert!(
+                    t.is_equivalent(&widened, &expected),
+                    "recursive-spec widening should keep the list axis while widening element literals, got {}",
+                    t.display(&widened),
+                );
+            }
+
+            #[test]
+            fn widen_for_recursive_spec_key_preserves_callable_surface_shape() {
+                let mut t = $ctor;
+                let entries = {
+                    let one = t.int_lit(1);
+                    let two = t.int_lit(2);
+                    t.union(one, two)
+                };
+                let zero = t.int_lit(0);
+                let callable = {
+                    let lit = t.fn_ref_lit(ClosureTarget(19), 2);
+                    let surface = t.arrow(&[entries, zero], zero);
+                    t.intersect(lit, surface)
+                };
+                let widened = t.widen_for_recursive_spec_key(&callable);
+                let clauses = t
+                    .callable_value_clauses(&widened)
+                    .expect("widened callable clauses");
+                let clause = clauses.into_iter().next().expect("widened callable clause");
+                let int = t.int();
+                assert!(
+                    t.is_equivalent(&clause.args[0], &int),
+                    "recursive-spec widening should widen callable arg literals to integer, got {}",
+                    t.display(&clause.args[0]),
+                );
+                assert!(
+                    t.is_equivalent(&clause.args[1], &int),
+                    "recursive-spec widening should widen the accumulator literal to integer, got {}",
+                    t.display(&clause.args[1]),
+                );
+                assert!(
+                    t.is_equivalent(&clause.ret, &int),
+                    "recursive-spec widening should widen the callable return literal to integer, got {}",
+                    t.display(&clause.ret),
+                );
+            }
         }
     };
 }
@@ -709,6 +763,137 @@ macro_rules! closure_helper_conformance_tests {
                 assert_eq!(clauses.len(), 1);
                 assert_eq!(clauses[0].args.len(), 2);
                 assert!(clauses[0].closure.is_none());
+            }
+
+            #[test]
+            fn callable_value_clauses_apply_surface_to_closure_vars() {
+                let mut t = $ctor;
+                let closure = t.fn_ref_lit(ClosureTarget(3), 1);
+                let int = t.int();
+                let nil = t.nil();
+                let surface = t.arrow(&[int], nil);
+                let refined = t.intersect(closure, surface);
+                let clauses = t
+                    .callable_value_clauses(&refined)
+                    .expect("refined callable should expose value clauses");
+                assert_eq!(clauses.len(), 1);
+                let clause = &clauses[0];
+                assert!(clause.closure.is_some(), "value clauses should preserve closure identity");
+                assert!(t.is_integer(&clause.args[0]), "the surface should specialize the closure arg");
+                assert!(t.is_nil(&clause.ret), "the surface should specialize the closure return");
+            }
+
+            #[test]
+            fn closure_lit_intersect_same_fn_narrows_captures() {
+                let mut t = $ctor;
+                let int = t.int();
+                let ten = t.int_lit(10);
+                let a = t.closure_lit(ClosureTarget(3), vec![int], 1);
+                let b = t.closure_lit(ClosureTarget(3), vec![ten], 1);
+                let narrowed = t.intersect(a, b);
+                let parts = t
+                    .closure_lit_parts(&narrowed)
+                    .expect("same-target closure meet should stay a singleton");
+                assert_eq!(parts.target, ClosureTarget(3));
+                assert_eq!(parts.captures.len(), 1);
+                assert_eq!(
+                    parts.captures[0], ten,
+                    "same-target closure meet should narrow captures elementwise"
+                );
+            }
+
+            #[test]
+            fn closure_lit_intersect_different_fn_ids_is_empty() {
+                let mut t = $ctor;
+                let a = t.closure_lit(ClosureTarget(3), Vec::new(), 1);
+                let b = t.closure_lit(ClosureTarget(4), Vec::new(), 1);
+                let intersection = t.intersect(a, b);
+                assert!(
+                    t.is_empty(&intersection),
+                    "different closure identities should have an empty meet"
+                );
+            }
+
+            #[test]
+            fn tuple_contract_meet_keeps_a_single_specialized_tuple_shape() {
+                let mut t = $ctor;
+                let any = t.any();
+                let suspended_tag = t.atom_lit("suspended");
+                let continuation_surface = t.arrow(&[], any);
+                let captured = t.int_lit(7);
+                let payload = t.int_lit(42);
+                let continuation = t.closure_lit(ClosureTarget(7), vec![captured], 0);
+                let observed = t.tuple(&[suspended_tag, payload, continuation]);
+                let contract = t.tuple(&[suspended_tag, any, continuation_surface]);
+
+                let refined = t.intersect(observed, contract);
+                let fields = t
+                    .tuple_lit_elems(&refined)
+                    .expect("tuple meets should collapse to one tuple shape, not a conjunction of tuple clauses");
+                assert_eq!(fields.len(), 3);
+
+                let repeated = t.intersect(refined, contract);
+                assert_eq!(
+                    repeated, refined,
+                    "meeting the same tuple contract again should stay stable"
+                );
+            }
+
+            #[test]
+            fn intersect_preserves_concrete_suspended_return_when_it_is_already_within_contract() {
+                let mut t = $ctor;
+                let any = t.any();
+                let list_any = t.list(any);
+                let cont_tag = t.atom_lit("cont");
+                let halt_tag = t.atom_lit("halt");
+                let suspend_tag = t.atom_lit("suspend");
+                let done_tag = t.atom_lit("done");
+                let halted_tag = t.atom_lit("halted");
+                let suspended_tag = t.atom_lit("suspended");
+                let reducer_surface = {
+                    let cont = t.tuple(&[cont_tag, any]);
+                    let halt = t.tuple(&[halt_tag, any]);
+                    let suspend = t.tuple(&[suspend_tag, any]);
+                    let states = t.union(cont, halt);
+                    let states = t.union(states, suspend);
+                    t.arrow(&[any, any], states)
+                };
+                let continuation_surface = t.arrow(&[], any);
+                let continuation = {
+                    let lit = t.closure_lit(ClosureTarget(7), vec![list_any, any, reducer_surface], 0);
+                    t.intersect(lit, continuation_surface)
+                };
+                let done = t.tuple(&[done_tag, any]);
+                let halted = t.tuple(&[halted_tag, any]);
+                let suspended = t.tuple(&[suspended_tag, any, continuation]);
+                let observed = {
+                    let two = t.union(done, halted);
+                    t.union(two, suspended)
+                };
+
+                let contract = {
+                    let done = t.tuple(&[done_tag, any]);
+                    let halted = t.tuple(&[halted_tag, any]);
+                    let suspended = t.tuple(&[suspended_tag, any, continuation_surface]);
+                    let two = t.union(done, halted);
+                    t.union(two, suspended)
+                };
+
+                assert!(
+                    t.is_subtype(&observed, &contract),
+                    "the concrete suspended-return shape should already satisfy its declared contract: observed={} contract={}",
+                    t.display(&observed),
+                    t.display(&contract),
+                );
+
+                let refined = t.intersect(observed, contract);
+                assert_eq!(
+                    refined, observed,
+                    "intersecting a subtype with its contract should be an identity, not a larger conjunction"
+                );
+
+                let repeated = t.intersect(refined, contract);
+                assert_eq!(repeated, observed, "repeating the same contract meet should stay stable");
             }
         }
     };
@@ -831,6 +1016,7 @@ mod smoke {
         let one = t.int_lit(1);
         let int = t.int();
         let float = t.float();
+        let resource = t.resource(int);
         let nil = t.nil();
         let bool_t = t.bool();
         let atom_lit = t.atom_lit("ok");
@@ -841,6 +1027,10 @@ mod smoke {
         assert!(t.is_integer(&one));
         assert!(t.is_integer(&int));
         assert!(!t.is_integer(&float));
+        assert!(
+            !t.is_integer(&resource),
+            "resource(integer) must stay a boxed resource value, not collapse into the raw integer lane",
+        );
         assert!(t.is_floating(&float));
         assert!(!t.is_floating(&int));
         assert!(t.is_nil(&nil));

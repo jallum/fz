@@ -17,6 +17,34 @@ fn run_fz2(args: &[&OsStr]) -> Output {
     Command::new(FZ2_BIN).args(args).output().expect("invoke fz2 binary")
 }
 
+fn fixture_expected_stdout(path: &str) -> String {
+    let expected = Path::new(path).with_file_name("expected.txt");
+    if expected.exists() {
+        read_to_string(&expected).unwrap_or_else(|error| panic!("read {}: {error}", expected.display()))
+    } else {
+        String::new()
+    }
+}
+
+fn assert_successful_stdout(out: &Output, expected: &str, context: &str) {
+    assert!(
+        out.status.success(),
+        "{context} should succeed; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(out.stdout.clone()).expect("stdout is utf-8"),
+        expected,
+        "{context} should print the expected stdout"
+    );
+    assert!(
+        out.stderr.is_empty(),
+        "{context} should write nothing to stderr; got: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 fn assert_compiler2_telemetry_only(path: &Path, context: &str) {
     let log = read_to_string(path).unwrap_or_else(|error| panic!("read telemetry log {}: {error}", path.display()));
     assert!(
@@ -128,4 +156,49 @@ fn build_stays_on_compiler2_telemetry_and_links_a_native_binary() {
     let _ = remove_file(&source_path);
     let _ = remove_file(&out_bin);
     let _ = remove_file(out_bin.with_extension("bin.o"));
+}
+
+#[test]
+fn run_and_interp_execute_map_struct_and_bitstring_fixtures() {
+    for fixture in [
+        "fixtures/map_three_path_parity/input.fz",
+        "fixtures/defstruct_runtime/input.fz",
+        "fixtures/utf8_smart_constructor/input.fz",
+    ] {
+        let expected = fixture_expected_stdout(fixture);
+        for command in ["run", "interp"] {
+            let out = run_fz2(&[OsStr::new(command), OsStr::new(fixture)]);
+            assert_successful_stdout(&out, &expected, &format!("fz2 {command} {fixture}"));
+        }
+    }
+}
+
+#[test]
+fn build_executes_map_struct_and_bitstring_fixtures() {
+    for fixture in [
+        "fixtures/map_three_path_parity/input.fz",
+        "fixtures/defstruct_runtime/input.fz",
+        "fixtures/utf8_smart_constructor/input.fz",
+    ] {
+        let expected = fixture_expected_stdout(fixture);
+        let out_bin = unique_temp_path("fz2_fixture_build", ".bin");
+        let build = run_fz2(&[
+            OsStr::new("build"),
+            OsStr::new(fixture),
+            OsStr::new("-o"),
+            out_bin.as_os_str(),
+        ]);
+        assert!(
+            build.status.success(),
+            "fz2 build {fixture} should succeed; stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&build.stdout),
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let run = Command::new(&out_bin)
+            .output()
+            .unwrap_or_else(|error| panic!("run built binary for {fixture}: {error}"));
+        assert_successful_stdout(&run, &expected, &format!("fz2 build/run {fixture}"));
+        let _ = remove_file(&out_bin);
+        let _ = remove_file(out_bin.with_extension("bin.o"));
+    }
 }

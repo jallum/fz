@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::telemetry::capture::vec_writer;
 use crate::telemetry::event::{Measurements, Metadata};
 use crate::telemetry::handler::{Event, EventKind};
-use crate::telemetry::value::opaque;
+use crate::telemetry::value::opaque_debug;
 use crate::telemetry::{ConfiguredTelemetry, Telemetry as _};
 
 use super::*;
@@ -108,17 +108,21 @@ fn string_sequence_renders_as_json_array() {
 }
 
 #[test]
-fn opaque_values_are_omitted() {
+fn opaque_values_render_as_type_and_debug() {
     let payload = 99usize;
     let m = Measurements::new();
     let md = crate::metadata! {
         keep: "yes",
-        payload: opaque(&payload),
+        payload: opaque_debug(&payload),
     };
     let ev = make_event(&["x"], EventKind::Event, &m, &md);
     let line = capture_jsonl(&ev);
     assert!(line.contains("\"keep\":\"yes\""), "{}", line);
-    assert!(!line.contains("payload"), "{}", line);
+    assert!(
+        line.contains("\"payload\":{\"opaque_type\":\"usize\",\"debug\":\"99\"}"),
+        "{}",
+        line
+    );
 }
 
 #[test]

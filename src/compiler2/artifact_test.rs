@@ -7,6 +7,7 @@ use crate::compiler2::artifact::{
 use crate::fz_ir::{
     Block, BlockId, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnCategory, FnId, FnIr, Module, Term, Var,
 };
+use crate::type_expr::ResolvedSpecDecl;
 use crate::types::Types as _;
 
 #[test]
@@ -139,6 +140,11 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
         variadic: true,
         ret: ExternTy::I64,
         ret_descr: legacy_types.any(),
+        semantic_contract: ResolvedSpecDecl {
+            params: vec![legacy_types.any(), legacy_types.any()],
+            result: legacy_types.any(),
+            constraints: HashMap::new(),
+        },
     });
     module.extern_idx.insert(ExternId(0), 0);
     module.fns.push(FnIr {

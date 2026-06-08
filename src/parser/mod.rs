@@ -4,7 +4,7 @@ use self::lexer::{Tok, Token};
 use crate::ast::*;
 use crate::compiler::source::Span;
 use crate::diag::{Diagnostic, codes::PARSE_EXPECTED_TOKEN};
-use crate::telemetry::{Metadata, Telemetry, value::opaque};
+use crate::telemetry::{Metadata, Telemetry, opaque};
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
 use std::mem::discriminant;

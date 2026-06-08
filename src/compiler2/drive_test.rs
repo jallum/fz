@@ -1231,6 +1231,59 @@ fn compiler2_abi_ready_makes_tuple_field_return_delivery_explicit_for_quicksort(
 }
 
 #[test]
+fn compiler2_abi_ready_boxes_heap_projection_returns_at_function_boundaries() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let abi_ready = AbiReadyProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "abi_ready_program", "defined"],
+        abi_ready.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/compiler2_projection_boundary_abi.fz".to_string()),
+        text: r#"
+fn tuple_first({value, _}), do: value
+fn map_first(map), do: map[:value]
+
+fn main() do
+  {
+    tuple_first({2, :ok}),
+    map_first(%{value: 3})
+  }
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "ABI-ready projection should keep heap observations boxed across function boundaries",
+    );
+
+    let tuple_first_id = function_id(&functions, "tuple_first", 1);
+    let map_first_id = function_id(&functions, "map_first", 1);
+    let program = abi_ready.last(root_id).program;
+
+    for function in [tuple_first_id, map_first_id] {
+        let (_, executable) = abi_ready_executable(&program, function);
+        assert_eq!(
+            executable.return_abi,
+            ReturnAbi::Value(AbiValueRepr::ValueRef),
+            "projection-only helpers should box their boundary return lane instead of exporting a guessed raw scalar ABI",
+        );
+    }
+}
+
+#[test]
 fn compiler2_abi_ready_derives_only_the_closed_enum_reduce_callable_entries() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -2619,6 +2672,41 @@ end
 }
 
 #[test]
+fn compiler2_native_program_jit_runs_map_fixture_through_shared_codegen() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/map_three_path_parity/input.fz".to_string()),
+        text: include_str!("../../fixtures/map_three_path_parity/input.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "Compiler2 native lowering should settle before shared codegen consumes the map fixture: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let program = native.last(root_id).program;
+    let _compiled = jit_compile_native_program(&program, &tel);
+}
+
+#[test]
 fn compiler2_native_program_jit_keeps_tail_recursion_bounded() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -3004,6 +3092,92 @@ end
     assert!(
         capture.find(&["fz", "runtime", "dtor_drain_failed"]).is_empty(),
         "resource destructor drain should complete cleanly on the backend interpreter path",
+    );
+}
+
+#[test]
+fn compiler2_native_program_resource_fixture_shapes_callable_entries_explicitly() {
+    let _lock = tests_support_lock().lock().unwrap();
+    tests_support_dtor_reset();
+
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/compiler2_resource_callable_shape.fz".to_string()),
+        text: r#"
+extern "C" fn _resource_test_dtor(integer) :: nil
+
+fn main() do
+  make_resource(42, fn (x) -> _resource_test_dtor(x) end)
+  0
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "resource fixture should settle through native lowering before JIT consumes it",
+    );
+
+    let program = native.last(root_id).program;
+    let main_id = function_id(&functions, "main", 0);
+    let lambda_id = generated_functions_owned_by(&functions, main_id)
+        .into_iter()
+        .next()
+        .expect("generated dtor lambda")
+        .function_id;
+    let callable_entries = program
+        .callable_entries
+        .iter()
+        .filter(|entry| entry.target.activation.function == lambda_id)
+        .map(|entry| (entry.capture_count, entry.param_reprs.clone(), entry.return_abi.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        callable_entries,
+        vec![(0, vec![AbiValueRepr::RawInt], ReturnAbi::Value(AbiValueRepr::ValueRef))],
+        "resource destructor lambdas should surface one zero-capture callable entry that takes the raw payload lane and returns through the boxed nil seam",
+    );
+    assert_eq!(
+        native_executable_body(&program, lambda_id).param_reprs,
+        vec![AbiValueRepr::RawInt],
+        "resource destructor executable bodies should specialize their native entry lane to the raw payload type",
+    );
+    let make_resource_id = function_id(&functions, "fz_make_resource", 2);
+    assert_eq!(
+        native_executable_body(&program, make_resource_id).return_abi,
+        ReturnAbi::Value(AbiValueRepr::ValueRef),
+        "fz_make_resource/2 must return a boxed resource ref through the native ABI",
+    );
+
+    let native_callable_entry = program
+        .callable_entries
+        .iter()
+        .find(|entry| entry.target.activation.function == lambda_id)
+        .expect("native program should publish the dtor lambda callable entry");
+    let compiled = jit_compile_native_program(&program, &tel);
+    let static_target = compiled
+        .static_closure_targets()
+        .iter()
+        .find(|(_, fn_id, _, _)| *fn_id == native_callable_entry.target_fn.0)
+        .expect("compiled JIT module should publish one static closure target for the dtor entry target");
+    let body_ptr = compiled
+        .fn_ptr(native_callable_entry.target_fn)
+        .expect("compiled JIT module should publish the dtor entry target body address");
+    assert_ne!(
+        static_target.2, body_ptr,
+        "static closure singletons should point at callable-entry wrappers, not straight at the lambda body",
     );
 }
 

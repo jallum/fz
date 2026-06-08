@@ -31,7 +31,7 @@ pub use crate::types::{
 use conj::Conj;
 use descr::Descr;
 use lit_set::{LiteralSet, closure_ret_var_id, closure_var_id};
-use sigs::{ArrowSig, ClosureLit, ListSig};
+use sigs::{ArrowSig, ClosureLit, ListSig, MergeSig};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -400,7 +400,18 @@ impl Types {
     }
 
     pub fn intersect(&mut self, a: Ty, b: Ty) -> Ty {
-        let d = self.descr(&a).intersect(self.descr(&b));
+        if a == b {
+            return a;
+        }
+        if self.is_subtype(&a, &b) {
+            return a;
+        }
+        if self.is_subtype(&b, &a) {
+            return b;
+        }
+        let left = self.descr(&a).clone();
+        let right = self.descr(&b).clone();
+        let d = intersect_descr(self, &left, &right);
         self.intern(d)
     }
 
@@ -633,6 +644,45 @@ impl Types {
 
     pub fn callable_clauses(&mut self, a: &Ty) -> Option<Vec<CallableClause<Ty>>> {
         callable_clauses(self.ctx(), self.descr(a))
+    }
+
+    pub fn callable_value_clauses(&mut self, a: &Ty) -> Option<Vec<CallableClause<Ty>>> {
+        let clauses = self.callable_clauses(a)?;
+        let surface_clauses = clauses
+            .iter()
+            .filter(|clause| clause.closure.is_none())
+            .cloned()
+            .collect::<Vec<_>>();
+        if surface_clauses.is_empty() {
+            return Some(clauses);
+        }
+
+        let mut resolved = Vec::new();
+        for clause in clauses {
+            if clause.closure.is_none() {
+                continue;
+            }
+            let mut specialized = false;
+            for surface in surface_clauses
+                .iter()
+                .filter(|surface| surface.args.len() == clause.args.len())
+            {
+                specialized = true;
+                let resolved_clause = specialize_callable_clause(self, &clause, surface);
+                if !resolved.contains(&resolved_clause) {
+                    resolved.push(resolved_clause);
+                }
+            }
+            if !specialized && !resolved.contains(&clause) {
+                resolved.push(clause);
+            }
+        }
+
+        if resolved.is_empty() {
+            Some(surface_clauses)
+        } else {
+            Some(resolved)
+        }
     }
 
     pub fn erase_closure_identity(&mut self, a: &Ty) -> Ty {
@@ -1000,6 +1050,57 @@ fn pure_var_ids(d: &Descr) -> Option<Vec<TypeVarId>> {
     (only_vars && !finite.is_empty()).then_some(finite)
 }
 
+fn intersect_descr(types: &mut Types, a: &Descr, b: &Descr) -> Descr {
+    Descr {
+        basic: a.basic.intersect(b.basic),
+        atoms: a.atoms.intersect(&b.atoms),
+        ints: a.ints.intersect(&b.ints),
+        floats: a.floats.intersect(&b.floats),
+        opaques: a.opaques.intersect(&b.opaques),
+        brands: a.brands.intersect(&b.brands),
+        vars: a.vars.intersect(&b.vars),
+        tuples: intersect_dnf(types, &a.tuples, &b.tuples),
+        lists: intersect_dnf(types, &a.lists, &b.lists),
+        resources: intersect_dnf(types, &a.resources, &b.resources),
+        funcs: intersect_dnf(types, &a.funcs, &b.funcs),
+        maps: intersect_dnf(types, &a.maps, &b.maps),
+    }
+}
+
+fn intersect_dnf<T: MergeSig>(types: &mut Types, a: &[Conj<T>], b: &[Conj<T>]) -> Vec<Conj<T>> {
+    let mut out = Vec::with_capacity(a.len() * b.len());
+    for c1 in a {
+        for c2 in b {
+            out.push(intersect_clauses(types, c1, c2));
+        }
+    }
+    out
+}
+
+fn intersect_clauses<T: MergeSig>(types: &mut Types, a: &Conj<T>, b: &Conj<T>) -> Conj<T> {
+    let mut pos = a.pos.clone();
+    for new_sig in &b.pos {
+        let mut merged = false;
+        for slot in pos.iter_mut() {
+            if let Some(narrowed) = T::intersect_pos(types, slot, new_sig) {
+                *slot = narrowed;
+                merged = true;
+                break;
+            }
+        }
+        if !merged && !pos.contains(new_sig) {
+            pos.push(new_sig.clone());
+        }
+    }
+    let mut neg = a.neg.clone();
+    for sig in &b.neg {
+        if !neg.contains(sig) {
+            neg.push(sig.clone());
+        }
+    }
+    Conj { pos, neg }
+}
+
 fn list_element_type(cx: TyCtx<'_>, d: &Descr) -> Descr {
     if d.lists.is_empty() {
         return Descr::any();
@@ -1175,6 +1276,23 @@ fn callable_clauses(cx: TyCtx<'_>, d: &Descr) -> Option<Vec<CallableClause<Ty>>>
             .filter(|clause| clause.args.iter().all(|arg| !cx.descr(arg).is_empty(cx)))
             .collect(),
     )
+}
+
+fn specialize_callable_clause(
+    types: &mut Types,
+    clause: &CallableClause<Ty>,
+    surface: &CallableClause<Ty>,
+) -> CallableClause<Ty> {
+    let mut sigma = Sigma::new();
+    for (pattern, witness) in clause.args.iter().zip(surface.args.iter()) {
+        types.collect_instantiation_subst(pattern, witness, &mut sigma);
+    }
+    types.collect_instantiation_subst(&clause.ret, &surface.ret, &mut sigma);
+    CallableClause {
+        args: clause.args.iter().map(|arg| types.instantiate(arg, &sigma)).collect(),
+        ret: types.instantiate(&clause.ret, &sigma),
+        closure: clause.closure.clone(),
+    }
 }
 
 fn has_vars(cx: TyCtx<'_>, d: &Descr) -> bool {

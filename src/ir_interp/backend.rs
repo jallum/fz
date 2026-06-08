@@ -4,9 +4,10 @@ use std::rc::Rc;
 use super::binop::{eval_binop, eval_unop, interp_value_eq, unpack_closure};
 use super::dispatch_exec::{DispatchExecState, execute_dispatch_inputs};
 use super::extern_call::call_lowered_extern;
-use super::prim::{interp_list_cons, interp_list_head, interp_list_tail, interp_map_get};
+use super::prim::{interp_list_cons, interp_list_head, interp_list_tail, interp_map_get, interp_map_put};
 use super::value::{
-    AnyValue, interp_bool_value, interp_empty_list_value, interp_nil_value, interp_value_from_ref_word, with_value_ref,
+    AnyValue, interp_bool_value, interp_empty_list_value, interp_nil_value, interp_struct_field_from_tagged_bits,
+    interp_value_from_ref_word, with_value_ref,
 };
 use super::*;
 use crate::compiler2::{
@@ -20,8 +21,12 @@ use fz_runtime::any_value::{
     AnyValue as RuntimeAnyValue, AnyValueRef, ValueKind, closure_addr_from_tagged, struct_schema_id,
 };
 use fz_runtime::exec_ctx::ExecCtx;
+use fz_runtime::heap::Schema;
 use fz_runtime::heap::{FieldKind, Heap, deep_copy_any_value_ref};
-use fz_runtime::ir_runtime::fz_struct_get_field_ref;
+use fz_runtime::ir_runtime::{
+    fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_map_empty, fz_map_get_atom_key_ref, fz_matcher_map_get_ref,
+    fz_struct_get_field_ref,
+};
 use fz_runtime::procbin::mso_drop_all_deferred;
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Process, ProcessState};
 
@@ -35,6 +40,7 @@ pub(crate) fn run_backend_main(
     let mut runtime = IrInterpRuntime::fresh_with_atoms(program.atom_names.clone());
     let module = Module {
         atom_names: program.atom_names.clone(),
+        struct_schemas: program.struct_schemas.clone(),
         ..Module::default()
     };
     runtime.enqueue_backend_entry(1, program.entry, Vec::new())?;
@@ -379,7 +385,7 @@ fn eval_steps(
     _types: &mut crate::compiler2::Types,
     _tel: &dyn Telemetry,
     _program: &BackendProgram,
-    _module: &Module,
+    module: &Module,
     _executable: &BackendExecutable,
     steps: &[BackendStep],
     env: &mut HashMap<ValueId, AnyValue>,
@@ -400,6 +406,83 @@ fn eval_steps(
                     acc = interp_list_cons(runtime.cur_proc(), env_get(env, *item)?, acc, "backend list")?;
                 }
                 env.insert(*value, acc);
+            }
+            BackendStep::Map { value, entries } => {
+                let mut map_bits = if entries.is_empty() {
+                    fz_map_empty(runtime.cur_proc())
+                } else {
+                    0
+                };
+                for (key, item) in entries {
+                    map_bits = interp_map_put(
+                        runtime.cur_proc(),
+                        map_bits,
+                        env_get(env, *key)?,
+                        env_get(env, *item)?,
+                        "backend map",
+                    )?;
+                }
+                env.insert(*value, interp_value_from_ref_word(map_bits, "backend map")?);
+            }
+            BackendStep::MapUpdate { value, base, entries } => {
+                let base = env_get(env, *base)?;
+                let mut map_bits = base.value(runtime.cur_proc())?.ref_word().raw_word();
+                for (key, item) in entries {
+                    map_bits = interp_map_put(
+                        runtime.cur_proc(),
+                        map_bits,
+                        env_get(env, *key)?,
+                        env_get(env, *item)?,
+                        "backend map update",
+                    )?;
+                }
+                env.insert(*value, interp_value_from_ref_word(map_bits, "backend map update")?);
+            }
+            BackendStep::Struct {
+                value,
+                module_name,
+                fields,
+            } => {
+                let schema = module
+                    .struct_schemas
+                    .get(module_name)
+                    .cloned()
+                    .ok_or_else(|| format!("backend struct `{module_name}` is missing its schema"))?;
+                let schema_id = unsafe { &mut *runtime.cur_proc() }
+                    .heap
+                    .register_schema(Schema::named_struct(module_name.clone(), schema));
+                let ptr = unsafe { &mut *runtime.cur_proc() }.heap.alloc_struct(schema_id);
+                for (index, (_, item)) in fields.iter().enumerate() {
+                    let item = env_get(env, *item)?;
+                    unsafe { &mut *runtime.cur_proc() }.heap.write_field_slot(
+                        ptr,
+                        (index as u32) * 8,
+                        item.value(runtime.cur_proc())?,
+                    );
+                }
+                let struct_ref = AnyValueRef::from_heap_object(ValueKind::STRUCT, ptr).expect("backend struct ref");
+                env.insert(*value, AnyValue::Ref(struct_ref));
+            }
+            BackendStep::Bitstring { value, fields } => {
+                fz_bs_begin(runtime.cur_proc());
+                for field in fields {
+                    let item = env_get(env, field.value)?;
+                    let (size_present, size_value) = backend_bit_size_value(env, &field.spec.size)?;
+                    fz_bs_write_field_ref(
+                        runtime.cur_proc(),
+                        item.as_ref_word(runtime.cur_proc())?,
+                        backend_bit_type_tag(field.spec.ty),
+                        size_present,
+                        size_value,
+                        field.spec.unit.unwrap_or(backend_default_bit_unit(field.spec.ty)),
+                        backend_endian_tag(field.spec.endian),
+                        field.spec.signed as u32,
+                    );
+                }
+                env.insert(
+                    *value,
+                    interp_value_from_ref_word(fz_bs_finalize(runtime.cur_proc()), "backend bitstring")?,
+                );
             }
             BackendStep::FunctionRef { value, function } => {
                 env.insert(*value, AnyValue::FnRef(FnId(function.as_u32())));
@@ -434,6 +517,11 @@ fn eval_steps(
                 let result = interp_map_get(runtime.cur_proc(), env_get(env, *base)?, env_get(env, *key)?)?;
                 env.insert(*value, result);
             }
+            BackendStep::FieldAccess { value, base, field } => {
+                let base = env_get(env, *base)?;
+                let result = interp_struct_field(runtime, module, base, field)?;
+                env.insert(*value, result);
+            }
             BackendStep::AssertLiteral { source, literal } => {
                 let actual = env_get(env, *source)?;
                 let expected = literal_value(runtime, literal)?;
@@ -443,6 +531,19 @@ fn eval_steps(
                         source.as_u32()
                     ));
                 }
+            }
+            BackendStep::AssertStruct { source, module_name } => {
+                if !is_named_struct(runtime, module, env_get(env, *source)?, module_name)? {
+                    return Err(format!("match_error: expected struct {module_name}"));
+                }
+            }
+            BackendStep::RequireMapValue { value, source, key } => {
+                let key = literal_value(runtime, key)?;
+                let result = matcher_map_get(runtime, env_get(env, *source)?, key)?;
+                if matches!(result, AnyValue::Null) {
+                    return Err("match_error: expected map key to exist".to_string());
+                }
+                env.insert(*value, result);
             }
             BackendStep::AssertTuple { source, arity } => {
                 if !is_tuple_arity(runtime, env_get(env, *source)?, *arity)? {
@@ -473,6 +574,84 @@ fn eval_steps(
                 let tail_value = interp_list_tail(runtime.cur_proc(), source)?;
                 env.insert(*head, head_value);
                 env.insert(*tail, tail_value);
+            }
+            BackendStep::BitstringInit { reader, source } => {
+                let source = env_get(env, *source)?;
+                let source_ref = source.as_ref_word(runtime.cur_proc())?;
+                let reader_ref = fz_runtime::ir_runtime::fz_bs_reader_init_ref(runtime.cur_proc(), source_ref);
+                env.insert(
+                    *reader,
+                    interp_value_from_ref_word(reader_ref, "backend bitstring reader")?,
+                );
+            }
+            BackendStep::BitstringRead {
+                ok,
+                value,
+                next_reader,
+                reader,
+                spec,
+                is_last,
+            } => {
+                let reader_ref = env_get(env, *reader)?.as_ref_word(runtime.cur_proc())?;
+                let (size_present, size_value) = backend_bit_size_value(env, &spec.size)?;
+                let field_spec = fz_runtime::ir_runtime::fz_bs_field_spec(
+                    backend_bit_type_tag(spec.ty),
+                    size_present,
+                    spec.unit.unwrap_or(backend_default_bit_unit(spec.ty)),
+                    backend_endian_tag(spec.endian),
+                    spec.signed as u32,
+                    *is_last as u32,
+                );
+                let result = fz_runtime::ir_runtime::fz_bs_read_field_ref(
+                    runtime.cur_proc(),
+                    reader_ref,
+                    field_spec,
+                    size_value,
+                );
+                let ok_value =
+                    interp_struct_field_from_tagged_bits(runtime.cur_proc(), result, 0, "backend bitstring ok")?;
+                env.insert(*ok, ok_value);
+                if ok_value.is_false() || ok_value.is_nil() {
+                    env.insert(*value, AnyValue::Null);
+                    env.insert(*next_reader, AnyValue::Null);
+                } else {
+                    env.insert(
+                        *value,
+                        interp_struct_field_from_tagged_bits(
+                            runtime.cur_proc(),
+                            result,
+                            8,
+                            "backend bitstring extracted",
+                        )?,
+                    );
+                    env.insert(
+                        *next_reader,
+                        interp_struct_field_from_tagged_bits(
+                            runtime.cur_proc(),
+                            result,
+                            16,
+                            "backend bitstring next reader",
+                        )?,
+                    );
+                }
+            }
+            BackendStep::AssertBitstringDone { reader } => {
+                let reader = env_get(env, *reader)?;
+                let bit_len = interp_struct_field_from_tagged_bits(
+                    runtime.cur_proc(),
+                    reader.as_ref_word(runtime.cur_proc())?,
+                    8,
+                    "backend bitstring done bit_len",
+                )?;
+                let pos = interp_struct_field_from_tagged_bits(
+                    runtime.cur_proc(),
+                    reader.as_ref_word(runtime.cur_proc())?,
+                    16,
+                    "backend bitstring done pos",
+                )?;
+                if bit_len.as_i64() != pos.as_i64() {
+                    return Err("match_error: expected bitstring reader to be fully consumed".to_string());
+                }
             }
         }
     }
@@ -812,6 +991,119 @@ fn dynamic_ref_ty(
         ValueKind::NULL | ValueKind::INT | ValueKind::FLOAT | ValueKind::ATOM => Ok(types.any()),
         _ => Ok(types.any()),
     }
+}
+
+fn backend_bit_type_tag(ty: crate::ast::BitType) -> u32 {
+    match ty {
+        crate::ast::BitType::Integer => 0,
+        crate::ast::BitType::Float => 1,
+        crate::ast::BitType::Binary => 2,
+        crate::ast::BitType::Bits => 3,
+        crate::ast::BitType::Utf8 => 4,
+        crate::ast::BitType::Utf16 => 5,
+        crate::ast::BitType::Utf32 => 6,
+    }
+}
+
+fn backend_default_bit_unit(ty: crate::ast::BitType) -> u32 {
+    match ty {
+        crate::ast::BitType::Integer | crate::ast::BitType::Float | crate::ast::BitType::Bits => 1,
+        crate::ast::BitType::Binary => 8,
+        crate::ast::BitType::Utf8 | crate::ast::BitType::Utf16 | crate::ast::BitType::Utf32 => 1,
+    }
+}
+
+fn backend_endian_tag(endian: crate::ast::Endian) -> u32 {
+    match endian {
+        crate::ast::Endian::Big => 0,
+        crate::ast::Endian::Little => 1,
+        crate::ast::Endian::Native => 2,
+    }
+}
+
+fn backend_bit_size_value(
+    env: &HashMap<ValueId, AnyValue>,
+    size: &Option<crate::compiler2::LoweredBitSize>,
+) -> Result<(u32, u32), String> {
+    Ok(match size {
+        None => (0, 0),
+        Some(crate::compiler2::LoweredBitSize::Literal(value)) => (1, *value),
+        Some(crate::compiler2::LoweredBitSize::Value(value)) => {
+            let size = env_get(env, *value)?
+                .as_i64()
+                .ok_or_else(|| "bit size value must be an integer".to_string())?;
+            (1, size as u32)
+        }
+    })
+}
+
+fn interp_struct_field(
+    runtime: &mut IrInterpRuntime,
+    module: &Module,
+    value: AnyValue,
+    field: &str,
+) -> Result<AnyValue, String> {
+    let slot = value.value(runtime.cur_proc())?;
+    if slot.kind() == ValueKind::MAP {
+        let atom_id = module
+            .atom_names
+            .iter()
+            .position(|name| name == field)
+            .ok_or_else(|| format!("field atom `{field}` not interned"))?;
+        let map = value.as_ref_word(runtime.cur_proc())?;
+        return interp_value_from_ref_word(
+            fz_map_get_atom_key_ref(runtime.cur_proc(), map, atom_id as u64),
+            "backend field access",
+        );
+    }
+    if slot.kind() != ValueKind::STRUCT {
+        return Err("StructField: subject is not a map or Struct".to_string());
+    }
+    with_value_ref(runtime.cur_proc(), value, "backend struct field", |struct_ref_word| {
+        let struct_ref = AnyValueRef::from_raw_word(struct_ref_word).expect("backend struct ref");
+        unsafe { &*runtime.cur_proc() }
+            .heap
+            .read_struct_named_field_ref(struct_ref, field)
+            .map(|value| value.raw_word())
+            .map_err(|err| format!("{err:?}"))
+    })?
+    .and_then(|ref_word| interp_value_from_ref_word(ref_word, "backend struct field"))
+}
+
+fn matcher_map_get(runtime: &mut IrInterpRuntime, map: AnyValue, key: AnyValue) -> Result<AnyValue, String> {
+    let map_slot = map.value(runtime.cur_proc())?;
+    if map_slot.kind() != ValueKind::MAP {
+        return Err("MatcherMapGet expects a map".to_string());
+    }
+    let value = with_value_ref(runtime.cur_proc(), map, "MatcherMapGet map", |map_ref| {
+        with_value_ref(runtime.cur_proc(), key, "MatcherMapGet key", |key_ref| {
+            fz_matcher_map_get_ref(runtime.cur_proc(), map_ref, key_ref)
+        })
+    })??;
+    interp_value_from_ref_word(value, "MatcherMapGet")
+}
+
+fn is_named_struct(
+    runtime: &mut IrInterpRuntime,
+    module: &Module,
+    value: AnyValue,
+    name: &str,
+) -> Result<bool, String> {
+    let slot = value.value(runtime.cur_proc())?;
+    if slot.kind() != ValueKind::STRUCT {
+        return Ok(false);
+    }
+    let Some(fields) = module.struct_schemas.get(name).cloned() else {
+        return Ok(false);
+    };
+    let Some(ptr) = slot.heap_addr() else {
+        return Ok(false);
+    };
+    let actual_schema = unsafe { struct_schema_id(ptr) };
+    let want_schema = unsafe { &mut *runtime.cur_proc() }
+        .heap
+        .register_schema(Schema::named_struct(name.to_string(), fields));
+    Ok(actual_schema == want_schema)
 }
 
 fn backend_binop(op: crate::ast::BinOp) -> Result<IrBinOp, String> {

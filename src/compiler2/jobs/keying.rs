@@ -185,17 +185,27 @@ fn collect_step_edges(steps: &[LoweredStep], edges: &mut Vec<StaticEdge>) {
             LoweredStep::Const { .. }
             | LoweredStep::Tuple { .. }
             | LoweredStep::List { .. }
+            | LoweredStep::Map { .. }
+            | LoweredStep::MapUpdate { .. }
+            | LoweredStep::Struct { .. }
+            | LoweredStep::Bitstring { .. }
             | LoweredStep::FunctionRef { .. }
             | LoweredStep::NamedFunctionRef { .. }
             | LoweredStep::BinaryOp { .. }
             | LoweredStep::UnaryOp { .. }
             | LoweredStep::MapIndex { .. }
+            | LoweredStep::FieldAccess { .. }
             | LoweredStep::AssertLiteral { .. }
+            | LoweredStep::AssertStruct { .. }
+            | LoweredStep::RequireMapValue { .. }
             | LoweredStep::AssertTuple { .. }
             | LoweredStep::TupleField { .. }
             | LoweredStep::AssertEmptyList { .. }
             | LoweredStep::AssertSame { .. }
-            | LoweredStep::SplitList { .. } => {}
+            | LoweredStep::SplitList { .. }
+            | LoweredStep::BitstringInit { .. }
+            | LoweredStep::BitstringRead { .. }
+            | LoweredStep::AssertBitstringDone { .. } => {}
         }
     }
 }

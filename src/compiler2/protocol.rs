@@ -77,6 +77,10 @@ impl ProtocolCallbackMap {
     pub(crate) fn get(&self, function: FunctionId) -> Option<ProtocolCallback> {
         self.slots.get(&function).map(|slot| slot.value)
     }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&FunctionId, ProtocolCallback)> {
+        self.slots.iter().map(|(function, slot)| (function, slot.value))
+    }
 }
 
 impl ProtocolImplMap {
@@ -117,5 +121,9 @@ impl ProtocolImplMap {
         self.slots
             .iter()
             .filter_map(move |(key, slot)| (key.protocol == protocol).then_some((key, &slot.value)))
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&ProtocolImplKey, &ProtocolImpl)> {
+        self.slots.iter().map(|(key, slot)| (key, &slot.value))
     }
 }

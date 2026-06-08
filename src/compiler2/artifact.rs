@@ -12,7 +12,7 @@
 //! codegen-ready CPS/native handoff that carries only backend-consumption
 //! facts and never rebuilds `ModulePlan`, `PlannedProgram`, or `AbiFacts`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::ast::{BinOp, UnOp};
 use crate::compiler::source::Span;
@@ -23,7 +23,10 @@ use crate::fz_ir::{
     Stmt as IrStmt, Term as IrTerm, Var,
 };
 
-use super::body::{CallSiteId, ControlDestination, ControlEntryId, Literal, LoweredBody, LoweredExtern, ValueId};
+use super::body::{
+    CallSiteId, ControlDestination, ControlEntryId, Literal, LoweredBitField, LoweredBitFieldSpec, LoweredBody,
+    LoweredExtern, ValueId,
+};
 use super::identity::{ExecutableKey, FunctionId, RootId};
 use super::types::Ty;
 
@@ -72,6 +75,7 @@ pub struct BackendProgram {
     pub emission_ready_revision: u64,
     pub entry: usize,
     pub atom_names: Vec<String>,
+    pub struct_schemas: BTreeMap<String, Vec<String>>,
     pub executables: Vec<BackendExecutable>,
     pub callable_entries: Vec<BackendCallableEntry>,
 }
@@ -204,6 +208,9 @@ pub struct EmissionReadyCallEdge {
 pub struct EmissionReadyCallableEntry {
     pub target: usize,
     pub capture_count: usize,
+    pub param_reprs: Vec<AbiValueRepr>,
+    pub return_ty: Ty,
+    pub return_abi: ReturnAbi,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -223,6 +230,9 @@ pub struct BackendExecutable {
 pub struct BackendCallableEntry {
     pub target: usize,
     pub capture_count: usize,
+    pub param_reprs: Vec<AbiValueRepr>,
+    pub return_ty: Ty,
+    pub return_abi: ReturnAbi,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -340,6 +350,24 @@ pub enum BackendStep {
         items: Vec<ValueId>,
         tail: Option<ValueId>,
     },
+    Map {
+        value: ValueId,
+        entries: Vec<(ValueId, ValueId)>,
+    },
+    MapUpdate {
+        value: ValueId,
+        base: ValueId,
+        entries: Vec<(ValueId, ValueId)>,
+    },
+    Struct {
+        value: ValueId,
+        module_name: String,
+        fields: Vec<(String, ValueId)>,
+    },
+    Bitstring {
+        value: ValueId,
+        fields: Vec<LoweredBitField>,
+    },
     FunctionRef {
         value: ValueId,
         function: FunctionId,
@@ -370,9 +398,23 @@ pub enum BackendStep {
         base: ValueId,
         key: ValueId,
     },
+    FieldAccess {
+        value: ValueId,
+        base: ValueId,
+        field: String,
+    },
     AssertLiteral {
         source: ValueId,
         literal: Literal,
+    },
+    AssertStruct {
+        source: ValueId,
+        module_name: String,
+    },
+    RequireMapValue {
+        value: ValueId,
+        source: ValueId,
+        key: Literal,
     },
     AssertTuple {
         source: ValueId,
@@ -394,6 +436,21 @@ pub enum BackendStep {
         source: ValueId,
         head: ValueId,
         tail: ValueId,
+    },
+    BitstringInit {
+        reader: ValueId,
+        source: ValueId,
+    },
+    BitstringRead {
+        ok: ValueId,
+        value: ValueId,
+        next_reader: ValueId,
+        reader: ValueId,
+        spec: LoweredBitFieldSpec,
+        is_last: bool,
+    },
+    AssertBitstringDone {
+        reader: ValueId,
     },
 }
 

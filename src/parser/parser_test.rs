@@ -711,20 +711,20 @@ mod extern_parse_tests {
         let d = parse_extern("extern \"C\" fn fz_halt() :: never\n");
         assert_eq!(d.name, "fz_halt");
         assert_eq!(d.extern_abi, Some("C".into()));
-        assert_eq!(d.extern_params.len(), 0);
+        assert_eq!(d.extern_param_tokens.len(), 0);
         assert!(d.clauses.is_empty());
     }
 
     #[test]
     fn extern_fn_one_param() {
         let d = parse_extern("extern \"C\" fn fz_print(any) :: unit\n");
-        assert_eq!(d.extern_params.len(), 1);
+        assert_eq!(d.extern_param_tokens.len(), 1);
     }
 
     #[test]
     fn extern_fn_two_params() {
         let d = parse_extern("extern \"C\" fn fz_pair(any, any) :: unit\n");
-        assert_eq!(d.extern_params.len(), 2);
+        assert_eq!(d.extern_param_tokens.len(), 2);
         assert!(!d.variadic);
         assert!(!d.extern_ret_tokens.0.is_empty());
     }
@@ -733,8 +733,27 @@ mod extern_parse_tests {
     fn extern_fn_variadic_marker() {
         let d = parse_extern("extern \"C\" fn libc::open(path :: cstring, flags :: integer, ...) :: integer\n");
         assert_eq!(d.name, "libc::open");
-        assert_eq!(d.extern_params, vec!["cstring", "integer"]);
+        assert_eq!(d.extern_param_tokens.len(), 2);
+        assert_eq!(d.extern_param_tokens[0].0.len(), 1);
+        assert_eq!(d.extern_param_tokens[1].0.len(), 1);
         assert!(d.variadic);
+    }
+
+    #[test]
+    fn extern_fn_preserves_param_shapes_and_constraints() {
+        let d = parse_extern(
+            "extern \"C\" fn fz_make_resource(t, dtor :: (t) -> nil) :: resource(t) when t: integer | cpointer\n",
+        );
+        assert_eq!(d.extern_param_tokens.len(), 2);
+        assert_eq!(d.extern_constraints.len(), 1);
+        assert!(!d.extern_ret_tokens.0.is_empty());
+        assert!(
+            d.extern_param_tokens[1]
+                .0
+                .iter()
+                .any(|token| matches!(token.tok, Tok::Arrow)),
+            "destructor param should preserve the arrow type body",
+        );
     }
 
     #[test]

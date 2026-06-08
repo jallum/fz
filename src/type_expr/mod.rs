@@ -34,7 +34,7 @@ use crate::compiler::source::Span;
 use crate::modules::identity::ModuleName;
 use crate::parser::lexer::{Tok, Token};
 use crate::specs::{ResolvedSpec, ResolvedSpecSet, ResolvedStructFieldShape, ResolvedTypeShape};
-use crate::types::{Ty, Types};
+use crate::types::{Ty, TypeVarId, Types};
 
 /// Module-level type environment. Monomorphic aliases resolve directly to
 /// `Ty`; parameterized aliases keep their body tokens until an application
@@ -67,6 +67,13 @@ pub struct StructRecordType<TypeHandle = Ty> {
     pub module: ModuleName,
     pub span: Span,
     pub fields: Vec<StructFieldType<TypeHandle>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSpecDecl<TypeHandle = Ty> {
+    pub params: Vec<TypeHandle>,
+    pub result: TypeHandle,
+    pub constraints: HashMap<TypeVarId, TypeHandle>,
 }
 
 #[derive(Debug, Clone)]
@@ -251,6 +258,17 @@ where
     self::env::resolve_spec_decl(t, decl, env)
 }
 
+pub fn resolve_spec_decl_generic<T>(
+    t: &mut T,
+    decl: &SpecDecl,
+    env: &ModuleTypeEnv<T::Ty>,
+) -> Result<ResolvedSpecDecl<T::Ty>, TypeExprError>
+where
+    T: Types,
+{
+    self::env::resolve_spec_decl_generic(t, decl, env)
+}
+
 pub fn resolve_spec_decls<'a, T>(
     t: &mut T,
     decls: impl IntoIterator<Item = &'a SpecDecl>,
@@ -264,6 +282,21 @@ where
         arrows.push(resolve_spec_decl(t, decl, env)?);
     }
     Ok(ResolvedSpecSet { arrows })
+}
+
+pub fn resolve_spec_decls_generic<'a, T>(
+    t: &mut T,
+    decls: impl IntoIterator<Item = &'a SpecDecl>,
+    env: &ModuleTypeEnv<T::Ty>,
+) -> Result<Vec<ResolvedSpecDecl<T::Ty>>, TypeExprError>
+where
+    T: Types,
+{
+    let mut arrows = Vec::new();
+    for decl in decls {
+        arrows.push(resolve_spec_decl_generic(t, decl, env)?);
+    }
+    Ok(arrows)
 }
 
 /// Best-effort per-position spec resolution: each param and the result resolve

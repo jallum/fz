@@ -7,7 +7,7 @@
 //! or "this known code has not been indexed yet".
 
 use std::cmp::Reverse;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::ast::FnDef;
@@ -16,9 +16,14 @@ use crate::compiler::source::Span;
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch};
+use crate::frontend::protocols::{
+    ImplTarget as InterfaceImplTarget, PROTOCOL_ELEM_VAR, ProtocolDecl as InterfaceProtocolDecl,
+    ProtocolImplFact as InterfaceProtocolImplFact, ProtocolRegistry, impl_target_type_with_element,
+    protocol_domain_tag,
+};
 use crate::modules::runtime_library;
-use crate::telemetry::{Telemetry, opaque};
-use crate::type_expr::{ModuleTypeEnv, build_module_type_env_for_with_base, builtin_type_env};
+use crate::telemetry::{Telemetry, opaque_debug};
+use crate::type_expr::{ModuleTypeEnv, build_module_type_env_for_with_base};
 use crate::{measurements, metadata};
 
 use super::CodeId;
@@ -28,6 +33,7 @@ use super::artifact::{
 };
 use super::body::{LoweredBody, LoweredBodyMap};
 use super::code::CodeMap;
+use super::contract::{FunctionContract, FunctionContractMap};
 use super::deps::UnresolvedWait;
 use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
 use super::drive::{FactKey, Job, JobEffects, WorkGraph};
@@ -70,6 +76,7 @@ pub struct World<'a> {
     code: CodeMap,
     modules: ModuleMap,
     functions: FunctionMap,
+    function_contracts: FunctionContractMap,
     bodies: LoweredBodyMap,
     guard_dispatches: GuardDispatchMap,
     entry_dispatches: EntryDispatchMap,
@@ -100,6 +107,7 @@ impl std::fmt::Debug for World<'_> {
             .field("code", &self.code)
             .field("modules", &self.modules)
             .field("functions", &self.functions)
+            .field("function_contracts", &self.function_contracts)
             .field("bodies", &self.bodies)
             .field("roots", &self.roots)
             .field("namespaces", &self.namespaces)
@@ -117,6 +125,7 @@ impl<'a> World<'a> {
             code: CodeMap::new(),
             modules: ModuleMap::new(),
             functions: FunctionMap::new(),
+            function_contracts: FunctionContractMap::new(),
             bodies: LoweredBodyMap::new(),
             guard_dispatches: GuardDispatchMap::new(),
             entry_dispatches: EntryDispatchMap::new(),
@@ -207,8 +216,8 @@ impl<'a> World<'a> {
                 pending_codes: self.code.len() as u64,
             },
             &metadata! {
-                root: opaque(root),
-                function_ref: opaque(function_ref),
+                root: opaque_debug(root),
+                function_ref: opaque_debug(function_ref),
             },
         );
         root_id
@@ -228,8 +237,8 @@ impl<'a> World<'a> {
         self.tel.event(
             &["fz", "compiler2", "work_graph", "applied"],
             metadata! {
-                job: opaque(&job),
-                step: opaque(&step),
+                job: opaque_debug(&job),
+                step: opaque_debug(&step),
             },
         );
         step
@@ -315,8 +324,8 @@ impl<'a> World<'a> {
                 values: analysis.value_types.len() as u64,
             },
             &metadata! {
-                activation: opaque(key),
-                analysis: opaque(&analysis),
+                activation: opaque_debug(key),
+                analysis: opaque_debug(&analysis),
             },
         );
         revision
@@ -333,8 +342,8 @@ impl<'a> World<'a> {
                 revision: revision,
             },
             &metadata! {
-                activation: opaque(key),
-                return_ty: opaque(&return_ty),
+                activation: opaque_debug(key),
+                return_ty: opaque_debug(&return_ty),
             },
         );
         revision
@@ -358,8 +367,8 @@ impl<'a> World<'a> {
                 input_arity: summary.input_types.len() as u64,
             },
             &metadata! {
-                callsite: opaque(&key),
-                summary: opaque(&summary),
+                callsite: opaque_debug(&key),
+                summary: opaque_debug(&summary),
             },
         );
         revision
@@ -383,7 +392,7 @@ impl<'a> World<'a> {
                 revision: revision,
             },
             &metadata! {
-                closure: opaque(&closure),
+                closure: opaque_debug(&closure),
             },
         );
         revision
@@ -412,7 +421,7 @@ impl<'a> World<'a> {
                 executable_count: program.executables.len() as u64,
             },
             &metadata! {
-                program: opaque(&program),
+                program: opaque_debug(&program),
             },
         );
         revision
@@ -436,7 +445,7 @@ impl<'a> World<'a> {
                 callable_entry_count: program.callable_entries.len() as u64,
             },
             &metadata! {
-                program: opaque(&program),
+                program: opaque_debug(&program),
             },
         );
         revision
@@ -460,7 +469,7 @@ impl<'a> World<'a> {
                 callable_entry_count: program.callable_entries.len() as u64,
             },
             &metadata! {
-                program: opaque(&program),
+                program: opaque_debug(&program),
             },
         );
         revision
@@ -485,7 +494,7 @@ impl<'a> World<'a> {
                 callable_entry_count: program.callable_entries.len() as u64,
             },
             &metadata! {
-                program: opaque(&program),
+                program: opaque_debug(&program),
             },
         );
         revision
@@ -510,7 +519,7 @@ impl<'a> World<'a> {
                 fn_count: program.module.fns.len() as u64,
             },
             &metadata! {
-                program: opaque(&program),
+                program: opaque_debug(&program),
             },
         );
         revision
@@ -544,7 +553,7 @@ impl<'a> World<'a> {
                 revision: revision,
             },
             &metadata! {
-                module: opaque(module),
+                module: opaque_debug(module),
             },
         );
         revision
@@ -621,12 +630,48 @@ impl<'a> World<'a> {
                     clauses: clauses,
                 },
                 &metadata! {
-                    function: opaque(function),
-                    function_ref: opaque(function_ref),
+                    function: opaque_debug(function),
+                    function_ref: opaque_debug(function_ref),
                 },
             );
         }
         (id, revision)
+    }
+
+    pub(crate) fn define_function_contract(&mut self, function: FunctionId, contract: FunctionContract) -> u64 {
+        let revision = self.function_contracts.define(function, contract.clone());
+        let function_ref = self.functions.reference_for(function);
+        self.tel.execute(
+            &["fz", "compiler2", "function_contract", "defined"],
+            &measurements! {
+                function_id: function.as_u32() as u64,
+                revision: revision,
+                arity: function_ref.arity as u64,
+            },
+            &metadata! {
+                function_ref: opaque_debug(function_ref),
+                contract: opaque_debug(&contract),
+            },
+        );
+        revision
+    }
+
+    pub(crate) fn function_contract(&self, function: FunctionId) -> Option<&FunctionContract> {
+        self.function_contracts.get(function)
+    }
+
+    pub(crate) fn function_declares_contract(&self, function: FunctionId) -> bool {
+        match &self.functions.get(function).state {
+            super::identity::FunctionState::Defined { def } => {
+                def.ast.extern_abi.is_some()
+                    || def
+                        .ast
+                        .attrs
+                        .iter()
+                        .any(|attr| matches!(attr, crate::ast::Attribute::Spec(_)))
+            }
+            super::identity::FunctionState::Placeholder => false,
+        }
     }
 
     pub(crate) fn define_protocol_callback(&mut self, function: FunctionId, protocol: ModuleId) -> u64 {
@@ -642,8 +687,8 @@ impl<'a> World<'a> {
                 arity: function_ref.arity as u64,
             },
             &metadata! {
-                callback: opaque(&callback),
-                function_ref: opaque(function_ref),
+                callback: opaque_debug(&callback),
+                function_ref: opaque_debug(function_ref),
             },
         );
         revision
@@ -673,8 +718,8 @@ impl<'a> World<'a> {
                 callbacks: protocol_impl.callbacks.len() as u64,
             },
             &metadata! {
-                key: opaque(&key),
-                protocol_impl: opaque(&protocol_impl),
+                key: opaque_debug(&key),
+                protocol_impl: opaque_debug(&protocol_impl),
             },
         );
         revision
@@ -731,8 +776,8 @@ impl<'a> World<'a> {
                     owner_function_id: owner.as_u32() as u64,
                 },
                 &metadata! {
-                    function: opaque(function),
-                    function_ref: opaque(function_ref),
+                    function: opaque_debug(function),
+                    function_ref: opaque_debug(function_ref),
                 },
             );
         }
@@ -767,8 +812,8 @@ impl<'a> World<'a> {
                 generated: generated,
             },
             &metadata! {
-                function_ref: opaque(function_ref),
-                body: opaque(&body),
+                function_ref: opaque_debug(function_ref),
+                body: opaque_debug(&body),
             },
         );
         revision
@@ -797,8 +842,8 @@ impl<'a> World<'a> {
                 pinned: dispatch.plan.pinned.len() as u64,
             },
             &metadata! {
-                function_ref: opaque(function_ref),
-                dispatch: opaque(&dispatch),
+                function_ref: opaque_debug(function_ref),
+                dispatch: opaque_debug(&dispatch),
             },
         );
         revision
@@ -827,8 +872,8 @@ impl<'a> World<'a> {
                 pinned: plan.pinned.len() as u64,
             },
             &metadata! {
-                function_ref: opaque(function_ref),
-                plan: opaque(&plan),
+                function_ref: opaque_debug(function_ref),
+                plan: opaque_debug(&plan),
             },
         );
         revision
@@ -896,8 +941,27 @@ impl<'a> World<'a> {
         }
     }
 
+    pub(crate) fn module_struct_fields(&self, module: ModuleId) -> Option<&[String]> {
+        match &self.modules.get(module).state {
+            ModuleState::Placeholder => None,
+            ModuleState::Indexed(source) | ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. } => {
+                match &source.kind {
+                    ModuleSourceKind::Protocol { .. } => None,
+                    ModuleSourceKind::Body { items } => items.iter().find_map(|item| match &**item {
+                        Item::Struct(def) => Some(def.fields.as_slice()),
+                        _ => None,
+                    }),
+                }
+            }
+        }
+    }
+
     pub(crate) fn module_name(&self, module: ModuleId) -> Option<&str> {
         self.modules.name(module)
+    }
+
+    pub(crate) fn struct_schemas(&self) -> BTreeMap<String, Vec<String>> {
+        self.modules.named_struct_schemas()
     }
 
     pub fn finish_code_index(&mut self, id: CodeId, items: Vec<Rc<Item>>) -> u64 {
@@ -923,6 +987,10 @@ impl<'a> World<'a> {
             return None;
         }
         self.work_graph.facts().revision(&FactKey::FunctionDefined(function))
+    }
+
+    pub(crate) fn function_contract_revision(&self, function: FunctionId) -> Option<u64> {
+        self.work_graph.facts().revision(&FactKey::FunctionContract(function))
     }
 
     pub(crate) fn function_definition(&self, function: FunctionId) -> super::identity::FunctionDef {
@@ -971,6 +1039,10 @@ impl<'a> World<'a> {
 
     pub fn fact_revision(&self, key: FactKey) -> Option<u64> {
         self.work_graph.facts().revision(&key)
+    }
+
+    pub(crate) fn fact_would_change(&self, key: FactKey, revision: u64) -> bool {
+        self.fact_revision(key) != Some(revision)
     }
 
     pub(crate) fn require_activation_key_facts(
@@ -1087,9 +1159,10 @@ impl<'a> World<'a> {
         function: FunctionId,
     ) -> Result<ModuleTypeEnv<Ty>, crate::type_expr::TypeExprError> {
         let module = self.function_definition(function).owner_module;
-        let builtin_env = builtin_type_env(&mut self.types);
+        let mut base_env = runtime_library::root_type_env(&mut self.types, self.tel).env;
+        self.extend_protocol_type_env(&mut base_env, (!module.is_global()).then_some(module));
         if module.is_global() {
-            return Ok(builtin_env);
+            return Ok(base_env);
         }
         let module_name = self
             .modules
@@ -1104,7 +1177,77 @@ impl<'a> World<'a> {
                 panic!("function modules should have source metadata before resolving type env")
             }
         };
-        build_module_type_env_for_with_base(&mut self.types, &attrs, &module_name, &builtin_env).map(|(env, _, _)| env)
+        build_module_type_env_for_with_base(&mut self.types, &attrs, &module_name, &base_env).map(|(env, _, _)| env)
+    }
+
+    fn extend_protocol_type_env(&mut self, env: &mut ModuleTypeEnv<Ty>, current_module: Option<ModuleId>) {
+        let mut registry = ProtocolRegistry::default();
+        registry.extend_interfaces(&runtime_library::interfaces(self.tel));
+        let current_module_name = current_module.and_then(|module| self.modules.name(module).map(str::to_string));
+        for (_function, callback) in self.protocol_callbacks.iter() {
+            let Some(protocol) = self
+                .modules
+                .name(callback.protocol)
+                .and_then(|name| crate::modules::identity::ModuleName::parse_dotted(name).ok())
+            else {
+                continue;
+            };
+            registry
+                .protocols
+                .entry(protocol)
+                .or_insert_with(|| InterfaceProtocolDecl {
+                    callbacks: Vec::new(),
+                    span: Span::DUMMY,
+                });
+        }
+        for (key, _protocol_impl) in self.protocol_impls.iter() {
+            let Some(protocol) = self
+                .modules
+                .name(key.protocol)
+                .and_then(|name| crate::modules::identity::ModuleName::parse_dotted(name).ok())
+            else {
+                continue;
+            };
+            let Some(target) = self
+                .modules
+                .name(key.target)
+                .and_then(|name| crate::modules::identity::ModuleName::parse_dotted(name).ok())
+            else {
+                continue;
+            };
+            registry
+                .protocols
+                .entry(protocol.clone())
+                .or_insert_with(|| InterfaceProtocolDecl {
+                    callbacks: Vec::new(),
+                    span: Span::DUMMY,
+                });
+            registry
+                .impls
+                .entry(crate::frontend::protocols::ProtocolImplKey {
+                    protocol: protocol.clone(),
+                    target: InterfaceImplTarget::module(target.clone()),
+                })
+                .or_insert_with(|| InterfaceProtocolImplFact {
+                    protocol,
+                    target: InterfaceImplTarget::module(target),
+                    callbacks: BTreeMap::new(),
+                    callback_specs: BTreeMap::new(),
+                    span: Span::DUMMY,
+                });
+        }
+        for protocol in registry.protocols.keys().cloned().collect::<Vec<_>>() {
+            let any = self.types.any();
+            let ty = protocol_domain_template(&mut self.types, &protocol, &registry, any);
+            let element = self.types.type_var(PROTOCOL_ELEM_VAR);
+            let template = protocol_domain_template(&mut self.types, &protocol, &registry, element);
+            env.insert(format!("{}.t", protocol), ty);
+            env.insert_protocol_domain(format!("{}.t", protocol), template);
+            if current_module_name.as_deref() == Some(protocol.dotted().as_str()) {
+                env.insert("t".to_string(), ty);
+                env.insert_protocol_domain("t".to_string(), template);
+            }
+        }
     }
 
     pub fn code_items(&self, id: CodeId) -> Option<&[Rc<Item>]> {
@@ -1228,6 +1371,32 @@ impl<'a> World<'a> {
 
     pub(crate) fn module_impl_target_ty(&mut self, module: ModuleId) -> Ty {
         self.module_impl_target_ty_with(module)
+    }
+
+    pub(crate) fn resolve_module_name(
+        &mut self,
+        current_module: ModuleId,
+        head: Namespace,
+        path: &crate::modules::identity::ModuleName,
+    ) -> Option<ModuleId> {
+        if path.segments().len() == 1 {
+            let local = path.last_segment();
+            if let Some(NamespaceSymbol::Module(module)) = self.lookup_namespace(head, local) {
+                return Some(module);
+            }
+            if current_module.is_global() {
+                return Some(self.reference_module(local.to_string()));
+            }
+            let current_name = self.module_name(current_module)?;
+            if current_name.rsplit('.').next().unwrap_or(current_name) == local {
+                return Some(current_module);
+            }
+            return Some(self.reference_module(path.dotted()));
+        }
+
+        let dotted = path.dotted();
+        self.lookup_module_path(head, &dotted)
+            .or_else(|| Some(self.reference_module(dotted)))
     }
 
     fn lookup_module_path(&mut self, head: Namespace, path: &str) -> Option<ModuleId> {
@@ -1354,6 +1523,20 @@ fn callable_match_score(fixed_arity: usize, variadic: bool, actual_arity: usize)
         return Some(CallableMatchScore::VariadicPrefix(fixed_arity));
     }
     None
+}
+
+fn protocol_domain_template(
+    types: &mut Types,
+    protocol: &crate::modules::identity::ModuleName,
+    registry: &ProtocolRegistry,
+    element: Ty,
+) -> Ty {
+    let mut domain = types.opaque_of(&protocol_domain_tag(protocol));
+    for fact in registry.impls.values().filter(|fact| fact.protocol == *protocol) {
+        let target_ty = impl_target_type_with_element(types, &fact.target, element);
+        domain = types.union(domain, target_ty);
+    }
+    domain
 }
 
 fn impl_target_ty<T: crate::types::Types<Ty = Ty>>(t: &mut T, module_name: &str) -> Ty {

@@ -4,7 +4,7 @@
 //! dispatch, derives direct-call summaries, and settles per-activation return
 //! types without calling the legacy whole-program pipeline.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::ast::{BinOp, UnOp};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
@@ -17,6 +17,7 @@ use super::super::body::{
     CallSiteId, ControlDestination, DirectCallee, Literal, LoweredBody, LoweredClause, LoweredEntry, LoweredStep,
     LoweredTail, ValueId,
 };
+use super::super::contract::FunctionContract;
 use super::super::drive::{FactKey, Job, JobEffects};
 use super::super::facts::FactValue;
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, ModuleId};
@@ -27,6 +28,7 @@ use super::super::world::World;
 
 type DispatchPlan = PatternDispatchPlan<Ty>;
 type ValueTypes = HashMap<ValueId, Ty>;
+type RefinedCallSurface = (Vec<Ty>, Option<Ty>);
 
 #[derive(Debug, Clone)]
 struct CallEmission {
@@ -265,6 +267,31 @@ fn apply_step(
         LoweredStep::List { value, items, tail } => {
             values.insert(*value, list_ty(world, values, items, *tail));
         }
+        LoweredStep::Map { value, entries } => {
+            values.insert(*value, map_ty(world, values, entries));
+        }
+        LoweredStep::MapUpdate { value, base, entries } => {
+            let mut map_ty = value_ty(world, values, *base);
+            for (key, item) in entries {
+                let key_ty = value_ty(world, values, *key);
+                if let Some(key) = map_key_from_ty(world, key_ty) {
+                    let item_ty = value_ty(world, values, *item);
+                    map_ty = world.types_mut().refine_map_field(&map_ty, &key, &item_ty);
+                } else {
+                    map_ty = world.types_mut().map_top();
+                    break;
+                }
+            }
+            values.insert(*value, map_ty);
+        }
+        LoweredStep::Struct { value, module, fields } => {
+            let map_ty = struct_map_ty(world, values, fields);
+            let nominal = struct_nominal_ty(world, *module);
+            values.insert(*value, world.types_mut().union(nominal, map_ty));
+        }
+        LoweredStep::Bitstring { value, .. } => {
+            values.insert(*value, world.types_mut().str_t());
+        }
         LoweredStep::FunctionRef { value, function } => {
             let arity = world.function_arity(*function);
             values.insert(
@@ -295,14 +322,40 @@ fn apply_step(
             let input = value_ty(world, values, *input);
             values.insert(*value, unop_ty(world, *op, input));
         }
-        LoweredStep::MapIndex { value, .. } => {
-            values.insert(*value, any_ty(world));
+        LoweredStep::MapIndex { value, base, key } => {
+            let key_ty = value_ty(world, values, *key);
+            let base_ty = value_ty(world, values, *base);
+            let value_ty = map_key_from_ty(world, key_ty)
+                .and_then(|key| world.types_mut().map_field_lookup(&base_ty, &key))
+                .unwrap_or_else(|| any_ty(world));
+            values.insert(*value, value_ty);
+        }
+        LoweredStep::FieldAccess { value, base, field } => {
+            let base_ty = value_ty(world, values, *base);
+            let value_ty = world
+                .types_mut()
+                .map_field_lookup(&base_ty, &super::super::types::MapKey::Atom(field.clone()))
+                .unwrap_or_else(|| any_ty(world));
+            values.insert(*value, value_ty);
         }
         LoweredStep::AssertLiteral { source, literal } => {
             let source_ty = value_ty(world, values, *source);
             let literal_ty = literal_ty(world, literal);
             let refined = world.types_mut().intersect(source_ty, literal_ty);
             values.insert(*source, refined);
+        }
+        LoweredStep::AssertStruct { source, module } => {
+            let source_ty = value_ty(world, values, *source);
+            let nominal = struct_nominal_ty(world, *module);
+            let refined = world.types_mut().intersect(source_ty, nominal);
+            values.insert(*source, refined);
+        }
+        LoweredStep::RequireMapValue { value, source, key } => {
+            let source_ty = value_ty(world, values, *source);
+            let value_ty = literal_map_key(key)
+                .and_then(|key| world.types_mut().map_field_lookup(&source_ty, &key))
+                .unwrap_or_else(|| any_ty(world));
+            values.insert(*value, value_ty);
         }
         LoweredStep::AssertTuple { source, arity } => {
             let any = world.types_mut().any();
@@ -336,6 +389,22 @@ fn apply_step(
             values.insert(*head, elem);
             values.insert(*tail, tail_ty);
         }
+        LoweredStep::BitstringInit { reader, source } => {
+            values.insert(*reader, value_ty(world, values, *source));
+        }
+        LoweredStep::BitstringRead {
+            ok,
+            value,
+            next_reader,
+            reader,
+            spec,
+            ..
+        } => {
+            values.insert(*ok, world.types_mut().bool());
+            values.insert(*value, bitfield_value_ty(world, spec));
+            values.insert(*next_reader, value_ty(world, values, *reader));
+        }
+        LoweredStep::AssertBitstringDone { reader: _ } => {}
     }
     Ok(())
 }
@@ -558,12 +627,21 @@ fn resolve_direct_call(
         ),
     };
     let mut latent_executables = Vec::new();
-    if let Some(function) = summary.as_ref().and_then(|summary| match summary.callee {
-        SelectedCallee::Function(function) => Some(function),
-        SelectedCallee::Named { .. } => None,
+    if let Some((function, runtime_inputs)) = summary.as_ref().and_then(|summary| {
+        match summary.callee {
+            SelectedCallee::Function(function) => Some(function),
+            SelectedCallee::Named { .. } => None,
+        }
+        .map(|function| (function, summary.input_types.as_slice()))
     }) {
         let runtime_activations = resolve_runtime_callable_boundary_activations(
-            world, caller, function, &arg_types, reads, waits, follow_up,
+            world,
+            caller,
+            function,
+            runtime_inputs,
+            reads,
+            waits,
+            follow_up,
         )?;
         latent_executables.extend(runtime_activations.iter().map(|activation| ExecutableKey {
             activation: activation.key.clone(),
@@ -623,11 +701,17 @@ fn resolve_function_call(
     if wait_for_unresolved_function_module(world, function, waits, follow_up) {
         return Ok((None, Vec::new(), any_ty(world)));
     }
+    let Some((input_types, contract_return_ty)) =
+        refine_function_call_surface(world, function, input_types, reads, waits, follow_up)?
+    else {
+        return Ok((None, Vec::new(), any_ty(world)));
+    };
     let Some((activation, already_present, return_ty)) =
         prepare_function_call(world, caller, function, input_types.clone(), reads, waits, follow_up)
     else {
         return Ok((None, Vec::new(), any_ty(world)));
     };
+    let return_ty = refine_call_return(world, return_ty, contract_return_ty);
     Ok((
         Some(CallSiteSummary {
             callee: SelectedCallee::Function(function),
@@ -700,6 +784,11 @@ fn resolve_protocol_call(
     }
     reads.push(owner_fact);
 
+    let Some((input_types, contract_return_ty)) =
+        refine_function_call_surface(world, selected.function, input_types, reads, waits, follow_up)?
+    else {
+        return Ok((None, Vec::new(), any_ty(world)));
+    };
     let Some((activation, already_present, return_ty)) = prepare_function_call(
         world,
         caller,
@@ -711,6 +800,7 @@ fn resolve_protocol_call(
     ) else {
         return Ok((None, Vec::new(), any_ty(world)));
     };
+    let return_ty = refine_call_return(world, return_ty, contract_return_ty);
     Ok((
         Some(CallSiteSummary {
             callee: SelectedCallee::Function(selected.function),
@@ -738,14 +828,72 @@ fn resolve_closure_call(
     if world.types().is_empty(&callee_ty) || arg_types.iter().any(|arg| world.types().is_empty(arg)) {
         return Ok((None, none_ty(world)));
     }
-    let Some(parts) = world.types().closure_lit_parts(&callee_ty) else {
+    let Some(clauses) = world.types_mut().callable_value_clauses(&callee_ty) else {
         return Ok((None, any_ty(world)));
     };
-    let function = FunctionId::from_u32(parts.target.0);
-    let mut inputs = parts.captures;
-    inputs.extend(arg_types);
-    let (summary, callee_activation, return_ty) =
-        resolve_function_call(world, caller, function, inputs, reads, waits, follow_up)?;
+    let mut selected_function = None;
+    let mut summary_inputs = None;
+    let mut activations = Vec::new();
+    let mut return_ty = none_ty(world);
+
+    for clause in clauses {
+        let Some(closure) = clause.closure else {
+            continue;
+        };
+        if clause.args.len() != arg_types.len() {
+            continue;
+        }
+
+        let function = FunctionId::from_u32(closure.target.0);
+        match selected_function {
+            Some(current) if current != function => return Ok((None, any_ty(world))),
+            None => selected_function = Some(function),
+            Some(_) => {}
+        }
+
+        let refined_args = refine_contract_inputs(world, arg_types.clone(), std::iter::once(clause.args.as_slice()));
+        let mut inputs = closure.captures;
+        inputs.extend(refined_args);
+        let (summary, clause_activations, observed_return) =
+            resolve_function_call(world, caller, function, inputs, reads, waits, follow_up)?;
+        let clause_return = refine_call_return(world, observed_return, Some(clause.ret));
+        return_ty = if world.types().is_empty(&return_ty) {
+            clause_return
+        } else {
+            world.types_mut().union(return_ty, clause_return)
+        };
+
+        if let Some(summary) = summary {
+            merge_call_inputs(world, &mut summary_inputs, &summary.input_types);
+            activations.extend(clause_activations);
+        }
+    }
+
+    let Some(function) = selected_function else {
+        return Ok((None, any_ty(world)));
+    };
+    let summary = summary_inputs.map(|input_types| CallSiteSummary {
+        callee: SelectedCallee::Function(function),
+        input_types,
+        return_ty,
+    });
+    let mut latent_executables = Vec::new();
+    if let Some(summary) = summary.as_ref() {
+        let runtime_activations = resolve_runtime_callable_boundary_activations(
+            world,
+            caller,
+            function,
+            summary.input_types.as_slice(),
+            reads,
+            waits,
+            follow_up,
+        )?;
+        latent_executables.extend(runtime_activations.iter().map(|activation| ExecutableKey {
+            activation: activation.key.clone(),
+            need: ExecutableNeed::Value,
+        }));
+        activations.extend(runtime_activations);
+    }
     Ok((
         summary.map(|summary| CallEmission {
             key: CallSiteKey {
@@ -753,8 +901,8 @@ fn resolve_closure_call(
                 callsite,
             },
             summary,
-            latent_executables: Vec::new(),
-            activations: callee_activation.into_iter().collect(),
+            latent_executables,
+            activations,
         }),
         return_ty,
     ))
@@ -776,15 +924,15 @@ fn resolve_runtime_callable_boundary_activations(
         return Ok(Vec::new());
     };
     reads.push(lowered_fact);
-    let LoweredBody::Extern { signature } = world.lowered_body(function) else {
+    let LoweredBody::Extern { signature: _ } = world.lowered_body(function) else {
         return Ok(Vec::new());
     };
 
     let mut activations = Vec::new();
-    for &arg_index in runtime_callable_arg_indexes(signature.symbol.as_str()) {
-        let Some(&callable_ty) = arg_types.get(arg_index) else {
+    for &callable_ty in arg_types {
+        if world.types_mut().callable_clauses(&callable_ty).is_none() {
             continue;
-        };
+        }
         activations.extend(resolve_callable_activations_from_type(
             world,
             caller,
@@ -797,11 +945,101 @@ fn resolve_runtime_callable_boundary_activations(
     Ok(activations)
 }
 
-fn runtime_callable_arg_indexes(symbol: &str) -> &'static [usize] {
-    match symbol {
-        "fz_spawn" | "fz_spawn_opt" => &[0],
-        "fz_make_resource" => &[1],
-        _ => &[],
+fn refine_function_call_surface(
+    world: &mut World<'_>,
+    function: FunctionId,
+    input_types: Vec<Ty>,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Result<Option<RefinedCallSurface>, FatalError> {
+    if !world.function_declares_contract(function) {
+        return Ok(Some((input_types, None)));
+    }
+    let contract_fact = FactKey::FunctionContract(function);
+    let Some(_) = world.function_contract_revision(function) else {
+        waits.insert(contract_fact);
+        follow_up.insert(Job::DeriveFunctionContract(function));
+        return Ok(None);
+    };
+    reads.push(contract_fact);
+    let contract = world
+        .function_contract(function)
+        .cloned()
+        .expect("function contract fact should resolve to a stored contract");
+    Ok(Some(apply_function_contract(world, &contract, input_types)))
+}
+
+fn apply_function_contract(
+    world: &mut World<'_>,
+    contract: &FunctionContract,
+    input_types: Vec<Ty>,
+) -> (Vec<Ty>, Option<Ty>) {
+    let application = contract.apply(world.types_mut(), &input_types);
+    (
+        refine_contract_inputs(
+            world,
+            input_types,
+            application.matched_arrows.iter().map(|arrow| arrow.params.as_slice()),
+        ),
+        application.result,
+    )
+}
+
+fn refine_contract_inputs<'a>(
+    world: &mut World<'_>,
+    observed: Vec<Ty>,
+    arrows: impl Iterator<Item = &'a [Ty]>,
+) -> Vec<Ty> {
+    let mut joined = Vec::<Option<Ty>>::new();
+    for params in arrows {
+        if joined.len() < params.len() {
+            joined.resize(params.len(), None);
+        }
+        for (index, ty) in params.iter().copied().enumerate() {
+            joined[index] = Some(match joined[index].take() {
+                Some(current) => world.types_mut().union(current, ty),
+                None => ty,
+            });
+        }
+    }
+    observed
+        .into_iter()
+        .enumerate()
+        .map(|(index, input)| {
+            let Some(surface) = joined.get(index).and_then(|ty| *ty) else {
+                return input;
+            };
+            let refined = world.types_mut().intersect(input, surface);
+            if world.types().is_empty(&refined) {
+                input
+            } else {
+                refined
+            }
+        })
+        .collect()
+}
+
+fn refine_call_return(world: &mut World<'_>, observed: Ty, contract: Option<Ty>) -> Ty {
+    let Some(contract) = contract else {
+        return observed;
+    };
+    if world.types().is_empty(&observed) {
+        return contract;
+    }
+    let any = world.types_mut().any();
+    let observed_is_unconstrained = world.types().is_equivalent(&observed, &any) || world.types().has_vars(&observed);
+    if !observed_is_unconstrained
+        && world.types().is_subtype(&contract, &observed)
+        && !world.types().is_subtype(&observed, &contract)
+    {
+        return observed;
+    }
+    let refined = world.types_mut().intersect(observed, contract);
+    if world.types().is_empty(&refined) {
+        observed
+    } else {
+        refined
     }
 }
 
@@ -813,7 +1051,7 @@ fn resolve_callable_activations_from_type(
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
 ) -> Vec<ActivationContribution> {
-    let Some(clauses) = world.types_mut().callable_clauses(&callable_ty) else {
+    let Some(clauses) = world.types_mut().callable_value_clauses(&callable_ty) else {
         return Vec::new();
     };
     let mut activations = Vec::new();
@@ -926,6 +1164,22 @@ fn call_summary(callee: Option<SelectedCallee>, input_types: Vec<Ty>, return_ty:
         input_types,
         return_ty,
     })
+}
+
+fn merge_call_inputs(world: &mut World<'_>, merged: &mut Option<Vec<Ty>>, observed: &[Ty]) {
+    match merged {
+        Some(current) => {
+            if current.len() < observed.len() {
+                current.resize_with(observed.len(), || any_ty(world));
+            }
+            for (slot, observed_ty) in observed.iter().copied().enumerate() {
+                current[slot] = world.types_mut().union(current[slot], observed_ty);
+            }
+        }
+        None => {
+            *merged = Some(observed.to_vec());
+        }
+    }
 }
 
 fn reachable_clause_ids(world: &mut World<'_>, plan: &DispatchPlan, inputs: &[Ty]) -> Vec<u32> {
@@ -1178,12 +1432,18 @@ fn collect_entry_callsite_needs(
             LoweredStep::Const { value, .. }
             | LoweredStep::Tuple { value, .. }
             | LoweredStep::List { value, .. }
+            | LoweredStep::Map { value, .. }
+            | LoweredStep::MapUpdate { value, .. }
+            | LoweredStep::Struct { value, .. }
+            | LoweredStep::Bitstring { value, .. }
             | LoweredStep::FunctionRef { value, .. }
             | LoweredStep::NamedFunctionRef { value, .. }
             | LoweredStep::Lambda { value, .. }
             | LoweredStep::BinaryOp { value, .. }
             | LoweredStep::UnaryOp { value, .. }
             | LoweredStep::MapIndex { value, .. }
+            | LoweredStep::FieldAccess { value, .. }
+            | LoweredStep::RequireMapValue { value, .. }
             | LoweredStep::TupleField { value, .. } => {
                 tuple_demands.remove(value);
             }
@@ -1191,9 +1451,21 @@ fn collect_entry_callsite_needs(
                 tuple_demands.remove(head);
                 tuple_demands.remove(tail);
             }
+            LoweredStep::BitstringInit { reader, .. } => {
+                tuple_demands.remove(reader);
+            }
+            LoweredStep::BitstringRead {
+                ok, value, next_reader, ..
+            } => {
+                tuple_demands.remove(ok);
+                tuple_demands.remove(value);
+                tuple_demands.remove(next_reader);
+            }
             LoweredStep::AssertLiteral { .. }
+            | LoweredStep::AssertStruct { .. }
             | LoweredStep::AssertEmptyList { .. }
-            | LoweredStep::AssertSame { .. } => {}
+            | LoweredStep::AssertSame { .. }
+            | LoweredStep::AssertBitstringDone { .. } => {}
         }
     }
     entry
@@ -1311,6 +1583,65 @@ fn list_ty(world: &mut World<'_>, values: &ValueTypes, items: &[ValueId], tail: 
                 world.types_mut().non_empty_list(elem_ty)
             }
         }
+    }
+}
+
+fn map_ty(world: &mut World<'_>, values: &ValueTypes, entries: &[(ValueId, ValueId)]) -> Ty {
+    let mut fields = BTreeMap::new();
+    for (key, value) in entries {
+        let key_ty = value_ty(world, values, *key);
+        let Some(key) = map_key_from_ty(world, key_ty) else {
+            return world.types_mut().map_top();
+        };
+        fields.insert(key, value_ty(world, values, *value));
+    }
+    world.types_mut().map(&fields.into_iter().collect::<Vec<_>>())
+}
+
+fn struct_map_ty(world: &mut World<'_>, values: &ValueTypes, fields: &[(String, ValueId)]) -> Ty {
+    let map_fields = fields
+        .iter()
+        .map(|(name, value)| {
+            (
+                super::super::types::MapKey::Atom(name.clone()),
+                value_ty(world, values, *value),
+            )
+        })
+        .collect::<Vec<_>>();
+    world.types_mut().map(&map_fields)
+}
+
+fn struct_nominal_ty(world: &mut World<'_>, module: ModuleId) -> Ty {
+    let name = world
+        .module_name(module)
+        .unwrap_or_else(|| panic!("named struct module {} should have a reverse lookup", module.as_u32()))
+        .to_string();
+    crate::frontend::protocols::struct_impl_target_type(
+        world.types_mut(),
+        name.rsplit('.').next().unwrap_or(name.as_str()),
+    )
+}
+
+fn map_key_from_ty(world: &World<'_>, ty: Ty) -> Option<super::super::types::MapKey> {
+    world.types().as_map_key(&ty)
+}
+
+fn literal_map_key(literal: &Literal) -> Option<super::super::types::MapKey> {
+    match literal {
+        Literal::Int(value) => Some(super::super::types::MapKey::Int(*value)),
+        Literal::Atom(name) => Some(super::super::types::MapKey::Atom(name.clone())),
+        Literal::Float(_) | Literal::Binary(_) | Literal::Bool(_) | Literal::Nil => None,
+    }
+}
+
+fn bitfield_value_ty(world: &mut World<'_>, spec: &super::super::body::LoweredBitFieldSpec) -> Ty {
+    match spec.ty {
+        crate::ast::BitType::Integer
+        | crate::ast::BitType::Utf8
+        | crate::ast::BitType::Utf16
+        | crate::ast::BitType::Utf32 => world.types_mut().int(),
+        crate::ast::BitType::Float => world.types_mut().float(),
+        crate::ast::BitType::Binary | crate::ast::BitType::Bits => world.types_mut().str_t(),
     }
 }
 

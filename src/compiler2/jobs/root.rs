@@ -235,6 +235,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
     );
 
     if waits.is_empty() {
+        let semantic_closed_fact = FactKey::SemanticClosed(root_id);
         let semantic_closed = world.define_semantic_closure(
             root_id,
             SemanticClosure {
@@ -244,8 +245,11 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
             },
             dependencies,
         );
-        outputs.push((FactKey::SemanticClosed(root_id), FactValue::presence(semantic_closed)));
-        follow_up.insert(Job::MaterializeRoot(root_id));
+        let closure_changed = world.fact_would_change(semantic_closed_fact.clone(), semantic_closed);
+        outputs.push((semantic_closed_fact, FactValue::presence(semantic_closed)));
+        if closure_changed {
+            follow_up.insert(Job::MaterializeRoot(root_id));
+        }
     }
 
     Ok(JobEffects {

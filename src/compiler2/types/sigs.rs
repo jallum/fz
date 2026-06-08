@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use crate::fz_ir::FnId;
 
-use super::{CallableValueKind, MapKey, Ty, TyCtx};
+use super::{CallableValueKind, MapKey, Sigma, Ty, TyCtx, Types};
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct TupleSig {
@@ -110,4 +110,126 @@ pub(crate) struct ArrowSig {
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct MapSig {
     pub fields: BTreeMap<MapKey, Ty>,
+}
+
+/// Same-shape positive clauses in an intersection should collapse to one
+/// narrower clause. This keeps semantic meets stable instead of piling up
+/// conjunctive structure on every repeated refinement.
+pub(crate) trait MergeSig: Clone + PartialEq {
+    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> Option<Self>;
+}
+
+impl MergeSig for ListSig {
+    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> Option<Self> {
+        let elem = match (a.elem, b.elem) {
+            (Some(a), Some(b)) => {
+                let elem = types.intersect(a, b);
+                if types.is_empty(&elem) { None } else { Some(elem) }
+            }
+            _ => None,
+        };
+        Some(ListSig {
+            empty: a.empty && b.empty,
+            elem,
+        })
+    }
+}
+
+impl MergeSig for ResourceSig {
+    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> Option<Self> {
+        let payload = types.intersect(a.payload, b.payload);
+        if types.is_empty(&payload) {
+            None
+        } else {
+            Some(ResourceSig { payload })
+        }
+    }
+}
+
+impl MergeSig for TupleSig {
+    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> Option<Self> {
+        if a.elems.len() != b.elems.len() {
+            return None;
+        }
+        Some(TupleSig {
+            elems: a
+                .elems
+                .iter()
+                .zip(b.elems.iter())
+                .map(|(x, y)| types.intersect(*x, *y))
+                .collect(),
+        })
+    }
+}
+
+impl MergeSig for ArrowSig {
+    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> Option<Self> {
+        if a.args.len() != b.args.len() {
+            return None;
+        }
+        match (&a.lit, &b.lit) {
+            (Some(la), Some(lb)) => {
+                if la.fn_id != lb.fn_id || la.kind != lb.kind || la.captures.len() != lb.captures.len() {
+                    return None;
+                }
+                Some(ArrowSig {
+                    args: a
+                        .args
+                        .iter()
+                        .zip(b.args.iter())
+                        .map(|(x, y)| types.union(*x, *y))
+                        .collect(),
+                    ret: types.intersect(a.ret, b.ret),
+                    lit: Some(ClosureLit {
+                        kind: la.kind,
+                        fn_id: la.fn_id,
+                        captures: la
+                            .captures
+                            .iter()
+                            .zip(lb.captures.iter())
+                            .map(|(x, y)| types.intersect(*x, *y))
+                            .collect(),
+                    }),
+                })
+            }
+            (Some(_), None) => Some(specialize_lit_arrow(types, a, b)),
+            (None, Some(_)) => Some(specialize_lit_arrow(types, b, a)),
+            (None, None) => Some(ArrowSig {
+                args: a
+                    .args
+                    .iter()
+                    .zip(b.args.iter())
+                    .map(|(x, y)| types.union(*x, *y))
+                    .collect(),
+                ret: types.intersect(a.ret, b.ret),
+                lit: None,
+            }),
+        }
+    }
+}
+
+fn specialize_lit_arrow(types: &mut Types, lit: &ArrowSig, surface: &ArrowSig) -> ArrowSig {
+    let mut sigma = Sigma::new();
+    for (pattern, witness) in lit.args.iter().zip(surface.args.iter()) {
+        types.collect_instantiation_subst(pattern, witness, &mut sigma);
+    }
+    types.collect_instantiation_subst(&lit.ret, &surface.ret, &mut sigma);
+    ArrowSig {
+        args: lit.args.iter().map(|arg| types.instantiate(arg, &sigma)).collect(),
+        ret: types.instantiate(&lit.ret, &sigma),
+        lit: lit.lit.clone(),
+    }
+}
+
+impl MergeSig for MapSig {
+    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> Option<Self> {
+        let mut fields = a.fields.clone();
+        for (key, value) in &b.fields {
+            fields
+                .entry(key.clone())
+                .and_modify(|current| *current = types.intersect(*current, *value))
+                .or_insert(*value);
+        }
+        Some(MapSig { fields })
+    }
 }

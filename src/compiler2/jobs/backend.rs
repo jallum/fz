@@ -57,20 +57,29 @@ pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> R
         .map(|entry| BackendCallableEntry {
             target: entry.target,
             capture_count: entry.capture_count,
+            param_reprs: entry.param_reprs.clone(),
+            return_ty: entry.return_ty,
+            return_abi: entry.return_abi.clone(),
         })
         .collect();
     let program = BackendProgram {
         emission_ready_revision,
         entry: emission_ready.entry,
         atom_names: collect_backend_atom_names(lowerer.world, &executables),
+        struct_schemas: lowerer.world.struct_schemas(),
         executables,
         callable_entries,
     };
+    let backend_fact = FactKey::BackendProgram(root_id);
     let revision = world.define_backend_program(root_id, program);
+    let changed = world.fact_would_change(backend_fact.clone(), revision);
     Ok(JobEffects {
         reads: vec![emission_ready_fact],
-        outputs: vec![(FactKey::BackendProgram(root_id), FactValue::presence(revision))],
-        follow_up: vec![Job::LowerNativeProgram(root_id)],
+        outputs: vec![(backend_fact, FactValue::presence(revision))],
+        follow_up: changed
+            .then_some(Job::LowerNativeProgram(root_id))
+            .into_iter()
+            .collect(),
         ..JobEffects::default()
     })
 }
@@ -198,6 +207,28 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
                 items: items.clone(),
                 tail: *tail,
             },
+            LoweredStep::Map { value, entries } => BackendStep::Map {
+                value: *value,
+                entries: entries.clone(),
+            },
+            LoweredStep::MapUpdate { value, base, entries } => BackendStep::MapUpdate {
+                value: *value,
+                base: *base,
+                entries: entries.clone(),
+            },
+            LoweredStep::Struct { value, module, fields } => BackendStep::Struct {
+                value: *value,
+                module_name: self
+                    .world
+                    .module_name(*module)
+                    .unwrap_or_else(|| panic!("struct module {} should have a name", module.as_u32()))
+                    .to_string(),
+                fields: fields.clone(),
+            },
+            LoweredStep::Bitstring { value, fields } => BackendStep::Bitstring {
+                value: *value,
+                fields: fields.clone(),
+            },
             LoweredStep::FunctionRef { value, function } => BackendStep::FunctionRef {
                 value: *value,
                 function: *function,
@@ -232,9 +263,27 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
                 base: *base,
                 key: *key,
             },
+            LoweredStep::FieldAccess { value, base, field } => BackendStep::FieldAccess {
+                value: *value,
+                base: *base,
+                field: field.clone(),
+            },
             LoweredStep::AssertLiteral { source, literal } => BackendStep::AssertLiteral {
                 source: *source,
                 literal: literal.clone(),
+            },
+            LoweredStep::AssertStruct { source, module } => BackendStep::AssertStruct {
+                source: *source,
+                module_name: self
+                    .world
+                    .module_name(*module)
+                    .unwrap_or_else(|| panic!("struct module {} should have a name", module.as_u32()))
+                    .to_string(),
+            },
+            LoweredStep::RequireMapValue { value, source, key } => BackendStep::RequireMapValue {
+                value: *value,
+                source: *source,
+                key: key.clone(),
             },
             LoweredStep::AssertTuple { source, arity } => BackendStep::AssertTuple {
                 source: *source,
@@ -255,6 +304,26 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
                 head: *head,
                 tail: *tail,
             },
+            LoweredStep::BitstringInit { reader, source } => BackendStep::BitstringInit {
+                reader: *reader,
+                source: *source,
+            },
+            LoweredStep::BitstringRead {
+                ok,
+                value,
+                next_reader,
+                reader,
+                spec,
+                is_last,
+            } => BackendStep::BitstringRead {
+                ok: *ok,
+                value: *value,
+                next_reader: *next_reader,
+                reader: *reader,
+                spec: spec.clone(),
+                is_last: *is_last,
+            },
+            LoweredStep::AssertBitstringDone { reader } => BackendStep::AssertBitstringDone { reader: *reader },
         })
     }
 
@@ -403,7 +472,7 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
     }
 
     fn resolve_callable_entries_for_type(&mut self, ty: Ty) -> Result<CallableResolution, FatalError> {
-        let Some(clauses) = self.world.types_mut().callable_clauses(&ty) else {
+        let Some(clauses) = self.world.types_mut().callable_value_clauses(&ty) else {
             return Ok(CallableResolution::NotCallable);
         };
         if clauses.is_empty() {
@@ -564,12 +633,18 @@ fn collect_entry_input_need(
             LoweredStep::Const { value, .. }
             | LoweredStep::Tuple { value, .. }
             | LoweredStep::List { value, .. }
+            | LoweredStep::Map { value, .. }
+            | LoweredStep::MapUpdate { value, .. }
+            | LoweredStep::Struct { value, .. }
+            | LoweredStep::Bitstring { value, .. }
             | LoweredStep::FunctionRef { value, .. }
             | LoweredStep::NamedFunctionRef { value, .. }
             | LoweredStep::Lambda { value, .. }
             | LoweredStep::BinaryOp { value, .. }
             | LoweredStep::UnaryOp { value, .. }
             | LoweredStep::MapIndex { value, .. }
+            | LoweredStep::FieldAccess { value, .. }
+            | LoweredStep::RequireMapValue { value, .. }
             | LoweredStep::TupleField { value, .. } => {
                 tuple_demands.remove(value);
             }
@@ -577,9 +652,21 @@ fn collect_entry_input_need(
                 tuple_demands.remove(head);
                 tuple_demands.remove(tail);
             }
+            LoweredStep::BitstringInit { reader, .. } => {
+                tuple_demands.remove(reader);
+            }
+            LoweredStep::BitstringRead {
+                ok, value, next_reader, ..
+            } => {
+                tuple_demands.remove(ok);
+                tuple_demands.remove(value);
+                tuple_demands.remove(next_reader);
+            }
             LoweredStep::AssertLiteral { .. }
+            | LoweredStep::AssertStruct { .. }
             | LoweredStep::AssertEmptyList { .. }
-            | LoweredStep::AssertSame { .. } => {}
+            | LoweredStep::AssertSame { .. }
+            | LoweredStep::AssertBitstringDone { .. } => {}
         }
     }
     let input_need = entry.origin.input_value().and_then(|value| {
@@ -604,6 +691,28 @@ fn collect_step_reads(step: &LoweredStep, out: &mut HashSet<ValueId>) {
                 out.insert(*tail);
             }
         }
+        LoweredStep::Map { entries, .. } => {
+            for (key, value) in entries {
+                out.insert(*key);
+                out.insert(*value);
+            }
+        }
+        LoweredStep::MapUpdate { base, entries, .. } => {
+            out.insert(*base);
+            for (key, value) in entries {
+                out.insert(*key);
+                out.insert(*value);
+            }
+        }
+        LoweredStep::Struct { fields, .. } => out.extend(fields.iter().map(|(_, value)| *value)),
+        LoweredStep::Bitstring { fields, .. } => {
+            for field in fields {
+                out.insert(field.value);
+                if let Some(super::super::body::LoweredBitSize::Value(size)) = &field.spec.size {
+                    out.insert(*size);
+                }
+            }
+        }
         LoweredStep::Lambda { captures, .. } => out.extend(captures.iter().copied()),
         LoweredStep::BinaryOp { left, right, .. } => {
             out.insert(*left);
@@ -615,6 +724,12 @@ fn collect_step_reads(step: &LoweredStep, out: &mut HashSet<ValueId>) {
         LoweredStep::MapIndex { base, key, .. } => {
             out.insert(*base);
             out.insert(*key);
+        }
+        LoweredStep::FieldAccess { base, .. } | LoweredStep::AssertStruct { source: base, .. } => {
+            out.insert(*base);
+        }
+        LoweredStep::RequireMapValue { source, .. } => {
+            out.insert(*source);
         }
         LoweredStep::AssertLiteral { source, .. }
         | LoweredStep::AssertTuple { source, .. }
@@ -630,6 +745,15 @@ fn collect_step_reads(step: &LoweredStep, out: &mut HashSet<ValueId>) {
         }
         LoweredStep::SplitList { source, .. } => {
             out.insert(*source);
+        }
+        LoweredStep::BitstringInit { source, .. } | LoweredStep::AssertBitstringDone { reader: source } => {
+            out.insert(*source);
+        }
+        LoweredStep::BitstringRead { reader, spec, .. } => {
+            out.insert(*reader);
+            if let Some(super::super::body::LoweredBitSize::Value(size)) = &spec.size {
+                out.insert(*size);
+            }
         }
     }
 }
@@ -846,19 +970,35 @@ fn collect_step_atoms(
             BackendStep::Const { literal, .. } | BackendStep::AssertLiteral { literal, .. } => {
                 collect_literal_atoms(literal, seen, atoms);
             }
+            BackendStep::FieldAccess { field, .. } => {
+                if seen.insert(field.clone()) {
+                    atoms.push(field.clone());
+                }
+            }
+            BackendStep::RequireMapValue { key, .. } => {
+                collect_literal_atoms(key, seen, atoms);
+            }
             BackendStep::Tuple { .. }
             | BackendStep::List { .. }
+            | BackendStep::Map { .. }
+            | BackendStep::MapUpdate { .. }
+            | BackendStep::Struct { .. }
+            | BackendStep::Bitstring { .. }
             | BackendStep::FunctionRef { .. }
             | BackendStep::NamedFunctionRef { .. }
             | BackendStep::Lambda { .. }
             | BackendStep::BinaryOp { .. }
             | BackendStep::UnaryOp { .. }
             | BackendStep::MapIndex { .. }
+            | BackendStep::AssertStruct { .. }
             | BackendStep::AssertTuple { .. }
             | BackendStep::TupleField { .. }
             | BackendStep::AssertEmptyList { .. }
             | BackendStep::AssertSame { .. }
-            | BackendStep::SplitList { .. } => {}
+            | BackendStep::SplitList { .. }
+            | BackendStep::BitstringInit { .. }
+            | BackendStep::BitstringRead { .. }
+            | BackendStep::AssertBitstringDone { .. } => {}
         }
     }
 }

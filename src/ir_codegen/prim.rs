@@ -1070,7 +1070,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                 if ty_is_float(t, fn_types, dest_var) {
                     return Ok(LowerOut::RawF64(body.b.ins().f64const(*f)));
                 }
-                Err(CodegenError::new("Float literal inferred outside float representation"))
+                Ok(LowerOut::StrictConst(AnyValue::float(*f)))
             }
         },
         Prim::BinOp(op, a, bv) => {

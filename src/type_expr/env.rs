@@ -45,6 +45,39 @@ where
     })
 }
 
+pub fn resolve_spec_decl_generic<T>(
+    t: &mut T,
+    decl: &SpecDecl,
+    env: &ModuleTypeEnv<T::Ty>,
+) -> Result<ResolvedSpecDecl<T::Ty>, TypeExprError>
+where
+    T: Types,
+{
+    let mut vars: HashMap<String, TypeVarId> = HashMap::new();
+    let mut params = Vec::with_capacity(decl.param_body_tokens.len());
+    for body in &decl.param_body_tokens {
+        let (ty, _consumed) = super::parser::parse_type_expr_with_vars(t, &body.0, env, &mut vars)?;
+        params.push(ty);
+    }
+    let (result, _consumed) = super::parser::parse_type_expr_with_vars(t, &decl.result_body_tokens.0, env, &mut vars)?;
+    let mut constraints = HashMap::new();
+    for (name, body) in &decl.constraints {
+        let Some(id) = vars.get(name).copied() else {
+            return Err(TypeExprError {
+                msg: format!("constraint references unknown type variable `{}`", name),
+                span: body.0.first().map(|tok| tok.span).unwrap_or(Span::DUMMY),
+            });
+        };
+        let (bound, _consumed) = parse_type_expr(t, &body.0, env)?;
+        constraints.insert(id, bound);
+    }
+    Ok(ResolvedSpecDecl {
+        params,
+        result,
+        constraints,
+    })
+}
+
 /// Best-effort per-position resolution of a spec's bodies: a body that fails to
 /// resolve yields `None` for that position instead of failing the whole spec.
 /// Free type variables are shared across positions, matching `resolve_spec_decl`.

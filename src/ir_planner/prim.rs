@@ -2,6 +2,7 @@ use super::expr_types::{lookup, numeric_result, numeric_result_fold, type_binop,
 use crate::ast::BitType;
 use crate::frontend::protocols::struct_impl_target_type;
 use crate::fz_ir::{BinOp, FnId, Module, Prim, UnOp, Var};
+use crate::specs::{SchemeInstantiation, instantiate_match};
 use crate::types::{ClosureTypes, MapKey, Ty, Types};
 use std::collections::{HashMap, HashSet};
 
@@ -86,10 +87,7 @@ pub(crate) fn type_prim<T: Types<Ty = Ty> + ClosureTypes>(
         Prim::MakeFnRef(_, fn_id) => type_make_fn_ref(t, m, *fn_id),
         Prim::MakeClosure(_, fn_id, captured) => type_make_closure(t, env, m, *fn_id, captured),
 
-        Prim::Extern(_, eid, _) => {
-            let ret_ty = m.extern_idx.get(eid).map(|&i| m.externs[i].ret_descr.clone());
-            ret_ty.unwrap_or_else(|| t.any())
-        }
+        Prim::Extern(_, eid, args) => extern_return_ty(t, env, m, *eid, args).unwrap_or_else(|| t.any()),
 
         Prim::TypeTest(v, descr) => type_type_test(t, env, *v, descr),
 
@@ -102,6 +100,27 @@ pub(crate) fn type_prim<T: Types<Ty = Ty> + ClosureTypes>(
         Prim::BitReaderInit(_) => t.any(),
         Prim::BitReadField { ty, .. } => type_bit_read_field(t, ty),
         Prim::BitReaderDone(_) => t.bool(),
+    }
+}
+
+fn extern_return_ty<T: Types<Ty = Ty> + ClosureTypes>(
+    t: &mut T,
+    env: &HashMap<Var, Ty>,
+    module: &Module,
+    extern_id: crate::fz_ir::ExternId,
+    args: &[crate::fz_ir::ExternArg],
+) -> Option<Ty> {
+    let decl = module.extern_idx.get(&extern_id).map(|&idx| &module.externs[idx])?;
+    let witnesses = args.iter().map(|arg| lookup(t, env, arg.var)).collect::<Vec<_>>();
+    match instantiate_match(
+        t,
+        &decl.semantic_contract.params,
+        &decl.semantic_contract.result,
+        &decl.semantic_contract.constraints,
+        &witnesses,
+    ) {
+        SchemeInstantiation::Known(matched) | SchemeInstantiation::Underconstrained(matched) => Some(matched.result),
+        SchemeInstantiation::Invalid => Some(decl.ret_descr.clone()),
     }
 }
 

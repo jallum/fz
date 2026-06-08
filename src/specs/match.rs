@@ -214,11 +214,7 @@ fn collect_tuple_subst<T: ClosureTypes + ?Sized>(
         return Witness::Unknown;
     }
     if t.max_tuple_arity(witness) < arity {
-        return if t.has_vars(witness) {
-            Witness::Unknown
-        } else {
-            Witness::Invalid
-        };
+        return missing_structural_axis_outcome(t, pattern, witness);
     }
     let witness_fields = t.tuple_projections(witness, arity);
     let mut outcome = Witness::Unknown;
@@ -242,11 +238,7 @@ fn collect_list_subst<T: ClosureTypes + ?Sized>(
         return Witness::Unknown;
     }
     if !t.has_list_shape(witness) {
-        return if t.has_vars(witness) {
-            Witness::Unknown
-        } else {
-            Witness::Invalid
-        };
+        return missing_structural_axis_outcome(t, pattern, witness);
     }
     let witness_elem = t.list_element_type(witness);
     collect_structural_subst(t, &pattern_elem, &witness_elem, sigma)
@@ -265,11 +257,7 @@ fn collect_resource_subst<T: ClosureTypes + ?Sized>(
         return Witness::Unknown;
     }
     let Some(witness_payload) = t.resource_payload_type(witness) else {
-        return if t.has_vars(witness) {
-            Witness::Unknown
-        } else {
-            Witness::Invalid
-        };
+        return missing_structural_axis_outcome(t, pattern, witness);
     };
     collect_structural_subst(t, &pattern_payload, &witness_payload, sigma)
 }
@@ -290,8 +278,8 @@ fn collect_map_subst<T: ClosureTypes + ?Sized>(
             continue;
         }
         if !witness_keys.contains(&key) {
-            if t.map_field_lookup(witness, &key).is_none() && !t.has_vars(witness) {
-                outcome = outcome.merge(Witness::Invalid);
+            if t.map_field_lookup(witness, &key).is_none() {
+                outcome = outcome.merge(missing_structural_axis_outcome(t, pattern, witness));
             }
             continue;
         }
@@ -315,11 +303,7 @@ fn collect_arrow_subst<T: ClosureTypes + ?Sized>(
         return Witness::Unknown;
     }
     let Some(witness_clauses) = t.callable_clauses(witness) else {
-        return if t.has_vars(witness) {
-            Witness::Unknown
-        } else {
-            Witness::Invalid
-        };
+        return missing_structural_axis_outcome(t, pattern, witness);
     };
 
     let mut saw_compatible_arity = false;
@@ -341,7 +325,19 @@ fn collect_arrow_subst<T: ClosureTypes + ?Sized>(
     if saw_compatible_arity {
         outcome
     } else {
+        missing_structural_axis_outcome(t, pattern, witness)
+    }
+}
+
+fn missing_structural_axis_outcome<T: Types + ?Sized>(t: &mut T, pattern: &T::Ty, witness: &T::Ty) -> Witness {
+    if t.has_vars(witness) {
+        return Witness::Unknown;
+    }
+    let overlap = t.intersect(pattern.clone(), witness.clone());
+    if t.is_empty(&overlap) {
         Witness::Invalid
+    } else {
+        Witness::Unknown
     }
 }
 

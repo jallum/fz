@@ -1713,6 +1713,37 @@ fn main() do fz_open(\"x\", 0) end
     assert_ne!(write.params[1], ExternTy::Any);
 }
 
+#[test]
+fn constrained_resource_extern_uses_raw_payload_and_boxed_return() {
+    let src = "\
+extern \"C\" fn fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
+fn main() do fz_make_resource(42, fn (x) -> nil end) end
+";
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
+    let module = lower_program(
+        &mut crate::types::new(),
+        &prog,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("lower");
+    let make_resource = module
+        .externs
+        .iter()
+        .find(|e| e.fz_name == "fz_make_resource")
+        .expect("fz_make_resource missing");
+    assert_eq!(make_resource.params, vec![ExternTy::I64, ExternTy::Any]);
+    assert_eq!(
+        make_resource.ret,
+        ExternTy::Any,
+        "resource(t) must stay boxed at the extern boundary",
+    );
+}
+
 /// fz-eol — `&libc::close/1` resolves to a synthesized top-level
 /// wrapper fn whose body contains a single `Prim::Extern` call. This
 /// is the canonical shape `resolve_dtor_from_closure` walks at

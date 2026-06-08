@@ -4,7 +4,7 @@
 //! effects, and the drive loop. Concrete job implementations live under
 //! `compiler2::jobs`.
 
-use crate::telemetry::{TelemetryExt, opaque};
+use crate::telemetry::{TelemetryExt, opaque_debug};
 use crate::{measurements, metadata};
 
 use super::code::CodeId;
@@ -19,6 +19,7 @@ pub enum Job {
     IndexCode(CodeId),
     ScopeCode(CodeId),
     DefineModule(ModuleId),
+    DeriveFunctionContract(FunctionId),
     LowerFunction(FunctionId),
     ReifyGuardDispatch(FunctionId),
     PlanEntryDispatch(FunctionId),
@@ -41,6 +42,7 @@ pub enum FactKey {
     ModuleIndexed(ModuleId),
     ModuleDefined(ModuleId),
     FunctionDefined(FunctionId),
+    FunctionContract(FunctionId),
     LoweredBody(FunctionId),
     GuardDispatch(FunctionId),
     EntryDispatch(FunctionId),
@@ -99,7 +101,7 @@ impl World<'_> {
             let job_span = self.tel().span(
                 &["fz", "compiler2", "job"],
                 metadata! {
-                    job: opaque(&job),
+                    job: opaque_debug(&job),
                 },
             );
             let result = super::jobs::run(self, &job);
@@ -110,15 +112,18 @@ impl World<'_> {
                     job_span.stop_with(
                         &measurements! {},
                         &metadata! {
-                            effects: opaque(&effects),
-                            step: opaque(&step),
+                            effects: opaque_debug(&effects),
+                            step: opaque_debug(&step),
                         },
                     );
                 }
                 Err(_) => {
                     job_span.stop_with(&measurements! {}, &metadata! {});
                     self.clear_unresolved_diagnostics();
-                    span.stop_with(&measurements! { jobs_ran: jobs_ran }, &metadata! { job: opaque(&job) });
+                    span.stop_with(
+                        &measurements! { jobs_ran: jobs_ran },
+                        &metadata! { job: opaque_debug(&job) },
+                    );
                     return DriveOutcome::Fatal { job };
                 }
             }
@@ -133,7 +138,7 @@ impl World<'_> {
             span.stop_with(
                 &measurements! { jobs_ran: jobs_ran },
                 &metadata! {
-                    waits: opaque(&unresolved),
+                    waits: opaque_debug(&unresolved),
                 },
             );
             DriveOutcome::Unresolved { waits: unresolved }

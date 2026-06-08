@@ -34,6 +34,7 @@ use crate::test_support::{
     assert_authoritative_planner_consistent, linked_runtime_graph, linked_runtime_module, lower_frontend_module,
     runtime_graph_planner_activation_projection_signals, runtime_graph_reachable_materialized_body_signals,
 };
+use crate::type_expr::ResolvedSpecDecl;
 use crate::types::{ClosureTypes, DefaultTypes, KeySlot, Ty, TypeVarId, Types, display_key_slots, key_slots_from_tys};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::read_to_string;
@@ -217,6 +218,12 @@ fn test_callback_return_demand(demand: CallbackReturnDemand) -> ReturnDemand {
 }
 
 fn extern_decl(t: &mut DefaultTypes, id: ExternId, symbol: &str, ret: ExternTy) -> ExternDecl {
+    let ret_descr = match ret {
+        ExternTy::Unit => t.nil(),
+        ExternTy::Never => t.none(),
+        ExternTy::I64 => t.int(),
+        _ => t.any(),
+    };
     ExternDecl {
         id,
         fz_name: symbol.to_string(),
@@ -224,11 +231,11 @@ fn extern_decl(t: &mut DefaultTypes, id: ExternId, symbol: &str, ret: ExternTy) 
         params: Vec::new(),
         variadic: false,
         ret,
-        ret_descr: match ret {
-            ExternTy::Unit => t.nil(),
-            ExternTy::Never => t.none(),
-            ExternTy::I64 => t.int(),
-            _ => t.any(),
+        ret_descr: ret_descr.clone(),
+        semantic_contract: ResolvedSpecDecl {
+            params: Vec::new(),
+            result: ret_descr,
+            constraints: HashMap::new(),
         },
     }
 }
@@ -5563,10 +5570,33 @@ end
 "#;
     let (mut t, m, mt) = pipeline(src, &crate::telemetry::ConfiguredTelemetry::new());
     let f = m.fn_by_name("A.get").expect("A.get exists post-lower");
+    let make = m.fn_by_name("A.make").expect("A.make exists post-lower");
     let ft = mt.any_spec_for(f.id).unwrap_or_else(|| {
         let keys: Vec<_> = mt.specs.keys().filter(|key| key.fn_id == f.id).collect();
         panic!("no spec for A.get/1; have keys: {:?}", keys);
     });
+    let get_keys = mt
+        .specs
+        .keys()
+        .filter(|key| key.fn_id == f.id)
+        .map(|key| {
+            key.input
+                .iter()
+                .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let make_keys = mt
+        .specs
+        .keys()
+        .filter(|key| key.fn_id == make.id)
+        .map(|key| {
+            key.input
+                .iter()
+                .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
     // The fn body lowers `h.value` to a `Prim::MapGet(h, :value)`
     // (TypeTest dispatch wraps it in a few blocks). Find that stmt's
     // result var and check its inferred type — it must be a subtype
@@ -5581,8 +5611,14 @@ end
                 let int = t.int();
                 assert!(
                     t.is_subtype(rt, &int),
-                    "h.value should type as integer (inner T), got `{}`",
+                    "h.value should type as integer (inner T), got `{}`; get_keys={:?}; make_keys={:?}; entry_vars={:?}",
                     t.display(rt),
+                    get_keys,
+                    make_keys,
+                    ft.vars
+                        .iter()
+                        .map(|(var, ty)| (var.0, t.display(ty)))
+                        .collect::<Vec<_>>(),
                 );
                 found = true;
             }

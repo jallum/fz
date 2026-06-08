@@ -157,13 +157,17 @@ hands one caller-owned sink to `World`, and every job/event under
 
 **Emit raw compiler facts, not formatted strings.** Compiler2 emission sites
 pass existing ids in measurements and existing compiler-owned structures in
-metadata via `opaque(...)`: `Job`, `JobEffects`, `AppliedStep<Job, FactKey>`,
+metadata via `opaque_debug(...)`: `Job`, `JobEffects`, `AppliedStep<Job, FactKey>`,
 `FunctionRef`, `CallSiteSummary`, `SemanticClosure`, `MaterializedProgram`,
 `AbiReadyProgram`, `EmissionReadyProgram`, `BackendProgram`, `Ty`, and
 unresolved waits. If an emit site has to build a display string just for
-telemetry, that is the wrong side of the boundary. The ignored JSONL harness in
-`src/compiler2/telemetry_dump_test.rs` is the model: the handler decides how
-to render opaque values, not the compiler.
+telemetry, that is the wrong side of the boundary. Plain `opaque(...)` values
+stay type-erased; `opaque_debug(...)` carries a borrowed `Debug` formatter so
+handlers can render those raw values when they need detail. The stock JSONL
+backend now serializes opaque values as
+`{"opaque_type":"...","debug":"..."}`, which means the normal
+`--log-telemetry` path and the ignored Compiler2 dump harness both show the
+precipitating actions without adding formatter code at the emit site.
 
 **Slot revisions are the stable change signal.** Compiler2 state stores and fact
 slots bump revisions only when their aggregate value changes. Handlers and
@@ -183,8 +187,11 @@ If a handler wants a rendered type, it must derive that rendering on its side.
 `[fz, compiler2, drive]` span. Each popped job opens one
 `[fz, compiler2, job]` span. Successful job spans close with raw `effects` and
 the applied `work_graph` step in metadata; unresolved drives close with the raw
-wait frontier; fatal drives close with the fatal job. There is no extra
-"job_fatal" event and no redundant "fact_published" stream.
+wait frontier; fatal drives close with the fatal job. Because the JSONL handler
+renders opaque metadata now, the emitted log shows the actual precipitating
+`Job`, `JobEffects`, `AppliedStep`, and unresolved waits instead of hiding them
+behind the final outcome. There is no extra "job_fatal" event and no redundant
+"fact_published" stream.
 
 Artifact jobs lean on that raw `JobEffects` payload as a contract surface. The
 tests assert that:

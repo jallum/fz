@@ -6,16 +6,17 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{Expr, FnClause, FnDef, LambdaClause, MatchClause, Pattern, Spanned, WithBinding};
+use crate::ast::{BitField, BitSize, Expr, FnClause, FnDef, LambdaClause, MatchClause, Pattern, Spanned, WithBinding};
 use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
-use crate::ir_lower::{extern_symbol_from_name, extern_ty_from_name, lower_extern_ret_ty};
+use crate::ir_lower::{extern_symbol_from_name, lower_extern_signature};
 
 use super::super::body::{
-    CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, DirectCallee, Literal, LoweredBody,
-    LoweredClause, LoweredEntry, LoweredExtern, LoweredStep, LoweredTail, ValueId,
+    CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, DirectCallee, Literal,
+    LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause, LoweredEntry, LoweredExtern,
+    LoweredStep, LoweredTail, ValueId,
 };
 use super::super::drive::{FactKey, JobEffects};
 use super::super::facts::FactValue;
@@ -55,6 +56,24 @@ enum ExprStep {
         value: ValueId,
         items: Vec<ValueId>,
         tail: Option<ValueId>,
+    },
+    Map {
+        value: ValueId,
+        entries: Vec<(ValueId, ValueId)>,
+    },
+    MapUpdate {
+        value: ValueId,
+        base: ValueId,
+        entries: Vec<(ValueId, ValueId)>,
+    },
+    Struct {
+        value: ValueId,
+        module: super::super::identity::ModuleId,
+        fields: Vec<(String, ValueId)>,
+    },
+    Bitstring {
+        value: ValueId,
+        fields: Vec<LoweredBitField>,
     },
     FunctionRef {
         value: ValueId,
@@ -98,6 +117,11 @@ enum ExprStep {
         base: ValueId,
         key: ValueId,
     },
+    FieldAccess {
+        value: ValueId,
+        base: ValueId,
+        field: String,
+    },
     If {
         value: ValueId,
         cond: ValueId,
@@ -107,6 +131,15 @@ enum ExprStep {
     AssertLiteral {
         source: ValueId,
         literal: Literal,
+    },
+    AssertStruct {
+        source: ValueId,
+        module: super::super::identity::ModuleId,
+    },
+    RequireMapValue {
+        value: ValueId,
+        source: ValueId,
+        key: Literal,
     },
     AssertTuple {
         source: ValueId,
@@ -128,6 +161,21 @@ enum ExprStep {
         source: ValueId,
         head: ValueId,
         tail: ValueId,
+    },
+    BitstringInit {
+        reader: ValueId,
+        source: ValueId,
+    },
+    BitstringRead {
+        ok: ValueId,
+        value: ValueId,
+        next_reader: ValueId,
+        reader: ValueId,
+        spec: LoweredBitFieldSpec,
+        is_last: bool,
+    },
+    AssertBitstringDone {
+        reader: ValueId,
     },
 }
 
@@ -203,15 +251,8 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                     ),
                 )
             })?;
-            let params = self
-                .def
-                .ast
-                .extern_params
-                .iter()
-                .map(|name| extern_ty_from_name(name).unwrap_or(crate::fz_ir::ExternTy::Any))
-                .collect();
-            let (ret, return_ty) =
-                lower_extern_ret_ty(self.world.types_mut(), &self.def.ast, &type_env).map_err(|error| {
+            let signature =
+                lower_extern_signature(self.world.types_mut(), &self.def.ast, &type_env).map_err(|error| {
                     emit_job_diagnostic(
                         self.world,
                         Diagnostic::error(codes::LOWER_UNSUPPORTED, error.to_string(), self.def.ast.name_span),
@@ -222,10 +263,11 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                     signature: LoweredExtern {
                         abi,
                         symbol: extern_symbol_from_name(&self.def.ast.name).to_string(),
-                        params,
+                        params: signature.params,
                         variadic: self.def.ast.variadic,
-                        ret,
-                        return_ty,
+                        ret: signature.ret,
+                        return_ty: signature.return_ty,
+                        semantic_contract: signature.semantic_contract,
                     },
                 },
                 Vec::new(),
@@ -380,11 +422,47 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 steps.push(ExprStep::Tuple { value, items: lowered });
                 Ok(value)
             }
+            Expr::Map(entries) => {
+                let mut lowered = Vec::with_capacity(entries.len());
+                for (key, value) in entries {
+                    lowered.push((self.lower_expr(key, env, steps)?, self.lower_expr(value, env, steps)?));
+                }
+                let value = self.fresh_value();
+                steps.push(ExprStep::Map {
+                    value,
+                    entries: lowered,
+                });
+                Ok(value)
+            }
+            Expr::MapUpdate(base, entries) => {
+                let base = self.lower_expr(base, env, steps)?;
+                let mut lowered = Vec::with_capacity(entries.len());
+                for (key, value) in entries {
+                    lowered.push((self.lower_expr(key, env, steps)?, self.lower_expr(value, env, steps)?));
+                }
+                let value = self.fresh_value();
+                steps.push(ExprStep::MapUpdate {
+                    value,
+                    base,
+                    entries: lowered,
+                });
+                Ok(value)
+            }
+            Expr::Struct { module, fields } => self.lower_struct_expr(expr.span, module, fields, env, steps),
+            Expr::Bitstring(fields) => self.lower_bitstring_expr(fields, env, steps),
             Expr::Index(base, key) => {
                 let base = self.lower_expr(base, env, steps)?;
-                let key = self.lower_expr(key, env, steps)?;
                 let value = self.fresh_value();
-                steps.push(ExprStep::MapIndex { value, base, key });
+                if let Expr::Atom(field) = &key.node {
+                    steps.push(ExprStep::FieldAccess {
+                        value,
+                        base,
+                        field: field.clone(),
+                    });
+                } else {
+                    let key = self.lower_expr(key, env, steps)?;
+                    steps.push(ExprStep::MapIndex { value, base, key });
+                }
                 Ok(value)
             }
             Expr::Call(target, args) => {
@@ -485,10 +563,6 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             Expr::Lambda(clauses) => self.lower_lambda(expr.span, clauses, env, steps),
             Expr::Capture(_)
             | Expr::CaptureArg(_)
-            | Expr::Bitstring(_)
-            | Expr::Map(_)
-            | Expr::MapUpdate(_, _)
-            | Expr::Struct { .. }
             | Expr::Case(_, _)
             | Expr::Cond(_)
             | Expr::With(_, _, _)
@@ -568,6 +642,143 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         Ok(lowered)
     }
 
+    fn lower_struct_expr(
+        &mut self,
+        span: Span,
+        module: &crate::modules::identity::ModuleName,
+        fields: &[(String, Spanned<Expr>)],
+        env: &mut HashMap<String, ValueId>,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        let module_id = self.resolve_struct_module(module, span)?;
+        let Some(order) = self.world.module_struct_fields(module_id).map(|fields| fields.to_vec()) else {
+            return Err(emit_job_diagnostic(
+                self.world,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    format!("compiler2 does not know the schema for struct `{}`", module.dotted()),
+                    span,
+                ),
+            ));
+        };
+        let mut by_name = fields
+            .iter()
+            .map(|(name, expr)| (name.as_str(), expr))
+            .collect::<HashMap<_, _>>();
+        let mut lowered = Vec::with_capacity(order.len());
+        for field in order {
+            let value = if let Some(expr) = by_name.remove(field.as_str()) {
+                self.lower_expr(expr, env, steps)?
+            } else {
+                self.push_const(steps, Literal::Nil)
+            };
+            lowered.push((field, value));
+        }
+        if let Some((name, _)) = by_name.into_iter().next() {
+            return Err(emit_job_diagnostic(
+                self.world,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    format!("struct `{}` does not define field `{}`", module.dotted(), name),
+                    span,
+                ),
+            ));
+        }
+        let value = self.fresh_value();
+        steps.push(ExprStep::Struct {
+            value,
+            module: module_id,
+            fields: lowered,
+        });
+        Ok(value)
+    }
+
+    fn lower_bitstring_expr(
+        &mut self,
+        fields: &[BitField<Spanned<Expr>>],
+        env: &mut HashMap<String, ValueId>,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        let mut lowered = Vec::with_capacity(fields.len());
+        for field in fields {
+            lowered.push(LoweredBitField {
+                value: self.lower_expr(&field.value, env, steps)?,
+                spec: self.lower_bitfield_spec(
+                    &field.spec.size,
+                    field.spec.ty,
+                    field.spec.endian,
+                    field.spec.signed,
+                    field.spec.unit,
+                    field.value.span,
+                    env,
+                )?,
+            });
+        }
+        let value = self.fresh_value();
+        steps.push(ExprStep::Bitstring { value, fields: lowered });
+        Ok(value)
+    }
+
+    fn lower_bitfield_spec(
+        &mut self,
+        size: &Option<BitSize>,
+        ty: crate::ast::BitType,
+        endian: crate::ast::Endian,
+        signed: bool,
+        unit: Option<u32>,
+        span: Span,
+        env: &HashMap<String, ValueId>,
+    ) -> Result<LoweredBitFieldSpec, FatalError> {
+        Ok(LoweredBitFieldSpec {
+            ty,
+            size: self.lower_bit_size(size, span, env)?,
+            endian,
+            signed,
+            unit,
+        })
+    }
+
+    fn lower_bit_size(
+        &mut self,
+        size: &Option<BitSize>,
+        span: Span,
+        env: &HashMap<String, ValueId>,
+    ) -> Result<Option<LoweredBitSize>, FatalError> {
+        Ok(match size {
+            None => None,
+            Some(BitSize::Literal(value)) => Some(LoweredBitSize::Literal(*value)),
+            Some(BitSize::Var(name)) => Some(LoweredBitSize::Value(*env.get(name).ok_or_else(|| {
+                emit_job_diagnostic(
+                    self.world,
+                    Diagnostic::error(
+                        codes::LOWER_UNBOUND,
+                        format!("compiler2 lowering found unbound bit size name `{name}`"),
+                        span,
+                    ),
+                )
+            })?)),
+        })
+    }
+
+    fn resolve_struct_module(
+        &mut self,
+        module: &crate::modules::identity::ModuleName,
+        span: Span,
+    ) -> Result<super::super::identity::ModuleId, FatalError> {
+        self.world
+            .resolve_module_name(self.def.owner_module, self.namespace, module)
+            .ok_or_else(|| {
+                emit_job_diagnostic(
+                    self.world,
+                    Diagnostic::error(
+                        codes::LOWER_UNBOUND,
+                        format!("compiler2 could not resolve struct module `{}`", module.dotted()),
+                        span,
+                    ),
+                )
+            })
+    }
+
     fn lower_lambda(
         &mut self,
         span: Span,
@@ -591,8 +802,9 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             is_macro: false,
             is_private: true,
             extern_abi: None,
-            extern_params: Vec::new(),
+            extern_param_tokens: Vec::new(),
             extern_ret_tokens: crate::ast::TypeExprBody(Vec::new()),
+            extern_constraints: Vec::new(),
             variadic: false,
             attrs: Vec::new(),
             span,
@@ -905,14 +1117,11 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 steps.push(ExprStep::AssertSame { source, value: pinned });
                 Ok(())
             }
-            Pattern::Map(_) | Pattern::Struct { .. } | Pattern::Bitstring(_) => Err(emit_job_diagnostic(
-                self.world,
-                Diagnostic::error(
-                    codes::LOWER_UNSUPPORTED,
-                    format!("compiler2 does not lower `{}` patterns yet", pattern_name(pattern)),
-                    span,
-                ),
-            )),
+            Pattern::Map(entries) => self.lower_map_pattern(entries, span, source, env, steps, true),
+            Pattern::Struct { module, fields } => {
+                self.lower_struct_pattern(module, fields, span, source, env, steps, true)
+            }
+            Pattern::Bitstring(fields) => self.lower_bitstring_pattern(fields, span, source, env, steps, true),
         }
     }
 
@@ -967,18 +1176,148 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 env.insert(name.clone(), source);
                 self.bind_pattern(&inner.node, inner.span, source, env, steps)
             }
-            Pattern::Map(_) | Pattern::Struct { .. } | Pattern::Bitstring(_) => Err(emit_job_diagnostic(
+            Pattern::Map(entries) => self.lower_map_pattern(entries, span, source, env, steps, false),
+            Pattern::Struct { module, fields } => {
+                self.lower_struct_pattern(module, fields, span, source, env, steps, false)
+            }
+            Pattern::Bitstring(fields) => self.lower_bitstring_pattern(fields, span, source, env, steps, false),
+        }
+    }
+
+    fn lower_map_pattern(
+        &mut self,
+        entries: &[(Spanned<Pattern>, Spanned<Pattern>)],
+        span: Span,
+        source: ValueId,
+        env: &mut HashMap<String, ValueId>,
+        steps: &mut Vec<ExprStep>,
+        with_asserts: bool,
+    ) -> Result<(), FatalError> {
+        for (key_pattern, value_pattern) in entries {
+            let Some(key) = literal_from_pattern(&key_pattern.node) else {
+                return Err(emit_job_diagnostic(
+                    self.world,
+                    Diagnostic::error(
+                        codes::LOWER_UNSUPPORTED,
+                        format!(
+                            "compiler2 map patterns require literal keys, found `{}`",
+                            pattern_name(&key_pattern.node)
+                        ),
+                        key_pattern.span,
+                    ),
+                ));
+            };
+            let value = self.fresh_value();
+            steps.push(ExprStep::RequireMapValue { value, source, key });
+            if with_asserts {
+                self.apply_pattern(&value_pattern.node, value_pattern.span, value, env, steps)?;
+            } else {
+                self.bind_pattern(&value_pattern.node, value_pattern.span, value, env, steps)?;
+            }
+        }
+        let _ = span;
+        Ok(())
+    }
+
+    fn lower_struct_pattern(
+        &mut self,
+        module: &crate::modules::identity::ModuleName,
+        fields: &[(String, Spanned<Pattern>)],
+        span: Span,
+        source: ValueId,
+        env: &mut HashMap<String, ValueId>,
+        steps: &mut Vec<ExprStep>,
+        with_asserts: bool,
+    ) -> Result<(), FatalError> {
+        let module_id = self.resolve_struct_module(module, span)?;
+        let Some(order) = self.world.module_struct_fields(module_id).map(|fields| fields.to_vec()) else {
+            return Err(emit_job_diagnostic(
                 self.world,
                 Diagnostic::error(
                     codes::LOWER_UNSUPPORTED,
-                    format!(
-                        "compiler2 does not lower `{}` clause projections yet",
-                        pattern_name(pattern)
-                    ),
+                    format!("compiler2 does not know the schema for struct `{}`", module.dotted()),
                     span,
                 ),
-            )),
+            ));
+        };
+        let mut by_name = fields
+            .iter()
+            .map(|(name, pattern)| (name.as_str(), pattern))
+            .collect::<HashMap<_, _>>();
+        steps.push(ExprStep::AssertStruct {
+            source,
+            module: module_id,
+        });
+        for (index, field) in order.iter().enumerate() {
+            let Some(pattern) = by_name.remove(field.as_str()) else {
+                continue;
+            };
+            let value = self.fresh_value();
+            steps.push(ExprStep::TupleField { value, source, index });
+            if with_asserts {
+                self.apply_pattern(&pattern.node, pattern.span, value, env, steps)?;
+            } else {
+                self.bind_pattern(&pattern.node, pattern.span, value, env, steps)?;
+            }
         }
+        if let Some((name, pattern)) = by_name.into_iter().next() {
+            return Err(emit_job_diagnostic(
+                self.world,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    format!("struct `{}` does not define field `{}`", module.dotted(), name),
+                    pattern.span,
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn lower_bitstring_pattern(
+        &mut self,
+        fields: &[BitField<Spanned<Pattern>>],
+        span: Span,
+        source: ValueId,
+        env: &mut HashMap<String, ValueId>,
+        steps: &mut Vec<ExprStep>,
+        with_asserts: bool,
+    ) -> Result<(), FatalError> {
+        let mut reader = self.fresh_value();
+        steps.push(ExprStep::BitstringInit { reader, source });
+        for (index, field) in fields.iter().enumerate() {
+            let ok = self.fresh_value();
+            let value = self.fresh_value();
+            let next_reader = self.fresh_value();
+            steps.push(ExprStep::BitstringRead {
+                ok,
+                value,
+                next_reader,
+                reader,
+                spec: self.lower_bitfield_spec(
+                    &field.spec.size,
+                    field.spec.ty,
+                    field.spec.endian,
+                    field.spec.signed,
+                    field.spec.unit,
+                    field.value.span,
+                    env,
+                )?,
+                is_last: index + 1 == fields.len(),
+            });
+            steps.push(ExprStep::AssertLiteral {
+                source: ok,
+                literal: Literal::Bool(true),
+            });
+            if with_asserts {
+                self.apply_pattern(&field.value.node, field.value.span, value, env, steps)?;
+            } else {
+                self.bind_pattern(&field.value.node, field.value.span, value, env, steps)?;
+            }
+            reader = next_reader;
+        }
+        steps.push(ExprStep::AssertBitstringDone { reader });
+        let _ = span;
+        Ok(())
     }
 
     fn push_const(&mut self, steps: &mut Vec<ExprStep>, literal: Literal) -> ValueId {
@@ -1015,6 +1354,24 @@ fn lower_projection_step(step: &ExprStep) -> LoweredStep {
             items: items.clone(),
             tail: *tail,
         },
+        ExprStep::Map { value, entries } => LoweredStep::Map {
+            value: *value,
+            entries: entries.clone(),
+        },
+        ExprStep::MapUpdate { value, base, entries } => LoweredStep::MapUpdate {
+            value: *value,
+            base: *base,
+            entries: entries.clone(),
+        },
+        ExprStep::Struct { value, module, fields } => LoweredStep::Struct {
+            value: *value,
+            module: *module,
+            fields: fields.clone(),
+        },
+        ExprStep::Bitstring { value, fields } => LoweredStep::Bitstring {
+            value: *value,
+            fields: fields.clone(),
+        },
         ExprStep::FunctionRef { value, function } => LoweredStep::FunctionRef {
             value: *value,
             function: *function,
@@ -1049,9 +1406,23 @@ fn lower_projection_step(step: &ExprStep) -> LoweredStep {
             base: *base,
             key: *key,
         },
+        ExprStep::FieldAccess { value, base, field } => LoweredStep::FieldAccess {
+            value: *value,
+            base: *base,
+            field: field.clone(),
+        },
         ExprStep::AssertLiteral { source, literal } => LoweredStep::AssertLiteral {
             source: *source,
             literal: literal.clone(),
+        },
+        ExprStep::AssertStruct { source, module } => LoweredStep::AssertStruct {
+            source: *source,
+            module: *module,
+        },
+        ExprStep::RequireMapValue { value, source, key } => LoweredStep::RequireMapValue {
+            value: *value,
+            source: *source,
+            key: key.clone(),
         },
         ExprStep::AssertTuple { source, arity } => LoweredStep::AssertTuple {
             source: *source,
@@ -1072,6 +1443,26 @@ fn lower_projection_step(step: &ExprStep) -> LoweredStep {
             head: *head,
             tail: *tail,
         },
+        ExprStep::BitstringInit { reader, source } => LoweredStep::BitstringInit {
+            reader: *reader,
+            source: *source,
+        },
+        ExprStep::BitstringRead {
+            ok,
+            value,
+            next_reader,
+            reader,
+            spec,
+            is_last,
+        } => LoweredStep::BitstringRead {
+            ok: *ok,
+            value: *value,
+            next_reader: *next_reader,
+            reader: *reader,
+            spec: spec.clone(),
+            is_last: *is_last,
+        },
+        ExprStep::AssertBitstringDone { reader } => LoweredStep::AssertBitstringDone { reader: *reader },
         ExprStep::DirectCall { .. } | ExprStep::ClosureCall { .. } | ExprStep::If { .. } => {
             panic!("control steps should be lowered into tails before projection conversion")
         }
@@ -1085,12 +1476,18 @@ fn values_defined_by_steps(steps: &[LoweredStep]) -> HashSet<ValueId> {
             LoweredStep::Const { value, .. }
             | LoweredStep::Tuple { value, .. }
             | LoweredStep::List { value, .. }
+            | LoweredStep::Map { value, .. }
+            | LoweredStep::MapUpdate { value, .. }
+            | LoweredStep::Struct { value, .. }
+            | LoweredStep::Bitstring { value, .. }
             | LoweredStep::FunctionRef { value, .. }
             | LoweredStep::NamedFunctionRef { value, .. }
             | LoweredStep::Lambda { value, .. }
             | LoweredStep::BinaryOp { value, .. }
             | LoweredStep::UnaryOp { value, .. }
             | LoweredStep::MapIndex { value, .. }
+            | LoweredStep::FieldAccess { value, .. }
+            | LoweredStep::RequireMapValue { value, .. }
             | LoweredStep::TupleField { value, .. } => {
                 out.insert(*value);
             }
@@ -1098,10 +1495,22 @@ fn values_defined_by_steps(steps: &[LoweredStep]) -> HashSet<ValueId> {
                 out.insert(*head);
                 out.insert(*tail);
             }
+            LoweredStep::BitstringInit { reader, .. } => {
+                out.insert(*reader);
+            }
+            LoweredStep::BitstringRead {
+                ok, value, next_reader, ..
+            } => {
+                out.insert(*ok);
+                out.insert(*value);
+                out.insert(*next_reader);
+            }
             LoweredStep::AssertLiteral { .. }
+            | LoweredStep::AssertStruct { .. }
             | LoweredStep::AssertTuple { .. }
             | LoweredStep::AssertEmptyList { .. }
-            | LoweredStep::AssertSame { .. } => {}
+            | LoweredStep::AssertSame { .. }
+            | LoweredStep::AssertBitstringDone { .. } => {}
         }
     }
     out
@@ -1189,6 +1598,28 @@ fn collect_used_values(steps: &[LoweredStep], out: &mut HashSet<ValueId>) {
                     out.insert(*tail);
                 }
             }
+            LoweredStep::Map { entries, .. } => {
+                for (key, value) in entries {
+                    out.insert(*key);
+                    out.insert(*value);
+                }
+            }
+            LoweredStep::MapUpdate { base, entries, .. } => {
+                out.insert(*base);
+                for (key, value) in entries {
+                    out.insert(*key);
+                    out.insert(*value);
+                }
+            }
+            LoweredStep::Struct { fields, .. } => out.extend(fields.iter().map(|(_, value)| *value)),
+            LoweredStep::Bitstring { fields, .. } => {
+                for field in fields {
+                    out.insert(field.value);
+                    if let Some(LoweredBitSize::Value(size)) = field.spec.size {
+                        out.insert(size);
+                    }
+                }
+            }
             LoweredStep::Lambda { captures, .. } => out.extend(captures.iter().copied()),
             LoweredStep::BinaryOp { left, right, .. } => {
                 out.insert(*left);
@@ -1200,6 +1631,12 @@ fn collect_used_values(steps: &[LoweredStep], out: &mut HashSet<ValueId>) {
             LoweredStep::MapIndex { base, key, .. } => {
                 out.insert(*base);
                 out.insert(*key);
+            }
+            LoweredStep::FieldAccess { base, .. } | LoweredStep::AssertStruct { source: base, .. } => {
+                out.insert(*base);
+            }
+            LoweredStep::RequireMapValue { source, .. } => {
+                out.insert(*source);
             }
             LoweredStep::AssertLiteral { source, .. }
             | LoweredStep::AssertTuple { source, .. }
@@ -1215,6 +1652,15 @@ fn collect_used_values(steps: &[LoweredStep], out: &mut HashSet<ValueId>) {
             }
             LoweredStep::SplitList { source, .. } => {
                 out.insert(*source);
+            }
+            LoweredStep::BitstringInit { source, .. } | LoweredStep::AssertBitstringDone { reader: source } => {
+                out.insert(*source);
+            }
+            LoweredStep::BitstringRead { reader, spec, .. } => {
+                out.insert(*reader);
+                if let Some(LoweredBitSize::Value(size)) = spec.size {
+                    out.insert(size);
+                }
             }
         }
     }
@@ -1282,14 +1728,18 @@ fn bind_pattern_names(pattern: &Pattern, bound: &mut HashSet<String>) {
                 bind_pattern_names(&value.node, bound);
             }
         }
+        Pattern::Bitstring(fields) => {
+            for field in fields {
+                bind_pattern_names(&field.value.node, bound);
+            }
+        }
         Pattern::Wildcard
         | Pattern::Int(_)
         | Pattern::Float(_)
         | Pattern::Binary(_)
         | Pattern::Atom(_)
         | Pattern::Bool(_)
-        | Pattern::Nil
-        | Pattern::Bitstring(_) => {}
+        | Pattern::Nil => {}
     }
 }
 
@@ -1465,6 +1915,11 @@ fn collect_pattern_free_names(pattern: &Pattern, bound: &mut HashSet<String>, fr
                 collect_pattern_free_names(&value.node, bound, free);
             }
         }
+        Pattern::Bitstring(fields) => {
+            for field in fields {
+                collect_pattern_free_names(&field.value.node, bound, free);
+            }
+        }
         Pattern::Wildcard
         | Pattern::Var(_)
         | Pattern::Int(_)
@@ -1472,8 +1927,7 @@ fn collect_pattern_free_names(pattern: &Pattern, bound: &mut HashSet<String>, fr
         | Pattern::Binary(_)
         | Pattern::Atom(_)
         | Pattern::Bool(_)
-        | Pattern::Nil
-        | Pattern::Bitstring(_) => {}
+        | Pattern::Nil => {}
     }
 }
 
@@ -1549,6 +2003,26 @@ fn direct_call_name(expr: &Spanned<Expr>, env: &HashMap<String, ValueId>) -> Opt
             _ => return None,
         }
     }
+}
+
+fn literal_from_pattern(pattern: &Pattern) -> Option<Literal> {
+    Some(match pattern {
+        Pattern::Int(value) => Literal::Int(*value),
+        Pattern::Float(value) => Literal::Float(*value),
+        Pattern::Binary(value) => Literal::Binary(value.clone()),
+        Pattern::Atom(value) => Literal::Atom(value.clone()),
+        Pattern::Bool(value) => Literal::Bool(*value),
+        Pattern::Nil => Literal::Nil,
+        Pattern::Wildcard
+        | Pattern::Var(_)
+        | Pattern::Tuple(_)
+        | Pattern::List(_, _)
+        | Pattern::Map(_)
+        | Pattern::Struct { .. }
+        | Pattern::Pinned(_)
+        | Pattern::As(_, _)
+        | Pattern::Bitstring(_) => return None,
+    })
 }
 
 fn pattern_name(pattern: &Pattern) -> &'static str {

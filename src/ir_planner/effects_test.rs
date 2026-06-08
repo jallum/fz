@@ -1,5 +1,6 @@
 use super::*;
 use crate::fz_ir::{CallsiteIdent, ExternArg, ExternDecl, ExternId, ExternTy, Var};
+use crate::type_expr::ResolvedSpecDecl;
 use crate::types::Types;
 
 fn module_with_extern(symbol: &str, ret: ExternTy) -> Module {
@@ -14,6 +15,11 @@ fn module_with_extern(symbol: &str, ret: ExternTy) -> Module {
         variadic: false,
         ret,
         ret_descr: types.any(),
+        semantic_contract: ResolvedSpecDecl {
+            params: vec![types.any()],
+            result: types.any(),
+            constraints: std::collections::HashMap::new(),
+        },
     });
     module
 }

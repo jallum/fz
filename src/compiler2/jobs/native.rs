@@ -17,9 +17,11 @@ use crate::dispatch_matrix::{
     ComparisonValue, DispatchConst, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId,
 };
 use crate::fz_ir::{
-    BinOp as IrBinOp, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, ExternArg, ExternDecl, ExternId,
-    ExternMarshalSite, ExternTy, FnBuilder, FnCategory, FnId, ModuleBuilder, Prim, Term, UnOp as IrUnOp, Var,
+    BinOp as IrBinOp, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, ExternArg, ExternDecl, ExternId,
+    ExternMarshalSite, ExternTy, FnBuilder, FnCategory, FnId, InitTokenId, ModuleBuilder, Prim, Term, UnOp as IrUnOp,
+    Var,
 };
+use crate::type_expr::ResolvedSpecDecl;
 use crate::types::Types as LegacyTypes;
 
 use super::super::artifact::{
@@ -34,6 +36,37 @@ use super::super::identity::{FunctionId, RootId};
 use super::super::scheduler::FatalError;
 use super::super::types::Ty;
 use super::super::world::World;
+
+fn legacy_extern_ty<T>(types: &mut T, ty: ExternTy) -> crate::types::Ty
+where
+    T: LegacyTypes<Ty = crate::types::Ty>,
+{
+    match ty {
+        ExternTy::Unit => types.nil(),
+        ExternTy::Never => types.none(),
+        ExternTy::I64 => types.int(),
+        ExternTy::F64 => types.float(),
+        ExternTy::Any | ExternTy::Binary | ExternTy::CString => types.any(),
+    }
+}
+
+fn legacy_extern_contract<T>(types: &mut T, signature: &LoweredExtern) -> ResolvedSpecDecl<crate::types::Ty>
+where
+    T: LegacyTypes<Ty = crate::types::Ty>,
+{
+    let params = signature
+        .params
+        .iter()
+        .copied()
+        .map(|ty| legacy_extern_ty(types, ty))
+        .collect::<Vec<_>>();
+    let result = legacy_extern_ty(types, signature.ret);
+    ResolvedSpecDecl {
+        params,
+        result,
+        constraints: HashMap::new(),
+    }
+}
 
 /// Lowers one backend program into the Compiler2-owned native handoff.
 ///
@@ -114,6 +147,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             };
             let id = ExternId(extern_decls.len() as u32);
             extern_ids.insert(index, id);
+            let semantic_contract = legacy_extern_contract(&mut legacy_types, signature);
             extern_decls.push(ExternDecl {
                 id,
                 fz_name: world.function_ref(executable.key.activation.function).name.clone(),
@@ -121,7 +155,8 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 params: signature.params.clone(),
                 variadic: signature.variadic,
                 ret: signature.ret,
-                ret_descr: legacy_types.any(),
+                ret_descr: semantic_contract.result.clone(),
+                semantic_contract,
             });
         }
 
@@ -139,9 +174,9 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     target_fn: executable_fns[entry.target],
                     target: executable.key.clone(),
                     capture_count: entry.capture_count,
-                    param_reprs: executable.param_reprs.clone(),
-                    return_ty: executable.return_ty,
-                    return_abi: executable.return_abi.clone(),
+                    param_reprs: entry.param_reprs.clone(),
+                    return_ty: entry.return_ty,
+                    return_abi: entry.return_abi.clone(),
                 }
             })
             .collect();
@@ -216,6 +251,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             .enumerate()
             .map(|(index, decl)| (decl.id, index))
             .collect();
+        module.struct_schemas = self.program.struct_schemas.clone();
         Ok(NativeProgram {
             backend_revision: self.program.emission_ready_revision,
             entry,
@@ -522,6 +558,97 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     let (var, _) = ctx.emit_let(Prim::MakeList(vars, tail));
                     bind_backend_value(ctx, executable, env, *value, var);
                 }
+                BackendStep::Map { value, entries } => {
+                    let token = ctx.fresh_token();
+                    let (map, _) = ctx.emit_let(Prim::DestMapBegin {
+                        token,
+                        base: None,
+                        extra: entries.len(),
+                    });
+                    let mut token = token;
+                    for (key, item) in entries {
+                        let next = ctx.fresh_token();
+                        let key = env.var(*key).ok_or_else(|| missing_backend_value(self.root_id, *key))?;
+                        let value = env
+                            .var(*item)
+                            .ok_or_else(|| missing_backend_value(self.root_id, *item))?;
+                        let _ = ctx.emit_let(Prim::DestMapPut {
+                            map,
+                            token,
+                            key,
+                            value,
+                            next,
+                        });
+                        token = next;
+                    }
+                    let (var, _) = ctx.emit_let(Prim::DestMapFreeze { map, token });
+                    bind_backend_value(ctx, executable, env, *value, var);
+                }
+                BackendStep::MapUpdate { value, base, entries } => {
+                    let base = env
+                        .var(*base)
+                        .ok_or_else(|| missing_backend_value(self.root_id, *base))?;
+                    let token = ctx.fresh_token();
+                    let (map, _) = ctx.emit_let(Prim::DestMapBegin {
+                        token,
+                        base: Some(base),
+                        extra: entries.len(),
+                    });
+                    let mut token = token;
+                    for (key, item) in entries {
+                        let next = ctx.fresh_token();
+                        let key = env.var(*key).ok_or_else(|| missing_backend_value(self.root_id, *key))?;
+                        let value = env
+                            .var(*item)
+                            .ok_or_else(|| missing_backend_value(self.root_id, *item))?;
+                        let _ = ctx.emit_let(Prim::DestMapPut {
+                            map,
+                            token,
+                            key,
+                            value,
+                            next,
+                        });
+                        token = next;
+                    }
+                    let (var, _) = ctx.emit_let(Prim::DestMapFreeze { map, token });
+                    bind_backend_value(ctx, executable, env, *value, var);
+                }
+                BackendStep::Struct {
+                    value,
+                    module_name,
+                    fields,
+                } => {
+                    let mut lowered = Vec::with_capacity(fields.len());
+                    for (field, item) in fields {
+                        lowered.push((
+                            field.clone(),
+                            env.var(*item)
+                                .ok_or_else(|| missing_backend_value(self.root_id, *item))?,
+                        ));
+                    }
+                    let (var, _) = ctx.emit_let(Prim::MakeStruct {
+                        module: module_name.clone(),
+                        fields: lowered,
+                    });
+                    bind_backend_value(ctx, executable, env, *value, var);
+                }
+                BackendStep::Bitstring { value, fields } => {
+                    let mut lowered = Vec::with_capacity(fields.len());
+                    for field in fields {
+                        lowered.push(crate::fz_ir::BitFieldIr {
+                            value: env
+                                .var(field.value)
+                                .ok_or_else(|| missing_backend_value(self.root_id, field.value))?,
+                            ty: field.spec.ty,
+                            size: lower_bit_size_ir(&field.spec.size, env)?,
+                            endian: field.spec.endian,
+                            signed: field.spec.signed,
+                            unit: field.spec.unit,
+                        });
+                    }
+                    let (var, _) = ctx.emit_let(Prim::MakeBitstring(lowered));
+                    bind_backend_value(ctx, executable, env, *value, var);
+                }
                 BackendStep::FunctionRef { value, function } => {
                     let identity = self.callable_identity(*function, 0);
                     let candidates = self.callable_entry_candidates(*function, 0);
@@ -589,6 +716,13 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     let (var, _) = ctx.emit_let(Prim::MapGet(base, key));
                     bind_backend_value(ctx, executable, env, *value, var);
                 }
+                BackendStep::FieldAccess { value, base, field } => {
+                    let base = env
+                        .var(*base)
+                        .ok_or_else(|| missing_backend_value(self.root_id, *base))?;
+                    let (var, _) = ctx.emit_let(Prim::StructField(base, field.clone()));
+                    bind_backend_value(ctx, executable, env, *value, var);
+                }
                 BackendStep::AssertLiteral { source, literal } => {
                     let source = env
                         .var(*source)
@@ -596,6 +730,26 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     let expected = lower_backend_literal(ctx, &self.atom_ids, literal)?;
                     let (matches, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, source, expected));
                     ctx.assert_truthy(matches, self.atom_id("match_error"));
+                }
+                BackendStep::AssertStruct { source, module_name } => {
+                    let source = env
+                        .var(*source)
+                        .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
+                    let legacy_ty = legacy_named_struct(module_name);
+                    let (matches, _) = ctx.emit_let(Prim::TypeTest(source, Box::new(legacy_ty)));
+                    ctx.assert_truthy(matches, self.atom_id("match_error"));
+                }
+                BackendStep::RequireMapValue { value, source, key } => {
+                    let source = env
+                        .var(*source)
+                        .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
+                    let key = lower_backend_literal(ctx, &self.atom_ids, key)?;
+                    let (var, _) = ctx.emit_let(Prim::MatcherMapGet(source, key));
+                    let (is_miss, _) = ctx.emit_let(Prim::IsMatcherMapMiss(var));
+                    let (false_v, _) = ctx.emit_let(Prim::Const(Const::False));
+                    let (matches, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, is_miss, false_v));
+                    ctx.assert_truthy(matches, self.atom_id("match_error"));
+                    bind_backend_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::AssertTuple { source, arity } => {
                     let source = env
@@ -637,6 +791,47 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     bind_backend_value(ctx, executable, env, *head, head_var);
                     let (tail_var, _) = ctx.emit_let(Prim::ListTail(source));
                     bind_backend_value(ctx, executable, env, *tail, tail_var);
+                }
+                BackendStep::BitstringInit { reader, source } => {
+                    let source = env
+                        .var(*source)
+                        .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
+                    let (var, _) = ctx.emit_let(Prim::BitReaderInit(source));
+                    bind_backend_value(ctx, executable, env, *reader, var);
+                }
+                BackendStep::BitstringRead {
+                    ok,
+                    value,
+                    next_reader,
+                    reader,
+                    spec,
+                    is_last,
+                } => {
+                    let reader = env
+                        .var(*reader)
+                        .ok_or_else(|| missing_backend_value(self.root_id, *reader))?;
+                    let (result, _) = ctx.emit_let(Prim::BitReadField {
+                        reader,
+                        ty: spec.ty,
+                        size: lower_bit_size_ir(&spec.size, env)?,
+                        endian: spec.endian,
+                        signed: spec.signed,
+                        unit: spec.unit,
+                        is_last: *is_last,
+                    });
+                    let (ok_var, _) = ctx.emit_let(Prim::TupleField(result, 0));
+                    bind_backend_value(ctx, executable, env, *ok, ok_var);
+                    let (value_var, _) = ctx.emit_let(Prim::TupleField(result, 1));
+                    bind_backend_value(ctx, executable, env, *value, value_var);
+                    let (reader_var, _) = ctx.emit_let(Prim::TupleField(result, 2));
+                    bind_backend_value(ctx, executable, env, *next_reader, reader_var);
+                }
+                BackendStep::AssertBitstringDone { reader } => {
+                    let reader = env
+                        .var(*reader)
+                        .ok_or_else(|| missing_backend_value(self.root_id, *reader))?;
+                    let (done, _) = ctx.emit_let(Prim::BitReaderDone(reader));
+                    ctx.assert_truthy(done, self.atom_id("match_error"));
                 }
             }
         }
@@ -1571,6 +1766,7 @@ struct NativeFnCtx {
     return_ty: Ty,
     return_abi: ReturnAbi,
     effects: EffectSummary,
+    next_token: u32,
 }
 
 impl NativeFnCtx {
@@ -1602,6 +1798,7 @@ impl NativeFnCtx {
             return_ty,
             return_abi,
             effects,
+            next_token: 0,
         }
     }
 
@@ -1624,6 +1821,12 @@ impl NativeFnCtx {
 
     fn fresh_callsite(&self) -> CallsiteIdent {
         CallsiteIdent::from_source(Span::DUMMY)
+    }
+
+    fn fresh_token(&mut self) -> InitTokenId {
+        let token = InitTokenId(self.next_token);
+        self.next_token += 1;
+        token
     }
 
     fn set_term(&mut self, term: Term) {
@@ -1914,6 +2117,27 @@ fn legacy_any_tuple(arity: usize) -> crate::types::Ty {
 fn legacy_any_map() -> crate::types::Ty {
     let mut legacy_types = crate::types::new();
     legacy_types.map_top()
+}
+
+fn legacy_named_struct(module_name: &str) -> crate::types::Ty {
+    let mut legacy_types = crate::types::new();
+    crate::frontend::protocols::struct_impl_target_type(
+        &mut legacy_types,
+        module_name.rsplit('.').next().unwrap_or(module_name),
+    )
+}
+
+fn lower_bit_size_ir(
+    size: &Option<super::super::body::LoweredBitSize>,
+    env: &ValueEnv,
+) -> Result<Option<BitSizeIr>, FatalError> {
+    Ok(match size {
+        None => None,
+        Some(super::super::body::LoweredBitSize::Literal(value)) => Some(BitSizeIr::Literal(*value)),
+        Some(super::super::body::LoweredBitSize::Value(value)) => {
+            Some(BitSizeIr::Var(env.var(*value).ok_or(FatalError)?))
+        }
+    })
 }
 
 fn legacy_type_test_ty(world: &mut World<'_>, ty: Ty) -> Option<crate::types::Ty> {

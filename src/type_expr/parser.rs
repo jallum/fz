@@ -290,13 +290,8 @@ impl<'a, T: Types> TypeExprParser<'a, T> {
             // A protocol domain `Protocol.t(elem)` refines its element-parametric
             // targets with `elem`. The element is the first argument; the domain
             // is single-parameter, so any extra arguments do not refine further.
-            // A `elem` that still mentions a free type variable (e.g. the `a` in
-            // a protocol's own `t(a)` callback declaration) carries no concrete
-            // refinement — `list(a)` for unconstrained `a` is `list(any)` — so
-            // the bare domain is used and dispatch is left unperturbed.
             if let (Some(TypeAlias::ProtocolDomain(template)), Some(elem)) =
                 (self.env.get_alias(&name, args.len()).cloned(), args.first())
-                && !self.t.has_vars(elem)
             {
                 let sigma = HashMap::from([(PROTOCOL_ELEM_VAR, elem.clone())]);
                 return Ok(self.t.instantiate(&template, &sigma));
@@ -348,10 +343,6 @@ impl<'a, T: Types> TypeExprParser<'a, T> {
             TypeAlias::Resolved(ty) => return Ok(ty),
             TypeAlias::ProtocolDomain(template) => {
                 let elem = args.first().cloned().unwrap_or_else(|| self.t.any());
-                // A concrete element refines; an element mentioning a free
-                // variable carries no refinement, so `PROTOCOL_ELEM_VAR` falls
-                // back to `any` (the bare domain).
-                let elem = if self.t.has_vars(&elem) { self.t.any() } else { elem };
                 let sigma = HashMap::from([(PROTOCOL_ELEM_VAR, elem)]);
                 return Ok(self.t.instantiate(&template, &sigma));
             }

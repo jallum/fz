@@ -4,11 +4,12 @@
 //! pattern/destructure steps, and compiler-generated lambda definitions, but
 //! it stops above old-world CPS IR and planner concerns.
 
-use crate::ast::{BinOp, TypeExprBody, UnOp};
+use crate::ast::{BinOp, BitType, Endian, TypeExprBody, UnOp};
 use crate::compiler::source::Span;
 use crate::fz_ir::ExternTy;
+use crate::type_expr::ResolvedSpecDecl;
 
-use super::identity::FunctionId;
+use super::identity::{FunctionId, ModuleId};
 use super::types::Ty;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -80,6 +81,28 @@ pub struct LoweredExtern {
     pub variadic: bool,
     pub ret: ExternTy,
     pub return_ty: Ty,
+    pub semantic_contract: ResolvedSpecDecl<Ty>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoweredBitSize {
+    Literal(u32),
+    Value(ValueId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoweredBitFieldSpec {
+    pub ty: BitType,
+    pub size: Option<LoweredBitSize>,
+    pub endian: Endian,
+    pub signed: bool,
+    pub unit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoweredBitField {
+    pub value: ValueId,
+    pub spec: LoweredBitFieldSpec,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -175,6 +198,24 @@ pub enum LoweredStep {
         items: Vec<ValueId>,
         tail: Option<ValueId>,
     },
+    Map {
+        value: ValueId,
+        entries: Vec<(ValueId, ValueId)>,
+    },
+    MapUpdate {
+        value: ValueId,
+        base: ValueId,
+        entries: Vec<(ValueId, ValueId)>,
+    },
+    Struct {
+        value: ValueId,
+        module: ModuleId,
+        fields: Vec<(String, ValueId)>,
+    },
+    Bitstring {
+        value: ValueId,
+        fields: Vec<LoweredBitField>,
+    },
     FunctionRef {
         value: ValueId,
         function: FunctionId,
@@ -205,9 +246,23 @@ pub enum LoweredStep {
         base: ValueId,
         key: ValueId,
     },
+    FieldAccess {
+        value: ValueId,
+        base: ValueId,
+        field: String,
+    },
     AssertLiteral {
         source: ValueId,
         literal: Literal,
+    },
+    AssertStruct {
+        source: ValueId,
+        module: ModuleId,
+    },
+    RequireMapValue {
+        value: ValueId,
+        source: ValueId,
+        key: Literal,
     },
     AssertTuple {
         source: ValueId,
@@ -229,6 +284,21 @@ pub enum LoweredStep {
         source: ValueId,
         head: ValueId,
         tail: ValueId,
+    },
+    BitstringInit {
+        reader: ValueId,
+        source: ValueId,
+    },
+    BitstringRead {
+        ok: ValueId,
+        value: ValueId,
+        next_reader: ValueId,
+        reader: ValueId,
+        spec: LoweredBitFieldSpec,
+        is_last: bool,
+    },
+    AssertBitstringDone {
+        reader: ValueId,
     },
 }
 
