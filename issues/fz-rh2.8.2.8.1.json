@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-08T11:32:40Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-rh2.8.2.8",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 semantics/tests: make quicksort frontier contract explicit",
   "type": "task",
-  "updated_at": "2026-06-08T11:32:40Z"
+  "updated_at": "2026-06-08T11:33:03Z"
 }
