@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-08T04:59:08Z",
+  "description": "Goal: define the exact Compiler2-owned native handoff that sits above `BackendProgram(root)` and below the shared native codegen driver. Signal: the handoff shape, invariants, and artifact boundary are explicit in code/tests/docs, and they cover only the facts native codegen truly consumes.\n\nChange:\n- identify the minimal native-consumption surface currently read from `Module`, `ModulePlan`, `PlannedProgram`, and `AbiFacts`\n- define the corresponding Compiler2-owned handoff data model and artifact slot\n- add contract tests/documentation for the one-way ladder and the forbidden old-world dependencies\n\nWhy:\n- native cannot honestly consume structured `BackendProgram` directly; the next lowering stage must be deliberate and minimal instead of quietly rebuilding planner state\n\nChecks:\n- the handoff contract is grounded in current codegen reads, not guesses\n- tests/docs state which old facts disappear and which closed facts remain required",
+  "id": "fz-rh2.8.2.3.1",
+  "labels": [],
+  "parent": "fz-rh2.8.2.3",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 native backends: publish the codegen-ready handoff contract",
+  "type": "task",
+  "updated_at": "2026-06-08T04:59:08Z"
+}
