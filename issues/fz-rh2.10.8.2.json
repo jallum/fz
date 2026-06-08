@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-08T00:05:44Z",
+  "description": "Goal: make `World` the sole owner of Compiler2's type universe. Signal: Compiler2 production code no longer calls `crate::types::new()` or stores old-world `crate::types::Ty`; instead, all Compiler2 type-bearing state and logic use the one `World`-owned `compiler2::types::Types` instance and its local `Ty` ids.\n\nStrategy: add the local type store to `World`, expose crisp world-owned type operations, migrate Compiler2 structs/facts/artifacts/jobs from old-world `Ty` to local `compiler2::types::Ty`, and delete production `types::new()` calls rather than wrapping them.\n\nChange:\n- Add `types: compiler2::types::Types` to `World`.\n- Add the minimal world surface needed to operate on the owned type store directly.\n- Convert Compiler2 production structs that currently store `crate::types::Ty` to store `compiler2::types::Ty` instead.\n  This includes activation keys, fact values, semantic summaries, and materialized artifacts.\n- Rewrite Compiler2 production jobs and helpers to use the world-owned type store instead of minting fresh `types::new()` instances.\n- Update Compiler2-focused tests and telemetry captures to observe the local type carrier.\n\nWhy:\n- With interned ids, a type handle only has meaning inside the owning store.\n- Fresh type universes in Compiler2 production code are a correctness bug waiting to happen, not a performance smell.\n- Once `World` owns the one type store, types become just another compiler-owned identity domain.\n\nChecks:\n- Compiler2 production code has zero `crate::types::new()` calls.\n- Compiler2 production code no longer imports old-world `crate::types::Ty`.\n- Existing Compiler2 tests continue to pass with the local type carrier.\n- New targeted tests prove activation-input joins and activation keys are computed within one shared type universe.",
+  "id": "fz-rh2.10.8.2",
+  "labels": [],
+  "parent": "fz-rh2.10.8",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 world: own one local type store and migrate all type-bearing state to it",
+  "type": "task",
+  "updated_at": "2026-06-08T00:05:44Z"
+}
