@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-08T20:52:14Z",
+  "description": "Bring type-expr resolution in-house. A compiler2-owned resolver turns @spec, @type, param-annotation, and extern token bodies into hard Ty: structure (list, union, tuple, arrow) via compiler2 own Types; names via namespace lookup -\u003e TypeName -\u003e read TypeDefined (wait/demand on miss); scalars and builtins (integer, utf8, pid) minted directly with inner. No ModuleTypeEnv assembled -- the namespace is the env, prelude types visible by structural sharing. Grammar inspired by crate::type_expr::parse_type_expr but resolving via facts, not a blob. Verify: resolver unit tests over the worked examples (foo(SomeModule.t(float),integer); a plain alias; a refines brand).",
+  "id": "fz-rh2.12.3",
+  "labels": [],
+  "parent": "fz-rh2.12",
+  "priority": 1,
+  "status": "open",
+  "title": "In-house type-expr resolver: name -\u003e hard Ty via namespace + TypeDefined",
+  "type": "task",
+  "updated_at": "2026-06-08T20:52:14Z"
+}
