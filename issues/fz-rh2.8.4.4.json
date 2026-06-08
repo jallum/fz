@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-08T02:49:42Z",
+  "description": "Goal: publish a stable closed emission inventory from AbiReadyProgram. Signal: interpreter/JIT/AOT adapters can enumerate executable entries, callable entries, call edges, return contracts, extern marshal facts, and effects without building their own reachability or spec registry.\n\nChange:\n- Add EmissionReadyProgram with stable executable and callable-entry inventory derived from AbiReadyProgram.\n- Assign any dense ordinals as emission-local ids over Compiler2 keys; never make old SpecId or SpecRegistry semantic authority.\n- Keep backend-specific wrapper names, Cranelift signatures, continuation classification, and native/cont sets out of Compiler2 facts.\n- Add the job/fact transition AbiReady(root) -\u003e EmissionReady(root).\n\nWhy:\n- Emission needs a deterministic inventory, but semantic identity remains Compiler2 ids and artifact keys. Dense ids are for emission bookkeeping only.\n\nChecks:\n- Quicksort inventory includes only the closed executable frontier and excludes foo/0.\n- Enum.reduce inventory includes the required callable entry entries.\n- Re-running unchanged input does not bump revisions for identical EmissionReadyProgram state.\n- Tests assert inventory keys and opaque facts, not formatted symbol strings.",
+  "id": "fz-rh2.8.4.4",
+  "labels": [],
+  "parent": "fz-rh2.8.4",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 artifacts: derive EmissionReadyProgram inventory",
+  "type": "task",
+  "updated_at": "2026-06-08T02:49:42Z"
+}
