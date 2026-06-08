@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-rh2.11",
     "fz-rh2.8.2"
   ],
   "blocks": [],
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Compiler2 migration: compare contracts and plan old compiler scrap",
   "type": "task",
-  "updated_at": "2026-06-08T11:48:34Z"
+  "updated_at": "2026-06-08T11:49:50Z"
 }
