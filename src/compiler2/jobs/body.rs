@@ -11,19 +11,24 @@ use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
+use crate::dispatch_matrix::pattern::{
+    PatternBodyId, PatternDispatchError, PatternGuardExpr, PatternRow, SourcePatternError, SourcePatternRows,
+    pattern_dispatch_from_source, pattern_dispatch_from_source_with_guard_resolver,
+};
 use crate::ir_lower::{extern_symbol_from_name, lower_extern_signature};
 
 use super::super::body::{
-    CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, DirectCallee, Literal,
-    LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause, LoweredEntry, LoweredExtern,
-    LoweredStep, LoweredTail, ValueId,
+    CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DirectCallee,
+    Literal, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause, LoweredEntry,
+    LoweredExtern, LoweredStep, LoweredTail, ValueId,
 };
-use super::super::drive::{FactKey, JobEffects};
+use super::super::drive::{FactKey, Job, JobEffects};
 use super::super::facts::FactValue;
 use super::super::identity::{FunctionDef, FunctionId};
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::scheduler::FatalError;
 use super::super::world::World;
+use super::dispatch::{collect_guard_calls_in_expr, resolve_guard_callee, resolve_guard_callee_checked};
 
 type Output = (FactKey, FactValue);
 
@@ -40,6 +45,13 @@ struct ExprBlock {
     span: Span,
     steps: Vec<ExprStep>,
     result: ValueId,
+}
+
+#[derive(Debug, Clone)]
+struct ExprDispatch {
+    plan: crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>,
+    arm_blocks: Vec<ExprBlock>,
+    miss_block: ExprBlock,
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +140,15 @@ enum ExprStep {
         then_block: ExprBlock,
         else_block: ExprBlock,
     },
+    Dispatch {
+        value: ValueId,
+        inputs: Vec<ValueId>,
+        pinned: Vec<ValueId>,
+        dispatch: Box<ExprDispatch>,
+    },
+    Halt {
+        atom: String,
+    },
     AssertLiteral {
         source: ValueId,
         literal: Literal,
@@ -200,15 +221,191 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
         ));
     }
 
+    let mut reads = vec![FactKey::FunctionDefined(function)];
+    let mut waits = HashSet::new();
+    let mut follow_up = HashSet::new();
+    for clause in &def.ast.clauses {
+        if let Some(guard) = &clause.guard {
+            collect_local_dispatch_requirements(world, def.namespace, guard, &mut reads, &mut waits, &mut follow_up)?;
+        }
+        collect_local_dispatch_requirements(
+            world,
+            def.namespace,
+            &clause.body,
+            &mut reads,
+            &mut waits,
+            &mut follow_up,
+        )?;
+    }
+    if !waits.is_empty() {
+        return Ok(JobEffects {
+            reads,
+            waits: waits.into_iter().collect(),
+            follow_up: follow_up.into_iter().collect(),
+            ..JobEffects::default()
+        });
+    }
+
     let mut lowerer = Lowerer::new(world, function, &def);
     let (body, mut outputs) = lowerer.lower()?;
     let revision = lowerer.world.define_lowered_body(function, body);
     outputs.push((FactKey::LoweredBody(function), FactValue::presence(revision)));
     Ok(JobEffects {
-        reads: vec![FactKey::FunctionDefined(function)],
+        reads,
         outputs,
         ..JobEffects::default()
     })
+}
+
+fn collect_local_dispatch_requirements(
+    world: &mut World<'_>,
+    namespace: Namespace,
+    expr: &Spanned<Expr>,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Result<(), FatalError> {
+    match &expr.node {
+        Expr::Case(subject, clauses) => {
+            if let Some(subject) = subject {
+                collect_local_dispatch_requirements(world, namespace, subject, reads, waits, follow_up)?;
+            }
+            for clause in clauses {
+                if let Some(guard) = &clause.guard {
+                    collect_local_guard_requirements(world, namespace, guard, reads, waits, follow_up)?;
+                }
+                collect_local_dispatch_requirements(world, namespace, &clause.body, reads, waits, follow_up)?;
+            }
+        }
+        Expr::With(bindings, body, else_clauses) => {
+            for binding in bindings {
+                match binding {
+                    WithBinding::Match(_, expr) | WithBinding::Bare(expr) => {
+                        collect_local_dispatch_requirements(world, namespace, expr, reads, waits, follow_up)?;
+                    }
+                }
+            }
+            collect_local_dispatch_requirements(world, namespace, body, reads, waits, follow_up)?;
+            for clause in else_clauses {
+                if let Some(guard) = &clause.guard {
+                    collect_local_guard_requirements(world, namespace, guard, reads, waits, follow_up)?;
+                }
+                collect_local_dispatch_requirements(world, namespace, &clause.body, reads, waits, follow_up)?;
+            }
+        }
+        Expr::If(cond, then_expr, else_expr) => {
+            collect_local_dispatch_requirements(world, namespace, cond, reads, waits, follow_up)?;
+            collect_local_dispatch_requirements(world, namespace, then_expr, reads, waits, follow_up)?;
+            if let Some(else_expr) = else_expr {
+                collect_local_dispatch_requirements(world, namespace, else_expr, reads, waits, follow_up)?;
+            }
+        }
+        Expr::Cond(arms) => {
+            for (cond, body) in arms {
+                collect_local_dispatch_requirements(world, namespace, cond, reads, waits, follow_up)?;
+                collect_local_dispatch_requirements(world, namespace, body, reads, waits, follow_up)?;
+            }
+        }
+        Expr::Match(_, rhs)
+        | Expr::Ascribe(rhs, _)
+        | Expr::UnOp(_, rhs)
+        | Expr::Capture(rhs)
+        | Expr::Quote(rhs)
+        | Expr::Unquote(rhs) => {
+            collect_local_dispatch_requirements(world, namespace, rhs, reads, waits, follow_up)?;
+        }
+        Expr::BinOp(_, left, right) | Expr::Index(left, right) => {
+            collect_local_dispatch_requirements(world, namespace, left, reads, waits, follow_up)?;
+            collect_local_dispatch_requirements(world, namespace, right, reads, waits, follow_up)?;
+        }
+        Expr::Call(target, args) | Expr::ClosureCall(target, args) => {
+            collect_local_dispatch_requirements(world, namespace, target, reads, waits, follow_up)?;
+            for arg in args {
+                collect_local_dispatch_requirements(world, namespace, arg, reads, waits, follow_up)?;
+            }
+        }
+        Expr::List(items, tail) => {
+            for item in items {
+                collect_local_dispatch_requirements(world, namespace, item, reads, waits, follow_up)?;
+            }
+            if let Some(tail) = tail {
+                collect_local_dispatch_requirements(world, namespace, tail, reads, waits, follow_up)?;
+            }
+        }
+        Expr::Tuple(items) => {
+            for item in items {
+                collect_local_dispatch_requirements(world, namespace, item, reads, waits, follow_up)?;
+            }
+        }
+        Expr::Bitstring(fields) => {
+            for field in fields {
+                collect_local_dispatch_requirements(world, namespace, &field.value, reads, waits, follow_up)?;
+            }
+        }
+        Expr::Map(entries) | Expr::MapUpdate(_, entries) => {
+            if let Expr::MapUpdate(base, _) = &expr.node {
+                collect_local_dispatch_requirements(world, namespace, base, reads, waits, follow_up)?;
+            }
+            for (key, value) in entries {
+                collect_local_dispatch_requirements(world, namespace, key, reads, waits, follow_up)?;
+                collect_local_dispatch_requirements(world, namespace, value, reads, waits, follow_up)?;
+            }
+        }
+        Expr::Struct { fields, .. } => {
+            for (_, value) in fields {
+                collect_local_dispatch_requirements(world, namespace, value, reads, waits, follow_up)?;
+            }
+        }
+        Expr::Block(exprs) => {
+            for expr in exprs {
+                collect_local_dispatch_requirements(world, namespace, expr, reads, waits, follow_up)?;
+            }
+        }
+        Expr::Lambda(_) => {}
+        Expr::Receive { .. }
+        | Expr::CaptureArg(_)
+        | Expr::FnRef { .. }
+        | Expr::Var(_)
+        | Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Binary(_)
+        | Expr::Atom(_)
+        | Expr::Bool(_)
+        | Expr::Nil => {}
+    }
+    Ok(())
+}
+
+fn collect_local_guard_requirements(
+    world: &mut World<'_>,
+    namespace: Namespace,
+    guard: &Spanned<Expr>,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Result<(), FatalError> {
+    let mut calls = Vec::new();
+    collect_guard_calls_in_expr(guard, &mut calls).map_err(|span| {
+        emit_job_diagnostic(
+            world,
+            Diagnostic::error(
+                codes::LOWER_UNSUPPORTED,
+                "compiler2 case/with guards must be dispatch-pure".to_string(),
+                span,
+            ),
+        )
+    })?;
+    for call in calls {
+        let callee = resolve_guard_callee(world, namespace, &call)?;
+        let fact = FactKey::GuardDispatch(callee);
+        if world.fact_revision(fact.clone()).is_some() {
+            reads.push(fact);
+        } else {
+            waits.insert(fact);
+            follow_up.insert(Job::ReifyGuardDispatch(callee));
+        }
+    }
+    Ok(())
 }
 
 struct Lowerer<'w, 'tel> {
@@ -560,22 +757,30 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 });
                 Ok(value)
             }
-            Expr::Lambda(clauses) => self.lower_lambda(expr.span, clauses, env, steps),
-            Expr::Capture(_)
-            | Expr::CaptureArg(_)
-            | Expr::Case(_, _)
-            | Expr::Cond(_)
-            | Expr::With(_, _, _)
-            | Expr::Receive { .. }
-            | Expr::Quote(_)
-            | Expr::Unquote(_) => Err(emit_job_diagnostic(
+            Expr::Case(Some(subject), clauses) => self.lower_case(expr.span, subject, clauses, env, steps),
+            Expr::Case(None, _) => Err(emit_job_diagnostic(
                 self.world,
                 Diagnostic::error(
                     codes::LOWER_UNSUPPORTED,
-                    format!("compiler2 does not lower `{}` yet", expr_name(&expr.node)),
+                    "compiler2 lowering expected headless case to be expanded by the pipe desugar".to_string(),
                     expr.span,
                 ),
             )),
+            Expr::Cond(arms) => self.lower_cond(expr.span, arms, env, steps),
+            Expr::With(bindings, body, else_clauses) => {
+                self.lower_with(expr.span, bindings, body, else_clauses, env, steps)
+            }
+            Expr::Lambda(clauses) => self.lower_lambda(expr.span, clauses, env, steps),
+            Expr::Capture(_) | Expr::CaptureArg(_) | Expr::Receive { .. } | Expr::Quote(_) | Expr::Unquote(_) => {
+                Err(emit_job_diagnostic(
+                    self.world,
+                    Diagnostic::error(
+                        codes::LOWER_UNSUPPORTED,
+                        format!("compiler2 does not lower `{}` yet", expr_name(&expr.node)),
+                        expr.span,
+                    ),
+                ))
+            }
         }
     }
 
@@ -777,6 +982,329 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                     ),
                 )
             })
+    }
+
+    fn lower_case(
+        &mut self,
+        span: Span,
+        subject: &Spanned<Expr>,
+        clauses: &[MatchClause],
+        env: &mut HashMap<String, ValueId>,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        let subject_value = self.lower_expr(subject, env, steps)?;
+        let plan = self.compile_match_dispatch("case", span, match_rows(clauses))?;
+        let pinned = self.lower_dispatch_pins(&plan, &[subject_value], env, span)?;
+        let arm_blocks = clauses
+            .iter()
+            .map(|clause| self.lower_match_clause_block(subject_value, clause, env.clone()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let value = self.fresh_value();
+        steps.push(ExprStep::Dispatch {
+            value,
+            inputs: vec![subject_value],
+            pinned,
+            dispatch: Box::new(ExprDispatch {
+                plan,
+                arm_blocks,
+                miss_block: self.halt_block(span, "case_clause"),
+            }),
+        });
+        Ok(value)
+    }
+
+    fn lower_cond(
+        &mut self,
+        span: Span,
+        arms: &[(Spanned<Expr>, Spanned<Expr>)],
+        env: &mut HashMap<String, ValueId>,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        let block = self.lower_cond_block(span, arms, env.clone())?;
+        steps.extend(block.steps);
+        Ok(block.result)
+    }
+
+    fn lower_with(
+        &mut self,
+        span: Span,
+        bindings: &[WithBinding],
+        body: &Spanned<Expr>,
+        else_clauses: &[MatchClause],
+        env: &mut HashMap<String, ValueId>,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        let block = self.lower_with_block(span, bindings, body, else_clauses, env.clone())?;
+        steps.extend(block.steps);
+        Ok(block.result)
+    }
+
+    fn lower_cond_block(
+        &mut self,
+        span: Span,
+        arms: &[(Spanned<Expr>, Spanned<Expr>)],
+        mut env: HashMap<String, ValueId>,
+    ) -> Result<ExprBlock, FatalError> {
+        let Some((cond, body)) = arms.first() else {
+            return Ok(self.halt_block(span, "cond_clause"));
+        };
+
+        let mut steps = Vec::new();
+        let cond_value = self.lower_expr(cond, &mut env, &mut steps)?;
+        let arm_block = self.lower_expr_as_block(body, env.clone())?;
+        let miss_block = if arms.len() == 1 {
+            self.halt_block(span, "cond_clause")
+        } else {
+            self.lower_cond_block(span, &arms[1..], env)?
+        };
+        let value = self.fresh_value();
+        steps.push(ExprStep::Dispatch {
+            value,
+            inputs: vec![cond_value],
+            pinned: Vec::new(),
+            dispatch: Box::new(ExprDispatch {
+                plan: self.compile_bool_true_dispatch(span)?,
+                arm_blocks: vec![arm_block],
+                miss_block,
+            }),
+        });
+        Ok(ExprBlock {
+            span,
+            steps,
+            result: value,
+        })
+    }
+
+    fn lower_with_block(
+        &mut self,
+        span: Span,
+        bindings: &[WithBinding],
+        body: &Spanned<Expr>,
+        else_clauses: &[MatchClause],
+        mut env: HashMap<String, ValueId>,
+    ) -> Result<ExprBlock, FatalError> {
+        let Some((binding, rest)) = bindings.split_first() else {
+            return self.lower_expr_as_block(body, env);
+        };
+        match binding {
+            WithBinding::Bare(expr) => {
+                let mut steps = Vec::new();
+                let _ = self.lower_expr(expr, &mut env, &mut steps)?;
+                let rest_block = self.lower_with_block(span, rest, body, else_clauses, env)?;
+                steps.extend(rest_block.steps);
+                Ok(ExprBlock {
+                    span,
+                    steps,
+                    result: rest_block.result,
+                })
+            }
+            WithBinding::Match(pattern, expr) => {
+                let mut steps = Vec::new();
+                let matched = self.lower_expr(expr, &mut env, &mut steps)?;
+                let success_block =
+                    self.lower_match_success_block(matched, pattern, rest, body, else_clauses, env.clone(), span)?;
+                let miss_block = self.lower_with_fail_block(span, matched, else_clauses, env.clone())?;
+                let plan = self.compile_single_pattern_dispatch("with", pattern, span)?;
+                let pinned = self.lower_dispatch_pins(&plan, &[matched], &env, pattern.span)?;
+                let value = self.fresh_value();
+                steps.push(ExprStep::Dispatch {
+                    value,
+                    inputs: vec![matched],
+                    pinned,
+                    dispatch: Box::new(ExprDispatch {
+                        plan,
+                        arm_blocks: vec![success_block],
+                        miss_block,
+                    }),
+                });
+                Ok(ExprBlock {
+                    span,
+                    steps,
+                    result: value,
+                })
+            }
+        }
+    }
+
+    fn lower_match_success_block(
+        &mut self,
+        subject: ValueId,
+        pattern: &Spanned<Pattern>,
+        remaining_bindings: &[WithBinding],
+        body: &Spanned<Expr>,
+        else_clauses: &[MatchClause],
+        mut env: HashMap<String, ValueId>,
+        span: Span,
+    ) -> Result<ExprBlock, FatalError> {
+        let mut steps = Vec::new();
+        self.bind_pattern(&pattern.node, pattern.span, subject, &mut env, &mut steps)?;
+        let rest = self.lower_with_block(span, remaining_bindings, body, else_clauses, env)?;
+        steps.extend(rest.steps);
+        Ok(ExprBlock {
+            span: pattern.span,
+            steps,
+            result: rest.result,
+        })
+    }
+
+    fn lower_with_fail_block(
+        &mut self,
+        span: Span,
+        failed: ValueId,
+        else_clauses: &[MatchClause],
+        env: HashMap<String, ValueId>,
+    ) -> Result<ExprBlock, FatalError> {
+        if else_clauses.is_empty() {
+            return Ok(ExprBlock {
+                span,
+                steps: Vec::new(),
+                result: failed,
+            });
+        }
+        let plan = self.compile_match_dispatch("with else", span, match_rows(else_clauses))?;
+        let pinned = self.lower_dispatch_pins(&plan, &[failed], &env, span)?;
+        let arm_blocks = else_clauses
+            .iter()
+            .map(|clause| self.lower_match_clause_block(failed, clause, env.clone()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let value = self.fresh_value();
+        Ok(ExprBlock {
+            span,
+            steps: vec![ExprStep::Dispatch {
+                value,
+                inputs: vec![failed],
+                pinned,
+                dispatch: Box::new(ExprDispatch {
+                    plan,
+                    arm_blocks,
+                    miss_block: self.halt_block(span, "with_clause"),
+                }),
+            }],
+            result: value,
+        })
+    }
+
+    fn lower_match_clause_block(
+        &mut self,
+        subject: ValueId,
+        clause: &MatchClause,
+        mut env: HashMap<String, ValueId>,
+    ) -> Result<ExprBlock, FatalError> {
+        let mut steps = Vec::new();
+        self.bind_pattern(&clause.pattern.node, clause.pattern.span, subject, &mut env, &mut steps)?;
+        let body = self.lower_expr_as_block(&clause.body, env)?;
+        steps.extend(body.steps);
+        Ok(ExprBlock {
+            span: clause.span,
+            steps,
+            result: body.result,
+        })
+    }
+
+    fn compile_match_dispatch(
+        &mut self,
+        label: &str,
+        span: Span,
+        rows: Vec<PatternRow<super::super::types::Ty>>,
+    ) -> Result<crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>, FatalError> {
+        let source = SourcePatternRows { input_count: 1, rows };
+        let mut resolver = |name: &str,
+                            arity: usize,
+                            args: Vec<PatternGuardExpr<super::super::types::Ty>>|
+         -> Result<Option<PatternGuardExpr<super::super::types::Ty>>, SourcePatternError> {
+            let callee = resolve_guard_callee_checked(self.world, self.namespace, name, arity);
+            Ok(Some(PatternGuardExpr::Dispatch {
+                inputs: args,
+                dispatch: Box::new(self.world.guard_dispatch(callee)),
+            }))
+        };
+        pattern_dispatch_from_source_with_guard_resolver(source, &mut resolver)
+            .map_err(|error| emit_local_dispatch_error(self.world, label, span, error))
+    }
+
+    fn compile_single_pattern_dispatch(
+        &mut self,
+        label: &str,
+        pattern: &Spanned<Pattern>,
+        span: Span,
+    ) -> Result<crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>, FatalError> {
+        self.compile_match_dispatch(
+            label,
+            span,
+            vec![PatternRow {
+                patterns: vec![pattern.clone()],
+                preconditions: Vec::new(),
+                guard: None,
+                body_id: 0,
+            }],
+        )
+    }
+
+    fn compile_bool_true_dispatch(
+        &mut self,
+        span: Span,
+    ) -> Result<crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>, FatalError> {
+        pattern_dispatch_from_source(SourcePatternRows {
+            input_count: 1,
+            rows: vec![PatternRow {
+                patterns: vec![Spanned::new(Pattern::Bool(true), span)],
+                preconditions: Vec::new(),
+                guard: None,
+                body_id: 0,
+            }],
+        })
+        .map_err(|error| emit_local_dispatch_error(self.world, "cond", span, error))
+    }
+
+    fn lower_dispatch_pins(
+        &mut self,
+        plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>,
+        inputs: &[ValueId],
+        env: &HashMap<String, ValueId>,
+        span: Span,
+    ) -> Result<Vec<ValueId>, FatalError> {
+        plan.pinned
+            .iter()
+            .map(|pinned| {
+                if let Some(input) = pinned.input {
+                    return inputs.get(input as usize).copied().ok_or_else(|| {
+                        emit_job_diagnostic(
+                            self.world,
+                            Diagnostic::error(
+                                codes::LOWER_UNSUPPORTED,
+                                format!("compiler2 local dispatch input {} is out of bounds", input),
+                                span,
+                            ),
+                        )
+                    });
+                }
+                env.get(&pinned.name).copied().ok_or_else(|| {
+                    emit_job_diagnostic(
+                        self.world,
+                        Diagnostic::error(
+                            codes::LOWER_UNBOUND,
+                            format!("compiler2 local dispatch pinned name `{}` is unresolved", pinned.name),
+                            pinned.span,
+                        ),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    fn halt_block(&mut self, span: Span, atom: &str) -> ExprBlock {
+        let value = self.fresh_value();
+        ExprBlock {
+            span,
+            steps: vec![
+                ExprStep::Const {
+                    value,
+                    literal: Literal::Nil,
+                },
+                ExprStep::Halt { atom: atom.to_string() },
+            ],
+            result: value,
+        }
     }
 
     fn lower_lambda(
@@ -994,6 +1522,55 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                             else_entry,
                         },
                     );
+                }
+                ExprStep::Dispatch {
+                    value,
+                    inputs,
+                    pinned,
+                    dispatch,
+                } => {
+                    let branch_dest = if index + 1 == block.steps.len() && *value == block.result {
+                        dest
+                    } else {
+                        let resume = self.plan_block(
+                            ExprBlock {
+                                span: block.span,
+                                steps: block.steps[index + 1..].to_vec(),
+                                result: block.result,
+                            },
+                            ControlEntryOrigin::Resume { value: *value },
+                            dest,
+                            entries,
+                        );
+                        ControlDestination::Deliver(resume)
+                    };
+                    let arm_entries = dispatch
+                        .arm_blocks
+                        .iter()
+                        .cloned()
+                        .map(|arm| self.plan_block(arm, ControlEntryOrigin::Branch, branch_dest.clone(), entries))
+                        .collect::<Vec<_>>();
+                    let miss_entry = self.plan_block(
+                        dispatch.miss_block.clone(),
+                        ControlEntryOrigin::Branch,
+                        branch_dest,
+                        entries,
+                    );
+                    return (
+                        lowered,
+                        LoweredTail::Dispatch {
+                            inputs: inputs.clone(),
+                            pinned: pinned.clone(),
+                            dispatch: Box::new(ControlDispatch {
+                                plan: dispatch.plan.clone(),
+                                arm_entries,
+                                miss_entry,
+                            }),
+                        },
+                    );
+                }
+                ExprStep::Halt { atom } => {
+                    return (lowered, LoweredTail::Halt { atom: atom.clone() });
                 }
                 _ => lowered.push(lower_projection_step(step)),
             }
@@ -1463,7 +2040,11 @@ fn lower_projection_step(step: &ExprStep) -> LoweredStep {
             is_last: *is_last,
         },
         ExprStep::AssertBitstringDone { reader } => LoweredStep::AssertBitstringDone { reader: *reader },
-        ExprStep::DirectCall { .. } | ExprStep::ClosureCall { .. } | ExprStep::If { .. } => {
+        ExprStep::DirectCall { .. }
+        | ExprStep::ClosureCall { .. }
+        | ExprStep::If { .. }
+        | ExprStep::Dispatch { .. }
+        | ExprStep::Halt { .. } => {
             panic!("control steps should be lowered into tails before projection conversion")
         }
     }
@@ -1583,6 +2164,11 @@ fn used_values_in_entry(entry: &LoweredEntry) -> HashSet<ValueId> {
         LoweredTail::If { cond, .. } => {
             out.insert(*cond);
         }
+        LoweredTail::Dispatch { inputs, pinned, .. } => {
+            out.extend(inputs.iter().copied());
+            out.extend(pinned.iter().copied());
+        }
+        LoweredTail::Halt { .. } => {}
     }
     out
 }
@@ -1677,6 +2263,12 @@ fn child_entries(tail: LoweredTail) -> Vec<ControlEntryId> {
         LoweredTail::If {
             then_entry, else_entry, ..
         } => vec![then_entry, else_entry],
+        LoweredTail::Dispatch { dispatch, .. } => {
+            let mut children = dispatch.arm_entries.clone();
+            children.push(dispatch.miss_entry);
+            children
+        }
+        LoweredTail::Halt { .. } => Vec::new(),
     }
 }
 
@@ -1940,6 +2532,88 @@ fn collect_match_clause_free_names(clauses: &[MatchClause], bound: &mut HashSet<
             collect_expr_free_names(&guard.node, &mut clause_bound, free);
         }
         collect_expr_free_names(&clause.body.node, &mut clause_bound, free);
+    }
+}
+
+fn match_rows(clauses: &[MatchClause]) -> Vec<PatternRow<super::super::types::Ty>> {
+    clauses
+        .iter()
+        .enumerate()
+        .map(|(index, clause)| PatternRow {
+            patterns: vec![clause.pattern.clone()],
+            preconditions: Vec::new(),
+            guard: clause.guard.clone(),
+            body_id: index as PatternBodyId,
+        })
+        .collect()
+}
+
+fn emit_local_dispatch_error(world: &World<'_>, label: &str, span: Span, error: PatternDispatchError) -> FatalError {
+    match error {
+        PatternDispatchError::SourcePattern(SourcePatternError::UnsupportedGuardExpr) => emit_job_diagnostic(
+            world,
+            Diagnostic::error(
+                codes::LOWER_UNSUPPORTED,
+                format!("compiler2 {label} guards must be dispatch-pure"),
+                span,
+            ),
+        ),
+        PatternDispatchError::SourcePattern(SourcePatternError::UnknownPinned(name))
+        | PatternDispatchError::SourcePattern(SourcePatternError::UnknownGuardVar(name)) => emit_job_diagnostic(
+            world,
+            Diagnostic::error(
+                codes::LOWER_UNBOUND,
+                format!("compiler2 {label} guard references unknown name `{name}`"),
+                span,
+            ),
+        ),
+        PatternDispatchError::SourcePattern(SourcePatternError::UnsupportedMapKey) => emit_job_diagnostic(
+            world,
+            Diagnostic::error(
+                codes::LOWER_UNSUPPORTED,
+                format!("compiler2 {label} patterns require literal map keys"),
+                span,
+            ),
+        ),
+        PatternDispatchError::SourcePattern(SourcePatternError::DispatchMatrix(message)) => emit_job_diagnostic(
+            world,
+            Diagnostic::error(
+                codes::LOWER_UNSUPPORTED,
+                format!("compiler2 {label} dispatch could not be planned: {message}"),
+                span,
+            ),
+        ),
+        PatternDispatchError::SourcePattern(
+            SourcePatternError::UnknownSubject(_)
+            | SourcePatternError::RowPatternArity { .. }
+            | SourcePatternError::NonMonotonicBodyId { .. },
+        ) => {
+            panic!("compiler2 built an invalid local dispatch row set: {error:?}")
+        }
+        PatternDispatchError::SourcePattern(SourcePatternError::GuardCallCycle(name, arity)) => emit_job_diagnostic(
+            world,
+            Diagnostic::error(
+                codes::LOWER_UNSUPPORTED,
+                format!("compiler2 {label} guard helper cycle detected through `{name}/{arity}`"),
+                span,
+            ),
+        ),
+        PatternDispatchError::MatrixBuild(error) => emit_job_diagnostic(
+            world,
+            Diagnostic::error(
+                codes::LOWER_UNSUPPORTED,
+                format!("compiler2 {label} dispatch matrix is invalid: {error:?}"),
+                span,
+            ),
+        ),
+        PatternDispatchError::Compile(error) => emit_job_diagnostic(
+            world,
+            Diagnostic::error(
+                codes::LOWER_UNSUPPORTED,
+                format!("compiler2 {label} dispatch could not be compiled: {error:?}"),
+                span,
+            ),
+        ),
     }
 }
 

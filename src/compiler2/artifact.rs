@@ -24,8 +24,8 @@ use crate::fz_ir::{
 };
 
 use super::body::{
-    CallSiteId, ControlDestination, ControlEntryId, Literal, LoweredBitField, LoweredBitFieldSpec, LoweredBody,
-    LoweredExtern, ValueId,
+    CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, Literal, LoweredBitField, LoweredBitFieldSpec,
+    LoweredBody, LoweredExtern, ValueId,
 };
 use super::identity::{ExecutableKey, FunctionId, RootId};
 use super::types::Ty;
@@ -332,6 +332,14 @@ pub enum BackendTail {
         cond: ValueId,
         then_entry: ControlEntryId,
         else_entry: ControlEntryId,
+    },
+    Dispatch {
+        inputs: Vec<ValueId>,
+        pinned: Vec<ValueId>,
+        dispatch: Box<ControlDispatch>,
+    },
+    Halt {
+        atom: String,
     },
 }
 

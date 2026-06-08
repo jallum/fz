@@ -67,7 +67,9 @@ submit_root(main/0)
     Activation/Executable facts -> the frontier grows itself (emergent)
   SealSemanticClosure observes the frontier; when it settles, writes
     SemanticClosed(root) and enqueues MaterializeRoot(root)
-  MaterializeRoot freezes the closed set into MaterializedProgram(root)
+  MaterializeRoot freezes the closed set into MaterializedProgram(root),
+    pruning unreachable clauses and turning semantically cold local-control
+    entries into explicit halt stubs
   DeriveAbiReady(root) derives ABI lanes, return delivery, and callable-boundary facts
   DeriveEmissionReady(root) derives stable emission inventory
   LowerBackendProgram(root) derives the backend-consumable handoff

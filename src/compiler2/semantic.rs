@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::body::{CallSiteId, ValueId};
+use super::body::{CallSiteId, ControlEntryId, ValueId};
 use super::drive::FactKey;
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, RootId};
 use super::types::{Ty, Types};
@@ -33,6 +33,7 @@ pub struct CallSiteSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationAnalysis {
     pub reachable_clauses: Vec<u32>,
+    pub reachable_entries: Vec<ControlEntryId>,
     pub callsites: Vec<CallSiteId>,
     pub latent_executables: Vec<ExecutableKey>,
     pub value_types: HashMap<ValueId, Ty>,

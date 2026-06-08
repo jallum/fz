@@ -581,8 +581,9 @@ struct Types {
 DependencySnapshot = HashMap&lt;FactKey, u64&gt;</code></pre>
       <p>
         Materialization is downstream of that one fact. <code>MaterializeRoot</code> reads the
-        closed frontier, clones only the reachable lowered bodies, prunes unreachable clauses, and
-        freezes each live callsite to one selected callee executable. Then
+        closed frontier, clones only the reachable lowered bodies, prunes unreachable clauses,
+        rewrites semantically cold local-control entries into explicit halt stubs, and freezes each
+        live callsite to one selected callee executable. Then
         <code>DeriveAbiReady</code> reads only <code>MaterializedProgram</code> and
         <code>DeriveEmissionReady</code> reads only <code>AbiReadyProgram</code>. No rung asks new
         semantic questions and no rung reopens discovery.
@@ -894,7 +895,8 @@ join =&gt; Inputs([list(int)]) after refine_widen + alpha normalization</code></
         <h3><span class="num">08</span>The artifact ladder freezes and inventories the closed path only</h3>
         <p>
           <code>MaterializeRoot(root)</code> clones only the executable bodies in the closed
-          frontier, prunes unreachable clauses, and emits <code>MaterializedProgram(root)</code>.
+          frontier, prunes unreachable clauses, rewrites semantically cold local-control entries
+          into explicit halt stubs, and emits <code>MaterializedProgram(root)</code>.
           <code>DeriveAbiReady(root)</code> then makes return delivery, ABI lanes, and callable
           entries explicit without asking new semantic questions. Finally,
           <code>DeriveEmissionReady(root)</code> rewrites that closed artifact into stable emission

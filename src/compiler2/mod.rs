@@ -32,9 +32,9 @@ pub use artifact::{
 };
 pub(crate) use artifact::{NativeBody, NativeProgram};
 pub use body::{
-    BodySlot, BodyState, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, DirectCallee, Literal,
-    LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredBodyMap, LoweredClause, LoweredEntry,
-    LoweredExtern, LoweredStep, LoweredTail, ValueId,
+    BodySlot, BodyState, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin,
+    DirectCallee, Literal, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredBodyMap,
+    LoweredClause, LoweredEntry, LoweredExtern, LoweredStep, LoweredTail, ValueId,
 };
 pub use cli::run as run_cli;
 pub use code::{Code, CodeId, CodeMap, CodeState};

@@ -392,6 +392,16 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
                 then_entry: *then_entry,
                 else_entry: *else_entry,
             },
+            LoweredTail::Dispatch {
+                inputs,
+                pinned,
+                dispatch,
+            } => BackendTail::Dispatch {
+                inputs: inputs.clone(),
+                pinned: pinned.clone(),
+                dispatch: dispatch.clone(),
+            },
+            LoweredTail::Halt { atom } => BackendTail::Halt { atom: atom.clone() },
         })
     }
 
@@ -623,6 +633,19 @@ fn collect_entry_input_need(
             let _ = collect_entry_input_need(world, executable, entries, *then_entry, outgoing_need.clone(), out);
             let _ = collect_entry_input_need(world, executable, entries, *else_entry, outgoing_need, out);
         }
+        LoweredTail::Dispatch {
+            inputs,
+            pinned,
+            dispatch,
+        } => {
+            used_values.extend(inputs.iter().copied());
+            used_values.extend(pinned.iter().copied());
+            for arm_entry in &dispatch.arm_entries {
+                let _ = collect_entry_input_need(world, executable, entries, *arm_entry, outgoing_need.clone(), out);
+            }
+            let _ = collect_entry_input_need(world, executable, entries, dispatch.miss_entry, outgoing_need, out);
+        }
+        LoweredTail::Halt { .. } => {}
     }
     for step in entry.steps.iter().rev() {
         collect_step_reads(step, &mut used_values);
@@ -810,7 +833,7 @@ fn publish_entry_input_abis(
                 merge_resume_abi(world, root_id, *target, abi, out)?;
             }
         }
-        LoweredTail::If { .. } => {}
+        LoweredTail::If { .. } | LoweredTail::Dispatch { .. } | LoweredTail::Halt { .. } => {}
     }
     Ok(())
 }
@@ -1003,12 +1026,15 @@ fn collect_step_atoms(
     }
 }
 
-fn collect_tail_atoms(
-    _world: &mut World<'_>,
-    _tail: &BackendTail,
-    _seen: &mut HashSet<String>,
-    _atoms: &mut Vec<String>,
-) {
+fn collect_tail_atoms(world: &mut World<'_>, tail: &BackendTail, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
+    match tail {
+        BackendTail::Dispatch { dispatch, .. } => collect_dispatch_atoms(world, &dispatch.plan, seen, atoms),
+        BackendTail::Halt { atom } => push_atom(seen, atoms, atom),
+        BackendTail::Value { .. }
+        | BackendTail::DirectCall { .. }
+        | BackendTail::ClosureCall { .. }
+        | BackendTail::If { .. } => {}
+    }
 }
 
 fn collect_literal_atoms(literal: &super::super::body::Literal, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {

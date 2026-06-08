@@ -31,10 +31,13 @@ use super::super::types::Ty;
 use super::super::world::World;
 use super::semantic::executable_callsite_needs;
 
+const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
+
 /// Materializes one closed root into a backend-owned program snapshot.
 ///
 /// The job reads the current `SemanticClosed(root)` payload, clones only the
-/// reachable lowered bodies, prunes unreachable clauses, freezes each live
+/// reachable lowered bodies, prunes unreachable clauses, rewrites semantically
+/// cold local-control entries into explicit halt stubs, freezes each live
 /// callsite to its selected callee executable, and settles executable effects
 /// over the closed call graph. Missing semantic constituents are fatal:
 /// materialization never reopens discovery.
@@ -81,6 +84,7 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
         let body = prune_lowered_body(
             world.lowered_body(executable.activation.function),
             &analysis.reachable_clauses,
+            &analysis.reachable_entries,
         );
         let callsite_args = collect_callsite_args(&body);
         let Some(call_edges) = materialize_call_edges(world, root_id, executable, &analysis, &callsite_args)? else {
@@ -178,6 +182,7 @@ pub(super) fn derive_abi_ready(world: &mut World<'_>, root_id: RootId) -> Result
 #[derive(Debug, Clone)]
 struct ExecutableAbiPlan {
     param_reprs: Vec<AbiValueRepr>,
+    result_abi: ReturnAbi,
     value_reprs: HashMap<ValueId, AbiValueRepr>,
     resume_values: HashMap<ControlEntryId, ValueId>,
     deliveries: HashMap<ControlEntryId, Vec<DeliverySource>>,
@@ -354,7 +359,11 @@ fn materialize_entry_dispatch(
     }
 }
 
-fn prune_lowered_body(body: LoweredBody, reachable_clauses: &[u32]) -> LoweredBody {
+fn prune_lowered_body(
+    body: LoweredBody,
+    reachable_clauses: &[u32],
+    reachable_entries: &[ControlEntryId],
+) -> LoweredBody {
     match body {
         LoweredBody::Extern { .. } => body,
         LoweredBody::Clauses {
@@ -362,6 +371,7 @@ fn prune_lowered_body(body: LoweredBody, reachable_clauses: &[u32]) -> LoweredBo
             entries,
             generated,
         } => {
+            let reachable_entries = reachable_entries.iter().copied().collect::<HashSet<_>>();
             let mut clauses = reachable_clauses
                 .iter()
                 .map(|clause_id| clauses[*clause_id as usize].clone())
@@ -369,11 +379,16 @@ fn prune_lowered_body(body: LoweredBody, reachable_clauses: &[u32]) -> LoweredBo
             let mut needed = HashMap::new();
             let mut kept_ids = Vec::new();
             for clause in &clauses {
-                collect_reachable_entries(&entries, clause.entry, &mut kept_ids, &mut needed);
+                collect_reachable_entries(&entries, clause.entry, &reachable_entries, &mut kept_ids, &mut needed);
             }
             let mut kept = kept_ids
                 .iter()
-                .map(|entry_id| entries[entry_id.as_u32() as usize].clone())
+                .map(|entry_id| {
+                    specialize_entry(
+                        entries[entry_id.as_u32() as usize].clone(),
+                        reachable_entries.contains(entry_id),
+                    )
+                })
                 .collect::<Vec<_>>();
             reindex_entries(&mut clauses, &mut kept, &needed);
             LoweredBody::Clauses {
@@ -388,6 +403,7 @@ fn prune_lowered_body(body: LoweredBody, reachable_clauses: &[u32]) -> LoweredBo
 fn collect_reachable_entries(
     entries: &[LoweredEntry],
     entry_id: super::super::body::ControlEntryId,
+    reachable_entries: &HashSet<super::super::body::ControlEntryId>,
     order: &mut Vec<super::super::body::ControlEntryId>,
     out: &mut HashMap<super::super::body::ControlEntryId, super::super::body::ControlEntryId>,
 ) {
@@ -397,22 +413,43 @@ fn collect_reachable_entries(
     let next_id = super::super::body::ControlEntryId::from_u32(order.len() as u32);
     order.push(entry_id);
     out.insert(entry_id, next_id);
+    if !reachable_entries.contains(&entry_id) {
+        return;
+    }
     let entry = &entries[entry_id.as_u32() as usize];
     match &entry.tail {
         LoweredTail::Value { dest, .. }
         | LoweredTail::DirectCall { dest, .. }
         | LoweredTail::ClosureCall { dest, .. } => {
             if let super::super::body::ControlDestination::Deliver(target) = dest {
-                collect_reachable_entries(entries, *target, order, out);
+                collect_reachable_entries(entries, *target, reachable_entries, order, out);
             }
         }
         LoweredTail::If {
             then_entry, else_entry, ..
         } => {
-            collect_reachable_entries(entries, *then_entry, order, out);
-            collect_reachable_entries(entries, *else_entry, order, out);
+            collect_reachable_entries(entries, *then_entry, reachable_entries, order, out);
+            collect_reachable_entries(entries, *else_entry, reachable_entries, order, out);
         }
+        LoweredTail::Dispatch { dispatch, .. } => {
+            for arm_entry in &dispatch.arm_entries {
+                collect_reachable_entries(entries, *arm_entry, reachable_entries, order, out);
+            }
+            collect_reachable_entries(entries, dispatch.miss_entry, reachable_entries, order, out);
+        }
+        LoweredTail::Halt { .. } => {}
     }
+}
+
+fn specialize_entry(mut entry: LoweredEntry, is_reachable: bool) -> LoweredEntry {
+    if is_reachable {
+        return entry;
+    }
+    entry.steps.clear();
+    entry.tail = LoweredTail::Halt {
+        atom: UNREACHABLE_CONTROL_ATOM.to_string(),
+    };
+    entry
 }
 
 fn reindex_entries(
@@ -438,6 +475,13 @@ fn reindex_entries(
                 *then_entry = ids[then_entry];
                 *else_entry = ids[else_entry];
             }
+            LoweredTail::Dispatch { dispatch, .. } => {
+                for arm_entry in &mut dispatch.arm_entries {
+                    *arm_entry = ids[arm_entry];
+                }
+                dispatch.miss_entry = ids[&dispatch.miss_entry];
+            }
+            LoweredTail::Halt { .. } => {}
         }
     }
 }
@@ -466,7 +510,10 @@ fn collect_tail_call_args(tail: &LoweredTail, out: &mut HashMap<CallSiteId, Vec<
         LoweredTail::DirectCall { callsite, args, .. } | LoweredTail::ClosureCall { callsite, args, .. } => {
             out.insert(*callsite, args.clone());
         }
-        LoweredTail::Value { .. } | LoweredTail::If { .. } => {}
+        LoweredTail::Value { .. }
+        | LoweredTail::If { .. }
+        | LoweredTail::Dispatch { .. }
+        | LoweredTail::Halt { .. } => {}
     }
 }
 
@@ -630,7 +677,11 @@ fn tail_effects(tail: &LoweredTail, call_edges: &HashMap<CallSiteId, Materialize
         LoweredTail::ClosureCall { callsite, .. } if !call_edges.contains_key(callsite) => {
             effects.calls_opaque = true;
         }
-        LoweredTail::Value { .. } | LoweredTail::DirectCall { .. } | LoweredTail::If { .. } => {}
+        LoweredTail::Value { .. }
+        | LoweredTail::DirectCall { .. }
+        | LoweredTail::If { .. }
+        | LoweredTail::Dispatch { .. }
+        | LoweredTail::Halt { .. } => {}
         LoweredTail::ClosureCall { .. } => {}
     }
     effects
@@ -704,6 +755,7 @@ fn build_executable_abi_plan(
 
     ExecutableAbiPlan {
         param_reprs,
+        result_abi: fixed_return_abi(world, executable.return_ty, key.need),
         value_reprs,
         resume_values: resume_values(&executable.body),
         deliveries: deliveries(&executable.body),
@@ -1009,6 +1061,46 @@ fn resolve_entry_return_abi(
                 _ => None,
             }
         }
+        LoweredTail::Dispatch { dispatch, .. } => {
+            let mut widened = None;
+            for arm_entry in &dispatch.arm_entries {
+                let Some(arm_abi) =
+                    resolve_entry_return_abi(world, root_id, executable, plan, entries, *arm_entry, return_abis, seen)?
+                else {
+                    return Ok(None);
+                };
+                widened = Some(match widened {
+                    None => arm_abi,
+                    Some(current) if current == arm_abi => current,
+                    Some(current) => widen_return_abi(current, arm_abi).ok_or_else(|| {
+                        incomplete_semantic_plan(
+                            world,
+                            root_id,
+                            format!("dispatch arm returns disagree for entry {}", entry_id.as_u32()),
+                        )
+                    })?,
+                });
+            }
+            let Some(miss_abi) = resolve_entry_return_abi(
+                world,
+                root_id,
+                executable,
+                plan,
+                entries,
+                dispatch.miss_entry,
+                return_abis,
+                seen,
+            )?
+            else {
+                return Ok(None);
+            };
+            match widened {
+                None => Some(miss_abi),
+                Some(current) if current == miss_abi => Some(current),
+                Some(current) => widen_return_abi(current, miss_abi),
+            }
+        }
+        LoweredTail::Halt { .. } => Some(plan.result_abi.clone()),
     };
     seen.remove(&entry_id);
     Ok(resolved)
@@ -1222,7 +1314,7 @@ fn record_delivery(tail: &LoweredTail, deliveries: &mut HashMap<ControlEntryId, 
             .or_default()
             .push(DeliverySource::Call(*callsite)),
         LoweredTail::Value { .. } | LoweredTail::DirectCall { .. } | LoweredTail::ClosureCall { .. } => {}
-        LoweredTail::If { .. } => {}
+        LoweredTail::If { .. } | LoweredTail::Dispatch { .. } | LoweredTail::Halt { .. } => {}
     }
 }
 
@@ -1423,7 +1515,10 @@ fn callable_entries_in_tail(
             args,
             out,
         ),
-        LoweredTail::Value { .. } | LoweredTail::If { .. } => Ok(()),
+        LoweredTail::Value { .. }
+        | LoweredTail::If { .. }
+        | LoweredTail::Dispatch { .. }
+        | LoweredTail::Halt { .. } => Ok(()),
     }
 }
 
@@ -1453,11 +1548,17 @@ fn record_callable_boundary_args(
             ));
         }
 
-        let arg_ty = executable
-            .value_types
-            .get(&arg.value)
-            .copied()
-            .expect("ABI-ready executables should carry settled types for every call argument value");
+        let arg_ty = executable.value_types.get(&arg.value).copied().ok_or_else(|| {
+            incomplete_semantic_plan(
+                world,
+                root_id,
+                format!(
+                    "ABI-ready executable is missing the settled type for call argument value {} at callsite {}",
+                    arg.value.as_u32(),
+                    callsite.as_u32()
+                ),
+            )
+        })?;
         match resolve_callable_entries_for_type(world, root_id, executables, arg_ty)? {
             CallableResolution::NotCallable => {
                 if boundary_expects_callable(world, executable, callsite, closure_callee, arg_index) {

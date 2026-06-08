@@ -81,6 +81,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     let reachable_clauses = reachable_clause_ids(world, &entry_dispatch, &inputs);
 
     let mut analysis_calls = Vec::new();
+    let mut reachable_entries = HashSet::new();
     let mut value_types = HashMap::new();
     let mut return_ty = none_ty(world);
     match lowered_body {
@@ -110,6 +111,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
                     entries.as_slice(),
                     clause.entry,
                     &values,
+                    &mut reachable_entries,
                     &mut value_types,
                     &mut analysis_calls,
                     activation,
@@ -166,6 +168,11 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         activation,
         ActivationAnalysis {
             reachable_clauses: reachable_clauses.clone(),
+            reachable_entries: {
+                let mut entries = reachable_entries.into_iter().collect::<Vec<_>>();
+                entries.sort_by_key(|entry| entry.as_u32());
+                entries
+            },
             callsites: analysis_calls.iter().map(|call| call.key.callsite).collect(),
             latent_executables: analysis_calls
                 .iter()
@@ -193,6 +200,7 @@ fn analyze_entry(
     entries: &[LoweredEntry],
     entry_id: super::super::body::ControlEntryId,
     values: &ValueTypes,
+    reachable_entries: &mut HashSet<super::super::body::ControlEntryId>,
     value_types: &mut ValueTypes,
     calls: &mut Vec<CallEmission>,
     activation: &ActivationKey,
@@ -200,6 +208,7 @@ fn analyze_entry(
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
 ) -> Result<Ty, FatalError> {
+    reachable_entries.insert(entry_id);
     let entry = &entries[entry_id.as_u32() as usize];
     let mut local = values.clone();
     apply_steps(
@@ -218,6 +227,7 @@ fn analyze_entry(
         entries,
         &entry.tail,
         &local,
+        reachable_entries,
         value_types,
         calls,
         activation,
@@ -415,6 +425,7 @@ fn analyze_tail(
     entries: &[LoweredEntry],
     tail: &LoweredTail,
     values: &ValueTypes,
+    reachable_entries: &mut HashSet<super::super::body::ControlEntryId>,
     value_types: &mut ValueTypes,
     calls: &mut Vec<CallEmission>,
     activation: &ActivationKey,
@@ -429,6 +440,7 @@ fn analyze_tail(
             dest,
             *value,
             values,
+            reachable_entries,
             value_types,
             calls,
             activation,
@@ -461,6 +473,7 @@ fn analyze_tail(
                 dest,
                 *value,
                 &delivered,
+                reachable_entries,
                 value_types,
                 calls,
                 activation,
@@ -496,6 +509,7 @@ fn analyze_tail(
                 dest,
                 *value,
                 &delivered,
+                reachable_entries,
                 value_types,
                 calls,
                 activation,
@@ -512,6 +526,7 @@ fn analyze_tail(
                 entries,
                 *then_entry,
                 &entry_scope(entries, *then_entry, values, None),
+                reachable_entries,
                 value_types,
                 calls,
                 activation,
@@ -524,6 +539,7 @@ fn analyze_tail(
                 entries,
                 *else_entry,
                 &entry_scope(entries, *else_entry, values, None),
+                reachable_entries,
                 value_types,
                 calls,
                 activation,
@@ -533,6 +549,55 @@ fn analyze_tail(
             )?;
             Ok(world.types_mut().union(then_ty, else_ty))
         }
+        LoweredTail::Dispatch { inputs, dispatch, .. } => {
+            let input_tys = inputs
+                .iter()
+                .map(|input| value_ty(world, values, *input))
+                .collect::<Vec<_>>();
+            let reachable = reachable_clause_ids(world, &dispatch.plan, &input_tys);
+            let mut merged = None;
+            for body_id in reachable {
+                let arm_entry = *dispatch
+                    .arm_entries
+                    .get(body_id as usize)
+                    .unwrap_or_else(|| panic!("compiler2 local dispatch arm {} is out of bounds", body_id));
+                let arm_ty = analyze_entry(
+                    world,
+                    entries,
+                    arm_entry,
+                    &entry_scope(entries, arm_entry, values, None),
+                    reachable_entries,
+                    value_types,
+                    calls,
+                    activation,
+                    reads,
+                    waits,
+                    follow_up,
+                )?;
+                merged = Some(match merged {
+                    None => arm_ty,
+                    Some(current) => world.types_mut().union(current, arm_ty),
+                });
+            }
+            let miss_ty = analyze_entry(
+                world,
+                entries,
+                dispatch.miss_entry,
+                &entry_scope(entries, dispatch.miss_entry, values, None),
+                reachable_entries,
+                value_types,
+                calls,
+                activation,
+                reads,
+                waits,
+                follow_up,
+            )?;
+            Ok(match merged {
+                None => miss_ty,
+                Some(current) => world.types_mut().union(current, miss_ty),
+            })
+        }
+        LoweredTail::Halt { .. } => Ok(world.types_mut().none()),
     }
 }
 
@@ -543,6 +608,7 @@ fn deliver_tail_value(
     dest: &ControlDestination,
     value: ValueId,
     values: &ValueTypes,
+    reachable_entries: &mut HashSet<super::super::body::ControlEntryId>,
     value_types: &mut ValueTypes,
     calls: &mut Vec<CallEmission>,
     activation: &ActivationKey,
@@ -558,6 +624,7 @@ fn deliver_tail_value(
             entries,
             *entry_id,
             &entry_scope(entries, *entry_id, values, Some((value, delivered_ty))),
+            reachable_entries,
             value_types,
             calls,
             activation,
@@ -1423,6 +1490,13 @@ fn collect_entry_callsite_needs(
             let _ = collect_entry_callsite_needs(entries, *then_entry, outgoing_need, out);
             let _ = collect_entry_callsite_needs(entries, *else_entry, outgoing_need, out);
         }
+        LoweredTail::Dispatch { dispatch, .. } => {
+            for arm_entry in &dispatch.arm_entries {
+                let _ = collect_entry_callsite_needs(entries, *arm_entry, outgoing_need, out);
+            }
+            let _ = collect_entry_callsite_needs(entries, dispatch.miss_entry, outgoing_need, out);
+        }
+        LoweredTail::Halt { .. } => {}
     }
     for step in entry.steps.iter().rev() {
         match step {

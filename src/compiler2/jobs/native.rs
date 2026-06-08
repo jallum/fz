@@ -350,7 +350,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             executable.effects,
         );
         let inputs = ctx.entry_params(executable.key.activation.input.as_slice());
-        let mut state = DispatchState::new(inputs);
+        let mut state = DispatchState::new(inputs, Vec::new());
         let dispatch = executable
             .entry_dispatch
             .as_ref()
@@ -958,6 +958,43 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 });
                 Ok(())
             }
+            BackendTail::Dispatch {
+                inputs,
+                pinned,
+                dispatch,
+            } => {
+                let input_vars = env.vars(inputs).ok_or_else(|| {
+                    incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        "native local dispatch referenced an unbound input value",
+                    )
+                })?;
+                let pinned_vars = env.vars(pinned).ok_or_else(|| {
+                    incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        "native local dispatch referenced an unbound pinned value",
+                    )
+                })?;
+                let mut state = DispatchState::new(input_vars, pinned_vars);
+                self.lower_control_dispatch_node(
+                    ctx,
+                    executable,
+                    entries,
+                    entry_fns,
+                    env,
+                    &dispatch.plan,
+                    &dispatch.arm_entries,
+                    dispatch.miss_entry,
+                    dispatch.plan.graph.root,
+                    &mut state,
+                )
+            }
+            BackendTail::Halt { atom } => {
+                ctx.halt_with_atom(self.atom_id(atom));
+                Ok(())
+            }
         }
     }
 
@@ -1228,6 +1265,112 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn lower_control_dispatch_node(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        entries: &[BackendEntry],
+        entry_fns: &HashMap<ControlEntryId, FnId>,
+        env: &ValueEnv,
+        plan: &PatternDispatchPlan<Ty>,
+        arm_entries: &[ControlEntryId],
+        miss_entry: ControlEntryId,
+        node_id: GraphNodeId,
+        state: &mut DispatchState,
+    ) -> Result<(), FatalError> {
+        let Some(node) = plan.graph.node(node_id).cloned() else {
+            return Err(incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!("local dispatch graph node {:?} is out of bounds", node_id),
+            ));
+        };
+        match node {
+            DispatchNode::Fail => {
+                let args = self.entry_capture_args(entries, miss_entry, env)?;
+                ctx.set_term(Term::TailCall {
+                    ident: CallsiteIdent::from_source(Span::DUMMY),
+                    callee: *entry_fns
+                        .get(&miss_entry)
+                        .expect("local dispatch miss entry should have a helper fn"),
+                    args,
+                    is_back_edge: false,
+                });
+                Ok(())
+            }
+            DispatchNode::Outcome { outcome, .. } => {
+                let body_id = plan.outcome(outcome).map(|outcome| outcome.body_id).ok_or_else(|| {
+                    incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        format!("local dispatch outcome {:?} is out of bounds", outcome),
+                    )
+                })?;
+                let arm_entry = *arm_entries.get(body_id as usize).ok_or_else(|| {
+                    incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        format!("local dispatch arm {} is out of bounds", body_id),
+                    )
+                })?;
+                let args = self.entry_capture_args(entries, arm_entry, env)?;
+                ctx.set_term(Term::TailCall {
+                    ident: CallsiteIdent::from_source(Span::DUMMY),
+                    callee: *entry_fns
+                        .get(&arm_entry)
+                        .expect("local dispatch arm entry should have a helper fn"),
+                    args,
+                    is_back_edge: false,
+                });
+                Ok(())
+            }
+            DispatchNode::Test {
+                predicate,
+                on_match,
+                on_miss,
+            } => {
+                let cond =
+                    self.lower_dispatch_region(ctx, executable, plan, predicate.subject, &predicate.region, state)?;
+                let then_b = ctx.builder.block(vec![]);
+                let else_b = ctx.builder.block(vec![]);
+                ctx.set_term(Term::If {
+                    cond,
+                    then_b,
+                    else_b,
+                    origin: BranchOrigin::User,
+                });
+                let mut match_state = state.clone();
+                ctx.current_block = then_b;
+                self.lower_control_dispatch_node(
+                    ctx,
+                    executable,
+                    entries,
+                    entry_fns,
+                    env,
+                    plan,
+                    arm_entries,
+                    miss_entry,
+                    on_match.target,
+                    &mut match_state,
+                )?;
+                ctx.current_block = else_b;
+                self.lower_control_dispatch_node(
+                    ctx,
+                    executable,
+                    entries,
+                    entry_fns,
+                    env,
+                    plan,
+                    arm_entries,
+                    miss_entry,
+                    on_miss.target,
+                    state,
+                )
+            }
+        }
+    }
+
     fn lower_dispatch_region(
         &mut self,
         ctx: &mut NativeFnCtx,
@@ -1304,12 +1447,11 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 })?;
                 self.lower_guard_expr(ctx, executable, plan, state, expr)?
             }
-            Region::Equal(ComparisonValue::Pinned(_)) => {
-                return Err(incomplete_native_program(
-                    self.world,
-                    self.root_id,
-                    "native entry-dispatch lowering does not support pinned guard values yet",
-                ));
+            Region::Equal(ComparisonValue::Pinned(pinned)) => {
+                let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
+                let pinned = self.dispatch_pinned_var(plan, state, *pinned)?;
+                let (var, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, subject, pinned));
+                var
             }
             Region::Bitstring(_) => {
                 return Err(incomplete_native_program(
@@ -1356,13 +1498,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     unreachable!("dispatch arm must have matched");
                 }
             }
-            PatternGuardExpr::Pinned(_) => {
-                return Err(incomplete_native_program(
-                    self.world,
-                    self.root_id,
-                    "native entry-dispatch lowering does not support pinned guard values yet",
-                ));
-            }
+            PatternGuardExpr::Pinned(pinned) => self.dispatch_pinned_var(plan, state, *pinned)?,
         })
     }
 
@@ -1382,10 +1518,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         let done_value = ctx.builder.fresh_var();
         let done_b = ctx.builder.block(vec![done_value]);
         let fail_b = ctx.builder.block(vec![]);
-        let mut dispatch_state = DispatchState {
-            inputs: input_vars,
-            values: HashMap::new(),
-        };
+        let mut dispatch_state = DispatchState::new(input_vars, Vec::new());
         self.lower_guard_dispatch_node(
             ctx,
             executable,
@@ -1539,6 +1672,37 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         };
         state.values.insert(subject, var);
         Ok(var)
+    }
+
+    fn dispatch_pinned_var(
+        &mut self,
+        plan: &PatternDispatchPlan<Ty>,
+        state: &DispatchState,
+        pinned: crate::dispatch_matrix::PinnedValueId,
+    ) -> Result<Var, FatalError> {
+        let pin = plan.pinned.get(pinned.0 as usize).ok_or_else(|| {
+            incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!("dispatch pinned {:?} is out of bounds", pinned),
+            )
+        })?;
+        if let Some(input) = pin.input {
+            return state.inputs.get(input as usize).copied().ok_or_else(|| {
+                incomplete_native_program(
+                    self.world,
+                    self.root_id,
+                    format!("dispatch pinned input {} is out of bounds", input),
+                )
+            });
+        }
+        state.pinned.get(pinned.0 as usize).copied().ok_or_else(|| {
+            incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!("dispatch pinned capture {:?} is out of bounds", pinned),
+            )
+        })
     }
 
     fn atom_id(&self, name: &str) -> u32 {
@@ -1738,13 +1902,15 @@ impl ValueEnv {
 #[derive(Clone)]
 struct DispatchState {
     inputs: Vec<Var>,
+    pinned: Vec<Var>,
     values: HashMap<SubjectId, Var>,
 }
 
 impl DispatchState {
-    fn new(inputs: Vec<Var>) -> Self {
+    fn new(inputs: Vec<Var>, pinned: Vec<Var>) -> Self {
         Self {
             inputs,
+            pinned,
             values: HashMap::new(),
         }
     }

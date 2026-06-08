@@ -202,3 +202,80 @@ fn build_executes_map_struct_and_bitstring_fixtures() {
         let _ = remove_file(out_bin.with_extension("bin.o"));
     }
 }
+
+#[test]
+fn run_and_interp_execute_case_and_with_fixtures() {
+    let fixture = "fixtures/case_tuple_pattern_sequential/input.fz";
+    let expected = fixture_expected_stdout(fixture);
+    for command in ["run", "interp"] {
+        let out = run_fz2(&[OsStr::new(command), OsStr::new(fixture)]);
+        assert_successful_stdout(&out, &expected, &format!("fz2 {command} {fixture}"));
+    }
+}
+
+#[test]
+fn build_executes_case_and_with_fixtures() {
+    let fixture = "fixtures/case_tuple_pattern_sequential/input.fz";
+    let expected = fixture_expected_stdout(fixture);
+    let out_bin = unique_temp_path("fz2_control_fixture_build", ".bin");
+    let build = run_fz2(&[
+        OsStr::new("build"),
+        OsStr::new(fixture),
+        OsStr::new("-o"),
+        out_bin.as_os_str(),
+    ]);
+    assert!(
+        build.status.success(),
+        "fz2 build {fixture} should succeed; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&out_bin)
+        .output()
+        .unwrap_or_else(|error| panic!("run built binary for {fixture}: {error}"));
+    assert_successful_stdout(&run, &expected, &format!("fz2 build/run {fixture}"));
+    let _ = remove_file(&out_bin);
+    let _ = remove_file(out_bin.with_extension("bin.o"));
+}
+
+#[test]
+fn run_interp_and_build_execute_cond_source() {
+    let source_path = unique_temp_path("fz2_cond", ".fz");
+    write(
+        &source_path,
+        r#"
+fn main() do
+  cond do
+    false -> dbg(:bad)
+    2 + 2 == 4 -> dbg(:ok)
+  end
+end
+"#,
+    )
+    .expect("write cond fixture");
+
+    for command in ["run", "interp"] {
+        let out = run_fz2(&[OsStr::new(command), source_path.as_os_str()]);
+        assert_successful_stdout(&out, ":ok\n", &format!("fz2 {command} cond source"));
+    }
+
+    let out_bin = unique_temp_path("fz2_cond_build", ".bin");
+    let build = run_fz2(&[
+        OsStr::new("build"),
+        source_path.as_os_str(),
+        OsStr::new("-o"),
+        out_bin.as_os_str(),
+    ]);
+    assert!(
+        build.status.success(),
+        "fz2 build cond source should succeed; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&out_bin).output().expect("run built cond binary");
+    assert_successful_stdout(&run, ":ok\n", "fz2 build/run cond source");
+
+    let _ = remove_file(&source_path);
+    let _ = remove_file(&out_bin);
+    let _ = remove_file(out_bin.with_extension("bin.o"));
+}

@@ -243,25 +243,28 @@ fn select_clause(
     dispatch: &ExecutableDispatch,
     args: &[AnyValue],
 ) -> Result<Option<usize>, String> {
+    let selected = select_dispatch_body(runtime, types, module, dispatch.plan(), args, &HashMap::new())?;
+    Ok(selected.and_then(|body_id| dispatch.clause_index(body_id)))
+}
+
+fn select_dispatch_body(
+    runtime: &mut IrInterpRuntime,
+    types: &mut crate::compiler2::Types,
+    module: &Module,
+    plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
+    args: &[AnyValue],
+    pinned: &HashMap<String, AnyValue>,
+) -> Result<Option<u32>, String> {
     let mut state = DispatchExecState::default();
-    let pinned = HashMap::new();
     let mut type_match =
         |runtime: &mut IrInterpRuntime, module: &Module, want: &crate::compiler2::Ty, value: AnyValue| {
             let have = dynamic_value_ty(runtime, types, module, value).ok()?;
             let overlap = types.intersect(have, *want);
             Some(!types.is_empty(&overlap))
         };
-    let selected = execute_dispatch_inputs(
-        runtime,
-        module,
-        dispatch.plan(),
-        args,
-        &pinned,
-        &mut state,
-        &mut type_match,
-    )
-    .map(|(body_id, _)| body_id);
-    Ok(selected.and_then(|body_id| dispatch.clause_index(body_id)))
+    let selected = execute_dispatch_inputs(runtime, module, plan, args, pinned, &mut state, &mut type_match)
+        .map(|(body_id, _)| body_id);
+    Ok(selected)
 }
 
 fn eval_entry(
@@ -377,6 +380,34 @@ fn eval_entry(
                 delivered_env(entries, &env, target, None)?,
             )
         }
+        BackendTail::Dispatch {
+            inputs,
+            pinned,
+            dispatch,
+        } => {
+            let input_values = env_values(&env, inputs)?;
+            let pinned_values = local_dispatch_pinned(&env, pinned, &dispatch.plan)?;
+            let target =
+                match select_dispatch_body(runtime, types, module, &dispatch.plan, &input_values, &pinned_values)? {
+                    Some(body_id) => *dispatch
+                        .arm_entries
+                        .get(body_id as usize)
+                        .ok_or_else(|| format!("backend local dispatch arm {} is out of bounds", body_id))?,
+                    None => dispatch.miss_entry,
+                };
+            eval_entry(
+                runtime,
+                types,
+                tel,
+                program,
+                module,
+                executable,
+                entries,
+                target,
+                delivered_env(entries, &env, target, None)?,
+            )
+        }
+        BackendTail::Halt { atom } => Err(atom.clone()),
     }
 }
 
@@ -723,6 +754,23 @@ fn eval_call_args(
 
 fn env_values(env: &HashMap<ValueId, AnyValue>, values: &[ValueId]) -> Result<Vec<AnyValue>, String> {
     values.iter().map(|value| env_get(env, *value)).collect()
+}
+
+fn local_dispatch_pinned(
+    env: &HashMap<ValueId, AnyValue>,
+    pinned_values: &[ValueId],
+    plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
+) -> Result<HashMap<String, AnyValue>, String> {
+    let mut pinned = HashMap::new();
+    for (index, value_id) in pinned_values.iter().copied().enumerate() {
+        let Some(pin) = plan.pinned.get(index) else {
+            return Err(format!("backend local dispatch pinned {} is out of bounds", index));
+        };
+        if pin.input.is_none() {
+            pinned.insert(pin.name.clone(), env_get(env, value_id)?);
+        }
+    }
+    Ok(pinned)
 }
 
 fn env_get(env: &HashMap<ValueId, AnyValue>, value: ValueId) -> Result<AnyValue, String> {

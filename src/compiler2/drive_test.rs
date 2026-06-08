@@ -5,8 +5,8 @@ use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
     AbiReadyProgram, AbiValueRepr, ActivationKey, BackendProgram, CallSiteId, CallSiteKey, CallSiteSummary,
     CallableEntry, ControlEntryOrigin, EmissionReadyProgram, ExecutableKey, FactKey, FactValue, FunctionId,
-    FunctionRef, LoweredBody, LoweredStep, MaterializedProgram, Module, ModuleId, ReturnAbi, SelectedCallee,
-    SemanticClosure, Ty, ValueId,
+    FunctionRef, LoweredBody, LoweredStep, LoweredTail, MaterializedProgram, Module, ModuleId, ReturnAbi,
+    SelectedCallee, SemanticClosure, Ty, ValueId,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
@@ -1021,6 +1021,81 @@ fn compiler2_materialization_projects_only_the_closed_quicksort_frontier() {
     assert!(
         capture.find(&["fz", "planner"]).is_empty(),
         "Compiler2 materialization should not invoke the legacy planner pipeline",
+    );
+}
+
+#[test]
+fn compiler2_materialization_turns_semantically_cold_cond_arms_into_halt_stubs() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    let materialized = MaterializedProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "materialized_program", "defined"],
+        materialized.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("cond_specialization.fz".to_string()),
+        text: r#"
+fn main() do
+  cond do
+    false -> dbg(:bad)
+    2 + 2 == 4 -> dbg(:ok)
+  end
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "materialization should specialize semantically cold cond arms before ABI projection",
+    );
+
+    let program = materialized.last(root_id).program;
+    let main_id = function_id(&functions, "main", 0);
+    let (_, executable) = materialized_executable(&program, main_id);
+    let LoweredBody::Clauses { entries, .. } = &executable.body else {
+        panic!("main/0 should materialize as a clause body");
+    };
+    let direct_calls = entries
+        .iter()
+        .filter(|entry| matches!(entry.tail, LoweredTail::DirectCall { .. }))
+        .count();
+    let cold_halts = entries
+        .iter()
+        .filter(|entry| {
+            matches!(
+                entry.tail,
+                LoweredTail::Halt {
+                    ref atom
+                } if atom == "compiler2_unreachable_control"
+            )
+        })
+        .count();
+
+    assert_eq!(
+        executable.call_edges.len(),
+        1,
+        "only the semantically reachable dbg/1 call should survive materialization",
+    );
+    assert_eq!(
+        direct_calls, 1,
+        "the specialized materialized body should keep only one live direct-call tail",
+    );
+    assert!(
+        cold_halts >= 1,
+        "materialization should turn impossible local-control arms into explicit halt stubs",
     );
 }
 
@@ -6811,7 +6886,13 @@ fn collect_backend_callable_entry_uses(
             collect_backend_callable_entry_uses(entries, *then_entry, out);
             collect_backend_callable_entry_uses(entries, *else_entry, out);
         }
-        BackendTail::Value { .. } => {}
+        BackendTail::Dispatch { dispatch, .. } => {
+            for arm_entry in &dispatch.arm_entries {
+                collect_backend_callable_entry_uses(entries, *arm_entry, out);
+            }
+            collect_backend_callable_entry_uses(entries, dispatch.miss_entry, out);
+        }
+        BackendTail::Value { .. } | BackendTail::Halt { .. } => {}
     }
 }
 

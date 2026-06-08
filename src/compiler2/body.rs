@@ -6,6 +6,7 @@
 
 use crate::ast::{BinOp, BitType, Endian, TypeExprBody, UnOp};
 use crate::compiler::source::Span;
+use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::fz_ir::ExternTy;
 use crate::type_expr::ResolvedSpecDecl;
 
@@ -157,6 +158,13 @@ pub enum ControlDestination {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ControlDispatch {
+    pub(crate) plan: PatternDispatchPlan<Ty>,
+    pub(crate) arm_entries: Vec<ControlEntryId>,
+    pub(crate) miss_entry: ControlEntryId,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum LoweredTail {
     Value {
         value: ValueId,
@@ -180,6 +188,14 @@ pub enum LoweredTail {
         cond: ValueId,
         then_entry: ControlEntryId,
         else_entry: ControlEntryId,
+    },
+    Dispatch {
+        inputs: Vec<ValueId>,
+        pinned: Vec<ValueId>,
+        dispatch: Box<ControlDispatch>,
+    },
+    Halt {
+        atom: String,
     },
 }
 

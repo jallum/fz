@@ -222,7 +222,9 @@ fn collect_tail_edges(tail: &LoweredTail, edges: &mut Vec<StaticEdge>) {
             ..
         }
         | LoweredTail::ClosureCall { .. }
-        | LoweredTail::If { .. } => {}
+        | LoweredTail::If { .. }
+        | LoweredTail::Dispatch { .. }
+        | LoweredTail::Halt { .. } => {}
     }
 }
 

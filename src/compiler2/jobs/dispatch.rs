@@ -28,7 +28,7 @@ use super::super::types::Ty;
 use super::super::world::World;
 
 #[derive(Debug, Clone)]
-struct GuardCall {
+pub(super) struct GuardCall {
     name: String,
     arity: usize,
     span: Span,
@@ -348,7 +348,7 @@ fn collect_guard_calls_in_fn(def: &FnDef) -> Result<Vec<GuardCall>, Span> {
     Ok(calls)
 }
 
-fn collect_guard_calls_in_expr(expr: &Spanned<Expr>, out: &mut Vec<GuardCall>) -> Result<(), Span> {
+pub(super) fn collect_guard_calls_in_expr(expr: &Spanned<Expr>, out: &mut Vec<GuardCall>) -> Result<(), Span> {
     match &expr.node {
         Expr::Int(_) | Expr::Float(_) | Expr::Binary(_) | Expr::Atom(_) | Expr::Bool(_) | Expr::Nil | Expr::Var(_) => {
             Ok(())
@@ -402,7 +402,7 @@ fn collect_guard_calls_in_expr(expr: &Spanned<Expr>, out: &mut Vec<GuardCall>) -
     }
 }
 
-fn resolve_guard_callee(
+pub(super) fn resolve_guard_callee(
     world: &mut World<'_>,
     namespace: Namespace,
     call: &GuardCall,
@@ -434,7 +434,12 @@ fn resolve_guard_callee(
     }
 }
 
-fn resolve_guard_callee_checked(world: &mut World<'_>, namespace: Namespace, name: &str, arity: usize) -> FunctionId {
+pub(super) fn resolve_guard_callee_checked(
+    world: &mut World<'_>,
+    namespace: Namespace,
+    name: &str,
+    arity: usize,
+) -> FunctionId {
     match world.lookup_callable_namespace(namespace, name, arity) {
         Some(NamespaceSymbol::Function(function)) => function,
         Some(NamespaceSymbol::Macro(_)) => {
