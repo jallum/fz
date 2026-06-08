@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-08T00:05:19Z",
+  "description": "Goal: make Compiler2 own its type universe as a compiler-owned identity domain, the same way it owns code, modules, functions, and namespaces. Signal: Compiler2 production code stops minting fresh type universes, all type-bearing facts and keys live in one world-owned interned store, within-run change detection uses exact id-backed values plus revisions instead of structural hashing, and the docs/backend tickets can describe the engine without caveats about old-world type handles or trait-based abstraction.\n\nStrategy: pull the full interned type store and its tests into Compiler2 as a first-class local subsystem, rename it to `Types`/`Ty`, let `World` own the single instance, migrate Compiler2 production code to use it directly without the old-world trait boundary, then simplify fact aggregation and closure dependency tracking around exact id-backed equality rather than ad hoc fingerprints.\n\nCompiler2's type system should be one more compiler-owned map-like world subsystem, not an imported abstraction leak from the old compiler. `InternedConcreteTypes` already has the right ontology: it mints immutable integer identities over compiler-owned structural descriptors, caches decisions by those ids, and gives the compiler canonical equality within one run. The current Compiler2 code violates that model by storing old-world `crate::types::Ty` directly and repeatedly calling `types::new()` in production paths, which is harmless only while the concrete type implementation is self-describing. Once types are interned by id, those throwaway universes become semantically wrong, not just slow.\n\nThis arc fixes that at the root. First, Compiler2 gets its own local `types/` module by pulling in the interned implementation and its full safety net. Second, `World` owns exactly one `Types` instance and every Compiler2 type-bearing structure stores `compiler2::types::Ty` from that store. Third, fact joins and semantic-closure dependencies stop hashing structure and instead lean on exact id-backed values plus monotonic revisions. The result is simpler, faster, and more correct-by-construction: one type world, one meaning for a type id, and no fake separation between compiler-owned ids and compiler-owned types.",
+  "id": "fz-rh2.10.8",
+  "labels": [],
+  "parent": "fz-rh2.10",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 types: adopt a world-owned interned type store",
+  "type": "epic",
+  "updated_at": "2026-06-08T00:05:19Z"
+}
