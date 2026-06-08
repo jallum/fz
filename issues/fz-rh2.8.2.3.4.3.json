@@ -6,14 +6,15 @@
   "blocks": [
     "fz-rh2.8.2.3.4.4"
   ],
+  "closed_at": "2026-06-08T09:25:55Z",
   "created": "2026-06-08T06:38:40Z",
   "description": "Goal: make native lowering helpers consume Compiler2-owned native facts directly. Signal: call-target selection, callable-entry use, extern marshals, yield/receive helpers, and return lanes are resolved from the Compiler2 handoff instead of `SpecPlan`/`AbiFacts` lookups.\n\nChange:\n- retarget the native codegen env and lowerers onto Compiler2-native facts\n- remove planner-shaped lookup paths from Compiler2’s native backend route\n- add fixture coverage for the tricky cases that were previously planner-mediated\n\nWhy:\n- this is the step that turns the new handoff from documentation into the actual source of truth\n\nChecks:\n- quicksort, `Enum.reduce`, variadic externs, and native control-flow fixtures exercise the Compiler2-native paths\n- no Compiler2-native codegen path reaches into old planner/type-preparation machinery",
   "id": "fz-rh2.8.2.3.4.3",
   "labels": [],
   "parent": "fz-rh2.8.2.3.4",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 native backends: retarget lowerers onto Compiler2 native facts",
   "type": "task",
-  "updated_at": "2026-06-08T07:12:55Z"
+  "updated_at": "2026-06-08T09:25:55Z"
 }
