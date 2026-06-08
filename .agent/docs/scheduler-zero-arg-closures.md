@@ -140,14 +140,7 @@ its to-space copy at the boundary if GC runs, and restart is `k()`.
 Synchronous native calls do not build this closure eagerly. They carry
 compiler-known continuation state as a stack-backed lazy descriptor and
 materialize it only on the exhausted-budget branch (`materialize_cont` on the last
-root above). See [`lazy-continuation-materialization`](lazy-continuation-materialization.md)
-and the budget mechanism in [`reduction-yielding`](reduction-yielding.md).
-
-Destination-passing values add no scheduler side channel. A tuple, list, or map
-destination live at a yield boundary is held in the ordinary continuation state
-captured by `k`, so GC sees it through the same typed capture path as any other
-heap value. Init tokens are compile-time proof only and are never stored in the
-closure. See [`destination-passing`](destination-passing.md).
+root above) — the budget mechanism is in [`reduction-yielding`](reduction-yielding.md).
 
 ## Spawn: a fresh task is still just a closure
 
