@@ -17,6 +17,7 @@ mod protocol;
 mod runtime;
 mod scheduler;
 mod semantic;
+mod type_expr;
 mod types;
 mod world;
 
@@ -81,5 +82,7 @@ mod namespace_test;
 mod scheduler_test;
 #[cfg(test)]
 mod telemetry_dump_test;
+#[cfg(test)]
+mod type_expr_test;
 #[cfg(test)]
 mod world_test;
