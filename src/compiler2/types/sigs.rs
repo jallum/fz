@@ -4,24 +4,23 @@
 use std::collections::BTreeMap;
 
 use crate::fz_ir::FnId;
-use crate::types::{CallableValueKind, MapKey};
 
-use super::{InternedTy, TyCtx};
+use super::{CallableValueKind, MapKey, Ty, TyCtx};
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct TupleSig {
-    pub elems: Vec<InternedTy>,
+    pub elems: Vec<Ty>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ListSig {
     pub empty: bool,
-    pub elem: Option<InternedTy>,
+    pub elem: Option<Ty>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ResourceSig {
-    pub payload: InternedTy,
+    pub payload: Ty,
 }
 
 impl ListSig {
@@ -32,7 +31,7 @@ impl ListSig {
         }
     }
 
-    pub(super) fn possibly_empty(cx: &TyCtx<'_>, elem: InternedTy) -> Self {
+    pub(super) fn possibly_empty(cx: &TyCtx<'_>, elem: Ty) -> Self {
         if cx.descr(&elem).is_empty(*cx) {
             Self::empty()
         } else {
@@ -43,7 +42,7 @@ impl ListSig {
         }
     }
 
-    pub(super) fn non_empty(cx: &TyCtx<'_>, elem: InternedTy) -> Option<Self> {
+    pub(super) fn non_empty(cx: &TyCtx<'_>, elem: Ty) -> Option<Self> {
         if cx.descr(&elem).is_empty(*cx) {
             None
         } else {
@@ -91,13 +90,13 @@ impl ListSig {
 pub(crate) struct ClosureLit {
     pub kind: CallableValueKind,
     pub fn_id: FnId,
-    pub captures: Vec<InternedTy>,
+    pub captures: Vec<Ty>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ArrowSig {
-    pub args: Vec<InternedTy>,
-    pub ret: InternedTy,
+    pub args: Vec<Ty>,
+    pub ret: Ty,
     /// `None` for ordinary arrows; `Some` for closure literals (fz-ul4.27.22.8).
     pub lit: Option<ClosureLit>,
 }
@@ -110,5 +109,5 @@ pub(crate) struct ArrowSig {
 /// subtype value. More required keys = smaller set.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct MapSig {
-    pub fields: BTreeMap<MapKey, InternedTy>,
+    pub fields: BTreeMap<MapKey, Ty>,
 }

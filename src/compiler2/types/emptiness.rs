@@ -2,12 +2,10 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use crate::types::MapKey;
-
-use super::TyCtx;
 use super::conj::Conj;
 use super::descr::Descr;
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
+use super::{MapKey, TyCtx};
 
 #[derive(Default)]
 pub(crate) struct Memo {

@@ -1,7 +1,5 @@
 //! Private descriptor for the interned type implementation.
 
-use crate::types::{MapKey, Nominals, TypeVarId};
-
 use super::bits::{BasicBits, F64Bits};
 use super::conj::Conj;
 use super::dnf::{dnf_intersect, dnf_neg, dnf_union, is_dnf_top, normalize_empty_nonempty_list_unions};
@@ -10,7 +8,7 @@ use super::emptiness::{
 };
 use super::lit_set::{AtomSet, FloatSet, IntSet, LiteralSet, VarSet};
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
-use super::{InternedTy, TyCtx};
+use super::{MapKey, Nominals, Ty, TyCtx, TypeVarId};
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(super) struct Descr {
@@ -137,7 +135,7 @@ impl Descr {
         d
     }
 
-    pub(super) fn resource_of(cx: TyCtx<'_>, payload: InternedTy) -> Self {
+    pub(super) fn resource_of(cx: TyCtx<'_>, payload: Ty) -> Self {
         if cx.descr(&payload).is_empty(cx) {
             return Self::none();
         }
@@ -146,7 +144,7 @@ impl Descr {
         d
     }
 
-    pub(super) fn tuple_of(elems: impl IntoIterator<Item = InternedTy>) -> Self {
+    pub(super) fn tuple_of(elems: impl IntoIterator<Item = Ty>) -> Self {
         let mut d = Self::none();
         d.tuples.push(Conj::pos_of(TupleSig {
             elems: elems.into_iter().collect(),
@@ -160,11 +158,11 @@ impl Descr {
         d
     }
 
-    pub(super) fn list_of(cx: TyCtx<'_>, elem: InternedTy) -> Self {
+    pub(super) fn list_of(cx: TyCtx<'_>, elem: Ty) -> Self {
         Self::list_sig(ListSig::possibly_empty(&cx, elem))
     }
 
-    pub(super) fn non_empty_list_of(cx: TyCtx<'_>, elem: InternedTy) -> Self {
+    pub(super) fn non_empty_list_of(cx: TyCtx<'_>, elem: Ty) -> Self {
         let mut d = Self::none();
         if let Some(sig) = ListSig::non_empty(&cx, elem) {
             d.lists.push(Conj::pos_of(sig));
@@ -176,7 +174,7 @@ impl Descr {
         Self::list_sig(ListSig::empty())
     }
 
-    pub(super) fn arrow(args: impl IntoIterator<Item = InternedTy>, ret: InternedTy) -> Self {
+    pub(super) fn arrow(args: impl IntoIterator<Item = Ty>, ret: Ty) -> Self {
         let mut d = Self::none();
         d.funcs.push(Conj::pos_of(ArrowSig {
             args: args.into_iter().collect(),
@@ -192,7 +190,7 @@ impl Descr {
         d
     }
 
-    pub(super) fn map_of(fields: impl IntoIterator<Item = (MapKey, InternedTy)>) -> Self {
+    pub(super) fn map_of(fields: impl IntoIterator<Item = (MapKey, Ty)>) -> Self {
         let mut d = Self::none();
         d.maps.push(Conj::pos_of(MapSig {
             fields: fields.into_iter().collect(),
@@ -232,7 +230,7 @@ impl Descr {
     }
 
     #[cfg(test)]
-    pub(super) fn as_tuple_singleton(&self) -> Option<&[InternedTy]> {
+    pub(super) fn as_tuple_singleton(&self) -> Option<&[Ty]> {
         if self.basic.is_empty()
             && self.atoms.is_none()
             && self.ints.is_none()
@@ -287,7 +285,7 @@ impl Descr {
             || (!self.maps.is_empty() && !other.maps.is_empty())
     }
 
-    pub(super) fn refine_map_field(&self, key: &MapKey, vt: InternedTy) -> Descr {
+    pub(super) fn refine_map_field(&self, key: &MapKey, vt: Ty) -> Descr {
         let mut out = self.clone();
         for clause in &mut out.maps {
             for sig in &mut clause.pos {

@@ -4,9 +4,7 @@
 //! boundary is the `Types` trait: a single object that owns every construction,
 //! query, and decision about types.
 //!
-//! `new()` is the system-wide default factory. Use explicit implementation
-//! constructors only when a test or migration step is intentionally selecting a
-//! non-default implementation.
+//! `new()` is the system-wide default factory.
 //!
 //! Parent epic: fz-mm2 (inch-worm strategy — every sub-ticket points back
 //! so the plan survives compaction).
@@ -16,11 +14,9 @@ use std::hash::Hash;
 use std::sync::Arc;
 
 pub mod concrete_types;
-pub mod interned_types;
 
 pub use concrete_types::ConcreteTypes;
 pub(crate) use concrete_types::{Descr, ty_descr, ty_display};
-pub use interned_types::InternedConcreteTypes;
 
 mod closure;
 mod literal;
@@ -1049,14 +1045,6 @@ mod conformance_tests {
         concrete_types_closure,
         ConcreteTypes
     );
-
-    impl_types_conformance_tests!(
-        interned_types,
-        interned_types_helpers,
-        interned_types_semantics,
-        interned_types_closure,
-        InternedConcreteTypes::new()
-    );
 }
 
 // ----------------------------------------------------------------------
@@ -1273,5 +1261,4 @@ mod smoke {
     }
 
     impl_smoke_suite!(concrete, ConcreteTypes);
-    impl_smoke_suite!(interned, InternedConcreteTypes::new());
 }

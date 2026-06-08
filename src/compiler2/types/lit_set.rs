@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 
 use crate::fz_ir::FnId;
-use crate::types::TypeVarId;
 
+use super::TypeVarId;
 use super::bits::F64Bits;
 
 /// A finite-or-cofinite set over `T`. `cofinite=false` means "exactly these";

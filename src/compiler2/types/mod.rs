@@ -2,8 +2,8 @@
 //!
 //! This module intentionally duplicates the concrete type kernel instead of
 //! depending on `concrete_types::Descr`. Its `Descr` is private here, and every
-//! structural child is an `InternedTy` allocated by the owning
-//! `InternedConcreteTypes` instance.
+//! structural child is a `Ty` allocated by the owning
+//! `Types` instance.
 
 mod bits;
 mod conj;
@@ -18,9 +18,10 @@ use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 
 use crate::type_expr::opaque_owner_module;
-use crate::types::{
-    CallableClause, ClosureLitInfo, ClosureTarget, ClosureTypes, MapKey, Nominals, OpaqueVisibilityError, RenderTypes,
-    Sigma, TypeVarId, Types, VisibilityTypes,
+
+pub use crate::types::{
+    CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, Nominals, OpaqueVisibilityError, Sigma,
+    TypeVarId,
 };
 
 use conj::Conj;
@@ -30,10 +31,10 @@ use sigs::{ArrowSig, ClosureLit, ListSig};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
-pub struct InternedTy(u32);
+pub struct Ty(u32);
 
 #[derive(Default)]
-pub struct InternedConcreteTypes {
+pub struct Types {
     interner: TypeInterner,
     comparisons: RefCell<ComparisonCache>,
 }
@@ -41,7 +42,7 @@ pub struct InternedConcreteTypes {
 #[derive(Default)]
 struct TypeInterner {
     arena: Vec<Descr>,
-    index: HashMap<Descr, InternedTy>,
+    index: HashMap<Descr, Ty>,
 }
 
 #[derive(Default)]
@@ -53,10 +54,10 @@ struct ComparisonCache {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum ComparisonKey {
-    Empty(InternedTy),
-    Subtype(InternedTy, InternedTy),
-    Disjoint(InternedTy, InternedTy),
-    Equivalent(InternedTy, InternedTy),
+    Empty(Ty),
+    Subtype(Ty, Ty),
+    Disjoint(Ty, Ty),
+    Equivalent(Ty, Ty),
 }
 
 #[cfg(test)]
@@ -73,7 +74,7 @@ pub(super) struct TyCtx<'a> {
 }
 
 impl<'a> TyCtx<'a> {
-    fn descr(&self, t: &InternedTy) -> &'a Descr {
+    fn descr(&self, t: &Ty) -> &'a Descr {
         self.arena
             .get(t.0 as usize)
             .unwrap_or_else(|| panic!("unknown interned type id {}", t.0))
@@ -81,13 +82,13 @@ impl<'a> TyCtx<'a> {
 }
 
 impl TypeInterner {
-    fn intern(&mut self, d: Descr) -> InternedTy {
+    fn intern(&mut self, d: Descr) -> Ty {
         if let Some(ty) = self.index.get(&d) {
             return *ty;
         }
         let raw = self.arena.len();
         assert!(u32::try_from(raw).is_ok(), "type interner exhausted ids");
-        let ty = InternedTy(raw as u32);
+        let ty = Ty(raw as u32);
         self.arena.push(d.clone());
         self.index.insert(d, ty);
         ty
@@ -97,17 +98,50 @@ impl TypeInterner {
         TyCtx { arena: &self.arena }
     }
 
-    fn descr(&self, t: &InternedTy) -> &Descr {
+    fn descr(&self, t: &Ty) -> &Descr {
         self.ctx().descr(t)
     }
 }
 
-impl InternedConcreteTypes {
+impl Types {
     pub fn new() -> Self {
         Self::default()
     }
 
-    fn intern(&mut self, d: Descr) -> InternedTy {
+    pub fn repeat(&mut self, ty: Ty, n: usize) -> Vec<Ty> {
+        vec![ty; n]
+    }
+
+    pub fn bool_lit(&mut self, value: bool) -> Ty {
+        self.atom_lit(if value { "true" } else { "false" })
+    }
+
+    pub fn cpointer(&mut self) -> Ty {
+        self.opaque_of("cpointer")
+    }
+
+    pub fn differs_only_nominally(&self, a: &Ty, b: &Ty, nominals: Nominals<'_, Ty>) -> bool {
+        self.is_disjoint(a, b) && !self.is_value_disjoint(a, b, nominals)
+    }
+
+    pub fn key_is_strictly_more_specific(&self, lhs: &[Ty], rhs: &[Ty]) -> bool {
+        lhs.len() == rhs.len()
+            && lhs
+                .iter()
+                .zip(rhs.iter())
+                .fold((true, false), |(all_le, any_strict), (l, r)| {
+                    (all_le && self.is_subtype(l, r), any_strict || !self.is_subtype(r, l))
+                })
+                == (true, true)
+    }
+
+    pub fn as_map_key(&self, a: &Ty) -> Option<MapKey> {
+        self.as_int_singleton(a)
+            .map(MapKey::Int)
+            .or_else(|| self.as_atom_singleton(a).map(MapKey::Atom))
+    }
+
+    fn intern(&mut self, d: Descr) -> Ty {
         self.interner.intern(d)
     }
 
@@ -115,11 +149,11 @@ impl InternedConcreteTypes {
         self.interner.ctx()
     }
 
-    fn descr(&self, t: &InternedTy) -> &Descr {
+    fn descr(&self, t: &Ty) -> &Descr {
         self.interner.descr(t)
     }
 
-    fn descr_inner_map(&self, m: &HashMap<String, InternedTy>) -> HashMap<String, Descr> {
+    fn descr_inner_map(&self, m: &HashMap<String, Ty>) -> HashMap<String, Descr> {
         m.iter().map(|(k, v)| (k.clone(), self.descr(v).clone())).collect()
     }
 
@@ -132,7 +166,7 @@ impl InternedConcreteTypes {
         result
     }
 
-    fn symmetric_key(kind: fn(InternedTy, InternedTy) -> ComparisonKey, a: InternedTy, b: InternedTy) -> ComparisonKey {
+    fn symmetric_key(kind: fn(Ty, Ty) -> ComparisonKey, a: Ty, b: Ty) -> ComparisonKey {
         if a <= b { kind(a, b) } else { kind(b, a) }
     }
 
@@ -162,104 +196,102 @@ impl ComparisonCache {
     }
 }
 
-impl Types for InternedConcreteTypes {
-    type Ty = InternedTy;
-
-    fn any(&mut self) -> InternedTy {
+impl Types {
+    pub fn any(&mut self) -> Ty {
         self.intern(Descr::any())
     }
 
-    fn none(&mut self) -> InternedTy {
+    pub fn none(&mut self) -> Ty {
         self.intern(Descr::none())
     }
 
-    fn nil(&mut self) -> InternedTy {
+    pub fn nil(&mut self) -> Ty {
         self.intern(Descr::nil())
     }
 
-    fn bool(&mut self) -> InternedTy {
+    pub fn bool(&mut self) -> Ty {
         self.intern(Descr::bool_t())
     }
 
-    fn int(&mut self) -> InternedTy {
+    pub fn int(&mut self) -> Ty {
         self.intern(Descr::int())
     }
 
-    fn int_lit(&mut self, n: i64) -> InternedTy {
+    pub fn int_lit(&mut self, n: i64) -> Ty {
         self.intern(Descr::int_lit(n))
     }
 
-    fn float(&mut self) -> InternedTy {
+    pub fn float(&mut self) -> Ty {
         self.intern(Descr::float())
     }
 
-    fn float_lit(&mut self, f: f64) -> InternedTy {
+    pub fn float_lit(&mut self, f: f64) -> Ty {
         self.intern(Descr::float_lit(f))
     }
 
-    fn atom(&mut self) -> InternedTy {
+    pub fn atom(&mut self) -> Ty {
         self.intern(Descr::atom_top())
     }
 
-    fn atom_lit(&mut self, name: &str) -> InternedTy {
+    pub fn atom_lit(&mut self, name: &str) -> Ty {
         self.intern(Descr::atom_lit(name))
     }
 
-    fn type_var(&mut self, id: TypeVarId) -> InternedTy {
+    pub fn type_var(&mut self, id: TypeVarId) -> Ty {
         self.intern(Descr::var(id))
     }
 
-    fn resource(&mut self, payload: InternedTy) -> InternedTy {
+    pub fn resource(&mut self, payload: Ty) -> Ty {
         self.intern(Descr::resource_of(self.ctx(), payload))
     }
 
-    fn arrow(&mut self, args: &[InternedTy], ret: InternedTy) -> InternedTy {
+    pub fn arrow(&mut self, args: &[Ty], ret: Ty) -> Ty {
         self.intern(Descr::arrow(args.iter().copied(), ret))
     }
 
-    fn tuple(&mut self, elems: &[InternedTy]) -> InternedTy {
+    pub fn tuple(&mut self, elems: &[Ty]) -> Ty {
         self.intern(Descr::tuple_of(elems.iter().copied()))
     }
 
-    fn empty_list(&mut self) -> InternedTy {
+    pub fn empty_list(&mut self) -> Ty {
         self.intern(Descr::empty_list())
     }
 
-    fn list(&mut self, elem: InternedTy) -> InternedTy {
+    pub fn list(&mut self, elem: Ty) -> Ty {
         self.intern(Descr::list_of(self.ctx(), elem))
     }
 
-    fn non_empty_list(&mut self, elem: InternedTy) -> InternedTy {
+    pub fn non_empty_list(&mut self, elem: Ty) -> Ty {
         self.intern(Descr::non_empty_list_of(self.ctx(), elem))
     }
 
-    fn map(&mut self, fields: &[(MapKey, InternedTy)]) -> InternedTy {
+    pub fn map(&mut self, fields: &[(MapKey, Ty)]) -> Ty {
         self.intern(Descr::map_of(fields.iter().cloned()))
     }
 
-    fn str_t(&mut self) -> InternedTy {
+    pub fn str_t(&mut self) -> Ty {
         self.intern(Descr::str_t())
     }
 
-    fn map_top(&mut self) -> InternedTy {
+    pub fn map_top(&mut self) -> Ty {
         self.intern(Descr::map_top())
     }
 
-    fn mint_brand(&mut self, inner: InternedTy, name: &str) -> InternedTy {
+    pub fn mint_brand(&mut self, inner: Ty, name: &str) -> Ty {
         let mut d = self.descr(&inner).clone();
         d.brands = LiteralSet::lit(name.to_string());
         self.intern(d)
     }
 
-    fn opaque_of(&mut self, name: &str) -> InternedTy {
+    pub fn opaque_of(&mut self, name: &str) -> Ty {
         self.intern(Descr::opaque_of(name))
     }
 
-    fn brand_of(&mut self, name: &str) -> InternedTy {
+    pub fn brand_of(&mut self, name: &str) -> Ty {
         self.intern(Descr::brand_of(name))
     }
 
-    fn list_element_type(&mut self, a: &InternedTy) -> InternedTy {
+    pub fn list_element_type(&mut self, a: &Ty) -> Ty {
         let d = {
             let cx = self.ctx();
             list_element_type(cx, cx.descr(a))
@@ -267,11 +299,11 @@ impl Types for InternedConcreteTypes {
         self.intern(d)
     }
 
-    fn has_list_shape(&self, a: &InternedTy) -> bool {
+    pub fn has_list_shape(&self, a: &Ty) -> bool {
         !self.descr(a).lists.is_empty()
     }
 
-    fn resource_payload_type(&mut self, a: &InternedTy) -> Option<InternedTy> {
+    pub fn resource_payload_type(&mut self, a: &Ty) -> Option<Ty> {
         let d = {
             let cx = self.ctx();
             resource_payload_type(cx, cx.descr(a))?
@@ -279,12 +311,7 @@ impl Types for InternedConcreteTypes {
         Some(self.intern(d))
     }
 
-    fn mint_owned_resource_aliases(
-        &mut self,
-        a: InternedTy,
-        owner: &str,
-        opaque_inners: &HashMap<String, InternedTy>,
-    ) -> InternedTy {
+    pub fn mint_owned_resource_aliases(&mut self, a: Ty, owner: &str, opaque_inners: &HashMap<String, Ty>) -> Ty {
         let candidates = opaque_inners
             .iter()
             .filter_map(|(tag, inner)| {
@@ -299,7 +326,7 @@ impl Types for InternedConcreteTypes {
         self.intern(d)
     }
 
-    fn tuple_projections(&mut self, a: &InternedTy, arity: usize) -> Vec<InternedTy> {
+    pub fn tuple_projections(&mut self, a: &Ty, arity: usize) -> Vec<Ty> {
         let ds = {
             let cx = self.ctx();
             tuple_projections(cx, cx.descr(a), arity)
@@ -307,7 +334,7 @@ impl Types for InternedConcreteTypes {
         ds.into_iter().map(|d| self.intern(d)).collect()
     }
 
-    fn tuple_field_type(&mut self, a: &InternedTy, index: usize) -> InternedTy {
+    pub fn tuple_field_type(&mut self, a: &Ty, index: usize) -> Ty {
         let d = {
             let cx = self.ctx();
             tuple_field_type(cx, cx.descr(a), index)
@@ -315,16 +342,16 @@ impl Types for InternedConcreteTypes {
         self.intern(d)
     }
 
-    fn max_tuple_arity(&self, a: &InternedTy) -> usize {
+    pub fn max_tuple_arity(&self, a: &Ty) -> usize {
         self.descr(a).max_tuple_arity()
     }
 
-    fn refine_map_field(&mut self, a: &InternedTy, key: &MapKey, v: &InternedTy) -> InternedTy {
+    pub fn refine_map_field(&mut self, a: &Ty, key: &MapKey, v: &Ty) -> Ty {
         let d = self.descr(a).refine_map_field(key, *v);
         self.intern(d)
     }
 
-    fn map_field_lookup(&mut self, a: &InternedTy, key: &MapKey) -> Option<InternedTy> {
+    pub fn map_field_lookup(&mut self, a: &Ty, key: &MapKey) -> Option<Ty> {
         let d = {
             let cx = self.ctx();
             map_field_lookup(cx, cx.descr(a), key)?
@@ -332,26 +359,26 @@ impl Types for InternedConcreteTypes {
         Some(self.intern(d))
     }
 
-    fn map_known_keys(&self, a: &InternedTy) -> Vec<MapKey> {
+    pub fn map_known_keys(&self, a: &Ty) -> Vec<MapKey> {
         map_known_keys(self.descr(a))
     }
 
-    fn widen_for_recursive_spec_key(&mut self, a: &InternedTy) -> InternedTy {
+    pub fn widen_for_recursive_spec_key(&mut self, a: &Ty) -> Ty {
         let d = widen_for_recursive_spec_key(self, *a);
         self.intern(d)
     }
 
-    fn alpha_normalize_vars(&mut self, a: &InternedTy) -> InternedTy {
+    pub fn alpha_normalize_vars(&mut self, a: &Ty) -> Ty {
         let d = alpha_normalize_vars(self, *a);
         self.intern(d)
     }
 
-    fn refine_widen(&mut self, a: &InternedTy, b: &InternedTy) -> InternedTy {
+    pub fn refine_widen(&mut self, a: &Ty, b: &Ty) -> Ty {
         let d = refine_widen(self, *a, *b);
         self.intern(d)
     }
 
-    fn convergence_class(&mut self, a: &InternedTy) -> InternedTy {
+    pub fn convergence_class(&mut self, a: &Ty) -> Ty {
         if as_pure_list(self.ctx(), self.descr(a)).is_some() {
             let any = self.any();
             self.list(any)
@@ -360,7 +387,7 @@ impl Types for InternedConcreteTypes {
         }
     }
 
-    fn union(&mut self, a: InternedTy, b: InternedTy) -> InternedTy {
+    pub fn union(&mut self, a: Ty, b: Ty) -> Ty {
         let d = {
             let cx = self.ctx();
             cx.descr(&a).union(cx, cx.descr(&b))
@@ -368,23 +395,23 @@ impl Types for InternedConcreteTypes {
         self.intern(d)
     }
 
-    fn intersect(&mut self, a: InternedTy, b: InternedTy) -> InternedTy {
+    pub fn intersect(&mut self, a: Ty, b: Ty) -> Ty {
         let d = self.descr(&a).intersect(self.descr(&b));
         self.intern(d)
     }
 
     #[cfg(test)]
-    fn complement(&mut self, a: InternedTy) -> InternedTy {
+    pub fn complement(&mut self, a: Ty) -> Ty {
         let d = self.descr(&a).neg();
         self.intern(d)
     }
 
-    fn difference(&mut self, a: InternedTy, b: InternedTy) -> InternedTy {
+    pub fn difference(&mut self, a: Ty, b: Ty) -> Ty {
         let d = self.descr(&a).diff(self.descr(&b));
         self.intern(d)
     }
 
-    fn is_empty(&self, a: &InternedTy) -> bool {
+    pub fn is_empty(&self, a: &Ty) -> bool {
         self.cached_comparison(ComparisonKey::Empty(*a), |types| {
             let cx = types.ctx();
             types.descr(a).is_empty(cx)
@@ -392,12 +419,12 @@ impl Types for InternedConcreteTypes {
     }
 
     #[cfg(test)]
-    fn is_top(&self, a: &InternedTy) -> bool {
+    pub fn is_top(&self, a: &Ty) -> bool {
         let cx = self.ctx();
         self.descr(a).is_equiv(cx, &Descr::any())
     }
 
-    fn is_subtype(&self, a: &InternedTy, b: &InternedTy) -> bool {
+    pub fn is_subtype(&self, a: &Ty, b: &Ty) -> bool {
         if a == b {
             return true;
         }
@@ -407,7 +434,7 @@ impl Types for InternedConcreteTypes {
         })
     }
 
-    fn is_disjoint(&self, a: &InternedTy, b: &InternedTy) -> bool {
+    pub fn is_disjoint(&self, a: &Ty, b: &Ty) -> bool {
         if a == b {
             return self.is_empty(a);
         }
@@ -418,18 +445,18 @@ impl Types for InternedConcreteTypes {
         })
     }
 
-    fn is_value_disjoint(&self, a: &InternedTy, b: &InternedTy, nominals: Nominals<'_, InternedTy>) -> bool {
+    pub fn is_value_disjoint(&self, a: &Ty, b: &Ty, nominals: Nominals<'_, Ty>) -> bool {
         let bi = self.descr_inner_map(nominals.brand_inners);
         let oi = self.descr_inner_map(nominals.opaque_inners);
         let cx = self.ctx();
         self.descr(a).value_disjoint(cx, self.descr(b), Nominals::new(&bi, &oi))
     }
 
-    fn key_var_count(&self, key: &[InternedTy]) -> usize {
+    pub fn key_var_count(&self, key: &[Ty]) -> usize {
         key.iter().map(|t| self.descr(t).vars.finite_len().unwrap_or(0)).sum()
     }
 
-    fn key_subsumes_with(&self, query: &InternedTy, key: &InternedTy, sigma: &mut Sigma<InternedTy>) -> bool {
+    pub fn key_subsumes_with(&self, query: &Ty, key: &Ty, sigma: &mut Sigma<Ty>) -> bool {
         let qd = self.descr(query);
         let kd = self.descr(key);
         if kd.looks_full() {
@@ -455,7 +482,7 @@ impl Types for InternedConcreteTypes {
         qd.is_subtype(cx, kd)
     }
 
-    fn is_equivalent(&self, a: &InternedTy, b: &InternedTy) -> bool {
+    pub fn is_equivalent(&self, a: &Ty, b: &Ty) -> bool {
         if a == b {
             return true;
         }
@@ -463,36 +490,36 @@ impl Types for InternedConcreteTypes {
         self.cached_comparison(key, |types| types.is_subtype(a, b) && types.is_subtype(b, a))
     }
 
-    fn kinds_overlap(&self, a: &InternedTy, b: &InternedTy) -> bool {
+    pub fn kinds_overlap(&self, a: &Ty, b: &Ty) -> bool {
         self.descr(a).kinds_overlap(self.descr(b))
     }
 
-    fn opaque_singleton(&self, a: &InternedTy) -> Option<String> {
+    pub fn opaque_singleton(&self, a: &Ty) -> Option<String> {
         self.descr(a).as_opaque_singleton().map(String::from)
     }
 
     #[cfg(test)]
-    fn brand_singleton(&self, a: &InternedTy) -> Option<String> {
+    pub fn brand_singleton(&self, a: &Ty) -> Option<String> {
         self.descr(a).as_brand_singleton().map(String::from)
     }
 
-    fn is_singleton_lit(&self, a: &InternedTy) -> bool {
+    pub fn is_singleton_lit(&self, a: &Ty) -> bool {
         self.descr(a).is_singleton_literal()
     }
 
-    fn as_int_singleton(&self, a: &InternedTy) -> Option<i64> {
+    pub fn as_int_singleton(&self, a: &Ty) -> Option<i64> {
         self.descr(a).as_int_singleton()
     }
 
-    fn as_float_singleton(&self, a: &InternedTy) -> Option<f64> {
+    pub fn as_float_singleton(&self, a: &Ty) -> Option<f64> {
         self.descr(a).as_float_singleton().map(|b| b.get())
     }
 
-    fn as_atom_singleton(&self, a: &InternedTy) -> Option<String> {
+    pub fn as_atom_singleton(&self, a: &Ty) -> Option<String> {
         self.descr(a).as_atom_singleton().map(String::from)
     }
 
-    fn arrow_join_return(&mut self, a: &InternedTy) -> InternedTy {
+    pub fn arrow_join_return(&mut self, a: &Ty) -> Ty {
         let d = {
             let cx = self.ctx();
             arrow_join_return(cx, cx.descr(a))
@@ -501,60 +528,55 @@ impl Types for InternedConcreteTypes {
     }
 
     #[cfg(test)]
-    fn tuple_lit_elems(&self, a: &InternedTy) -> Option<Vec<InternedTy>> {
+    pub fn tuple_lit_elems(&self, a: &Ty) -> Option<Vec<Ty>> {
         tuple_lit_elems(self.ctx(), self.descr(a))
     }
 
-    fn is_integer(&self, a: &InternedTy) -> bool {
+    pub fn is_integer(&self, a: &Ty) -> bool {
         let cx = self.ctx();
         self.descr(a).is_subtype(cx, &Descr::int())
     }
 
-    fn is_floating(&self, a: &InternedTy) -> bool {
+    pub fn is_floating(&self, a: &Ty) -> bool {
         let cx = self.ctx();
         self.descr(a).is_subtype(cx, &Descr::float())
     }
 
-    fn is_nil(&self, a: &InternedTy) -> bool {
+    pub fn is_nil(&self, a: &Ty) -> bool {
         let cx = self.ctx();
         self.descr(a).is_subtype(cx, &Descr::nil())
     }
 
     #[cfg(test)]
-    fn is_bool(&self, a: &InternedTy) -> bool {
+    pub fn is_bool(&self, a: &Ty) -> bool {
         let cx = self.ctx();
         self.descr(a).is_subtype(cx, &Descr::bool_t())
     }
 
     #[cfg(test)]
-    fn is_atom_type(&self, a: &InternedTy) -> bool {
+    pub fn is_atom_type(&self, a: &Ty) -> bool {
         let cx = self.ctx();
         self.descr(a).is_subtype(cx, &Descr::atom_top())
     }
 
-    fn has_vars(&self, a: &InternedTy) -> bool {
+    pub fn has_vars(&self, a: &Ty) -> bool {
         has_vars(self.ctx(), self.descr(a))
     }
 
-    fn instantiate(&mut self, a: &InternedTy, sigma: &Sigma<InternedTy>) -> InternedTy {
+    pub fn instantiate(&mut self, a: &Ty, sigma: &Sigma<Ty>) -> Ty {
         let d = instantiate(self, *a, sigma);
         self.intern(d)
     }
 
-    fn collect_instantiation_subst(
-        &mut self,
-        pattern: &InternedTy,
-        witness: &InternedTy,
-        sigma: &mut Sigma<InternedTy>,
-    ) {
+    pub fn collect_instantiation_subst(&mut self, pattern: &Ty, witness: &Ty, sigma: &mut Sigma<Ty>) {
         collect_subst_into(self, *pattern, *witness, sigma);
     }
 }
 
-impl ClosureTypes for InternedConcreteTypes {
-    fn fn_ref_lit(&mut self, target: ClosureTarget, n_args: usize) -> InternedTy {
+impl Types {
+    pub fn fn_ref_lit(&mut self, target: ClosureTarget, n_args: usize) -> Ty {
         let fn_id = target.into();
-        let args: Vec<InternedTy> = (0..n_args)
+        let args: Vec<Ty> = (0..n_args)
             .map(|pos| self.intern(Descr::var(closure_var_id(fn_id, pos))))
             .collect();
         let ret = self.intern(Descr::var(closure_ret_var_id(fn_id)));
@@ -563,7 +585,7 @@ impl ClosureTypes for InternedConcreteTypes {
                 args,
                 ret,
                 lit: Some(ClosureLit {
-                    kind: crate::types::CallableValueKind::FnRef,
+                    kind: CallableValueKind::FnRef,
                     fn_id,
                     captures: Vec::new(),
                 }),
@@ -572,9 +594,9 @@ impl ClosureTypes for InternedConcreteTypes {
         })
     }
 
-    fn closure_lit(&mut self, target: ClosureTarget, captures: Vec<InternedTy>, n_args: usize) -> InternedTy {
+    pub fn closure_lit(&mut self, target: ClosureTarget, captures: Vec<Ty>, n_args: usize) -> Ty {
         let fn_id = target.into();
-        let args: Vec<InternedTy> = (0..n_args)
+        let args: Vec<Ty> = (0..n_args)
             .map(|pos| self.intern(Descr::var(closure_var_id(fn_id, pos))))
             .collect();
         let ret = self.intern(Descr::var(closure_ret_var_id(fn_id)));
@@ -583,7 +605,7 @@ impl ClosureTypes for InternedConcreteTypes {
                 args,
                 ret,
                 lit: Some(ClosureLit {
-                    kind: crate::types::CallableValueKind::Closure,
+                    kind: CallableValueKind::Closure,
                     fn_id,
                     captures,
                 }),
@@ -592,7 +614,7 @@ impl ClosureTypes for InternedConcreteTypes {
         })
     }
 
-    fn closure_lit_parts(&self, a: &InternedTy) -> Option<ClosureLitInfo<InternedTy>> {
+    pub fn closure_lit_parts(&self, a: &Ty) -> Option<ClosureLitInfo<Ty>> {
         let lit = self.descr(a).as_closure_lit()?;
         Some(ClosureLitInfo {
             target: lit.fn_id.into(),
@@ -601,18 +623,18 @@ impl ClosureTypes for InternedConcreteTypes {
         })
     }
 
-    fn callable_clauses(&mut self, a: &InternedTy) -> Option<Vec<CallableClause<InternedTy>>> {
+    pub fn callable_clauses(&mut self, a: &Ty) -> Option<Vec<CallableClause<Ty>>> {
         callable_clauses(self.ctx(), self.descr(a))
     }
 
-    fn erase_closure_identity(&mut self, a: &InternedTy) -> InternedTy {
+    pub fn erase_closure_identity(&mut self, a: &Ty) -> Ty {
         let d = erase_closure_identity(self, *a);
         self.intern(d)
     }
 }
 
-impl VisibilityTypes for InternedConcreteTypes {
-    fn check_opaque_visibility(&self, a: &InternedTy, using_module: &str) -> Result<(), OpaqueVisibilityError> {
+impl Types {
+    pub fn check_opaque_visibility(&self, a: &Ty, using_module: &str) -> Result<(), OpaqueVisibilityError> {
         let Some(tag) = self.descr(a).as_opaque_singleton() else {
             return Ok(());
         };
@@ -631,12 +653,12 @@ impl VisibilityTypes for InternedConcreteTypes {
     }
 }
 
-impl RenderTypes for InternedConcreteTypes {
-    fn display(&self, a: &InternedTy) -> String {
+impl Types {
+    pub fn display(&self, a: &Ty) -> String {
         format::display(self.ctx(), self.descr(a))
     }
 
-    fn display_for_diag(&self, a: &InternedTy) -> String {
+    pub fn display_for_diag(&self, a: &Ty) -> String {
         format::display_for_diag(self.ctx(), self.descr(a))
     }
 }
@@ -812,7 +834,7 @@ fn map_known_keys(d: &Descr) -> Vec<MapKey> {
     keys.into_iter().collect()
 }
 
-fn callable_clauses(cx: TyCtx<'_>, d: &Descr) -> Option<Vec<CallableClause<InternedTy>>> {
+fn callable_clauses(cx: TyCtx<'_>, d: &Descr) -> Option<Vec<CallableClause<Ty>>> {
     if d.funcs.is_empty() || d.funcs.iter().any(|c| !c.neg.is_empty() || c.pos.is_empty()) {
         return None;
     }
@@ -887,13 +909,13 @@ fn arrow_join_return(cx: TyCtx<'_>, d: &Descr) -> Descr {
 }
 
 #[cfg(test)]
-fn tuple_lit_elems(cx: TyCtx<'_>, d: &Descr) -> Option<Vec<InternedTy>> {
+fn tuple_lit_elems(cx: TyCtx<'_>, d: &Descr) -> Option<Vec<Ty>> {
     let elems = d.as_tuple_singleton()?;
     elems.iter().all(|t| is_literal(cx, t)).then(|| elems.to_vec())
 }
 
 #[cfg(test)]
-fn is_literal(cx: TyCtx<'_>, a: &InternedTy) -> bool {
+fn is_literal(cx: TyCtx<'_>, a: &Ty) -> bool {
     let d = cx.descr(a);
     d.is_singleton_literal()
         || d.is_equiv(cx, &Descr::nil())
@@ -904,23 +926,23 @@ fn is_literal(cx: TyCtx<'_>, a: &InternedTy) -> bool {
 
 // More recursive transforms live in this module so they can thread the owning
 // interner explicitly without exposing the private descriptor representation.
-fn widen_for_recursive_spec_key(t: &mut InternedConcreteTypes, a: InternedTy) -> Descr {
+fn widen_for_recursive_spec_key(t: &mut Types, a: Ty) -> Descr {
     let base = t.descr(&a).widen_literals();
     map_recursive_inputs(t, base, widen_for_recursive_spec_key)
 }
 
-fn erase_closure_identity(t: &mut InternedConcreteTypes, a: InternedTy) -> Descr {
+fn erase_closure_identity(t: &mut Types, a: Ty) -> Descr {
     let base = t.descr(&a).clone();
     map_recursive_inputs(t, base, erase_closure_identity).without_closure_lits()
 }
 
-fn refine_widen(t: &mut InternedConcreteTypes, a: InternedTy, b: InternedTy) -> Descr {
+fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Descr {
     let lhs = t.descr(&a).clone();
     let rhs = t.descr(&b).clone();
     if let (Some(l), Some(r)) = (lhs.pure_tuple().cloned(), rhs.pure_tuple().cloned())
         && l.elems.len() == r.elems.len()
     {
-        let elems: Vec<InternedTy> = l
+        let elems: Vec<Ty> = l
             .elems
             .iter()
             .zip(r.elems.iter())
@@ -957,7 +979,7 @@ fn refine_widen(t: &mut InternedConcreteTypes, a: InternedTy, b: InternedTy) -> 
     if let (Some(l), Some(r)) = (lhs.pure_arrow().cloned(), rhs.pure_arrow().cloned())
         && l.args.len() == r.args.len()
     {
-        let args: Vec<InternedTy> = l.args.iter().zip(r.args.iter()).map(|(l, r)| t.union(*l, *r)).collect();
+        let args: Vec<Ty> = l.args.iter().zip(r.args.iter()).map(|(l, r)| t.union(*l, *r)).collect();
         let d = refine_widen(t, l.ret, r.ret);
         let ret = t.intern(d);
         return Descr::arrow(args, ret);
@@ -979,15 +1001,15 @@ fn refine_widen(t: &mut InternedConcreteTypes, a: InternedTy, b: InternedTy) -> 
     widen_for_recursive_spec_key(t, u)
 }
 
-fn alpha_normalize_vars(t: &mut InternedConcreteTypes, a: InternedTy) -> Descr {
+fn alpha_normalize_vars(t: &mut Types, a: Ty) -> Descr {
     let mut sigma = std::collections::BTreeMap::new();
     let mut next = 0;
     alpha_normalize_go(t, a, &mut sigma, &mut next)
 }
 
 fn alpha_normalize_go(
-    t: &mut InternedConcreteTypes,
-    a: InternedTy,
+    t: &mut Types,
+    a: Ty,
     sigma: &mut std::collections::BTreeMap<TypeVarId, TypeVarId>,
     next: &mut u32,
 ) -> Descr {
@@ -1021,7 +1043,7 @@ fn alpha_normalize_go(
     })
 }
 
-fn instantiate(t: &mut InternedConcreteTypes, a: InternedTy, sigma: &Sigma<InternedTy>) -> Descr {
+fn instantiate(t: &mut Types, a: Ty, sigma: &Sigma<Ty>) -> Descr {
     let d = t.descr(&a).clone();
     if !has_vars(t.ctx(), &d) {
         return d;
@@ -1052,12 +1074,7 @@ fn instantiate(t: &mut InternedConcreteTypes, a: InternedTy, sigma: &Sigma<Inter
     walked.union(t.ctx(), &substituted)
 }
 
-fn collect_subst_into(
-    t: &mut InternedConcreteTypes,
-    pattern: InternedTy,
-    witness: InternedTy,
-    sigma: &mut Sigma<InternedTy>,
-) {
+fn collect_subst_into(t: &mut Types, pattern: Ty, witness: Ty, sigma: &mut Sigma<Ty>) {
     let pat = t.descr(&pattern).clone();
     let wit = t.descr(&witness).clone();
     if let Some(ids) = pure_var_ids(&pat) {
@@ -1098,22 +1115,14 @@ fn collect_subst_into(
     }
 }
 
-fn map_recursive_inputs(
-    t: &mut InternedConcreteTypes,
-    d: Descr,
-    f: fn(&mut InternedConcreteTypes, InternedTy) -> Descr,
-) -> Descr {
+fn map_recursive_inputs(t: &mut Types, d: Descr, f: fn(&mut Types, Ty) -> Descr) -> Descr {
     map_recursive_inputs_with(t, d, &mut |t, nested| {
         let d = f(t, nested);
         t.intern(d)
     })
 }
 
-fn map_recursive_inputs_with(
-    t: &mut InternedConcreteTypes,
-    mut d: Descr,
-    f: &mut impl FnMut(&mut InternedConcreteTypes, InternedTy) -> InternedTy,
-) -> Descr {
+fn map_recursive_inputs_with(t: &mut Types, mut d: Descr, f: &mut impl FnMut(&mut Types, Ty) -> Ty) -> Descr {
     for conj in &mut d.tuples {
         for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
             sig.elems = sig.elems.iter().map(|ty| f(t, *ty)).collect();
@@ -1153,4 +1162,4 @@ fn mint_owned_resource_aliases_descr(cx: TyCtx<'_>, d: &Descr, candidates: &[(St
 }
 
 #[cfg(test)]
-mod interned_types_test;
+mod types_test;

@@ -15,6 +15,7 @@ mod protocol;
 mod runtime;
 mod scheduler;
 mod semantic;
+mod types;
 mod world;
 
 pub use agenda::Agenda;
@@ -38,6 +39,10 @@ pub use scheduler::{AppliedStep, DriveOutcome, FatalError, Scheduler};
 pub use semantic::{
     ActivationAnalysis, ActivationMap, ActivationSlot, CallSiteKey, CallSiteMap, CallSiteSummary, SelectedCallee,
     SemanticClosure, SemanticClosureMap,
+};
+pub use types::{
+    CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, Nominals, OpaqueVisibilityError, Sigma,
+    Ty, TypeVarId, Types,
 };
 pub use world::World;
 

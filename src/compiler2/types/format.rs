@@ -1,12 +1,12 @@
 //! Display helpers for interned descriptors.
 
+use super::MapKey;
 use super::TyCtx;
 use super::bits::BASIC_NAMES;
 use super::conj::Conj;
 use super::descr::Descr;
 use super::lit_set::LiteralSet;
 use super::sigs::{ArrowSig, ListSig, MapSig, ResourceSig, TupleSig};
-use crate::types::MapKey;
 
 pub(crate) fn display(cx: TyCtx<'_>, d: &Descr) -> String {
     if d.looks_empty() {
