@@ -2,7 +2,8 @@
   "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.10.6",
-    "fz-rh2.8.1"
+    "fz-rh2.8.1",
+    "fz-rh2.8.3"
   ],
   "blocks": [
     "fz-rh2.9"
@@ -16,5 +17,5 @@
   "status": "in_progress",
   "title": "Compiler2 artifacts: derive ABI and emission from closed facts",
   "type": "task",
-  "updated_at": "2026-06-08T01:37:40Z"
+  "updated_at": "2026-06-08T01:37:44Z"
 }
