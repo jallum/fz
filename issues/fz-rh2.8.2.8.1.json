@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-08T11:32:40Z",
+  "description": "",
+  "id": "fz-rh2.8.2.8.1",
+  "labels": [],
+  "parent": "fz-rh2.8.2.8",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 semantics/tests: make quicksort frontier contract explicit",
+  "type": "task",
+  "updated_at": "2026-06-08T11:32:40Z"
+}
