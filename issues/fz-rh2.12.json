@@ -17,11 +17,15 @@
     {
       "text": "Design refinement (from the @spec to FunctionContract parity discussion):\n\nThe lifecycle is Note / Reference / Resolve, and the reference/resolve split is the load-bearing invariant -- it is what makes the re-lex structurally unrepresentable rather than merely removed.\n\n  - Reference is an INDEX-time walk (.1): every type-position name is minted and recorded as its consumer dep. The recorded set IS the consumer wait-set.\n  - Resolve is split across the consumer and the resolver: the CONSUMER (.4) is the demand source -- it waits on its recorded TypeDefined, then calls a PURE-READ resolver (.3) that never blocks, demands, or mints.\n\nSo a type name rides one tier below the function that names it: a @spec referencing SomeModule.t pulls DeriveTypeDef only because DeriveFunctionContract waited on TypeDefined -- and a @type no reached consumer references stays cold (epic signal 3, gated in .2). DeriveFunctionContract over MFAs is the exact template.\n\nUnchanged by this: the DAG, the inch boundaries, the lace into fz-rh2.9, and the two-grains contract/body split (already existing compiler2 structure -- a caller reads the contract without entering the body).",
       "timestamp": "2026-06-08T21:06:24Z"
+    },
+    {
+      "text": "Sequencing refined -- dark-launch + cut-over phases (from the \"test it without disrupting anything, then cut over\" strategy). New gate .10 inserted: the new path is proven end-to-end BEFORE any old machinery is deleted, in the one window where both paths coexist and can be diffed.\n\n```mermaid\ngraph LR\n    subgraph BUILD_DARK[\"build dark -- additive, every commit green\"]\n        1[\".1 note + reference walk\"] --\u003e 2[\".2 DeriveTypeDef + TypeDefined\"]\n        2 --\u003e 3[\".3 pure-read resolver\"]\n        2 --\u003e 6[\".6 inner-in-symbol kernel\"]\n    end\n    3 --\u003e 10[\".10 dark-launch PARITY proof\"]\n    6 --\u003e 10\n    subgraph CUT_OVER[\"cut over -- gated green by .10\"]\n        10 --\u003e 4[\".4 re-seat; delete function_type_env\"]\n        10 --\u003e 5[\".5 protocol domain = marker\"]\n    end\n    subgraph SEVER[\"sever + prove gone\"]\n        4 --\u003e 7[\".7 sever + lexer-pass guard\"]\n        5 --\u003e 7\n        6 --\u003e 7\n        7 --\u003e 8[\".8 promote docs\"]\n        8 --\u003e 9[\".9 back here: quicksort.log\"]\n    end\n    9 -.lace.-\u003e RH29[\"fz-rh2.9 scrap old compiler\"]\n```\n\nWhy .10 is its own inch: the parity-vs-old diff (new resolver Ty == function_type_env Ty) is only possible while both paths exist. .4 deletes function_type_env, so that diff has a one-shot window -- now. Its temporary half is removed by .4; its permanent half (firing + correct Ty) stays as oracle. Supersedes the earlier mermaid comment.",
+      "timestamp": "2026-06-08T21:15:45Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 type naming: bring name→Ty in-house as demanded facts",
   "type": "epic",
-  "updated_at": "2026-06-08T21:06:24Z"
+  "updated_at": "2026-06-08T21:15:45Z"
 }
