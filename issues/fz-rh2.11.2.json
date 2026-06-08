@@ -7,14 +7,16 @@
     "fz-rh2.11.3",
     "fz-rh2.11.4"
   ],
+  "closed_at": "2026-06-08T17:37:11Z",
+  "close_reason": "Map/struct/bitstring surface is covered in Compiler2 and verified by fz2 fixture coverage.",
   "created": "2026-06-08T11:49:07Z",
   "description": "Goal: make Compiler2 own the remaining non-control data shapes that current fixtures treat as ordinary surface: map/struct construction and access, raw bitstrings, and the pattern projections those shapes need.\n\nSignal:\n- representative `fz2 run` fixtures that currently fail on `Map`, `Struct`, or `Bitstring` lower and run through Compiler2-native paths\n- dispatch-compatible subject projections exist for map values and bitstring fields without reopening old-world lowering\n\nChange:\n- add the missing lowered/backend/native/interpreter vocabulary for map/struct/bitstring expressions and projections\n- add map/struct/bitstring pattern binding/projection support where control lowering will need it\n\nWhy:\n- `case` and `receive` support will immediately depend on these shapes, and today Compiler2 rejects them before control selection is even relevant",
   "id": "fz-rh2.11.2",
   "labels": [],
   "parent": "fz-rh2.11",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 data surface: maps, structs, and bitstrings through the structured pipeline",
   "type": "task",
-  "updated_at": "2026-06-08T12:58:51Z"
+  "updated_at": "2026-06-08T17:37:11Z"
 }
