@@ -6,14 +6,15 @@
   "blocks": [
     "fz-rh2.8.2.4"
   ],
+  "closed_at": "2026-06-08T09:42:42Z",
   "created": "2026-06-08T03:52:30Z",
   "description": "Goal: move the shared native pipeline onto Compiler2-owned artifacts without rebuilding old planner/codegen facts on the side. Signal: JIT and AOT consume a Compiler2-owned native handoff derived from `BackendProgram(root)` and never call `prepare_preplanned_native`, `materialize_program`, or `AbiFacts::derive` to fill missing data.\n\nGrounding from the current code:\n- `Compiler2` currently stops at `BackendProgram(root)`: structured clause bodies, settled executable targets, callable-entry inventory, extern marshal classes, value/return ABI, effects, and entry dispatch.\n- The shared native path in `ir_codegen::driver::compile_with_backend_prepared_impl` still consumes CPS `fz_ir::Module`, `ModulePlan.effective_returns/fn_effects`, `PlannedProgram.spec_registry/spec_keys/spec_fn_indices/bodies/callable_entries/reachable_specs`, and `AbiFacts.native_fns/cont_fns/cont_target_fns/closure_capture_counts/cont_extras_count`.\n- `prepare_preplanned_native` still rebuilds that surface through `lower_destinations`, `resolve_module_types`, `materialize_program`, and `AbiFacts::derive`.\n- That means `BackendProgram` is enough for the interpreter, but not yet the right handoff for the shared native codegen path. Native still needs a Compiler2-owned lowering stage to CPS/codegen-ready facts.\n\nStrategy:\n- Add the minimal Compiler2-owned native handoff above `BackendProgram(root)`, carrying only the CPS/codegen facts the shared native path actually consumes.\n- Lower `BackendProgram(root)` to that handoff once, by function, without rediscovering semantic closure or planner reachability.\n- Move the shared native driver onto the new handoff, then switch Compiler2 JIT/AOT entry paths and prove the contract with fixture tests.\n\nDesign constraints:\n- No shims, bridges, or adapter-side planner rediscovery.\n- No synthetic `ModulePlan`, `PlannedProgram`, or `AbiFacts` rebuilt off to the side just to satisfy the old API surface.\n- If the shared native driver needs information not present in the new handoff, publish the missing Compiler2-owned fact and extend the handoff deliberately.\n\nChecks:\n- Compiler2 JIT/AOT paths do not call `prepare_preplanned_native`, `materialize_program`, `AbiFacts::derive`, `plan_module_with_role`, or `resolve_module_types`.\n- Native runs preserve the settled callable-entry, marshal, return-lane, and effect contracts already carried by Compiler2 artifacts.\n- The native handoff contains only backend-consumption facts; it does not become a second semantic/planner world.\n\n## UNBLOCKS\n\n- ○ fz-rh2.8.2.4 P2 Compiler2 backends: switch entry points and remove compiler2 fallback",
   "id": "fz-rh2.8.2.3",
   "labels": [],
   "parent": "fz-rh2.8.2",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 native backends: lower BackendProgram to a codegen-ready handoff and consume it mechanically",
   "type": "epic",
-  "updated_at": "2026-06-08T04:58:57Z"
+  "updated_at": "2026-06-08T09:42:42Z"
 }
