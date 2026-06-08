@@ -560,6 +560,76 @@ struct Types {
     </section>
 
     <section>
+      <h2>Type Naming And The Surface Tier</h2>
+      <p>
+        A type name in source — <code>integer</code>, <code>Enumerable.t</code>,
+        <code>SomeModule.t</code> — is a name, not a type. Representing a type and naming
+        one are different jobs. <code>World.types</code> represents: it mints and compares
+        set-theoretic symbols and is ignorant of what the language calls them, so a
+        <code>Ty</code> carries its own content and the lattice never consults a name table.
+        Naming is reference and definition, so it is fact work like everything else.
+      </p>
+      <p class="rule">
+        name → (namespace) → identity → (fact) → Ty. The same path an MFA takes, applied
+        to types.
+      </p>
+      <div class="grid">
+        <div class="card">
+          <h3>Namespace is the bridge</h3>
+          <p>
+            A type-position name resolves through the same binding chain as a value name.
+            <code>NamespaceSymbol::Type(TypeName)</code> binds a name to an <em>identity</em>,
+            never to a resolved type, so it can be named before it is defined.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Identity carries arity</h3>
+          <p>
+            <code>TypeName { module, name, arity }</code> keys on the owning module id, so
+            <code>t</code> in-module and <code>Mod.t</code> from outside are one identity.
+            <code>t/0</code> and <code>t/1</code> are not.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Definition is a fact</h3>
+          <p>
+            <code>TypeDefined(TypeName)</code> publishes the resolved <code>Ty</code> from a
+            typed store with a <code>Presence</code> revision. A spec waits on it like any
+            other fact.
+          </p>
+        </div>
+      </div>
+      <pre><code>@spec foo(SomeModule.t(float), integer) :: integer
+
+index:   mint ModuleId(SomeModule), TypeName(SomeModule, "t", 1)
+         demand DefineModule(SomeModule)              -- reference before define
+surface: DeriveTypeDef -> TypeDefined(SomeModule,"t",1) = hard Ty
+         DeriveFunctionContract(foo) waits on it -> FunctionContract(foo)</code></pre>
+      <p>
+        Type denotation is a <strong>surface-tier</strong> fact: it depends only on indexing
+        and definition, never on activations, return types, or callsite summaries. Every
+        dependency edge runs one way — index, surface, semantic, artifact — so by the time
+        the fixpoint loop runs, every type name is already a hard <code>Ty</code>. The
+        semantic tier reads types; it never moves a denotation. That one-way rule is what
+        keeps <code>SealSemanticClosure</code> observing a settled frontier instead of
+        chasing one that is still resolving.
+      </p>
+      <p>
+        Two consequences keep the symbol self-contained and the program minimal. A nominal
+        type carries its own inner: <code>@type Meters :: refines integer</code> mints a
+        <code>Ty</code> whose axes already hold the integer representation, so
+        <code>is_subtype(Meters, integer)</code> reads from structure and no name table is
+        threaded into the lattice. And a protocol domain is a <em>marker</em>, not a union:
+        <code>Enumerable.t</code> depends only on the protocol declaration, while which impls
+        reach the program is decided by demand-driven dispatch as concrete values flow to
+        protocol positions. The implementation relation is closed — "does this type
+        implement it?" has a fixed answer — but the implementers are never enumerated up
+        front: a program that never mentions a <code>Range</code> never pulls the
+        <code>Range</code> impl, and only the callbacks actually called are lowered.
+      </p>
+    </section>
+
+    <section>
       <h2>Semantic Closure And Artifact Projection</h2>
       <p>
         <code>AnalyzeActivation</code> publishes direct-call summaries, reached callee activations,
@@ -1034,6 +1104,7 @@ ReturnType(root, lambda#reduce_sum/2, [int, int]) = int</code></pre>
       <ul>
         <li><strong>Stable ids before meaning:</strong> modules and MFAs can be referenced before they are defined.</li>
         <li><strong>One local type world:</strong> <code>Ty</code> is compiler-owned and never compared across worlds.</li>
+        <li><strong>Represent, don't name:</strong> <code>Types</code> carries no naming duty; a type name is an identity defined by <code>TypeDefined</code>, settled at the surface tier before any semantic question is asked.</li>
         <li><strong>One logical fact, one key:</strong> whole callsite summaries replace split partial facts.</li>
         <li><strong>No separate type loop:</strong> activation-input joins are ordinary fact replacement.</li>
         <li><strong>Lazy runtime bootstrap:</strong> <code>runtime.fz</code> and runtime modules warm only when demanded.</li>
