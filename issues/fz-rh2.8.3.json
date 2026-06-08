@@ -4,14 +4,15 @@
   "blocks": [
     "fz-rh2.8.2"
   ],
+  "closed_at": "2026-06-08T02:20:50Z",
   "created": "2026-06-08T01:37:39Z",
   "description": "Goal: derive a backend-owned executable-plan projection from Compiler2 materialized closed artifacts, without reopening semantic discovery or depending on old-world planner fallback.\n\nSignal: each materialized executable carries enough settled backend facts for downstream adapters to consume mechanically: pruned body shape, selected call edges, per-value or per-slot type/representation facts, callable-target facts, extern marshal decisions, and allocation/effect facts. No backend adapter reaches back into semantic analysis or asks the old planner/interpreter to infer missing facts.\n\nStrategy: move the missing backend-facing semantic results into Compiler2-owned facts first, then have materialization project those facts into a backend-owned program surface. Build the artifact data model around what backends actually need, not around the current semantic-internal maps.\n\nChange:\n- Identify and publish the missing semantic facts that today die inside AnalyzeActivation but that backend work needs later.\n- Add a Compiler2 artifact-side executable-plan/program model that contains the closed backend surface, not just lowered bodies plus call edges.\n- Update materialization to project only from SemanticClosed plus those owned semantic facts.\n- Add tests proving the artifact projection is sufficient and that no backend path falls back to semantic/type/reachability recomputation.\n\nWhy:\n- Current MaterializedProgram is an honest closure snapshot, but it is not yet a backend-ready contract. It lacks the settled executable-plan facts the old interpreter/JIT/AOT path expects, so wiring adapters directly to it would either rediscover semantics or smuggle in old fallback behavior.\n\nChecks:\n- Artifact projection tests pin the quicksort and Enum.reduce closed frontiers plus the new backend-facing facts.\n- Any attempted backend fallback to type/reachability/callee discovery is fatal.\n- The resulting artifact surface is stable enough for fz-rh2.8.2 to derive AbiReady/Emitted mechanically.",
   "id": "fz-rh2.8.3",
   "labels": [],
   "parent": "fz-rh2.8",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 artifacts: project backend executable plans from closed facts",
   "type": "task",
-  "updated_at": "2026-06-08T01:37:55Z"
+  "updated_at": "2026-06-08T02:20:50Z"
 }
