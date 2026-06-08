@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-08T11:13:28Z",
+  "description": "",
+  "id": "fz-rh2.8.2.4.1",
+  "labels": [],
+  "parent": "fz-rh2.8.2.4",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 CLI: add fz2 binary front door",
+  "type": "task",
+  "updated_at": "2026-06-08T11:13:28Z"
+}
