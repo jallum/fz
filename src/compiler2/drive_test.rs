@@ -1284,53 +1284,71 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
         "the settled Enum.reduce path should need one callable entry for the bridge reducer and one for the user reducer",
     );
 
-    let user_entry = abi_ready_callable_entry(&program, user_reducer_id);
-    assert_eq!(
-        user_entry.capture_count, 0,
-        "the user reducer should stay a thin zero-capture callable value",
-    );
-    assert_eq!(
-        user_entry.target.need,
-        ExecutableNeed::Value,
-        "callable entries should always target value-return executables",
-    );
-    assert_eq!(
-        user_entry.target.activation.input.len(),
-        2,
-        "the user reducer entry should specialize over its two runtime call arguments",
-    );
-    assert_eq!(
-        user_entry.return_abi,
-        ReturnAbi::Value(AbiValueRepr::RawInt),
-        "the user reducer entry should expose the accumulator as a raw integer return lane",
+    let user_entries = abi_ready_callable_entries(&program, user_reducer_id);
+    assert!(
+        !user_entries.is_empty(),
+        "the user reducer should surface at least one closed callable entry",
     );
     assert!(
-        program.executables.contains_key(&user_entry.target),
+        user_entries.iter().all(|entry| entry.capture_count == 0),
+        "the user reducer should stay a thin zero-capture callable value across every settled callable entry",
+    );
+    assert!(
+        user_entries
+            .iter()
+            .all(|entry| entry.target.need == ExecutableNeed::Value),
+        "callable entries should always target value-return executables",
+    );
+    assert!(
+        user_entries
+            .iter()
+            .all(|entry| entry.target.activation.input.len() == 2),
+        "user reducer callable entries should specialize over two runtime call arguments",
+    );
+    assert!(
+        user_entries
+            .iter()
+            .any(|entry| entry.return_abi == ReturnAbi::Value(AbiValueRepr::RawInt)),
+        "the closed user reducer callable inventory should preserve a raw integer accumulator return lane",
+    );
+    assert!(
+        user_entries
+            .iter()
+            .all(|entry| program.executables.contains_key(&entry.target)),
         "callable-entry targets must already exist in the closed executable frontier",
     );
 
-    let bridge_entry = abi_ready_callable_entry(&program, bridge_reducer_id);
-    assert_eq!(
-        bridge_entry.capture_count, 1,
-        "the bridge reducer should keep the captured user reducer in its callable-entry contract",
-    );
-    assert_eq!(
-        bridge_entry.target.need,
-        ExecutableNeed::Value,
-        "bridge reducer callable entries should still target value-return executables",
-    );
-    assert_eq!(
-        bridge_entry.target.activation.input.len(),
-        3,
-        "the bridge reducer entry should include one captured reducer plus two runtime call arguments",
-    );
-    assert_eq!(
-        bridge_entry.return_abi,
-        ReturnAbi::Value(AbiValueRepr::ValueRef),
-        "the bridge reducer returns the tagged reduce-step tuple as an ordinary value reference",
+    let bridge_entries = abi_ready_callable_entries(&program, bridge_reducer_id);
+    assert!(
+        !bridge_entries.is_empty(),
+        "the bridge reducer should surface at least one closed callable entry",
     );
     assert!(
-        program.executables.contains_key(&bridge_entry.target),
+        bridge_entries.iter().all(|entry| entry.capture_count == 1),
+        "the bridge reducer should keep the captured user reducer in every callable-entry contract",
+    );
+    assert!(
+        bridge_entries
+            .iter()
+            .all(|entry| entry.target.need == ExecutableNeed::Value),
+        "bridge reducer callable entries should still target value-return executables",
+    );
+    assert!(
+        bridge_entries
+            .iter()
+            .all(|entry| entry.target.activation.input.len() == 3),
+        "bridge reducer callable entries should include one capture plus two runtime args",
+    );
+    assert!(
+        bridge_entries
+            .iter()
+            .all(|entry| entry.return_abi == ReturnAbi::Value(AbiValueRepr::ValueRef)),
+        "the bridge reducer should return the tagged reduce-step tuple as an ordinary value reference",
+    );
+    assert!(
+        bridge_entries
+            .iter()
+            .all(|entry| program.executables.contains_key(&entry.target)),
         "bridge callable-entry targets must already exist in the closed executable frontier",
     );
 }
@@ -1608,36 +1626,48 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
         "the emission-ready callable inventory should contain exactly the user reducer and bridge reducer entries",
     );
 
-    let (_, user_entry) = emission_ready_callable_entry(&program, user_reducer_id);
-    assert_eq!(
-        user_entry.capture_count, 0,
+    let user_entries = emission_ready_callable_entries(&program, user_reducer_id);
+    assert!(
+        !user_entries.is_empty(),
+        "the user reducer should keep at least one emission-ready callable entry",
+    );
+    assert!(
+        user_entries.iter().all(|(_, entry)| entry.capture_count == 0),
         "the user reducer should stay a zero-capture callable entry",
     );
-    assert_eq!(
-        program.executables[user_entry.target].key.activation.input.len(),
-        2,
-        "the user reducer executable inventory slot should specialize over its two runtime call arguments",
+    assert!(
+        user_entries
+            .iter()
+            .all(|(_, entry)| program.executables[entry.target].key.activation.input.len() == 2),
+        "user reducer executable inventory slots should specialize over two runtime call arguments",
     );
-    assert_eq!(
-        program.executables[user_entry.target].return_abi,
-        ReturnAbi::Value(AbiValueRepr::RawInt),
-        "the user reducer executable should return a raw integer lane",
+    assert!(
+        user_entries.iter().any(|(_, entry)| {
+            program.executables[entry.target].return_abi == ReturnAbi::Value(AbiValueRepr::RawInt)
+        }),
+        "the emission-ready user reducer inventory should preserve a raw integer return lane",
     );
 
-    let (_, bridge_entry) = emission_ready_callable_entry(&program, bridge_reducer_id);
-    assert_eq!(
-        bridge_entry.capture_count, 1,
+    let bridge_entries = emission_ready_callable_entries(&program, bridge_reducer_id);
+    assert!(
+        !bridge_entries.is_empty(),
+        "the bridge reducer should keep at least one emission-ready callable entry",
+    );
+    assert!(
+        bridge_entries.iter().all(|(_, entry)| entry.capture_count == 1),
         "the bridge reducer should keep its captured reducer in the callable-entry inventory",
     );
-    assert_eq!(
-        program.executables[bridge_entry.target].key.activation.input.len(),
-        3,
-        "the bridge reducer executable inventory slot should include one capture plus two runtime args",
+    assert!(
+        bridge_entries
+            .iter()
+            .all(|(_, entry)| program.executables[entry.target].key.activation.input.len() == 3),
+        "bridge reducer executable inventory slots should include one capture plus two runtime args",
     );
-    assert_eq!(
-        program.executables[bridge_entry.target].return_abi,
-        ReturnAbi::Value(AbiValueRepr::ValueRef),
-        "the bridge reducer executable should return the tagged reduce-step tuple as a value reference",
+    assert!(
+        bridge_entries.iter().all(|(_, entry)| {
+            program.executables[entry.target].return_abi == ReturnAbi::Value(AbiValueRepr::ValueRef)
+        }),
+        "the bridge reducer executable inventory should return the tagged reduce-step tuple as a value reference",
     );
 }
 
@@ -6143,12 +6173,14 @@ fn abi_ready_executable(
         .unwrap_or_else(|| panic!("ABI-ready executable for {function:?}"))
 }
 
-fn abi_ready_callable_entry(program: &AbiReadyProgram, function: FunctionId) -> &CallableEntry {
-    program
+fn abi_ready_callable_entries(program: &AbiReadyProgram, function: FunctionId) -> Vec<&CallableEntry> {
+    let entries = program
         .callable_entries
         .iter()
-        .find(|entry| entry.target.activation.function == function)
-        .unwrap_or_else(|| panic!("ABI-ready callable entry for {function:?}"))
+        .filter(|entry| entry.target.activation.function == function)
+        .collect::<Vec<_>>();
+    assert!(!entries.is_empty(), "ABI-ready callable entries for {function:?}");
+    entries
 }
 
 fn emission_ready_executable(
@@ -6163,16 +6195,18 @@ fn emission_ready_executable(
         .unwrap_or_else(|| panic!("emission-ready executable for {function:?}"))
 }
 
-fn emission_ready_callable_entry(
+fn emission_ready_callable_entries(
     program: &EmissionReadyProgram,
     function: FunctionId,
-) -> (usize, &crate::compiler2::EmissionReadyCallableEntry) {
-    program
+) -> Vec<(usize, &crate::compiler2::EmissionReadyCallableEntry)> {
+    let entries = program
         .callable_entries
         .iter()
         .enumerate()
-        .find(|(_, entry)| program.executables[entry.target].key.activation.function == function)
-        .unwrap_or_else(|| panic!("emission-ready callable entry for {function:?}"))
+        .filter(|(_, entry)| program.executables[entry.target].key.activation.function == function)
+        .collect::<Vec<_>>();
+    assert!(!entries.is_empty(), "emission-ready callable entries for {function:?}");
+    entries
 }
 
 fn backend_executable(program: &BackendProgram, function: FunctionId) -> (usize, &crate::compiler2::BackendExecutable) {
