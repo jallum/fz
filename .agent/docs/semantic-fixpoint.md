@@ -1,6 +1,6 @@
-# Compiler2 Semantic Fixpoint
+# Semantic Fixpoint
 
-This is the heart of Compiler2: turning a root request into a settled set of
+This is the heart of the Compiler: turning a root request into a settled set of
 typed, reachable function activations. It runs on the fact engine
 (`fact-engine`), so read that first. Three jobs do the work —
 `SeedRoot`, `AnalyzeActivation`, and `SealSemanticClosure` — and the surprising

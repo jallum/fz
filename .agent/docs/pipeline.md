@@ -1,9 +1,9 @@
-# Compiler2 Pipeline: From Source To Artifact
+# Pipeline: From Source To Artifact
 
-Compiler2 turns submitted source plus a root request into a frozen, backend-ready
-program — and touches only what the root reaches. This doc traces that journey
-across the job families. The engine underneath is `fact-engine`; the
-semantic core is `semantic-fixpoint`.
+The compiler turns submitted source plus a root request into a frozen, 
+backend-ready program — and touches only what the root reaches. This doc traces 
+that journey across the job families. The engine underneath is `fact-engine`; 
+the semantic core is `semantic-fixpoint`.
 
 ## Identity first, work on demand
 

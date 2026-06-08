@@ -1,6 +1,6 @@
-# Compiler2 Type World
+# Type World
 
-Compiler2 owns its own set-theoretic type kernel. A `Ty` is an interned integer
+Compiler owns its own set-theoretic type kernel. A `Ty` is an interned integer
 id, and one `Types` instance — held by `World` — is the single authority that
 mints and interprets those ids. This is what makes type comparison cheap enough
 that the fact engine can detect change by value equality instead of hashing.
