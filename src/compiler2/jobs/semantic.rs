@@ -18,7 +18,7 @@ use super::super::body::{
 };
 use super::super::drive::{FactKey, Job, JobEffects};
 use super::super::facts::FactValue;
-use super::super::identity::{ActivationKey, ExecutableNeed, FunctionId, ModuleId};
+use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, ModuleId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallSiteSummary, SelectedCallee};
 use super::super::types::{ClosureTarget, Ty, Types};
@@ -31,7 +31,8 @@ type ValueTypes = HashMap<ValueId, Ty>;
 struct CallEmission {
     key: CallSiteKey,
     summary: CallSiteSummary,
-    callee_activation: Option<ActivationContribution>,
+    activations: Vec<ActivationContribution>,
+    latent_executables: Vec<super::super::identity::ExecutableKey>,
 }
 
 #[derive(Debug, Clone)]
@@ -136,15 +137,18 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
             FactKey::CallSiteSummary(call.key.clone()),
             FactValue::presence(revision),
         ));
-        if let Some(callee_activation) = &call.callee_activation {
+        for callee_activation in &call.activations {
             outputs.push((
                 FactKey::Activation(callee_activation.key.clone()),
-                FactValue::inputs(world.types_mut(), call.summary.input_types.clone()),
+                FactValue::inputs(world.types_mut(), callee_activation.key.input.clone()),
             ));
             if !callee_activation.already_present {
                 follow_up.insert(Job::AnalyzeActivation(callee_activation.key.clone()));
             }
             follow_up.insert(Job::SealSemanticClosure(activation.root));
+        }
+        for executable in &call.latent_executables {
+            outputs.push((FactKey::Executable(executable.clone()), FactValue::presence(1)));
         }
     }
 
@@ -159,6 +163,10 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         ActivationAnalysis {
             reachable_clauses: reachable_clauses.clone(),
             callsites: analysis_calls.iter().map(|call| call.key.callsite).collect(),
+            latent_executables: analysis_calls
+                .iter()
+                .flat_map(|call| call.latent_executables.iter().cloned())
+                .collect(),
             value_types,
         },
     );
@@ -406,22 +414,34 @@ fn resolve_direct_call(
                     callsite,
                 },
                 summary,
-                callee_activation: None,
+                activations: Vec::new(),
+                latent_executables: Vec::new(),
             }),
             none,
         ));
     }
 
-    let (summary, callee_activation, return_ty) = match callee {
+    let (summary, mut activations, return_ty) = match callee {
         DirectCallee::Function(function) => {
-            resolve_function_call(world, caller, *function, arg_types, reads, waits, follow_up)?
+            resolve_function_call(world, caller, *function, arg_types.clone(), reads, waits, follow_up)?
         }
         DirectCallee::Named { .. } => (
-            call_summary(selected_callee(callee), arg_types, any_ty(world)),
-            None,
+            call_summary(selected_callee(callee), arg_types.clone(), any_ty(world)),
+            Vec::new(),
             any_ty(world),
         ),
     };
+    let mut latent_executables = Vec::new();
+    if let DirectCallee::Function(function) = callee {
+        let runtime_activations = resolve_runtime_callable_boundary_activations(
+            world, caller, *function, &arg_types, reads, waits, follow_up,
+        )?;
+        latent_executables.extend(runtime_activations.iter().map(|activation| ExecutableKey {
+            activation: activation.key.clone(),
+            need: ExecutableNeed::Value,
+        }));
+        activations.extend(runtime_activations);
+    }
     Ok((
         summary.map(|summary| CallEmission {
             key: CallSiteKey {
@@ -429,7 +449,8 @@ fn resolve_direct_call(
                 callsite,
             },
             summary,
-            callee_activation,
+            latent_executables,
+            activations,
         }),
         return_ty,
     ))
@@ -457,7 +478,7 @@ fn resolve_function_call(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
-) -> Result<(Option<CallSiteSummary>, Option<ActivationContribution>, Ty), FatalError> {
+) -> Result<(Option<CallSiteSummary>, Vec<ActivationContribution>, Ty), FatalError> {
     if let Some(callback) = world.protocol_callback(function) {
         return resolve_protocol_call(
             world,
@@ -471,12 +492,12 @@ fn resolve_function_call(
         );
     }
     if wait_for_unresolved_function_module(world, function, waits, follow_up) {
-        return Ok((None, None, any_ty(world)));
+        return Ok((None, Vec::new(), any_ty(world)));
     }
     let Some((activation, already_present, return_ty)) =
         prepare_function_call(world, caller, function, input_types.clone(), reads, waits, follow_up)
     else {
-        return Ok((None, None, any_ty(world)));
+        return Ok((None, Vec::new(), any_ty(world)));
     };
     Ok((
         Some(CallSiteSummary {
@@ -484,10 +505,10 @@ fn resolve_function_call(
             input_types,
             return_ty,
         }),
-        Some(ActivationContribution {
+        vec![ActivationContribution {
             key: activation,
             already_present,
-        }),
+        }],
         return_ty,
     ))
 }
@@ -501,11 +522,11 @@ fn resolve_protocol_call(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
-) -> Result<(Option<CallSiteSummary>, Option<ActivationContribution>, Ty), FatalError> {
+) -> Result<(Option<CallSiteSummary>, Vec<ActivationContribution>, Ty), FatalError> {
     let protocol_fact = FactKey::ModuleDefined(protocol);
     if world.module_defined_revision(protocol).is_none() {
         wait_for_protocol_module(world, protocol, waits, follow_up);
-        return Ok((None, None, any_ty(world)));
+        return Ok((None, Vec::new(), any_ty(world)));
     }
     reads.push(protocol_fact);
 
@@ -534,11 +555,11 @@ fn resolve_protocol_call(
             }
             wait_for_runtime_module(world, module, waits, follow_up);
         }
-        return Ok((None, None, any_ty(world)));
+        return Ok((None, Vec::new(), any_ty(world)));
     }
 
     if matches.len() != 1 {
-        return Ok((None, None, any_ty(world)));
+        return Ok((None, Vec::new(), any_ty(world)));
     }
 
     let selected = matches[0];
@@ -546,7 +567,7 @@ fn resolve_protocol_call(
     if world.module_defined_revision(selected.owner_module).is_none() {
         waits.insert(owner_fact);
         follow_up.insert(Job::DefineModule(selected.owner_module));
-        return Ok((None, None, any_ty(world)));
+        return Ok((None, Vec::new(), any_ty(world)));
     }
     reads.push(owner_fact);
 
@@ -559,7 +580,7 @@ fn resolve_protocol_call(
         waits,
         follow_up,
     ) else {
-        return Ok((None, None, any_ty(world)));
+        return Ok((None, Vec::new(), any_ty(world)));
     };
     Ok((
         Some(CallSiteSummary {
@@ -567,10 +588,10 @@ fn resolve_protocol_call(
             input_types,
             return_ty,
         }),
-        Some(ActivationContribution {
+        vec![ActivationContribution {
             key: activation,
             already_present,
-        }),
+        }],
         return_ty,
     ))
 }
@@ -603,10 +624,88 @@ fn resolve_closure_call(
                 callsite,
             },
             summary,
-            callee_activation,
+            latent_executables: Vec::new(),
+            activations: callee_activation.into_iter().collect(),
         }),
         return_ty,
     ))
+}
+
+fn resolve_runtime_callable_boundary_activations(
+    world: &mut World<'_>,
+    caller: &ActivationKey,
+    function: FunctionId,
+    arg_types: &[Ty],
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Result<Vec<ActivationContribution>, FatalError> {
+    let lowered_fact = FactKey::LoweredBody(function);
+    let Some(_) = world.fact_revision(lowered_fact.clone()) else {
+        waits.insert(lowered_fact);
+        follow_up.insert(Job::LowerFunction(function));
+        return Ok(Vec::new());
+    };
+    reads.push(lowered_fact);
+    let LoweredBody::Extern { signature } = world.lowered_body(function) else {
+        return Ok(Vec::new());
+    };
+
+    let mut activations = Vec::new();
+    for &arg_index in runtime_callable_arg_indexes(signature.symbol.as_str()) {
+        let Some(&callable_ty) = arg_types.get(arg_index) else {
+            continue;
+        };
+        activations.extend(resolve_callable_activations_from_type(
+            world,
+            caller,
+            callable_ty,
+            reads,
+            waits,
+            follow_up,
+        ));
+    }
+    Ok(activations)
+}
+
+fn runtime_callable_arg_indexes(symbol: &str) -> &'static [usize] {
+    match symbol {
+        "fz_spawn" | "fz_spawn_opt" => &[0],
+        "fz_make_resource" => &[1],
+        _ => &[],
+    }
+}
+
+fn resolve_callable_activations_from_type(
+    world: &mut World<'_>,
+    caller: &ActivationKey,
+    callable_ty: Ty,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Vec<ActivationContribution> {
+    let Some(clauses) = world.types_mut().callable_clauses(&callable_ty) else {
+        return Vec::new();
+    };
+    let mut activations = Vec::new();
+    for clause in clauses {
+        let Some(closure) = clause.closure else {
+            continue;
+        };
+        let function = FunctionId::from_u32(closure.target.0);
+        if !world.require_activation_key_facts(function, reads, waits, follow_up) {
+            continue;
+        }
+        let mut input_types = closure.captures;
+        input_types.extend(clause.args);
+        let activation = world.activation_key(caller.root, function, &input_types);
+        let already_present = world.fact_revision(FactKey::Activation(activation.clone())).is_some();
+        activations.push(ActivationContribution {
+            key: activation,
+            already_present,
+        });
+    }
+    activations
 }
 
 fn prepare_function_call(

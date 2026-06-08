@@ -119,7 +119,10 @@ fn call_variadic_extern(
 
 pub(super) fn call_lowered_extern(
     runtime: &mut IrInterpRuntime,
+    types: &mut crate::compiler2::Types,
     tel: &dyn Telemetry,
+    program: &crate::compiler2::BackendProgram,
+    module: &Module,
     signature: &LoweredExtern,
     marshals: Option<&[ExternTy]>,
     args: &[AnyValue],
@@ -180,12 +183,48 @@ pub(super) fn call_lowered_extern(
                 .ok_or_else(|| "fz_map_entry_value/2 index must be integer".to_string())?;
             return interp_value_from_extern_ref_word(fz_map_entry_value(map_ref, index));
         }
-        "fz_spawn" | "fz_spawn_opt" | "fz_send" | "fz_self" | "fz_make_resource" => {
-            let _ = tel;
-            return Err(format!(
-                "compiler2 backend interpreter does not support runtime extern `{}` yet",
-                signature.symbol
-            ));
+        "fz_spawn" | "fz_spawn_opt" => {
+            if args.is_empty() {
+                return Err(format!("{}/1+ got 0 args", signature.symbol));
+            }
+            let (fn_id, captured) = super::binop::unpack_callable(args[0], runtime.cur_proc())?;
+            let target = super::backend::resolve_backend_callable_executable(
+                runtime,
+                types,
+                module,
+                program,
+                fn_id,
+                &captured,
+                &[],
+            )?;
+            let pid = runtime.spawn_backend(target, captured)?;
+            return Ok(AnyValue::Int(pid as i64));
+        }
+        "fz_self" => {
+            return Ok(AnyValue::Int(unsafe { &*runtime.cur_proc() }.pid as i64));
+        }
+        "fz_send" => {
+            if args.len() != 2 {
+                return Err(format!("fz_send/2 got {} args", args.len()));
+            }
+            let receiver = args[0].as_i64().ok_or_else(|| "send/2: pid must be Int".to_string())? as u32;
+            runtime.send_opaque(tel, receiver, args[1])?;
+            return Ok(args[1]);
+        }
+        "fz_make_resource" => {
+            if args.len() != 2 {
+                return Err(format!("fz_make_resource/2 got {} args", args.len()));
+            }
+            let payload = args[0]
+                .as_i64()
+                .ok_or_else(|| "make_resource/2: payload must be integer".to_string())?;
+            return super::make_resource_in_current_process(
+                runtime.cur_proc(),
+                module,
+                payload,
+                args[1].value(runtime.cur_proc())?,
+            )
+            .map(interp_value_from_slot);
         }
         _ => {}
     }

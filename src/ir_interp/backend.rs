@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use super::binop::{eval_binop, eval_unop, interp_value_eq, unpack_closure};
 use super::dispatch_exec::{DispatchExecState, execute_dispatch_inputs};
@@ -11,15 +12,17 @@ use super::*;
 use crate::compiler2::{
     BackendBlock, BackendBody, BackendExecutable, BackendProgram, BackendStep, ExecutableDispatch, ValueId,
 };
+use crate::compiler2::{ExecutableNeed, FunctionId};
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
 use crate::telemetry::Telemetry;
 use fz_runtime::any_value::{
     AnyValue as RuntimeAnyValue, AnyValueRef, ValueKind, closure_addr_from_tagged, struct_schema_id,
 };
 use fz_runtime::exec_ctx::ExecCtx;
-use fz_runtime::heap::FieldKind;
+use fz_runtime::heap::{FieldKind, Heap, deep_copy_any_value_ref};
 use fz_runtime::ir_runtime::fz_struct_get_field_ref;
-use fz_runtime::process::{Process, ProcessState};
+use fz_runtime::procbin::mso_drop_all_deferred;
+use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Process, ProcessState};
 
 /// Runs one closed Compiler2 backend program through the shared interpreter
 /// runtime without reopening planner or type-resolution work.
@@ -33,22 +36,129 @@ pub(crate) fn run_backend_main(
         atom_names: program.atom_names.clone(),
         ..Module::default()
     };
-    let proc_ptr = runtime.process_ptr(1).expect("backend interp installed pid 1");
+    runtime.enqueue_backend_entry(1, program.entry, Vec::new())?;
+    let completions = drive_backend_until_idle(&mut runtime, types, tel, program, &module)?;
+    let halt_val = completions
+        .iter()
+        .rev()
+        .find_map(|(pid, value)| {
+            (*pid == 1).then(|| {
+                runtime
+                    .process_ref(*pid)
+                    .map(|task| value_to_halt(task as *const Process as *mut Process, *value))
+            })
+        })
+        .flatten()
+        .unwrap_or(0);
+    Ok(halt_val)
+}
+
+impl IrInterpRuntime {
+    fn enqueue_backend_entry(&mut self, pid: u32, executable: usize, args: Vec<AnyValue>) -> Result<(), String> {
+        if !self.tasks.contains_key(&pid) {
+            return Err(format!("enqueue_backend_entry: unknown pid {}", pid));
+        }
+        self.backend_resume.insert(pid, (executable, args));
+        self.run_queue.push_back(pid);
+        self.set_process_state(pid, ProcessState::Ready);
+        Ok(())
+    }
+
+    fn take_backend_resume(&mut self, pid: u32) -> Option<(usize, Vec<AnyValue>)> {
+        self.backend_resume.remove(&pid)
+    }
+
+    pub(super) fn spawn_backend(&mut self, executable: usize, args: Vec<AnyValue>) -> Result<u32, String> {
+        let pid = self.next_pid();
+        let user_schemas = self.schemas();
+        let node = Rc::clone(&self.node);
+        let consts = CompiledModuleConsts::empty();
+        let mut child = Box::new(Process::from_consts(
+            node,
+            user_schemas,
+            &consts,
+            pid,
+            DEFAULT_REDUCTIONS_PER_QUANTUM,
+        ));
+        child.state = ProcessState::Ready;
+        self.insert_task(pid, child);
+        self.enqueue_backend_entry(pid, executable, args)?;
+        Ok(pid)
+    }
+
+    pub(super) fn send_opaque(&mut self, tel: &dyn Telemetry, receiver_pid: u32, msg: AnyValue) -> Result<(), String> {
+        let sender_heap = &unsafe { &*self.cur_proc() }.heap as *const Heap;
+        let msg_ref = msg.as_any_value_ref(self.cur_proc())?;
+        let Some(task) = self.tasks.get_mut(&receiver_pid) else {
+            tel.event(
+                &["fz", "runtime", "send_to_unknown_pid"],
+                crate::metadata! { pid: receiver_pid as u64 },
+            );
+            return Ok(());
+        };
+
+        let mut forwarding = HashMap::new();
+        let copied = deep_copy_any_value_ref(msg_ref, unsafe { &*sender_heap }, &mut task.heap, &mut forwarding);
+        if task.state == ProcessState::Blocked {
+            let copied_msg = AnyValue::from_any_value_ref(copied).expect("copied backend interpreter message ref");
+            if let Some(entry) = self.resume.get_mut(&receiver_pid) {
+                entry.1.insert(0, copied_msg);
+            }
+            task.state = ProcessState::Ready;
+            self.run_queue.push_back(receiver_pid);
+        } else {
+            task.mailbox.push_back(copied);
+        }
+        Ok(())
+    }
+}
+
+fn drive_backend_until_idle(
+    runtime: &mut IrInterpRuntime,
+    types: &mut crate::compiler2::Types,
+    tel: &dyn Telemetry,
+    program: &BackendProgram,
+    module: &Module,
+) -> Result<Vec<(u32, AnyValue)>, String> {
+    let mut completions = Vec::new();
     let mut exec_ctx = ExecCtx {
-        scheduler: &mut runtime as *mut IrInterpRuntime as *mut (),
+        scheduler: runtime as *mut IrInterpRuntime as *mut (),
         tel: (&tel) as *const &dyn Telemetry as *const (),
         output: Some(output_hook_thunk),
-        module: &module as *const Module as *const (),
+        module: module as *const Module as *const (),
         ..ExecCtx::empty()
     };
-    unsafe {
-        (*proc_ptr).state = ProcessState::Running;
-        (*proc_ptr).ctx = &mut exec_ctx;
-        (*proc_ptr).heap.set_owner(proc_ptr);
+
+    while let Some(pid) = runtime.pop_runnable() {
+        let (executable, args) = runtime
+            .take_backend_resume(pid)
+            .expect("backend pid in run queue with no backend resume");
+        let proc_ptr = runtime
+            .process_ptr(pid)
+            .expect("backend pid in run queue with no process entry");
+        unsafe {
+            (*proc_ptr).state = ProcessState::Running;
+            (*proc_ptr).reset_reduction_budget();
+            (*proc_ptr).ctx = &mut exec_ctx;
+            (*proc_ptr).heap.set_owner(proc_ptr);
+        }
+        runtime.current_proc = proc_ptr;
+        let value = run_backend_executable(runtime, types, tel, program, module, executable, args)?;
+        completions.push((pid, value));
+        unsafe {
+            mso_drop_all_deferred(&mut (*proc_ptr).heap);
+        }
+        if let Err(e) = drain_pending_dtors_backend(runtime, types, tel, program, module) {
+            tel.event(&["fz", "runtime", "dtor_drain_failed"], crate::metadata! { error: e });
+        }
+        unsafe {
+            (*proc_ptr).halt_value = value_to_halt(proc_ptr, value);
+            ExitRecord::emit(tel, pid, &*proc_ptr);
+        }
+        runtime.set_process_state(pid, ProcessState::Exited);
     }
-    runtime.current_proc = proc_ptr;
-    let value = run_backend_executable(&mut runtime, types, tel, program, &module, program.entry, Vec::new())?;
-    Ok(value_to_halt(proc_ptr, value))
+
+    Ok(completions)
 }
 
 fn run_backend_executable(
@@ -65,7 +175,9 @@ fn run_backend_executable(
         .get(executable_index)
         .ok_or_else(|| format!("backend executable {} is out of bounds", executable_index))?;
     match &executable.body {
-        BackendBody::Extern { signature } => call_lowered_extern(runtime, tel, signature, None, &args),
+        BackendBody::Extern { signature } => {
+            call_lowered_extern(runtime, types, tel, program, module, signature, None, &args)
+        }
         BackendBody::Clauses { clauses, .. } => {
             let dispatch = executable
                 .entry_dispatch
@@ -326,7 +438,16 @@ fn eval_direct_call(
         .ok_or_else(|| format!("backend direct callee {} is out of bounds", callee))?;
     let call_args = eval_call_args(env, args)?;
     match &executable.body {
-        BackendBody::Extern { signature } => call_lowered_extern(runtime, tel, signature, extern_marshals, &call_args),
+        BackendBody::Extern { signature } => call_lowered_extern(
+            runtime,
+            types,
+            tel,
+            program,
+            module,
+            signature,
+            extern_marshals,
+            &call_args,
+        ),
         BackendBody::Clauses { .. } => run_backend_executable(runtime, types, tel, program, module, callee, call_args),
     }
 }
@@ -403,6 +524,116 @@ fn closure_captures(proc: *mut Process, value: AnyValue) -> Result<Vec<AnyValue>
             let (_, captures) = unpack_closure(other.value(proc)?)?;
             Ok(captures)
         }
+    }
+}
+
+fn drain_pending_dtors_backend(
+    runtime: &mut IrInterpRuntime,
+    types: &mut crate::compiler2::Types,
+    tel: &dyn Telemetry,
+    program: &BackendProgram,
+    module: &Module,
+) -> Result<(), String> {
+    loop {
+        let entry = {
+            let process = unsafe { &mut *runtime.cur_proc() };
+            process.heap.pending_dtors.pop_front()
+        };
+        let Some((closure_bits, payload_ref)) = entry else {
+            break;
+        };
+        let closure_ref = AnyValueRef::from_raw_word(closure_bits)
+            .map_err(|err| format!("backend dtor drain: invalid closure ref {closure_bits:#x}: {err:?}"))?;
+        let closure = RuntimeAnyValue::heap_ptr(
+            closure_ref
+                .closure_addr()
+                .map_err(|err| format!("backend dtor drain: ref is not a closure: {err:?}"))?,
+            ValueKind::CLOSURE,
+        );
+        let (fn_id, captures) = match unpack_closure(closure) {
+            Ok(parts) => parts,
+            Err(err) => {
+                tel.event(&["fz", "runtime", "bad_dtor_closure"], crate::metadata! { error: err });
+                continue;
+            }
+        };
+        let payload = interp_value_from_ref_word(payload_ref, "backend dtor drain payload")?;
+        let target =
+            resolve_backend_callable_executable(runtime, types, module, program, fn_id, &captures, &[payload])?;
+        let mut args = captures;
+        args.push(payload);
+        let _ = run_backend_executable(runtime, types, tel, program, module, target, args)?;
+    }
+    Ok(())
+}
+
+/// Resolves one runtime callable value against the closed backend inventory.
+///
+/// Callable identity comes from the published closure body + capture shape.
+/// Dynamic arg types only break ties when more than one closed executable
+/// matches that identity.
+pub(super) fn resolve_backend_callable_executable(
+    runtime: &mut IrInterpRuntime,
+    types: &mut crate::compiler2::Types,
+    module: &Module,
+    program: &BackendProgram,
+    fn_id: FnId,
+    captures: &[AnyValue],
+    args: &[AnyValue],
+) -> Result<usize, String> {
+    let candidates = program
+        .callable_entries
+        .iter()
+        .filter_map(|entry| {
+            let executable = &program.executables[entry.target];
+            (executable.key.need == ExecutableNeed::Value
+                && executable.key.activation.function == FunctionId::from_u32(fn_id.0)
+                && entry.capture_count == captures.len()
+                && executable.key.activation.input.len() == captures.len() + args.len())
+            .then_some(entry.target)
+        })
+        .collect::<Vec<_>>();
+
+    if let [target] = candidates.as_slice() {
+        return Ok(*target);
+    }
+
+    let mut actual_types = Vec::with_capacity(captures.len() + args.len());
+    for value in captures.iter().chain(args.iter()) {
+        actual_types.push(dynamic_value_ty(runtime, types, module, *value)?);
+    }
+
+    let mut matches = candidates
+        .into_iter()
+        .filter(|target| {
+            let executable = &program.executables[*target];
+            actual_types
+                .iter()
+                .zip(executable.key.activation.input.iter())
+                .all(|(&actual, &expected)| {
+                    let overlap = types.intersect(actual, expected);
+                    !types.is_empty(&overlap)
+                })
+        })
+        .collect::<Vec<_>>();
+    matches.sort_unstable();
+    matches.dedup();
+
+    match matches.as_slice() {
+        [target] => Ok(*target),
+        [] => Err(format!(
+            "backend callable {} with {} capture(s) and {} arg(s) has no settled callable entry",
+            fn_id.0,
+            captures.len(),
+            args.len()
+        )),
+        _ => Err(format!(
+            "backend callable {} with {} capture(s) and {} arg(s) is ambiguous across callable entries {:?}",
+            fn_id.0,
+            captures.len(),
+            args.len(),
+            matches
+        )),
     }
 }
 

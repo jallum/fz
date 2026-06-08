@@ -175,6 +175,12 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
         let lowered_body = world.lowered_body(activation.function);
         let callsite_needs = executable_callsite_needs(&lowered_body, &analysis.reachable_clauses, executable.need);
 
+        for latent in &analysis.latent_executables {
+            if !executables.contains(latent) {
+                pending.push_back(latent.clone());
+            }
+        }
+
         for callsite in analysis.callsites {
             let key = CallSiteKey {
                 activation: activation.clone(),

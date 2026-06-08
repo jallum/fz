@@ -72,7 +72,7 @@ pub(super) struct MatchedClause {
 }
 
 impl IrInterpRuntime {
-    fn next_pid(&mut self) -> u32 {
+    pub(super) fn next_pid(&mut self) -> u32 {
         let pid = self.next_pid;
         self.next_pid += 1;
         pid

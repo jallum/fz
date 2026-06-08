@@ -16,6 +16,9 @@ use crate::fz_ir::{
     FnIr as IrFn, Module as IrModule, Prim as IrPrim, ReceiveAfter, ReceiveClause, Stmt as IrStmt, Term as IrTerm,
 };
 use crate::ir_codegen::{JitBackend, compile_with_backend_native_program};
+use crate::ir_interp::{
+    tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
+};
 use crate::telemetry::handler::{Event, EventKind, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use std::cell::RefCell;
@@ -2731,6 +2734,198 @@ fn main(), do: check(42) + check(:foo)
     assert_eq!(
         halt, 12,
         "typed entry dispatch should select the integer clause only for integer activations"
+    );
+}
+
+#[test]
+fn compiler2_interp_uses_backend_runtime_self_and_send_intrinsics() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/backend_interp_self_send.fz".to_string()),
+        text: r#"
+fn main() do
+  me = self()
+  send(me, 42)
+  me
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let halt = compiler
+        .run_root_interp(root_id)
+        .expect("Compiler2 backend interpreter should route self/send through the runtime scheduler");
+
+    assert_eq!(halt, 1, "self/0 should report pid 1 for the root backend task");
+    assert!(
+        capture.find(&["fz", "runtime", "send_to_unknown_pid"]).is_empty(),
+        "send(self(), ...) should deliver to the live root task instead of falling through the unknown-pid path",
+    );
+    assert!(
+        capture.find(&["fz", "type_infer"]).is_empty()
+            && capture.find(&["fz", "planner"]).is_empty()
+            && capture.find(&["fz", "codegen"]).is_empty(),
+        "Compiler2 interpreter runs should not reopen legacy type inference, planning, or codegen",
+    );
+}
+
+#[test]
+fn compiler2_interp_runs_spawned_children_from_backend_runtime_intrinsics() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/backend_interp_spawn.fz".to_string()),
+        text: r#"
+fn main() do
+  spawn(fn () -> dbg(42) end)
+  0
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let halt = compiler.run_root_interp(root_id).unwrap_or_else(|error| {
+        let diagnostic = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!("Compiler2 backend interpreter should schedule spawned child tasks: {error}; diagnostic={diagnostic}");
+    });
+
+    assert_eq!(halt, 0, "spawn/1 should leave the root task's scalar result untouched");
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["42"],
+        "spawn/1 should enqueue the child on the backend interpreter run queue and let it reach dbg/1",
+    );
+    assert!(
+        capture.find(&["fz", "type_infer"]).is_empty()
+            && capture.find(&["fz", "planner"]).is_empty()
+            && capture.find(&["fz", "codegen"]).is_empty(),
+        "Compiler2 interpreter runs should not reopen legacy type inference, planning, or codegen",
+    );
+}
+
+#[test]
+fn compiler2_interp_runs_spawn_opt_children_from_backend_runtime_intrinsics() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/backend_interp_spawn_opt.fz".to_string()),
+        text: r#"
+fn main() do
+  spawn(fn () -> dbg(7) end, 4096)
+  0
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let halt = compiler.run_root_interp(root_id).unwrap_or_else(|error| {
+        let diagnostic = dbg
+            .lines()
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "Compiler2 backend interpreter should accept spawn/2 heap hints through fz_spawn_opt: {error}; dbg={diagnostic}"
+        );
+    });
+
+    assert_eq!(halt, 0, "spawn/2 should preserve the root task's explicit result");
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["7"],
+        "spawn/2 should still enqueue the child even though the backend interpreter ignores the heap hint",
+    );
+}
+
+#[test]
+fn compiler2_interp_runs_resource_dtors_from_backend_runtime_intrinsics() {
+    let _lock = tests_support_lock().lock().unwrap();
+    tests_support_dtor_reset();
+
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/backend_interp_make_resource.fz".to_string()),
+        text: r#"
+extern "C" fn _resource_test_dtor(integer) :: nil
+
+fn main() do
+  make_resource(42, fn (x) -> _resource_test_dtor(x) end)
+  0
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let halt = compiler.run_root_interp(root_id).unwrap_or_else(|error| {
+        let diagnostic = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "Compiler2 backend interpreter should route make_resource/2 through the shared runtime helper: {error}; diagnostic={diagnostic}"
+        );
+    });
+
+    assert_eq!(
+        halt, 0,
+        "make_resource/2 should preserve the root task's explicit result"
+    );
+    assert_eq!(
+        tests_support_dtor_fired(),
+        1,
+        "backend interpreter shutdown should drain the pending resource destructor exactly once",
+    );
+    assert_eq!(
+        tests_support_dtor_last_payload(),
+        42,
+        "the backend interpreter should run the resource destructor body as real fz code and pass the payload through",
+    );
+    assert!(
+        capture.find(&["fz", "runtime", "dtor_drain_failed"]).is_empty(),
+        "resource destructor drain should complete cleanly on the backend interpreter path",
     );
 }
 

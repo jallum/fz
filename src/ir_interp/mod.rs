@@ -76,6 +76,7 @@ pub(super) struct InterpContinuation {
 
 /// Per-task resume state: fn to call, args, selected spec, and after-chain.
 type ResumeEntry = (FnId, Vec<AnyValue>, Option<SpecKey>, Vec<InterpContinuation>);
+type BackendResumeEntry = (usize, Vec<AnyValue>);
 
 /// fz-yxs/fz-2v3 — value type for selective-receive park records.
 type InterpParked = (ParkRecord, Vec<InterpContinuation>);
@@ -143,6 +144,7 @@ pub(crate) struct IrInterpRuntime {
     tuple_schema_ids: HashMap<usize, u32>,
     run_queue: VecDeque<u32>,
     resume: HashMap<u32, ResumeEntry>,
+    backend_resume: HashMap<u32, BackendResumeEntry>,
     parked: HashMap<u32, InterpParked>,
     /// Node-global state (the atom table) shared by every task in this
     /// interpreter instance, seeded from the program module's atoms.
@@ -165,6 +167,7 @@ impl IrInterpRuntime {
             tuple_schema_ids: HashMap::new(),
             run_queue: VecDeque::new(),
             resume: HashMap::new(),
+            backend_resume: HashMap::new(),
             parked: HashMap::new(),
             node: Rc::new(Node::empty()),
             current_proc: std::ptr::null_mut(),

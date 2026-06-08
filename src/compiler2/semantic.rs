@@ -34,6 +34,7 @@ pub struct CallSiteSummary {
 pub struct ActivationAnalysis {
     pub reachable_clauses: Vec<u32>,
     pub callsites: Vec<CallSiteId>,
+    pub latent_executables: Vec<ExecutableKey>,
     pub value_types: HashMap<ValueId, Ty>,
 }
 
