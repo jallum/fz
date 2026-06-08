@@ -6,14 +6,15 @@
   "blocks": [
     "fz-rh2.10.8.4"
   ],
+  "closed_at": "2026-06-08T01:11:22Z",
   "created": "2026-06-08T00:05:55Z",
   "description": "Goal: make Compiler2 fact aggregation and change detection exact within one run. Signal: type-bearing fact joins operate on the world-owned local type ids, joined values change only when their exact value changes, and structural fingerprinting over type payloads is gone from Compiler2.\n\nStrategy: move canonicalization and joins onto the shared world-owned type store, replace ad hoc structural type fingerprinting with exact value equality plus monotonic slot revisions, and simplify the fact table around the reality that interned ids are already canonical within one compiler run.\n\nChange:\n- Rework `FactValue::Inputs` normalization and join to use the world-owned local `Types` instance.\n- Keep `alpha_normalize_vars`, but run it in the one shared Compiler2 type store before the joined value is stored.\n- Replace deep structural hashing/fingerprinting for type-bearing facts with exact joined-value comparison plus slot revision bumps.\n- Revisit the `FactTable` surface so it reports the revisions Compiler2 actually needs rather than pretending a separately-computed fingerprint is a different truth.\n- Update scheduler/work-graph tests to assert the new exact-value behavior.\n\nWhy:\n- Once Compiler2 owns one shared interned type store, local type ids are already canonical for within-run equality and hashing.\n- Structural hashing in Compiler2's fact layer becomes redundant at best and misleading at worst.\n- Exact value equality plus revisions is simpler, cheaper, and easier to reason about.\n\nChecks:\n- Fact-table tests prove joined `Inputs` are order-independent and change only when the exact joined value changes.\n- Activation-input aggregation tests continue to prove `refine_widen` semantics under the local type store.\n- No Compiler2 production code fingerprints type-bearing fact payloads structurally.",
   "id": "fz-rh2.10.8.3",
   "labels": [],
   "parent": "fz-rh2.10.8",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 facts: use exact id-backed values and revisions instead of structural type fingerprints",
   "type": "task",
-  "updated_at": "2026-06-08T01:05:21Z"
+  "updated_at": "2026-06-08T01:11:22Z"
 }
