@@ -1,11 +1,12 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
+use crate::compiler2::artifact::{BackendEntry, BackendTail};
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
-    AbiReadyProgram, AbiValueRepr, ActivationKey, BackendProgram, BackendStep, CallSiteId, CallSiteKey,
-    CallSiteSummary, CallableEntry, EmissionReadyProgram, ExecutableKey, FactKey, FactValue, FunctionId, FunctionRef,
-    LoweredBody, LoweredStep, MaterializedProgram, Module, ModuleId, ReturnAbi, SelectedCallee, SemanticClosure, Ty,
-    ValueId,
+    AbiReadyProgram, AbiValueRepr, ActivationKey, BackendProgram, CallSiteId, CallSiteKey, CallSiteSummary,
+    CallableEntry, ControlEntryOrigin, EmissionReadyProgram, ExecutableKey, FactKey, FactValue, FunctionId,
+    FunctionRef, LoweredBody, LoweredStep, MaterializedProgram, Module, ModuleId, ReturnAbi, SelectedCallee,
+    SemanticClosure, Ty, ValueId,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
@@ -963,6 +964,16 @@ fn compiler2_materialization_projects_only_the_closed_quicksort_frontier() {
     );
 
     let (_, main_plan) = materialized_executable(&program, main_id);
+    match &main_plan.body {
+        crate::compiler2::LoweredBody::Clauses { clauses, entries, .. } => {
+            let entry = &entries[clauses[0].entry.as_u32() as usize];
+            assert!(
+                matches!(entry.origin, ControlEntryOrigin::Clause),
+                "materialization should preserve clause entry ids when it prunes and reindexes control entries",
+            );
+        }
+        other => panic!("expected clause body for materialized main/0, got {other:?}"),
+    }
     let (main_callsite, main_call_value) = direct_call_in_body(lowered_body(&bodies, main_id), qsort_id);
     let qsort_edge = main_plan
         .call_edges
@@ -1929,7 +1940,7 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
     let (_, main_exec) = backend_executable(&program, main_id);
     let call = backend_direct_call(main_exec, &program, qsort_id);
     match call {
-        BackendStep::DirectCall { callee, args, .. } => {
+        BackendTail::DirectCall { callee, args, .. } => {
             assert_eq!(
                 program.executables[*callee].key.activation.function, qsort_id,
                 "backend direct-call steps should point at settled executable inventory indices",
@@ -2078,7 +2089,7 @@ end
 
     let call = backend_direct_call(main_exec, &program, open_id);
     match call {
-        BackendStep::DirectCall {
+        BackendTail::DirectCall {
             callee,
             args,
             extern_marshals,
@@ -2208,32 +2219,48 @@ fn compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee
     }
 
     let program = native.last(root_id).program;
-    let qsort_clause_1 = program
-        .module
-        .fn_by_name("qsort__clause_1")
-        .expect("qsort recursive clause")
-        .id;
-    let tuple_field_cont = program
+    let qsort_owners = program
         .bodies
         .iter()
-        .find(|body| {
-            body.origin
-                == NativeBodyOrigin::Continuation {
-                    owner: qsort_clause_1,
-                    index: 0,
-                }
+        .filter_map(|body| match &body.origin {
+            NativeBodyOrigin::Executable(_) if program.module.fn_by_id(body.fn_id).name.starts_with("qsort__e") => {
+                Some(body.fn_id)
+            }
+            _ => None,
         })
-        .expect("qsort tuple-field continuation");
+        .collect::<HashSet<_>>();
+    let tuple_field_conts = program
+        .bodies
+        .iter()
+        .filter(|body| {
+            matches!(
+                body.origin,
+                NativeBodyOrigin::Continuation { owner, .. } if qsort_owners.contains(&owner)
+            ) && body.entry_abi == NativeEntryAbi::Continuation { extra_params: 2 }
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
-        tuple_field_cont.entry_abi,
-        NativeEntryAbi::Continuation { extra_params: 2 },
-        "the continuation fed by partition/4's tuple-field executable should accept both returned fields explicitly",
+        tuple_field_conts.len(),
+        2,
+        "the rooted quicksort frontier reaches two qsort executables, and each should own one tuple-field continuation from partition/4",
     );
-    assert_eq!(
-        tuple_field_cont.param_reprs,
-        vec![AbiValueRepr::ValueRef, AbiValueRepr::ValueRef, AbiValueRepr::RawInt],
-        "the tuple-field continuation should expose both field lanes before its captured pivot",
-    );
+    for tuple_field_cont in tuple_field_conts {
+        assert_eq!(
+            tuple_field_cont.entry_abi,
+            NativeEntryAbi::Continuation { extra_params: 2 },
+            "the continuation fed by partition/4's tuple-field executable should accept both returned fields explicitly",
+        );
+        assert_eq!(
+            tuple_field_cont.param_reprs[..2],
+            [AbiValueRepr::ValueRef, AbiValueRepr::ValueRef],
+            "the tuple-field continuation should expose both returned field lanes first",
+        );
+        assert_eq!(
+            tuple_field_cont.param_reprs.len(),
+            3,
+            "the tuple-field continuation should still carry exactly one captured pivot lane after the returned fields",
+        );
+    }
 }
 
 #[test]
@@ -4189,7 +4216,7 @@ end
     );
 
     let body = lowered_body(&bodies, main_id);
-    let LoweredBody::Clauses { clauses, .. } = body else {
+    let LoweredBody::Clauses { clauses, entries, .. } = body else {
         panic!("main/0 should lower as clauses");
     };
     assert_eq!(
@@ -4198,7 +4225,7 @@ end
         "main/0 has no head params to project after entry dispatch",
     );
     assert!(
-        clauses[0].body.steps.iter().any(|step| {
+        entries[clauses[0].entry.as_u32() as usize].steps.iter().any(|step| {
             matches!(
                 step,
                 LoweredStep::AssertTuple { .. } | LoweredStep::AssertLiteral { .. } | LoweredStep::AssertSame { .. }
@@ -6234,15 +6261,12 @@ fn backend_direct_call<'a>(
     executable: &'a crate::compiler2::BackendExecutable,
     program: &'a BackendProgram,
     callee: FunctionId,
-) -> &'a BackendStep {
+) -> &'a BackendTail {
     match &executable.body {
         crate::compiler2::BackendBody::Extern { .. } => panic!("expected clause body with a direct call"),
-        crate::compiler2::BackendBody::Clauses { clauses, .. } => {
+        crate::compiler2::BackendBody::Clauses { clauses, entries, .. } => {
             for clause in clauses {
-                if let Some(found) = backend_direct_call_in_steps(&clause.projections, program, callee) {
-                    return found;
-                }
-                if let Some(found) = backend_direct_call_in_steps(&clause.body.steps, program, callee) {
+                if let Some(found) = backend_direct_call_in_entry(entries, clause.entry, program, callee) {
                     return found;
                 }
             }
@@ -6251,32 +6275,25 @@ fn backend_direct_call<'a>(
     }
 }
 
-fn backend_direct_call_in_steps<'a>(
-    steps: &'a [BackendStep],
+fn backend_direct_call_in_entry<'a>(
+    entries: &'a [BackendEntry],
+    entry_id: crate::compiler2::ControlEntryId,
     program: &'a BackendProgram,
     callee: FunctionId,
-) -> Option<&'a BackendStep> {
-    for step in steps {
-        match step {
-            BackendStep::DirectCall { callee: target, .. }
-                if program.executables[*target].key.activation.function == callee =>
-            {
-                return Some(step);
-            }
-            BackendStep::If {
-                then_block, else_block, ..
-            } => {
-                if let Some(found) = backend_direct_call_in_steps(&then_block.steps, program, callee) {
-                    return Some(found);
-                }
-                if let Some(found) = backend_direct_call_in_steps(&else_block.steps, program, callee) {
-                    return Some(found);
-                }
-            }
-            _ => {}
+) -> Option<&'a BackendTail> {
+    let entry = &entries[entry_id.as_u32() as usize];
+    match &entry.tail {
+        BackendTail::DirectCall { callee: target, .. }
+            if program.executables[*target].key.activation.function == callee =>
+        {
+            Some(&entry.tail)
         }
+        BackendTail::If {
+            then_entry, else_entry, ..
+        } => backend_direct_call_in_entry(entries, *then_entry, program, callee)
+            .or_else(|| backend_direct_call_in_entry(entries, *else_entry, program, callee)),
+        _ => None,
     }
-    None
 }
 
 fn backend_callable_entry_uses(program: &BackendProgram) -> HashSet<usize> {
@@ -6284,10 +6301,9 @@ fn backend_callable_entry_uses(program: &BackendProgram) -> HashSet<usize> {
     for executable in &program.executables {
         match &executable.body {
             crate::compiler2::BackendBody::Extern { .. } => {}
-            crate::compiler2::BackendBody::Clauses { clauses, .. } => {
+            crate::compiler2::BackendBody::Clauses { clauses, entries, .. } => {
                 for clause in clauses {
-                    collect_backend_callable_entry_uses(&clause.projections, &mut out);
-                    collect_backend_callable_entry_uses(&clause.body.steps, &mut out);
+                    collect_backend_callable_entry_uses(entries, clause.entry, &mut out);
                 }
             }
         }
@@ -6603,34 +6619,34 @@ fn native_callsite_idents_match(left: &CallsiteIdent, right: &CallsiteIdent) -> 
     left.span() == right.span()
 }
 
-fn collect_backend_callable_entry_uses(steps: &[BackendStep], out: &mut HashSet<usize>) {
-    for step in steps {
-        match step {
-            BackendStep::DirectCall { args, .. } | BackendStep::ClosureCall { args, .. } => {
-                for arg in args {
-                    out.extend(arg.callable_entries.iter().copied());
-                }
+fn collect_backend_callable_entry_uses(
+    entries: &[BackendEntry],
+    entry_id: crate::compiler2::ControlEntryId,
+    out: &mut HashSet<usize>,
+) {
+    let entry = &entries[entry_id.as_u32() as usize];
+    match &entry.tail {
+        BackendTail::DirectCall { args, .. } | BackendTail::ClosureCall { args, .. } => {
+            for arg in args {
+                out.extend(arg.callable_entries.iter().copied());
             }
-            BackendStep::If {
-                then_block, else_block, ..
-            } => {
-                collect_backend_callable_entry_uses(&then_block.steps, out);
-                collect_backend_callable_entry_uses(&else_block.steps, out);
-            }
-            _ => {}
         }
+        BackendTail::If {
+            then_entry, else_entry, ..
+        } => {
+            collect_backend_callable_entry_uses(entries, *then_entry, out);
+            collect_backend_callable_entry_uses(entries, *else_entry, out);
+        }
+        BackendTail::Value { .. } => {}
     }
 }
 
 fn direct_call_in_body(body: LoweredBody, callee: FunctionId) -> (CallSiteId, ValueId) {
     match body {
         LoweredBody::Extern { .. } => panic!("expected clause body with a direct call"),
-        LoweredBody::Clauses { clauses, .. } => {
+        LoweredBody::Clauses { clauses, entries, .. } => {
             for clause in clauses {
-                if let Some(found) = direct_call_in_steps(&clause.projections, callee) {
-                    return found;
-                }
-                if let Some(found) = direct_call_in_steps(&clause.body.steps, callee) {
+                if let Some(found) = direct_call_in_entry(&entries, clause.entry, callee) {
                     return found;
                 }
             }
@@ -6639,29 +6655,25 @@ fn direct_call_in_body(body: LoweredBody, callee: FunctionId) -> (CallSiteId, Va
     }
 }
 
-fn direct_call_in_steps(steps: &[LoweredStep], callee: FunctionId) -> Option<(CallSiteId, ValueId)> {
-    for step in steps {
-        match step {
-            LoweredStep::DirectCall {
-                value,
-                callsite,
-                callee: crate::compiler2::DirectCallee::Function(function),
-                ..
-            } if *function == callee => return Some((*callsite, *value)),
-            LoweredStep::If {
-                then_block, else_block, ..
-            } => {
-                if let Some(found) = direct_call_in_steps(&then_block.steps, callee) {
-                    return Some(found);
-                }
-                if let Some(found) = direct_call_in_steps(&else_block.steps, callee) {
-                    return Some(found);
-                }
-            }
-            _ => {}
-        }
+fn direct_call_in_entry(
+    entries: &[crate::compiler2::LoweredEntry],
+    entry_id: crate::compiler2::ControlEntryId,
+    callee: FunctionId,
+) -> Option<(CallSiteId, ValueId)> {
+    let entry = &entries[entry_id.as_u32() as usize];
+    match &entry.tail {
+        crate::compiler2::LoweredTail::DirectCall {
+            value,
+            callsite,
+            callee: crate::compiler2::DirectCallee::Function(function),
+            ..
+        } if *function == callee => Some((*callsite, *value)),
+        crate::compiler2::LoweredTail::If {
+            then_entry, else_entry, ..
+        } => direct_call_in_entry(entries, *then_entry, callee)
+            .or_else(|| direct_call_in_entry(entries, *else_entry, callee)),
+        _ => None,
     }
-    None
 }
 
 fn plan_has_nested_guard_dispatch(plan: &PatternDispatchPlan<Ty>) -> bool {

@@ -18,7 +18,7 @@ use super::super::artifact::{
     EmissionReadyCallEdge, EmissionReadyCallableEntry, EmissionReadyExecutable, EmissionReadyProgram,
     ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable, MaterializedProgram, ReturnAbi,
 };
-use super::super::body::{CallArg, CallSiteId, LoweredBlock, LoweredBody, LoweredStep, ValueId};
+use super::super::body::{CallArg, CallSiteId, LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId};
 use super::super::drive::{FactKey, Job, JobEffects};
 use super::super::facts::FactValue;
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, RootId};
@@ -307,13 +307,88 @@ fn materialize_entry_dispatch(
 fn prune_lowered_body(body: LoweredBody, reachable_clauses: &[u32]) -> LoweredBody {
     match body {
         LoweredBody::Extern { .. } => body,
-        LoweredBody::Clauses { clauses, generated } => LoweredBody::Clauses {
-            clauses: reachable_clauses
+        LoweredBody::Clauses {
+            clauses,
+            entries,
+            generated,
+        } => {
+            let mut clauses = reachable_clauses
                 .iter()
                 .map(|clause_id| clauses[*clause_id as usize].clone())
-                .collect(),
-            generated,
-        },
+                .collect::<Vec<_>>();
+            let mut needed = HashMap::new();
+            let mut kept_ids = Vec::new();
+            for clause in &clauses {
+                collect_reachable_entries(&entries, clause.entry, &mut kept_ids, &mut needed);
+            }
+            let mut kept = kept_ids
+                .iter()
+                .map(|entry_id| entries[entry_id.as_u32() as usize].clone())
+                .collect::<Vec<_>>();
+            reindex_entries(&mut clauses, &mut kept, &needed);
+            LoweredBody::Clauses {
+                clauses,
+                entries: kept,
+                generated,
+            }
+        }
+    }
+}
+
+fn collect_reachable_entries(
+    entries: &[LoweredEntry],
+    entry_id: super::super::body::ControlEntryId,
+    order: &mut Vec<super::super::body::ControlEntryId>,
+    out: &mut HashMap<super::super::body::ControlEntryId, super::super::body::ControlEntryId>,
+) {
+    if out.contains_key(&entry_id) {
+        return;
+    }
+    let next_id = super::super::body::ControlEntryId::from_u32(order.len() as u32);
+    order.push(entry_id);
+    out.insert(entry_id, next_id);
+    let entry = &entries[entry_id.as_u32() as usize];
+    match &entry.tail {
+        LoweredTail::Value { dest, .. }
+        | LoweredTail::DirectCall { dest, .. }
+        | LoweredTail::ClosureCall { dest, .. } => {
+            if let super::super::body::ControlDestination::Deliver(target) = dest {
+                collect_reachable_entries(entries, *target, order, out);
+            }
+        }
+        LoweredTail::If {
+            then_entry, else_entry, ..
+        } => {
+            collect_reachable_entries(entries, *then_entry, order, out);
+            collect_reachable_entries(entries, *else_entry, order, out);
+        }
+    }
+}
+
+fn reindex_entries(
+    clauses: &mut [super::super::body::LoweredClause],
+    entries: &mut [LoweredEntry],
+    ids: &HashMap<super::super::body::ControlEntryId, super::super::body::ControlEntryId>,
+) {
+    for clause in clauses {
+        clause.entry = ids[&clause.entry];
+    }
+    for entry in entries {
+        match &mut entry.tail {
+            LoweredTail::Value { dest, .. }
+            | LoweredTail::DirectCall { dest, .. }
+            | LoweredTail::ClosureCall { dest, .. } => {
+                if let super::super::body::ControlDestination::Deliver(target) = dest {
+                    *target = ids[target];
+                }
+            }
+            LoweredTail::If {
+                then_entry, else_entry, ..
+            } => {
+                *then_entry = ids[then_entry];
+                *else_entry = ids[else_entry];
+            }
+        }
     }
 }
 
@@ -321,34 +396,27 @@ fn collect_callsite_args(body: &LoweredBody) -> HashMap<CallSiteId, Vec<CallArg>
     let mut out = HashMap::new();
     match body {
         LoweredBody::Extern { .. } => {}
-        LoweredBody::Clauses { clauses, .. } => {
+        LoweredBody::Clauses { clauses, entries, .. } => {
             for clause in clauses {
                 collect_step_call_args(&clause.projections, &mut out);
-                collect_block_call_args(&clause.body, &mut out);
+            }
+            for entry in entries {
+                collect_step_call_args(&entry.steps, &mut out);
+                collect_tail_call_args(&entry.tail, &mut out);
             }
         }
     }
     out
 }
 
-fn collect_block_call_args(block: &LoweredBlock, out: &mut HashMap<CallSiteId, Vec<CallArg>>) {
-    collect_step_call_args(&block.steps, out);
-}
+fn collect_step_call_args(_steps: &[LoweredStep], _out: &mut HashMap<CallSiteId, Vec<CallArg>>) {}
 
-fn collect_step_call_args(steps: &[LoweredStep], out: &mut HashMap<CallSiteId, Vec<CallArg>>) {
-    for step in steps {
-        match step {
-            LoweredStep::DirectCall { callsite, args, .. } | LoweredStep::ClosureCall { callsite, args, .. } => {
-                out.insert(*callsite, args.clone());
-            }
-            LoweredStep::If {
-                then_block, else_block, ..
-            } => {
-                collect_block_call_args(then_block, out);
-                collect_block_call_args(else_block, out);
-            }
-            _ => {}
+fn collect_tail_call_args(tail: &LoweredTail, out: &mut HashMap<CallSiteId, Vec<CallArg>>) {
+    match tail {
+        LoweredTail::DirectCall { callsite, args, .. } | LoweredTail::ClosureCall { callsite, args, .. } => {
+            out.insert(*callsite, args.clone());
         }
+        LoweredTail::Value { .. } | LoweredTail::If { .. } => {}
     }
 }
 
@@ -473,39 +541,41 @@ fn local_effects(body: &LoweredBody, call_edges: &HashMap<CallSiteId, Materializ
             halts: signature.ret == crate::fz_ir::ExternTy::Never,
             ..EffectSummary::default()
         },
-        LoweredBody::Clauses { clauses, .. } => {
+        LoweredBody::Clauses { clauses, entries, .. } => {
             let mut effects = EffectSummary::default();
             for clause in clauses {
                 effects.union_with(step_effects(&clause.projections, call_edges));
-                effects.union_with(block_effects(&clause.body, call_edges));
+            }
+            for entry in entries {
+                effects.union_with(step_effects(&entry.steps, call_edges));
+                effects.union_with(tail_effects(&entry.tail, call_edges));
             }
             effects
         }
     }
 }
 
-fn block_effects(block: &LoweredBlock, call_edges: &HashMap<CallSiteId, MaterializedCallEdge>) -> EffectSummary {
-    step_effects(&block.steps, call_edges)
-}
-
-fn step_effects(steps: &[LoweredStep], call_edges: &HashMap<CallSiteId, MaterializedCallEdge>) -> EffectSummary {
+fn step_effects(steps: &[LoweredStep], _call_edges: &HashMap<CallSiteId, MaterializedCallEdge>) -> EffectSummary {
     let mut effects = EffectSummary::default();
     for step in steps {
         match step {
             LoweredStep::Tuple { .. } | LoweredStep::List { .. } | LoweredStep::Lambda { .. } => {
                 effects.allocates = true;
             }
-            LoweredStep::ClosureCall { callsite, .. } if !call_edges.contains_key(callsite) => {
-                effects.calls_opaque = true;
-            }
-            LoweredStep::If {
-                then_block, else_block, ..
-            } => {
-                effects.union_with(block_effects(then_block, call_edges));
-                effects.union_with(block_effects(else_block, call_edges));
-            }
             _ => {}
         }
+    }
+    effects
+}
+
+fn tail_effects(tail: &LoweredTail, call_edges: &HashMap<CallSiteId, MaterializedCallEdge>) -> EffectSummary {
+    let mut effects = EffectSummary::default();
+    match tail {
+        LoweredTail::ClosureCall { callsite, .. } if !call_edges.contains_key(callsite) => {
+            effects.calls_opaque = true;
+        }
+        LoweredTail::Value { .. } | LoweredTail::DirectCall { .. } | LoweredTail::If { .. } => {}
+        LoweredTail::ClosureCall { .. } => {}
     }
     effects
 }
@@ -657,10 +727,12 @@ fn named_function_refs(body: &LoweredBody) -> HashMap<ValueId, (String, usize)> 
     let mut named = HashMap::new();
     match body {
         LoweredBody::Extern { .. } => {}
-        LoweredBody::Clauses { clauses, .. } => {
+        LoweredBody::Clauses { clauses, entries, .. } => {
             for clause in clauses {
                 collect_named_function_refs(&clause.projections, &mut named);
-                collect_named_function_refs(&clause.body.steps, &mut named);
+            }
+            for entry in entries {
+                collect_named_function_refs(&entry.steps, &mut named);
             }
         }
     }
@@ -673,18 +745,10 @@ fn collect_named_function_refs(steps: &[LoweredStep], named: &mut HashMap<ValueI
             LoweredStep::NamedFunctionRef { value, name, arity } => {
                 named.insert(*value, (name.clone(), *arity));
             }
-            LoweredStep::If {
-                then_block, else_block, ..
-            } => {
-                collect_named_function_refs(&then_block.steps, named);
-                collect_named_function_refs(&else_block.steps, named);
-            }
             LoweredStep::Const { .. }
             | LoweredStep::Tuple { .. }
             | LoweredStep::List { .. }
             | LoweredStep::FunctionRef { .. }
-            | LoweredStep::DirectCall { .. }
-            | LoweredStep::ClosureCall { .. }
             | LoweredStep::Lambda { .. }
             | LoweredStep::BinaryOp { .. }
             | LoweredStep::UnaryOp { .. }
@@ -709,7 +773,7 @@ fn callable_entries_in_body(
 ) -> Result<(), FatalError> {
     match &executable.body {
         LoweredBody::Extern { .. } => Ok(()),
-        LoweredBody::Clauses { clauses, .. } => {
+        LoweredBody::Clauses { clauses, entries, .. } => {
             for clause in clauses {
                 callable_entries_in_steps(
                     world,
@@ -720,15 +784,10 @@ fn callable_entries_in_body(
                     &clause.projections,
                     out,
                 )?;
-                callable_entries_in_steps(
-                    world,
-                    root_id,
-                    executables,
-                    executable,
-                    named_refs,
-                    &clause.body.steps,
-                    out,
-                )?;
+            }
+            for entry in entries {
+                callable_entries_in_steps(world, root_id, executables, executable, named_refs, &entry.steps, out)?;
+                callable_entries_in_tail(world, root_id, executables, executable, named_refs, &entry.tail, out)?;
             }
             Ok(())
         }
@@ -744,76 +803,47 @@ fn callable_entries_in_steps(
     steps: &[LoweredStep],
     out: &mut Vec<CallableEntry>,
 ) -> Result<(), FatalError> {
-    for step in steps {
-        match step {
-            LoweredStep::DirectCall { callsite, args, .. } => {
-                record_callable_boundary_args(
-                    world,
-                    root_id,
-                    executables,
-                    executable,
-                    named_refs,
-                    *callsite,
-                    None,
-                    args,
-                    out,
-                )?;
-            }
-            LoweredStep::ClosureCall {
-                callsite, callee, args, ..
-            } => {
-                record_callable_boundary_args(
-                    world,
-                    root_id,
-                    executables,
-                    executable,
-                    named_refs,
-                    *callsite,
-                    Some(*callee),
-                    args,
-                    out,
-                )?;
-            }
-            LoweredStep::If {
-                then_block, else_block, ..
-            } => {
-                callable_entries_in_steps(
-                    world,
-                    root_id,
-                    executables,
-                    executable,
-                    named_refs,
-                    &then_block.steps,
-                    out,
-                )?;
-                callable_entries_in_steps(
-                    world,
-                    root_id,
-                    executables,
-                    executable,
-                    named_refs,
-                    &else_block.steps,
-                    out,
-                )?;
-            }
-            LoweredStep::Const { .. }
-            | LoweredStep::Tuple { .. }
-            | LoweredStep::List { .. }
-            | LoweredStep::FunctionRef { .. }
-            | LoweredStep::NamedFunctionRef { .. }
-            | LoweredStep::Lambda { .. }
-            | LoweredStep::BinaryOp { .. }
-            | LoweredStep::UnaryOp { .. }
-            | LoweredStep::MapIndex { .. }
-            | LoweredStep::AssertLiteral { .. }
-            | LoweredStep::AssertTuple { .. }
-            | LoweredStep::TupleField { .. }
-            | LoweredStep::AssertEmptyList { .. }
-            | LoweredStep::AssertSame { .. }
-            | LoweredStep::SplitList { .. } => {}
-        }
-    }
+    let _ = (world, root_id, executables, executable, named_refs, steps, out);
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn callable_entries_in_tail(
+    world: &mut World<'_>,
+    root_id: RootId,
+    executables: &HashMap<ExecutableKey, AbiReadyExecutable>,
+    executable: &AbiReadyExecutable,
+    named_refs: &HashMap<ValueId, (String, usize)>,
+    tail: &LoweredTail,
+    out: &mut Vec<CallableEntry>,
+) -> Result<(), FatalError> {
+    match tail {
+        LoweredTail::DirectCall { callsite, args, .. } => record_callable_boundary_args(
+            world,
+            root_id,
+            executables,
+            executable,
+            named_refs,
+            *callsite,
+            None,
+            args,
+            out,
+        ),
+        LoweredTail::ClosureCall {
+            callsite, callee, args, ..
+        } => record_callable_boundary_args(
+            world,
+            root_id,
+            executables,
+            executable,
+            named_refs,
+            *callsite,
+            Some(*callee),
+            args,
+            out,
+        ),
+        LoweredTail::Value { .. } | LoweredTail::If { .. } => Ok(()),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

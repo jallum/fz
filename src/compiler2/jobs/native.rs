@@ -23,10 +23,11 @@ use crate::fz_ir::{
 use crate::types::Types as LegacyTypes;
 
 use super::super::artifact::{
-    AbiValueRepr, BackendBody, BackendExecutable, BackendProgram, BackendStep, EffectSummary, NativeBody,
-    NativeBodyOrigin, NativeCallableEntry, NativeEntryAbi, NativeProgram, ReturnAbi,
+    AbiValueRepr, BackendBody, BackendClause, BackendEntry, BackendEntryOrigin, BackendExecutable, BackendProgram,
+    BackendStep, BackendTail, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableEntry, NativeEntryAbi,
+    NativeProgram, ReturnAbi,
 };
-use super::super::body::{Literal, LoweredExtern, ValueId};
+use super::super::body::{ControlDestination, ControlEntryId, Literal, LoweredExtern, ValueId};
 use super::super::drive::{FactKey, Job, JobEffects};
 use super::super::facts::FactValue;
 use super::super::identity::{FunctionId, RootId};
@@ -68,7 +69,6 @@ struct NativeLowerer<'a, 'tel> {
     extern_marshals: HashMap<usize, Vec<ExternTy>>,
     extern_decls: Vec<ExternDecl>,
     native_bodies: Vec<NativeBody>,
-    continuation_indices: HashMap<FnId, u32>,
 }
 
 impl<'a, 'tel> NativeLowerer<'a, 'tel> {
@@ -159,7 +159,6 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             extern_marshals,
             extern_decls,
             native_bodies: Vec::new(),
-            continuation_indices: HashMap::new(),
         })
     }
 
@@ -167,9 +166,10 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         for (index, executable) in self.program.executables.iter().enumerate() {
             match &executable.body {
                 BackendBody::Extern { signature } => self.lower_extern_executable(index, executable, signature)?,
-                BackendBody::Clauses { clauses, .. } => {
+                BackendBody::Clauses { clauses, entries, .. } => {
+                    let entry_fns = entry_fn_ids(&mut self.module, entries);
                     if executable.entry_dispatch.is_some() {
-                        self.lower_clause_dispatch_executable(index, executable, clauses)?;
+                        self.lower_clause_dispatch_executable(index, executable, clauses, entries, &entry_fns)?;
                     } else {
                         let [clause] = clauses.as_slice() else {
                             return Err(incomplete_native_program(
@@ -182,7 +182,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                                 ),
                             ));
                         };
-                        self.lower_clause_fn(
+                        self.lower_clause_body_fn(
                             self.executable_fns[index],
                             executable,
                             &format!(
@@ -192,14 +192,12 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                             ),
                             FnCategory::User,
                             NativeBodyOrigin::Executable(executable.key.clone()),
-                            NativeEntryAbi::Direct,
-                            clause.params.as_slice(),
-                            &clause.projections,
-                            &clause.body.steps,
-                            clause.body.result,
-                            Finish::Return,
+                            entries,
+                            &entry_fns,
+                            clause,
                         )?;
                     }
+                    self.lower_entry_helpers(index, executable, entries, &entry_fns)?;
                 }
             }
         }
@@ -293,7 +291,9 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         &mut self,
         index: usize,
         executable: &BackendExecutable,
-        clauses: &[crate::compiler2::BackendClause],
+        clauses: &[BackendClause],
+        entries: &[BackendEntry],
+        entry_fns: &HashMap<ControlEntryId, FnId>,
     ) -> Result<(), FatalError> {
         let helper_ids = clauses.iter().map(|_| self.module.fresh_fn_id()).collect::<Vec<_>>();
         let fn_id = self.executable_fns[index];
@@ -330,7 +330,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         self.finish_native_fn(ctx);
 
         for (clause_index, (clause, helper_id)) in clauses.iter().zip(helper_ids.iter().copied()).enumerate() {
-            self.lower_clause_fn(
+            self.lower_clause_body_fn(
                 helper_id,
                 executable,
                 &format!(
@@ -343,45 +343,39 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     owner: executable.key.clone(),
                     index: clause_index as u32,
                 },
-                NativeEntryAbi::Direct,
-                clause.params.as_slice(),
-                &clause.projections,
-                &clause.body.steps,
-                clause.body.result,
-                Finish::Return,
+                entries,
+                entry_fns,
+                clause,
             )?;
         }
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn lower_clause_fn(
+    fn lower_clause_body_fn(
         &mut self,
         fn_id: FnId,
         executable: &BackendExecutable,
         name: &str,
         category: FnCategory,
         origin: NativeBodyOrigin,
-        entry_abi: NativeEntryAbi,
-        params: &[ValueId],
-        steps: &[BackendStep],
-        tail_steps: &[BackendStep],
-        final_result: ValueId,
-        finish: Finish,
+        entries: &[BackendEntry],
+        entry_fns: &HashMap<ControlEntryId, FnId>,
+        clause: &BackendClause,
     ) -> Result<(), FatalError> {
         let mut ctx = NativeFnCtx::new(
             fn_id,
             name,
             category,
             origin,
-            entry_abi,
+            NativeEntryAbi::Direct,
             executable.param_reprs.clone(),
             executable.return_ty,
             executable.return_abi.clone(),
             executable.effects,
         );
         let mut env = ValueEnv::default();
-        let entry_tys = params
+        let entry_tys = clause
+            .params
             .iter()
             .map(|value| {
                 executable
@@ -392,10 +386,11 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             })
             .collect::<Vec<_>>();
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
-        for (value, var) in params.iter().copied().zip(entry_vars) {
+        for (value, var) in clause.params.iter().copied().zip(entry_vars) {
             env.insert(value, var);
         }
-        self.lower_steps(&mut ctx, executable, env, steps, tail_steps, final_result, finish)?;
+        self.lower_entry_steps(&mut ctx, executable, &mut env, &clause.projections)?;
+        self.lower_entry_from_id(&mut ctx, executable, entries, entry_fns, clause.entry, env)?;
         self.finish_native_fn(ctx);
         Ok(())
     }
@@ -406,40 +401,103 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         self.native_bodies.push(body);
     }
 
-    fn lower_steps(
+    fn lower_entry_helpers(
+        &mut self,
+        executable_index: usize,
+        executable: &BackendExecutable,
+        entries: &[BackendEntry],
+        entry_fns: &HashMap<ControlEntryId, FnId>,
+    ) -> Result<(), FatalError> {
+        for (entry_index, entry) in entries.iter().enumerate() {
+            if matches!(entry.origin, BackendEntryOrigin::Clause) {
+                continue;
+            }
+            self.lower_entry_fn(
+                executable_index,
+                executable,
+                entries,
+                entry_fns,
+                ControlEntryId::from_u32(entry_index as u32),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn lower_entry_fn(
+        &mut self,
+        executable_index: usize,
+        executable: &BackendExecutable,
+        entries: &[BackendEntry],
+        entry_fns: &HashMap<ControlEntryId, FnId>,
+        entry_id: ControlEntryId,
+    ) -> Result<(), FatalError> {
+        let entry = &entries[entry_id.as_u32() as usize];
+        let fn_id = *entry_fns
+            .get(&entry_id)
+            .expect("non-clause entry should have a predeclared helper fn");
+        let base_name = format!(
+            "{}__e{}",
+            self.world.function_ref(executable.key.activation.function).name,
+            executable_index
+        );
+        let (entry_tys, param_reprs, entry_abi) = self.entry_signature(executable, entry);
+        let mut ctx = NativeFnCtx::new(
+            fn_id,
+            &entry_name(&base_name, entry_id, &entry.origin),
+            entry_category(&entry.origin),
+            NativeBodyOrigin::Continuation {
+                owner: self.executable_fns[executable_index],
+                index: entry_id.as_u32(),
+            },
+            entry_abi,
+            param_reprs,
+            executable.return_ty,
+            executable.return_abi.clone(),
+            executable.effects,
+        );
+        let mut env = ValueEnv::default();
+        let entry_vars = ctx.entry_params(entry_tys.as_slice());
+        let capture_offset = self.bind_entry_input(&mut ctx, executable, entry, &entry_vars, &mut env)?;
+        for (value, var) in entry
+            .captures
+            .iter()
+            .copied()
+            .zip(entry_vars.iter().copied().skip(capture_offset))
+        {
+            env.insert(value, var);
+        }
+        self.lower_entry_steps(&mut ctx, executable, &mut env, &entry.steps)?;
+        self.lower_entry_tail(&mut ctx, executable, entries, entry_fns, &env, &entry.tail)?;
+        self.finish_native_fn(ctx);
+        Ok(())
+    }
+
+    fn lower_entry_from_id(
         &mut self,
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
+        entries: &[BackendEntry],
+        entry_fns: &HashMap<ControlEntryId, FnId>,
+        entry_id: ControlEntryId,
         mut env: ValueEnv,
-        steps: &[BackendStep],
-        tail_steps: &[BackendStep],
-        final_result: ValueId,
-        finish: Finish,
     ) -> Result<(), FatalError> {
-        if steps.is_empty() {
-            if tail_steps.is_empty() {
-                let result = env.var(final_result).ok_or_else(|| {
-                    incomplete_native_program(
-                        self.world,
-                        self.root_id,
-                        format!(
-                            "native lowering could not resolve final result {}",
-                            final_result.as_u32()
-                        ),
-                    )
-                })?;
-                apply_finish(ctx, &env, result, finish);
-                return Ok(());
-            }
-            return self.lower_steps(ctx, executable, env, tail_steps, &[], final_result, finish);
-        }
+        let entry = &entries[entry_id.as_u32() as usize];
+        self.lower_entry_steps(ctx, executable, &mut env, &entry.steps)?;
+        self.lower_entry_tail(ctx, executable, entries, entry_fns, &env, &entry.tail)
+    }
 
-        for (index, step) in steps.iter().enumerate() {
-            let rest_current = &steps[index + 1..];
+    fn lower_entry_steps(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        env: &mut ValueEnv,
+        steps: &[BackendStep],
+    ) -> Result<(), FatalError> {
+        for step in steps {
             match step {
                 BackendStep::Const { value, literal } => {
                     let var = lower_backend_literal(ctx, &self.atom_ids, literal)?;
-                    bind_backend_value(ctx, executable, &mut env, *value, var);
+                    bind_backend_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::Tuple { value, items } => {
                     let vars = env.vars(items).ok_or_else(|| {
@@ -450,7 +508,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         )
                     })?;
                     let (var, _) = ctx.emit_let(Prim::MakeTuple(vars));
-                    bind_backend_value(ctx, executable, &mut env, *value, var);
+                    bind_backend_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::List { value, items, tail } => {
                     let vars = env.vars(items).ok_or_else(|| {
@@ -462,7 +520,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     })?;
                     let tail = tail.and_then(|tail| env.var(tail));
                     let (var, _) = ctx.emit_let(Prim::MakeList(vars, tail));
-                    bind_backend_value(ctx, executable, &mut env, *value, var);
+                    bind_backend_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::FunctionRef { value, function } => {
                     let identity = self.callable_identity(*function, 0);
@@ -471,7 +529,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     if !candidates.is_empty() {
                         ctx.callable_constructors.insert(var, candidates);
                     }
-                    bind_backend_value(ctx, executable, &mut env, *value, var);
+                    bind_backend_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::NamedFunctionRef { name, arity, .. } => {
                     return Err(incomplete_native_program(
@@ -504,39 +562,37 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     if !candidates.is_empty() {
                         ctx.callable_constructors.insert(var, candidates);
                     }
-                    bind_backend_value(ctx, executable, &mut env, *value, var);
+                    bind_backend_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::BinaryOp { value, op, left, right } => {
                     let left = env
                         .var(*left)
-                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *left))?;
+                        .ok_or_else(|| missing_backend_value(self.root_id, *left))?;
                     let right = env
                         .var(*right)
-                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *right))?;
+                        .ok_or_else(|| missing_backend_value(self.root_id, *right))?;
                     let (var, _) = ctx.emit_let(Prim::BinOp(lower_binop(*op), left, right));
-                    bind_backend_value(ctx, executable, &mut env, *value, var);
+                    bind_backend_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::UnaryOp { value, op, input } => {
                     let input = env
                         .var(*input)
-                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *input))?;
+                        .ok_or_else(|| missing_backend_value(self.root_id, *input))?;
                     let (var, _) = ctx.emit_let(Prim::UnOp(lower_unop(*op), input));
-                    bind_backend_value(ctx, executable, &mut env, *value, var);
+                    bind_backend_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::MapIndex { value, base, key } => {
                     let base = env
                         .var(*base)
-                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *base))?;
-                    let key = env
-                        .var(*key)
-                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *key))?;
+                        .ok_or_else(|| missing_backend_value(self.root_id, *base))?;
+                    let key = env.var(*key).ok_or_else(|| missing_backend_value(self.root_id, *key))?;
                     let (var, _) = ctx.emit_let(Prim::MapGet(base, key));
-                    bind_backend_value(ctx, executable, &mut env, *value, var);
+                    bind_backend_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::AssertLiteral { source, literal } => {
                     let source = env
                         .var(*source)
-                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *source))?;
+                        .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
                     let expected = lower_backend_literal(ctx, &self.atom_ids, literal)?;
                     let (matches, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, source, expected));
                     ctx.assert_truthy(matches, self.atom_id("match_error"));
@@ -544,7 +600,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 BackendStep::AssertTuple { source, arity } => {
                     let source = env
                         .var(*source)
-                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *source))?;
+                        .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
                     let tuple_ty = legacy_any_tuple(*arity);
                     let (matches, _) = ctx.emit_let(Prim::TypeTest(source, Box::new(tuple_ty)));
                     ctx.assert_truthy(matches, self.atom_id("match_error"));
@@ -552,242 +608,201 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 BackendStep::TupleField { value, source, index } => {
                     let source = env
                         .var(*source)
-                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *source))?;
+                        .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
                     let (var, _) = ctx.emit_let(Prim::TupleField(source, *index as u32));
-                    bind_backend_value(ctx, executable, &mut env, *value, var);
+                    bind_backend_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::AssertEmptyList { source } => {
                     let source = env
                         .var(*source)
-                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *source))?;
+                        .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
                     let (matches, _) = ctx.emit_let(Prim::IsEmptyList(source));
                     ctx.assert_truthy(matches, self.atom_id("match_error"));
                 }
                 BackendStep::AssertSame { source, value } => {
                     let source = env
                         .var(*source)
-                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *source))?;
+                        .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
                     let value = env
                         .var(*value)
-                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *value))?;
+                        .ok_or_else(|| missing_backend_value(self.root_id, *value))?;
                     let (matches, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, source, value));
                     ctx.assert_truthy(matches, self.atom_id("match_error"));
                 }
                 BackendStep::SplitList { source, head, tail } => {
                     let source = env
                         .var(*source)
-                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *source))?;
+                        .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
                     let (head_var, _) = ctx.emit_let(Prim::ListHead(source));
-                    bind_backend_value(ctx, executable, &mut env, *head, head_var);
+                    bind_backend_value(ctx, executable, env, *head, head_var);
                     let (tail_var, _) = ctx.emit_let(Prim::ListTail(source));
-                    bind_backend_value(ctx, executable, &mut env, *tail, tail_var);
+                    bind_backend_value(ctx, executable, env, *tail, tail_var);
                 }
-                BackendStep::If {
-                    value,
-                    cond,
-                    then_block,
-                    else_block,
-                } => {
-                    let cond = env
-                        .var(*cond)
-                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *cond))?;
-                    let needs_continuation =
-                        !rest_current.is_empty() || !tail_steps.is_empty() || *value != final_result;
-                    let branch_finish = if needs_continuation {
-                        let captured = env.capture_ids(used_values_in_sequence(rest_current, tail_steps, final_result));
-                        let join_fn = self.module.fresh_fn_id();
-                        self.lower_join_fn(
-                            join_fn,
-                            executable,
-                            ctx.fn_id,
-                            *value,
-                            captured.clone(),
-                            rest_current,
-                            tail_steps,
-                            final_result,
-                            finish.clone(),
-                        )?;
-                        Finish::TailJoin {
-                            fn_id: join_fn,
-                            captured,
-                        }
-                    } else {
-                        finish.clone()
-                    };
-                    let then_target = self.lower_branch_fn(
-                        ctx.fn_id,
-                        executable,
-                        then_block,
-                        &env,
-                        branch_finish.clone(),
-                        "if_then",
-                    )?;
-                    let else_target =
-                        self.lower_branch_fn(ctx.fn_id, executable, else_block, &env, branch_finish, "if_else")?;
-                    let then_b = ctx.builder.block(vec![]);
-                    let else_b = ctx.builder.block(vec![]);
-                    ctx.set_term(Term::If {
-                        cond,
-                        then_b,
-                        else_b,
-                        origin: BranchOrigin::User,
-                    });
-                    ctx.current_block = then_b;
-                    let then_args = env.capture_args(&then_target.captures).ok_or(FatalError)?;
-                    ctx.set_term(Term::TailCall {
-                        ident: CallsiteIdent::from_source(Span::DUMMY),
-                        callee: then_target.fn_id,
-                        args: then_args,
-                        is_back_edge: false,
-                    });
-                    ctx.current_block = else_b;
-                    let else_args = env.capture_args(&else_target.captures).ok_or(FatalError)?;
-                    ctx.set_term(Term::TailCall {
-                        ident: CallsiteIdent::from_source(Span::DUMMY),
-                        callee: else_target.fn_id,
-                        args: else_args,
-                        is_back_edge: false,
-                    });
-                    return Ok(());
-                }
-                BackendStep::DirectCall {
-                    value, callee, args, ..
-                } => {
-                    let call_args = env.call_args(args).ok_or_else(|| {
-                        incomplete_native_program(
-                            self.world,
-                            self.root_id,
-                            "native direct call referenced an unbound argument",
-                        )
-                    })?;
-                    if rest_current.is_empty() && tail_steps.is_empty() && *value == final_result {
+            }
+        }
+        Ok(())
+    }
+
+    fn lower_entry_tail(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        entries: &[BackendEntry],
+        entry_fns: &HashMap<ControlEntryId, FnId>,
+        env: &ValueEnv,
+        tail: &BackendTail,
+    ) -> Result<(), FatalError> {
+        match tail {
+            BackendTail::Value { value, dest } => {
+                let result = env
+                    .var(*value)
+                    .ok_or_else(|| missing_backend_value(self.root_id, *value))?;
+                self.lower_value_destination(ctx, executable, entries, entry_fns, env, *value, result, dest)
+            }
+            BackendTail::DirectCall { callee, args, dest, .. } => {
+                let call_args = env.call_args(args).ok_or_else(|| {
+                    incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        "native direct call referenced an unbound argument",
+                    )
+                })?;
+                match dest {
+                    ControlDestination::Return => {
                         ctx.set_term(Term::TailCall {
                             ident: CallsiteIdent::from_source(Span::DUMMY),
                             callee: self.executable_fns[*callee],
                             args: call_args,
                             is_back_edge: false,
                         });
-                        return Ok(());
+                        Ok(())
                     }
-                    let captured = env.capture_ids(used_values_in_sequence(rest_current, tail_steps, final_result));
-                    let cont_fn = self.module.fresh_fn_id();
-                    self.lower_continuation_fn(
-                        cont_fn,
-                        executable,
-                        ctx.fn_id,
-                        *value,
-                        self.program.executables[*callee].return_abi.clone(),
-                        captured.clone(),
-                        rest_current,
-                        tail_steps,
-                        final_result,
-                        finish.clone(),
-                    )?;
-                    let captured_vars = env.capture_args(&captured).ok_or(FatalError)?;
-                    ctx.set_term(Term::Call {
-                        ident: CallsiteIdent::from_source(Span::DUMMY),
-                        callee: self.executable_fns[*callee],
-                        args: call_args,
-                        continuation: Cont {
-                            fn_id: cont_fn,
-                            captured: captured_vars,
-                        },
-                    });
-                    return Ok(());
+                    ControlDestination::Deliver(entry_id) => {
+                        let continuation = self.entry_continuation(entries, entry_fns, *entry_id, env)?;
+                        ctx.set_term(Term::Call {
+                            ident: CallsiteIdent::from_source(Span::DUMMY),
+                            callee: self.executable_fns[*callee],
+                            args: call_args,
+                            continuation,
+                        });
+                        Ok(())
+                    }
                 }
-                BackendStep::ClosureCall {
-                    value,
-                    callee,
-                    target,
-                    args,
-                    ..
-                } => {
-                    let closure = env
-                        .var(*callee)
-                        .ok_or_else(|| missing_backend_value(self.world, self.root_id, *callee))?;
-                    let call_args = env.call_args(args).ok_or_else(|| {
-                        incomplete_native_program(
-                            self.world,
-                            self.root_id,
-                            "native closure call referenced an unbound argument",
-                        )
-                    })?;
-                    let target_fn = self.executable_fns[*target];
-                    ctx.closure_call_targets.insert(ctx.current_block, target_fn);
-                    if rest_current.is_empty() && tail_steps.is_empty() && *value == final_result {
+            }
+            BackendTail::ClosureCall {
+                callee,
+                target,
+                args,
+                dest,
+                ..
+            } => {
+                let closure = env
+                    .var(*callee)
+                    .ok_or_else(|| missing_backend_value(self.root_id, *callee))?;
+                let call_args = env.call_args(args).ok_or_else(|| {
+                    incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        "native closure call referenced an unbound argument",
+                    )
+                })?;
+                let target_fn = self.executable_fns[*target];
+                ctx.closure_call_targets.insert(ctx.current_block, target_fn);
+                match dest {
+                    ControlDestination::Return => {
                         ctx.set_term(Term::TailCallClosure {
                             ident: CallsiteIdent::from_source(Span::DUMMY),
                             closure,
                             args: call_args,
                         });
-                        return Ok(());
+                        Ok(())
                     }
-                    let captured = env.capture_ids(used_values_in_sequence(rest_current, tail_steps, final_result));
-                    let cont_fn = self.module.fresh_fn_id();
-                    self.lower_continuation_fn(
-                        cont_fn,
-                        executable,
-                        ctx.fn_id,
-                        *value,
-                        self.program.executables[*target].return_abi.clone(),
-                        captured.clone(),
-                        rest_current,
-                        tail_steps,
-                        final_result,
-                        finish.clone(),
-                    )?;
-                    let captured_vars = env.capture_args(&captured).ok_or(FatalError)?;
-                    ctx.set_term(Term::CallClosure {
-                        ident: CallsiteIdent::from_source(Span::DUMMY),
-                        closure,
-                        args: call_args,
-                        continuation: Cont {
-                            fn_id: cont_fn,
-                            captured: captured_vars,
-                        },
-                    });
-                    return Ok(());
+                    ControlDestination::Deliver(entry_id) => {
+                        let continuation = self.entry_continuation(entries, entry_fns, *entry_id, env)?;
+                        ctx.set_term(Term::CallClosure {
+                            ident: CallsiteIdent::from_source(Span::DUMMY),
+                            closure,
+                            args: call_args,
+                            continuation,
+                        });
+                        Ok(())
+                    }
                 }
             }
+            BackendTail::If {
+                cond,
+                then_entry,
+                else_entry,
+            } => {
+                let cond = env
+                    .var(*cond)
+                    .ok_or_else(|| missing_backend_value(self.root_id, *cond))?;
+                let then_b = ctx.builder.block(vec![]);
+                let else_b = ctx.builder.block(vec![]);
+                ctx.set_term(Term::If {
+                    cond,
+                    then_b,
+                    else_b,
+                    origin: BranchOrigin::User,
+                });
+                ctx.current_block = then_b;
+                let then_args = self.entry_capture_args(entries, *then_entry, env)?;
+                ctx.set_term(Term::TailCall {
+                    ident: CallsiteIdent::from_source(Span::DUMMY),
+                    callee: *entry_fns.get(then_entry).expect("branch entry should have a helper fn"),
+                    args: then_args,
+                    is_back_edge: false,
+                });
+                ctx.current_block = else_b;
+                let else_args = self.entry_capture_args(entries, *else_entry, env)?;
+                ctx.set_term(Term::TailCall {
+                    ident: CallsiteIdent::from_source(Span::DUMMY),
+                    callee: *entry_fns.get(else_entry).expect("branch entry should have a helper fn"),
+                    args: else_args,
+                    is_back_edge: false,
+                });
+                Ok(())
+            }
         }
-        if tail_steps.is_empty() {
-            let result = env.var(final_result).ok_or_else(|| {
-                incomplete_native_program(
-                    self.world,
-                    self.root_id,
-                    format!(
-                        "native lowering could not resolve final result {}",
-                        final_result.as_u32()
-                    ),
-                )
-            })?;
-            apply_finish(ctx, &env, result, finish);
-            return Ok(());
-        }
-        self.lower_steps(ctx, executable, env, tail_steps, &[], final_result, finish)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn lower_continuation_fn(
+    fn lower_value_destination(
         &mut self,
-        fn_id: FnId,
+        ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
-        owner: FnId,
-        result_value: ValueId,
-        result_abi: ReturnAbi,
-        captured: Vec<ValueId>,
-        steps: &[BackendStep],
-        tail_steps: &[BackendStep],
-        final_result: ValueId,
-        finish: Finish,
+        entries: &[BackendEntry],
+        entry_fns: &HashMap<ControlEntryId, FnId>,
+        env: &ValueEnv,
+        value_id: ValueId,
+        value_var: Var,
+        dest: &ControlDestination,
     ) -> Result<(), FatalError> {
-        let index = self.next_continuation_index(owner);
-        let result_ty = executable
-            .value_types
-            .get(&result_value)
-            .copied()
-            .unwrap_or_else(|| self.world.types_mut().any());
-        let capture_tys = captured
+        match dest {
+            ControlDestination::Return => {
+                ctx.set_term(Term::Return(value_var));
+                Ok(())
+            }
+            ControlDestination::Deliver(entry_id) => {
+                let args =
+                    self.entry_call_args_from_value(ctx, executable, entries, *entry_id, env, value_id, value_var)?;
+                ctx.set_term(Term::TailCall {
+                    ident: CallsiteIdent::from_source(Span::DUMMY),
+                    callee: *entry_fns.get(entry_id).expect("resume entry should have a helper fn"),
+                    args,
+                    is_back_edge: false,
+                });
+                Ok(())
+            }
+        }
+    }
+
+    fn entry_signature(
+        &mut self,
+        executable: &BackendExecutable,
+        entry: &BackendEntry,
+    ) -> (Vec<Ty>, Vec<AbiValueRepr>, NativeEntryAbi) {
+        let capture_tys = entry
+            .captures
             .iter()
             .map(|value| {
                 executable
@@ -797,164 +812,149 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     .unwrap_or_else(|| self.world.types_mut().any())
             })
             .collect::<Vec<_>>();
-        let (mut entry_tys, mut param_reprs) = continuation_result_entry(self.world, result_ty, &result_abi);
-        entry_tys.extend(capture_tys.iter().copied());
-        param_reprs.extend(capture_tys.iter().copied().map(|ty| abi_value_repr(self.world, ty)));
-        let extra_params = param_reprs.len() - capture_tys.len();
-        let mut ctx = NativeFnCtx::new(
-            fn_id,
-            &format!("k_{}_{}", owner.0, index),
-            FnCategory::CpsCont,
-            NativeBodyOrigin::Continuation { owner, index },
-            NativeEntryAbi::Continuation { extra_params },
-            param_reprs,
-            executable.return_ty,
-            executable.return_abi.clone(),
-            executable.effects,
-        );
-        let mut env = ValueEnv::default();
-        let entry_vars = ctx.entry_params(entry_tys.as_slice());
-        let capture_offset = match result_abi {
-            ReturnAbi::Value(_) => {
-                bind_backend_value(&mut ctx, executable, &mut env, result_value, entry_vars[0]);
-                1
+        match entry.origin.clone() {
+            BackendEntryOrigin::Clause => panic!("clause entries are lowered through their owning clause"),
+            BackendEntryOrigin::Branch => {
+                let param_reprs = capture_tys
+                    .iter()
+                    .copied()
+                    .map(|ty| abi_value_repr(self.world, ty))
+                    .collect::<Vec<_>>();
+                (capture_tys, param_reprs, NativeEntryAbi::Direct)
             }
-            ReturnAbi::TupleFields(_) => {
-                let tuple_fields = entry_vars.iter().copied().take(extra_params).collect::<Vec<_>>();
-                let (result_var, _) = ctx.emit_let(Prim::MakeTuple(tuple_fields));
-                bind_backend_value(&mut ctx, executable, &mut env, result_value, result_var);
-                extra_params
+            BackendEntryOrigin::Resume { value, return_abi } => {
+                let result_ty = executable
+                    .value_types
+                    .get(&value)
+                    .copied()
+                    .unwrap_or_else(|| self.world.types_mut().any());
+                let (mut entry_tys, mut param_reprs) = continuation_result_entry(self.world, result_ty, &return_abi);
+                let extra_params = param_reprs.len();
+                entry_tys.extend(capture_tys.iter().copied());
+                param_reprs.extend(capture_tys.iter().copied().map(|ty| abi_value_repr(self.world, ty)));
+                (entry_tys, param_reprs, NativeEntryAbi::Continuation { extra_params })
+            }
+        }
+    }
+
+    fn bind_entry_input(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        entry: &BackendEntry,
+        entry_vars: &[Var],
+        env: &mut ValueEnv,
+    ) -> Result<usize, FatalError> {
+        match &entry.origin {
+            BackendEntryOrigin::Clause | BackendEntryOrigin::Branch => Ok(0),
+            BackendEntryOrigin::Resume { value, return_abi } => match return_abi {
+                ReturnAbi::Value(_) => {
+                    let var = *entry_vars
+                        .first()
+                        .expect("value continuation should have one entry param");
+                    bind_backend_value(ctx, executable, env, *value, var);
+                    Ok(1)
+                }
+                ReturnAbi::TupleFields(reprs) => {
+                    let tuple_fields = entry_vars.iter().copied().take(reprs.len()).collect::<Vec<_>>();
+                    let (result_var, _) = ctx.emit_let(Prim::MakeTuple(tuple_fields));
+                    bind_backend_value(ctx, executable, env, *value, result_var);
+                    Ok(reprs.len())
+                }
+            },
+        }
+    }
+
+    fn entry_continuation(
+        &mut self,
+        entries: &[BackendEntry],
+        entry_fns: &HashMap<ControlEntryId, FnId>,
+        entry_id: ControlEntryId,
+        env: &ValueEnv,
+    ) -> Result<Cont, FatalError> {
+        let entry = &entries[entry_id.as_u32() as usize];
+        if entry.origin.input_value().is_none() {
+            return Err(incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!(
+                    "native call continuation targeted entry {} without an input value",
+                    entry_id.as_u32()
+                ),
+            ));
+        }
+        Ok(Cont {
+            fn_id: *entry_fns.get(&entry_id).expect("resume entry should have a helper fn"),
+            captured: self.entry_capture_args(entries, entry_id, env)?,
+        })
+    }
+
+    fn entry_capture_args(
+        &mut self,
+        entries: &[BackendEntry],
+        entry_id: ControlEntryId,
+        env: &ValueEnv,
+    ) -> Result<Vec<Var>, FatalError> {
+        let entry = &entries[entry_id.as_u32() as usize];
+        env.capture_args(&entry.captures).ok_or_else(|| {
+            incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!(
+                    "native lowering could not resolve captures for entry {}",
+                    entry_id.as_u32()
+                ),
+            )
+        })
+    }
+
+    fn entry_call_args_from_value(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        entries: &[BackendEntry],
+        entry_id: ControlEntryId,
+        env: &ValueEnv,
+        value_id: ValueId,
+        value_var: Var,
+    ) -> Result<Vec<Var>, FatalError> {
+        let entry = &entries[entry_id.as_u32() as usize];
+        let mut args = match &entry.origin {
+            BackendEntryOrigin::Clause | BackendEntryOrigin::Branch => Vec::new(),
+            BackendEntryOrigin::Resume { return_abi, .. } => {
+                self.delivered_args_for_abi(ctx, executable, value_id, value_var, return_abi)?
             }
         };
-        for (value, var) in captured
-            .into_iter()
-            .zip(entry_vars.iter().copied().skip(capture_offset))
-        {
-            env.insert(value, var);
-        }
-        self.lower_steps(&mut ctx, executable, env, steps, tail_steps, final_result, finish)?;
-        self.finish_native_fn(ctx);
-        Ok(())
+        args.extend(self.entry_capture_args(entries, entry_id, env)?);
+        Ok(args)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn lower_join_fn(
+    fn delivered_args_for_abi(
         &mut self,
-        fn_id: FnId,
+        ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
-        owner: FnId,
-        result_value: ValueId,
-        captured: Vec<ValueId>,
-        steps: &[BackendStep],
-        tail_steps: &[BackendStep],
-        final_result: ValueId,
-        finish: Finish,
-    ) -> Result<(), FatalError> {
-        let index = self.next_continuation_index(owner);
-        let result_ty = executable
-            .value_types
-            .get(&result_value)
-            .copied()
-            .unwrap_or_else(|| self.world.types_mut().any());
-        let capture_tys = captured
-            .iter()
-            .map(|value| {
-                executable
+        value_id: ValueId,
+        value_var: Var,
+        return_abi: &ReturnAbi,
+    ) -> Result<Vec<Var>, FatalError> {
+        match return_abi {
+            ReturnAbi::Value(_) => Ok(vec![value_var]),
+            ReturnAbi::TupleFields(reprs) => {
+                let tuple_ty = executable
                     .value_types
-                    .get(value)
+                    .get(&value_id)
                     .copied()
-                    .unwrap_or_else(|| self.world.types_mut().any())
-            })
-            .collect::<Vec<_>>();
-        let mut entry_tys = Vec::with_capacity(1 + capture_tys.len());
-        entry_tys.push(result_ty);
-        entry_tys.extend(capture_tys.iter().copied());
-        let param_reprs = entry_tys
-            .iter()
-            .copied()
-            .map(|ty| abi_value_repr(self.world, ty))
-            .collect();
-        let mut ctx = NativeFnCtx::new(
-            fn_id,
-            &format!("k_{}_{}", owner.0, index),
-            FnCategory::CpsCont,
-            NativeBodyOrigin::Continuation { owner, index },
-            NativeEntryAbi::Direct,
-            param_reprs,
-            executable.return_ty,
-            executable.return_abi.clone(),
-            executable.effects,
-        );
-        let mut env = ValueEnv::default();
-        let entry_vars = ctx.entry_params(entry_tys.as_slice());
-        bind_backend_value(&mut ctx, executable, &mut env, result_value, entry_vars[0]);
-        for (value, var) in captured.into_iter().zip(entry_vars.iter().copied().skip(1)) {
-            env.insert(value, var);
+                    .unwrap_or_else(|| self.world.types_mut().any());
+                let field_tys = self.world.types_mut().tuple_projections(&tuple_ty, reprs.len());
+                let mut out = Vec::with_capacity(reprs.len());
+                for (index, field_ty) in field_tys.into_iter().enumerate() {
+                    let (field_var, _) = ctx.emit_let(Prim::TupleField(value_var, index as u32));
+                    ctx.value_types.insert(field_var, field_ty);
+                    out.push(field_var);
+                }
+                Ok(out)
+            }
         }
-        self.lower_steps(&mut ctx, executable, env, steps, tail_steps, final_result, finish)?;
-        self.finish_native_fn(ctx);
-        Ok(())
-    }
-
-    fn lower_branch_fn(
-        &mut self,
-        owner: FnId,
-        executable: &BackendExecutable,
-        block: &crate::compiler2::BackendBlock,
-        env: &ValueEnv,
-        finish: Finish,
-        label: &str,
-    ) -> Result<BranchTarget, FatalError> {
-        let index = self.next_continuation_index(owner);
-        let fn_id = self.module.fresh_fn_id();
-        let captures = env.capture_ids(
-            used_values_in_block(block)
-                .into_iter()
-                .chain(finish.capture_ids())
-                .collect(),
-        );
-        let capture_tys = captures
-            .iter()
-            .map(|value| {
-                executable
-                    .value_types
-                    .get(value)
-                    .copied()
-                    .unwrap_or_else(|| self.world.types_mut().any())
-            })
-            .collect::<Vec<_>>();
-        let param_reprs = capture_tys
-            .iter()
-            .copied()
-            .map(|ty| abi_value_repr(self.world, ty))
-            .collect();
-        let mut ctx = NativeFnCtx::new(
-            fn_id,
-            &format!("{label}_{}_{}", owner.0, index),
-            FnCategory::ControlFlowCont,
-            NativeBodyOrigin::Continuation { owner, index },
-            NativeEntryAbi::Direct,
-            param_reprs,
-            executable.return_ty,
-            executable.return_abi.clone(),
-            executable.effects,
-        );
-        let mut branch_env = ValueEnv::default();
-        let entry_vars = ctx.entry_params(capture_tys.as_slice());
-        for (value, var) in captures.iter().copied().zip(entry_vars) {
-            branch_env.insert(value, var);
-        }
-        self.lower_steps(
-            &mut ctx,
-            executable,
-            branch_env,
-            &block.steps,
-            &[],
-            block.result,
-            finish,
-        )?;
-        self.finish_native_fn(ctx);
-        Ok(BranchTarget { fn_id, captures })
     }
 
     fn lower_dispatch_node(
@@ -1368,12 +1368,32 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             })
             .collect()
     }
+}
 
-    fn next_continuation_index(&mut self, owner: FnId) -> u32 {
-        let next = self.continuation_indices.entry(owner).or_insert(0);
-        let index = *next;
-        *next += 1;
-        index
+fn entry_fn_ids(module: &mut ModuleBuilder, entries: &[BackendEntry]) -> HashMap<ControlEntryId, FnId> {
+    let mut out = HashMap::new();
+    for (index, entry) in entries.iter().enumerate() {
+        if matches!(entry.origin, BackendEntryOrigin::Clause) {
+            continue;
+        }
+        out.insert(ControlEntryId::from_u32(index as u32), module.fresh_fn_id());
+    }
+    out
+}
+
+fn entry_name(base: &str, entry_id: ControlEntryId, origin: &BackendEntryOrigin) -> String {
+    match origin {
+        BackendEntryOrigin::Clause => panic!("clause entries are named by their owning clause"),
+        BackendEntryOrigin::Branch => format!("{base}__branch_{}", entry_id.as_u32()),
+        BackendEntryOrigin::Resume { .. } => format!("{base}__resume_{}", entry_id.as_u32()),
+    }
+}
+
+fn entry_category(origin: &BackendEntryOrigin) -> FnCategory {
+    match origin {
+        BackendEntryOrigin::Clause => panic!("clause entries are named by their owning clause"),
+        BackendEntryOrigin::Branch => FnCategory::ControlFlowCont,
+        BackendEntryOrigin::Resume { .. } => FnCategory::CpsCont,
     }
 }
 
@@ -1493,54 +1513,14 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
     }
 }
 
-#[derive(Clone)]
-enum Finish {
-    Return,
-    TailJoin { fn_id: FnId, captured: Vec<ValueId> },
-}
-
-impl Finish {
-    fn capture_ids(&self) -> Vec<ValueId> {
-        match self {
-            Self::Return => Vec::new(),
-            Self::TailJoin { captured, .. } => captured.clone(),
-        }
-    }
-}
-
-fn apply_finish(ctx: &mut NativeFnCtx, env: &ValueEnv, result: Var, finish: Finish) {
-    match finish {
-        Finish::Return => ctx.set_term(Term::Return(result)),
-        Finish::TailJoin { fn_id, captured } => {
-            let mut args = vec![result];
-            args.extend(env.capture_args(&captured).expect("join capture should be bound"));
-            ctx.set_term(Term::TailCall {
-                ident: CallsiteIdent::from_source(Span::DUMMY),
-                callee: fn_id,
-                args,
-                is_back_edge: false,
-            });
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct BranchTarget {
-    fn_id: FnId,
-    captures: Vec<ValueId>,
-}
-
 #[derive(Default, Clone)]
 struct ValueEnv {
     vars: HashMap<ValueId, Var>,
-    order: Vec<ValueId>,
 }
 
 impl ValueEnv {
     fn insert(&mut self, value: ValueId, var: Var) {
-        if self.vars.insert(value, var).is_none() {
-            self.order.push(value);
-        }
+        self.vars.insert(value, var);
     }
 
     fn var(&self, value: ValueId) -> Option<Var> {
@@ -1553,14 +1533,6 @@ impl ValueEnv {
 
     fn call_args(&self, args: &[crate::compiler2::BackendCallArg]) -> Option<Vec<Var>> {
         args.iter().map(|arg| self.var(arg.value)).collect()
-    }
-
-    fn capture_ids(&self, needed: HashSet<ValueId>) -> Vec<ValueId> {
-        self.order
-            .iter()
-            .copied()
-            .filter(|value| needed.contains(value))
-            .collect()
     }
 
     fn capture_args(&self, captured: &[ValueId]) -> Option<Vec<Var>> {
@@ -1718,86 +1690,6 @@ fn bind_backend_value(
     }
 }
 
-fn used_values_in_sequence(
-    steps: &[BackendStep],
-    tail_steps: &[BackendStep],
-    final_result: ValueId,
-) -> HashSet<ValueId> {
-    let mut out = HashSet::new();
-    collect_used_values(steps, &mut out);
-    collect_used_values(tail_steps, &mut out);
-    out.insert(final_result);
-    out
-}
-
-fn used_values_in_block(block: &crate::compiler2::BackendBlock) -> HashSet<ValueId> {
-    let mut out = HashSet::new();
-    collect_used_values(&block.steps, &mut out);
-    out.insert(block.result);
-    out
-}
-
-fn collect_used_values(steps: &[BackendStep], out: &mut HashSet<ValueId>) {
-    for step in steps {
-        match step {
-            BackendStep::Const { .. } | BackendStep::NamedFunctionRef { .. } => {}
-            BackendStep::Tuple { items, .. } => out.extend(items.iter().copied()),
-            BackendStep::List { items, tail, .. } => {
-                out.extend(items.iter().copied());
-                if let Some(tail) = tail {
-                    out.insert(*tail);
-                }
-            }
-            BackendStep::FunctionRef { .. } => {}
-            BackendStep::DirectCall { args, .. } | BackendStep::ClosureCall { args, .. } => {
-                for arg in args {
-                    out.insert(arg.value);
-                }
-                if let BackendStep::ClosureCall { callee, .. } = step {
-                    out.insert(*callee);
-                }
-            }
-            BackendStep::Lambda { captures, .. } => out.extend(captures.iter().copied()),
-            BackendStep::BinaryOp { left, right, .. } => {
-                out.insert(*left);
-                out.insert(*right);
-            }
-            BackendStep::UnaryOp { input, .. } => {
-                out.insert(*input);
-            }
-            BackendStep::MapIndex { base, key, .. } => {
-                out.insert(*base);
-                out.insert(*key);
-            }
-            BackendStep::If {
-                cond,
-                then_block,
-                else_block,
-                ..
-            } => {
-                out.insert(*cond);
-                out.extend(used_values_in_block(then_block));
-                out.extend(used_values_in_block(else_block));
-            }
-            BackendStep::AssertLiteral { source, .. }
-            | BackendStep::AssertTuple { source, .. }
-            | BackendStep::AssertEmptyList { source } => {
-                out.insert(*source);
-            }
-            BackendStep::TupleField { source, .. } => {
-                out.insert(*source);
-            }
-            BackendStep::AssertSame { source, value } => {
-                out.insert(*source);
-                out.insert(*value);
-            }
-            BackendStep::SplitList { source, .. } => {
-                out.insert(*source);
-            }
-        }
-    }
-}
-
 fn collect_callable_identity_needs(program: &BackendProgram) -> Vec<(FunctionId, usize)> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
@@ -1810,10 +1702,12 @@ fn collect_callable_identity_needs(program: &BackendProgram) -> Vec<(FunctionId,
     for executable in &program.executables {
         match &executable.body {
             BackendBody::Extern { .. } => {}
-            BackendBody::Clauses { clauses, .. } => {
+            BackendBody::Clauses { clauses, entries, .. } => {
                 for clause in clauses {
                     collect_callable_identity_needs_in_steps(&clause.projections, &mut seen, &mut out);
-                    collect_callable_identity_needs_in_steps(&clause.body.steps, &mut seen, &mut out);
+                }
+                for entry in entries {
+                    collect_callable_identity_needs_in_steps(&entry.steps, &mut seen, &mut out);
                 }
             }
         }
@@ -1839,12 +1733,6 @@ fn collect_callable_identity_needs_in_steps(
                     out.push(key);
                 }
             }
-            BackendStep::If {
-                then_block, else_block, ..
-            } => {
-                collect_callable_identity_needs_in_steps(&then_block.steps, seen, out);
-                collect_callable_identity_needs_in_steps(&else_block.steps, seen, out);
-            }
             _ => {}
         }
     }
@@ -1857,10 +1745,12 @@ fn collect_extern_marshals(
 ) -> Result<HashMap<usize, Vec<ExternTy>>, FatalError> {
     let mut out = HashMap::new();
     for executable in &program.executables {
-        if let BackendBody::Clauses { clauses, .. } = &executable.body {
+        if let BackendBody::Clauses { clauses, entries, .. } = &executable.body {
             for clause in clauses {
                 collect_extern_marshals_in_steps(world, root_id, program, &clause.projections, &mut out)?;
-                collect_extern_marshals_in_steps(world, root_id, program, &clause.body.steps, &mut out)?;
+            }
+            for entry in entries {
+                collect_extern_marshals_in_tail(world, root_id, program, &entry.tail, &mut out)?;
             }
         }
     }
@@ -1868,48 +1758,49 @@ fn collect_extern_marshals(
 }
 
 fn collect_extern_marshals_in_steps(
+    _world: &World<'_>,
+    _root_id: RootId,
+    _program: &BackendProgram,
+    _steps: &[BackendStep],
+    _out: &mut HashMap<usize, Vec<ExternTy>>,
+) -> Result<(), FatalError> {
+    Ok(())
+}
+
+fn collect_extern_marshals_in_tail(
     world: &World<'_>,
     root_id: RootId,
     program: &BackendProgram,
-    steps: &[BackendStep],
+    tail: &BackendTail,
     out: &mut HashMap<usize, Vec<ExternTy>>,
 ) -> Result<(), FatalError> {
-    for step in steps {
-        match step {
-            BackendStep::DirectCall {
-                callee,
-                extern_marshals,
-                ..
-            } if matches!(program.executables[*callee].body, BackendBody::Extern { .. }) => {
-                let signature = match &program.executables[*callee].body {
-                    BackendBody::Extern { signature } => signature,
-                    BackendBody::Clauses { .. } => unreachable!(),
-                };
-                let marshals = extern_marshals.clone().unwrap_or_else(|| signature.params.clone());
-                match out.get(callee) {
-                    Some(existing) if existing != &marshals => {
-                        return Err(incomplete_native_program(
-                            world,
-                            root_id,
-                            format!(
-                                "extern executable {} has conflicting marshal plans: {:?} vs {:?}",
-                                callee, existing, marshals
-                            ),
-                        ));
-                    }
-                    Some(_) => {}
-                    None => {
-                        out.insert(*callee, marshals);
-                    }
-                }
+    if let BackendTail::DirectCall {
+        callee,
+        extern_marshals,
+        ..
+    } = tail
+        && matches!(program.executables[*callee].body, BackendBody::Extern { .. })
+    {
+        let signature = match &program.executables[*callee].body {
+            BackendBody::Extern { signature } => signature,
+            BackendBody::Clauses { .. } => unreachable!(),
+        };
+        let marshals = extern_marshals.clone().unwrap_or_else(|| signature.params.clone());
+        match out.get(callee) {
+            Some(existing) if existing != &marshals => {
+                return Err(incomplete_native_program(
+                    world,
+                    root_id,
+                    format!(
+                        "extern executable {} has conflicting marshal plans: {:?} vs {:?}",
+                        callee, existing, marshals
+                    ),
+                ));
             }
-            BackendStep::If {
-                then_block, else_block, ..
-            } => {
-                collect_extern_marshals_in_steps(world, root_id, program, &then_block.steps, out)?;
-                collect_extern_marshals_in_steps(world, root_id, program, &else_block.steps, out)?;
+            Some(_) => {}
+            None => {
+                out.insert(*callee, marshals);
             }
-            _ => {}
         }
     }
     Ok(())
@@ -2171,11 +2062,11 @@ fn exact_tuple_arity(world: &mut World<'_>, ty: Ty) -> Option<usize> {
     world.types().is_equivalent(&ty, &tuple).then_some(arity)
 }
 
-fn missing_backend_value(world: &World<'_>, root_id: RootId, value: ValueId) -> FatalError {
-    incomplete_native_program(
-        world,
-        root_id,
-        format!("native lowering referenced unbound value {}", value.as_u32()),
+fn missing_backend_value(root_id: RootId, value: ValueId) -> FatalError {
+    panic!(
+        "native lowering referenced unbound value {} for root {}",
+        value.as_u32(),
+        root_id.as_u32()
     )
 }
 

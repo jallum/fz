@@ -37,6 +37,19 @@ impl CallSiteId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ControlEntryId(u32);
+
+impl ControlEntryId {
+    pub fn from_u32(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CallArg {
     pub value: ValueId,
@@ -76,6 +89,7 @@ pub enum LoweredBody {
     },
     Clauses {
         clauses: Vec<LoweredClause>,
+        entries: Vec<LoweredEntry>,
         generated: Vec<FunctionId>,
     },
 }
@@ -85,14 +99,65 @@ pub struct LoweredClause {
     pub span: Span,
     pub params: Vec<ValueId>,
     pub projections: Vec<LoweredStep>,
-    pub body: LoweredBlock,
+    pub entry: ControlEntryId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct LoweredBlock {
+pub struct LoweredEntry {
     pub span: Span,
+    pub origin: ControlEntryOrigin,
+    pub captures: Vec<ValueId>,
     pub steps: Vec<LoweredStep>,
-    pub result: ValueId,
+    pub tail: LoweredTail,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ControlEntryOrigin {
+    Clause,
+    Branch,
+    Resume { value: ValueId },
+}
+
+impl ControlEntryOrigin {
+    pub fn input_value(&self) -> Option<ValueId> {
+        match self {
+            Self::Clause | Self::Branch => None,
+            Self::Resume { value } => Some(*value),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlDestination {
+    Return,
+    Deliver(ControlEntryId),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoweredTail {
+    Value {
+        value: ValueId,
+        dest: ControlDestination,
+    },
+    DirectCall {
+        value: ValueId,
+        callsite: CallSiteId,
+        callee: DirectCallee,
+        args: Vec<CallArg>,
+        dest: ControlDestination,
+    },
+    ClosureCall {
+        value: ValueId,
+        callsite: CallSiteId,
+        callee: ValueId,
+        args: Vec<CallArg>,
+        dest: ControlDestination,
+    },
+    If {
+        cond: ValueId,
+        then_entry: ControlEntryId,
+        else_entry: ControlEntryId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -119,18 +184,6 @@ pub enum LoweredStep {
         name: String,
         arity: usize,
     },
-    DirectCall {
-        value: ValueId,
-        callsite: CallSiteId,
-        callee: DirectCallee,
-        args: Vec<CallArg>,
-    },
-    ClosureCall {
-        value: ValueId,
-        callsite: CallSiteId,
-        callee: ValueId,
-        args: Vec<CallArg>,
-    },
     Lambda {
         value: ValueId,
         function: FunctionId,
@@ -151,12 +204,6 @@ pub enum LoweredStep {
         value: ValueId,
         base: ValueId,
         key: ValueId,
-    },
-    If {
-        value: ValueId,
-        cond: ValueId,
-        then_block: LoweredBlock,
-        else_block: LoweredBlock,
     },
     AssertLiteral {
         source: ValueId,

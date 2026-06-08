@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use crate::dispatch_matrix::SubjectSource;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
 
-use super::super::body::{DirectCallee, LoweredBlock, LoweredBody, LoweredStep};
+use super::super::body::{DirectCallee, LoweredBody, LoweredStep, LoweredTail};
 use super::super::drive::{FactKey, Job, JobEffects};
 use super::super::facts::FactValue;
 use super::super::identity::FunctionId;
@@ -157,10 +157,13 @@ fn static_edges(body: &LoweredBody) -> Vec<StaticEdge> {
     let mut edges = Vec::new();
     match body {
         LoweredBody::Extern { .. } => {}
-        LoweredBody::Clauses { clauses, .. } => {
+        LoweredBody::Clauses { clauses, entries, .. } => {
             for clause in clauses {
                 collect_step_edges(&clause.projections, &mut edges);
-                collect_block_edges(&clause.body, &mut edges);
+            }
+            for entry in entries {
+                collect_step_edges(&entry.steps, &mut edges);
+                collect_tail_edges(&entry.tail, &mut edges);
             }
         }
     }
@@ -175,34 +178,15 @@ fn static_edges(body: &LoweredBody) -> Vec<StaticEdge> {
     edges
 }
 
-fn collect_block_edges(block: &LoweredBlock, edges: &mut Vec<StaticEdge>) {
-    collect_step_edges(&block.steps, edges);
-}
-
 fn collect_step_edges(steps: &[LoweredStep], edges: &mut Vec<StaticEdge>) {
     for step in steps {
         match step {
-            LoweredStep::DirectCall {
-                callee: DirectCallee::Function(function),
-                ..
-            } => edges.push(StaticEdge::Direct(*function)),
             LoweredStep::Lambda { function, .. } => edges.push(StaticEdge::Lambda(*function)),
-            LoweredStep::If {
-                then_block, else_block, ..
-            } => {
-                collect_block_edges(then_block, edges);
-                collect_block_edges(else_block, edges);
-            }
             LoweredStep::Const { .. }
             | LoweredStep::Tuple { .. }
             | LoweredStep::List { .. }
             | LoweredStep::FunctionRef { .. }
             | LoweredStep::NamedFunctionRef { .. }
-            | LoweredStep::DirectCall {
-                callee: DirectCallee::Named { .. },
-                ..
-            }
-            | LoweredStep::ClosureCall { .. }
             | LoweredStep::BinaryOp { .. }
             | LoweredStep::UnaryOp { .. }
             | LoweredStep::MapIndex { .. }
@@ -213,6 +197,22 @@ fn collect_step_edges(steps: &[LoweredStep], edges: &mut Vec<StaticEdge>) {
             | LoweredStep::AssertSame { .. }
             | LoweredStep::SplitList { .. } => {}
         }
+    }
+}
+
+fn collect_tail_edges(tail: &LoweredTail, edges: &mut Vec<StaticEdge>) {
+    match tail {
+        LoweredTail::DirectCall {
+            callee: DirectCallee::Function(function),
+            ..
+        } => edges.push(StaticEdge::Direct(*function)),
+        LoweredTail::Value { .. }
+        | LoweredTail::DirectCall {
+            callee: DirectCallee::Named { .. },
+            ..
+        }
+        | LoweredTail::ClosureCall { .. }
+        | LoweredTail::If { .. } => {}
     }
 }
 

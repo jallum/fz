@@ -6,7 +6,7 @@
 //! required callable-entry inventory, and every extern callsite carries its
 //! concrete wire classes.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
@@ -16,10 +16,13 @@ use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch,
 use crate::dispatch_matrix::{ComparisonValue, DispatchConst, DispatchNode, ProjectionKind, Region, SubjectSource};
 
 use super::super::artifact::{
-    BackendBlock, BackendBody, BackendCallArg, BackendCallableEntry, BackendClause, BackendExecutable, BackendProgram,
-    BackendStep,
+    AbiValueRepr, BackendBody, BackendCallArg, BackendCallableEntry, BackendClause, BackendEntry, BackendEntryOrigin,
+    BackendExecutable, BackendProgram, BackendStep, BackendTail, ReturnAbi,
 };
-use super::super::body::{CallArg, CallSiteId, LoweredBlock, LoweredBody, LoweredClause, LoweredStep};
+use super::super::body::{
+    CallArg, CallSiteId, ControlDestination, ControlEntryOrigin, LoweredBody, LoweredClause, LoweredEntry, LoweredStep,
+    LoweredTail, ValueId,
+};
 use super::super::drive::{FactKey, Job, JobEffects};
 use super::super::facts::FactValue;
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, RootId};
@@ -116,13 +119,26 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
             LoweredBody::Extern { signature } => Ok(BackendBody::Extern {
                 signature: signature.clone(),
             }),
-            LoweredBody::Clauses { clauses, generated } => Ok(BackendBody::Clauses {
-                clauses: clauses
-                    .iter()
-                    .map(|clause| self.lower_clause(executable, clause))
-                    .collect::<Result<Vec<_>, _>>()?,
-                generated: generated.clone(),
-            }),
+            LoweredBody::Clauses {
+                clauses,
+                entries,
+                generated,
+            } => {
+                let resume_abis =
+                    entry_input_abis(self.world, self.root_id, self.program, executable, entries, clauses)?;
+                Ok(BackendBody::Clauses {
+                    clauses: clauses
+                        .iter()
+                        .map(|clause| self.lower_clause(executable, clause))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    entries: entries
+                        .iter()
+                        .enumerate()
+                        .map(|(index, entry)| self.lower_entry(executable, index, entry, &resume_abis))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    generated: generated.clone(),
+                })
+            }
         }
     }
 
@@ -139,29 +155,33 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
                 .iter()
                 .map(|step| self.lower_step(executable, step))
                 .collect::<Result<Vec<_>, _>>()?,
-            body: self.lower_block(executable, &clause.body)?,
+            entry: clause.entry,
         })
     }
 
-    fn lower_block(
+    fn lower_entry(
         &mut self,
         executable: &super::super::artifact::EmissionReadyExecutable,
-        block: &LoweredBlock,
-    ) -> Result<BackendBlock, FatalError> {
-        Ok(BackendBlock {
-            span: block.span,
-            steps: block
+        entry_index: usize,
+        entry: &LoweredEntry,
+        resume_abis: &[Option<ReturnAbi>],
+    ) -> Result<BackendEntry, FatalError> {
+        Ok(BackendEntry {
+            span: entry.span,
+            origin: lower_entry_origin(entry_index, entry, resume_abis),
+            captures: entry.captures.clone(),
+            steps: entry
                 .steps
                 .iter()
                 .map(|step| self.lower_step(executable, step))
                 .collect::<Result<Vec<_>, _>>()?,
-            result: block.result,
+            tail: self.lower_tail(executable, &entry.tail)?,
         })
     }
 
     fn lower_step(
         &mut self,
-        executable: &super::super::artifact::EmissionReadyExecutable,
+        _executable: &super::super::artifact::EmissionReadyExecutable,
         step: &LoweredStep,
     ) -> Result<BackendStep, FatalError> {
         Ok(match step {
@@ -187,45 +207,6 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
                 name: name.clone(),
                 arity: *arity,
             },
-            LoweredStep::DirectCall {
-                value, callsite, args, ..
-            } => {
-                let edge = call_edge(executable, *callsite).ok_or_else(|| {
-                    incomplete_backend_program(
-                        self.world,
-                        self.root_id,
-                        format!("missing settled direct-call edge for callsite {}", callsite.as_u32()),
-                    )
-                })?;
-                BackendStep::DirectCall {
-                    value: *value,
-                    callsite: *callsite,
-                    callee: edge.callee,
-                    args: self.lower_call_args(executable, *callsite, None, args)?,
-                    extern_marshals: edge.extern_marshals.clone(),
-                }
-            }
-            LoweredStep::ClosureCall {
-                value,
-                callsite,
-                callee,
-                args,
-            } => {
-                let edge = call_edge(executable, *callsite).ok_or_else(|| {
-                    incomplete_backend_program(
-                        self.world,
-                        self.root_id,
-                        format!("missing settled closure-call edge for callsite {}", callsite.as_u32()),
-                    )
-                })?;
-                BackendStep::ClosureCall {
-                    value: *value,
-                    callsite: *callsite,
-                    callee: *callee,
-                    target: edge.callee,
-                    args: self.lower_call_args(executable, *callsite, Some(*callee), args)?,
-                }
-            }
             LoweredStep::Lambda {
                 value,
                 function,
@@ -251,17 +232,6 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
                 base: *base,
                 key: *key,
             },
-            LoweredStep::If {
-                value,
-                cond,
-                then_block,
-                else_block,
-            } => BackendStep::If {
-                value: *value,
-                cond: *cond,
-                then_block: self.lower_block(executable, then_block)?,
-                else_block: self.lower_block(executable, else_block)?,
-            },
             LoweredStep::AssertLiteral { source, literal } => BackendStep::AssertLiteral {
                 source: *source,
                 literal: literal.clone(),
@@ -284,6 +254,74 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
                 source: *source,
                 head: *head,
                 tail: *tail,
+            },
+        })
+    }
+
+    fn lower_tail(
+        &mut self,
+        executable: &super::super::artifact::EmissionReadyExecutable,
+        tail: &LoweredTail,
+    ) -> Result<BackendTail, FatalError> {
+        Ok(match tail {
+            LoweredTail::Value { value, dest } => BackendTail::Value {
+                value: *value,
+                dest: dest.clone(),
+            },
+            LoweredTail::DirectCall {
+                value,
+                callsite,
+                args,
+                dest,
+                ..
+            } => {
+                let edge = call_edge(executable, *callsite).ok_or_else(|| {
+                    incomplete_backend_program(
+                        self.world,
+                        self.root_id,
+                        format!("missing settled direct-call edge for callsite {}", callsite.as_u32()),
+                    )
+                })?;
+                BackendTail::DirectCall {
+                    value: *value,
+                    callsite: *callsite,
+                    callee: edge.callee,
+                    args: self.lower_call_args(executable, *callsite, None, args)?,
+                    dest: dest.clone(),
+                    extern_marshals: edge.extern_marshals.clone(),
+                }
+            }
+            LoweredTail::ClosureCall {
+                value,
+                callsite,
+                callee,
+                args,
+                dest,
+            } => {
+                let edge = call_edge(executable, *callsite).ok_or_else(|| {
+                    incomplete_backend_program(
+                        self.world,
+                        self.root_id,
+                        format!("missing settled closure-call edge for callsite {}", callsite.as_u32()),
+                    )
+                })?;
+                BackendTail::ClosureCall {
+                    value: *value,
+                    callsite: *callsite,
+                    callee: *callee,
+                    target: edge.callee,
+                    args: self.lower_call_args(executable, *callsite, Some(*callee), args)?,
+                    dest: dest.clone(),
+                }
+            }
+            LoweredTail::If {
+                cond,
+                then_entry,
+                else_entry,
+            } => BackendTail::If {
+                cond: *cond,
+                then_entry: *then_entry,
+                else_entry: *else_entry,
             },
         })
     }
@@ -411,6 +449,317 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
     }
 }
 
+fn lower_entry_origin(
+    entry_index: usize,
+    entry: &LoweredEntry,
+    resume_abis: &[Option<ReturnAbi>],
+) -> BackendEntryOrigin {
+    match entry.origin {
+        ControlEntryOrigin::Clause => BackendEntryOrigin::Clause,
+        ControlEntryOrigin::Branch => BackendEntryOrigin::Branch,
+        ControlEntryOrigin::Resume { value } => BackendEntryOrigin::Resume {
+            value,
+            return_abi: resume_abis[entry_index]
+                .clone()
+                .unwrap_or_else(|| panic!("resume entry {entry_index} should have a settled input ABI: {entry:?}")),
+        },
+    }
+}
+
+fn entry_input_abis(
+    world: &mut World<'_>,
+    root_id: RootId,
+    program: &super::super::artifact::EmissionReadyProgram,
+    executable: &super::super::artifact::EmissionReadyExecutable,
+    entries: &[LoweredEntry],
+    clauses: &[LoweredClause],
+) -> Result<Vec<Option<ReturnAbi>>, FatalError> {
+    let mut needs = vec![None; entries.len()];
+    for clause in clauses {
+        let _ = collect_entry_input_need(
+            world,
+            executable,
+            entries,
+            clause.entry,
+            executable.return_abi.clone(),
+            &mut needs,
+        );
+    }
+    let mut out = vec![None; entries.len()];
+    for (index, entry) in entries.iter().enumerate() {
+        if let ControlEntryOrigin::Resume { value } = entry.origin
+            && let Some(need) = needs[index]
+        {
+            out[index] = Some(return_abi_for_resume_input(world, executable, value, need));
+        }
+    }
+    for entry in entries {
+        publish_entry_input_abis(world, root_id, program, executable, entry, &needs, &mut out)?;
+    }
+    for (index, entry) in entries.iter().enumerate() {
+        if let ControlEntryOrigin::Resume { value } = entry.origin
+            && out[index].is_none()
+        {
+            out[index] = Some(return_abi_for_resume_input(
+                world,
+                executable,
+                value,
+                ExecutableNeed::Value,
+            ));
+        }
+    }
+    Ok(out)
+}
+
+fn collect_entry_input_need(
+    world: &mut World<'_>,
+    executable: &super::super::artifact::EmissionReadyExecutable,
+    entries: &[LoweredEntry],
+    entry_id: super::super::body::ControlEntryId,
+    outgoing_need: ReturnAbi,
+    out: &mut [Option<ExecutableNeed>],
+) -> ExecutableNeed {
+    let entry = &entries[entry_id.as_u32() as usize];
+    let mut tuple_demands = HashMap::new();
+    let mut used_values = HashSet::new();
+    match &entry.tail {
+        LoweredTail::Value { value, dest } => {
+            used_values.insert(*value);
+            if let ExecutableNeed::TupleFields(arity) =
+                destination_need(world, executable, entries, dest, outgoing_need.clone(), out)
+            {
+                tuple_demands.insert(*value, arity);
+            }
+        }
+        LoweredTail::DirectCall { args, dest, .. } => {
+            for arg in args {
+                used_values.insert(arg.value);
+            }
+            let _ = destination_need(world, executable, entries, dest, outgoing_need.clone(), out);
+        }
+        LoweredTail::ClosureCall { callee, args, dest, .. } => {
+            used_values.insert(*callee);
+            for arg in args {
+                used_values.insert(arg.value);
+            }
+            let _ = destination_need(world, executable, entries, dest, outgoing_need.clone(), out);
+        }
+        LoweredTail::If {
+            cond,
+            then_entry,
+            else_entry,
+            ..
+        } => {
+            used_values.insert(*cond);
+            let _ = collect_entry_input_need(world, executable, entries, *then_entry, outgoing_need.clone(), out);
+            let _ = collect_entry_input_need(world, executable, entries, *else_entry, outgoing_need, out);
+        }
+    }
+    for step in entry.steps.iter().rev() {
+        collect_step_reads(step, &mut used_values);
+        match step {
+            LoweredStep::AssertTuple { source, arity } => {
+                tuple_demands.insert(*source, *arity);
+            }
+            LoweredStep::Const { value, .. }
+            | LoweredStep::Tuple { value, .. }
+            | LoweredStep::List { value, .. }
+            | LoweredStep::FunctionRef { value, .. }
+            | LoweredStep::NamedFunctionRef { value, .. }
+            | LoweredStep::Lambda { value, .. }
+            | LoweredStep::BinaryOp { value, .. }
+            | LoweredStep::UnaryOp { value, .. }
+            | LoweredStep::MapIndex { value, .. }
+            | LoweredStep::TupleField { value, .. } => {
+                tuple_demands.remove(value);
+            }
+            LoweredStep::SplitList { head, tail, .. } => {
+                tuple_demands.remove(head);
+                tuple_demands.remove(tail);
+            }
+            LoweredStep::AssertLiteral { .. }
+            | LoweredStep::AssertEmptyList { .. }
+            | LoweredStep::AssertSame { .. } => {}
+        }
+    }
+    let input_need = entry.origin.input_value().and_then(|value| {
+        tuple_demands
+            .remove(&value)
+            .map(ExecutableNeed::TupleFields)
+            .or_else(|| used_values.contains(&value).then_some(ExecutableNeed::Value))
+    });
+    if matches!(entry.origin, ControlEntryOrigin::Resume { .. }) {
+        out[entry_id.as_u32() as usize] = input_need;
+    }
+    input_need.unwrap_or(ExecutableNeed::Value)
+}
+
+fn collect_step_reads(step: &LoweredStep, out: &mut HashSet<ValueId>) {
+    match step {
+        LoweredStep::Const { .. } | LoweredStep::FunctionRef { .. } | LoweredStep::NamedFunctionRef { .. } => {}
+        LoweredStep::Tuple { items, .. } => out.extend(items.iter().copied()),
+        LoweredStep::List { items, tail, .. } => {
+            out.extend(items.iter().copied());
+            if let Some(tail) = tail {
+                out.insert(*tail);
+            }
+        }
+        LoweredStep::Lambda { captures, .. } => out.extend(captures.iter().copied()),
+        LoweredStep::BinaryOp { left, right, .. } => {
+            out.insert(*left);
+            out.insert(*right);
+        }
+        LoweredStep::UnaryOp { input, .. } => {
+            out.insert(*input);
+        }
+        LoweredStep::MapIndex { base, key, .. } => {
+            out.insert(*base);
+            out.insert(*key);
+        }
+        LoweredStep::AssertLiteral { source, .. }
+        | LoweredStep::AssertTuple { source, .. }
+        | LoweredStep::AssertEmptyList { source } => {
+            out.insert(*source);
+        }
+        LoweredStep::TupleField { source, .. } => {
+            out.insert(*source);
+        }
+        LoweredStep::AssertSame { source, value } => {
+            out.insert(*source);
+            out.insert(*value);
+        }
+        LoweredStep::SplitList { source, .. } => {
+            out.insert(*source);
+        }
+    }
+}
+
+fn destination_need(
+    world: &mut World<'_>,
+    executable: &super::super::artifact::EmissionReadyExecutable,
+    entries: &[LoweredEntry],
+    dest: &ControlDestination,
+    outgoing_need: ReturnAbi,
+    out: &mut [Option<ExecutableNeed>],
+) -> ExecutableNeed {
+    match dest {
+        ControlDestination::Return => match outgoing_need {
+            ReturnAbi::Value(_) => ExecutableNeed::Value,
+            ReturnAbi::TupleFields(ref reprs) => ExecutableNeed::TupleFields(reprs.len()),
+        },
+        ControlDestination::Deliver(entry_id) => {
+            collect_entry_input_need(world, executable, entries, *entry_id, outgoing_need, out)
+        }
+    }
+}
+
+fn publish_entry_input_abis(
+    world: &mut World<'_>,
+    root_id: RootId,
+    program: &super::super::artifact::EmissionReadyProgram,
+    executable: &super::super::artifact::EmissionReadyExecutable,
+    entry: &LoweredEntry,
+    needs: &[Option<ExecutableNeed>],
+    out: &mut [Option<ReturnAbi>],
+) -> Result<(), FatalError> {
+    match &entry.tail {
+        LoweredTail::Value { value, dest } => {
+            if let ControlDestination::Deliver(target) = dest {
+                let need = needs[target.as_u32() as usize].unwrap_or(ExecutableNeed::Value);
+                let abi = return_abi_for_resume_input(world, executable, *value, need);
+                merge_resume_abi(world, root_id, *target, abi, out)?;
+            }
+        }
+        LoweredTail::DirectCall { callsite, dest, .. } | LoweredTail::ClosureCall { callsite, dest, .. } => {
+            if let ControlDestination::Deliver(target) = dest {
+                let edge = call_edge(executable, *callsite).ok_or_else(|| {
+                    incomplete_backend_program(
+                        world,
+                        root_id,
+                        format!(
+                            "missing settled call edge while deriving resume ABI for callsite {}",
+                            callsite.as_u32()
+                        ),
+                    )
+                })?;
+                let abi = program.executables[edge.callee].return_abi.clone();
+                merge_resume_abi(world, root_id, *target, abi, out)?;
+            }
+        }
+        LoweredTail::If { .. } => {}
+    }
+    Ok(())
+}
+
+fn merge_resume_abi(
+    world: &World<'_>,
+    root_id: RootId,
+    entry_id: super::super::body::ControlEntryId,
+    abi: ReturnAbi,
+    out: &mut [Option<ReturnAbi>],
+) -> Result<(), FatalError> {
+    let slot = &mut out[entry_id.as_u32() as usize];
+    match slot {
+        Some(existing) if *existing != abi => Err(incomplete_backend_program(
+            world,
+            root_id,
+            format!(
+                "resume entry {} received conflicting input ABIs: {:?} vs {:?}",
+                entry_id.as_u32(),
+                existing,
+                abi
+            ),
+        )),
+        Some(_) => Ok(()),
+        None => {
+            *slot = Some(abi);
+            Ok(())
+        }
+    }
+}
+
+fn return_abi_for_resume_input(
+    world: &mut World<'_>,
+    executable: &super::super::artifact::EmissionReadyExecutable,
+    value: ValueId,
+    need: ExecutableNeed,
+) -> ReturnAbi {
+    match need {
+        ExecutableNeed::Value => ReturnAbi::Value(
+            executable
+                .value_reprs
+                .get(&value)
+                .copied()
+                .unwrap_or_else(|| backend_value_repr(world, executable.value_types[&value])),
+        ),
+        ExecutableNeed::TupleFields(arity) => {
+            let field_tys = world
+                .types_mut()
+                .tuple_projections(&executable.value_types[&value], arity);
+            let reprs = field_tys
+                .into_iter()
+                .map(|ty| backend_value_repr(world, ty))
+                .collect::<Vec<_>>();
+            ReturnAbi::TupleFields(reprs)
+        }
+    }
+}
+
+fn backend_value_repr(world: &mut World<'_>, ty: Ty) -> AbiValueRepr {
+    if world.types().is_floating(&ty) {
+        return AbiValueRepr::RawF64;
+    }
+    if world.types().is_integer(&ty) {
+        return AbiValueRepr::RawInt;
+    }
+    let atom = world.types_mut().atom();
+    if world.types().is_subtype(&ty, &atom) {
+        AbiValueRepr::RawAtom
+    } else {
+        AbiValueRepr::ValueRef
+    }
+}
+
 fn call_edge(
     executable: &super::super::artifact::EmissionReadyExecutable,
     callsite: CallSiteId,
@@ -462,29 +811,32 @@ fn collect_executable_atoms(
 ) {
     match &executable.body {
         BackendBody::Extern { .. } => {}
-        BackendBody::Clauses { clauses, .. } => {
+        BackendBody::Clauses { clauses, entries, .. } => {
             if let Some(dispatch) = &executable.entry_dispatch {
                 collect_dispatch_atoms(world, dispatch.plan(), seen, atoms);
             }
             for clause in clauses {
                 collect_step_atoms(world, &clause.projections, seen, atoms);
-                collect_block_atoms(world, &clause.body, seen, atoms);
+            }
+            for entry in entries {
+                collect_entry_atoms(world, entry, seen, atoms);
             }
         }
     }
 }
 
-fn collect_block_atoms(
+fn collect_entry_atoms(
     world: &mut World<'_>,
-    block: &BackendBlock,
+    entry: &BackendEntry,
     seen: &mut HashSet<String>,
     atoms: &mut Vec<String>,
 ) {
-    collect_step_atoms(world, &block.steps, seen, atoms);
+    collect_step_atoms(world, &entry.steps, seen, atoms);
+    collect_tail_atoms(world, &entry.tail, seen, atoms);
 }
 
 fn collect_step_atoms(
-    world: &mut World<'_>,
+    _world: &mut World<'_>,
     steps: &[BackendStep],
     seen: &mut HashSet<String>,
     atoms: &mut Vec<String>,
@@ -494,18 +846,10 @@ fn collect_step_atoms(
             BackendStep::Const { literal, .. } | BackendStep::AssertLiteral { literal, .. } => {
                 collect_literal_atoms(literal, seen, atoms);
             }
-            BackendStep::If {
-                then_block, else_block, ..
-            } => {
-                collect_block_atoms(world, then_block, seen, atoms);
-                collect_block_atoms(world, else_block, seen, atoms);
-            }
             BackendStep::Tuple { .. }
             | BackendStep::List { .. }
             | BackendStep::FunctionRef { .. }
             | BackendStep::NamedFunctionRef { .. }
-            | BackendStep::DirectCall { .. }
-            | BackendStep::ClosureCall { .. }
             | BackendStep::Lambda { .. }
             | BackendStep::BinaryOp { .. }
             | BackendStep::UnaryOp { .. }
@@ -517,6 +861,14 @@ fn collect_step_atoms(
             | BackendStep::SplitList { .. } => {}
         }
     }
+}
+
+fn collect_tail_atoms(
+    _world: &mut World<'_>,
+    _tail: &BackendTail,
+    _seen: &mut HashSet<String>,
+    _atoms: &mut Vec<String>,
+) {
 }
 
 fn collect_literal_atoms(literal: &super::super::body::Literal, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {

@@ -14,7 +14,8 @@ use crate::dispatch_matrix::{
 };
 
 use super::super::body::{
-    CallSiteId, DirectCallee, Literal, LoweredBlock, LoweredBody, LoweredClause, LoweredStep, ValueId,
+    CallSiteId, ControlDestination, DirectCallee, Literal, LoweredBody, LoweredClause, LoweredEntry, LoweredStep,
+    LoweredTail, ValueId,
 };
 use super::super::drive::{FactKey, Job, JobEffects};
 use super::super::facts::FactValue;
@@ -84,7 +85,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         LoweredBody::Extern { signature } => {
             return_ty = signature.return_ty;
         }
-        LoweredBody::Clauses { clauses, .. } => {
+        LoweredBody::Clauses { clauses, entries, .. } => {
             for clause_id in &reachable_clauses {
                 let clause = &clauses[*clause_id as usize];
                 let mut values = HashMap::new();
@@ -102,17 +103,18 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
                     &mut follow_up,
                 )?;
                 merge_value_types(world, &mut value_types, &values);
-                let clause_return = analyze_block(
+                let clause_return = analyze_entry(
                     world,
-                    &clause.body,
-                    &mut values,
+                    entries.as_slice(),
+                    clause.entry,
+                    &values,
+                    &mut value_types,
                     &mut analysis_calls,
                     activation,
                     &mut reads,
                     &mut waits,
                     &mut follow_up,
                 )?;
-                merge_value_types(world, &mut value_types, &values);
                 return_ty = if world.types().is_empty(&return_ty) {
                     clause_return
                 } else {
@@ -184,32 +186,57 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     })
 }
 
-fn analyze_block(
+fn analyze_entry(
     world: &mut World<'_>,
-    block: &LoweredBlock,
-    values: &mut ValueTypes,
+    entries: &[LoweredEntry],
+    entry_id: super::super::body::ControlEntryId,
+    values: &ValueTypes,
+    value_types: &mut ValueTypes,
     calls: &mut Vec<CallEmission>,
     activation: &ActivationKey,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
 ) -> Result<Ty, FatalError> {
-    apply_steps(world, &block.steps, values, calls, activation, reads, waits, follow_up)?;
-    Ok(values.get(&block.result).cloned().unwrap_or_else(|| any_ty(world)))
+    let entry = &entries[entry_id.as_u32() as usize];
+    let mut local = values.clone();
+    apply_steps(
+        world,
+        &entry.steps,
+        &mut local,
+        calls,
+        activation,
+        reads,
+        waits,
+        follow_up,
+    )?;
+    merge_value_types(world, value_types, &local);
+    analyze_tail(
+        world,
+        entries,
+        &entry.tail,
+        &local,
+        value_types,
+        calls,
+        activation,
+        reads,
+        waits,
+        follow_up,
+    )
 }
 
 fn apply_steps(
     world: &mut World<'_>,
     steps: &[LoweredStep],
     values: &mut ValueTypes,
-    calls: &mut Vec<CallEmission>,
-    activation: &ActivationKey,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
+    _calls: &mut Vec<CallEmission>,
+    _activation: &ActivationKey,
+    _reads: &mut Vec<FactKey>,
+    _waits: &mut HashSet<FactKey>,
+    _follow_up: &mut HashSet<Job>,
 ) -> Result<(), FatalError> {
     for step in steps {
-        apply_step(world, step, values, calls, activation, reads, waits, follow_up)?;
+        apply_step(world, step, values, _calls, _activation, _reads, _waits, _follow_up)?;
     }
     Ok(())
 }
@@ -218,11 +245,11 @@ fn apply_step(
     world: &mut World<'_>,
     step: &LoweredStep,
     values: &mut ValueTypes,
-    calls: &mut Vec<CallEmission>,
-    activation: &ActivationKey,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
+    _calls: &mut Vec<CallEmission>,
+    _activation: &ActivationKey,
+    _reads: &mut Vec<FactKey>,
+    _waits: &mut HashSet<FactKey>,
+    _follow_up: &mut HashSet<Job>,
 ) -> Result<(), FatalError> {
     match step {
         LoweredStep::Const { value, literal } => {
@@ -248,57 +275,6 @@ fn apply_step(
         LoweredStep::NamedFunctionRef { value, .. } => {
             values.insert(*value, any_ty(world));
         }
-        LoweredStep::DirectCall {
-            value,
-            callsite,
-            callee,
-            args,
-        } => {
-            let arg_types = args
-                .iter()
-                .map(|arg| value_ty(world, values, arg.value))
-                .collect::<Vec<_>>();
-            let (emission, return_ty) = resolve_direct_call(
-                world,
-                activation,
-                *callsite,
-                callee,
-                arg_types.clone(),
-                reads,
-                waits,
-                follow_up,
-            )?;
-            if let Some(emission) = emission {
-                calls.push(emission);
-            }
-            values.insert(*value, return_ty);
-        }
-        LoweredStep::ClosureCall {
-            value,
-            callsite,
-            callee,
-            args,
-        } => {
-            let callee_ty = value_ty(world, values, *callee);
-            let arg_types = args
-                .iter()
-                .map(|arg| value_ty(world, values, arg.value))
-                .collect::<Vec<_>>();
-            let (emission, return_ty) = resolve_closure_call(
-                world,
-                activation,
-                *callsite,
-                callee_ty,
-                arg_types.clone(),
-                reads,
-                waits,
-                follow_up,
-            )?;
-            if let Some(emission) = emission {
-                calls.push(emission);
-            }
-            values.insert(*value, return_ty);
-        }
         LoweredStep::Lambda {
             value,
             function,
@@ -321,36 +297,6 @@ fn apply_step(
         }
         LoweredStep::MapIndex { value, .. } => {
             values.insert(*value, any_ty(world));
-        }
-        LoweredStep::If {
-            value,
-            then_block,
-            else_block,
-            ..
-        } => {
-            let mut then_values = values.clone();
-            let mut else_values = values.clone();
-            let then_ty = analyze_block(
-                world,
-                then_block,
-                &mut then_values,
-                calls,
-                activation,
-                reads,
-                waits,
-                follow_up,
-            )?;
-            let else_ty = analyze_block(
-                world,
-                else_block,
-                &mut else_values,
-                calls,
-                activation,
-                reads,
-                waits,
-                follow_up,
-            )?;
-            values.insert(*value, world.types_mut().union(then_ty, else_ty));
         }
         LoweredStep::AssertLiteral { source, literal } => {
             let source_ty = value_ty(world, values, *source);
@@ -392,6 +338,186 @@ fn apply_step(
         }
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn analyze_tail(
+    world: &mut World<'_>,
+    entries: &[LoweredEntry],
+    tail: &LoweredTail,
+    values: &ValueTypes,
+    value_types: &mut ValueTypes,
+    calls: &mut Vec<CallEmission>,
+    activation: &ActivationKey,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Result<Ty, FatalError> {
+    match tail {
+        LoweredTail::Value { value, dest } => deliver_tail_value(
+            world,
+            entries,
+            dest,
+            *value,
+            values,
+            value_types,
+            calls,
+            activation,
+            reads,
+            waits,
+            follow_up,
+        ),
+        LoweredTail::DirectCall {
+            value,
+            callsite,
+            callee,
+            args,
+            dest,
+        } => {
+            let arg_types = args
+                .iter()
+                .map(|arg| value_ty(world, values, arg.value))
+                .collect::<Vec<_>>();
+            let (emission, return_ty) =
+                resolve_direct_call(world, activation, *callsite, callee, arg_types, reads, waits, follow_up)?;
+            if let Some(emission) = emission {
+                calls.push(emission);
+            }
+            let mut delivered = values.clone();
+            delivered.insert(*value, return_ty);
+            merge_value_types(world, value_types, &delivered);
+            deliver_tail_value(
+                world,
+                entries,
+                dest,
+                *value,
+                &delivered,
+                value_types,
+                calls,
+                activation,
+                reads,
+                waits,
+                follow_up,
+            )
+        }
+        LoweredTail::ClosureCall {
+            value,
+            callsite,
+            callee,
+            args,
+            dest,
+        } => {
+            let callee_ty = value_ty(world, values, *callee);
+            let arg_types = args
+                .iter()
+                .map(|arg| value_ty(world, values, arg.value))
+                .collect::<Vec<_>>();
+            let (emission, return_ty) = resolve_closure_call(
+                world, activation, *callsite, callee_ty, arg_types, reads, waits, follow_up,
+            )?;
+            if let Some(emission) = emission {
+                calls.push(emission);
+            }
+            let mut delivered = values.clone();
+            delivered.insert(*value, return_ty);
+            merge_value_types(world, value_types, &delivered);
+            deliver_tail_value(
+                world,
+                entries,
+                dest,
+                *value,
+                &delivered,
+                value_types,
+                calls,
+                activation,
+                reads,
+                waits,
+                follow_up,
+            )
+        }
+        LoweredTail::If {
+            then_entry, else_entry, ..
+        } => {
+            let then_ty = analyze_entry(
+                world,
+                entries,
+                *then_entry,
+                &entry_scope(entries, *then_entry, values, None),
+                value_types,
+                calls,
+                activation,
+                reads,
+                waits,
+                follow_up,
+            )?;
+            let else_ty = analyze_entry(
+                world,
+                entries,
+                *else_entry,
+                &entry_scope(entries, *else_entry, values, None),
+                value_types,
+                calls,
+                activation,
+                reads,
+                waits,
+                follow_up,
+            )?;
+            Ok(world.types_mut().union(then_ty, else_ty))
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn deliver_tail_value(
+    world: &mut World<'_>,
+    entries: &[LoweredEntry],
+    dest: &ControlDestination,
+    value: ValueId,
+    values: &ValueTypes,
+    value_types: &mut ValueTypes,
+    calls: &mut Vec<CallEmission>,
+    activation: &ActivationKey,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Result<Ty, FatalError> {
+    let delivered_ty = value_ty(world, values, value);
+    match dest {
+        ControlDestination::Return => Ok(delivered_ty),
+        ControlDestination::Deliver(entry_id) => analyze_entry(
+            world,
+            entries,
+            *entry_id,
+            &entry_scope(entries, *entry_id, values, Some((value, delivered_ty))),
+            value_types,
+            calls,
+            activation,
+            reads,
+            waits,
+            follow_up,
+        ),
+    }
+}
+
+fn entry_scope(
+    entries: &[LoweredEntry],
+    entry_id: super::super::body::ControlEntryId,
+    values: &ValueTypes,
+    delivered: Option<(ValueId, Ty)>,
+) -> ValueTypes {
+    let entry = &entries[entry_id.as_u32() as usize];
+    let mut scope = HashMap::new();
+    if let Some((_, ty)) = delivered
+        && let Some(input) = entry.origin.input_value()
+    {
+        scope.insert(input, ty);
+    }
+    for capture in &entry.captures {
+        if let Some(ty) = values.get(capture).copied() {
+            scope.insert(*capture, ty);
+        }
+    }
+    scope
 }
 
 fn resolve_direct_call(
@@ -991,69 +1117,63 @@ pub(super) fn executable_callsite_needs(
     executable_need: ExecutableNeed,
 ) -> HashMap<CallSiteId, ExecutableNeed> {
     let mut needs = HashMap::new();
-    let LoweredBody::Clauses { clauses, .. } = body else {
+    let LoweredBody::Clauses { clauses, entries, .. } = body else {
         return needs;
     };
     for clause_id in reachable_clauses {
-        collect_clause_callsite_needs(&clauses[*clause_id as usize], executable_need, &mut needs);
+        collect_clause_callsite_needs(&clauses[*clause_id as usize], entries, executable_need, &mut needs);
     }
     needs
 }
 
 fn collect_clause_callsite_needs(
     clause: &LoweredClause,
+    entries: &[LoweredEntry],
     executable_need: ExecutableNeed,
     out: &mut HashMap<CallSiteId, ExecutableNeed>,
 ) {
-    let mut tuple_demands = HashMap::new();
-    if let ExecutableNeed::TupleFields(arity) = executable_need {
-        tuple_demands.insert(clause.body.result, arity);
-    }
-    collect_steps_callsite_needs_reverse(&clause.body.steps, &mut tuple_demands, out);
-    collect_steps_callsite_needs_reverse(&clause.projections, &mut tuple_demands, out);
+    collect_entry_callsite_needs(entries, clause.entry, executable_need, out);
 }
 
-fn collect_block_callsite_needs(
-    block: &LoweredBlock,
-    block_need: ExecutableNeed,
+fn collect_entry_callsite_needs(
+    entries: &[LoweredEntry],
+    entry_id: super::super::body::ControlEntryId,
+    outgoing_need: ExecutableNeed,
     out: &mut HashMap<CallSiteId, ExecutableNeed>,
-) {
+) -> Option<usize> {
+    let entry = &entries[entry_id.as_u32() as usize];
     let mut tuple_demands = HashMap::new();
-    if let ExecutableNeed::TupleFields(arity) = block_need {
-        tuple_demands.insert(block.result, arity);
+    match &entry.tail {
+        LoweredTail::Value { value, dest } => {
+            if let Some(arity) = destination_need(entries, dest, outgoing_need, out) {
+                tuple_demands.insert(*value, arity);
+            }
+        }
+        LoweredTail::DirectCall {
+            value, callsite, dest, ..
+        }
+        | LoweredTail::ClosureCall {
+            value, callsite, dest, ..
+        } => {
+            let need = destination_need(entries, dest, outgoing_need, out)
+                .map(ExecutableNeed::TupleFields)
+                .unwrap_or(ExecutableNeed::Value);
+            record_callsite_need(out, *callsite, need);
+            if let ExecutableNeed::TupleFields(arity) = need {
+                tuple_demands.insert(*value, arity);
+            }
+        }
+        LoweredTail::If {
+            then_entry, else_entry, ..
+        } => {
+            let _ = collect_entry_callsite_needs(entries, *then_entry, outgoing_need, out);
+            let _ = collect_entry_callsite_needs(entries, *else_entry, outgoing_need, out);
+        }
     }
-    collect_steps_callsite_needs_reverse(&block.steps, &mut tuple_demands, out);
-}
-
-fn collect_steps_callsite_needs_reverse(
-    steps: &[LoweredStep],
-    tuple_demands: &mut HashMap<ValueId, usize>,
-    out: &mut HashMap<CallSiteId, ExecutableNeed>,
-) {
-    for step in steps.iter().rev() {
+    for step in entry.steps.iter().rev() {
         match step {
             LoweredStep::AssertTuple { source, arity } => {
                 tuple_demands.insert(*source, *arity);
-            }
-            LoweredStep::DirectCall { value, callsite, .. } | LoweredStep::ClosureCall { value, callsite, .. } => {
-                let need = tuple_demands
-                    .remove(value)
-                    .map(ExecutableNeed::TupleFields)
-                    .unwrap_or(ExecutableNeed::Value);
-                record_callsite_need(out, *callsite, need);
-            }
-            LoweredStep::If {
-                value,
-                then_block,
-                else_block,
-                ..
-            } => {
-                let branch_need = tuple_demands
-                    .remove(value)
-                    .map(ExecutableNeed::TupleFields)
-                    .unwrap_or(ExecutableNeed::Value);
-                collect_block_callsite_needs(then_block, branch_need, out);
-                collect_block_callsite_needs(else_block, branch_need, out);
             }
             LoweredStep::Const { value, .. }
             | LoweredStep::Tuple { value, .. }
@@ -1075,6 +1195,25 @@ fn collect_steps_callsite_needs_reverse(
             | LoweredStep::AssertEmptyList { .. }
             | LoweredStep::AssertSame { .. } => {}
         }
+    }
+    entry
+        .origin
+        .input_value()
+        .and_then(|value| tuple_demands.remove(&value))
+}
+
+fn destination_need(
+    entries: &[LoweredEntry],
+    dest: &ControlDestination,
+    outgoing_need: ExecutableNeed,
+    out: &mut HashMap<CallSiteId, ExecutableNeed>,
+) -> Option<usize> {
+    match dest {
+        ControlDestination::Return => match outgoing_need {
+            ExecutableNeed::Value => None,
+            ExecutableNeed::TupleFields(arity) => Some(arity),
+        },
+        ControlDestination::Deliver(entry_id) => collect_entry_callsite_needs(entries, *entry_id, outgoing_need, out),
     }
 }
 

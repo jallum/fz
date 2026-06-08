@@ -751,7 +751,7 @@ impl<'a> World<'a> {
         };
         let (clauses, generated, arity) = match &body {
             LoweredBody::Extern { signature } => (0_u64, 0_u64, signature.params.len() as u64),
-            LoweredBody::Clauses { clauses, generated } => {
+            LoweredBody::Clauses { clauses, generated, .. } => {
                 (clauses.len() as u64, generated.len() as u64, def.ast.arity() as u64)
             }
         };

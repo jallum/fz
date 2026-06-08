@@ -87,6 +87,45 @@ The first reachable reference pulls the owning runtime module's source through
 functions are never lowered. The prelude itself is just a namespace head saved
 after bootstrap bindings — visibility, not a stage.
 
+## Function-local control is an entry graph
+
+`LoweredBlock { steps, result }` was enough for straight-line code plus a
+special-cased `if`, but it was too weak for `case`, `with`, and `receive`.
+Compiler2 now lowers one function body as:
+
+- `LoweredClause`: head projections plus the `ControlEntryId` where the clause
+  body starts
+- `LoweredEntry`: one reusable local control node with `captures`, straight-line
+  `steps`, and one `LoweredTail`
+- `LoweredTail`: the only place control can branch, call, or return
+- `ControlDestination`: either `Return` or `Deliver(next_entry)`
+
+That makes local control explicit instead of positional.
+
+- `ControlEntryOrigin::Clause` is a clause body entry.
+- `ControlEntryOrigin::Branch` is a compiler-made join/arm entry.
+- `ControlEntryOrigin::Resume { value }` is where a non-tail call delivers its
+  result before more work continues.
+
+So a non-tail direct call is not "call, then keep walking the remaining steps."
+It is:
+
+```text
+entry N:
+  steps...
+  tail = DirectCall { ..., dest: Deliver(resume_k) }
+
+entry resume_k:
+  origin = Resume { value: v }
+  captures = [...]
+  steps...
+  tail = ...
+```
+
+The backend and native jobs preserve this shape mechanically. They derive ABI
+for resume entries, clause-entry helpers, and continuations from the same entry
+graph instead of rebuilding hidden CPS structure from "tail position" guesses.
+
 ## The artifact boundary is one-way
 
 `MaterializeRoot` reads `SemanticClosed(root)` and nothing else from the semantic

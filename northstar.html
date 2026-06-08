@@ -743,6 +743,39 @@ DependencySnapshot = HashMap&lt;FactKey, u64&gt;</code></pre>
     <section>
       <h2>Worked Example: Quicksort Plus <code>foo/0</code></h2>
 
+      <p>
+        One local design change matters for the next wave of control work:
+        a function body is no longer "a list of steps plus a final result."
+        It is a small entry graph.
+      </p>
+      <ul>
+        <li><code>LoweredClause</code> owns head projections and points at the <code>ControlEntryId</code> where its body starts.</li>
+        <li><code>LoweredEntry</code> is one reusable local control node: captured inputs, straight-line steps, and one tail.</li>
+        <li><code>LoweredTail</code> is the only place control can branch, call, or return.</li>
+        <li><code>ControlDestination</code> says whether a value returns from the executable or is delivered into another local entry.</li>
+      </ul>
+      <p>
+        That sounds abstract, but it removes the old weakness directly. A
+        non-tail call no longer needs hidden "finish the rest of the block"
+        machinery. It simply names the resume entry that receives the result:
+      </p>
+      <pre><code>entry N:
+  steps...
+  tail = DirectCall { ..., dest: Deliver(resume_k) }
+
+entry resume_k:
+  origin = Resume { value: v }
+  captures = [...]
+  steps...
+  tail = ...</code></pre>
+      <p>
+        Clause bodies use <code>ControlEntryOrigin::Clause</code>. Compiler-made
+        joins and branch arms use <code>Branch</code>. Resume points use
+        <code>Resume { value }</code>. The important part is that backend and
+        native lowering now consume this explicit control graph mechanically
+        instead of trying to recover it later from positional tailness.
+      </p>
+
       <div class="step">
         <h3><span class="num">01</span>Discovery is cheap</h3>
         <p>

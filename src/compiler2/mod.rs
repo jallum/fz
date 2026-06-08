@@ -22,16 +22,17 @@ mod world;
 pub use agenda::Agenda;
 pub(crate) use artifact::NativeEntryAbi;
 pub use artifact::{
-    AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiReadyProgramMap, AbiValueRepr, BackendBlock, BackendBody,
-    BackendCallArg, BackendCallableEntry, BackendClause, BackendExecutable, BackendProgram, BackendProgramMap,
-    BackendStep, CallableEntry, EmissionReadyCallEdge, EmissionReadyCallableEntry, EmissionReadyExecutable,
-    EmissionReadyProgram, EmissionReadyProgramMap, ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable,
-    MaterializedProgram, MaterializedProgramMap, ReturnAbi,
+    AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiReadyProgramMap, AbiValueRepr, BackendBody,
+    BackendCallArg, BackendCallableEntry, BackendClause, BackendEntry, BackendEntryOrigin, BackendExecutable,
+    BackendProgram, BackendProgramMap, BackendStep, BackendTail, CallableEntry, EmissionReadyCallEdge,
+    EmissionReadyCallableEntry, EmissionReadyExecutable, EmissionReadyProgram, EmissionReadyProgramMap,
+    ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable, MaterializedProgram, MaterializedProgramMap,
+    ReturnAbi,
 };
 pub(crate) use artifact::{NativeBody, NativeProgram};
 pub use body::{
-    BodySlot, BodyState, CallSiteId, DirectCallee, Literal, LoweredBlock, LoweredBody, LoweredBodyMap, LoweredClause,
-    LoweredExtern, LoweredStep, ValueId,
+    BodySlot, BodyState, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, DirectCallee, Literal,
+    LoweredBody, LoweredBodyMap, LoweredClause, LoweredEntry, LoweredExtern, LoweredStep, LoweredTail, ValueId,
 };
 pub use cli::run as run_cli;
 pub use code::{Code, CodeId, CodeMap, CodeState};

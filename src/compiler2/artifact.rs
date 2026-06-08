@@ -23,7 +23,7 @@ use crate::fz_ir::{
     Stmt as IrStmt, Term as IrTerm, Var,
 };
 
-use super::body::{CallSiteId, Literal, LoweredBody, LoweredExtern, ValueId};
+use super::body::{CallSiteId, ControlDestination, ControlEntryId, Literal, LoweredBody, LoweredExtern, ValueId};
 use super::identity::{ExecutableKey, FunctionId, RootId};
 use super::types::Ty;
 
@@ -232,6 +232,7 @@ pub enum BackendBody {
     },
     Clauses {
         clauses: Vec<BackendClause>,
+        entries: Vec<BackendEntry>,
         generated: Vec<FunctionId>,
     },
 }
@@ -261,20 +262,67 @@ pub struct BackendClause {
     pub span: Span,
     pub params: Vec<ValueId>,
     pub projections: Vec<BackendStep>,
-    pub body: BackendBlock,
+    pub entry: ControlEntryId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct BackendBlock {
+pub struct BackendEntry {
     pub span: Span,
+    pub origin: BackendEntryOrigin,
+    pub captures: Vec<ValueId>,
     pub steps: Vec<BackendStep>,
-    pub result: ValueId,
+    pub tail: BackendTail,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackendEntryOrigin {
+    Clause,
+    Branch,
+    Resume { value: ValueId, return_abi: ReturnAbi },
+}
+
+impl BackendEntryOrigin {
+    pub fn input_value(&self) -> Option<ValueId> {
+        match self {
+            Self::Clause | Self::Branch => None,
+            Self::Resume { value, .. } => Some(*value),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendCallArg {
     pub value: ValueId,
     pub callable_entries: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackendTail {
+    Value {
+        value: ValueId,
+        dest: ControlDestination,
+    },
+    DirectCall {
+        value: ValueId,
+        callsite: CallSiteId,
+        callee: usize,
+        args: Vec<BackendCallArg>,
+        dest: ControlDestination,
+        extern_marshals: Option<Vec<ExternTy>>,
+    },
+    ClosureCall {
+        value: ValueId,
+        callsite: CallSiteId,
+        callee: ValueId,
+        target: usize,
+        args: Vec<BackendCallArg>,
+        dest: ControlDestination,
+    },
+    If {
+        cond: ValueId,
+        then_entry: ControlEntryId,
+        else_entry: ControlEntryId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -301,20 +349,6 @@ pub enum BackendStep {
         name: String,
         arity: usize,
     },
-    DirectCall {
-        value: ValueId,
-        callsite: CallSiteId,
-        callee: usize,
-        args: Vec<BackendCallArg>,
-        extern_marshals: Option<Vec<ExternTy>>,
-    },
-    ClosureCall {
-        value: ValueId,
-        callsite: CallSiteId,
-        callee: ValueId,
-        target: usize,
-        args: Vec<BackendCallArg>,
-    },
     Lambda {
         value: ValueId,
         function: FunctionId,
@@ -335,12 +369,6 @@ pub enum BackendStep {
         value: ValueId,
         base: ValueId,
         key: ValueId,
-    },
-    If {
-        value: ValueId,
-        cond: ValueId,
-        then_block: BackendBlock,
-        else_block: BackendBlock,
     },
     AssertLiteral {
         source: ValueId,

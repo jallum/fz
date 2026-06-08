@@ -14,8 +14,8 @@ use crate::diag::driver::emit_through;
 use crate::ir_lower::{extern_symbol_from_name, extern_ty_from_name, lower_extern_ret_ty};
 
 use super::super::body::{
-    CallArg, CallSiteId, DirectCallee, Literal, LoweredBlock, LoweredBody, LoweredClause, LoweredExtern, LoweredStep,
-    ValueId,
+    CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, DirectCallee, Literal, LoweredBody,
+    LoweredClause, LoweredEntry, LoweredExtern, LoweredStep, LoweredTail, ValueId,
 };
 use super::super::drive::{FactKey, JobEffects};
 use super::super::facts::FactValue;
@@ -25,6 +25,111 @@ use super::super::scheduler::FatalError;
 use super::super::world::World;
 
 type Output = (FactKey, FactValue);
+
+#[derive(Debug, Clone)]
+struct ExprClause {
+    span: Span,
+    params: Vec<ValueId>,
+    projections: Vec<ExprStep>,
+    body: ExprBlock,
+}
+
+#[derive(Debug, Clone)]
+struct ExprBlock {
+    span: Span,
+    steps: Vec<ExprStep>,
+    result: ValueId,
+}
+
+#[derive(Debug, Clone)]
+enum ExprStep {
+    Const {
+        value: ValueId,
+        literal: Literal,
+    },
+    Tuple {
+        value: ValueId,
+        items: Vec<ValueId>,
+    },
+    List {
+        value: ValueId,
+        items: Vec<ValueId>,
+        tail: Option<ValueId>,
+    },
+    FunctionRef {
+        value: ValueId,
+        function: FunctionId,
+    },
+    NamedFunctionRef {
+        value: ValueId,
+        name: String,
+        arity: usize,
+    },
+    DirectCall {
+        value: ValueId,
+        callsite: CallSiteId,
+        callee: DirectCallee,
+        args: Vec<CallArg>,
+    },
+    ClosureCall {
+        value: ValueId,
+        callsite: CallSiteId,
+        callee: ValueId,
+        args: Vec<CallArg>,
+    },
+    Lambda {
+        value: ValueId,
+        function: FunctionId,
+        captures: Vec<ValueId>,
+    },
+    BinaryOp {
+        value: ValueId,
+        op: crate::ast::BinOp,
+        left: ValueId,
+        right: ValueId,
+    },
+    UnaryOp {
+        value: ValueId,
+        op: crate::ast::UnOp,
+        input: ValueId,
+    },
+    MapIndex {
+        value: ValueId,
+        base: ValueId,
+        key: ValueId,
+    },
+    If {
+        value: ValueId,
+        cond: ValueId,
+        then_block: ExprBlock,
+        else_block: ExprBlock,
+    },
+    AssertLiteral {
+        source: ValueId,
+        literal: Literal,
+    },
+    AssertTuple {
+        source: ValueId,
+        arity: usize,
+    },
+    TupleField {
+        value: ValueId,
+        source: ValueId,
+        index: usize,
+    },
+    AssertEmptyList {
+        source: ValueId,
+    },
+    AssertSame {
+        source: ValueId,
+        value: ValueId,
+    },
+    SplitList {
+        source: ValueId,
+        head: ValueId,
+        tail: ValueId,
+    },
+}
 
 /// Lowers one demanded function into Compiler2's structured body form.
 ///
@@ -127,21 +232,23 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             ));
         }
 
-        let mut clauses = Vec::new();
+        let mut clause_defs = Vec::new();
         for clause in self.def.ast.clauses.clone() {
-            clauses.push(self.lower_clause(&clause)?);
+            clause_defs.push(self.lower_clause(&clause)?);
         }
+        let (clauses, entries) = self.plan_clauses(clause_defs);
 
         Ok((
             LoweredBody::Clauses {
                 clauses,
+                entries,
                 generated: self.generated_ids.clone(),
             },
             std::mem::take(&mut self.generated),
         ))
     }
 
-    fn lower_clause(&mut self, clause: &FnClause) -> Result<LoweredClause, FatalError> {
+    fn lower_clause(&mut self, clause: &FnClause) -> Result<ExprClause, FatalError> {
         let mut env = HashMap::new();
         let mut projections = Vec::new();
         let mut params = Vec::new();
@@ -158,7 +265,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
 
         let body = self.lower_expr_as_block(&clause.body, env)?;
 
-        Ok(LoweredClause {
+        Ok(ExprClause {
             span: clause.span,
             params,
             projections,
@@ -170,10 +277,10 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         &mut self,
         expr: &Spanned<Expr>,
         mut env: HashMap<String, ValueId>,
-    ) -> Result<LoweredBlock, FatalError> {
+    ) -> Result<ExprBlock, FatalError> {
         let mut steps = Vec::new();
         let result = self.lower_expr(expr, &mut env, &mut steps)?;
-        Ok(LoweredBlock {
+        Ok(ExprBlock {
             span: expr.span,
             steps,
             result,
@@ -184,7 +291,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         &mut self,
         expr: &Spanned<Expr>,
         env: &mut HashMap<String, ValueId>,
-        steps: &mut Vec<LoweredStep>,
+        steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         match &expr.node {
             Expr::Int(value) => Ok(self.push_const(steps, Literal::Int(*value))),
@@ -200,7 +307,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 match self.world.lookup_namespace(self.namespace, name) {
                     Some(NamespaceSymbol::Function(function)) => {
                         let value = self.fresh_value();
-                        steps.push(LoweredStep::FunctionRef { value, function });
+                        steps.push(ExprStep::FunctionRef { value, function });
                         Ok(value)
                     }
                     Some(NamespaceSymbol::Macro(_)) => Err(emit_job_diagnostic(
@@ -225,7 +332,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 let value = self.fresh_value();
                 match self.world.lookup_callable_namespace(self.namespace, name, *arity) {
                     Some(NamespaceSymbol::Function(function)) => {
-                        steps.push(LoweredStep::FunctionRef { value, function });
+                        steps.push(ExprStep::FunctionRef { value, function });
                     }
                     Some(NamespaceSymbol::Macro(_)) => {
                         return Err(emit_job_diagnostic(
@@ -238,7 +345,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                         ));
                     }
                     Some(NamespaceSymbol::Module(_)) | None => {
-                        steps.push(LoweredStep::NamedFunctionRef {
+                        steps.push(ExprStep::NamedFunctionRef {
                             value,
                             name: name.clone(),
                             arity: *arity,
@@ -257,7 +364,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                     .map(|tail| self.lower_expr(tail, env, steps))
                     .transpose()?;
                 let value = self.fresh_value();
-                steps.push(LoweredStep::List {
+                steps.push(ExprStep::List {
                     value,
                     items: lowered,
                     tail,
@@ -270,14 +377,14 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                     lowered.push(self.lower_expr(item, env, steps)?);
                 }
                 let value = self.fresh_value();
-                steps.push(LoweredStep::Tuple { value, items: lowered });
+                steps.push(ExprStep::Tuple { value, items: lowered });
                 Ok(value)
             }
             Expr::Index(base, key) => {
                 let base = self.lower_expr(base, env, steps)?;
                 let key = self.lower_expr(key, env, steps)?;
                 let value = self.fresh_value();
-                steps.push(LoweredStep::MapIndex { value, base, key });
+                steps.push(ExprStep::MapIndex { value, base, key });
                 Ok(value)
             }
             Expr::Call(target, args) => {
@@ -285,7 +392,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 let callsite = self.fresh_callsite();
                 if let Some(name) = direct_call_name(target, env) {
                     let value = self.fresh_value();
-                    steps.push(LoweredStep::DirectCall {
+                    steps.push(ExprStep::DirectCall {
                         value,
                         callsite,
                         callee: self.resolve_direct_callee(&name, args.len(), target.span)?,
@@ -295,7 +402,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 }
                 let callee = self.lower_expr(target, env, steps)?;
                 let value = self.fresh_value();
-                steps.push(LoweredStep::ClosureCall {
+                steps.push(ExprStep::ClosureCall {
                     value,
                     callsite,
                     callee,
@@ -307,7 +414,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 let callee = self.lower_expr(target, env, steps)?;
                 let lowered_args = self.lower_call_args(args, env, steps)?;
                 let value = self.fresh_value();
-                steps.push(LoweredStep::ClosureCall {
+                steps.push(ExprStep::ClosureCall {
                     value,
                     callsite: self.fresh_callsite(),
                     callee,
@@ -319,7 +426,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 let left = self.lower_expr(left, env, steps)?;
                 let right = self.lower_expr(right, env, steps)?;
                 let value = self.fresh_value();
-                steps.push(LoweredStep::BinaryOp {
+                steps.push(ExprStep::BinaryOp {
                     value,
                     op: *op,
                     left,
@@ -330,7 +437,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             Expr::UnOp(op, input) => {
                 let input = self.lower_expr(input, env, steps)?;
                 let value = self.fresh_value();
-                steps.push(LoweredStep::UnaryOp { value, op: *op, input });
+                steps.push(ExprStep::UnaryOp { value, op: *op, input });
                 Ok(value)
             }
             Expr::Ascribe(inner, _) => self.lower_expr(inner, env, steps),
@@ -357,9 +464,9 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 } else {
                     let nil_span = expr.span;
                     let result = self.fresh_value();
-                    LoweredBlock {
+                    ExprBlock {
                         span: nil_span,
-                        steps: vec![LoweredStep::Const {
+                        steps: vec![ExprStep::Const {
                             value: result,
                             literal: Literal::Nil,
                         }],
@@ -367,7 +474,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                     }
                 };
                 let value = self.fresh_value();
-                steps.push(LoweredStep::If {
+                steps.push(ExprStep::If {
                     value,
                     cond,
                     then_block,
@@ -445,7 +552,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         &mut self,
         args: &[Spanned<Expr>],
         env: &mut HashMap<String, ValueId>,
-        steps: &mut Vec<LoweredStep>,
+        steps: &mut Vec<ExprStep>,
     ) -> Result<Vec<CallArg>, FatalError> {
         let mut lowered = Vec::with_capacity(args.len());
         for arg in args {
@@ -466,7 +573,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         span: Span,
         clauses: &[LambdaClause],
         env: &HashMap<String, ValueId>,
-        steps: &mut Vec<LoweredStep>,
+        steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         let ast = FnDef {
             name: format!("#lambda:{}:{}-{}", self.owner.as_u32(), span.start, span.end),
@@ -509,12 +616,183 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
 
         let captures = captures.into_iter().collect::<Vec<_>>();
         let value = self.fresh_value();
-        steps.push(LoweredStep::Lambda {
+        steps.push(ExprStep::Lambda {
             value,
             function,
             captures,
         });
         Ok(value)
+    }
+
+    fn plan_clauses(&mut self, clauses: Vec<ExprClause>) -> (Vec<LoweredClause>, Vec<LoweredEntry>) {
+        let mut lowered = Vec::with_capacity(clauses.len());
+        let mut entries = Vec::new();
+        let mut clause_bounds = HashMap::new();
+        for clause in clauses {
+            let projection_steps = clause.projections.iter().map(lower_projection_step).collect::<Vec<_>>();
+            let entry = self.plan_block(
+                clause.body,
+                ControlEntryOrigin::Clause,
+                ControlDestination::Return,
+                &mut entries,
+            );
+            let mut bound = clause.params.iter().copied().collect::<HashSet<_>>();
+            bound.extend(values_defined_by_steps(&projection_steps));
+            clause_bounds.insert(entry, bound);
+            lowered.push(LoweredClause {
+                span: clause.span,
+                params: clause.params,
+                projections: projection_steps,
+                entry,
+            });
+        }
+        let captures = compute_entry_captures(&entries, &clause_bounds);
+        for (entry, captures) in entries.iter_mut().zip(captures) {
+            entry.captures = captures;
+        }
+        (lowered, entries)
+    }
+
+    fn plan_block(
+        &mut self,
+        block: ExprBlock,
+        origin: ControlEntryOrigin,
+        dest: ControlDestination,
+        entries: &mut Vec<LoweredEntry>,
+    ) -> ControlEntryId {
+        let (steps, tail) = self.plan_steps(&block, dest, entries);
+        let entry_id = ControlEntryId::from_u32(entries.len() as u32);
+        entries.push(LoweredEntry {
+            span: block.span,
+            origin,
+            captures: Vec::new(),
+            steps,
+            tail,
+        });
+        entry_id
+    }
+
+    fn plan_steps(
+        &mut self,
+        block: &ExprBlock,
+        dest: ControlDestination,
+        entries: &mut Vec<LoweredEntry>,
+    ) -> (Vec<LoweredStep>, LoweredTail) {
+        let mut lowered = Vec::new();
+        for (index, step) in block.steps.iter().enumerate() {
+            match step {
+                ExprStep::DirectCall {
+                    value,
+                    callsite,
+                    callee,
+                    args,
+                } => {
+                    let tail_dest = if index + 1 == block.steps.len() && *value == block.result {
+                        dest
+                    } else {
+                        let resume = self.plan_block(
+                            ExprBlock {
+                                span: block.span,
+                                steps: block.steps[index + 1..].to_vec(),
+                                result: block.result,
+                            },
+                            ControlEntryOrigin::Resume { value: *value },
+                            dest,
+                            entries,
+                        );
+                        ControlDestination::Deliver(resume)
+                    };
+                    return (
+                        lowered,
+                        LoweredTail::DirectCall {
+                            value: *value,
+                            callsite: *callsite,
+                            callee: callee.clone(),
+                            args: args.clone(),
+                            dest: tail_dest,
+                        },
+                    );
+                }
+                ExprStep::ClosureCall {
+                    value,
+                    callsite,
+                    callee,
+                    args,
+                } => {
+                    let tail_dest = if index + 1 == block.steps.len() && *value == block.result {
+                        dest
+                    } else {
+                        let resume = self.plan_block(
+                            ExprBlock {
+                                span: block.span,
+                                steps: block.steps[index + 1..].to_vec(),
+                                result: block.result,
+                            },
+                            ControlEntryOrigin::Resume { value: *value },
+                            dest,
+                            entries,
+                        );
+                        ControlDestination::Deliver(resume)
+                    };
+                    return (
+                        lowered,
+                        LoweredTail::ClosureCall {
+                            value: *value,
+                            callsite: *callsite,
+                            callee: *callee,
+                            args: args.clone(),
+                            dest: tail_dest,
+                        },
+                    );
+                }
+                ExprStep::If {
+                    value,
+                    cond,
+                    then_block,
+                    else_block,
+                } => {
+                    let branch_dest = if index + 1 == block.steps.len() && *value == block.result {
+                        dest
+                    } else {
+                        let resume = self.plan_block(
+                            ExprBlock {
+                                span: block.span,
+                                steps: block.steps[index + 1..].to_vec(),
+                                result: block.result,
+                            },
+                            ControlEntryOrigin::Resume { value: *value },
+                            dest,
+                            entries,
+                        );
+                        ControlDestination::Deliver(resume)
+                    };
+                    let then_entry = self.plan_block(
+                        then_block.clone(),
+                        ControlEntryOrigin::Branch,
+                        branch_dest.clone(),
+                        entries,
+                    );
+                    let else_entry =
+                        self.plan_block(else_block.clone(), ControlEntryOrigin::Branch, branch_dest, entries);
+                    return (
+                        lowered,
+                        LoweredTail::If {
+                            cond: *cond,
+                            then_entry,
+                            else_entry,
+                        },
+                    );
+                }
+                _ => lowered.push(lower_projection_step(step)),
+            }
+        }
+        (
+            lowered,
+            LoweredTail::Value {
+                value: block.result,
+                dest,
+            },
+        )
     }
 
     fn apply_pattern(
@@ -523,7 +801,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         span: Span,
         source: ValueId,
         env: &mut HashMap<String, ValueId>,
-        steps: &mut Vec<LoweredStep>,
+        steps: &mut Vec<ExprStep>,
     ) -> Result<(), FatalError> {
         match pattern {
             Pattern::Wildcard => Ok(()),
@@ -532,69 +810,69 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 Ok(())
             }
             Pattern::Int(value) => {
-                steps.push(LoweredStep::AssertLiteral {
+                steps.push(ExprStep::AssertLiteral {
                     source,
                     literal: Literal::Int(*value),
                 });
                 Ok(())
             }
             Pattern::Float(value) => {
-                steps.push(LoweredStep::AssertLiteral {
+                steps.push(ExprStep::AssertLiteral {
                     source,
                     literal: Literal::Float(*value),
                 });
                 Ok(())
             }
             Pattern::Binary(value) => {
-                steps.push(LoweredStep::AssertLiteral {
+                steps.push(ExprStep::AssertLiteral {
                     source,
                     literal: Literal::Binary(value.clone()),
                 });
                 Ok(())
             }
             Pattern::Atom(value) => {
-                steps.push(LoweredStep::AssertLiteral {
+                steps.push(ExprStep::AssertLiteral {
                     source,
                     literal: Literal::Atom(value.clone()),
                 });
                 Ok(())
             }
             Pattern::Bool(value) => {
-                steps.push(LoweredStep::AssertLiteral {
+                steps.push(ExprStep::AssertLiteral {
                     source,
                     literal: Literal::Bool(*value),
                 });
                 Ok(())
             }
             Pattern::Nil => {
-                steps.push(LoweredStep::AssertLiteral {
+                steps.push(ExprStep::AssertLiteral {
                     source,
                     literal: Literal::Nil,
                 });
                 Ok(())
             }
             Pattern::Tuple(items) => {
-                steps.push(LoweredStep::AssertTuple {
+                steps.push(ExprStep::AssertTuple {
                     source,
                     arity: items.len(),
                 });
                 for (index, item) in items.iter().enumerate() {
                     let value = self.fresh_value();
-                    steps.push(LoweredStep::TupleField { value, source, index });
+                    steps.push(ExprStep::TupleField { value, source, index });
                     self.apply_pattern(&item.node, item.span, value, env, steps)?;
                 }
                 Ok(())
             }
             Pattern::List(items, tail) => {
                 if items.is_empty() && tail.is_none() {
-                    steps.push(LoweredStep::AssertEmptyList { source });
+                    steps.push(ExprStep::AssertEmptyList { source });
                     return Ok(());
                 }
                 let mut current = source;
                 for item in items {
                     let head = self.fresh_value();
                     let tail_value = self.fresh_value();
-                    steps.push(LoweredStep::SplitList {
+                    steps.push(ExprStep::SplitList {
                         source: current,
                         head,
                         tail: tail_value,
@@ -605,7 +883,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 if let Some(tail) = tail {
                     self.apply_pattern(&tail.node, tail.span, current, env, steps)?;
                 } else {
-                    steps.push(LoweredStep::AssertEmptyList { source: current });
+                    steps.push(ExprStep::AssertEmptyList { source: current });
                 }
                 Ok(())
             }
@@ -624,7 +902,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                         ),
                     ));
                 };
-                steps.push(LoweredStep::AssertSame { source, value: pinned });
+                steps.push(ExprStep::AssertSame { source, value: pinned });
                 Ok(())
             }
             Pattern::Map(_) | Pattern::Struct { .. } | Pattern::Bitstring(_) => Err(emit_job_diagnostic(
@@ -644,7 +922,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         span: Span,
         source: ValueId,
         env: &mut HashMap<String, ValueId>,
-        steps: &mut Vec<LoweredStep>,
+        steps: &mut Vec<ExprStep>,
     ) -> Result<(), FatalError> {
         match pattern {
             Pattern::Wildcard
@@ -662,7 +940,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             Pattern::Tuple(items) => {
                 for (index, item) in items.iter().enumerate() {
                     let value = self.fresh_value();
-                    steps.push(LoweredStep::TupleField { value, source, index });
+                    steps.push(ExprStep::TupleField { value, source, index });
                     self.bind_pattern(&item.node, item.span, value, env, steps)?;
                 }
                 Ok(())
@@ -672,7 +950,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 for item in items {
                     let head = self.fresh_value();
                     let tail_value = self.fresh_value();
-                    steps.push(LoweredStep::SplitList {
+                    steps.push(ExprStep::SplitList {
                         source: current,
                         head,
                         tail: tail_value,
@@ -703,9 +981,9 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         }
     }
 
-    fn push_const(&mut self, steps: &mut Vec<LoweredStep>, literal: Literal) -> ValueId {
+    fn push_const(&mut self, steps: &mut Vec<ExprStep>, literal: Literal) -> ValueId {
         let value = self.fresh_value();
-        steps.push(LoweredStep::Const { value, literal });
+        steps.push(ExprStep::Const { value, literal });
         value
     }
 
@@ -719,6 +997,240 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         let value = CallSiteId::from_u32(self.next_callsite);
         self.next_callsite += 1;
         value
+    }
+}
+
+fn lower_projection_step(step: &ExprStep) -> LoweredStep {
+    match step {
+        ExprStep::Const { value, literal } => LoweredStep::Const {
+            value: *value,
+            literal: literal.clone(),
+        },
+        ExprStep::Tuple { value, items } => LoweredStep::Tuple {
+            value: *value,
+            items: items.clone(),
+        },
+        ExprStep::List { value, items, tail } => LoweredStep::List {
+            value: *value,
+            items: items.clone(),
+            tail: *tail,
+        },
+        ExprStep::FunctionRef { value, function } => LoweredStep::FunctionRef {
+            value: *value,
+            function: *function,
+        },
+        ExprStep::NamedFunctionRef { value, name, arity } => LoweredStep::NamedFunctionRef {
+            value: *value,
+            name: name.clone(),
+            arity: *arity,
+        },
+        ExprStep::Lambda {
+            value,
+            function,
+            captures,
+        } => LoweredStep::Lambda {
+            value: *value,
+            function: *function,
+            captures: captures.clone(),
+        },
+        ExprStep::BinaryOp { value, op, left, right } => LoweredStep::BinaryOp {
+            value: *value,
+            op: *op,
+            left: *left,
+            right: *right,
+        },
+        ExprStep::UnaryOp { value, op, input } => LoweredStep::UnaryOp {
+            value: *value,
+            op: *op,
+            input: *input,
+        },
+        ExprStep::MapIndex { value, base, key } => LoweredStep::MapIndex {
+            value: *value,
+            base: *base,
+            key: *key,
+        },
+        ExprStep::AssertLiteral { source, literal } => LoweredStep::AssertLiteral {
+            source: *source,
+            literal: literal.clone(),
+        },
+        ExprStep::AssertTuple { source, arity } => LoweredStep::AssertTuple {
+            source: *source,
+            arity: *arity,
+        },
+        ExprStep::TupleField { value, source, index } => LoweredStep::TupleField {
+            value: *value,
+            source: *source,
+            index: *index,
+        },
+        ExprStep::AssertEmptyList { source } => LoweredStep::AssertEmptyList { source: *source },
+        ExprStep::AssertSame { source, value } => LoweredStep::AssertSame {
+            source: *source,
+            value: *value,
+        },
+        ExprStep::SplitList { source, head, tail } => LoweredStep::SplitList {
+            source: *source,
+            head: *head,
+            tail: *tail,
+        },
+        ExprStep::DirectCall { .. } | ExprStep::ClosureCall { .. } | ExprStep::If { .. } => {
+            panic!("control steps should be lowered into tails before projection conversion")
+        }
+    }
+}
+
+fn values_defined_by_steps(steps: &[LoweredStep]) -> HashSet<ValueId> {
+    let mut out = HashSet::new();
+    for step in steps {
+        match step {
+            LoweredStep::Const { value, .. }
+            | LoweredStep::Tuple { value, .. }
+            | LoweredStep::List { value, .. }
+            | LoweredStep::FunctionRef { value, .. }
+            | LoweredStep::NamedFunctionRef { value, .. }
+            | LoweredStep::Lambda { value, .. }
+            | LoweredStep::BinaryOp { value, .. }
+            | LoweredStep::UnaryOp { value, .. }
+            | LoweredStep::MapIndex { value, .. }
+            | LoweredStep::TupleField { value, .. } => {
+                out.insert(*value);
+            }
+            LoweredStep::SplitList { head, tail, .. } => {
+                out.insert(*head);
+                out.insert(*tail);
+            }
+            LoweredStep::AssertLiteral { .. }
+            | LoweredStep::AssertTuple { .. }
+            | LoweredStep::AssertEmptyList { .. }
+            | LoweredStep::AssertSame { .. } => {}
+        }
+    }
+    out
+}
+
+fn compute_entry_captures(
+    entries: &[LoweredEntry],
+    clause_bounds: &HashMap<ControlEntryId, HashSet<ValueId>>,
+) -> Vec<Vec<ValueId>> {
+    let mut memo = HashMap::new();
+    for entry_id in 0..entries.len() {
+        let entry_id = ControlEntryId::from_u32(entry_id as u32);
+        let _ = entry_captures(entries, clause_bounds, entry_id, &mut memo);
+    }
+    (0..entries.len())
+        .map(|index| memo.remove(&ControlEntryId::from_u32(index as u32)).unwrap_or_default())
+        .collect()
+}
+
+fn entry_captures(
+    entries: &[LoweredEntry],
+    clause_bounds: &HashMap<ControlEntryId, HashSet<ValueId>>,
+    entry_id: ControlEntryId,
+    memo: &mut HashMap<ControlEntryId, Vec<ValueId>>,
+) -> Vec<ValueId> {
+    if let Some(captures) = memo.get(&entry_id) {
+        return captures.clone();
+    }
+
+    let entry = &entries[entry_id.as_u32() as usize];
+    let mut bound = clause_bounds.get(&entry_id).cloned().unwrap_or_default();
+    if let Some(value) = entry.origin.input_value() {
+        bound.insert(value);
+    }
+    bound.extend(values_defined_by_steps(&entry.steps));
+
+    let mut needed = used_values_in_entry(entry);
+    for child in child_entries(entry.tail.clone()) {
+        for capture in entry_captures(entries, clause_bounds, child, memo) {
+            if !bound.contains(&capture) {
+                needed.insert(capture);
+            }
+        }
+    }
+    needed.retain(|value| !bound.contains(value));
+    let mut ordered = needed.into_iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|value| value.as_u32());
+    memo.insert(entry_id, ordered.clone());
+    ordered
+}
+
+fn used_values_in_entry(entry: &LoweredEntry) -> HashSet<ValueId> {
+    let mut out = HashSet::new();
+    collect_used_values(&entry.steps, &mut out);
+    match &entry.tail {
+        LoweredTail::Value { value, .. } => {
+            out.insert(*value);
+        }
+        LoweredTail::DirectCall { args, .. } => {
+            for arg in args {
+                out.insert(arg.value);
+            }
+        }
+        LoweredTail::ClosureCall { callee, args, .. } => {
+            out.insert(*callee);
+            for arg in args {
+                out.insert(arg.value);
+            }
+        }
+        LoweredTail::If { cond, .. } => {
+            out.insert(*cond);
+        }
+    }
+    out
+}
+
+fn collect_used_values(steps: &[LoweredStep], out: &mut HashSet<ValueId>) {
+    for step in steps {
+        match step {
+            LoweredStep::Const { .. } | LoweredStep::FunctionRef { .. } | LoweredStep::NamedFunctionRef { .. } => {}
+            LoweredStep::Tuple { items, .. } => out.extend(items.iter().copied()),
+            LoweredStep::List { items, tail, .. } => {
+                out.extend(items.iter().copied());
+                if let Some(tail) = tail {
+                    out.insert(*tail);
+                }
+            }
+            LoweredStep::Lambda { captures, .. } => out.extend(captures.iter().copied()),
+            LoweredStep::BinaryOp { left, right, .. } => {
+                out.insert(*left);
+                out.insert(*right);
+            }
+            LoweredStep::UnaryOp { input, .. } => {
+                out.insert(*input);
+            }
+            LoweredStep::MapIndex { base, key, .. } => {
+                out.insert(*base);
+                out.insert(*key);
+            }
+            LoweredStep::AssertLiteral { source, .. }
+            | LoweredStep::AssertTuple { source, .. }
+            | LoweredStep::AssertEmptyList { source } => {
+                out.insert(*source);
+            }
+            LoweredStep::TupleField { source, .. } => {
+                out.insert(*source);
+            }
+            LoweredStep::AssertSame { source, value } => {
+                out.insert(*source);
+                out.insert(*value);
+            }
+            LoweredStep::SplitList { source, .. } => {
+                out.insert(*source);
+            }
+        }
+    }
+}
+
+fn child_entries(tail: LoweredTail) -> Vec<ControlEntryId> {
+    match tail {
+        LoweredTail::Value { dest, .. }
+        | LoweredTail::DirectCall { dest, .. }
+        | LoweredTail::ClosureCall { dest, .. } => match dest {
+            ControlDestination::Return => Vec::new(),
+            ControlDestination::Deliver(entry) => vec![entry],
+        },
+        LoweredTail::If {
+            then_entry, else_entry, ..
+        } => vec![then_entry, else_entry],
     }
 }
 
