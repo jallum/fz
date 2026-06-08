@@ -7,7 +7,7 @@
     "fz-rh2.12.9"
   ],
   "created": "2026-06-08T20:52:15Z",
-  "description": "Promote the design docs to current. Move .agent/targets/{type-naming,type-world,set-theoretic-types,protocols}.md into .agent/docs/ (they describe the now-current system); write the specs.md delta (construction seam reads TypeDefined, not a per-call ModuleTypeEnv) and the modules.md delta (NamespaceSymbol::Type; the namespace bridges type names too). The northstar Type-Naming section already landed; reconcile any drift. Verify: docs match the landed code -- present-tense, honest structures, no chronology.",
+  "description": "Promote the design docs to current. Move .agent/targets/{type-naming,type-world,set-theoretic-types,protocols}.md into .agent/docs/ (they describe the now-current system); write the specs.md delta (construction seam reads TypeDefined, not a per-call ModuleTypeEnv) and the modules.md delta (NamespaceSymbol::Type; the namespace bridges type names too). The northstar Type-Naming section already landed; reconcile any drift. Verify: docs match the landed code -- present-tense, honest structures, no chronology.\n\nReconcile the target docs with the .11 in-house-parse design: type-naming.md Where-it-lives must describe a compiler2-owned env-free type-expr parser + namespace captured at the declaration point (NOT a reused legacy type_expr::parse_type_expr), and name-vs-var classification as a namespace question. type-world.md/​set-theoretic-types.md unaffected.",
   "id": "fz-rh2.12.8",
   "labels": [],
   "parent": "fz-rh2.12",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "Promote .agent/targets -\u003e .agent/docs; specs.md/modules.md deltas; northstar reconcile",
   "type": "task",
-  "updated_at": "2026-06-08T20:52:15Z"
+  "updated_at": "2026-06-08T21:34:18Z"
 }
