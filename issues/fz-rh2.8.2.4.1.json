@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-08T11:13:28Z",
-  "description": "",
+  "description": "# Compiler2 CLI: add fz2 binary front door\n\nGoal: publish a real outer CLI surface for Compiler2 so run/build/interp are no longer stranded behind unit tests.\n\nChange:\n- add a new `fz2` binary with the same backend-facing verbs: `run`, `build`, `interp`, `help`\n- route those verbs straight into Compiler2-owned front doors instead of old planner/module entry points\n- keep the old `fz` binary untouched for now\n- share only the truly generic AOT link step rather than duplicating it\n- add end-to-end binary tests for `fz2 run`, `fz2 interp`, and `fz2 build`\n\nDesign constraints:\n- no `run2` / `build2` / `interp2` command sprawl inside `fz`\n- no quiet fallback from `fz2` back into old planner/codegen discovery\n- diagnostics may stay coarse, but must come from Compiler2 telemetry rather than fabricated old-world state\n\nSignal:\n- `cargo test --test fz2_cli -- --nocapture` passes\n- `fz2` binary paths do not emit `[fz, planner]` or `[fz, type_infer]` telemetry when exercised through Compiler2-native fixtures\n",
   "id": "fz-rh2.8.2.4.1",
   "labels": [],
   "parent": "fz-rh2.8.2.4",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "Compiler2 CLI: add fz2 binary front door",
   "type": "task",
-  "updated_at": "2026-06-08T11:13:28Z"
+  "updated_at": "2026-06-08T11:13:37Z"
 }
