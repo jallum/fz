@@ -21,11 +21,15 @@
     {
       "text": "Source-root ABI clarification: at the Fz-visible boundary an AST root is an AnyValueRef value (usually a tuple/list/atom/map graph). The heap is not passed as a Fz argument; it is implied by the active compile-time Process that ir_interp is running. Conceptually source transport is still {process heap, root}, but the service/macro ABI passes root values and validates them against the current process heap/world. Fz.Compiler service externs use that same context to save roots as function AST/source facts.",
       "timestamp": "2026-06-09T16:12:18Z"
+    },
+    {
+      "text": "Job-model correction: indexing/scoping/module definition are not the only consumers that must move. CodeState/module source/function source and jobs such as contract derivation, body lowering, dispatch planning, and keying must read compiler2 Fz AST roots (AnyValueRef in the active compile-time process heap), not old Rc\u003cItem\u003e/FnDef authority. Added a dedicated child ticket so compiler services/macros depend on that cut.",
+      "timestamp": "2026-06-09T16:16:31Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 source production: quoted AST, macro facts, and compiler services",
   "type": "epic",
-  "updated_at": "2026-06-09T16:12:18Z"
+  "updated_at": "2026-06-09T16:16:31Z"
 }
