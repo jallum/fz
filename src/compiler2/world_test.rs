@@ -79,7 +79,7 @@ fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_capt
     let function = world.reference_function(ModuleId::GLOBAL, "tkf_f", 2);
     let def = world.function_definition(function);
     let spec = def
-        .ast
+        .legacy_ast
         .attrs
         .iter()
         .find_map(|attr| match attr {

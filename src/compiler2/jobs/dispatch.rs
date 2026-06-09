@@ -43,16 +43,16 @@ pub(super) fn reify_guard_dispatch(world: &mut World<'_>, function: FunctionId) 
     };
 
     let def = world.function_definition(function);
-    if def.ast.is_macro {
+    if def.legacy_ast.is_macro {
         return Err(emit_job_diagnostic(
             world,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
                 format!(
                     "compiler2 cannot reify macro `{}` as a dispatch-pure helper",
-                    function_label(&def.ast)
+                    function_label(&def.legacy_ast)
                 ),
-                def.ast.span,
+                def.legacy_ast.span,
             ),
         ));
     }
@@ -83,7 +83,7 @@ pub(super) fn reify_guard_dispatch(world: &mut World<'_>, function: FunctionId) 
     let mut cache = HashMap::new();
     let mut build_stack = Vec::new();
     let dispatch = build_guard_dispatch(world, function, &mut cache, &mut build_stack)
-        .map_err(|err| emit_guard_dispatch_error(world, function, def.ast.span, err))?;
+        .map_err(|err| emit_guard_dispatch_error(world, function, def.legacy_ast.span, err))?;
     let revision = world.define_guard_dispatch(function, dispatch);
     Ok(JobEffects {
         reads,
@@ -104,16 +104,16 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
     };
 
     let def = world.function_definition(function);
-    if def.ast.is_macro {
+    if def.legacy_ast.is_macro {
         return Err(emit_job_diagnostic(
             world,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
                 format!(
                     "compiler2 cannot plan macro `{}` as runtime entry dispatch",
-                    function_label(&def.ast)
+                    function_label(&def.legacy_ast)
                 ),
-                def.ast.span,
+                def.legacy_ast.span,
             ),
         ));
     }
@@ -139,7 +139,7 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
             follow_up.insert(Job::DeriveTypeDef(referenced));
         }
     }
-    for call in collect_guard_calls_in_guards(&def.ast)
+    for call in collect_guard_calls_in_guards(&def.legacy_ast)
         .map_err(|span| emit_entry_guard_error(world, function, span, "are not dispatch-pure"))?
     {
         let callee = resolve_guard_callee(world, def.namespace, &call)?;
@@ -169,7 +169,7 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
         }))
     };
     let plan = pattern_dispatch_from_source_with_guard_resolver(source_patterns, &mut resolver)
-        .map_err(|error| emit_entry_dispatch_error(world, function, def.ast.span, error))?;
+        .map_err(|error| emit_entry_dispatch_error(world, function, def.legacy_ast.span, error))?;
     let revision = world.define_entry_dispatch(function, plan);
     Ok(JobEffects {
         reads,
@@ -201,7 +201,7 @@ fn collect_requirements(
     reads.push(FactKey::FunctionDefined(function));
     let def = world.function_definition(function);
     stack.push(function);
-    for call in collect_guard_calls_in_fn(&def.ast)
+    for call in collect_guard_calls_in_fn(&def.legacy_ast)
         .map_err(|span| emit_guard_dispatch_error(world, function, span, SourcePatternError::UnsupportedGuardExpr))?
     {
         let callee = resolve_guard_callee(world, def.namespace, &call)?;
@@ -223,8 +223,8 @@ fn build_guard_dispatch(
     if stack.contains(&function) {
         let def = world.function_definition(function);
         return Err(SourcePatternError::GuardCallCycle(
-            def.ast.name.clone(),
-            def.ast.arity(),
+            def.legacy_ast.name.clone(),
+            def.legacy_ast.arity(),
         ));
     }
 
@@ -238,7 +238,7 @@ fn build_guard_dispatch(
             dispatch: Box::new(dispatch),
         }))
     };
-    let dispatch = guard_dispatch_from_fn_def(&def.ast, &mut resolver)?;
+    let dispatch = guard_dispatch_from_fn_def(&def.legacy_ast, &mut resolver)?;
     stack.pop();
     cache.insert(function, dispatch.clone());
     Ok(dispatch)
@@ -252,15 +252,15 @@ fn entry_source_patterns(
     let capture_patterns = def
         .capture_params
         .iter()
-        .map(|name| Spanned::new(Pattern::Var(name.clone()), def.ast.span))
+        .map(|name| Spanned::new(Pattern::Var(name.clone()), def.legacy_ast.span))
         .collect::<Vec<_>>();
-    let input_count = capture_patterns.len() + def.ast.arity();
-    if def.ast.extern_abi.is_some() {
+    let input_count = capture_patterns.len() + def.legacy_ast.arity();
+    if def.legacy_ast.extern_abi.is_some() {
         return Ok(SourcePatternRows {
             input_count,
             rows: vec![PatternRow {
                 patterns: (0..input_count)
-                    .map(|_| Spanned::new(Pattern::Wildcard, def.ast.span))
+                    .map(|_| Spanned::new(Pattern::Wildcard, def.legacy_ast.span))
                     .collect(),
                 preconditions: Vec::new(),
                 guard: None,
@@ -269,8 +269,8 @@ fn entry_source_patterns(
         });
     }
 
-    let mut rows = Vec::with_capacity(def.ast.clauses.len());
-    for (body_id, clause) in def.ast.clauses.iter().enumerate() {
+    let mut rows = Vec::with_capacity(def.legacy_ast.clauses.len());
+    for (body_id, clause) in def.legacy_ast.clauses.iter().enumerate() {
         let mut preconditions = Vec::new();
         for (index, tokens) in clause.param_annotations.iter().enumerate() {
             let Some(tokens) = tokens else {
@@ -284,7 +284,7 @@ fn entry_source_patterns(
                         format!(
                             "compiler2 could not resolve parameter annotation {} for `{}`: {}",
                             index + 1,
-                            function_label(&def.ast),
+                            function_label(&def.legacy_ast),
                             error.msg
                         ),
                         error.span,
@@ -433,15 +433,15 @@ pub(super) fn resolve_guard_callee_checked(
 fn emit_cycle(world: &World<'_>, function: FunctionId, cycle: &[FunctionId]) -> FatalError {
     let mut path = cycle
         .iter()
-        .map(|function| function_label(&world.function_definition(*function).ast))
+        .map(|function| function_label(&world.function_definition(*function).legacy_ast))
         .collect::<Vec<_>>();
-    path.push(function_label(&world.function_definition(function).ast));
+    path.push(function_label(&world.function_definition(function).legacy_ast));
     emit_job_diagnostic(
         world,
         Diagnostic::error(
             codes::LOWER_UNSUPPORTED,
             format!("compiler2 guard helper cycle detected: {}", path.join(" -> ")),
-            world.function_definition(function).ast.span,
+            world.function_definition(function).legacy_ast.span,
         ),
     )
 }
@@ -452,7 +452,7 @@ fn emit_guard_dispatch_error(
     span: Span,
     error: SourcePatternError,
 ) -> FatalError {
-    let label = function_label(&world.function_definition(function).ast);
+    let label = function_label(&world.function_definition(function).legacy_ast);
     match error {
         SourcePatternError::UnsupportedGuardExpr => emit_job_diagnostic(
             world,
@@ -509,7 +509,7 @@ fn emit_entry_guard_error(world: &World<'_>, function: FunctionId, span: Span, r
             codes::LOWER_UNSUPPORTED,
             format!(
                 "compiler2 entry guards for `{}` {reason} and cannot be planned",
-                function_label(&world.function_definition(function).ast)
+                function_label(&world.function_definition(function).legacy_ast)
             ),
             span,
         ),
@@ -522,7 +522,7 @@ fn emit_entry_dispatch_error(
     span: Span,
     error: PatternDispatchError,
 ) -> FatalError {
-    let label = function_label(&world.function_definition(function).ast);
+    let label = function_label(&world.function_definition(function).legacy_ast);
     match error {
         PatternDispatchError::SourcePattern(SourcePatternError::UnsupportedGuardExpr) => {
             emit_entry_guard_error(world, function, span, "are not dispatch-pure")

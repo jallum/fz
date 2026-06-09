@@ -28,7 +28,7 @@ pub(super) fn derive_function_contract(world: &mut World<'_>, function: Function
 
     let def = world.function_definition(function);
     let declared_specs = def
-        .ast
+        .legacy_ast
         .attrs
         .iter()
         .filter_map(|attr| match attr {
@@ -38,7 +38,7 @@ pub(super) fn derive_function_contract(world: &mut World<'_>, function: Function
         .collect::<Vec<_>>();
     let specs = if !declared_specs.is_empty() {
         declared_specs
-    } else if let Some(spec) = extern_semantic_contract(&def.ast) {
+    } else if let Some(spec) = extern_semantic_contract(&def.legacy_ast) {
         vec![spec]
     } else {
         Vec::new()
@@ -76,7 +76,7 @@ pub(super) fn derive_function_contract(world: &mut World<'_>, function: Function
                     codes::RESOLVE_TYPE_ALIAS,
                     format!(
                         "compiler2 could not resolve function contract for `{}`: {}",
-                        def.ast.name, error.msg
+                        def.legacy_ast.name, error.msg
                     ),
                     error.span,
                 ),

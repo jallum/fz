@@ -188,6 +188,31 @@ fn compiler2_frontdoor_parses_function_and_macro_defs_with_quote_unquote() {
 }
 
 #[test]
+fn compiler2_frontdoor_parses_guarded_one_line_function_clauses() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "guarded_clause.fz",
+        "fn positive(n), do: n > 0\nfn wanted(n) when positive(n), do: n\n",
+        &tel,
+    )
+    .expect("quoted parse");
+
+    let items = root.cursor().list_items().expect("top-level items");
+    assert_eq!(items.len(), 2);
+    let wanted = items[1].ast_node().expect("wanted cursor").expect("wanted node");
+    assert_eq!(head_name(&wanted), "fn");
+    let head = wanted.tail.list_items().expect("wanted args")[0]
+        .ast_node()
+        .expect("wanted head cursor")
+        .expect("wanted head node");
+    assert_eq!(
+        head_name(&head),
+        "when",
+        "guarded one-line defs should keep the guard on the function head instead of letting `, do:` bleed into the guard expression",
+    );
+}
+
+#[test]
 fn compiler2_frontdoor_parses_item_macro_calls_with_trailing_do() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program("test_surface.fz", "test(:name) do\n  42\nend\n", &tel).expect("quoted parse");
@@ -264,6 +289,29 @@ fn compiler2_frontdoor_parses_remote_calls_captures_and_headless_case_from_fixtu
 }
 
 #[test]
+fn compiler2_frontdoor_parses_cond_and_remote_operator_capture_refs() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "cond_capture.fz",
+        "fn main() do\n  cond do\n    false -> &Kernel.+/2\n    true -> &+/2\n  end\nend\n",
+        &tel,
+    )
+    .expect("quoted parse");
+
+    let semantic = root
+        .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
+        .expect("semantic fingerprint");
+    assert!(
+        semantic.canonical.contains("atom:cond")
+            && semantic.canonical.contains("atom:&")
+            && semantic.canonical.contains("atom:/")
+            && semantic.canonical.contains("atom:+")
+            && semantic.canonical.contains("atom:Kernel"),
+        "front door should quote cond arms and both remote and bare operator capture refs directly"
+    );
+}
+
+#[test]
 fn compiler2_frontdoor_parses_attributes_protocols_impls_and_structs() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
@@ -312,6 +360,45 @@ fn compiler2_frontdoor_parses_maps_structs_bitstrings_and_patterns() {
             && semantic.canonical.contains("atom:size"),
         "front door should parse typed params, maps, structs, bitstrings, and pattern forms directly to quoted source"
     );
+}
+
+#[test]
+fn compiler2_frontdoor_quotes_postfix_bracket_access_as_access_get() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program("map_access.fz", "fn main(), do: m[:a]\n", &tel).expect("quoted parse");
+
+    let items = root.cursor().list_items().expect("top-level items");
+    let main = items[0].ast_node().expect("main cursor").expect("main node");
+    let body = main.tail.list_items().expect("main args")[1]
+        .list_items()
+        .expect("main kw")[0]
+        .tuple_items()
+        .expect("main do tuple")[1]
+        .ast_node()
+        .expect("body cursor")
+        .expect("body node");
+    let callee = body.head.ast_node().expect("callee cursor").expect("callee node");
+
+    assert_eq!(
+        head_name(&callee),
+        ".",
+        "postfix bracket access should quote through an Access.get remote callee, like Elixir",
+    );
+    let callee_tail = callee.tail.list_items().expect("callee tail");
+    let access = callee_tail[0].ast_node().expect("access cursor").expect("access alias");
+    assert_eq!(head_name(&access), "__aliases__");
+    assert_eq!(
+        access.tail.list_atom_names().expect("access segments"),
+        vec!["Access".to_string()]
+    );
+    assert_eq!(callee_tail[1].atom_name().expect("callee field"), "get");
+    let args = body.tail.list_items().expect("access args");
+    assert_eq!(args.len(), 2);
+    assert_eq!(
+        head_name(&args[0].ast_node().expect("base cursor").expect("base var")),
+        "m"
+    );
+    assert_eq!(args[1].atom_name().expect("map key"), "a");
 }
 
 #[test]

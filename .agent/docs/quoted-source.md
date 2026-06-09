@@ -19,6 +19,10 @@ the `fz-rh2.11.7.*` arc.
 - The fingerprint answers "what quoted source shape does this root contain?"
 - A rebuilt equivalent graph on a different heap gets a different key and the
   same semantic fingerprint.
+- Compiler2 now uses that split deliberately:
+  code/module source revisions compare semantic fingerprints,
+  while function-definition revisions treat replacement of the stored
+  `{heap, root}` transport as a source bump.
 
 That keeps identity honest and still gives compiler2 a stable semantic
 comparison surface when it wants one.
@@ -36,6 +40,21 @@ comparison surface when it wants one.
 - FZ `extern` items are quoted as `{:extern, meta, [abi_binary, options_map]}`.
   `options_map` currently carries raw source strings for `name`, `params`,
   `return`, optional `when`, and `variadic`.
+- Postfix bracket access quotes through an Elixir-shaped `Access.get` remote
+  callee form.
+- `cond do` quotes through ordinary `{:cond, meta, [[do: [{:->, ...}, ...]]]}`.
+  structure.
+- Capture refs cover local names, remote names, and bare/operator refs such as
+  `&Kernel.+/2` and `&+/2`.
+
+## Surface Grouping
+
+- Raw quoted source still preserves one top-level form per source clause.
+- The compiler2 source reader groups top-level `fn`/`fnp`/`defmacro` clause
+  forms into the same function inventory shape the legacy item surface exposes:
+  grouped by `{name, arity}` and flushed at the same non-function boundaries.
+- That grouped surface is what indexing/scoping walks today while downstream
+  body/contract work still carries explicit `legacy_*` compatibility payloads.
 
 ## Bootstrap Coverage
 

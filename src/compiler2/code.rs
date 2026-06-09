@@ -2,6 +2,8 @@ use std::rc::Rc;
 
 use crate::ast::{Attribute, Item};
 
+use super::source::QuotedSourceCarrier;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CodeId(u32);
 
@@ -22,12 +24,23 @@ pub struct Code {
 #[derive(Debug, Clone)]
 pub enum CodeState {
     Pending,
-    /// Parsed top-level surface: the items, plus the root-scope attributes
-    /// (top-level `@type`s) that scoping reserves into the GLOBAL scope.
+    /// Compiler-owned quoted source is the authority. The legacy parser payload
+    /// remains only as a temporary downstream compatibility artifact.
     Indexed {
-        items: Vec<Rc<Item>>,
-        attrs: Vec<Attribute>,
+        source: QuotedCodeSource,
+        legacy: LegacyCodeSource,
     },
+}
+
+#[derive(Debug, Clone)]
+pub struct QuotedCodeSource {
+    pub quoted: QuotedSourceCarrier,
+}
+
+#[derive(Debug, Clone)]
+pub struct LegacyCodeSource {
+    pub items: Vec<Rc<Item>>,
+    pub attrs: Vec<Attribute>,
 }
 
 #[derive(Debug, Default)]
@@ -53,9 +66,9 @@ impl CodeMap {
         id
     }
 
-    pub fn index(&mut self, id: CodeId, items: Vec<Rc<Item>>, attrs: Vec<Attribute>) -> u64 {
+    pub fn index(&mut self, id: CodeId, source: QuotedCodeSource, legacy: LegacyCodeSource) -> u64 {
         let code = &mut self.slots[id.0 as usize];
-        let next = CodeState::Indexed { items, attrs };
+        let next = CodeState::Indexed { source, legacy };
         if same_code_state(&code.state, &next) {
             return code.revision;
         }
@@ -96,11 +109,9 @@ impl CodeMap {
 fn same_code_state(left: &CodeState, right: &CodeState) -> bool {
     match (left, right) {
         (CodeState::Pending, CodeState::Pending) => true,
-        (CodeState::Indexed { items: left, .. }, CodeState::Indexed { items: right, .. }) => same_items(left, right),
+        (CodeState::Indexed { source: left, .. }, CodeState::Indexed { source: right, .. }) => {
+            left.quoted.semantic.digest == right.quoted.semantic.digest
+        }
         _ => false,
     }
-}
-
-fn same_items(left: &[Rc<Item>], right: &[Rc<Item>]) -> bool {
-    left.len() == right.len() && left.iter().zip(right).all(|(left, right)| Rc::ptr_eq(left, right))
 }

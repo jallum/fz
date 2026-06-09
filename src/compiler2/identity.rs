@@ -7,6 +7,7 @@ use crate::compiler::source::Span;
 
 use super::code::CodeId;
 use super::namespace::{Namespace, NamespaceSymbol};
+use super::source::QuotedSourceCarrier;
 use super::type_expr::TypeDefBody;
 use super::types::Ty;
 
@@ -138,14 +139,28 @@ pub struct ModuleSource {
     pub code: CodeId,
     pub parent: ModuleId,
     pub local_name: String,
-    pub attrs: Vec<Attribute>,
-    pub kind: ModuleSourceKind,
+    pub source: QuotedSourceCarrier,
+    pub legacy: LegacyModuleSource,
 }
 
 #[derive(Debug, Clone)]
-pub enum ModuleSourceKind {
-    Body { items: Vec<Rc<Item>> },
-    Protocol { callbacks: Vec<ProtocolCallbackDef> },
+pub enum LegacyModuleSource {
+    Body(LegacyModuleBody),
+    Protocol(LegacyProtocolSource),
+}
+
+pub type ModuleSourceKind = LegacyModuleSource;
+
+#[derive(Debug, Clone)]
+pub struct LegacyModuleBody {
+    pub attrs: Vec<Attribute>,
+    pub items: Vec<Rc<Item>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LegacyProtocolSource {
+    pub attrs: Vec<Attribute>,
+    pub callbacks: Vec<ProtocolCallbackDef>,
 }
 
 impl ModuleSource {
@@ -154,22 +169,32 @@ impl ModuleSource {
             code,
             parent: ModuleId::GLOBAL,
             local_name: String::new(),
-            attrs: Vec::new(),
-            kind: ModuleSourceKind::Body { items: Vec::new() },
+            source: QuotedSourceCarrier::empty(),
+            legacy: LegacyModuleSource::Body(LegacyModuleBody {
+                attrs: Vec::new(),
+                items: Vec::new(),
+            }),
         }
     }
 
-    pub fn items(&self) -> Option<&[Rc<Item>]> {
-        match &self.kind {
-            ModuleSourceKind::Body { items } => Some(items.as_slice()),
-            ModuleSourceKind::Protocol { .. } => None,
+    pub fn legacy_items(&self) -> Option<&[Rc<Item>]> {
+        match &self.legacy {
+            LegacyModuleSource::Body(body) => Some(body.items.as_slice()),
+            LegacyModuleSource::Protocol(_) => None,
         }
     }
 
-    pub fn callbacks(&self) -> Option<&[ProtocolCallbackDef]> {
-        match &self.kind {
-            ModuleSourceKind::Body { .. } => None,
-            ModuleSourceKind::Protocol { callbacks } => Some(callbacks.as_slice()),
+    pub fn legacy_attrs(&self) -> &[Attribute] {
+        match &self.legacy {
+            LegacyModuleSource::Body(body) => body.attrs.as_slice(),
+            LegacyModuleSource::Protocol(protocol) => protocol.attrs.as_slice(),
+        }
+    }
+
+    pub fn legacy_callbacks(&self) -> Option<&[ProtocolCallbackDef]> {
+        match &self.legacy {
+            LegacyModuleSource::Body(_) => None,
+            LegacyModuleSource::Protocol(protocol) => Some(protocol.callbacks.as_slice()),
         }
     }
 }
@@ -196,6 +221,22 @@ pub struct Function {
     pub revision: u64,
 }
 
+impl Function {
+    pub fn state_source_heap_id(&self) -> Option<usize> {
+        match &self.state {
+            FunctionState::Placeholder => None,
+            FunctionState::Defined { def } => Some(def.source.root.key().heap_id),
+        }
+    }
+
+    pub fn state_source_root_word(&self) -> Option<u64> {
+        match &self.state {
+            FunctionState::Placeholder => None,
+            FunctionState::Defined { def } => Some(def.source.root.root().raw_word()),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum FunctionState {
     Placeholder,
@@ -208,7 +249,8 @@ pub struct FunctionDef {
     pub owner_module: ModuleId,
     pub namespace: Namespace,
     pub capture_params: Vec<String>,
-    pub ast: FnDef,
+    pub source: QuotedSourceCarrier,
+    pub legacy_ast: FnDef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -347,16 +389,20 @@ impl ModuleMap {
         code: CodeId,
         parent: ModuleId,
         local_name: String,
-        attrs: Vec<Attribute>,
-        items: Vec<Rc<Item>>,
+        source: QuotedSourceCarrier,
+        legacy_attrs: Vec<Attribute>,
+        legacy_items: Vec<Rc<Item>>,
     ) -> u64 {
         let module = &mut self.slots[id.0 as usize];
         let next = ModuleState::Indexed(ModuleSource {
             code,
             parent,
             local_name,
-            attrs,
-            kind: ModuleSourceKind::Body { items },
+            source,
+            legacy: LegacyModuleSource::Body(LegacyModuleBody {
+                attrs: legacy_attrs,
+                items: legacy_items,
+            }),
         });
         replace_if_changed(&mut module.state, &mut module.revision, next)
     }
@@ -367,16 +413,20 @@ impl ModuleMap {
         code: CodeId,
         parent: ModuleId,
         local_name: String,
-        attrs: Vec<Attribute>,
-        callbacks: Vec<ProtocolCallbackDef>,
+        source: QuotedSourceCarrier,
+        legacy_attrs: Vec<Attribute>,
+        legacy_callbacks: Vec<ProtocolCallbackDef>,
     ) -> u64 {
         let module = &mut self.slots[id.0 as usize];
         let next = ModuleState::Indexed(ModuleSource {
             code,
             parent,
             local_name,
-            attrs,
-            kind: ModuleSourceKind::Protocol { callbacks },
+            source,
+            legacy: LegacyModuleSource::Protocol(LegacyProtocolSource {
+                attrs: legacy_attrs,
+                callbacks: legacy_callbacks,
+            }),
         });
         replace_if_changed(&mut module.state, &mut module.revision, next)
     }
@@ -423,7 +473,7 @@ impl ModuleMap {
                 ModuleState::Placeholder => None,
                 ModuleState::Indexed(source)
                 | ModuleState::Scoped { source, .. }
-                | ModuleState::Defined { source, .. } => source.items().and_then(|items| {
+                | ModuleState::Defined { source, .. } => source.legacy_items().and_then(|items| {
                     items.iter().find_map(|item| match &**item {
                         Item::Struct(def) => Some(def.fields.clone()),
                         _ => None,
@@ -642,28 +692,7 @@ impl ModuleSource {
         self.code == other.code
             && self.parent == other.parent
             && self.local_name == other.local_name
-            && self.kind.same_kind(&other.kind)
-    }
-}
-
-fn same_items(left: &[Rc<Item>], right: &[Rc<Item>]) -> bool {
-    left.len() == right.len() && left.iter().zip(right).all(|(left, right)| Rc::ptr_eq(left, right))
-}
-
-impl ModuleSourceKind {
-    fn same_kind(&self, other: &Self) -> bool {
-        match (self, other) {
-            (ModuleSourceKind::Body { items: left }, ModuleSourceKind::Body { items: right }) => {
-                same_items(left, right)
-            }
-            (ModuleSourceKind::Protocol { callbacks: left }, ModuleSourceKind::Protocol { callbacks: right }) => {
-                left.len() == right.len()
-                    && left.iter().zip(right).all(|(left, right)| {
-                        left.name == right.name && left.arity == right.arity && left.span == right.span
-                    })
-            }
-            _ => false,
-        }
+            && self.source.semantic.digest == other.source.semantic.digest
     }
 }
 
@@ -676,6 +705,7 @@ impl SameState for FunctionState {
                     && left.owner_module == right.owner_module
                     && left.namespace == right.namespace
                     && left.capture_params == right.capture_params
+                    && left.source.key() == right.source.key()
             }
             _ => false,
         }

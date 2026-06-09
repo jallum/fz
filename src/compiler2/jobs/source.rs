@@ -1,8 +1,6 @@
 use std::collections::HashSet;
-use std::rc::Rc;
 
-use super::super::facts::FactValue;
-use crate::ast::{Attribute, FnDef, Item, ProtocolImplDef, SpecDecl, TypeExprBody};
+use crate::ast::{Attribute, Item, SpecDecl, TypeExprBody};
 use crate::compiler::source::Id as SourceId;
 use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
@@ -17,10 +15,15 @@ use super::super::drive::{FactKey, Job, JobEffects};
 use super::super::identity::{ModuleExport, ModuleId, ModuleSourceKind, NotedTypeDecl, TypeName};
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::protocol::ProtocolCallbackImpl;
+use super::super::quoted_surface::{
+    FunctionForm, ProtocolImplForm, ScopeForm, ScopeSurface, read_module_body_surface,
+    read_module_body_surface_from_parts, read_scope_surface,
+};
 use super::super::scheduler::FatalError;
 use super::super::scope::ScopeSnapshot;
 use super::super::type_expr::{NominalKind, TypeDefBody, TypeExpr, parse_type_def_body, parse_type_expr};
 use super::super::world::World;
+use super::super::{FactValue, LegacyCodeSource, QuotedCodeSource, QuotedSourceCarrier, parse_quoted_program};
 
 type Output = (FactKey, FactValue);
 type Outputs = Vec<Output>;
@@ -47,6 +50,13 @@ pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
         .map(str::to_owned)
         .unwrap_or_else(|| format!("<code:{}>", code_id.as_u32()));
     let source_text = world.code_text(code_id).to_owned();
+    let quoted_root = parse_quoted_program(source_name.clone(), &source_text, world.tel())
+        .map_err(|error| emit_job_diagnostic(world, error.to_diagnostic()))?;
+    let quoted = QuotedCodeSource {
+        quoted: QuotedSourceCarrier::new(quoted_root.clone()).map_err(|error| {
+            emit_internal_surface_error(world, format!("quoted source fingerprint failed: {error}"))
+        })?,
+    };
 
     let source_id = SourceId(code_id.as_u32());
     let tokens = Lexer::with_code_id_and_source_name(&source_text, source_id, source_name)
@@ -55,10 +65,19 @@ pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
     let program = Parser::new(tokens)
         .parse_program(world.tel())
         .map_err(|error| emit_job_diagnostic(world, error.to_diagnostic()))?;
+    let surface = read_scope_surface(&quoted_root, &program.items, &program.attrs)
+        .map_err(|error| emit_internal_surface_error(world, format!("quoted surface read failed: {error}")))?;
     let mut outputs = Vec::new();
-    discover_modules(world, code_id, ModuleId::GLOBAL, &program.items, &mut outputs);
+    discover_modules(world, code_id, ModuleId::GLOBAL, &surface, &mut outputs)?;
 
-    let code_revision = world.finish_code_index(code_id, program.items.clone(), program.attrs.clone());
+    let code_revision = world.finish_code_index(
+        code_id,
+        quoted,
+        LegacyCodeSource {
+            items: program.items.clone(),
+            attrs: program.attrs.clone(),
+        },
+    );
     outputs.push((FactKey::CodeIndexed(code_id), FactValue::presence(code_revision)));
 
     Ok(JobEffects {
@@ -72,12 +91,18 @@ pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
 /// If the code has not been indexed yet, this job waits on `CodeIndexed` and
 /// asks for `IndexCode`. When the scope is complete, it publishes `CodeScoped`.
 pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEffects, FatalError> {
-    let Some(items) = world.code_items(code_id).map(|items| items.to_vec()) else {
+    let Some(source) = world.code_source(code_id) else {
         return Ok(JobEffects::wait_on(
             FactKey::CodeIndexed(code_id),
             [Job::IndexCode(code_id)],
         ));
     };
+    let legacy_items = world
+        .code_legacy_items(code_id)
+        .expect("indexed code should retain legacy compatibility items");
+    let legacy_attrs = world.code_legacy_attrs(code_id);
+    let surface = read_scope_surface(&source.quoted.root, legacy_items, legacy_attrs)
+        .map_err(|error| emit_internal_surface_error(world, format!("quoted scope read failed: {error}")))?;
     let mut reads = Vec::new();
     let base_namespace = if world.is_runtime_prelude(code_id) {
         Namespace::default()
@@ -90,13 +115,11 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
         reads.push(prelude_fact);
         world.prelude_head()
     };
-    let attrs = world.code_attrs(code_id).to_vec();
     match define_scope(
         world,
         code_id,
         ScopeSnapshot::module(ModuleId::GLOBAL, base_namespace),
-        &items,
-        &attrs,
+        &surface,
     )? {
         ScopeResult::Complete {
             namespace,
@@ -129,10 +152,20 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
 /// When ready, it scopes the module body and publishes `ModuleDefined`.
 pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Result<JobEffects, FatalError> {
     if let Some((source, scope)) = world.module_scope(module_id) {
-        let result = match &source.kind {
-            ModuleSourceKind::Body { items } => define_scope(world, source.code, scope, items, &source.attrs)?,
-            ModuleSourceKind::Protocol { callbacks } => {
-                define_protocol_surface(world, module_id, scope.namespace(), callbacks)
+        let result = match &source.legacy {
+            ModuleSourceKind::Body(_) => {
+                let surface = read_module_body_surface_from_parts(
+                    &source.source,
+                    source.legacy_items().expect("body modules should retain legacy items"),
+                    source.legacy_attrs(),
+                )
+                .map_err(|error| {
+                    emit_internal_surface_error(world, format!("quoted module body read failed: {error}"))
+                })?;
+                define_scope(world, source.code, scope, &surface)?
+            }
+            ModuleSourceKind::Protocol(protocol) => {
+                define_protocol_surface(world, module_id, scope.namespace(), &protocol.callbacks)
             }
         };
         return match result {
@@ -192,14 +225,13 @@ fn define_scope(
     world: &mut World<'_>,
     code_id: CodeId,
     current_scope: ScopeSnapshot,
-    items: &[Rc<Item>],
-    attrs: &[Attribute],
+    surface: &ScopeSurface,
 ) -> Result<ScopeResult, FatalError> {
     let current_module = current_scope.module_id();
     let mut scope = current_scope.namespace();
 
     let mut pending_types = Vec::new();
-    for attr in attrs {
+    for attr in &surface.legacy_attrs {
         let Attribute::TypeAlias(decl) = attr else {
             continue;
         };
@@ -222,45 +254,63 @@ fn define_scope(
         pending_types.push((type_name, decl.params.clone(), body, decl.span));
     }
 
-    let local_protocols = items
+    let local_protocols = surface
+        .forms
         .iter()
-        .filter_map(|item| match &**item {
-            Item::Protocol(protocol) if protocol.name.segments().len() == 1 => {
-                Some(protocol.name.last_segment().to_string())
+        .filter_map(|form| match form {
+            ScopeForm::Protocol(protocol) if protocol.legacy_protocol.name.segments().len() == 1 => {
+                Some(protocol.legacy_protocol.name.last_segment().to_string())
             }
             _ => None,
         })
         .collect::<HashSet<_>>();
-    for item in items {
-        match &**item {
-            Item::Fn(def) => {
-                let function_id = world.reference_function(current_module, def.name.clone(), def.arity());
-                if def.is_macro {
-                    scope = world.bind_namespace(scope, def.name.clone(), NamespaceSymbol::Macro(function_id));
+    for form in &surface.forms {
+        match form {
+            ScopeForm::Function(function) => {
+                let function_id = world.reference_function(
+                    current_module,
+                    function.legacy_fn.name.clone(),
+                    function.legacy_fn.arity(),
+                );
+                if function.legacy_fn.is_macro {
+                    scope = world.bind_namespace(
+                        scope,
+                        function.legacy_fn.name.clone(),
+                        NamespaceSymbol::Macro(function_id),
+                    );
                 } else {
-                    scope = world.bind_namespace(scope, def.name.clone(), NamespaceSymbol::Function(function_id));
+                    scope = world.bind_namespace(
+                        scope,
+                        function.legacy_fn.name.clone(),
+                        NamespaceSymbol::Function(function_id),
+                    );
                 }
             }
-            Item::Module(module) => {
-                let module_id = world.reference_child_module(current_module, &module.name);
-                scope = world.bind_namespace(scope, module.name.clone(), NamespaceSymbol::Module(module_id));
-            }
-            Item::Protocol(protocol) => {
-                let protocol_id = reference_declared_protocol_module(world, current_module, &protocol.name);
+            ScopeForm::Module(module) => {
+                let module_id = world.reference_child_module(current_module, &module.legacy_module.name);
                 scope = world.bind_namespace(
                     scope,
-                    protocol.name.last_segment().to_string(),
+                    module.legacy_module.name.clone(),
+                    NamespaceSymbol::Module(module_id),
+                );
+            }
+            ScopeForm::Protocol(protocol) => {
+                let protocol_id =
+                    reference_declared_protocol_module(world, current_module, &protocol.legacy_protocol.name);
+                scope = world.bind_namespace(
+                    scope,
+                    protocol.legacy_protocol.name.last_segment().to_string(),
                     NamespaceSymbol::Module(protocol_id),
                 );
             }
-            Item::Alias { .. } | Item::Import { .. } | Item::Struct(_) | Item::ProtocolImpl(_) => {}
-            Item::MacroCall { span, .. } => {
+            ScopeForm::Alias(_) | ScopeForm::Import(_) | ScopeForm::Struct(_) | ScopeForm::ProtocolImpl(_) => {}
+            ScopeForm::MacroCall(macro_call) => {
                 return Err(emit_job_diagnostic(
                     world,
                     Diagnostic::error(
                         crate::diag::codes::INTERNAL_POST_RESOLUTION_LEFTOVER,
                         "compiler2 indexing expected expanded AST without item macro calls",
-                        *span,
+                        macro_call.span,
                     ),
                 ));
             }
@@ -289,20 +339,15 @@ fn define_scope(
     let mut function_plans = Vec::new();
     let mut protocol_outputs = Vec::new();
     let mut revision_floor = 0;
-    for item in items {
-        match &**item {
-            Item::Alias { full_path, as_name, .. } => {
-                let module_id = world.reference_module(full_path.dotted());
-                scope = world.bind_namespace(scope, as_name.clone(), NamespaceSymbol::Module(module_id));
+    for form in &surface.forms {
+        match form {
+            ScopeForm::Alias(alias) => {
+                let module_id = world.reference_module(alias.path.join("."));
+                scope = world.bind_namespace(scope, alias.as_name.clone(), NamespaceSymbol::Module(module_id));
             }
-            Item::Import {
-                path,
-                only,
-                except,
-                span,
-            } => {
-                let imported_module = world.reference_module(path.dotted());
-                if let Some(only) = only.as_deref() {
+            ScopeForm::Import(import) => {
+                let imported_module = world.reference_module(import.path.join("."));
+                if let Some(only) = import.only.as_deref() {
                     for (name, arity) in only {
                         let function = world.reference_function(imported_module, name.clone(), *arity);
                         scope = world.bind_namespace(scope, name.clone(), NamespaceSymbol::Function(function));
@@ -322,7 +367,7 @@ fn define_scope(
                 reads.push(surface_fact);
 
                 let exports = world.module_exports(imported_module);
-                if let Some(except) = except.as_deref() {
+                if let Some(except) = import.except.as_deref() {
                     let mut deny = HashSet::new();
                     for (name, arity) in except {
                         if find_export(&exports, name, *arity).is_none() {
@@ -330,8 +375,13 @@ fn define_scope(
                                 world,
                                 Diagnostic::error(
                                     codes::RESOLVE_UNKNOWN_IMPORT,
-                                    format!("module `{}` does not export `{}/{}`", path, name, arity),
-                                    *span,
+                                    format!(
+                                        "module `{}` does not export `{}/{}`",
+                                        import.path.join("."),
+                                        name,
+                                        arity
+                                    ),
+                                    import.span,
                                 ),
                             ));
                         }
@@ -349,32 +399,33 @@ fn define_scope(
                     }
                 }
             }
-            Item::Fn(def) => {
-                function_plans.push((current_scope.with_namespace(scope), def.clone()));
+            ScopeForm::Function(function) => {
+                function_plans.push((current_scope.with_namespace(scope), function.clone()));
             }
-            Item::Module(module) => {
-                let module_id = world.reference_child_module(current_module, &module.name);
+            ScopeForm::Module(module) => {
+                let module_id = world.reference_child_module(current_module, &module.legacy_module.name);
                 world.scope_module(module_id, scope);
             }
-            Item::Protocol(protocol) => {
-                let protocol_id = reference_declared_protocol_module(world, current_module, &protocol.name);
+            ScopeForm::Protocol(protocol) => {
+                let protocol_id =
+                    reference_declared_protocol_module(world, current_module, &protocol.legacy_protocol.name);
                 world.scope_module(protocol_id, scope);
             }
-            Item::ProtocolImpl(protocol_impl) => {
+            ScopeForm::ProtocolImpl(protocol_impl) => {
                 let (mut outputs, revision) =
                     define_protocol_impl(world, code_id, current_module, scope, &local_protocols, protocol_impl)?;
                 protocol_outputs.append(&mut outputs);
                 revision_floor = revision_floor.max(revision);
             }
-            Item::Struct(_) | Item::MacroCall { .. } => {}
+            ScopeForm::Struct(_) | ScopeForm::MacroCall(_) => {}
         }
     }
 
     let mut outputs = Vec::new();
     outputs.append(&mut protocol_outputs);
     let mut exports = Vec::new();
-    for (function_scope, def) in function_plans {
-        let (output, export) = index_function(world, code_id, function_scope, &def)?;
+    for (function_scope, function) in function_plans {
+        let (output, export) = index_function(world, code_id, function_scope, &function)?;
         outputs.push(output);
         if let Some(export) = export {
             exports.push(export);
@@ -394,43 +445,44 @@ fn index_function(
     world: &mut World<'_>,
     code_id: CodeId,
     scope: ScopeSnapshot,
-    def: &FnDef,
+    function: &FunctionForm,
 ) -> Result<(Output, Option<ModuleExport>), FatalError> {
     let current_module = scope.module_id();
     let namespace = scope.namespace();
     let (function_id, revision) = world.define_function(
         current_module,
         current_module,
-        def.name.clone(),
+        function.legacy_fn.name.clone(),
         code_id,
         namespace,
-        def.clone(),
+        function.source.clone(),
+        function.legacy_fn.clone(),
     );
 
     // A function's declared type surface is one dependency set: its @spec, its
     // extern signature, and its inline parameter annotations (`fn f(x(T), …)`),
     // the last of which become entry-dispatch type-tests resolved in .4.
     let mut refs = Vec::new();
-    for attr in &def.attrs {
+    for attr in &function.legacy_fn.attrs {
         if let Attribute::Spec(spec) = attr {
             collect_spec_refs(world, namespace, spec, &mut refs)?;
         }
     }
-    if let Some(extern_spec) = def.extern_contract_decl() {
+    if let Some(extern_spec) = function.legacy_fn.extern_contract_decl() {
         collect_spec_refs(world, namespace, &extern_spec, &mut refs)?;
     }
-    for clause in &def.clauses {
+    for clause in &function.legacy_fn.clauses {
         for annotation in clause.param_annotations.iter().flatten() {
             collect_body_refs(world, namespace, annotation, &mut refs)?;
         }
     }
     world.record_function_type_refs(function_id, refs);
 
-    let export = (!def.is_private).then(|| ModuleExport {
-        name: def.name.clone(),
-        arity: def.arity(),
-        variadic: def.variadic,
-        symbol: if def.is_macro {
+    let export = (!function.legacy_fn.is_private).then(|| ModuleExport {
+        name: function.legacy_fn.name.clone(),
+        arity: function.legacy_fn.arity(),
+        variadic: function.legacy_fn.variadic,
+        symbol: if function.legacy_fn.is_macro {
             NamespaceSymbol::Macro(function_id)
         } else {
             NamespaceSymbol::Function(function_id)
@@ -597,22 +649,23 @@ fn define_protocol_impl(
     current_module: ModuleId,
     namespace: Namespace,
     local_protocols: &HashSet<String>,
-    protocol_impl: &ProtocolImplDef,
+    protocol_impl: &ProtocolImplForm,
 ) -> Result<(Outputs, u64), FatalError> {
-    let protocol = reference_impl_protocol_module(world, current_module, &protocol_impl.protocol, local_protocols);
-    let target = reference_impl_target_module(world, current_module, &protocol_impl.target.path);
+    let legacy = &protocol_impl.legacy_protocol_impl;
+    let protocol = reference_impl_protocol_module(world, current_module, &legacy.protocol, local_protocols);
+    let target = reference_impl_target_module(world, current_module, &legacy.target.path);
     let impl_module = reference_protocol_impl_module(world, protocol, target);
 
     let mut impl_scope = namespace;
     let mut defs = Vec::new();
-    for item in &protocol_impl.items {
+    for item in &legacy.items {
         let Item::Fn(def) = &**item else {
             return Err(emit_job_diagnostic(
                 world,
                 Diagnostic::error(
                     codes::LOWER_UNSUPPORTED,
                     "compiler2 protocol implementations only support callback functions",
-                    protocol_impl.span,
+                    legacy.span,
                 ),
             ));
         };
@@ -641,6 +694,7 @@ fn define_protocol_impl(
             def.name.clone(),
             code_id,
             impl_scope,
+            protocol_impl.source.clone(),
             def.clone(),
         );
         outputs.push((FactKey::FunctionDefined(function), FactValue::presence(revision)));
@@ -663,6 +717,13 @@ fn emit_job_diagnostic(world: &World<'_>, diagnostic: Diagnostic) -> FatalError 
     FatalError
 }
 
+fn emit_internal_surface_error(world: &World<'_>, message: String) -> FatalError {
+    emit_job_diagnostic(
+        world,
+        Diagnostic::error(codes::INTERNAL_POST_RESOLUTION_LEFTOVER, message, Span::DUMMY),
+    )
+}
+
 fn find_export<'a>(exports: &'a [ModuleExport], name: &str, arity: usize) -> Option<&'a ModuleExport> {
     exports
         .iter()
@@ -677,39 +738,46 @@ fn discover_modules(
     world: &mut World<'_>,
     code_id: CodeId,
     parent_module: ModuleId,
-    items: &[Rc<Item>],
+    surface: &ScopeSurface,
     outputs: &mut Outputs,
-) {
-    for item in items {
-        match &**item {
-            Item::Module(module) => {
-                let module_id = world.reference_child_module(parent_module, &module.name);
+) -> Result<(), FatalError> {
+    for form in &surface.forms {
+        match form {
+            ScopeForm::Module(module) => {
+                let module_id = world.reference_child_module(parent_module, &module.legacy_module.name);
                 let revision = world.index_module_body(
                     module_id,
                     code_id,
                     parent_module,
-                    module.name.clone(),
-                    module.attrs.clone(),
-                    module.items.clone(),
+                    module.legacy_module.name.clone(),
+                    module.source.clone(),
+                    module.legacy_module.attrs.clone(),
+                    module.legacy_module.items.clone(),
                 );
                 outputs.push((FactKey::ModuleIndexed(module_id), FactValue::presence(revision)));
-                discover_modules(world, code_id, module_id, &module.items, outputs);
+                let nested = read_module_body_surface(module).map_err(|error| {
+                    emit_internal_surface_error(world, format!("nested module body read failed: {error}"))
+                })?;
+                discover_modules(world, code_id, module_id, &nested, outputs)?;
             }
-            Item::Protocol(protocol) => {
-                let module_id = reference_declared_protocol_module(world, parent_module, &protocol.name);
+            ScopeForm::Protocol(protocol) => {
+                let module_id =
+                    reference_declared_protocol_module(world, parent_module, &protocol.legacy_protocol.name);
                 let revision = world.index_protocol_module(
                     module_id,
                     code_id,
                     parent_module,
-                    protocol.name.last_segment().to_string(),
-                    protocol.attrs.clone(),
-                    protocol.callbacks.clone(),
+                    protocol.legacy_protocol.name.last_segment().to_string(),
+                    protocol.source.clone(),
+                    protocol.legacy_protocol.attrs.clone(),
+                    protocol.legacy_protocol.callbacks.clone(),
                 );
                 outputs.push((FactKey::ModuleIndexed(module_id), FactValue::presence(revision)));
             }
             _ => {}
         }
     }
+    Ok(())
 }
 
 fn reference_declared_protocol_module(world: &mut World<'_>, current_module: ModuleId, name: &ModuleName) -> ModuleId {

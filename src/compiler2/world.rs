@@ -29,7 +29,7 @@ use super::artifact::{
     EmissionReadyProgramMap, MaterializedProgram, MaterializedProgramMap, NativeProgram, NativeProgramMap,
 };
 use super::body::{LoweredBody, LoweredBodyMap};
-use super::code::CodeMap;
+use super::code::{CodeMap, LegacyCodeSource, QuotedCodeSource};
 use super::contract::{FunctionContract, FunctionContractMap};
 use super::deps::UnresolvedWait;
 use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
@@ -50,6 +50,7 @@ use super::scope::ScopeSnapshot;
 use super::semantic::{
     ActivationAnalysis, ActivationMap, CallSiteKey, CallSiteMap, CallSiteSummary, SemanticClosure, SemanticClosureMap,
 };
+use super::source::QuotedSourceCarrier;
 #[cfg(test)]
 use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
@@ -579,10 +580,12 @@ impl<'a> World<'a> {
         code: CodeId,
         parent: ModuleId,
         local_name: String,
-        attrs: Vec<crate::ast::Attribute>,
-        items: Vec<Rc<Item>>,
+        source: QuotedSourceCarrier,
+        legacy_attrs: Vec<crate::ast::Attribute>,
+        legacy_items: Vec<Rc<Item>>,
     ) -> u64 {
-        self.modules.index_body(id, code, parent, local_name, attrs, items)
+        self.modules
+            .index_body(id, code, parent, local_name, source, legacy_attrs, legacy_items)
     }
 
     pub fn index_protocol_module(
@@ -591,11 +594,12 @@ impl<'a> World<'a> {
         code: CodeId,
         parent: ModuleId,
         local_name: String,
-        attrs: Vec<crate::ast::Attribute>,
-        callbacks: Vec<crate::ast::ProtocolCallback>,
+        source: QuotedSourceCarrier,
+        legacy_attrs: Vec<crate::ast::Attribute>,
+        legacy_callbacks: Vec<crate::ast::ProtocolCallback>,
     ) -> u64 {
         self.modules
-            .index_protocol(id, code, parent, local_name, attrs, callbacks)
+            .index_protocol(id, code, parent, local_name, source, legacy_attrs, legacy_callbacks)
     }
 
     pub fn scope_module(&mut self, id: ModuleId, base_namespace: Namespace) -> u64 {
@@ -826,7 +830,7 @@ impl<'a> World<'a> {
             && matches!(
                 &self.modules.get(name.module).state,
                 ModuleState::Indexed(source) | ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. }
-                    if matches!(source.kind, ModuleSourceKind::Protocol { .. })
+                    if matches!(source.legacy, ModuleSourceKind::Protocol(_))
             )
     }
 
@@ -871,10 +875,11 @@ impl<'a> World<'a> {
         local_name: String,
         code: CodeId,
         namespace: Namespace,
-        ast: FnDef,
+        source: QuotedSourceCarrier,
+        legacy_ast: FnDef,
     ) -> (FunctionId, u64) {
-        let arity = ast.arity();
-        let clauses = ast.clauses.len() as u64;
+        let arity = legacy_ast.arity();
+        let clauses = legacy_ast.clauses.len() as u64;
         let id = self.functions.reference(module, local_name, arity);
         let previous_revision = self.functions.get(id).revision;
         let revision = self.functions.define(
@@ -884,7 +889,8 @@ impl<'a> World<'a> {
                 owner_module,
                 namespace,
                 capture_params: Vec::new(),
-                ast,
+                source,
+                legacy_ast,
             },
         );
         if revision != previous_revision {
@@ -900,6 +906,8 @@ impl<'a> World<'a> {
                     revision: revision,
                     arity: arity as u64,
                     clauses: clauses,
+                    source_heap_id: function.state_source_heap_id().unwrap_or_default() as u64,
+                    source_root_ref: function.state_source_root_word().unwrap_or_default(),
                 },
                 &metadata! {
                     function: opaque_debug(function),
@@ -935,9 +943,9 @@ impl<'a> World<'a> {
     pub(crate) fn function_declares_contract(&self, function: FunctionId) -> bool {
         match &self.functions.get(function).state {
             super::identity::FunctionState::Defined { def } => {
-                def.ast.extern_abi.is_some()
+                def.legacy_ast.extern_abi.is_some()
                     || def
-                        .ast
+                        .legacy_ast
                         .attrs
                         .iter()
                         .any(|attr| matches!(attr, crate::ast::Attribute::Spec(_)))
@@ -1013,14 +1021,14 @@ impl<'a> World<'a> {
         owner: FunctionId,
         namespace: Namespace,
         capture_params: Vec<String>,
-        ast: FnDef,
+        legacy_ast: FnDef,
     ) -> (FunctionId, u64) {
         let owner_def = self.function_definition(owner);
         let owner_module = self.functions.reference_for(owner).module;
         let owner_code = owner_def.code;
         let id = self
             .functions
-            .reference_generated(owner, owner_module, ast.span, ast.arity());
+            .reference_generated(owner, owner_module, legacy_ast.span, legacy_ast.arity());
         let previous_revision = self.functions.get(id).revision;
         let revision = self.functions.define(
             id,
@@ -1029,7 +1037,8 @@ impl<'a> World<'a> {
                 owner_module: owner_def.owner_module,
                 namespace,
                 capture_params,
-                ast: ast.clone(),
+                source: owner_def.source.clone(),
+                legacy_ast: legacy_ast.clone(),
             },
         );
         if revision != previous_revision {
@@ -1043,9 +1052,11 @@ impl<'a> World<'a> {
                     owner_module_id: owner_def.owner_module.as_u32() as u64,
                     function_id: id.as_u32() as u64,
                     revision: revision,
-                    arity: ast.arity() as u64,
-                    clauses: ast.clauses.len() as u64,
+                    arity: legacy_ast.arity() as u64,
+                    clauses: legacy_ast.clauses.len() as u64,
                     owner_function_id: owner.as_u32() as u64,
+                    source_heap_id: function.state_source_heap_id().unwrap_or_default() as u64,
+                    source_root_ref: function.state_source_root_word().unwrap_or_default(),
                 },
                 &metadata! {
                     function: opaque_debug(function),
@@ -1068,9 +1079,11 @@ impl<'a> World<'a> {
         };
         let (clauses, generated, arity) = match &body {
             LoweredBody::Extern { signature } => (0_u64, 0_u64, signature.params.len() as u64),
-            LoweredBody::Clauses { clauses, generated, .. } => {
-                (clauses.len() as u64, generated.len() as u64, def.ast.arity() as u64)
-            }
+            LoweredBody::Clauses { clauses, generated, .. } => (
+                clauses.len() as u64,
+                generated.len() as u64,
+                def.legacy_ast.arity() as u64,
+            ),
         };
         self.tel.execute(
             &["fz", "compiler2", "lowered_body", "defined"],
@@ -1082,6 +1095,7 @@ impl<'a> World<'a> {
                 arity: arity,
                 clauses: clauses,
                 generated: generated,
+                source_root_ref: def.source.root.root().raw_word(),
             },
             &metadata! {
                 function_ref: opaque_debug(function_ref),
@@ -1108,10 +1122,11 @@ impl<'a> World<'a> {
                 module_id: function_ref.module.as_u32() as u64,
                 function_id: function.as_u32() as u64,
                 revision: revision,
-                arity: def.ast.arity() as u64,
+                arity: def.legacy_ast.arity() as u64,
                 bodies: dispatch.bodies.len() as u64,
                 guards: dispatch.plan.guards.len() as u64,
                 pinned: dispatch.plan.pinned.len() as u64,
+                source_root_ref: def.source.root.root().raw_word(),
             },
             &metadata! {
                 function_ref: opaque_debug(function_ref),
@@ -1138,10 +1153,11 @@ impl<'a> World<'a> {
                 module_id: function_ref.module.as_u32() as u64,
                 function_id: function.as_u32() as u64,
                 revision: revision,
-                arity: def.ast.arity() as u64,
+                arity: def.legacy_ast.arity() as u64,
                 outcomes: plan.outcomes.len() as u64,
                 guards: plan.guards.len() as u64,
                 pinned: plan.pinned.len() as u64,
+                source_root_ref: def.source.root.root().raw_word(),
             },
             &metadata! {
                 function_ref: opaque_debug(function_ref),
@@ -1217,9 +1233,9 @@ impl<'a> World<'a> {
         match &self.modules.get(module).state {
             ModuleState::Placeholder => None,
             ModuleState::Indexed(source) | ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. } => {
-                match &source.kind {
-                    ModuleSourceKind::Protocol { .. } => None,
-                    ModuleSourceKind::Body { items } => items.iter().find_map(|item| match &**item {
+                match &source.legacy {
+                    ModuleSourceKind::Protocol(_) => None,
+                    ModuleSourceKind::Body(body) => body.items.iter().find_map(|item| match &**item {
                         Item::Struct(def) => Some(def.fields.as_slice()),
                         _ => None,
                     }),
@@ -1236,8 +1252,8 @@ impl<'a> World<'a> {
         self.modules.named_struct_schemas()
     }
 
-    pub fn finish_code_index(&mut self, id: CodeId, items: Vec<Rc<Item>>, attrs: Vec<Attribute>) -> u64 {
-        self.code.index(id, items, attrs)
+    pub fn finish_code_index(&mut self, id: CodeId, source: QuotedCodeSource, legacy: LegacyCodeSource) -> u64 {
+        self.code.index(id, source, legacy)
     }
 
     pub fn code_revision(&self, id: CodeId) -> u64 {
@@ -1298,7 +1314,7 @@ impl<'a> World<'a> {
 
     pub(crate) fn function_variadic(&self, function: FunctionId) -> bool {
         match &self.functions.get(function).state {
-            super::identity::FunctionState::Defined { def } => def.ast.variadic,
+            super::identity::FunctionState::Defined { def } => def.legacy_ast.variadic,
             super::identity::FunctionState::Placeholder => false,
         }
     }
@@ -1505,9 +1521,16 @@ impl<'a> World<'a> {
             .expect("guard dispatch should only be read after its fact is defined")
     }
 
-    pub fn code_items(&self, id: CodeId) -> Option<&[Rc<Item>]> {
+    pub fn code_source(&self, id: CodeId) -> Option<QuotedCodeSource> {
         match &self.code.get(id).state {
-            super::code::CodeState::Indexed { items, .. } => Some(items.as_slice()),
+            super::code::CodeState::Indexed { source, .. } => Some(source.clone()),
+            super::code::CodeState::Pending => None,
+        }
+    }
+
+    pub fn code_legacy_items(&self, id: CodeId) -> Option<&[Rc<Item>]> {
+        match &self.code.get(id).state {
+            super::code::CodeState::Indexed { legacy, .. } => Some(legacy.items.as_slice()),
             super::code::CodeState::Pending => None,
         }
     }
@@ -1515,9 +1538,9 @@ impl<'a> World<'a> {
     /// The root-scope attributes (top-level `@type`s) retained at indexing, so
     /// scoping reserves them into the GLOBAL scope exactly as a module reserves
     /// its own.
-    pub fn code_attrs(&self, id: CodeId) -> &[Attribute] {
+    pub fn code_legacy_attrs(&self, id: CodeId) -> &[Attribute] {
         match &self.code.get(id).state {
-            super::code::CodeState::Indexed { attrs, .. } => attrs.as_slice(),
+            super::code::CodeState::Indexed { legacy, .. } => legacy.attrs.as_slice(),
             super::code::CodeState::Pending => &[],
         }
     }
@@ -1696,9 +1719,10 @@ impl<'a> World<'a> {
             }
             ModuleState::Placeholder => return None,
         };
-        match &source.kind {
-            ModuleSourceKind::Protocol { callbacks }
-                if callbacks
+        match &source.legacy {
+            ModuleSourceKind::Protocol(protocol)
+                if protocol
+                    .callbacks
                     .iter()
                     .any(|callback| callback.name == function_ref.name && callback.arity == function_ref.arity) =>
             {
@@ -1706,7 +1730,7 @@ impl<'a> World<'a> {
                     protocol: function_ref.module,
                 })
             }
-            ModuleSourceKind::Body { .. } | ModuleSourceKind::Protocol { .. } => None,
+            ModuleSourceKind::Body(_) | ModuleSourceKind::Protocol(_) => None,
         }
     }
 

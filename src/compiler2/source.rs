@@ -29,7 +29,7 @@ pub struct QuotedSourceError {
 }
 
 impl QuotedSourceError {
-    fn new(message: impl Into<String>) -> Self {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
         }
@@ -81,6 +81,29 @@ pub struct QuotedSourceFingerprint {
     pub policy: QuotedSourceFingerprintPolicy,
     pub digest: String,
     pub canonical: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuotedSourceCarrier {
+    pub root: QuotedSourceRoot,
+    pub semantic: QuotedSourceFingerprint,
+}
+
+impl QuotedSourceCarrier {
+    pub fn new(root: QuotedSourceRoot) -> Result<Self, QuotedSourceError> {
+        let semantic = root.fingerprint(QuotedSourceFingerprintPolicy::Semantic)?;
+        Ok(Self { root, semantic })
+    }
+
+    pub fn empty() -> Self {
+        let heap = Rc::new(QuotedSourceHeap::new());
+        let root = QuotedSourceRoot::new(heap, AnyValueRef::empty_list());
+        Self::new(root).expect("empty quoted source carrier should fingerprint")
+    }
+
+    pub fn key(&self) -> QuotedSourceKey {
+        self.root.key()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -444,6 +467,10 @@ impl QuotedSourceRoot {
 
     pub fn cursor(&self) -> QuotedSourceCursor {
         self.heap.cursor(self.root)
+    }
+
+    pub fn subroot(&self, root: AnyValueRef) -> Self {
+        Self::new(self.heap.clone(), root)
     }
 }
 

@@ -16,6 +16,7 @@ mod keying;
 mod namespace;
 mod native_codegen;
 mod protocol;
+mod quoted_surface;
 mod resolve;
 mod runtime;
 mod scheduler;
@@ -45,7 +46,7 @@ pub use body::{
     ReceiveClause, ValueId,
 };
 pub use cli::run as run_cli;
-pub use code::{Code, CodeId, CodeMap, CodeState};
+pub use code::{Code, CodeId, CodeMap, CodeState, LegacyCodeSource, QuotedCodeSource};
 pub use compiler::{CodeSubmission, Compiler2, RootSubmission};
 pub use contract::{FunctionContract, FunctionContractMap};
 pub use deps::{DependencyIndex, UnresolvedWait};
@@ -54,8 +55,9 @@ pub use facts::{FactChange, FactReplace, FactSlot, FactTable, FactValue};
 pub use frontdoor::{FrontDoorError, parse_quoted_program};
 pub use identity::{
     ActivationKey, ExecutableKey, ExecutableNeed, Function, FunctionDef, FunctionId, FunctionMap, FunctionRef,
-    FunctionState, Module, ModuleExport, ModuleId, ModuleMap, ModuleSource, ModuleSourceKind, ModuleState,
-    ModuleSurface, NotedTypeDecl, Root, RootEntry, RootId, RootMap, TypeName,
+    FunctionState, LegacyModuleBody, LegacyModuleSource, LegacyProtocolSource, Module, ModuleExport, ModuleId,
+    ModuleMap, ModuleSource, ModuleSourceKind, ModuleState, ModuleSurface, NotedTypeDecl, Root, RootEntry, RootId,
+    RootMap, TypeName,
 };
 pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
 pub use scheduler::{AppliedStep, DriveOutcome, FatalError, Scheduler};
@@ -65,9 +67,9 @@ pub use semantic::{
     SemanticClosure, SemanticClosureMap,
 };
 pub use source::{
-    QuotedAstNode, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceCursor,
-    QuotedSourceError, QuotedSourceFingerprint, QuotedSourceFingerprintPolicy, QuotedSourceHeap, QuotedSourceKey,
-    QuotedSourceMetadata, QuotedSourceRoot, QuotedSourceSpan,
+    QuotedAstNode, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceCarrier,
+    QuotedSourceCursor, QuotedSourceError, QuotedSourceFingerprint, QuotedSourceFingerprintPolicy, QuotedSourceHeap,
+    QuotedSourceKey, QuotedSourceMetadata, QuotedSourceRoot, QuotedSourceSpan,
 };
 pub use types::{
     CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, Nominals, OpaqueVisibilityError, Sigma,
@@ -93,6 +95,8 @@ mod frontdoor_test;
 mod identity_test;
 #[cfg(test)]
 mod namespace_test;
+#[cfg(test)]
+mod quoted_surface_test;
 #[cfg(test)]
 mod scheduler_test;
 #[cfg(test)]

@@ -1,6 +1,9 @@
 use std::rc::Rc;
 
-use super::{Job, ModuleId, NamespaceSymbol, QuotedLexicalContextKind, QuotedSourceHeap, ScopeSnapshot, World};
+use super::{
+    Job, ModuleId, NamespaceSymbol, QuotedLexicalContextKind, QuotedSourceCarrier, QuotedSourceHeap, ScopeSnapshot,
+    World,
+};
 use crate::telemetry::ConfiguredTelemetry;
 
 #[test]
@@ -90,6 +93,7 @@ fn compiler2_module_scope_returns_a_scope_snapshot_not_just_a_namespace() {
         code,
         ModuleId::GLOBAL,
         "Scoped".to_string(),
+        QuotedSourceCarrier::empty(),
         Vec::new(),
         Vec::new(),
     );
