@@ -7,6 +7,7 @@
     "fz-rh2.11.7.2"
   ],
   "blocks": [
+    "fz-rh2.11.7.15",
     "fz-rh2.11.7.4"
   ],
   "created": "2026-06-09T16:16:21Z",
@@ -28,5 +29,5 @@
   "status": "in_progress",
   "title": "Compiler2 job model: consume source AST roots as AnyValueRef",
   "type": "task",
-  "updated_at": "2026-06-09T22:19:31Z"
+  "updated_at": "2026-06-09T22:21:30Z"
 }
