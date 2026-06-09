@@ -18,12 +18,14 @@ mod native;
 mod root;
 mod semantic;
 mod source;
+mod types;
 
 pub(crate) fn run(world: &mut World<'_>, job: &Job) -> Result<JobEffects, FatalError> {
     match job {
         Job::IndexCode(code_id) => source::index_code(world, *code_id),
         Job::ScopeCode(code_id) => source::scope_code(world, *code_id),
         Job::DefineModule(module_id) => source::define_module(world, *module_id),
+        Job::DeriveTypeDef(type_name) => types::derive_type_def(world, type_name),
         Job::DeriveFunctionContract(function_id) => contract::derive_function_contract(world, *function_id),
         Job::LowerFunction(function_id) => body::lower_function(world, *function_id),
         Job::ReifyGuardDispatch(function_id) => dispatch::reify_guard_dispatch(world, *function_id),

@@ -9,7 +9,7 @@ use crate::{measurements, metadata};
 
 use super::code::CodeId;
 use super::facts::FactValue;
-use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId};
+use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId, TypeName};
 use super::scheduler::{DriveOutcome, Scheduler};
 use super::semantic::CallSiteKey;
 use super::world::World;
@@ -19,6 +19,7 @@ pub enum Job {
     IndexCode(CodeId),
     ScopeCode(CodeId),
     DefineModule(ModuleId),
+    DeriveTypeDef(TypeName),
     DeriveFunctionContract(FunctionId),
     LowerFunction(FunctionId),
     ReifyGuardDispatch(FunctionId),
@@ -41,6 +42,7 @@ pub enum FactKey {
     CodeScoped(CodeId),
     ModuleIndexed(ModuleId),
     ModuleDefined(ModuleId),
+    TypeDefined(TypeName),
     FunctionDefined(FunctionId),
     FunctionContract(FunctionId),
     LoweredBody(FunctionId),

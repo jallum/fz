@@ -14,10 +14,12 @@ mod jobs;
 mod keying;
 mod namespace;
 mod protocol;
+mod resolve;
 mod runtime;
 mod scheduler;
 mod semantic;
 mod type_expr;
+mod typedef;
 mod types;
 mod world;
 

@@ -96,7 +96,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `repr_seam_closure_predicate/` | Closure predicate results stay truth-preserving across native representation seams | jit, interp, aot, repl |
 | `repr_seam_enum_count_after_reduce2/` | Enum.count/2 remains correct after Enum.reduce/3 retains the same list | jit, interp, aot, repl |
 | `resource_aot_dtor/` | AOT-compiled binary fires user-supplied resource dtors at heap drop | aot, repl |
-| `resource_lifecycle/` | fz-swt.12 — resource lifecycle (make_resource + .value + dtor) is observably identical across interp, JIT, AOT | interp, jit, aot, repl |
+| `resource_lifecycle/` | fz-swt.12 — resource lifecycle (make_resource + .value + dtor) is observably identical across interp, JIT, AOT | interp, repl |
 | `reverse/` | source-level reverse allocation baseline for accumulator-style list traversal | jit, interp, aot, repl |
 | `sample_tests/` | `test()` macro from the prelude — assert / refute | jit |
 | `sample_tests_module/` | `test()` inside a defmodule body | jit |

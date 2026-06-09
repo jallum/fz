@@ -51,6 +51,7 @@ use super::runtime::{self, RuntimeModuleCode};
 use super::semantic::{
     ActivationAnalysis, ActivationMap, CallSiteKey, CallSiteMap, CallSiteSummary, SemanticClosure, SemanticClosureMap,
 };
+use super::typedef::{TypeDef, TypeDefMap};
 use super::types::{ClosureTarget, Ty, Types};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -78,6 +79,7 @@ pub struct World<'a> {
     functions: FunctionMap,
     type_decls: TypeDeclMap,
     type_refs: TypeRefMap,
+    type_defs: TypeDefMap,
     function_contracts: FunctionContractMap,
     bodies: LoweredBodyMap,
     guard_dispatches: GuardDispatchMap,
@@ -129,6 +131,7 @@ impl<'a> World<'a> {
             functions: FunctionMap::new(),
             type_decls: TypeDeclMap::new(),
             type_refs: TypeRefMap::new(),
+            type_defs: TypeDefMap::new(),
             function_contracts: FunctionContractMap::new(),
             bodies: LoweredBodyMap::new(),
             guard_dispatches: GuardDispatchMap::new(),
@@ -684,10 +687,51 @@ impl<'a> World<'a> {
         self.type_refs.record_type(name, refs);
     }
 
-    // Consumed by DeriveTypeDef (fz-rh2.12.2); recorded one inch ahead.
-    #[allow(dead_code)]
+    /// The type names a `@type` body references — `DeriveTypeDef`'s wait-set.
     pub(crate) fn type_def_refs(&self, name: &TypeName) -> &[TypeName] {
         self.type_refs.type_refs(name)
+    }
+
+    /// Publishes a resolved type definition under `name` and emits the
+    /// callee-tier `type defined` signal. The rendered type rides the event so
+    /// tests and tooling can read the resolved surface without the interner.
+    pub(crate) fn define_type_def(&mut self, name: TypeName, def: TypeDef) -> u64 {
+        let rendered = self.types.display(&def.ty);
+        let has_vars = self.types.has_vars(&def.ty);
+        let params = def.params.len();
+        let revision = self.type_defs.define(name.clone(), def);
+        self.tel.execute(
+            &["fz", "compiler2", "type", "defined"],
+            &measurements! {
+                module_id: name.module.as_u32() as u64,
+                arity: name.arity as u64,
+                params: params as u64,
+                revision: revision,
+                has_vars: has_vars as u64,
+            },
+            &metadata! {
+                name: name.name.clone(),
+                ty: rendered,
+            },
+        );
+        revision
+    }
+
+    pub(crate) fn type_def(&self, name: &TypeName) -> Option<&TypeDef> {
+        self.type_defs.get(name)
+    }
+
+    /// The qualified tag a nominal `@type` (`refines` / `opaque`) brands under.
+    /// A top-level type owns no module, so its tag is its bare name; a module
+    /// type is tagged `Module.Path::name`.
+    pub(crate) fn qualified_type_tag(&self, name: &TypeName) -> String {
+        if name.module.is_global() {
+            return name.name.clone();
+        }
+        match self.module_name(name.module) {
+            Some(path) if !path.is_empty() => format!("{}::{}", path, name.name),
+            _ => name.name.clone(),
+        }
     }
 
     fn emit_type_referenced(&self, consumer: &str, referenced: &TypeName) {
@@ -1147,6 +1191,14 @@ impl<'a> World<'a> {
             FactKey::FunctionDefined(function),
             self.ensure_function_surface(function),
         )
+    }
+
+    /// Demands and waits on the module whose definition notes `module`'s
+    /// `@type`s — the type-side mirror of `wait_for_function_definition`. Used
+    /// only for non-global modules; a top-level type is noted by its code scope.
+    pub(crate) fn wait_for_type_decl(&mut self, module: ModuleId) -> JobEffects {
+        self.ensure_runtime_module(module);
+        JobEffects::wait_on(FactKey::ModuleDefined(module), vec![Job::DefineModule(module)])
     }
 
     pub fn fact_revision(&self, key: FactKey) -> Option<u64> {

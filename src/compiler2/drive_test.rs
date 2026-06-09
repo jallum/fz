@@ -6,7 +6,7 @@ use crate::compiler2::{
     AbiReadyProgram, AbiValueRepr, ActivationKey, BackendProgram, CallSiteId, CallSiteKey, CallSiteSummary,
     CallableEntry, ControlEntryOrigin, EmissionReadyProgram, ExecutableKey, FactKey, FactValue, FunctionId,
     FunctionRef, LoweredBody, LoweredStep, LoweredTail, MaterializedProgram, Module, ModuleId, ReturnAbi,
-    SelectedCallee, SemanticClosure, Ty, ValueId,
+    SelectedCallee, SemanticClosure, Ty, TypeName, TypeVarId, Types, ValueId,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
@@ -231,6 +231,170 @@ fn compiler2_records_type_references_as_consumer_dependencies() {
         consumers_of("tkf_box"),
         vec!["type:tkf_wrapper".to_string()],
         "the parametric type is a dep of the wrapper that applies it",
+    );
+}
+
+#[test]
+fn compiler2_derive_type_def_pulls_a_referenced_type_and_its_wait_set_leaving_others_cold() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let code_id = compiler.submit_code(CodeSubmission {
+        name: Some("typedefs.fz".to_string()),
+        text: concat!(
+            "@type tkf_int :: integer\n",
+            "@type tkf_box(a) :: list(a)\n",
+            "@type tkf_wrapper :: tkf_box(tkf_int)\n",
+            "@type tkf_cold :: {tkf_int, tkf_int}\n",
+            "fn main(), do: 1\n",
+        )
+        .to_string(),
+    });
+    assert_resolved(compiler.drive(), "first drive should index the source");
+    assert!(
+        compiler.demand(Job::ScopeCode(code_id)),
+        "scoping the top-level code should be demandable"
+    );
+    assert_resolved(compiler.drive(), "second drive should scope, note, and walk references");
+
+    let define_count = |name: &str| {
+        capture
+            .find(&["fz", "compiler2", "type", "defined"])
+            .into_iter()
+            .filter(|event| metadata_str(event, "name") == name)
+            .count()
+    };
+
+    // DeriveTypeDef is strictly pulled: scoping notes and references the types
+    // but resolves none of them.
+    assert_eq!(
+        define_count("tkf_int"),
+        0,
+        "a noted @type is not resolved until a consumer pulls it"
+    );
+    assert_eq!(
+        define_count("tkf_wrapper"),
+        0,
+        "a noted @type is not resolved until a consumer pulls it"
+    );
+
+    // Pull the wrapper. Its body names tkf_box(tkf_int); the wait-set drags both
+    // dependencies through. tkf_cold — reached by no one — stays cold.
+    let wrapper = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "tkf_wrapper".to_string(),
+        arity: 0,
+    };
+    assert!(
+        compiler.demand(Job::DeriveTypeDef(wrapper)),
+        "deriving a type should be demandable"
+    );
+    assert_resolved(
+        compiler.drive(),
+        "third drive should resolve the wrapper and its wait-set",
+    );
+
+    let resolved_ty = |name: &str| {
+        capture
+            .find(&["fz", "compiler2", "type", "defined"])
+            .into_iter()
+            .filter(|event| metadata_str(event, "name") == name)
+            .map(|event| metadata_str(&event, "ty").to_string())
+            .last()
+    };
+
+    // Render the expected types through the same renderer (a scratch interner),
+    // so the assertion captures structural identity rather than a brittle format.
+    let mut expect = Types::new();
+    let int = expect.int();
+    let list_int = expect.list(int);
+    let var0 = expect.type_var(TypeVarId(0));
+    let list_var = expect.list(var0);
+
+    assert_eq!(
+        resolved_ty("tkf_int").as_deref(),
+        Some(expect.display(&int).as_str()),
+        "a scalar @type resolves to the builtin it names",
+    );
+    assert_eq!(
+        resolved_ty("tkf_box").as_deref(),
+        Some(expect.display(&list_var).as_str()),
+        "a parametric @type resolves to a template over its formal parameter",
+    );
+    assert_eq!(
+        resolved_ty("tkf_wrapper").as_deref(),
+        Some(expect.display(&list_int).as_str()),
+        "applying tkf_box(tkf_int) instantiates the template to a list of integer",
+    );
+
+    assert_eq!(define_count("tkf_int"), 1, "each reached type resolves exactly once");
+    assert_eq!(define_count("tkf_box"), 1, "each reached type resolves exactly once");
+    assert_eq!(
+        define_count("tkf_wrapper"),
+        1,
+        "each reached type resolves exactly once"
+    );
+    assert_eq!(
+        define_count("tkf_cold"),
+        0,
+        "a type no reached consumer references stays cold"
+    );
+}
+
+#[test]
+fn compiler2_derive_type_def_mints_a_refines_brand_inner_in_symbol() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let code_id = compiler.submit_code(CodeSubmission {
+        name: Some("brand.fz".to_string()),
+        text: "@type tkf_pos :: refines integer\n\nfn main(), do: 1\n".to_string(),
+    });
+    assert_resolved(compiler.drive(), "first drive should index the source");
+    assert!(
+        compiler.demand(Job::ScopeCode(code_id)),
+        "scoping the top-level code should be demandable"
+    );
+    assert_resolved(compiler.drive(), "second drive should scope and note the brand");
+
+    let pos = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "tkf_pos".to_string(),
+        arity: 0,
+    };
+    assert!(
+        compiler.demand(Job::DeriveTypeDef(pos)),
+        "deriving the brand should be demandable"
+    );
+    assert_resolved(compiler.drive(), "third drive should resolve the brand");
+
+    let resolved = capture
+        .find(&["fz", "compiler2", "type", "defined"])
+        .into_iter()
+        .filter(|event| metadata_str(event, "name") == "tkf_pos")
+        .map(|event| metadata_str(&event, "ty").to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(resolved.len(), 1, "the brand resolves exactly once");
+
+    // A `refines T` brand is its inner T tagged in-symbol with the brand name —
+    // the integer structure branded `tkf_pos`, distinct from a bare integer and
+    // never a fresh opaque.
+    let mut expect = Types::new();
+    let int = expect.int();
+    let branded = expect.mint_brand(int, "tkf_pos");
+    assert_eq!(
+        resolved[0],
+        expect.display(&branded),
+        "refines integer resolves to integer branded `tkf_pos`, minted inner-in-symbol",
+    );
+    assert_ne!(
+        resolved[0],
+        expect.display(&int),
+        "the brand is observably distinct from its bare inner type",
     );
 }
 
