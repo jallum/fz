@@ -10,9 +10,15 @@
   "id": "fz-rh2.11.7.1",
   "labels": [],
   "parent": "fz-rh2.11.7",
+  "comments": [
+    {
+      "text": "Source-key correction landed in code: compiler2 source identity is the rooted quoted value key {heap, root}. The owning source heap is part of the durable key; the structural walk is a separate semantic fingerprint used for comparison/debugging, with explicit metadata policy (semantic excludes transport-only namespace ids; diagnostic may include spans).",
+      "timestamp": "2026-06-09T16:50:47Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 Fz-shaped source AST: one quoted value representation",
   "type": "task",
-  "updated_at": "2026-06-09T16:25:18Z"
+  "updated_at": "2026-06-09T16:50:47Z"
 }
