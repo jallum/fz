@@ -40,7 +40,7 @@ use super::drive::{FactKey, Job, JobEffects, WorkGraph};
 use super::facts::FactValue;
 use super::identity::{
     ActivationKey, ExecutableNeed, FunctionDef, FunctionId, FunctionMap, ModuleExport, ModuleId, ModuleMap,
-    ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootMap, TypeDeclMap, TypeName,
+    ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::keying::{DispatchMaskMap, RecursiveMap};
 use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
@@ -77,6 +77,7 @@ pub struct World<'a> {
     modules: ModuleMap,
     functions: FunctionMap,
     type_decls: TypeDeclMap,
+    type_refs: TypeRefMap,
     function_contracts: FunctionContractMap,
     bodies: LoweredBodyMap,
     guard_dispatches: GuardDispatchMap,
@@ -127,6 +128,7 @@ impl<'a> World<'a> {
             modules: ModuleMap::new(),
             functions: FunctionMap::new(),
             type_decls: TypeDeclMap::new(),
+            type_refs: TypeRefMap::new(),
             function_contracts: FunctionContractMap::new(),
             bodies: LoweredBodyMap::new(),
             guard_dispatches: GuardDispatchMap::new(),
@@ -616,6 +618,90 @@ impl<'a> World<'a> {
 
     pub fn type_decl(&self, name: &TypeName) -> Option<&NotedTypeDecl> {
         self.type_decls.get(name)
+    }
+
+    /// Resolves a type-position name against a captured scope to its identity,
+    /// or `None` when it is not a named type (a builtin scalar, a free type
+    /// variable, or an unresolvable bare name — all of which resolution, not
+    /// the reference walk, decides). A dotted path resolves its module prefix
+    /// and mints the provider module the way an import does; a bare name finds
+    /// a `Type` binding in scope. Arity comes from the use site, so `t` and
+    /// `t(a)` reference distinct identities.
+    pub(crate) fn reference_type(&mut self, scope: Namespace, path: &[String], arity: usize) -> Option<TypeName> {
+        match path {
+            [] => None,
+            [name] => self.lookup_type_name(scope, name).map(|bound| TypeName {
+                module: bound.module,
+                name: name.clone(),
+                arity,
+            }),
+            [prefix @ .., leaf] => {
+                let module = self.lookup_module_path(scope, &prefix.join("."))?;
+                Some(TypeName {
+                    module,
+                    name: leaf.clone(),
+                    arity,
+                })
+            }
+        }
+    }
+
+    fn lookup_type_name(&self, head: Namespace, name: &str) -> Option<TypeName> {
+        match self
+            .namespaces
+            .lookup_matching(head, name, |symbol| matches!(symbol, NamespaceSymbol::Type(_)))
+        {
+            Some(NamespaceSymbol::Type(type_name)) => Some(type_name.clone()),
+            _ => None,
+        }
+    }
+
+    /// Records the type names a function's contract surface references — its
+    /// later `TypeDefined` wait-set (fz-rh2.12.4).
+    pub(crate) fn record_function_type_refs(&mut self, function: FunctionId, mut refs: Vec<TypeName>) {
+        dedup_type_names(&mut refs);
+        let consumer = format!("fn:{}", self.functions.reference_for(function).name);
+        for referenced in &refs {
+            self.emit_type_referenced(&consumer, referenced);
+        }
+        self.type_refs.record_function(function, refs);
+    }
+
+    // Consumed by the contract re-seat (fz-rh2.12.4); recorded one inch ahead.
+    #[allow(dead_code)]
+    pub(crate) fn function_type_refs(&self, function: FunctionId) -> &[TypeName] {
+        self.type_refs.function_refs(function)
+    }
+
+    /// Records the type names a `@type` body references — the wait-set
+    /// `DeriveTypeDef` resolves against before minting the symbol (fz-rh2.12.2).
+    pub(crate) fn record_type_def_refs(&mut self, name: TypeName, mut refs: Vec<TypeName>) {
+        dedup_type_names(&mut refs);
+        let consumer = format!("type:{}", name.name);
+        for referenced in &refs {
+            self.emit_type_referenced(&consumer, referenced);
+        }
+        self.type_refs.record_type(name, refs);
+    }
+
+    // Consumed by DeriveTypeDef (fz-rh2.12.2); recorded one inch ahead.
+    #[allow(dead_code)]
+    pub(crate) fn type_def_refs(&self, name: &TypeName) -> &[TypeName] {
+        self.type_refs.type_refs(name)
+    }
+
+    fn emit_type_referenced(&self, consumer: &str, referenced: &TypeName) {
+        self.tel.execute(
+            &["fz", "compiler2", "type", "referenced"],
+            &measurements! {
+                ref_module_id: referenced.module.as_u32() as u64,
+                ref_arity: referenced.arity as u64,
+            },
+            &metadata! {
+                ref_name: referenced.name.clone(),
+                consumer: consumer.to_string(),
+            },
+        );
     }
 
     pub fn define_function(
@@ -1561,6 +1647,13 @@ fn callable_match_score(fixed_arity: usize, variadic: bool, actual_arity: usize)
         return Some(CallableMatchScore::VariadicPrefix(fixed_arity));
     }
     None
+}
+
+/// A consumer's references are a set: the same type named twice (e.g. by both a
+/// spec and a parameter annotation) is one dependency. Order is preserved.
+fn dedup_type_names(refs: &mut Vec<TypeName>) {
+    let mut seen = HashSet::new();
+    refs.retain(|name| seen.insert(name.clone()));
 }
 
 fn protocol_domain_template(

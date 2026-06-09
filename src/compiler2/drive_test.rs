@@ -155,6 +155,86 @@ fn compiler2_notes_top_level_types_into_the_global_scope() {
 }
 
 #[test]
+fn compiler2_records_type_references_as_consumer_dependencies() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let code_id = compiler.submit_code(CodeSubmission {
+        name: Some("refs.fz".to_string()),
+        text: concat!(
+            "@type tkf_target :: integer\n",
+            "@type tkf_param :: integer\n",
+            "@type tkf_box(a) :: list(a)\n",
+            "@type tkf_wrapper :: tkf_box(tkf_target)\n",
+            "@spec tkf_uses(tkf_target, a) :: a\n",
+            "fn tkf_uses(x :: tkf_param, y), do: x\n",
+        )
+        .to_string(),
+    });
+    assert_resolved(compiler.drive(), "first drive should index the source");
+    assert!(
+        compiler.demand(Job::ScopeCode(code_id)),
+        "scoping the top-level code should be demandable",
+    );
+    assert_resolved(compiler.drive(), "second drive should scope, note, and walk references");
+
+    let consumers_of = |ref_name: &str| {
+        let mut consumers = capture
+            .find(&["fz", "compiler2", "type", "referenced"])
+            .into_iter()
+            .filter(|event| metadata_str(event, "ref_name") == ref_name)
+            .map(|event| metadata_str(&event, "consumer").to_string())
+            .collect::<Vec<_>>();
+        consumers.sort();
+        consumers
+    };
+
+    // tkf_target is named by the @spec of `tkf_uses` and — nested inside the
+    // parametric application `tkf_box(tkf_target)` — by the wrapper type. The
+    // walk recurses into type arguments, and the free type variable `a` in the
+    // spec (and the formal `a` in `tkf_box`'s own body) is no reference at all.
+    assert_eq!(
+        consumers_of("tkf_target"),
+        vec!["fn:tkf_uses".to_string(), "type:tkf_wrapper".to_string()],
+        "tkf_target is a dep of the function and, recursed out of tkf_box(tkf_target), the wrapper",
+    );
+    // tkf_param is named only by `tkf_uses`'s inline parameter annotation — a
+    // function type-position walked the same way as its @spec.
+    assert_eq!(
+        consumers_of("tkf_param"),
+        vec!["fn:tkf_uses".to_string()],
+        "tkf_param is a dep of the function via its inline parameter annotation",
+    );
+    // The parametric type tkf_box is itself referenced, at arity 1 — parameter
+    // arity is part of the identity, so tkf_box and tkf_box/1 never conflate.
+    // (Its own body `list(a)` references nothing: `list` is a builtin ctor and
+    // `a` is a formal type variable.)
+    let box_refs = capture
+        .find(&["fz", "compiler2", "type", "referenced"])
+        .into_iter()
+        .filter(|event| metadata_str(event, "ref_name") == "tkf_box")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        box_refs.len(),
+        1,
+        "the parametric type tkf_box is referenced exactly once"
+    );
+    assert_eq!(
+        measurement_u64(&box_refs[0], "ref_arity"),
+        1,
+        "tkf_box is referenced at arity 1",
+    );
+    assert_eq!(metadata_str(&box_refs[0], "consumer"), "type:tkf_wrapper");
+    assert_eq!(
+        consumers_of("tkf_box"),
+        vec!["type:tkf_wrapper".to_string()],
+        "the parametric type is a dep of the wrapper that applies it",
+    );
+}
+
+#[test]
 fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_bodies() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();

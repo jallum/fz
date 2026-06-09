@@ -533,6 +533,42 @@ impl TypeDeclMap {
     }
 }
 
+/// The type names each consumer references, recorded by the reference walk
+/// (fz-rh2.12.12). A function (its `@spec`/extern) and a `@type` body each gain
+/// a dependency list — the exact set of `TypeDefined` facts that consumer waits
+/// on before it resolves (fz-rh2.12.2/.4). Recorded at index, never resolved.
+#[derive(Debug, Default)]
+pub struct TypeRefMap {
+    by_function: HashMap<FunctionId, Vec<TypeName>>,
+    by_type: HashMap<TypeName, Vec<TypeName>>,
+}
+
+impl TypeRefMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn record_function(&mut self, function: FunctionId, refs: Vec<TypeName>) {
+        self.by_function.insert(function, refs);
+    }
+
+    // Consumed by the contract re-seat (fz-rh2.12.4); recorded one inch ahead.
+    #[allow(dead_code)]
+    pub fn function_refs(&self, function: FunctionId) -> &[TypeName] {
+        self.by_function.get(&function).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub fn record_type(&mut self, name: TypeName, refs: Vec<TypeName>) {
+        self.by_type.insert(name, refs);
+    }
+
+    // Consumed by DeriveTypeDef (fz-rh2.12.2); recorded one inch ahead.
+    #[allow(dead_code)]
+    pub fn type_refs(&self, name: &TypeName) -> &[TypeName] {
+        self.by_type.get(name).map(Vec::as_slice).unwrap_or(&[])
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct RootMap {
     slots: Vec<Root>,

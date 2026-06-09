@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use super::super::facts::FactValue;
-use crate::ast::{Attribute, FnDef, Item, ProtocolImplDef};
+use crate::ast::{Attribute, FnDef, Item, ProtocolImplDef, SpecDecl, TypeExprBody};
 use crate::compiler::source::Id as SourceId;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
@@ -17,7 +17,7 @@ use super::super::identity::{ModuleExport, ModuleId, ModuleSourceKind, NotedType
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::protocol::ProtocolCallbackImpl;
 use super::super::scheduler::FatalError;
-use super::super::type_expr::parse_type_def_body;
+use super::super::type_expr::{TypeExpr, parse_type_def_body, parse_type_expr};
 use super::super::world::World;
 
 type Output = (FactKey, FactValue);
@@ -265,6 +265,9 @@ fn define_scope(
     // note each @type against it: that captured namespace is the resolution
     // context DeriveTypeDef reads, replacing the per-module type-env fixpoint.
     for (type_name, params, body, span) in pending_types {
+        let mut refs = Vec::new();
+        collect_type_refs(world, scope, &body.inner, &mut refs);
+        world.record_type_def_refs(type_name.clone(), refs);
         world.note_type_decl(
             type_name,
             NotedTypeDecl {
@@ -396,6 +399,26 @@ fn index_function(
         namespace,
         def.clone(),
     );
+
+    // A function's declared type surface is one dependency set: its @spec, its
+    // extern signature, and its inline parameter annotations (`fn f(x(T), …)`),
+    // the last of which become entry-dispatch type-tests resolved in .4.
+    let mut refs = Vec::new();
+    for attr in &def.attrs {
+        if let Attribute::Spec(spec) = attr {
+            collect_spec_refs(world, namespace, spec, &mut refs)?;
+        }
+    }
+    if let Some(extern_spec) = def.extern_contract_decl() {
+        collect_spec_refs(world, namespace, &extern_spec, &mut refs)?;
+    }
+    for clause in &def.clauses {
+        for annotation in clause.param_annotations.iter().flatten() {
+            collect_body_refs(world, namespace, annotation, &mut refs)?;
+        }
+    }
+    world.record_function_type_refs(function_id, refs);
+
     let export = (!def.is_private).then(|| ModuleExport {
         name: def.name.clone(),
         arity: def.arity(),
@@ -410,6 +433,89 @@ fn index_function(
         (FactKey::FunctionDefined(function_id), FactValue::presence(revision)),
         export,
     ))
+}
+
+/// Walks a parsed type expression, recording each name that resolves to a type
+/// identity against `scope`. Builtins, free type variables, and unresolvable
+/// bare names are not references — resolution decides them, not this walk.
+fn collect_type_refs(world: &mut World<'_>, scope: Namespace, expr: &TypeExpr, out: &mut Vec<TypeName>) {
+    match expr {
+        TypeExpr::Name { path, args } => {
+            if let Some(type_name) = world.reference_type(scope, path, args.len()) {
+                out.push(type_name);
+            }
+            for arg in args {
+                collect_type_refs(world, scope, arg, out);
+            }
+        }
+        TypeExpr::List(inner) => collect_type_refs(world, scope, inner, out),
+        TypeExpr::Tuple(elems) | TypeExpr::Union(elems) => {
+            for elem in elems {
+                collect_type_refs(world, scope, elem, out);
+            }
+        }
+        TypeExpr::Arrow { params, result } => {
+            for param in params {
+                collect_type_refs(world, scope, param, out);
+            }
+            collect_type_refs(world, scope, result, out);
+        }
+        TypeExpr::StructRecord { fields, .. } => {
+            for (_, ty) in fields {
+                collect_type_refs(world, scope, ty, out);
+            }
+        }
+        TypeExpr::EmptyList
+        | TypeExpr::AtomLit(_)
+        | TypeExpr::IntLit(_)
+        | TypeExpr::FloatLit(_)
+        | TypeExpr::Wildcard
+        | TypeExpr::Nil
+        | TypeExpr::Bool => {}
+    }
+}
+
+/// Walks every type-position of a spec — each parameter, the result, and each
+/// constraint bound — recording the type names it references.
+fn collect_spec_refs(
+    world: &mut World<'_>,
+    scope: Namespace,
+    spec: &SpecDecl,
+    out: &mut Vec<TypeName>,
+) -> Result<(), FatalError> {
+    for body in spec
+        .param_body_tokens
+        .iter()
+        .chain(std::iter::once(&spec.result_body_tokens))
+        .chain(spec.constraints.iter().map(|(_, bound)| bound))
+    {
+        collect_body_refs(world, scope, body, out)?;
+    }
+    Ok(())
+}
+
+/// Parses one type-expression body and records the type names it references.
+fn collect_body_refs(
+    world: &mut World<'_>,
+    scope: Namespace,
+    body: &TypeExprBody,
+    out: &mut Vec<TypeName>,
+) -> Result<(), FatalError> {
+    if body.0.is_empty() {
+        return Ok(());
+    }
+    let expr = parse_type_expr(&body.0).map_err(|error| {
+        emit_job_diagnostic(
+            world,
+            Diagnostic::error(
+                codes::RESOLVE_TYPE_ALIAS,
+                format!("compiler2 could not parse a type expression: {}", error.msg),
+                error.span,
+            ),
+        )
+    })?;
+    collect_type_refs(world, scope, &expr, out);
+    Ok(())
 }
 
 fn define_protocol_surface(
