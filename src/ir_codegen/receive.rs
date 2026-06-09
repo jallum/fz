@@ -30,6 +30,7 @@ use crate::dispatch_matrix::{
 };
 use crate::fz_ir::{Module, ReceiveClause, Var};
 use crate::ir_codegen::{CodegenError, SLOT_BYTES, emit_fn_body_stats};
+use crate::runtime_type_test_shim::{ListShape, ObservedSet, RuntimeTypeTestShim};
 use cranelift_codegen::ir::{self, AbiParam, InstBuilder, MemFlags, Signature, condcodes::IntCC, types};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -37,6 +38,12 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage};
 use fz_runtime::any_value::{AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind};
 use fz_runtime::ir_runtime::fz_bs_field_spec;
 use std::collections::HashMap;
+
+type ReceiveDispatchPlan = PatternDispatchPlan<RuntimeTypeTestShim>;
+type ReceiveRegion = Region<RuntimeTypeTestShim>;
+type ReceiveEdgeEvidence = EdgeEvidence<RuntimeTypeTestShim>;
+type ReceiveGuardExpr = PatternGuardExpr<RuntimeTypeTestShim>;
+type ReceiveGuardDispatch = PatternGuardDispatch<RuntimeTypeTestShim>;
 
 /// Cranelift signature for the receive dispatch fn family. Matches
 /// `fz_runtime::park::MatcherFn`.
@@ -127,9 +134,10 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
     dispatch_id: FuncId,
     fz_module: &Module,
     tuple_schema_ids: &HashMap<usize, u32>,
+    named_schema_ids: &HashMap<String, u32>,
     pinned: &[(String, Var)],
     clauses: &[ReceiveClause],
-    dispatch: &PatternDispatchPlan,
+    dispatch: &ReceiveDispatchPlan,
     helpers: &DispatchRuntimeHelpers,
 ) -> Result<(usize, usize), CodegenError> {
     let DispatchRuntimeHelpers {
@@ -224,6 +232,7 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
             process,
             fz_module,
             tuple_schema_ids,
+            named_schema_ids,
             bound_indices_per_clause: &bound_indices_per_clause,
             pinned_indices: &pinned_indices,
             pinned_ptr,
@@ -272,11 +281,12 @@ struct DispatchCtx<'a> {
     process: ir::Value,
     fz_module: &'a Module,
     tuple_schema_ids: &'a HashMap<usize, u32>,
+    named_schema_ids: &'a HashMap<String, u32>,
     bound_indices_per_clause: &'a [HashMap<String, usize>],
     pinned_indices: &'a HashMap<String, usize>,
     pinned_ptr: ir::Value,
     out_ptr: ir::Value,
-    dispatch: &'a PatternDispatchPlan,
+    dispatch: &'a ReceiveDispatchPlan,
     inputs: Vec<ReceiveValue>,
     binary_data_gvs: &'a HashMap<Vec<u8>, ir::GlobalValue>,
     runtime: DispatchRuntimeRefs,
@@ -601,8 +611,8 @@ fn emit_region_test(
     b: &mut FunctionBuilder<'_>,
     ctx: &DispatchCtx<'_>,
     subject: SubjectId,
-    region: &Region,
-    evidence: &EdgeEvidence,
+    region: &ReceiveRegion,
+    evidence: &ReceiveEdgeEvidence,
     true_b: ir::Block,
     false_b: ir::Block,
     state: &mut DispatchEmitState,
@@ -615,8 +625,9 @@ fn emit_region_test(
         Region::Never => {
             b.ins().jump(false_b, &[]);
         }
-        Region::Type(_) => {
-            return Err(CodegenError::new("receive dispatch cannot emit type regions yet"));
+        Region::Type(shim) => {
+            let val = resolve_dispatch_subject(b, ctx, subject, state)?;
+            emit_runtime_type_test_shim_region_test(b, ctx, val, shim, true_b, false_b)?;
         }
         Region::Equal(ComparisonValue::Const(value)) => {
             let val = resolve_dispatch_subject(b, ctx, subject, state)?;
@@ -673,10 +684,388 @@ fn emit_region_test(
     Ok(true_values)
 }
 
+fn emit_runtime_type_test_shim_region_test(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &DispatchCtx<'_>,
+    value: ReceiveValue,
+    shim: &RuntimeTypeTestShim,
+    match_b: ir::Block,
+    next_b: ir::Block,
+) -> Result<(), CodegenError> {
+    let scalar = emit_runtime_type_test_shim_scalar_checks(b, ctx, value, shim)?;
+    let heap = emit_runtime_type_test_shim_heap_checks(b, ctx, value, shim)?;
+    let struct_flag = shim
+        .has_structs()
+        .then(|| emit_runtime_type_test_shim_struct_check(b, ctx, value, shim))
+        .transpose()?;
+    let flag = [scalar, heap, struct_flag]
+        .into_iter()
+        .flatten()
+        .reduce(|acc, next| b.ins().bor(acc, next))
+        .unwrap_or_else(|| b.ins().iconst(types::I8, 0));
+    b.ins().brif(flag, match_b, &[], next_b, &[]);
+    Ok(())
+}
+
+fn emit_runtime_type_test_shim_scalar_checks(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &DispatchCtx<'_>,
+    value: ReceiveValue,
+    shim: &RuntimeTypeTestShim,
+) -> Result<Option<ir::Value>, CodegenError> {
+    let mut scalar = None;
+    let or_in = |b: &mut FunctionBuilder<'_>, flag: ir::Value, scalar: &mut Option<ir::Value>| {
+        *scalar = Some(match scalar.take() {
+            None => flag,
+            Some(prev) => b.ins().bor(prev, flag),
+        });
+    };
+    if !shim.ints.is_none() {
+        let flag = emit_receive_kind_guarded_membership(b, ctx, value, ValueKind::INT, |b, ctx, value| {
+            let raw = receive_value_int(b, ctx, value)?;
+            Ok(emit_receive_i64_membership(b, raw, &shim.ints))
+        })?;
+        or_in(b, flag, &mut scalar);
+    }
+    if !shim.floats.is_none() {
+        let flag = emit_receive_kind_guarded_membership(b, ctx, value, ValueKind::FLOAT, |b, ctx, value| {
+            let raw = receive_value_float(b, ctx, value)?;
+            let bits = b.ins().bitcast(types::I64, MemFlags::new(), raw);
+            Ok(emit_receive_u64_membership(b, bits, &shim.floats))
+        })?;
+        or_in(b, flag, &mut scalar);
+    }
+    if !shim.atoms.is_none() {
+        let name_to_id: HashMap<&str, u32> = ctx
+            .fz_module
+            .atom_names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| (name.as_str(), i as u32))
+            .collect();
+        let atom_ids = ObservedSet {
+            cofinite: shim.atoms.cofinite,
+            values: shim
+                .atoms
+                .values
+                .iter()
+                .filter_map(|name| name_to_id.get(name.as_str()).copied().map(i64::from))
+                .collect(),
+        };
+        let flag = emit_receive_kind_guarded_membership(b, ctx, value, ValueKind::ATOM, |b, ctx, value| {
+            let raw = receive_value_atom(b, ctx, value)?;
+            Ok(emit_receive_i64_membership(b, raw, &atom_ids))
+        })?;
+        or_in(b, flag, &mut scalar);
+    }
+    Ok(scalar)
+}
+
+fn emit_runtime_type_test_shim_heap_checks(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &DispatchCtx<'_>,
+    value: ReceiveValue,
+    shim: &RuntimeTypeTestShim,
+) -> Result<Option<ir::Value>, CodegenError> {
+    let mut flag = None;
+    let mut or_in = |b: &mut FunctionBuilder<'_>, next: ir::Value| {
+        flag = Some(match flag.take() {
+            None => next,
+            Some(prev) => b.ins().bor(prev, next),
+        });
+    };
+    if let Some(list_flag) = emit_runtime_type_test_shim_list_check(b, ctx, value, &shim.lists)? {
+        or_in(b, list_flag);
+    }
+    if shim.maps {
+        let map_flag = emit_receive_value_kind_flag(b, ctx, value, ValueKind::MAP)?;
+        or_in(b, map_flag);
+    }
+    if shim.binaries {
+        let binary_flag = emit_receive_value_kind_flag(b, ctx, value, ValueKind::BITSTRING)?;
+        or_in(b, binary_flag);
+    }
+    if shim.closures {
+        let closure_flag = emit_receive_value_kind_flag(b, ctx, value, ValueKind::CLOSURE)?;
+        or_in(b, closure_flag);
+    }
+    if shim.resources {
+        let resource_flag = emit_receive_value_kind_flag(b, ctx, value, ValueKind::RESOURCE)?;
+        or_in(b, resource_flag);
+    }
+    Ok(flag)
+}
+
+fn emit_runtime_type_test_shim_struct_check(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &DispatchCtx<'_>,
+    value: ReceiveValue,
+    shim: &RuntimeTypeTestShim,
+) -> Result<ir::Value, CodegenError> {
+    if shim.allow_other_structs && shim.tuple_arities.is_any() && shim.named_structs.is_any() {
+        return emit_receive_value_kind_flag(b, ctx, value, ValueKind::STRUCT);
+    }
+
+    let is_struct = emit_receive_value_kind_flag(b, ctx, value, ValueKind::STRUCT)?;
+    let struct_blk = b.create_block();
+    let join_blk = b.create_block();
+    b.append_block_param(join_blk, types::I8);
+    let false8 = b.ins().iconst(types::I8, 0);
+    b.ins()
+        .brif(is_struct, struct_blk, &[], join_blk, &[ir::BlockArg::Value(false8)]);
+
+    b.switch_to_block(struct_blk);
+    b.seal_block(struct_blk);
+    let Some(fref) = ctx.runtime.struct_schema_id_ref_fref else {
+        return Err(CodegenError::new("struct type-test requires fz_struct_schema_id_ref"));
+    };
+    let struct_ref = emit_receive_value_ref(b, ctx, value)?;
+    let inst = b.ins().call(fref, &[struct_ref]);
+    let schema_raw = b.inst_results(inst)[0];
+    let schema64 = b.ins().uextend(types::I64, schema_raw);
+
+    let tuple_match =
+        emit_receive_struct_tuple_membership(b, schema64, ctx.tuple_schema_ids, ctx.named_schema_ids, shim);
+    let named_match = emit_receive_struct_named_membership(b, schema64, ctx.named_schema_ids, &shim.named_structs);
+    let other_match = if shim.allow_other_structs {
+        let known_tuple = emit_receive_any_schema_id_match(b, schema64, ctx.tuple_schema_ids.values().copied());
+        let known_named = emit_receive_any_schema_id_match(b, schema64, ctx.named_schema_ids.values().copied());
+        let known_struct = b.ins().bor(known_tuple, known_named);
+        b.ins().icmp_imm(IntCC::Equal, known_struct, 0)
+    } else {
+        b.ins().iconst(types::I8, 0)
+    };
+    let tuple_or_named = b.ins().bor(tuple_match, named_match);
+    let flag = b.ins().bor(tuple_or_named, other_match);
+    b.ins().jump(join_blk, &[ir::BlockArg::Value(flag)]);
+
+    b.switch_to_block(join_blk);
+    b.seal_block(join_blk);
+    Ok(b.block_params(join_blk)[0])
+}
+
+fn emit_runtime_type_test_shim_list_check(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &DispatchCtx<'_>,
+    value: ReceiveValue,
+    lists: &ObservedSet<ListShape>,
+) -> Result<Option<ir::Value>, CodegenError> {
+    if lists.is_none() {
+        return Ok(None);
+    }
+    let allow_empty = lists.contains(&ListShape::Empty);
+    let allow_non_empty = lists.contains(&ListShape::NonEmpty);
+    Ok(match (allow_empty, allow_non_empty) {
+        (false, false) => None,
+        (true, true) => Some(emit_receive_value_kind_flag(b, ctx, value, ValueKind::LIST)?),
+        (true, false) => Some(emit_receive_is_empty_list_flag(b, ctx, value)?),
+        (false, true) => Some(emit_receive_is_list_cons_flag(b, ctx, value)?),
+    })
+}
+
+fn emit_receive_kind_guarded_membership(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &DispatchCtx<'_>,
+    value: ReceiveValue,
+    kind: ValueKind,
+    build: impl FnOnce(&mut FunctionBuilder<'_>, &DispatchCtx<'_>, ReceiveValue) -> Result<ir::Value, CodegenError>,
+) -> Result<ir::Value, CodegenError> {
+    match value {
+        ReceiveValue::AnyRef(_) => {
+            let is_kind = emit_receive_value_kind_flag(b, ctx, value, kind)?;
+            let match_blk = b.create_block();
+            let join_blk = b.create_block();
+            b.append_block_param(join_blk, types::I8);
+            let false8 = b.ins().iconst(types::I8, 0);
+            b.ins()
+                .brif(is_kind, match_blk, &[], join_blk, &[ir::BlockArg::Value(false8)]);
+            b.switch_to_block(match_blk);
+            b.seal_block(match_blk);
+            let matched = build(b, ctx, value)?;
+            b.ins().jump(join_blk, &[ir::BlockArg::Value(matched)]);
+            b.switch_to_block(join_blk);
+            b.seal_block(join_blk);
+            Ok(b.block_params(join_blk)[0])
+        }
+        ReceiveValue::Int(_) if kind == ValueKind::INT => build(b, ctx, value),
+        ReceiveValue::Float(_) if kind == ValueKind::FLOAT => build(b, ctx, value),
+        ReceiveValue::Atom(_) if kind == ValueKind::ATOM => build(b, ctx, value),
+        _ => Ok(b.ins().iconst(types::I8, 0)),
+    }
+}
+
+fn emit_receive_value_kind_flag(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &DispatchCtx<'_>,
+    value: ReceiveValue,
+    kind: ValueKind,
+) -> Result<ir::Value, CodegenError> {
+    let tag = receive_value_tag(b, ctx, value)?;
+    let tag64 = b.ins().uextend(types::I64, tag);
+    Ok(b.ins().icmp_imm(IntCC::Equal, tag64, kind.tag() as i64))
+}
+
+fn emit_receive_i64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, values: &ObservedSet<i64>) -> ir::Value {
+    if values.is_any() {
+        return b.ins().iconst(types::I8, 1);
+    }
+    let mut eq_any = b.ins().iconst(types::I8, 0);
+    for want in &values.values {
+        let next = b.ins().icmp_imm(IntCC::Equal, raw, *want);
+        eq_any = b.ins().bor(eq_any, next);
+    }
+    if values.cofinite {
+        b.ins().icmp_imm(IntCC::Equal, eq_any, 0)
+    } else {
+        eq_any
+    }
+}
+
+fn emit_receive_u64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, values: &ObservedSet<u64>) -> ir::Value {
+    if values.is_any() {
+        return b.ins().iconst(types::I8, 1);
+    }
+    let mut eq_any = b.ins().iconst(types::I8, 0);
+    for want in &values.values {
+        let want = b.ins().iconst(types::I64, *want as i64);
+        let next = b.ins().icmp(IntCC::Equal, raw, want);
+        eq_any = b.ins().bor(eq_any, next);
+    }
+    if values.cofinite {
+        b.ins().icmp_imm(IntCC::Equal, eq_any, 0)
+    } else {
+        eq_any
+    }
+}
+
+fn emit_receive_any_schema_id_match(
+    b: &mut FunctionBuilder<'_>,
+    schema64: ir::Value,
+    ids: impl IntoIterator<Item = u32>,
+) -> ir::Value {
+    let mut matched = b.ins().iconst(types::I8, 0);
+    for id in ids {
+        let want = b.ins().iconst(types::I64, id as i64);
+        let next = b.ins().icmp(IntCC::Equal, schema64, want);
+        matched = b.ins().bor(matched, next);
+    }
+    matched
+}
+
+fn emit_receive_struct_tuple_membership(
+    b: &mut FunctionBuilder<'_>,
+    schema64: ir::Value,
+    tuple_schema_ids: &HashMap<usize, u32>,
+    named_schema_ids: &HashMap<String, u32>,
+    shim: &RuntimeTypeTestShim,
+) -> ir::Value {
+    if shim.tuple_arities.is_none() {
+        return b.ins().iconst(types::I8, 0);
+    }
+    if shim.tuple_arities.is_any() {
+        let known_named = emit_receive_any_schema_id_match(b, schema64, named_schema_ids.values().copied());
+        return b.ins().icmp_imm(IntCC::Equal, known_named, 0);
+    }
+    if shim.tuple_arities.cofinite {
+        let excluded = shim
+            .tuple_arities
+            .values
+            .iter()
+            .filter_map(|arity| tuple_schema_ids.get(arity).copied())
+            .collect::<Vec<_>>();
+        let known_named = emit_receive_any_schema_id_match(b, schema64, named_schema_ids.values().copied());
+        let is_named = b.ins().icmp_imm(IntCC::NotEqual, known_named, 0);
+        let excluded_match = emit_receive_any_schema_id_match(b, schema64, excluded);
+        let excluded_ok = b.ins().icmp_imm(IntCC::Equal, excluded_match, 0);
+        let not_named = b.ins().bxor_imm(is_named, 1);
+        b.ins().band(not_named, excluded_ok)
+    } else {
+        emit_receive_any_schema_id_match(
+            b,
+            schema64,
+            shim.tuple_arities
+                .values
+                .iter()
+                .filter_map(|arity| tuple_schema_ids.get(arity).copied()),
+        )
+    }
+}
+
+fn emit_receive_struct_named_membership(
+    b: &mut FunctionBuilder<'_>,
+    schema64: ir::Value,
+    named_schema_ids: &HashMap<String, u32>,
+    names: &ObservedSet<String>,
+) -> ir::Value {
+    if names.is_none() {
+        return b.ins().iconst(types::I8, 0);
+    }
+    if names.is_any() {
+        return emit_receive_any_schema_id_match(b, schema64, named_schema_ids.values().copied());
+    }
+    let relevant_ids = names
+        .values
+        .iter()
+        .filter_map(|name| named_schema_ids.get(name).copied())
+        .collect::<Vec<_>>();
+    let matched = emit_receive_any_schema_id_match(b, schema64, relevant_ids);
+    if names.cofinite {
+        let any_named = emit_receive_any_schema_id_match(b, schema64, named_schema_ids.values().copied());
+        let not_excluded = b.ins().icmp_imm(IntCC::Equal, matched, 0);
+        b.ins().band(any_named, not_excluded)
+    } else {
+        matched
+    }
+}
+
+fn emit_receive_is_empty_list_flag(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &DispatchCtx<'_>,
+    value: ReceiveValue,
+) -> Result<ir::Value, CodegenError> {
+    Ok(match value {
+        ReceiveValue::EmptyList => b.ins().iconst(types::I8, 1),
+        ReceiveValue::AnyRef(value_ref) => {
+            let tag = receive_value_tag(b, ctx, value)?;
+            let tag64 = b.ins().uextend(types::I64, tag);
+            let empty = b.ins().iconst(types::I64, AnyValueRef::empty_list().raw_word() as i64);
+            let is_list = b.ins().icmp_imm(IntCC::Equal, tag64, ValueKind::LIST.tag() as i64);
+            let is_empty = b.ins().icmp(IntCC::Equal, value_ref, empty);
+            b.ins().band(is_list, is_empty)
+        }
+        ReceiveValue::Null | ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => {
+            b.ins().iconst(types::I8, 0)
+        }
+    })
+}
+
+fn emit_receive_is_list_cons_flag(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &DispatchCtx<'_>,
+    value: ReceiveValue,
+) -> Result<ir::Value, CodegenError> {
+    Ok(match value {
+        ReceiveValue::AnyRef(value_ref) => {
+            let tag = receive_value_tag(b, ctx, value)?;
+            let tag64 = b.ins().uextend(types::I64, tag);
+            let empty = b.ins().iconst(types::I64, AnyValueRef::empty_list().raw_word() as i64);
+            let is_list = b.ins().icmp_imm(IntCC::Equal, tag64, ValueKind::LIST.tag() as i64);
+            let is_empty = b.ins().icmp(IntCC::Equal, value_ref, empty);
+            let not_empty = b.ins().icmp_imm(IntCC::Equal, is_empty, 0);
+            b.ins().band(is_list, not_empty)
+        }
+        ReceiveValue::Null
+        | ReceiveValue::Int(_)
+        | ReceiveValue::Float(_)
+        | ReceiveValue::Atom(_)
+        | ReceiveValue::EmptyList => b.ins().iconst(types::I8, 0),
+    })
+}
+
 fn apply_edge_evidence_to_receive_state(
     b: &mut FunctionBuilder<'_>,
     ctx: &DispatchCtx<'_>,
-    evidence: &EdgeEvidence,
+    evidence: &ReceiveEdgeEvidence,
     state: &mut DispatchEmitState,
 ) -> Result<(), CodegenError> {
     for projection in &evidence.projections {
@@ -925,7 +1314,7 @@ fn emit_dispatch_map_get_value(
     Ok(receive_value_from_ref_word(b, out_ref))
 }
 
-fn prepared_dispatch_key_index(dispatch: &PatternDispatchPlan, key: &DispatchConst) -> Option<usize> {
+fn prepared_dispatch_key_index(dispatch: &ReceiveDispatchPlan, key: &DispatchConst) -> Option<usize> {
     dispatch.prepared_keys.iter().position(|prepared| prepared == key)
 }
 
@@ -999,7 +1388,11 @@ fn emit_bitstring_test(
     Ok(())
 }
 
-fn bitstring_field_subject(dispatch: &PatternDispatchPlan, source: SubjectId, index: u32) -> Option<SubjectId> {
+fn bitstring_field_subject<TypeHandle>(
+    dispatch: &PatternDispatchPlan<TypeHandle>,
+    source: SubjectId,
+    index: u32,
+) -> Option<SubjectId> {
     dispatch
         .matrix
         .subjects
@@ -1131,7 +1524,7 @@ fn default_dispatch_bit_unit(ty: BitstringFieldKind) -> u32 {
 fn emit_dispatch_guard_expr(
     b: &mut FunctionBuilder<'_>,
     ctx: &DispatchCtx<'_>,
-    expr: &PatternGuardExpr,
+    expr: &ReceiveGuardExpr,
     state: &mut DispatchEmitState,
 ) -> Result<ReceiveValue, CodegenError> {
     Ok(match expr {
@@ -1232,7 +1625,7 @@ fn emit_dispatch_guard_expr(
 fn emit_guard_dispatch(
     b: &mut FunctionBuilder<'_>,
     parent: &DispatchCtx<'_>,
-    dispatch: &PatternGuardDispatch,
+    dispatch: &ReceiveGuardDispatch,
     inputs: Vec<ReceiveValue>,
 ) -> Result<ReceiveValue, CodegenError> {
     let done = b.create_block();
@@ -1241,6 +1634,7 @@ fn emit_guard_dispatch(
         process: parent.process,
         fz_module: parent.fz_module,
         tuple_schema_ids: parent.tuple_schema_ids,
+        named_schema_ids: parent.named_schema_ids,
         bound_indices_per_clause: parent.bound_indices_per_clause,
         pinned_indices: parent.pinned_indices,
         pinned_ptr: parent.pinned_ptr,
@@ -1260,7 +1654,7 @@ fn emit_guard_dispatch(
 fn emit_guard_dispatch_node(
     b: &mut FunctionBuilder<'_>,
     ctx: &DispatchCtx<'_>,
-    bodies: &[PatternGuardExpr],
+    bodies: &[ReceiveGuardExpr],
     node_id: GraphNodeId,
     done: ir::Block,
     state: &mut DispatchEmitState,
@@ -1330,8 +1724,8 @@ fn emit_short_circuit_guard(
     b: &mut FunctionBuilder<'_>,
     ctx: &DispatchCtx<'_>,
     op: PatternGuardBinOp,
-    lhs: &PatternGuardExpr,
-    rhs: &PatternGuardExpr,
+    lhs: &ReceiveGuardExpr,
+    rhs: &ReceiveGuardExpr,
     state: &mut DispatchEmitState,
 ) -> Result<ReceiveValue, CodegenError> {
     let lhs_value = emit_dispatch_guard_expr(b, ctx, lhs, state)?;
@@ -1554,7 +1948,7 @@ fn emit_tuple_arity_test(
     Ok(())
 }
 
-fn collect_binary_literals_in_dispatch(dispatch: &PatternDispatchPlan, out: &mut Vec<Vec<u8>>) {
+fn collect_binary_literals_in_dispatch(dispatch: &ReceiveDispatchPlan, out: &mut Vec<Vec<u8>>) {
     for key in &dispatch.prepared_keys {
         collect_binary_literals_in_const(key, out);
     }
@@ -1568,7 +1962,7 @@ fn collect_binary_literals_in_dispatch(dispatch: &PatternDispatchPlan, out: &mut
     }
 }
 
-fn collect_binary_literals_in_region(region: &Region, out: &mut Vec<Vec<u8>>) {
+fn collect_binary_literals_in_region(region: &ReceiveRegion, out: &mut Vec<Vec<u8>>) {
     match region {
         Region::Equal(ComparisonValue::Const(value)) | Region::MapKeyPresent { key: value } => {
             collect_binary_literals_in_const(value, out);
@@ -1585,7 +1979,7 @@ fn collect_binary_literals_in_region(region: &Region, out: &mut Vec<Vec<u8>>) {
     }
 }
 
-fn collect_binary_literals_in_guard(expr: &PatternGuardExpr, out: &mut Vec<Vec<u8>>) {
+fn collect_binary_literals_in_guard(expr: &ReceiveGuardExpr, out: &mut Vec<Vec<u8>>) {
     match expr {
         PatternGuardExpr::Const(value) => collect_binary_literals_in_const(value, out),
         PatternGuardExpr::Unary { expr, .. } => collect_binary_literals_in_guard(expr, out),

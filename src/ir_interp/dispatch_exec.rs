@@ -11,7 +11,7 @@ use crate::dispatch_matrix::{
     SubjectSource,
 };
 use crate::fz_ir::Module;
-use crate::types::Ty as LegacyTy;
+use crate::runtime_type_test_shim::{RuntimeTypeTestShim, matches_runtime_any_value};
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, TRUE_ATOM_ID, ValueKind, struct_schema_id};
 use fz_runtime::ir_runtime::{
     fz_bs_field_spec, fz_bs_read_field_ref, fz_bs_reader_init_ref, fz_matcher_map_get_ref, fz_struct_get_field_ref,
@@ -29,13 +29,23 @@ pub(super) struct DispatchExecState {
 pub(super) fn execute_dispatch(
     runtime: &mut IrInterpRuntime,
     module: &Module,
-    plan: &PatternDispatchPlan<LegacyTy>,
+    plan: &PatternDispatchPlan<RuntimeTypeTestShim>,
     root: AnyValue,
     pinned: &HashMap<String, AnyValue>,
 ) -> Option<(u32, Vec<(String, AnyValue)>)> {
     let mut state = DispatchExecState::default();
     let mut type_match =
-        |_runtime: &mut IrInterpRuntime, _module: &Module, _ty: &LegacyTy, _value: AnyValue| Some(true);
+        |runtime: &mut IrInterpRuntime, module: &Module, shim: &RuntimeTypeTestShim, value: AnyValue| {
+            let runtime_value = value.value(runtime.cur_proc()).ok()?;
+            let (tuple_schema_ids, named_schema_ids) = interp_runtime_type_test_schema_ids(runtime, module, shim);
+            Some(matches_runtime_any_value(
+                shim,
+                module,
+                runtime_value,
+                &tuple_schema_ids,
+                &named_schema_ids,
+            ))
+        };
     execute_dispatch_inputs(runtime, module, plan, &[root], pinned, &mut state, &mut type_match)
 }
 

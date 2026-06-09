@@ -54,6 +54,9 @@ fn collect_tuple_arities_and_register_schemas(
                             tuple_arities.insert(arity);
                         }
                     }
+                    Prim::RuntimeTypeTestShim(_, descr) => {
+                        tuple_arities.extend(descr.tuple_arities.values.iter().copied());
+                    }
                     _ => {}
                 }
             }
@@ -678,6 +681,7 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
     module: &Module,
     runtime: &RuntimeRefs,
     tuple_schema_ids: &HashMap<usize, u32>,
+    named_schema_ids: &HashMap<String, u32>,
     dispatch_fn_ids: &HashMap<(u32, u32), FuncId>,
     receive_matched_sites: &[(FnId, BlockId)],
     tel: &dyn Telemetry,
@@ -713,6 +717,7 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
                 m_id,
                 module,
                 tuple_schema_ids,
+                named_schema_ids,
                 pinned.as_slice(),
                 clauses.as_slice(),
                 dispatch,
@@ -1237,6 +1242,7 @@ pub(crate) fn compile_with_backend_surface<
         module,
         &runtime,
         &tuple_schema_ids,
+        &named_schema_ids,
         &receive_dispatch_fn_ids,
         &receive_matched_sites,
         tel,

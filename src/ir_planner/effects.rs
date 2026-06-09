@@ -56,6 +56,7 @@ pub(crate) fn prim_effects(module: &Module, prim: &Prim) -> EffectSummary {
         | Prim::BitReadField { .. }
         | Prim::BitReaderDone(_)
         | Prim::TypeTest(_, _)
+        | Prim::RuntimeTypeTestShim(_, _)
         | Prim::Brand(_, _) => EffectSummary::default(),
     }
 }

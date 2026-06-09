@@ -17,6 +17,7 @@ mod sigs;
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 
+use crate::runtime_type_test_shim::{ListShape, ObservedSet, RuntimeTypeTestShim};
 use crate::type_expr::opaque_owner_module;
 use crate::types::{
     ClosureTypes as SharedClosureTypes, RenderTypes as SharedRenderTypes, Types as SharedTypes,
@@ -526,6 +527,35 @@ impl Types {
 
     pub fn as_atom_singleton(&self, a: &Ty) -> Option<String> {
         self.descr(a).as_atom_singleton().map(String::from)
+    }
+
+    pub(crate) fn runtime_type_test_shim(&self, a: &Ty) -> RuntimeTypeTestShim {
+        let descr = self.descr(a);
+        if runtime_type_test_shim_requires_any(descr) {
+            return RuntimeTypeTestShim::any();
+        }
+        RuntimeTypeTestShim {
+            ints: ObservedSet {
+                cofinite: descr.ints.cofinite,
+                values: descr.ints.set.iter().copied().collect(),
+            },
+            floats: ObservedSet {
+                cofinite: descr.floats.cofinite,
+                values: descr.floats.set.iter().map(|bits| bits.get().to_bits()).collect(),
+            },
+            atoms: ObservedSet {
+                cofinite: descr.atoms.cofinite,
+                values: descr.atoms.set.iter().cloned().collect(),
+            },
+            lists: runtime_type_test_shim_list_shapes(descr),
+            tuple_arities: runtime_type_test_shim_tuple_arities(descr),
+            named_structs: runtime_type_test_shim_named_structs(descr),
+            allow_other_structs: false,
+            maps: !descr.maps.is_empty(),
+            binaries: !descr.basic.is_empty(),
+            closures: !descr.funcs.is_empty(),
+            resources: !descr.resources.is_empty(),
+        }
     }
 
     pub(crate) fn atom_literals(&self, a: &Ty) -> Vec<String> {
@@ -1270,6 +1300,97 @@ fn callable_clauses(cx: TyCtx<'_>, d: &Descr) -> Option<Vec<CallableClause<Ty>>>
             .filter(|clause| clause.args.iter().all(|arg| !cx.descr(arg).is_empty(cx)))
             .collect(),
     )
+}
+
+fn runtime_type_test_shim_requires_any(descr: &Descr) -> bool {
+    const STRUCT_PREFIX: &str = "impl-target::";
+    descr.opaques.cofinite
+        || descr.opaques.set.iter().any(|tag| !tag.starts_with(STRUCT_PREFIX))
+        || descr.brands.cofinite
+        || descr.vars.cofinite
+        || !descr.vars.set.is_empty()
+}
+
+fn runtime_type_test_shim_list_shapes(descr: &Descr) -> ObservedSet<ListShape> {
+    let mut out = ObservedSet::none();
+    for clause in &descr.lists {
+        let mut allowed = ObservedSet::finite([ListShape::Empty, ListShape::NonEmpty]);
+        for sig in &clause.pos {
+            let sig_allowed = if sig.is_exact_empty() {
+                ObservedSet::lit(ListShape::Empty)
+            } else if sig.is_exact_non_empty() {
+                ObservedSet::lit(ListShape::NonEmpty)
+            } else {
+                ObservedSet::finite([ListShape::Empty, ListShape::NonEmpty])
+            };
+            allowed = runtime_type_test_shim_intersect(&allowed, &sig_allowed);
+        }
+        for sig in &clause.neg {
+            if sig.is_exact_empty() {
+                allowed = runtime_type_test_shim_remove(&allowed, &ListShape::Empty);
+            } else if sig.is_exact_non_empty() {
+                allowed = runtime_type_test_shim_remove(&allowed, &ListShape::NonEmpty);
+            }
+        }
+        out = out.union(&allowed);
+    }
+    out
+}
+
+fn runtime_type_test_shim_tuple_arities(descr: &Descr) -> ObservedSet<usize> {
+    let mut out = ObservedSet::none();
+    for clause in &descr.tuples {
+        let mut allowed = if clause.pos.is_empty() {
+            ObservedSet::any()
+        } else {
+            let arities = clause.pos.iter().map(|sig| sig.elems.len()).collect::<BTreeSet<_>>();
+            if arities.len() != 1 {
+                continue;
+            }
+            ObservedSet::lit(*arities.iter().next().expect("one tuple arity"))
+        };
+        for sig in &clause.neg {
+            allowed = runtime_type_test_shim_remove(&allowed, &sig.elems.len());
+        }
+        out = out.union(&allowed);
+    }
+    out
+}
+
+fn runtime_type_test_shim_named_structs(descr: &Descr) -> ObservedSet<String> {
+    const STRUCT_PREFIX: &str = "impl-target::";
+    ObservedSet::finite(
+        descr
+            .opaques
+            .set
+            .iter()
+            .filter_map(|tag| tag.strip_prefix(STRUCT_PREFIX).map(str::to_string)),
+    )
+}
+
+fn runtime_type_test_shim_intersect<T>(left: &ObservedSet<T>, right: &ObservedSet<T>) -> ObservedSet<T>
+where
+    T: Ord + Clone,
+{
+    match (left.cofinite, right.cofinite) {
+        (false, false) => ObservedSet::finite(left.values.intersection(&right.values).cloned()),
+        (true, false) => ObservedSet::finite(right.values.difference(&left.values).cloned()),
+        (false, true) => ObservedSet::finite(left.values.difference(&right.values).cloned()),
+        (true, true) => ObservedSet::cofinite(left.values.union(&right.values).cloned()),
+    }
+}
+
+fn runtime_type_test_shim_remove<T>(set: &ObservedSet<T>, value: &T) -> ObservedSet<T>
+where
+    T: Ord + Clone,
+{
+    if set.cofinite {
+        let mut excluded = set.values.clone();
+        excluded.insert(value.clone());
+        ObservedSet::cofinite(excluded)
+    } else {
+        ObservedSet::finite(set.values.iter().filter(|candidate| *candidate != value).cloned())
+    }
 }
 
 fn specialize_callable_clause(

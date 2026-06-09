@@ -90,6 +90,18 @@ impl<TypeHandle> DispatchMatrix<TypeHandle> {
     pub(crate) fn arm(&self, id: ArmId) -> Option<&DispatchArm<TypeHandle>> {
         self.arms.get(id.0 as usize)
     }
+
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> DispatchMatrix<MappedHandle> {
+        DispatchMatrix {
+            subjects: self.subjects.clone(),
+            outcomes: self.outcomes.clone(),
+            arms: self.arms.iter().map(|arm| arm.map_type_handle(map)).collect(),
+            order: self.order.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +139,24 @@ pub(crate) struct DispatchArm<TypeHandle = DefaultTy> {
     pub(crate) outcome: OutcomeId,
 }
 
+impl<TypeHandle> DispatchArm<TypeHandle> {
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> DispatchArm<MappedHandle> {
+        DispatchArm {
+            id: self.id,
+            questions: self
+                .questions
+                .iter()
+                .map(|question| question.map_type_handle(map))
+                .collect(),
+            evidence: self.evidence.map_type_handle(map),
+            outcome: self.outcome,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RegionPredicate<TypeHandle = DefaultTy> {
     pub(crate) subject: SubjectId,
@@ -136,6 +166,16 @@ pub(crate) struct RegionPredicate<TypeHandle = DefaultTy> {
 impl<TypeHandle> RegionPredicate<TypeHandle> {
     pub(crate) fn new(subject: SubjectId, region: Region<TypeHandle>) -> Self {
         Self { subject, region }
+    }
+
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> RegionPredicate<MappedHandle> {
+        RegionPredicate {
+            subject: self.subject,
+            region: self.region.map_type_handle(map),
+        }
     }
 }
 
@@ -155,6 +195,26 @@ pub(crate) enum Region<TypeHandle = DefaultTy> {
     },
     Bitstring(BitstringShape),
     Guard(GuardId),
+}
+
+impl<TypeHandle> Region<TypeHandle> {
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> Region<MappedHandle> {
+        match self {
+            Region::Any => Region::Any,
+            Region::Never => Region::Never,
+            Region::Type(ty) => Region::Type(map(ty)),
+            Region::Equal(value) => Region::Equal(value.clone()),
+            Region::TupleArity(arity) => Region::TupleArity(*arity),
+            Region::List(region) => Region::List(*region),
+            Region::MapKind => Region::MapKind,
+            Region::MapKeyPresent { key } => Region::MapKeyPresent { key: key.clone() },
+            Region::Bitstring(shape) => Region::Bitstring(shape.clone()),
+            Region::Guard(guard) => Region::Guard(*guard),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -278,12 +338,34 @@ impl<TypeHandle> EdgeEvidence<TypeHandle> {
         self.projections.push(projection);
         self
     }
+
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> EdgeEvidence<MappedHandle> {
+        EdgeEvidence {
+            proofs: self.proofs.iter().map(|proof| proof.map_type_handle(map)).collect(),
+            projections: self.projections.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Proof<TypeHandle = DefaultTy> {
     pub(crate) predicate: RegionPredicate<TypeHandle>,
     pub(crate) sense: ProofSense,
+}
+
+impl<TypeHandle> Proof<TypeHandle> {
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> Proof<MappedHandle> {
+        Proof {
+            predicate: self.predicate.map_type_handle(map),
+            sense: self.sense,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -422,6 +504,17 @@ impl<TypeHandle> RegionQuestion<TypeHandle> {
             predicate,
         }
     }
+
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> RegionQuestion<MappedHandle> {
+        RegionQuestion {
+            predicate: self.predicate.map_type_handle(map),
+            match_evidence: self.match_evidence.map_type_handle(map),
+            miss_evidence: self.miss_evidence.map_type_handle(map),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -433,6 +526,16 @@ pub(crate) struct DispatchGraph<TypeHandle = DefaultTy> {
 impl<TypeHandle> DispatchGraph<TypeHandle> {
     pub(crate) fn node(&self, id: GraphNodeId) -> Option<&DispatchNode<TypeHandle>> {
         self.nodes.get(id.0 as usize)
+    }
+
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> DispatchGraph<MappedHandle> {
+        DispatchGraph {
+            nodes: self.nodes.iter().map(|node| node.map_type_handle(map)).collect(),
+            root: self.root,
+        }
     }
 }
 
@@ -450,13 +553,37 @@ pub(crate) enum DispatchNode<TypeHandle = DefaultTy> {
     },
 }
 
+impl<TypeHandle> DispatchNode<TypeHandle> {
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> DispatchNode<MappedHandle> {
+        match self {
+            DispatchNode::Fail => DispatchNode::Fail,
+            DispatchNode::Outcome { outcome, evidence } => DispatchNode::Outcome {
+                outcome: *outcome,
+                evidence: evidence.map_type_handle(map),
+            },
+            DispatchNode::Test {
+                predicate,
+                on_match,
+                on_miss,
+            } => DispatchNode::Test {
+                predicate: predicate.map_type_handle(map),
+                on_match: on_match.map_type_handle(map),
+                on_miss: on_miss.map_type_handle(map),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DispatchEdge<TypeHandle = DefaultTy> {
     pub(crate) target: GraphNodeId,
     pub(crate) evidence: EdgeEvidence<TypeHandle>,
 }
 
-impl<TypeHandle: Clone> DispatchEdge<TypeHandle> {
+impl<TypeHandle> DispatchEdge<TypeHandle> {
     #[cfg(test)]
     pub(crate) fn new(target: GraphNodeId) -> Self {
         Self {
@@ -467,6 +594,16 @@ impl<TypeHandle: Clone> DispatchEdge<TypeHandle> {
 
     pub(crate) fn with_evidence(target: GraphNodeId, evidence: EdgeEvidence<TypeHandle>) -> Self {
         Self { target, evidence }
+    }
+
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> DispatchEdge<MappedHandle> {
+        DispatchEdge {
+            target: self.target,
+            evidence: self.evidence.map_type_handle(map),
+        }
     }
 }
 

@@ -90,6 +90,7 @@ pub(crate) fn type_prim<T: Types<Ty = Ty> + ClosureTypes>(
         Prim::Extern(_, eid, args) => extern_return_ty(t, env, m, *eid, args).unwrap_or_else(|| t.any()),
 
         Prim::TypeTest(v, descr) => type_type_test(t, env, *v, descr),
+        Prim::RuntimeTypeTestShim(_, _) => t.bool(),
 
         // Preserve the source's structural axes and add the brand tag.
         Prim::Brand(v, name) => {

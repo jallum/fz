@@ -8,6 +8,7 @@ use crate::fz_ir::{
 };
 use crate::ir_planner::SpecPlan;
 use crate::ir_planner::planned::{PlannedCallableEntrySelection, select_callable_entry_target};
+use crate::runtime_type_test_shim::{ListShape, ObservedSet, RuntimeTypeTestShim};
 use crate::types::{Descr, key_slot_var_count, ty_descr};
 use cranelift_codegen::ir::{
     self, BlockArg, InstBuilder, MemFlags,
@@ -1289,6 +1290,9 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         Prim::Brand(_, _) => unreachable!("Prim::Brand reached codegen — erasure should run inside lower_program"),
 
         Prim::TypeTest(v, descr) => lower_type_test(body, env, var_env, runtime, *v, descr, dest_var),
+        Prim::RuntimeTypeTestShim(v, descr) => {
+            lower_runtime_type_test_shim(body, env, var_env, runtime, *v, descr, dest_var)
+        }
     }
 }
 
@@ -1344,6 +1348,48 @@ fn lower_type_test<M: cranelift_module::Module>(
     } else {
         None
     };
+
+    let flag = [scalar, heap, struct_flag]
+        .into_iter()
+        .flatten()
+        .reduce(|acc, f| body.b.ins().bor(acc, f))
+        .unwrap_or_else(|| body.b.ins().iconst(types::I8, 0));
+    if body.cache.if_only_conds.contains(&dest_var.0) {
+        return Ok(LowerOut::Condition(flag));
+    }
+    Ok(LowerOut::Strict(strict_bool(body.b, flag)))
+}
+
+fn lower_runtime_type_test_shim<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    env: &CodegenEnv<'_>,
+    var_env: &HashMap<u32, CodegenValue>,
+    runtime: &RuntimeRefs,
+    v: Var,
+    shim: &RuntimeTypeTestShim,
+    dest_var: Var,
+) -> Result<LowerOut, CodegenError> {
+    if let Some(delivered_arity) = delivered_tuple_field_arity(body, v)
+        && !shim.allow_other_structs
+        && shim.named_structs.is_none()
+    {
+        let flag = body
+            .b
+            .ins()
+            .iconst(types::I8, i64::from(shim.tuple_arities.contains(&delivered_arity)));
+        if body.cache.if_only_conds.contains(&dest_var.0) {
+            return Ok(LowerOut::Condition(flag));
+        }
+        return Ok(LowerOut::Strict(strict_bool(body.b, flag)));
+    }
+
+    let value = *var_env.get(&v.0).expect("type-test subject");
+    let scalar = emit_runtime_type_test_shim_scalar_checks(body, env.module, shim, value)?;
+    let heap = emit_runtime_type_test_shim_heap_checks(body, shim, value);
+    let struct_flag = shim
+        .has_structs()
+        .then(|| emit_runtime_type_test_shim_struct_check(body, runtime, env, value, shim))
+        .transpose()?;
 
     let flag = [scalar, heap, struct_flag]
         .into_iter()
@@ -1425,6 +1471,59 @@ fn emit_scalar_kind_checks<M: cranelift_module::Module>(
     Ok(scalar)
 }
 
+fn emit_runtime_type_test_shim_scalar_checks<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    module: &Module,
+    shim: &RuntimeTypeTestShim,
+    value: CodegenValue,
+) -> Result<Option<ir::Value>, CodegenError> {
+    let mut scalar = None;
+    let or_in = |b: &mut FunctionBuilder<'_>, flag: ir::Value, scalar: &mut Option<ir::Value>| {
+        *scalar = Some(match scalar.take() {
+            None => flag,
+            Some(prev) => b.ins().bor(prev, flag),
+        });
+    };
+    if !shim.ints.is_none() {
+        let flag = emit_kind_guarded_membership(body, value, ValueKind::INT, |body, value| {
+            let raw = body.value_raw_int(value);
+            emit_i64_membership(body.b, raw, &shim.ints)
+        });
+        or_in(body.b, flag, &mut scalar);
+    }
+    if !shim.floats.is_none() {
+        let flag = emit_kind_guarded_membership(body, value, ValueKind::FLOAT, |body, value| {
+            let raw = body.value_raw_float(value);
+            let bits = body.b.ins().bitcast(types::I64, MemFlags::new(), raw);
+            emit_u64_membership(body.b, bits, &shim.floats)
+        });
+        or_in(body.b, flag, &mut scalar);
+    }
+    if !shim.atoms.is_none() {
+        let name_to_id: HashMap<&str, u32> = module
+            .atom_names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| (name.as_str(), i as u32))
+            .collect();
+        let atom_ids = ObservedSet {
+            cofinite: shim.atoms.cofinite,
+            values: shim
+                .atoms
+                .values
+                .iter()
+                .filter_map(|name| name_to_id.get(name.as_str()).copied().map(i64::from))
+                .collect(),
+        };
+        let flag = emit_kind_guarded_membership(body, value, ValueKind::ATOM, |body, value| {
+            let raw = body.value_raw_atom(value);
+            emit_i64_membership(body.b, raw, &atom_ids)
+        });
+        or_in(body.b, flag, &mut scalar);
+    }
+    Ok(scalar)
+}
+
 /// Heap kind checks: emits icmps against the LIST / MAP / BITSTRING value tags
 /// for the list, map, and binary axes, or-ing into the returned flag. Kind-level
 /// (the list element / map shape is not inspected), matching the descriptor
@@ -1450,6 +1549,40 @@ fn emit_heap_kind_checks<M: cranelift_module::Module>(
     }
     if descr.type_test_has_binaries() {
         or_in(body, ValueKind::BITSTRING);
+    }
+    flag
+}
+
+fn emit_runtime_type_test_shim_heap_checks<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    shim: &RuntimeTypeTestShim,
+    value: CodegenValue,
+) -> Option<ir::Value> {
+    let mut flag = None;
+    let mut or_in = |body: &mut CodegenFn<'_, '_, '_, M>, next: ir::Value| {
+        flag = Some(match flag.take() {
+            None => next,
+            Some(prev) => body.b.ins().bor(prev, next),
+        });
+    };
+    if let Some(list_flag) = emit_runtime_type_test_shim_list_check(body, value, &shim.lists) {
+        or_in(body, list_flag);
+    }
+    if shim.maps {
+        let map_flag = body.value_is_tag(value, ValueKind::MAP);
+        or_in(body, map_flag);
+    }
+    if shim.binaries {
+        let binary_flag = body.value_is_tag(value, ValueKind::BITSTRING);
+        or_in(body, binary_flag);
+    }
+    if shim.closures {
+        let closure_flag = body.value_is_tag(value, ValueKind::CLOSURE);
+        or_in(body, closure_flag);
+    }
+    if shim.resources {
+        let resource_flag = body.value_is_tag(value, ValueKind::RESOURCE);
+        or_in(body, resource_flag);
     }
     flag
 }
@@ -1513,6 +1646,268 @@ fn emit_struct_schema_check<M: cranelift_module::Module>(
     body.b.switch_to_block(tuple_join);
     body.b.seal_block(tuple_join);
     body.b.block_params(tuple_join)[0]
+}
+
+fn emit_runtime_type_test_shim_struct_check<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    runtime: &RuntimeRefs,
+    env: &CodegenEnv<'_>,
+    value: CodegenValue,
+    shim: &RuntimeTypeTestShim,
+) -> Result<ir::Value, CodegenError> {
+    if shim.allow_other_structs && shim.tuple_arities.is_any() && shim.named_structs.is_any() {
+        return Ok(body.value_is_tag(value, ValueKind::STRUCT));
+    }
+
+    let is_struct = body.value_is_tag(value, ValueKind::STRUCT);
+    let struct_blk = body.b.create_block();
+    let join_blk = body.b.create_block();
+    body.b.append_block_param(join_blk, types::I8);
+    let false8 = body.b.ins().iconst(types::I8, 0);
+    let no_args: Vec<BlockArg> = Vec::new();
+    body.b
+        .ins()
+        .brif(is_struct, struct_blk, &no_args, join_blk, &[BlockArg::Value(false8)]);
+
+    body.b.switch_to_block(struct_blk);
+    body.b.seal_block(struct_blk);
+    let struct_ref = body.value_as_any_ref(value);
+    let fref = body
+        .jmod
+        .declare_func_in_func(runtime.struct_schema_id_ref_id, body.b.func);
+    let inst = body.b.ins().call(fref, &[struct_ref]);
+    let schema_raw = body.b.inst_results(inst)[0];
+    let schema64 = body.b.ins().uextend(types::I64, schema_raw);
+
+    let tuple_match = emit_struct_tuple_membership(body.b, schema64, env.tuple_schema_ids, env.named_schema_ids, shim);
+    let named_match = emit_struct_named_membership(body.b, schema64, env.named_schema_ids, &shim.named_structs);
+    let other_match = if shim.allow_other_structs {
+        let known_tuple = emit_any_schema_id_match(body.b, schema64, env.tuple_schema_ids.values().copied());
+        let known_named = emit_any_schema_id_match(body.b, schema64, env.named_schema_ids.values().copied());
+        let known_struct = body.b.ins().bor(known_tuple, known_named);
+        body.b.ins().icmp_imm(IntCC::Equal, known_struct, 0)
+    } else {
+        body.b.ins().iconst(types::I8, 0)
+    };
+    let tuple_or_named = body.b.ins().bor(tuple_match, named_match);
+    let flag = body.b.ins().bor(tuple_or_named, other_match);
+    body.b.ins().jump(join_blk, &[BlockArg::Value(flag)]);
+
+    body.b.switch_to_block(join_blk);
+    body.b.seal_block(join_blk);
+    Ok(body.b.block_params(join_blk)[0])
+}
+
+fn emit_runtime_type_test_shim_list_check<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    value: CodegenValue,
+    lists: &ObservedSet<ListShape>,
+) -> Option<ir::Value> {
+    if lists.is_none() {
+        return None;
+    }
+    let allow_empty = lists.contains(&ListShape::Empty);
+    let allow_non_empty = lists.contains(&ListShape::NonEmpty);
+    match (allow_empty, allow_non_empty) {
+        (false, false) => None,
+        (true, true) => Some(body.value_is_tag(value, ValueKind::LIST)),
+        (true, false) => Some(emit_is_empty_list_flag(body, value)),
+        (false, true) => Some(emit_is_list_cons_flag(body, value)),
+    }
+}
+
+fn emit_kind_guarded_membership<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    value: CodegenValue,
+    kind: ValueKind,
+    build: impl FnOnce(&mut CodegenFn<'_, '_, '_, M>, CodegenValue) -> ir::Value,
+) -> ir::Value {
+    match value {
+        CodegenValue::AnyRef(_) => {
+            let is_kind = body.value_is_tag(value, kind);
+            let match_blk = body.b.create_block();
+            let join_blk = body.b.create_block();
+            body.b.append_block_param(join_blk, types::I8);
+            let false8 = body.b.ins().iconst(types::I8, 0);
+            let no_args: Vec<BlockArg> = Vec::new();
+            body.b
+                .ins()
+                .brif(is_kind, match_blk, &no_args, join_blk, &[BlockArg::Value(false8)]);
+            body.b.switch_to_block(match_blk);
+            body.b.seal_block(match_blk);
+            let matched = build(body, value);
+            body.b.ins().jump(join_blk, &[BlockArg::Value(matched)]);
+            body.b.switch_to_block(join_blk);
+            body.b.seal_block(join_blk);
+            body.b.block_params(join_blk)[0]
+        }
+        CodegenValue::RawInt(_)
+        | CodegenValue::Known {
+            kind: ValueKind::INT, ..
+        } if kind == ValueKind::INT => build(body, value),
+        CodegenValue::RawF64(_)
+        | CodegenValue::Known {
+            kind: ValueKind::FLOAT, ..
+        } if kind == ValueKind::FLOAT => build(body, value),
+        CodegenValue::RawAtom(_)
+        | CodegenValue::Condition(_)
+        | CodegenValue::Known {
+            kind: ValueKind::ATOM, ..
+        } if kind == ValueKind::ATOM => build(body, value),
+        _ => body.b.ins().iconst(types::I8, 0),
+    }
+}
+
+fn emit_i64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, values: &ObservedSet<i64>) -> ir::Value {
+    if values.is_any() {
+        return b.ins().iconst(types::I8, 1);
+    }
+    let mut eq_any = b.ins().iconst(types::I8, 0);
+    for want in &values.values {
+        let next = b.ins().icmp_imm(IntCC::Equal, raw, *want);
+        eq_any = b.ins().bor(eq_any, next);
+    }
+    if values.cofinite {
+        b.ins().icmp_imm(IntCC::Equal, eq_any, 0)
+    } else {
+        eq_any
+    }
+}
+
+fn emit_u64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, values: &ObservedSet<u64>) -> ir::Value {
+    if values.is_any() {
+        return b.ins().iconst(types::I8, 1);
+    }
+    let mut eq_any = b.ins().iconst(types::I8, 0);
+    for want in &values.values {
+        let want = b.ins().iconst(types::I64, *want as i64);
+        let next = b.ins().icmp(IntCC::Equal, raw, want);
+        eq_any = b.ins().bor(eq_any, next);
+    }
+    if values.cofinite {
+        b.ins().icmp_imm(IntCC::Equal, eq_any, 0)
+    } else {
+        eq_any
+    }
+}
+
+fn emit_any_schema_id_match(
+    b: &mut FunctionBuilder<'_>,
+    schema64: ir::Value,
+    ids: impl IntoIterator<Item = u32>,
+) -> ir::Value {
+    let mut matched = b.ins().iconst(types::I8, 0);
+    for id in ids {
+        let want = b.ins().iconst(types::I64, id as i64);
+        let next = b.ins().icmp(IntCC::Equal, schema64, want);
+        matched = b.ins().bor(matched, next);
+    }
+    matched
+}
+
+fn emit_struct_tuple_membership(
+    b: &mut FunctionBuilder<'_>,
+    schema64: ir::Value,
+    tuple_schema_ids: &HashMap<usize, u32>,
+    named_schema_ids: &HashMap<String, u32>,
+    shim: &RuntimeTypeTestShim,
+) -> ir::Value {
+    if shim.tuple_arities.is_none() {
+        return b.ins().iconst(types::I8, 0);
+    }
+    if shim.tuple_arities.is_any() {
+        let known_named = emit_any_schema_id_match(b, schema64, named_schema_ids.values().copied());
+        return b.ins().icmp_imm(IntCC::Equal, known_named, 0);
+    }
+    if shim.tuple_arities.cofinite {
+        let excluded = shim
+            .tuple_arities
+            .values
+            .iter()
+            .filter_map(|arity| tuple_schema_ids.get(arity).copied())
+            .collect::<Vec<_>>();
+        let known_named = emit_any_schema_id_match(b, schema64, named_schema_ids.values().copied());
+        let is_named = b.ins().icmp_imm(IntCC::NotEqual, known_named, 0);
+        let excluded_match = emit_any_schema_id_match(b, schema64, excluded);
+        let excluded_ok = b.ins().icmp_imm(IntCC::Equal, excluded_match, 0);
+        let not_named = b.ins().bxor_imm(is_named, 1);
+        b.ins().band(not_named, excluded_ok)
+    } else {
+        emit_any_schema_id_match(
+            b,
+            schema64,
+            shim.tuple_arities
+                .values
+                .iter()
+                .filter_map(|arity| tuple_schema_ids.get(arity).copied()),
+        )
+    }
+}
+
+fn emit_struct_named_membership(
+    b: &mut FunctionBuilder<'_>,
+    schema64: ir::Value,
+    named_schema_ids: &HashMap<String, u32>,
+    names: &ObservedSet<String>,
+) -> ir::Value {
+    if names.is_none() {
+        return b.ins().iconst(types::I8, 0);
+    }
+    if names.is_any() {
+        return emit_any_schema_id_match(b, schema64, named_schema_ids.values().copied());
+    }
+    let relevant_ids = names
+        .values
+        .iter()
+        .filter_map(|name| named_schema_ids.get(name).copied())
+        .collect::<Vec<_>>();
+    let matched = emit_any_schema_id_match(b, schema64, relevant_ids);
+    if names.cofinite {
+        let any_named = emit_any_schema_id_match(b, schema64, named_schema_ids.values().copied());
+        let not_excluded = b.ins().icmp_imm(IntCC::Equal, matched, 0);
+        b.ins().band(any_named, not_excluded)
+    } else {
+        matched
+    }
+}
+
+fn emit_is_empty_list_flag<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    value: CodegenValue,
+) -> ir::Value {
+    if let CodegenValue::AnyRef(value_ref) = value {
+        let tag = body.ref_tag(value_ref);
+        let empty_list_v = body.empty_list_ref();
+        let is_list = body.b.ins().icmp_imm(IntCC::Equal, tag, ValueKind::LIST.tag() as i64);
+        let is_empty_word = body.b.ins().icmp(IntCC::Equal, value_ref, empty_list_v);
+        body.b.ins().band(is_list, is_empty_word)
+    } else {
+        let cv = body.value_as_any_ref(value);
+        let empty_list_v = body.empty_list_ref();
+        body.b.ins().icmp(IntCC::Equal, cv, empty_list_v)
+    }
+}
+
+fn emit_is_list_cons_flag<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    value: CodegenValue,
+) -> ir::Value {
+    if let CodegenValue::AnyRef(value_ref) = value {
+        let tag = body.ref_tag(value_ref);
+        let empty_list_v = body.empty_list_ref();
+        let is_list = body.b.ins().icmp_imm(IntCC::Equal, tag, ValueKind::LIST.tag() as i64);
+        let is_empty_word = body.b.ins().icmp(IntCC::Equal, value_ref, empty_list_v);
+        let not_empty = body.b.ins().icmp_imm(IntCC::Equal, is_empty_word, 0);
+        body.b.ins().band(is_list, not_empty)
+    } else {
+        let cv = body.value_as_any_ref(value);
+        let tag = body.ref_tag(cv);
+        let empty_list_v = body.empty_list_ref();
+        let is_list = body.b.ins().icmp_imm(IntCC::Equal, tag, ValueKind::LIST.tag() as i64);
+        let is_empty_word = body.b.ins().icmp(IntCC::Equal, cv, empty_list_v);
+        let not_empty = body.b.ins().icmp_imm(IntCC::Equal, is_empty_word, 0);
+        body.b.ins().band(is_list, not_empty)
+    }
 }
 
 /// Same-kind typed fast path for a binop: when the typer proves both

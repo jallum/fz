@@ -177,6 +177,7 @@ fn max_var_in_prim(prim: &Prim) -> u32 {
         | Prim::BitReaderInit(value)
         | Prim::BitReaderDone(value)
         | Prim::TypeTest(value, _)
+        | Prim::RuntimeTypeTestShim(value, _)
         | Prim::Brand(value, _) => visit(*value),
         Prim::Extern(_, _, args) => args.iter().for_each(|arg| visit(arg.var)),
         Prim::MakeTuple(args) | Prim::MakeClosure(_, _, args) => args.iter().for_each(|arg| visit(*arg)),

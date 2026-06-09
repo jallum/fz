@@ -223,7 +223,8 @@ fn collect_prim_vars(prim: &Prim, used: &mut HashSet<Var>) {
         | Prim::IsMatcherMapMiss(a)
         | Prim::BitReaderInit(a)
         | Prim::BitReaderDone(a)
-        | Prim::TypeTest(a, _) => {
+        | Prim::TypeTest(a, _)
+        | Prim::RuntimeTypeTestShim(a, _) => {
             used.insert(*a);
         }
         Prim::Extern(_, _, args) => {

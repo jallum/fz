@@ -259,6 +259,13 @@ authority for compiler2-native codegen after `NativeProgram(root)`. If the
 compiler2 backend still reads them, that is backend debt to remove, not part of
 the published handoff.
 
+Current temporary exception: compiler2-native now projects compiler2-owned
+types into an explicit `RuntimeTypeTestShim` before lowering runtime membership
+questions. That shim is not a second semantic type system; it is a temporary
+runtime-observable predicate layer used by both direct type-tests and cached
+receive dispatch. Replacing it with a first-class runtime predicate is tracked
+separately by `fz-rh2.14.6`.
+
 Current conclusion from the code:
 
 - no missing closed fact has been identified for the current compiler2-native

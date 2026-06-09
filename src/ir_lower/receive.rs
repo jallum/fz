@@ -6,6 +6,7 @@ use crate::dispatch_matrix::pattern::{
     PatternGuardExpr, pattern_dispatch_from_source_with_guard_resolver, prepared_key_name,
 };
 use crate::fz_ir::{CallsiteIdent, FnCategory, ReceiveAfter, ReceiveClause, Term, Var};
+use crate::runtime_type_test_shim;
 use crate::types::{Ty, Types};
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
@@ -172,6 +173,7 @@ pub(crate) fn lower_receive<T: Types<Ty = Ty>>(
                 span: rx_span,
                 what: format!("receive dispatch cannot be lowered: {:?}", err),
             })
+            .map(|plan| plan.map_type_handle(&mut runtime_type_test_shim::from_legacy_ty))
             .map(Arc::new)?;
     for (index, key) in receive_dispatch.prepared_keys.iter().enumerate() {
         let name = prepared_key_name(index);

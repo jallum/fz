@@ -9,6 +9,7 @@ use super::*;
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::fz_ir::{FnId, Module};
 use crate::ir_planner::fn_types::SpecKey;
+use crate::runtime_type_test_shim::RuntimeTypeTestShim;
 use crate::telemetry::Telemetry;
 use crate::types::{Ty, Types};
 
@@ -59,7 +60,7 @@ pub(super) enum InterpStep {
 #[derive(Clone)]
 pub(super) struct ParkRecord {
     pub(super) clauses: Vec<MatchedClause>,
-    pub(super) dispatch: Arc<PatternDispatchPlan>,
+    pub(super) dispatch: Arc<PatternDispatchPlan<RuntimeTypeTestShim>>,
     pub(super) pinned: HashMap<String, AnyValue>,
     pub(super) captures: Vec<AnyValue>,
 }

@@ -6,6 +6,7 @@ use super::*;
 use crate::ast::{BitType as AstBitType, Endian};
 use crate::fz_ir::{BitSizeIr, BlockId, Module, Prim, Var};
 use crate::ir_planner::SpecPlan;
+use crate::runtime_type_test_shim::matches_runtime_any_value;
 use crate::telemetry::Telemetry;
 use crate::types::{ClosureTypes, Ty, Types, ty_descr};
 use fz_runtime::any_value::{AnyValueRef, NIL_ATOM_ID, ValueKind, closure_addr_from_tagged, struct_schema_id};
@@ -375,6 +376,18 @@ pub(super) fn eval_prim<T: Types<Ty = Ty> + ClosureTypes>(
                 }
             }
             interp_bool_value(matched)
+        }
+        Prim::RuntimeTypeTestShim(v, shim) => {
+            let value = env_get(env, *v)?.value(runtime.cur_proc())?;
+            let (tuple_schema_ids, named_schema_ids) =
+                interp_runtime_type_test_schema_ids(runtime, module, shim.as_ref());
+            interp_bool_value(matches_runtime_any_value(
+                shim.as_ref(),
+                module,
+                value,
+                &tuple_schema_ids,
+                &named_schema_ids,
+            ))
         }
         Prim::ListHead(c) => {
             let cv = env_get(env, *c)?;

@@ -37,6 +37,23 @@ impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
     pub(crate) fn subject_ref(&self, id: SubjectId) -> Option<&PatternSubjectRef> {
         self.subjects.get(id.0 as usize).and_then(|entry| entry.as_ref())
     }
+
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> PatternDispatchPlan<MappedHandle> {
+        PatternDispatchPlan {
+            matrix: self.matrix.map_type_handle(map),
+            graph: self.graph.map_type_handle(map),
+            input_count: self.input_count,
+            subjects: self.subjects.clone(),
+            outcomes: self.outcomes.clone(),
+            guards: self.guards.iter().map(|guard| guard.map_type_handle(map)).collect(),
+            pinned: self.pinned.clone(),
+            prepared_keys: self.prepared_keys.clone(),
+            bitstring_direct_bindings: self.bitstring_direct_bindings.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,10 +117,48 @@ pub(crate) enum PatternGuardExpr<TypeHandle = DefaultTy> {
     },
 }
 
+impl<TypeHandle> PatternGuardExpr<TypeHandle> {
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> PatternGuardExpr<MappedHandle> {
+        match self {
+            PatternGuardExpr::Const(value) => PatternGuardExpr::Const(value.clone()),
+            PatternGuardExpr::Subject(subject) => PatternGuardExpr::Subject(*subject),
+            PatternGuardExpr::Pinned(pinned) => PatternGuardExpr::Pinned(*pinned),
+            PatternGuardExpr::Unary { op, expr } => PatternGuardExpr::Unary {
+                op: *op,
+                expr: Box::new(expr.map_type_handle(map)),
+            },
+            PatternGuardExpr::Binary { op, lhs, rhs } => PatternGuardExpr::Binary {
+                op: *op,
+                lhs: Box::new(lhs.map_type_handle(map)),
+                rhs: Box::new(rhs.map_type_handle(map)),
+            },
+            PatternGuardExpr::Dispatch { inputs, dispatch } => PatternGuardExpr::Dispatch {
+                inputs: inputs.iter().map(|input| input.map_type_handle(map)).collect(),
+                dispatch: Box::new(dispatch.map_type_handle(map)),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PatternGuardDispatch<TypeHandle = DefaultTy> {
     pub(crate) plan: Box<PatternDispatchPlan<TypeHandle>>,
     pub(crate) bodies: Vec<PatternGuardExpr<TypeHandle>>,
+}
+
+impl<TypeHandle> PatternGuardDispatch<TypeHandle> {
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> PatternGuardDispatch<MappedHandle> {
+        PatternGuardDispatch {
+            plan: Box::new(self.plan.map_type_handle(map)),
+            bodies: self.bodies.iter().map(|body| body.map_type_handle(map)).collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

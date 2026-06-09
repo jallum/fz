@@ -63,6 +63,7 @@ pub fn prim_is_pure(p: &Prim) -> Result<(), ImpureKind> {
         | BitReadField { .. }
         | BitReaderDone(_)
         | TypeTest(_, _)
+        | RuntimeTypeTestShim(_, _)
         | MakeFnRef(_, _)
         | Brand(_, _) => Ok(()),
 

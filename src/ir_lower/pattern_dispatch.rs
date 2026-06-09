@@ -662,7 +662,10 @@ pub(crate) fn lower_guard_helper_call_to_dispatch(
     }))
 }
 
-pub(crate) fn collect_dispatch_pinned_names_recursive(plan: &PatternDispatchPlan, out: &mut Vec<String>) {
+pub(crate) fn collect_dispatch_pinned_names_recursive<TypeHandle>(
+    plan: &PatternDispatchPlan<TypeHandle>,
+    out: &mut Vec<String>,
+) {
     for pinned in &plan.pinned {
         if pinned.input.is_some() {
             continue;
@@ -676,7 +679,10 @@ pub(crate) fn collect_dispatch_pinned_names_recursive(plan: &PatternDispatchPlan
     }
 }
 
-pub(crate) fn collect_guard_expr_dispatch_pinned(expr: &PatternGuardExpr, out: &mut Vec<String>) {
+pub(crate) fn collect_guard_expr_dispatch_pinned<TypeHandle>(
+    expr: &PatternGuardExpr<TypeHandle>,
+    out: &mut Vec<String>,
+) {
     match expr {
         PatternGuardExpr::Unary { expr, .. } => collect_guard_expr_dispatch_pinned(expr, out),
         PatternGuardExpr::Binary { lhs, rhs, .. } => {

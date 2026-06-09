@@ -2244,7 +2244,9 @@ fn lower_receive_rejects_impure_guard() {
     );
 }
 
-fn first_receive_dispatch(m: &Module) -> Option<&PatternDispatchPlan> {
+fn first_receive_dispatch(
+    m: &Module,
+) -> Option<&PatternDispatchPlan<crate::runtime_type_test_shim::RuntimeTypeTestShim>> {
     for f in &m.fns {
         for b in &f.blocks {
             if let Term::ReceiveMatched { dispatch, .. } = &b.terminator {
@@ -2255,8 +2257,10 @@ fn first_receive_dispatch(m: &Module) -> Option<&PatternDispatchPlan> {
     None
 }
 
-fn dispatch_has_guard_dispatch(dispatch: &PatternDispatchPlan) -> bool {
-    fn expr_has_dispatch(expr: &PatternGuardExpr) -> bool {
+fn dispatch_has_guard_dispatch(
+    dispatch: &PatternDispatchPlan<crate::runtime_type_test_shim::RuntimeTypeTestShim>,
+) -> bool {
+    fn expr_has_dispatch(expr: &PatternGuardExpr<crate::runtime_type_test_shim::RuntimeTypeTestShim>) -> bool {
         match expr {
             PatternGuardExpr::Dispatch { .. } => true,
             PatternGuardExpr::Unary { expr, .. } => expr_has_dispatch(expr),

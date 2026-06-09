@@ -23,6 +23,7 @@ use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternSubjectRef};
 use crate::frontend::protocols::ProtocolRegistry;
 use crate::modules::identity::{Mfa, ModuleName};
 use crate::modules::interface::ModuleInterface;
+use crate::runtime_type_test_shim::RuntimeTypeTestShim;
 use crate::specs::{ResolvedSpecSet, StructuralCorrespondenceGroup};
 use crate::type_expr::ResolvedSpecDecl;
 use crate::types::{KeySlot, Nominals, Ty, ty_display};
@@ -498,6 +499,11 @@ pub enum Prim {
     /// the planner (opaque types have no runtime tag) — the branch is then
     /// eliminated by DCE.
     TypeTest(Var, Box<Ty>),
+    /// Compiler2-native runtime-membership check over the shimmed
+    /// runtime-observable projection. Honest name: this is the temporary
+    /// compiler2-owned bridge away from legacy `Ty` type-tests until the
+    /// runtime predicate becomes first-class.
+    RuntimeTypeTestShim(Var, Box<RuntimeTypeTestShim>),
 
     /// fz-axu.4 (K3) — brand-mint. Tags the source value with the
     /// nominal brand `name` (resolved against `Module.brand_inners` to
@@ -626,7 +632,7 @@ impl Prim {
                     used.insert(*sv);
                 }
             }
-            Prim::TypeTest(v, _) | Prim::Brand(v, _) => {
+            Prim::TypeTest(v, _) | Prim::RuntimeTypeTestShim(v, _) | Prim::Brand(v, _) => {
                 used.insert(*v);
             }
         }
@@ -747,7 +753,7 @@ pub enum Term {
         ident: CallsiteIdent,
         clauses: Vec<ReceiveClause>,
         /// Cached AST-free dispatch plan for interpreter and native receive probes.
-        dispatch: Arc<PatternDispatchPlan>,
+        dispatch: Arc<PatternDispatchPlan<RuntimeTypeTestShim>>,
         after: Option<ReceiveAfter>,
         /// Outer-scope vars referenced by `^name` patterns across all
         /// clauses, paired with their source names so backends can
@@ -922,7 +928,8 @@ pub(crate) fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
         | Prim::BitReaderInit(v)
         | Prim::BitReaderDone(v)
         | Prim::Brand(v, _)
-        | Prim::TypeTest(v, _) => visit(*v),
+        | Prim::TypeTest(v, _)
+        | Prim::RuntimeTypeTestShim(v, _) => visit(*v),
         Prim::Extern(_, _, args) => {
             for arg in args {
                 visit(arg.var);
@@ -2045,6 +2052,9 @@ impl fmt::Display for Prim {
             Prim::BitReaderDone(v) => write!(f, "bit_reader_done({})", v),
             Prim::TypeTest(v, d) => {
                 write!(f, "type_test({}, {})", v, ty_display(d))
+            }
+            Prim::RuntimeTypeTestShim(v, d) => {
+                write!(f, "runtime_type_test_shim({}, {})", v, d)
             }
             Prim::Brand(v, name) => write!(f, "brand({}, {})", v, name),
         }

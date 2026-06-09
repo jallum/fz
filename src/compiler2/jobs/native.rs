@@ -13,18 +13,16 @@ use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
-use crate::dispatch_matrix::pattern::{
-    PatternDispatchOutcome, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr, prepared_key_name,
-};
+use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr, prepared_key_name};
 use crate::dispatch_matrix::{
-    ComparisonValue, DispatchConst, DispatchEdge, DispatchGraph, DispatchMatrix, DispatchNode, EdgeEvidence,
-    GraphNodeId, ListRegion, Proof, Region, RegionPredicate, RegionQuestion, SubjectId,
+    ComparisonValue, DispatchConst, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId,
 };
 use crate::fz_ir::{
     BinOp as IrBinOp, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, ExternArg, ExternDecl, ExternId,
     ExternMarshalSite, ExternTy, FnBuilder, FnCategory, FnId, InitTokenId, ModuleBuilder, Prim, ReceiveAfter,
     ReceiveClause, Term, UnOp as IrUnOp, Var,
 };
+use crate::runtime_type_test_shim::RuntimeTypeTestShim;
 use crate::type_expr::ResolvedSpecDecl;
 use crate::types::Types as LegacyTypes;
 
@@ -739,8 +737,8 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     let source = env
                         .var(*source)
                         .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
-                    let legacy_ty = legacy_named_struct(module_name);
-                    let (matches, _) = ctx.emit_let(Prim::TypeTest(source, Box::new(legacy_ty)));
+                    let shim = RuntimeTypeTestShim::named_struct(module_name.rsplit('.').next().unwrap_or(module_name));
+                    let (matches, _) = ctx.emit_let(Prim::RuntimeTypeTestShim(source, Box::new(shim)));
                     ctx.assert_truthy(matches, self.atom_id("match_error"));
                 }
                 BackendStep::RequireMapValue { value, source, key } => {
@@ -759,8 +757,8 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     let source = env
                         .var(*source)
                         .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
-                    let tuple_ty = legacy_any_tuple(*arity);
-                    let (matches, _) = ctx.emit_let(Prim::TypeTest(source, Box::new(tuple_ty)));
+                    let tuple_ty = RuntimeTypeTestShim::tuple_arity(*arity);
+                    let (matches, _) = ctx.emit_let(Prim::RuntimeTypeTestShim(source, Box::new(tuple_ty)));
                     ctx.assert_truthy(matches, self.atom_id("match_error"));
                 }
                 BackendStep::TupleField { value, source, index } => {
@@ -1034,10 +1032,14 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     })
                     .transpose()?;
                 let pinned = self.receive_pinned_vars(env, bindings, dispatch)?;
+                let dispatch = {
+                    let types = self.world.types();
+                    dispatch.map_type_handle(&mut |ty| types.runtime_type_test_shim(ty))
+                };
                 ctx.set_term(Term::ReceiveMatched {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
                     clauses,
-                    dispatch: Arc::new(legacy_receive_dispatch_plan(self.world, self.root_id, dispatch)?),
+                    dispatch: Arc::new(dispatch),
                     after,
                     pinned,
                     captures,
@@ -1559,14 +1561,8 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             }
             Region::Type(ty) => {
                 let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
-                let legacy_ty = legacy_type_test_ty(self.world, *ty).ok_or_else(|| {
-                    incomplete_native_program(
-                        self.world,
-                        self.root_id,
-                        "native entry-dispatch lowering does not support this type test yet",
-                    )
-                })?;
-                let (var, _) = ctx.emit_let(Prim::TypeTest(subject, Box::new(legacy_ty)));
+                let shim = self.world.types().runtime_type_test_shim(ty);
+                let (var, _) = ctx.emit_let(Prim::RuntimeTypeTestShim(subject, Box::new(shim)));
                 var
             }
             Region::Equal(ComparisonValue::Const(DispatchConst::EmptyList)) | Region::List(ListRegion::Empty) => {
@@ -1581,13 +1577,16 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             }
             Region::TupleArity(arity) => {
                 let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
-                let tuple_ty = legacy_any_tuple(*arity as usize);
-                let (var, _) = ctx.emit_let(Prim::TypeTest(subject, Box::new(tuple_ty)));
+                let tuple_ty = RuntimeTypeTestShim::tuple_arity(*arity as usize);
+                let (var, _) = ctx.emit_let(Prim::RuntimeTypeTestShim(subject, Box::new(tuple_ty)));
                 var
             }
             Region::MapKind => {
                 let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
-                let (var, _) = ctx.emit_let(Prim::TypeTest(subject, Box::new(legacy_any_map())));
+                let (var, _) = ctx.emit_let(Prim::RuntimeTypeTestShim(
+                    subject,
+                    Box::new(RuntimeTypeTestShim::map_kind()),
+                ));
                 var
             }
             Region::MapKeyPresent { key } => {
@@ -2447,25 +2446,6 @@ fn atom_names(atom_ids: &HashMap<String, u32>) -> Vec<String> {
     out
 }
 
-fn legacy_any_tuple(arity: usize) -> crate::types::Ty {
-    let mut legacy_types = crate::types::new();
-    let fields = (0..arity).map(|_| legacy_types.any()).collect::<Vec<_>>();
-    legacy_types.tuple(&fields)
-}
-
-fn legacy_any_map() -> crate::types::Ty {
-    let mut legacy_types = crate::types::new();
-    legacy_types.map_top()
-}
-
-fn legacy_named_struct(module_name: &str) -> crate::types::Ty {
-    let mut legacy_types = crate::types::new();
-    crate::frontend::protocols::struct_impl_target_type(
-        &mut legacy_types,
-        module_name.rsplit('.').next().unwrap_or(module_name),
-    )
-}
-
 fn lower_bit_size_ir(
     size: &Option<super::super::body::LoweredBitSize>,
     env: &ValueEnv,
@@ -2477,285 +2457,6 @@ fn lower_bit_size_ir(
             Some(BitSizeIr::Var(env.var(*value).ok_or(FatalError)?))
         }
     })
-}
-
-fn legacy_receive_dispatch_plan(
-    world: &mut World<'_>,
-    root_id: RootId,
-    plan: &PatternDispatchPlan<Ty>,
-) -> Result<crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::types::Ty>, FatalError> {
-    Ok(crate::dispatch_matrix::pattern::PatternDispatchPlan {
-        matrix: legacy_dispatch_matrix(world, root_id, &plan.matrix)?,
-        graph: legacy_dispatch_graph(world, root_id, &plan.graph)?,
-        input_count: plan.input_count,
-        subjects: plan.subjects.clone(),
-        outcomes: plan
-            .outcomes
-            .iter()
-            .map(|outcome| PatternDispatchOutcome {
-                outcome: outcome.outcome,
-                body_id: outcome.body_id,
-                bindings: outcome.bindings.clone(),
-                span: outcome.span,
-            })
-            .collect(),
-        guards: plan
-            .guards
-            .iter()
-            .map(|guard| legacy_pattern_guard_expr(world, root_id, guard))
-            .collect::<Result<Vec<_>, _>>()?,
-        pinned: plan.pinned.clone(),
-        prepared_keys: plan.prepared_keys.clone(),
-        bitstring_direct_bindings: plan.bitstring_direct_bindings.clone(),
-    })
-}
-
-fn legacy_dispatch_matrix(
-    world: &mut World<'_>,
-    root_id: RootId,
-    matrix: &DispatchMatrix<Ty>,
-) -> Result<DispatchMatrix<crate::types::Ty>, FatalError> {
-    Ok(DispatchMatrix {
-        subjects: matrix.subjects.clone(),
-        outcomes: matrix.outcomes.clone(),
-        arms: matrix
-            .arms
-            .iter()
-            .map(|arm| {
-                Ok(crate::dispatch_matrix::DispatchArm {
-                    id: arm.id,
-                    questions: arm
-                        .questions
-                        .iter()
-                        .map(|question| legacy_region_question(world, root_id, question))
-                        .collect::<Result<Vec<_>, _>>()?,
-                    evidence: legacy_edge_evidence(world, root_id, &arm.evidence)?,
-                    outcome: arm.outcome,
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?,
-        order: matrix.order.clone(),
-    })
-}
-
-fn legacy_dispatch_graph(
-    world: &mut World<'_>,
-    root_id: RootId,
-    graph: &DispatchGraph<Ty>,
-) -> Result<DispatchGraph<crate::types::Ty>, FatalError> {
-    Ok(DispatchGraph {
-        nodes: graph
-            .nodes
-            .iter()
-            .map(|node| legacy_dispatch_node(world, root_id, node))
-            .collect::<Result<Vec<_>, _>>()?,
-        root: graph.root,
-    })
-}
-
-fn legacy_dispatch_node(
-    world: &mut World<'_>,
-    root_id: RootId,
-    node: &DispatchNode<Ty>,
-) -> Result<DispatchNode<crate::types::Ty>, FatalError> {
-    Ok(match node {
-        DispatchNode::Fail => DispatchNode::Fail,
-        DispatchNode::Outcome { outcome, evidence } => DispatchNode::Outcome {
-            outcome: *outcome,
-            evidence: legacy_edge_evidence(world, root_id, evidence)?,
-        },
-        DispatchNode::Test {
-            predicate,
-            on_match,
-            on_miss,
-        } => DispatchNode::Test {
-            predicate: legacy_region_predicate(world, root_id, predicate)?,
-            on_match: legacy_dispatch_edge(world, root_id, on_match)?,
-            on_miss: legacy_dispatch_edge(world, root_id, on_miss)?,
-        },
-    })
-}
-
-fn legacy_dispatch_edge(
-    world: &mut World<'_>,
-    root_id: RootId,
-    edge: &DispatchEdge<Ty>,
-) -> Result<DispatchEdge<crate::types::Ty>, FatalError> {
-    Ok(DispatchEdge {
-        target: edge.target,
-        evidence: legacy_edge_evidence(world, root_id, &edge.evidence)?,
-    })
-}
-
-fn legacy_region_question(
-    world: &mut World<'_>,
-    root_id: RootId,
-    question: &RegionQuestion<Ty>,
-) -> Result<RegionQuestion<crate::types::Ty>, FatalError> {
-    Ok(RegionQuestion {
-        predicate: legacy_region_predicate(world, root_id, &question.predicate)?,
-        match_evidence: legacy_edge_evidence(world, root_id, &question.match_evidence)?,
-        miss_evidence: legacy_edge_evidence(world, root_id, &question.miss_evidence)?,
-    })
-}
-
-fn legacy_edge_evidence(
-    world: &mut World<'_>,
-    root_id: RootId,
-    evidence: &EdgeEvidence<Ty>,
-) -> Result<EdgeEvidence<crate::types::Ty>, FatalError> {
-    Ok(EdgeEvidence {
-        proofs: evidence
-            .proofs
-            .iter()
-            .map(|proof| {
-                Ok(Proof {
-                    predicate: legacy_region_predicate(world, root_id, &proof.predicate)?,
-                    sense: proof.sense,
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?,
-        projections: evidence.projections.clone(),
-    })
-}
-
-fn legacy_region_predicate(
-    world: &mut World<'_>,
-    root_id: RootId,
-    predicate: &RegionPredicate<Ty>,
-) -> Result<RegionPredicate<crate::types::Ty>, FatalError> {
-    Ok(RegionPredicate {
-        subject: predicate.subject,
-        region: legacy_region(world, root_id, &predicate.region)?,
-    })
-}
-
-fn legacy_region(
-    world: &mut World<'_>,
-    root_id: RootId,
-    region: &Region<Ty>,
-) -> Result<Region<crate::types::Ty>, FatalError> {
-    Ok(match region {
-        Region::Any => Region::Any,
-        Region::Never => Region::Never,
-        Region::Type(ty) => Region::Type(legacy_type_test_ty(world, *ty).ok_or_else(|| {
-            incomplete_native_program(
-                world,
-                root_id,
-                "native receive cannot translate one dispatch type test".to_string(),
-            )
-        })?),
-        Region::Equal(value) => Region::Equal(value.clone()),
-        Region::TupleArity(arity) => Region::TupleArity(*arity),
-        Region::List(region) => Region::List(*region),
-        Region::MapKind => Region::MapKind,
-        Region::MapKeyPresent { key } => Region::MapKeyPresent { key: key.clone() },
-        Region::Bitstring(shape) => Region::Bitstring(shape.clone()),
-        Region::Guard(id) => Region::Guard(*id),
-    })
-}
-
-fn legacy_pattern_guard_expr(
-    world: &mut World<'_>,
-    root_id: RootId,
-    expr: &PatternGuardExpr<Ty>,
-) -> Result<PatternGuardExpr<crate::types::Ty>, FatalError> {
-    Ok(match expr {
-        PatternGuardExpr::Const(value) => PatternGuardExpr::Const(value.clone()),
-        PatternGuardExpr::Subject(subject) => PatternGuardExpr::Subject(*subject),
-        PatternGuardExpr::Pinned(pinned) => PatternGuardExpr::Pinned(*pinned),
-        PatternGuardExpr::Unary { op, expr } => PatternGuardExpr::Unary {
-            op: *op,
-            expr: Box::new(legacy_pattern_guard_expr(world, root_id, expr)?),
-        },
-        PatternGuardExpr::Binary { op, lhs, rhs } => PatternGuardExpr::Binary {
-            op: *op,
-            lhs: Box::new(legacy_pattern_guard_expr(world, root_id, lhs)?),
-            rhs: Box::new(legacy_pattern_guard_expr(world, root_id, rhs)?),
-        },
-        PatternGuardExpr::Dispatch { inputs, dispatch } => PatternGuardExpr::Dispatch {
-            inputs: inputs
-                .iter()
-                .map(|input| legacy_pattern_guard_expr(world, root_id, input))
-                .collect::<Result<Vec<_>, _>>()?,
-            dispatch: Box::new(legacy_pattern_guard_dispatch(world, root_id, dispatch)?),
-        },
-    })
-}
-
-fn legacy_pattern_guard_dispatch(
-    world: &mut World<'_>,
-    root_id: RootId,
-    dispatch: &PatternGuardDispatch<Ty>,
-) -> Result<PatternGuardDispatch<crate::types::Ty>, FatalError> {
-    Ok(PatternGuardDispatch {
-        plan: Box::new(legacy_receive_dispatch_plan(world, root_id, &dispatch.plan)?),
-        bodies: dispatch
-            .bodies
-            .iter()
-            .map(|body| legacy_pattern_guard_expr(world, root_id, body))
-            .collect::<Result<Vec<_>, _>>()?,
-    })
-}
-
-fn legacy_type_test_ty(world: &mut World<'_>, ty: Ty) -> Option<crate::types::Ty> {
-    if type_is_any(world, ty) {
-        let mut legacy_types = crate::types::new();
-        return Some(legacy_types.any());
-    }
-    if type_is_integer(world, ty) {
-        let mut legacy_types = crate::types::new();
-        return Some(legacy_types.int());
-    }
-    if type_is_float(world, ty) {
-        let mut legacy_types = crate::types::new();
-        return Some(legacy_types.float());
-    }
-    if type_is_atom(world, ty) {
-        let mut legacy_types = crate::types::new();
-        return Some(legacy_types.atom());
-    }
-    if let Some(atom) = world.types().as_atom_singleton(&ty) {
-        let mut legacy_types = crate::types::new();
-        return Some(legacy_types.atom_lit(&atom));
-    }
-    let atom_literals = world.types().atom_literals(&ty);
-    if !atom_literals.is_empty() {
-        let mut legacy_types = crate::types::new();
-        let mut atoms = atom_literals.into_iter();
-        let first = legacy_types.atom_lit(&atoms.next()?);
-        let union = atoms.fold(first, |acc, atom| {
-            let lit = legacy_types.atom_lit(&atom);
-            legacy_types.union(acc, lit)
-        });
-        return Some(union);
-    }
-    if let Some(arity) = exact_tuple_arity(world, ty) {
-        return Some(legacy_any_tuple(arity));
-    }
-    if type_is_empty_list(world, ty) {
-        let mut legacy_types = crate::types::new();
-        return Some(legacy_types.empty_list());
-    }
-    if type_is_non_empty_list(world, ty) {
-        let mut legacy_types = crate::types::new();
-        let any = legacy_types.any();
-        return Some(legacy_types.non_empty_list(any));
-    }
-    if type_is_list(world, ty) {
-        let mut legacy_types = crate::types::new();
-        let any = legacy_types.any();
-        return Some(legacy_types.list(any));
-    }
-    if type_is_map(world, ty) {
-        return Some(legacy_any_map());
-    }
-    None
-}
-
-fn type_is_any(world: &mut World<'_>, ty: Ty) -> bool {
-    let any = world.types_mut().any();
-    world.types().is_equivalent(&ty, &any)
 }
 
 fn abi_value_repr(world: &mut World<'_>, ty: Ty) -> AbiValueRepr {
@@ -2785,63 +2486,6 @@ fn continuation_result_entry(
             reprs.clone(),
         ),
     }
-}
-
-fn type_is_integer(world: &mut World<'_>, ty: Ty) -> bool {
-    let int = world.types_mut().int();
-    world.types().is_equivalent(&ty, &int)
-}
-
-fn type_is_float(world: &mut World<'_>, ty: Ty) -> bool {
-    let float = world.types_mut().float();
-    world.types().is_equivalent(&ty, &float)
-}
-
-fn type_is_atom(world: &mut World<'_>, ty: Ty) -> bool {
-    let atom = world.types_mut().atom();
-    world.types().is_equivalent(&ty, &atom)
-}
-
-fn type_is_empty_list(world: &mut World<'_>, ty: Ty) -> bool {
-    let empty = world.types_mut().empty_list();
-    world.types().is_equivalent(&ty, &empty)
-}
-
-fn type_is_non_empty_list(world: &mut World<'_>, ty: Ty) -> bool {
-    let list = {
-        let types = world.types_mut();
-        let any = types.any();
-        types.non_empty_list(any)
-    };
-    world.types().is_equivalent(&ty, &list)
-}
-
-fn type_is_list(world: &mut World<'_>, ty: Ty) -> bool {
-    let list = {
-        let types = world.types_mut();
-        let any = types.any();
-        types.list(any)
-    };
-    world.types().is_equivalent(&ty, &list)
-}
-
-fn type_is_map(world: &mut World<'_>, ty: Ty) -> bool {
-    let map = world.types_mut().map_top();
-    world.types().is_equivalent(&ty, &map)
-}
-
-fn exact_tuple_arity(world: &mut World<'_>, ty: Ty) -> Option<usize> {
-    let arity = world.types().max_tuple_arity(&ty);
-    if arity == 0 {
-        return None;
-    }
-    let tuple = {
-        let types = world.types_mut();
-        let any = types.any();
-        let fields = vec![any; arity];
-        types.tuple(&fields)
-    };
-    world.types().is_equivalent(&ty, &tuple).then_some(arity)
 }
 
 fn missing_backend_value(root_id: RootId, value: ValueId) -> FatalError {

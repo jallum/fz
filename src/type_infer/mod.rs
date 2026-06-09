@@ -1674,7 +1674,9 @@ impl<'m> Solver<'m> {
                 UnOp::Neg => negate_info(t, info_of(*v, env)),
                 UnOp::Not => not_info(t, info_of(*v, env)),
             },
-            Prim::IsEmptyList(_) | Prim::IsListCons(_) | Prim::TypeTest(_, _) => Info::known(t.bool()),
+            Prim::IsEmptyList(_) | Prim::IsListCons(_) | Prim::TypeTest(_, _) | Prim::RuntimeTypeTestShim(_, _) => {
+                Info::known(t.bool())
+            }
             Prim::ListHead(v) => info_of(*v, env).map_known(|value| value.map_ty(|ty| t.list_element_type(&ty))),
             Prim::ListTail(v) => info_of(*v, env).map_known(|lt| {
                 let elem = t.list_element_type(&lt.ty);
