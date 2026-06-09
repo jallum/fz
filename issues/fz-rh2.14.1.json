@@ -4,14 +4,15 @@
   "blocks": [
     "fz-rh2.14.2"
   ],
+  "closed_at": "2026-06-09T09:35:21Z",
   "created": "2026-06-09T04:22:53Z",
   "description": "Goal: publish the ownership cut for the compiler2-native backend before code moves. Signal: docs and contract tests state exactly which artifacts a compiler2-native backend may read after `NativeProgram(root)`, which lower-level backend/runtime mechanics remain genuinely shared, and which old-world/codegen shapes are illegal as the long-term compiler2-native contract.\n\nChange:\n- document the ownership cut in northstar and agent docs\n- turn the existing native-handoff assertions in `src/compiler2/artifact_test.rs` into the explicit contract for the in-house backend move\n- map the remaining old-world dependencies (`SpecPlan`, `SpecRegistry`, `crate::types::Ty`, legacy dispatch/type-test reprojection, old `ExternDecl` payloads) to either compiler2 facts that should replace them or temporary compiler2-local baggage that must later be deleted\n\nWhy:\n- without a precise cut line, the fork will calcify into a permanent compatibility layer under new names\n\nChecks:\n- docs cite the real current files and artifacts\n- tests/notes make illegal backend questions visible",
   "id": "fz-rh2.14.1",
   "labels": [],
   "parent": "fz-rh2.14",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 native backends: publish the in-house native-codegen contract",
   "type": "task",
-  "updated_at": "2026-06-09T09:33:23Z"
+  "updated_at": "2026-06-09T09:35:21Z"
 }
