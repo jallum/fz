@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-09T15:51:59Z",
+  "description": "Goal: make compiler2 source identity an owned quoted/source value, not shared `src/ast::Item` object identity.\n\nSignal:\n- compiler2 has a focused source AST / quoted-AST model that can represent items, expressions, patterns, attributes, metadata, spans, and lexical context needed by macro expansion\n- source-value equality/revisions are based on compiler2-owned content/identity, not `Rc::ptr_eq` over old AST nodes\n- the model can encode the worked examples: `defmacro inc`, `quote/unquote`, `defmodule Helpers`, `import Helpers, only: [twice: 1]`, and item-level `test(:name) do ... end`\n\nChange:\n- introduce compiler2-owned source syntax/value modules for quoted AST and source metadata\n- define lexical-context metadata for identifiers so macro-authored names and unquoted caller AST can resolve against different namespaces correctly\n- define the process-heap allocation/ownership contract for source AST values, including atom/list/tuple/map shapes that match fz runtime values\n- replace any new compiler2 source identity decisions that would otherwise depend on shared Rust AST pointer identity\n\nWhy:\n- a parser fork without an owned source value just recreates the current old-world AST dependency under a different module name\n- macro redefinition and expansion must wake facts through honest source revisions",
+  "id": "fz-rh2.11.7.1",
+  "labels": [],
+  "parent": "fz-rh2.11.7",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 source AST: own quoted syntax and lexical-context identity",
+  "type": "task",
+  "updated_at": "2026-06-09T15:51:59Z"
+}
