@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-09T01:52:22Z",
   "created": "2026-06-08T20:52:14Z",
   "description": "Bring name-\u003eTy resolution in-house as a PURE READ over the in-house type-expr (.11) against the captured namespace. Structure (list, union, tuple, arrow) maps via compiler2 own Types; a name classifies against the namespace captured at the declaration point -- a Type binding -\u003e TypeName -\u003e read the already-present TypeDefined; a builtin -\u003e scalar minted directly with inner; an unbound lowercase name -\u003e a free type var. No env, no ModuleTypeEnv -- the captured namespace IS the resolution context, prelude types visible by structural sharing.\n\nIt never blocks, never demands, never mints a reference -- the index-time reference walk (.1) already minted the names and the consumer (.4) already waited on their TypeDefined before calling in. A name not present here is a consumer-wiring bug, not a resolver retry. Output is crate::specs::ResolvedSpec (params: Ty + param_shapes: ResolvedTypeShape) so the shared specs scheme engine is fed unchanged.\n\nVerify: resolver unit tests over the worked examples (foo(SomeModule.t(float),integer); a plain alias; a refines brand; (a,b)-\u003e{a,b} free vars), each handed a prebuilt namespace + TypeDefined set -- proving resolution is a pure function of captured namespace + present facts.",
   "id": "fz-rh2.12.3",
@@ -14,7 +15,7 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "In-house type-expr resolver: name -\u003e hard Ty via namespace + TypeDefined",
   "type": "task",
   "updated_at": "2026-06-09T01:52:22Z"
