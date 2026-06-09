@@ -3,6 +3,7 @@
   "blocked_by": [
     "fz-rh2.11",
     "fz-rh2.12",
+    "fz-rh2.14",
     "fz-rh2.8.2"
   ],
   "blocks": [],
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Compiler2 migration: compare contracts and plan old compiler scrap",
   "type": "task",
-  "updated_at": "2026-06-08T20:52:15Z"
+  "updated_at": "2026-06-09T04:26:24Z"
 }
