@@ -11,9 +11,15 @@
   "id": "fz-rh2.11.7.14",
   "labels": [],
   "parent": "fz-rh2.11.7",
+  "comments": [
+    {
+      "text": "Follow-on clarification after the Elixir review: this ticket should consume the compiler-owned grouped quoted roots produced by fz-rh2.11.7.13. It should not regrow grouping logic, and it should not ask the parser/frontdoor for a grouped function artifact. The only job here is one-way derivation of the transitional  artifact from those already-grouped quoted roots.",
+      "timestamp": "2026-06-09T20:56:22Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 legacy_fn_def: derive downstream fn input from grouped quoted roots",
   "type": "task",
-  "updated_at": "2026-06-09T20:41:26Z"
+  "updated_at": "2026-06-09T20:56:22Z"
 }
