@@ -11,9 +11,15 @@
   "id": "fz-rh2.14.3",
   "labels": [],
   "parent": "fz-rh2.14",
+  "comments": [
+    {
+      "text": "fz-rh2.14.2 leaves src/compiler2/native_codegen test-gated because the public front doors intentionally remain on the old shared semantic route until this ticket. Remove the #[cfg(test)] gate in src/compiler2/mod.rs as part of switching Compiler2::compile_root_jit/run_root_jit/compile_root_aot onto the fork.",
+      "timestamp": "2026-06-09T11:17:23Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Compiler2 native backends: switch compiler2 front doors onto the in-house backend",
   "type": "task",
-  "updated_at": "2026-06-09T04:35:13Z"
+  "updated_at": "2026-06-09T11:17:23Z"
 }
