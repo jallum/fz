@@ -3,7 +3,6 @@
   "blocked_by": [
     "fz-rh2.11.7.10",
     "fz-rh2.11.7.11",
-    "fz-rh2.11.7.13",
     "fz-rh2.11.7.2"
   ],
   "blocks": [
@@ -28,5 +27,5 @@
   "status": "open",
   "title": "Compiler2 job model: consume source AST roots as AnyValueRef",
   "type": "task",
-  "updated_at": "2026-06-09T19:17:13Z"
+  "updated_at": "2026-06-09T20:41:26Z"
 }
