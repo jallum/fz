@@ -4,6 +4,7 @@
     "fz-rh2.12.12"
   ],
   "blocks": [
+    "fz-rh2.12.10",
     "fz-rh2.12.6"
   ],
   "created": "2026-06-08T20:52:14Z",
@@ -21,5 +22,5 @@
   "status": "in_progress",
   "title": "DeriveTypeDef formula + TypeDefined fact + TypeName-\u003eTy store",
   "type": "task",
-  "updated_at": "2026-06-09T01:52:21Z"
+  "updated_at": "2026-06-09T01:52:22Z"
 }
