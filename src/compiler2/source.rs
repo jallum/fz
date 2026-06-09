@@ -482,6 +482,35 @@ impl QuotedSourceCursor {
         self.root.load_int().map_err(QuotedSourceError::from)
     }
 
+    pub fn utf8_binary_text(&self) -> Result<String, QuotedSourceError> {
+        let (addr, byte_ptr) = match self.root.tag() {
+            ValueKind::BITSTRING => {
+                let addr = self.root.bitstring_addr().map_err(QuotedSourceError::from)?;
+                (addr, unsafe { bitstring_bytes_ptr(addr as *const u8) })
+            }
+            ValueKind::PROCBIN => {
+                let addr = self.root.procbin_addr().map_err(QuotedSourceError::from)?;
+                (addr, unsafe { procbin_byte_ptr(addr as *const u8) })
+            }
+            other => {
+                return Err(QuotedSourceError::new(format!(
+                    "expected UTF-8 bitstring-like root, got {:?}",
+                    other
+                )));
+            }
+        };
+        let bit_len = unsafe { bitstring_bit_len(addr as *const u8) } as usize;
+        if !bit_len.is_multiple_of(8) {
+            return Err(QuotedSourceError::new(format!(
+                "expected whole-byte UTF-8 bitstring, got {bit_len} bits"
+            )));
+        }
+        let byte_len = bit_len / 8;
+        let bytes = unsafe { slice::from_raw_parts(byte_ptr, byte_len) };
+        String::from_utf8(bytes.to_vec())
+            .map_err(|error| QuotedSourceError::new(format!("expected valid UTF-8 bitstring: {error}")))
+    }
+
     pub fn list_items(&self) -> Result<Vec<Self>, QuotedSourceError> {
         let proc = self.heap.process.borrow();
         let mut cursor = self.root;
@@ -585,6 +614,13 @@ impl QuotedSourceCursor {
             tail: items[2].clone(),
         }))
     }
+
+    pub fn fingerprint(
+        &self,
+        policy: QuotedSourceFingerprintPolicy,
+    ) -> Result<QuotedSourceFingerprint, QuotedSourceError> {
+        fingerprint_root(&self.heap, self.root, policy)
+    }
 }
 
 fn fingerprint_root(
@@ -629,13 +665,17 @@ fn fingerprint_value(
         }
         ValueKind::LIST if value.is_empty_list() => "list[]".to_string(),
         ValueKind::LIST => {
-            let mut parts = Vec::new();
             let mut cursor = value;
+            let mut items = Vec::new();
             while !cursor.is_empty_list() {
                 let head = proc.heap.read_list_head_ref(cursor).map_err(QuotedSourceError::from)?;
                 let tail = proc.heap.read_list_tail_ref(cursor).map_err(QuotedSourceError::from)?;
-                parts.push(fingerprint_value(proc, head, policy, stack)?);
+                items.push(head);
                 cursor = tail;
+            }
+            let mut parts = Vec::with_capacity(items.len());
+            for item in items {
+                parts.push(fingerprint_value(proc, item, policy, stack)?);
             }
             format!("list[{}]", parts.join(","))
         }

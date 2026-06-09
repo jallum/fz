@@ -59,6 +59,7 @@ struct FrontDoorParser<'a> {
     source_name: String,
     source_text: &'a str,
     builder: QuotedSourceBuilder,
+    allow_trailing_do: bool,
 }
 
 #[derive(Clone)]
@@ -96,6 +97,7 @@ impl<'a> FrontDoorParser<'a> {
             source_name,
             source_text,
             builder,
+            allow_trailing_do: true,
         }
     }
 
@@ -130,6 +132,7 @@ impl<'a> FrontDoorParser<'a> {
             Tok::Defstruct => self.parse_struct_item(module_path),
             Tok::Defprotocol => self.parse_protocol_item(module_path),
             Tok::Defimpl => self.parse_protocol_impl_item(module_path),
+            Tok::Extern => self.parse_extern_item(module_path),
             Tok::Fn | Tok::Fnp | Tok::Defmacro => self.parse_function_item(module_path),
             Tok::Ident(_) => self.parse_item_macro_call(module_path),
             other => self.err(format!(
@@ -375,6 +378,108 @@ impl<'a> FrontDoorParser<'a> {
             .map_err(FrontDoorError::from)
     }
 
+    fn parse_extern_item(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
+        let start = self.cur_span();
+        self.expect(&Tok::Extern, "`extern`")?;
+        let abi = match self.bump() {
+            Tok::Binary(bytes) => String::from_utf8(bytes)
+                .map_err(|error| self.error(format!("extern ABI string must be valid UTF-8: {error}")))?,
+            other => return Err(self.error(format!("expected ABI string after `extern`, got {:?}", other))),
+        };
+        self.expect(&Tok::Fn, "`fn` after extern ABI string")?;
+        let name = self.parse_extern_name()?;
+        self.expect(&Tok::LParen, "`(`")?;
+        let mut params = Vec::new();
+        let mut variadic = false;
+        self.skip_newlines();
+        if !self.peek_is(&Tok::RParen) {
+            loop {
+                if self.eat(&Tok::Ellipsis) {
+                    if params.is_empty() {
+                        return self.err("extern variadic `...` must follow at least one fixed parameter");
+                    }
+                    variadic = true;
+                    self.skip_newlines();
+                    if !self.peek_is(&Tok::RParen) {
+                        return self.err("extern variadic `...` must be the final parameter");
+                    }
+                    break;
+                }
+                let param = self.collect_balanced_source_until(&[Tok::Comma, Tok::RParen])?;
+                if param.is_empty() {
+                    return self.err("expected extern parameter type");
+                }
+                params.push(param);
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+                self.skip_newlines();
+                if self.eat(&Tok::Ellipsis) {
+                    variadic = true;
+                    self.skip_newlines();
+                    if !self.peek_is(&Tok::RParen) {
+                        return self.err("extern variadic `...` must be the final parameter");
+                    }
+                    break;
+                }
+            }
+        }
+        self.expect(&Tok::RParen, "`)`")?;
+        self.expect(&Tok::ColonColon, "`::`")?;
+        let ret = self.collect_balanced_source_until(&[Tok::When, Tok::Newline, Tok::Eof, Tok::End])?;
+        if ret.is_empty() {
+            return self.err("expected extern return type after `::`");
+        }
+        let mut constraints = Vec::new();
+        if self.eat(&Tok::When) {
+            loop {
+                let (var, colon_consumed) = match self.bump() {
+                    Tok::Ident(name) => (name, false),
+                    Tok::KwKey(name) => (name, true),
+                    other => return Err(self.error(format!("expected type variable after `when`, got {:?}", other))),
+                };
+                if !colon_consumed {
+                    self.expect(&Tok::Colon, "`:`")?;
+                }
+                let ty = self.collect_balanced_source_until(&[Tok::Comma, Tok::Newline, Tok::Eof, Tok::End])?;
+                if ty.is_empty() {
+                    return self.err(format!("expected constraint type expression after `{var}:`"));
+                }
+                constraints.push((var, ty));
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+                self.skip_newlines();
+            }
+        }
+        let span = start.merge(self.prev_span());
+        let meta = self.meta(module_path, &[], span)?;
+        let params = params
+            .iter()
+            .map(|param| self.builder.utf8_binary(param))
+            .collect::<Result<Vec<_>, _>>()?;
+        let constraints = constraints
+            .iter()
+            .map(|(name, ty)| self.builder.keyword(name, self.builder.utf8_binary(ty)?))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut entries = vec![
+            (self.builder.atom("name"), self.builder.utf8_binary(&name)?),
+            (self.builder.atom("params"), self.builder.list(&params)?),
+            (self.builder.atom("return"), self.builder.utf8_binary(&ret)?),
+            (self.builder.atom("variadic"), self.builder.bool(variadic)),
+        ];
+        if !constraints.is_empty() {
+            entries.push((self.builder.atom("when"), self.builder.list(&constraints)?));
+        }
+        self.builder
+            .call(
+                "extern",
+                &meta,
+                &[self.builder.utf8_binary(&abi)?, self.builder.map(&entries)?],
+            )
+            .map_err(FrontDoorError::from)
+    }
+
     fn parse_function_head(&mut self, module_path: &[String]) -> Result<(String, AnyValueRef), FrontDoorError> {
         let start = self.cur_span();
         if matches!(self.peek(), Tok::Ident(_)) && matches!(self.peek_at(1), Tok::LParen) {
@@ -391,7 +496,7 @@ impl<'a> FrontDoorParser<'a> {
             return Ok((name, head));
         }
 
-        let left = self.parse_expr(module_path, &[])?;
+        let left = self.parse_bp(121, module_path, &[])?;
         let op = self.operator_name(self.peek()).ok_or_else(|| {
             self.error(format!(
                 "expected `name(` or an operator-headed function clause, got {:?}",
@@ -399,7 +504,7 @@ impl<'a> FrontDoorParser<'a> {
             ))
         })?;
         self.bump();
-        let right = self.parse_expr(module_path, &[])?;
+        let right = self.parse_bp(121, module_path, &[])?;
         let meta = self.meta(module_path, &[op.to_string()], start.merge(self.prev_span()))?;
         let head = self.builder.call(op, &meta, &[left.root, right.root])?;
         Ok((op.to_string(), head))
@@ -527,7 +632,10 @@ impl<'a> FrontDoorParser<'a> {
             }
             Tok::Quote => self.parse_quote_expr(module_path, scope, start),
             Tok::Unquote => self.parse_unquote_expr(module_path, scope, start),
+            Tok::If => self.parse_if_expr(module_path, scope, start),
+            Tok::Receive => self.parse_receive_expr(module_path, scope, start),
             Tok::Case => self.parse_case_expr(module_path, scope, start),
+            Tok::Fn => self.parse_lambda_expr(module_path, scope, start),
             Tok::Amp => self.parse_capture_expr(module_path, scope, start),
             Tok::Caret => self.parse_pin_expr(module_path, scope, start),
             other => self.err(format!(
@@ -756,6 +864,127 @@ impl<'a> FrontDoorParser<'a> {
         ))
     }
 
+    fn parse_if_expr(
+        &mut self,
+        module_path: &[String],
+        scope: &[String],
+        start: Span,
+    ) -> Result<ParsedExpr, FrontDoorError> {
+        let cond = self.with_trailing_do_suppressed(|parser| parser.parse_expr(module_path, scope))?;
+        let mut kw_entries = Vec::new();
+        if self.eat(&Tok::Comma) {
+            match self.bump() {
+                Tok::KwKey(key) if key == "do" => {}
+                other => return Err(self.error(format!("expected `do:` after `if` condition, got {:?}", other))),
+            }
+            let body = self.parse_expr(module_path, scope)?.root;
+            kw_entries.push(self.builder.keyword("do", body)?);
+            if self.eat(&Tok::Comma) {
+                match self.bump() {
+                    Tok::KwKey(key) if key == "else" => {}
+                    other => return Err(self.error(format!("expected `else:` after `if` branch, got {:?}", other))),
+                }
+                let els = self.parse_expr(module_path, scope)?.root;
+                kw_entries.push(self.builder.keyword("else", els)?);
+            }
+        } else {
+            self.expect(&Tok::Do, "`do`")?;
+            self.skip_newlines();
+            let body = self.parse_block_until(&[Tok::Else, Tok::End], module_path, scope)?;
+            kw_entries.push(self.builder.keyword("do", body)?);
+            if self.eat(&Tok::Else) {
+                self.skip_newlines();
+                let els = self.parse_block_until(&[Tok::End], module_path, scope)?;
+                kw_entries.push(self.builder.keyword("else", els)?);
+            }
+            self.expect(&Tok::End, "`end`")?;
+        }
+        let span = start.merge(self.prev_span());
+        let meta = self.meta(module_path, scope, span)?;
+        let kw = self.builder.list(&kw_entries)?;
+        Ok(ParsedExpr::plain(
+            self.builder.call("if", &meta, &[cond.root, kw])?,
+            span,
+        ))
+    }
+
+    fn parse_receive_expr(
+        &mut self,
+        module_path: &[String],
+        scope: &[String],
+        start: Span,
+    ) -> Result<ParsedExpr, FrontDoorError> {
+        self.expect(&Tok::Do, "`do`")?;
+        self.skip_newlines();
+        let mut clauses = Vec::new();
+        while !matches!(self.peek(), Tok::After | Tok::End | Tok::Eof) {
+            clauses.push(self.parse_case_clause(module_path, scope)?);
+            self.skip_newlines();
+        }
+        let mut kw_entries = vec![self.builder.keyword("do", self.builder.list(&clauses)?)?];
+        if self.eat(&Tok::After) {
+            self.skip_newlines();
+            let after_start = self.cur_span();
+            let timeout = self.with_trailing_do_suppressed(|parser| parser.parse_expr(module_path, scope))?;
+            self.expect(&Tok::Arrow, "`->` after receive timeout")?;
+            self.skip_newlines();
+            let body = self.parse_expr(module_path, scope)?;
+            let after_span = after_start.merge(body.span);
+            let after_meta = self.meta(module_path, scope, after_span)?;
+            let patterns = self.builder.list(&[timeout.root])?;
+            let clause = self.builder.call("->", &after_meta, &[patterns, body.root])?;
+            kw_entries.push(self.builder.keyword("after", self.builder.list(&[clause])?)?);
+            self.skip_newlines();
+        }
+        self.expect(&Tok::End, "`end`")?;
+        let span = start.merge(self.prev_span());
+        let meta = self.meta(module_path, scope, span)?;
+        let kw = self.builder.list(&kw_entries)?;
+        Ok(ParsedExpr::plain(self.builder.call("receive", &meta, &[kw])?, span))
+    }
+
+    fn parse_lambda_expr(
+        &mut self,
+        module_path: &[String],
+        scope: &[String],
+        start: Span,
+    ) -> Result<ParsedExpr, FrontDoorError> {
+        self.skip_newlines();
+        let mut clauses = Vec::new();
+        while !matches!(self.peek(), Tok::End | Tok::Eof) {
+            let clause_start = self.cur_span();
+            let params = if self.eat(&Tok::LParen) {
+                let params = self.parse_exprs_until(&Tok::RParen, module_path, scope)?;
+                self.expect(&Tok::RParen, "`)`")?;
+                params
+            } else {
+                vec![self.parse_expr(module_path, scope)?.root]
+            };
+            let patterns = if self.eat(&Tok::When) {
+                let guard = self.parse_expr(module_path, scope)?;
+                let when_span = clause_start.merge(guard.span);
+                let when_meta = self.meta(module_path, scope, when_span)?;
+                let mut when_args = params.clone();
+                when_args.push(guard.root);
+                self.builder
+                    .list(&[self.builder.call("when", &when_meta, &when_args)?])?
+            } else {
+                self.builder.list(&params)?
+            };
+            self.expect(&Tok::Arrow, "`->`")?;
+            self.skip_newlines();
+            let body = self.parse_expr(module_path, scope)?;
+            let clause_span = clause_start.merge(body.span);
+            let clause_meta = self.meta(module_path, scope, clause_span)?;
+            clauses.push(self.builder.call("->", &clause_meta, &[patterns, body.root])?);
+            self.skip_newlines();
+        }
+        self.expect(&Tok::End, "`end`")?;
+        let span = start.merge(self.prev_span());
+        let meta = self.meta(module_path, scope, span)?;
+        Ok(ParsedExpr::plain(self.builder.call("fn", &meta, &clauses)?, span))
+    }
+
     fn parse_capture_expr(
         &mut self,
         module_path: &[String],
@@ -804,7 +1033,10 @@ impl<'a> FrontDoorParser<'a> {
         let subject = if self.peek_is(&Tok::Do) {
             None
         } else {
-            Some(self.parse_expr(module_path, scope)?.root)
+            Some(
+                self.with_trailing_do_suppressed(|parser| parser.parse_expr(module_path, scope))?
+                    .root,
+            )
         };
         self.expect(&Tok::Do, "`do`")?;
         self.skip_newlines();
@@ -899,6 +1131,9 @@ impl<'a> FrontDoorParser<'a> {
         module_path: &[String],
         scope: &[String],
     ) -> Result<(), FrontDoorError> {
+        if !self.allow_trailing_do {
+            return Ok(());
+        }
         let body = if matches!(self.peek(), Tok::KwKey(key) if key == "do") {
             self.bump();
             Some(self.parse_expr(module_path, scope)?.root)
@@ -929,6 +1164,11 @@ impl<'a> FrontDoorParser<'a> {
             loop {
                 let name = match self.bump() {
                     Tok::KwKey(name) => name,
+                    other if self.operator_name(&other).is_some() => {
+                        let name = self.operator_name(&other).expect("checked operator token").to_string();
+                        self.expect(&Tok::Colon, "`:` after operator name in import/require filter list")?;
+                        name
+                    }
                     other => {
                         return Err(self.error(format!(
                             "expected `name:` entry in import/require filter list, got {:?}",
@@ -1082,6 +1322,65 @@ impl<'a> FrontDoorParser<'a> {
         Ok(path)
     }
 
+    fn parse_extern_name(&mut self) -> Result<String, FrontDoorError> {
+        let first = match self.bump() {
+            Tok::Ident(name) => name,
+            other => return Err(self.error(format!("expected function name, got {:?}", other))),
+        };
+        if self.eat(&Tok::ColonColon) {
+            let second = match self.bump() {
+                Tok::Ident(name) => name,
+                other => {
+                    return Err(self.error(format!(
+                        "expected extern symbol name after `{}::`, got {:?}",
+                        first, other
+                    )));
+                }
+            };
+            Ok(format!("{first}::{second}"))
+        } else {
+            Ok(first)
+        }
+    }
+
+    fn collect_balanced_source_until(&mut self, terminators: &[Tok]) -> Result<String, FrontDoorError> {
+        self.skip_newlines();
+        let start = self.pos;
+        let mut parens = 0_u32;
+        let mut brackets = 0_u32;
+        let mut braces = 0_u32;
+        let mut bitstrings = 0_u32;
+        while !self.peek_is(&Tok::Eof) {
+            let tok = self.peek().clone();
+            let at_top_level = parens == 0 && brackets == 0 && braces == 0 && bitstrings == 0;
+            if at_top_level
+                && terminators
+                    .iter()
+                    .any(|terminator| discriminant(terminator) == discriminant(&tok))
+            {
+                break;
+            }
+            match tok {
+                Tok::LParen => parens += 1,
+                Tok::RParen if parens > 0 => parens -= 1,
+                Tok::LBrack => brackets += 1,
+                Tok::RBrack if brackets > 0 => brackets -= 1,
+                Tok::LBrace => braces += 1,
+                Tok::RBrace if braces > 0 => braces -= 1,
+                Tok::LBitstr => bitstrings += 1,
+                Tok::RBitstr if bitstrings > 0 => bitstrings -= 1,
+                _ => {}
+            }
+            self.bump();
+        }
+        if self.pos == start {
+            return Ok(String::new());
+        }
+        let start_byte = self.toks[start].span.start as usize;
+        let end_byte = self.toks[self.pos - 1].span.end as usize;
+        Ok(self.source_text[start_byte..end_byte].trim().to_string())
+    }
+
     fn meta(
         &self,
         module_path: &[String],
@@ -1187,6 +1486,17 @@ impl<'a> FrontDoorParser<'a> {
 
     fn error(&self, msg: impl Into<String>) -> FrontDoorError {
         FrontDoorError::syntax(msg, self.cur_span())
+    }
+
+    fn with_trailing_do_suppressed<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, FrontDoorError>,
+    ) -> Result<T, FrontDoorError> {
+        let old = self.allow_trailing_do;
+        self.allow_trailing_do = false;
+        let out = f(self);
+        self.allow_trailing_do = old;
+        out
     }
 
     fn infix_bp(&self, tok: &Tok) -> Option<(u8, u8, &'static str)> {

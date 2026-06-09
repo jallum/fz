@@ -33,6 +33,21 @@ comparison surface when it wants one.
 - Variables use `tail = lexical_context_map`.
 - Module aliases use `{:__aliases__, meta, [:Foo, :Bar]}`.
 - Keyword items are ordinary 2-tuples inside lists.
+- FZ `extern` items are quoted as `{:extern, meta, [abi_binary, options_map]}`.
+  `options_map` currently carries raw source strings for `name`, `params`,
+  `return`, optional `when`, and `variadic`.
+
+## Bootstrap Coverage
+
+- `src/compiler2/frontdoor.rs` now quotes the compiler-owned bootstrap/runtime
+  surface directly, including:
+  `extern`,
+  runtime-prelude operator import filters such as `only: [+: 2]`,
+  `if`,
+  `receive ... after`,
+  and anonymous `fn ... end`.
+- Runtime library sources are expected to reach quoted roots without an old-AST
+  fallback path.
 
 ## Private Metadata Keys
 

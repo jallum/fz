@@ -1,4 +1,5 @@
 use super::{QuotedSourceFingerprintPolicy, parse_quoted_program};
+use crate::modules::runtime_library;
 use crate::telemetry::ConfiguredTelemetry;
 
 fn head_name(node: &super::QuotedAstNode) -> String {
@@ -310,5 +311,178 @@ fn compiler2_frontdoor_parses_maps_structs_bitstrings_and_patterns() {
             && semantic.canonical.contains("atom:binary")
             && semantic.canonical.contains("atom:size"),
         "front door should parse typed params, maps, structs, bitstrings, and pattern forms directly to quoted source"
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_parses_runtime_bootstrap_sources_directly() {
+    let tel = ConfiguredTelemetry::new();
+
+    let prelude = parse_quoted_program("runtime:runtime.fz", runtime_library::prelude_source(), &tel)
+        .expect("runtime prelude quoted parse");
+    let prelude_semantic = prelude
+        .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
+        .expect("runtime prelude semantic fingerprint");
+    assert!(
+        prelude_semantic.canonical.contains("atom:import")
+            && prelude_semantic.canonical.contains("atom:+")
+            && prelude_semantic.canonical.contains("atom:dbg"),
+        "runtime prelude should quote operator import filters directly"
+    );
+
+    for (name, source) in runtime_library::module_sources() {
+        let root = parse_quoted_program(format!("runtime:{name}.fz"), source, &tel)
+            .unwrap_or_else(|error| panic!("runtime module `{name}` should quote directly: {error}"));
+        let module = root.cursor().list_items().expect("runtime module top-level items")[0]
+            .ast_node()
+            .expect("runtime module cursor")
+            .expect("runtime module node");
+        let head = head_name(&module);
+        assert!(
+            head == "defmodule" || head == "defprotocol",
+            "runtime module `{name}` should still be ordinary module/protocol source"
+        );
+    }
+
+    parse_quoted_program(
+        "receive_selective_refs.fz",
+        include_str!("../../fixtures/receive_selective_refs/input.fz"),
+        &tel,
+    )
+    .expect("receive selective refs quoted parse");
+}
+
+#[test]
+fn compiler2_frontdoor_quotes_bootstrap_control_and_ffi_forms() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "bootstrap_surface.fz",
+        "extern \"C\" fn libc::open(path :: cstring, flags :: integer, ...) :: integer\nfn run(pred) do\n  if pred.(1) do\n    receive do\n      {:ok, value} -> (fn (x) -> x end).(value)\n    after\n      500 -> nil\n    end\n  else\n    nil\n  end\nend\n",
+        &tel,
+    )
+    .expect("quoted parse");
+    let semantic = root
+        .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
+        .expect("bootstrap surface semantic fingerprint");
+    assert!(
+        semantic.canonical.contains("atom:extern")
+            && semantic.canonical.contains("atom:if")
+            && semantic.canonical.contains("atom:receive")
+            && semantic.canonical.contains("atom:fn"),
+        "bootstrap-shaped surface should fingerprint through extern/control/lambda forms directly"
+    );
+
+    let items = root.cursor().list_items().expect("top-level items");
+    assert_eq!(items.len(), 2);
+
+    let extern_node = items[0].ast_node().expect("extern cursor").expect("extern node");
+    assert_eq!(head_name(&extern_node), "extern");
+    let extern_args = extern_node.tail.list_items().expect("extern args");
+    assert_eq!(extern_args[0].utf8_binary_text().expect("extern abi text"), "C");
+    let extern_options = extern_args[1].map_entries().expect("extern options");
+    assert_eq!(
+        extern_options
+            .iter()
+            .find(|(key, _)| key.atom_name().ok().as_deref() == Some("name"))
+            .expect("extern name entry")
+            .1
+            .utf8_binary_text()
+            .expect("extern name text"),
+        "libc::open"
+    );
+    assert_eq!(
+        extern_options
+            .iter()
+            .find(|(key, _)| key.atom_name().ok().as_deref() == Some("variadic"))
+            .expect("extern variadic entry")
+            .1
+            .atom_name()
+            .expect("extern variadic atom"),
+        "true"
+    );
+
+    let run_node = items[1].ast_node().expect("run cursor").expect("run node");
+    let run_args = run_node.tail.list_items().expect("run args");
+    let if_node = run_args[1].list_items().expect("run kw")[0]
+        .tuple_items()
+        .expect("run do tuple")[1]
+        .ast_node()
+        .expect("if cursor")
+        .expect("if node");
+    assert_eq!(head_name(&if_node), "if");
+
+    let if_args = if_node.tail.list_items().expect("if args");
+    let cond_call = if_args[0].ast_node().expect("if cond cursor").expect("if cond node");
+    let cond_head = cond_call
+        .head
+        .ast_node()
+        .expect("closure-call head cursor")
+        .expect("closure-call head");
+    assert_eq!(head_name(&cond_head), ".");
+    let if_kw = if_args[1].list_items().expect("if kw list");
+    let do_branch = if_kw[0].tuple_items().expect("if do tuple")[1]
+        .ast_node()
+        .expect("receive cursor")
+        .expect("receive node");
+    assert_eq!(head_name(&do_branch), "receive");
+
+    let receive_args = do_branch.tail.list_items().expect("receive args");
+    let receive_kw = receive_args[0].list_items().expect("receive kw");
+    let do_clauses = receive_kw[0].tuple_items().expect("receive do tuple")[1]
+        .list_items()
+        .expect("receive clauses");
+    let clause = do_clauses[0]
+        .ast_node()
+        .expect("receive clause cursor")
+        .expect("receive clause");
+    assert_eq!(head_name(&clause), "->");
+    let lambda_call = clause.tail.list_items().expect("receive clause args")[1]
+        .ast_node()
+        .expect("lambda call cursor")
+        .expect("lambda call");
+    let lambda_dot = lambda_call
+        .head
+        .ast_node()
+        .expect("lambda callee cursor")
+        .expect("lambda callee");
+    assert_eq!(head_name(&lambda_dot), ".");
+    let lambda = lambda_dot.tail.list_items().expect("lambda dot args")[0]
+        .ast_node()
+        .expect("lambda root cursor")
+        .expect("lambda root");
+    assert_eq!(head_name(&lambda), "fn");
+}
+
+#[test]
+fn compiler2_frontdoor_parses_operator_headed_function_defs() {
+    let tel = ConfiguredTelemetry::new();
+    let root =
+        parse_quoted_program("operator_head.fz", "fn left + right, do: left + right\n", &tel).expect("quoted parse");
+    let semantic = root
+        .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
+        .expect("operator head semantic fingerprint");
+    assert!(
+        semantic.canonical.contains("atom:fn") && semantic.canonical.contains("atom:+"),
+        "operator-headed function definitions should quote and fingerprint directly"
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_parses_complex_extern_signatures() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "extern_surface.fz",
+        "extern \"C\" fn fz_spawn(() -> any) :: pid\nextern \"C\" fn fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer\n",
+        &tel,
+    )
+    .expect("quoted parse");
+    let semantic = root
+        .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
+        .expect("complex extern semantic fingerprint");
+    assert!(
+        semantic.canonical.contains("atom:extern")
+            && semantic.canonical.contains("bits:2829202d3e20616e79/72")
+            && semantic.canonical.contains("bits:7265736f75726365287429/88"),
+        "complex extern signatures should quote raw parameter/return surfaces directly"
     );
 }

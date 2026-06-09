@@ -303,3 +303,25 @@ fn worked_surface_examples_fit_in_one_quoted_source_model() {
         "one quoted-source graph should carry macro defs, module defs, imports, and item-level macro surfaces"
     );
 }
+
+#[test]
+fn semantic_fingerprint_walks_long_lists_of_ast_nodes() {
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let ctx = context(QuotedLexicalContextKind::Source, &["App"], &["bulk"], 99);
+    let meta = meta(&ctx, "bulk.fz", 1);
+    let mut items = Vec::new();
+    for n in 0..64 {
+        items.push(builder.call("dbg", &meta, &[builder.int(n)]).expect("bulk dbg call"));
+    }
+    let root = builder
+        .root(builder.list(&items).expect("bulk root list"))
+        .expect("bulk root");
+    let semantic = root
+        .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
+        .expect("bulk semantic fingerprint");
+    assert!(
+        semantic.canonical.contains("atom:dbg") && semantic.canonical.contains("int:63"),
+        "semantic fingerprint should walk long lists of quoted AST nodes without corrupting the graph"
+    );
+}
