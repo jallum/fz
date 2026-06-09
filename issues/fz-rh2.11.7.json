@@ -29,11 +29,15 @@
     {
       "text": "Plan correction: source identity is not a heap-independent structural digest. The durable compiler2 source key is {heap, root}; structural fingerprints are layered on top for semantic comparison/revision policy. Downstream tickets should preserve that split when moving parser output, job state, and compiler services onto quoted source roots.",
       "timestamp": "2026-06-09T16:50:47Z"
+    },
+    {
+      "text": "Plan correction after design review: (1)  is not a second  authority. The right shape is one scope snapshot rooted in namespace plus current module/function/source metadata, with , , and the needed  fields projected from that snapshot at macro/source boundaries. (2)  belongs in  as a source pre-scan dependency workflow: wait on  to learn the exported macro surface, then wait on the exact selected macro executable facts ( or all minus ). (3)  should reuse the shared function lowering / IR substrate for macros; the difference is compile-time ABI and readiness, not a second macro-only lowering implementation. Elixir's / and dispatch paths were the reference check for this correction.",
+      "timestamp": "2026-06-09T17:22:39Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 source production: quoted AST, macro facts, and compiler services",
   "type": "epic",
-  "updated_at": "2026-06-09T16:50:47Z"
+  "updated_at": "2026-06-09T17:22:39Z"
 }
