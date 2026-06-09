@@ -37,11 +37,15 @@
     {
       "text": "Plan correction after design review, replacing the shell-mangled comment above:\n\n1. `fz-rh2.11.7.3` is not a second `CompileEnv` authority. The right shape is one scope snapshot rooted in namespace plus current module/function/source metadata, with `__MODULE__`, `__CALLER__`, and the needed `__ENV__` fields projected from that snapshot at macro/source boundaries.\n2. `require` belongs in `fz-rh2.11.7.6` as a source pre-scan dependency workflow: wait on `ModuleDefined(provider)` to learn the exported macro surface, then wait on the exact selected macro executable facts (`only:` or all minus `except:`).\n3. `fz-rh2.11.7.5` should reuse the shared function lowering / IR substrate for macros; the difference is compile-time ABI and readiness, not a second macro-only lowering implementation.\n\nElixir's `def` / `defmacro` definition path and macro dispatch path were the reference check for this correction.",
       "timestamp": "2026-06-09T17:22:58Z"
+    },
+    {
+      "text": "Plan correction after architecture review: the real missing layer was not downstream \\ derivation but source-layer quoted composition. A logical function surface must exist as one stable grouped quoted root in the owning Fz heap so compiler2 can keep  as source authority. Re-scoped fz-rh2.11.7.13 to add that grouped-root composition/interning substrate, then split the old downstream concern into fz-rh2.11.7.14, which now derives  from those grouped roots instead of from old parser authority. This follows the Elixir-shaped one-term-world model more honestly and should also serve compiler-service/macro-produced definitions later.",
+      "timestamp": "2026-06-09T20:41:27Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 source production: quoted AST, macro facts, and compiler services",
   "type": "epic",
-  "updated_at": "2026-06-09T17:22:58Z"
+  "updated_at": "2026-06-09T20:41:27Z"
 }
