@@ -4,14 +4,16 @@
   "blocks": [
     "fz-rh2.11.7.9"
   ],
+  "closed_at": "2026-06-09T19:12:49Z",
+  "close_reason": "fixed",
   "created": "2026-06-09T19:01:53Z",
   "description": "Goal: make quoted-source semantic fingerprinting safe and deterministic for whole compiler2 source roots, including runtime-sized module wrappers and their body lists.\n\nGrounding:\n- While landing fz-rh2.11.7.10, compiler2's quoted front door successfully parsed runtime prelude and runtime module sources directly to quoted roots.\n- Individual items inside runtime modules fingerprint semantically, but fingerprinting the enclosing wrapper/body-list structure for runtime-sized sources like Kernel triggered a SIGBUS during investigation.\n- That means parser coverage is moving, but whole-root fingerprint/revision safety is still not proven for the source-authority swap.\n\nSignal:\n- QuotedSourceFingerprint walks runtime-sized module wrapper/body-list roots without crashing.\n- Tests cover whole-root fingerprinting for representative runtime sources, not just individual items.\n- fz-rh2.11.7.9 can rely on whole-root source identity/fingerprint behavior when replacing old AST authority.\n\nChange:\n- isolate and fix the unsafe fingerprint walk for wrapper/body-list roots\n- add regression tests using runtime-library-sized quoted module roots\n- keep the quoted-source substrate single-authority and avoid any fallback bridge\n\nWhy:\n- source identity/fingerprint is part of the authority story for the next ticket\n- if whole quoted roots cannot be fingerprinted safely, compiler2 cannot honestly swap source authority at the code/module level",
   "id": "fz-rh2.11.7.11",
   "labels": [],
   "parent": "fz-rh2.11.7",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 quoted source fingerprint: runtime-sized wrapper/body-list roots must fingerprint safely",
   "type": "bug",
-  "updated_at": "2026-06-09T19:01:59Z"
+  "updated_at": "2026-06-09T19:12:49Z"
 }
