@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
-use crate::ast::FnDef;
 use crate::compiler::source::Span;
+use crate::function_surface::FunctionSurface;
 
 use super::code::CodeId;
 use super::namespace::{Namespace, NamespaceSymbol};
@@ -226,7 +226,7 @@ pub struct FunctionDef {
     pub namespace: Namespace,
     pub capture_params: Vec<String>,
     pub source: QuotedSourceCarrier,
-    pub legacy_ast: FnDef,
+    pub(crate) surface: FunctionSurface,
 }
 
 #[derive(Debug, Clone)]

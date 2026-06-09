@@ -9,7 +9,6 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::ast::FnDef;
 use crate::compiler::source::Span;
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
@@ -19,7 +18,7 @@ use crate::frontend::protocols::{
 };
 use crate::modules::runtime_library;
 use crate::telemetry::{Telemetry, opaque_debug};
-use crate::{measurements, metadata};
+use crate::{FunctionSurface, measurements, metadata};
 
 use super::CodeId;
 use super::artifact::{
@@ -867,7 +866,7 @@ impl<'a> World<'a> {
         );
     }
 
-    pub fn define_function(
+    pub(crate) fn define_function(
         &mut self,
         module: ModuleId,
         owner_module: ModuleId,
@@ -875,10 +874,10 @@ impl<'a> World<'a> {
         code: CodeId,
         namespace: Namespace,
         source: QuotedSourceCarrier,
-        legacy_ast: FnDef,
+        surface: FunctionSurface,
     ) -> (FunctionId, u64) {
-        let arity = legacy_ast.arity();
-        let clauses = legacy_ast.clauses.len() as u64;
+        let arity = surface.arity();
+        let clauses = surface.clauses.len() as u64;
         let id = self.functions.reference(module, local_name, arity);
         let previous_revision = self.functions.get(id).revision;
         let revision = self.functions.define(
@@ -889,7 +888,7 @@ impl<'a> World<'a> {
                 namespace,
                 capture_params: Vec::new(),
                 source,
-                legacy_ast,
+                surface,
             },
         );
         if revision != previous_revision {
@@ -973,9 +972,9 @@ impl<'a> World<'a> {
     pub(crate) fn function_declares_contract(&self, function: FunctionId) -> bool {
         match &self.functions.get(function).state {
             super::identity::FunctionState::Defined { def } => {
-                def.legacy_ast.extern_abi.is_some()
+                def.surface.extern_abi.is_some()
                     || def
-                        .legacy_ast
+                        .surface
                         .attrs
                         .iter()
                         .any(|attr| matches!(attr, crate::ast::Attribute::Spec(_)))
@@ -1051,14 +1050,14 @@ impl<'a> World<'a> {
         owner: FunctionId,
         namespace: Namespace,
         capture_params: Vec<String>,
-        legacy_ast: FnDef,
+        surface: FunctionSurface,
     ) -> (FunctionId, u64) {
         let owner_def = self.function_definition(owner);
         let owner_module = self.functions.reference_for(owner).module;
         let owner_code = owner_def.code;
         let id = self
             .functions
-            .reference_generated(owner, owner_module, legacy_ast.span, legacy_ast.arity());
+            .reference_generated(owner, owner_module, surface.span, surface.arity());
         let previous_revision = self.functions.get(id).revision;
         let revision = self.functions.define(
             id,
@@ -1068,7 +1067,7 @@ impl<'a> World<'a> {
                 namespace,
                 capture_params,
                 source: owner_def.source.clone(),
-                legacy_ast: legacy_ast.clone(),
+                surface: surface.clone(),
             },
         );
         if revision != previous_revision {
@@ -1082,8 +1081,8 @@ impl<'a> World<'a> {
                     owner_module_id: owner_def.owner_module.as_u32() as u64,
                     function_id: id.as_u32() as u64,
                     revision: revision,
-                    arity: legacy_ast.arity() as u64,
-                    clauses: legacy_ast.clauses.len() as u64,
+                    arity: surface.arity() as u64,
+                    clauses: surface.clauses.len() as u64,
                     owner_function_id: owner.as_u32() as u64,
                     source_heap_id: function.state_source_heap_id().unwrap_or_default() as u64,
                     source_root_ref: function.state_source_root_word().unwrap_or_default(),
@@ -1109,11 +1108,9 @@ impl<'a> World<'a> {
         };
         let (clauses, generated, arity) = match &body {
             LoweredBody::Extern { signature } => (0_u64, 0_u64, signature.params.len() as u64),
-            LoweredBody::Clauses { clauses, generated, .. } => (
-                clauses.len() as u64,
-                generated.len() as u64,
-                def.legacy_ast.arity() as u64,
-            ),
+            LoweredBody::Clauses { clauses, generated, .. } => {
+                (clauses.len() as u64, generated.len() as u64, def.surface.arity() as u64)
+            }
         };
         self.tel.execute(
             &["fz", "compiler2", "lowered_body", "defined"],
@@ -1152,7 +1149,7 @@ impl<'a> World<'a> {
                 module_id: function_ref.module.as_u32() as u64,
                 function_id: function.as_u32() as u64,
                 revision: revision,
-                arity: def.legacy_ast.arity() as u64,
+                arity: def.surface.arity() as u64,
                 bodies: dispatch.bodies.len() as u64,
                 guards: dispatch.plan.guards.len() as u64,
                 pinned: dispatch.plan.pinned.len() as u64,
@@ -1183,7 +1180,7 @@ impl<'a> World<'a> {
                 module_id: function_ref.module.as_u32() as u64,
                 function_id: function.as_u32() as u64,
                 revision: revision,
-                arity: def.legacy_ast.arity() as u64,
+                arity: def.surface.arity() as u64,
                 outcomes: plan.outcomes.len() as u64,
                 guards: plan.guards.len() as u64,
                 pinned: plan.pinned.len() as u64,
@@ -1346,7 +1343,7 @@ impl<'a> World<'a> {
 
     pub(crate) fn function_variadic(&self, function: FunctionId) -> bool {
         match &self.functions.get(function).state {
-            super::identity::FunctionState::Defined { def } => def.legacy_ast.variadic,
+            super::identity::FunctionState::Defined { def } => def.surface.variadic,
             super::identity::FunctionState::Placeholder => {
                 self.function_source(function).is_some_and(|source| source.variadic)
             }

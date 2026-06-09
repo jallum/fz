@@ -3,7 +3,8 @@ use super::{
     CodeMap, CodeState, FunctionDef, FunctionMap, FunctionState, ModuleId, ModuleMap, ModuleState, NamespaceStore,
     NamespaceSymbol, QuotedCodeSource, QuotedSourceCarrier, parse_quoted_program,
 };
-use crate::ast::{Expr, FnClause, FnDef, Spanned, TypeExprBody};
+use crate::ast::{Expr, FnClause, Spanned, TypeExprBody};
+use crate::function_surface::FunctionSurface;
 use crate::telemetry::ConfiguredTelemetry;
 
 fn quoted_carrier(source_name: &str, text: &str) -> QuotedSourceCarrier {
@@ -12,8 +13,8 @@ fn quoted_carrier(source_name: &str, text: &str) -> QuotedSourceCarrier {
     QuotedSourceCarrier::new(root).expect("quoted source should fingerprint")
 }
 
-fn legacy_fn_def(name: &str) -> FnDef {
-    FnDef {
+fn function_surface(name: &str) -> FunctionSurface {
+    FunctionSurface {
         name: name.to_string(),
         name_span: crate::compiler::source::Span::DUMMY,
         clauses: vec![FnClause {
@@ -24,7 +25,6 @@ fn legacy_fn_def(name: &str) -> FnDef {
             span: crate::compiler::source::Span::DUMMY,
         }],
         is_macro: false,
-        is_private: false,
         extern_abi: None,
         extern_param_tokens: vec![],
         extern_ret_tokens: TypeExprBody(vec![]),
@@ -106,7 +106,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
 
     let add_ref = functions.reference(math_def, "add", 2);
     let add_def = add_ref;
-    let add_ast = legacy_fn_def("Math.add");
+    let add_ast = function_surface("Math.add");
     let add_source = quoted_carrier("math.fz", "fn add(x, y), do: 42\n");
     let add_revision = functions.define(
         add_def,
@@ -116,7 +116,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
             namespace,
             capture_params: Vec::new(),
             source: add_source.clone(),
-            legacy_ast: add_ast.clone(),
+            surface: add_ast.clone(),
         },
     );
     let same_add_revision = functions.define(
@@ -127,7 +127,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
             namespace,
             capture_params: Vec::new(),
             source: add_source,
-            legacy_ast: add_ast.clone(),
+            surface: add_ast.clone(),
         },
     );
     assert_eq!(
@@ -163,7 +163,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
     match &function.state {
         FunctionState::Defined { def } => {
             assert_eq!(def.code, code_id);
-            assert_eq!(def.legacy_ast.name, "Math.add");
+            assert_eq!(def.surface.name, "Math.add");
         }
         other => panic!("function should promote from placeholder to defined, got {other:?}"),
     }
@@ -244,7 +244,7 @@ fn compiler2_function_definition_revisions_bump_when_quoted_transport_changes() 
     let code_id = code.define(Some("math.fz".to_string()), "fn add(x, y), do: 42\n".to_string());
     let namespace = namespaces.prelude_head();
     let function = functions.reference(ModuleId::GLOBAL, "add", 2);
-    let def_ast = legacy_fn_def("add");
+    let def_ast = function_surface("add");
     let first = quoted_carrier("math.fz", "fn add(x, y), do: 42\n");
     let second = quoted_carrier("math.fz", "fn add(x, y), do: 42\n");
     assert_ne!(
@@ -261,7 +261,7 @@ fn compiler2_function_definition_revisions_bump_when_quoted_transport_changes() 
             namespace,
             capture_params: Vec::new(),
             source: first,
-            legacy_ast: def_ast.clone(),
+            surface: def_ast.clone(),
         },
     );
     let second_revision = functions.define(
@@ -272,7 +272,7 @@ fn compiler2_function_definition_revisions_bump_when_quoted_transport_changes() 
             namespace,
             capture_params: Vec::new(),
             source: second,
-            legacy_ast: def_ast,
+            surface: def_ast,
         },
     );
 

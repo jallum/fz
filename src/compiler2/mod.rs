@@ -13,10 +13,10 @@ mod frontdoor;
 mod identity;
 mod jobs;
 mod keying;
-mod legacy_fn_def;
 mod namespace;
 mod native_codegen;
 mod protocol;
+mod quoted_function;
 mod quoted_surface;
 mod resolve;
 mod runtime;
@@ -96,9 +96,9 @@ mod frontdoor_test;
 #[cfg(test)]
 mod identity_test;
 #[cfg(test)]
-mod legacy_fn_def_test;
-#[cfg(test)]
 mod namespace_test;
+#[cfg(test)]
+mod quoted_function_test;
 #[cfg(test)]
 mod quoted_surface_test;
 #[cfg(test)]

@@ -473,16 +473,6 @@ impl FnDef {
         }
     }
 
-    pub fn extern_contract_decl(&self) -> Option<SpecDecl> {
-        self.extern_abi.as_ref()?;
-        Some(SpecDecl {
-            name: self.name.clone(),
-            param_body_tokens: self.extern_param_tokens.clone(),
-            result_body_tokens: self.extern_ret_tokens.clone(),
-            constraints: self.extern_constraints.clone(),
-        })
-    }
-
     /// Returns the first `@doc` string attached to this fn, if any.
     pub fn doc(&self) -> Option<&str> {
         self.attrs.iter().find_map(|a| match a {

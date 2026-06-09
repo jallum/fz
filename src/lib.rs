@@ -6,6 +6,7 @@ pub mod compiler2;
 mod diag;
 mod dispatch_matrix;
 mod frontend;
+mod function_surface;
 mod fz_ir;
 mod ir_capture_norm;
 mod ir_codegen;
@@ -63,6 +64,8 @@ use telemetry::{
     ConfiguredTelemetry, DiagRenderer, Event, Handler, JsonlBackend, StatsHandler, Telemetry, next_compile_nonce,
 };
 use types::{DefaultTypes, KeySlot, display_key_slots};
+
+pub(crate) use function_surface::FunctionSurface;
 
 const FZ_EXEC_READY_FD_ENV: &str = "FZ_EXEC_READY_FD";
 

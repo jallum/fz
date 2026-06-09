@@ -2,7 +2,7 @@ use crate::ast::{Attribute, BitSize, BitType, Expr};
 use crate::parser::lexer::Tok;
 use crate::telemetry::ConfiguredTelemetry;
 
-use super::legacy_fn_def::derive_legacy_fn_def;
+use super::quoted_function::derive_function_surface;
 use super::{CodeId, QuotedSourceRoot, parse_quoted_program};
 
 fn grouped_function_root(source_name: &str, text: &str) -> QuotedSourceRoot {
@@ -15,16 +15,17 @@ fn grouped_function_root(source_name: &str, text: &str) -> QuotedSourceRoot {
 }
 
 #[test]
-fn compiler2_legacy_fn_def_derives_specs_and_bit_specs_without_old_parser() {
+fn compiler2_quoted_function_surface_derives_specs_and_bit_specs_without_old_parser() {
     let source = r#"
 @spec pack(integer) :: binary
 fn pack(x :: integer), do: <<x::integer-size(16), rest::binary-size(len)-unit(8)>>
 "#;
     let root = grouped_function_root("pack.fz", source);
     let tel = ConfiguredTelemetry::new();
-    let def = derive_legacy_fn_def(&root, CodeId::ZERO, Some("pack.fz"), source, &tel).expect("derive legacy fn");
+    let surface =
+        derive_function_surface(&root, CodeId::ZERO, Some("pack.fz"), source, &tel).expect("derive function surface");
 
-    let Attribute::Spec(spec) = &def.attrs[0] else {
+    let Attribute::Spec(spec) = &surface.attrs[0] else {
         panic!("expected @spec attr");
     };
     assert_eq!(spec.name, "pack");
@@ -36,14 +37,14 @@ fn pack(x :: integer), do: <<x::integer-size(16), rest::binary-size(len)-unit(8)
         matches!(spec.result_body_tokens.0.as_slice(), [token] if matches!(token.tok, Tok::Ident(ref name) if name == "binary"))
     );
 
-    let annotation = def.clauses[0].param_annotations[0]
+    let annotation = surface.clauses[0].param_annotations[0]
         .as_ref()
         .expect("parameter annotation should decode");
     assert!(
         matches!(annotation.0.as_slice(), [token] if matches!(token.tok, Tok::Ident(ref name) if name == "integer"))
     );
 
-    let Expr::Bitstring(fields) = &def.clauses[0].body.node else {
+    let Expr::Bitstring(fields) = &surface.clauses[0].body.node else {
         panic!("expected bitstring body");
     };
     assert_eq!(fields.len(), 2);
@@ -55,17 +56,18 @@ fn pack(x :: integer), do: <<x::integer-size(16), rest::binary-size(len)-unit(8)
 }
 
 #[test]
-fn compiler2_legacy_fn_def_derives_operator_specs_from_quoted_source() {
+fn compiler2_quoted_function_surface_derives_operator_specs_from_quoted_source() {
     let source = r#"
 @spec integer + integer :: integer
 fn left + right, do: left + right
 "#;
     let root = grouped_function_root("plus.fz", source);
     let tel = ConfiguredTelemetry::new();
-    let def = derive_legacy_fn_def(&root, CodeId::ZERO, Some("plus.fz"), source, &tel).expect("derive legacy fn");
+    let surface =
+        derive_function_surface(&root, CodeId::ZERO, Some("plus.fz"), source, &tel).expect("derive function surface");
 
-    assert_eq!(def.name, "+");
-    let Attribute::Spec(spec) = &def.attrs[0] else {
+    assert_eq!(surface.name, "+");
+    let Attribute::Spec(spec) = &surface.attrs[0] else {
         panic!("expected @spec attr");
     };
     assert_eq!(spec.name, "+");

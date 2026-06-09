@@ -4,7 +4,7 @@ use crate::compiler::source::Span;
 use crate::dispatch_matrix::pattern::{PatternBodyId, SourcePatternError, SourcePatternRows};
 use crate::dispatch_matrix::pattern::{
     PatternDispatchPlan, PatternGuardBinOp, PatternGuardDispatch, PatternGuardExpr, PatternGuardUnaryOp,
-    PatternSubjectRef, guard_dispatch_from_fn_def, pattern_dispatch_from_source_with_guard_resolver,
+    PatternSubjectRef, guard_dispatch_from_surface, pattern_dispatch_from_source_with_guard_resolver,
 };
 use crate::dispatch_matrix::{
     BitstringEndian, BitstringFieldKind, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchConst,
@@ -652,7 +652,7 @@ pub(crate) fn lower_guard_helper_call_to_dispatch(
     let mut resolver = |callee: &str, callee_arity: usize, callee_args: Vec<PatternGuardExpr>| {
         lower_guard_helper_call_to_dispatch(ctx, callee, callee_arity, callee_args, stack)
     };
-    let dispatch_result = guard_dispatch_from_fn_def(fn_def, &mut resolver);
+    let dispatch_result = guard_dispatch_from_surface(fn_def, &mut resolver);
     stack.pop();
     let dispatch = dispatch_result?;
 

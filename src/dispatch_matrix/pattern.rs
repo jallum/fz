@@ -5,8 +5,9 @@ use super::{
     DispatchMatrixError, EdgeEvidence, EdgeProjection, GuardId, OutcomeId, OutcomeMultiplicity, PinnedValueId,
     ProjectionKind, Region, RegionPredicate, RegionQuestion, SubjectId, compile_dispatch_matrix,
 };
-use crate::ast::{BitSize, BitType, Endian, Expr, FnDef, Pattern, Spanned};
+use crate::ast::{BitSize, BitType, Endian, Expr, Pattern, Spanned};
 use crate::compiler::source::Span;
+use crate::function_surface::CallableSurface;
 use crate::types::Ty as DefaultTy;
 use std::collections::HashMap;
 
@@ -195,8 +196,8 @@ pub(crate) fn prepared_key_name(index: usize) -> String {
     format!("__dispatch_key_{}", index)
 }
 
-pub(crate) fn guard_dispatch_from_fn_def<F, TypeHandle>(
-    fn_def: &FnDef,
+pub(crate) fn guard_dispatch_from_surface<F, TypeHandle>(
+    surface: &impl CallableSurface,
     guard_call_resolver: &mut F,
 ) -> Result<PatternGuardDispatch<TypeHandle>, SourcePatternError>
 where
@@ -207,15 +208,15 @@ where
     ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
     TypeHandle: Clone + PartialEq + Eq,
 {
-    let arity = fn_def.arity();
-    if fn_def.clauses.is_empty() || fn_def.clauses.iter().any(|clause| clause.params.len() != arity) {
+    let arity = surface.arity();
+    if surface.clauses().is_empty() || surface.clauses().iter().any(|clause| clause.params.len() != arity) {
         return Err(SourcePatternError::UnsupportedGuardExpr);
     }
 
     let source_patterns = SourcePatternRows {
         input_count: arity,
-        rows: fn_def
-            .clauses
+        rows: surface
+            .clauses()
             .iter()
             .enumerate()
             .map(|(i, clause)| PatternRow {
@@ -229,7 +230,7 @@ where
     let mut plan = pattern_dispatch_from_source_with_guard_resolver(source_patterns, guard_call_resolver)
         .map_err(|err| SourcePatternError::DispatchMatrix(format!("{err:?}")))?;
 
-    let param_input_by_name: HashMap<String, u32> = fn_def.clauses[0]
+    let param_input_by_name: HashMap<String, u32> = surface.clauses()[0]
         .params
         .iter()
         .enumerate()
@@ -250,7 +251,7 @@ where
         .enumerate()
         .map(|(i, pinned)| (pinned.name.clone(), PinnedValueId(i as u32)))
         .collect();
-    for clause in &fn_def.clauses {
+    for clause in surface.clauses() {
         let mut bound = std::collections::BTreeSet::new();
         for pattern in &clause.params {
             collect_bound_names_in_pattern(&pattern.node, &mut bound);
@@ -271,8 +272,8 @@ where
         }
     }
 
-    let mut bodies = Vec::with_capacity(fn_def.clauses.len());
-    for clause in &fn_def.clauses {
+    let mut bodies = Vec::with_capacity(surface.clauses().len());
+    for clause in surface.clauses() {
         let outcome = plan
             .outcomes
             .iter()

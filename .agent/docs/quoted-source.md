@@ -68,9 +68,9 @@ comparison surface when it wants one.
 - `FactKey::FunctionSource(FunctionId)` is now the lazy authoritative function
   fact. Source jobs note grouped quoted roots first; `FunctionDefined` is
   derived on demand from that fact.
-- While downstream body/contract work still carries explicit `legacy_*`
-  compatibility payloads, compiler2 derives them once from grouped quoted
-  source in `src/compiler2/legacy_fn_def.rs` instead of reparsing text.
+- `FunctionDefined` now carries a compiler2-owned `FunctionSurface` decoded
+  from grouped quoted source. Source-defined functions and generated lambdas
+  both use that same callable-surface model.
 - The noted function-source fact must carry enough callable surface to keep
   pre-definition name resolution honest. Today that explicitly includes the
   variadic bit, because lowering may need callable matching before
@@ -125,9 +125,8 @@ comparison surface when it wants one.
 - Module bodies and protocol bodies use the same `ScopeSurface` shape as
   top-level code, so nested discovery and protocol-impl callback discovery stay
   in one quoted-source world.
-- The remaining explicit `legacy_*` seam is function-local only:
-  `legacy_fn_def` is still derived on demand for downstream body/contract jobs
-  that have not been ported yet.
+- Function bodies, contracts, and dispatch planning now read compiler2-owned
+  `FunctionSurface` data directly rather than old parser function records.
 
 ## Rooting Contract
 

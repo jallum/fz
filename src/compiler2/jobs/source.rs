@@ -5,6 +5,7 @@ use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
+use crate::function_surface::FunctionSurface;
 use crate::modules::identity::ModuleName;
 
 use super::super::code::CodeId;
@@ -519,22 +520,22 @@ fn collect_body_refs(
 fn record_function_type_refs(
     world: &mut World<'_>,
     function: super::super::FunctionId,
-    def: &crate::ast::FnDef,
+    surface: &FunctionSurface,
 ) -> Result<(), FatalError> {
     let namespace = world
         .function_source(function)
         .expect("function type refs should only be recorded after function source is noted")
         .namespace;
     let mut refs = Vec::new();
-    for attr in &def.attrs {
+    for attr in &surface.attrs {
         if let Attribute::Spec(spec) = attr {
             collect_spec_refs(world, namespace, spec, &mut refs)?;
         }
     }
-    if let Some(extern_spec) = def.extern_contract_decl() {
+    if let Some(extern_spec) = surface.extern_contract_decl() {
         collect_spec_refs(world, namespace, &extern_spec, &mut refs)?;
     }
-    for clause in &def.clauses {
+    for clause in &surface.clauses {
         for annotation in clause.param_annotations.iter().flatten() {
             collect_body_refs(world, namespace, annotation, &mut refs)?;
         }
@@ -554,7 +555,7 @@ pub(super) fn define_function(
         ));
     };
 
-    let legacy_ast = crate::compiler2::legacy_fn_def::derive_legacy_fn_def(
+    let surface = crate::compiler2::quoted_function::derive_function_surface(
         &source.source.root,
         source.code,
         world.code_name(source.code),
@@ -562,7 +563,7 @@ pub(super) fn define_function(
         world.tel(),
     )
     .map_err(|error| emit_internal_surface_error(world, format!("quoted function decode failed: {error}")))?;
-    record_function_type_refs(world, function_id, &legacy_ast)?;
+    record_function_type_refs(world, function_id, &surface)?;
     let (_, revision) = world.define_function(
         world.function_module(function_id),
         source.owner_module,
@@ -570,7 +571,7 @@ pub(super) fn define_function(
         source.code,
         source.namespace,
         source.source,
-        legacy_ast,
+        surface,
     );
     Ok(JobEffects {
         reads: vec![FactKey::FunctionSource(function_id)],

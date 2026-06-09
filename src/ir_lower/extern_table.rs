@@ -1,4 +1,5 @@
-use crate::ast::{FnDef, SpecDecl, TypeExprBody};
+use crate::ast::{SpecDecl, TypeExprBody};
+use crate::function_surface::CallableSurface;
 use crate::fz_ir::{ExternId, ExternTy};
 use crate::parser::lexer::{Tok, Token};
 use std::collections::HashMap;
@@ -54,8 +55,8 @@ pub(crate) fn extern_ty_from_name(name: &str) -> Option<ExternTy> {
     }
 }
 
-pub(crate) fn extern_semantic_contract(fn_def: &FnDef) -> Option<SpecDecl> {
-    let mut contract = fn_def.extern_contract_decl()?;
+pub(crate) fn extern_semantic_contract(surface: &impl CallableSurface) -> Option<SpecDecl> {
+    let mut contract = surface.extern_contract_decl()?;
     contract.param_body_tokens = contract
         .param_body_tokens
         .iter()
