@@ -1,6 +1,6 @@
 use super::*;
 use crate::fz_ir::{FnId, Module};
-use crate::runtime_type_test_shim::RuntimeTypeTestShim;
+use crate::runtime_type_predicate::RuntimeTypePredicate;
 use fz_runtime::any_value::debug::render_value;
 use fz_runtime::any_value::{
     AnyValue as RuntimeAnyValue, AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TAG_BITSTRING, TAG_MASK, TAG_PROCBIN,
@@ -153,12 +153,12 @@ pub(super) fn interp_tuple_schema_id(runtime: &mut IrInterpRuntime, arity: usize
     runtime.tuple_schema_id(arity)
 }
 
-pub(super) fn interp_runtime_type_test_schema_ids(
+pub(super) fn interp_runtime_type_predicate_schema_ids(
     runtime: &mut IrInterpRuntime,
     module: &Module,
-    shim: &RuntimeTypeTestShim,
+    predicate: &RuntimeTypePredicate,
 ) -> (HashMap<usize, u32>, HashMap<String, u32>) {
-    let tuple_schema_ids = shim
+    let tuple_schema_ids = predicate
         .tuple_arities
         .values
         .iter()

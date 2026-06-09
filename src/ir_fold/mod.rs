@@ -35,7 +35,7 @@ pub(crate) fn fold_planned_body<T: Types<Ty = Ty>>(t: &mut T, f: &mut FnIr, fn_t
         for stmt in &mut block.stmts {
             let Stmt::Let(dest, prim) = stmt;
             let d = match prim {
-                Prim::BinOp(..) | Prim::TypeTest(..) | Prim::RuntimeTypeTestShim(..) => {
+                Prim::BinOp(..) | Prim::TypeTest(..) | Prim::RuntimeTypeTest(..) => {
                     fn_types.vars.get(dest).cloned().unwrap_or_else(|| t.any())
                 }
                 _ => continue,
@@ -51,7 +51,7 @@ pub(crate) fn fold_planned_body<T: Types<Ty = Ty>>(t: &mut T, f: &mut FnIr, fn_t
                     *stmt = Stmt::Let(*dest, Prim::Const(Const::False));
                     stats.prim_count += 1;
                 }
-            } else if matches!(prim, Prim::TypeTest(..) | Prim::RuntimeTypeTestShim(..)) {
+            } else if matches!(prim, Prim::TypeTest(..) | Prim::RuntimeTypeTest(..)) {
                 if t.is_subtype(&d, &true_t) {
                     *stmt = Stmt::Let(*dest, Prim::Const(Const::True));
                     stats.prim_count += 1;

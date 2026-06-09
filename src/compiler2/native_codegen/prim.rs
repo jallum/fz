@@ -5,7 +5,7 @@ use crate::fz_ir::{
     BinOp, BitSizeIr, BlockId, CallsiteIdent, Const, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternTy,
     FnId, Module, Prim, UnOp, Var,
 };
-use crate::runtime_type_test_shim::{ListShape, ObservedSet, RuntimeTypeTestShim};
+use crate::runtime_type_predicate::{ListShape, ObservedSet, RuntimeTypePredicate};
 use crate::types::key_slot_var_count;
 use cranelift_codegen::ir::{
     self, BlockArg, InstBuilder, MemFlags,
@@ -575,7 +575,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             if let Some(binding) = body.cache.tuple_field_params.get(&(c.0, *idx)).copied() {
                 return Ok(lower_out_for_codegen_value(binding));
             }
-            // Every TupleField is gated by a preceding runtime type-test shim
+            // Every TupleField is gated by a preceding runtime type-test predicate
             // that runtime-checks the subject is a matching-arity Struct
             // heap value, so the load is provably safe. A SIGSEGV here
             // would be an IR integrity bug worth surfacing loudly — do
@@ -1287,29 +1287,29 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         Prim::TypeTest(_, _) => {
             unreachable!("compiler2 native program should not carry legacy Prim::TypeTest")
         }
-        Prim::RuntimeTypeTestShim(v, descr) => {
-            lower_runtime_type_test_shim(body, env, var_env, runtime, *v, descr, dest_var)
+        Prim::RuntimeTypeTest(v, descr) => {
+            lower_runtime_type_predicate(body, env, var_env, runtime, *v, descr, dest_var)
         }
     }
 }
 
-fn lower_runtime_type_test_shim<M: cranelift_module::Module>(
+fn lower_runtime_type_predicate<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     runtime: &RuntimeRefs,
     v: Var,
-    shim: &RuntimeTypeTestShim,
+    predicate: &RuntimeTypePredicate,
     dest_var: Var,
 ) -> Result<LowerOut, CodegenError> {
     if let Some(delivered_arity) = delivered_tuple_field_arity(body, v)
-        && !shim.allow_other_structs
-        && shim.named_structs.is_none()
+        && !predicate.allow_other_structs
+        && predicate.named_structs.is_none()
     {
         let flag = body
             .b
             .ins()
-            .iconst(types::I8, i64::from(shim.tuple_arities.contains(&delivered_arity)));
+            .iconst(types::I8, i64::from(predicate.tuple_arities.contains(&delivered_arity)));
         if body.cache.if_only_conds.contains(&dest_var.0) {
             return Ok(LowerOut::Condition(flag));
         }
@@ -1317,11 +1317,11 @@ fn lower_runtime_type_test_shim<M: cranelift_module::Module>(
     }
 
     let value = *var_env.get(&v.0).expect("type-test subject");
-    let scalar = emit_runtime_type_test_shim_scalar_checks(body, env.module, shim, value)?;
-    let heap = emit_runtime_type_test_shim_heap_checks(body, shim, value);
-    let struct_flag = shim
+    let scalar = emit_runtime_type_predicate_scalar_checks(body, env.module, predicate, value)?;
+    let heap = emit_runtime_type_predicate_heap_checks(body, predicate, value);
+    let struct_flag = predicate
         .has_structs()
-        .then(|| emit_runtime_type_test_shim_struct_check(body, runtime, env, value, shim))
+        .then(|| emit_runtime_type_predicate_struct_check(body, runtime, env, value, predicate))
         .transpose()?;
 
     let flag = [scalar, heap, struct_flag]
@@ -1348,10 +1348,10 @@ fn delivered_tuple_field_arity<M: cranelift_module::Module>(
     (count > 0).then_some(count)
 }
 
-fn emit_runtime_type_test_shim_scalar_checks<M: cranelift_module::Module>(
+fn emit_runtime_type_predicate_scalar_checks<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     module: &Module,
-    shim: &RuntimeTypeTestShim,
+    predicate: &RuntimeTypePredicate,
     value: CodegenValue,
 ) -> Result<Option<ir::Value>, CodegenError> {
     let mut scalar = None;
@@ -1361,22 +1361,22 @@ fn emit_runtime_type_test_shim_scalar_checks<M: cranelift_module::Module>(
             Some(prev) => b.ins().bor(prev, flag),
         });
     };
-    if !shim.ints.is_none() {
+    if !predicate.ints.is_none() {
         let flag = emit_kind_guarded_membership(body, value, ValueKind::INT, |body, value| {
             let raw = body.value_raw_int(value);
-            emit_i64_membership(body.b, raw, &shim.ints)
+            emit_i64_membership(body.b, raw, &predicate.ints)
         });
         or_in(body.b, flag, &mut scalar);
     }
-    if !shim.floats.is_none() {
+    if !predicate.floats.is_none() {
         let flag = emit_kind_guarded_membership(body, value, ValueKind::FLOAT, |body, value| {
             let raw = body.value_raw_float(value);
             let bits = body.b.ins().bitcast(types::I64, MemFlags::new(), raw);
-            emit_u64_membership(body.b, bits, &shim.floats)
+            emit_u64_membership(body.b, bits, &predicate.floats)
         });
         or_in(body.b, flag, &mut scalar);
     }
-    if !shim.atoms.is_none() {
+    if !predicate.atoms.is_none() {
         let name_to_id: HashMap<&str, u32> = module
             .atom_names
             .iter()
@@ -1384,8 +1384,8 @@ fn emit_runtime_type_test_shim_scalar_checks<M: cranelift_module::Module>(
             .map(|(i, name)| (name.as_str(), i as u32))
             .collect();
         let atom_ids = ObservedSet {
-            cofinite: shim.atoms.cofinite,
-            values: shim
+            cofinite: predicate.atoms.cofinite,
+            values: predicate
                 .atoms
                 .values
                 .iter()
@@ -1401,9 +1401,9 @@ fn emit_runtime_type_test_shim_scalar_checks<M: cranelift_module::Module>(
     Ok(scalar)
 }
 
-fn emit_runtime_type_test_shim_heap_checks<M: cranelift_module::Module>(
+fn emit_runtime_type_predicate_heap_checks<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    shim: &RuntimeTypeTestShim,
+    predicate: &RuntimeTypePredicate,
     value: CodegenValue,
 ) -> Option<ir::Value> {
     let mut flag = None;
@@ -1413,36 +1413,36 @@ fn emit_runtime_type_test_shim_heap_checks<M: cranelift_module::Module>(
             Some(prev) => body.b.ins().bor(prev, next),
         });
     };
-    if let Some(list_flag) = emit_runtime_type_test_shim_list_check(body, value, &shim.lists) {
+    if let Some(list_flag) = emit_runtime_type_predicate_list_check(body, value, &predicate.lists) {
         or_in(body, list_flag);
     }
-    if shim.maps {
+    if predicate.maps {
         let map_flag = body.value_is_tag(value, ValueKind::MAP);
         or_in(body, map_flag);
     }
-    if shim.binaries {
+    if predicate.binaries {
         let binary_flag = body.value_is_tag(value, ValueKind::BITSTRING);
         or_in(body, binary_flag);
     }
-    if shim.closures {
+    if predicate.closures {
         let closure_flag = body.value_is_tag(value, ValueKind::CLOSURE);
         or_in(body, closure_flag);
     }
-    if shim.resources {
+    if predicate.resources {
         let resource_flag = body.value_is_tag(value, ValueKind::RESOURCE);
         or_in(body, resource_flag);
     }
     flag
 }
 
-fn emit_runtime_type_test_shim_struct_check<M: cranelift_module::Module>(
+fn emit_runtime_type_predicate_struct_check<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
     env: &CodegenEnv<'_>,
     value: CodegenValue,
-    shim: &RuntimeTypeTestShim,
+    predicate: &RuntimeTypePredicate,
 ) -> Result<ir::Value, CodegenError> {
-    if shim.allow_other_structs && shim.tuple_arities.is_any() && shim.named_structs.is_any() {
+    if predicate.allow_other_structs && predicate.tuple_arities.is_any() && predicate.named_structs.is_any() {
         return Ok(body.value_is_tag(value, ValueKind::STRUCT));
     }
 
@@ -1466,9 +1466,10 @@ fn emit_runtime_type_test_shim_struct_check<M: cranelift_module::Module>(
     let schema_raw = body.b.inst_results(inst)[0];
     let schema64 = body.b.ins().uextend(types::I64, schema_raw);
 
-    let tuple_match = emit_struct_tuple_membership(body.b, schema64, env.tuple_schema_ids, env.named_schema_ids, shim);
-    let named_match = emit_struct_named_membership(body.b, schema64, env.named_schema_ids, &shim.named_structs);
-    let other_match = if shim.allow_other_structs {
+    let tuple_match =
+        emit_struct_tuple_membership(body.b, schema64, env.tuple_schema_ids, env.named_schema_ids, predicate);
+    let named_match = emit_struct_named_membership(body.b, schema64, env.named_schema_ids, &predicate.named_structs);
+    let other_match = if predicate.allow_other_structs {
         let known_tuple = emit_any_schema_id_match(body.b, schema64, env.tuple_schema_ids.values().copied());
         let known_named = emit_any_schema_id_match(body.b, schema64, env.named_schema_ids.values().copied());
         let known_struct = body.b.ins().bor(known_tuple, known_named);
@@ -1485,7 +1486,7 @@ fn emit_runtime_type_test_shim_struct_check<M: cranelift_module::Module>(
     Ok(body.b.block_params(join_blk)[0])
 }
 
-fn emit_runtime_type_test_shim_list_check<M: cranelift_module::Module>(
+fn emit_runtime_type_predicate_list_check<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     value: CodegenValue,
     lists: &ObservedSet<ListShape>,
@@ -1597,17 +1598,17 @@ fn emit_struct_tuple_membership(
     schema64: ir::Value,
     tuple_schema_ids: &HashMap<usize, u32>,
     named_schema_ids: &HashMap<String, u32>,
-    shim: &RuntimeTypeTestShim,
+    predicate: &RuntimeTypePredicate,
 ) -> ir::Value {
-    if shim.tuple_arities.is_none() {
+    if predicate.tuple_arities.is_none() {
         return b.ins().iconst(types::I8, 0);
     }
-    if shim.tuple_arities.is_any() {
+    if predicate.tuple_arities.is_any() {
         let known_named = emit_any_schema_id_match(b, schema64, named_schema_ids.values().copied());
         return b.ins().icmp_imm(IntCC::Equal, known_named, 0);
     }
-    if shim.tuple_arities.cofinite {
-        let excluded = shim
+    if predicate.tuple_arities.cofinite {
+        let excluded = predicate
             .tuple_arities
             .values
             .iter()
@@ -1623,7 +1624,8 @@ fn emit_struct_tuple_membership(
         emit_any_schema_id_match(
             b,
             schema64,
-            shim.tuple_arities
+            predicate
+                .tuple_arities
                 .values
                 .iter()
                 .filter_map(|arity| tuple_schema_ids.get(arity).copied()),

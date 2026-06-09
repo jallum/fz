@@ -30,7 +30,7 @@ use crate::dispatch_matrix::{
 };
 use crate::fz_ir::{Module, ReceiveClause, Var};
 use crate::ir_codegen::{CodegenError, SLOT_BYTES, emit_fn_body_stats};
-use crate::runtime_type_test_shim::{ListShape, ObservedSet, RuntimeTypeTestShim};
+use crate::runtime_type_predicate::{ListShape, ObservedSet, RuntimeTypePredicate};
 use cranelift_codegen::ir::{self, AbiParam, InstBuilder, MemFlags, Signature, condcodes::IntCC, types};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -39,11 +39,11 @@ use fz_runtime::any_value::{AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_I
 use fz_runtime::ir_runtime::fz_bs_field_spec;
 use std::collections::HashMap;
 
-type ReceiveDispatchPlan = PatternDispatchPlan<RuntimeTypeTestShim>;
-type ReceiveRegion = Region<RuntimeTypeTestShim>;
-type ReceiveEdgeEvidence = EdgeEvidence<RuntimeTypeTestShim>;
-type ReceiveGuardExpr = PatternGuardExpr<RuntimeTypeTestShim>;
-type ReceiveGuardDispatch = PatternGuardDispatch<RuntimeTypeTestShim>;
+type ReceiveDispatchPlan = PatternDispatchPlan<RuntimeTypePredicate>;
+type ReceiveRegion = Region<RuntimeTypePredicate>;
+type ReceiveEdgeEvidence = EdgeEvidence<RuntimeTypePredicate>;
+type ReceiveGuardExpr = PatternGuardExpr<RuntimeTypePredicate>;
+type ReceiveGuardDispatch = PatternGuardDispatch<RuntimeTypePredicate>;
 
 /// Cranelift signature for the receive dispatch fn family. Matches
 /// `fz_runtime::park::MatcherFn`.
@@ -625,9 +625,9 @@ fn emit_region_test(
         Region::Never => {
             b.ins().jump(false_b, &[]);
         }
-        Region::Type(shim) => {
+        Region::Type(predicate) => {
             let val = resolve_dispatch_subject(b, ctx, subject, state)?;
-            emit_runtime_type_test_shim_region_test(b, ctx, val, shim, true_b, false_b)?;
+            emit_runtime_type_predicate_region_test(b, ctx, val, predicate, true_b, false_b)?;
         }
         Region::Equal(ComparisonValue::Const(value)) => {
             let val = resolve_dispatch_subject(b, ctx, subject, state)?;
@@ -684,19 +684,19 @@ fn emit_region_test(
     Ok(true_values)
 }
 
-fn emit_runtime_type_test_shim_region_test(
+fn emit_runtime_type_predicate_region_test(
     b: &mut FunctionBuilder<'_>,
     ctx: &DispatchCtx<'_>,
     value: ReceiveValue,
-    shim: &RuntimeTypeTestShim,
+    predicate: &RuntimeTypePredicate,
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
-    let scalar = emit_runtime_type_test_shim_scalar_checks(b, ctx, value, shim)?;
-    let heap = emit_runtime_type_test_shim_heap_checks(b, ctx, value, shim)?;
-    let struct_flag = shim
+    let scalar = emit_runtime_type_predicate_scalar_checks(b, ctx, value, predicate)?;
+    let heap = emit_runtime_type_predicate_heap_checks(b, ctx, value, predicate)?;
+    let struct_flag = predicate
         .has_structs()
-        .then(|| emit_runtime_type_test_shim_struct_check(b, ctx, value, shim))
+        .then(|| emit_runtime_type_predicate_struct_check(b, ctx, value, predicate))
         .transpose()?;
     let flag = [scalar, heap, struct_flag]
         .into_iter()
@@ -707,11 +707,11 @@ fn emit_runtime_type_test_shim_region_test(
     Ok(())
 }
 
-fn emit_runtime_type_test_shim_scalar_checks(
+fn emit_runtime_type_predicate_scalar_checks(
     b: &mut FunctionBuilder<'_>,
     ctx: &DispatchCtx<'_>,
     value: ReceiveValue,
-    shim: &RuntimeTypeTestShim,
+    predicate: &RuntimeTypePredicate,
 ) -> Result<Option<ir::Value>, CodegenError> {
     let mut scalar = None;
     let or_in = |b: &mut FunctionBuilder<'_>, flag: ir::Value, scalar: &mut Option<ir::Value>| {
@@ -720,22 +720,22 @@ fn emit_runtime_type_test_shim_scalar_checks(
             Some(prev) => b.ins().bor(prev, flag),
         });
     };
-    if !shim.ints.is_none() {
+    if !predicate.ints.is_none() {
         let flag = emit_receive_kind_guarded_membership(b, ctx, value, ValueKind::INT, |b, ctx, value| {
             let raw = receive_value_int(b, ctx, value)?;
-            Ok(emit_receive_i64_membership(b, raw, &shim.ints))
+            Ok(emit_receive_i64_membership(b, raw, &predicate.ints))
         })?;
         or_in(b, flag, &mut scalar);
     }
-    if !shim.floats.is_none() {
+    if !predicate.floats.is_none() {
         let flag = emit_receive_kind_guarded_membership(b, ctx, value, ValueKind::FLOAT, |b, ctx, value| {
             let raw = receive_value_float(b, ctx, value)?;
             let bits = b.ins().bitcast(types::I64, MemFlags::new(), raw);
-            Ok(emit_receive_u64_membership(b, bits, &shim.floats))
+            Ok(emit_receive_u64_membership(b, bits, &predicate.floats))
         })?;
         or_in(b, flag, &mut scalar);
     }
-    if !shim.atoms.is_none() {
+    if !predicate.atoms.is_none() {
         let name_to_id: HashMap<&str, u32> = ctx
             .fz_module
             .atom_names
@@ -744,8 +744,8 @@ fn emit_runtime_type_test_shim_scalar_checks(
             .map(|(i, name)| (name.as_str(), i as u32))
             .collect();
         let atom_ids = ObservedSet {
-            cofinite: shim.atoms.cofinite,
-            values: shim
+            cofinite: predicate.atoms.cofinite,
+            values: predicate
                 .atoms
                 .values
                 .iter()
@@ -761,11 +761,11 @@ fn emit_runtime_type_test_shim_scalar_checks(
     Ok(scalar)
 }
 
-fn emit_runtime_type_test_shim_heap_checks(
+fn emit_runtime_type_predicate_heap_checks(
     b: &mut FunctionBuilder<'_>,
     ctx: &DispatchCtx<'_>,
     value: ReceiveValue,
-    shim: &RuntimeTypeTestShim,
+    predicate: &RuntimeTypePredicate,
 ) -> Result<Option<ir::Value>, CodegenError> {
     let mut flag = None;
     let mut or_in = |b: &mut FunctionBuilder<'_>, next: ir::Value| {
@@ -774,35 +774,35 @@ fn emit_runtime_type_test_shim_heap_checks(
             Some(prev) => b.ins().bor(prev, next),
         });
     };
-    if let Some(list_flag) = emit_runtime_type_test_shim_list_check(b, ctx, value, &shim.lists)? {
+    if let Some(list_flag) = emit_runtime_type_predicate_list_check(b, ctx, value, &predicate.lists)? {
         or_in(b, list_flag);
     }
-    if shim.maps {
+    if predicate.maps {
         let map_flag = emit_receive_value_kind_flag(b, ctx, value, ValueKind::MAP)?;
         or_in(b, map_flag);
     }
-    if shim.binaries {
+    if predicate.binaries {
         let binary_flag = emit_receive_value_kind_flag(b, ctx, value, ValueKind::BITSTRING)?;
         or_in(b, binary_flag);
     }
-    if shim.closures {
+    if predicate.closures {
         let closure_flag = emit_receive_value_kind_flag(b, ctx, value, ValueKind::CLOSURE)?;
         or_in(b, closure_flag);
     }
-    if shim.resources {
+    if predicate.resources {
         let resource_flag = emit_receive_value_kind_flag(b, ctx, value, ValueKind::RESOURCE)?;
         or_in(b, resource_flag);
     }
     Ok(flag)
 }
 
-fn emit_runtime_type_test_shim_struct_check(
+fn emit_runtime_type_predicate_struct_check(
     b: &mut FunctionBuilder<'_>,
     ctx: &DispatchCtx<'_>,
     value: ReceiveValue,
-    shim: &RuntimeTypeTestShim,
+    predicate: &RuntimeTypePredicate,
 ) -> Result<ir::Value, CodegenError> {
-    if shim.allow_other_structs && shim.tuple_arities.is_any() && shim.named_structs.is_any() {
+    if predicate.allow_other_structs && predicate.tuple_arities.is_any() && predicate.named_structs.is_any() {
         return emit_receive_value_kind_flag(b, ctx, value, ValueKind::STRUCT);
     }
 
@@ -825,9 +825,9 @@ fn emit_runtime_type_test_shim_struct_check(
     let schema64 = b.ins().uextend(types::I64, schema_raw);
 
     let tuple_match =
-        emit_receive_struct_tuple_membership(b, schema64, ctx.tuple_schema_ids, ctx.named_schema_ids, shim);
-    let named_match = emit_receive_struct_named_membership(b, schema64, ctx.named_schema_ids, &shim.named_structs);
-    let other_match = if shim.allow_other_structs {
+        emit_receive_struct_tuple_membership(b, schema64, ctx.tuple_schema_ids, ctx.named_schema_ids, predicate);
+    let named_match = emit_receive_struct_named_membership(b, schema64, ctx.named_schema_ids, &predicate.named_structs);
+    let other_match = if predicate.allow_other_structs {
         let known_tuple = emit_receive_any_schema_id_match(b, schema64, ctx.tuple_schema_ids.values().copied());
         let known_named = emit_receive_any_schema_id_match(b, schema64, ctx.named_schema_ids.values().copied());
         let known_struct = b.ins().bor(known_tuple, known_named);
@@ -844,7 +844,7 @@ fn emit_runtime_type_test_shim_struct_check(
     Ok(b.block_params(join_blk)[0])
 }
 
-fn emit_runtime_type_test_shim_list_check(
+fn emit_runtime_type_predicate_list_check(
     b: &mut FunctionBuilder<'_>,
     ctx: &DispatchCtx<'_>,
     value: ReceiveValue,
@@ -957,17 +957,17 @@ fn emit_receive_struct_tuple_membership(
     schema64: ir::Value,
     tuple_schema_ids: &HashMap<usize, u32>,
     named_schema_ids: &HashMap<String, u32>,
-    shim: &RuntimeTypeTestShim,
+    predicate: &RuntimeTypePredicate,
 ) -> ir::Value {
-    if shim.tuple_arities.is_none() {
+    if predicate.tuple_arities.is_none() {
         return b.ins().iconst(types::I8, 0);
     }
-    if shim.tuple_arities.is_any() {
+    if predicate.tuple_arities.is_any() {
         let known_named = emit_receive_any_schema_id_match(b, schema64, named_schema_ids.values().copied());
         return b.ins().icmp_imm(IntCC::Equal, known_named, 0);
     }
-    if shim.tuple_arities.cofinite {
-        let excluded = shim
+    if predicate.tuple_arities.cofinite {
+        let excluded = predicate
             .tuple_arities
             .values
             .iter()
@@ -983,7 +983,8 @@ fn emit_receive_struct_tuple_membership(
         emit_receive_any_schema_id_match(
             b,
             schema64,
-            shim.tuple_arities
+            predicate
+                .tuple_arities
                 .values
                 .iter()
                 .filter_map(|arity| tuple_schema_ids.get(arity).copied()),

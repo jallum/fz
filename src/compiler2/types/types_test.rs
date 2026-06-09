@@ -3,7 +3,7 @@ use std::mem;
 use std::slice;
 
 use super::*;
-use crate::runtime_type_test_shim::{ListShape, ObservedSet, RuntimeTypeTestShim};
+use crate::runtime_type_predicate::{ListShape, ObservedSet, RuntimeTypePredicate};
 
 #[test]
 fn ty_is_an_integer_handle() {
@@ -63,61 +63,61 @@ fn repeated_subtype_comparisons_are_memoized_by_type_id() {
 }
 
 #[test]
-fn runtime_type_test_shim_projects_integer_singleton() {
+fn runtime_type_predicate_projects_integer_singleton() {
     let mut t = Types::new();
     let forty_two = t.int_lit(42);
-    let shim = t.runtime_type_test_shim(&forty_two);
+    let predicate = t.runtime_type_predicate(&forty_two);
     assert_eq!(
-        shim,
-        RuntimeTypeTestShim {
+        predicate,
+        RuntimeTypePredicate {
             ints: ObservedSet::lit(42),
-            ..RuntimeTypeTestShim::none()
+            ..RuntimeTypePredicate::none()
         }
     );
 }
 
 #[test]
-fn runtime_type_test_shim_projects_tuple_and_list_shapes() {
+fn runtime_type_predicate_projects_tuple_and_list_shapes() {
     let mut t = Types::new();
     let empty_list_ty = t.empty_list();
-    let empty_list = t.runtime_type_test_shim(&empty_list_ty);
+    let empty_list = t.runtime_type_predicate(&empty_list_ty);
     assert_eq!(
         empty_list,
-        RuntimeTypeTestShim {
+        RuntimeTypePredicate {
             lists: ObservedSet::lit(ListShape::Empty),
-            ..RuntimeTypeTestShim::none()
+            ..RuntimeTypePredicate::none()
         }
     );
 
     let int = t.int();
     let atom = t.atom();
     let tuple_ty = t.tuple(&[int, atom]);
-    let tuple = t.runtime_type_test_shim(&tuple_ty);
+    let tuple = t.runtime_type_predicate(&tuple_ty);
     assert_eq!(
         tuple,
-        RuntimeTypeTestShim {
+        RuntimeTypePredicate {
             tuple_arities: ObservedSet::lit(2),
-            ..RuntimeTypeTestShim::none()
+            ..RuntimeTypePredicate::none()
         }
     );
 }
 
 #[test]
-fn runtime_type_test_shim_projects_named_structs_and_widens_unknown_opaques() {
+fn runtime_type_predicate_projects_named_structs_and_widens_unknown_opaques() {
     let mut t = Types::new();
     let named_ty = t.opaque_of("impl-target::box");
-    let named = t.runtime_type_test_shim(&named_ty);
+    let named = t.runtime_type_predicate(&named_ty);
     assert_eq!(
         named,
-        RuntimeTypeTestShim {
+        RuntimeTypePredicate {
             named_structs: ObservedSet::lit("box".to_string()),
-            ..RuntimeTypeTestShim::none()
+            ..RuntimeTypePredicate::none()
         }
     );
 
     let mystery = t.opaque_of("mystery");
-    let widened = t.runtime_type_test_shim(&mystery);
-    assert_eq!(widened, RuntimeTypeTestShim::any());
+    let widened = t.runtime_type_predicate(&mystery);
+    assert_eq!(widened, RuntimeTypePredicate::any());
 }
 
 #[test]

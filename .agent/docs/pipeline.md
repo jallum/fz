@@ -236,7 +236,7 @@ questions at that rung:
 | callable-constructor lookup through planner state | `NativeBody.callable_constructors` |
 | extern decls plus wire classes | `NativeProgram.module.externs` plus `NativeBody.extern_marshals` |
 | continuation / entry ABI classification | `NativeBody.entry_abi` and `NativeBodyOrigin::Continuation` |
-| runtime type-membership questions | explicit `RuntimeTypeTestShim` facts |
+| runtime type-membership questions | explicit `RuntimeTypePredicate` facts |
 
 Questions that are illegal after `NativeProgram(root)`:
 
@@ -248,11 +248,10 @@ Questions that are illegal after `NativeProgram(root)`:
 
 Compiler2-native no longer carries copied planner-shaped baggage
 (`SpecPlan`, `SpecRegistry`, synthetic `SpecKey`, widened `return_tys`) as part
-of its backend handoff. The remaining explicit backend-local debt is the
-runtime type-test shim: compiler2 still projects rich semantic types into
-runtime-observable membership predicates because the runtime cannot answer full
-semantic membership directly. That shim is part of the published handoff above,
-and replacing it with a first-class runtime predicate is tracked separately.
+of its backend handoff. Runtime type-membership questions now cross the handoff
+through explicit `RuntimeTypePredicate` facts: compiler2 keeps rich semantic
+`Ty` facts for dispatch/refinement above the seam, then projects them into the
+runtime-observable predicate model the runtime can actually answer below it.
 
 Likewise, old semantic payloads still hanging off shared fz-IR structures
 (`ExternDecl.ret_descr`, `ExternDecl.semantic_contract`, and similar) are not
@@ -260,12 +259,11 @@ authority for compiler2-native codegen after `NativeProgram(root)`. If the
 compiler2 backend still reads them, that is backend debt to remove, not part of
 the published handoff.
 
-Current temporary exception: compiler2-native now projects compiler2-owned
-types into an explicit `RuntimeTypeTestShim` before lowering runtime membership
-questions. That shim is not a second semantic type system; it is a temporary
-runtime-observable predicate layer used by both direct type-tests and cached
-receive dispatch. Replacing it with a first-class runtime predicate is tracked
-separately by `fz-rh2.14.6`.
+The same two-layer split now applies on both sides of the migration seam:
+legacy lowering may still project legacy `Ty` handles into
+`RuntimeTypePredicate` for cached receive dispatch while that world exists, but
+the shared runtime predicate itself is first-class and is not a second semantic
+type system.
 
 Current conclusion from the code:
 

@@ -61,7 +61,7 @@ fn collect_tuple_arities_and_register_schemas(
                             tuple_arities.insert(arity);
                         }
                     }
-                    Prim::RuntimeTypeTestShim(_, descr) => {
+                    Prim::RuntimeTypeTest(_, descr) => {
                         tuple_arities.extend(descr.tuple_arities.values.iter().copied());
                     }
                     _ => {}

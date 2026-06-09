@@ -10,7 +10,7 @@ use crate::dispatch_matrix::{
 use crate::fz_ir::{CallsiteIdent, FnId, ReceiveClause, Var};
 use crate::ir_codegen::backend::register_runtime_symbols;
 use crate::ir_codegen::runtime_syms::declare_runtime_symbols;
-use crate::runtime_type_test_shim::{self, ObservedSet, RuntimeTypeTestShim};
+use crate::runtime_type_predicate::{self, ObservedSet, RuntimeTypePredicate};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::default_libcall_names;
@@ -80,7 +80,7 @@ fn clause_meta(bound_names: Vec<&str>) -> ReceiveClause {
     }
 }
 
-fn dispatch_from_rows(rows: Vec<(AstPattern, Option<Spanned<AstExpr>>)>) -> PatternDispatchPlan<RuntimeTypeTestShim> {
+fn dispatch_from_rows(rows: Vec<(AstPattern, Option<Spanned<AstExpr>>)>) -> PatternDispatchPlan<RuntimeTypePredicate> {
     let source_patterns = SourcePatternRows {
         input_count: 1,
         rows: rows
@@ -96,7 +96,7 @@ fn dispatch_from_rows(rows: Vec<(AstPattern, Option<Spanned<AstExpr>>)>) -> Patt
     };
     pattern_dispatch_from_source(source_patterns)
         .expect("compile dispatch")
-        .map_type_handle(&mut runtime_type_test_shim::from_legacy_ty)
+        .map_type_handle(&mut runtime_type_predicate::from_legacy_ty)
 }
 
 fn finalize_and_get(mut jmod: JITModule, fid: FuncId) -> ReceiveDispatchAbi {
@@ -113,7 +113,7 @@ fn build_dispatch_fn(
     tuple_schemas: &HashMap<usize, u32>,
     pinned: &[(String, Var)],
     clauses: &[ReceiveClause],
-    dispatch: &PatternDispatchPlan<RuntimeTypeTestShim>,
+    dispatch: &PatternDispatchPlan<RuntimeTypePredicate>,
     name: &str,
 ) -> ReceiveDispatchAbi {
     let fid = declare_receive_dispatch(jmod, name).expect("declare receive dispatch");
@@ -176,7 +176,9 @@ fn build_dispatch_fn(
     finalize_and_get(replace(jmod, make_jit().0), fid)
 }
 
-fn direct_shim_dispatch(shim: RuntimeTypeTestShim) -> PatternDispatchPlan<RuntimeTypeTestShim> {
+fn direct_runtime_type_predicate_dispatch(
+    predicate: RuntimeTypePredicate,
+) -> PatternDispatchPlan<RuntimeTypePredicate> {
     PatternDispatchPlan {
         matrix: DispatchMatrix {
             subjects: vec![Subject {
@@ -198,7 +200,7 @@ fn direct_shim_dispatch(shim: RuntimeTypeTestShim) -> PatternDispatchPlan<Runtim
         graph: DispatchGraph {
             nodes: vec![
                 DispatchNode::Test {
-                    predicate: RegionPredicate::new(SubjectId(0), Region::Type(shim)),
+                    predicate: RegionPredicate::new(SubjectId(0), Region::Type(predicate)),
                     on_match: DispatchEdge::with_evidence(GraphNodeId(1), EdgeEvidence::empty()),
                     on_miss: DispatchEdge::with_evidence(GraphNodeId(2), EdgeEvidence::empty()),
                 },
@@ -395,7 +397,7 @@ fn cached_matcher_tuple_with_atom_pinned_var_matches_arrived_message() {
 }
 
 #[test]
-fn cached_matcher_type_region_uses_runtime_type_test_shim() {
+fn cached_matcher_type_region_uses_runtime_type_predicate() {
     let mut process = new_process();
     let pp = process.as_mut() as *mut Process;
     let (mut jmod, mut fbctx) = make_jit();
@@ -403,9 +405,9 @@ fn cached_matcher_type_region_uses_runtime_type_test_shim() {
     let tuple_ids = HashMap::new();
     let pinned = Vec::new();
     let clauses = vec![clause_meta(vec![])];
-    let dispatch = direct_shim_dispatch(RuntimeTypeTestShim {
+    let dispatch = direct_runtime_type_predicate_dispatch(RuntimeTypePredicate {
         ints: ObservedSet::lit(42),
-        ..RuntimeTypeTestShim::none()
+        ..RuntimeTypePredicate::none()
     });
     let f = build_dispatch_fn(
         &mut jmod,

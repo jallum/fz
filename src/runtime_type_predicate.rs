@@ -1,3 +1,9 @@
+//! First-class runtime-observable membership predicates.
+//!
+//! Semantic types remain richer than what the runtime can inspect directly.
+//! Backends and the interpreter therefore answer runtime-membership questions
+//! by projecting semantic types into this explicit predicate layer.
+
 use crate::fz_ir::Module;
 use crate::types::{Ty as LegacyTy, ty_descr};
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind, struct_schema_id};
@@ -80,7 +86,7 @@ impl<T: Ord + Clone> ObservedSet<T> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RuntimeTypeTestShim {
+pub(crate) struct RuntimeTypePredicate {
     pub(crate) ints: ObservedSet<i64>,
     pub(crate) floats: ObservedSet<u64>,
     pub(crate) atoms: ObservedSet<String>,
@@ -94,7 +100,7 @@ pub(crate) struct RuntimeTypeTestShim {
     pub(crate) resources: bool,
 }
 
-impl RuntimeTypeTestShim {
+impl RuntimeTypePredicate {
     pub(crate) fn none() -> Self {
         Self {
             ints: ObservedSet::none(),
@@ -128,21 +134,21 @@ impl RuntimeTypeTestShim {
     }
 
     pub(crate) fn tuple_arity(arity: usize) -> Self {
-        let mut shim = Self::none();
-        shim.tuple_arities = ObservedSet::lit(arity);
-        shim
+        let mut predicate = Self::none();
+        predicate.tuple_arities = ObservedSet::lit(arity);
+        predicate
     }
 
     pub(crate) fn named_struct(name: impl Into<String>) -> Self {
-        let mut shim = Self::none();
-        shim.named_structs = ObservedSet::lit(name.into());
-        shim
+        let mut predicate = Self::none();
+        predicate.named_structs = ObservedSet::lit(name.into());
+        predicate
     }
 
     pub(crate) fn map_kind() -> Self {
-        let mut shim = Self::none();
-        shim.maps = true;
-        shim
+        let mut predicate = Self::none();
+        predicate.maps = true;
+        predicate
     }
 
     pub(crate) fn has_structs(&self) -> bool {
@@ -150,20 +156,20 @@ impl RuntimeTypeTestShim {
     }
 }
 
-impl Default for RuntimeTypeTestShim {
+impl Default for RuntimeTypePredicate {
     fn default() -> Self {
         Self::none()
     }
 }
 
-impl fmt::Display for RuntimeTypeTestShim {
+impl fmt::Display for RuntimeTypePredicate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{self:?}")
     }
 }
 
-pub(crate) fn matches_runtime_any_value(
-    shim: &RuntimeTypeTestShim,
+pub(crate) fn matches_runtime_type_predicate(
+    predicate: &RuntimeTypePredicate,
     module: &Module,
     value: RuntimeAnyValue,
     tuple_schema_ids: &HashMap<usize, u32>,
@@ -171,10 +177,10 @@ pub(crate) fn matches_runtime_any_value(
 ) -> bool {
     match value {
         RuntimeAnyValue::Null => false,
-        RuntimeAnyValue::EmptyList => shim.lists.contains(&ListShape::Empty),
-        RuntimeAnyValue::Int(value) => shim.ints.contains(&value),
-        RuntimeAnyValue::Float(bits) => shim.floats.contains(&bits),
-        RuntimeAnyValue::Atom(atom_id) => mapped_membership(&shim.atoms, atom_id, |name| {
+        RuntimeAnyValue::EmptyList => predicate.lists.contains(&ListShape::Empty),
+        RuntimeAnyValue::Int(value) => predicate.ints.contains(&value),
+        RuntimeAnyValue::Float(bits) => predicate.floats.contains(&bits),
+        RuntimeAnyValue::Atom(atom_id) => mapped_membership(&predicate.atoms, atom_id, |name| {
             module
                 .atom_names
                 .iter()
@@ -182,21 +188,21 @@ pub(crate) fn matches_runtime_any_value(
                 .map(|idx| idx as u32)
         }),
         RuntimeAnyValue::HeapRef(value_ref) => match value_ref.tag() {
-            ValueKind::LIST => shim.lists.contains(&ListShape::NonEmpty),
-            ValueKind::MAP => shim.maps,
-            ValueKind::BITSTRING => shim.binaries,
-            ValueKind::CLOSURE => shim.closures,
-            ValueKind::RESOURCE => shim.resources,
-            ValueKind::STRUCT => matches_runtime_struct(shim, module, value, tuple_schema_ids, named_schema_ids),
+            ValueKind::LIST => predicate.lists.contains(&ListShape::NonEmpty),
+            ValueKind::MAP => predicate.maps,
+            ValueKind::BITSTRING => predicate.binaries,
+            ValueKind::CLOSURE => predicate.closures,
+            ValueKind::RESOURCE => predicate.resources,
+            ValueKind::STRUCT => matches_runtime_struct(predicate, module, value, tuple_schema_ids, named_schema_ids),
             ValueKind::NULL | ValueKind::INT | ValueKind::FLOAT | ValueKind::ATOM => false,
             _ => false,
         },
     }
 }
 
-pub(crate) fn from_legacy_ty(ty: &LegacyTy) -> RuntimeTypeTestShim {
+pub(crate) fn from_legacy_ty(ty: &LegacyTy) -> RuntimeTypePredicate {
     let descr = ty_descr(ty);
-    RuntimeTypeTestShim {
+    RuntimeTypePredicate {
         ints: ObservedSet {
             cofinite: descr.ints.cofinite,
             values: descr.ints.set.iter().copied().collect(),
@@ -318,16 +324,16 @@ where
 }
 
 fn matches_runtime_struct(
-    shim: &RuntimeTypeTestShim,
+    predicate: &RuntimeTypePredicate,
     module: &Module,
     value: RuntimeAnyValue,
     tuple_schema_ids: &HashMap<usize, u32>,
     named_schema_ids: &HashMap<String, u32>,
 ) -> bool {
-    if !shim.has_structs() {
+    if !predicate.has_structs() {
         return false;
     }
-    if shim.allow_other_structs && shim.tuple_arities.is_any() && shim.named_structs.is_any() {
+    if predicate.allow_other_structs && predicate.tuple_arities.is_any() && predicate.named_structs.is_any() {
         return true;
     }
     let Some(ptr) = value.heap_addr() else {
@@ -339,47 +345,47 @@ fn matches_runtime_struct(
         .keys()
         .filter_map(|name| named_schema_ids.get(name).copied())
         .collect::<BTreeSet<_>>();
-    let tuple_match = if shim.tuple_arities.is_none() {
+    let tuple_match = if predicate.tuple_arities.is_none() {
         false
-    } else if shim.tuple_arities.is_any() {
+    } else if predicate.tuple_arities.is_any() {
         !known_named.contains(&actual_schema)
     } else {
-        let tuple_ids = shim
+        let tuple_ids = predicate
             .tuple_arities
             .values
             .iter()
             .filter_map(|arity| tuple_schema_ids.get(arity).copied())
             .collect::<BTreeSet<_>>();
-        if shim.tuple_arities.cofinite {
+        if predicate.tuple_arities.cofinite {
             !known_named.contains(&actual_schema) && !tuple_ids.contains(&actual_schema)
         } else {
             tuple_ids.contains(&actual_schema)
         }
     };
-    let named_match = if shim.named_structs.is_none() {
+    let named_match = if predicate.named_structs.is_none() {
         false
-    } else if shim.named_structs.is_any() {
+    } else if predicate.named_structs.is_any() {
         known_named.contains(&actual_schema)
     } else {
-        let relevant = shim
+        let relevant = predicate
             .named_structs
             .values
             .iter()
             .filter_map(|name| named_schema_ids.get(name).copied())
             .collect::<BTreeSet<_>>();
-        if shim.named_structs.cofinite {
+        if predicate.named_structs.cofinite {
             known_named.contains(&actual_schema) && !relevant.contains(&actual_schema)
         } else {
             relevant.contains(&actual_schema)
         }
     };
-    let known_tuple = shim
+    let known_tuple = predicate
         .tuple_arities
         .values
         .iter()
         .filter_map(|arity| tuple_schema_ids.get(arity).copied())
         .collect::<BTreeSet<_>>();
     let other_match =
-        shim.allow_other_structs && !known_named.contains(&actual_schema) && !known_tuple.contains(&actual_schema);
+        predicate.allow_other_structs && !known_named.contains(&actual_schema) && !known_tuple.contains(&actual_schema);
     tuple_match || named_match || other_match
 }

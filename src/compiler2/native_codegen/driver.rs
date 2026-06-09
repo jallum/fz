@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 /// Walk every fn body collecting tuple arities used by MakeTuple /
-/// DestTupleBegin / RuntimeTypeTestShim facts, detecting any bitstring prim, then
+/// DestTupleBegin / RuntimeTypePredicate facts, detecting any bitstring prim, then
 /// registering a deterministic-id Schema per arity in `user_schemas`.
 ///
 /// Returns `(tuple_arities, tuple_schema_ids, bs_tuple_arity1_schema,
@@ -48,7 +48,7 @@ fn collect_tuple_arities_and_register_schemas(
                         has_bs_prim = true;
                     }
                     Prim::TypeTest(_, _) => panic!("compiler2 native program should not carry legacy Prim::TypeTest"),
-                    Prim::RuntimeTypeTestShim(_, descr) => {
+                    Prim::RuntimeTypeTest(_, descr) => {
                         tuple_arities.extend(descr.tuple_arities.values.iter().copied());
                     }
                     _ => {}

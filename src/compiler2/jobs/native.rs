@@ -22,7 +22,7 @@ use crate::fz_ir::{
     ExternMarshalSite, ExternTy, FnBuilder, FnCategory, FnId, InitTokenId, ModuleBuilder, Prim, ReceiveAfter,
     ReceiveClause, Term, UnOp as IrUnOp, Var,
 };
-use crate::runtime_type_test_shim::RuntimeTypeTestShim;
+use crate::runtime_type_predicate::RuntimeTypePredicate;
 use crate::type_expr::ResolvedSpecDecl;
 use crate::types::Types as LegacyTypes;
 
@@ -737,8 +737,9 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     let source = env
                         .var(*source)
                         .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
-                    let shim = RuntimeTypeTestShim::named_struct(module_name.rsplit('.').next().unwrap_or(module_name));
-                    let (matches, _) = ctx.emit_let(Prim::RuntimeTypeTestShim(source, Box::new(shim)));
+                    let predicate =
+                        RuntimeTypePredicate::named_struct(module_name.rsplit('.').next().unwrap_or(module_name));
+                    let (matches, _) = ctx.emit_let(Prim::RuntimeTypeTest(source, Box::new(predicate)));
                     ctx.assert_truthy(matches, self.atom_id("match_error"));
                 }
                 BackendStep::RequireMapValue { value, source, key } => {
@@ -757,8 +758,8 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     let source = env
                         .var(*source)
                         .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
-                    let tuple_ty = RuntimeTypeTestShim::tuple_arity(*arity);
-                    let (matches, _) = ctx.emit_let(Prim::RuntimeTypeTestShim(source, Box::new(tuple_ty)));
+                    let tuple_ty = RuntimeTypePredicate::tuple_arity(*arity);
+                    let (matches, _) = ctx.emit_let(Prim::RuntimeTypeTest(source, Box::new(tuple_ty)));
                     ctx.assert_truthy(matches, self.atom_id("match_error"));
                 }
                 BackendStep::TupleField { value, source, index } => {
@@ -1034,7 +1035,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 let pinned = self.receive_pinned_vars(env, bindings, dispatch)?;
                 let dispatch = {
                     let types = self.world.types();
-                    dispatch.map_type_handle(&mut |ty| types.runtime_type_test_shim(ty))
+                    dispatch.map_type_handle(&mut |ty| types.runtime_type_predicate(ty))
                 };
                 ctx.set_term(Term::ReceiveMatched {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
@@ -1561,8 +1562,8 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             }
             Region::Type(ty) => {
                 let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
-                let shim = self.world.types().runtime_type_test_shim(ty);
-                let (var, _) = ctx.emit_let(Prim::RuntimeTypeTestShim(subject, Box::new(shim)));
+                let predicate = self.world.types().runtime_type_predicate(ty);
+                let (var, _) = ctx.emit_let(Prim::RuntimeTypeTest(subject, Box::new(predicate)));
                 var
             }
             Region::Equal(ComparisonValue::Const(DispatchConst::EmptyList)) | Region::List(ListRegion::Empty) => {
@@ -1577,15 +1578,15 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             }
             Region::TupleArity(arity) => {
                 let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
-                let tuple_ty = RuntimeTypeTestShim::tuple_arity(*arity as usize);
-                let (var, _) = ctx.emit_let(Prim::RuntimeTypeTestShim(subject, Box::new(tuple_ty)));
+                let tuple_ty = RuntimeTypePredicate::tuple_arity(*arity as usize);
+                let (var, _) = ctx.emit_let(Prim::RuntimeTypeTest(subject, Box::new(tuple_ty)));
                 var
             }
             Region::MapKind => {
                 let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
-                let (var, _) = ctx.emit_let(Prim::RuntimeTypeTestShim(
+                let (var, _) = ctx.emit_let(Prim::RuntimeTypeTest(
                     subject,
-                    Box::new(RuntimeTypeTestShim::map_kind()),
+                    Box::new(RuntimeTypePredicate::map_kind()),
                 ));
                 var
             }

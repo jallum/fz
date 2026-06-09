@@ -146,7 +146,7 @@ pub(crate) fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
             is_last: *is_last,
         },
         Prim::TypeTest(a, d) => Prim::TypeTest(sv(*a), d.clone()),
-        Prim::RuntimeTypeTestShim(a, d) => Prim::RuntimeTypeTestShim(sv(*a), d.clone()),
+        Prim::RuntimeTypeTest(a, d) => Prim::RuntimeTypeTest(sv(*a), d.clone()),
         Prim::Brand(a, name) => Prim::Brand(sv(*a), name.clone()),
     }
 }

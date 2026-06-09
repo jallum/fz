@@ -9,7 +9,7 @@ use crate::ir_planner::type_fn::type_fn;
 use crate::ir_planner::{ModulePlan, SpecPlan};
 use crate::measurements;
 use crate::metadata;
-use crate::runtime_type_test_shim::RuntimeTypeTestShim;
+use crate::runtime_type_predicate::RuntimeTypePredicate;
 use crate::telemetry::{Metadata, Telemetry};
 use crate::types::{ClosureTypes, RenderTypes, Ty, Types};
 use fz_runtime::any_value::AnyValueRef;
@@ -35,7 +35,7 @@ pub(super) fn try_match_clauses<T: Types<Ty = Ty>>(
     module: &Module,
     tel: &dyn Telemetry,
     clauses: &[MatchedClause],
-    dispatch: &PatternDispatchPlan<RuntimeTypeTestShim>,
+    dispatch: &PatternDispatchPlan<RuntimeTypePredicate>,
     msg: AnyValue,
     pinned: &HashMap<String, AnyValue>,
     _captures: &[AnyValue],

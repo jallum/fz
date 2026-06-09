@@ -26,7 +26,7 @@ mod ir_lower;
 mod ir_planner;
 mod modules;
 mod parser;
-mod runtime_type_test_shim;
+mod runtime_type_predicate;
 mod specs;
 mod telemetry;
 #[cfg(test)]

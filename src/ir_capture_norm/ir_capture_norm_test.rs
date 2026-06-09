@@ -8,7 +8,7 @@ use crate::dispatch_matrix::{
 use crate::fz_ir::{
     BinOp, BlockId, CallsiteIdent, Const, FnBuilder, FnCategory, FnId, ModuleBuilder, Prim, ReceiveAfter, ReceiveClause,
 };
-use crate::runtime_type_test_shim::RuntimeTypeTestShim;
+use crate::runtime_type_predicate::RuntimeTypePredicate;
 use crate::telemetry::capture::OwnedEvent;
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use std::sync::Arc;
@@ -139,7 +139,7 @@ fn build_module_with_tail_call_cont_site() -> Module {
     mb.build()
 }
 
-fn empty_dispatch() -> Arc<PatternDispatchPlan<RuntimeTypeTestShim>> {
+fn empty_dispatch() -> Arc<PatternDispatchPlan<RuntimeTypePredicate>> {
     Arc::new(PatternDispatchPlan {
         matrix: DispatchMatrix {
             subjects: vec![],
