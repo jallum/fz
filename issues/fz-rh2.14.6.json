@@ -7,13 +7,13 @@
     "fz-rh2.14.5"
   ],
   "created": "2026-06-09T12:51:25Z",
-  "description": "If .13 lands with a runtime_type_test_shim, rework that area so direct type-tests and receive dispatch consume one honest runtime-membership model instead of a shimmed projection. Signal: the _shim is gone and compiler2-native has one runtime predicate path.",
+  "description": "The landscape changed after .13/.14.4: the so-called runtime_type_test_shim is already the shared runtime-membership model in substance. Compiler2 projects rich Ty facts into it, cached receive dispatch stores it, native codegen consumes it, and the interpreter executes it.\n\nThe remaining problem is not missing machinery; it is that the honest runtime-observable predicate is still named and documented like temporary compiler2-local scaffolding. That confuses the semantic type layer with the runtime-membership layer.\n\nGoal: make the layering explicit and truthful. Signal: the shared runtime-membership model is named and documented as a first-class runtime predicate; semantic dispatch/refinement still uses rich Ty, while direct runtime tests and cached receive dispatch carry the runtime predicate explicitly through one projection seam.\n\nChange:\n- rename RuntimeTypeTestShim / runtime_type_test_shim / Prim::RuntimeTypeTestShim to first-class runtime-predicate names\n- keep the two-layer model explicit: semantic Region\u003cTy\u003e / branch refinement above, runtime predicate execution below\n- keep explicit projector seams from compiler2 Ty and legacy Ty into the runtime predicate while both worlds exist\n- update docs/tests/telemetry guidance so the queue stops describing this as temporary compiler2-native exception handling\n\nNon-goals:\n- replacing semantic Ty dispatch/refinement with runtime predicates\n- deleting legacy Prim::TypeTest or legacy Ty consumers outside this seam\n- inventing a second runtime-membership model\n\nWhy:\n- the correct architecture is already mostly present; this ticket should make it honest, tight, and easy to reason about rather than pretending the shared runtime predicate is still an ad hoc bridge",
   "id": "fz-rh2.14.6",
   "labels": [],
   "parent": "fz-rh2.14",
   "priority": 2,
   "status": "open",
-  "title": "Compiler2 native backends: replace the runtime_type_test_shim with a first-class runtime predicate",
+  "title": "Compiler2 native backends: promote runtime_type_test_shim to the shared first-class runtime predicate",
   "type": "task",
-  "updated_at": "2026-06-09T12:51:35Z"
+  "updated_at": "2026-06-09T14:45:09Z"
 }
