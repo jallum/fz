@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-09T04:26:11Z",
+  "description": "Goal: close the arc cleanly and hand back a smaller migration problem. Signal: docs, telemetry guidance, and ticket text all describe the post-move ownership cut precisely; `fz-rh2.9` is either newly tractable or obviously obsolete with any true remainder filed as its own ticket.\n\nChange:\n- update northstar, agent docs, and telemetry guidance to match the in-house backend boundary\n- remove temporary scaffolding/fixtures introduced during the move\n- rewrite or retire stale migration tickets so the queue points at the real remaining work, if any\n\nWhy:\n- this arc only pays off if it leaves the queue cleaner than it found it\n\nChecks:\n- no temporary fixtures remain without a removal ticket\n- returning to `fz-rh2.9` is clearly the next move, or a smaller replacement ticket exists and explains why",
+  "id": "fz-rh2.14.5",
+  "labels": [],
+  "parent": "fz-rh2.14",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 native backends: close the arc and restate the migration problem",
+  "type": "task",
+  "updated_at": "2026-06-09T04:26:11Z"
+}
