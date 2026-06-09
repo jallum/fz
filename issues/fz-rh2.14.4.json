@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-09T04:26:04Z",
+  "description": "Goal: switch compiler2 front doors onto the in-house native backend and delete the compiler2 route through old-world codegen entry points. Signal: `Compiler2::compile_root_jit`, `run_root_jit`, `compile_root_aot`, compiler2 tests, and the `fz2` binary use only the compiler2-owned backend path; `src/compiler2/compiler.rs` no longer creates a fresh legacy type owner or calls the planner-shaped shared native entrypoint.\n\nChange:\n- move compiler2 JIT/AOT/runtime entry points onto the compiler2-owned backend\n- delete compiler2-specific dead helpers and entry paths in the old shared native route\n- keep shared only the universal backend/runtime substrate still consumed by both worlds\n\nWhy:\n- until the front doors switch, the compiler2 path still pays the old-world tax even if the new backend exists\n\nChecks:\n- compiler2 front-door and CLI tests pass through the in-house backend\n- grep for compiler2 callsites into the old shared native entrypoint is empty",
+  "id": "fz-rh2.14.4",
+  "labels": [],
+  "parent": "fz-rh2.14",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 native backends: switch compiler2 front doors and delete the old route",
+  "type": "task",
+  "updated_at": "2026-06-09T04:26:04Z"
+}
