@@ -1,4 +1,5 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
+use crate::ast::Attribute;
 use crate::compiler2::artifact::{BackendEntry, BackendTail};
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::JobEffects;
@@ -22,6 +23,7 @@ use crate::ir_interp::{
 };
 use crate::telemetry::handler::{Event, EventKind, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+use crate::type_expr::resolve_spec_decls_generic;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -395,6 +397,217 @@ fn compiler2_derive_type_def_mints_a_refines_brand_inner_in_symbol() {
         resolved[0],
         expect.display(&int),
         "the brand is observably distinct from its bare inner type",
+    );
+}
+
+#[test]
+fn compiler2_dark_launch_contract_type_resolution_matches_legacy_env_and_stays_lazy() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+
+    let mut world = crate::compiler2::World::new(&tel);
+    let code_id = world.submit_code(
+        Some("contract_dark_launch.fz".to_string()),
+        concat!(
+            "defmodule Proof do\n",
+            "  @type count :: integer\n",
+            "  @type box(a) :: [a]\n",
+            "  @type count_box :: box(count)\n",
+            "  @type cold :: {count, count}\n",
+            "\n",
+            "  @spec roundtrip(count_box, x) :: x when x: count_box\n",
+            "  fn roundtrip(value, x), do: x\n",
+            "end\n",
+        )
+        .to_string(),
+    );
+    assert_resolved(
+        world.drive(),
+        "first drive should index the module-scoped contract case",
+    );
+
+    let indexed = outputs
+        .take(Job::IndexCode(code_id))
+        .expect("IndexCode job effects for the dark-launch contract case");
+    let module_ids = module_indexed_ids(&indexed);
+    assert_eq!(module_ids.len(), 1, "the test source defines exactly one module");
+    let module = module_ids[0];
+
+    assert!(
+        world.demand(Job::ScopeCode(code_id)),
+        "scoping the test source should be demandable",
+    );
+    assert_resolved(world.drive(), "second drive should scope the test source");
+    assert!(
+        world.demand(Job::DefineModule(module)),
+        "defining the test module should be demandable",
+    );
+    assert_resolved(
+        world.drive(),
+        "third drive should define the module-scoped function surface",
+    );
+
+    let function = function_id(&functions, "roundtrip", 2);
+    let define_count = |name: &str| {
+        capture
+            .find(&["fz", "compiler2", "type", "defined"])
+            .into_iter()
+            .filter(|event| metadata_str(event, "name") == name)
+            .count()
+    };
+
+    assert_eq!(
+        define_count("count"),
+        0,
+        "the new type path stays cold before explicit demand"
+    );
+    assert_eq!(
+        define_count("box"),
+        0,
+        "the new type path stays cold before explicit demand"
+    );
+    assert_eq!(
+        define_count("count_box"),
+        0,
+        "the new type path stays cold before explicit demand",
+    );
+    assert_eq!(
+        define_count("cold"),
+        0,
+        "unreached types stay cold before explicit demand"
+    );
+
+    let def = world.function_definition(function);
+    let spec = def
+        .ast
+        .attrs
+        .iter()
+        .find_map(|attr| match attr {
+            Attribute::Spec(spec) => Some(spec.clone()),
+            _ => None,
+        })
+        .expect("roundtrip/2 should still carry its declared @spec");
+
+    let legacy_env = world
+        .function_type_env(function)
+        .expect("the legacy type env should still resolve while both paths coexist");
+    assert_eq!(
+        define_count("count"),
+        0,
+        "reading the legacy type env should not fire the new type resolver"
+    );
+    assert_eq!(
+        define_count("box"),
+        0,
+        "reading the legacy type env should not fire the new type resolver"
+    );
+    assert_eq!(
+        define_count("count_box"),
+        0,
+        "reading the legacy type env should not fire the new type resolver"
+    );
+    assert_eq!(
+        define_count("cold"),
+        0,
+        "an unreferenced type should stay cold while only the legacy env path is read"
+    );
+    let legacy = resolve_spec_decls_generic(world.types_mut(), std::iter::once(&spec), &legacy_env)
+        .expect("the legacy type env should still resolve the declared contract")
+        .into_iter()
+        .next()
+        .expect("one declared spec should produce one resolved arrow");
+
+    let referenced = world.function_type_refs(function).to_vec();
+    assert_eq!(
+        referenced.len(),
+        1,
+        "the function surface references exactly one declared type name"
+    );
+    assert_eq!(
+        referenced[0].name, "count_box",
+        "the recorded type-name dep is the module-local alias named in the @spec"
+    );
+    assert_eq!(referenced[0].arity, 0, "the referenced alias is monomorphic");
+
+    for type_name in referenced {
+        assert!(
+            world.demand(Job::DeriveTypeDef(type_name)),
+            "pulling a referenced type through the production demand path should be demandable",
+        );
+    }
+    assert_resolved(
+        world.drive(),
+        "demanding the referenced type names should resolve the wait-set closure",
+    );
+
+    assert_eq!(
+        define_count("count"),
+        1,
+        "the wrapper wait-set should pull count exactly once"
+    );
+    assert_eq!(
+        define_count("box"),
+        1,
+        "the wrapper wait-set should pull box exactly once"
+    );
+    assert_eq!(
+        define_count("count_box"),
+        1,
+        "the directly referenced alias should resolve exactly once"
+    );
+    assert_eq!(
+        define_count("cold"),
+        0,
+        "a type no consumer references should stay cold through the dark launch"
+    );
+
+    let resolved = world
+        .resolve_spec(def.namespace, &spec)
+        .expect("the new resolver should resolve the same declared contract through TypeDefined");
+
+    let int = world.types_mut().int();
+    let list_int = world.types_mut().list(int);
+    let var0 = world.types_mut().type_var(TypeVarId(0));
+
+    assert_eq!(
+        resolved.params.len(),
+        2,
+        "the worked example keeps both declared params"
+    );
+    assert_eq!(
+        resolved.params[0], list_int,
+        "count_box should resolve to list(integer) through the new resolver"
+    );
+    assert_eq!(
+        resolved.params[1], var0,
+        "the free type variable x should intern to TypeVarId(0)"
+    );
+    assert_eq!(
+        resolved.result, var0,
+        "the result x should reuse the exact same type-var handle"
+    );
+    assert_eq!(
+        resolved.constraints.get(&TypeVarId(0)),
+        Some(&list_int),
+        "the when-clause bound should resolve to the same list(integer) handle"
+    );
+
+    assert_eq!(
+        legacy.params, resolved.params,
+        "old and new contract params should be the exact same interned Ty handles"
+    );
+    assert_eq!(
+        legacy.result, resolved.result,
+        "old and new contract results should be the exact same interned Ty handle"
+    );
+    assert_eq!(
+        legacy.constraints, resolved.constraints,
+        "old and new contract bounds should be the exact same interned Ty handles"
     );
 }
 
