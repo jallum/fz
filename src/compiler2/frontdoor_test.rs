@@ -541,6 +541,42 @@ fn compiler2_frontdoor_quotes_bootstrap_control_and_ffi_forms() {
 }
 
 #[test]
+fn compiler2_frontdoor_preserves_extern_symbol_calls_distinct_from_ascription() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "extern_call.fz",
+        "fn main(), do: libc::open(path, flags, mode :: integer)\n",
+        &tel,
+    )
+    .expect("quoted parse");
+
+    let items = root.cursor().list_items().expect("top-level items");
+    assert_eq!(items.len(), 1);
+
+    let main_node = items[0].ast_node().expect("main cursor").expect("main node");
+    let main_args = main_node.tail.list_items().expect("main args");
+    let body = main_args[1].list_items().expect("main kw")[0]
+        .tuple_items()
+        .expect("main do tuple")[1]
+        .ast_node()
+        .expect("call cursor")
+        .expect("call node");
+    assert_eq!(head_name(&body), "libc::open");
+
+    let call_args = body.tail.list_items().expect("call args");
+    assert_eq!(call_args.len(), 3);
+    let typed_arg = call_args[2]
+        .ast_node()
+        .expect("typed arg cursor")
+        .expect("typed arg node");
+    assert_eq!(
+        head_name(&typed_arg),
+        "::",
+        "call-arg ascription should survive while the extern symbol itself stays a direct call head",
+    );
+}
+
+#[test]
 fn compiler2_frontdoor_parses_operator_headed_function_defs() {
     let tel = ConfiguredTelemetry::new();
     let root =

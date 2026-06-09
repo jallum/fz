@@ -36,8 +36,9 @@ use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
 use super::drive::{FactKey, Job, JobEffects, WorkGraph};
 use super::facts::FactValue;
 use super::identity::{
-    ActivationKey, ExecutableNeed, FunctionDef, FunctionId, FunctionMap, ModuleExport, ModuleId, ModuleMap,
-    ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootMap, TypeDeclMap, TypeName, TypeRefMap,
+    ActivationKey, ExecutableNeed, FunctionDef, FunctionId, FunctionMap, FunctionSource, FunctionSourceMap,
+    FunctionSourceState, ModuleExport, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry,
+    RootId, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::keying::{DispatchMaskMap, RecursiveMap};
 use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
@@ -83,6 +84,7 @@ pub struct World<'a> {
     code: CodeMap,
     modules: ModuleMap,
     functions: FunctionMap,
+    function_sources: FunctionSourceMap,
     type_decls: TypeDeclMap,
     type_refs: TypeRefMap,
     type_defs: TypeDefMap,
@@ -118,6 +120,7 @@ impl std::fmt::Debug for World<'_> {
             .field("code", &self.code)
             .field("modules", &self.modules)
             .field("functions", &self.functions)
+            .field("function_sources", &self.function_sources)
             .field("function_contracts", &self.function_contracts)
             .field("bodies", &self.bodies)
             .field("roots", &self.roots)
@@ -136,6 +139,7 @@ impl<'a> World<'a> {
             code: CodeMap::new(),
             modules: ModuleMap::new(),
             functions: FunctionMap::new(),
+            function_sources: FunctionSourceMap::new(),
             type_decls: TypeDeclMap::new(),
             type_refs: TypeRefMap::new(),
             type_defs: TypeDefMap::new(),
@@ -918,6 +922,37 @@ impl<'a> World<'a> {
         (id, revision)
     }
 
+    pub(crate) fn note_function_source(&mut self, function: FunctionId, source: FunctionSource) -> u64 {
+        let revision = self.function_sources.note(function, source.clone());
+        let function_ref = self.functions.reference_for(function);
+        self.tel.execute(
+            &["fz", "compiler2", "function", "source", "noted"],
+            &measurements! {
+                code_id: source.code.as_u32() as u64,
+                module_id: function_ref.module.as_u32() as u64,
+                owner_module_id: source.owner_module.as_u32() as u64,
+                function_id: function.as_u32() as u64,
+                revision: revision,
+                arity: function_ref.arity as u64,
+                clauses: function_source_clause_count(&source),
+                source_heap_id: source.source.root.key().heap_id as u64,
+                source_root_ref: source.source.root.root().raw_word(),
+            },
+            &metadata! {
+                function_ref: opaque_debug(function_ref),
+                source: opaque_debug(&source),
+            },
+        );
+        revision
+    }
+
+    pub(crate) fn function_source(&self, function: FunctionId) -> Option<FunctionSource> {
+        match self.function_sources.get(function)?.state.clone() {
+            FunctionSourceState::Placeholder => None,
+            FunctionSourceState::Noted { source } => Some(*source),
+        }
+    }
+
     pub(crate) fn define_function_contract(&mut self, function: FunctionId, contract: FunctionContract) -> u64 {
         let revision = self.function_contracts.define(function, contract.clone());
         let function_ref = self.functions.reference_for(function);
@@ -1304,7 +1339,9 @@ impl<'a> World<'a> {
             super::identity::FunctionState::Defined { def } => {
                 Some(ScopeSnapshot::function(def.owner_module, def.namespace, function))
             }
-            super::identity::FunctionState::Placeholder => None,
+            super::identity::FunctionState::Placeholder => self
+                .function_source(function)
+                .map(|source| ScopeSnapshot::function(source.owner_module, source.namespace, function)),
         }
     }
 
@@ -1315,24 +1352,23 @@ impl<'a> World<'a> {
     pub(crate) fn function_variadic(&self, function: FunctionId) -> bool {
         match &self.functions.get(function).state {
             super::identity::FunctionState::Defined { def } => def.legacy_ast.variadic,
-            super::identity::FunctionState::Placeholder => false,
+            super::identity::FunctionState::Placeholder => {
+                self.function_source(function).is_some_and(|source| source.variadic)
+            }
         }
     }
 
-    pub(crate) fn ensure_function_surface(&mut self, function: FunctionId) -> Vec<Job> {
+    pub(crate) fn ensure_function_source(&mut self, function: FunctionId) -> Vec<Job> {
         let module = self.function_module(function);
         if module.is_global() {
-            return Vec::new();
+            return self.code.ids().into_iter().map(Job::ScopeCode).collect();
         }
         self.ensure_runtime_module(module);
         vec![Job::DefineModule(module)]
     }
 
     pub(crate) fn wait_for_function_definition(&mut self, function: FunctionId) -> JobEffects {
-        JobEffects::wait_on(
-            FactKey::FunctionDefined(function),
-            self.ensure_function_surface(function),
-        )
+        JobEffects::wait_on(FactKey::FunctionDefined(function), vec![Job::DefineFunction(function)])
     }
 
     /// Demands and waits on the module whose definition notes `module`'s
@@ -1765,6 +1801,7 @@ impl<'a> World<'a> {
                     Span::DUMMY,
                 ),
             }),
+            FactKey::FunctionSource(function) => self.unresolved_function_issue(frontier, *function),
             FactKey::FunctionDefined(function) => self.unresolved_function_issue(frontier, *function),
             _ => None,
         }
@@ -1814,6 +1851,29 @@ fn callable_match_score(fixed_arity: usize, variadic: bool, actual_arity: usize)
         return Some(CallableMatchScore::VariadicPrefix(fixed_arity));
     }
     None
+}
+
+fn function_source_clause_count(source: &FunctionSource) -> u64 {
+    let Ok(items) = source.source.root.cursor().list_items() else {
+        return 0;
+    };
+    let mut clauses = 0_u64;
+    for item in items {
+        let Ok(Some(node)) = item.ast_node() else {
+            continue;
+        };
+        let Ok(head) = node.head.atom_name() else {
+            continue;
+        };
+        if head.starts_with('@') {
+            continue;
+        }
+        if head == "extern" {
+            return 0;
+        }
+        clauses += 1;
+    }
+    clauses
 }
 
 /// A consumer's references are a set: the same type named twice (e.g. by both a

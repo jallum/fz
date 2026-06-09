@@ -244,6 +244,18 @@ pub enum FunctionState {
 }
 
 #[derive(Debug, Clone)]
+pub struct FunctionSourceSlot {
+    pub state: FunctionSourceState,
+    pub revision: u64,
+}
+
+#[derive(Debug, Clone)]
+pub enum FunctionSourceState {
+    Placeholder,
+    Noted { source: Box<FunctionSource> },
+}
+
+#[derive(Debug, Clone)]
 pub struct FunctionDef {
     pub code: CodeId,
     pub owner_module: ModuleId,
@@ -251,6 +263,16 @@ pub struct FunctionDef {
     pub capture_params: Vec<String>,
     pub source: QuotedSourceCarrier,
     pub legacy_ast: FnDef,
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionSource {
+    pub code: CodeId,
+    pub owner_module: ModuleId,
+    pub namespace: Namespace,
+    pub capture_params: Vec<String>,
+    pub variadic: bool,
+    pub source: QuotedSourceCarrier,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -305,6 +327,41 @@ pub struct ModuleMap {
     slots: Vec<Module>,
     names: Vec<Option<String>>,
     by_name: HashMap<String, ModuleId>,
+}
+
+#[derive(Debug, Default)]
+pub struct FunctionSourceMap {
+    slots: Vec<FunctionSourceSlot>,
+}
+
+impl FunctionSourceMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn note(&mut self, id: FunctionId, source: FunctionSource) -> u64 {
+        self.ensure_slot(id);
+        let slot = &mut self.slots[id.0 as usize];
+        let next = FunctionSourceState::Noted {
+            source: Box::new(source),
+        };
+        replace_if_changed(&mut slot.state, &mut slot.revision, next)
+    }
+
+    pub fn get(&self, id: FunctionId) -> Option<&FunctionSourceSlot> {
+        self.slots.get(id.0 as usize)
+    }
+
+    fn ensure_slot(&mut self, id: FunctionId) {
+        let needed = id.0 as usize + 1;
+        if self.slots.len() >= needed {
+            return;
+        }
+        self.slots.resize_with(needed, || FunctionSourceSlot {
+            state: FunctionSourceState::Placeholder,
+            revision: 0,
+        });
+    }
 }
 
 impl ModuleMap {
@@ -705,6 +762,23 @@ impl SameState for FunctionState {
                     && left.owner_module == right.owner_module
                     && left.namespace == right.namespace
                     && left.capture_params == right.capture_params
+                    && left.source.key() == right.source.key()
+            }
+            _ => false,
+        }
+    }
+}
+
+impl SameState for FunctionSourceState {
+    fn same_state(&self, other: &Self) -> bool {
+        match (self, other) {
+            (FunctionSourceState::Placeholder, FunctionSourceState::Placeholder) => true,
+            (FunctionSourceState::Noted { source: left }, FunctionSourceState::Noted { source: right }) => {
+                left.code == right.code
+                    && left.owner_module == right.owner_module
+                    && left.namespace == right.namespace
+                    && left.capture_params == right.capture_params
+                    && left.variadic == right.variadic
                     && left.source.key() == right.source.key()
             }
             _ => false,

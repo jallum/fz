@@ -195,7 +195,7 @@ fn collect_requirements(
     }
     let Some(_) = world.function_defined_revision(function) else {
         waits.insert(FactKey::FunctionDefined(function));
-        follow_up.extend(world.ensure_function_surface(function));
+        follow_up.insert(Job::DefineFunction(function));
         return Ok(());
     };
     reads.push(FactKey::FunctionDefined(function));

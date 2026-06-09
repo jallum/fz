@@ -32,7 +32,7 @@ type EntryDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternDispatchPlan<T
 type GuardDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternGuardDispatch<Ty>>>>>;
 type LoweredBodyDefs = Rc<RefCell<HashMap<FunctionId, Vec<LoweredBody>>>>;
 type SpanJobs = Rc<RefCell<HashMap<u64, Job>>>;
-type FunctionDefs = Rc<RefCell<Vec<FunctionDefinedRecord>>>;
+type FunctionDefs = Rc<RefCell<HashMap<FunctionId, FunctionDefinedRecord>>>;
 type ModuleDefs = Rc<RefCell<HashMap<ModuleId, Vec<Module>>>>;
 type CallsiteDefs = Rc<RefCell<Vec<CallsiteDefinedRecord>>>;
 type SemanticClosedDefs = Rc<RefCell<Vec<SemanticClosedRecord>>>;
@@ -161,6 +161,8 @@ fn compiler2_records_type_references_as_consumer_dependencies() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
@@ -181,6 +183,15 @@ fn compiler2_records_type_references_as_consumer_dependencies() {
         "scoping the top-level code should be demandable",
     );
     assert_resolved(compiler.drive(), "second drive should scope, note, and walk references");
+    let uses_id = function_id(&functions, "tkf_uses", 2);
+    assert!(
+        compiler.demand(Job::DefineFunction(uses_id)),
+        "function type refs should become observable when the function surface is actually demanded",
+    );
+    assert_resolved(
+        compiler.drive(),
+        "third drive should materialize the function and publish its type references",
+    );
 
     let consumers_of = |ref_name: &str| {
         let mut consumers = capture
@@ -593,7 +604,7 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let modules = ModuleCapture::new();
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
 
@@ -665,20 +676,25 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
             ("partition", 4, "<top-level>", "partition", "function", 3),
             ("qsort", 1, "<top-level>", "qsort", "function", 2),
         ],
-        "function.defined should publish the expected top-level definitions"
+        "scoping should note the expected top-level function surfaces"
     );
 
     assert_eq!(
         capture.count(&["fz", "compiler2", "function", "defined"]),
+        0,
+        "indexing should not eagerly materialize function definitions"
+    );
+    assert_eq!(
+        capture.count(&["fz", "compiler2", "function", "source", "noted"]),
         5,
-        "indexing should emit one function.defined event per function"
+        "scoping should note one function-source fact per top-level function"
     );
     assert!(
         capture
-            .find(&["fz", "compiler2", "function", "defined"])
+            .find(&["fz", "compiler2", "function", "source", "noted"])
             .into_iter()
             .all(|event| event.metadata.len() == 0),
-        "generic capture should not durable-copy synthesized function definition metadata"
+        "generic capture should not durable-copy synthesized function-source metadata"
     );
     assert_eq!(
         capture.count(&["fz", "compiler2", "code", "indexed"]),
@@ -755,7 +771,7 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
     let work_graph = WorkGraphCapture::new();
     tel.attach(&["fz", "compiler2", "work_graph", "applied"], work_graph.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
     let mut compiler = Compiler2::new(&tel);
     let _code_id = compiler.submit_code(CodeSubmission {
@@ -941,7 +957,7 @@ fn compiler2_runtime_refs_pull_only_the_reached_runtime_modules() {
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let modules = ModuleCapture::new();
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
     let bodies = LoweredBodyCapture::new();
@@ -1034,7 +1050,7 @@ fn compiler2_analyze_activation_publishes_one_whole_callsite_fact_per_call() {
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
@@ -1078,7 +1094,7 @@ fn compiler2_unused_runtime_library_stays_cold() {
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let modules = ModuleCapture::new();
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
     let bodies = LoweredBodyCapture::new();
@@ -1127,7 +1143,7 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let modules = ModuleCapture::new();
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
     let callsites = CallsiteCapture::new();
@@ -1288,7 +1304,7 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
 fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let modules = ModuleCapture::new();
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
     let callsites = CallsiteCapture::new();
@@ -1387,7 +1403,7 @@ fn compiler2_materialization_projects_only_the_closed_quicksort_frontier() {
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let bodies = LoweredBodyCapture::new();
     tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
     let materialized = MaterializedProgramCapture::new();
@@ -1511,7 +1527,7 @@ fn compiler2_materialization_turns_semantically_cold_cond_arms_into_halt_stubs()
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let materialized = MaterializedProgramCapture::new();
     tel.attach(
         &["fz", "compiler2", "materialized_program", "defined"],
@@ -1588,7 +1604,7 @@ fn compiler2_materialization_freezes_only_the_selected_enum_reduce_path() {
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let modules = ModuleCapture::new();
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
     let materialized = MaterializedProgramCapture::new();
@@ -1713,7 +1729,7 @@ fn compiler2_abi_ready_makes_tuple_field_return_delivery_explicit_for_quicksort(
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let abi_ready = AbiReadyProgramCapture::new();
     tel.attach(
         &["fz", "compiler2", "abi_ready_program", "defined"],
@@ -1790,7 +1806,7 @@ fn compiler2_abi_ready_makes_tuple_field_return_delivery_explicit_for_quicksort(
 fn compiler2_abi_ready_boxes_heap_projection_returns_at_function_boundaries() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let abi_ready = AbiReadyProgramCapture::new();
     tel.attach(
         &["fz", "compiler2", "abi_ready_program", "defined"],
@@ -1845,7 +1861,7 @@ fn compiler2_abi_ready_derives_only_the_closed_enum_reduce_callable_entries() {
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let modules = ModuleCapture::new();
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
     let abi_ready = AbiReadyProgramCapture::new();
@@ -1979,7 +1995,7 @@ fn compiler2_materialization_projects_variadic_extern_signatures_and_callsite_ma
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let materialized = MaterializedProgramCapture::new();
     tel.attach(
         &["fz", "compiler2", "materialized_program", "defined"],
@@ -2097,7 +2113,7 @@ fn compiler2_emission_ready_projects_only_the_closed_quicksort_inventory() {
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let emission_ready = EmissionReadyProgramCapture::new();
     tel.attach(
         &["fz", "compiler2", "emission_ready_program", "defined"],
@@ -2192,7 +2208,7 @@ fn compiler2_emission_ready_projects_only_the_closed_quicksort_inventory() {
 fn compiler2_emission_ready_includes_the_required_enum_reduce_callable_entries() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let modules = ModuleCapture::new();
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
     let emission_ready = EmissionReadyProgramCapture::new();
@@ -2490,7 +2506,7 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let backend = BackendProgramCapture::new();
     tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
 
@@ -2579,7 +2595,7 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
 fn compiler2_backend_program_attaches_the_closed_enum_reduce_callable_boundaries() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let modules = ModuleCapture::new();
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
     let backend = BackendProgramCapture::new();
@@ -2652,7 +2668,7 @@ fn compiler2_backend_program_preserves_variadic_extern_wire_classes() {
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let backend = BackendProgramCapture::new();
     tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
 
@@ -2733,7 +2749,7 @@ fn compiler2_native_program_keeps_only_the_closed_quicksort_inventory() {
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
@@ -2878,7 +2894,7 @@ fn compiler2_native_program_keeps_the_closed_enum_reduce_callable_entries() {
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let modules = ModuleCapture::new();
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
     let native = NativeProgramCapture::new();
@@ -2959,7 +2975,7 @@ fn compiler2_native_program_preserves_variadic_extern_wrappers_and_marshals() {
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
@@ -3137,7 +3153,7 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
@@ -3835,7 +3851,7 @@ fn compiler2_native_program_resource_fixture_shapes_callable_entries_explicitly(
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
@@ -3963,7 +3979,7 @@ fn compiler2_backend_program_revision_stays_stable_for_identical_recompute() {
 fn compiler2_abi_ready_preserves_variadic_extern_marshals_and_integer_lanes() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let abi_ready = AbiReadyProgramCapture::new();
     tel.attach(
         &["fz", "compiler2", "abi_ready_program", "defined"],
@@ -4031,7 +4047,7 @@ end
 fn compiler2_emission_ready_preserves_variadic_extern_inventory_and_marshals() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let emission_ready = EmissionReadyProgramCapture::new();
     tel.attach(
         &["fz", "compiler2", "emission_ready_program", "defined"],
@@ -4099,7 +4115,7 @@ end
 fn compiler2_materialization_resolves_auto_variadic_marshals_from_value_types() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let materialized = MaterializedProgramCapture::new();
     tel.attach(
         &["fz", "compiler2", "materialized_program", "defined"],
@@ -4152,7 +4168,7 @@ fn compiler2_variadic_extern_too_few_args_is_a_lower_diagnostic() {
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
@@ -4206,7 +4222,7 @@ fn compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_nee
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let callsites = CallsiteCapture::new();
     tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
     let semantic = SemanticClosedCapture::new();
@@ -4296,7 +4312,7 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     let semantic = SemanticClosedCapture::new();
     tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
@@ -4460,7 +4476,7 @@ fn compiler2_redefining_main_retracts_the_old_root_frontier_and_activates_foo() 
     let semantic = SemanticClosedCapture::new();
     tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
@@ -4713,7 +4729,7 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
@@ -4753,8 +4769,8 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
     assert!(
         scope_outputs
             .iter()
-            .any(|(fact, _)| *fact == FactKey::FunctionDefined(foo_id)),
-        "late code should define foo/0 without an explicit ScopeCode demand"
+            .any(|(fact, _)| *fact == FactKey::FunctionSource(foo_id)),
+        "late code should note foo/0 source without an explicit ScopeCode demand"
     );
     assert_eq!(
         outputs.stops_matching(|job| matches!(job, Job::SeedRoot(_))).len(),
@@ -4783,7 +4799,7 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
@@ -4866,7 +4882,7 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let semantic = SemanticClosedCapture::new();
     tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
 
@@ -4946,7 +4962,7 @@ fn compiler2_lowered_body_keeps_clause_projections_separate_from_entry_matching(
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let bodies = LoweredBodyCapture::new();
     tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
 
@@ -5010,7 +5026,7 @@ fn compiler2_generated_lambda_body_binds_captures_as_leading_inputs() {
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let bodies = LoweredBodyCapture::new();
     tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
 
@@ -5082,7 +5098,7 @@ fn compiler2_lowered_body_keeps_local_match_asserts_inside_the_body() {
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let bodies = LoweredBodyCapture::new();
     tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
 
@@ -5148,7 +5164,7 @@ fn compiler2_guard_dispatch_reifies_single_clause_and_transitive_helpers() {
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let guard_defs = GuardDispatchCapture::new();
     tel.attach(&["fz", "compiler2", "guard_dispatch", "defined"], guard_defs.handler());
 
@@ -5220,7 +5236,7 @@ fn compiler2_guard_dispatch_threads_call_arguments_and_destructuring() {
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let guard_defs = GuardDispatchCapture::new();
     tel.attach(&["fz", "compiler2", "guard_dispatch", "defined"], guard_defs.handler());
 
@@ -5287,7 +5303,7 @@ fn compiler2_guard_dispatch_rejects_cycles() {
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
@@ -5340,7 +5356,7 @@ fn compiler2_guard_dispatch_rejects_impure_helpers() {
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
@@ -5402,7 +5418,7 @@ fn compiler2_entry_dispatch_plans_clause_heads_with_preconditions_and_helper_gua
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let entry_defs = EntryDispatchCapture::new();
     tel.attach(&["fz", "compiler2", "entry_dispatch", "defined"], entry_defs.handler());
 
@@ -5493,7 +5509,7 @@ fn compiler2_entry_dispatch_plans_trivial_single_clause_functions() {
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let entry_defs = EntryDispatchCapture::new();
     tel.attach(&["fz", "compiler2", "entry_dispatch", "defined"], entry_defs.handler());
 
@@ -5546,7 +5562,7 @@ fn compiler2_entry_dispatch_recomputes_only_the_dependent_helper_blast_radius() 
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let entry_defs = EntryDispatchCapture::new();
     tel.attach(&["fz", "compiler2", "entry_dispatch", "defined"], entry_defs.handler());
 
@@ -5593,6 +5609,9 @@ fn other(_), do: false
     let _ = outputs
         .take(Job::PlanEntryDispatch(other_id))
         .expect("initial other/1 entry dispatch should run");
+    let other_plan_stops_before = outputs
+        .stops_matching(|job| matches!(job, Job::PlanEntryDispatch(id) if *id == other_id))
+        .len();
     let _ = entry_dispatch(&entry_defs, wanted_id);
     let _ = entry_dispatch(&entry_defs, other_id);
 
@@ -5623,8 +5642,11 @@ fn other(_), do: false
         wanted_outputs.contains(&presence(FactKey::EntryDispatch(wanted_id), 2)),
         "dependent wanted/1 entry dispatch should republish with a new revision",
     );
-    assert!(
-        outputs.take(Job::PlanEntryDispatch(other_id)).is_none(),
+    assert_eq!(
+        outputs
+            .stops_matching(|job| matches!(job, Job::PlanEntryDispatch(id) if *id == other_id))
+            .len(),
+        other_plan_stops_before,
         "independent other/1 entry dispatch should stay cold across helper redefinition",
     );
 }
@@ -5637,7 +5659,7 @@ fn compiler2_index_code_recurses_through_nested_modules() {
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let modules = ModuleCapture::new();
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
 
@@ -5763,7 +5785,7 @@ fn compiler2_import_only_binds_exact_refs_and_pulls_provider_when_used() {
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let modules = ModuleCapture::new();
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
 
@@ -5930,7 +5952,7 @@ fn compiler2_import_all_waits_for_defined_module_surface() {
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let modules = ModuleCapture::new();
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
 
@@ -5988,7 +6010,7 @@ fn compiler2_import_except_waits_for_defined_module_surface() {
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let modules = ModuleCapture::new();
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
 
@@ -6246,7 +6268,7 @@ impl WorkGraphCapture {
 impl FunctionCapture {
     fn new() -> Self {
         Self {
-            defs: Rc::new(RefCell::new(Vec::new())),
+            defs: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
@@ -6257,16 +6279,16 @@ impl FunctionCapture {
     }
 
     fn all(&self) -> Vec<FunctionDefinedRecord> {
-        self.defs.borrow().clone()
+        self.defs.borrow().values().cloned().collect()
     }
 
     fn id(&self, name: &str, arity: u64) -> FunctionId {
         self.defs
             .borrow()
-            .iter()
+            .values()
             .find(|record| record.function_ref.name == name && record.arity == arity)
             .map(|record| record.function_id)
-            .unwrap_or_else(|| panic!("function.defined for {name}/{arity}"))
+            .unwrap_or_else(|| panic!("function fact for {name}/{arity}"))
     }
 }
 
@@ -6294,6 +6316,23 @@ impl ModuleCapture {
             .and_then(|defs| defs.last())
             .cloned()
             .unwrap_or_else(|| panic!("module.defined for {}", module_id.as_u32()));
+        Self::qualified_name_from(module, self)
+    }
+
+    fn try_qualified_name(&self, module_id: ModuleId) -> Option<String> {
+        if module_id == ModuleId::GLOBAL {
+            return Some("<top-level>".to_string());
+        }
+        let module = self
+            .defs
+            .borrow()
+            .get(&module_id)
+            .and_then(|defs| defs.last())
+            .cloned()?;
+        Some(Self::qualified_name_from(module, self))
+    }
+
+    fn qualified_name_from(module: Module, modules: &Self) -> String {
         match &module.state {
             crate::compiler2::ModuleState::Defined { source, .. }
             | crate::compiler2::ModuleState::Scoped { source, .. }
@@ -6301,7 +6340,7 @@ impl ModuleCapture {
                 if source.parent == ModuleId::GLOBAL {
                     source.local_name.clone()
                 } else {
-                    format!("{}.{}", self.qualified_name(source.parent), source.local_name)
+                    format!("{}.{}", modules.qualified_name(source.parent), source.local_name)
                 }
             }
             crate::compiler2::ModuleState::Placeholder => {
@@ -6732,9 +6771,14 @@ impl Handler for WorkGraphCaptureHandler {
 
 impl Handler for FunctionCaptureHandler {
     fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "function", "defined"] || event.kind != EventKind::Event {
+        if event.kind != EventKind::Event {
             return;
         }
+        let from_source = match event.name {
+            ["fz", "compiler2", "function", "defined"] => false,
+            ["fz", "compiler2", "function", "source", "noted"] => true,
+            _ => return,
+        };
         let Some(Value::U64(function_id)) = event.measurements.get("function_id") else {
             return;
         };
@@ -6758,19 +6802,27 @@ impl Handler for FunctionCaptureHandler {
         else {
             return;
         };
-        let owner_function_id = match event.measurements.get("owner_function_id") {
-            Some(Value::U64(owner)) => Some(FunctionId::from_u32(*owner as u32)),
-            _ => None,
+        let function_id = FunctionId::from_u32(*function_id as u32);
+        let owner_function_id = if from_source {
+            None
+        } else {
+            match event.measurements.get("owner_function_id") {
+                Some(Value::U64(owner)) => Some(FunctionId::from_u32(*owner as u32)),
+                _ => None,
+            }
         };
-        self.defs.borrow_mut().push(FunctionDefinedRecord {
-            function_id: FunctionId::from_u32(*function_id as u32),
-            module_id: ModuleId::from_u32(*module_id as u32),
-            owner_module_id,
-            arity: *arity,
-            clauses: *clauses,
-            owner_function_id,
-            function_ref: function_ref.clone(),
-        });
+        self.defs.borrow_mut().insert(
+            function_id,
+            FunctionDefinedRecord {
+                function_id,
+                module_id: ModuleId::from_u32(*module_id as u32),
+                owner_module_id,
+                arity: *arity,
+                clauses: *clauses,
+                owner_function_id,
+                function_ref: function_ref.clone(),
+            },
+        );
     }
 }
 
@@ -7679,7 +7731,7 @@ fn function_id_in_module(
         .find(|record| {
             record.function_ref.name == name
                 && record.arity == arity
-                && function_module_name(record, modules) == module_name
+                && modules.try_qualified_name(record.module_id).as_deref() == Some(module_name)
         })
         .map(|record| record.function_id)
         .unwrap_or_else(|| panic!("function.defined for {module_name}.{name}/{arity}"))
@@ -7708,7 +7760,9 @@ fn function_fq_name(function: &FunctionDefinedRecord, modules: &ModuleCapture) -
 }
 
 fn function_module_name(function: &FunctionDefinedRecord, modules: &ModuleCapture) -> String {
-    modules.qualified_name(function.module_id)
+    modules
+        .try_qualified_name(function.module_id)
+        .unwrap_or_else(|| format!("<module:{}>", function.module_id.as_u32()))
 }
 
 fn module_indexed_ids(outputs: &OutputFacts) -> Vec<crate::compiler2::ModuleId> {

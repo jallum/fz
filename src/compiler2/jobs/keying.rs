@@ -106,11 +106,11 @@ fn collect_static_graph(
         let module = world.function_module(function);
         if !module.is_global() && world.module_defined_revision(module).is_none() {
             waits.insert(FactKey::ModuleDefined(module));
-            follow_up.extend(world.ensure_function_surface(function));
+            follow_up.extend(world.ensure_function_source(function));
             return;
         }
         waits.insert(FactKey::FunctionDefined(function));
-        follow_up.extend(world.ensure_function_surface(function));
+        follow_up.insert(Job::DefineFunction(function));
         return;
     }
 

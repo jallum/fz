@@ -532,12 +532,12 @@ impl QuotedSourceCursor {
     }
 
     pub fn utf8_binary_text(&self) -> Result<String, QuotedSourceError> {
-        let bytes = self.root_bytes()?;
+        let bytes = self.raw_bytes()?;
         String::from_utf8(bytes)
             .map_err(|error| QuotedSourceError::new(format!("expected valid UTF-8 bitstring: {error}")))
     }
 
-    fn root_bytes(&self) -> Result<Vec<u8>, QuotedSourceError> {
+    pub fn raw_bytes(&self) -> Result<Vec<u8>, QuotedSourceError> {
         let heap_word = match self.root.tag() {
             ValueKind::BITSTRING | ValueKind::PROCBIN => {
                 self.root.heap_object_word().map_err(QuotedSourceError::from)?

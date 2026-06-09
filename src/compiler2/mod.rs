@@ -13,6 +13,7 @@ mod frontdoor;
 mod identity;
 mod jobs;
 mod keying;
+mod legacy_fn_def;
 mod namespace;
 mod native_codegen;
 mod protocol;
@@ -55,9 +56,9 @@ pub use facts::{FactChange, FactReplace, FactSlot, FactTable, FactValue};
 pub use frontdoor::{FrontDoorError, parse_quoted_program};
 pub use identity::{
     ActivationKey, ExecutableKey, ExecutableNeed, Function, FunctionDef, FunctionId, FunctionMap, FunctionRef,
-    FunctionState, LegacyModuleBody, LegacyModuleSource, LegacyProtocolSource, Module, ModuleExport, ModuleId,
-    ModuleMap, ModuleSource, ModuleSourceKind, ModuleState, ModuleSurface, NotedTypeDecl, Root, RootEntry, RootId,
-    RootMap, TypeName,
+    FunctionSource, FunctionSourceMap, FunctionSourceSlot, FunctionSourceState, FunctionState, LegacyModuleBody,
+    LegacyModuleSource, LegacyProtocolSource, Module, ModuleExport, ModuleId, ModuleMap, ModuleSource,
+    ModuleSourceKind, ModuleState, ModuleSurface, NotedTypeDecl, Root, RootEntry, RootId, RootMap, TypeName,
 };
 pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
 pub use scheduler::{AppliedStep, DriveOutcome, FatalError, Scheduler};
@@ -93,6 +94,8 @@ mod facts_test;
 mod frontdoor_test;
 #[cfg(test)]
 mod identity_test;
+#[cfg(test)]
+mod legacy_fn_def_test;
 #[cfg(test)]
 mod namespace_test;
 #[cfg(test)]

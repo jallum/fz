@@ -1,0 +1,79 @@
+use crate::ast::{Attribute, BitSize, BitType, Expr};
+use crate::parser::lexer::Tok;
+use crate::telemetry::ConfiguredTelemetry;
+
+use super::legacy_fn_def::derive_legacy_fn_def;
+use super::{CodeId, QuotedSourceRoot, parse_quoted_program};
+
+fn grouped_function_root(source_name: &str, text: &str) -> QuotedSourceRoot {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(source_name, text, &tel).expect("quoted parse");
+    let items = root.cursor().list_items().expect("top-level items");
+    let item_roots = items.into_iter().map(|item| item.root()).collect::<Vec<_>>();
+    root.interned_list_subroot(&item_roots)
+        .expect("grouped function root should intern")
+}
+
+#[test]
+fn compiler2_legacy_fn_def_derives_specs_and_bit_specs_without_old_parser() {
+    let source = r#"
+@spec pack(integer) :: binary
+fn pack(x :: integer), do: <<x::integer-size(16), rest::binary-size(len)-unit(8)>>
+"#;
+    let root = grouped_function_root("pack.fz", source);
+    let tel = ConfiguredTelemetry::new();
+    let def = derive_legacy_fn_def(&root, CodeId::ZERO, Some("pack.fz"), source, &tel).expect("derive legacy fn");
+
+    let Attribute::Spec(spec) = &def.attrs[0] else {
+        panic!("expected @spec attr");
+    };
+    assert_eq!(spec.name, "pack");
+    assert_eq!(spec.param_body_tokens.len(), 1);
+    assert!(
+        matches!(spec.param_body_tokens[0].0.as_slice(), [token] if matches!(token.tok, Tok::Ident(ref name) if name == "integer"))
+    );
+    assert!(
+        matches!(spec.result_body_tokens.0.as_slice(), [token] if matches!(token.tok, Tok::Ident(ref name) if name == "binary"))
+    );
+
+    let annotation = def.clauses[0].param_annotations[0]
+        .as_ref()
+        .expect("parameter annotation should decode");
+    assert!(
+        matches!(annotation.0.as_slice(), [token] if matches!(token.tok, Tok::Ident(ref name) if name == "integer"))
+    );
+
+    let Expr::Bitstring(fields) = &def.clauses[0].body.node else {
+        panic!("expected bitstring body");
+    };
+    assert_eq!(fields.len(), 2);
+    assert_eq!(fields[0].spec.ty, BitType::Integer);
+    assert!(matches!(fields[0].spec.size, Some(BitSize::Literal(16))));
+    assert_eq!(fields[1].spec.ty, BitType::Binary);
+    assert!(matches!(fields[1].spec.size, Some(BitSize::Var(ref name)) if name == "len"));
+    assert_eq!(fields[1].spec.unit, Some(8));
+}
+
+#[test]
+fn compiler2_legacy_fn_def_derives_operator_specs_from_quoted_source() {
+    let source = r#"
+@spec integer + integer :: integer
+fn left + right, do: left + right
+"#;
+    let root = grouped_function_root("plus.fz", source);
+    let tel = ConfiguredTelemetry::new();
+    let def = derive_legacy_fn_def(&root, CodeId::ZERO, Some("plus.fz"), source, &tel).expect("derive legacy fn");
+
+    assert_eq!(def.name, "+");
+    let Attribute::Spec(spec) = &def.attrs[0] else {
+        panic!("expected @spec attr");
+    };
+    assert_eq!(spec.name, "+");
+    assert_eq!(spec.param_body_tokens.len(), 2);
+    assert!(spec.param_body_tokens.iter().all(
+        |body| matches!(body.0.as_slice(), [token] if matches!(token.tok, Tok::Ident(ref name) if name == "integer"))
+    ));
+    assert!(
+        matches!(spec.result_body_tokens.0.as_slice(), [token] if matches!(token.tok, Tok::Ident(ref name) if name == "integer"))
+    );
+}

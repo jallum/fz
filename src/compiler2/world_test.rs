@@ -77,6 +77,19 @@ fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_capt
     );
 
     let function = world.reference_function(ModuleId::GLOBAL, "tkf_f", 2);
+    assert!(
+        world.demand(Job::DefineFunction(function)),
+        "legacy function materialization should be demandable when a caller actually needs it",
+    );
+    assert!(
+        world.function_source(function).is_some(),
+        "scoping should note the grouped quoted function source before define",
+    );
+    let outcome = world.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Resolved),
+        "demanding the function should derive its legacy compatibility shape on demand",
+    );
     let def = world.function_definition(function);
     let spec = def
         .legacy_ast

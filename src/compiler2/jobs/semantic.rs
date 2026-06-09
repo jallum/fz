@@ -1275,7 +1275,7 @@ fn wait_for_unresolved_function_module(
         return false;
     }
     waits.insert(FactKey::ModuleDefined(module));
-    follow_up.extend(world.ensure_function_surface(function));
+    follow_up.extend(world.ensure_function_source(function));
     true
 }
 

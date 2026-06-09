@@ -46,6 +46,10 @@ comparison surface when it wants one.
   structure.
 - Capture refs cover local names, remote names, and bare/operator refs such as
   `&Kernel.+/2` and `&+/2`.
+- Extern-symbol folding for adjacent `ident::ident` names is only valid in
+  ordinary expression/capture position. Bitstring segment parsing suppresses
+  that folding so forms like `payload::binary-size(len)` stay quoted as
+  segment/type AST, not as fake extern-symbol variables.
 
 ## Surface Grouping
 
@@ -61,8 +65,16 @@ comparison surface when it wants one.
   must yield the same `{heap, root}` for the same logical function surface.
 - Protocol-impl callback bodies use that same grouped-root substrate; they are
   not a second special-case function source format.
-- That grouped surface is what indexing/scoping walks today while downstream
-  body/contract work still carries explicit `legacy_*` compatibility payloads.
+- `FactKey::FunctionSource(FunctionId)` is now the lazy authoritative function
+  fact. Source jobs note grouped quoted roots first; `FunctionDefined` is
+  derived on demand from that fact.
+- While downstream body/contract work still carries explicit `legacy_*`
+  compatibility payloads, compiler2 derives them once from grouped quoted
+  source in `src/compiler2/legacy_fn_def.rs` instead of reparsing text.
+- The noted function-source fact must carry enough callable surface to keep
+  pre-definition name resolution honest. Today that explicitly includes the
+  variadic bit, because lowering may need callable matching before
+  `FunctionDefined` exists.
 
 ## Bootstrap Coverage
 

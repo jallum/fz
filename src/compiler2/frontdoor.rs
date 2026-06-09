@@ -60,6 +60,7 @@ struct FrontDoorParser<'a> {
     source_text: &'a str,
     builder: QuotedSourceBuilder,
     allow_trailing_do: bool,
+    allow_extern_symbol_folding: bool,
 }
 
 #[derive(Clone)]
@@ -98,6 +99,7 @@ impl<'a> FrontDoorParser<'a> {
             source_text,
             builder,
             allow_trailing_do: true,
+            allow_extern_symbol_folding: true,
         }
     }
 
@@ -609,9 +611,24 @@ impl<'a> FrontDoorParser<'a> {
                 Ok(ParsedExpr::plain(self.builder.variable("_", &meta)?, start))
             }
             Tok::Ident(name) => {
+                let mut name = name;
+                if self.allow_extern_symbol_folding
+                    && self.peek_is(&Tok::ColonColon)
+                    && self.prev_span().end == self.cur_span().start
+                {
+                    self.bump();
+                    match self.bump() {
+                        Tok::Ident(second) => {
+                            name = format!("{name}::{second}");
+                        }
+                        other => {
+                            return self.err(format!("expected name after `{}::`, got {:?}", name, other));
+                        }
+                    }
+                }
                 let meta = self.meta(module_path, scope, start)?;
                 let root = self.builder.variable(&name, &meta)?;
-                Ok(ParsedExpr::direct_name(root, start, name))
+                Ok(ParsedExpr::direct_name(root, start.merge(self.prev_span()), name))
             }
             Tok::Upper(name) => self.parse_alias_expr(name, module_path, scope, start),
             Tok::LParen => {
@@ -846,7 +863,9 @@ impl<'a> FrontDoorParser<'a> {
         scope: &[String],
         start: Span,
     ) -> Result<ParsedExpr, FrontDoorError> {
-        let segments = self.parse_exprs_until(&Tok::RBitstr, module_path, scope)?;
+        let segments = self.with_extern_symbol_folding_suppressed(|parser| {
+            parser.parse_exprs_until(&Tok::RBitstr, module_path, scope)
+        })?;
         self.expect(&Tok::RBitstr, "`>>`")?;
         let span = start.merge(self.prev_span());
         let meta = self.meta(module_path, scope, span)?;
@@ -1072,7 +1091,7 @@ impl<'a> FrontDoorParser<'a> {
                 &meta,
                 self.builder.list(&[target.root, self.builder.atom(&field)])?,
             )?;
-            target = ParsedExpr::plain(self.builder.call_callee(callee, &meta, &[])?, span);
+            target = ParsedExpr::plain(callee, span);
         }
 
         Ok(target)
@@ -1593,6 +1612,17 @@ impl<'a> FrontDoorParser<'a> {
         self.allow_trailing_do = false;
         let out = f(self);
         self.allow_trailing_do = old;
+        out
+    }
+
+    fn with_extern_symbol_folding_suppressed<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, FrontDoorError>,
+    ) -> Result<T, FrontDoorError> {
+        let old = self.allow_extern_symbol_folding;
+        self.allow_extern_symbol_folding = false;
+        let out = f(self);
+        self.allow_extern_symbol_folding = old;
         out
     }
 

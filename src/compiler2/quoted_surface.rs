@@ -199,7 +199,9 @@ fn prepare_surface_forms(source: &QuotedSourceRoot) -> Result<Vec<QuotedSourceCa
         };
         let head_name = node.head.atom_name()?;
         if head_name.starts_with('@') {
-            pending_attrs.push(quoted_item.root());
+            if matches!(head_name.as_str(), "@doc" | "@spec") {
+                pending_attrs.push(quoted_item.root());
+            }
             continue;
         }
         match head_name.as_str() {

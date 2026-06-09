@@ -23,7 +23,9 @@ use super::super::scheduler::FatalError;
 use super::super::scope::ScopeSnapshot;
 use super::super::type_expr::{NominalKind, TypeDefBody, TypeExpr, parse_type_def_body, parse_type_expr};
 use super::super::world::World;
-use super::super::{FactValue, LegacyCodeSource, QuotedCodeSource, QuotedSourceCarrier, parse_quoted_program};
+use super::super::{
+    FactValue, FunctionSource, LegacyCodeSource, QuotedCodeSource, QuotedSourceCarrier, parse_quoted_program,
+};
 
 type Output = (FactKey, FactValue);
 type Outputs = Vec<Output>;
@@ -449,34 +451,22 @@ fn index_function(
 ) -> Result<(Output, Option<ModuleExport>), FatalError> {
     let current_module = scope.module_id();
     let namespace = scope.namespace();
-    let (function_id, revision) = world.define_function(
-        current_module,
+    let function_id = world.reference_function(
         current_module,
         function.legacy_fn.name.clone(),
-        code_id,
-        namespace,
-        function.source.clone(),
-        function.legacy_fn.clone(),
+        function.legacy_fn.arity(),
     );
-
-    // A function's declared type surface is one dependency set: its @spec, its
-    // extern signature, and its inline parameter annotations (`fn f(x(T), …)`),
-    // the last of which become entry-dispatch type-tests resolved in .4.
-    let mut refs = Vec::new();
-    for attr in &function.legacy_fn.attrs {
-        if let Attribute::Spec(spec) = attr {
-            collect_spec_refs(world, namespace, spec, &mut refs)?;
-        }
-    }
-    if let Some(extern_spec) = function.legacy_fn.extern_contract_decl() {
-        collect_spec_refs(world, namespace, &extern_spec, &mut refs)?;
-    }
-    for clause in &function.legacy_fn.clauses {
-        for annotation in clause.param_annotations.iter().flatten() {
-            collect_body_refs(world, namespace, annotation, &mut refs)?;
-        }
-    }
-    world.record_function_type_refs(function_id, refs);
+    let revision = world.note_function_source(
+        function_id,
+        FunctionSource {
+            code: code_id,
+            owner_module: current_module,
+            namespace,
+            capture_params: Vec::new(),
+            variadic: function.legacy_fn.variadic,
+            source: function.source.clone(),
+        },
+    );
 
     let export = (!function.legacy_fn.is_private).then(|| ModuleExport {
         name: function.legacy_fn.name.clone(),
@@ -489,7 +479,7 @@ fn index_function(
         },
     });
     Ok((
-        (FactKey::FunctionDefined(function_id), FactValue::presence(revision)),
+        (FactKey::FunctionSource(function_id), FactValue::presence(revision)),
         export,
     ))
 }
@@ -575,6 +565,69 @@ fn collect_body_refs(
     })?;
     collect_type_refs(world, scope, &expr, out);
     Ok(())
+}
+
+fn record_function_type_refs(
+    world: &mut World<'_>,
+    function: super::super::FunctionId,
+    def: &crate::ast::FnDef,
+) -> Result<(), FatalError> {
+    let namespace = world
+        .function_source(function)
+        .expect("function type refs should only be recorded after function source is noted")
+        .namespace;
+    let mut refs = Vec::new();
+    for attr in &def.attrs {
+        if let Attribute::Spec(spec) = attr {
+            collect_spec_refs(world, namespace, spec, &mut refs)?;
+        }
+    }
+    if let Some(extern_spec) = def.extern_contract_decl() {
+        collect_spec_refs(world, namespace, &extern_spec, &mut refs)?;
+    }
+    for clause in &def.clauses {
+        for annotation in clause.param_annotations.iter().flatten() {
+            collect_body_refs(world, namespace, annotation, &mut refs)?;
+        }
+    }
+    world.record_function_type_refs(function, refs);
+    Ok(())
+}
+
+pub(super) fn define_function(
+    world: &mut World<'_>,
+    function_id: super::super::FunctionId,
+) -> Result<JobEffects, FatalError> {
+    let Some(source) = world.function_source(function_id) else {
+        return Ok(JobEffects::wait_on(
+            FactKey::FunctionSource(function_id),
+            world.ensure_function_source(function_id),
+        ));
+    };
+
+    let legacy_ast = crate::compiler2::legacy_fn_def::derive_legacy_fn_def(
+        &source.source.root,
+        source.code,
+        world.code_name(source.code),
+        world.code_text(source.code),
+        world.tel(),
+    )
+    .map_err(|error| emit_internal_surface_error(world, format!("quoted function decode failed: {error}")))?;
+    record_function_type_refs(world, function_id, &legacy_ast)?;
+    let (_, revision) = world.define_function(
+        world.function_module(function_id),
+        source.owner_module,
+        world.function_ref(function_id).name.clone(),
+        source.code,
+        source.namespace,
+        source.source,
+        legacy_ast,
+    );
+    Ok(JobEffects {
+        reads: vec![FactKey::FunctionSource(function_id)],
+        outputs: vec![(FactKey::FunctionDefined(function_id), FactValue::presence(revision))],
+        ..JobEffects::default()
+    })
 }
 
 fn define_protocol_surface(
@@ -697,16 +750,18 @@ fn define_protocol_impl(
     for function in functions {
         let function_id =
             world.reference_function(impl_module, function.legacy_fn.name.clone(), function.legacy_fn.arity());
-        let (_, revision) = world.define_function(
-            impl_module,
-            current_module,
-            function.legacy_fn.name.clone(),
-            code_id,
-            impl_scope,
-            function.source.clone(),
-            function.legacy_fn.clone(),
+        let revision = world.note_function_source(
+            function_id,
+            FunctionSource {
+                code: code_id,
+                owner_module: current_module,
+                namespace: impl_scope,
+                capture_params: Vec::new(),
+                variadic: function.legacy_fn.variadic,
+                source: function.source.clone(),
+            },
         );
-        outputs.push((FactKey::FunctionDefined(function_id), FactValue::presence(revision)));
+        outputs.push((FactKey::FunctionSource(function_id), FactValue::presence(revision)));
         callbacks.insert(
             (function.legacy_fn.name.clone(), function.legacy_fn.arity()),
             ProtocolCallbackImpl {
