@@ -124,8 +124,8 @@ impl Types {
         self.opaque_of("cpointer")
     }
 
-    pub fn differs_only_nominally(&self, a: &Ty, b: &Ty, nominals: Nominals<'_, Ty>) -> bool {
-        self.is_disjoint(a, b) && !self.is_value_disjoint(a, b, nominals)
+    pub fn differs_only_nominally(&self, a: &Ty, b: &Ty) -> bool {
+        self.is_disjoint(a, b) && !self.is_value_disjoint(a, b)
     }
 
     pub fn key_is_strictly_more_specific(&self, lhs: &[Ty], rhs: &[Ty]) -> bool {
@@ -155,10 +155,6 @@ impl Types {
 
     fn descr(&self, t: &Ty) -> &Descr {
         self.interner.descr(t)
-    }
-
-    fn descr_inner_map(&self, m: &HashMap<String, Ty>) -> HashMap<String, Descr> {
-        m.iter().map(|(k, v)| (k.clone(), self.descr(v).clone())).collect()
     }
 
     fn cached_comparison(&self, key: ComparisonKey, compute: impl FnOnce(&Self) -> bool) -> bool {
@@ -460,11 +456,9 @@ impl Types {
         })
     }
 
-    pub fn is_value_disjoint(&self, a: &Ty, b: &Ty, nominals: Nominals<'_, Ty>) -> bool {
-        let bi = self.descr_inner_map(nominals.brand_inners);
-        let oi = self.descr_inner_map(nominals.opaque_inners);
+    pub fn is_value_disjoint(&self, a: &Ty, b: &Ty) -> bool {
         let cx = self.ctx();
-        self.descr(a).value_disjoint(cx, self.descr(b), Nominals::new(&bi, &oi))
+        self.descr(a).value_disjoint(cx, self.descr(b))
     }
 
     pub fn key_var_count(&self, key: &[Ty]) -> usize {
@@ -911,8 +905,8 @@ impl SharedTypes for Types {
         Types::is_disjoint(self, a, b)
     }
 
-    fn is_value_disjoint(&self, a: &Self::Ty, b: &Self::Ty, nominals: Nominals<'_, Self::Ty>) -> bool {
-        Types::is_value_disjoint(self, a, b, nominals)
+    fn is_value_disjoint(&self, a: &Self::Ty, b: &Self::Ty, _nominals: Nominals<'_, Self::Ty>) -> bool {
+        Types::is_value_disjoint(self, a, b)
     }
 
     fn key_var_count(&self, key: &[Self::Ty]) -> usize {

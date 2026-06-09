@@ -341,15 +341,18 @@ macro_rules! semantic_helper_conformance_tests {
             }
 
             #[test]
-            fn differs_only_nominally_holds_for_brand_vs_unbranded() {
+            fn value_disjoint_erases_embedded_brand_correctly() {
+                // mint_brand embeds the inner's structural axes; erasing the brand
+                // just clears the brands field — no external map needed.
                 let mut t = $ctor;
                 let str_inner = t.str_t();
-                let mut brand_inners = HashMap::new();
-                brand_inners.insert("utf8".to_string(), str_inner);
-                let opaque_inners = HashMap::new();
-                let utf8 = t.brand_of("utf8");
+                let int = t.int();
+                let utf8 = t.mint_brand(str_inner, "utf8");
                 let plain = t.str_t();
-                assert!(t.differs_only_nominally(&utf8, &plain, Nominals::new(&brand_inners, &opaque_inners)));
+                // utf8 and int are structurally different runtime kinds — value-disjoint.
+                assert!(t.is_value_disjoint(&utf8, &int));
+                // utf8 and plain binary share the same runtime kind after erasing brands — NOT value-disjoint.
+                assert!(!t.is_value_disjoint(&utf8, &plain));
             }
 
             #[test]

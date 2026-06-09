@@ -363,7 +363,10 @@ impl World<'_> {
             Builtin::Atom => types.atom(),
             Builtin::Any => types.any(),
             Builtin::Never => types.none(),
-            Builtin::Utf8 => types.brand_of("utf8"),
+            Builtin::Utf8 => {
+                let inner = types.str_t();
+                types.mint_brand(inner, "utf8")
+            }
             Builtin::Pid => types.opaque_of("pid"),
             Builtin::Ref => types.opaque_of("ref"),
         }

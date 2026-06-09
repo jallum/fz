@@ -8,7 +8,7 @@ use super::emptiness::{
 };
 use super::lit_set::{AtomSet, FloatSet, IntSet, LiteralSet, VarSet};
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
-use super::{MapKey, Nominals, Ty, TyCtx, TypeVarId};
+use super::{MapKey, Ty, TyCtx, TypeVarId};
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(super) struct Descr {
@@ -487,30 +487,23 @@ impl Descr {
         self == other || (self.is_subtype(cx, other) && other.is_subtype(cx, self))
     }
 
-    pub(super) fn value_disjoint(&self, cx: TyCtx<'_>, other: &Descr, nominals: Nominals<'_, Descr>) -> bool {
-        self.erase_nominal(cx, nominals)
-            .intersect(&other.erase_nominal(cx, nominals))
-            .is_empty(cx)
+    pub(super) fn value_disjoint(&self, cx: TyCtx<'_>, other: &Descr) -> bool {
+        self.erase_nominal(cx).intersect(&other.erase_nominal(cx)).is_empty(cx)
     }
 
-    fn erase_nominal(&self, cx: TyCtx<'_>, nominals: Nominals<'_, Descr>) -> Descr {
+    fn erase_nominal(&self, cx: TyCtx<'_>) -> Descr {
         let mut d = self.clone();
         let brands = std::mem::replace(&mut d.brands, LiteralSet::none());
         let opaques = std::mem::replace(&mut d.opaques, LiteralSet::none());
-        for (tags, inners) in [(&brands, nominals.brand_inners), (&opaques, nominals.opaque_inners)] {
-            if tags.is_none() {
-                continue;
-            }
-            if tags.cofinite {
-                d = d.union(cx, &Descr::any());
-                continue;
-            }
-            for tag in &tags.set {
-                match inners.get(tag) {
-                    Some(inner) => d = d.union(cx, &inner.erase_nominal(cx, nominals)),
-                    None => d = d.union(cx, &Descr::any()),
-                }
-            }
+        // Finite brands: mint_brand embeds the inner's structural axes directly in the
+        // descriptor (replacing the inner's own brand axis), so clearing suffices.
+        // Cofinite brands (e.g. from any()): we cannot enumerate inners; widen to any.
+        if brands.cofinite {
+            d = d.union(cx, &Descr::any());
+        }
+        // Opaques carry no embedded inner (opaque_of sets only the tag axis); erase conservatively.
+        if !opaques.is_none() {
+            d = d.union(cx, &Descr::any());
         }
         d
     }
