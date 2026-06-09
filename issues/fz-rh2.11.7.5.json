@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-09T15:52:40Z",
+  "description": "Goal: execute compiler2 macro functions as compile-time Fz code over process-heap quoted AST values, without the old `CompileTimeEvaluator` or `exec::Value` AST codec.\n\nSignal:\n- a local `defmacro inc(x) do quote do: unquote(x) + 1 end end` can run during source production and return quoted AST\n- macro functions receive quoted args and caller env in a shape compatible with `__CALLER__`\n- quote/unquote allocate and splice process-heap source values, preserving lexical context metadata\n- macro execution errors surface through compiler2 diagnostics/telemetry with call-site and definition context\n- no fz2 path calls `frontend::macros::expand_program_with_types`, `exec::ast_value`, or the scratch `CompileTimeEvaluator`\n\nChange:\n- add compile-time process/interpreter entry points for macro functions defined by compiler2 services\n- implement quote/unquote over the compiler2 quoted source value model\n- define deterministic macro execution limits/signals for recursion/runaway expansion\n- add telemetry for macro execution start/stop/error carrying raw ids/source facts, not formatted strings\n\nWhy:\n- the old evaluator proves the semantics, but its value model and whole-program preload are the wrong substrate\n- macros are ordinary compiled compile-time functions; their only authority is returned source data and compiler-service calls",
+  "id": "fz-rh2.11.7.5",
+  "labels": [],
+  "parent": "fz-rh2.11.7",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 macro runtime: execute defmacro functions on a compile-time process heap",
+  "type": "task",
+  "updated_at": "2026-06-09T15:52:40Z"
+}
