@@ -11,9 +11,15 @@
   "id": "fz-rh2.11.7.13",
   "labels": [],
   "parent": "fz-rh2.11.7",
+  "comments": [
+    {
+      "text": "Elixir cross-check:  hands ordinary quoted  into , and  groups/stores clauses in compiler-owned tables keyed by  rather than teaching the parser a special grouped-function AST. That confirms the boundary here: parser/frontdoor should keep emitting ordinary quoted forms; fz-rh2.11.7.13 should add compiler-owned grouped-source composition/interning and reuse those grouped roots on repeated reads instead of rebuilding them ad hoc.",
+      "timestamp": "2026-06-09T20:56:22Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Compiler2 quoted source composition: make grouped function roots first-class and stable",
   "type": "task",
-  "updated_at": "2026-06-09T20:41:26Z"
+  "updated_at": "2026-06-09T20:56:22Z"
 }
