@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.14.3"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-rh2.14",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Runtime type-tests from the set-theoretic descriptor, not a legacy Ty re-projection (retire legacy_type_test_ty)",
   "type": "task",
-  "updated_at": "2026-06-09T04:35:27Z"
+  "updated_at": "2026-06-09T11:38:35Z"
 }
