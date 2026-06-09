@@ -50,9 +50,17 @@ comparison surface when it wants one.
 ## Surface Grouping
 
 - Raw quoted source still preserves one top-level form per source clause.
-- The compiler2 source reader groups top-level `fn`/`fnp`/`defmacro` clause
-  forms into the same function inventory shape the legacy item surface exposes:
-  grouped by `{name, arity}` and flushed at the same non-function boundaries.
+- Compiler2 function surfaces are then composed back into first-class grouped
+  quoted roots on that same heap:
+  a logical function surface is a quoted list carrying attached `@doc` /
+  `@spec` items plus every grouped `fn` / `fnp` / `defmacro` clause, or a
+  single `extern` item surface.
+- Grouping is by `{name, arity}` and flushes at the same non-function
+  boundaries the legacy item surface exposes.
+- Grouped roots are interned per quoted-source heap. Re-reading the same body
+  must yield the same `{heap, root}` for the same logical function surface.
+- Protocol-impl callback bodies use that same grouped-root substrate; they are
+  not a second special-case function source format.
 - That grouped surface is what indexing/scoping walks today while downstream
   body/contract work still carries explicit `legacy_*` compatibility payloads.
 

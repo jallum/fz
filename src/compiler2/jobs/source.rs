@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::ast::{Attribute, Item, SpecDecl, TypeExprBody};
+use crate::ast::{Attribute, SpecDecl, TypeExprBody};
 use crate::compiler::source::Id as SourceId;
 use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
@@ -17,7 +17,7 @@ use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::protocol::ProtocolCallbackImpl;
 use super::super::quoted_surface::{
     FunctionForm, ProtocolImplForm, ScopeForm, ScopeSurface, read_module_body_surface,
-    read_module_body_surface_from_parts, read_scope_surface,
+    read_module_body_surface_from_parts, read_protocol_impl_body_surface, read_scope_surface,
 };
 use super::super::scheduler::FatalError;
 use super::super::scope::ScopeSnapshot;
@@ -655,11 +655,14 @@ fn define_protocol_impl(
     let protocol = reference_impl_protocol_module(world, current_module, &legacy.protocol, local_protocols);
     let target = reference_impl_target_module(world, current_module, &legacy.target.path);
     let impl_module = reference_protocol_impl_module(world, protocol, target);
+    let body_surface = read_protocol_impl_body_surface(protocol_impl).map_err(|error| {
+        emit_internal_surface_error(world, format!("quoted protocol impl body read failed: {error}"))
+    })?;
 
     let mut impl_scope = namespace;
-    let mut defs = Vec::new();
-    for item in &legacy.items {
-        let Item::Fn(def) = &**item else {
+    let mut functions = Vec::new();
+    for form in &body_surface.forms {
+        let ScopeForm::Function(function) = form else {
             return Err(emit_job_diagnostic(
                 world,
                 Diagnostic::error(
@@ -669,39 +672,45 @@ fn define_protocol_impl(
                 ),
             ));
         };
-        if def.is_macro {
+        if function.legacy_fn.is_macro {
             return Err(emit_job_diagnostic(
                 world,
                 Diagnostic::error(
                     codes::LOWER_UNSUPPORTED,
                     "compiler2 protocol implementations cannot define macros",
-                    def.span,
+                    function.legacy_fn.span,
                 ),
             ));
         }
-        let function = world.reference_function(impl_module, def.name.clone(), def.arity());
-        impl_scope = world.bind_namespace(impl_scope, def.name.clone(), NamespaceSymbol::Function(function));
-        defs.push(def.clone());
+        let function_id =
+            world.reference_function(impl_module, function.legacy_fn.name.clone(), function.legacy_fn.arity());
+        impl_scope = world.bind_namespace(
+            impl_scope,
+            function.legacy_fn.name.clone(),
+            NamespaceSymbol::Function(function_id),
+        );
+        functions.push(function.clone());
     }
 
     let mut outputs = Vec::new();
     let mut callbacks = std::collections::HashMap::new();
-    for def in defs {
-        let function = world.reference_function(impl_module, def.name.clone(), def.arity());
+    for function in functions {
+        let function_id =
+            world.reference_function(impl_module, function.legacy_fn.name.clone(), function.legacy_fn.arity());
         let (_, revision) = world.define_function(
             impl_module,
             current_module,
-            def.name.clone(),
+            function.legacy_fn.name.clone(),
             code_id,
             impl_scope,
-            protocol_impl.source.clone(),
-            def.clone(),
+            function.source.clone(),
+            function.legacy_fn.clone(),
         );
-        outputs.push((FactKey::FunctionDefined(function), FactValue::presence(revision)));
+        outputs.push((FactKey::FunctionDefined(function_id), FactValue::presence(revision)));
         callbacks.insert(
-            (def.name.clone(), def.arity()),
+            (function.legacy_fn.name.clone(), function.legacy_fn.arity()),
             ProtocolCallbackImpl {
-                function,
+                function: function_id,
                 owner_module: current_module,
             },
         );

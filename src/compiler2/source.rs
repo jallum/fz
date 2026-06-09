@@ -188,6 +188,7 @@ pub struct QuotedSourceMetadata {
 pub struct QuotedSourceHeap {
     process: RefCell<Process>,
     tuple_schemas: RefCell<HashMap<usize, u32>>,
+    interned_lists: RefCell<HashMap<Vec<u64>, AnyValueRef>>,
 }
 
 impl fmt::Debug for QuotedSourceHeap {
@@ -222,6 +223,7 @@ impl QuotedSourceHeap {
         Self {
             process: RefCell::new(process),
             tuple_schemas: RefCell::new(HashMap::new()),
+            interned_lists: RefCell::new(HashMap::new()),
         }
     }
 
@@ -314,6 +316,16 @@ impl QuotedSourceBuilder {
                 .map_err(QuotedSourceError::from)?;
         }
         Ok(tail)
+    }
+
+    pub fn interned_list(&self, items: &[AnyValueRef]) -> Result<AnyValueRef, QuotedSourceError> {
+        let key = items.iter().map(|item| item.raw_word()).collect::<Vec<_>>();
+        if let Some(existing) = self.heap.interned_lists.borrow().get(&key).copied() {
+            return Ok(existing);
+        }
+        let list = self.list(items)?;
+        self.heap.interned_lists.borrow_mut().insert(key, list);
+        Ok(list)
     }
 
     pub fn tuple(&self, items: &[AnyValueRef]) -> Result<AnyValueRef, QuotedSourceError> {
@@ -469,6 +481,15 @@ impl QuotedSourceRoot {
         self.heap.cursor(self.root)
     }
 
+    fn builder(&self) -> QuotedSourceBuilder {
+        self.heap.builder()
+    }
+
+    pub fn interned_list_subroot(&self, items: &[AnyValueRef]) -> Result<Self, QuotedSourceError> {
+        let list = self.builder().interned_list(items)?;
+        Ok(self.subroot(list))
+    }
+
     pub fn subroot(&self, root: AnyValueRef) -> Self {
         Self::new(self.heap.clone(), root)
     }
@@ -511,6 +532,12 @@ impl QuotedSourceCursor {
     }
 
     pub fn utf8_binary_text(&self) -> Result<String, QuotedSourceError> {
+        let bytes = self.root_bytes()?;
+        String::from_utf8(bytes)
+            .map_err(|error| QuotedSourceError::new(format!("expected valid UTF-8 bitstring: {error}")))
+    }
+
+    fn root_bytes(&self) -> Result<Vec<u8>, QuotedSourceError> {
         let heap_word = match self.root.tag() {
             ValueKind::BITSTRING | ValueKind::PROCBIN => {
                 self.root.heap_object_word().map_err(QuotedSourceError::from)?
@@ -531,8 +558,7 @@ impl QuotedSourceCursor {
         }
         let byte_len = bit_len / 8;
         let bytes = unsafe { slice::from_raw_parts(byte_ptr, byte_len) };
-        String::from_utf8(bytes.to_vec())
-            .map_err(|error| QuotedSourceError::new(format!("expected valid UTF-8 bitstring: {error}")))
+        Ok(bytes.to_vec())
     }
 
     pub fn list_items(&self) -> Result<Vec<Self>, QuotedSourceError> {

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use fz_runtime::any_value::AnyValueRef;
+
 use crate::ast::{Attribute, FnDef, Item, ModuleDef, ProtocolDef, ProtocolImplDef, StructDef};
 use crate::compiler::source::Span;
 
@@ -87,7 +89,7 @@ struct FunctionGroupKey {
 
 #[derive(Debug, Clone)]
 struct PendingFunctionGroup {
-    source: QuotedSourceCarrier,
+    item_roots: Vec<AnyValueRef>,
     kind: String,
 }
 
@@ -121,7 +123,23 @@ pub fn read_module_body_surface(form: &ModuleForm) -> Result<ScopeSurface, Quote
     read_module_body_surface_from_parts(&form.source, &form.legacy_module.items, &form.legacy_module.attrs)
 }
 
+pub fn read_protocol_impl_body_surface(form: &ProtocolImplForm) -> Result<ScopeSurface, QuotedSourceError> {
+    read_do_body_surface_from_parts(
+        &form.source,
+        &form.legacy_protocol_impl.items,
+        &form.legacy_protocol_impl.attrs,
+    )
+}
+
 pub fn read_module_body_surface_from_parts(
+    source: &QuotedSourceCarrier,
+    legacy_items: &[Rc<Item>],
+    legacy_attrs: &[Attribute],
+) -> Result<ScopeSurface, QuotedSourceError> {
+    read_do_body_surface_from_parts(source, legacy_items, legacy_attrs)
+}
+
+fn read_do_body_surface_from_parts(
     source: &QuotedSourceCarrier,
     legacy_items: &[Rc<Item>],
     legacy_attrs: &[Attribute],
@@ -131,13 +149,16 @@ pub fn read_module_body_surface_from_parts(
 }
 
 fn build_form(source: QuotedSourceCarrier, legacy_item: &Rc<Item>) -> Result<ScopeForm, QuotedSourceError> {
-    let Some(node) = source.root.cursor().ast_node()? else {
-        return Err(QuotedSourceError::new("expected quoted item AST node"));
-    };
-    let head = node.head.atom_name()?;
+    let head = surface_head_name(&source.root)?;
     match (head.as_str(), &**legacy_item) {
-        ("alias", Item::Alias { span, .. }) => Ok(ScopeForm::Alias(parse_alias(&node, *span)?)),
-        ("import", Item::Import { span, .. }) => Ok(ScopeForm::Import(parse_import(&node, *span)?)),
+        ("alias", Item::Alias { span, .. }) => {
+            let node = expect_surface_node(&source.root)?;
+            Ok(ScopeForm::Alias(parse_alias(&node, *span)?))
+        }
+        ("import", Item::Import { span, .. }) => {
+            let node = expect_surface_node(&source.root)?;
+            Ok(ScopeForm::Import(parse_import(&node, *span)?))
+        }
         ("fn" | "fnp" | "defmacro" | "extern", Item::Fn(def)) => Ok(ScopeForm::Function(FunctionForm {
             source,
             legacy_fn: def.clone(),
@@ -170,66 +191,103 @@ fn prepare_surface_forms(source: &QuotedSourceRoot) -> Result<Vec<QuotedSourceCa
     let mut forms = Vec::new();
     let mut group_order = Vec::new();
     let mut groups: HashMap<FunctionGroupKey, PendingFunctionGroup> = HashMap::new();
+    let mut pending_attrs = Vec::new();
 
     for quoted_item in quoted_items {
-        let carrier = QuotedSourceCarrier::new(source.subroot(quoted_item.root()))?;
-        let Some(node) = carrier.root.cursor().ast_node()? else {
+        let Some(node) = quoted_item.ast_node()? else {
             return Err(QuotedSourceError::new("expected quoted item AST node"));
         };
         let head_name = node.head.atom_name()?;
         if head_name.starts_with('@') {
+            pending_attrs.push(quoted_item.root());
             continue;
         }
         match head_name.as_str() {
             "fn" | "fnp" | "defmacro" => {
-                let key = parse_function_group_key(&carrier)?;
-                if let Some(existing) = groups.get(&key) {
-                    if existing.kind != head_name {
-                        return Err(QuotedSourceError::new(format!(
-                            "quoted function group `{}/{} ` mixes `{}` and `{}` heads",
-                            key.name, key.arity, existing.kind, head_name
-                        )));
+                let key = parse_function_group_key(&source.subroot(quoted_item.root()))?;
+                let order_key = key.clone();
+                let entry = groups.entry(key.clone()).or_insert_with(|| {
+                    group_order.push(order_key);
+                    PendingFunctionGroup {
+                        item_roots: Vec::new(),
+                        kind: head_name.clone(),
                     }
-                } else {
-                    group_order.push(key.clone());
-                    groups.insert(
-                        key,
-                        PendingFunctionGroup {
-                            source: carrier,
-                            kind: head_name,
-                        },
-                    );
+                });
+                if entry.kind != head_name {
+                    return Err(QuotedSourceError::new(format!(
+                        "quoted function group `{}/{} ` mixes `{}` and `{}` heads",
+                        key.name, key.arity, entry.kind, head_name
+                    )));
                 }
+                entry.item_roots.append(&mut pending_attrs);
+                entry.item_roots.push(quoted_item.root());
             }
             "extern" => {
-                flush_function_groups(&mut forms, &mut group_order, &mut groups);
-                forms.push(carrier);
+                flush_function_groups(source, &mut forms, &mut group_order, &mut groups)?;
+                let mut item_roots = std::mem::take(&mut pending_attrs);
+                item_roots.push(quoted_item.root());
+                forms.push(grouped_surface_carrier(source, &item_roots)?);
             }
             _ => {
-                flush_function_groups(&mut forms, &mut group_order, &mut groups);
-                forms.push(carrier);
+                flush_function_groups(source, &mut forms, &mut group_order, &mut groups)?;
+                pending_attrs.clear();
+                forms.push(QuotedSourceCarrier::new(source.subroot(quoted_item.root()))?);
             }
         }
     }
 
-    flush_function_groups(&mut forms, &mut group_order, &mut groups);
+    flush_function_groups(source, &mut forms, &mut group_order, &mut groups)?;
     Ok(forms)
 }
 
 fn flush_function_groups(
+    source: &QuotedSourceRoot,
     forms: &mut Vec<QuotedSourceCarrier>,
     order: &mut Vec<FunctionGroupKey>,
     groups: &mut HashMap<FunctionGroupKey, PendingFunctionGroup>,
-) {
+) -> Result<(), QuotedSourceError> {
     for key in order.drain(..) {
         if let Some(group) = groups.remove(&key) {
-            forms.push(group.source);
+            forms.push(grouped_surface_carrier(source, &group.item_roots)?);
         }
     }
+    Ok(())
 }
 
-fn parse_function_group_key(source: &QuotedSourceCarrier) -> Result<FunctionGroupKey, QuotedSourceError> {
-    let Some(node) = source.root.cursor().ast_node()? else {
+fn grouped_surface_carrier(
+    source: &QuotedSourceRoot,
+    item_roots: &[AnyValueRef],
+) -> Result<QuotedSourceCarrier, QuotedSourceError> {
+    let root = source.interned_list_subroot(item_roots)?;
+    QuotedSourceCarrier::new(root)
+}
+
+fn surface_head_name(root: &QuotedSourceRoot) -> Result<String, QuotedSourceError> {
+    if let Some(node) = root.cursor().ast_node()? {
+        return node.head.atom_name();
+    }
+    for item in root.cursor().list_items()? {
+        let Some(node) = item.ast_node()? else {
+            return Err(QuotedSourceError::new("expected quoted grouped surface item AST node"));
+        };
+        let head = node.head.atom_name()?;
+        if !head.starts_with('@') {
+            return Ok(head);
+        }
+    }
+    Err(QuotedSourceError::new(
+        "expected grouped quoted surface to contain a non-attribute form",
+    ))
+}
+
+fn expect_surface_node(root: &QuotedSourceRoot) -> Result<QuotedAstNode, QuotedSourceError> {
+    root.cursor()
+        .ast_node()?
+        .ok_or_else(|| QuotedSourceError::new("expected quoted item AST node"))
+}
+
+fn parse_function_group_key(source: &QuotedSourceRoot) -> Result<FunctionGroupKey, QuotedSourceError> {
+    let Some(node) = source.cursor().ast_node()? else {
         return Err(QuotedSourceError::new("expected grouped function clause AST node"));
     };
     let args = node.tail.list_items()?;
