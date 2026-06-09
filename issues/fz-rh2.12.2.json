@@ -8,7 +8,7 @@
     "fz-rh2.12.6"
   ],
   "created": "2026-06-08T20:52:14Z",
-  "description": "Add the demanded formula. FactKey::TypeDefined(TypeName) carrying Presence, plus a TypeName-\u003eTy typed store like FunctionContractMap. Job::DeriveTypeDef resolves ONE type name body to a hard Ty, minting nominal types inner-in-symbol via mint_brand(inner,name). Sibling and cross-module refs resolve by reading TypeDefined and waiting/demanding -- the work graph is the fixpoint, so build_module_type_env loop is not ported. DeriveTypeDef is strictly PULLED, never queued at note time: a @type no reached consumer reads stays cold like an uncalled function. Verify: drive test that a referenced @type publishes TypeDefined once and an unreferenced one stays cold.",
+  "description": "MERGED with .3 (DeriveTypeDef and the resolver are one unit; the TypeDefined fact closes the loop between them). Deliver:\n\n(1) Core resolver resolve_type_expr(namespace, TypeExpr) -\u003e a hard compiler2 Ty. Scalars/builtins minted directly; structure (list/tuple/union/arrow/struct-record) via compiler2 Types; a Name classified against the captured namespace -- a Type binding -\u003e TypeName -\u003e read TypeDefined; an unbound lowercase name -\u003e a free type var; a builtin -\u003e a scalar. Parametric @types instantiated by substitution.\n\nHARD CONSTRAINT: pure compiler2 Types through the single interner (world.types_mut()). NEVER legacy crate::types, NEVER a throwaway crate::types::new(), NEVER a legacy_type_test_ty-style re-projection or type_is_X if-ladder. That pattern is radioactive (see fz-rh2.13).\n\n(2) FactKey::TypeDefined(TypeName) carrying Presence + a TypeName -\u003e Ty(/parametric template) store, like FunctionContractMap.\n\n(3) Job::DeriveTypeDef: strictly PULLED, never queued at note time. Waits on the @type body recorded refs (.12) TypeDefined, then resolves the body (Plain / Refines / Opaque -- brands minted inner-in-symbol via mint_brand(inner,name)) and publishes. A @type no reached consumer references stays cold like an uncalled function.\n\n(4) resolve_spec(namespace, SpecDecl) -\u003e crate::specs::ResolvedSpec (Ty + ResolvedTypeShape) over the core resolver, for .4 to wire into contract/dispatch/extern and .10 to parity-test.\n\nVerify: a referenced @type publishes TypeDefined once, an unreferenced one stays cold; resolve_type_expr over the worked examples (incl. a refines brand and a parametric instantiation); resolve_spec over foo(SomeModule.t(float), integer) :: x when x: SomeModule.t; no crate::types::new() anywhere on the compiler2 resolver path.",
   "id": "fz-rh2.12.2",
   "labels": [],
   "parent": "fz-rh2.12",
@@ -22,5 +22,5 @@
   "status": "in_progress",
   "title": "DeriveTypeDef formula + TypeDefined fact + TypeName-\u003eTy store",
   "type": "task",
-  "updated_at": "2026-06-09T01:25:58Z"
+  "updated_at": "2026-06-09T01:52:21Z"
 }
