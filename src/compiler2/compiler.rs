@@ -101,11 +101,10 @@ impl<'a> Compiler2<'a> {
         let program = self.native_program_for_root(root)?;
         let entry = program.entry;
         let tel = self.world.tel();
-        let mut legacy_types = crate::types::new();
-        let compiled = crate::ir_codegen::compile_with_backend_native_program(
-            &mut legacy_types,
+        let compiled = super::native_codegen::compile_with_backend_native_program(
+            self.world.types_mut(),
             &program,
-            crate::ir_codegen::JitBackend::new(),
+            super::native_codegen::JitBackend::new(),
             tel,
         )
         .map_err(|err| format!("compiler2 root {} JIT compile failed: {err}", root.as_u32()))?;
@@ -117,11 +116,10 @@ impl<'a> Compiler2<'a> {
     pub fn run_root_jit(&mut self, root: RootId) -> Result<(), String> {
         let program = self.native_program_for_root(root)?;
         let tel = self.world.tel();
-        let mut legacy_types = crate::types::new();
-        let compiled = crate::ir_codegen::compile_with_backend_native_program(
-            &mut legacy_types,
+        let compiled = super::native_codegen::compile_with_backend_native_program(
+            self.world.types_mut(),
             &program,
-            crate::ir_codegen::JitBackend::new(),
+            super::native_codegen::JitBackend::new(),
             tel,
         )
         .map_err(|err| format!("compiler2 root {} JIT compile failed: {err}", root.as_u32()))?;
@@ -136,11 +134,10 @@ impl<'a> Compiler2<'a> {
     pub fn compile_root_aot(&mut self, root: RootId, obj_name: &str) -> Result<crate::ir_codegen::AotArtifact, String> {
         let program = self.native_program_for_root(root)?;
         let tel = self.world.tel();
-        let mut legacy_types = crate::types::new();
-        crate::ir_codegen::compile_with_backend_native_program(
-            &mut legacy_types,
+        super::native_codegen::compile_with_backend_native_program(
+            self.world.types_mut(),
             &program,
-            crate::ir_codegen::AotBackend::new(obj_name),
+            super::native_codegen::AotBackend::new(obj_name),
             tel,
         )
         .map_err(|err| format!("compiler2 root {} AOT compile failed: {err}", root.as_u32()))

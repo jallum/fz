@@ -95,15 +95,6 @@ impl ArgRepr {
     }
 }
 
-pub(crate) fn arg_repr_from_compiler2(repr: crate::compiler2::AbiValueRepr) -> ArgRepr {
-    match repr {
-        crate::compiler2::AbiValueRepr::ValueRef => ArgRepr::ValueRef,
-        crate::compiler2::AbiValueRepr::RawInt => ArgRepr::RawInt,
-        crate::compiler2::AbiValueRepr::RawF64 => ArgRepr::RawF64,
-        crate::compiler2::AbiValueRepr::RawAtom => ArgRepr::RawAtom,
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum MidFlightArgShape {
     Value(ArgRepr),

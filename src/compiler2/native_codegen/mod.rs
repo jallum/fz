@@ -18,7 +18,7 @@
 
 pub(crate) use crate::frontend::spec_registry::SpecRegistry;
 use crate::telemetry::Telemetry;
-use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Ty, Types, VisibilityTypes};
+pub(crate) use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Ty, Types, VisibilityTypes};
 
 mod call;
 mod clif;
@@ -59,18 +59,21 @@ pub(crate) use type_pred::*;
 pub(crate) use value::*;
 
 pub(crate) use crate::ir_codegen::{
-    Backend, BsConstSyms, CodegenError, CompiledMetadata, JitBackend, RuntimeRefs, build_frame_schema,
+    AotBackend, Backend, BsConstSyms, CodegenError, CompiledMetadata, JitBackend, RuntimeRefs, build_frame_schema,
     declare_runtime_symbols, define_static_sharedbin, runtime_import_sig, sig1,
 };
 
 pub(crate) fn compile_with_backend_native_program<
     B: Backend,
-    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
+    T: Types + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
 >(
-    t: &mut T,
+    _t: &mut T,
     program: &crate::compiler2::NativeProgram,
     backend: B,
     tel: &dyn Telemetry,
 ) -> Result<B::Output, CodegenError> {
-    driver::compile_with_backend_native_program(t, program, backend, tel)
+    // The fork still answers planner-shaped internal codegen questions through
+    // legacy `SpecPlan` baggage. Keep that debt local to the fork.
+    let mut legacy_types = crate::types::new();
+    driver::compile_with_backend_native_program(&mut legacy_types, program, backend, tel)
 }

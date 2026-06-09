@@ -265,8 +265,9 @@ Current conclusion from the code:
   codegen inputs
 - the compiler2-native JIT fixture tests now consume `NativeProgram(root)`
   through the compiler2-owned backend fork directly
-- `Compiler2::compile_root_jit`, `run_root_jit`, and `compile_root_aot` still
-  switch to that backend in `fz-rh2.14.3`
+- `Compiler2::compile_root_jit`, `run_root_jit`, and `compile_root_aot` now
+  consume that same compiler2-owned backend path directly, using the world's
+  interned type store instead of a fresh legacy one
 - `fz2` is now the side-by-side outer shell for those front doors: `fz2 run`,
   `fz2 interp`, and `fz2 build` submit source directly to Compiler2, seed
   `main/0`, and never reopen old planner or type-infer work

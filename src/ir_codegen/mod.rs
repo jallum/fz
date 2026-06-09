@@ -106,18 +106,6 @@ pub(crate) fn compile_with_backend_prepared<
     )
 }
 
-pub(crate) fn compile_with_backend_native_program<
-    B: Backend,
-    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
->(
-    t: &mut T,
-    program: &crate::compiler2::NativeProgram,
-    backend: B,
-    tel: &dyn Telemetry,
-) -> Result<B::Output, CodegenError> {
-    driver::compile_with_backend_native_program(t, program, backend, tel)
-}
-
 #[cfg(test)]
 pub(crate) fn compile_with_backend_planned<
     B: Backend,

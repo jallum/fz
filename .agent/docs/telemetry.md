@@ -214,7 +214,8 @@ full artifact ladder through `NativeProgram(root)`. The quicksort,
 compiler2-owned native JIT fixture tests prove the forked backend can consume
 `NativeProgram(root)` directly, while the `Compiler2::compile_root_jit` /
 `run_root_jit` / `compile_root_aot` front-door tests prove that the public
-runtime setup still does not fall back to planner or type-preparation
+runtime setup now stays on that same compiler2-owned backend path without
+falling back to planner or type-preparation
 telemetry. `tests/fz2_cli.rs` extends that proof to the real `fz2` binary
 surface. The ignored JSONL dump is the occasional deep trace.
 
