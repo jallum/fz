@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.11.7.12"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.11.7.9"
+  ],
   "created": "2026-06-09T19:16:47Z",
   "description": "Goal: keep contract/body/dispatch/keying alive after the source-authority swap by deriving an honest legacy_fn_def-style downstream artifact from function quoted roots, not from the old parser or Rc\u003cItem\u003e/FnDef authority.\n\nGrounding:\n- src/compiler2/jobs/contract.rs, src/compiler2/jobs/body.rs, src/compiler2/jobs/dispatch.rs, and src/compiler2/jobs/keying.rs all read world.function_definition(function).ast today.\n- Those jobs currently consume Expr/Pattern/FnDef directly, but compiler2 has no typed quoted-source reader layer for function bodies and patterns yet.\n- Reusing the old parser inside compiler2 would violate the source-authority goal of fz-rh2.11.7.9, but deleting FnDef overnight would strand the downstream phases.\n\nSignal:\n- compiler2 never reparses source text through the old frontend in order to feed contract/body/dispatch/keying\n- downstream jobs obtain an explicitly named legacy_fn_def artifact (or equivalent honest carrier) derived from the function quoted root\n- function/body/dispatch semantic facts remain stable when the derived downstream artifact is semantically unchanged, even if the quoted source heap/root changes elsewhere\n- naming/docs make it obvious this is transitional legacy surface, not canonical source authority\n\nChange:\n- add a one-way compiler2-owned quoted-\u003elegacy function artifact derivation path\n- cache or fact it at the function tier so downstream jobs share one derived artifact instead of each growing their own ad hoc reader\n- route contract/body/dispatch/keying through that artifact while keeping quoted source as the only authoritative source record\n- add focused tests around revision behavior and no-old-parser usage\n\nWhy:\n- this preserves one source authority while buying a clean migration seam for the deepest remaining old-AST consumers\n- the stinky name is intentional: we should be able to grep for the debt later and rip it out deliberately",
   "id": "fz-rh2.11.7.13",
