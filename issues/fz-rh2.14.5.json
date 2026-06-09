@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.14.4",
     "fz-rh2.14.6"
@@ -11,8 +11,8 @@
   "labels": [],
   "parent": "fz-rh2.14",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 native backends: close the arc and restate the migration problem",
   "type": "task",
-  "updated_at": "2026-06-09T12:51:35Z"
+  "updated_at": "2026-06-09T14:51:05Z"
 }
