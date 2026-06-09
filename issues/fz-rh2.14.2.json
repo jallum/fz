@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.14.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.14.3"
+  ],
   "created": "2026-06-09T04:25:49Z",
   "description": "Goal: make the compiler2 native handoff truthful and self-sufficient before moving more backend code. Signal: the compiler2-native backend contract is expressed directly in compiler2-owned data structures; no compiler2-native consumer needs synthetic `SpecKey`/`SpecPlan`/`SpecRegistry`, widened `return_tys`, or old-world semantic payloads hung off `fz_ir` just to answer backend questions.\n\nChange:\n- audit each compiler2-native backend question and make the answer live directly on `NativeProgram` / `NativeBody` or another compiler2-owned artifact\n- remove or replace old-world semantic payloads that are only present to feed the planner-shaped native route, especially extern contracts and dispatch/type-test payloads\n- tighten contract tests around the handoff so the backend surface is correct by construction before the consumer move\n\nWhy:\n- if the handoff still encodes old-world assumptions, copying codegen in-house just relocates the rot\n\nChecks:\n- compiler2 artifact tests prove the backend reads direct compiler2 facts for body identity, value types, callable entries, continuation ownership, extern metadata, and dispatch/type-test inputs\n- the remaining compiler2-native backend questions can be answered without inventing planner state",
   "id": "fz-rh2.14.2",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Compiler2 native backends: make the native handoff truthful and self-sufficient",
   "type": "task",
-  "updated_at": "2026-06-09T04:26:23Z"
+  "updated_at": "2026-06-09T04:26:24Z"
 }

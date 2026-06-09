@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.14.2"
+  ],
   "blocks": [
     "fz-rh2.13"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Compiler2 native backends: bring semantic native codegen in-house",
   "type": "task",
-  "updated_at": "2026-06-09T04:26:23Z"
+  "updated_at": "2026-06-09T04:26:24Z"
 }
