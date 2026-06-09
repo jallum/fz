@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-rh2.12.2"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-rh2.12.10"
   ],
@@ -15,5 +13,5 @@
   "status": "open",
   "title": "In-house type-expr resolver: name -\u003e hard Ty via namespace + TypeDefined",
   "type": "task",
-  "updated_at": "2026-06-08T21:33:43Z"
+  "updated_at": "2026-06-09T01:52:21Z"
 }
