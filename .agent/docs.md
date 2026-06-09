@@ -12,7 +12,7 @@ Read:
 - [semantic fixpoint](docs/semantic-fixpoint.md) — the heart: activation inputs as joined facts, emergent discovery vs. the observe-only seal job, the key/value split, and the `Recursive`/`DispatchMask` keying facts.
 - [pipeline](docs/pipeline.md) — source→artifact across the job families: demand from a root, lazy runtime code, the one-way artifact boundary, and retraction by fact ownership.
 - [type world](docs/type-world.md) — the World-owned interned type kernel: `Ty` as an id, one threaded `Types`, and why cheap id-equality lets facts detect change without hashing.
-- [quoted source](docs/quoted-source.md) — compiler2's Fz-shaped quoted-source substrate: `{heap, root}` keys, structural fingerprints, Elixir-shaped AST tuples, and the private metadata keys.
+- [quoted source](docs/quoted-source.md) — compiler2's Fz-shaped quoted-source substrate: `{heap, root}` keys, structural fingerprints, Elixir-shaped AST tuples, private metadata keys, and `ScopeSnapshot`-based `__MODULE__` / `__ENV__` projection.
 - [set-theoretic types](docs/set-theoretic-types.md) — types as sets of values: axes/DNF, the two `Types` implementations behind one trait, schemes, brands/opaques, and the typing-vs-runtime predicate split.
 - [type specialization](docs/type-specialization.md) — how compiler2 types one activation (value-flow over lowered steps, return as a union over reachable clauses) and why specialization stays finite.
 - [specs](docs/specs.md) — the `@spec` contract engine: overload sets, scheme matching, application with overlap witnesses, higher-order callback evidence, and the upper-bound coverage check.

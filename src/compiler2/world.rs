@@ -46,11 +46,18 @@ use super::protocol::{
     ProtocolDispatchMap, ProtocolImpl, ProtocolImplKey, ProtocolImplMap,
 };
 use super::runtime::{self, RuntimeModuleCode};
+use super::scope::ScopeSnapshot;
 use super::semantic::{
     ActivationAnalysis, ActivationMap, CallSiteKey, CallSiteMap, CallSiteSummary, SemanticClosure, SemanticClosureMap,
 };
+#[cfg(test)]
+use super::source::{
+    QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
+};
 use super::typedef::{TypeDef, TypeDefMap};
 use super::types::{ClosureTarget, Ty, Types};
+#[cfg(test)]
+use fz_runtime::any_value::AnyValueRef;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum UnresolvedIssueKey {
@@ -1275,6 +1282,16 @@ impl<'a> World<'a> {
         self.functions.reference_for(function)
     }
 
+    #[cfg(test)]
+    pub(crate) fn function_scope(&self, function: FunctionId) -> Option<ScopeSnapshot> {
+        match &self.functions.get(function).state {
+            super::identity::FunctionState::Defined { def } => {
+                Some(ScopeSnapshot::function(def.owner_module, def.namespace, function))
+            }
+            super::identity::FunctionState::Placeholder => None,
+        }
+    }
+
     pub(crate) fn function_arity(&self, function: FunctionId) -> usize {
         self.functions.reference_for(function).arity
     }
@@ -1312,6 +1329,65 @@ impl<'a> World<'a> {
 
     pub fn fact_revision(&self, key: FactKey) -> Option<u64> {
         self.work_graph.facts().revision(&key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scope_lexical_context(
+        &self,
+        scope: ScopeSnapshot,
+        kind: QuotedLexicalContextKind,
+    ) -> QuotedLexicalContext {
+        let module = self
+            .module_name(scope.module_id())
+            .map(module_name_segments)
+            .unwrap_or_default();
+        let function_scope = scope
+            .function_id()
+            .map(|function| vec![self.function_ref(function).name.clone()])
+            .unwrap_or_default();
+        QuotedLexicalContext::new(kind, module, function_scope).with_namespace_id(scope.namespace().as_u32())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn project_module_value(
+        &self,
+        builder: &QuotedSourceBuilder,
+        scope: ScopeSnapshot,
+        kind: QuotedLexicalContextKind,
+    ) -> Result<AnyValueRef, QuotedSourceError> {
+        let Some(name) = self.module_name(scope.module_id()) else {
+            return Ok(builder.nil());
+        };
+        let metadata = QuotedSourceMetadata {
+            lexical_context: Some(self.scope_lexical_context(scope, kind)),
+            span: None,
+        };
+        let segments = name.split('.').collect::<Vec<_>>();
+        builder.alias(&metadata, &segments)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn project_env_value(
+        &self,
+        builder: &QuotedSourceBuilder,
+        scope: ScopeSnapshot,
+        kind: QuotedLexicalContextKind,
+    ) -> Result<AnyValueRef, QuotedSourceError> {
+        let function = match scope.function_id() {
+            Some(function) => {
+                let function_ref = self.function_ref(function);
+                builder.tuple(&[builder.atom(&function_ref.name), builder.int(function_ref.arity as i64)])?
+            }
+            None => builder.nil(),
+        };
+        builder.map(&[
+            (builder.atom("module"), self.project_module_value(builder, scope, kind)?),
+            (builder.atom("function"), function),
+            (
+                builder.atom("namespace"),
+                builder.int(scope.namespace().as_u32() as i64),
+            ),
+        ])
     }
 
     pub(crate) fn fact_would_change(&self, key: FactKey, revision: u64) -> bool {
@@ -1446,10 +1522,12 @@ impl<'a> World<'a> {
         }
     }
 
-    pub fn module_scope(&self, module: ModuleId) -> Option<(super::identity::ModuleSource, Namespace)> {
+    pub fn module_scope(&self, module: ModuleId) -> Option<(super::identity::ModuleSource, ScopeSnapshot)> {
         match &self.modules.get(module).state {
-            ModuleState::Scoped { source, base } => Some((source.clone(), *base)),
-            ModuleState::Defined { source, surface } => Some((source.clone(), surface.base)),
+            ModuleState::Scoped { source, base } => Some((source.clone(), ScopeSnapshot::module(module, *base))),
+            ModuleState::Defined { source, surface } => {
+                Some((source.clone(), ScopeSnapshot::module(module, surface.base)))
+            }
             _ => None,
         }
     }
@@ -1719,6 +1797,14 @@ fn callable_match_score(fixed_arity: usize, variadic: bool, actual_arity: usize)
 fn dedup_type_names(refs: &mut Vec<TypeName>) {
     let mut seen = HashSet::new();
     refs.retain(|name| seen.insert(name.clone()));
+}
+
+#[cfg(test)]
+fn module_name_segments(name: &str) -> Vec<String> {
+    name.split('.')
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn protocol_domain_type_name(protocol: ModuleId, arity: usize) -> TypeName {

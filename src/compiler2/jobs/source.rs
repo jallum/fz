@@ -18,6 +18,7 @@ use super::super::identity::{ModuleExport, ModuleId, ModuleSourceKind, NotedType
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::protocol::ProtocolCallbackImpl;
 use super::super::scheduler::FatalError;
+use super::super::scope::ScopeSnapshot;
 use super::super::type_expr::{NominalKind, TypeDefBody, TypeExpr, parse_type_def_body, parse_type_expr};
 use super::super::world::World;
 
@@ -90,7 +91,13 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
         world.prelude_head()
     };
     let attrs = world.code_attrs(code_id).to_vec();
-    match define_scope(world, code_id, ModuleId::GLOBAL, base_namespace, &items, &attrs)? {
+    match define_scope(
+        world,
+        code_id,
+        ScopeSnapshot::module(ModuleId::GLOBAL, base_namespace),
+        &items,
+        &attrs,
+    )? {
         ScopeResult::Complete {
             namespace,
             reads: scope_reads,
@@ -121,13 +128,11 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
 /// not ready, this job waits on the parent fact and schedules the parent job.
 /// When ready, it scopes the module body and publishes `ModuleDefined`.
 pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Result<JobEffects, FatalError> {
-    if let Some((source, base_namespace)) = world.module_scope(module_id) {
+    if let Some((source, scope)) = world.module_scope(module_id) {
         let result = match &source.kind {
-            ModuleSourceKind::Body { items } => {
-                define_scope(world, source.code, module_id, base_namespace, items, &source.attrs)?
-            }
+            ModuleSourceKind::Body { items } => define_scope(world, source.code, scope, items, &source.attrs)?,
             ModuleSourceKind::Protocol { callbacks } => {
-                define_protocol_surface(world, module_id, base_namespace, callbacks)
+                define_protocol_surface(world, module_id, scope.namespace(), callbacks)
             }
         };
         return match result {
@@ -186,12 +191,12 @@ pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Resul
 fn define_scope(
     world: &mut World<'_>,
     code_id: CodeId,
-    current_module: ModuleId,
-    namespace: Namespace,
+    current_scope: ScopeSnapshot,
     items: &[Rc<Item>],
     attrs: &[Attribute],
 ) -> Result<ScopeResult, FatalError> {
-    let mut scope = namespace;
+    let current_module = current_scope.module_id();
+    let mut scope = current_scope.namespace();
 
     let mut pending_types = Vec::new();
     for attr in attrs {
@@ -345,7 +350,7 @@ fn define_scope(
                 }
             }
             Item::Fn(def) => {
-                function_plans.push((scope, def.clone()));
+                function_plans.push((current_scope.with_namespace(scope), def.clone()));
             }
             Item::Module(module) => {
                 let module_id = world.reference_child_module(current_module, &module.name);
@@ -368,8 +373,8 @@ fn define_scope(
     let mut outputs = Vec::new();
     outputs.append(&mut protocol_outputs);
     let mut exports = Vec::new();
-    for (function_namespace, def) in function_plans {
-        let (output, export) = index_function(world, code_id, current_module, function_namespace, &def)?;
+    for (function_scope, def) in function_plans {
+        let (output, export) = index_function(world, code_id, function_scope, &def)?;
         outputs.push(output);
         if let Some(export) = export {
             exports.push(export);
@@ -388,10 +393,11 @@ fn define_scope(
 fn index_function(
     world: &mut World<'_>,
     code_id: CodeId,
-    current_module: ModuleId,
-    namespace: Namespace,
+    scope: ScopeSnapshot,
     def: &FnDef,
 ) -> Result<(Output, Option<ModuleExport>), FatalError> {
+    let current_module = scope.module_id();
+    let namespace = scope.namespace();
     let (function_id, revision) = world.define_function(
         current_module,
         current_module,

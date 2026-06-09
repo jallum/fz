@@ -40,6 +40,20 @@ comparison surface when it wants one.
 - `__fz_namespace_id__`: transport-only namespace handle; excluded from every
   fingerprint policy.
 
+## Scope Authority
+
+- Compiler2 does not maintain a second mutable compile-env store for quoted
+  source.
+- `ScopeSnapshot` is the one scope projection carrier:
+  `{module_id, namespace_head, function_id?}`.
+- `World::scope_lexical_context` derives quoted lexical metadata from that
+  snapshot.
+- `World::project_module_value` and `World::project_env_value` project
+  `__MODULE__` / `__ENV__` as Fz-shaped values from the same snapshot.
+- The namespace id carried in quoted metadata is transport only; it helps jobs
+  and tests line contexts back up with the live namespace chain, but it is not
+  semantic identity.
+
 ## Rooting Contract
 
 - `QuotedSourceRoot` retains the owning `QuotedSourceHeap` by `Rc`, so the

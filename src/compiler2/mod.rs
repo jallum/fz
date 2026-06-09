@@ -18,6 +18,7 @@ mod protocol;
 mod resolve;
 mod runtime;
 mod scheduler;
+mod scope;
 mod semantic;
 mod source;
 mod type_expr;
@@ -56,6 +57,7 @@ pub use identity::{
 };
 pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
 pub use scheduler::{AppliedStep, DriveOutcome, FatalError, Scheduler};
+pub use scope::ScopeSnapshot;
 pub use semantic::{
     ActivationAnalysis, ActivationMap, ActivationSlot, CallSiteKey, CallSiteMap, CallSiteSummary, SelectedCallee,
     SemanticClosure, SemanticClosureMap,
@@ -89,6 +91,8 @@ mod identity_test;
 mod namespace_test;
 #[cfg(test)]
 mod scheduler_test;
+#[cfg(test)]
+mod scope_test;
 #[cfg(test)]
 mod source_test;
 #[cfg(test)]
