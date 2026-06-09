@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-09T23:37:26Z",
@@ -7,8 +7,8 @@
   "id": "fz-gli",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Close native codegen telemetry accounting: span declare/define/emit_runtime/finalize under one compile span",
   "type": "task",
-  "updated_at": "2026-06-09T23:37:26Z"
+  "updated_at": "2026-06-09T23:37:44Z"
 }
