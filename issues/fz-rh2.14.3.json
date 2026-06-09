@@ -7,13 +7,13 @@
     "fz-rh2.13"
   ],
   "created": "2026-06-09T04:25:57Z",
-  "description": "Goal: move the semantic part of native codegen into compiler2 ownership. Signal: compiler2 lowers `NativeProgram(root)` through compiler2-owned codegen modules that consume compiler2 `Ty`, compiler2 dispatch/type-test facts, callable-entry inventory, extern marshal facts, and body ownership directly; only truly universal CLIF/backend/runtime mechanics remain shared.\n\nChange:\n- copy/adapt the native-codegen modules whose behavior depends on compiler2 facts out of `src/ir_codegen` into compiler2\n- retarget those modules onto compiler2-owned surfaces instead of planner-shaped wrappers and old-world associated-type pins\n- leave shared only the substrate that turns already-settled ABI/layout/runtime facts into machine code and linked artifacts\n\nWhy:\n- compiler2 cannot be free of old dead weight while the logic that interprets its facts lives inside a backend path shaped around the old compiler\n\nChecks:\n- compiler2-native tests enter the compiler2-owned backend directly\n- no compiler2-owned lowering module depends on `SpecPlan`, `SpecRegistry`, or `crate::types::Ty`",
+  "description": "Goal: switch compiler2 front doors onto the in-house native backend and delete the compiler2 route through shared semantic codegen. Signal: `Compiler2::compile_root_jit`, `run_root_jit`, `compile_root_aot`, compiler2 tests, and the `fz2` binary use only the compiler2-owned backend path; `src/compiler2/compiler.rs` no longer creates a fresh legacy type owner or calls the shared semantic native entrypoint.\n\nChange:\n- move compiler2 JIT/AOT/runtime entry points onto the compiler2-owned backend\n- delete compiler2-specific dead helpers and entry paths in the old shared semantic native route\n- keep shared only the universal backend/runtime substrate still consumed by both worlds\n\nWhy:\n- until the front doors switch, every cleanup still has to negotiate with the old shared route and the compiler2 path still pays the old-world tax\n\nChecks:\n- compiler2 front-door and CLI tests pass through the in-house backend\n- grep for compiler2 callsites into the old shared semantic native entrypoint is empty",
   "id": "fz-rh2.14.3",
   "labels": [],
   "parent": "fz-rh2.14",
   "priority": 2,
   "status": "open",
-  "title": "Compiler2 native backends: bring semantic native codegen in-house",
+  "title": "Compiler2 native backends: switch compiler2 front doors onto the in-house backend",
   "type": "task",
-  "updated_at": "2026-06-09T04:26:24Z"
+  "updated_at": "2026-06-09T04:35:13Z"
 }
