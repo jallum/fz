@@ -110,6 +110,25 @@ comparison surface when it wants one.
   and tests line contexts back up with the live namespace chain, but it is not
   semantic identity.
 
+## Discovery Authority
+
+- `QuotedCodeSource` now carries two compiler2-owned views of one source
+  submission:
+  the authoritative quoted root and a derived `ScopeSurface` read model.
+- `ScopeSurface` is intentionally narrow:
+  top-level attrs plus decoded scope forms for `alias`, `import`, `require`,
+  functions, modules, protocols, protocol impls, structs, and macro-call
+  surface forms.
+- Code/module/protocol discovery facts read those decoded forms directly from
+  quoted roots; they no longer store or zip against old parser `Rc<Item>`
+  payloads.
+- Module bodies and protocol bodies use the same `ScopeSurface` shape as
+  top-level code, so nested discovery and protocol-impl callback discovery stay
+  in one quoted-source world.
+- The remaining explicit `legacy_*` seam is function-local only:
+  `legacy_fn_def` is still derived on demand for downstream body/contract jobs
+  that have not been ported yet.
+
 ## Rooting Contract
 
 - `QuotedSourceRoot` retains the owning `QuotedSourceHeap` by `Rc`, so the

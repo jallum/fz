@@ -8,10 +8,8 @@
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::rc::Rc;
 
-use crate::ast::Item;
-use crate::ast::{Attribute, FnDef};
+use crate::ast::FnDef;
 use crate::compiler::source::Span;
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
@@ -29,7 +27,7 @@ use super::artifact::{
     EmissionReadyProgramMap, MaterializedProgram, MaterializedProgramMap, NativeProgram, NativeProgramMap,
 };
 use super::body::{LoweredBody, LoweredBodyMap};
-use super::code::{CodeMap, LegacyCodeSource, QuotedCodeSource};
+use super::code::{CodeMap, QuotedCodeSource};
 use super::contract::{FunctionContract, FunctionContractMap};
 use super::deps::UnresolvedWait;
 use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
@@ -585,11 +583,9 @@ impl<'a> World<'a> {
         parent: ModuleId,
         local_name: String,
         source: QuotedSourceCarrier,
-        legacy_attrs: Vec<crate::ast::Attribute>,
-        legacy_items: Vec<Rc<Item>>,
+        surface: super::quoted_surface::ScopeSurface,
     ) -> u64 {
-        self.modules
-            .index_body(id, code, parent, local_name, source, legacy_attrs, legacy_items)
+        self.modules.index_body(id, code, parent, local_name, source, surface)
     }
 
     pub fn index_protocol_module(
@@ -599,11 +595,10 @@ impl<'a> World<'a> {
         parent: ModuleId,
         local_name: String,
         source: QuotedSourceCarrier,
-        legacy_attrs: Vec<crate::ast::Attribute>,
-        legacy_callbacks: Vec<crate::ast::ProtocolCallback>,
+        surface: super::quoted_surface::ScopeSurface,
     ) -> u64 {
         self.modules
-            .index_protocol(id, code, parent, local_name, source, legacy_attrs, legacy_callbacks)
+            .index_protocol(id, code, parent, local_name, source, surface)
     }
 
     pub fn scope_module(&mut self, id: ModuleId, base_namespace: Namespace) -> u64 {
@@ -834,7 +829,7 @@ impl<'a> World<'a> {
             && matches!(
                 &self.modules.get(name.module).state,
                 ModuleState::Indexed(source) | ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. }
-                    if matches!(source.legacy, ModuleSourceKind::Protocol(_))
+                    if matches!(source.kind, ModuleSourceKind::Protocol(_))
             )
     }
 
@@ -1268,10 +1263,10 @@ impl<'a> World<'a> {
         match &self.modules.get(module).state {
             ModuleState::Placeholder => None,
             ModuleState::Indexed(source) | ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. } => {
-                match &source.legacy {
+                match &source.kind {
                     ModuleSourceKind::Protocol(_) => None,
-                    ModuleSourceKind::Body(body) => body.items.iter().find_map(|item| match &**item {
-                        Item::Struct(def) => Some(def.fields.as_slice()),
+                    ModuleSourceKind::Body(body) => body.forms.iter().find_map(|form| match form {
+                        super::quoted_surface::ScopeForm::Struct(def) => Some(def.fields.as_slice()),
                         _ => None,
                     }),
                 }
@@ -1287,8 +1282,8 @@ impl<'a> World<'a> {
         self.modules.named_struct_schemas()
     }
 
-    pub fn finish_code_index(&mut self, id: CodeId, source: QuotedCodeSource, legacy: LegacyCodeSource) -> u64 {
-        self.code.index(id, source, legacy)
+    pub fn finish_code_index(&mut self, id: CodeId, source: QuotedCodeSource) -> u64 {
+        self.code.index(id, source)
     }
 
     pub fn code_revision(&self, id: CodeId) -> u64 {
@@ -1564,20 +1559,10 @@ impl<'a> World<'a> {
         }
     }
 
-    pub fn code_legacy_items(&self, id: CodeId) -> Option<&[Rc<Item>]> {
+    pub fn code_surface(&self, id: CodeId) -> Option<&super::quoted_surface::ScopeSurface> {
         match &self.code.get(id).state {
-            super::code::CodeState::Indexed { legacy, .. } => Some(legacy.items.as_slice()),
+            super::code::CodeState::Indexed { source } => Some(&source.surface),
             super::code::CodeState::Pending => None,
-        }
-    }
-
-    /// The root-scope attributes (top-level `@type`s) retained at indexing, so
-    /// scoping reserves them into the GLOBAL scope exactly as a module reserves
-    /// its own.
-    pub fn code_legacy_attrs(&self, id: CodeId) -> &[Attribute] {
-        match &self.code.get(id).state {
-            super::code::CodeState::Indexed { legacy, .. } => legacy.attrs.as_slice(),
-            super::code::CodeState::Pending => &[],
         }
     }
 
@@ -1755,12 +1740,14 @@ impl<'a> World<'a> {
             }
             ModuleState::Placeholder => return None,
         };
-        match &source.legacy {
+        match &source.kind {
             ModuleSourceKind::Protocol(protocol)
-                if protocol
-                    .callbacks
-                    .iter()
-                    .any(|callback| callback.name == function_ref.name && callback.arity == function_ref.arity) =>
+                if protocol.forms.iter().any(|form| match form {
+                    super::quoted_surface::ScopeForm::Function(callback) => {
+                        callback.name == function_ref.name && callback.arity == function_ref.arity
+                    }
+                    _ => false,
+                }) =>
             {
                 Some(ProtocolCallback {
                     protocol: function_ref.module,

@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use super::quoted_surface::ScopeSurface;
 use super::{
     Job, ModuleId, NamespaceSymbol, QuotedLexicalContextKind, QuotedSourceCarrier, QuotedSourceHeap, ScopeSnapshot,
     World,
@@ -94,8 +95,10 @@ fn compiler2_module_scope_returns_a_scope_snapshot_not_just_a_namespace() {
         ModuleId::GLOBAL,
         "Scoped".to_string(),
         QuotedSourceCarrier::empty(),
-        Vec::new(),
-        Vec::new(),
+        ScopeSurface {
+            attrs: Vec::new(),
+            forms: Vec::new(),
+        },
     );
     world.scope_module(module, namespace);
 

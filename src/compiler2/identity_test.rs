@@ -1,6 +1,7 @@
+use super::quoted_surface::ScopeSurface;
 use super::{
-    CodeMap, CodeState, FunctionDef, FunctionMap, FunctionState, LegacyCodeSource, ModuleId, ModuleMap, ModuleState,
-    NamespaceStore, NamespaceSymbol, QuotedCodeSource, QuotedSourceCarrier, parse_quoted_program,
+    CodeMap, CodeState, FunctionDef, FunctionMap, FunctionState, ModuleId, ModuleMap, ModuleState, NamespaceStore,
+    NamespaceSymbol, QuotedCodeSource, QuotedSourceCarrier, parse_quoted_program,
 };
 use crate::ast::{Expr, FnClause, FnDef, Spanned, TypeExprBody};
 use crate::telemetry::ConfiguredTelemetry;
@@ -31,6 +32,13 @@ fn legacy_fn_def(name: &str) -> FnDef {
         variadic: false,
         attrs: vec![],
         span: crate::compiler::source::Span::DUMMY,
+    }
+}
+
+fn empty_scope_surface() -> ScopeSurface {
+    ScopeSurface {
+        attrs: Vec::new(),
+        forms: Vec::new(),
     }
 }
 
@@ -75,8 +83,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         ModuleId::GLOBAL,
         "Scoped".to_string(),
         scoped_source.clone(),
-        Vec::new(),
-        Vec::new(),
+        empty_scope_surface(),
     );
     let same_indexed_revision = modules.index_body(
         scoped_ref,
@@ -84,8 +91,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         ModuleId::GLOBAL,
         "Scoped".to_string(),
         scoped_source,
-        Vec::new(),
-        Vec::new(),
+        empty_scope_surface(),
     );
     assert_eq!(
         same_indexed_revision, indexed_revision,
@@ -172,18 +178,14 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         code_id,
         QuotedCodeSource {
             quoted: code_source.clone(),
-        },
-        LegacyCodeSource {
-            items: Vec::new(),
-            attrs: Vec::new(),
+            surface: empty_scope_surface(),
         },
     );
     let same_indexed_code_revision = code.index(
         code_id,
-        QuotedCodeSource { quoted: code_source },
-        LegacyCodeSource {
-            items: Vec::new(),
-            attrs: Vec::new(),
+        QuotedCodeSource {
+            quoted: code_source,
+            surface: empty_scope_surface(),
         },
     );
     assert_eq!(
@@ -215,18 +217,16 @@ fn compiler2_code_index_revisions_ignore_quoted_heap_identity_when_semantics_mat
 
     let first_revision = code.index(
         code_id,
-        QuotedCodeSource { quoted: first },
-        LegacyCodeSource {
-            items: Vec::new(),
-            attrs: Vec::new(),
+        QuotedCodeSource {
+            quoted: first,
+            surface: empty_scope_surface(),
         },
     );
     let second_revision = code.index(
         code_id,
-        QuotedCodeSource { quoted: second },
-        LegacyCodeSource {
-            items: Vec::new(),
-            attrs: Vec::new(),
+        QuotedCodeSource {
+            quoted: second,
+            surface: empty_scope_surface(),
         },
     );
 

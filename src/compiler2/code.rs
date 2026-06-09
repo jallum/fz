@@ -1,7 +1,4 @@
-use std::rc::Rc;
-
-use crate::ast::{Attribute, Item};
-
+use super::quoted_surface::ScopeSurface;
 use super::source::QuotedSourceCarrier;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -24,23 +21,17 @@ pub struct Code {
 #[derive(Debug, Clone)]
 pub enum CodeState {
     Pending,
-    /// Compiler-owned quoted source is the authority. The legacy parser payload
-    /// remains only as a temporary downstream compatibility artifact.
+    /// Compiler-owned quoted source is the authority. The decoded scope surface
+    /// is a compiler2-owned read model derived from that quoted root.
     Indexed {
         source: QuotedCodeSource,
-        legacy: LegacyCodeSource,
     },
 }
 
 #[derive(Debug, Clone)]
 pub struct QuotedCodeSource {
     pub quoted: QuotedSourceCarrier,
-}
-
-#[derive(Debug, Clone)]
-pub struct LegacyCodeSource {
-    pub items: Vec<Rc<Item>>,
-    pub attrs: Vec<Attribute>,
+    pub surface: ScopeSurface,
 }
 
 #[derive(Debug, Default)]
@@ -66,9 +57,9 @@ impl CodeMap {
         id
     }
 
-    pub fn index(&mut self, id: CodeId, source: QuotedCodeSource, legacy: LegacyCodeSource) -> u64 {
+    pub fn index(&mut self, id: CodeId, source: QuotedCodeSource) -> u64 {
         let code = &mut self.slots[id.0 as usize];
-        let next = CodeState::Indexed { source, legacy };
+        let next = CodeState::Indexed { source };
         if same_code_state(&code.state, &next) {
             return code.revision;
         }
@@ -109,7 +100,7 @@ impl CodeMap {
 fn same_code_state(left: &CodeState, right: &CodeState) -> bool {
     match (left, right) {
         (CodeState::Pending, CodeState::Pending) => true,
-        (CodeState::Indexed { source: left, .. }, CodeState::Indexed { source: right, .. }) => {
+        (CodeState::Indexed { source: left }, CodeState::Indexed { source: right }) => {
             left.quoted.semantic.digest == right.quoted.semantic.digest
         }
         _ => false,

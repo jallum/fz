@@ -1,12 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
 
-use std::rc::Rc;
-
-use crate::ast::{Attribute, FnDef, Item, ProtocolCallback as ProtocolCallbackDef};
+use crate::ast::FnDef;
 use crate::compiler::source::Span;
 
 use super::code::CodeId;
 use super::namespace::{Namespace, NamespaceSymbol};
+use super::quoted_surface::{ScopeForm, ScopeSurface};
 use super::source::QuotedSourceCarrier;
 use super::type_expr::TypeDefBody;
 use super::types::Ty;
@@ -140,27 +139,13 @@ pub struct ModuleSource {
     pub parent: ModuleId,
     pub local_name: String,
     pub source: QuotedSourceCarrier,
-    pub legacy: LegacyModuleSource,
+    pub kind: ModuleSourceKind,
 }
 
 #[derive(Debug, Clone)]
-pub enum LegacyModuleSource {
-    Body(LegacyModuleBody),
-    Protocol(LegacyProtocolSource),
-}
-
-pub type ModuleSourceKind = LegacyModuleSource;
-
-#[derive(Debug, Clone)]
-pub struct LegacyModuleBody {
-    pub attrs: Vec<Attribute>,
-    pub items: Vec<Rc<Item>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct LegacyProtocolSource {
-    pub attrs: Vec<Attribute>,
-    pub callbacks: Vec<ProtocolCallbackDef>,
+pub enum ModuleSourceKind {
+    Body(ScopeSurface),
+    Protocol(ScopeSurface),
 }
 
 impl ModuleSource {
@@ -170,31 +155,10 @@ impl ModuleSource {
             parent: ModuleId::GLOBAL,
             local_name: String::new(),
             source: QuotedSourceCarrier::empty(),
-            legacy: LegacyModuleSource::Body(LegacyModuleBody {
+            kind: ModuleSourceKind::Body(ScopeSurface {
                 attrs: Vec::new(),
-                items: Vec::new(),
+                forms: Vec::new(),
             }),
-        }
-    }
-
-    pub fn legacy_items(&self) -> Option<&[Rc<Item>]> {
-        match &self.legacy {
-            LegacyModuleSource::Body(body) => Some(body.items.as_slice()),
-            LegacyModuleSource::Protocol(_) => None,
-        }
-    }
-
-    pub fn legacy_attrs(&self) -> &[Attribute] {
-        match &self.legacy {
-            LegacyModuleSource::Body(body) => body.attrs.as_slice(),
-            LegacyModuleSource::Protocol(protocol) => protocol.attrs.as_slice(),
-        }
-    }
-
-    pub fn legacy_callbacks(&self) -> Option<&[ProtocolCallbackDef]> {
-        match &self.legacy {
-            LegacyModuleSource::Body(_) => None,
-            LegacyModuleSource::Protocol(protocol) => Some(protocol.callbacks.as_slice()),
         }
     }
 }
@@ -447,8 +411,7 @@ impl ModuleMap {
         parent: ModuleId,
         local_name: String,
         source: QuotedSourceCarrier,
-        legacy_attrs: Vec<Attribute>,
-        legacy_items: Vec<Rc<Item>>,
+        surface: ScopeSurface,
     ) -> u64 {
         let module = &mut self.slots[id.0 as usize];
         let next = ModuleState::Indexed(ModuleSource {
@@ -456,10 +419,7 @@ impl ModuleMap {
             parent,
             local_name,
             source,
-            legacy: LegacyModuleSource::Body(LegacyModuleBody {
-                attrs: legacy_attrs,
-                items: legacy_items,
-            }),
+            kind: ModuleSourceKind::Body(surface),
         });
         replace_if_changed(&mut module.state, &mut module.revision, next)
     }
@@ -471,8 +431,7 @@ impl ModuleMap {
         parent: ModuleId,
         local_name: String,
         source: QuotedSourceCarrier,
-        legacy_attrs: Vec<Attribute>,
-        legacy_callbacks: Vec<ProtocolCallbackDef>,
+        surface: ScopeSurface,
     ) -> u64 {
         let module = &mut self.slots[id.0 as usize];
         let next = ModuleState::Indexed(ModuleSource {
@@ -480,10 +439,7 @@ impl ModuleMap {
             parent,
             local_name,
             source,
-            legacy: LegacyModuleSource::Protocol(LegacyProtocolSource {
-                attrs: legacy_attrs,
-                callbacks: legacy_callbacks,
-            }),
+            kind: ModuleSourceKind::Protocol(surface),
         });
         replace_if_changed(&mut module.state, &mut module.revision, next)
     }
@@ -530,12 +486,13 @@ impl ModuleMap {
                 ModuleState::Placeholder => None,
                 ModuleState::Indexed(source)
                 | ModuleState::Scoped { source, .. }
-                | ModuleState::Defined { source, .. } => source.legacy_items().and_then(|items| {
-                    items.iter().find_map(|item| match &**item {
-                        Item::Struct(def) => Some(def.fields.clone()),
+                | ModuleState::Defined { source, .. } => match &source.kind {
+                    ModuleSourceKind::Body(surface) => surface.forms.iter().find_map(|form| match form {
+                        ScopeForm::Struct(def) => Some(def.fields.clone()),
                         _ => None,
-                    })
-                }),
+                    }),
+                    ModuleSourceKind::Protocol(_) => None,
+                },
             }) else {
                 continue;
             };

@@ -47,7 +47,7 @@ pub use body::{
     ReceiveClause, ValueId,
 };
 pub use cli::run as run_cli;
-pub use code::{Code, CodeId, CodeMap, CodeState, LegacyCodeSource, QuotedCodeSource};
+pub use code::{Code, CodeId, CodeMap, CodeState, QuotedCodeSource};
 pub use compiler::{CodeSubmission, Compiler2, RootSubmission};
 pub use contract::{FunctionContract, FunctionContractMap};
 pub use deps::{DependencyIndex, UnresolvedWait};
@@ -56,11 +56,12 @@ pub use facts::{FactChange, FactReplace, FactSlot, FactTable, FactValue};
 pub use frontdoor::{FrontDoorError, parse_quoted_program};
 pub use identity::{
     ActivationKey, ExecutableKey, ExecutableNeed, Function, FunctionDef, FunctionId, FunctionMap, FunctionRef,
-    FunctionSource, FunctionSourceMap, FunctionSourceSlot, FunctionSourceState, FunctionState, LegacyModuleBody,
-    LegacyModuleSource, LegacyProtocolSource, Module, ModuleExport, ModuleId, ModuleMap, ModuleSource,
-    ModuleSourceKind, ModuleState, ModuleSurface, NotedTypeDecl, Root, RootEntry, RootId, RootMap, TypeName,
+    FunctionSource, FunctionSourceMap, FunctionSourceSlot, FunctionSourceState, FunctionState, Module, ModuleExport,
+    ModuleId, ModuleMap, ModuleSource, ModuleSourceKind, ModuleState, ModuleSurface, NotedTypeDecl, Root, RootEntry,
+    RootId, RootMap, TypeName,
 };
 pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
+pub use quoted_surface::SurfaceSourceContext;
 pub use scheduler::{AppliedStep, DriveOutcome, FatalError, Scheduler};
 pub use scope::ScopeSnapshot;
 pub use semantic::{
