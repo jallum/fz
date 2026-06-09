@@ -4,6 +4,7 @@ use std::rc::Rc;
 use super::super::facts::FactValue;
 use crate::ast::{Attribute, FnDef, Item, ProtocolImplDef, SpecDecl, TypeExprBody};
 use crate::compiler::source::Id as SourceId;
+use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
@@ -17,7 +18,7 @@ use super::super::identity::{ModuleExport, ModuleId, ModuleSourceKind, NotedType
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::protocol::ProtocolCallbackImpl;
 use super::super::scheduler::FatalError;
-use super::super::type_expr::{TypeExpr, parse_type_def_body, parse_type_expr};
+use super::super::type_expr::{NominalKind, TypeDefBody, TypeExpr, parse_type_def_body, parse_type_expr};
 use super::super::world::World;
 
 type Output = (FactKey, FactValue);
@@ -525,6 +526,26 @@ fn define_protocol_surface(
     callbacks: &[crate::ast::ProtocolCallback],
 ) -> ScopeResult {
     let mut scope = namespace;
+    let protocol_t = TypeName {
+        module: module_id,
+        name: "t".to_string(),
+        arity: 0,
+    };
+    scope = world.bind_namespace(scope, "t".to_string(), NamespaceSymbol::Type(protocol_t.clone()));
+    note_protocol_domain_type(world, protocol_t, scope, Vec::new());
+    note_protocol_domain_type(
+        world,
+        TypeName {
+            module: module_id,
+            name: "t".to_string(),
+            arity: 1,
+        },
+        scope,
+        vec!["a".to_string()],
+    );
+
+    let mut outputs = world.refresh_protocol_domain_facts(module_id);
+    outputs.push(world.refresh_protocol_dispatch_fact(module_id));
     let mut exports = Vec::new();
     let mut revision_floor = 0;
     for callback in callbacks {
@@ -543,9 +564,25 @@ fn define_protocol_surface(
         namespace: scope,
         revision_floor,
         reads: Vec::new(),
-        outputs: Vec::new(),
+        outputs,
         exports,
     }
+}
+
+fn note_protocol_domain_type(world: &mut World<'_>, name: TypeName, namespace: Namespace, params: Vec<String>) {
+    world.note_type_decl(
+        name.clone(),
+        NotedTypeDecl {
+            params,
+            body: TypeDefBody {
+                kind: NominalKind::Opaque,
+                inner: TypeExpr::Wildcard,
+            },
+            namespace,
+            span: Span::DUMMY,
+        },
+    );
+    world.record_type_def_refs(name, Vec::new());
 }
 
 fn define_protocol_impl(
@@ -610,6 +647,8 @@ fn define_protocol_impl(
         );
     }
     let revision = world.define_protocol_impl(protocol, target, callbacks);
+    outputs.extend(world.refresh_protocol_domain_facts(protocol));
+    outputs.push(world.refresh_protocol_dispatch_fact(protocol));
     Ok((outputs, revision))
 }
 

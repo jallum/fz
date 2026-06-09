@@ -1,5 +1,4 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
-use crate::ast::Attribute;
 use crate::compiler2::artifact::{BackendEntry, BackendTail};
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::JobEffects;
@@ -23,7 +22,6 @@ use crate::ir_interp::{
 };
 use crate::telemetry::handler::{Event, EventKind, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
-use crate::type_expr::resolve_spec_decls_generic;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -401,213 +399,187 @@ fn compiler2_derive_type_def_mints_a_refines_brand_inner_in_symbol() {
 }
 
 #[test]
-fn compiler2_dark_launch_contract_type_resolution_matches_legacy_env_and_stays_lazy() {
+fn compiler2_protocol_domain_and_dispatch_facts_revise_when_impls_land() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
-    let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function", "defined"], functions.handler());
-
     let mut world = crate::compiler2::World::new(&tel);
     let code_id = world.submit_code(
-        Some("contract_dark_launch.fz".to_string()),
+        Some("protocol_domain.fz".to_string()),
         concat!(
-            "defmodule Proof do\n",
-            "  @type count :: integer\n",
-            "  @type box(a) :: [a]\n",
-            "  @type count_box :: box(count)\n",
-            "  @type cold :: {count, count}\n",
+            "defprotocol Proof do\n",
+            "  @spec pick(t(a), a) :: a\n",
+            "  fn pick(value, fallback)\n",
+            "end\n",
             "\n",
-            "  @spec roundtrip(count_box, x) :: x when x: count_box\n",
-            "  fn roundtrip(value, x), do: x\n",
+            "defmodule Box do\n",
+            "  fn pick(value, _fallback), do: value\n",
+            "  defimpl Proof, for: List do\n",
+            "    fn pick(value, fallback), do: Box.pick(value, fallback)\n",
+            "  end\n",
             "end\n",
         )
         .to_string(),
     );
     assert_resolved(
         world.drive(),
-        "first drive should index the module-scoped contract case",
+        "first drive should index the protocol and impl owner modules",
     );
-
     let indexed = outputs
         .take(Job::IndexCode(code_id))
-        .expect("IndexCode job effects for the dark-launch contract case");
+        .expect("IndexCode job effects for the protocol-domain case");
     let module_ids = module_indexed_ids(&indexed);
-    assert_eq!(module_ids.len(), 1, "the test source defines exactly one module");
-    let module = module_ids[0];
+    assert_eq!(
+        module_ids.len(),
+        2,
+        "the source defines one protocol and one impl owner module"
+    );
+    let protocol = *module_ids
+        .iter()
+        .find(|module| world.module_name(**module) == Some("Proof"))
+        .expect("indexed module id for the protocol");
+    let owner = *module_ids
+        .iter()
+        .find(|module| world.module_name(**module) == Some("Box"))
+        .expect("indexed module id for the impl owner");
 
     assert!(
         world.demand(Job::ScopeCode(code_id)),
-        "scoping the test source should be demandable",
+        "scoping the protocol source should be demandable",
     );
-    assert_resolved(world.drive(), "second drive should scope the test source");
+    assert_resolved(world.drive(), "second drive should scope the protocol source");
     assert!(
-        world.demand(Job::DefineModule(module)),
-        "defining the test module should be demandable",
+        world.demand(Job::DefineModule(protocol)),
+        "defining the protocol module should be demandable",
     );
-    assert_resolved(
-        world.drive(),
-        "third drive should define the module-scoped function surface",
-    );
+    assert_resolved(world.drive(), "third drive should define the protocol callback surface");
+    let protocol_defined = outputs
+        .take(Job::DefineModule(protocol))
+        .expect("DefineModule job effects for the protocol surface");
 
-    let function = function_id(&functions, "roundtrip", 2);
-    let define_count = |name: &str| {
-        capture
-            .find(&["fz", "compiler2", "type", "defined"])
-            .into_iter()
-            .filter(|event| metadata_str(event, "name") == name)
-            .count()
-    };
-
-    assert_eq!(
-        define_count("count"),
-        0,
-        "the new type path stays cold before explicit demand"
-    );
-    assert_eq!(
-        define_count("box"),
-        0,
-        "the new type path stays cold before explicit demand"
-    );
-    assert_eq!(
-        define_count("count_box"),
-        0,
-        "the new type path stays cold before explicit demand",
-    );
-    assert_eq!(
-        define_count("cold"),
-        0,
-        "unreached types stay cold before explicit demand"
-    );
-
-    let def = world.function_definition(function);
-    let spec = def
-        .ast
-        .attrs
-        .iter()
-        .find_map(|attr| match attr {
-            Attribute::Spec(spec) => Some(spec.clone()),
-            _ => None,
-        })
-        .expect("roundtrip/2 should still carry its declared @spec");
-
-    let legacy_env = world
-        .function_type_env(function)
-        .expect("the legacy type env should still resolve while both paths coexist");
-    assert_eq!(
-        define_count("count"),
-        0,
-        "reading the legacy type env should not fire the new type resolver"
-    );
-    assert_eq!(
-        define_count("box"),
-        0,
-        "reading the legacy type env should not fire the new type resolver"
-    );
-    assert_eq!(
-        define_count("count_box"),
-        0,
-        "reading the legacy type env should not fire the new type resolver"
-    );
-    assert_eq!(
-        define_count("cold"),
-        0,
-        "an unreferenced type should stay cold while only the legacy env path is read"
-    );
-    let legacy = resolve_spec_decls_generic(world.types_mut(), std::iter::once(&spec), &legacy_env)
-        .expect("the legacy type env should still resolve the declared contract")
+    let noted = capture
+        .find(&["fz", "compiler2", "type", "noted"])
         .into_iter()
-        .next()
-        .expect("one declared spec should produce one resolved arrow");
+        .filter(|event| metadata_str(event, "name") == "t")
+        .map(|event| measurement_u64(&event, "arity"))
+        .collect::<Vec<_>>();
+    assert_eq!(noted, vec![0, 1], "protocol modules should synthesize both t/0 and t/1");
 
-    let referenced = world.function_type_refs(function).to_vec();
-    assert_eq!(
-        referenced.len(),
-        1,
-        "the function surface references exactly one declared type name"
+    let t0 = TypeName {
+        module: protocol,
+        name: "t".to_string(),
+        arity: 0,
+    };
+    let t1 = TypeName {
+        module: protocol,
+        name: "t".to_string(),
+        arity: 1,
+    };
+    assert!(
+        protocol_defined.contains(&presence(FactKey::TypeDefined(t0.clone()), 1))
+            && protocol_defined.contains(&presence(FactKey::TypeDefined(t1.clone()), 1))
+            && protocol_defined.contains(&presence(FactKey::ProtocolDispatch(protocol), 1)),
+        "defining the protocol should publish both protocol-domain type facts and an initial dispatch fact",
     );
-    assert_eq!(
-        referenced[0].name, "count_box",
-        "the recorded type-name dep is the module-local alias named in the @spec"
-    );
-    assert_eq!(referenced[0].arity, 0, "the referenced alias is monomorphic");
 
-    for type_name in referenced {
-        assert!(
-            world.demand(Job::DeriveTypeDef(type_name)),
-            "pulling a referenced type through the production demand path should be demandable",
-        );
-    }
+    let initial = capture
+        .find(&["fz", "compiler2", "type", "defined"])
+        .into_iter()
+        .filter(|event| metadata_str(event, "name") == "t")
+        .map(|event| {
+            (
+                measurement_u64(&event, "arity"),
+                measurement_u64(&event, "revision"),
+                metadata_str(&event, "ty").to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        initial.len(),
+        2,
+        "the initial protocol surface should publish both t arities once"
+    );
+
+    let mut expect = Types::new();
+    let marker = expect.opaque_of(&crate::frontend::protocols::protocol_domain_tag(
+        &crate::modules::identity::ModuleName::parse_dotted("Proof").expect("protocol name should parse"),
+    ));
+    let rendered = expect.display(&marker).to_string();
+    assert_eq!(
+        initial,
+        vec![(0, 1, rendered.clone()), (1, 1, rendered.clone())],
+        "before any impl lands, both protocol-domain facts should resolve to the protocol marker",
+    );
+
+    assert!(
+        world.demand(Job::DefineModule(owner)),
+        "defining the impl owner module should be demandable",
+    );
     assert_resolved(
         world.drive(),
-        "demanding the referenced type names should resolve the wait-set closure",
+        "defining the impl owner should revise the protocol facts",
+    );
+    let owner_defined = outputs
+        .take(Job::DefineModule(owner))
+        .expect("DefineModule job effects for the impl owner");
+    assert!(
+        owner_defined.contains(&presence(FactKey::TypeDefined(t0.clone()), 2))
+            && owner_defined.contains(&presence(FactKey::TypeDefined(t1.clone()), 2))
+            && owner_defined.contains(&presence(FactKey::ProtocolDispatch(protocol), 2)),
+        "adding an impl should revise both protocol-domain type facts and the dispatch fact",
     );
 
+    let any = world.types_mut().any();
+    let list_any = world.types_mut().list(any);
+    let widened_t0 = world
+        .type_def(&t0)
+        .expect("the monomorphic protocol-domain fact should stay stored after widening")
+        .ty;
+    let marker_t0 = world
+        .types_mut()
+        .opaque_of(&crate::frontend::protocols::protocol_domain_tag(
+            &crate::modules::identity::ModuleName::parse_dotted("Proof").expect("protocol name should parse"),
+        ));
     assert_eq!(
-        define_count("count"),
-        1,
-        "the wrapper wait-set should pull count exactly once"
-    );
-    assert_eq!(
-        define_count("box"),
-        1,
-        "the wrapper wait-set should pull box exactly once"
-    );
-    assert_eq!(
-        define_count("count_box"),
-        1,
-        "the directly referenced alias should resolve exactly once"
-    );
-    assert_eq!(
-        define_count("cold"),
-        0,
-        "a type no consumer references should stay cold through the dark launch"
+        widened_t0,
+        world.types_mut().union(marker_t0, list_any),
+        "t/0 should widen from the marker to the marker-or-list(any) domain when List implements the protocol",
     );
 
-    let resolved = world
-        .resolve_spec(def.namespace, &spec)
-        .expect("the new resolver should resolve the same declared contract through TypeDefined");
-
-    let int = world.types_mut().int();
-    let list_int = world.types_mut().list(int);
-    let var0 = world.types_mut().type_var(TypeVarId(0));
-
+    let elem = world
+        .types_mut()
+        .type_var(crate::frontend::protocols::PROTOCOL_ELEM_VAR);
+    let list_elem = world.types_mut().list(elem);
+    let widened_t1 = world
+        .type_def(&t1)
+        .expect("the parametric protocol-domain fact should stay stored after widening")
+        .ty;
+    let marker_t1 = world
+        .types_mut()
+        .opaque_of(&crate::frontend::protocols::protocol_domain_tag(
+            &crate::modules::identity::ModuleName::parse_dotted("Proof").expect("protocol name should parse"),
+        ));
     assert_eq!(
-        resolved.params.len(),
-        2,
-        "the worked example keeps both declared params"
-    );
-    assert_eq!(
-        resolved.params[0], list_int,
-        "count_box should resolve to list(integer) through the new resolver"
-    );
-    assert_eq!(
-        resolved.params[1], var0,
-        "the free type variable x should intern to TypeVarId(0)"
-    );
-    assert_eq!(
-        resolved.result, var0,
-        "the result x should reuse the exact same type-var handle"
-    );
-    assert_eq!(
-        resolved.constraints.get(&TypeVarId(0)),
-        Some(&list_int),
-        "the when-clause bound should resolve to the same list(integer) handle"
+        widened_t1,
+        world.types_mut().union(marker_t1, list_elem),
+        "t(a) should widen from the marker to the marker-or-list(a) domain when List implements the protocol",
     );
 
-    assert_eq!(
-        legacy.params, resolved.params,
-        "old and new contract params should be the exact same interned Ty handles"
+    let dispatch = world
+        .protocol_dispatch(protocol)
+        .expect("the revised protocol dispatch fact should be stored");
+    assert_eq!(dispatch.arms.len(), 1, "one defimpl should produce one dispatch arm");
+    assert!(
+        world
+            .module_name(dispatch.arms[0].target)
+            .is_some_and(|name| name.ends_with("List")),
+        "the dispatch arm should target the List receiver domain",
     );
-    assert_eq!(
-        legacy.result, resolved.result,
-        "old and new contract results should be the exact same interned Ty handle"
-    );
-    assert_eq!(
-        legacy.constraints, resolved.constraints,
-        "old and new contract bounds should be the exact same interned Ty handles"
+    assert!(
+        dispatch.arms[0].callbacks.contains_key(&("pick".to_string(), 2)),
+        "the dispatch arm should route the declared callback name and arity",
     );
 }
 

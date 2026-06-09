@@ -284,21 +284,6 @@ where
     Ok(ResolvedSpecSet { arrows })
 }
 
-pub fn resolve_spec_decls_generic<'a, T>(
-    t: &mut T,
-    decls: impl IntoIterator<Item = &'a SpecDecl>,
-    env: &ModuleTypeEnv<T::Ty>,
-) -> Result<Vec<ResolvedSpecDecl<T::Ty>>, TypeExprError>
-where
-    T: Types,
-{
-    let mut arrows = Vec::new();
-    for decl in decls {
-        arrows.push(resolve_spec_decl_generic(t, decl, env)?);
-    }
-    Ok(arrows)
-}
-
 /// Best-effort per-position spec resolution: each param and the result resolve
 /// independently, yielding `None` for any body that does not resolve (rather
 /// than failing the whole spec). Free type variables are shared across

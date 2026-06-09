@@ -43,6 +43,7 @@ pub enum FactKey {
     ModuleIndexed(ModuleId),
     ModuleDefined(ModuleId),
     TypeDefined(TypeName),
+    ProtocolDispatch(ModuleId),
     FunctionDefined(FunctionId),
     FunctionContract(FunctionId),
     LoweredBody(FunctionId),

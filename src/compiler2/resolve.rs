@@ -19,10 +19,11 @@
 
 use std::collections::HashMap;
 
-use crate::ast::SpecDecl;
+use crate::ast::{SpecDecl, TypeExprBody};
 use crate::compiler::source::Span;
 use crate::modules::identity::ModuleName;
 use crate::specs::{ResolvedStructFieldShape, ResolvedTypeShape};
+use crate::type_expr::ResolvedSpecDecl;
 
 use super::identity::{NotedTypeDecl, TypeName};
 use super::namespace::Namespace;
@@ -157,6 +158,35 @@ impl World<'_> {
             result,
             result_shape,
             constraints,
+        })
+    }
+
+    /// Resolves a source `TypeExprBody` directly against a captured namespace.
+    /// Consumers that own one type-position (parameter annotations, extern wire
+    /// hints after semantic resolution) use this instead of rebuilding a
+    /// module-wide environment.
+    pub(crate) fn resolve_type_expr_body(
+        &mut self,
+        namespace: Namespace,
+        body: &TypeExprBody,
+    ) -> Result<Ty, TypeExprError> {
+        let expr = parse_type_expr(&body.0)?;
+        let mut vars: HashMap<String, TypeVarId> = HashMap::new();
+        self.resolve_ty(namespace, &expr, &mut vars)
+    }
+
+    /// Resolves one spec to the shared downstream contract shape:
+    /// params/result/constraints over hard compiler2 `Ty`.
+    pub(crate) fn resolve_spec_decl(
+        &mut self,
+        namespace: Namespace,
+        spec: &SpecDecl,
+    ) -> Result<ResolvedSpecDecl<Ty>, TypeExprError> {
+        let resolved = self.resolve_spec(namespace, spec)?;
+        Ok(ResolvedSpecDecl {
+            params: resolved.params,
+            result: resolved.result,
+            constraints: resolved.constraints,
         })
     }
 

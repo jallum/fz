@@ -2,8 +2,9 @@
 //!
 //! Protocol callbacks are function-like namespaced identities without lowered
 //! bodies. Protocol implementations map those callbacks onto ordinary
-//! functions owned by a source module. Semantic analysis consumes these facts
-//! directly when a rooted call reaches a protocol callback.
+//! functions owned by a source module. Compiler2 publishes both the raw impl
+//! registry and a co-defined protocol-dispatch artifact so type legality and
+//! impl selection stay separate in the fact graph.
 
 use std::collections::HashMap;
 
@@ -31,6 +32,17 @@ pub(crate) struct ProtocolImpl {
     pub(crate) callbacks: HashMap<(String, usize), ProtocolCallbackImpl>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProtocolDispatchArm {
+    pub(crate) target: ModuleId,
+    pub(crate) callbacks: HashMap<(String, usize), ProtocolCallbackImpl>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProtocolDispatch {
+    pub(crate) arms: Vec<ProtocolDispatchArm>,
+}
+
 #[derive(Debug, Clone)]
 struct Revisioned<T> {
     value: T,
@@ -45,6 +57,11 @@ pub(crate) struct ProtocolCallbackMap {
 #[derive(Debug, Default)]
 pub(crate) struct ProtocolImplMap {
     slots: HashMap<ProtocolImplKey, Revisioned<ProtocolImpl>>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ProtocolDispatchMap {
+    slots: HashMap<ModuleId, Revisioned<ProtocolDispatch>>,
 }
 
 impl ProtocolCallbackMap {
@@ -76,10 +93,6 @@ impl ProtocolCallbackMap {
 
     pub(crate) fn get(&self, function: FunctionId) -> Option<ProtocolCallback> {
         self.slots.get(&function).map(|slot| slot.value)
-    }
-
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&FunctionId, ProtocolCallback)> {
-        self.slots.iter().map(|(function, slot)| (function, slot.value))
     }
 }
 
@@ -122,8 +135,36 @@ impl ProtocolImplMap {
             .iter()
             .filter_map(move |(key, slot)| (key.protocol == protocol).then_some((key, &slot.value)))
     }
+}
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&ProtocolImplKey, &ProtocolImpl)> {
-        self.slots.iter().map(|(key, slot)| (key, &slot.value))
+impl ProtocolDispatchMap {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn define(&mut self, protocol: ModuleId, dispatch: ProtocolDispatch) -> u64 {
+        match self.slots.get_mut(&protocol) {
+            Some(slot) => {
+                if slot.value != dispatch {
+                    slot.value = dispatch;
+                    slot.revision += 1;
+                }
+                slot.revision
+            }
+            None => {
+                self.slots.insert(
+                    protocol,
+                    Revisioned {
+                        value: dispatch,
+                        revision: 1,
+                    },
+                );
+                1
+            }
+        }
+    }
+
+    pub(crate) fn get(&self, protocol: ModuleId) -> Option<&ProtocolDispatch> {
+        self.slots.get(&protocol).map(|slot| &slot.value)
     }
 }

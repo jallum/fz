@@ -17,7 +17,7 @@ use crate::dispatch_matrix::pattern::{
     PatternBodyId, PatternDispatchError, PatternGuardExpr, PatternRow, SourcePatternError, SourcePatternRows,
     pattern_dispatch_from_source, pattern_dispatch_from_source_with_guard_resolver,
 };
-use crate::ir_lower::{extern_symbol_from_name, lower_extern_signature};
+use crate::ir_lower::{explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, ty_to_extern_ty};
 
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DirectCallee,
@@ -252,6 +252,17 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
     let mut reads = vec![FactKey::FunctionDefined(function)];
     let mut waits = HashSet::new();
     let mut follow_up = HashSet::new();
+    if def.ast.extern_abi.is_some() {
+        for referenced in world.function_type_refs(function).iter().cloned() {
+            let fact = FactKey::TypeDefined(referenced.clone());
+            if world.fact_revision(fact.clone()).is_some() {
+                reads.push(fact);
+            } else {
+                waits.insert(fact);
+                follow_up.insert(Job::DeriveTypeDef(referenced));
+            }
+        }
+    }
     for clause in &def.ast.clauses {
         if let Some(guard) = &clause.guard {
             collect_local_dispatch_requirements(world, def.namespace, guard, &mut reads, &mut waits, &mut follow_up)?;
@@ -283,6 +294,23 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
         outputs,
         ..JobEffects::default()
     })
+}
+
+fn extern_wire_ty(
+    types: &mut super::super::types::Types,
+    body: &crate::ast::TypeExprBody,
+    semantic_ty: &super::super::types::Ty,
+    constraints: &HashMap<super::super::types::TypeVarId, super::super::types::Ty>,
+) -> crate::fz_ir::ExternTy {
+    if let Some(hint) = explicit_extern_wire_hint(body) {
+        return hint;
+    }
+    let upper_bound = if constraints.is_empty() {
+        *semantic_ty
+    } else {
+        types.instantiate(semantic_ty, constraints)
+    };
+    ty_to_extern_ty(types, &upper_bound)
 }
 
 fn collect_local_dispatch_requirements(
@@ -474,26 +502,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
 
     fn lower(&mut self) -> Result<(LoweredBody, Vec<Output>), FatalError> {
         if let Some(abi) = self.def.ast.extern_abi.clone() {
-            let type_env = self.world.function_type_env(self.owner).map_err(|error| {
-                emit_job_diagnostic(
-                    self.world,
-                    Diagnostic::error(
-                        codes::RESOLVE_TYPE_ALIAS,
-                        format!(
-                            "compiler2 could not resolve extern return type for `{}`: {}",
-                            self.def.ast.name, error.msg
-                        ),
-                        error.span,
-                    ),
-                )
-            })?;
-            let signature =
-                lower_extern_signature(self.world.types_mut(), &self.def.ast, &type_env).map_err(|error| {
-                    emit_job_diagnostic(
-                        self.world,
-                        Diagnostic::error(codes::LOWER_UNSUPPORTED, error.to_string(), self.def.ast.name_span),
-                    )
-                })?;
+            let signature = self.resolve_extern_signature()?;
             return Ok((
                 LoweredBody::Extern {
                     signature: LoweredExtern {
@@ -524,6 +533,63 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             },
             std::mem::take(&mut self.generated),
         ))
+    }
+
+    fn resolve_extern_signature(&mut self) -> Result<LoweredExtern, FatalError> {
+        let contract = extern_semantic_contract(&self.def.ast).ok_or_else(|| {
+            emit_job_diagnostic(
+                self.world,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    format!("`{}` is not an extern declaration", self.def.ast.name),
+                    self.def.ast.name_span,
+                ),
+            )
+        })?;
+        let semantic_contract = self
+            .world
+            .resolve_spec_decl(self.namespace, &contract)
+            .map_err(|error| {
+                emit_job_diagnostic(
+                    self.world,
+                    Diagnostic::error(
+                        codes::RESOLVE_TYPE_ALIAS,
+                        format!(
+                            "compiler2 could not resolve extern contract for `{}`: {}",
+                            self.def.ast.name, error.msg
+                        ),
+                        error.span,
+                    ),
+                )
+            })?;
+        let params = self
+            .def
+            .ast
+            .extern_param_tokens
+            .iter()
+            .zip(semantic_contract.params.iter())
+            .map(|(body, ty)| extern_wire_ty(self.world.types_mut(), body, ty, &semantic_contract.constraints))
+            .collect();
+        let ret = extern_wire_ty(
+            self.world.types_mut(),
+            &self.def.ast.extern_ret_tokens,
+            &semantic_contract.result,
+            &semantic_contract.constraints,
+        );
+        Ok(LoweredExtern {
+            abi: self
+                .def
+                .ast
+                .extern_abi
+                .clone()
+                .expect("extern signatures only resolve for extern fns"),
+            symbol: extern_symbol_from_name(&self.def.ast.name).to_string(),
+            params,
+            variadic: self.def.ast.variadic,
+            ret,
+            return_ty: semantic_contract.result,
+            semantic_contract,
+        })
     }
 
     fn lower_clause(&mut self, clause: &FnClause) -> Result<ExprClause, FatalError> {

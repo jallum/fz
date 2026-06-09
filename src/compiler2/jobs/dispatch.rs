@@ -7,6 +7,13 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::super::drive::{FactKey, Job, JobEffects};
+use super::super::facts::FactValue;
+use super::super::identity::{FunctionDef, FunctionId};
+use super::super::namespace::{Namespace, NamespaceSymbol};
+use super::super::scheduler::FatalError;
+use super::super::types::Ty;
+use super::super::world::World;
 use crate::ast::{Expr, FnDef, Pattern, Spanned};
 use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
@@ -17,15 +24,6 @@ use crate::dispatch_matrix::pattern::{
     SourcePatternError, SourcePatternRows, guard_dispatch_from_fn_def,
     pattern_dispatch_from_source_with_guard_resolver,
 };
-use crate::type_expr::parse_type_expr;
-
-use super::super::drive::{FactKey, Job, JobEffects};
-use super::super::facts::FactValue;
-use super::super::identity::{FunctionDef, FunctionId};
-use super::super::namespace::{Namespace, NamespaceSymbol};
-use super::super::scheduler::FatalError;
-use super::super::types::Ty;
-use super::super::world::World;
 
 #[derive(Debug, Clone)]
 pub(super) struct GuardCall {
@@ -132,6 +130,15 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
     }
     let mut waits = HashSet::new();
     let mut follow_up = HashSet::new();
+    for referenced in world.function_type_refs(function).iter().cloned() {
+        let fact = FactKey::TypeDefined(referenced.clone());
+        if world.fact_revision(fact.clone()).is_some() {
+            reads.push(fact);
+        } else {
+            waits.insert(fact);
+            follow_up.insert(Job::DeriveTypeDef(referenced));
+        }
+    }
     for call in collect_guard_calls_in_guards(&def.ast)
         .map_err(|span| emit_entry_guard_error(world, function, span, "are not dispatch-pure"))?
     {
@@ -239,7 +246,7 @@ fn build_guard_dispatch(
 
 fn entry_source_patterns(
     world: &mut World<'_>,
-    function: FunctionId,
+    _function: FunctionId,
     def: &FunctionDef,
 ) -> Result<SourcePatternRows<Ty>, FatalError> {
     let capture_patterns = def
@@ -262,20 +269,6 @@ fn entry_source_patterns(
         });
     }
 
-    let type_env = world.function_type_env(function).map_err(|error| {
-        emit_job_diagnostic(
-            world,
-            Diagnostic::error(
-                codes::RESOLVE_TYPE_ALIAS,
-                format!(
-                    "compiler2 could not resolve type aliases for `{}`: {}",
-                    function_label(&def.ast),
-                    error.msg
-                ),
-                error.span,
-            ),
-        )
-    })?;
     let mut rows = Vec::with_capacity(def.ast.clauses.len());
     for (body_id, clause) in def.ast.clauses.iter().enumerate() {
         let mut preconditions = Vec::new();
@@ -283,7 +276,7 @@ fn entry_source_patterns(
             let Some(tokens) = tokens else {
                 continue;
             };
-            let (ty, consumed) = parse_type_expr(world.types_mut(), &tokens.0, &type_env).map_err(|error| {
+            let ty = world.resolve_type_expr_body(def.namespace, tokens).map_err(|error| {
                 emit_job_diagnostic(
                     world,
                     Diagnostic::error(
@@ -298,20 +291,6 @@ fn entry_source_patterns(
                     ),
                 )
             })?;
-            if consumed != tokens.0.len() {
-                return Err(emit_job_diagnostic(
-                    world,
-                    Diagnostic::error(
-                        codes::RESOLVE_TYPE_ALIAS,
-                        format!(
-                            "compiler2 found trailing tokens in parameter annotation {} for `{}`",
-                            index + 1,
-                            function_label(&def.ast)
-                        ),
-                        clause.params[index].span,
-                    ),
-                ));
-            }
             preconditions.push((PatternSubjectRef::Input((capture_patterns.len() + index) as u32), ty));
         }
         let mut patterns = capture_patterns.clone();

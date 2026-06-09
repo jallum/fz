@@ -862,17 +862,28 @@ fn resolve_protocol_call(
         return Ok((None, Vec::new(), any_ty(world)));
     }
     reads.push(protocol_fact);
+    let dispatch_fact = FactKey::ProtocolDispatch(protocol);
+    if world.fact_revision(dispatch_fact.clone()).is_none() {
+        waits.insert(dispatch_fact);
+        follow_up.insert(Job::DefineModule(protocol));
+        return Ok((None, Vec::new(), any_ty(world)));
+    }
+    reads.push(dispatch_fact);
 
     let receiver_ty = input_types.first().cloned().unwrap_or_else(|| any_ty(world));
     let function_ref = world.function_ref(callback_function).clone();
 
     let mut matches = Vec::new();
-    for (key, protocol_impl) in world.protocol_impls_for(protocol) {
-        let target_ty = world.module_impl_target_ty(key.target);
+    let dispatch = world
+        .protocol_dispatch(protocol)
+        .expect("protocol dispatch fact should be stored before semantic reads it")
+        .clone();
+    for arm in dispatch.arms {
+        let target_ty = world.module_impl_target_ty(arm.target);
         if !world.types().is_subtype(&receiver_ty, &target_ty) {
             continue;
         }
-        let callback = protocol_impl
+        let callback = arm
             .callbacks
             .get(&(function_ref.name.clone(), function_ref.arity))
             .copied();

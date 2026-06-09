@@ -17,13 +17,10 @@ use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch};
 use crate::frontend::protocols::{
-    ImplTarget as InterfaceImplTarget, PROTOCOL_ELEM_VAR, ProtocolDecl as InterfaceProtocolDecl,
-    ProtocolImplFact as InterfaceProtocolImplFact, ProtocolRegistry, impl_target_type_with_element,
-    protocol_domain_tag,
+    ImplTarget as InterfaceImplTarget, PROTOCOL_ELEM_VAR, impl_target_type_with_element, protocol_domain_tag,
 };
 use crate::modules::runtime_library;
 use crate::telemetry::{Telemetry, opaque_debug};
-use crate::type_expr::{ModuleTypeEnv, build_module_type_env_for_with_base};
 use crate::{measurements, metadata};
 
 use super::CodeId;
@@ -45,7 +42,8 @@ use super::identity::{
 use super::keying::{DispatchMaskMap, RecursiveMap};
 use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
 use super::protocol::{
-    ProtocolCallback, ProtocolCallbackImpl, ProtocolCallbackMap, ProtocolImpl, ProtocolImplKey, ProtocolImplMap,
+    ProtocolCallback, ProtocolCallbackImpl, ProtocolCallbackMap, ProtocolDispatch, ProtocolDispatchArm,
+    ProtocolDispatchMap, ProtocolImpl, ProtocolImplKey, ProtocolImplMap,
 };
 use super::runtime::{self, RuntimeModuleCode};
 use super::semantic::{
@@ -88,6 +86,7 @@ pub struct World<'a> {
     dispatch_masks: DispatchMaskMap,
     protocol_callbacks: ProtocolCallbackMap,
     protocol_impls: ProtocolImplMap,
+    protocol_dispatches: ProtocolDispatchMap,
     activations: ActivationMap,
     callsites: CallSiteMap,
     semantic_closures: SemanticClosureMap,
@@ -140,6 +139,7 @@ impl<'a> World<'a> {
             dispatch_masks: DispatchMaskMap::new(),
             protocol_callbacks: ProtocolCallbackMap::new(),
             protocol_impls: ProtocolImplMap::new(),
+            protocol_dispatches: ProtocolDispatchMap::new(),
             activations: ActivationMap::new(),
             callsites: CallSiteMap::new(),
             semantic_closures: SemanticClosureMap::new(),
@@ -721,10 +721,119 @@ impl<'a> World<'a> {
         self.type_defs.get(name)
     }
 
+    pub(crate) fn refresh_protocol_domain_facts(&mut self, protocol: ModuleId) -> Vec<(FactKey, FactValue)> {
+        let mut outputs = Vec::new();
+        for name in [
+            protocol_domain_type_name(protocol, 0),
+            protocol_domain_type_name(protocol, 1),
+        ] {
+            let Some(def) = self.protocol_domain_type_def(&name) else {
+                continue;
+            };
+            let revision = self.define_type_def(name.clone(), def);
+            outputs.push((FactKey::TypeDefined(name), FactValue::presence(revision)));
+        }
+        outputs
+    }
+
+    pub(crate) fn protocol_domain_type_def(&mut self, name: &TypeName) -> Option<TypeDef> {
+        if !self.is_protocol_domain_type(name) {
+            return None;
+        }
+        let protocol = self
+            .module_name(name.module)
+            .and_then(|path| crate::modules::identity::ModuleName::parse_dotted(path).ok())?;
+        let (ty, params) = match name.arity {
+            0 => {
+                let any = self.types.any();
+                let mut domain = self.types.opaque_of(&protocol_domain_tag(&protocol));
+                for (key, _protocol_impl) in self.protocol_impls_for(name.module) {
+                    let target_name = self
+                        .module_name(key.target)
+                        .and_then(|path| crate::modules::identity::ModuleName::parse_dotted(path).ok())?;
+                    let target_ty =
+                        impl_target_type_with_element(&mut self.types, &InterfaceImplTarget::module(target_name), any);
+                    domain = self.types.union(domain, target_ty);
+                }
+                (domain, Vec::new())
+            }
+            1 => {
+                let element = self.types.type_var(PROTOCOL_ELEM_VAR);
+                let mut domain = self.types.opaque_of(&protocol_domain_tag(&protocol));
+                for (key, _protocol_impl) in self.protocol_impls_for(name.module) {
+                    let target_name = self
+                        .module_name(key.target)
+                        .and_then(|path| crate::modules::identity::ModuleName::parse_dotted(path).ok())?;
+                    let target_ty = impl_target_type_with_element(
+                        &mut self.types,
+                        &InterfaceImplTarget::module(target_name),
+                        element,
+                    );
+                    domain = self.types.union(domain, target_ty);
+                }
+                (domain, vec![PROTOCOL_ELEM_VAR])
+            }
+            _ => return None,
+        };
+        Some(TypeDef { ty, params })
+    }
+
+    pub(crate) fn define_protocol_dispatch(&mut self, protocol: ModuleId, dispatch: ProtocolDispatch) -> u64 {
+        let revision = self.protocol_dispatches.define(protocol, dispatch.clone());
+        self.tel.execute(
+            &["fz", "compiler2", "protocol_dispatch", "defined"],
+            &measurements! {
+                protocol_id: protocol.as_u32() as u64,
+                revision: revision,
+                arms: dispatch.arms.len() as u64,
+            },
+            &metadata! {
+                dispatch: opaque_debug(&dispatch),
+            },
+        );
+        revision
+    }
+
+    pub(crate) fn refresh_protocol_dispatch_fact(&mut self, protocol: ModuleId) -> (FactKey, FactValue) {
+        let dispatch = ProtocolDispatch {
+            arms: self
+                .protocol_impls_for(protocol)
+                .into_iter()
+                .map(|(key, protocol_impl)| ProtocolDispatchArm {
+                    target: key.target,
+                    callbacks: protocol_impl.callbacks,
+                })
+                .collect(),
+        };
+        let revision = self.define_protocol_dispatch(protocol, dispatch);
+        (FactKey::ProtocolDispatch(protocol), FactValue::presence(revision))
+    }
+
+    pub(crate) fn protocol_dispatch(&self, protocol: ModuleId) -> Option<&ProtocolDispatch> {
+        self.protocol_dispatches.get(protocol)
+    }
+
+    fn is_protocol_domain_type(&self, name: &TypeName) -> bool {
+        name.name == "t"
+            && matches!(name.arity, 0 | 1)
+            && matches!(
+                &self.modules.get(name.module).state,
+                ModuleState::Indexed(source) | ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. }
+                    if matches!(source.kind, ModuleSourceKind::Protocol { .. })
+            )
+    }
+
     /// The qualified tag a nominal `@type` (`refines` / `opaque`) brands under.
     /// A top-level type owns no module, so its tag is its bare name; a module
     /// type is tagged `Module.Path::name`.
     pub(crate) fn qualified_type_tag(&self, name: &TypeName) -> String {
+        if self.is_protocol_domain_type(name)
+            && let Some(protocol) = self
+                .module_name(name.module)
+                .and_then(|path| crate::modules::identity::ModuleName::parse_dotted(path).ok())
+        {
+            return protocol_domain_tag(&protocol);
+        }
         if name.module.is_global() {
             return name.name.clone();
         }
@@ -1320,102 +1429,6 @@ impl<'a> World<'a> {
             .expect("guard dispatch should only be read after its fact is defined")
     }
 
-    pub(crate) fn function_type_env(
-        &mut self,
-        function: FunctionId,
-    ) -> Result<ModuleTypeEnv<Ty>, crate::type_expr::TypeExprError> {
-        let module = self.function_definition(function).owner_module;
-        let mut base_env = runtime_library::root_type_env(&mut self.types, self.tel).env;
-        self.extend_protocol_type_env(&mut base_env, (!module.is_global()).then_some(module));
-        if module.is_global() {
-            return Ok(base_env);
-        }
-        let module_name = self
-            .modules
-            .name(module)
-            .expect("named function modules should have a reverse lookup")
-            .to_string();
-        let attrs = match &self.modules.get(module).state {
-            ModuleState::Indexed(source) | ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. } => {
-                source.attrs.clone()
-            }
-            ModuleState::Placeholder => {
-                panic!("function modules should have source metadata before resolving type env")
-            }
-        };
-        build_module_type_env_for_with_base(&mut self.types, &attrs, &module_name, &base_env).map(|(env, _, _)| env)
-    }
-
-    fn extend_protocol_type_env(&mut self, env: &mut ModuleTypeEnv<Ty>, current_module: Option<ModuleId>) {
-        let mut registry = ProtocolRegistry::default();
-        registry.extend_interfaces(&runtime_library::interfaces(self.tel));
-        let current_module_name = current_module.and_then(|module| self.modules.name(module).map(str::to_string));
-        for (_function, callback) in self.protocol_callbacks.iter() {
-            let Some(protocol) = self
-                .modules
-                .name(callback.protocol)
-                .and_then(|name| crate::modules::identity::ModuleName::parse_dotted(name).ok())
-            else {
-                continue;
-            };
-            registry
-                .protocols
-                .entry(protocol)
-                .or_insert_with(|| InterfaceProtocolDecl {
-                    callbacks: Vec::new(),
-                    span: Span::DUMMY,
-                });
-        }
-        for (key, _protocol_impl) in self.protocol_impls.iter() {
-            let Some(protocol) = self
-                .modules
-                .name(key.protocol)
-                .and_then(|name| crate::modules::identity::ModuleName::parse_dotted(name).ok())
-            else {
-                continue;
-            };
-            let Some(target) = self
-                .modules
-                .name(key.target)
-                .and_then(|name| crate::modules::identity::ModuleName::parse_dotted(name).ok())
-            else {
-                continue;
-            };
-            registry
-                .protocols
-                .entry(protocol.clone())
-                .or_insert_with(|| InterfaceProtocolDecl {
-                    callbacks: Vec::new(),
-                    span: Span::DUMMY,
-                });
-            registry
-                .impls
-                .entry(crate::frontend::protocols::ProtocolImplKey {
-                    protocol: protocol.clone(),
-                    target: InterfaceImplTarget::module(target.clone()),
-                })
-                .or_insert_with(|| InterfaceProtocolImplFact {
-                    protocol,
-                    target: InterfaceImplTarget::module(target),
-                    callbacks: BTreeMap::new(),
-                    callback_specs: BTreeMap::new(),
-                    span: Span::DUMMY,
-                });
-        }
-        for protocol in registry.protocols.keys().cloned().collect::<Vec<_>>() {
-            let any = self.types.any();
-            let ty = protocol_domain_template(&mut self.types, &protocol, &registry, any);
-            let element = self.types.type_var(PROTOCOL_ELEM_VAR);
-            let template = protocol_domain_template(&mut self.types, &protocol, &registry, element);
-            env.insert(format!("{}.t", protocol), ty);
-            env.insert_protocol_domain(format!("{}.t", protocol), template);
-            if current_module_name.as_deref() == Some(protocol.dotted().as_str()) {
-                env.insert("t".to_string(), ty);
-                env.insert_protocol_domain("t".to_string(), template);
-            }
-        }
-    }
-
     pub fn code_items(&self, id: CodeId) -> Option<&[Rc<Item>]> {
         match &self.code.get(id).state {
             super::code::CodeState::Indexed { items, .. } => Some(items.as_slice()),
@@ -1708,18 +1721,12 @@ fn dedup_type_names(refs: &mut Vec<TypeName>) {
     refs.retain(|name| seen.insert(name.clone()));
 }
 
-fn protocol_domain_template(
-    types: &mut Types,
-    protocol: &crate::modules::identity::ModuleName,
-    registry: &ProtocolRegistry,
-    element: Ty,
-) -> Ty {
-    let mut domain = types.opaque_of(&protocol_domain_tag(protocol));
-    for fact in registry.impls.values().filter(|fact| fact.protocol == *protocol) {
-        let target_ty = impl_target_type_with_element(types, &fact.target, element);
-        domain = types.union(domain, target_ty);
+fn protocol_domain_type_name(protocol: ModuleId, arity: usize) -> TypeName {
+    TypeName {
+        module: protocol,
+        name: "t".to_string(),
+        arity,
     }
-    domain
 }
 
 fn impl_target_ty<T: crate::types::Types<Ty = Ty>>(t: &mut T, module_name: &str) -> Ty {

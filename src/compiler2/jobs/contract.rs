@@ -9,10 +9,10 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::ir_lower::extern_semantic_contract;
-use crate::type_expr::{ResolvedSpecDecl, resolve_spec_decls_generic};
+use crate::type_expr::ResolvedSpecDecl;
 
 use super::super::contract::FunctionContract;
-use super::super::drive::{FactKey, JobEffects};
+use super::super::drive::{FactKey, Job, JobEffects};
 use super::super::facts::FactValue;
 use super::super::identity::FunctionId;
 use super::super::scheduler::FatalError;
@@ -43,49 +43,57 @@ pub(super) fn derive_function_contract(world: &mut World<'_>, function: Function
     } else {
         Vec::new()
     };
-    let type_env = world.function_type_env(function).map_err(|error| {
-        emit_job_diagnostic(
-            world,
-            Diagnostic::error(
-                codes::RESOLVE_TYPE_ALIAS,
-                format!(
-                    "compiler2 could not resolve function contract for `{}`: {}",
-                    def.ast.name, error.msg
+
+    let mut reads = vec![FactKey::FunctionDefined(function)];
+    let mut waits = Vec::new();
+    let mut follow_up = Vec::new();
+    for referenced in world.function_type_refs(function).iter().cloned() {
+        let fact = FactKey::TypeDefined(referenced.clone());
+        if world.fact_revision(fact.clone()).is_some() {
+            reads.push(fact);
+        } else {
+            waits.push(fact);
+            follow_up.push(Job::DeriveTypeDef(referenced));
+        }
+    }
+    if !waits.is_empty() {
+        return Ok(JobEffects {
+            reads,
+            waits,
+            follow_up,
+            ..JobEffects::default()
+        });
+    }
+
+    let contract = specs
+        .iter()
+        .map(|spec| world.resolve_spec_decl(def.namespace, spec))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            emit_job_diagnostic(
+                world,
+                Diagnostic::error(
+                    codes::RESOLVE_TYPE_ALIAS,
+                    format!(
+                        "compiler2 could not resolve function contract for `{}`: {}",
+                        def.ast.name, error.msg
+                    ),
+                    error.span,
                 ),
-                error.span,
-            ),
-        )
-    })?;
-    let contract = resolve_spec_decls_generic(world.types_mut(), specs.iter(), &type_env).map_err(|error| {
-        emit_job_diagnostic(
-            world,
-            Diagnostic::error(
-                codes::RESOLVE_TYPE_ALIAS,
-                format!(
-                    "compiler2 could not resolve function contract for `{}`: {}",
-                    def.ast.name, error.msg
-                ),
-                error.span,
-            ),
-        )
-    })?;
-    Ok(publish_contract(
-        world,
-        function,
-        FactKey::FunctionDefined(function),
-        contract,
-    ))
+            )
+        })?;
+    Ok(publish_contract(world, function, reads, contract))
 }
 
 fn publish_contract(
     world: &mut World<'_>,
     function: FunctionId,
-    read: FactKey,
+    reads: Vec<FactKey>,
     contract: Vec<ResolvedSpecDecl<super::super::types::Ty>>,
 ) -> JobEffects {
     let revision = world.define_function_contract(function, FunctionContract::from_resolved(contract));
     JobEffects {
-        reads: vec![read],
+        reads,
         outputs: vec![(FactKey::FunctionContract(function), FactValue::presence(revision))],
         ..JobEffects::default()
     }

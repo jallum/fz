@@ -17,6 +17,14 @@ use super::super::scheduler::FatalError;
 use super::super::world::World;
 
 pub(super) fn derive_type_def(world: &mut World<'_>, name: &TypeName) -> Result<JobEffects, FatalError> {
+    if let Some(def) = world.protocol_domain_type_def(name) {
+        let revision = world.define_type_def(name.clone(), def);
+        return Ok(JobEffects {
+            outputs: vec![(FactKey::TypeDefined(name.clone()), FactValue::presence(revision))],
+            ..JobEffects::default()
+        });
+    }
+
     let Some(decl) = world.type_decl(name).cloned() else {
         // The owning scope has not noted this name yet. A module type is noted
         // when its module is defined, so demand that and wait. A global name
