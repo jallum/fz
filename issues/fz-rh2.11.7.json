@@ -49,11 +49,15 @@
     {
       "text": "Elixir reference point for the re-scoped .13/.14 seam:  keeps parser output as ordinary quoted forms, then  groups/stores definitions in compiler-owned state keyed by  and later reassembles them for consumers. That reinforces the current shape of this arc: no parser-level grouped AST authority, one quoted term world, compiler-owned grouped source state, then any temporary downstream legacy artifact derived from that state rather than from the parser.",
       "timestamp": "2026-06-09T20:56:22Z"
+    },
+    {
+      "text": "Elixir reference point for the re-scoped .13/.14 seam, replacing the shell-mangled note above:\n\n`Kernel.define/4` keeps parser output as ordinary quoted forms, then `elixir_def` groups/stores definitions in compiler-owned state keyed by `{name, arity}` and later reassembles them for consumers.\n\nThat reinforces the current shape of this arc: no parser-level grouped AST authority, one quoted term world, compiler-owned grouped source state, then any temporary downstream legacy artifact derived from that state rather than from the parser.",
+      "timestamp": "2026-06-09T20:56:58Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 source production: quoted AST, macro facts, and compiler services",
   "type": "epic",
-  "updated_at": "2026-06-09T20:56:22Z"
+  "updated_at": "2026-06-09T20:56:58Z"
 }
