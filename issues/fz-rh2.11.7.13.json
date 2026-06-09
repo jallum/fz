@@ -15,11 +15,15 @@
     {
       "text": "Elixir cross-check:  hands ordinary quoted  into , and  groups/stores clauses in compiler-owned tables keyed by  rather than teaching the parser a special grouped-function AST. That confirms the boundary here: parser/frontdoor should keep emitting ordinary quoted forms; fz-rh2.11.7.13 should add compiler-owned grouped-source composition/interning and reuse those grouped roots on repeated reads instead of rebuilding them ad hoc.",
       "timestamp": "2026-06-09T20:56:22Z"
+    },
+    {
+      "text": "Elixir cross-check, replacing the shell-mangled note above:\n\n`Kernel.define/4` hands ordinary quoted `{call, expr}` into `:elixir_def.store_definition`, and `elixir_def` groups/stores clauses in compiler-owned tables keyed by `{name, arity}` rather than teaching the parser a special grouped-function AST.\n\nThat confirms the boundary here: parser/frontdoor should keep emitting ordinary quoted forms; `fz-rh2.11.7.13` should add compiler-owned grouped-source composition/interning and reuse those grouped roots on repeated reads instead of rebuilding them ad hoc.",
+      "timestamp": "2026-06-09T20:56:58Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Compiler2 quoted source composition: make grouped function roots first-class and stable",
   "type": "task",
-  "updated_at": "2026-06-09T20:56:22Z"
+  "updated_at": "2026-06-09T20:56:58Z"
 }
