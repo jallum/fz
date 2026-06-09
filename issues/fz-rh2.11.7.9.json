@@ -12,6 +12,12 @@
   "id": "fz-rh2.11.7.9",
   "labels": [],
   "parent": "fz-rh2.11.7",
+  "comments": [
+    {
+      "text": "Blocker discovered during implementation audit: swapping `IndexCode` / source authority to quoted roots right now would break compiler2 bootstrap. The current quoted front door in `src/compiler2/frontdoor.rs` does not yet parse core forms that already appear in compiler2-owned inputs, including `extern` item declarations and `if` expressions in `src/modules/runtime_library/kernel.fz`, plus `receive ... after`, expression lambdas, and richer pattern forms used by active fixtures/runtime modules. Using the old parser/AST as a fallback here would reintroduce the second-authority/conversion-loop problem this arc is removing, so I filed `fz-rh2.11.7.10` and blocked `.11.7.9` on it.",
+      "timestamp": "2026-06-09T18:27:24Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 job model: consume source AST roots as AnyValueRef",
