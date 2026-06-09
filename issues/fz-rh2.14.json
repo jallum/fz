@@ -4,14 +4,15 @@
   "blocks": [
     "fz-rh2.9"
   ],
+  "closed_at": "2026-06-09T14:55:55Z",
   "created": "2026-06-09T04:22:44Z",
   "description": "Goal: make compiler2 native codegen compiler2-owned end to end, so the compiler2 route no longer depends on old-world semantic codegen or a second type owner before JIT/AOT.\n\nCurrent conclusion from the landed code:\n- `Compiler2::compile_root_jit`, `run_root_jit`, and `compile_root_aot` now consume compiler2-owned native backend state directly through `NativeProgram(root)` plus the one world-owned compiler2 `Types`.\n- copied planner-shaped baggage (`SpecPlan`, `SpecRegistry`, synthetic `SpecKey`, widened `return_tys`) is gone from the compiler2-native handoff.\n- compiler2-native no longer re-projects runtime membership through a fake legacy `Ty` world; direct runtime tests and cached receive dispatch use the shared first-class `RuntimeTypePredicate`.\n- the remaining migration problem above this seam is cutover and contract comparison, tracked by `fz-rh2.9` once its other blockers clear.\n\nContained follow-up outside this arc: `fz-rh2.15` tracks the last compiler2-native pocket still fabricating old-world semantic extern payloads on `fz_ir::ExternDecl`.",
   "id": "fz-rh2.14",
   "labels": [],
   "parent": "fz-rh2",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 native backends: bring native codegen in-house and delete old-world backend dead weight",
   "type": "epic",
-  "updated_at": "2026-06-09T14:55:10Z"
+  "updated_at": "2026-06-09T14:55:55Z"
 }
