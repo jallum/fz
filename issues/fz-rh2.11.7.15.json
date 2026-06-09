@@ -4,6 +4,7 @@
     "fz-rh2.11.7.9"
   ],
   "blocks": [],
+  "closed_at": "2026-06-09T23:23:34Z",
   "created": "2026-06-09T22:21:03Z",
   "description": "Goal: remove the explicit legacy_fn_def compatibility seam introduced in fz-rh2.11.7.14 by porting contract/body/dispatch/keying to compiler2-owned quoted-source readers, leaving grouped quoted roots as the only function source surface and eliminating the last derived old-AST function carrier from compiler2.\\n\\nGrounding:\\n- fz-rh2.11.7.14 made FunctionSource the authoritative function fact and legacy_fn_def the explicit temporary downstream artifact.\\n- jobs/contract.rs, jobs/body.rs, jobs/dispatch.rs, and related keying helpers still read def.legacy_ast today.\\n- the name is intentionally stinky so we can grep it later and remove it deliberately.\\n\\nSignal:\\n- contract/body/dispatch/keying consume typed quoted-source readers or equivalent compiler2-owned function-surface records, not legacy_fn_def/FnDef\\n- FunctionDef no longer needs to carry legacy_ast as a stored compatibility field\\n- deleting src/compiler2/legacy_fn_def.rs is either part of this ticket or the ticket leaves a smaller final follow-up if one truly remains\\n- telemetry/tests prove the same source-root revision path still wakes downstream facts without any old-AST compatibility carrier\\n\\nChange:\\n- add the typed quoted readers needed by downstream jobs\\n- port downstream users off def.legacy_ast\\n- remove legacy_fn_def storage and its now-dead helpers/tests/docs\\n\\nWhy:\\n- .14 made the temporary seam honest; this ticket is the cleanup price for that affordance",
   "id": "fz-rh2.11.7.15",
@@ -16,8 +17,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 cleanup: remove legacy_fn_def compatibility seam",
   "type": "task",
-  "updated_at": "2026-06-09T23:23:16Z"
+  "updated_at": "2026-06-09T23:23:34Z"
 }
