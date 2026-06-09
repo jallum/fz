@@ -211,11 +211,12 @@ captures live in `src/compiler2/drive_test.rs` and assert on emitted
 definitions, work-graph steps, callsite summaries, semantic closure, and the
 full artifact ladder through `NativeProgram(root)`. The quicksort,
 `Enum.reduce`, and variadic-extern contracts are the fast summary probe; the
-shared-native JIT tests plus the `Compiler2::compile_root_jit` /
-`run_root_jit` / `compile_root_aot` front-door tests prove that
-Compiler2-native codegen and runtime setup do not fall back to planner or
-type-preparation telemetry; `tests/fz2_cli.rs` extends that proof to the real
-`fz2` binary surface. The ignored JSONL dump is the occasional deep trace.
+compiler2-owned native JIT fixture tests prove the forked backend can consume
+`NativeProgram(root)` directly, while the `Compiler2::compile_root_jit` /
+`run_root_jit` / `compile_root_aot` front-door tests prove that the public
+runtime setup still does not fall back to planner or type-preparation
+telemetry. `tests/fz2_cli.rs` extends that proof to the real `fz2` binary
+surface. The ignored JSONL dump is the occasional deep trace.
 
 Useful reruns:
 
@@ -226,9 +227,9 @@ Useful reruns:
 - `cargo test --lib compiler2_materialization_freezes_only_the_selected_enum_reduce_path -- --exact --nocapture`
 - `cargo test --lib compiler2_artifact_ladder_consumes_only_the_previous_rung -- --exact --nocapture`
 - `cargo test --lib compiler2_emission_ready_preserves_variadic_extern_inventory_and_marshals -- --exact --nocapture`
-- `cargo test --lib compiler2_native_program_jit_runs_quicksort_through_shared_codegen -- --exact --nocapture`
-- `cargo test --lib compiler2_native_program_jit_runs_enum_reduce_through_shared_codegen -- --exact --nocapture`
-- `cargo test --lib compiler2_native_program_jit_runs_variadic_extern_through_shared_codegen -- --exact --nocapture`
+- `cargo test --lib compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen -- --nocapture`
+- `cargo test --lib compiler2_native_program_jit_runs_enum_reduce_through_compiler2_codegen -- --nocapture`
+- `cargo test --lib compiler2_native_program_jit_runs_variadic_extern_through_compiler2_codegen -- --nocapture`
 - `cargo test --lib compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare -- --exact --nocapture`
 - `cargo test --lib compiler2_run_root_jit_executes_resources_without_legacy_prepare -- --exact --nocapture`
 - `cargo test --lib compiler2_compile_root_aot_consumes_native_program_without_legacy_prepare -- --exact --nocapture`

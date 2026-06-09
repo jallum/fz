@@ -73,7 +73,7 @@ submit_root(main/0)
   DeriveAbiReady(root) derives ABI lanes, return delivery, and callable-boundary facts
   DeriveEmissionReady(root) derives stable emission inventory
   LowerBackendProgram(root) derives the backend-consumable handoff
-  LowerNativeProgram(root) derives the CPS/native handoff for shared codegen
+  LowerNativeProgram(root) derives the CPS/native handoff for compiler2-owned codegen
 ```
 
 Each callee pulls its own `LowerFunction` / `PlanEntryDispatch` /
@@ -261,11 +261,12 @@ the published handoff.
 
 Current conclusion from the code:
 
-- no missing closed fact has been identified for the current shared native
+- no missing closed fact has been identified for the current compiler2-native
   codegen inputs
-- `Compiler2::compile_root_jit`, `run_root_jit`, and `compile_root_aot` now
-  consume `NativeProgram(root)` through the shared native backend without
-  `prepare_preplanned_native`
+- the compiler2-native JIT fixture tests now consume `NativeProgram(root)`
+  through the compiler2-owned backend fork directly
+- `Compiler2::compile_root_jit`, `run_root_jit`, and `compile_root_aot` still
+  switch to that backend in `fz-rh2.14.3`
 - `fz2` is now the side-by-side outer shell for those front doors: `fz2 run`,
   `fz2 interp`, and `fz2 build` submit source directly to Compiler2, seed
   `main/0`, and never reopen old planner or type-infer work

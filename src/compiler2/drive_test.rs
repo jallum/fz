@@ -16,7 +16,6 @@ use crate::fz_ir::{
     Block as IrBlock, CallsiteId as IrCallsiteId, CallsiteIdent, Cont as IrCont, ExternTy, ExternalCallEdge,
     FnIr as IrFn, Module as IrModule, Prim as IrPrim, ReceiveAfter, ReceiveClause, Stmt as IrStmt, Term as IrTerm,
 };
-use crate::ir_codegen::{JitBackend, compile_with_backend_native_program};
 use crate::ir_interp::{
     tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
 };
@@ -46,8 +45,13 @@ type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
 
 fn jit_compile_native_program(program: &NativeProgram, tel: &ConfiguredTelemetry) -> crate::ir_codegen::CompiledModule {
     let mut legacy_types = crate::types::new();
-    compile_with_backend_native_program(&mut legacy_types, program, JitBackend::new(), tel)
-        .expect("shared native codegen should compile a Compiler2 native program")
+    super::native_codegen::compile_with_backend_native_program(
+        &mut legacy_types,
+        program,
+        super::native_codegen::JitBackend::new(),
+        tel,
+    )
+    .expect("compiler2-owned native codegen should compile a Compiler2 native program")
 }
 
 fn assert_no_legacy_planner_or_type_infer(capture: &Capture, context: &str) {
@@ -3074,7 +3078,7 @@ fn compiler2_native_program_revision_stays_stable_for_identical_recompute() {
 }
 
 #[test]
-fn compiler2_native_program_jit_runs_quicksort_through_shared_codegen() {
+fn compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
@@ -3105,7 +3109,7 @@ fn compiler2_native_program_jit_runs_quicksort_through_shared_codegen() {
             .map(|event| metadata_str(&event, "message").to_string())
             .unwrap_or_else(|| "<missing diagnostic>".to_string());
         panic!(
-            "Compiler2 native lowering should settle before shared codegen consumes quicksort: {outcome:?}; diagnostic={message}"
+            "Compiler2 native lowering should settle before compiler2-owned codegen consumes quicksort: {outcome:?}; diagnostic={message}"
         );
     }
 
@@ -3114,12 +3118,12 @@ fn compiler2_native_program_jit_runs_quicksort_through_shared_codegen() {
     let halt = compiled.run(&tel, program.entry);
     assert_eq!(
         halt, 42,
-        "shared native codegen should preserve the Compiler2 quicksort entry result"
+        "compiler2-owned native codegen should preserve the Compiler2 quicksort entry result"
     );
     assert_eq!(
         dbg.lines().first().map(String::as_str),
         Some("[1, 1, 2, 3, 3, 4, 5, 5, 5, 6, 9]"),
-        "shared native codegen should preserve Compiler2 quicksort dbg output",
+        "compiler2-owned native codegen should preserve Compiler2 quicksort dbg output",
     );
     assert_no_legacy_planner_or_type_infer(
         &capture,
@@ -3128,7 +3132,7 @@ fn compiler2_native_program_jit_runs_quicksort_through_shared_codegen() {
 }
 
 #[test]
-fn compiler2_native_program_jit_runs_spawn_then_receive_through_shared_codegen() {
+fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
@@ -3166,7 +3170,7 @@ end
             .map(|event| metadata_str(&event, "message").to_string())
             .unwrap_or_else(|| "<missing diagnostic>".to_string());
         panic!(
-            "Compiler2 native lowering should settle spawn+receive before shared codegen consumes it: {outcome:?}; diagnostic={message}"
+            "Compiler2 native lowering should settle spawn+receive before compiler2-owned codegen consumes it: {outcome:?}; diagnostic={message}"
         );
     }
 
@@ -3209,7 +3213,7 @@ end
     assert_eq!(
         compiled.run(&tel, program.entry),
         42,
-        "shared native codegen should preserve Compiler2 spawn/receive behavior through the callable-entry seam",
+        "compiler2-owned native codegen should preserve Compiler2 spawn/receive behavior through the callable-entry seam",
     );
     assert_no_legacy_planner_or_type_infer(
         &capture,
@@ -3218,7 +3222,7 @@ end
 }
 
 #[test]
-fn compiler2_native_program_jit_runs_spawn_receive_and_assert_through_shared_codegen() {
+fn compiler2_native_program_jit_runs_spawn_receive_and_assert_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
@@ -3256,7 +3260,7 @@ end
             .map(|event| metadata_str(&event, "message").to_string())
             .unwrap_or_else(|| "<missing diagnostic>".to_string());
         panic!(
-            "Compiler2 native lowering should settle spawn+receive+assert before shared codegen consumes it: {outcome:?}; diagnostic={message}"
+            "Compiler2 native lowering should settle spawn+receive+assert before compiler2-owned codegen consumes it: {outcome:?}; diagnostic={message}"
         );
     }
 
@@ -3265,7 +3269,7 @@ end
     assert_eq!(
         compiled.run(&tel, program.entry),
         0,
-        "shared native codegen should preserve Compiler2 spawn/receive/assert behavior through the continuation seam",
+        "compiler2-owned native codegen should preserve Compiler2 spawn/receive/assert behavior through the continuation seam",
     );
     assert_no_legacy_planner_or_type_infer(
         &capture,
@@ -3274,7 +3278,7 @@ end
 }
 
 #[test]
-fn compiler2_native_program_jit_runs_enum_reduce_through_shared_codegen() {
+fn compiler2_native_program_jit_runs_enum_reduce_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
@@ -3303,7 +3307,7 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
             .map(|event| metadata_str(&event, "message").to_string())
             .unwrap_or_else(|| "<missing diagnostic>".to_string());
         panic!(
-            "Compiler2 native lowering should settle before shared codegen consumes Enum.reduce: {outcome:?}; diagnostic={message}"
+            "Compiler2 native lowering should settle before compiler2-owned codegen consumes Enum.reduce: {outcome:?}; diagnostic={message}"
         );
     }
 
@@ -3312,7 +3316,7 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
     assert_eq!(
         compiled.run(&tel, program.entry),
         15,
-        "shared native codegen should preserve the closed Enum.reduce result from Compiler2",
+        "compiler2-owned native codegen should preserve the closed Enum.reduce result from Compiler2",
     );
     assert_no_legacy_planner_or_type_infer(
         &capture,
@@ -3321,7 +3325,7 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
 }
 
 #[test]
-fn compiler2_native_program_jit_runs_variadic_extern_through_shared_codegen() {
+fn compiler2_native_program_jit_runs_variadic_extern_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
@@ -3354,7 +3358,7 @@ end
             .map(|event| metadata_str(&event, "message").to_string())
             .unwrap_or_else(|| "<missing diagnostic>".to_string());
         panic!(
-            "Compiler2 native lowering should settle before shared codegen consumes variadic externs: {outcome:?}; diagnostic={message}"
+            "Compiler2 native lowering should settle before compiler2-owned codegen consumes variadic externs: {outcome:?}; diagnostic={message}"
         );
     }
 
@@ -3363,7 +3367,7 @@ end
     assert_eq!(
         compiled.run(&tel, program.entry),
         -1,
-        "shared native codegen should preserve Compiler2 variadic extern calls and return the libc open error sentinel for a missing path",
+        "compiler2-owned native codegen should preserve Compiler2 variadic extern calls and return the libc open error sentinel for a missing path",
     );
     assert_no_legacy_planner_or_type_infer(
         &capture,
@@ -3372,7 +3376,7 @@ end
 }
 
 #[test]
-fn compiler2_native_program_jit_runs_map_fixture_through_shared_codegen() {
+fn compiler2_native_program_jit_runs_map_fixture_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
@@ -3398,7 +3402,7 @@ fn compiler2_native_program_jit_runs_map_fixture_through_shared_codegen() {
             .map(|event| metadata_str(&event, "message").to_string())
             .unwrap_or_else(|| "<missing diagnostic>".to_string());
         panic!(
-            "Compiler2 native lowering should settle before shared codegen consumes the map fixture: {outcome:?}; diagnostic={message}"
+            "Compiler2 native lowering should settle before compiler2-owned codegen consumes the map fixture: {outcome:?}; diagnostic={message}"
         );
     }
 
@@ -3438,7 +3442,7 @@ fn main(), do: count(100000, 0)
             .map(|event| metadata_str(&event, "message").to_string())
             .unwrap_or_else(|| "<missing diagnostic>".to_string());
         panic!(
-            "Compiler2 native lowering should settle before shared codegen consumes tail recursion: {outcome:?}; diagnostic={message}"
+            "Compiler2 native lowering should settle before compiler2-owned codegen consumes tail recursion: {outcome:?}; diagnostic={message}"
         );
     }
 
@@ -3447,7 +3451,7 @@ fn main(), do: count(100000, 0)
     assert_eq!(
         compiled.run(&tel, program.entry),
         100_000,
-        "shared native codegen should preserve Compiler2 tail recursion without stack growth",
+        "compiler2-owned native codegen should preserve Compiler2 tail recursion without stack growth",
     );
     assert_no_legacy_planner_or_type_infer(
         &capture,

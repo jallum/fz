@@ -13,6 +13,8 @@ mod identity;
 mod jobs;
 mod keying;
 mod namespace;
+#[cfg(test)]
+mod native_codegen;
 mod protocol;
 mod resolve;
 mod runtime;
