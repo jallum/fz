@@ -6,14 +6,15 @@
   "blocks": [
     "fz-rh2.14.3"
   ],
+  "closed_at": "2026-06-09T11:22:15Z",
   "created": "2026-06-09T04:25:49Z",
   "description": "Goal: fork the semantic native-codegen path into compiler2 ownership with behavior preserved. Signal: compiler2 has a compiler2-owned native backend entry path that can lower `NativeProgram(root)` end to end while still carrying any necessary `SpecPlan`/`SpecRegistry`-shaped baggage only as quarantined compiler2-local implementation detail.\n\nChange:\n- copy/adapt the native-codegen modules whose behavior depends on compiler2 facts out of `src/ir_codegen` into compiler2 with the smallest semantic delta necessary to preserve behavior\n- keep truly universal substrate shared: Cranelift/module setup, symbol declaration/finalization, JIT/AOT packaging, and runtime ABI/layout mechanics\n- wire compiler2-native tests to enter the compiler2-owned backend directly so parity is proven before front-door cutover\n\nWhy:\n- compiler2 cannot cleanly simplify this backend while the semantic code still lives inside a shared path shaped around the old compiler\n\nChecks:\n- compiler2-native tests enter the compiler2-owned backend directly\n- parity fixtures still pass through the forked path before front-door switch\n- any copied planner-shaped baggage is confined to compiler2-owned modules rather than the shared route",
   "id": "fz-rh2.14.2",
   "labels": [],
   "parent": "fz-rh2.14",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 native backends: fork semantic native codegen into compiler2",
   "type": "task",
-  "updated_at": "2026-06-09T09:35:27Z"
+  "updated_at": "2026-06-09T11:22:15Z"
 }
