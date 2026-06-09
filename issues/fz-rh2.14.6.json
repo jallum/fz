@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-09T12:51:25Z",
+  "description": "If .13 lands with a runtime_type_test_shim, rework that area so direct type-tests and receive dispatch consume one honest runtime-membership model instead of a shimmed projection. Signal: the _shim is gone and compiler2-native has one runtime predicate path.",
+  "id": "fz-rh2.14.6",
+  "labels": [],
+  "parent": "fz-rh2.14",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 native backends: replace the runtime_type_test_shim with a first-class runtime predicate",
+  "type": "task",
+  "updated_at": "2026-06-09T12:51:25Z"
+}
