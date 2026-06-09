@@ -6,6 +6,7 @@
   "blocks": [
     "fz-rh2.12.7"
   ],
+  "closed_at": "2026-06-09T04:05:24Z",
   "created": "2026-06-08T20:52:14Z",
   "description": "Re-seat the three consumers as the demand SOURCES that pull type defs, then delete function_type_env (world.rs:1157).\n\nEach consumer -- DeriveFunctionContract (contract.rs:46), dispatch param annotations (dispatch.rs:265), extern types (body.rs:477) -- WAITS on the TypeDefined facts recorded as its references in .1, then runs the pure-read resolver (.3) against the now-present hard Ty. This is the cascade @spec to FunctionContract: the contract is itself a demanded fact, and its wait on TypeDefined is what pulls DeriveTypeDef for exactly the names the spec mentions -- the same way DeriveFunctionContract sits over its MFAs. ResolvedSpecDecl and crate::specs are unchanged downstream (shared, over hard Ty). Externs: in-house extern type resolution replaces env-based ir_lower::lower_extern_signature.\n\nCut-over scaffold removal (the price of the parity gate): deleting function_type_env also deletes the temporary parity-vs-old half of the .10 dark-launch test -- you cannot call a deleted function. The PERMANENT half of .10 (DeriveTypeDef fires per referenced name; resolver yields the right Ty) stays as the oracle.\n\nVerify: spec_ok / spec_boundary / spec_violation fixtures and the contract/dispatch drive tests stay green (the unchanged oracle corpus IS the behavior-identical proof for the swap); a contract resolves before its function body is activated (two grains: a caller reads the contract without entering the body).",
   "id": "fz-rh2.12.4",
@@ -22,8 +23,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Re-seat contract/dispatch/extern onto the resolver; delete function_type_env",
   "type": "task",
-  "updated_at": "2026-06-09T03:23:40Z"
+  "updated_at": "2026-06-09T04:05:24Z"
 }
