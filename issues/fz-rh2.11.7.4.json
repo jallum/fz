@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-09T15:52:29Z",
+  "description": "Goal: make source forms define modules, functions, macros, types, protocols, imports, aliases, and requires through compiler2-owned services that publish existing fact families.\n\nSignal:\n- literal source that does not use macros still publishes the same downstream facts as today: `ModuleIndexed`, `CodeScoped`, `ModuleDefined`, `FunctionDefined`, `TypeDefined` waits, `ProtocolDispatch`, and function type-reference wait sets\n- `def`, `defmodule`, `defmacro`, `@type`, `@spec`, `defprotocol`, and `defimpl` are handled through one source-production service boundary\n- definition facts include enough source identity that changing a produced body or macro expansion bumps the owning revision and wakes lower/contract/semantic jobs correctly\n- downstream body/dispatch/semantic/artifact jobs do not learn whether a definition was literal source or produced source\n\nChange:\n- replace direct `define_scope` over `Rc\u003cItem\u003e` with source-production services over owned compiler2 source AST\n- centralize function/module/type/protocol definition publication so literal source and macro-produced source use the same path\n- preserve existing type-reference recording and contract/type-definition waits at the service boundary\n- keep protocol type facts and dispatch facts as facts, without folding protocol-domain cleanup from `fz-rh2.12.5` into this ticket\n\nWhy:\n- Elixir-style `def` works because the compiler remains the authority; macros produce or request source definitions, but compiler services store them\n- this is the seam that keeps downstream compiler2 structurally unchanged",
+  "id": "fz-rh2.11.7.4",
+  "labels": [],
+  "parent": "fz-rh2.11.7",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 compiler services: publish facts from quoted source forms",
+  "type": "task",
+  "updated_at": "2026-06-09T15:52:29Z"
+}
