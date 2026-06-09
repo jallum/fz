@@ -2,8 +2,10 @@ use std::rc::Rc;
 
 use super::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceFingerprintPolicy, QuotedSourceHeap,
-    QuotedSourceMetadata, QuotedSourceRoot, QuotedSourceSpan,
+    QuotedSourceMetadata, QuotedSourceRoot, QuotedSourceSpan, parse_quoted_program,
 };
+use crate::modules::runtime_library;
+use crate::telemetry::ConfiguredTelemetry;
 
 fn context(kind: QuotedLexicalContextKind, module: &[&str], scope: &[&str], namespace_id: u32) -> QuotedLexicalContext {
     QuotedLexicalContext::new(
@@ -323,5 +325,51 @@ fn semantic_fingerprint_walks_long_lists_of_ast_nodes() {
     assert!(
         semantic.canonical.contains("atom:dbg") && semantic.canonical.contains("int:63"),
         "semantic fingerprint should walk long lists of quoted AST nodes without corrupting the graph"
+    );
+}
+
+#[test]
+fn semantic_fingerprint_walks_runtime_sized_quoted_roots() {
+    let tel = ConfiguredTelemetry::new();
+    for (name, source) in runtime_library::module_sources() {
+        let root = parse_quoted_program(format!("runtime:{name}.fz"), source, &tel)
+            .unwrap_or_else(|error| panic!("runtime source `{name}` should parse to quoted root: {error}"));
+        let semantic = root
+            .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
+            .unwrap_or_else(|error| panic!("runtime source `{name}` root should fingerprint semantically: {error}"));
+        assert!(
+            semantic.canonical.contains("atom:defmodule") || semantic.canonical.contains("atom:defprotocol"),
+            "runtime source `{name}` should fingerprint as ordinary quoted module/protocol source"
+        );
+    }
+}
+
+#[test]
+fn semantic_fingerprint_walks_long_lists_of_bitstring_heavy_nodes() {
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let ctx = context(QuotedLexicalContextKind::Source, &["App"], &["bulk_bits"], 101);
+    let meta = meta(&ctx, "bulk_bits.fz", 1);
+    let payload = "abcdefghijklmnopqrstuvwxyz0123456789".repeat(8);
+    let mut items = Vec::new();
+    for _ in 0..48 {
+        let node = builder
+            .call(
+                "@spec",
+                &meta,
+                &[builder.utf8_binary(&payload).expect("payload binary")],
+            )
+            .expect("bitstring-heavy node");
+        items.push(node);
+    }
+    let root = builder
+        .root(builder.list(&items).expect("bitstring-heavy root list"))
+        .expect("bitstring-heavy root");
+    let semantic = root
+        .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
+        .expect("bitstring-heavy semantic fingerprint");
+    assert!(
+        semantic.canonical.contains("atom:@spec") && semantic.canonical.contains("bits:"),
+        "semantic fingerprint should walk long lists of bitstring-heavy quoted nodes safely"
     );
 }

@@ -7,10 +7,11 @@ use std::rc::Rc;
 use std::slice;
 
 use fz_runtime::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefError, ValueKind, bitstring_bit_len, bitstring_bytes_ptr, map_count,
-    map_key_kind, map_keys_ptr, map_tag_ptr, map_value_kind, map_values_ptr, struct_schema_id,
+    AnyValue, AnyValueRef, AnyValueRefError, ValueKind, map_count, map_key_kind, map_keys_ptr, map_tag_ptr,
+    map_value_kind, map_values_ptr, struct_schema_id,
 };
 use fz_runtime::heap::{SHARED_BIN_THRESHOLD_BYTES, Schema, SchemaRegistry};
+use fz_runtime::procbin::bitstring_bit_len as tagged_bitstring_bit_len;
 use fz_runtime::procbin::bitstring_byte_ptr as procbin_byte_ptr;
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
 
@@ -483,14 +484,9 @@ impl QuotedSourceCursor {
     }
 
     pub fn utf8_binary_text(&self) -> Result<String, QuotedSourceError> {
-        let (addr, byte_ptr) = match self.root.tag() {
-            ValueKind::BITSTRING => {
-                let addr = self.root.bitstring_addr().map_err(QuotedSourceError::from)?;
-                (addr, unsafe { bitstring_bytes_ptr(addr as *const u8) })
-            }
-            ValueKind::PROCBIN => {
-                let addr = self.root.procbin_addr().map_err(QuotedSourceError::from)?;
-                (addr, unsafe { procbin_byte_ptr(addr as *const u8) })
+        let heap_word = match self.root.tag() {
+            ValueKind::BITSTRING | ValueKind::PROCBIN => {
+                self.root.heap_object_word().map_err(QuotedSourceError::from)?
             }
             other => {
                 return Err(QuotedSourceError::new(format!(
@@ -499,7 +495,8 @@ impl QuotedSourceCursor {
                 )));
             }
         };
-        let bit_len = unsafe { bitstring_bit_len(addr as *const u8) } as usize;
+        let byte_ptr = unsafe { procbin_byte_ptr(heap_word as *const u8) };
+        let bit_len = unsafe { tagged_bitstring_bit_len(heap_word as *const u8) } as usize;
         if !bit_len.is_multiple_of(8) {
             return Err(QuotedSourceError::new(format!(
                 "expected whole-byte UTF-8 bitstring, got {bit_len} bits"
@@ -784,15 +781,8 @@ fn fingerprint_struct(
 }
 
 fn fingerprint_bitstring(value: AnyValueRef) -> Result<String, QuotedSourceError> {
-    let (addr, byte_ptr) = match value.tag() {
-        ValueKind::BITSTRING => {
-            let addr = value.bitstring_addr().map_err(QuotedSourceError::from)?;
-            (addr, unsafe { bitstring_bytes_ptr(addr as *const u8) })
-        }
-        ValueKind::PROCBIN => {
-            let addr = value.procbin_addr().map_err(QuotedSourceError::from)?;
-            (addr, unsafe { procbin_byte_ptr(addr as *const u8) })
-        }
+    let heap_word = match value.tag() {
+        ValueKind::BITSTRING | ValueKind::PROCBIN => value.heap_object_word().map_err(QuotedSourceError::from)?,
         other => {
             return Err(QuotedSourceError::new(format!(
                 "expected bitstring-like root, got {:?}",
@@ -800,7 +790,9 @@ fn fingerprint_bitstring(value: AnyValueRef) -> Result<String, QuotedSourceError
             )));
         }
     };
-    let bit_len = unsafe { bitstring_bit_len(addr as *const u8) } as usize;
+    let tagged_ptr = heap_word as *const u8;
+    let byte_ptr = unsafe { procbin_byte_ptr(tagged_ptr) };
+    let bit_len = unsafe { tagged_bitstring_bit_len(tagged_ptr) } as usize;
     let byte_len = bit_len.div_ceil(8);
     let bytes = unsafe { slice::from_raw_parts(byte_ptr, byte_len) };
     let mut rendered = String::from("bits:");

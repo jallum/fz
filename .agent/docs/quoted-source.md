@@ -76,4 +76,6 @@ comparison surface when it wants one.
 - `QuotedSourceRoot` retains the owning `QuotedSourceHeap` by `Rc`, so the
   heap outlives the `AnyValueRef`.
 - The raw `AnyValueRef` is never treated as durable without its heap owner.
+- Runtime bitstring/procbin readers operate on heap-object words
+  (`AnyValueRef::heap_object_word()`), not `AnyValueRef::raw_word()`.
 - The fingerprint walk rejects cycles and unsupported runtime-only value kinds.
