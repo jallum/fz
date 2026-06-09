@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-09T18:27:11Z",
+  "description": "Goal: extend compiler2's quoted-source front door and its reader assumptions until it can parse the compiler-owned bootstrap/runtime surface and the core source forms current compiler2 jobs already rely on, so `.11.7.9` can replace old AST authority without a fallback bridge.\n\nGrounding:\n- `src/compiler2/frontdoor.rs` currently rejects item forms such as `extern` and expression/control forms such as `if`, `receive ... after`, ordinary expression lambdas, and other core syntax that appears in compiler2's current bootstrap/runtime inputs.\n- `src/modules/runtime_library/kernel.fz` already uses `extern` item declarations and `if` expressions in the core prelude that compiler2 auto-loads.\n- runtime modules and active fixtures also rely on list-cons patterns, struct/map/bitstring patterns, ordinary `fn (...) -\u003e ... end` lambdas, and `receive` forms that must be representable as quoted source before `.11.7.9` can make quoted roots the only compiler2 source authority.\n- Using the old parser/AST as a hidden fallback here would reintroduce the exact second-authority / conversion-loop problem this arc is removing.\n\nSignal:\n- compiler2's quoted front door parses the runtime prelude and runtime library module sources used by fz2 without falling back to old AST authority\n- representative core-control fixtures that compiler2 already runs (`receive`, `if`, ordinary lambda expressions, list-cons / map / bitstring / struct patterns, extern item forms) produce quoted roots directly\n- `.11.7.9` can switch `IndexCode` / source authority to quoted roots without immediately breaking bootstrap or demanding a legacy parser bridge\n- work already assigned to `.11.7.7` remains there: pipe/capture/operator/lambda sugar rewrites stay source-production work, not parser-authority fallback work\n\nChange:\n- extend the quoted front door for missing core item/expression/pattern/control forms required by compiler2 bootstrap and active fixtures\n- add parser/front-door tests that prove runtime-library and bootstrap-shaped sources parse directly to quoted roots\n- keep the substrate Elixir-shaped and Fz-owned; do not add a legacy AST fallback path\n\nWhy:\n- `.11.7.9` is blocked on actual source-authority replacement, not just on data-model changes\n- if compiler2 cannot parse its own bootstrap/runtime sources through the quoted front door, the authority swap would either break the compiler or smuggle the old AST back in through a back door",
+  "id": "fz-rh2.11.7.10",
+  "labels": [],
+  "parent": "fz-rh2.11.7",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 quoted front door: cover bootstrap/core source forms before authority swap",
+  "type": "task",
+  "updated_at": "2026-06-09T18:27:11Z"
+}
