@@ -11,9 +11,15 @@
   "id": "fz-rh2.12.4",
   "labels": [],
   "parent": "fz-rh2.12",
+  "comments": [
+    {
+      "text": "Also record body type-test (x is T) named-type references here, against the body namespace, as the body resolver is re-seated -- the one type-position .12 left to its consumer (guards feed the body, not the contract).",
+      "timestamp": "2026-06-09T01:25:41Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Re-seat contract/dispatch/extern onto the resolver; delete function_type_env",
   "type": "task",
-  "updated_at": "2026-06-08T21:15:35Z"
+  "updated_at": "2026-06-09T01:25:41Z"
 }
