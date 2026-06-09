@@ -11,9 +11,15 @@
   "id": "fz-rh2.12.12",
   "labels": [],
   "parent": "fz-rh2.12",
+  "comments": [
+    {
+      "text": "Covered here: @spec (params, result, constraint bounds), @type bodies, and extern signatures -- the contract-feeding positions the .10 parity gate needs. Body type-test (x is T) references feed body LOWERING, not the contract, so they are recorded in .4 where the body resolver consumes them (re-attribution, not a silent cut).",
+      "timestamp": "2026-06-09T01:25:41Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Reference walk: reference_type over type-positions; record consumer type-name deps",
   "type": "task",
-  "updated_at": "2026-06-09T01:18:47Z"
+  "updated_at": "2026-06-09T01:25:41Z"
 }
