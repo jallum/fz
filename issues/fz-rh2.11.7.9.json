@@ -23,6 +23,10 @@
     {
       "text": "Implementation audit after fz-rh2.11.7.10/.11 showed that .9 is currently hiding two missing layers.\n\n1. compiler2 still has no quoted-source reader/state layer for code/module/function surfaces: code.rs, identity.rs, and jobs/source.rs still store and walk Rc\u003cItem\u003e/FnDef directly.\n2. contract/body/dispatch/keying still consume world.function_definition(...).ast, but compiler2 has no typed quoted-source body/pattern readers yet.\n\nThat means a direct .9 landing would either reintroduce old-parser authority in disguise or smuggle in an ad hoc converter at every downstream callsite. I split the seam into fz-rh2.11.7.12 (quoted source readers + source-state authority) and fz-rh2.11.7.13 (honest legacy_fn_def downstream artifact from quoted roots). Once those land, .9 can be the actual authority-swap closeout instead of a grab-bag of unrelated work.",
       "timestamp": "2026-06-09T19:16:58Z"
+    },
+    {
+      "text": "Post-fz-rh2.11.7.14 correction: legacy_fn_def is now an explicit, derived, grep-able compatibility seam rather than hidden source authority. I filed fz-rh2.11.7.15 to own its later removal, and narrowed this ticket back to the actual remaining authority-swap work: code/module/protocol discovery and source state must stop depending on legacy parser payloads.",
+      "timestamp": "2026-06-09T22:21:30Z"
     }
   ],
   "priority": 1,
