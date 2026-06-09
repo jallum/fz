@@ -13,11 +13,15 @@
     {
       "text": "Transport invariant added: the unit of quoted source movement is . The heap is the compile-time/source Fz heap that owns the quoted AST graph; the root is the current AST value handle inside that heap. Parser output, macro args,  projections, macro returns, recursive expansion input, and compiler-service source forms move as . A macro returns a new  relative to the same heap; expansion must not copy into a second AST format or return roots from a different heap.",
       "timestamp": "2026-06-09T16:04:41Z"
+    },
+    {
+      "text": "Correction to prior transport note: the unit of quoted source movement is `{heap, root}`. The heap is the compile-time/source Fz heap that owns the quoted AST graph; the root is the current AST value handle inside that heap. Parser output, macro args, `__CALLER__` projections, macro returns, recursive expansion input, and compiler-service source forms move as `{heap, root}`. A macro returns a new `root` relative to the same heap; expansion must not copy into a second AST format or return roots from a different heap.",
+      "timestamp": "2026-06-09T16:04:52Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 source production: quoted AST, macro facts, and compiler services",
   "type": "epic",
-  "updated_at": "2026-06-09T16:04:41Z"
+  "updated_at": "2026-06-09T16:04:52Z"
 }
