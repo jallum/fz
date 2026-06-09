@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-rh2.11.7.2"
+    "fz-rh2.11.7.2",
+    "fz-rh2.11.7.3"
   ],
   "blocks": [],
   "created": "2026-06-09T15:52:29Z",

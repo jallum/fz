@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.11.7.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.11.7.4"
+  ],
   "created": "2026-06-09T15:52:18Z",
   "description": "Goal: make compile-time environment a first-class compiler2 value backed by namespace savepoints.\n\nSignal:\n- a `CompileEnv` records current module, function/context, source/span, namespace head, aliases/imports/requires, and visible lexical variables needed for macro expansion\n- `__ENV__`, `__MODULE__`, and `__CALLER__` are runtime-value projections of `CompileEnv`, not independent mutable state\n- tests prove alias/import/require/env mutations produce new namespace/env savepoints without copying whole scopes\n- quoted identifiers can carry the env/context required by the hygiene pressure test\n\nChange:\n- introduce `CompileEnv` near compiler2 source jobs and namespace code\n- define projection from `CompileEnv` to process-heap values for compiler variables\n- teach source traversal to thread env savepoints through module/function/macro bodies and source forms\n- expose env data to compiler services and macro invocation without letting macros mutate world state directly\n\nWhy:\n- namespace is the durable authority; macro env values are just data given to user code\n- without a single env model, `require`, `__CALLER__`, hygiene, and source-order definitions will drift into separate ad hoc mechanisms",
   "id": "fz-rh2.11.7.3",
