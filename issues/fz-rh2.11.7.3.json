@@ -7,14 +7,15 @@
     "fz-rh2.11.7.4",
     "fz-rh2.11.7.5"
   ],
+  "closed_at": "2026-06-09T17:48:30Z",
   "created": "2026-06-09T15:52:18Z",
   "description": "Goal: make compile-time scope a single compiler2 snapshot derived from namespace plus current module/function/caller context, and project `__ENV__`, `__MODULE__`, and `__CALLER__` as Fz-shaped data only at macro/source boundaries.\n\nSignal:\n- there is no second mutable `CompileEnv` authority or fake env-only namespace binding layer\n- `__MODULE__` is derived from the current module id/name already tracked by compiler2\n- current function/definition context is derived from the function/module being processed, not stored in parallel state\n- `__CALLER__` and the needed `__ENV__` fields are projected from the current scope snapshot plus quoted-source lexical/span metadata\n- tests prove scope snapshots thread through module/function boundaries without copying whole scopes or polluting ordinary name resolution\n- quoted identifiers can carry the definition/caller lexical context required by the hygiene pressure test\n\nChange:\n- tighten compiler2's scope model around one authoritative snapshot: namespace head plus the module/function/source metadata needed for projection\n- derive `__MODULE__`, current function context, and the required `__CALLER__` / `__ENV__` Fz values from that snapshot instead of introducing a parallel env store\n- thread the snapshot through module/function/macro/source-production paths in a way that keeps ordinary resolution and compiler-variable projection separate\n- keep caller-vs-definition lexical/span context in quoted-source metadata, not in fake namespace bindings\n- leave `require` / imported-macro availability and provider waits to `.11.7.6`; this ticket is about projection and authority shape, not macro-provider dependency scanning\n\nWhy:\n- namespace is already the durable resolution authority, and module/function identity already exists in compiler2 state\n- adding a second env store for data that is derivable would duplicate authority and make the design sloppier, not simpler\n- the only extra state that must survive macro boundaries is caller/definition/source metadata, which belongs in the quoted-source layer",
   "id": "fz-rh2.11.7.3",
   "labels": [],
   "parent": "fz-rh2.11.7",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 scope snapshot: project __ENV__/__MODULE__/__CALLER__ without a second env store",
   "type": "task",
-  "updated_at": "2026-06-09T17:24:27Z"
+  "updated_at": "2026-06-09T17:48:30Z"
 }
