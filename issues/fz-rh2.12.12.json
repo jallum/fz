@@ -15,6 +15,10 @@
     {
       "text": "Covered here: @spec (params, result, constraint bounds), @type bodies, and extern signatures -- the contract-feeding positions the .10 parity gate needs. Body type-test (x is T) references feed body LOWERING, not the contract, so they are recorded in .4 where the body resolver consumes them (re-attribution, not a silent cut).",
       "timestamp": "2026-06-09T01:25:41Z"
+    },
+    {
+      "text": "CORRECTION (supersedes the earlier comment on this issue): there is NO `x is T` construct in fz. What I mislabeled body type-test guards is inline parameter annotations (fn f(x :: T, ...)) -- a FUNCTION type-position, lowered to entry-dispatch type-tests. They are walked HERE in .12 and recorded as function deps, not deferred. No type-position is deferred; .12 covers them all.",
+      "timestamp": "2026-06-09T01:44:49Z"
     }
   ],
   "priority": 2,
