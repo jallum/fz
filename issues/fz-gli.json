@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-09T23:37:26Z",
+  "description": "MOTIVATION\nA --log-telemetry build of fixtures/quicksort spends ~36% of wall time (40ms/121ms) in codegen with ZERO telemetry. compile_with_backend_surface (src/compiler2/native_codegen/driver.rs:1036) emits only a per-spec 'fz/codegen/lower_function' span (fz IR -\u003e cranelift IR, ~3.5ms total). The expensive work is uninstrumented: per-function verify+define_function (native compile, the ~40ms of inter-span gaps) and the entire post-loop emit+finalize tail (after the last log line, cost unknown). There is also no enclosing codegen span, so every span lands at parent=0 and gaps are unattributable.\n\nDESIGN (mirror the function's phase structure; closed accounting by construction)\nAdd an enclosing 'fz/codegen/compile' span over the whole surface body (keystone/denominator; parent linkage is automatic via bus.rs span_stack so all children nest). Then bracket the three uninstrumented regions so compile = declare + Sum(lower+define) + emit_runtime + finalize with no mystery gaps:\n  - fz/codegen/declare       wraps setup/declarations (1045-1088)\n  - fz/codegen/define_function  per-spec; wraps verify_function + define_function (1164-1177); stop payload code_bytes (ctx.compiled_code().code_buffer().len()), spec_id, fn_id, instruction_count\n  - fz/codegen/emit_runtime  wraps receive_dispatch/mid_flight_cont/callable_entry/resume body emission (1181-1213)\n  - fz/codegen/finalize      wraps emit_metadata_carriers + backend.finalize (1244-1245)\nAdd Backend::kind()-\u003e\u0026'static str (jit/aot) for the compile span metadata (finalize cost differs sharply between JIT mmap+reloc and AOT object emit).\n\nPARITY: compile_with_backend_surface is the shared generic over B: Backend, so JIT and AOT both get this for free; interpreter does not codegen (three-path parity satisfied at the shared seam).\n\nTDD: drive_test.rs capture test (model: compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen) asserting exactly one compile span; declare/emit_runtime/finalize present once each with parent==compile; define_function count == lower_function count, all parented to compile; each define_function stop carries code_bytes\u003e=1.\n\nDOCS: update .agent codegen telemetry surface doc + any codegen guide listing emitted spans.\n\nFOLLOW-UPS (new tickets, do not fold in):\n  - ir_codegen/driver.rs appears to be a legacy twin (compiler.rs only calls native_codegen) carrying the same loop -\u003e confirm dead + remove.\n  - If emit_runtime turns out hot, drill into per-helper define_function spans for trampoline/dispatch/entry bodies.",
+  "id": "fz-gli",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Close native codegen telemetry accounting: span declare/define/emit_runtime/finalize under one compile span",
+  "type": "task",
+  "updated_at": "2026-06-09T23:37:26Z"
+}
