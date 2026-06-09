@@ -290,3 +290,89 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
         "native codegen should recover helper ownership from NativeBody.origin instead of planner reachability metadata",
     );
 }
+
+#[test]
+fn compiler2_native_program_contract_treats_old_extern_semantics_as_cleanup_not_authority() {
+    let mut types = Types::new();
+    let int = types.int();
+    let entry_fn = FnId(0);
+
+    let mut legacy_types = crate::types::new();
+    let mut module = Module::default();
+    module.externs.push(ExternDecl {
+        id: ExternId(0),
+        fz_name: "libc::puts".to_string(),
+        symbol: "puts".to_string(),
+        params: vec![ExternTy::CString],
+        variadic: false,
+        ret: ExternTy::I64,
+        ret_descr: legacy_types.any(),
+        semantic_contract: ResolvedSpecDecl {
+            params: vec![legacy_types.any()],
+            result: legacy_types.any(),
+            constraints: HashMap::new(),
+        },
+    });
+    module.extern_idx.insert(ExternId(0), 0);
+    module.fns.push(FnIr {
+        id: entry_fn,
+        name: "main".to_string(),
+        frame_schema_id: 0,
+        blocks: vec![Block {
+            id: BlockId(0),
+            params: vec![Var(0)],
+            stmts: Vec::new(),
+            terminator: Term::Return(Var(0)),
+        }],
+        entry: BlockId(0),
+        category: FnCategory::User,
+        owner_module: String::new(),
+        ignored_entry_params: vec![false],
+        physical_entry_params: Vec::new(),
+        physical_capabilities: Vec::new(),
+    });
+    module.fn_idx.insert(entry_fn, 0);
+
+    let marshal_site = ExternMarshalSite {
+        block: BlockId(0),
+        stmt_idx: 0,
+        arg_idx: 0,
+    };
+    let program = NativeProgram {
+        backend_revision: 7,
+        entry: entry_fn,
+        module,
+        bodies: vec![NativeBody {
+            fn_id: entry_fn,
+            origin: NativeBodyOrigin::Executable(ExecutableKey {
+                activation: ActivationKey {
+                    root: RootId::from_u32(0),
+                    function: FunctionId::from_u32(0),
+                    input: vec![int],
+                },
+                need: ExecutableNeed::Value,
+            }),
+            entry_abi: NativeEntryAbi::Direct,
+            param_reprs: vec![AbiValueRepr::RawInt],
+            return_ty: int,
+            return_abi: ReturnAbi::Value(AbiValueRepr::RawInt),
+            value_types: HashMap::from([(Var(0), int)]),
+            callable_constructors: HashMap::new(),
+            closure_call_targets: HashMap::new(),
+            extern_marshals: HashMap::from([(marshal_site, ExternTy::CString)]),
+            effects: EffectSummary::default(),
+        }],
+        callable_entries: Vec::new(),
+    };
+
+    assert_eq!(
+        program.module.externs[0].semantic_contract.result,
+        legacy_types.any(),
+        "shared fz-IR still carries old extern semantic payloads during the fork",
+    );
+    assert_eq!(
+        program.bodies[0].extern_marshals.get(&marshal_site),
+        Some(&ExternTy::CString),
+        "compiler2-native codegen must treat NativeBody.extern_marshals as authority and old ExternDecl semantics as cleanup-only baggage",
+    );
+}

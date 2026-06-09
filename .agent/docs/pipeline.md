@@ -245,6 +245,20 @@ Questions that are illegal after `NativeProgram(root)`:
 - re-deriving callable-entry obligations, return lanes, or extern marshal
   classes from old-world planner state
 
+During the in-house backend fork, compiler2 may temporarily carry copied
+planner-shaped baggage (`SpecPlan`, `SpecRegistry`, synthetic `SpecKey`,
+widened `return_tys`) as compiler2-local implementation detail. That baggage is
+never part of the contract above. It is tolerated only inside the forked
+compiler2 backend while parity is being established, and it remains a cleanup
+target until the compiler2-native backend answers those questions directly from
+`NativeProgram` / `NativeBody`.
+
+Likewise, old semantic payloads still hanging off shared fz-IR structures
+(`ExternDecl.ret_descr`, `ExternDecl.semantic_contract`, and similar) are not
+authority for compiler2-native codegen after `NativeProgram(root)`. If the
+compiler2 backend still reads them, that is backend debt to remove, not part of
+the published handoff.
+
 Current conclusion from the code:
 
 - no missing closed fact has been identified for the current shared native
