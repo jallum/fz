@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.13"
+  ],
   "created": "2026-06-09T04:25:57Z",
   "description": "Goal: move the semantic part of native codegen into compiler2 ownership. Signal: compiler2 lowers `NativeProgram(root)` through compiler2-owned codegen modules that consume compiler2 `Ty`, compiler2 dispatch/type-test facts, callable-entry inventory, extern marshal facts, and body ownership directly; only truly universal CLIF/backend/runtime mechanics remain shared.\n\nChange:\n- copy/adapt the native-codegen modules whose behavior depends on compiler2 facts out of `src/ir_codegen` into compiler2\n- retarget those modules onto compiler2-owned surfaces instead of planner-shaped wrappers and old-world associated-type pins\n- leave shared only the substrate that turns already-settled ABI/layout/runtime facts into machine code and linked artifacts\n\nWhy:\n- compiler2 cannot be free of old dead weight while the logic that interprets its facts lives inside a backend path shaped around the old compiler\n\nChecks:\n- compiler2-native tests enter the compiler2-owned backend directly\n- no compiler2-owned lowering module depends on `SpecPlan`, `SpecRegistry`, or `crate::types::Ty`",
   "id": "fz-rh2.14.3",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 native backends: bring semantic native codegen in-house",
   "type": "task",
-  "updated_at": "2026-06-09T04:25:57Z"
+  "updated_at": "2026-06-09T04:26:23Z"
 }
