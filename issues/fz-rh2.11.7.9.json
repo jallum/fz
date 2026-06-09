@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.11.7.10",
     "fz-rh2.11.7.11",
@@ -25,8 +25,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 job model: consume source AST roots as AnyValueRef",
   "type": "task",
-  "updated_at": "2026-06-09T20:41:26Z"
+  "updated_at": "2026-06-09T22:19:31Z"
 }
