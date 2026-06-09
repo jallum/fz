@@ -6,6 +6,7 @@
   "blocks": [
     "fz-rh2.12.2"
   ],
+  "closed_at": "2026-06-09T01:44:49Z",
   "created": "2026-06-08T23:23:05Z",
   "description": "Record type-name references as consumer deps -- the second half of noting. Walk every type-position in the indexed surface: @spec (params, result, constraint bounds), inline parameter annotations (fn f(x :: T, ...)), extern signatures, and @type bodies. Parse each with the in-house type-expr (.11) and classify each Name against the namespace captured at that declaration point: a Type binding (or a dotted module-path leaf) -\u003e reference_type -\u003e the TypeName identity, recorded as an upstream dep of the consumer it feeds (the FunctionId whose contract/dispatch names it, or the TypeName whose @type body names it). The walk recurses into type arguments, so a name nested in a parametric application (tkf_box(tkf_target), list(T)) is found; arity is part of the identity. An unbound lowercase name is a free type var (not referenced); a builtin is a scalar (not referenced). The recorded set is each consumer wait-set: DeriveTypeDef (.2) reads a type body refs; the contract/dispatch re-seat (.4) reads a function refs. Add world.reference_type and the consumer-\u003e[TypeName] dep store. Nothing resolves to Ty; no type-algebra. Verify: a @spec, a @type body (incl. a name nested in a parametric type), and a parameter annotation each record their named types as deps of the right consumer at the right arity; a free type var is not referenced.",
   "id": "fz-rh2.12.12",
@@ -22,7 +23,7 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Reference walk: reference_type over type-positions; record consumer type-name deps",
   "type": "task",
   "updated_at": "2026-06-09T01:44:49Z"
