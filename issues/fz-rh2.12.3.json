@@ -7,6 +7,12 @@
   "id": "fz-rh2.12.3",
   "labels": [],
   "parent": "fz-rh2.12",
+  "comments": [
+    {
+      "text": "Absorbed into fz-rh2.12.2: the core TypeExpr-\u003eTy resolver and DeriveTypeDef are one unit (the TypeDefined fact closes the loop), so they land together. resolve_spec-\u003eResolvedSpec rides the same core. Closed as merged, not done.",
+      "timestamp": "2026-06-09T01:52:22Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "In-house type-expr resolver: name -\u003e hard Ty via namespace + TypeDefined",
