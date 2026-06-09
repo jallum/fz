@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.12.10"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-rh2.12",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Protocol domain = marker: delete the eager union and interfaces() re-lex",
   "type": "task",
-  "updated_at": "2026-06-08T21:15:22Z"
+  "updated_at": "2026-06-09T03:29:56Z"
 }
