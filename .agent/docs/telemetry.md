@@ -211,7 +211,7 @@ captures live in `src/compiler2/drive_test.rs` and assert on emitted
 definitions, work-graph steps, callsite summaries, semantic closure, and the
 full artifact ladder through `NativeProgram(root)`. The quicksort,
 `Enum.reduce`, and variadic-extern contracts are the fast summary probe; the
-compiler2-owned native JIT fixture tests prove the forked backend can consume
+compiler2-owned native JIT fixture tests prove the in-house backend can consume
 `NativeProgram(root)` directly, while the `Compiler2::compile_root_jit` /
 `run_root_jit` / `compile_root_aot` front-door tests prove that the public
 runtime setup now stays on that same compiler2-owned backend path without
@@ -238,6 +238,13 @@ Useful reruns:
 - `cargo test --lib compiler2::telemetry_dump_test::dump_quicksort_compiler2_telemetry_to_jsonl -- --ignored --exact --nocapture`
 
 The ignored harness writes its log to `/tmp/fz-compiler2-quicksort.jsonl`.
+
+For runtime-membership regressions below the native handoff, the fast probes are
+the explicit runtime-predicate projection tests and the cached receive-dispatch
+test:
+
+- `cargo test --lib runtime_type_predicate_ -- --nocapture`
+- `cargo test --lib cached_matcher_type_region_uses_runtime_type_predicate -- --exact --nocapture`
 
 ## Codegen Regression Events
 

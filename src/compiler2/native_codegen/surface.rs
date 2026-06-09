@@ -1,10 +1,11 @@
 //! Planner-free input surface for compiler2-owned native codegen.
 //!
-//! The old native driver starts from planner-owned artifacts, but the backend
-//! fork only needs a narrower set of codegen facts: the prepared fz-IR bodies,
-//! their per-body typing/dispatch facts, ABI lanes, callable-entry inventory,
-//! and a few module-wide metadata tables. `NativeCodegenSurface` owns that
-//! handoff so the planner wrapper can stay outside compiler2 native codegen.
+//! The old native driver starts from planner-owned artifacts, but compiler2's
+//! in-house backend only needs a narrower set of codegen facts: the prepared
+//! fz-IR bodies, their per-body typing/dispatch facts, ABI lanes,
+//! callable-entry inventory, and a few module-wide metadata tables.
+//! `NativeCodegenSurface` owns that handoff so planner-owned wrappers stay
+//! outside compiler2 native codegen.
 
 use super::{ArgRepr, MidFlightArgShape};
 use crate::compiler2::NativeBody;

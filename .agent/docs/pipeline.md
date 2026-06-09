@@ -270,7 +270,7 @@ Current conclusion from the code:
 - no missing closed fact has been identified for the current compiler2-native
   codegen inputs
 - the compiler2-native JIT fixture tests now consume `NativeProgram(root)`
-  through the compiler2-owned backend fork directly
+  through the compiler2-owned backend path directly
 - `Compiler2::compile_root_jit`, `run_root_jit`, and `compile_root_aot` now
   consume that same compiler2-owned backend path directly, using the world's
   interned type store instead of a fresh legacy one

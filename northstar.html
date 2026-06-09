@@ -789,6 +789,10 @@ DependencySnapshot = HashMap&lt;FactKey, u64&gt;</code></pre>
             <td>continuation / entry ABI classification</td>
             <td><code>NativeBody.entry_abi</code> and <code>NativeBodyOrigin::Continuation</code></td>
           </tr>
+          <tr>
+            <td>runtime type-membership questions</td>
+            <td>explicit <code>RuntimeTypePredicate</code> facts</td>
+          </tr>
         </tbody>
       </table>
       <p>
@@ -799,6 +803,13 @@ DependencySnapshot = HashMap&lt;FactKey, u64&gt;</code></pre>
         <li>asking reachability, callee-selection, or semantic-closure questions</li>
         <li>re-deriving callable-entry obligations, return lanes, or extern marshal classes from old-world planner state</li>
       </ul>
+      <p>
+        Rich semantic <code>Ty</code> facts stay above this seam. Direct runtime
+        tests and cached receive dispatch cross it through
+        <code>RuntimeTypePredicate</code>, the first-class runtime-observable
+        predicate layer shared by compiler2 native codegen, legacy receive
+        dispatch, and the interpreter.
+      </p>
       <p>
         Current conclusion from the code: no missing closed fact has been identified for the
         current shared native codegen inputs. <code>Compiler2::compile_root_jit</code>,
