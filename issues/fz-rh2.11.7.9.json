@@ -28,6 +28,10 @@
     {
       "text": "Post-fz-rh2.11.7.14 correction: legacy_fn_def is now an explicit, derived, grep-able compatibility seam rather than hidden source authority. I filed fz-rh2.11.7.15 to own its later removal, and narrowed this ticket back to the actual remaining authority-swap work: code/module/protocol discovery and source state must stop depending on legacy parser payloads.",
       "timestamp": "2026-06-09T22:21:30Z"
+    },
+    {
+      "text": "Landed in 46fc965fe. Compiler2 code/module/protocol discovery now reads compiler2-owned ScopeSurface records derived directly from quoted roots. CodeState::Indexed and ModuleSource no longer retain legacy parser discovery payloads, quoted_surface.rs owns top-level/module/protocol/protocol-impl decoding, and jobs/source.rs plus world.rs consume those surfaces directly. The only remaining explicit old-world seam in compiler2 is the function-local legacy_fn_def compatibility artifact tracked by fz-rh2.11.7.15. Verification: cargo fmt --all; cargo check --all; cargo clippy --all-targets -- -D warnings; cargo test --lib.",
+      "timestamp": "2026-06-09T23:00:21Z"
     }
   ],
   "priority": 1,
