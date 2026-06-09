@@ -18,6 +18,10 @@
     {
       "text": "Blocker discovered during implementation audit: swapping `IndexCode` / source authority to quoted roots right now would break compiler2 bootstrap. The current quoted front door in `src/compiler2/frontdoor.rs` does not yet parse core forms that already appear in compiler2-owned inputs, including `extern` item declarations and `if` expressions in `src/modules/runtime_library/kernel.fz`, plus `receive ... after`, expression lambdas, and richer pattern forms used by active fixtures/runtime modules. Using the old parser/AST as a fallback here would reintroduce the second-authority/conversion-loop problem this arc is removing, so I filed `fz-rh2.11.7.10` and blocked `.11.7.9` on it.",
       "timestamp": "2026-06-09T18:27:24Z"
+    },
+    {
+      "text": "Implementation audit after fz-rh2.11.7.10/.11 showed that .9 is currently hiding two missing layers.\n\n1. compiler2 still has no quoted-source reader/state layer for code/module/function surfaces: code.rs, identity.rs, and jobs/source.rs still store and walk Rc\u003cItem\u003e/FnDef directly.\n2. contract/body/dispatch/keying still consume world.function_definition(...).ast, but compiler2 has no typed quoted-source body/pattern readers yet.\n\nThat means a direct .9 landing would either reintroduce old-parser authority in disguise or smuggle in an ad hoc converter at every downstream callsite. I split the seam into fz-rh2.11.7.12 (quoted source readers + source-state authority) and fz-rh2.11.7.13 (honest legacy_fn_def downstream artifact from quoted roots). Once those land, .9 can be the actual authority-swap closeout instead of a grab-bag of unrelated work.",
+      "timestamp": "2026-06-09T19:16:58Z"
     }
   ],
   "priority": 1,
