@@ -4,14 +4,16 @@
   "blocks": [
     "fz-rh2.11.7.13"
   ],
+  "closed_at": "2026-06-09T19:56:31Z",
+  "close_reason": "completed",
   "created": "2026-06-09T19:16:36Z",
   "description": "Goal: introduce compiler2-owned typed readers over quoted AnyValueRef roots for top-level/module/function surfaces so IndexCode, ScopeCode, DefineModule, and source identity live entirely on quoted source rather than Rc\u003cItem\u003e authority.\n\nGrounding:\n- src/compiler2/code.rs stores CodeState::Indexed { items: Vec\u003cRc\u003cItem\u003e\u003e, attrs: Vec\u003cAttribute\u003e } and revisions compare Rc::ptr_eq over parsed items.\n- src/compiler2/identity.rs stores ModuleSourceKind::Body { items: Vec\u003cRc\u003cItem\u003e\u003e } and FunctionDef currently has no quoted-source carrier.\n- src/compiler2/jobs/source.rs indexes, discovers modules, scopes aliases/imports/protocols/functions, and notes type refs by walking Item/FnDef directly.\n- src/compiler2/frontdoor.rs and src/compiler2/source.rs now provide the compiler2-owned quoted-source substrate and parser front door.\n\nSignal:\n- Code/module/function source state stores rooted quoted source plus explicit source identity/fingerprint fields; Rc\u003cItem\u003e is not the canonical compiler2 source record.\n- IndexCode, discover_modules, ScopeCode, DefineModule, and function surface indexing consume compiler2 typed readers over quoted roots.\n- FunctionDefined revisioning keys off function source root identity plus relevant non-source metadata, not Rc::ptr_eq.\n- Tests prove the source jobs publish the same surface facts from quoted roots and that replacing a function source root bumps function definition revision.\n\nChange:\n- add compiler2-owned typed quoted-source readers for top-level forms, module/protocol/defimpl bodies, function heads, attrs, and import/alias filters\n- replace CodeState / ModuleSource / FunctionDef source authority fields with quoted-root carriers and source identity metadata\n- rework source jobs and telemetry to consume/report quoted-source ids and revisions\n\nWhy:\n- this is the seam where compiler2 stops pretending old parsed Rust AST is still the source of truth\n- downstream phases can only be migrated honestly once the source/state layer is already authoritative",
   "id": "fz-rh2.11.7.12",
   "labels": [],
   "parent": "fz-rh2.11.7",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 quoted source readers: replace Rc\u003cItem\u003e source authority",
   "type": "task",
-  "updated_at": "2026-06-09T19:18:06Z"
+  "updated_at": "2026-06-09T19:56:31Z"
 }
