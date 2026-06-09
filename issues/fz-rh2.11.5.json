@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.11.7.8"
+  ],
   "blocks": [
     "fz-rh2.11.6"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Compiler2 frontend surface: feed expanded macro-free bodies and capture sugar",
   "type": "task",
-  "updated_at": "2026-06-08T11:49:50Z"
+  "updated_at": "2026-06-09T15:53:43Z"
 }
