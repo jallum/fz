@@ -4,7 +4,8 @@
     "fz-rh2.14.3"
   ],
   "blocks": [
-    "fz-rh2.14.4"
+    "fz-rh2.14.4",
+    "fz-rh2.14.6"
   ],
   "created": "2026-06-09T01:46:03Z",
   "description": "Smell surfaced during the type-naming epic (fz-rh2.12) and becomes local cleanup once compiler2 owns the semantic native backend. native.rs lowers a Prim::TypeTest by calling legacy_type_test_ty(world, ty), which re-projects a compiler2 Ty into a throwaway legacy crate::types::Ty -- a hand-written if-ladder of type_is_X probes (any, integer, float, atom, atom-singleton/union, tuple-of-arity, empty/non-empty/list, map) that spins up a fresh crate::types::new() interner per branch and returns None for everything else. This is the same transient-interner / parallel-type-system pathology as the re-lexing the epic removes, now quarantined inside the compiler2-owned backend.\n\nQuestion its authority. A type-test asks \"does this value belong to set T?\" -- a value-membership predicate. In the set-theoretic model a type IS a set of values described by a DNF descriptor over runtime kinds (atoms, ints, floats, tuples, lists, maps, ...). compiler2 ALREADY owns that descriptor. Translating to a legacy Ty is a lossy, partial duplicate of structure compiler2 already has.\n\nGoal: the runtime type-test derives its predicate directly from the compiler2 Ty value-kind projection. No legacy Ty, no throwaway interner, no fixed subset, no \"not supported yet\" wall -- a type-test over any compiler2 type lowers by construction because the Ty already describes exactly the set being tested.\n\nSignal: legacy_type_test_ty and the throwaway crate::types::new() calls in the compiler2-owned backend are gone; the incompleteness wall is gone; a property over arbitrary compiler2 types lowers to a correct runtime test.\n\nStrategy / inspiration: project a Ty to a runtime value-kind predicate from its DNF axes; teach the compiler2-owned Prim::TypeTest lowering to consume that projection. Ground it in the original semantic-subtyping work (Castagna et al.) and in ../elixir set-theoretic types -- descr.ex (the descriptor), of.ex / pattern.ex (how a descr drives guards/pattern tests).",
@@ -15,5 +16,5 @@
   "status": "in_progress",
   "title": "Runtime type-tests from the set-theoretic descriptor, not a legacy Ty re-projection (retire legacy_type_test_ty)",
   "type": "task",
-  "updated_at": "2026-06-09T11:38:35Z"
+  "updated_at": "2026-06-09T12:51:35Z"
 }
