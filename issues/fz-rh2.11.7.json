@@ -17,11 +17,15 @@
     {
       "text": "Correction to prior transport note: the unit of quoted source movement is `{heap, root}`. The heap is the compile-time/source Fz heap that owns the quoted AST graph; the root is the current AST value handle inside that heap. Parser output, macro args, `__CALLER__` projections, macro returns, recursive expansion input, and compiler-service source forms move as `{heap, root}`. A macro returns a new `root` relative to the same heap; expansion must not copy into a second AST format or return roots from a different heap.",
       "timestamp": "2026-06-09T16:04:52Z"
+    },
+    {
+      "text": "Source-root ABI clarification: at the Fz-visible boundary an AST root is an AnyValueRef value (usually a tuple/list/atom/map graph). The heap is not passed as a Fz argument; it is implied by the active compile-time Process that ir_interp is running. Conceptually source transport is still {process heap, root}, but the service/macro ABI passes root values and validates them against the current process heap/world. Fz.Compiler service externs use that same context to save roots as function AST/source facts.",
+      "timestamp": "2026-06-09T16:12:18Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 source production: quoted AST, macro facts, and compiler services",
   "type": "epic",
-  "updated_at": "2026-06-09T16:04:52Z"
+  "updated_at": "2026-06-09T16:12:18Z"
 }
