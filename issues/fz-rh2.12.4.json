@@ -15,11 +15,15 @@
     {
       "text": "Also record body type-test (x is T) named-type references here, against the body namespace, as the body resolver is re-seated -- the one type-position .12 left to its consumer (guards feed the body, not the contract).",
       "timestamp": "2026-06-09T01:25:41Z"
+    },
+    {
+      "text": "CORRECTION (supersedes the earlier comment on this issue): nothing extra to record here. Parameter annotations are walked in .12; .4 only RESOLVES them as dispatch is re-seated (dispatch.rs:265, already in scope). There is no `x is T` construct.",
+      "timestamp": "2026-06-09T01:44:49Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Re-seat contract/dispatch/extern onto the resolver; delete function_type_env",
   "type": "task",
-  "updated_at": "2026-06-09T01:25:41Z"
+  "updated_at": "2026-06-09T01:44:49Z"
 }
