@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.11.7.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.11.7.4"
+  ],
   "created": "2026-06-09T15:52:08Z",
   "description": "Goal: bring compiler2's parser output in-house so `IndexCode` no longer stores shared `src/ast::Item` trees as its source authority.\n\nSignal:\n- `IndexCode` records compiler2-owned quoted/source AST for top-level code\n- `ModuleSourceKind` and code/module source records no longer depend on shared `Rc\u003cItem\u003e` as the canonical compiler2 surface\n- parser tests cover Elixir-shaped source forms needed by the mini-epic: function/macro definitions, modules, attributes, alias/import/require, protocol forms, quote/unquote, item calls, pipe/headless case, capture syntax, maps/structs/bitstrings, and patterns\n- legacy parser/AST remains legacy-owned; compiler2 does not ask the old frontend to pre-expand or desugar source\n\nChange:\n- add a compiler2 parser/front-door module that emits the owned source AST from `.11.7.1`\n- add first-class `require` syntax or equivalent source form support at this boundary\n- move compiler2 source discovery (`discover_modules`, protocol/module indexing) over the owned AST\n- decide by inspection whether the existing lexer is neutral enough to reuse; fork lexer behavior too if tokenization embeds old AST policy\n\nWhy:\n- quoted source production cannot be correct-by-construction if the old parser tree remains the hidden authority\n- `require` and source-order macro availability are parser/source facts, not downstream lowering concerns",
   "id": "fz-rh2.11.7.2",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Compiler2 parser front door: parse directly into owned source AST",
   "type": "task",
-  "updated_at": "2026-06-09T15:53:42Z"
+  "updated_at": "2026-06-09T15:53:43Z"
 }
