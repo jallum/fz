@@ -41,11 +41,15 @@
     {
       "text": "Plan correction after architecture review: the real missing layer was not downstream \\ derivation but source-layer quoted composition. A logical function surface must exist as one stable grouped quoted root in the owning Fz heap so compiler2 can keep  as source authority. Re-scoped fz-rh2.11.7.13 to add that grouped-root composition/interning substrate, then split the old downstream concern into fz-rh2.11.7.14, which now derives  from those grouped roots instead of from old parser authority. This follows the Elixir-shaped one-term-world model more honestly and should also serve compiler-service/macro-produced definitions later.",
       "timestamp": "2026-06-09T20:41:27Z"
+    },
+    {
+      "text": "Plan correction after architecture review, replacing the shell-mangled note above:\n\n1. The real missing layer was not downstream `legacy_fn_def` derivation but source-layer quoted composition.\n2. A logical function surface must exist as one stable grouped quoted root in the owning Fz heap so compiler2 can keep `{heap, root}` as source authority.\n3. `fz-rh2.11.7.13` is now the upstream fix for that original sin: heap-local grouped-root composition/interning plus grouped function/protocol-callback source readers.\n4. `fz-rh2.11.7.14` is the narrower downstream follow-up: derive `legacy_fn_def` from those grouped roots to keep old consumers alive while the deeper readers are still being ported.\n5. This is the more Elixir-concordant shape: one quoted term world, with compiler phases grouping and passing roots in that world instead of escaping to a second AST authority.",
+      "timestamp": "2026-06-09T20:41:51Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 source production: quoted AST, macro facts, and compiler services",
   "type": "epic",
-  "updated_at": "2026-06-09T20:41:27Z"
+  "updated_at": "2026-06-09T20:41:51Z"
 }
