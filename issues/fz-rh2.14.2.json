@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.14.1"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-rh2.14",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 native backends: fork semantic native codegen into compiler2",
   "type": "task",
-  "updated_at": "2026-06-09T04:35:05Z"
+  "updated_at": "2026-06-09T09:35:27Z"
 }
