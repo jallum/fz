@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.12.10"
   ],
@@ -22,8 +22,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Re-seat contract/dispatch/extern onto the resolver; delete function_type_env",
   "type": "task",
-  "updated_at": "2026-06-09T01:44:49Z"
+  "updated_at": "2026-06-09T03:23:40Z"
 }
