@@ -25,11 +25,15 @@
     {
       "text": "Job-model correction: indexing/scoping/module definition are not the only consumers that must move. CodeState/module source/function source and jobs such as contract derivation, body lowering, dispatch planning, and keying must read compiler2 Fz AST roots (AnyValueRef in the active compile-time process heap), not old Rc\u003cItem\u003e/FnDef authority. Added a dedicated child ticket so compiler services/macros depend on that cut.",
       "timestamp": "2026-06-09T16:16:31Z"
+    },
+    {
+      "text": "Plan correction: source identity is not a heap-independent structural digest. The durable compiler2 source key is {heap, root}; structural fingerprints are layered on top for semantic comparison/revision policy. Downstream tickets should preserve that split when moving parser output, job state, and compiler services onto quoted source roots.",
+      "timestamp": "2026-06-09T16:50:47Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 source production: quoted AST, macro facts, and compiler services",
   "type": "epic",
-  "updated_at": "2026-06-09T16:25:18Z"
+  "updated_at": "2026-06-09T16:50:47Z"
 }
