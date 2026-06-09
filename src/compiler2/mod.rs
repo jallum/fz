@@ -19,6 +19,7 @@ mod resolve;
 mod runtime;
 mod scheduler;
 mod semantic;
+mod source;
 mod type_expr;
 mod typedef;
 mod types;
@@ -59,6 +60,11 @@ pub use semantic::{
     ActivationAnalysis, ActivationMap, ActivationSlot, CallSiteKey, CallSiteMap, CallSiteSummary, SelectedCallee,
     SemanticClosure, SemanticClosureMap,
 };
+pub use source::{
+    QuotedAstNode, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceCursor,
+    QuotedSourceError, QuotedSourceFingerprint, QuotedSourceFingerprintPolicy, QuotedSourceHeap, QuotedSourceKey,
+    QuotedSourceMetadata, QuotedSourceRoot, QuotedSourceSpan,
+};
 pub use types::{
     CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, Nominals, OpaqueVisibilityError, Sigma,
     Ty, TypeVarId, Types,
@@ -83,6 +89,8 @@ mod identity_test;
 mod namespace_test;
 #[cfg(test)]
 mod scheduler_test;
+#[cfg(test)]
+mod source_test;
 #[cfg(test)]
 mod telemetry_dump_test;
 #[cfg(test)]
