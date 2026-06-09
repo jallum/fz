@@ -9,9 +9,15 @@
   "id": "fz-rh2.11.7.15",
   "labels": [],
   "parent": "fz-rh2.11.7",
+  "comments": [
+    {
+      "text": "Landed in bd174ea76.\n\nThis takes the pain instead of carrying the compatibility seam forward:\n- compiler2 now stores and propagates a compiler-owned FunctionSurface rather than old FnDef payloads\n- grouped quoted function roots decode directly into that callable surface for source-defined functions\n- generated lambdas mint the same FunctionSurface model, so compiler2 has one callable-surface story\n- contract/body/dispatch/keying now read that surface directly\n- src/compiler2/legacy_fn_def.rs and its tests are gone\n\nVerification:\n- cargo fmt --all\n- cargo check --all\n- cargo clippy --all-targets -- -D warnings\n- cargo test --lib",
+      "timestamp": "2026-06-09T23:23:16Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Compiler2 cleanup: remove legacy_fn_def compatibility seam",
   "type": "task",
-  "updated_at": "2026-06-09T23:04:35Z"
+  "updated_at": "2026-06-09T23:23:16Z"
 }
