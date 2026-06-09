@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-rh2.14.4"
+    "fz-rh2.14.4",
+    "fz-rh2.14.6"
   ],
   "blocks": [],
   "created": "2026-06-09T04:26:11Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Compiler2 native backends: close the arc and restate the migration problem",
   "type": "task",
-  "updated_at": "2026-06-09T04:35:44Z"
+  "updated_at": "2026-06-09T12:51:35Z"
 }
