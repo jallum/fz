@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.11.7.5"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.11.7.7"
+  ],
   "created": "2026-06-09T15:52:50Z",
   "description": "Goal: make macro availability and expansion an ordinary source-tier fact workflow, including `require`, imported macros, local macros, and recursive expansion of returned quoted AST.\n\nSignal:\n- `fixtures/cross_module_macro` runs through `fz2`: `import Helpers, only: [twice: 1]` waits on Helpers' surface, binds `twice/1` as a macro, and expands it in App's caller env\n- explicit `require Mod` forces the provider module to be defined before remote macro expansion\n- local macro use observes source-order/availability rules rather than only name reservation\n- returned quoted AST recursively expands until it contains only compiler-service forms and runtime body syntax\n- telemetry/work-graph output shows macro-provider waits as exact `ModuleDefined`/macro-availability dependencies\n\nChange:\n- represent required macro providers in `CompileEnv` and source facts\n- make import filtering bind the actual exported symbol kind after the provider surface is known, not a guessed function binding\n- implement macro lookup for local, imported, and required remote macros over namespace/env data\n- stamp expanded source with call-site/definition context while preserving lexical context for macro-authored and unquoted identifiers\n- reject ambiguous or unavailable macro calls with diagnostics at source-production time\n\nWhy:\n- cross-module macros are where a pre-expanded input assumption breaks most obviously\n- macro expansion is a compile-order problem plus an env problem; treating it as lowering sugar would be incorrect",
   "id": "fz-rh2.11.7.6",
