@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.11.7.12"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-rh2.11.7",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 legacy_fn_def: derive downstream fn input from quoted roots",
   "type": "task",
-  "updated_at": "2026-06-09T19:16:58Z"
+  "updated_at": "2026-06-09T19:56:43Z"
 }
