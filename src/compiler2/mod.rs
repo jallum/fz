@@ -9,6 +9,7 @@ mod deps;
 mod dispatch;
 mod drive;
 mod facts;
+mod frontdoor;
 mod identity;
 mod jobs;
 mod keying;
@@ -50,6 +51,7 @@ pub use contract::{FunctionContract, FunctionContractMap};
 pub use deps::{DependencyIndex, UnresolvedWait};
 pub use drive::{FactKey, Job, WorkGraph};
 pub use facts::{FactChange, FactReplace, FactSlot, FactTable, FactValue};
+pub use frontdoor::{FrontDoorError, parse_quoted_program};
 pub use identity::{
     ActivationKey, ExecutableKey, ExecutableNeed, Function, FunctionDef, FunctionId, FunctionMap, FunctionRef,
     FunctionState, Module, ModuleExport, ModuleId, ModuleMap, ModuleSource, ModuleSourceKind, ModuleState,
@@ -85,6 +87,8 @@ mod contract_test;
 mod drive_test;
 #[cfg(test)]
 mod facts_test;
+#[cfg(test)]
+mod frontdoor_test;
 #[cfg(test)]
 mod identity_test;
 #[cfg(test)]

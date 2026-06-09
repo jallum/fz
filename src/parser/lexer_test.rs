@@ -209,6 +209,14 @@ fn lexes_membership_keywords() {
     assert_eq!(toks_of("x not in xs"), vec![id("x"), Tok::Not, Tok::In, id("xs")]);
 }
 
+#[test]
+fn lexes_require_as_a_first_class_keyword() {
+    assert_eq!(
+        toks_of("require Helpers"),
+        vec![Tok::Require, Tok::Upper("Helpers".to_string())]
+    );
+}
+
 fn id(s: &str) -> Tok {
     Tok::Ident(s.to_string())
 }

@@ -27,7 +27,7 @@ fn compiler2_scope_snapshot_projects_module_alias_and_env_from_one_authority() {
         .ast_node()
         .expect("module alias cursor")
         .expect("module alias node");
-    assert_eq!(module_alias.head, "__aliases__");
+    assert_eq!(module_alias.head.atom_name().expect("module alias head"), "__aliases__");
     assert_eq!(
         module_alias.tail.list_atom_names().expect("module alias segments"),
         vec!["App".to_string(), "Tools".to_string()],
@@ -49,7 +49,7 @@ fn compiler2_scope_snapshot_projects_module_alias_and_env_from_one_authority() {
         .ast_node()
         .expect("env module cursor")
         .expect("env module node");
-    assert_eq!(env_module.head, "__aliases__");
+    assert_eq!(env_module.head.atom_name().expect("env module head"), "__aliases__");
     assert_eq!(
         env_module.tail.list_atom_names().expect("env module alias segments"),
         vec!["App".to_string(), "Tools".to_string()],

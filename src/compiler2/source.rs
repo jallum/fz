@@ -351,11 +351,11 @@ impl QuotedSourceBuilder {
 
     pub fn ast_node(
         &self,
-        head: &str,
+        head: AnyValueRef,
         meta: &QuotedSourceMetadata,
         tail: AnyValueRef,
     ) -> Result<AnyValueRef, QuotedSourceError> {
-        self.tuple(&[self.atom(head), self.meta(meta)?, tail])
+        self.tuple(&[head, self.meta(meta)?, tail])
     }
 
     pub fn variable(&self, name: &str, meta: &QuotedSourceMetadata) -> Result<AnyValueRef, QuotedSourceError> {
@@ -364,7 +364,7 @@ impl QuotedSourceBuilder {
         } else {
             self.nil()
         };
-        self.ast_node(name, meta, context)
+        self.ast_node(self.atom(name), meta, context)
     }
 
     pub fn call(
@@ -373,12 +373,21 @@ impl QuotedSourceBuilder {
         meta: &QuotedSourceMetadata,
         args: &[AnyValueRef],
     ) -> Result<AnyValueRef, QuotedSourceError> {
-        self.ast_node(name, meta, self.list(args)?)
+        self.ast_node(self.atom(name), meta, self.list(args)?)
+    }
+
+    pub fn call_callee(
+        &self,
+        callee: AnyValueRef,
+        meta: &QuotedSourceMetadata,
+        args: &[AnyValueRef],
+    ) -> Result<AnyValueRef, QuotedSourceError> {
+        self.ast_node(callee, meta, self.list(args)?)
     }
 
     pub fn alias(&self, meta: &QuotedSourceMetadata, segments: &[&str]) -> Result<AnyValueRef, QuotedSourceError> {
         let values = segments.iter().map(|segment| self.atom(segment)).collect::<Vec<_>>();
-        self.ast_node("__aliases__", meta, self.list(&values)?)
+        self.ast_node(self.atom("__aliases__"), meta, self.list(&values)?)
     }
 
     pub fn keyword(&self, key: &str, value: AnyValueRef) -> Result<AnyValueRef, QuotedSourceError> {
@@ -453,7 +462,7 @@ pub struct QuotedSourceCursor {
 
 #[derive(Debug, Clone)]
 pub struct QuotedAstNode {
-    pub head: String,
+    pub head: QuotedSourceCursor,
     pub meta: QuotedSourceCursor,
     pub tail: QuotedSourceCursor,
 }
@@ -567,11 +576,11 @@ impl QuotedSourceCursor {
             return Ok(None);
         }
         let items = self.tuple_items()?;
-        if items.len() != 3 || items[0].root.tag() != ValueKind::ATOM {
+        if items.len() != 3 {
             return Ok(None);
         }
         Ok(Some(QuotedAstNode {
-            head: items[0].atom_name()?,
+            head: items[0].clone(),
             meta: items[1].clone(),
             tail: items[2].clone(),
         }))

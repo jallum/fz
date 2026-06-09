@@ -26,8 +26,10 @@ comparison surface when it wants one.
 ## Source Shape
 
 - AST nodes are Elixir-shaped 3-tuples:
-  `{head_atom, meta_map, tail}`.
-- Calls use `tail = [arg, ...]`.
+  `{head, meta_map, tail}`.
+- Most calls use an atom head and `tail = [arg, ...]`.
+- Remote calls and closure calls are allowed to carry a quoted callee AST in
+  `head`, not just an atom.
 - Variables use `tail = lexical_context_map`.
 - Module aliases use `{:__aliases__, meta, [:Foo, :Bar]}`.
 - Keyword items are ordinary 2-tuples inside lists.

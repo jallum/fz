@@ -164,7 +164,7 @@ fn cursor_reads_definition_and_caller_contexts_separately() {
     let root = builder.root(call).expect("quoted source root");
 
     let node = root.cursor().ast_node().expect("call cursor").expect("ast node");
-    assert_eq!(node.head, "double");
+    assert_eq!(node.head.atom_name().expect("call head atom"), "double");
 
     let call_ctx = node
         .meta
@@ -192,7 +192,7 @@ fn cursor_reads_definition_and_caller_contexts_separately() {
 
     let args = node.tail.list_items().expect("call args");
     let arg_node = args[0].ast_node().expect("arg node cursor").expect("arg ast node");
-    assert_eq!(arg_node.head, "x");
+    assert_eq!(arg_node.head.atom_name().expect("arg head atom"), "x");
     assert_eq!(
         arg_node
             .tail
