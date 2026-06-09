@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-rh2.11.7.2",
-    "fz-rh2.11.7.3"
+    "fz-rh2.11.7.3",
+    "fz-rh2.11.7.9"
   ],
   "blocks": [
     "fz-rh2.11.7.5"
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "Compiler2 compiler services: publish facts from quoted source forms",
   "type": "task",
-  "updated_at": "2026-06-09T16:12:18Z"
+  "updated_at": "2026-06-09T16:16:21Z"
 }
