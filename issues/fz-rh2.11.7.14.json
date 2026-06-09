@@ -24,11 +24,15 @@
     {
       "text": "Landed in f83105a72.\n\nWhat changed:\n- function discovery now notes a lazy  authoritative source fact first\n-  derives  on demand from grouped quoted source instead of eager old-parser authority\n- downstream compatibility now flows through , a compiler2-owned one-way decoder from grouped quoted roots\n- the quoted front door and grouped-surface readers were tightened so the lazy seam stays honest (/ attachment, extern-symbol folding vs bitstring parsing, remote operator capture shape)\n\nVerification:\n- cargo fmt --all\n- cargo check --all\n- cargo clippy --all-targets -- -D warnings\n- cargo test --lib compiler2::legacy_fn_def_test:: -- --nocapture\n- cargo test --lib",
       "timestamp": "2026-06-09T22:19:03Z"
+    },
+    {
+      "text": "Superseding the shell-mangled comment immediately above.\n\nLanded in f83105a72.\n\nWhat changed:\n- function discovery now notes a lazy FunctionSource authoritative fact first\n- Job::DefineFunction(FunctionId) derives FunctionDefined on demand from grouped quoted source instead of eager old-parser authority\n- downstream compatibility now flows through src/compiler2/legacy_fn_def.rs, a compiler2-owned one-way decoder from grouped quoted roots\n- the quoted front door and grouped-surface readers were tightened so the lazy seam stays honest (doc/spec attachment, extern-symbol folding vs bitstring parsing, remote operator capture shape)\n\nVerification:\n- cargo fmt --all\n- cargo check --all\n- cargo clippy --all-targets -- -D warnings\n- cargo test --lib compiler2::legacy_fn_def_test:: -- --nocapture\n- cargo test --lib",
+      "timestamp": "2026-06-09T22:19:12Z"
     }
   ],
   "priority": 1,
   "status": "closed",
   "title": "Compiler2 legacy_fn_def: derive downstream fn input from grouped quoted roots",
   "type": "task",
-  "updated_at": "2026-06-09T22:19:03Z"
+  "updated_at": "2026-06-09T22:19:12Z"
 }
