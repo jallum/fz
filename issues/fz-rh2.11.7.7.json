@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-09T15:53:02Z",
+  "description": "Goal: move remaining frontend sugar out of body lowering and the old macro pass by making it source-production work over compiler2-owned AST.\n\nSignal:\n- `fixtures/pipe_headless_case` runs through `fz2` without old frontend desugaring\n- representative capture/lambda sugar fixtures run through `fz2`: `\u0026(\u00261 + \u00262)`, bare `\u00261`, `\u0026name/arity`, and guarded/multi-clause lambdas become ordinary lowered forms before body lowering\n- operator sugars (`++`, `--`, `\u003c\u003e`, ranges, `in`, `not in`) enter downstream as ordinary calls/forms with correct namespace/env context\n- body lowering no longer rejects `Capture`/`CaptureArg` because those source-only forms do not reach it\n\nChange:\n- implement source-production rewrites or built-in macros for pipe/headless case, capture placeholders, multi-clause lambdas, and operator sugars\n- preserve spans and lexical context through rewrites\n- keep structured control/data lowering owned by the existing compiler2 body/dispatch pipeline; this ticket only removes source-only sugar before that seam\n- add fixture/telemetry assertions that prove fz2 did not call old frontend macro/desugar paths\n\nWhy:\n- source sugar is not runtime semantics and not backend work\n- once quoted source production exists, these rewrites belong beside macro expansion where returned AST is recursively normalized",
+  "id": "fz-rh2.11.7.7",
+  "labels": [],
+  "parent": "fz-rh2.11.7",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 source sugars: define pipe, capture, operators, and lambda rewrites in source production",
+  "type": "task",
+  "updated_at": "2026-06-09T15:53:02Z"
+}
