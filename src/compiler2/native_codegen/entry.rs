@@ -43,15 +43,13 @@ pub(crate) fn build_entry_harness<M: ClModule>(
     // the Option panics loudly at codegen if any future path violates
     // the invariant. `cont_param` is the trailing i64 in the native-tier
     // signature.
-    let demand_abi = DemandAbi::new(env.body_key(this_spec_id));
+    let demand_abi = NativeDemandAbi::new(env.body_native(this_spec_id));
     let (frame_ptr, host_ctx, cont_param): (Option<ir::Value>, Option<ir::Value>, Option<ir::Value>) = if is_native {
         let params: Vec<ir::Value> = body.b.block_params(entry_cl).to_vec();
         let my_param_reprs = &param_reprs[this_spec_id as usize];
         if is_cont_fn {
             harness_cont_fn(
                 body,
-                env,
-                f,
                 entry_blk,
                 &params,
                 my_param_reprs,
@@ -113,9 +111,8 @@ pub(crate) fn build_entry_harness<M: ClModule>(
 ///   self+32 : user_cap[1]      -> fz_param[N+1]
 ///   ...
 ///
-/// extras_count defaults to 1 (single-input call continuation) but
-/// ReceiveMatched lowering overrides via `cont_extras_count`:
-/// body/guard fns set it to bound_arity; after-body sets 0.
+/// extras_count defaults to 1 (single-input call continuation), unless the
+/// settled continuation entry ABI says otherwise.
 /// Cont sig matches my_param_reprs[i]'s Cranelift type directly;
 /// producer's Term::Return uses the same sig, so no coerce at
 /// entry.
@@ -123,17 +120,15 @@ pub(crate) fn build_entry_harness<M: ClModule>(
 /// Returns (frame_ptr, host_ctx, cont_param).
 fn harness_cont_fn<M: ClModule>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_>,
-    f: &FnIr,
     entry_blk: &crate::fz_ir::Block,
     params: &[ir::Value],
     my_param_reprs: &[ArgRepr],
-    demand_abi: &DemandAbi,
+    demand_abi: &NativeDemandAbi<'_>,
     var_env: &mut HashMap<u32, CodegenValue>,
     tuple_field_params: &mut HashMap<(u32, u32), CodegenValue>,
 ) -> (Option<ir::Value>, Option<ir::Value>, Option<ir::Value>) {
     let tuple_fields = demand_abi.tuple_field_arity();
-    let extras_count = tuple_fields.unwrap_or_else(|| env.cont_extras_count.get(&f.id).copied().unwrap_or(1));
+    let extras_count = demand_abi.continuation_extras();
     let mut param_cursor = 0;
     if let Some(field_count) = tuple_fields {
         let tuple_param = entry_blk.params.first().expect("TupleFields cont requires tuple slot0");

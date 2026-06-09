@@ -2,10 +2,10 @@
 
 use super::*;
 use crate::compiler::source::Span;
+use crate::compiler2::NativeBody;
 use crate::fz_ir::{Block, FnIr, PhysicalCapability, Prim, SourceInfo, Stmt, Term, Var};
 use crate::ir_dce::classify_var_uses;
-use crate::ir_planner::fn_types::SpecKey;
-use crate::types::{ClosureTypes, Ty, Types};
+use crate::types::{ClosureTypes, Types};
 use cranelift_codegen::{
     Context,
     ir::{self, InstBuilder, types},
@@ -25,12 +25,13 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     this_spec_id: u32,
     source: &SourceInfo,
 ) -> Result<(), CodegenError> {
-    let fn_types = env.fn_types;
     let param_reprs = env.param_reprs;
     let native_abi_fns = env.native_abi_fns;
     let cont_target_fns = env.cont_target_fns;
     let cont_fns = env.cont_fns;
     let closure_capture_counts = env.closure_capture_counts;
+    let native_body = env.body_native(this_spec_id);
+    let value_types = &native_body.value_types;
     let is_native = native_abi_fns.contains(&f.id);
     let is_cont_fn = cont_fns.contains(&f.id);
     // Closure-target fn shape: `(args..., self, cont) tail`. Only takes
@@ -41,7 +42,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     } else {
         None
     };
-    let demand_abi = DemandAbi::new(env.body_key(this_spec_id));
+    let demand_abi = NativeDemandAbi::new(native_body);
     // When this fn is never invoked from any fz IR site (not a direct
     // callee, not a continuation, not a closure target), it can only
     // enter via the trampoline entry, which writes null into the frame's
@@ -52,19 +53,8 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     let cont_ptr_known_null = !cont_target_fns.contains(&f.id);
     let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
 
-    let reachable_fz_blocks: HashSet<u32> = fn_types.reachable_blocks.iter().map(|id| id.0).collect();
-    if !reachable_fz_blocks.contains(&f.entry.0) {
-        return Err(CodegenError::new(format!(
-            "spec for {}#{} does not include entry block {:?}",
-            f.name, f.id.0, f.entry
-        )));
-    }
-
     let mut block_map: HashMap<u32, ir::Block> = HashMap::new();
     for blk in &f.blocks {
-        if !reachable_fz_blocks.contains(&blk.id.0) {
-            continue;
-        }
         let cl_blk = b.create_block();
         block_map.insert(blk.id.0, cl_blk);
     }
@@ -81,10 +71,10 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             // native shape — no coerce at entry.
             //
             // Scheduler-resumed receive continuations override the default
-            // one-result input shape via `cont_extras_count`: their bound
+            // one-result input shape via their settled continuation ABI: their bound
             // values and captures are loaded from the closure env, leaving
             // only `self` in the Tail-CC signature.
-            let extras_count = demand_abi.continuation_extras(env.cont_extras_count.get(&f.id).copied());
+            let extras_count = demand_abi.continuation_extras();
             for (i, r) in my_param_reprs[..extras_count].iter().enumerate() {
                 let _ = i;
                 append_block_param_for_repr(&mut b, entry_cl, *r);
@@ -112,9 +102,6 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
 
     for blk in &f.blocks {
         if blk.id == f.entry {
-            continue;
-        }
-        if !reachable_fz_blocks.contains(&blk.id.0) {
             continue;
         }
         let cl_blk = *block_map.get(&blk.id.0).unwrap();
@@ -152,8 +139,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
 
     {
         let (if_only, all_used) = classify_var_uses(f);
-        let (tuple_return_fields, skipped_tuple_return_vars) =
-            tuple_return_delivery_plan(f, env.body_key(this_spec_id), is_cont_fn);
+        let (tuple_return_fields, skipped_tuple_return_vars) = tuple_return_delivery_plan(f, native_body, is_cont_fn);
         body.cache.if_only_conds = if_only.into_iter().map(|v| v.0).collect();
         body.cache.used_vars = all_used.into_iter().map(|v| v.0).collect();
         body.cache.tuple_field_params = tuple_field_params;
@@ -161,16 +147,12 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         body.cache.tuple_return_fields = tuple_return_fields;
         body.cache.owned_cons_reuse_sources = owned_cons_reuse_sources(f);
     }
-    // Walk blocks in declared order with entry first. Unreachable
-    // fz_ir blocks are filtered out — they have no Cranelift counterpart.
+    // Walk blocks in declared order with entry first.
     let mut order: Vec<&Block> = Vec::with_capacity(f.blocks.len());
     if let Some(eb) = f.blocks.iter().find(|b| b.id == f.entry) {
         order.push(eb);
     }
     for blk in &f.blocks {
-        if !reachable_fz_blocks.contains(&blk.id.0) {
-            continue;
-        }
         if blk.id != f.entry {
             order.push(blk);
         }
@@ -183,8 +165,8 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             let params: Vec<ir::Value> = body.b.block_params(cl_blk).to_vec();
             let mut param_cursor = 0;
             for p in &blk.params {
-                let fallback = t.any();
-                let repr = ArgRepr::for_block_param_ty(t, &fn_types.vars.get(p).cloned().unwrap_or(fallback));
+                let param_ty = value_types.get(p).copied().unwrap_or_else(|| t.any());
+                let repr = ArgRepr::for_block_param_ty(t, &param_ty);
                 var_env.insert(p.0, take_param_binding(body.b, &params, &mut param_cursor, repr));
             }
         }
@@ -193,7 +175,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         // SourceInfo.stmt_spans; encode each as a Cranelift SourceLoc so
         // `fz dump --emit clif` can render `; @file:line:col` comments.
         let stmt_spans = source.stmt_spans.get(&(f.id, blk.id));
-        let block_env = fn_types.block_envs.get(&blk.id);
+        let block_env = None;
         for (idx, stmt) in blk.stmts.iter().enumerate() {
             let span = stmt_spans.and_then(|v| v.get(idx)).copied().unwrap_or(Span::DUMMY);
             body.b.set_srcloc(span_to_srcloc(span));
@@ -233,18 +215,18 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         // Repr-aware Goto coercion. Mirrors coerce_call_args but for
         // intra-function block edges. Each arg is coerced to the repr
         // the target block param actually needs (derived from
-        // fn_types.vars), so RawInt values flow through without a
+        // compiler2 value_types), so RawInt values flow through without a
         // box/unbox round-trip at block joins.
         if let Term::Goto(target, args) = &blk.terminator {
             if !block_map.contains_key(&target.0) {
                 return Err(CodegenError::new(format!(
-                    "reachable block {:?} in {}#{} jumps to spec-unreachable block {:?}",
+                    "block {:?} in {}#{} jumps to an unknown successor {:?}",
                     blk.id, f.name, f.id.0, target
                 )));
             }
             for (param, arg) in f.block(*target).params.iter().zip(args.iter()) {
-                let fallback = t.any();
-                let want = ArgRepr::for_block_param_ty(t, &fn_types.vars.get(param).cloned().unwrap_or(fallback));
+                let param_ty = value_types.get(param).copied().unwrap_or_else(|| t.any());
+                let want = ArgRepr::for_block_param_ty(t, &param_ty);
                 let vb = *var_env.get(&arg.0).expect("unbound goto arg");
                 if let Some(coerced) = body.coerce_goto_arg(vb, want) {
                     var_env.insert(arg.0, coerced);
@@ -268,15 +250,12 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             frame_ptr,
             host_ctx,
             cont_param,
-            &fn_types.vars,
+            value_types,
             block_env,
         )?;
     }
 
     for blk in &f.blocks {
-        if !reachable_fz_blocks.contains(&blk.id.0) {
-            continue;
-        }
         let cl_blk = *block_map.get(&blk.id.0).unwrap();
         if blk.id != f.entry {
             body.b.seal_block(cl_blk);
@@ -298,13 +277,13 @@ fn owned_cons_reuse_sources(f: &FnIr) -> HashMap<u32, Var> {
 
 fn tuple_return_delivery_plan(
     f: &FnIr,
-    spec_key: &SpecKey,
+    native_body: &NativeBody,
     is_cont_fn: bool,
 ) -> (HashMap<u32, Vec<Var>>, HashSet<u32>) {
-    if is_cont_fn && spec_key.demand.tuple_field_arity().is_some() {
+    if is_cont_fn && NativeDemandAbi::new(native_body).tuple_field_arity().is_some() {
         return (HashMap::new(), HashSet::new());
     }
-    let arity = match DemandAbi::new(spec_key).tuple_field_arity() {
+    let arity = match NativeDemandAbi::new(native_body).tuple_field_arity() {
         Some(arity) => arity,
         None => return (HashMap::new(), HashSet::new()),
     };

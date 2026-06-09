@@ -242,7 +242,7 @@ The ignored harness writes its log to `/tmp/fz-compiler2-quicksort.jsonl`.
 ## Codegen Regression Events
 
 Three codegen events carry stable enough fields to assert on in tests, proving
-codegen consumed the ABI and callable-entry facts the planner handed it. They are
+codegen consumed the published ABI and callable-entry facts handed to it. They are
 emitted for reachable specs / lowered sites and pair with CLIF or runtime checks
 when the generated shape matters.
 

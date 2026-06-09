@@ -16,9 +16,9 @@
 //! Native-tier fns bypass the trampoline; their ABI is built per-spec
 //! from ArgRepr (see `repr.rs`).
 
-pub(crate) use crate::frontend::spec_registry::SpecRegistry;
+pub(crate) use crate::compiler2::Ty;
 use crate::telemetry::Telemetry;
-pub(crate) use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Ty, Types, VisibilityTypes};
+pub(crate) use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Types, VisibilityTypes};
 
 mod call;
 mod clif;
@@ -65,15 +65,12 @@ pub(crate) use crate::ir_codegen::{
 
 pub(crate) fn compile_with_backend_native_program<
     B: Backend,
-    T: Types + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
+    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
 >(
-    _t: &mut T,
+    t: &mut T,
     program: &crate::compiler2::NativeProgram,
     backend: B,
     tel: &dyn Telemetry,
 ) -> Result<B::Output, CodegenError> {
-    // The fork still answers planner-shaped internal codegen questions through
-    // legacy `SpecPlan` baggage. Keep that debt local to the fork.
-    let mut legacy_types = crate::types::new();
-    driver::compile_with_backend_native_program(&mut legacy_types, program, backend, tel)
+    driver::compile_with_backend_native_program(t, program, backend, tel)
 }

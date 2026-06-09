@@ -2,8 +2,7 @@
 
 use super::*;
 use crate::fz_ir::{BlockId, Var};
-use crate::ir_planner::SpecPlan;
-use crate::types::{Ty, Types};
+use crate::types::Types;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlags, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::Module;
@@ -127,24 +126,24 @@ pub(crate) fn binding_for_var(var_env: &HashMap<u32, CodegenValue>, v: u32) -> C
 
 pub(crate) fn expected_runtime_value_kind<T: Types<Ty = Ty>>(
     t: &mut T,
-    fn_types: &SpecPlan,
+    value_types: &HashMap<Var, Ty>,
     block_env: Option<&HashMap<Var, Ty>>,
     v: Var,
 ) -> Option<ValueKind> {
-    if ty_is_int(t, fn_types, v) {
+    if ty_is_int(t, value_types, v) {
         Some(ValueKind::INT)
-    } else if ty_is_float(t, fn_types, v) {
+    } else if ty_is_float(t, value_types, v) {
         Some(ValueKind::FLOAT)
-    } else if ty_is_atom(t, fn_types, v) {
+    } else if ty_is_atom(t, value_types, v) {
         Some(ValueKind::ATOM)
-    } else if ty_is_list(t, fn_types, v)
-        || ty_is_empty_list_in_context(t, fn_types, v, block_env)
-        || ty_is_non_empty_list_in_context(t, fn_types, v, block_env)
+    } else if ty_is_list(t, value_types, v)
+        || ty_is_empty_list_in_context(t, value_types, v, block_env)
+        || ty_is_non_empty_list_in_context(t, value_types, v, block_env)
     {
         Some(ValueKind::LIST)
-    } else if ty_is_map(t, fn_types, v) {
+    } else if ty_is_map(t, value_types, v) {
         Some(ValueKind::MAP)
-    } else if ty_has_tuple(t, fn_types, v) {
+    } else if ty_has_tuple(t, value_types, v) {
         Some(ValueKind::STRUCT)
     } else {
         None

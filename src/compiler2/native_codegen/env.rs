@@ -3,7 +3,6 @@
 use super::*;
 use crate::compiler2::NativeBody;
 use crate::fz_ir::{BlockId, ExternId, FnId, Module, Var};
-use crate::ir_planner::SpecPlan;
 use crate::telemetry::Telemetry;
 use cranelift_codegen::ir::{self};
 use cranelift_module::{DataId, FuncId};
@@ -16,7 +15,6 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) runtime: &'a RuntimeRefs,
     pub(super) surface: &'a NativeCodegenSurface<'a>,
     pub(super) module: &'a Module,
-    pub(super) fn_types: &'a SpecPlan,
     pub(super) active_spec_id: u32,
     pub(super) active_body_fn_id: FnId,
     pub(super) active_body_name: &'a str,
@@ -35,11 +33,6 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) cont_target_fns: &'a HashSet<FnId>,
     pub(super) cont_fns: &'a HashSet<FnId>,
     pub(super) closure_capture_counts: &'a HashMap<FnId, usize>,
-    /// Number of Tail-CC "extra" params before the trailing `self` closure
-    /// ptr. Scheduler-resumed receive continuations use zero extras because
-    /// their values are closure-env slots. Unmapped call continuations keep
-    /// the normal one-result input shape.
-    pub(super) cont_extras_count: &'a HashMap<FnId, usize>,
     /// Receive-dispatch FuncId per ReceiveMatched site, keyed by `(parent_fn_id.0,
     /// block_id.0)`. Populated by the planned codegen declaration pass
     /// and consumed by the Term::ReceiveMatched arm in
@@ -48,28 +41,24 @@ pub(crate) struct CodegenEnv<'a> {
 }
 
 impl<'a> CodegenEnv<'a> {
-    pub(super) fn body_key(&self, codegen_id: u32) -> &crate::ir_planner::fn_types::SpecKey {
-        self.surface.body_key(codegen_id)
-    }
-
     pub(super) fn body_fn_id(&self, codegen_id: u32) -> FnId {
         self.surface.body_fn_id(codegen_id)
-    }
-
-    pub(super) fn body_id_for_key<T: crate::types::Types<Ty = crate::types::Ty>>(
-        &self,
-        t: &T,
-        key: &crate::ir_planner::fn_types::SpecKey,
-    ) -> Option<u32> {
-        self.surface.body_id_for_key(t, key)
     }
 
     pub(super) fn body_id_for_fn(&self, fn_id: FnId) -> Option<u32> {
         self.surface.body_id_for_fn(fn_id)
     }
 
-    pub(super) fn active_native_body(&self) -> Option<&NativeBody> {
-        self.surface.body(self.active_spec_id).native_body
+    pub(super) fn body_native(&self, codegen_id: u32) -> &NativeBody {
+        self.surface.body(codegen_id).native_body
+    }
+
+    pub(super) fn active_native_body(&self) -> &NativeBody {
+        self.body_native(self.active_spec_id)
+    }
+
+    pub(super) fn active_value_types(&self) -> &HashMap<Var, crate::compiler2::Ty> {
+        &self.active_native_body().value_types
     }
 }
 

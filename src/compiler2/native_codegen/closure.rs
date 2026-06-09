@@ -1,8 +1,4 @@
 use super::*;
-use crate::fz_ir::{FnId, Module as FzModule, Var};
-use crate::ir_planner::SpecPlan;
-use crate::ir_planner::fn_types::{CallableCapability, SpecKey};
-use crate::types::{ClosureLitInfo, ClosureTypes, key_slots_from_tys};
 use cranelift_codegen::ir::{
     self, BlockArg, InstBuilder, MemFlags, StackSlotData, StackSlotKind, condcodes::IntCC, types,
 };
@@ -249,42 +245,4 @@ fn store_lazy_capture(
         .stack_store(raw, slot, (raw_base + idx * SLOT_BYTES as usize) as i32);
     let kind_v = b.ins().iconst(types::I8, kind);
     b.ins().stack_store(kind_v, slot, (kind_base + idx) as i32);
-}
-
-/// Resolve a TailCallClosure edge to its body's `(FnId, SpecId)`.
-///
-/// This is compiler2-local SpecPlan-shaped baggage until the native surface
-/// carries the closure target fact directly.
-pub(crate) fn resolve_tcc_body<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    closure: &Var,
-    args: &[Var],
-    ft: &SpecPlan,
-    module: &FzModule,
-    mut resolve_body_id: impl FnMut(&T, &SpecKey) -> Option<u32>,
-) -> Option<(FnId, u32)> {
-    let (fn_id, captures) = if let Some(ClosureLitInfo { target, captures, .. }) =
-        ft.vars.get(closure).and_then(|ty| t.closure_lit_parts(ty))
-    {
-        (FnId::from(target), captures)
-    } else {
-        match ft.callable_capabilities.get(closure)? {
-            CallableCapability::KnownFn(fn_id) => (*fn_id, Vec::new()),
-            CallableCapability::KnownClosure { fn_id, captures, .. } => (*fn_id, captures.clone()),
-            CallableCapability::OpaqueCallable => return None,
-        }
-    };
-    let body_fn = module.fn_by_id(fn_id);
-    let np = body_fn.block(body_fn.entry).params.len();
-    let any = t.any();
-    let mut key: Vec<Ty> = captures;
-    for av in args {
-        key.push(ft.vars.get(av).cloned().unwrap_or_else(|| any.clone()));
-    }
-    while key.len() < np {
-        key.push(any.clone());
-    }
-    key.truncate(np);
-    let key = SpecKey::value(fn_id, key_slots_from_tys(key));
-    Some((fn_id, resolve_body_id(&*t, &key)?))
 }

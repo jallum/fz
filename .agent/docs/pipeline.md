@@ -236,6 +236,7 @@ questions at that rung:
 | callable-constructor lookup through planner state | `NativeBody.callable_constructors` |
 | extern decls plus wire classes | `NativeProgram.module.externs` plus `NativeBody.extern_marshals` |
 | continuation / entry ABI classification | `NativeBody.entry_abi` and `NativeBodyOrigin::Continuation` |
+| runtime type-membership questions | explicit `RuntimeTypeTestShim` facts |
 
 Questions that are illegal after `NativeProgram(root)`:
 
@@ -245,13 +246,13 @@ Questions that are illegal after `NativeProgram(root)`:
 - re-deriving callable-entry obligations, return lanes, or extern marshal
   classes from old-world planner state
 
-During the in-house backend fork, compiler2 may temporarily carry copied
-planner-shaped baggage (`SpecPlan`, `SpecRegistry`, synthetic `SpecKey`,
-widened `return_tys`) as compiler2-local implementation detail. That baggage is
-never part of the contract above. It is tolerated only inside the forked
-compiler2 backend while parity is being established, and it remains a cleanup
-target until the compiler2-native backend answers those questions directly from
-`NativeProgram` / `NativeBody`.
+Compiler2-native no longer carries copied planner-shaped baggage
+(`SpecPlan`, `SpecRegistry`, synthetic `SpecKey`, widened `return_tys`) as part
+of its backend handoff. The remaining explicit backend-local debt is the
+runtime type-test shim: compiler2 still projects rich semantic types into
+runtime-observable membership predicates because the runtime cannot answer full
+semantic membership directly. That shim is part of the published handoff above,
+and replacing it with a first-class runtime predicate is tracked separately.
 
 Likewise, old semantic payloads still hanging off shared fz-IR structures
 (`ExternDecl.ret_descr`, `ExternDecl.semantic_contract`, and similar) are not

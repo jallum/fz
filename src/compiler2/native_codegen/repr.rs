@@ -1,7 +1,7 @@
 //! ArgRepr (per-spec ABI shape) and signature builders.
 
 use super::*;
-use crate::types::{Ty, Types};
+use crate::types::Types;
 use cranelift_codegen::ir::{self, AbiParam, Signature, types};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilder;
@@ -13,7 +13,7 @@ use cranelift_frontend::FunctionBuilder;
 /// int payload as i64; `RawF64` is a raw f64; `RawAtom` is an atom-id
 /// payload as i64.
 ///
-/// Per-spec param/return reprs are derived from `ir_planner`'s types:
+/// Per-spec param/return reprs are derived from compiler2's settled types:
 /// float-only -> `RawF64`, int-only -> `RawInt`, atom-only -> `RawAtom`,
 /// else `ValueRef`.
 /// `build_fn_signature` picks the AbiParam type from the repr; `compile_fn`

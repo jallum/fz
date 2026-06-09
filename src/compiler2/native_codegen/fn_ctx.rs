@@ -8,12 +8,10 @@
 
 use super::*;
 use crate::fz_ir::Var;
-use cranelift_codegen::ir::{self, BlockArg, InstBuilder, MemFlags, condcodes::IntCC, types};
+use cranelift_codegen::ir::{self, InstBuilder, MemFlags, condcodes::IntCC, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{FuncId, Linkage, Module};
-use fz_runtime::any_value::{
-    AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID, TaggedRefArch, ValueKind,
-};
+use fz_runtime::any_value::{AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, TaggedRefArch, ValueKind};
 use fz_runtime::heap::{FieldKind, Schema};
 use std::collections::HashMap;
 
@@ -380,55 +378,6 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
         let actual = self.value_type_tag(value);
         let b = &mut *self.b;
         b.ins().icmp_imm(IntCC::Equal, actual, tag.tag() as i64)
-    }
-
-    pub(crate) fn value_atom_id_is(&mut self, value: CodegenValue, atom_id: u32) -> ir::Value {
-        if let CodegenValue::AnyRef(value_ref) = value {
-            // The AnyRef path interleaves block-building with an unbox BIF, so
-            // each builder burst is scoped to release the borrow around the
-            // `unbox_atom` call (which needs `&mut self`).
-            let is_atom = self.value_is_tag(value, ValueKind::ATOM);
-            let join_blk = {
-                let b = &mut *self.b;
-                let atom_blk = b.create_block();
-                let join_blk = b.create_block();
-                b.append_block_param(join_blk, types::I8);
-                let false8 = b.ins().iconst(types::I8, 0);
-                let no_args: Vec<BlockArg> = Vec::new();
-                b.ins()
-                    .brif(is_atom, atom_blk, &no_args, join_blk, &[BlockArg::Value(false8)]);
-                b.switch_to_block(atom_blk);
-                b.seal_block(atom_blk);
-                join_blk
-            };
-            let atom = self.unbox_atom(value_ref);
-            let b = &mut *self.b;
-            let found = b.ins().icmp_imm(IntCC::Equal, atom, atom_id as i64);
-            b.ins().jump(join_blk, &[BlockArg::Value(found)]);
-            b.switch_to_block(join_blk);
-            b.seal_block(join_blk);
-            return b.block_params(join_blk)[0];
-        }
-        let b = &mut *self.b;
-        match value {
-            CodegenValue::Condition(flag) => {
-                if atom_id == TRUE_ATOM_ID {
-                    return flag;
-                }
-                if atom_id == FALSE_ATOM_ID {
-                    return b.ins().bxor_imm(flag, 1);
-                }
-                b.ins().iconst(types::I8, 0)
-            }
-            CodegenValue::RawAtom(payload) => b.ins().icmp_imm(IntCC::Equal, payload, atom_id as i64),
-            CodegenValue::RawInt(_) | CodegenValue::RawF64(_) => b.ins().iconst(types::I8, 0),
-            CodegenValue::Known {
-                payload,
-                kind: ValueKind::ATOM,
-            } => b.ins().icmp_imm(IntCC::Equal, payload, atom_id as i64),
-            CodegenValue::Known { .. } => b.ins().iconst(types::I8, 0),
-            CodegenValue::AnyRef(_) => unreachable!("handled above"),
-        }
     }
 
     pub(crate) fn value_raw_int(&mut self, value: CodegenValue) -> ir::Value {

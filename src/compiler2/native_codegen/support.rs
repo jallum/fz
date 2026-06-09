@@ -3,8 +3,7 @@
 use super::*;
 use crate::ast::{BitType, Endian};
 use crate::fz_ir::Var;
-use crate::ir_planner::SpecPlan;
-use crate::types::{Ty, Types};
+use crate::types::Types;
 use cranelift_codegen::ir::{self};
 use cranelift_module::Module;
 use fz_runtime::any_value::{FALSE_BITS as FALSE_BITS_RAW, TRUE_BITS as TRUE_BITS_RAW};
@@ -39,14 +38,14 @@ pub(crate) enum ListTailBits {
 
 pub(crate) fn list_tail_bits_for_var<T: Types<Ty = Ty>>(
     t: &mut T,
-    fn_types: &SpecPlan,
+    value_types: &HashMap<Var, Ty>,
     block_env: Option<&HashMap<Var, Ty>>,
     tail_var: Var,
     tail_bits: ir::Value,
 ) -> ListTailBits {
-    if ty_is_empty_list_in_context(t, fn_types, tail_var, block_env) {
+    if ty_is_empty_list_in_context(t, value_types, tail_var, block_env) {
         ListTailBits::Empty
-    } else if ty_is_non_empty_list_in_context(t, fn_types, tail_var, block_env) {
+    } else if ty_is_non_empty_list_in_context(t, value_types, tail_var, block_env) {
         ListTailBits::NonEmptyValueRef(tail_bits)
     } else {
         ListTailBits::ValueRef(tail_bits)

@@ -43,15 +43,13 @@ type BackendProgramDefs = Rc<RefCell<Vec<BackendProgramRecord>>>;
 type NativeProgramDefs = Rc<RefCell<Vec<NativeProgramRecord>>>;
 type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
 
-fn jit_compile_native_program(program: &NativeProgram, tel: &ConfiguredTelemetry) -> crate::ir_codegen::CompiledModule {
-    let mut legacy_types = crate::types::new();
-    super::native_codegen::compile_with_backend_native_program(
-        &mut legacy_types,
-        program,
-        super::native_codegen::JitBackend::new(),
-        tel,
-    )
-    .expect("compiler2-owned native codegen should compile a Compiler2 native program")
+fn jit_compile_native_program(
+    compiler: &mut Compiler2<'_>,
+    program: &NativeProgram,
+) -> crate::ir_codegen::CompiledModule {
+    compiler
+        .compile_native_program_jit_for_test(program)
+        .expect("compiler2-owned native codegen should compile a Compiler2 native program")
 }
 
 fn assert_no_legacy_planner_or_type_infer(capture: &Capture, context: &str) {
@@ -3114,7 +3112,7 @@ fn compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen() {
     }
 
     let program = native.last(root_id).program;
-    let compiled = jit_compile_native_program(&program, &tel);
+    let compiled = jit_compile_native_program(&mut compiler, &program);
     let halt = compiled.run(&tel, program.entry);
     assert_eq!(
         halt, 42,
@@ -3209,7 +3207,7 @@ end
         "native callable constructors should resolve to the one closed callable-entry target for child/0",
     );
 
-    let compiled = jit_compile_native_program(&program, &tel);
+    let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(
         compiled.run(&tel, program.entry),
         42,
@@ -3265,7 +3263,7 @@ end
     }
 
     let program = native.last(root_id).program;
-    let compiled = jit_compile_native_program(&program, &tel);
+    let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(
         compiled.run(&tel, program.entry),
         0,
@@ -3312,7 +3310,7 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
     }
 
     let program = native.last(root_id).program;
-    let compiled = jit_compile_native_program(&program, &tel);
+    let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(
         compiled.run(&tel, program.entry),
         15,
@@ -3363,7 +3361,7 @@ end
     }
 
     let program = native.last(root_id).program;
-    let compiled = jit_compile_native_program(&program, &tel);
+    let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(
         compiled.run(&tel, program.entry),
         -1,
@@ -3407,7 +3405,7 @@ fn compiler2_native_program_jit_runs_map_fixture_through_compiler2_codegen() {
     }
 
     let program = native.last(root_id).program;
-    let _compiled = jit_compile_native_program(&program, &tel);
+    let _compiled = jit_compile_native_program(&mut compiler, &program);
 }
 
 #[test]
@@ -3447,7 +3445,7 @@ fn main(), do: count(100000, 0)
     }
 
     let program = native.last(root_id).program;
-    let compiled = jit_compile_native_program(&program, &tel);
+    let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(
         compiled.run(&tel, program.entry),
         100_000,
@@ -3899,7 +3897,7 @@ end
         .iter()
         .find(|entry| entry.target.activation.function == lambda_id)
         .expect("native program should publish the dtor lambda callable entry");
-    let compiled = jit_compile_native_program(&program, &tel);
+    let compiled = jit_compile_native_program(&mut compiler, &program);
     let static_target = compiled
         .static_closure_targets()
         .iter()

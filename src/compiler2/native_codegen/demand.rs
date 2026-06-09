@@ -1,21 +1,22 @@
-//! Codegen view of planner-selected return ABI facts.
+//! Codegen view of compiler2-native return and continuation ABI facts.
 
-use crate::ir_planner::fn_types::{ReturnDemand, SpecKey};
+use crate::compiler2::{NativeBody, NativeEntryAbi, ReturnAbi};
 
 #[derive(Clone, Copy)]
-pub(crate) struct DemandAbi<'a> {
-    demand: &'a ReturnDemand,
+pub(crate) struct NativeDemandAbi<'a> {
+    body: &'a NativeBody,
 }
 
-impl<'a> DemandAbi<'a> {
-    pub(crate) fn new(spec_key: &'a SpecKey) -> Self {
-        Self {
-            demand: &spec_key.demand,
-        }
+impl<'a> NativeDemandAbi<'a> {
+    pub(crate) fn new(body: &'a NativeBody) -> Self {
+        Self { body }
     }
 
     pub(crate) fn tuple_field_arity(self) -> Option<usize> {
-        self.demand.tuple_field_arity()
+        match &self.body.return_abi {
+            ReturnAbi::Value(_) => None,
+            ReturnAbi::TupleFields(fields) => Some(fields.len()),
+        }
     }
 
     pub(crate) fn returned_tuple_field_arity(self, is_cont_fn: bool) -> Option<usize> {
@@ -34,7 +35,13 @@ impl<'a> DemandAbi<'a> {
         }
     }
 
-    pub(crate) fn continuation_extras(self, fallback: Option<usize>) -> usize {
-        self.tuple_field_arity().or(fallback).unwrap_or(1)
+    pub(crate) fn continuation_extras(self) -> usize {
+        if let Some(arity) = self.tuple_field_arity() {
+            return arity;
+        }
+        match self.body.entry_abi {
+            NativeEntryAbi::Direct => 1,
+            NativeEntryAbi::Continuation { extra_params } => extra_params,
+        }
     }
 }

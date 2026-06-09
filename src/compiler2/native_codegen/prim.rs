@@ -1,15 +1,12 @@
 //! Primitive lowering helpers for codegen.
 
 use super::*;
-use crate::frontend::spec_registry::{BestCoverCandidate, best_covering_candidate};
 use crate::fz_ir::{
     BinOp, BitSizeIr, BlockId, CallsiteIdent, Const, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternTy,
     FnId, Module, Prim, UnOp, Var,
 };
-use crate::ir_planner::SpecPlan;
-use crate::ir_planner::planned::{PlannedCallableEntrySelection, select_callable_entry_target};
 use crate::runtime_type_test_shim::{ListShape, ObservedSet, RuntimeTypeTestShim};
-use crate::types::{Descr, key_slot_var_count, ty_descr};
+use crate::types::key_slot_var_count;
 use cranelift_codegen::ir::{
     self, BlockArg, InstBuilder, MemFlags,
     condcodes::{FloatCC, IntCC},
@@ -32,10 +29,10 @@ pub(crate) fn emit_map_get_value_ref_for_key<M: cranelift_module::Module, T: Typ
     block_env: Option<&HashMap<Var, Ty>>,
 ) -> ir::Value {
     let runtime = env.runtime;
-    let fn_types = env.fn_types;
+    let value_types = env.active_value_types();
     let map_ref = body.tagged_var(var_env, map.0);
     let process = body.process_arg();
-    let key_kind = expected_runtime_value_kind(t, fn_types, block_env, key);
+    let key_kind = expected_runtime_value_kind(t, value_types, block_env, key);
     match key_kind {
         Some(ValueKind::ATOM) => {
             let kv = body.value_raw_atom(binding_for_var(var_env, key.0));
@@ -394,7 +391,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
     block_env: Option<&HashMap<Var, Ty>>,
 ) -> Result<LowerOut, CodegenError> {
     let runtime = env.runtime;
-    let fn_types = env.fn_types;
+    let value_types = env.active_value_types();
     let tuple_schema_ids = env.tuple_schema_ids;
     let v: LowerOut = match prim {
         Prim::ListHead(c) => {
@@ -410,7 +407,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                 && let Some(tail_var) = tail
             {
                 let tail_bits = body.any_ref_for_var(var_env, tail_var.0);
-                let tail = list_tail_bits_for_var(t, fn_types, block_env, *tail_var, tail_bits);
+                let tail = list_tail_bits_for_var(t, value_types, block_env, *tail_var, tail_bits);
                 let reused = emit_owned_cons_reuse_or_alloc(body, var_env, elems[0], tail);
                 if let Some(reused) = reused {
                     return Ok(LowerOut::ValueRef(reused));
@@ -421,7 +418,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             let mut acc = match tail {
                 Some(tail_var) => {
                     let tail_bits = body.any_ref_for_var(var_env, tail_var.0);
-                    list_tail_bits_for_var(t, fn_types, block_env, *tail_var, tail_bits)
+                    list_tail_bits_for_var(t, value_types, block_env, *tail_var, tail_bits)
                 }
                 None => ListTailBits::Empty,
             };
@@ -431,7 +428,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                     env,
                     var_env,
                     *e,
-                    expected_runtime_value_kind(t, fn_types, block_env, *e),
+                    expected_runtime_value_kind(t, value_types, block_env, *e),
                     acc,
                 );
                 acc = ListTailBits::NonEmptyValueRef(cons);
@@ -547,7 +544,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
         Prim::DestListCons { head, tail, .. } => {
             if let Some(tail_var) = tail {
                 let tail_bits = body.any_ref_for_var(var_env, tail_var.0);
-                let tail = list_tail_bits_for_var(t, fn_types, block_env, *tail_var, tail_bits);
+                let tail = list_tail_bits_for_var(t, value_types, block_env, *tail_var, tail_bits);
                 let reused = emit_owned_cons_reuse_or_alloc(body, var_env, *head, tail);
                 if let Some(reused) = reused {
                     return Ok(LowerOut::ValueRef(reused));
@@ -556,7 +553,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             let acc = match tail {
                 Some(tail_var) => {
                     let tail_bits = body.any_ref_for_var(var_env, tail_var.0);
-                    list_tail_bits_for_var(t, fn_types, block_env, *tail_var, tail_bits)
+                    list_tail_bits_for_var(t, value_types, block_env, *tail_var, tail_bits)
                 }
                 None => ListTailBits::Empty,
             };
@@ -565,7 +562,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                 env,
                 var_env,
                 *head,
-                expected_runtime_value_kind(t, fn_types, block_env, *head),
+                expected_runtime_value_kind(t, value_types, block_env, *head),
                 acc,
             );
             LowerOut::ValueRef(cons)
@@ -578,7 +575,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             if let Some(binding) = body.cache.tuple_field_params.get(&(c.0, *idx)).copied() {
                 return Ok(lower_out_for_codegen_value(binding));
             }
-            // Every TupleField is gated by a preceding `Prim::TypeTest`
+            // Every TupleField is gated by a preceding runtime type-test shim
             // that runtime-checks the subject is a matching-arity Struct
             // heap value, so the load is provably safe. A SIGSEGV here
             // would be an IR integrity bug worth surfacing loudly — do
@@ -963,11 +960,7 @@ fn emit_variadic_extern_call<M: cranelift_module::Module>(
             stmt_idx,
             arg_idx,
         };
-        let Some(&ty) = env
-            .active_native_body()
-            .map(|body| body.extern_marshals.get(&site))
-            .unwrap_or_else(|| env.fn_types.extern_marshals.get(&site))
-        else {
+        let Some(&ty) = env.active_native_body().extern_marshals.get(&site) else {
             return Err(CodegenError::new(format!(
                 "variadic extern `{}` has unresolved marshal metadata at {:?}",
                 decl.symbol, site
@@ -1036,7 +1029,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         return Ok(LowerOut::DeadUnit);
     }
     let runtime = env.runtime;
-    let fn_types = env.fn_types;
+    let value_types = env.active_value_types();
     // Helper: every consumer site below that wants one-word ValueRef uses
     // this. Sites that want a raw f64 (float fast paths only) call
     // `as_raw_f64` directly.
@@ -1056,7 +1049,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             // `as_raw_i64`.
             Const::Int(n) => {
                 body.cache.static_scalar_consts.insert(dest_var.0, AnyValue::int(*n));
-                if ty_is_int(t, fn_types, dest_var) {
+                if ty_is_int(t, value_types, dest_var) {
                     body.cache.raw_int_consts.insert(dest_var.0, *n);
                     return Ok(LowerOut::RawI64(body.b.ins().iconst(types::I64, *n)));
                 }
@@ -1068,7 +1061,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             Const::Atom(id) => Ok(LowerOut::StrictConst(AnyValue::atom(*id))),
             Const::Float(f) => {
                 body.cache.static_scalar_consts.insert(dest_var.0, AnyValue::float(*f));
-                if ty_is_float(t, fn_types, dest_var) {
+                if ty_is_float(t, value_types, dest_var) {
                     return Ok(LowerOut::RawF64(body.b.ins().f64const(*f)));
                 }
                 Ok(LowerOut::StrictConst(AnyValue::float(*f)))
@@ -1082,11 +1075,13 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             // dispatch fallback) pay it.
             match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                    lower_arith_binop(body, t, fn_types, var_env, runtime, *op, *a, *bv)
+                    lower_arith_binop(body, t, value_types, var_env, runtime, *op, *a, *bv)
                 }
-                BinOp::Eq | BinOp::Neq => lower_eq_binop(body, t, fn_types, var_env, runtime, *op, *a, *bv, dest_var),
+                BinOp::Eq | BinOp::Neq => {
+                    lower_eq_binop(body, t, value_types, var_env, runtime, *op, *a, *bv, dest_var)
+                }
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                    lower_cmp_binop(body, t, fn_types, var_env, runtime, *op, *a, *bv, dest_var)
+                    lower_cmp_binop(body, t, value_types, var_env, runtime, *op, *a, *bv, dest_var)
                 }
                 BinOp::And | BinOp::Or => lower_bool_binop(body, var_env, *op, *a, *bv, dest_var),
             }
@@ -1216,37 +1211,37 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             }
             Ok(LowerOut::Strict(strict_bool(body.b, cmp)))
         }
-        Prim::MapGet(m, k) if ty_is_float(t, fn_types, dest_var) => {
+        Prim::MapGet(m, k) if ty_is_float(t, value_types, dest_var) => {
             let value_ref = emit_map_get_value_ref_for_key(body, t, env, var_env, *m, *k, block_env);
             let load_float = body.jmod.declare_func_in_func(runtime.ref_load_float_id, body.b.func);
             let load_inst = body.b.ins().call(load_float, &[value_ref]);
             Ok(LowerOut::RawF64(body.b.inst_results(load_inst)[0]))
         }
-        Prim::MapGet(m, k) if ty_is_int(t, fn_types, dest_var) => {
+        Prim::MapGet(m, k) if ty_is_int(t, value_types, dest_var) => {
             let value_ref = emit_map_get_value_ref_for_key(body, t, env, var_env, *m, *k, block_env);
             let load_int = body.jmod.declare_func_in_func(runtime.ref_load_int_id, body.b.func);
             let load_inst = body.b.ins().call(load_int, &[value_ref]);
             Ok(LowerOut::RawI64(body.b.inst_results(load_inst)[0]))
         }
-        Prim::MapGet(m, k) if ty_is_atom(t, fn_types, dest_var) => {
+        Prim::MapGet(m, k) if ty_is_atom(t, value_types, dest_var) => {
             let value_ref = emit_map_get_value_ref_for_key(body, t, env, var_env, *m, *k, block_env);
             let load_atom = body.jmod.declare_func_in_func(runtime.ref_load_atom_id, body.b.func);
             let load_inst = body.b.ins().call(load_atom, &[value_ref]);
             Ok(LowerOut::RawI64(body.b.inst_results(load_inst)[0]))
         }
         Prim::ListHead(c)
-            if list_projection_is_safe(t, fn_types, *c, block_env) && ty_is_int(t, fn_types, dest_var) =>
+            if list_projection_is_safe(t, value_types, *c, block_env) && ty_is_int(t, value_types, dest_var) =>
         {
             let list_ref = known_list_ref_for_var(var_env, body.b, body.cache, block_id, c.0);
             Ok(LowerOut::RawI64(body.list_head_int(list_ref)))
         }
         Prim::ListHead(c)
-            if list_projection_is_safe(t, fn_types, *c, block_env) && ty_is_float(t, fn_types, dest_var) =>
+            if list_projection_is_safe(t, value_types, *c, block_env) && ty_is_float(t, value_types, dest_var) =>
         {
             let list_ref = known_list_ref_for_var(var_env, body.b, body.cache, block_id, c.0);
             Ok(LowerOut::RawF64(body.list_head_float(list_ref)))
         }
-        Prim::ListTail(c) if list_projection_is_safe(t, fn_types, *c, block_env) => {
+        Prim::ListTail(c) if list_projection_is_safe(t, value_types, *c, block_env) => {
             let list_ref = known_list_ref_for_var(var_env, body.b, body.cache, block_id, c.0);
             Ok(LowerOut::ValueRefWord(body.list_tail(list_ref)))
         }
@@ -1289,75 +1284,13 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         // than silently lowering as identity.
         Prim::Brand(_, _) => unreachable!("Prim::Brand reached codegen — erasure should run inside lower_program"),
 
-        Prim::TypeTest(v, descr) => lower_type_test(body, env, var_env, runtime, *v, descr, dest_var),
+        Prim::TypeTest(_, _) => {
+            unreachable!("compiler2 native program should not carry legacy Prim::TypeTest")
+        }
         Prim::RuntimeTypeTestShim(v, descr) => {
             lower_runtime_type_test_shim(body, env, var_env, runtime, *v, descr, dest_var)
         }
     }
-}
-
-/// Lower a `Prim::TypeTest`. Combines a scalar-kind disjunction
-/// (int/float/atom-id) with optional schema checks on struct values; final
-/// result is `Condition` if the test feeds an `if`, otherwise a strict bool.
-fn lower_type_test<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_>,
-    var_env: &HashMap<u32, CodegenValue>,
-    runtime: &RuntimeRefs,
-    v: Var,
-    descr_ty: &Ty,
-    dest_var: Var,
-) -> Result<LowerOut, CodegenError> {
-    let descr = ty_descr(descr_ty);
-    let tuple_has_negations = descr.type_test_tuple_has_negations();
-    let tuple_arities = descr.type_test_tuple_arities();
-    let struct_names = descr.type_test_struct_names();
-
-    if let Some(delivered_arity) = delivered_tuple_field_arity(body, v) {
-        if tuple_has_negations {
-            panic!("TypeTest: negated tuple clauses not yet supported");
-        }
-        let flag = body
-            .b
-            .ins()
-            .iconst(types::I8, i64::from(tuple_arities.contains(&delivered_arity)));
-        if body.cache.if_only_conds.contains(&dest_var.0) {
-            return Ok(LowerOut::Condition(flag));
-        }
-        return Ok(LowerOut::Strict(strict_bool(body.b, flag)));
-    }
-
-    let value = *var_env.get(&v.0).expect("type-test subject");
-
-    let scalar = emit_scalar_kind_checks(body, env.module, descr, value)?;
-    let heap = emit_heap_kind_checks(body, descr, value);
-
-    let struct_flag = if !tuple_arities.is_empty() || !struct_names.is_empty() {
-        if tuple_has_negations {
-            panic!("TypeTest: negated tuple clauses not yet supported");
-        }
-        Some(emit_struct_schema_check(
-            body,
-            runtime,
-            env.tuple_schema_ids,
-            env.named_schema_ids,
-            value,
-            &tuple_arities,
-            &struct_names,
-        ))
-    } else {
-        None
-    };
-
-    let flag = [scalar, heap, struct_flag]
-        .into_iter()
-        .flatten()
-        .reduce(|acc, f| body.b.ins().bor(acc, f))
-        .unwrap_or_else(|| body.b.ins().iconst(types::I8, 0));
-    if body.cache.if_only_conds.contains(&dest_var.0) {
-        return Ok(LowerOut::Condition(flag));
-    }
-    Ok(LowerOut::Strict(strict_bool(body.b, flag)))
 }
 
 fn lower_runtime_type_test_shim<M: cranelift_module::Module>(
@@ -1415,62 +1348,6 @@ fn delivered_tuple_field_arity<M: cranelift_module::Module>(
     (count > 0).then_some(count)
 }
 
-/// Scalar kind checks: emits icmps that or-into the returned flag
-/// and ignores heap-bearing axes. For finite atom literal sets we
-/// compare the raw atom id.
-fn emit_scalar_kind_checks<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    module: &Module,
-    descr: &Descr,
-    value: CodegenValue,
-) -> Result<Option<ir::Value>, CodegenError> {
-    let ints = descr.type_test_has_ints();
-    let floats = descr.type_test_has_floats();
-    let mut scalar: Option<ir::Value> = None;
-    let or_in = |b: &mut FunctionBuilder<'_>, f: ir::Value, scalar: &mut Option<ir::Value>| {
-        *scalar = Some(match scalar.take() {
-            None => f,
-            Some(p) => b.ins().bor(p, f),
-        });
-    };
-    if ints {
-        let c = body.value_is_tag(value, ValueKind::INT);
-        or_in(body.b, c, &mut scalar);
-    }
-    if floats {
-        let c = body.value_is_tag(value, ValueKind::FLOAT);
-        or_in(body.b, c, &mut scalar);
-    }
-    if descr.type_test_atom_is_any() {
-        let c = body.value_is_tag(value, ValueKind::ATOM);
-        or_in(body.b, c, &mut scalar);
-    } else if descr.type_test_atom_is_cofinite() {
-        return Err(CodegenError::new(
-            "TypeTest: cofinite atom literal sets not yet implemented",
-        ));
-    } else {
-        let names = descr.type_test_atom_literals();
-        if !names.is_empty() {
-            let name_to_id: HashMap<&str, u32> = module
-                .atom_names
-                .iter()
-                .enumerate()
-                .map(|(i, n)| (n.as_str(), i as u32))
-                .collect();
-            for name in names {
-                let Some(id) = name_to_id.get(name.as_str()).copied() else {
-                    // Pattern wants an atom the module never interns
-                    // -> no value can match; skip.
-                    continue;
-                };
-                let atom_id_match = body.value_atom_id_is(value, id);
-                or_in(body.b, atom_id_match, &mut scalar);
-            }
-        }
-    }
-    Ok(scalar)
-}
-
 fn emit_runtime_type_test_shim_scalar_checks<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     module: &Module,
@@ -1524,35 +1401,6 @@ fn emit_runtime_type_test_shim_scalar_checks<M: cranelift_module::Module>(
     Ok(scalar)
 }
 
-/// Heap kind checks: emits icmps against the LIST / MAP / BITSTRING value tags
-/// for the list, map, and binary axes, or-ing into the returned flag. Kind-level
-/// (the list element / map shape is not inspected), matching the descriptor
-/// predicates and the interpreter.
-fn emit_heap_kind_checks<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    descr: &Descr,
-    value: CodegenValue,
-) -> Option<ir::Value> {
-    let mut flag: Option<ir::Value> = None;
-    let mut or_in = |body: &mut CodegenFn<'_, '_, '_, M>, kind: ValueKind| {
-        let c = body.value_is_tag(value, kind);
-        flag = Some(match flag.take() {
-            None => c,
-            Some(p) => body.b.ins().bor(p, c),
-        });
-    };
-    if descr.type_test_has_lists() {
-        or_in(body, ValueKind::LIST);
-    }
-    if descr.type_test_has_maps() {
-        or_in(body, ValueKind::MAP);
-    }
-    if descr.type_test_has_binaries() {
-        or_in(body, ValueKind::BITSTRING);
-    }
-    flag
-}
-
 fn emit_runtime_type_test_shim_heap_checks<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     shim: &RuntimeTypeTestShim,
@@ -1585,67 +1433,6 @@ fn emit_runtime_type_test_shim_heap_checks<M: cranelift_module::Module>(
         or_in(body, resource_flag);
     }
     flag
-}
-
-/// Struct schema check: gates on the STRUCT tag, then compares the struct's
-/// schema id against tuple-arity schemas and named source struct schemas.
-fn emit_struct_schema_check<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    runtime: &RuntimeRefs,
-    tuple_schema_ids: &HashMap<usize, u32>,
-    named_schema_ids: &HashMap<String, u32>,
-    value: CodegenValue,
-    tuple_arities: &[usize],
-    struct_names: &[String],
-) -> ir::Value {
-    let is_struct = body.value_is_tag(value, ValueKind::STRUCT);
-    let struct_blk = body.b.create_block();
-    let tuple_join = body.b.create_block();
-    body.b.append_block_param(tuple_join, types::I8);
-    let false8 = body.b.ins().iconst(types::I8, 0);
-    let no_args: Vec<BlockArg> = Vec::new();
-    body.b
-        .ins()
-        .brif(is_struct, struct_blk, &no_args, tuple_join, &[BlockArg::Value(false8)]);
-
-    body.b.switch_to_block(struct_blk);
-    body.b.seal_block(struct_blk);
-    let struct_ref = body.value_as_any_ref(value);
-    let fref = body
-        .jmod
-        .declare_func_in_func(runtime.struct_schema_id_ref_id, body.b.func);
-    let inst = body.b.ins().call(fref, &[struct_ref]);
-    let schema_raw = body.b.inst_results(inst)[0];
-    let schema64 = body.b.ins().uextend(types::I64, schema_raw);
-    let mut tf: Option<ir::Value> = None;
-    for arity in tuple_arities {
-        if let Some(&sid) = tuple_schema_ids.get(arity) {
-            let want = body.b.ins().iconst(types::I64, sid as i64);
-            let schema_match = body.b.ins().icmp(IntCC::Equal, schema64, want);
-            let combined = body.b.ins().band(is_struct, schema_match);
-            tf = Some(match tf.take() {
-                None => combined,
-                Some(prev) => body.b.ins().bor(prev, combined),
-            });
-        }
-    }
-    for name in struct_names {
-        if let Some(&sid) = named_schema_ids.get(name) {
-            let want = body.b.ins().iconst(types::I64, sid as i64);
-            let schema_match = body.b.ins().icmp(IntCC::Equal, schema64, want);
-            let combined = body.b.ins().band(is_struct, schema_match);
-            tf = Some(match tf.take() {
-                None => combined,
-                Some(prev) => body.b.ins().bor(prev, combined),
-            });
-        }
-    }
-    let tr = tf.unwrap_or_else(|| body.b.ins().iconst(types::I8, 0));
-    body.b.ins().jump(tuple_join, &[BlockArg::Value(tr)]);
-
-    body.b.switch_to_block(tuple_join);
-    body.b.seal_block(tuple_join);
-    body.b.block_params(tuple_join)[0]
 }
 
 fn emit_runtime_type_test_shim_struct_check<M: cranelift_module::Module>(
@@ -1917,7 +1704,7 @@ fn emit_is_list_cons_flag<M: cranelift_module::Module>(
 fn try_typed_binop_fast_path<T, F, I, M>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
-    fn_types: &SpecPlan,
+    value_types: &HashMap<Var, Ty>,
     a: Var,
     bv: Var,
     var_env: &HashMap<u32, CodegenValue>,
@@ -1930,14 +1717,14 @@ where
     F: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> Option<LowerOut>,
     I: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> Option<LowerOut>,
 {
-    if ty_is_float(t, fn_types, a) && ty_is_float(t, fn_types, bv) {
+    if ty_is_float(t, value_types, a) && ty_is_float(t, value_types, bv) {
         let af = body.as_raw_f64(var_env, a.0);
         let bf = body.as_raw_f64(var_env, bv.0);
         if let Some(out) = float_op(body.b, af, bf) {
             return Some(out);
         }
     }
-    if ty_is_int(t, fn_types, a) && ty_is_int(t, fn_types, bv) {
+    if ty_is_int(t, value_types, a) && ty_is_int(t, value_types, bv) {
         let ai = body.as_raw_i64(var_env, a.0);
         let bi = body.as_raw_i64(var_env, bv.0);
         if let Some(out) = int_op(body.b, ai, bi) {
@@ -1954,7 +1741,7 @@ where
 fn lower_arith_binop<M, T>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
-    fn_types: &SpecPlan,
+    value_types: &HashMap<Var, Ty>,
     var_env: &HashMap<u32, CodegenValue>,
     runtime: &RuntimeRefs,
     op: BinOp,
@@ -1966,10 +1753,10 @@ where
     T: Types<Ty = Ty>,
 {
     let mop = op;
-    let a_float = ty_is_float(t, fn_types, a);
-    let b_float = ty_is_float(t, fn_types, bv);
-    let a_int = ty_is_int(t, fn_types, a);
-    let b_int = ty_is_int(t, fn_types, bv);
+    let a_float = ty_is_float(t, value_types, a);
+    let b_float = ty_is_float(t, value_types, bv);
+    let a_int = ty_is_int(t, value_types, a);
+    let b_int = ty_is_int(t, value_types, bv);
     let a_repr = var_env.get(&a.0).expect("binop lhs").repr();
     let b_repr = var_env.get(&bv.0).expect("binop rhs").repr();
     if !matches!(mop, BinOp::Mod)
@@ -1993,7 +1780,7 @@ where
     if let Some(out) = try_typed_binop_fast_path(
         body,
         t,
-        fn_types,
+        value_types,
         a,
         bv,
         var_env,
@@ -2071,7 +1858,7 @@ where
 fn lower_eq_binop<M, T>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
-    fn_types: &SpecPlan,
+    value_types: &HashMap<Var, Ty>,
     var_env: &HashMap<u32, CodegenValue>,
     runtime: &RuntimeRefs,
     op: BinOp,
@@ -2088,7 +1875,7 @@ where
     let f_cc = if is_eq { FloatCC::Equal } else { FloatCC::NotEqual };
 
     // Value-disjoint (brand-erased) fold doesn't need either operand.
-    if descrs_value_disjoint(t, fn_types, a, bv) {
+    if descrs_value_disjoint(t, value_types, a, bv) {
         let raw = body.b.ins().iconst(
             types::I64,
             if is_eq {
@@ -2102,7 +1889,7 @@ where
     let a_repr = var_env.get(&a.0).expect("eq lhs").repr();
     let b_repr = var_env.get(&bv.0).expect("eq rhs").repr();
     // Same-kind float: native fcmp on raw f64.
-    if (ty_is_float(t, fn_types, a) && ty_is_float(t, fn_types, bv))
+    if (ty_is_float(t, value_types, a) && ty_is_float(t, value_types, bv))
         || matches!((a_repr, b_repr), (ArgRepr::RawF64, ArgRepr::RawF64))
     {
         let af = body.as_raw_f64(var_env, a.0);
@@ -2116,7 +1903,7 @@ where
     // Same-kind int: native icmp on raw i64. Must not
     // mix raw and tagged operands — bit-eq is only
     // correct when both are in the same encoding.
-    if ty_is_int(t, fn_types, a) && ty_is_int(t, fn_types, bv) {
+    if ty_is_int(t, value_types, a) && ty_is_int(t, value_types, bv) {
         let ai = body.as_raw_i64(var_env, a.0);
         let bi = body.as_raw_i64(var_env, bv.0);
         let cmp = body.b.ins().icmp(int_cc, ai, bi);
@@ -2125,8 +1912,8 @@ where
         }
         return Ok(LowerOut::Strict(strict_bool(body.b, cmp)));
     }
-    if (ty_is_atom(t, fn_types, a) && ty_is_atom(t, fn_types, bv))
-        || (descr_is_nil_or_bool(t, fn_types, a) && descr_is_nil_or_bool(t, fn_types, bv))
+    if (ty_is_atom(t, value_types, a) && ty_is_atom(t, value_types, bv))
+        || (descr_is_nil_or_bool(t, value_types, a) && descr_is_nil_or_bool(t, value_types, bv))
     {
         let avp = body.value_raw_atom(binding_for_var(var_env, a.0));
         let bvp = body.value_raw_atom(binding_for_var(var_env, bv.0));
@@ -2162,7 +1949,7 @@ where
 fn lower_cmp_binop<M, T>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
-    fn_types: &SpecPlan,
+    value_types: &HashMap<Var, Ty>,
     var_env: &HashMap<u32, CodegenValue>,
     runtime: &RuntimeRefs,
     op: BinOp,
@@ -2196,7 +1983,7 @@ where
     if let Some(out) = try_typed_binop_fast_path(
         body,
         t,
-        fn_types,
+        value_types,
         a,
         bv,
         var_env,
@@ -2493,6 +2280,75 @@ fn lower_extern_generic<M: cranelift_module::Module>(
     Ok(LowerOut::DeadUnit)
 }
 
+struct NativeCallableEntrySelection {
+    spec_id: u32,
+    candidate_count: usize,
+}
+
+fn key_slots_strictly_more_specific<T: Types<Ty = Ty>>(
+    t: &T,
+    lhs: &[crate::types::KeySlot<Ty>],
+    rhs: &[crate::types::KeySlot<Ty>],
+) -> bool {
+    if lhs.len() != rhs.len() {
+        return false;
+    }
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    for (lhs_slot, rhs_slot) in lhs.iter().zip(rhs.iter()) {
+        match (lhs_slot, rhs_slot) {
+            (None, None) => {}
+            (Some(lhs_ty), Some(rhs_ty)) => {
+                left.push(*lhs_ty);
+                right.push(*rhs_ty);
+            }
+            _ => return false,
+        }
+    }
+    t.key_is_strictly_more_specific(&left, &right)
+}
+
+fn select_native_callable_entry<T: Types<Ty = Ty>>(
+    t: &T,
+    query: &[Ty],
+    candidates: &[(u32, &[crate::types::KeySlot<Ty>])],
+) -> Option<u32> {
+    let arity = query.len();
+    let mut covers = candidates
+        .iter()
+        .copied()
+        .filter(|(_, key)| {
+            if key.len() != arity {
+                return false;
+            }
+            let mut sigma = HashMap::new();
+            query.iter().zip(key.iter()).all(|(query_ty, key_slot)| match key_slot {
+                None => true,
+                Some(key_ty) => t.key_subsumes_with(query_ty, key_ty, &mut sigma),
+            })
+        })
+        .collect::<Vec<_>>();
+    if covers.is_empty() {
+        return None;
+    }
+    let min_var_count = covers
+        .iter()
+        .map(|(_, key)| key_slot_var_count(t, key))
+        .min()
+        .unwrap_or(0);
+    covers.retain(|(_, key)| key_slot_var_count(t, key) == min_var_count);
+    covers.sort_by_key(|(id, _)| *id);
+    for (candidate_id, candidate_key) in &covers {
+        let strictly_subsumed = covers.iter().any(|(other_id, other_key)| {
+            other_id != candidate_id && key_slots_strictly_more_specific(t, other_key, candidate_key)
+        });
+        if !strictly_subsumed {
+            return Some(*candidate_id);
+        }
+    }
+    covers.first().map(|(id, _)| *id)
+}
+
 fn emit_callable_entry_selected(
     env: &CodegenEnv<'_>,
     mk_ident: &CallsiteIdent,
@@ -2501,7 +2357,7 @@ fn emit_callable_entry_selected(
     block_id: BlockId,
     stmt_idx: usize,
     selection_kind: &'static str,
-    selection: &PlannedCallableEntrySelection,
+    selection: &NativeCallableEntrySelection,
 ) {
     let span = mk_ident.span();
     let closure_fn_name = env
@@ -2511,21 +2367,6 @@ fn emit_callable_entry_selected(
         .find(|function| function.id == fn_id)
         .map(|function| function.name.clone())
         .unwrap_or_else(|| format!("fn_{}", fn_id.0));
-    let callable_entry_spec_key = env
-        .surface
-        .body_slots
-        .get(selection.spec_id as usize)
-        .and_then(Option::as_ref)
-        .map(|body| format!("{:?}", body.spec_key))
-        .unwrap_or_else(|| "<missing spec key>".to_string());
-    let mut planned_targets = env
-        .fn_types
-        .callable_entry_targets
-        .iter()
-        .filter(|target| target.fn_id == fn_id)
-        .map(|target| format!("{target:?}"))
-        .collect::<Vec<_>>();
-    planned_targets.sort();
     env.telemetry.execute(
         &["fz", "codegen", "callable_entry_selected"],
         &crate::measurements! {
@@ -2545,9 +2386,7 @@ fn emit_callable_entry_selected(
             body_name: env.active_body_name.to_owned(),
             closure_fn_name: closure_fn_name,
             selection_kind: selection_kind,
-            planned_target_spec_key: format!("{:?}", selection.target_key),
-            callable_entry_spec_key: callable_entry_spec_key,
-            planned_targets: planned_targets,
+            callable_entry_body_fn_id: env.body_fn_id(selection.spec_id).0 as u64,
         },
     );
 }
@@ -2564,76 +2403,46 @@ fn resolve_callable_entry_sid<T: Types<Ty = Ty> + ClosureTypes>(
     block_env: Option<&HashMap<Var, Ty>>,
     selection_kind: &'static str,
 ) -> Result<u32, CodegenError> {
-    let selection = if let Some(native_body) = env.active_native_body() {
-        let mut capture_tys = Vec::with_capacity(captured.len());
-        for var in captured {
-            let ty = block_env
-                .and_then(|env| env.get(var))
-                .or_else(|| env.fn_types.vars.get(var))
-                .cloned()
-                .unwrap_or_else(|| t.any());
-            let erased = t.erase_closure_identity(&ty);
-            capture_tys.push(t.alpha_normalize_vars(&erased));
-        }
-        let candidates = native_body
-            .callable_constructors
-            .get(&dest_var)
-            .ok_or_else(|| {
-                CodegenError::new(format!(
-                    "native callable constructor Var({}) has no settled callable-entry candidates",
-                    dest_var.0
-                ))
-            })?
-            .iter()
-            .copied()
-            .map(|sid| sid as u32)
-            .filter(|sid| env.callable_entry_fn_ids.contains_key(sid))
-            .collect::<Vec<_>>();
-        let candidate_count = candidates.len();
-        let selected_sid = best_covering_candidate(
-            &*t,
-            &capture_tys,
-            candidates.iter().filter_map(|sid| {
-                let entry = env.surface.callable_entries.get(sid)?;
-                Some(BestCoverCandidate {
-                    id: *sid,
-                    key: entry.capture_key.as_slice(),
-                    key_var_count: key_slot_var_count(&*t, entry.capture_key.as_slice()),
-                    precedence: *sid,
-                })
-            }),
-        )
+    let mut capture_tys = Vec::with_capacity(captured.len());
+    for var in captured {
+        let ty = block_env
+            .and_then(|env| env.get(var))
+            .or_else(|| env.active_value_types().get(var))
+            .cloned()
+            .unwrap_or_else(|| t.any());
+        let erased = t.erase_closure_identity(&ty);
+        capture_tys.push(t.alpha_normalize_vars(&erased));
+    }
+    let candidates = env
+        .active_native_body()
+        .callable_constructors
+        .get(&dest_var)
         .ok_or_else(|| {
+            CodegenError::new(format!(
+                "native callable constructor Var({}) has no settled callable-entry candidates",
+                dest_var.0
+            ))
+        })?
+        .iter()
+        .copied()
+        .map(|sid| sid as u32)
+        .filter(|sid| env.callable_entry_fn_ids.contains_key(sid))
+        .filter_map(|sid| {
+            env.surface
+                .callable_entries
+                .get(&sid)
+                .map(|entry| (sid, entry.capture_key.as_slice()))
+        })
+        .collect::<Vec<_>>();
+    let selection = NativeCallableEntrySelection {
+        spec_id: select_native_callable_entry(&*t, &capture_tys, &candidates).ok_or_else(|| {
             CodegenError::new(format!(
                 "native callable value for FnId({}) with {} captures has no settled callable entry",
                 fn_id.0,
                 captured.len()
             ))
-        })?;
-        PlannedCallableEntrySelection {
-            spec_id: selected_sid,
-            target_key: env.body_key(selected_sid).clone(),
-            candidate_count,
-        }
-    } else {
-        select_callable_entry_target(
-            t,
-            env.fn_types,
-            |t, key| {
-                env.body_id_for_key(t, key)
-                    .filter(|sid| env.callable_entry_fn_ids.contains_key(sid))
-            },
-            fn_id,
-            captured,
-            block_env,
-        )
-        .ok_or_else(|| {
-            CodegenError::new(format!(
-                "callable value for FnId({}) with {} captures survived planning without a site-specific callable entry",
-                fn_id.0,
-                captured.len()
-            ))
-        })?
+        })?,
+        candidate_count: candidates.len(),
     };
     emit_callable_entry_selected(
         env,

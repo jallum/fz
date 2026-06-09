@@ -129,6 +129,21 @@ impl<'a> Compiler2<'a> {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn compile_native_program_jit_for_test(
+        &mut self,
+        program: &NativeProgram,
+    ) -> Result<crate::ir_codegen::CompiledModule, String> {
+        let tel = self.world.tel();
+        super::native_codegen::compile_with_backend_native_program(
+            self.world.types_mut(),
+            program,
+            super::native_codegen::JitBackend::new(),
+            tel,
+        )
+        .map_err(|err| format!("compiler2 native program JIT compile failed: {err}"))
+    }
+
     /// Drives one root to `NativeProgram` and emits an AOT object through the
     /// shared native backend.
     pub fn compile_root_aot(&mut self, root: RootId, obj_name: &str) -> Result<crate::ir_codegen::AotArtifact, String> {
