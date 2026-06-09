@@ -1,7 +1,6 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-rh2.12.3",
     "fz-rh2.12.6"
   ],
   "blocks": [
@@ -17,5 +16,5 @@
   "status": "open",
   "title": "Dark-launch parity proof: new name-\u003eTy path fires end-to-end with the old path untouched",
   "type": "task",
-  "updated_at": "2026-06-08T21:15:56Z"
+  "updated_at": "2026-06-09T01:52:22Z"
 }
