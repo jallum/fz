@@ -2,13 +2,14 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-10T05:02:00Z",
   "created": "2026-06-10T04:04:55Z",
   "description": "Six related cleanups in compiler2/identity.rs and world.rs surfaced during the fz-knf revision-authority arc. No behavior changes — all structural simplifications that reduce duplication and clarify ownership.",
   "id": "fz-ehe",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-knf: compiler2 identity layer cleanup mini-epic",
   "type": "task",
-  "updated_at": "2026-06-10T04:04:55Z"
+  "updated_at": "2026-06-10T05:02:00Z"
 }
