@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-10T01:53:47Z",
+  "description": "Activation return: reconcile = (widen(current, incoming), advance iff widened != current) -- replaces define_return's bespoke path; keep Option current = not-computed (unknown-is-not-none). define_analysis + SemanticClosure composite likewise. Removes the last special-case reconcilers.",
+  "id": "fz-knf.4",
+  "labels": [],
+  "parent": "fz-knf",
+  "priority": 1,
+  "status": "open",
+  "title": "Fold Activation widen + SemanticClosure composite into Reconcile impls",
+  "type": "task",
+  "updated_at": "2026-06-10T01:53:47Z"
+}
