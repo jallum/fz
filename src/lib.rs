@@ -65,7 +65,7 @@ use telemetry::{
 };
 use types::{DefaultTypes, KeySlot, display_key_slots};
 
-pub(crate) use function_surface::FunctionSurface;
+pub use function_surface::FunctionSurface;
 
 const FZ_EXEC_READY_FD_ENV: &str = "FZ_EXEC_READY_FD";
 

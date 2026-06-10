@@ -162,44 +162,33 @@ pub struct ModuleExport {
 #[derive(Debug, Clone)]
 pub enum FunctionState {
     Placeholder,
-    Defined { def: Box<FunctionDef> },
+    Noted {
+        source: Box<FunctionSource>,
+    },
+    Defined {
+        source: Box<FunctionSource>,
+        surface: FunctionSurface,
+    },
 }
 
 impl FunctionState {
     pub fn state_source_heap_id(&self) -> Option<usize> {
         match self {
             FunctionState::Placeholder => None,
-            FunctionState::Defined { def } => Some(def.source.key().heap_id),
+            FunctionState::Noted { source } | FunctionState::Defined { source, .. } => {
+                Some(source.source.key().heap_id)
+            }
         }
     }
 
     pub fn state_source_root_word(&self) -> Option<u64> {
         match self {
             FunctionState::Placeholder => None,
-            FunctionState::Defined { def } => Some(def.source.root().raw_word()),
+            FunctionState::Noted { source } | FunctionState::Defined { source, .. } => {
+                Some(source.source.root().raw_word())
+            }
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct FunctionSourceSlot {
-    pub state: FunctionSourceState,
-}
-
-#[derive(Debug, Clone)]
-pub enum FunctionSourceState {
-    Placeholder,
-    Noted { source: Box<FunctionSource> },
-}
-
-#[derive(Debug, Clone)]
-pub struct FunctionDef {
-    pub code: CodeId,
-    pub owner_module: ModuleId,
-    pub namespace: Namespace,
-    pub capture_params: Vec<String>,
-    pub source: QuotedSourceRoot,
-    pub(crate) surface: FunctionSurface,
 }
 
 #[derive(Debug, Clone)]
@@ -264,40 +253,6 @@ pub struct ModuleMap {
     slots: Vec<ModuleState>,
     names: Vec<Option<String>>,
     by_name: HashMap<String, ModuleId>,
-}
-
-#[derive(Debug, Default)]
-pub struct FunctionSourceMap {
-    slots: Vec<FunctionSourceSlot>,
-}
-
-impl FunctionSourceMap {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn note(&mut self, id: FunctionId, source: FunctionSource, current_revision: u64) -> u64 {
-        self.ensure_slot(id);
-        let slot = &mut self.slots[id.0 as usize];
-        let next = FunctionSourceState::Noted {
-            source: Box::new(source),
-        };
-        update_if_changed(&mut slot.state, current_revision, next)
-    }
-
-    pub fn get(&self, id: FunctionId) -> Option<&FunctionSourceSlot> {
-        self.slots.get(id.0 as usize)
-    }
-
-    fn ensure_slot(&mut self, id: FunctionId) {
-        let needed = id.0 as usize + 1;
-        if self.slots.len() >= needed {
-            return;
-        }
-        self.slots.resize_with(needed, || FunctionSourceSlot {
-            state: FunctionSourceState::Placeholder,
-        });
-    }
 }
 
 impl ModuleMap {
@@ -516,9 +471,26 @@ impl FunctionMap {
         id
     }
 
-    pub fn define(&mut self, id: FunctionId, def: FunctionDef, current_revision: u64) -> u64 {
+    pub fn note(&mut self, id: FunctionId, source: FunctionSource, current_revision: u64) -> u64 {
         let function = &mut self.slots[id.0 as usize];
-        let next = FunctionState::Defined { def: Box::new(def) };
+        let next = FunctionState::Noted {
+            source: Box::new(source),
+        };
+        update_if_changed(function, current_revision, next)
+    }
+
+    pub fn define(
+        &mut self,
+        id: FunctionId,
+        source: FunctionSource,
+        surface: FunctionSurface,
+        current_revision: u64,
+    ) -> u64 {
+        let function = &mut self.slots[id.0 as usize];
+        let next = FunctionState::Defined {
+            source: Box::new(source),
+            surface,
+        };
         update_if_changed(function, current_revision, next)
     }
 
@@ -705,39 +677,20 @@ impl FunctionState {
     fn same(&self, other: &Self) -> bool {
         match (self, other) {
             (FunctionState::Placeholder, FunctionState::Placeholder) => true,
-            (FunctionState::Defined { def: left }, FunctionState::Defined { def: right }) => {
-                left.code == right.code
-                    && left.owner_module == right.owner_module
-                    && left.namespace == right.namespace
-                    && left.capture_params == right.capture_params
-                    && left.source.semantically_eq(&right.source, Horizon::Full)
-            }
+            (FunctionState::Noted { source: l }, FunctionState::Noted { source: r }) => source_same(l, r),
+            (FunctionState::Defined { source: l, .. }, FunctionState::Defined { source: r, .. }) => source_same(l, r),
             _ => false,
         }
     }
 }
 
-impl Reconcile for FunctionSourceState {
-    fn reconcile(current: Option<&Self>, incoming: Self, revision: u64) -> (Self, u64) {
-        monotonic(current, incoming, revision, FunctionSourceState::same)
-    }
-}
-
-impl FunctionSourceState {
-    fn same(&self, other: &Self) -> bool {
-        match (self, other) {
-            (FunctionSourceState::Placeholder, FunctionSourceState::Placeholder) => true,
-            (FunctionSourceState::Noted { source: left }, FunctionSourceState::Noted { source: right }) => {
-                left.code == right.code
-                    && left.owner_module == right.owner_module
-                    && left.namespace == right.namespace
-                    && left.capture_params == right.capture_params
-                    && left.variadic == right.variadic
-                    && left.source.semantically_eq(&right.source, Horizon::Full)
-            }
-            _ => false,
-        }
-    }
+fn source_same(left: &FunctionSource, right: &FunctionSource) -> bool {
+    left.code == right.code
+        && left.owner_module == right.owner_module
+        && left.namespace == right.namespace
+        && left.capture_params == right.capture_params
+        && left.variadic == right.variadic
+        && left.source.semantically_eq(&right.source, Horizon::Full)
 }
 
 #[cfg(test)]

@@ -90,9 +90,8 @@ fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_capt
         matches!(outcome, DriveOutcome::Resolved),
         "demanding the function should derive its function surface on demand",
     );
-    let def = world.function_definition(function);
-    let spec = def
-        .surface
+    let (source, surface) = world.function_definition(function);
+    let spec = surface
         .attrs
         .iter()
         .find_map(|attr| match attr {
@@ -101,7 +100,7 @@ fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_capt
         })
         .expect("tkf_f declares an @spec");
     let resolved = world
-        .resolve_spec(def.namespace, &spec)
+        .resolve_spec(source.namespace, &spec)
         .expect("the spec resolves against the function's captured namespace");
 
     // Expected hard types, rendered through the same interner for a format-

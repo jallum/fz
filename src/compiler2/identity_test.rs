@@ -1,6 +1,6 @@
 use super::quoted_surface::ScopeSurface;
 use super::{
-    CodeMap, CodeState, FunctionDef, FunctionMap, FunctionState, ModuleId, ModuleMap, ModuleState, NamespaceStore,
+    CodeMap, CodeState, FunctionMap, FunctionSource, FunctionState, ModuleId, ModuleMap, ModuleState, NamespaceStore,
     NamespaceSymbol, QuotedCodeSource, QuotedSourceRoot, parse_quoted_program,
 };
 use crate::ast::{Expr, FnClause, Spanned, TypeExprBody};
@@ -110,26 +110,28 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
     let add_source = quoted_source("math.fz", "fn add(x, y), do: 42\n");
     let add_revision = functions.define(
         add_def,
-        FunctionDef {
+        FunctionSource {
             code: code_id,
             owner_module: math_def,
             namespace,
             capture_params: Vec::new(),
+            variadic: false,
             source: add_source.clone(),
-            surface: add_ast.clone(),
         },
+        add_ast.clone(),
         0,
     );
     let same_add_revision = functions.define(
         add_def,
-        FunctionDef {
+        FunctionSource {
             code: code_id,
             owner_module: math_def,
             namespace,
             capture_params: Vec::new(),
+            variadic: false,
             source: add_source,
-            surface: add_ast.clone(),
         },
+        add_ast.clone(),
         add_revision,
     );
     assert_eq!(
@@ -162,9 +164,9 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
     );
     let function = functions.get(add_def);
     match function {
-        FunctionState::Defined { def } => {
-            assert_eq!(def.code, code_id);
-            assert_eq!(def.surface.name, "Math.add");
+        FunctionState::Defined { source, surface } => {
+            assert_eq!(source.code, code_id);
+            assert_eq!(surface.name, "Math.add");
         }
         other => panic!("function should promote from placeholder to defined, got {other:?}"),
     }
@@ -261,38 +263,41 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
 
     let first_revision = functions.define(
         function,
-        FunctionDef {
+        FunctionSource {
             code: code_id,
             owner_module: ModuleId::GLOBAL,
             namespace,
             capture_params: Vec::new(),
+            variadic: false,
             source: first,
-            surface: def_ast.clone(),
         },
+        def_ast.clone(),
         0,
     );
     let second_revision = functions.define(
         function,
-        FunctionDef {
+        FunctionSource {
             code: code_id,
             owner_module: ModuleId::GLOBAL,
             namespace,
             capture_params: Vec::new(),
+            variadic: false,
             source: second,
-            surface: def_ast.clone(),
         },
+        def_ast.clone(),
         first_revision,
     );
     let third_revision = functions.define(
         function,
-        FunctionDef {
+        FunctionSource {
             code: code_id,
             owner_module: ModuleId::GLOBAL,
             namespace,
             capture_params: Vec::new(),
+            variadic: false,
             source: third,
-            surface: def_ast,
         },
+        def_ast,
         second_revision,
     );
 

@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::super::drive::{FactKey, Job, JobEffects};
-use super::super::identity::{FunctionDef, FunctionId};
+use super::super::identity::{FunctionId, FunctionSource};
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::scheduler::FatalError;
 use super::super::types::Ty;
@@ -42,20 +42,21 @@ pub(super) fn reify_guard_dispatch(world: &mut World<'_>, function: FunctionId) 
         return Ok(world.wait_for_function_definition(function));
     };
 
-    let def = world.function_definition(function);
-    if def.surface.is_macro {
+    let (_, surface) = world.function_definition(function);
+    if surface.is_macro {
         return Err(emit_job_diagnostic(
             world,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
                 format!(
                     "compiler2 cannot reify macro `{}` as a dispatch-pure helper",
-                    function_label(&def.surface)
+                    function_label(&surface)
                 ),
-                def.surface.span,
+                surface.span,
             ),
         ));
     }
+    let fn_span = surface.span;
 
     let mut reads = Vec::new();
     let mut waits = HashSet::new();
@@ -83,7 +84,7 @@ pub(super) fn reify_guard_dispatch(world: &mut World<'_>, function: FunctionId) 
     let mut cache = HashMap::new();
     let mut build_stack = Vec::new();
     let dispatch = build_guard_dispatch(world, function, &mut cache, &mut build_stack)
-        .map_err(|err| emit_guard_dispatch_error(world, function, def.surface.span, err))?;
+        .map_err(|err| emit_guard_dispatch_error(world, function, fn_span, err))?;
     let revision = world.define_guard_dispatch(function, dispatch);
     Ok(JobEffects {
         reads,
@@ -103,23 +104,23 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
         return Ok(world.wait_for_function_definition(function));
     };
 
-    let def = world.function_definition(function);
-    if def.surface.is_macro {
+    let (source, surface) = world.function_definition(function);
+    if surface.is_macro {
         return Err(emit_job_diagnostic(
             world,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
                 format!(
                     "compiler2 cannot plan macro `{}` as runtime entry dispatch",
-                    function_label(&def.surface)
+                    function_label(&surface)
                 ),
-                def.surface.span,
+                surface.span,
             ),
         ));
     }
 
     let mut reads = vec![FactKey::FunctionDefined(function)];
-    let module = def.owner_module;
+    let module = source.owner_module;
     if !module.is_global() {
         let module_fact = FactKey::ModuleDefined(module);
         if world.fact_revision(module_fact.clone()).is_some() {
@@ -139,10 +140,10 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
             follow_up.insert(Job::DeriveTypeDef(referenced));
         }
     }
-    for call in collect_guard_calls_in_guards(&def.surface)
+    for call in collect_guard_calls_in_guards(&surface)
         .map_err(|span| emit_entry_guard_error(world, function, span, "are not dispatch-pure"))?
     {
-        let callee = resolve_guard_callee(world, def.namespace, &call)?;
+        let callee = resolve_guard_callee(world, source.namespace, &call)?;
         let fact = FactKey::GuardDispatch(callee);
         if world.fact_revision(fact.clone()).is_some() {
             reads.push(fact);
@@ -160,16 +161,18 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
         });
     }
 
-    let source_patterns = entry_source_patterns(world, function, &def)?;
+    let source_patterns = entry_source_patterns(world, function, &source, &surface)?;
+    let namespace = source.namespace;
+    let fn_span = surface.span;
     let mut resolver = |name: &str, arity: usize, args: Vec<PatternGuardExpr<Ty>>| {
-        let callee = resolve_guard_callee_checked(world, def.namespace, name, arity);
+        let callee = resolve_guard_callee_checked(world, namespace, name, arity);
         Ok(Some(PatternGuardExpr::Dispatch {
             inputs: args,
             dispatch: Box::new(world.guard_dispatch(callee)),
         }))
     };
     let plan = pattern_dispatch_from_source_with_guard_resolver(source_patterns, &mut resolver)
-        .map_err(|error| emit_entry_dispatch_error(world, function, def.surface.span, error))?;
+        .map_err(|error| emit_entry_dispatch_error(world, function, fn_span, error))?;
     let revision = world.define_entry_dispatch(function, plan);
     Ok(JobEffects {
         reads,
@@ -199,12 +202,12 @@ fn collect_requirements(
         return Ok(());
     };
     reads.push(FactKey::FunctionDefined(function));
-    let def = world.function_definition(function);
+    let (source, surface) = world.function_definition(function);
     stack.push(function);
-    for call in collect_guard_calls_in_fn(&def.surface)
+    for call in collect_guard_calls_in_fn(&surface)
         .map_err(|span| emit_guard_dispatch_error(world, function, span, SourcePatternError::UnsupportedGuardExpr))?
     {
-        let callee = resolve_guard_callee(world, def.namespace, &call)?;
+        let callee = resolve_guard_callee(world, source.namespace, &call)?;
         collect_requirements(world, callee, reads, waits, follow_up, seen, stack)?;
     }
     stack.pop();
@@ -221,24 +224,25 @@ fn build_guard_dispatch(
         return Ok(dispatch.clone());
     }
     if stack.contains(&function) {
-        let def = world.function_definition(function);
+        let (_, surface) = world.function_definition(function);
         return Err(SourcePatternError::GuardCallCycle(
-            def.surface.name.clone(),
-            def.surface.arity(),
+            surface.name.clone(),
+            surface.arity(),
         ));
     }
 
-    let def = world.function_definition(function);
+    let (source, surface) = world.function_definition(function);
+    let namespace = source.namespace;
     stack.push(function);
     let mut resolver = |name: &str, arity: usize, args: Vec<PatternGuardExpr<Ty>>| {
-        let callee = resolve_guard_callee_checked(world, def.namespace, name, arity);
+        let callee = resolve_guard_callee_checked(world, namespace, name, arity);
         let dispatch = build_guard_dispatch(world, callee, cache, stack)?;
         Ok(Some(PatternGuardExpr::Dispatch {
             inputs: args,
             dispatch: Box::new(dispatch),
         }))
     };
-    let dispatch = guard_dispatch_from_surface(&def.surface, &mut resolver)?;
+    let dispatch = guard_dispatch_from_surface(&surface, &mut resolver)?;
     stack.pop();
     cache.insert(function, dispatch.clone());
     Ok(dispatch)
@@ -247,20 +251,21 @@ fn build_guard_dispatch(
 fn entry_source_patterns(
     world: &mut World<'_>,
     _function: FunctionId,
-    def: &FunctionDef,
+    source: &FunctionSource,
+    surface: &FunctionSurface,
 ) -> Result<SourcePatternRows<Ty>, FatalError> {
-    let capture_patterns = def
+    let capture_patterns = source
         .capture_params
         .iter()
-        .map(|name| Spanned::new(Pattern::Var(name.clone()), def.surface.span))
+        .map(|name| Spanned::new(Pattern::Var(name.clone()), surface.span))
         .collect::<Vec<_>>();
-    let input_count = capture_patterns.len() + def.surface.arity();
-    if def.surface.extern_abi.is_some() {
+    let input_count = capture_patterns.len() + surface.arity();
+    if surface.extern_abi.is_some() {
         return Ok(SourcePatternRows {
             input_count,
             rows: vec![PatternRow {
                 patterns: (0..input_count)
-                    .map(|_| Spanned::new(Pattern::Wildcard, def.surface.span))
+                    .map(|_| Spanned::new(Pattern::Wildcard, surface.span))
                     .collect(),
                 preconditions: Vec::new(),
                 guard: None,
@@ -269,28 +274,30 @@ fn entry_source_patterns(
         });
     }
 
-    let mut rows = Vec::with_capacity(def.surface.clauses.len());
-    for (body_id, clause) in def.surface.clauses.iter().enumerate() {
+    let mut rows = Vec::with_capacity(surface.clauses.len());
+    for (body_id, clause) in surface.clauses.iter().enumerate() {
         let mut preconditions = Vec::new();
         for (index, tokens) in clause.param_annotations.iter().enumerate() {
             let Some(tokens) = tokens else {
                 continue;
             };
-            let ty = world.resolve_type_expr_body(def.namespace, tokens).map_err(|error| {
-                emit_job_diagnostic(
-                    world,
-                    Diagnostic::error(
-                        codes::RESOLVE_TYPE_ALIAS,
-                        format!(
-                            "compiler2 could not resolve parameter annotation {} for `{}`: {}",
-                            index + 1,
-                            function_label(&def.surface),
-                            error.msg
+            let ty = world
+                .resolve_type_expr_body(source.namespace, tokens)
+                .map_err(|error| {
+                    emit_job_diagnostic(
+                        world,
+                        Diagnostic::error(
+                            codes::RESOLVE_TYPE_ALIAS,
+                            format!(
+                                "compiler2 could not resolve parameter annotation {} for `{}`: {}",
+                                index + 1,
+                                function_label(surface),
+                                error.msg
+                            ),
+                            error.span,
                         ),
-                        error.span,
-                    ),
-                )
-            })?;
+                    )
+                })?;
             preconditions.push((PatternSubjectRef::Input((capture_patterns.len() + index) as u32), ty));
         }
         let mut patterns = capture_patterns.clone();
@@ -433,15 +440,15 @@ pub(super) fn resolve_guard_callee_checked(
 fn emit_cycle(world: &World<'_>, function: FunctionId, cycle: &[FunctionId]) -> FatalError {
     let mut path = cycle
         .iter()
-        .map(|function| function_label(&world.function_definition(*function).surface))
+        .map(|function| function_label(&world.function_surface(*function)))
         .collect::<Vec<_>>();
-    path.push(function_label(&world.function_definition(function).surface));
+    path.push(function_label(&world.function_surface(function)));
     emit_job_diagnostic(
         world,
         Diagnostic::error(
             codes::LOWER_UNSUPPORTED,
             format!("compiler2 guard helper cycle detected: {}", path.join(" -> ")),
-            world.function_definition(function).surface.span,
+            world.function_surface(function).span,
         ),
     )
 }
@@ -452,7 +459,7 @@ fn emit_guard_dispatch_error(
     span: Span,
     error: SourcePatternError,
 ) -> FatalError {
-    let label = function_label(&world.function_definition(function).surface);
+    let label = function_label(&world.function_surface(function));
     match error {
         SourcePatternError::UnsupportedGuardExpr => emit_job_diagnostic(
             world,
@@ -509,7 +516,7 @@ fn emit_entry_guard_error(world: &World<'_>, function: FunctionId, span: Span, r
             codes::LOWER_UNSUPPORTED,
             format!(
                 "compiler2 entry guards for `{}` {reason} and cannot be planned",
-                function_label(&world.function_definition(function).surface)
+                function_label(&world.function_surface(function))
             ),
             span,
         ),
@@ -522,7 +529,7 @@ fn emit_entry_dispatch_error(
     span: Span,
     error: PatternDispatchError,
 ) -> FatalError {
-    let label = function_label(&world.function_definition(function).surface);
+    let label = function_label(&world.function_surface(function));
     match error {
         PatternDispatchError::SourcePattern(SourcePatternError::UnsupportedGuardExpr) => {
             emit_entry_guard_error(world, function, span, "are not dispatch-pure")

@@ -32,7 +32,7 @@ pub(crate) trait CallableSurface {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct FunctionSurface {
+pub struct FunctionSurface {
     pub name: String,
     pub name_span: Span,
     pub clauses: Vec<FnClause>,

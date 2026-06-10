@@ -55,9 +55,9 @@ pub use drive::{FactKey, Job, WorkGraph};
 pub use facts::{FactChange, FactReplace, FactTable};
 pub use frontdoor::{FrontDoorError, parse_quoted_program};
 pub use identity::{
-    ActivationKey, ExecutableKey, ExecutableNeed, FunctionDef, FunctionId, FunctionMap, FunctionRef, FunctionSource,
-    FunctionSourceMap, FunctionSourceSlot, FunctionSourceState, FunctionState, ModuleExport, ModuleId, ModuleMap,
-    ModuleSource, ModuleSourceKind, ModuleState, ModuleSurface, NotedTypeDecl, RootEntry, RootId, RootMap, TypeName,
+    ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, FunctionMap, FunctionRef, FunctionSource, FunctionState,
+    ModuleExport, ModuleId, ModuleMap, ModuleSource, ModuleSourceKind, ModuleState, ModuleSurface, NotedTypeDecl,
+    RootEntry, RootId, RootMap, TypeName,
 };
 pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
 pub use quoted_surface::SurfaceSourceContext;

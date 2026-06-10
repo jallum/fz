@@ -25,9 +25,8 @@ pub(super) fn derive_function_contract(world: &mut World<'_>, function: Function
         return Ok(JobEffects::default());
     }
 
-    let def = world.function_definition(function);
-    let declared_specs = def
-        .surface
+    let (source, surface) = world.function_definition(function);
+    let declared_specs = surface
         .attrs
         .iter()
         .filter_map(|attr| match attr {
@@ -37,7 +36,7 @@ pub(super) fn derive_function_contract(world: &mut World<'_>, function: Function
         .collect::<Vec<_>>();
     let specs = if !declared_specs.is_empty() {
         declared_specs
-    } else if let Some(spec) = extern_semantic_contract(&def.surface) {
+    } else if let Some(spec) = extern_semantic_contract(&surface) {
         vec![spec]
     } else {
         Vec::new()
@@ -66,7 +65,7 @@ pub(super) fn derive_function_contract(world: &mut World<'_>, function: Function
 
     let contract = specs
         .iter()
-        .map(|spec| world.resolve_spec_decl(def.namespace, spec))
+        .map(|spec| world.resolve_spec_decl(source.namespace, spec))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| {
             emit_job_diagnostic(
@@ -75,7 +74,7 @@ pub(super) fn derive_function_contract(world: &mut World<'_>, function: Function
                     codes::RESOLVE_TYPE_ALIAS,
                     format!(
                         "compiler2 could not resolve function contract for `{}`: {}",
-                        def.surface.name, error.msg
+                        surface.name, error.msg
                     ),
                     error.span,
                 ),

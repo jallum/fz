@@ -26,7 +26,7 @@ use super::super::body::{
     LoweredEntry, LoweredExtern, LoweredStep, LoweredTail, ReceiveAfter, ReceiveClause, ValueId,
 };
 use super::super::drive::{FactKey, Job, JobEffects};
-use super::super::identity::{FunctionDef, FunctionId};
+use super::super::identity::{FunctionId, FunctionSource};
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::scheduler::FatalError;
 use super::super::world::World;
@@ -237,14 +237,14 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
     let Some(_) = world.function_defined_revision(function) else {
         return Ok(world.wait_for_function_definition(function));
     };
-    let def = world.function_definition(function);
-    if def.surface.is_macro {
+    let (source, surface) = world.function_definition(function);
+    if surface.is_macro {
         return Err(emit_job_diagnostic(
             world,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
-                format!("compiler2 cannot lower macro `{}` as a runtime body", def.surface.name),
-                def.surface.span,
+                format!("compiler2 cannot lower macro `{}` as a runtime body", surface.name),
+                surface.span,
             ),
         ));
     }
@@ -252,7 +252,7 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
     let mut reads = vec![FactKey::FunctionDefined(function)];
     let mut waits = HashSet::new();
     let mut follow_up = HashSet::new();
-    if def.surface.extern_abi.is_some() {
+    if surface.extern_abi.is_some() {
         for referenced in world.function_type_refs(function).iter().cloned() {
             let fact = FactKey::TypeDefined(referenced.clone());
             if world.fact_revision(fact.clone()).is_some() {
@@ -263,13 +263,20 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
             }
         }
     }
-    for clause in &def.surface.clauses {
+    for clause in &surface.clauses {
         if let Some(guard) = &clause.guard {
-            collect_local_dispatch_requirements(world, def.namespace, guard, &mut reads, &mut waits, &mut follow_up)?;
+            collect_local_dispatch_requirements(
+                world,
+                source.namespace,
+                guard,
+                &mut reads,
+                &mut waits,
+                &mut follow_up,
+            )?;
         }
         collect_local_dispatch_requirements(
             world,
-            def.namespace,
+            source.namespace,
             &clause.body,
             &mut reads,
             &mut waits,
@@ -285,7 +292,7 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
         });
     }
 
-    let mut lowerer = Lowerer::new(world, function, &def);
+    let mut lowerer = Lowerer::new(world, function, source, surface);
     let (body, mut outputs) = lowerer.lower()?;
     let revision = lowerer.world.define_lowered_body(function, body);
     outputs.push((FactKey::LoweredBody(function), revision));
@@ -479,7 +486,8 @@ struct Lowerer<'w, 'tel> {
     world: &'w mut World<'tel>,
     owner: FunctionId,
     namespace: Namespace,
-    def: FunctionDef,
+    source: FunctionSource,
+    surface: FunctionSurface,
     next_value: u32,
     next_callsite: u32,
     generated: Vec<Output>,
@@ -487,12 +495,14 @@ struct Lowerer<'w, 'tel> {
 }
 
 impl<'w, 'tel> Lowerer<'w, 'tel> {
-    fn new(world: &'w mut World<'tel>, owner: FunctionId, def: &FunctionDef) -> Self {
+    fn new(world: &'w mut World<'tel>, owner: FunctionId, source: FunctionSource, surface: FunctionSurface) -> Self {
+        let namespace = source.namespace;
         Self {
             world,
             owner,
-            namespace: def.namespace,
-            def: def.clone(),
+            namespace,
+            source,
+            surface,
             next_value: 0,
             next_callsite: 0,
             generated: Vec::new(),
@@ -501,15 +511,15 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
     }
 
     fn lower(&mut self) -> Result<(LoweredBody, Vec<Output>), FatalError> {
-        if let Some(abi) = self.def.surface.extern_abi.clone() {
+        if let Some(abi) = self.surface.extern_abi.clone() {
             let signature = self.resolve_extern_signature()?;
             return Ok((
                 LoweredBody::Extern {
                     signature: LoweredExtern {
                         abi,
-                        symbol: extern_symbol_from_name(&self.def.surface.name).to_string(),
+                        symbol: extern_symbol_from_name(&self.surface.name).to_string(),
                         params: signature.params,
-                        variadic: self.def.surface.variadic,
+                        variadic: self.surface.variadic,
                         ret: signature.ret,
                         return_ty: signature.return_ty,
                         semantic_contract: signature.semantic_contract,
@@ -520,7 +530,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         }
 
         let mut clause_defs = Vec::new();
-        for clause in self.def.surface.clauses.clone() {
+        for clause in self.surface.clauses.clone() {
             clause_defs.push(self.lower_clause(&clause)?);
         }
         let (clauses, entries) = self.plan_clauses(clause_defs);
@@ -536,13 +546,13 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
     }
 
     fn resolve_extern_signature(&mut self) -> Result<LoweredExtern, FatalError> {
-        let contract = extern_semantic_contract(&self.def.surface).ok_or_else(|| {
+        let contract = extern_semantic_contract(&self.surface).ok_or_else(|| {
             emit_job_diagnostic(
                 self.world,
                 Diagnostic::error(
                     codes::LOWER_UNSUPPORTED,
-                    format!("`{}` is not an extern declaration", self.def.surface.name),
-                    self.def.surface.name_span,
+                    format!("`{}` is not an extern declaration", self.surface.name),
+                    self.surface.name_span,
                 ),
             )
         })?;
@@ -556,14 +566,13 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                         codes::RESOLVE_TYPE_ALIAS,
                         format!(
                             "compiler2 could not resolve extern contract for `{}`: {}",
-                            self.def.surface.name, error.msg
+                            self.surface.name, error.msg
                         ),
                         error.span,
                     ),
                 )
             })?;
         let params = self
-            .def
             .surface
             .extern_param_tokens
             .iter()
@@ -572,20 +581,19 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             .collect();
         let ret = extern_wire_ty(
             self.world.types_mut(),
-            &self.def.surface.extern_ret_tokens,
+            &self.surface.extern_ret_tokens,
             &semantic_contract.result,
             &semantic_contract.constraints,
         );
         Ok(LoweredExtern {
             abi: self
-                .def
                 .surface
                 .extern_abi
                 .clone()
                 .expect("extern signatures only resolve for extern fns"),
-            symbol: extern_symbol_from_name(&self.def.surface.name).to_string(),
+            symbol: extern_symbol_from_name(&self.surface.name).to_string(),
             params,
-            variadic: self.def.surface.variadic,
+            variadic: self.surface.variadic,
             ret,
             return_ty: semantic_contract.result,
             semantic_contract,
@@ -596,7 +604,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         let mut env = HashMap::new();
         let mut projections = Vec::new();
         let mut params = Vec::new();
-        for capture in self.def.capture_params.clone() {
+        for capture in self.source.capture_params.clone() {
             let value = self.fresh_value();
             params.push(value);
             env.insert(capture, value);
@@ -1077,7 +1085,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         span: Span,
     ) -> Result<super::super::identity::ModuleId, FatalError> {
         self.world
-            .resolve_module_name(self.def.owner_module, self.namespace, module)
+            .resolve_module_name(self.source.owner_module, self.namespace, module)
             .ok_or_else(|| {
                 emit_job_diagnostic(
                     self.world,
