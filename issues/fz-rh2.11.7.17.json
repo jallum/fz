@@ -2,14 +2,16 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-10T06:39:25Z",
+  "close_reason": "done",
   "created": "2026-06-10T02:48:25Z",
   "description": "Current problem after fz-rh2.11.7.16: tests/fz2_cli.rs build_executes_map_struct_and_bitstring_fixtures and run_and_interp_execute_map_struct_and_bitstring_fixtures fail on fixtures/utf8_smart_constructor/input.fz. Direct reproduction: fz2 run fixtures/utf8_smart_constructor/input.fz emits 'error[internal/post-resolution-leftover]: quoted surface read failed: invalid any value ref: ExpectedTag { expected: ValueKind(1), found: ValueKind(3) }'. Isolation: 'import Utf8, only: [valid?: 1]' succeeds, while 'alias Utf8, as: U' produces the same surface-read diagnostic. fixtures/defstruct_runtime/input.fz now passes, so the old unresolved Point title was stale. Goal: make compiler2 quoted surface read alias keyword values such as 'as: U' as alias AST values instead of routing them through the import/require arity-filter decoder.",
   "id": "fz-rh2.11.7.17",
   "labels": [],
   "parent": "fz-rh2.11.7",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 quoted surface: read alias as: values",
   "type": "bug",
-  "updated_at": "2026-06-10T06:37:12Z"
+  "updated_at": "2026-06-10T06:39:25Z"
 }
