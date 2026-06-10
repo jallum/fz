@@ -1,0 +1,2 @@
+fn add2(x), do: x + 2
+fn main(), do: 1 |> add2()

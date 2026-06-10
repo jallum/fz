@@ -298,7 +298,7 @@ fn link_test_unit(module: &str, exports: &[(&str, usize)], imports: Vec<Mfa>) ->
     (unit, runtime)
 }
 
-// PICK: multi-module import and cross-module call resolves and runs
+// PICKED: multi-module import and cross-module call resolves and runs
 #[test]
 fn linked_image_validates_two_module_program_and_runs() {
     let src = r#"
@@ -334,7 +334,7 @@ fn main(), do: User.run()
     assert_eq!(image.run(&tel, entry), 42);
 }
 
-// PICK: cross-module function call resolves and executes provider body
+// PICKED: cross-module function call resolves and executes provider body
 #[test]
 fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
     let mut t = crate::types::new();
@@ -406,7 +406,7 @@ fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
     assert_eq!(image.run(&tel, entry), 42);
 }
 
-// PICK: cross-module protocol impl dispatch resolves to correct implementation
+// PICKED: cross-module protocol impl dispatch resolves to correct implementation
 #[test]
 fn linked_ir_units_preserve_provider_protocol_dispatch_plan() {
     let mut t = crate::types::new();
@@ -480,7 +480,7 @@ fn main(), do: User.run()
     assert_eq!(image.run(&tel, entry), 42);
 }
 
-// PICK: protocol dispatch over integer type calls correct impl
+// PICKED: protocol dispatch over integer type calls correct impl
 #[test]
 fn native_static_protocol_dispatch_preserves_integer_abi() {
     let mut t = crate::types::new();
@@ -519,7 +519,7 @@ fn main(), do: Integerish.id(41)
 /// cascade. The impls return distinguishing values (the integer itself vs the
 /// constant 100), so a swapped or missing arm would change the result:
 /// `describe(7) + describe([1,2,3])` = `7 + 100` = `107`.
-// PICK: closed-union protocol dispatch selects correct impl per value type
+// PICKED: closed-union protocol dispatch selects correct impl per value type
 #[test]
 fn closed_union_protocol_dispatch_runs_in_interp_and_native() {
     const SRC: &str = r#"
@@ -560,7 +560,7 @@ end
     assert_eq!(image.run(&tel, entry), 107, "native protocol dispatch");
 }
 
-// PICK: Enum.count, member?, reduce, and Enumerable.reduce over lists
+// PICKED: Enum.count, member?, reduce, and Enumerable.reduce over lists
 #[test]
 fn runtime_enumerable_list_count_member_and_reduce() {
     let got = capture_main_with_runtime_graph(
@@ -579,7 +579,7 @@ end
     assert_eq!(got, vec!["{3, true, 6, {:done, 6}}"]);
 }
 
-// PICK: Enum.to_list and Enum.map preserve list structure and elements
+// PICKED: Enum.to_list and Enum.map preserve list structure and elements
 #[test]
 fn runtime_enum_to_list_and_map_preserve_recursive_list_shape_native() {
     let got = capture_main_with_runtime_graph(
@@ -594,7 +594,7 @@ end
     assert_eq!(got, vec!["[1, 2, 3]", "[2, 4, 6, 8]"]);
 }
 
-// PICK: Enum tier-0 fixture exercises basic Enum operations end-to-end
+// PICKED: Enum tier-0 fixture exercises basic Enum operations end-to-end
 #[test]
 fn runtime_enum_tier0_fixture_runs_native() {
     let got = capture_main_with_runtime_graph(include_str!("../../fixtures/enum_tier0/input.fz"));
@@ -606,7 +606,7 @@ fn runtime_enum_tier0_fixture_runs_native() {
     assert_eq!(got, expected);
 }
 
-// PICK: Enum.count with predicate closure filters list correctly
+// PICKED: Enum.count with predicate closure filters list correctly
 #[test]
 fn enum_count_predicate_branch_helpers_keep_value_ref_return_lane() {
     let src = r#"
@@ -754,7 +754,7 @@ fn enum_find_closure_allocation_selects_site_specific_callable_entry() {
     );
 }
 
-// PICK: Enum.find and Enum.find_value with closures return correct results
+// PICKED: Enum.find and Enum.find_value with closures return correct results
 #[test]
 fn enum_find_then_find_value_preserves_reduce_continuation_protocol_native() {
     let src = r#"
@@ -802,7 +802,7 @@ end
     );
 }
 
-// PICK: Enum.find_index with predicate closure returns correct index or nil
+// PICKED: Enum.find_index with predicate closure returns correct index or nil
 #[test]
 fn enum_find_index_tail_clause_boxes_int_for_value_return_lane() {
     let src = r#"
@@ -853,7 +853,7 @@ end
     );
 }
 
-// PICK: opaque reducer closure call chains with indirect continuation
+// PICKED: opaque reducer closure call chains with indirect continuation
 #[test]
 fn opaque_reducer_join_uses_lazy_continuation_for_indirect_closure_call() {
     let src = include_str!("../../fixtures/opaque_fn_value_join/input.fz");
@@ -895,7 +895,7 @@ fn opaque_reducer_join_uses_lazy_continuation_for_indirect_closure_call() {
     );
 }
 
-// PICK: Enumerable.reduce returns :done and :halted protocol results correctly
+// PICKED: Enumerable.reduce returns :done and :halted protocol results correctly
 #[test]
 fn runtime_enumerable_list_reduce_reports_low_level_done_and_halt() {
     let src = r#"
@@ -996,7 +996,7 @@ end
     assert_eq!(got, vec!["{{:done, 3}, {:halted, 7}}"]);
 }
 
-// PICK: Enum.reduce_while with shape-changing accumulator halts at correct element
+// PICKED: Enum.reduce_while with shape-changing accumulator halts at correct element
 #[test]
 fn runtime_enum_reduce_while_shape_changing_accumulator_runs_native() {
     let src = r#"
@@ -1043,7 +1043,7 @@ end
     );
 }
 
-// PICK: Enum.find early halt with default value returns first matching element
+// PICKED: Enum.find early halt with default value returns first matching element
 #[test]
 fn runtime_enum_find_early_halt_keeps_value_delivery_boxed() {
     let got = capture_main_with_runtime_graph(
@@ -1057,7 +1057,7 @@ end
     assert_eq!(got, vec!["1"]);
 }
 
-// PICK: Enum.sort with default and custom comparator preserves stable order
+// PICKED: Enum.sort with default and custom comparator preserves stable order
 #[test]
 fn runtime_enum_sort_uses_stable_merge_sort_for_lists() {
     let got = capture_main_with_runtime_graph(
@@ -1334,7 +1334,7 @@ fn run_main_and_count_live(src: &str) -> usize {
 /// Two Processes built from the same CompiledModule observe equal atom
 /// ids for the same atom literal: atoms are u32s baked into compiled
 /// code, identical regardless of which Process runs it.
-// PICK: atom identity is stable across multiple executions of same program
+// PICKED: atom identity is stable across multiple executions of same program
 #[test]
 fn atom_identity_preserved_across_processes_from_same_module() {
     // `:ok` halts as the atom's raw u32 id; both Processes must agree
@@ -1359,7 +1359,7 @@ fn atom_identity_preserved_across_processes_from_same_module() {
 /// `nil`, `true`, and `false` are reserved at atom IDs 0/1/2 in every
 /// module so downstream codegen / runtime can rely on them. Pin halt
 /// values to the named constants to catch any re-shuffling of intern order.
-// PICK: nil, true, false reserved atom IDs are stable and correct
+// PICKED: nil, true, false reserved atom IDs are stable and correct
 #[test]
 fn reserved_atom_ids_are_stable() {
     assert_eq!(NIL_ATOM_ID, 0);
@@ -1370,7 +1370,7 @@ fn reserved_atom_ids_are_stable() {
     assert_eq!(run_main("fn main(), do: false"), FALSE_ATOM_ID as i64);
 }
 
-// PICK: spawn with captured variables executes and completes correctly
+// PICKED: spawn with captured variables executes and completes correctly
 #[test]
 fn runtime_graph_spawn_with_captures_runs_via_planned_codegen_path() {
     assert_eq!(
@@ -1379,7 +1379,7 @@ fn runtime_graph_spawn_with_captures_runs_via_planned_codegen_path() {
     );
 }
 
-// PICK: plain spawn of zero-arity function executes child process
+// PICKED: plain spawn of zero-arity function executes child process
 #[test]
 fn runtime_graph_plain_spawn_runs_via_planned_codegen_path() {
     assert_eq!(
@@ -1388,7 +1388,7 @@ fn runtime_graph_plain_spawn_runs_via_planned_codegen_path() {
     );
 }
 
-// PICK: spawn + send + selective receive delivers message to waiting process
+// PICKED: spawn + send + selective receive delivers message to waiting process
 #[test]
 fn planned_codegen_runs_runtime_graph_selective_receive() {
     let src = "fn child(), do: send(1, 42)\n\
@@ -1436,7 +1436,7 @@ fn materialization_keeps_selective_receive_outcome_bodies_reachable() {
     );
 }
 
-// PICK: plain spawn executes child process via interpreter path
+// PICKED: plain spawn executes child process via interpreter path
 #[test]
 fn runtime_graph_plain_spawn_runs_via_planned_interp_path() {
     let mut t = crate::types::new();
@@ -1471,7 +1471,7 @@ fn codegen_materializes_plain_spawn_child_callable_boundary_target() {
     );
 }
 
-// PICK: spawn child, send message, receive in main returns sent value
+// PICKED: spawn child, send message, receive in main returns sent value
 #[test]
 fn runtime_graph_spawn_then_receive_runs_via_planned_codegen_path() {
     assert_eq!(
@@ -1705,7 +1705,7 @@ fn planned_enum_take_indirect_closure_body_preserves_spec_key_arity() {
 /// Two Processes built from the same CompiledModule run independent
 /// programs that each construct a map; each Process owns its own
 /// builder fields so the runs cannot leak state into each other.
-// PICK: map construction is isolated between independent process runs
+// PICKED: map construction is isolated between independent process runs
 #[test]
 fn two_processes_run_independent_map_builds() {
     // Distinct keys + values so any state leak surfaces as a wrong halt.
@@ -1748,37 +1748,37 @@ fn two_processes_run_independent_map_builds() {
     assert!(lb > 0, "program b leaves live heap allocs");
 }
 
-// PICK: integer literal evaluates and returns correct value
+// PICKED: integer literal evaluates and returns correct value
 #[test]
 fn const_int_runs_and_halts_with_value() {
     assert_eq!(run_main("fn main() do 42 end"), 42);
 }
 
-// PICK: integer addition computes correct result
+// PICKED: integer addition computes correct result
 #[test]
 fn binop_int_addition_runs() {
     assert_eq!(run_main("fn main(), do: 40 + 2"), 42);
 }
 
-// PICK: chained arithmetic operators evaluate in correct order
+// PICKED: chained arithmetic operators evaluate in correct order
 #[test]
 fn binop_chain_runs() {
     assert_eq!(run_main("fn main(), do: (1 + 2) * 7"), 21);
 }
 
-// PICK: if/else conditional takes true branch on satisfied condition
+// PICKED: if/else conditional takes true branch on satisfied condition
 #[test]
 fn if_then_else_runs() {
     assert_eq!(run_main("fn main(), do: if 1 < 2, do: 100, else: 200"), 100);
 }
 
-// PICK: dbg/1 prints expression value to output
+// PICKED: dbg/1 prints expression value to output
 #[test]
 fn print_builtin_routes_through_runtime() {
     assert_eq!(capture_main("fn main(), do: dbg(40 + 2)"), vec!["42"]);
 }
 
-// PICK: Process.heap_alloc_stats intrinsic returns map with allocation counts
+// PICKED: Process.heap_alloc_stats intrinsic returns map with allocation counts
 #[test]
 fn process_heap_alloc_stats_is_callable_from_fz() {
     let lines = capture_main_with_runtime_graph(
@@ -1787,39 +1787,39 @@ fn process_heap_alloc_stats_is_callable_from_fz() {
     assert_eq!(lines, vec!["[1, 2]", "2", "0"]);
 }
 
-// PICK: assert and refute builtins distinguish integer payload from bool kind
+// PICKED: assert and refute builtins distinguish integer payload from bool kind
 #[test]
 fn assert_builtin_keeps_scalar_kind_separate_from_raw_payload() {
     assert_eq!(run_main("fn main(), do: assert(2)"), NIL_ATOM_ID as i64);
     assert_eq!(run_main("fn main(), do: refute(true == 1)"), NIL_ATOM_ID as i64);
 }
 
-// PICK: unary negation of integer literal returns negative value
+// PICKED: unary negation of integer literal returns negative value
 #[test]
 fn unop_neg_runs() {
     assert_eq!(run_main("fn main(), do: -7"), -7);
 }
 
-// PICK: atom literal returns its interned atom id
+// PICKED: atom literal returns its interned atom id
 #[test]
 fn atom_const_returns_atom_id() {
     let (atom_id, module) = run_main_returning_module("fn main(), do: :ok");
     assert_eq!(module.atom_names[atom_id as usize], "ok");
 }
 
-// PICK: function call passes argument and returns computed result
+// PICKED: function call passes argument and returns computed result
 #[test]
 fn add1_via_call_returns_42() {
     assert_eq!(run_main("fn add1(n), do: n + 1\nfn main(), do: add1(41)"), 42);
 }
 
-// PICK: non-tail call result used in enclosing arithmetic expression
+// PICKED: non-tail call result used in enclosing arithmetic expression
 #[test]
 fn binop_with_inner_nontail_call() {
     assert_eq!(run_main("fn add1(n), do: n + 1\nfn main(), do: add1(40) + 2"), 43);
 }
 
-// PICK: recursive function with base case and pattern matching computes factorial
+// PICKED: recursive function with base case and pattern matching computes factorial
 #[test]
 fn fact_5_smaller_repro() {
     assert_eq!(
@@ -1834,7 +1834,7 @@ fn main(), do: fact(5)
     );
 }
 
-// PICK: deep recursive factorial executes without stack overflow
+// PICKED: deep recursive factorial executes without stack overflow
 #[test]
 fn fact_10_runs_via_recursion_and_continuation_chain() {
     assert_eq!(
@@ -1849,7 +1849,7 @@ fn main(), do: fact(10)
     );
 }
 
-// PICK: tail-recursive loop over 100k iterations does not overflow stack
+// PICKED: tail-recursive loop over 100k iterations does not overflow stack
 #[test]
 fn count_100k_stays_bounded_via_tail_call_frame_reuse() {
     assert_eq!(
@@ -1877,7 +1877,7 @@ fn render_any_value_dispatches_per_tag() {
     assert_eq!(render_value(std::ptr::null_mut(), AnyValue::atom(3)), ":atom_3");
 }
 
-// PICK: atom, true, false literals render correctly via dbg
+// PICKED: atom, true, false literals render correctly via dbg
 #[test]
 fn print_captures_atom_and_specials() {
     assert_eq!(
@@ -1886,7 +1886,7 @@ fn print_captures_atom_and_specials() {
     );
 }
 
-// PICK: atom-keyed map literal renders with canonical key-value syntax
+// PICKED: atom-keyed map literal renders with canonical key-value syntax
 #[test]
 fn print_atom_keyed_map_renders_canonically() {
     assert_eq!(
@@ -1895,13 +1895,13 @@ fn print_atom_keyed_map_renders_canonically() {
     );
 }
 
-// PICK: map key access returns value for present keys
+// PICKED: map key access returns value for present keys
 #[test]
 fn map_get_returns_value_or_nil() {
     assert_eq!(run_main("fn main(), do: %{a: 10, b: 20}[:a] + %{a: 10, b: 20}[:b]"), 30);
 }
 
-// PICK: map update syntax creates new map leaving original immutable
+// PICKED: map update syntax creates new map leaving original immutable
 #[test]
 fn map_update_returns_new_map_originals_unchanged() {
     assert_eq!(
@@ -1919,13 +1919,13 @@ end
     );
 }
 
-// PICK: bitstring literal renders correctly as byte sequence
+// PICKED: bitstring literal renders correctly as byte sequence
 #[test]
 fn print_bitstring_literal_via_jit() {
     assert_eq!(capture_main("fn main(), do: dbg(<<0xff, 0xab>>)"), vec!["<<255, 171>>"]);
 }
 
-// PICK: binary pattern match splits header byte from rest of bitstring
+// PICKED: binary pattern match splits header byte from rest of bitstring
 #[test]
 fn match_simple_header_and_rest() {
     assert_eq!(
@@ -1939,7 +1939,7 @@ fn main(), do: dbg(parse(<<0xa5, 0x01, 0x02>>))
     );
 }
 
-// PICK: binary pattern with size variable extracts variable-length segment
+// PICKED: binary pattern with size variable extracts variable-length segment
 #[test]
 fn match_variable_size_payload_via_size_var() {
     assert_eq!(
@@ -1955,13 +1955,13 @@ fn main(), do: dbg(parse(<<3, 0x01, 0x02, 0x03, 0xff>>))
     );
 }
 
-// PICK: two-element tuple literal renders correctly
+// PICKED: two-element tuple literal renders correctly
 #[test]
 fn print_tuple_pair_renders() {
     assert_eq!(capture_main("fn main(), do: dbg({1, 2})"), vec!["{1, 2}"]);
 }
 
-// PICK: tuple pattern match destructures elements by position
+// PICKED: tuple pattern match destructures elements by position
 #[test]
 fn fst_snd_destructure_tuple() {
     assert_eq!(
@@ -1976,7 +1976,7 @@ fn main(), do: fst({10, 20}) + snd({30, 40})
     );
 }
 
-// PICK: mixed-type tuple with int, atom, bool renders correctly
+// PICKED: mixed-type tuple with int, atom, bool renders correctly
 #[test]
 fn print_mixed_type_tuple() {
     assert_eq!(
@@ -2047,13 +2047,13 @@ fn tuple_literal_marks_ref_fields_as_published() {
     );
 }
 
-// PICK: list literal renders correctly as bracketed comma-separated values
+// PICKED: list literal renders correctly as bracketed comma-separated values
 #[test]
 fn print_list_literal_renders_via_jit() {
     assert_eq!(capture_main("fn main(), do: dbg([1, 2, 3])"), vec!["[1, 2, 3]"]);
 }
 
-// PICK: recursive list head/tail pattern match accumulates sum correctly
+// PICKED: recursive list head/tail pattern match accumulates sum correctly
 #[test]
 fn sum_list_via_head_tail_recursion() {
     assert_eq!(
@@ -2068,7 +2068,7 @@ fn main(), do: sum([1, 2, 3, 4, 5])
     );
 }
 
-// PICK: double negation round-trips integer value correctly
+// PICKED: double negation round-trips integer value correctly
 #[test]
 fn box_unbox_int_roundtrip_via_neg_neg() {
     for n in &[0i64, 1, -1, 42, -42, 1_000_000_000] {
@@ -2077,7 +2077,7 @@ fn box_unbox_int_roundtrip_via_neg_neg() {
     }
 }
 
-// PICK: mutually recursive functions dispatch correctly across call boundaries
+// PICKED: mutually recursive functions dispatch correctly across call boundaries
 #[test]
 fn mutual_recursion_even_odd_small_n() {
     assert_eq!(
@@ -2094,7 +2094,7 @@ fn main(), do: even(10)
     );
 }
 
-// PICK: function reference passed as value and called via closure application
+// PICKED: function reference passed as value and called via closure application
 #[test]
 fn apply_simple_closure_no_captures() {
     assert_eq!(
@@ -2134,7 +2134,7 @@ fn main(), do: apply_f(double, 21)
     );
 }
 
-// PICK: closure captures enclosing scope variable and uses it on call
+// PICKED: closure captures enclosing scope variable and uses it on call
 #[test]
 fn closure_captures_local_value() {
     assert_eq!(
@@ -2193,7 +2193,7 @@ end
     );
 }
 
-// PICK: higher-order map applies function to each element and collects results
+// PICKED: higher-order map applies function to each element and collects results
 #[test]
 fn map_higher_order_renders_doubled_list() {
     assert_eq!(
@@ -2209,75 +2209,75 @@ fn main(), do: dbg(map_l(double, [1, 2, 3]))
     );
 }
 
-// PICK: list equality is structural not referential across distinct allocations
+// PICKED: list equality is structural not referential across distinct allocations
 #[test]
 fn list_structural_eq_same_content_distinct_allocations() {
     assert_eq!(run_main("fn main(), do: [1, 2, 3] == [1, 2, 3]"), 1);
 }
 
-// PICK: list equality is false when lists have different lengths
+// PICKED: list equality is false when lists have different lengths
 #[test]
 fn list_structural_eq_length_mismatch_is_false() {
     assert_eq!(run_main("fn main(), do: [1, 2] == [1, 2, 3]"), FALSE_HALT);
 }
 
-// PICK: tuple equality holds when arity and all fields match
+// PICKED: tuple equality holds when arity and all fields match
 #[test]
 fn tuple_structural_eq_same_arity_and_content() {
     assert_eq!(run_main("fn main(), do: {1, :ok} == {1, :ok}"), 1);
 }
 
-// PICK: tuple equality is false when arities differ
+// PICKED: tuple equality is false when arities differ
 #[test]
 fn tuple_eq_different_arity_is_false() {
     assert_eq!(run_main("fn main(), do: {1, 2} == {1, 2, 3}"), FALSE_HALT);
 }
 
-// PICK: bitstring equality compares byte content structurally
+// PICKED: bitstring equality compares byte content structurally
 #[test]
 fn bitstring_structural_eq_byte_aligned() {
     assert_eq!(run_main("fn main(), do: <<1, 2, 3>> == <<1, 2, 3>>"), 1);
 }
 
-// PICK: map equality is order-independent, compares keys and values structurally
+// PICKED: map equality is order-independent, compares keys and values structurally
 #[test]
 fn map_structural_eq_ignores_construction_order() {
     assert_eq!(run_main("fn main(), do: %{a: 1, b: 2} == %{b: 2, a: 1}"), 1);
 }
 
-// PICK: map equality is false when values differ for matching keys
+// PICKED: map equality is false when values differ for matching keys
 #[test]
 fn map_eq_different_value_is_false() {
     assert_eq!(run_main("fn main(), do: %{a: 1, b: 2} == %{a: 1, b: 3}"), FALSE_HALT);
 }
 
-// PICK: different container kinds (list vs tuple) are never equal
+// PICKED: different container kinds (list vs tuple) are never equal
 #[test]
 fn heterogeneous_kinds_compare_unequal() {
     assert_eq!(run_main("fn main(), do: [1, 2] == {1, 2}"), FALSE_HALT);
 }
 
-// PICK: nested map containing list compares recursively by value
+// PICKED: nested map containing list compares recursively by value
 #[test]
 fn nested_map_with_list_structural_eq() {
     assert_eq!(run_main("fn main(), do: %{x: [1, 2]} == %{x: [1, 2]}"), 1);
 }
 
-// PICK: != operator returns logical inverse of structural equality
+// PICKED: != operator returns logical inverse of structural equality
 #[test]
 fn neq_inverts_structural_eq() {
     assert_eq!(run_main("fn main(), do: [1, 2] != [1, 2]"), FALSE_HALT);
     assert_eq!(run_main("fn main(), do: [1, 2] != [1, 3]"), 1);
 }
 
-// PICK: float literal preserves bit-exact value in return
+// PICKED: float literal preserves bit-exact value in return
 #[test]
 fn float_const_halt_round_trips_via_bits() {
     let (halt, _m) = run_main_returning_module("fn main(), do: 2.5");
     assert_eq!(f64::from_bits(halt as u64), 2.5);
 }
 
-// PICK: float literals render with explicit decimal point in output
+// PICKED: float literals render with explicit decimal point in output
 #[test]
 fn print_float_renders_with_explicit_dot_zero() {
     assert_eq!(
@@ -2286,37 +2286,37 @@ fn print_float_renders_with_explicit_dot_zero() {
     );
 }
 
-// PICK: float addition evaluates correctly and compares equal to expected result
+// PICKED: float addition evaluates correctly and compares equal to expected result
 #[test]
 fn float_arithmetic_promotes_via_runtime_helper() {
     assert_eq!(run_main("fn main(), do: 1.5 + 2.5 == 4.0"), 1);
 }
 
-// PICK: mixed int and float arithmetic promotes integer to float
+// PICKED: mixed int and float arithmetic promotes integer to float
 #[test]
 fn mixed_int_float_arithmetic_promotes() {
     assert_eq!(run_main("fn main(), do: 1 + 2.0 == 3.0"), 1);
 }
 
-// PICK: integer and float with same numeric value are not equal by strict equality
+// PICKED: integer and float with same numeric value are not equal by strict equality
 #[test]
 fn mixed_int_float_eq_does_not_promote() {
     assert_eq!(run_main("fn main(), do: 1 == 1.0"), FALSE_HALT);
 }
 
-// PICK: identical float literals compare equal
+// PICKED: identical float literals compare equal
 #[test]
 fn float_literals_compare_equal_by_value() {
     assert_eq!(run_main("fn main(), do: 1.5 == 1.5"), 1);
 }
 
-// PICK: float ordered comparison returns correct boolean result
+// PICKED: float ordered comparison returns correct boolean result
 #[test]
 fn float_ordered_comparison_dispatches_through_helper() {
     assert_eq!(run_main("fn main(), do: 1.5 < 2.0"), 1);
 }
 
-// PICK: float bitstring field stores raw IEEE 754 bits big-endian
+// PICKED: float bitstring field stores raw IEEE 754 bits big-endian
 #[test]
 fn float_bit_field_round_trips_via_bitstring() {
     let (halt, _m) = run_main_returning_module("fn main(), do: <<2.5::float>>");
@@ -2329,7 +2329,7 @@ fn float_bit_field_round_trips_via_bitstring() {
     assert_eq!(f, 2.5);
 }
 
-// PICK: float as list head allocates only one cons cell without boxing
+// PICKED: float as list head allocates only one cons cell without boxing
 #[test]
 fn cons_with_float_head_no_box() {
     assert_eq!(
@@ -2339,13 +2339,13 @@ fn cons_with_float_head_no_box() {
     );
 }
 
-// PICK: float inside a list renders correctly
+// PICKED: float inside a list renders correctly
 #[test]
 fn render_raw_float_in_container() {
     assert_eq!(capture_main("fn main(), do: dbg([1.5])"), vec!["[1.5]"]);
 }
 
-// PICK: list head projection retrieves float element with correct value
+// PICKED: list head projection retrieves float element with correct value
 #[test]
 fn float_list_head_projects_raw_f64() {
     let src = "fn first([h | _]), do: h\nfn main(), do: first([2.5])";
@@ -2353,13 +2353,13 @@ fn float_list_head_projects_raw_f64() {
     assert_eq!(f64::from_bits(halt as u64), 2.5);
 }
 
-// PICK: list containing float compares equal by value
+// PICKED: list containing float compares equal by value
 #[test]
 fn equality_float_in_container() {
     assert_eq!(run_main("fn main(), do: [1.5] == [1.5]"), 1);
 }
 
-// PICK: map with float value allocates only one object without boxing float
+// PICKED: map with float value allocates only one object without boxing float
 #[test]
 fn map_with_float_value_no_box() {
     assert_eq!(
@@ -2369,7 +2369,7 @@ fn map_with_float_value_no_box() {
     );
 }
 
-// PICK: map with float key allocates only one object without boxing float key
+// PICKED: map with float key allocates only one object without boxing float key
 #[test]
 fn map_with_float_key_no_box() {
     assert_eq!(
@@ -2417,7 +2417,7 @@ fn map_literal_marks_ref_entries_as_published() {
     );
 }
 
-// PICK: self-applying closure in tail position reuses frame across iterations
+// PICKED: self-applying closure in tail position reuses frame across iterations
 #[test]
 fn tail_call_closure_reuses_frame_via_count_loop() {
     // Self-applying closure forces TailCallClosure on every iteration.
@@ -2618,7 +2618,7 @@ fn tuple_field_return_demand_does_not_rewrite_plain_function_params() {
     assert_eq!(reprs, vec![ArgRepr::RawInt, ArgRepr::RawF64]);
 }
 
-// PICK: chained non-tail closure calls compose correctly and return right values
+// PICKED: chained non-tail closure calls compose correctly and return right values
 #[test]
 fn non_tail_closure_call_chain_uses_value_ref_continuation_abi() {
     let src = r#"
@@ -3135,7 +3135,7 @@ fn pure_branch_type_test_does_not_materialize_bool() {
     }
 }
 
-// PICK: dbg/1 returns its argument allowing use in further expressions
+// PICKED: dbg/1 returns its argument allowing use in further expressions
 #[test]
 fn dbg_returns_the_value_it_prints() {
     let lines = capture_main(
@@ -3423,7 +3423,7 @@ end
 /// `fn f([])` does NOT match a `nil` argument: `nil` falls through to
 /// the `:match_error` halt. (Pre-split, `nil` and `[]` shared a
 /// runtime bit pattern and this call returned 1.)
-// PICK: nil value does not match empty-list pattern — distinct types
+// PICKED: nil value does not match empty-list pattern — distinct types
 #[test]
 fn nil_does_not_match_empty_list_pattern() {
     let (halt, module) = run_main_returning_module("fn f([]), do: 1\nfn main(), do: f(nil)");
@@ -3435,7 +3435,7 @@ fn nil_does_not_match_empty_list_pattern() {
 }
 
 /// `fn f(nil)` does NOT match an `[]` argument. Symmetric to the above.
-// PICK: empty list does not match nil pattern — distinct types
+// PICKED: empty list does not match nil pattern — distinct types
 #[test]
 fn empty_list_does_not_match_nil_pattern() {
     let (halt, module) = run_main_returning_module("fn f(nil), do: 1\nfn main(), do: f([])");
@@ -3446,7 +3446,7 @@ fn empty_list_does_not_match_nil_pattern() {
     );
 }
 
-// PICK: cons pattern falls through to next clause for non-list arguments
+// PICKED: cons pattern falls through to next clause for non-list arguments
 #[test]
 fn cons_function_clause_falls_through_for_non_lists_in_interp_and_native() {
     const SRC: &str = r#"
@@ -3471,7 +3471,7 @@ end
     assert_eq!(image.run(&tel, entry), 304, "native function-clause dispatch");
 }
 
-// PICK: recursive multi-clause function dispatches on list vs other types
+// PICKED: recursive multi-clause function dispatches on list vs other types
 #[test]
 fn recursive_cons_function_clause_runs_in_interp_and_native() {
     const SRC: &str = r#"
@@ -3526,7 +3526,7 @@ end
 
 /// `dbg(nil)` and `dbg([])` render as distinct strings — codegen
 /// pin for the broader fixture-driven check.
-// PICK: nil and empty list are distinct values with distinct string representations
+// PICKED: nil and empty list are distinct values with distinct string representations
 #[test]
 fn print_distinguishes_nil_from_empty_list() {
     let lines = capture_main("fn main() do\n  dbg(nil)\n  dbg([])\nend");
@@ -3572,7 +3572,7 @@ mod resource_jit_tests {
 
     /// JIT-leg round trip mirroring `make_resource_bif_round_trip`
     /// from the interp leg.
-    // PICK: make_resource creates resource and fires destructor at heap drop
+    // PICKED: make_resource creates resource and fires destructor at heap drop
     #[test]
     fn make_resource_round_trip_in_jit() {
         let _g = tests_support_lock().lock().unwrap_or_else(|e| e.into_inner());
@@ -3602,7 +3602,7 @@ end
     /// Aliasing inside one JIT-run process still produces exactly one
     /// dtor invocation. Mirrors the interp leg's
     /// `aliasing_in_one_process_fires_dtor_once`.
-    // PICK: aliased resource fires destructor exactly once despite multiple references
+    // PICKED: aliased resource fires destructor exactly once despite multiple references
     #[test]
     fn aliasing_in_one_jit_process_fires_dtor_once() {
         let _g = tests_support_lock().lock().unwrap_or_else(|e| e.into_inner());
@@ -3628,7 +3628,7 @@ end
 
     /// Two distinct `make_resource` calls each fire once. Mirrors the
     /// interp leg's `two_distinct_resources_each_fire_once`.
-    // PICK: two distinct resources each fire their destructor exactly once
+    // PICKED: two distinct resources each fire their destructor exactly once
     #[test]
     fn two_distinct_resources_in_jit_each_fire_once() {
         let _g = tests_support_lock().lock().unwrap_or_else(|e| e.into_inner());

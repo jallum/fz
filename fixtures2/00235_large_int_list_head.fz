@@ -1,0 +1,2 @@
+fn first([h | _]), do: h
+fn main(), do: first([4611686018427387904])

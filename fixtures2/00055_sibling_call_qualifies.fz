@@ -1,0 +1,4 @@
+defmodule M do
+  fn helper(x), do: x + 1
+  fn use_helper(x), do: helper(x)
+end

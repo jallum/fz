@@ -1266,7 +1266,7 @@ fn reachable_specs_do_not_seed_uninvoked_closure_targets() {
     );
 }
 
-// PICK: higher-order closure call inlined as direct control flow
+// PICKED: higher-order closure call inlined as direct control flow
 #[test]
 fn known_closure_call_with_branch_continuation_materializes_without_erased_callclosure() {
     let src = "fn choose(f, a, b) do\n\
@@ -1317,7 +1317,7 @@ fn known_closure_call_with_branch_continuation_materializes_without_erased_callc
     );
 }
 
-// PICK: non-tail direct call inlined and fused into single block
+// PICKED: non-tail direct call inlined and fused into single block
 #[test]
 fn direct_call_materialization_fuses_cloned_return_continuation_block() {
     let tel = ConfiguredTelemetry::new();
@@ -1425,7 +1425,7 @@ fn materialized_tail_direct_call_prunes_erased_callee_from_reachability() {
     );
 }
 
-// PICK: type-guard dispatch folds dead branch when arg type is concrete integer
+// PICKED: type-guard dispatch folds dead branch when arg type is concrete integer
 #[test]
 fn planned_program_materialization_reports_executable_body_folds() {
     let src = "fn check(x :: integer) do :is_int end\n\
@@ -1510,7 +1510,7 @@ fn planned_program_materialization_reports_executable_body_folds() {
     );
 }
 
-// PICK: closure with captures registers typed callable entry at materialization
+// PICKED: closure with captures registers typed callable entry at materialization
 #[test]
 fn repr_seam_closure_predicate_registers_captured_wrapper_callable_entry() {
     let src = include_str!("../../fixtures/repr_seam_closure_predicate/input.fz");
@@ -1544,7 +1544,7 @@ fn repr_seam_closure_predicate_registers_captured_wrapper_callable_entry() {
     );
 }
 
-// PICK: tuple destructure at call site specializes callee by return demand
+// PICKED: tuple destructure at call site specializes callee by return demand
 #[test]
 fn planner_specializes_pair_by_tuple_destructure_and_value_demand() {
     let src = "fn pair(x), do: {x, x}\n\
@@ -1713,7 +1713,7 @@ fn quicksort_partition_accumulators_converge_to_one_spec() {
 /// clause helpers), not per call site. partition returns a 2-tuple on every
 /// clause path, so a destructuring caller may demand the fields directly; qsort
 /// returns a list and main returns neither, so neither offers a tuple.
-// PICK: function return shape (tuple vs list) inferred statically over quicksort
+// PICKED: function return shape (tuple vs list) inferred statically over quicksort
 #[test]
 fn return_capabilities_classify_quicksort_fn_shapes() {
     let tel = ConfiguredTelemetry::new();
@@ -1858,7 +1858,7 @@ fn declared_reduce_while_return_uses_closure_return_witness() {
     );
 }
 
-// PICK: empty list pattern only dispatches to empty clause when input is []
+// PICKED: empty list pattern only dispatches to empty clause when input is []
 #[test]
 fn empty_list_call_only_reaches_empty_clause() {
     let (t, m, mt) = pipeline(
@@ -1881,7 +1881,7 @@ end
     assert_eq!(found.as_deref(), Some(":empty"));
 }
 
-// PICK: wildcard parameter position does not fork specialization on argument type
+// PICKED: wildcard parameter position does not fork specialization on argument type
 #[test]
 fn wildcard_param_becomes_semantic_key_hole() {
     let (_t, m, mt) = pipeline(
@@ -2051,7 +2051,7 @@ fn planner_emits_activation_projection_telemetry_for_visible_specs() {
     );
 }
 
-// PICK: polymorphic function returns distinct types per concrete call-site input
+// PICKED: polymorphic function returns distinct types per concrete call-site input
 #[test]
 fn planner_projects_polymorphic_direct_call_activations_per_visible_spec() {
     let tel = ConfiguredTelemetry::new();
@@ -2104,7 +2104,7 @@ fn planner_projects_polymorphic_direct_call_activations_per_visible_spec() {
     );
 }
 
-// PICK: named function reference passed as value retains polymorphic return per activation
+// PICKED: named function reference passed as value retains polymorphic return per activation
 #[test]
 fn planner_projects_polymorphic_named_ref_activations_per_visible_spec() {
     let tel = ConfiguredTelemetry::new();
@@ -2207,7 +2207,7 @@ fn compile_elides_named_ref_callable_fallback_when_calls_are_fully_resolved() {
     );
 }
 
-// PICK: captured closure invoked polymorphically preserves per-activation return types
+// PICKED: captured closure invoked polymorphically preserves per-activation return types
 #[test]
 fn planner_projects_captured_closure_activations_without_callable_fallback() {
     let tel = ConfiguredTelemetry::new();
@@ -2277,7 +2277,7 @@ fn planner_projects_captured_closure_activations_without_callable_fallback() {
     );
 }
 
-// PICK: pattern dispatch via named-ref function folds dead arms per concrete input
+// PICKED: pattern dispatch via named-ref function folds dead arms per concrete input
 #[test]
 fn planner_projects_named_ref_pattern_activations_and_dead_arms() {
     let tel = ConfiguredTelemetry::new();
@@ -2348,7 +2348,7 @@ fn planner_projects_named_ref_pattern_activations_and_dead_arms() {
     );
 }
 
-// PICK: atom pattern matching dispatches to correct clause per concrete input
+// PICKED: atom pattern matching dispatches to correct clause per concrete input
 #[test]
 fn planner_projects_atom_pattern_dispatch_per_activation() {
     let tel = ConfiguredTelemetry::new();
@@ -2413,7 +2413,7 @@ fn planner_projects_atom_pattern_dispatch_per_activation() {
     );
 }
 
-// PICK: list pattern dispatch on empty vs cons selects correct clause per input
+// PICKED: list pattern dispatch on empty vs cons selects correct clause per input
 #[test]
 fn planner_projects_list_pattern_dispatch_per_activation() {
     let tel = ConfiguredTelemetry::new();
@@ -2478,7 +2478,7 @@ fn planner_projects_list_pattern_dispatch_per_activation() {
     );
 }
 
-// PICK: list head binding in pattern returns head element type for cons input
+// PICKED: list head binding in pattern returns head element type for cons input
 #[test]
 fn planner_projects_list_pattern_binding_per_activation() {
     let tel = ConfiguredTelemetry::new();
@@ -2543,7 +2543,7 @@ fn planner_projects_list_pattern_binding_per_activation() {
     );
 }
 
-// PICK: tuple pattern binding projects field type at concrete tuple input
+// PICKED: tuple pattern binding projects field type at concrete tuple input
 #[test]
 fn planner_projects_tuple_pattern_binding_per_activation() {
     let tel = ConfiguredTelemetry::new();
@@ -2608,7 +2608,7 @@ fn planner_projects_tuple_pattern_binding_per_activation() {
     );
 }
 
-// PICK: nested tuple/list pattern binding projects inner type per activation
+// PICKED: nested tuple/list pattern binding projects inner type per activation
 #[test]
 fn planner_projects_nested_pattern_binding_per_activation() {
     let tel = ConfiguredTelemetry::new();
@@ -2673,7 +2673,7 @@ fn planner_projects_nested_pattern_binding_per_activation() {
     );
 }
 
-// PICK: nested pattern clause cascade selects right leaf for each concrete input
+// PICKED: nested pattern clause cascade selects right leaf for each concrete input
 #[test]
 fn planner_projects_nested_pattern_partition_per_activation() {
     let tel = ConfiguredTelemetry::new();
@@ -2742,7 +2742,7 @@ fn planner_projects_nested_pattern_partition_per_activation() {
     );
 }
 
-// PICK: tagged-tuple pattern dispatch selects clause by atom tag per input
+// PICKED: tagged-tuple pattern dispatch selects clause by atom tag per input
 #[test]
 fn planner_projects_tuple_tag_partition_per_activation() {
     let tel = ConfiguredTelemetry::new();
@@ -2810,7 +2810,7 @@ fn planner_projects_tuple_tag_partition_per_activation() {
     );
 }
 
-// PICK: tuple arity pattern dispatch selects clause by tuple size per input
+// PICKED: tuple arity pattern dispatch selects clause by tuple size per input
 #[test]
 fn planner_projects_tuple_arity_partition_per_activation() {
     let tel = ConfiguredTelemetry::new();
@@ -2882,7 +2882,7 @@ fn planner_projects_tuple_arity_partition_per_activation() {
     );
 }
 
-// PICK: guard clause collapses multiple witness activations to one semantic spec
+// PICKED: guard clause collapses multiple witness activations to one semantic spec
 #[test]
 fn planner_projects_guard_partition_per_activation() {
     let tel = ConfiguredTelemetry::new();
@@ -2957,7 +2957,7 @@ fn planner_projects_guard_partition_per_activation() {
     );
 }
 
-// PICK: map key pattern match binds hit value type vs absent atom per input
+// PICKED: map key pattern match binds hit value type vs absent atom per input
 #[test]
 fn planner_projects_map_pattern_binding_per_activation() {
     let tel = ConfiguredTelemetry::new();
@@ -3022,7 +3022,7 @@ fn planner_projects_map_pattern_binding_per_activation() {
     );
 }
 
-// PICK: tail-recursive fold over list returns concrete int type
+// PICKED: tail-recursive fold over list returns concrete int type
 #[test]
 fn planner_projects_fold_tail_entry_with_known_int_return() {
     let tel = ConfiguredTelemetry::new();
@@ -3062,7 +3062,7 @@ fn planner_projects_fold_tail_entry_with_known_int_return() {
     ));
 }
 
-// PICK: Enum.reduce with user closure converges to concrete accumulator return type
+// PICKED: Enum.reduce with user closure converges to concrete accumulator return type
 #[test]
 fn planner_projects_enum_reduce_runtime_graph_from_activation_facts() {
     let tel = ConfiguredTelemetry::new();
@@ -3137,7 +3137,7 @@ fn planner_projects_enum_reduce_runtime_graph_from_activation_facts() {
     );
 }
 
-// PICK: Enum.reduce with &Kernel.+/2 operator ref propagates int accumulator type
+// PICKED: Enum.reduce with &Kernel.+/2 operator ref propagates int accumulator type
 #[test]
 fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
     let tel = ConfiguredTelemetry::new();
@@ -3274,7 +3274,7 @@ fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
     );
 }
 
-// PICK: Enum.reduce over a Range enumerable converges to concrete int return
+// PICKED: Enum.reduce over a Range enumerable converges to concrete int return
 #[test]
 fn planner_projects_enum_reduce_range_runtime_graph_from_activation_facts() {
     let tel = ConfiguredTelemetry::new();
@@ -3377,7 +3377,7 @@ fn runtime_graph_enum_helpers_erase_closure_identity_from_public_spec_keys() {
     );
 }
 
-// PICK: spawned child process function reachable and typed through callable boundary
+// PICKED: spawned child process function reachable and typed through callable boundary
 #[test]
 fn planner_projects_plain_spawn_child_through_callable_boundary() {
     let signals = runtime_graph_planner_activation_projection_signals(
@@ -3514,7 +3514,7 @@ fn runtime_graph_enum_take_callers_supply_callable_args_to_indirect_closure_spec
     );
 }
 
-// PICK: spawned process child function stays reachable after materialization
+// PICKED: spawned process child function stays reachable after materialization
 #[test]
 fn materialization_keeps_plain_spawn_child_reachable_through_callable_boundary() {
     let signals = runtime_graph_reachable_materialized_body_signals(
@@ -3576,7 +3576,7 @@ fn planner_work_bounds_fib_tailrec() {
 /// fz-2yw.1 — recursive sum's effective return must come from the activation
 /// fixpoint (`int`, joined from base case 0 plus recursive case h + sum(t)) —
 /// NOT just the base case (0) which is what cycle-cut would give.
-// PICK: recursive list accumulation return type converges at fixpoint, not base case
+// PICKED: recursive list accumulation return type converges at fixpoint, not base case
 #[test]
 fn effective_return_lfp_for_recursive_sum() {
     let (mut t, m, mt) = pipeline(
@@ -3696,7 +3696,7 @@ fn main(), do: dbg(add1(40) + 2)
 /// .29.10.2 registers double's narrow
 /// spec for the typed arg from apply2's CallClosure; the CallClosure
 /// is rewritten into a direct `Call(double, …)`.
-// PICK: function passed as value retains both typed specialization and callable entry
+// PICKED: function passed as value retains both typed specialization and callable entry
 #[test]
 fn higher_order_callee_keeps_callable_entry_alongside_narrow_typed_spec() {
     let (mut t, m, mt) = pipeline(
@@ -3794,7 +3794,7 @@ fn main(), do: dbg(42)
 /// compiler-synthesized fz_spawn_thunk between the wrapper and the user
 /// closure. The spawned lambda stays reachable through the wrapper's real
 /// closure call, not because `MakeClosure` invents an any-key body.
-// PICK: spawn/1 receives typed closure capability; no synthetic thunk
+// PICKED: spawn/1 receives typed closure capability; no synthetic thunk
 #[test]
 fn spawn_wrapper_receives_known_closure_capability() {
     let (_t, m, mt) = frontend_plan(
@@ -3830,7 +3830,7 @@ fn spawn_wrapper_receives_known_closure_capability() {
 /// fz-ul4.29.12.2 — capture-specific refinements are ordinary call-site specs,
 /// not a second closure-handle registry. Constructing a closure does not keep
 /// an any-key body alive by itself.
-// PICK: closure with distinct captured values specializes without any-key body
+// PICKED: closure with distinct captured values specializes without any-key body
 #[test]
 fn make_closure_with_distinct_captures_uses_lambda_specs_not_handles() {
     let (mut t, m, mt) = pipeline(
@@ -3994,7 +3994,7 @@ end
 /// A `MakeFnRef(F)` (synthesized by ir_lower for named refs and zero-capture
 /// lambdas) populates
 /// `callable_capabilities[v] = KnownFn(F)` on the Let-bound var.
-// PICK: named function reference propagates concrete callable identity to call sites
+// PICKED: named function reference propagates concrete callable identity to call sites
 #[test]
 fn known_fn_capability_from_make_fn_ref() {
     let (_t, m, mt) = pipeline(
@@ -4037,7 +4037,7 @@ end
 
 /// A `MakeClosure` with captures is a real closure value, not a
 /// fn-as-value. It records a stateful closure capability, not `KnownFn`.
-// PICK: closure with captures is distinct from plain function reference
+// PICKED: closure with captures is distinct from plain function reference
 #[test]
 fn known_fn_capability_not_set_for_captures() {
     let (_t, m, mt) = pipeline(
@@ -4088,7 +4088,7 @@ end
 /// `apply2(double, 21)` — in apply2's specialized SpecPlan, the
 /// `f` entry param has `callable_capabilities[f_param] = KnownFn(double)`,
 /// propagated from main's callsite.
-// PICK: callable identity flows through direct call into higher-order parameter
+// PICKED: callable identity flows through direct call into higher-order parameter
 #[test]
 fn known_fn_capability_propagates_via_direct_call() {
     let (_t, m, mt) = pipeline(
@@ -4120,7 +4120,7 @@ end
     );
 }
 
-// PICK: returned closure value retains captured-closure identity at call sites
+// PICKED: returned closure value retains captured-closure identity at call sites
 #[test]
 fn returned_captured_closure_capability_propagates_into_cont_slot0() {
     let (_t, m, mt) = pipeline(
@@ -4204,7 +4204,7 @@ fn callable_capability_opaque_for_multi_target_join() {
 /// narrow spec for double — alongside its any-key (which .29.10.3
 /// will drop). This guarantees a narrow spec exists for the IR
 /// rewrite to dispatch into.
-// PICK: indirect call with known function identity registers typed specialization
+// PICKED: indirect call with known function identity registers typed specialization
 #[test]
 fn callclosure_with_known_fn_capability_registers_narrow_spec() {
     let (t, m, mt) = pipeline(
@@ -4478,7 +4478,7 @@ fn planner_publishes_dispatches_for_direct_call() {
     );
 }
 
-// PICK: protocol call on concrete receiver dispatches to correct impl
+// PICKED: protocol call on concrete receiver dispatches to correct impl
 #[test]
 fn planner_selects_static_protocol_impl_as_call_edge() {
     let src = r#"
@@ -4520,7 +4520,7 @@ fn main(), do: Collectable.id([1])
     assert_eq!(target_fn.name, "Collectable.List.id");
 }
 
-// PICK: cross-module call to imported function dispatches at module boundary
+// PICKED: cross-module call to imported function dispatches at module boundary
 #[test]
 fn planner_keeps_external_module_calls_at_provider_boundary() {
     let mut t = crate::types::new();
@@ -4586,7 +4586,7 @@ fn planner_keeps_external_module_calls_at_provider_boundary() {
     );
 }
 
-// PICK: cross-module protocol call stays at external boundary without local stub
+// PICKED: cross-module protocol call stays at external boundary without local stub
 #[test]
 fn planner_keeps_provider_protocol_calls_at_external_boundary() {
     let mut t = crate::types::new();
@@ -4700,7 +4700,7 @@ fn planner_publishes_cont_dispatches_for_non_tail_calls_in_enum_take_drop_split(
     }
 }
 
-// PICK: Enum.count/1 on Range enumerator returns integer per declared spec
+// PICKED: Enum.count/1 on Range enumerator returns integer per declared spec
 #[test]
 fn declared_return_fact_handles_enum_count_on_range_in_runtime_graph() {
     let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
@@ -4730,7 +4730,7 @@ fn declared_return_fact_handles_enum_count_on_range_in_runtime_graph() {
     );
 }
 
-// PICK: Enum.take on mixed List+Range inputs specializes for each enumerable type
+// PICKED: Enum.take on mixed List+Range inputs specializes for each enumerable type
 #[test]
 fn runtime_graph_mixed_enum_take_calls_plan_range_specialization() {
     let src = r#"
@@ -4785,7 +4785,7 @@ end
     );
 }
 
-// PICK: Enum.reduce with runtime-graph reducer returns non-empty type
+// PICKED: Enum.reduce with runtime-graph reducer returns non-empty type
 #[test]
 fn declared_return_fact_handles_enum_reduce_with_runtime_graph_reducer() {
     let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
@@ -4840,7 +4840,7 @@ fn declared_return_fact_handles_enum_reduce_with_runtime_graph_reducer() {
     );
 }
 
-// PICK: Enum.take_positive uses reduce_while with typed callback return
+// PICKED: Enum.take_positive uses reduce_while with typed callback return
 #[test]
 fn declared_return_fact_handles_take_positive_reduce_while_in_runtime_graph() {
     let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
@@ -4989,7 +4989,7 @@ fn declared_return_fact_handles_take_positive_reduce_while_in_runtime_graph() {
     }
 }
 
-// PICK: reduce_cont/reduce_step clause structure links list param to accumulator result
+// PICKED: reduce_cont/reduce_step clause structure links list param to accumulator result
 #[test]
 fn runtime_graph_reduce_helper_clause_carries_function_correspondence() {
     let src = "defmodule Probe do\n\
@@ -5060,7 +5060,7 @@ fn runtime_graph_reduce_helper_clause_carries_function_correspondence() {
 /// An impl callback whose declared `@spec` is set-theoretically disjoint from
 /// the protocol's declared callback spec (here: result `atom` vs `integer`) is
 /// rejected during resolve.
-// PICK: protocol impl callback with incompatible return type is rejected at compile time
+// PICKED: protocol impl callback with incompatible return type is rejected at compile time
 #[test]
 fn protocol_impl_callback_disjoint_spec_is_rejected() {
     let src = r#"
@@ -5097,7 +5097,7 @@ fn main(), do: P.to_thing([1])
 /// A compatible impl callback spec (result `integer`, matching the protocol)
 /// resolves without error; free type variables in callback positions never
 /// produce a false positive.
-// PICK: protocol impl with matching return type spec is accepted at compile time
+// PICKED: protocol impl with matching return type spec is accepted at compile time
 #[test]
 fn protocol_impl_callback_compatible_spec_is_accepted() {
     let src = r#"
@@ -5139,7 +5139,7 @@ fn plan_protocol_src(src: &str, tel: &dyn Telemetry) -> (DefaultTypes, Module, M
 /// Calling a protocol callback on a receiver whose type is disjoint from every
 /// implementing target emits a dedicated no-implementation diagnostic that names
 /// the protocol, the receiver type, and the known implementors.
-// PICK: protocol call on non-implementing type emits named diagnostic
+// PICKED: protocol call on non-implementing type emits named diagnostic
 #[test]
 fn protocol_call_on_unimplemented_receiver_emits_no_impl_diagnostic() {
     let src = r#"
@@ -5185,7 +5185,7 @@ fn main(), do: P.each(42)
 
 /// Calling the same protocol callback on a receiver the protocol does implement
 /// (a list) emits no no-implementation diagnostic.
-// PICK: protocol call on implementing receiver type emits no error
+// PICKED: protocol call on implementing receiver type emits no error
 #[test]
 fn protocol_call_on_implemented_receiver_emits_no_diagnostic() {
     let src = r#"
@@ -5219,7 +5219,7 @@ fn main(), do: P.each([1])
 /// from a single stub call into a `TypeTest`/`If` cascade with one direct
 /// call per impl. After the rewrite the dispatching fn calls the concrete
 /// impls — never the `__protocol__` stub.
-// PICK: closed union receiver dispatches each protocol impl via direct typetest cascade
+// PICKED: closed union receiver dispatches each protocol impl via direct typetest cascade
 #[test]
 fn closed_union_protocol_receiver_rewrites_to_typetest_cascade() {
     let src = r#"
@@ -5299,7 +5299,7 @@ end
     );
 }
 
-// PICK: closed union protocol dispatch matrix has no fallback when all types covered
+// PICKED: closed union protocol dispatch matrix has no fallback when all types covered
 #[test]
 fn closed_union_protocol_receiver_matrix_has_direct_outcomes_no_fallback() {
     let src = r#"
@@ -5356,7 +5356,7 @@ end
 
 /// A single-target receiver (a plain list, only `List` implements `Sizer`)
 /// is left untouched — ordinary single dispatch, no cascade.
-// PICK: single-impl protocol receiver is not transformed into multi-arm cascade
+// PICKED: single-impl protocol receiver is not transformed into multi-arm cascade
 #[test]
 fn single_target_protocol_receiver_is_not_rewritten() {
     let src = r#"
@@ -5379,7 +5379,7 @@ fn main(), do: describe([1, 2, 3])
     assert_eq!(before, after, "a single-target receiver must not grow a switch cascade");
 }
 
-// PICK: single-impl protocol receiver selects StaticDirect dispatch without matrix
+// PICKED: single-impl protocol receiver selects StaticDirect dispatch without matrix
 #[test]
 fn single_target_protocol_receiver_matrix_is_static_direct() {
     let src = r#"
@@ -5417,7 +5417,7 @@ fn main(), do: describe([1, 2, 3])
 /// every implementing arm and falls through to the original stub for a value
 /// matching none. The dispatch fn keeps a call to the `__protocol__` stub (the
 /// fallthrough), unlike the fully-covered closed-union case.
-// PICK: open union receiver dispatches known impls inline with stub fallthrough for rest
+// PICKED: open union receiver dispatches known impls inline with stub fallthrough for rest
 #[test]
 fn open_protocol_receiver_rewrites_to_cascade_with_stub_fallthrough() {
     let src = r#"
@@ -5478,7 +5478,7 @@ end
     );
 }
 
-// PICK: open union protocol matrix retains residual fallback for unimplemented types
+// PICKED: open union protocol matrix retains residual fallback for unimplemented types
 #[test]
 fn open_protocol_receiver_matrix_has_residual_stub_fallback() {
     let src = r#"
@@ -5523,7 +5523,7 @@ end
     assert_eq!(plan.graph.stats.fallback_nodes, 1);
 }
 
-// PICK: external provider protocol impl stays as stub fallback in dispatch matrix
+// PICKED: external provider protocol impl stays as stub fallback in dispatch matrix
 #[test]
 fn external_protocol_impl_overlap_remains_residual_in_matrix() {
     let src = r#"
@@ -5619,7 +5619,7 @@ end
 /// here is a fn parameter typed as `A.t` (where `A` declares
 /// `@type t :: opaque resource(integer)`), and the body returns
 /// `h.value`. The inferred return must be a subtype of `integer`.
-// PICK: opaque type .value accessor inside declaring module types as inner T
+// PICKED: opaque type .value accessor inside declaring module types as inner T
 #[test]
 fn value_accessor_inside_declaring_module_types_as_inner() {
     // Param uses the `x :: T` annotation form so ir_lower emits a
@@ -5803,7 +5803,7 @@ fn value_accessor_outside_declaring_module_emits_diagnostic() {
 /// Sibling fns in the declaring module reach `.value` without any
 /// diagnostic. Pairs with the rejecting test above to prove the gate
 /// is module-scoped, not whole-program.
-// PICK: opaque .value access inside declaring module emits no visibility diagnostic
+// PICKED: opaque .value access inside declaring module emits no visibility diagnostic
 #[test]
 fn value_accessor_inside_declaring_module_emits_no_diagnostic() {
     let src = r#"
@@ -5854,7 +5854,7 @@ fn make_bitstring_types_as_str_t() {
 // publishes the literal's Var as having `brands = {utf8}` and the
 // strs axis populated.
 
-// PICK: string literal lowers to utf8-branded bitstring with brand erasure in IR
+// PICKED: string literal lowers to utf8-branded bitstring with brand erasure in IR
 #[test]
 fn string_literal_lowers_to_utf8_branded_bitstring() {
     // fz-axu.23 (M2) — lower_program erases Brand prims as its
@@ -6014,7 +6014,7 @@ fn const_bitstring_types_as_str_t() {
 
 // ----- fz-l4c: planner rejects arithmetic on opaque-integer types -----
 
-// PICK: arithmetic on pid opaque type emits type error diagnostic
+// PICKED: arithmetic on pid opaque type emits type error diagnostic
 #[test]
 fn opaque_arithmetic_pid_plus_int_rejected() {
     let src = "fn main(), do: self() + 1";
@@ -6042,7 +6042,7 @@ fn opaque_arithmetic_pid_plus_int_rejected() {
     );
 }
 
-// PICK: arithmetic on ref opaque type emits type error diagnostic
+// PICKED: arithmetic on ref opaque type emits type error diagnostic
 #[test]
 fn opaque_arithmetic_ref_plus_int_rejected() {
     let src = "fn main(), do: make_ref() + 1";
@@ -6059,7 +6059,7 @@ fn opaque_arithmetic_ref_plus_int_rejected() {
     );
 }
 
-// PICK: equality comparison on opaque pid/ref is permitted without diagnostic
+// PICKED: equality comparison on opaque pid/ref is permitted without diagnostic
 #[test]
 fn opaque_equality_remains_permitted() {
     // Pid/ref equality is load-bearing for the selective-receive matcher
@@ -6084,7 +6084,7 @@ end
     );
 }
 
-// PICK: plain integer arithmetic does not trigger opaque-arithmetic diagnostic
+// PICKED: plain integer arithmetic does not trigger opaque-arithmetic diagnostic
 #[test]
 fn plain_int_arithmetic_still_passes() {
     let src = "fn main(), do: 1 + 1";

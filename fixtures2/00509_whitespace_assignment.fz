@@ -1,0 +1,5 @@
+fn main() do
+  x =
+    41
+  x + 1
+end

@@ -1,0 +1,7 @@
+fn pick({:one, x}), do: x
+fn pick({:two, x, y}), do: {x, y}
+fn pick(:other), do: :other
+
+fn main() do
+  {pick({:one, 1}), pick({:two, 1, 2}), pick(:other)}
+end

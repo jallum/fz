@@ -475,7 +475,7 @@ fn lower_if_uses_continuation_fns() {
     );
 }
 
-// PICK: if with constant condition routes to correct branch
+// PICKED: if with constant condition routes to correct branch
 #[test]
 fn fz_84m_repro_a_prints_99() {
     // fz-84m repro A — constant cond + non-tail call in if-arm.
@@ -491,7 +491,7 @@ fn fz_84m_repro_a_prints_99() {
     assert_eq!(out, "99");
 }
 
-// PICK: if arm with tail call returns correct value at runtime
+// PICKED: if arm with tail call returns correct value at runtime
 #[test]
 fn fz_84m_repro_b_prints_7_then_99() {
     // fz-84m repro B — tail-call in if-arm + per-callsite narrowing.
@@ -574,7 +574,7 @@ fn lower_with_uses_continuation_fns() {
     assert!(s.contains("with_else_0"), "expected else clause cont: {}", s);
 }
 
-// PICK: case clause with non-tail call compiles without error
+// PICKED: case clause with non-tail call compiles without error
 #[test]
 fn lower_case_with_call_in_clause_no_panic() {
     // case body with a call (was silently broken via Bug 2 — same
@@ -595,7 +595,7 @@ fn lower_case_with_call_in_clause_no_panic() {
     );
 }
 
-// PICK: with-else routes non-matching pattern to else clause at runtime
+// PICKED: with-else routes non-matching pattern to else clause at runtime
 #[test]
 fn fz_ben_tuple_pattern_typetest_routes_non_tuple_to_else() {
     // fz-ben — `{:ok, x}` pattern on `:err` (a non-tuple). Pre-fix,
@@ -616,7 +616,7 @@ fn fz_ben_tuple_pattern_typetest_routes_non_tuple_to_else() {
     assert_eq!(out, "0");
 }
 
-// PICK: if with comparison condition routes both arms correctly
+// PICKED: if with comparison condition routes both arms correctly
 #[test]
 fn fz_84m_repro_c_prints_7_then_99_no_narrowing() {
     // fz-84m repro C — same bug shape as B but with `n > 0` rather
@@ -646,7 +646,7 @@ fn lower_if_nontail_uses_join_fn() {
     assert!(s.contains("if_join"), "expected join fn for non-tail: {}", s);
 }
 
-// PICK: non-tail if with call arm; result flows into enclosing expression
+// PICKED: non-tail if with call arm; result flows into enclosing expression
 #[test]
 fn non_tail_if_call_arm_flows_through_join() {
     // The branch body is not final tail position when the if has a join.
@@ -666,7 +666,7 @@ fn non_tail_if_call_arm_flows_through_join() {
     assert_eq!(out, "[100, 2, 300, 4]");
 }
 
-// PICK: non-tail case with call arm; result flows into enclosing expression
+// PICKED: non-tail case with call arm; result flows into enclosing expression
 #[test]
 fn non_tail_case_call_arm_flows_through_join() {
     let out = run_and_capture(
@@ -683,7 +683,7 @@ fn non_tail_case_call_arm_flows_through_join() {
     assert_eq!(out, "[1]");
 }
 
-// PICK: non-tail cond with call arm; result flows into enclosing expression
+// PICKED: non-tail cond with call arm; result flows into enclosing expression
 #[test]
 fn non_tail_cond_call_arm_flows_through_join() {
     let out = run_and_capture(
@@ -765,7 +765,7 @@ fn lower_match_expr_binds_var() {
 /// should warn. User-authored Ifs whose dead branch the planner can
 /// prove (here: `if true do A else B` where the else is structurally
 /// unreachable) still do.
-// PICK: synthesized dispatch branches do not generate unreachable-arm warnings
+// PICKED: synthesized dispatch branches do not generate unreachable-arm warnings
 #[test]
 fn unreachable_arm_silenced_on_synthesized_ifs() {
     let m = lower_src(
@@ -1008,7 +1008,7 @@ fn lower_bare_top_level_fn_value_emits_thin_fn_ref_prim() {
     assert_eq!(count_prims_in_fn(main, |prim| matches!(prim, Prim::MakeClosure(..))), 0);
 }
 
-// PICK: closure captures only variables referenced in its body
+// PICKED: closure captures only variables referenced in its body
 #[test]
 fn lower_lambda_captures_only_referenced_outer_names() {
     let m = lower_src(
@@ -1032,7 +1032,7 @@ fn lower_lambda_captures_only_referenced_outer_names() {
     );
 }
 
-// PICK: closure with no outer references has no captured variables
+// PICKED: closure with no outer references has no captured variables
 #[test]
 fn lower_lambda_with_no_outer_reads_has_no_captures() {
     let m = lower_src(
@@ -1174,7 +1174,7 @@ fn spawn_wrapper_extern_keeps_intrinsic_boundary_identity() {
     );
 }
 
-// PICK: receive inside spawned lambda does not leak into enclosing function
+// PICKED: receive inside spawned lambda does not leak into enclosing function
 #[test]
 fn lambda_tail_receive_does_not_terminate_enclosing_spawn_call() {
     let m = lower_src(
@@ -1244,7 +1244,7 @@ fn spawn_free_program_has_no_compiler_spawn_thunk() {
     );
 }
 
-// PICK: unbound variable reference is a compile-time error
+// PICKED: unbound variable reference is a compile-time error
 #[test]
 fn unbound_var_returns_lower_error() {
     let err = lower_src_err("fn f(), do: missing", &crate::telemetry::ConfiguredTelemetry::new());
@@ -1266,14 +1266,14 @@ fn unbound_var_diag_has_real_span() {
     assert_eq!(d.code, codes::LOWER_UNBOUND);
 }
 
-// PICK: call to undefined function is a compile-time error
+// PICKED: call to undefined function is a compile-time error
 #[test]
 fn unbound_callee_returns_lower_error() {
     let err = lower_src_err("fn f(), do: nonesuch(1)", &crate::telemetry::ConfiguredTelemetry::new());
     assert!(matches!(err, LowerError::Unbound { .. }));
 }
 
-// PICK: empty case expression is a compile-time error
+// PICKED: empty case expression is a compile-time error
 #[test]
 fn empty_case_returns_unsupported() {
     let err = lower_src_err(
@@ -1389,7 +1389,7 @@ fn map_pattern_uses_map_get_check() {
     assert!(s.contains("map_get("), "got:\n{}", s);
 }
 
-// PICK: guard and binding share a single tuple field projection, not two
+// PICKED: guard and binding share a single tuple field projection, not two
 #[test]
 fn inline_dispatch_reuses_tuple_subject_across_test_guard_and_binding() {
     let m = lower_src(
@@ -1412,7 +1412,7 @@ fn inline_dispatch_reuses_tuple_subject_across_test_guard_and_binding() {
     );
 }
 
-// PICK: guard and binding share a single list head extraction, not two
+// PICKED: guard and binding share a single list head extraction, not two
 #[test]
 fn inline_dispatch_reuses_list_head_across_guard_and_binding() {
     let m = lower_src(
@@ -1435,7 +1435,7 @@ fn inline_dispatch_reuses_list_head_across_guard_and_binding() {
     );
 }
 
-// PICK: guard and binding share a single map_get extraction, not two
+// PICKED: guard and binding share a single map_get extraction, not two
 #[test]
 fn inline_dispatch_reuses_map_value_across_guard_and_binding() {
     let m = lower_src(
@@ -1467,7 +1467,7 @@ fn bitstring_pattern_lowers_to_per_field_reads() {
     assert!(s.contains("bit_reader_done("), "got:\n{}", s);
 }
 
-// PICK: unexpanded quote node is a compile-time error
+// PICKED: unexpanded quote node is a compile-time error
 #[test]
 fn quote_returns_post_expansion_node() {
     // Skip macro expansion to surface the leftover-quote error path.
@@ -1898,7 +1898,7 @@ fn main() do libc::open(\"x\", 0) end
 /// fz-jex — calling an extern with the wrong arg count must produce a
 /// LowerError at compile time, not a silent codegen truncation that
 /// panics at runtime in fz_unbox_int with a tag mismatch.
-// PICK: extern call with wrong argument count is a compile-time error
+// PICKED: extern call with wrong argument count is a compile-time error
 #[test]
 fn extern_call_arity_mismatch_is_lower_error() {
     let src = "\
@@ -1971,7 +1971,7 @@ fn main() do libc::printf(\"%d\", 7) end
     assert_eq!(extern_args[1].marshal, ExternMarshal::Auto);
 }
 
-// PICK: variadic extern call with too few args is a compile-time error
+// PICKED: variadic extern call with too few args is a compile-time error
 #[test]
 fn variadic_extern_too_few_args_is_lower_error() {
     let src = "\
@@ -2177,7 +2177,7 @@ fn build_receive_pattern_rows_carries_guard() {
     assert!(source_patterns.rows[1].guard.is_none());
 }
 
-// PICK: case guard calling a user function compiles without error
+// PICKED: case guard calling a user function compiles without error
 #[test]
 fn case_guard_with_pure_user_fn_inlines_and_lowers() {
     let src = "fn is_pos(n) do n > 0 end
@@ -2190,7 +2190,7 @@ fn case_guard_with_pure_user_fn_inlines_and_lowers() {
     let _ = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
 }
 
-// PICK: case guard calling multi-clause function dispatches correctly at runtime
+// PICKED: case guard calling multi-clause function dispatches correctly at runtime
 #[test]
 fn case_guard_with_multi_clause_user_fn_lowers_dispatch() {
     let src = "fn is_pos(0) do false end
@@ -2207,7 +2207,7 @@ fn case_guard_with_multi_clause_user_fn_lowers_dispatch() {
     );
 }
 
-// PICK: guarded list-cons pattern clause dispatches correctly at runtime
+// PICKED: guarded list-cons pattern clause dispatches correctly at runtime
 #[test]
 fn guarded_list_cons_clause_survives_compiled_folding() {
     let src = "fn partition(_, [], lo, hi), do: {lo, hi}
@@ -2263,7 +2263,7 @@ fn lower_receive_after_clause_emits_after_body() {
     );
 }
 
-// PICK: pinned variable in receive pattern resolves from outer scope
+// PICKED: pinned variable in receive pattern resolves from outer scope
 #[test]
 fn lower_receive_pinned_resolves_outer_scope() {
     let src = "fn rx_pinned(want) do
@@ -2280,7 +2280,7 @@ fn lower_receive_pinned_resolves_outer_scope() {
     );
 }
 
-// PICK: pinned variable in receive pattern referencing unbound name is an error
+// PICKED: pinned variable in receive pattern referencing unbound name is an error
 #[test]
 fn lower_receive_pinned_unbound_is_error() {
     let src = "fn rx() do
@@ -2297,7 +2297,7 @@ fn lower_receive_pinned_unbound_is_error() {
     }
 }
 
-// PICK: well-formed receive with multiple message patterns compiles cleanly
+// PICKED: well-formed receive with multiple message patterns compiles cleanly
 #[test]
 fn lower_receive_planner_accepts_well_formed() {
     // Acceptance bullet: planner accepts well-formed selective receive.
@@ -2323,7 +2323,7 @@ fn lower_receive_planner_accepts_well_formed() {
     assert!(impure.is_empty(), "unexpected purity diags: {:?}", impure);
 }
 
-// PICK: receive guard calling an extern-backed function is a compile-time error
+// PICKED: receive guard calling an extern-backed function is a compile-time error
 #[test]
 fn lower_receive_rejects_impure_guard() {
     // The helper body calls an extern-backed runtime fn, so it cannot

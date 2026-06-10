@@ -87,7 +87,7 @@ fn compiler_prepares_execution_graph_from_program_input() {
     );
 }
 
-// PICK: spawn with captured variables runs correctly through full compiler
+// PICKED: spawn with captured variables runs correctly through full compiler
 #[test]
 fn compiler_compile_planned_runs_spawn_with_captures_through_single_plan_path() {
     let tel = ConfiguredTelemetry::new();

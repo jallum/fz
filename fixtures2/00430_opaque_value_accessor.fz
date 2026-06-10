@@ -1,0 +1,11 @@
+defmodule A do
+  @type t :: opaque resource(integer)
+
+  fn make(), do: make_resource(7, &dbg/1)
+  fn get(h :: t), do: h.value
+end
+
+fn main() do
+  h = A.make()
+  A.get(h)
+end

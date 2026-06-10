@@ -1,0 +1,9 @@
+defmacro make_const(name, value) do
+  {:fn_def, name, value}
+end
+
+make_const(:answer, 42)
+
+fn main() do
+  answer()
+end

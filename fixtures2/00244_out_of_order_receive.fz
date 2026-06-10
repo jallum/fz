@@ -1,0 +1,12 @@
+fn main() do
+  me = self()
+  send(me, {:a, 1})
+  send(me, {:b, 2})
+  vb = receive do
+    {:b, x} -> x
+  end
+  va = receive do
+    {:a, x} -> x
+  end
+  dbg(va + vb)
+end

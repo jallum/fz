@@ -1,6 +1,6 @@
 use super::*;
 
-// PICK: test macro with passing assert runs without error
+// PICKED: test macro with passing assert runs without error
 #[test]
 fn passing_test_runs_clean() {
     let src = r#"
@@ -11,7 +11,7 @@ end
     run_str(src).expect("test should pass");
 }
 
-// PICK: test macro with failing assert surfaces as error result
+// PICKED: test macro with failing assert surfaces as error result
 #[test]
 fn failing_test_returns_err() {
     let src = r#"
@@ -23,7 +23,7 @@ end
     assert!(r.is_err(), "expected failure, got {:?}", r);
 }
 
-// PICK: multiple test blocks; one failure makes overall result an error
+// PICKED: multiple test blocks; one failure makes overall result an error
 #[test]
 fn multiple_tests_some_fail() {
     let src = r#"
@@ -41,7 +41,7 @@ end
     assert!(r.is_err(), "expected at least one failure");
 }
 
-// PICK: fn test_*() convention is discovered and run like test macro
+// PICKED: fn test_*() convention is discovered and run like test macro
 #[test]
 fn convention_style_test_fn_also_discovered() {
     // Skipping the macro: a hand-written `fn test_*() do ... end` is

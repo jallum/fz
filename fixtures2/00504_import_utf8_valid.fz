@@ -1,0 +1,3 @@
+import Utf8, only: [valid?: 1]
+
+fn main(), do: valid?(<<104, 105>>)

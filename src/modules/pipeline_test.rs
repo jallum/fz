@@ -32,7 +32,7 @@ end
     assert!(!modules.contains(&"Process".to_string()));
 }
 
-// PICK: recursive protocol reduce callback converges without oscillation
+// PICKED: recursive protocol reduce callback converges without oscillation
 #[test]
 fn protocol_impl_reduce_callback_plans_to_fixed_point() {
     let mut concrete_types = crate::types::new();
@@ -177,7 +177,7 @@ fn linked_runtime_graph_keeps_cont_dispatches_for_spawn_with_captures() {
     }
 }
 
-// PICK: Utf8.valid? on a valid binary returns true through linked runtime
+// PICKED: Utf8.valid? on a valid binary returns true through linked runtime
 #[test]
 fn runtime_library_units_link_and_run() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();

@@ -1,0 +1,1 @@
+fn mk(x, y), do: fn(z) -> x + z end

@@ -38,7 +38,7 @@ fn main(), do: User.run()
     assert!(capture.contains(&["fz", "lto", "boundaries_erased"]));
 }
 
-// PICK: spawn with captured variables executes correctly end-to-end
+// PICKED: spawn with captured variables executes correctly end-to-end
 #[test]
 fn compile_pipeline_runs_spawn_with_captures_through_single_plan_path() {
     let tel = ConfiguredTelemetry::new();

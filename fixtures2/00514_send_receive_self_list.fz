@@ -1,0 +1,4 @@
+fn main() do
+  send(self(), [1, 2.5, :a])
+  receive do x -> x end
+end

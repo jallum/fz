@@ -1,0 +1,3 @@
+fn fst({a, _}), do: a
+fn snd({_, b}), do: b
+fn main(), do: fst({10, 20}) + snd({30, 40})

@@ -1,0 +1,11 @@
+defmacro make_const(name, value) do
+  {:fn_def, name, value}
+end
+
+defmodule Constants do
+  make_const(:pi_ish, 314)
+end
+
+fn main() do
+  Constants.pi_ish()
+end

@@ -72,7 +72,7 @@ fn drive(lines: &[&str]) -> Vec<Result<String, String>> {
     out
 }
 
-// PICK: integer arithmetic evaluation in interactive session
+// PICKED: integer arithmetic evaluation in interactive session
 #[test]
 fn evaluates_simple_expression() {
     let r = drive(&["1 + 2"]);
@@ -94,7 +94,7 @@ fn drive_uses_composer_for_blank_docs_quit_and_parse_errors() {
     assert_eq!(r[2].as_deref(), Ok("3"));
 }
 
-// PICK: integer, float, and mixed-type list display round-trip
+// PICKED: integer, float, and mixed-type list display round-trip
 #[test]
 fn repl_round_trip_int_float_and_mixed_list_display() {
     let r = drive(&["42", "3.14", "[1, 2.5, :a]"]);
@@ -103,7 +103,7 @@ fn repl_round_trip_int_float_and_mixed_list_display() {
     assert_eq!(r[2].as_deref(), Ok("[1, 2.5, :a]"));
 }
 
-// PICK: Utf8.valid? and Utf8.from_bytes runtime semantics on binaries
+// PICKED: Utf8.valid? and Utf8.from_bytes runtime semantics on binaries
 #[test]
 fn run_script_str_accepts_utf8_smart_constructors() {
     let src = r#"
@@ -119,7 +119,7 @@ end
     run_script_str(src).expect("Utf8 helpers should run through script REPL");
 }
 
-// PICK: runtime import of Utf8 module; valid? callable in expression
+// PICKED: runtime import of Utf8 module; valid? callable in expression
 #[test]
 fn repl_session_accepts_top_level_runtime_import() {
     let mut session = ReplSession::new();
@@ -131,7 +131,7 @@ fn repl_session_accepts_top_level_runtime_import() {
     assert_eq!(eval_session_render(&mut session, "valid?(<<104, 105>>)"), "true");
 }
 
-// PICK: module alias in scope; qualified call via alias resolves correctly
+// PICKED: module alias in scope; qualified call via alias resolves correctly
 #[test]
 fn repl_session_accepts_top_level_runtime_alias() {
     let mut session = ReplSession::new();
@@ -349,7 +349,7 @@ fn repl_world_classifies_invalid_syntax_as_non_incomplete_error() {
     );
 }
 
-// PICK: variable binding persists across sequential evaluation chunks
+// PICKED: variable binding persists across sequential evaluation chunks
 #[test]
 fn repl_session_binds_variable_across_chunks() {
     let mut session = ReplSession::new();
@@ -357,7 +357,7 @@ fn repl_session_binds_variable_across_chunks() {
     assert_eq!(eval_session_i64(&mut session, "x + 1"), Some(42));
 }
 
-// PICK: expression evaluation does not rebind existing variables in scope
+// PICKED: expression evaluation does not rebind existing variables in scope
 #[test]
 fn repl_session_expression_display_does_not_mutate_frame() {
     let mut session = ReplSession::new();
@@ -366,7 +366,7 @@ fn repl_session_expression_display_does_not_mutate_frame() {
     assert_eq!(eval_session_i64(&mut session, "x"), Some(10));
 }
 
-// PICK: tuple destructuring binds multiple names across session chunks
+// PICKED: tuple destructuring binds multiple names across session chunks
 #[test]
 fn repl_session_destructuring_binding_persists_across_chunks() {
     let mut session = ReplSession::new();
@@ -428,7 +428,7 @@ fn repl_diagnostics_are_anchored_to_user_source_not_wrapper_text() {
     }
 }
 
-// PICK: whitespace-heavy assignment expression parses and binds correctly
+// PICKED: whitespace-heavy assignment expression parses and binds correctly
 #[test]
 fn repl_accepts_whitespace_heavy_multiline_expression_chunks() {
     let mut session = ReplSession::new();
@@ -437,7 +437,7 @@ fn repl_accepts_whitespace_heavy_multiline_expression_chunks() {
     assert_eq!(eval_session_i64(&mut session, "x + 1"), Some(42));
 }
 
-// PICK: failed pattern match errors and does not corrupt prior bindings
+// PICKED: failed pattern match errors and does not corrupt prior bindings
 #[test]
 fn repl_session_match_failure_uses_lowered_runtime_semantics() {
     let mut session = ReplSession::new();
@@ -454,7 +454,7 @@ fn repl_session_match_failure_uses_lowered_runtime_semantics() {
     assert_eq!(eval_session_i64(&mut session, "x"), Some(1));
 }
 
-// PICK: top-level fn definition is callable from subsequent expressions
+// PICKED: top-level fn definition is callable from subsequent expressions
 #[test]
 fn repl_session_top_level_definition_is_callable() {
     let mut session = ReplSession::new();
@@ -477,7 +477,7 @@ fn repl_session_accepts_top_level_extern_declaration() {
     ));
 }
 
-// PICK: spawn/receive/send message passing across sequential session chunks
+// PICKED: spawn/receive/send message passing across sequential session chunks
 #[test]
 fn repl_session_spawned_child_blocks_across_chunks_and_resumes() {
     let mut session = ReplSession::new();
@@ -490,7 +490,7 @@ fn repl_session_spawned_child_blocks_across_chunks_and_resumes() {
     assert_eq!(eval_session_i64(&mut session, "receive do x -> x end"), Some(42));
 }
 
-// PICK: blocked child process survives new fn definition and later message
+// PICKED: blocked child process survives new fn definition and later message
 #[test]
 fn repl_session_blocked_child_survives_later_code_generation() {
     let mut session = ReplSession::new();
@@ -509,14 +509,14 @@ fn repl_session_blocked_child_survives_later_code_generation() {
     assert_eq!(eval_session_i64(&mut session, "receive do x -> x end"), Some(7));
 }
 
-// PICK: send to self and receive round-trips a mixed-type list value
+// PICKED: send to self and receive round-trips a mixed-type list value
 #[test]
 fn repl_round_trip_send_receive_self() {
     let r = drive(&["send(self(), [1, 2.5, :a])", "receive do x -> x end"]);
     assert_eq!(r[1].as_deref(), Ok("[1, 2.5, :a]"));
 }
 
-// PICK: spawned closure sends; receive with pattern match and after clause
+// PICKED: spawned closure sends; receive with pattern match and after clause
 #[test]
 fn repl_spawned_send_round_trips_through_receive_matcher() {
     let r = drive(&[
@@ -531,7 +531,7 @@ fn repl_spawned_send_round_trips_through_receive_matcher() {
     assert_eq!(r[2].as_deref(), Ok(":ok"));
 }
 
-// PICK: spawn/2 with heap hint argument sends message correctly
+// PICKED: spawn/2 with heap hint argument sends message correctly
 #[test]
 fn repl_spawn2_accepts_ignored_heap_hint() {
     let r = drive(&[
@@ -542,7 +542,7 @@ fn repl_spawn2_accepts_ignored_heap_hint() {
     assert_eq!(r[2].as_deref(), Ok("42"));
 }
 
-// PICK: variable bound in one input chunk used in a later chunk
+// PICKED: variable bound in one input chunk used in a later chunk
 #[test]
 fn binds_variable_across_inputs() {
     let r = drive(&["x = 7", "x + 35"]);
@@ -550,14 +550,14 @@ fn binds_variable_across_inputs() {
     assert_eq!(r[1].as_deref(), Ok("42"));
 }
 
-// PICK: multi-clause recursive fn built incrementally across inputs
+// PICKED: multi-clause recursive fn built incrementally across inputs
 #[test]
 fn appends_clauses_to_existing_fn() {
     let r = drive(&["fn fact(0), do: 1", "fn fact(n), do: n * fact(n - 1)", "fact(6)"]);
     assert!(r[2].as_deref() == Ok("720"), "expected 720, got {:?}", r[2]);
 }
 
-// PICK: multiline do-end fn body with local binding evaluates correctly
+// PICKED: multiline do-end fn body with local binding evaluates correctly
 #[test]
 fn accepts_multiline_do_end_from_editor_buffer() {
     let r = drive(&["fn double_plus(x) do\n  y = x + 1\n  y * 2\nend", "double_plus(20)"]);
@@ -635,7 +635,7 @@ fn repl_world_compiles_accumulated_item_clauses() {
     assert!(module.module.fn_by_name("__repl_eval_0").is_some());
 }
 
-// PICK: defmacro defined in one chunk is expandable in a later expression
+// PICKED: defmacro defined in one chunk is expandable in a later expression
 #[test]
 fn repl_world_compiles_eval_chunks_with_accumulated_macros() {
     let mut world = ReplWorld::new();
@@ -775,7 +775,7 @@ fn doc_query_empty_shows_usage() {
 
 // ===== fz-i67.1 — run_script_str =====
 
-// PICK: script with main/0 calling a helper fn completes successfully
+// PICKED: script with main/0 calling a helper fn completes successfully
 #[test]
 fn run_script_str_accepts_program_with_main() {
     // Defines main/0; run_script_str should call it. (We can't capture
@@ -786,7 +786,7 @@ fn run_script_str_accepts_program_with_main() {
     run_script_str(src).expect("script with main should succeed");
 }
 
-// PICK: multi-process relay program runs through scheduler correctly
+// PICKED: multi-process relay program runs through scheduler correctly
 #[test]
 fn run_script_str_uses_scheduler_backed_relay() {
     let src = std::fs::read_to_string("fixtures/relay/input.fz").expect("read relay fixture");
@@ -801,14 +801,14 @@ fn run_script_str_accepts_program_without_main() {
     run_script_str(src).expect("script without main should succeed");
 }
 
-// PICK: multiline fn body with arithmetic evaluates and runs correctly
+// PICKED: multiline fn body with arithmetic evaluates and runs correctly
 #[test]
 fn run_script_str_accepts_multi_line_forms() {
     let src = "fn double(x) do\n  x * 2\nend\nfn main() do dbg(double(21)) end\n";
     run_script_str(src).expect("multi-line fn body should parse and run");
 }
 
-// PICK: top-level @spec attaches to following fn and program runs
+// PICKED: top-level @spec attaches to following fn and program runs
 #[test]
 fn run_script_str_accepts_top_level_spec_with_fn() {
     let src = "@spec add1(integer) :: integer\nfn add1(n), do: n + 1\nfn main() do dbg(add1(41)) end\n";
@@ -830,7 +830,7 @@ fn run_script_str_reports_parse_error() {
     );
 }
 
-// PICK: fn redefinition at different arity replaces old; new arity resolves
+// PICKED: fn redefinition at different arity replaces old; new arity resolves
 #[test]
 fn redefines_fn_with_different_arity() {
     let r = drive(&["fn f(x), do: x + 1", "fn f(x, y), do: x + y", "f(10, 20)"]);

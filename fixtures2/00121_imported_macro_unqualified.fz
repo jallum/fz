@@ -1,0 +1,8 @@
+defmodule M do
+  defmacro bump(x), do: quote do: unquote(x) + 1
+end
+defmodule User do
+  import M, only: [bump: 1]
+  fn run(), do: bump(41)
+end
+fn main() do User.run() end

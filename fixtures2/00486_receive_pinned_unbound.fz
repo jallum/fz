@@ -1,0 +1,5 @@
+fn rx() do
+  receive do
+    {^nope, _} -> 0
+  end
+end

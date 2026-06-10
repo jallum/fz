@@ -1,0 +1,9 @@
+fn main() do
+  parent = self()
+  spawn(fn () -> send(parent, [1, 2.5, :a]) end)
+  receive do
+    [1, 2.5, :a] -> :ok
+  after
+    0 -> :miss
+  end
+end

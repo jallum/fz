@@ -1,0 +1,5 @@
+fn main() do
+  dbg(:ok)
+  dbg(true)
+  dbg(false)
+end

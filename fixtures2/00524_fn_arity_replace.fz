@@ -1,0 +1,3 @@
+fn f(x, y), do: x + y
+
+fn main(), do: f(10, 20)

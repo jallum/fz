@@ -1,0 +1,8 @@
+fn main() do
+  f = fn
+0 -> :zero
+n when n > 0 -> :pos
+_ -> :other
+  end
+  {f.(0), f.(2), f.(-1)}
+end

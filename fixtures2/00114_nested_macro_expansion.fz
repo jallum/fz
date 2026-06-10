@@ -1,0 +1,3 @@
+defmacro m1(x) do quote do: unquote(x) + 1 end
+defmacro m2(x) do quote do: m1(unquote(x)) end
+fn main() do m2(40) end

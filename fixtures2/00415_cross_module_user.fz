@@ -1,0 +1,5 @@
+defmodule User do
+  import Math, only: [add: 2]
+  fn run(), do: add(20, 22) + 1
+end
+fn main(), do: User.run()

@@ -1,0 +1,4 @@
+defmodule User do
+  import Missing
+  fn run(), do: nil
+end

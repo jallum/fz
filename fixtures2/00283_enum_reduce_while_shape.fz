@@ -1,0 +1,16 @@
+fn finish({:found, index}), do: index
+fn finish({:not_found, _index}), do: -1
+
+fn collapsed() do
+  Enum.reduce_while([1, 2, 3], {:not_found, 0}, fn (entry, {:not_found, index}) ->
+    if entry == 2 do
+      {:halt, {:found, index}}
+    else
+      {:cont, {:not_found, index + 1}}
+    end
+  end)
+end
+
+fn main() do
+  dbg(finish(collapsed()))
+end

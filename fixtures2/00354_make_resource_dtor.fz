@@ -1,0 +1,6 @@
+extern "C" fn _resource_test_dtor(integer) :: nil
+fn dwrap(x), do: _resource_test_dtor(x)
+fn main() do
+  r = make_resource(42, &dwrap/1)
+  nil
+end

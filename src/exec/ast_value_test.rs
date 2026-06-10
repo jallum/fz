@@ -128,7 +128,7 @@ fn binop_eq() {
 
 // fz-g58.2.2 — the Elixir-aligned operators have AST representations that
 // round-trip through the quoted-atom reflection used by macros/quote.
-// PICK: Elixir-aligned binops round-trip through quoted-atom encoding
+// PICKED: Elixir-aligned binops round-trip through quoted-atom encoding
 #[test]
 fn binop_atom_round_trips_elixir_operators() {
     for op in [

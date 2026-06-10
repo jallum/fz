@@ -1,0 +1,4 @@
+fn double(x), do: x * 2
+fn map_l(_, []), do: []
+fn map_l(f, [h | t]), do: [f.(h) | map_l(f, t)]
+fn main(), do: dbg(map_l(double, [1, 2, 3]))

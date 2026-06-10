@@ -24,7 +24,7 @@ fn lower_src(src: &str) -> Module {
 }
 
 #[cfg(unix)]
-// PICK: variadic C extern call passes integer arguments and returns fd
+// PICKED: variadic C extern call passes integer arguments and returns fd
 #[test]
 #[serial_test::serial]
 fn variadic_open_interp_creates_file_with_mode_bits() {
@@ -77,7 +77,7 @@ end
     assert_eq!(mode, (requested as u32) & !(umask as u32) & 0o777);
 }
 
-// PICK: unsupported variadic extern arg type produces a clear runtime error
+// PICKED: unsupported variadic extern arg type produces a clear runtime error
 #[test]
 fn unsupported_variadic_extern_shape_is_interp_error() {
     let module = lower_src(

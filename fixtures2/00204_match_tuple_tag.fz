@@ -1,0 +1,11 @@
+# Same-arity tuple partition by atom tag. The selected clause projects the second
+# field from the matching tag, so `:ok` returns `int` and `:error` returns `:bad`.
+#
+# Expected: main() : {int, :bad}
+
+fn pick({:ok, x}), do: x
+fn pick({:error, reason}), do: reason
+
+fn main() do
+  {pick({:ok, 1}), pick({:error, :bad})}
+end

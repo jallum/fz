@@ -1,0 +1,21 @@
+# Tail-recursive fold threading a closure with no captures. The closure surface
+# type `&f[]:(α,α)->α` is fine; the apply `f.(h, acc)` resolves it. The list slot
+# widens nonempty_list(int) -> list(int) (one rung); acc and f are loop-invariant.
+#
+# Expected: myreduce([1,2,3], 0, +) : number ; settles.
+
+fn go(list, acc, f) do
+  case list do
+    [] -> acc
+    [h | t] -> go(t, f.(h, acc), f)
+    _ -> acc
+  end
+end
+
+fn myreduce(list, acc, f) do
+  go(list, acc, f)
+end
+
+fn main() do
+  dbg(myreduce([1, 2, 3], 0, fn (x, a) -> x + a end))
+end

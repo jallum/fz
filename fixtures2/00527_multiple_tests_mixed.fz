@@ -1,0 +1,9 @@
+test(:test_a) do
+  assert(true)
+end
+test(:test_b) do
+  assert(:x == :x)
+end
+test(:test_c) do
+  assert(1 == 2)
+end

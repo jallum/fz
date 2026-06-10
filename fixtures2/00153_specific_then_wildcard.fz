@@ -1,0 +1,3 @@
+fn classify(0), do: :zero
+fn classify(_), do: :other
+fn main(), do: classify(7)

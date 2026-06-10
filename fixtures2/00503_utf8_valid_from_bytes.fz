@@ -1,0 +1,8 @@
+fn main() do
+  good = <<104, 105>>
+  bad = <<0xff, 0xff>>
+  assert(Utf8.valid?(good))
+  refute(Utf8.valid?(bad) == true)
+  assert(Utf8.from_bytes(good) == {:ok, "hi"})
+  assert(Utf8.from_bytes(bad) == {:error, :invalid_utf8})
+end

@@ -1,0 +1,7 @@
+fn id(x), do: x
+fn apply(f, x), do: f.(x)
+fn main() do
+  f = &id/1
+  r = apply(f, 41)
+  r
+end

@@ -1,0 +1,11 @@
+defprotocol Enumerable do
+  fn reduce(enumerable, acc, reducer)
+end
+
+defimpl Enumerable, for: List do
+  fn reduce(list, acc, reducer), do: acc
+end
+
+defmodule Consumer do
+  fn use(xs), do: 1
+end

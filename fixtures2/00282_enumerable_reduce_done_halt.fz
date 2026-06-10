@@ -1,0 +1,6 @@
+fn main() do
+  dbg({
+    Enumerable.reduce([1, 2], {:cont, 0}, fn (x, acc) -> {:cont, acc + x} end),
+    Enumerable.reduce([1, 2], {:halt, 7}, fn (x, acc) -> {:cont, acc + x} end)
+  })
+end

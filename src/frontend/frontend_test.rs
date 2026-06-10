@@ -13,7 +13,7 @@ fn compile_source(src: String, source_name: String, tel: &dyn Telemetry) -> Fron
     compile_source_with_types(&mut t, src, source_name, tel)
 }
 
-// PICK: inexhaustive pattern match produces no-matching-clause warning
+// PICKED: inexhaustive pattern match produces no-matching-clause warning
 #[test]
 fn returns_warning_diagnostics_without_rendering() {
     let src = "\
@@ -181,7 +181,7 @@ fn compile_program_with_types_matches_source_pipeline() {
     assert_eq!(parsed_out.diagnostics.len(), source_out.diagnostics.len());
 }
 
-// PICK: unbound name in expression is a compile-time error
+// PICKED: unbound name in expression is a compile-time error
 #[test]
 fn compile_program_with_types_preserves_diagnostics() {
     let src = "fn main(), do: missing + 1\n";
@@ -194,7 +194,7 @@ fn compile_program_with_types_preserves_diagnostics() {
     assert!(err.diagnostics.as_slice().iter().any(|d| d.severity == Severity::Error));
 }
 
-// PICK: cross-module import from external interface resolves call edges
+// PICKED: cross-module import from external interface resolves call edges
 #[test]
 fn compile_source_accepts_loaded_interfaces_without_provider_body() {
     let mut t = crate::types::new();

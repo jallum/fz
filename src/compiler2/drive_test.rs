@@ -5860,11 +5860,11 @@ struct ReturnTypeRecord {
     return_ty: Ty,
 }
 
-struct FunctionCapture {
+pub(crate) struct FunctionCapture {
     defs: FunctionDefs,
 }
 
-struct ModuleCapture {
+pub(crate) struct ModuleCapture {
     defs: ModuleDefs,
 }
 
@@ -7481,11 +7481,11 @@ fn expr_has_binary_nested_input(expr: &PatternGuardExpr<Ty>) -> bool {
     }
 }
 
-fn assert_resolved(outcome: DriveOutcome<Job, FactKey>, message: &str) {
+pub(crate) fn assert_resolved(outcome: DriveOutcome<Job, FactKey>, message: &str) {
     assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
 }
 
-fn function_id(capture: &FunctionCapture, name: &str, arity: u64) -> FunctionId {
+pub(crate) fn function_id(capture: &FunctionCapture, name: &str, arity: u64) -> FunctionId {
     capture.id(name, arity)
 }
 
@@ -7516,7 +7516,7 @@ fn function_id_in_module(
         .unwrap_or_else(|| panic!("function.defined for {module_name}.{name}/{arity}"))
 }
 
-fn module_id(capture: &ModuleCapture, name: &str) -> ModuleId {
+pub(crate) fn module_id(capture: &ModuleCapture, name: &str) -> ModuleId {
     capture
         .defs
         .borrow()

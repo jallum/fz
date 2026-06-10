@@ -1,0 +1,13 @@
+# Pattern-dispatch binding flow. The cons leaf returns the bound head, proving
+# matcher-produced bindings carry the input list element type into the leaf.
+# The lowered `head(list)` primitive projects `int` from the non-empty input
+# list, so the leaf returns `int`, not an unbound or over-joined value.
+#
+# Expected: main() : {:empty, int}
+
+fn pick([]), do: :empty
+fn pick([h | _t]), do: h
+
+fn main() do
+  {pick([]), pick([1])}
+end

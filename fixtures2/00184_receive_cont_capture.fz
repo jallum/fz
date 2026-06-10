@@ -1,0 +1,11 @@
+fn parent(tag) do
+  msg = receive do
+    x -> x
+  end
+  {tag, msg}
+end
+
+fn main() do
+  result = parent(7)
+  {result}
+end

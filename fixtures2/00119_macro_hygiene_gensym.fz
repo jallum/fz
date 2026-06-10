@@ -1,0 +1,10 @@
+defmacro double_via_temp(x) do
+  quote do
+t = unquote(x)
+t + t
+  end
+end
+fn main() do
+  t = 100
+  double_via_temp(21)
+end

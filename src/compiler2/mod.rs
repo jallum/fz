@@ -96,6 +96,24 @@ mod identity_test;
 #[cfg(test)]
 mod namespace_test;
 #[cfg(test)]
+mod port_codegen_test;
+#[cfg(test)]
+mod port_frontend_test;
+#[cfg(test)]
+mod port_interp_test;
+#[cfg(test)]
+mod port_lower_test;
+#[cfg(test)]
+mod port_macros_test;
+#[cfg(test)]
+mod port_misc_test;
+#[cfg(test)]
+mod port_planner_test;
+#[cfg(test)]
+mod port_resolve_test;
+#[cfg(test)]
+mod port_type_infer_test;
+#[cfg(test)]
 mod quoted_function_test;
 #[cfg(test)]
 mod quoted_surface_test;
