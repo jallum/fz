@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-rh2.16.8.2"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-rh2.16.8.5"
   ],
