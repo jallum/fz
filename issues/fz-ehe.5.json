@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-10T04:10:38Z",
   "created": "2026-06-10T04:05:11Z",
   "description": "Root is a one-field wrapper over RootEntry with no impl. Constructed in one place, unwrapped immediately on every read. RootMap should store Vec\u003cRootEntry\u003e directly; the Root struct disappears.",
   "id": "fz-ehe.5",
   "labels": [],
   "parent": "fz-ehe",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-knf-e: collapse Root { entry: RootEntry } — RootMap stores RootEntry directly",
   "type": "task",
-  "updated_at": "2026-06-10T04:09:10Z"
+  "updated_at": "2026-06-10T04:10:38Z"
 }
