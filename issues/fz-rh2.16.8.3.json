@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.16.8.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.16.8.5"
+  ],
   "created": "2026-06-10T12:05:22Z",
   "description": "Goal: compiler2 type/spec/extern fragments have one authoritative transport: preserved token payloads. Signal: frontdoor emits token payloads for compiler2 fragment islands; surface/function readers consume them directly; compiler2 no longer reconstructs type tokens from quoted AST or re-lexes string fragments on its own path. Strategy: audit every compiler2 type/spec/extern fragment entry point, move them onto token_payload end-to-end, delete AST-\u003etoken reconstruction helpers once the readers no longer need them, and prove the old re-lex telemetry stays absent.",
   "id": "fz-rh2.16.8.3",
