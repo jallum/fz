@@ -5,7 +5,7 @@
     "fz-rh2.16.11.4"
   ],
   "created": "2026-06-10T22:37:27Z",
-  "description": "",
+  "description": "Goal: make the fz-rh2.16.8/16.10/16.11 arc landable again by bringing this branch forward onto the current fz-tkf baseline before attempting the 16.11.4 closeout.\\n\\nGrounding: clean HEAD on this worktree (4bb4db879) is red outside compiler2 closeout scope:  and  fail here, but both pass on current . That means the source-production branch is stale relative to the main line, and 16.11.4 cannot be honestly closed on top of this baseline.\\n\\nStrategy: rebase or forward-port the definition-macro arc onto current , resolve the old-world planner/materialization drift, then re-run the 16.11.4 closeout and verification surface on the rebased branch.\\n\\nSignal: the rebased branch is green on the old-world parity tests that currently fail here, and 16.11.4 can then close on a truthful baseline.",
   "id": "fz-rh2.16.11.5",
   "labels": [],
   "parent": "fz-rh2.16.11",
