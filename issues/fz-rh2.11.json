@@ -4,14 +4,16 @@
   "blocks": [
     "fz-rh2.9"
   ],
+  "closed_at": "2026-06-10T07:01:05Z",
+  "close_reason": "done",
   "created": "2026-06-08T11:48:47Z",
   "description": "Goal: make `fz2` able to compile the current structured-control surface without reopening old-world lowering or planner machinery.\n\nSignal:\n- representative `fz2 run` coverage for `case`, `with`, `receive`, map/struct/bitstring surface, and lambda-capture surface passes on the same fixtures that currently fail\n- Compiler2 continues to publish dispatch-owned facts and backend artifacts without calling old `ir_lower` / planner paths\n- migration/cutover planning resumes only after this surface gap is closed\n\nStrategy:\n- use `dispatch_matrix` as the shared decision engine for source control constructs\n- let old-world lowering/runtime code inform durable invariants only; do not import matcher-fn/CPS-era semantic shape\n- strengthen Compiler2's structured body/control model first, then lace in the missing data constructors/pattern projections, then lower `case`/`with`/`receive`, then restore outer-surface parity\n\nWhy:\n- the backend arc is mechanically closed, but `fz2` still rejects real language surface (`Case`, `Receive`, `Map`, `Struct`, `Bitstring`, `Capture`, macro-expanded item/value surface)\n- replacement planning is premature until Compiler2 can cover the same control/data surface the fixture matrix treats as ordinary language",
   "id": "fz-rh2.11",
   "labels": [],
   "parent": "fz-rh2",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 surface parity: lower structured control through dispatch_matrix",
   "type": "epic",
-  "updated_at": "2026-06-08T11:49:50Z"
+  "updated_at": "2026-06-10T07:01:05Z"
 }
