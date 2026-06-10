@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.16.8.2"
+  ],
   "blocks": [],
   "created": "2026-06-10T12:05:22Z",
   "description": "Goal: finish the source-spine cleanup by deleting retired code paths and making the new model explicit in docs and telemetry. Signal: no dead duplicate expansion or publication helpers remain; docs state the invariants clearly (quoted roots are the only source authority, QuotedExpander owns root-\u003eroot rewriting, publication is one transaction, ordinary function bodies expand on function demand, and type fragments are token payloads); telemetry and fixture checks prove compiler2 is not silently falling back to old-world behavior. Strategy: remove leftovers from the earlier split paths, update the agent docs and migration docs, and add the narrow regression and telemetry checks that keep this spine honest.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 source spine closeout: remove leftovers and restate the invariants",
   "type": "task",
-  "updated_at": "2026-06-10T20:00:47Z"
+  "updated_at": "2026-06-10T20:00:48Z"
 }
