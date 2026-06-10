@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-10T17:58:32Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-rh2.16.10",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Normalize rustfmt drift around function staging",
   "type": "task",
-  "updated_at": "2026-06-10T17:58:32Z"
+  "updated_at": "2026-06-10T17:58:37Z"
 }
