@@ -4,6 +4,7 @@
   "blocks": [
     "fz-rh2.16.6"
   ],
+  "closed_at": "2026-06-10T09:21:41Z",
   "created": "2026-06-10T08:05:46Z",
   "description": "Resolve the fz-rh2.9 artifact failures where compiler2 reaches an incomplete semantic/materialized artifact: enum_map_family, enum_reduce_suspend, enum_take_drop_split, enum_tier0, enumerable_protocol_dispatch, map_enumerable, membership_operator, opaque_fn_value_join, range_enumerable, repr_seam_closure_predicate, tailcall_closure_captures.\n\nObserved failure classes include missing materialized call edges, missing callable-entry targets, unresolved activation closure, and missing settled protocol direct-call edges.\n\nSignal: each fixture can be promoted to fz2 matrix coverage or is split into a smaller bug ticket with a precise missing fact/edge.",
   "id": "fz-rh2.16.3",
@@ -16,8 +17,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Fix fz2 callable/protocol/Enum artifact parity gaps",
   "type": "task",
-  "updated_at": "2026-06-10T09:21:36Z"
+  "updated_at": "2026-06-10T09:21:41Z"
 }
