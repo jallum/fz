@@ -7,6 +7,8 @@
     "fz-rh2.8.2"
   ],
   "blocks": [],
+  "closed_at": "2026-06-10T08:08:25Z",
+  "close_reason": "compiler2 cutover parity plan recorded; follow-up epic fz-rh2.16 created",
   "created": "2026-06-06T23:37:22Z",
   "description": "Goal: decide when Compiler2 can replace the old compiler.\n\nGrounding from current state:\n- `fz-rh2.14` settled the native/backend seam: compiler2 now owns the JIT/AOT/native handoff through `NativeProgram(root)` plus the one world-owned compiler2 `Types`, and runtime-membership questions use the shared first-class `RuntimeTypePredicate`.\n- The remaining migration uncertainty is therefore above that seam: source-surface parity, contract comparison against the current compiler oracle, and identifying obsolete old-world modules/docs/tests to scrap once parity is agreed.\n\nChange:\n- compare contract fixtures against the current compiler oracle\n- decide which old-world surfaces remain load-bearing versus obsolete\n- create follow-up scrap tickets only after the agreed contract surface is covered\n\nCheck: no deletion happens until Compiler2 covers agreed contracts, and the remaining comparison work is explicitly about surface/contract parity rather than backend wiring.",
   "id": "fz-rh2.9",
@@ -19,8 +21,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 migration: compare contracts and plan old compiler scrap",
   "type": "task",
-  "updated_at": "2026-06-10T08:08:21Z"
+  "updated_at": "2026-06-10T08:08:25Z"
 }
