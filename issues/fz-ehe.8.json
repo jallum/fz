@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-10T04:43:10Z",
+  "description": "",
+  "id": "fz-ehe.8",
+  "labels": [],
+  "parent": "fz-ehe",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-ehe.8: flatten Code wrapper struct — store CodeState directly in CodeMap slots, like Module and Function",
+  "type": "task",
+  "updated_at": "2026-06-10T04:43:10Z"
+}
