@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.16.6"
+  ],
   "created": "2026-06-09T14:54:55Z",
   "description": "Grounding from current code:\n- `src/compiler2/jobs/native.rs` still fabricates `legacy_extern_ty`, `legacy_extern_contract`, and a fresh legacy type owner only to populate `fz_ir::ExternDecl.ret_descr` / `semantic_contract`.\n- The compiler2-native backend no longer uses those fields as authority after `NativeProgram(root)`; they remain because the shared fz-IR/native substrate still carries old-world extern semantic payloads on `ExternDecl`.\n\nGoal: make the compiler2/native extern handoff truthful by construction. Signal: compiler2-native no longer needs to mint legacy extern semantic payloads just to satisfy `fz_ir::ExternDecl`; the runtime/codegen substrate consumes an extern surface that carries only backend-consumption facts.\n\nChange:\n- identify every backend/runtime consumer that still requires `ExternDecl.ret_descr` or `semantic_contract`\n- delete those old-world payloads from the compiler2/native handoff, or split the shared extern surface so compiler2-native does not have to carry them\n- remove the temporary legacy extern projection helpers from `src/compiler2/jobs/native.rs` once the substrate no longer needs them\n\nWhy:\n- `fz-rh2.14` closed the big backend ownership cut, but this is the remaining contained pocket where compiler2-native still manufactures old-world semantic data it does not semantically own",
   "id": "fz-rh2.15",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 native substrate: remove legacy extern semantic payloads from ExternDecl",
   "type": "task",
-  "updated_at": "2026-06-09T14:54:55Z"
+  "updated_at": "2026-06-10T08:05:56Z"
 }
