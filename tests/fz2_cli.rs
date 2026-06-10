@@ -120,6 +120,18 @@ fn assert_source_production_telemetry(path: &Path, context: &str, expect_macro_e
     }
 }
 
+fn assert_native_backend_compile_telemetry(path: &Path, context: &str) {
+    let log = read_to_string(path).unwrap_or_else(|error| panic!("read telemetry log {}: {error}", path.display()));
+    assert!(
+        log.contains("\"name\":[\"fz\",\"compiler2\",\"native_backend\",\"compile\"]"),
+        "{context} should name the compiler2 native-backend boundary; log=\n{log}",
+    );
+    assert!(
+        log.contains("\"name\":[\"fz\",\"codegen\",\"compile\"]"),
+        "{context} should include the nested codegen compile span; log=\n{log}",
+    );
+}
+
 fn output_text(out: &Output) -> String {
     format!(
         "{}{}",
@@ -220,6 +232,7 @@ fn quicksort_run_lexes_each_source_once() {
     );
     assert_compiler2_telemetry_only(&telemetry_path, "fz2 run quicksort");
     assert_lexer_passes_match_submitted_sources(&telemetry_path, "fz2 run quicksort", &expected_lexer_sources);
+    assert_native_backend_compile_telemetry(&telemetry_path, "fz2 run quicksort");
 
     let _ = remove_file(&telemetry_path);
 }

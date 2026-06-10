@@ -256,10 +256,12 @@ emitted four lexer span-starts, exactly
 `fixtures/quicksort/input.fz`, `runtime:runtime.fz`, `runtime:Kernel.fz`, and
 `runtime:Process.fz`. The old source-fragment re-lex and its hidden per-call
 type-env rebuild are gone by construction on the compiler2 path. The same trace
-showed the remaining tail clearly: `fz.compiler2.drive` took 57.955 ms, then
-post-drive `fz.codegen.compile` took 47.749 ms before runtime exit. That backend
-accounting problem is tracked as `fz-rh2.12.13`; it is not a source-production
-re-lex problem. The ignored JSONL dump is the occasional deep trace.
+showed the native tail clearly: `fz.compiler2.drive` took 58.109 ms, then
+post-drive native backend compilation took 47.207 ms before runtime exit. That
+tail is now named by `fz.compiler2.native_backend.compile`, whose child
+`fz.codegen.compile` owns the backend-internal phase breakdown (`47.136 ms` in
+the same run). It is not a source-production re-lex problem. The ignored JSONL
+dump is the occasional deep trace.
 
 Useful reruns:
 
@@ -290,10 +292,18 @@ test:
 
 ## Codegen Regression Events
 
+Compiler2 emits `fz.compiler2.native_backend.compile` when a public native front
+door consumes a `NativeProgram(root)` through JIT or AOT. It is the artifact
+boundary span: metadata names the `root_id`, `backend_revision`, `entry_fn_id`,
+`body_count`, `callable_entry_count`, and backend kind. The raw
+`fz.codegen.compile` span nests under it, so a trace can account for both the
+fact drive and the post-drive native backend tail without treating codegen as an
+unattributed gap.
+
 Three codegen events carry stable enough fields to assert on in tests, proving
-codegen consumed the published ABI and callable-entry facts handed to it. They are
-emitted for reachable specs / lowered sites and pair with CLIF or runtime checks
-when the generated shape matters.
+codegen consumed the published ABI and callable-entry facts handed to it. They
+are emitted for reachable specs / lowered sites and pair with CLIF or runtime
+checks when the generated shape matters.
 
 - `fz.codegen.abi_contract` (`ir_codegen/driver.rs`) — one per reachable lowered
   spec. Measurements: `spec_id`, `fn_id`, `param_count`, `capture_count`.

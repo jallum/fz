@@ -241,6 +241,69 @@ fn assert_no_legacy_planner_or_type_infer(capture: &Capture, context: &str) {
     );
 }
 
+fn assert_native_backend_compile_span(capture: &Capture, backend: &str, context: &str) {
+    let starts = |name: &[&str]| {
+        capture
+            .find(name)
+            .into_iter()
+            .filter(|event| event.kind == EventKind::SpanStart)
+            .collect::<Vec<_>>()
+    };
+    let stops = |name: &[&str]| {
+        capture
+            .find(name)
+            .into_iter()
+            .filter(|event| event.kind == EventKind::SpanStop)
+            .collect::<Vec<_>>()
+    };
+
+    let boundary_starts = starts(&["fz", "compiler2", "native_backend", "compile"]);
+    assert_eq!(
+        boundary_starts.len(),
+        1,
+        "{context}: compiler2 should name the native backend boundary once"
+    );
+    let boundary = &boundary_starts[0];
+    match boundary.metadata.get("backend") {
+        Some(Value::Str(actual)) => assert_eq!(actual.as_ref(), backend, "{context}: backend metadata"),
+        other => panic!("{context}: native backend span missing backend metadata: {other:?}"),
+    }
+    for key in [
+        "root_id",
+        "backend_revision",
+        "entry_fn_id",
+        "body_count",
+        "callable_entry_count",
+    ] {
+        assert!(
+            matches!(boundary.metadata.get(key), Some(Value::U64(_))),
+            "{context}: native backend span should carry numeric `{key}` metadata"
+        );
+    }
+
+    let boundary_stops = stops(&["fz", "compiler2", "native_backend", "compile"]);
+    assert_eq!(
+        boundary_stops.len(),
+        1,
+        "{context}: compiler2 native backend span should close once"
+    );
+    assert_eq!(
+        boundary_stops[0].span_id, boundary.span_id,
+        "{context}: native backend start/stop should share one span id"
+    );
+
+    let codegen_compile = starts(&["fz", "codegen", "compile"]);
+    assert_eq!(
+        codegen_compile.len(),
+        1,
+        "{context}: codegen should emit one compile span"
+    );
+    assert_eq!(
+        codegen_compile[0].parent_span_id, boundary.span_id,
+        "{context}: codegen compile should nest under the compiler2 native backend boundary"
+    );
+}
+
 struct NativeEntryCase<'a> {
     name: &'a str,
     source_name: &'a str,
@@ -301,6 +364,7 @@ fn compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare() {
         let (compiled, entry) = compiler
             .compile_root_jit(root_id)
             .unwrap_or_else(|err| panic!("{} should JIT-compile through NativeProgram: {err}", case.name));
+        assert_native_backend_compile_span(&capture, "jit", case.name);
         assert_eq!(
             compiled.run(&tel, entry),
             case.expected_halt,
@@ -364,6 +428,7 @@ fn compiler2_compile_root_aot_consumes_native_program_without_legacy_prepare() {
         let artifact = compiler
             .compile_root_aot(root_id, obj_name)
             .unwrap_or_else(|err| panic!("{name} should AOT-compile through NativeProgram: {err}"));
+        assert_native_backend_compile_span(&capture, "aot", name);
         assert!(
             !artifact.object.is_empty(),
             "{name} should produce a non-empty AOT object through the Compiler2 front door",
@@ -404,6 +469,7 @@ fn compiler2_run_root_jit_executes_resources_without_legacy_prepare() {
     compiler
         .run_root_jit(root_id)
         .unwrap_or_else(|error| panic!("resource fixture should run through Compiler2 JIT: {error}"));
+    assert_native_backend_compile_span(&capture, "jit", "Compiler2 run_root_jit");
 
     assert_eq!(
         tests_support_dtor_fired(),

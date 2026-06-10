@@ -1,4 +1,4 @@
-use crate::telemetry::Telemetry;
+use crate::telemetry::{Telemetry, TelemetryExt as _};
 
 use super::ExecutableNeed;
 use super::Job;
@@ -70,6 +70,31 @@ impl<'a> Compiler2<'a> {
         Ok(self.world.native_program(root))
     }
 
+    fn compile_native_backend<B>(
+        &mut self,
+        root: RootId,
+        program: &NativeProgram,
+        backend: B,
+    ) -> Result<B::Output, super::native_codegen::CodegenError>
+    where
+        B: super::native_codegen::Backend,
+    {
+        let backend_kind = backend.kind();
+        let tel = self.world.tel();
+        let _span = tel.span(
+            &["fz", "compiler2", "native_backend", "compile"],
+            crate::metadata! {
+                root_id: root.as_u32() as u64,
+                backend_revision: program.backend_revision,
+                entry_fn_id: program.entry.0 as u64,
+                body_count: program.bodies.len() as u64,
+                callable_entry_count: program.callable_entries.len() as u64,
+                backend: backend_kind,
+            },
+        );
+        super::native_codegen::compile_with_backend_native_program(self.world.types_mut(), program, backend, tel)
+    }
+
     fn drive_root_to(&mut self, root: RootId, job: Job) -> Result<(), String> {
         self.world.demand(job);
         match self.world.drive() {
@@ -105,14 +130,9 @@ impl<'a> Compiler2<'a> {
     ) -> Result<(crate::ir_codegen::CompiledModule, crate::fz_ir::FnId), String> {
         let program = self.native_program_for_root(root)?;
         let entry = program.entry;
-        let tel = self.world.tel();
-        let compiled = super::native_codegen::compile_with_backend_native_program(
-            self.world.types_mut(),
-            &program,
-            super::native_codegen::JitBackend::new(),
-            tel,
-        )
-        .map_err(|err| format!("compiler2 root {} JIT compile failed: {err}", root.as_u32()))?;
+        let compiled = self
+            .compile_native_backend(root, &program, super::native_codegen::JitBackend::new())
+            .map_err(|err| format!("compiler2 root {} JIT compile failed: {err}", root.as_u32()))?;
         Ok((compiled, entry))
     }
 
@@ -120,14 +140,10 @@ impl<'a> Compiler2<'a> {
     /// result through the shared runtime with the native module attached.
     pub fn run_root_jit(&mut self, root: RootId) -> Result<(), String> {
         let program = self.native_program_for_root(root)?;
+        let compiled = self
+            .compile_native_backend(root, &program, super::native_codegen::JitBackend::new())
+            .map_err(|err| format!("compiler2 root {} JIT compile failed: {err}", root.as_u32()))?;
         let tel = self.world.tel();
-        let compiled = super::native_codegen::compile_with_backend_native_program(
-            self.world.types_mut(),
-            &program,
-            super::native_codegen::JitBackend::new(),
-            tel,
-        )
-        .map_err(|err| format!("compiler2 root {} JIT compile failed: {err}", root.as_u32()))?;
         let mut runtime = crate::exec::runtime::Runtime::new(&compiled, 1, tel).with_module(&program.module);
         let _root_pid = runtime.spawn(program.entry);
         runtime.run_until_idle();
@@ -165,13 +181,7 @@ impl<'a> Compiler2<'a> {
     /// shared native backend.
     pub fn compile_root_aot(&mut self, root: RootId, obj_name: &str) -> Result<crate::ir_codegen::AotArtifact, String> {
         let program = self.native_program_for_root(root)?;
-        let tel = self.world.tel();
-        super::native_codegen::compile_with_backend_native_program(
-            self.world.types_mut(),
-            &program,
-            super::native_codegen::AotBackend::new(obj_name),
-            tel,
-        )
-        .map_err(|err| format!("compiler2 root {} AOT compile failed: {err}", root.as_u32()))
+        self.compile_native_backend(root, &program, super::native_codegen::AotBackend::new(obj_name))
+            .map_err(|err| format!("compiler2 root {} AOT compile failed: {err}", root.as_u32()))
     }
 }
