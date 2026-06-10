@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.16.11.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.16.11.3"
+  ],
   "created": "2026-06-10T21:05:05Z",
   "description": "Make the top-level function-definition family compile through compiler macros instead of direct source publication. Source-spelled `def`/`defp`/`defmacro`/`defmacrop` should be expanded by compiler-prelude macros into canonical raw function definition fragments wrapped in `Fz.Compiler.define(..., __ENV__)`.\n\nThis ticket must preserve the staged boundary already established in compiler2: top-level definition macros decide what functions exist, but they do not expand function bodies. `FunctionSource` stays raw; `ExpandFunctionSource` remains the demand-time body-local macro/sugar pass; `DefineFunction` keeps waiting on `ExpandedFunctionSource`.\n\nSignal: top-level function definitions enter compiler2 only through the compiler callback, `ScopeCode` does no body-local expansion for them, and demanded functions still expand exactly once behind `ExpandedFunctionSource`.",
   "id": "fz-rh2.16.11.2",
