@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.16.9.1"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-rh2.16.9",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 macro expansion: depend only on compile-time macro readiness and recover a fixed point",
   "type": "task",
-  "updated_at": "2026-06-10T15:39:02Z"
+  "updated_at": "2026-06-10T16:26:16Z"
 }
