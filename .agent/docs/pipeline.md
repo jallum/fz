@@ -129,6 +129,14 @@ and the selected macro executables up front, records that exact remote macro set
 for the source scope, then only those required remote macro calls expand in
 source order.
 
+Item macro calls are source-order work, not body-lowering work. The macro call
+expands through `MacroExecutable(function)`, the returned Fz-shaped root is read
+as a source fragment, and any function source inside that fragment is published
+through `Fz.Compiler.define` with a projected `__ENV__`. Literal functions,
+protocol callbacks, synthesized module-info functions, and explicit compiler
+services all use that same publication event; module indexing does not have a
+raw function-body capture side path.
+
 ## Runtime and built-ins are ordinary, lazy code
 
 `Enum`, `Kernel`, and friends are not a special class and not a prelude phase.

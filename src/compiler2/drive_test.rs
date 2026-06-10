@@ -394,6 +394,53 @@ fn compiler2_derive_type_def_mints_a_refines_brand_inner_in_symbol() {
 }
 
 #[test]
+fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = crate::compiler2::World::new(&tel);
+    let code_id = world.submit_code(
+        Some("defimpl_owner_remote_call.fz".to_string()),
+        concat!(
+            "defprotocol Proof do\n",
+            "  @spec pick(t(a), a) :: a\n",
+            "  fn pick(value, fallback)\n",
+            "end\n",
+            "\n",
+            "defmodule Box do\n",
+            "  fn pick(value, _fallback), do: value\n",
+            "  defimpl Proof, for: List do\n",
+            "    fn pick(value, fallback), do: Box.pick(value, fallback)\n",
+            "  end\n",
+            "end\n",
+        )
+        .to_string(),
+    );
+
+    assert_resolved(world.drive(), "source should index protocol and owner modules");
+    assert!(
+        world.demand(Job::ScopeCode(code_id)),
+        "top-level scope should be demandable"
+    );
+    assert_resolved(world.drive(), "top-level scope should prepare module definitions");
+
+    let protocol = world.reference_module("Proof");
+    assert!(
+        world.demand(Job::DefineModule(protocol)),
+        "protocol definition should be demandable"
+    );
+    assert_resolved(world.drive(), "protocol definition should publish callback facts first");
+
+    let owner = world.reference_module("Box");
+    assert!(
+        world.demand(Job::DefineModule(owner)),
+        "owner module definition should be demandable",
+    );
+    assert_resolved(
+        world.drive(),
+        "owner-module remote calls inside defimpl callbacks should use the live source namespace, not wait on ModuleDefined(owner)",
+    );
+}
+
+#[test]
 fn compiler2_protocol_domain_and_dispatch_facts_revise_when_impls_land() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -5952,12 +5999,24 @@ end
         need: ExecutableNeed::Value,
     });
 
-    match compiler.drive() {
-        DriveOutcome::Fatal {
-            job: Job::LowerFunction(_),
-        } => {}
-        other => panic!("unrequired remote macro call should reach macro-free lowering as a fatal error: {other:?}"),
-    }
+    let outcome = compiler.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Fatal { .. }),
+        "unrequired remote macro call should fail during source production: {outcome:?}",
+    );
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("unrequired remote macro diagnostic");
+    assert_eq!(
+        metadata_str(&diagnostic, "code"),
+        codes::MACRO_NOT_REQUIRED.0,
+        "unrequired remote macros should be rejected at source expansion",
+    );
+    assert!(
+        metadata_str(&diagnostic, "message").contains("require Helpers"),
+        "diagnostic should explain the missing require; got: {}",
+        metadata_str(&diagnostic, "message"),
+    );
     assert_eq!(
         capture.count(&["fz", "compiler2", "macro", "expanded"]),
         0,

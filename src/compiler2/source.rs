@@ -456,6 +456,9 @@ impl QuotedSourceRoot {
     /// "not equal" — conservative: it forces a revision bump rather than risk a
     /// missed change.
     pub fn semantically_eq(&self, other: &QuotedSourceRoot, horizon: Horizon) -> bool {
+        if self.key == other.key {
+            return true;
+        }
         let left = self.heap.process.borrow();
         let right = other.heap.process.borrow();
         values_eq(&left, self.root, &right, other.root, horizon).unwrap_or(false)

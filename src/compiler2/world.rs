@@ -1309,6 +1309,10 @@ impl<'a> World<'a> {
         code == self.runtime_prelude
     }
 
+    pub(crate) fn is_runtime_module(&self, module: ModuleId) -> bool {
+        self.runtime_modules.contains_key(&module)
+    }
+
     pub(crate) fn set_prelude_head(&mut self, head: Namespace) {
         self.namespaces.set_prelude_head(head);
     }

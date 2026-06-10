@@ -31,6 +31,7 @@ pub const SPEC_VIOLATION: DiagCode = DiagCode("spec/violation");
 // ----- macro expansion -----
 
 pub const MACRO_NOT_A_DEFMACRO: DiagCode = DiagCode("macro/not-a-defmacro");
+pub const MACRO_NOT_REQUIRED: DiagCode = DiagCode("macro/not-required");
 pub const MACRO_EXPANSION_LOOP: DiagCode = DiagCode("macro/expansion-loop");
 pub const MACRO_ARG_REIFICATION_FAILED: DiagCode = DiagCode("macro/arg-reification-failed");
 pub const MACRO_BODY_FAILED: DiagCode = DiagCode("macro/body-failed");

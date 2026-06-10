@@ -18,6 +18,7 @@ fn all_codes_follow_stage_slash_kind_format() {
         INTERFACE_MISSING_SPEC,
         SPEC_VIOLATION,
         MACRO_NOT_A_DEFMACRO,
+        MACRO_NOT_REQUIRED,
         MACRO_EXPANSION_LOOP,
         LOWER_UNSUPPORTED,
         LOWER_UNBOUND,

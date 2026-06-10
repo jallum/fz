@@ -23,9 +23,9 @@ use super::identity::{FunctionId, FunctionSource, ModuleExport, ModuleId, NotedT
 use super::namespace::{Namespace, NamespaceSymbol};
 use super::protocol::ProtocolCallbackImpl;
 use super::quoted_surface::{
-    CompilerService, CompilerServiceForm, FunctionForm, ProtocolImplForm, ScopeForm, ScopeSurface,
+    CompilerService, CompilerServiceForm, FunctionForm, MacroCallForm, ProtocolImplForm, ScopeForm, ScopeSurface,
     SurfaceSourceContext, read_module_body_surface, read_protocol_body_surface, read_protocol_impl_body_surface,
-    read_scope_form,
+    read_scope_surface,
 };
 use super::scheduler::FatalError;
 use super::scope::ScopeSnapshot;
@@ -74,12 +74,23 @@ enum ExpandedValue {
     Blocked(JobEffects),
 }
 
+enum FunctionDefinition {
+    Complete(FunctionPublication),
+    Blocked(JobEffects),
+}
+
+enum ProtocolImplDefinition {
+    Complete { outputs: Outputs },
+    Blocked(JobEffects),
+}
+
 struct ScopeSession<'world, 'tel> {
     world: &'world mut World<'tel>,
     code_id: CodeId,
     current_module: ModuleId,
     namespace: Namespace,
     local_protocols: HashSet<String>,
+    local_callables: HashMap<(String, usize), NamespaceSymbol>,
     pending_types: Vec<PendingType>,
     required_remote_macros: HashSet<FunctionId>,
     reads: Vec<FactKey>,
@@ -231,6 +242,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             current_module: current_scope.module_id(),
             namespace: current_scope.namespace(),
             local_protocols: HashSet::new(),
+            local_callables: HashMap::new(),
             pending_types: Vec::new(),
             required_remote_macros: HashSet::new(),
             reads: Vec::new(),
@@ -250,18 +262,20 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         if let Some(blocked) = self.apply_ordered_forms(&surface.forms)? {
             return Ok(ScopePublication::Blocked(blocked));
         }
-        self.publish_module_info()?;
+        if let Some(blocked) = self.publish_module_info()? {
+            return Ok(ScopePublication::Blocked(self.blocked_effects(blocked)));
+        }
         Ok(self.complete())
     }
 
-    fn publish_module_info(&mut self) -> Result<(), FatalError> {
+    fn publish_module_info(&mut self) -> Result<Option<JobEffects>, FatalError> {
         if self.current_module.is_global()
             || self
                 .exports
                 .iter()
                 .any(|export| export.name == "__info__" && export.arity == 1)
         {
-            return Ok(());
+            return Ok(None);
         }
 
         let module_name = self
@@ -285,21 +299,21 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             function.name.clone(),
             NamespaceSymbol::Function(function_id),
         );
-        let publication = publish_function_source(
-            self.world,
-            self.code_id,
+        let publication = match self.define_source_function(
             self.current_module,
             self.current_module,
             self.namespace,
             &function,
             true,
-            CompilerDefineOrigin::LiteralFunction,
-        );
+        )? {
+            FunctionDefinition::Complete(publication) => publication,
+            FunctionDefinition::Blocked(effects) => return Ok(Some(effects)),
+        };
         self.outputs.push(publication.output);
         if let Some(export) = publication.export {
             self.exports.push(export);
         }
-        Ok(())
+        Ok(None)
     }
 
     fn reserve_types(&mut self, attrs: &[Attribute]) -> Result<(), FatalError> {
@@ -347,6 +361,8 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                     } else {
                         NamespaceSymbol::Function(function_id)
                     };
+                    self.local_callables
+                        .insert((function.name.clone(), function.arity), symbol.clone());
                     self.namespace = self.world.bind_namespace(self.namespace, function.name.clone(), symbol);
                 }
                 ScopeForm::Module(module) => {
@@ -371,17 +387,8 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 | ScopeForm::Require(_)
                 | ScopeForm::CompilerService(_)
                 | ScopeForm::Struct(_)
-                | ScopeForm::ProtocolImpl(_) => {}
-                ScopeForm::MacroCall(macro_call) => {
-                    return Err(emit_job_diagnostic(
-                        self.world,
-                        Diagnostic::error(
-                            codes::INTERNAL_POST_RESOLUTION_LEFTOVER,
-                            "compiler2 indexing expected expanded AST without item macro calls",
-                            macro_call.span,
-                        ),
-                    ));
-                }
+                | ScopeForm::ProtocolImpl(_)
+                | ScopeForm::MacroCall(_) => {}
             }
         }
         Ok(())
@@ -435,24 +442,16 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                     self.apply_compiler_service(service)?;
                 }
                 ScopeForm::Function(function) => {
-                    let function_id =
-                        self.world
-                            .reference_function(self.current_module, function.name.clone(), function.arity);
-                    let function_scope = ScopeSnapshot::function(self.current_module, self.namespace, function_id);
-                    let function = match self.expand_function_form(function, function_scope)? {
-                        ExpandedFunction::Complete(function) => function,
-                        ExpandedFunction::Blocked(effects) => return Ok(Some(self.blocked_effects(effects))),
-                    };
-                    let publication = publish_function_source(
-                        self.world,
-                        self.code_id,
+                    let publication = match self.define_source_function(
                         self.current_module,
                         self.current_module,
                         self.namespace,
-                        &function,
+                        function,
                         true,
-                        CompilerDefineOrigin::LiteralFunction,
-                    );
+                    )? {
+                        FunctionDefinition::Complete(publication) => publication,
+                        FunctionDefinition::Blocked(effects) => return Ok(Some(self.blocked_effects(effects))),
+                    };
                     self.outputs.push(publication.output);
                     if let Some(export) = publication.export {
                         self.exports.push(export);
@@ -467,11 +466,18 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                         reference_declared_protocol_module(self.world, self.current_module, &protocol.name);
                     self.world.scope_module(protocol_id, self.namespace);
                 }
-                ScopeForm::ProtocolImpl(protocol_impl) => {
-                    let mut outputs = self.define_protocol_impl(protocol_impl)?;
-                    self.outputs.append(&mut outputs);
+                ScopeForm::ProtocolImpl(protocol_impl) => match self.define_protocol_impl(protocol_impl)? {
+                    ProtocolImplDefinition::Complete { mut outputs } => {
+                        self.outputs.append(&mut outputs);
+                    }
+                    ProtocolImplDefinition::Blocked(effects) => return Ok(Some(self.blocked_effects(effects))),
+                },
+                ScopeForm::MacroCall(macro_call) => {
+                    if let Some(blocked) = self.apply_item_macro_call(macro_call)? {
+                        return Ok(Some(self.blocked_effects(blocked)));
+                    }
                 }
-                ScopeForm::Struct(_) | ScopeForm::MacroCall(_) => {}
+                ScopeForm::Struct(_) => {}
             }
         }
         Ok(None)
@@ -484,11 +490,20 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     }
 
     fn apply_compiler_define(&mut self, service: &CompilerServiceForm) -> Result<(), FatalError> {
+        let mut surface = self.scope_surface_from_root(&service.source, "Fz.Compiler.define source")?;
         let code_text = self.world.code_text(self.code_id).to_owned();
         let ctx = SurfaceSourceContext::new(self.code_id, &code_text, self.world.tel());
-        match read_scope_form(service.source.clone(), &ctx).map_err(|error| {
-            emit_internal_surface_error(self.world, format!("Fz.Compiler.define source read failed: {error}"))
-        })? {
+        if !surface.attrs.is_empty() || surface.forms.len() != 1 {
+            return Err(emit_job_diagnostic(
+                self.world,
+                Diagnostic::error(
+                    codes::INTERNAL_POST_RESOLUTION_LEFTOVER,
+                    "Fz.Compiler.define expected one fully expanded source definition",
+                    service.span,
+                ),
+            ));
+        }
+        match surface.forms.remove(0) {
             ScopeForm::Function(function) => {
                 let function_id =
                     self.world
@@ -498,6 +513,8 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 } else {
                     NamespaceSymbol::Function(function_id)
                 };
+                self.local_callables
+                    .insert((function.name.clone(), function.arity), symbol.clone());
                 self.namespace = self.world.bind_namespace(self.namespace, function.name.clone(), symbol);
                 let publication = publish_function_source(
                     self.world,
@@ -507,7 +524,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                     self.namespace,
                     &function,
                     true,
-                    CompilerDefineOrigin::CompilerService { env: &service.env },
+                    &service.env,
                 );
                 self.outputs.push(publication.output);
                 if let Some(export) = publication.export {
@@ -564,11 +581,20 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 self.world.scope_module(protocol_id, self.namespace);
                 Ok(())
             }
-            ScopeForm::ProtocolImpl(protocol_impl) => {
-                let mut outputs = self.define_protocol_impl(&protocol_impl)?;
-                self.outputs.append(&mut outputs);
-                Ok(())
-            }
+            ScopeForm::ProtocolImpl(protocol_impl) => match self.define_protocol_impl(&protocol_impl)? {
+                ProtocolImplDefinition::Complete { mut outputs } => {
+                    self.outputs.append(&mut outputs);
+                    Ok(())
+                }
+                ProtocolImplDefinition::Blocked(_) => Err(emit_job_diagnostic(
+                    self.world,
+                    Diagnostic::error(
+                        codes::INTERNAL_POST_RESOLUTION_LEFTOVER,
+                        "Fz.Compiler.define cannot block while applying a protocol implementation",
+                        service.span,
+                    ),
+                )),
+            },
             ScopeForm::Alias(alias) => {
                 let module_id = self.world.reference_module(alias.path.join("."));
                 self.namespace = self.world.bind_namespace(
@@ -614,6 +640,131 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 ),
             )),
         }
+    }
+
+    fn define_source_function(
+        &mut self,
+        function_module: ModuleId,
+        owner_module: ModuleId,
+        namespace: Namespace,
+        function: &FunctionForm,
+        export_public: bool,
+    ) -> Result<FunctionDefinition, FatalError> {
+        let function_id = self
+            .world
+            .reference_function(function_module, function.name.clone(), function.arity);
+        let function_scope = ScopeSnapshot::function(function_module, namespace, function_id);
+        let function = match self.expand_function_form(function, function_scope)? {
+            ExpandedFunction::Complete(function) => function,
+            ExpandedFunction::Blocked(effects) => return Ok(FunctionDefinition::Blocked(effects)),
+        };
+        let env = self.project_compiler_define_env(&function.source, function_scope)?;
+        Ok(FunctionDefinition::Complete(publish_function_source(
+            self.world,
+            self.code_id,
+            function_module,
+            owner_module,
+            namespace,
+            &function,
+            export_public,
+            &env,
+        )))
+    }
+
+    fn project_compiler_define_env(
+        &self,
+        source: &QuotedSourceRoot,
+        scope: ScopeSnapshot,
+    ) -> Result<QuotedSourceRoot, FatalError> {
+        let builder = source.builder();
+        let env = self
+            .world
+            .project_env_value(&builder, scope, QuotedLexicalContextKind::Definition)
+            .map_err(|error| emit_internal_surface_error(self.world, format!("__ENV__ projection failed: {error}")))?;
+        Ok(source.subroot(env))
+    }
+
+    fn apply_item_macro_call(&mut self, macro_call: &MacroCallForm) -> Result<Option<JobEffects>, FatalError> {
+        let scope = ScopeSnapshot::module(self.current_module, self.namespace);
+        let expanded = match self.expand_item_macro_call(macro_call, scope)? {
+            ExpandedRoot::Complete(root) => root,
+            ExpandedRoot::Blocked(effects) => return Ok(Some(effects)),
+        };
+        let surface = self.surface_from_expanded_item_macro(&expanded, macro_call.span)?;
+        self.apply_surface_fragment(&surface)
+    }
+
+    fn expand_item_macro_call(
+        &mut self,
+        macro_call: &MacroCallForm,
+        scope: ScopeSnapshot,
+    ) -> Result<ExpandedRoot, FatalError> {
+        let owner = &macro_call.source;
+        let cursor = owner.cursor();
+        let Some(node) = cursor.ast_node().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("item macro source read failed: {error}"))
+        })?
+        else {
+            return Err(self.item_macro_not_defmacro("item", macro_call.span));
+        };
+        let Some(result) = self.expand_ast_call(owner, &cursor, &node, scope, 0)? else {
+            return Err(self.item_macro_not_defmacro(&item_macro_display_name(&node), macro_call.span));
+        };
+        match result {
+            ExpandedValue::Complete(root) => Ok(ExpandedRoot::Complete(owner.subroot(root))),
+            ExpandedValue::Blocked(effects) => Ok(ExpandedRoot::Blocked(effects)),
+        }
+    }
+
+    fn surface_from_expanded_item_macro(
+        &self,
+        root: &QuotedSourceRoot,
+        span: Span,
+    ) -> Result<ScopeSurface, FatalError> {
+        let surface = self.scope_surface_from_root(root, "item macro expanded source")?;
+        if surface.forms.iter().any(|form| matches!(form, ScopeForm::MacroCall(_))) {
+            return Err(emit_job_diagnostic(
+                self.world,
+                Diagnostic::error(
+                    codes::MACRO_NOT_A_DEFMACRO,
+                    "item macro expansion returned a non-definition call",
+                    span,
+                ),
+            ));
+        }
+        Ok(surface)
+    }
+
+    fn scope_surface_from_root(&self, root: &QuotedSourceRoot, context: &str) -> Result<ScopeSurface, FatalError> {
+        let code_text = self.world.code_text(self.code_id).to_owned();
+        let ctx = SurfaceSourceContext::new(self.code_id, &code_text, self.world.tel());
+        let source = if root.root().is_empty_list() || root.root().tag() == ValueKind::LIST {
+            root.clone()
+        } else {
+            root.interned_list_subroot(&[root.root()]).map_err(|error| {
+                emit_internal_surface_error(self.world, format!("{context} wrapper failed: {error}"))
+            })?
+        };
+        read_scope_surface(&source, &ctx)
+            .map_err(|error| emit_internal_surface_error(self.world, format!("{context} read failed: {error}")))
+    }
+
+    fn apply_surface_fragment(&mut self, surface: &ScopeSurface) -> Result<Option<JobEffects>, FatalError> {
+        self.reserve_types(&surface.attrs)?;
+        self.reserve_local_forms(&surface.forms)?;
+        self.note_pending_types();
+        self.apply_ordered_forms(&surface.forms)
+    }
+
+    fn item_macro_not_defmacro(&self, name: &str, span: Span) -> FatalError {
+        emit_job_diagnostic(
+            self.world,
+            Diagnostic::error(
+                codes::MACRO_NOT_A_DEFMACRO,
+                format!("item-level call `{name}(...)` is not a defmacro"),
+                span,
+            ),
+        )
     }
 
     fn expand_function_form(
@@ -835,6 +986,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             if let Some(result) = self.expand_ast_call(owner, cursor, &node, scope, depth)? {
                 return Ok(result);
             }
+            return self.expand_ast_node(owner, cursor, &node, scope, depth);
         }
 
         match cursor.root().tag() {
@@ -843,6 +995,32 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             ValueKind::MAP => self.expand_map(owner, cursor, scope, depth),
             _ => Ok(ExpandedValue::Complete(cursor.root())),
         }
+    }
+
+    fn expand_ast_node(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        node: &super::source::QuotedAstNode,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, FatalError> {
+        let head = match self.expand_cursor(owner, &node.head, scope, depth)? {
+            ExpandedValue::Complete(root) => root,
+            ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+        };
+        let tail = match self.expand_cursor(owner, &node.tail, scope, depth)? {
+            ExpandedValue::Complete(root) => root,
+            ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+        };
+        if head == node.head.root() && tail == node.tail.root() {
+            return Ok(ExpandedValue::Complete(cursor.root()));
+        }
+        let rebuilt = owner
+            .builder()
+            .tuple(&[head, node.meta.root(), tail])
+            .map_err(|error| emit_internal_surface_error(self.world, format!("quoted AST rebuild failed: {error}")))?;
+        Ok(ExpandedValue::Complete(rebuilt))
     }
 
     fn expand_ast_call(
@@ -918,19 +1096,94 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         let Some(module) = self.world.lookup_module_path(scope.namespace(), &module_path.join(".")) else {
             return Ok(None);
         };
-        if self.world.module_defined_revision(module).is_none() {
-            return Ok(None);
+        if module == self.current_module {
+            return self.expand_current_module_remote_ast_call(
+                owner,
+                scope,
+                depth,
+                input_root,
+                args,
+                &function_name,
+                &module_path,
+            );
         }
+        if self.world.module_defined_revision(module).is_none() {
+            if self.world.is_runtime_module(module) {
+                return Ok(None);
+            }
+            let follow_up = if module.is_global() {
+                Vec::new()
+            } else {
+                vec![Job::DefineModule(module)]
+            };
+            return Ok(Some(ExpandedValue::Blocked(JobEffects::wait_on(
+                FactKey::ModuleDefined(module),
+                follow_up,
+            ))));
+        }
+        self.reads.push(FactKey::ModuleDefined(module));
         let Some(NamespaceSymbol::Macro(function)) =
             self.world.lookup_module_callable(module, &function_name, args.len())
         else {
             return Ok(None);
         };
         if !self.required_remote_macros.contains(&function) {
-            return Ok(None);
+            return Err(self.remote_macro_not_required(&function_name, args.len(), &module_path));
         }
         self.expand_macro_invocation(owner, input_root, function, scope, depth, args)
             .map(Some)
+    }
+
+    fn expand_current_module_remote_ast_call(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        scope: ScopeSnapshot,
+        depth: usize,
+        input_root: AnyValueRef,
+        args: &[QuotedSourceCursor],
+        function_name: &str,
+        module_path: &[String],
+    ) -> Result<Option<ExpandedValue>, FatalError> {
+        let Some(symbol) = self.lookup_current_module_callable(function_name, args.len()) else {
+            return Ok(None);
+        };
+        let NamespaceSymbol::Macro(function) = symbol else {
+            return Ok(None);
+        };
+        if !self.required_remote_macros.contains(&function) {
+            return Err(self.remote_macro_not_required(function_name, args.len(), module_path));
+        }
+        self.expand_macro_invocation(owner, input_root, function, scope, depth, args)
+            .map(Some)
+    }
+
+    fn lookup_current_module_callable(&mut self, name: &str, arity: usize) -> Option<NamespaceSymbol> {
+        match self.local_callables.get(&(name.to_string(), arity)).cloned() {
+            Some(NamespaceSymbol::Function(function))
+                if self.world.function_module(function) == self.current_module =>
+            {
+                Some(NamespaceSymbol::Function(function))
+            }
+            Some(NamespaceSymbol::Macro(function)) if self.world.function_module(function) == self.current_module => {
+                Some(NamespaceSymbol::Macro(function))
+            }
+            _ => None,
+        }
+    }
+
+    fn remote_macro_not_required(&mut self, function_name: &str, arity: usize, module_path: &[String]) -> FatalError {
+        let module_name = module_path.join(".");
+        emit_job_diagnostic(
+            self.world,
+            Diagnostic::error(
+                codes::MACRO_NOT_REQUIRED,
+                format!(
+                    "remote macro `{}.{}/{}` requires `require {}` before source expansion",
+                    module_name, function_name, arity, module_name
+                ),
+                Span::DUMMY,
+            ),
+        )
     }
 
     fn expand_macro_invocation(
@@ -1296,7 +1549,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         }
         (!effects.waits.is_empty()).then_some(effects)
     }
-    fn define_protocol_impl(&mut self, protocol_impl: &ProtocolImplForm) -> Result<Outputs, FatalError> {
+    fn define_protocol_impl(&mut self, protocol_impl: &ProtocolImplForm) -> Result<ProtocolImplDefinition, FatalError> {
         let protocol = reference_impl_protocol_module(
             self.world,
             self.current_module,
@@ -1348,16 +1601,11 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         let mut outputs = Vec::new();
         let mut callbacks = HashMap::new();
         for function in functions {
-            let publication = publish_function_source(
-                self.world,
-                self.code_id,
-                impl_module,
-                self.current_module,
-                impl_scope,
-                &function,
-                false,
-                CompilerDefineOrigin::LiteralFunction,
-            );
+            let publication =
+                match self.define_source_function(impl_module, self.current_module, impl_scope, &function, false)? {
+                    FunctionDefinition::Complete(publication) => publication,
+                    FunctionDefinition::Blocked(effects) => return Ok(ProtocolImplDefinition::Blocked(effects)),
+                };
             outputs.push(publication.output);
             callbacks.insert(
                 (function.name.clone(), function.arity),
@@ -1370,7 +1618,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         self.world.define_protocol_impl(protocol, target, callbacks);
         outputs.extend(self.world.refresh_protocol_domain_facts(protocol));
         outputs.push(self.world.refresh_protocol_dispatch_fact(protocol));
-        Ok(outputs)
+        Ok(ProtocolImplDefinition::Complete { outputs })
     }
 
     fn complete(self) -> ScopePublication {
@@ -1473,6 +1721,22 @@ fn module_info_match_clause(
     builder.call("->", meta, &[patterns, body])
 }
 
+fn item_macro_display_name(node: &super::source::QuotedAstNode) -> String {
+    if let Ok(name) = node.head.atom_name() {
+        return name;
+    }
+    if let Ok(Some(head_node)) = node.head.ast_node()
+        && head_node.head.atom_name().as_deref() == Ok(".")
+        && let Ok(parts) = head_node.tail.list_items()
+        && let [module, function] = parts.as_slice()
+        && let Ok(path) = alias_path(module)
+        && let Ok(function) = function.atom_name()
+    {
+        return format!("{}.{}", path.join("."), function);
+    }
+    "item".to_string()
+}
+
 fn alias_path(cursor: &QuotedSourceCursor) -> Result<Vec<String>, QuotedSourceError> {
     let Some(node) = cursor.ast_node()? else {
         return Err(QuotedSourceError::new("expected quoted module alias"));
@@ -1493,12 +1757,6 @@ struct FunctionPublication {
     export: Option<ModuleExport>,
 }
 
-#[derive(Clone, Copy)]
-enum CompilerDefineOrigin<'a> {
-    LiteralFunction,
-    CompilerService { env: &'a super::source::QuotedSourceRoot },
-}
-
 fn publish_function_source(
     world: &mut World<'_>,
     code_id: CodeId,
@@ -1507,7 +1765,7 @@ fn publish_function_source(
     namespace: Namespace,
     function: &FunctionForm,
     export_public: bool,
-    origin: CompilerDefineOrigin<'_>,
+    env: &super::source::QuotedSourceRoot,
 ) -> FunctionPublication {
     let function_id = world.reference_function(function_module, function.name.clone(), function.arity);
     let revision = world.note_function_source(
@@ -1536,7 +1794,7 @@ fn publish_function_source(
     let source = world
         .function_source(function_id)
         .expect("function source should exist immediately after compiler service publication");
-    emit_compiler_service_define(world, function_id, &source, revision, origin);
+    emit_compiler_service_define(world, function_id, &source, revision, env);
     FunctionPublication {
         function: function_id,
         output: (FactKey::FunctionSource(function_id), revision),
@@ -1549,13 +1807,9 @@ fn emit_compiler_service_define(
     function: FunctionId,
     source: &FunctionSource,
     revision: u64,
-    origin: CompilerDefineOrigin<'_>,
+    env: &super::source::QuotedSourceRoot,
 ) {
     let function_ref = world.function_ref(function);
-    let (origin_name, env_root_ref) = match origin {
-        CompilerDefineOrigin::LiteralFunction => ("literal_function", 0),
-        CompilerDefineOrigin::CompilerService { env } => ("fz_compiler", env.root().raw_word()),
-    };
     world.tel().execute(
         &["fz", "compiler2", "compiler_service", "define"],
         &measurements! {
@@ -1567,10 +1821,10 @@ fn emit_compiler_service_define(
             namespace: source.namespace.as_u32() as u64,
             source_heap_id: source.source.key().heap_id as u64,
             source_root_ref: source.source.root().raw_word(),
-            env_root_ref: env_root_ref,
+            env_root_ref: env.root().raw_word(),
         },
         &metadata! {
-            origin: origin_name,
+            origin: "fz_compiler",
             function_ref: opaque_debug(function_ref),
         },
     );

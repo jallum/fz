@@ -5,5 +5,5 @@ oracle: oracle.exs
 ---
 
 Pins the Elixir-facing `in` / `not in` surface. The parser keeps these as
-operators long enough to preserve precedence; the frontend desugar pass rewrites
-them to `Enum.member?/2` before lowering.
+operators long enough to preserve precedence; compiler2 source production
+normalizes them to `Enum.member?/2` before function-source lowering.

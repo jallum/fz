@@ -147,10 +147,10 @@ the `fz-rh2.11.7.*` arc.
   that records the source-session authority. The service reads the source root
   as a scope form and applies it in source order through the live
   `ScopeSession`.
-- Literal function forms are published through the same compiler-service helper
-  as explicit `Fz.Compiler.define` forms. That keeps function-source saving in
-  one place while the next macro-expansion ticket replaces literal `fn` item
-  capture with explicit compiler-service forms.
+- Literal function forms, protocol-impl callbacks, and synthesized `__info__/1`
+  functions are applied as `Fz.Compiler.define` publications with a projected
+  `__ENV__`. There is no second raw function-body save path during module
+  indexing.
 - Source publication notes `@type` declarations, records function/type
   reference wait sets, binds aliases/imports/requires, saves expanded grouped
   function roots as `FunctionSource` through `Fz.Compiler.define`, scopes child
@@ -179,6 +179,19 @@ the `fz-rh2.11.7.*` arc.
   `MacroExecutable` facts. It records exactly those macro function ids as
   required in the source session. It does not import bare names; only required
   remote macro calls such as `Mod.m(...)` are available to source expansion.
+- Source-order item macro calls expand through the same
+  `MacroExecutable(function)` fact as expression macros. The returned root is
+  read as a source fragment, local definitions are reserved, and the fragment is
+  applied immediately in source order.
+- Remote calls to user modules may wait for the provider `ModuleDefined` fact
+  during body expansion so source production can distinguish ordinary functions
+  from macros before saving `FunctionSource`. If the provider exports a macro
+  and the current scope did not `require` it, source publication emits
+  `macro/not-required` instead of letting a macro call leak into body lowering.
+  Current-module remote calls use the live source-session callable map instead
+  of waiting for the module fact the active job is producing. Runtime helper
+  modules introduced by source-sugar rewrites are not eagerly submitted just to
+  prove they are not macros.
 - Module publication synthesizes a normal `__info__/1` function for non-global
   modules that do not define one. The body is ordinary quoted source
   (`case kind do ... end`) derived from the module exports, so reflection uses

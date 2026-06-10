@@ -61,6 +61,14 @@ fn assert_compiler2_telemetry_only(path: &Path, context: &str) {
     );
 }
 
+fn output_text(out: &Output) -> String {
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
 #[test]
 fn help_lists_compiler2_commands_on_stdout() {
     for flag in ["help", "--help", "-h"] {
@@ -171,6 +179,62 @@ fn run_and_interp_execute_map_struct_and_bitstring_fixtures() {
             assert_successful_stdout(&out, &expected, &format!("fz2 {command} {fixture}"));
         }
     }
+}
+
+#[test]
+fn run_and_interp_execute_source_production_macro_and_sugar_fixtures() {
+    for fixture in [
+        "fixtures/macro_inc/input.fz",
+        "fixtures/cross_module_macro/input.fz",
+        "fixtures/item_macro_source/input.fz",
+        "fixtures/pipe_headless_case/input.fz",
+        "fixtures/lambda_sugars/input.fz",
+        "fixtures/operator_sugars/input.fz",
+    ] {
+        let expected = fixture_expected_stdout(fixture);
+        for command in ["run", "interp"] {
+            let out = run_fz2(&[OsStr::new(command), OsStr::new(fixture)]);
+            assert_successful_stdout(&out, &expected, &format!("fz2 {command} {fixture}"));
+        }
+    }
+}
+
+#[test]
+fn run_reports_unrequired_remote_macro_during_source_production() {
+    let source_path = unique_temp_path("fz2_remote_macro_without_require", ".fz");
+    write(
+        &source_path,
+        r#"
+defmodule Helpers do
+  fn double(x), do: x * 2
+
+  defmacro twice(x) do
+    quote do: double(unquote(x))
+  end
+end
+
+defmodule App do
+  fn run(), do: Helpers.twice(21)
+end
+
+fn main(), do: App.run()
+"#,
+    )
+    .expect("write missing require fixture");
+
+    let out = run_fz2(&[OsStr::new("run"), source_path.as_os_str()]);
+    assert!(
+        !out.status.success(),
+        "fz2 run should reject unrequired remote macro; output={}",
+        output_text(&out)
+    );
+    let text = output_text(&out);
+    assert!(
+        text.contains("macro/not-required") && text.contains("require Helpers"),
+        "fz2 diagnostic should name the missing require; output={text}",
+    );
+
+    let _ = remove_file(&source_path);
 }
 
 #[test]

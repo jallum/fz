@@ -291,13 +291,6 @@ fn build_form(source: QuotedSourceRoot, ctx: &SurfaceSourceContext<'_>) -> Resul
     }
 }
 
-pub fn read_scope_form(
-    source: QuotedSourceRoot,
-    ctx: &SurfaceSourceContext<'_>,
-) -> Result<ScopeForm, QuotedSourceError> {
-    build_form(source, ctx)
-}
-
 fn parse_compiler_service_form(
     source: QuotedSourceRoot,
     ctx: &SurfaceSourceContext<'_>,

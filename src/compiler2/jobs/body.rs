@@ -799,7 +799,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                         self.world,
                         Diagnostic::error(
                             codes::LOWER_UNSUPPORTED,
-                            format!("compiler2 lowering expected expanded macro-free value `{name}`"),
+                            format!("macro `{name}` cannot be used as a runtime value"),
                             expr.span,
                         ),
                     )),
@@ -826,7 +826,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                             self.world,
                             Diagnostic::error(
                                 codes::LOWER_UNSUPPORTED,
-                                format!("compiler2 lowering expected expanded macro-free fn ref `{name}/{arity}`"),
+                                format!("macro `{name}/{arity}` cannot be captured as a runtime function reference"),
                                 expr.span,
                             ),
                         ));
@@ -1010,7 +1010,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 self.world,
                 Diagnostic::error(
                     codes::LOWER_UNSUPPORTED,
-                    "compiler2 lowering expected headless case to be expanded by the pipe desugar".to_string(),
+                    "source-only headless `case` reached body lowering without a pipe subject".to_string(),
                     expr.span,
                 ),
             )),
@@ -1049,7 +1049,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                         self.world,
                         Diagnostic::error(
                             codes::LOWER_UNSUPPORTED,
-                            format!("compiler2 lowering expected expanded macro-free call `{name}/{arity}`"),
+                            format!("macro call `{name}/{arity}` reached body lowering without source expansion"),
                             span,
                         ),
                     ));

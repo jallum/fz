@@ -54,6 +54,13 @@ fn measurement_u64(event: &crate::telemetry::capture::OwnedEvent, key: &str) -> 
     }
 }
 
+fn metadata_str<'a>(event: &'a crate::telemetry::capture::OwnedEvent, key: &str) -> &'a str {
+    match event.metadata.get(key) {
+        Some(Value::Str(value)) => value.as_ref(),
+        other => panic!("metadata key `{key}` missing or not str: {other:?}"),
+    }
+}
+
 #[test]
 fn compiler_service_define_publishes_function_source_and_threads_namespace_forward() {
     let tel = ConfiguredTelemetry::new();
@@ -99,6 +106,18 @@ fn compiler_service_define_publishes_function_source_and_threads_namespace_forwa
         2,
         "both the explicit service form and the literal function form should cross the compiler-service boundary",
     );
+    for event in capture.find(&["fz", "compiler2", "compiler_service", "define"]) {
+        assert_eq!(
+            metadata_str(&event, "origin"),
+            "fz_compiler",
+            "all function source publication should use the Fz.Compiler authority",
+        );
+        assert_ne!(
+            measurement_u64(&event, "env_root_ref"),
+            0,
+            "compiler-service publication should carry a real __ENV__ root",
+        );
+    }
 
     let bar_source = world.function_source(bar_id).expect("bar source");
     let foo_source = world.function_source(foo_id).expect("foo source");
@@ -111,6 +130,40 @@ fn compiler_service_define_publishes_function_source_and_threads_namespace_forwa
         world.lookup_namespace(bar_source.namespace, "foo"),
         Some(NamespaceSymbol::Function(foo_id)),
         "the service-updated namespace should be visible to later source forms",
+    );
+}
+
+#[test]
+fn compiler_service_define_groups_single_function_source_before_define_function() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    let code = world.submit_code(Some("compiler-service-single.fz".to_string()), String::new());
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+
+    let foo = function_form(&builder, "foo", builder.int(42));
+    let service = compiler_define_form(&builder, foo, builder.map(&[]).expect("__ENV__"));
+    let root = root_list(&builder, &[service]);
+    let ctx = SurfaceSourceContext::new(code, world.code_text(code), world.tel());
+    let surface = read_scope_surface(&root, &ctx).expect("source surface with compiler service");
+
+    let publication = publish_scope(
+        &mut world,
+        code,
+        ScopeSnapshot::module(ModuleId::GLOBAL, Namespace::default()),
+        &surface,
+    )
+    .expect("publish source scope");
+    assert!(matches!(publication, ScopePublication::Complete { .. }));
+
+    let foo_id = world.reference_function(ModuleId::GLOBAL, "foo", 0);
+    assert!(
+        world.demand(Job::DefineFunction(foo_id)),
+        "explicit compiler service source should be definable after publication",
+    );
+    assert!(
+        matches!(world.drive(), DriveOutcome::Resolved),
+        "Fz.Compiler.define should group a single function form before DefineFunction decodes it",
     );
 }
 
@@ -165,6 +218,54 @@ fn compiler_service_define_inside_a_function_body_has_no_source_publication_auth
         capture.count(&["fz", "compiler2", "compiler_service", "define"]),
         1,
         "only the literal main/0 source publication should cross the compiler-service boundary",
+    );
+}
+
+#[test]
+fn source_publication_expands_item_macros_as_scope_fragments() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let mut world = World::new(&tel);
+    let code = world.submit_code(
+        Some("item-macro.fz".to_string()),
+        r#"
+defmacro make_answer() do
+  {:fn, %{}, [{:answer, %{}, []}, [{:do, 42}]]}
+end
+
+make_answer()
+
+fn main(), do: answer()
+"#
+        .to_string(),
+    );
+
+    assert!(world.demand(Job::ScopeCode(code)), "code scoping should be demandable");
+    assert!(
+        matches!(world.drive(), DriveOutcome::Resolved),
+        "source publication should expand item macros and apply returned source forms",
+    );
+
+    let answer = world.reference_function(ModuleId::GLOBAL, "answer", 0);
+    let main = world.reference_function(ModuleId::GLOBAL, "main", 0);
+    assert!(
+        world.function_source(answer).is_some(),
+        "item macro should publish the function source it returned",
+    );
+    assert!(
+        world.function_source(main).is_some(),
+        "later source forms should publish after item macro expansion updates the namespace",
+    );
+    assert_eq!(
+        capture.count(&["fz", "compiler2", "macro", "expanded"]),
+        1,
+        "item macro expansion should run through the ordinary macro executable path",
+    );
+    assert_eq!(
+        capture.count(&["fz", "frontend", "lowered"]),
+        0,
+        "item macro source publication should not invoke the old frontend lowerer",
     );
 }
 
