@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-knf.1"
+  ],
   "blocks": [],
   "created": "2026-06-10T01:53:47Z",
   "description": "Move the revision out of the ~19 entity slots -\u003e pure value stores (key-\u003evalue). Fact system holds revision per FactKey, set from reconcile's returned 64-bit, propagate on rev!=prior. Retire contributions/join/FactValue::Presence(u64) (single-authority confirmed). Blanket Reconcile for the ~12 mechanical PartialEq facts. Readers (code_revision/function_defined_revision/...) read the fact-system revision.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Fact system owns/threads the 64-bit revision; strip revision from slots; retire join",
   "type": "task",
-  "updated_at": "2026-06-10T01:53:47Z"
+  "updated_at": "2026-06-10T01:53:48Z"
 }

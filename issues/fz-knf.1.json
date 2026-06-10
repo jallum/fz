@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-knf.3",
     "fz-uku"
   ],
   "created": "2026-06-10T01:53:47Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Reconcile trait + route reconcile machinery through it (behavior-preserving)",
   "type": "task",
-  "updated_at": "2026-06-10T01:53:47Z"
+  "updated_at": "2026-06-10T01:53:48Z"
 }
