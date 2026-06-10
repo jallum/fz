@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-10T08:21:45Z",
+  "description": "Grounding from fz-rh2.16.3: remaining artifact failures after callable-entry closure fixes are protocol dispatch callsites whose receiver type can match more than one impl. Example: fixtures/enumerable_protocol_dispatch/input.fz analyzes counted/1 once with a union receiver from list-pattern element flow, so Enumerable.count/1 has List, Range, and Map candidates. Current CallSiteSummary can name only one SelectedCallee; when semantic resolution sees multiple matches it emits no summary, leaving backend/materialization with a reachable DirectCall and no settled call edge. Goal: make protocol callsites with multiple possible impls correct by construction, either by producing an explicit protocol-dispatch artifact edge/matrix or by splitting activations before artifact closure. Signal: enum_map_family, enum_take_drop_split, enum_tier0, enumerable_protocol_dispatch, map_enumerable, membership_operator, and range_enumerable no longer fail with missing materialized/direct call edges and can be promoted or routed to golden decisions.",
+  "id": "fz-rh2.16.7",
+  "labels": [],
+  "parent": "fz-rh2.16",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 protocol dispatch: materialize multi-target call edges for union receivers",
+  "type": "bug",
+  "updated_at": "2026-06-10T08:21:45Z"
+}
