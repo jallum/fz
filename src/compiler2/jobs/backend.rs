@@ -70,11 +70,10 @@ pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> R
         callable_entries,
     };
     let backend_fact = FactKey::BackendProgram(root_id);
-    let revision = world.define_backend_program(root_id, program);
-    let changed = world.fact_would_change(backend_fact.clone(), revision);
+    let changed = world.define_backend_program(root_id, program);
     Ok(JobEffects {
         reads: vec![emission_ready_fact],
-        outputs: vec![(backend_fact, revision)],
+        outputs: vec![(backend_fact, changed)],
         follow_up: changed
             .then_some(Job::LowerNativeProgram(root_id))
             .into_iter()

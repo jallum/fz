@@ -32,7 +32,7 @@ use super::super::scheduler::FatalError;
 use super::super::world::World;
 use super::dispatch::{collect_guard_calls_in_expr, resolve_guard_callee, resolve_guard_callee_checked};
 
-type Output = (FactKey, u64);
+type Output = (FactKey, bool);
 
 #[derive(Debug, Clone)]
 struct ExprClause {
@@ -294,8 +294,8 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
 
     let mut lowerer = Lowerer::new(world, function, source, surface);
     let (body, mut outputs) = lowerer.lower()?;
-    let revision = lowerer.world.define_lowered_body(function, body);
-    outputs.push((FactKey::LoweredBody(function), revision));
+    let changed = lowerer.world.define_lowered_body(function, body);
+    outputs.push((FactKey::LoweredBody(function), changed));
     Ok(JobEffects {
         reads,
         outputs,
@@ -1624,10 +1624,10 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             .map(|name| *env.get(name).expect("captured names should resolve in the local env"))
             .collect::<Vec<_>>();
 
-        let (function, revision) =
+        let (function, changed) =
             self.world
                 .define_generated_function(self.owner, self.namespace, capture_params, surface);
-        self.generated.push((FactKey::FunctionDefined(function), revision));
+        self.generated.push((FactKey::FunctionDefined(function), changed));
         self.generated_ids.push(function);
 
         let captures = captures.into_iter().collect::<Vec<_>>();

@@ -82,10 +82,10 @@ pub(super) fn lower_native_program(world: &mut World<'_>, root_id: RootId) -> Re
 
     let backend = world.backend_program(root_id);
     let program = NativeLowerer::new(world, root_id, &backend)?.lower()?;
-    let revision = world.define_native_program(root_id, program);
+    let changed = world.define_native_program(root_id, program);
     Ok(JobEffects {
         reads: vec![backend_fact],
-        outputs: vec![(FactKey::NativeProgram(root_id), revision)],
+        outputs: vec![(FactKey::NativeProgram(root_id), changed)],
         ..JobEffects::default()
     })
 }

@@ -139,26 +139,26 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     }
 
     for call in &analysis_calls {
-        let revision = world.define_callsite_summary(call.key.clone(), call.summary.clone());
-        outputs.push((FactKey::CallSiteSummary(call.key.clone()), revision));
+        let changed = world.define_callsite_summary(call.key.clone(), call.summary.clone());
+        outputs.push((FactKey::CallSiteSummary(call.key.clone()), changed));
         for callee_activation in &call.activations {
             // An activation fact is fully determined by its key (the
             // canonical inputs live there), so once present it never changes.
-            outputs.push((FactKey::Activation(callee_activation.key.clone()), 1));
+            outputs.push((FactKey::Activation(callee_activation.key.clone()), false));
             if !callee_activation.already_present {
                 follow_up.insert(Job::AnalyzeActivation(callee_activation.key.clone()));
             }
             follow_up.insert(Job::SealSemanticClosure(activation.root));
         }
         for executable in &call.latent_executables {
-            outputs.push((FactKey::Executable(executable.clone()), 1));
+            outputs.push((FactKey::Executable(executable.clone()), false));
         }
     }
 
-    let return_revision = world.define_activation_return(activation, return_ty);
-    outputs.push((FactKey::ReturnType(activation.clone()), return_revision));
+    let return_changed = world.define_activation_return(activation, return_ty);
+    outputs.push((FactKey::ReturnType(activation.clone()), return_changed));
 
-    let analysis_revision = world.define_activation_analysis(
+    let analysis_changed = world.define_activation_analysis(
         activation,
         ActivationAnalysis {
             reachable_clauses: reachable_clauses.clone(),
@@ -175,7 +175,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
             value_types,
         },
     );
-    outputs.push((FactKey::ActivationAnalyzed(activation.clone()), analysis_revision));
+    outputs.push((FactKey::ActivationAnalyzed(activation.clone()), analysis_changed));
 
     follow_up.insert(Job::SealSemanticClosure(activation.root));
     Ok(JobEffects {
@@ -1834,13 +1834,10 @@ fn unop_ty(world: &mut World<'_>, op: UnOp, input: Ty) -> Ty {
 
 /// One body can demand the same callee activation from several call sites;
 /// those duplicates are the same fact — we take the highest revision among them.
-fn dedupe_outputs(outputs: Vec<(FactKey, u64)>) -> Vec<(FactKey, u64)> {
-    let mut deduped: HashMap<FactKey, u64> = HashMap::new();
-    for (fact, revision) in outputs {
-        deduped
-            .entry(fact)
-            .and_modify(|r| *r = (*r).max(revision))
-            .or_insert(revision);
+fn dedupe_outputs(outputs: Vec<(FactKey, bool)>) -> Vec<(FactKey, bool)> {
+    let mut deduped: HashMap<FactKey, bool> = HashMap::new();
+    for (fact, changed) in outputs {
+        deduped.entry(fact).and_modify(|c| *c |= changed).or_insert(changed);
     }
     deduped.into_iter().collect()
 }

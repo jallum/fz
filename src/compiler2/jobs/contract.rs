@@ -89,10 +89,10 @@ fn publish_contract(
     reads: Vec<FactKey>,
     contract: Vec<ResolvedSpecDecl<super::super::types::Ty>>,
 ) -> JobEffects {
-    let revision = world.define_function_contract(function, FunctionContract::from_resolved(contract));
+    let changed = world.define_function_contract(function, FunctionContract::from_resolved(contract));
     JobEffects {
         reads,
-        outputs: vec![(FactKey::FunctionContract(function), revision)],
+        outputs: vec![(FactKey::FunctionContract(function), changed)],
         ..JobEffects::default()
     }
 }

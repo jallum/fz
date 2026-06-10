@@ -25,7 +25,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-type OutputFacts = Vec<(FactKey, u64)>;
+type OutputFacts = Vec<(FactKey, bool)>;
 type JobOutputMap = Rc<RefCell<HashMap<Job, Vec<OutputFacts>>>>;
 type AppliedSteps = Rc<RefCell<Vec<AppliedStep<Job, FactKey>>>>;
 type EntryDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternDispatchPlan<Ty>>>>>;
@@ -59,8 +59,8 @@ fn assert_no_legacy_planner_or_type_infer(capture: &Capture, context: &str) {
     );
 }
 
-fn presence(fact: FactKey, revision: u64) -> (FactKey, u64) {
-    (fact, revision)
+fn presence(fact: FactKey, changed: bool) -> (FactKey, bool) {
+    (fact, changed)
 }
 
 #[test]
@@ -491,9 +491,9 @@ fn compiler2_protocol_domain_and_dispatch_facts_revise_when_impls_land() {
         arity: 1,
     };
     assert!(
-        protocol_defined.contains(&presence(FactKey::TypeDefined(t0.clone()), 1))
-            && protocol_defined.contains(&presence(FactKey::TypeDefined(t1.clone()), 1))
-            && protocol_defined.contains(&presence(FactKey::ProtocolDispatch(protocol), 1)),
+        protocol_defined.contains(&presence(FactKey::TypeDefined(t0.clone()), true))
+            && protocol_defined.contains(&presence(FactKey::TypeDefined(t1.clone()), true))
+            && protocol_defined.contains(&presence(FactKey::ProtocolDispatch(protocol), true)),
         "defining the protocol should publish both protocol-domain type facts and an initial dispatch fact",
     );
 
@@ -504,7 +504,7 @@ fn compiler2_protocol_domain_and_dispatch_facts_revise_when_impls_land() {
         .map(|event| {
             (
                 measurement_u64(&event, "arity"),
-                measurement_u64(&event, "revision"),
+                measurement_u64(&event, "changed"),
                 metadata_str(&event, "ty").to_string(),
             )
         })
@@ -538,9 +538,9 @@ fn compiler2_protocol_domain_and_dispatch_facts_revise_when_impls_land() {
         .take(Job::DefineModule(owner))
         .expect("DefineModule job effects for the impl owner");
     assert!(
-        owner_defined.contains(&presence(FactKey::TypeDefined(t0.clone()), 2))
-            && owner_defined.contains(&presence(FactKey::TypeDefined(t1.clone()), 2))
-            && owner_defined.contains(&presence(FactKey::ProtocolDispatch(protocol), 2)),
+        owner_defined.contains(&presence(FactKey::TypeDefined(t0.clone()), true))
+            && owner_defined.contains(&presence(FactKey::TypeDefined(t1.clone()), true))
+            && owner_defined.contains(&presence(FactKey::ProtocolDispatch(protocol), true)),
         "adding an impl should revise both protocol-domain type facts and the dispatch fact",
     );
 
@@ -756,7 +756,7 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
         "top-level quicksort indexing should not discover nested modules"
     );
     assert!(
-        outputs.contains(&presence(FactKey::CodeIndexed(code_id), 1)),
+        outputs.contains(&presence(FactKey::CodeIndexed(code_id), true)),
         "IndexCode outputs should include the final code-indexed fact"
     );
 }
@@ -826,7 +826,9 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         .take(Job::LowerFunction(main_id))
         .expect("LowerFunction job effects for main/0");
     assert!(
-        lower_outputs.contains(&presence(FactKey::LoweredBody(main_id), 1)),
+        lower_outputs
+            .iter()
+            .any(|(fact, _)| *fact == FactKey::LoweredBody(main_id)),
         "submitting a root should lower the entry function body"
     );
     assert!(
@@ -838,7 +840,9 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
 
     let seed_outputs = outputs.take(Job::SeedRoot(root_id)).expect("SeedRoot job effects");
     assert!(
-        seed_outputs.contains(&presence(FactKey::RootEntry(root_id), 1)),
+        seed_outputs
+            .iter()
+            .any(|(fact, _)| *fact == FactKey::RootEntry(root_id)),
         "SeedRoot should publish the root entry fact"
     );
     assert!(
@@ -853,17 +857,17 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         "SeedRoot should publish the entry activation"
     );
     assert!(
-        seed_outputs.contains(&presence(
-            FactKey::Executable(ExecutableKey {
-                activation: ActivationKey {
-                    root: root_id,
-                    function: main_id,
-                    input: Vec::new(),
-                },
-                need: ExecutableNeed::Value,
-            }),
-            1,
-        )),
+        seed_outputs.iter().any(|(fact, _)| {
+            *fact
+                == FactKey::Executable(ExecutableKey {
+                    activation: ActivationKey {
+                        root: root_id,
+                        function: main_id,
+                        input: Vec::new(),
+                    },
+                    need: ExecutableNeed::Value,
+                })
+        }),
         "SeedRoot should publish the entry executable request"
     );
 
@@ -1232,14 +1236,18 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
         .take(Job::LowerFunction(main_id))
         .expect("LowerFunction job effects for main/0");
     assert!(
-        main_lowered.contains(&presence(FactKey::FunctionDefined(user_reducer_id), 1)),
+        main_lowered
+            .iter()
+            .any(|(fact, _)| *fact == FactKey::FunctionDefined(user_reducer_id)),
         "lowering main/0 should surface its generated reducer function through job effects",
     );
     let enum_lowered = outputs
         .take(Job::LowerFunction(enum_reduce_id))
         .expect("LowerFunction job effects for Enum.reduce/3");
     assert!(
-        enum_lowered.contains(&presence(FactKey::FunctionDefined(bridge_reducer_id), 1)),
+        enum_lowered
+            .iter()
+            .any(|(fact, _)| *fact == FactKey::FunctionDefined(bridge_reducer_id)),
         "lowering Enum.reduce/3 should surface its bridge reducer function through job effects",
     );
 
@@ -2350,9 +2358,9 @@ fn compiler2_emission_ready_revision_stays_stable_for_identical_recompute() {
         2,
         "the emission-ready program should have one initial definition and one unchanged re-derivation",
     );
-    assert_eq!(
-        records[0].revision, records[1].revision,
-        "identical emission-ready state should keep the same revision number across recomputation",
+    assert!(
+        records[0].changed && !records[1].changed,
+        "initial derivation should be changed=true; re-derivation of identical state should be changed=false",
     );
     assert_eq!(
         records[0].program, records[1].program,
@@ -3081,9 +3089,9 @@ fn compiler2_native_program_revision_stays_stable_for_identical_recompute() {
         2,
         "the native program should have one initial definition and one unchanged re-derivation",
     );
-    assert_eq!(
-        records[0].revision, records[1].revision,
-        "identical native-program state should keep the same revision number across recomputation",
+    assert!(
+        records[0].changed && !records[1].changed,
+        "initial derivation should be changed=true; re-derivation of identical state should be changed=false",
     );
     assert!(
         native_programs_match(&records[0].program, &records[1].program),
@@ -4069,9 +4077,9 @@ fn compiler2_backend_program_revision_stays_stable_for_identical_recompute() {
         2,
         "the backend program should have one initial definition and one unchanged re-derivation",
     );
-    assert_eq!(
-        records[0].revision, records[1].revision,
-        "identical backend-program state should keep the same revision number across recomputation",
+    assert!(
+        records[0].changed && !records[1].changed,
+        "initial derivation should be changed=true; re-derivation of identical state should be changed=false",
     );
     assert_eq!(
         records[0].program, records[1].program,
@@ -4928,7 +4936,9 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
         })
         .collect::<Vec<_>>();
     assert!(
-        lower_outputs.contains(&presence(FactKey::LoweredBody(main_id), 1)),
+        lower_outputs
+            .iter()
+            .any(|(fact, _)| *fact == FactKey::LoweredBody(main_id)),
         "lowering local-lambda main/0 should publish the lowered body fact"
     );
     assert_eq!(
@@ -4946,7 +4956,9 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
         .take(Job::LowerFunction(generated[0]))
         .expect("LowerFunction job effects for the reached local lambda");
     assert!(
-        generated_outputs.contains(&presence(FactKey::LoweredBody(generated[0]), 1)),
+        generated_outputs
+            .iter()
+            .any(|(fact, _)| *fact == FactKey::LoweredBody(generated[0])),
         "reaching the local lambda through the rooted call should lower its body in its own job",
     );
     let lowered_functions = outputs
@@ -5024,7 +5036,7 @@ fn main(), do: dbg(build([], 5))
         outputs
             .take(Job::DeriveRecursive(build_id))
             .expect("DeriveRecursive job effects for build/2")
-            .contains(&presence(FactKey::Recursive(build_id), 1)),
+            .contains(&presence(FactKey::Recursive(build_id), true)),
         "the recursive fact should be published for closure-mediated recursion",
     );
     assert!(
@@ -5096,7 +5108,7 @@ fn wanted(_), do: 0
         .take(Job::LowerFunction(wanted_id))
         .expect("LowerFunction job effects for wanted/1");
     assert!(
-        lowered_outputs.contains(&presence(FactKey::LoweredBody(wanted_id), 1)),
+        lowered_outputs.contains(&presence(FactKey::LoweredBody(wanted_id), true)),
         "lowering wanted/1 should publish its lowered body fact",
     );
 
@@ -5168,7 +5180,7 @@ fn compiler2_generated_lambda_body_binds_captures_as_leading_inputs() {
         .take(Job::LowerFunction(lambda_id))
         .expect("LowerFunction job effects for generated lambda");
     assert!(
-        lowered_outputs.contains(&presence(FactKey::LoweredBody(lambda_id), 1)),
+        lowered_outputs.contains(&presence(FactKey::LoweredBody(lambda_id), true)),
         "lowering the generated lambda should publish its lowered body fact",
     );
 
@@ -5230,7 +5242,7 @@ end
         .take(Job::LowerFunction(main_id))
         .expect("LowerFunction job effects for main/0");
     assert!(
-        lowered_outputs.contains(&presence(FactKey::LoweredBody(main_id), 1)),
+        lowered_outputs.contains(&presence(FactKey::LoweredBody(main_id), true)),
         "lowering main/0 should publish its lowered body fact",
     );
 
@@ -5295,7 +5307,7 @@ fn wanted(n), do: positive(n)
         .take(Job::ReifyGuardDispatch(positive_id))
         .expect("ReifyGuardDispatch job effects for positive/1");
     assert!(
-        positive_outputs.contains(&presence(FactKey::GuardDispatch(positive_id), 1)),
+        positive_outputs.contains(&presence(FactKey::GuardDispatch(positive_id), true)),
         "positive/1 should publish its guard dispatch fact"
     );
     let positive_dispatch = guard_dispatch(&guard_defs, positive_id);
@@ -5316,7 +5328,7 @@ fn wanted(n), do: positive(n)
         .take(Job::ReifyGuardDispatch(wanted_id))
         .expect("ReifyGuardDispatch job effects for wanted/1");
     assert!(
-        wanted_outputs.contains(&presence(FactKey::GuardDispatch(wanted_id), 1)),
+        wanted_outputs.contains(&presence(FactKey::GuardDispatch(wanted_id), true)),
         "wanted/1 should publish its guard dispatch fact"
     );
     let wanted_dispatch = guard_dispatch(&guard_defs, wanted_id);
@@ -5371,7 +5383,7 @@ fn wanted(_), do: false
         .take(Job::ReifyGuardDispatch(wanted_id))
         .expect("ReifyGuardDispatch job effects for destructuring wanted/1");
     assert!(
-        wanted_outputs.contains(&presence(FactKey::GuardDispatch(wanted_id), 1)),
+        wanted_outputs.contains(&presence(FactKey::GuardDispatch(wanted_id), true)),
         "multi-clause wanted/1 should publish its guard dispatch fact"
     );
     let wanted_dispatch = guard_dispatch(&guard_defs, wanted_id);
@@ -5572,14 +5584,14 @@ end
         .take(Job::ReifyGuardDispatch(positive_id))
         .expect("ReifyGuardDispatch job effects for positive/1");
     assert!(
-        helper_outputs.contains(&presence(FactKey::GuardDispatch(positive_id), 1)),
+        helper_outputs.contains(&presence(FactKey::GuardDispatch(positive_id), true)),
         "helper planning should automatically publish the nested guard-dispatch fact",
     );
     let wanted_outputs = outputs
         .take(Job::PlanEntryDispatch(wanted_id))
         .expect("PlanEntryDispatch job effects for wanted/1");
     assert!(
-        wanted_outputs.contains(&presence(FactKey::EntryDispatch(wanted_id), 1)),
+        wanted_outputs.contains(&presence(FactKey::EntryDispatch(wanted_id), true)),
         "wanted/1 should publish its entry-dispatch fact",
     );
 
@@ -5638,7 +5650,7 @@ fn compiler2_entry_dispatch_plans_trivial_single_clause_functions() {
         .take(Job::PlanEntryDispatch(wanted_id))
         .expect("PlanEntryDispatch job effects for single-clause wanted/1");
     assert!(
-        wanted_outputs.contains(&presence(FactKey::EntryDispatch(wanted_id), 1)),
+        wanted_outputs.contains(&presence(FactKey::EntryDispatch(wanted_id), true)),
         "single-clause wanted/1 should publish its entry-dispatch fact",
     );
 
@@ -5730,14 +5742,14 @@ fn other(_), do: false
         .take(Job::ReifyGuardDispatch(positive_id))
         .expect("helper reification should rerun after helper redefinition");
     assert!(
-        helper_outputs.contains(&presence(FactKey::GuardDispatch(positive_id), 2)),
+        helper_outputs.contains(&presence(FactKey::GuardDispatch(positive_id), true)),
         "helper reification should publish a revised guard-dispatch fact",
     );
     let wanted_outputs = outputs
         .take(Job::PlanEntryDispatch(wanted_id))
         .expect("dependent wanted/1 entry dispatch should rerun");
     assert!(
-        wanted_outputs.contains(&presence(FactKey::EntryDispatch(wanted_id), 2)),
+        wanted_outputs.contains(&presence(FactKey::EntryDispatch(wanted_id), true)),
         "dependent wanted/1 entry dispatch should republish with a new revision",
     );
     assert_eq!(
@@ -5870,7 +5882,7 @@ end
         "nested indexing should not define modules directly"
     );
     assert!(
-        indexed_outputs.contains(&presence(FactKey::CodeIndexed(code_id), 1)),
+        indexed_outputs.contains(&presence(FactKey::CodeIndexed(code_id), true)),
         "nested indexing should include the final code-indexed fact"
     );
 }
@@ -6216,21 +6228,21 @@ struct AbiReadyProgramRecord {
 #[derive(Debug, Clone)]
 struct EmissionReadyProgramRecord {
     root_id: crate::compiler2::RootId,
-    revision: u64,
+    changed: bool,
     program: EmissionReadyProgram,
 }
 
 #[derive(Debug, Clone)]
 struct BackendProgramRecord {
     root_id: crate::compiler2::RootId,
-    revision: u64,
+    changed: bool,
     program: BackendProgram,
 }
 
 #[derive(Debug, Clone)]
 struct NativeProgramRecord {
     root_id: crate::compiler2::RootId,
-    revision: u64,
+    changed: bool,
     program: NativeProgram,
 }
 
@@ -7110,7 +7122,7 @@ impl Handler for EmissionReadyProgramCaptureHandler {
         else {
             return;
         };
-        let Some(Value::U64(revision)) = event.measurements.get("revision") else {
+        let Some(Value::U64(changed)) = event.measurements.get("changed") else {
             return;
         };
         let Some(program) = event
@@ -7122,7 +7134,7 @@ impl Handler for EmissionReadyProgramCaptureHandler {
         };
         self.defs.borrow_mut().push(EmissionReadyProgramRecord {
             root_id,
-            revision: *revision,
+            changed: *changed != 0,
             program: program.clone(),
         });
     }
@@ -7141,7 +7153,7 @@ impl Handler for BackendProgramCaptureHandler {
         else {
             return;
         };
-        let Some(Value::U64(revision)) = event.measurements.get("revision") else {
+        let Some(Value::U64(changed)) = event.measurements.get("changed") else {
             return;
         };
         let Some(program) = event
@@ -7153,7 +7165,7 @@ impl Handler for BackendProgramCaptureHandler {
         };
         self.defs.borrow_mut().push(BackendProgramRecord {
             root_id,
-            revision: *revision,
+            changed: *changed != 0,
             program: program.clone(),
         });
     }
@@ -7172,7 +7184,7 @@ impl Handler for NativeProgramCaptureHandler {
         else {
             return;
         };
-        let Some(Value::U64(revision)) = event.measurements.get("revision") else {
+        let Some(Value::U64(changed)) = event.measurements.get("changed") else {
             return;
         };
         let Some(program) = event
@@ -7184,7 +7196,7 @@ impl Handler for NativeProgramCaptureHandler {
         };
         self.defs.borrow_mut().push(NativeProgramRecord {
             root_id,
-            revision: *revision,
+            changed: *changed != 0,
             program: program.clone(),
         });
     }

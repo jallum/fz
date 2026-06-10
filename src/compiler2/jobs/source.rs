@@ -23,7 +23,7 @@ use super::super::type_expr::{NominalKind, TypeDefBody, TypeExpr, parse_type_def
 use super::super::world::World;
 use super::super::{FunctionSource, QuotedCodeSource, parse_quoted_program};
 
-type Output = (FactKey, u64);
+type Output = (FactKey, bool);
 type Outputs = Vec<Output>;
 
 enum ScopeResult {
@@ -60,8 +60,8 @@ pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
     let mut outputs = Vec::new();
     discover_modules(world, code_id, ModuleId::GLOBAL, &surface, &ctx, &mut outputs)?;
 
-    let code_revision = world.finish_code_index(code_id, quoted);
-    outputs.push((FactKey::CodeIndexed(code_id), code_revision));
+    let code_changed = world.finish_code_index(code_id, quoted);
+    outputs.push((FactKey::CodeIndexed(code_id), code_changed));
 
     Ok(JobEffects {
         outputs,
@@ -108,8 +108,8 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
                 world.set_prelude_head(namespace);
             }
             reads.extend(scope_reads);
-            let scoped_revision = world.finish_code_scope(code_id, namespace);
-            outputs.push((FactKey::CodeScoped(code_id), scoped_revision));
+            let scoped_changed = world.finish_code_scope(code_id, namespace);
+            outputs.push((FactKey::CodeScoped(code_id), scoped_changed));
             Ok(JobEffects {
                 reads,
                 outputs,
@@ -140,8 +140,8 @@ pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Resul
                 mut outputs,
                 exports,
             } => {
-                let revision = world.define_module(module_id, namespace, exports);
-                outputs.push((FactKey::ModuleDefined(module_id), revision));
+                let changed = world.define_module(module_id, namespace, exports);
+                outputs.push((FactKey::ModuleDefined(module_id), changed));
                 Ok(JobEffects {
                     reads,
                     outputs,
@@ -397,7 +397,7 @@ fn index_function(
     let current_module = scope.module_id();
     let namespace = scope.namespace();
     let function_id = world.reference_function(current_module, function.name.clone(), function.arity);
-    let revision = world.note_function_source(
+    let changed = world.note_function_source(
         function_id,
         FunctionSource {
             code: code_id,
@@ -419,7 +419,7 @@ fn index_function(
             NamespaceSymbol::Function(function_id)
         },
     });
-    Ok(((FactKey::FunctionSource(function_id), revision), export))
+    Ok(((FactKey::FunctionSource(function_id), changed), export))
 }
 
 /// Walks a parsed type expression, recording each name that resolves to a type
@@ -552,7 +552,7 @@ pub(super) fn define_function(
     )
     .map_err(|error| emit_internal_surface_error(world, format!("quoted function decode failed: {error}")))?;
     record_function_type_refs(world, function_id, &surface)?;
-    let (_, revision) = world.define_function(
+    let (_, changed) = world.define_function(
         world.function_module(function_id),
         source.owner_module,
         world.function_ref(function_id).name.clone(),
@@ -563,7 +563,7 @@ pub(super) fn define_function(
     );
     Ok(JobEffects {
         reads: vec![FactKey::FunctionSource(function_id)],
-        outputs: vec![(FactKey::FunctionDefined(function_id), revision)],
+        outputs: vec![(FactKey::FunctionDefined(function_id), changed)],
         ..JobEffects::default()
     })
 }
@@ -688,7 +688,7 @@ fn define_protocol_impl(
     let mut callbacks = std::collections::HashMap::new();
     for function in functions {
         let function_id = world.reference_function(impl_module, function.name.clone(), function.arity);
-        let revision = world.note_function_source(
+        let changed = world.note_function_source(
             function_id,
             FunctionSource {
                 code: code_id,
@@ -699,7 +699,7 @@ fn define_protocol_impl(
                 source: function.source.clone(),
             },
         );
-        outputs.push((FactKey::FunctionSource(function_id), revision));
+        outputs.push((FactKey::FunctionSource(function_id), changed));
         callbacks.insert(
             (function.name.clone(), function.arity),
             ProtocolCallbackImpl {
@@ -751,7 +751,7 @@ fn discover_modules(
                 let nested = read_module_body_surface(module, ctx).map_err(|error| {
                     emit_internal_surface_error(world, format!("nested module body read failed: {error}"))
                 })?;
-                let revision = world.index_module_body(
+                let changed = world.index_module_body(
                     module_id,
                     code_id,
                     parent_module,
@@ -759,7 +759,7 @@ fn discover_modules(
                     module.source.clone(),
                     nested.clone(),
                 );
-                outputs.push((FactKey::ModuleIndexed(module_id), revision));
+                outputs.push((FactKey::ModuleIndexed(module_id), changed));
                 discover_modules(world, code_id, module_id, &nested, ctx, outputs)?;
             }
             ScopeForm::Protocol(protocol) => {
@@ -767,7 +767,7 @@ fn discover_modules(
                 let protocol_surface = read_protocol_body_surface(protocol, ctx).map_err(|error| {
                     emit_internal_surface_error(world, format!("quoted protocol body read failed: {error}"))
                 })?;
-                let revision = world.index_protocol_module(
+                let changed = world.index_protocol_module(
                     module_id,
                     code_id,
                     parent_module,
@@ -775,7 +775,7 @@ fn discover_modules(
                     protocol.source.clone(),
                     protocol_surface,
                 );
-                outputs.push((FactKey::ModuleIndexed(module_id), revision));
+                outputs.push((FactKey::ModuleIndexed(module_id), changed));
             }
             _ => {}
         }

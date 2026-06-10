@@ -9,7 +9,7 @@ fn complete(
     job: u32,
     reads: HashSet<&'static str>,
     waits: HashSet<&'static str>,
-    outputs: Vec<(&'static str, u64)>,
+    outputs: Vec<(&'static str, bool)>,
     follow_up: Vec<u32>,
 ) -> AppliedStep<u32, &'static str> {
     scheduler.complete(job, reads, waits, outputs, follow_up)
@@ -42,7 +42,7 @@ fn compiler2_dependency_index_wakes_exact_waiters() {
 }
 
 #[test]
-fn compiler2_scheduler_stores_published_revisions_and_suppresses_no_change_wakeups() {
+fn compiler2_scheduler_wakes_on_content_change_suppresses_stable_republication() {
     let mut scheduler = TestScheduler::new();
 
     let subscriber = 2_u32;
@@ -75,14 +75,14 @@ fn compiler2_scheduler_stores_published_revisions_and_suppresses_no_change_wakeu
         writer,
         HashSet::new(),
         HashSet::new(),
-        vec![(fact, 1)],
+        vec![(fact, true)],
         Vec::new(),
     );
     assert_eq!(first.enqueued, vec![subscriber]);
     assert_eq!(
         scheduler.facts().revision(&fact),
         Some(1),
-        "the fact system should expose the revision the authority job published"
+        "the table-owned counter starts at 1 on first publication"
     );
     assert_eq!(scheduler.pop(), Some(subscriber));
 
@@ -91,28 +91,31 @@ fn compiler2_scheduler_stores_published_revisions_and_suppresses_no_change_wakeu
         writer,
         HashSet::new(),
         HashSet::new(),
-        vec![(fact, 1)],
+        vec![(fact, false)],
         Vec::new(),
     );
     assert!(
         second.enqueued.is_empty(),
-        "no-change writes should not wake subscribers"
+        "republishing with changed=false should not wake subscribers"
     );
-    assert!(second.changed.is_empty(), "same revision should suppress changes");
+    assert!(
+        second.changed.is_empty(),
+        "stable republication should suppress changes"
+    );
 
     let third = complete(
         &mut scheduler,
         writer,
         HashSet::new(),
         HashSet::new(),
-        vec![(fact, 9)],
+        vec![(fact, true)],
         Vec::new(),
     );
     assert_eq!(third.enqueued, vec![subscriber]);
     assert_eq!(
         scheduler.facts().revision(&fact),
-        Some(9),
-        "a moved revision should be stored verbatim, not re-counted"
+        Some(2),
+        "republishing with changed=true increments the table counter"
     );
 }
 
@@ -136,10 +139,10 @@ fn compiler2_scheduler_retracts_outputs_a_job_stops_publishing() {
         writer,
         HashSet::new(),
         HashSet::new(),
-        vec![(fact, 5)],
+        vec![(fact, true)],
         Vec::new(),
     );
-    assert_eq!(scheduler.facts().revision(&fact), Some(5));
+    assert_eq!(scheduler.facts().revision(&fact), Some(1));
     let _ = scheduler.pop();
 
     let retracted = complete(
@@ -154,8 +157,8 @@ fn compiler2_scheduler_retracts_outputs_a_job_stops_publishing() {
     assert_eq!(retracted.changed.len(), 1, "retraction should be a fact change");
     assert_eq!(
         retracted.changed[0].old_revision,
-        Some(5),
-        "old revision should reflect the prior published revision"
+        Some(1),
+        "old revision should reflect the table counter at retraction"
     );
     assert_eq!(
         retracted.changed[0].new_revision, None,
@@ -182,7 +185,7 @@ fn compiler2_scheduler_wakes_waiters_when_a_matching_fact_appears() {
         1_u32,
         HashSet::new(),
         HashSet::new(),
-        vec![("foo", 1)],
+        vec![("foo", true)],
         Vec::new(),
     );
     assert_eq!(result.enqueued, vec![waiter]);
@@ -214,7 +217,7 @@ fn compiler2_scheduler_has_unresolved_tracks_waiter_presence_without_materializi
         1_u32,
         HashSet::new(),
         HashSet::new(),
-        vec![("foo", 1)],
+        vec![("foo", true)],
         Vec::new(),
     );
     assert_eq!(

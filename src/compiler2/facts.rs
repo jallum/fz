@@ -14,28 +14,35 @@ pub struct FactReplace<F> {
     pub output_keys: HashSet<F>,
 }
 
-/// One fact: the revisions its publishers last published. State facts
-/// (ModuleDefined, FunctionDefined, ...) have one authority job. Demand facts
-/// (Activation, Executable) are published by every demander and stay present
-/// until the last one retracts. The settled revision is the max over
-/// publishers — the revision itself is whatever 64-bit value the fact's
-/// reconcile chose; the table only stores it and propagates when it moves.
+/// One fact: the set of jobs that currently claim it, plus a monotonic
+/// counter. State facts (ModuleDefined, FunctionDefined, …) have one
+/// authority job; demand facts (Activation, Executable) are held by every
+/// demander and stay present until the last one drops. The counter starts at
+/// 1 on first appearance and increments each time any publisher signals
+/// `changed = true`. Retraction (no publishers remain) is represented as
+/// `revision() = None`.
 #[derive(Debug, Clone)]
 struct FactSlot<J> {
-    publishers: HashMap<J, u64>,
+    publishers: HashSet<J>,
+    revision: u64,
 }
 
 impl<J> Default for FactSlot<J> {
     fn default() -> Self {
         Self {
-            publishers: HashMap::new(),
+            publishers: HashSet::new(),
+            revision: 0,
         }
     }
 }
 
 impl<J> FactSlot<J> {
     fn revision(&self) -> Option<u64> {
-        self.publishers.values().copied().max()
+        if self.publishers.is_empty() {
+            None
+        } else {
+            Some(self.revision)
+        }
     }
 }
 
@@ -65,17 +72,19 @@ where
 
     /// Replaces one job's published facts. Keys the job previously published
     /// but no longer does lose that job's entry; a fact with no publishers
-    /// left is retracted.
+    /// left is retracted. The `changed` flag on each output means the job's
+    /// content moved; the table increments the fact's revision only when that
+    /// flag is set (or when the fact is newly appearing).
     pub fn replace_outputs(
         &mut self,
         job: &J,
         previous_output_keys: &HashSet<F>,
-        outputs: Vec<(F, u64)>,
+        outputs: Vec<(F, bool)>,
     ) -> FactReplace<F> {
         let mut new_outputs = HashMap::new();
-        for (key, revision) in outputs {
+        for (key, content_changed) in outputs {
             assert!(
-                new_outputs.insert(key, revision).is_none(),
+                new_outputs.insert(key, content_changed).is_none(),
                 "job emitted duplicate fact output for one key"
             );
         }
@@ -91,8 +100,14 @@ where
             let mut slot = self.slots.remove(&key).unwrap_or_default();
             let old_revision = slot.revision();
 
-            if let Some(revision) = new_outputs.remove(&key) {
-                slot.publishers.insert(job.clone(), revision);
+            if let Some(content_changed) = new_outputs.remove(&key) {
+                let was_absent = slot.publishers.is_empty();
+                slot.publishers.insert(job.clone());
+                if was_absent {
+                    slot.revision = 1;
+                } else if content_changed {
+                    slot.revision += 1;
+                }
             } else {
                 slot.publishers.remove(job);
             }

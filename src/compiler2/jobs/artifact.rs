@@ -103,11 +103,10 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
         executables,
     };
     let materialized_fact = FactKey::MaterializedProgram(root_id);
-    let revision = world.define_materialized_program(root_id, program);
-    let changed = world.fact_would_change(materialized_fact.clone(), revision);
+    let changed = world.define_materialized_program(root_id, program);
     Ok(JobEffects {
         reads,
-        outputs: vec![(materialized_fact, revision)],
+        outputs: vec![(materialized_fact, changed)],
         follow_up: changed.then_some(Job::DeriveAbiReady(root_id)).into_iter().collect(),
         ..JobEffects::default()
     })
@@ -157,11 +156,10 @@ pub(super) fn derive_abi_ready(world: &mut World<'_>, root_id: RootId) -> Result
         callable_entries,
     };
     let abi_ready_fact = FactKey::AbiReadyProgram(root_id);
-    let revision = world.define_abi_ready_program(root_id, program);
-    let changed = world.fact_would_change(abi_ready_fact.clone(), revision);
+    let changed = world.define_abi_ready_program(root_id, program);
     Ok(JobEffects {
         reads,
-        outputs: vec![(abi_ready_fact, revision)],
+        outputs: vec![(abi_ready_fact, changed)],
         follow_up: changed
             .then_some(Job::DeriveEmissionReady(root_id))
             .into_iter()
@@ -256,11 +254,10 @@ pub(super) fn derive_emission_ready(world: &mut World<'_>, root_id: RootId) -> R
         callable_entries,
     };
     let emission_ready_fact = FactKey::EmissionReadyProgram(root_id);
-    let revision = world.define_emission_ready_program(root_id, program);
-    let changed = world.fact_would_change(emission_ready_fact.clone(), revision);
+    let changed = world.define_emission_ready_program(root_id, program);
     Ok(JobEffects {
         reads,
-        outputs: vec![(emission_ready_fact, revision)],
+        outputs: vec![(emission_ready_fact, changed)],
         follow_up: changed
             .then_some(Job::LowerBackendProgram(root_id))
             .into_iter()

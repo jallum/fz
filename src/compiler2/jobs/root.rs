@@ -16,10 +16,9 @@ use super::semantic::executable_callsite_needs;
 pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let root = world.root_entry(root_id);
     let root_fact = FactKey::RootEntry(root_id);
-    let root_revision = world.root_revision(root_id);
     let mut effects = JobEffects {
         reads: vec![root_fact.clone()],
-        outputs: vec![(root_fact, root_revision)],
+        outputs: vec![(root_fact, false)],
         ..JobEffects::default()
     };
 
@@ -43,13 +42,15 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
     let entry_activation = world.activation_key(root_id, root.function, &[]);
     // An activation fact is fully determined by its key (the canonical
     // inputs live there), so once present it never changes.
-    effects.outputs.push((FactKey::Activation(entry_activation.clone()), 1));
+    effects
+        .outputs
+        .push((FactKey::Activation(entry_activation.clone()), false));
     effects.outputs.push((
         FactKey::Executable(ExecutableKey {
             activation: entry_activation.clone(),
             need: root.need,
         }),
-        1,
+        false,
     ));
     effects.follow_up.push(Job::LowerFunction(root.function));
     effects.follow_up.push(Job::PlanEntryDispatch(root.function));
@@ -229,12 +230,12 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
         executables
             .iter()
             .cloned()
-            .map(|executable| (FactKey::Executable(executable), 1)),
+            .map(|executable| (FactKey::Executable(executable), false)),
     );
 
     if waits.is_empty() {
         let semantic_closed_fact = FactKey::SemanticClosed(root_id);
-        let semantic_closed = world.define_semantic_closure(
+        let closure_changed = world.define_semantic_closure(
             root_id,
             SemanticClosure {
                 entry: entry.clone(),
@@ -243,8 +244,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
             },
             dependencies,
         );
-        let closure_changed = world.fact_would_change(semantic_closed_fact.clone(), semantic_closed);
-        outputs.push((semantic_closed_fact, semantic_closed));
+        outputs.push((semantic_closed_fact, closure_changed));
         if closure_changed {
             follow_up.insert(Job::MaterializeRoot(root_id));
         }

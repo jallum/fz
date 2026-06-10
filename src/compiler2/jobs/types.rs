@@ -17,9 +17,9 @@ use super::super::world::World;
 
 pub(super) fn derive_type_def(world: &mut World<'_>, name: &TypeName) -> Result<JobEffects, FatalError> {
     if let Some(def) = world.protocol_domain_type_def(name) {
-        let revision = world.define_type_def(name.clone(), def);
+        let changed = world.define_type_def(name.clone(), def);
         return Ok(JobEffects {
-            outputs: vec![(FactKey::TypeDefined(name.clone()), revision)],
+            outputs: vec![(FactKey::TypeDefined(name.clone()), changed)],
             ..JobEffects::default()
         });
     }
@@ -69,10 +69,10 @@ pub(super) fn derive_type_def(world: &mut World<'_>, name: &TypeName) -> Result<
         .iter()
         .map(|referenced| FactKey::TypeDefined(referenced.clone()))
         .collect();
-    let revision = world.define_type_def(name.clone(), def);
+    let changed = world.define_type_def(name.clone(), def);
     Ok(JobEffects {
         reads,
-        outputs: vec![(FactKey::TypeDefined(name.clone()), revision)],
+        outputs: vec![(FactKey::TypeDefined(name.clone()), changed)],
         ..JobEffects::default()
     })
 }

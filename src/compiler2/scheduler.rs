@@ -83,7 +83,7 @@ where
         job: J,
         reads: HashSet<F>,
         waits: HashSet<F>,
-        outputs: Vec<(F, u64)>,
+        outputs: Vec<(F, bool)>,
         follow_up: Vec<J>,
     ) -> AppliedStep<J, F> {
         let blocked = waits.iter().cloned().collect();

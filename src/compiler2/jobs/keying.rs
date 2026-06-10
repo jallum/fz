@@ -60,10 +60,10 @@ pub(super) fn derive_recursive(world: &mut World<'_>, function: FunctionId) -> R
     }
 
     let recursive = reaches_self(function, &graph);
-    let revision = world.define_recursive(function, recursive);
+    let changed = world.define_recursive(function, recursive);
     Ok(JobEffects {
         reads,
-        outputs: vec![(FactKey::Recursive(function), revision)],
+        outputs: vec![(FactKey::Recursive(function), changed)],
         ..JobEffects::default()
     })
 }
@@ -77,10 +77,10 @@ pub(super) fn derive_dispatch_mask(world: &mut World<'_>, function: FunctionId) 
 
     let plan = world.entry_dispatch(function);
     let mask = dispatch_input_mask(&plan);
-    let revision = world.define_dispatch_mask(function, mask);
+    let changed = world.define_dispatch_mask(function, mask);
     Ok(JobEffects {
         reads: vec![FactKey::EntryDispatch(function)],
-        outputs: vec![(FactKey::DispatchMask(function), revision)],
+        outputs: vec![(FactKey::DispatchMask(function), changed)],
         ..JobEffects::default()
     })
 }

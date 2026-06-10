@@ -85,10 +85,10 @@ pub(super) fn reify_guard_dispatch(world: &mut World<'_>, function: FunctionId) 
     let mut build_stack = Vec::new();
     let dispatch = build_guard_dispatch(world, function, &mut cache, &mut build_stack)
         .map_err(|err| emit_guard_dispatch_error(world, function, fn_span, err))?;
-    let revision = world.define_guard_dispatch(function, dispatch);
+    let changed = world.define_guard_dispatch(function, dispatch);
     Ok(JobEffects {
         reads,
-        outputs: vec![(FactKey::GuardDispatch(function), revision)],
+        outputs: vec![(FactKey::GuardDispatch(function), changed)],
         ..JobEffects::default()
     })
 }
@@ -173,10 +173,10 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
     };
     let plan = pattern_dispatch_from_source_with_guard_resolver(source_patterns, &mut resolver)
         .map_err(|error| emit_entry_dispatch_error(world, function, fn_span, error))?;
-    let revision = world.define_entry_dispatch(function, plan);
+    let changed = world.define_entry_dispatch(function, plan);
     Ok(JobEffects {
         reads,
-        outputs: vec![(FactKey::EntryDispatch(function), revision)],
+        outputs: vec![(FactKey::EntryDispatch(function), changed)],
         ..JobEffects::default()
     })
 }

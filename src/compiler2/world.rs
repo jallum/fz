@@ -288,10 +288,6 @@ impl<'a> World<'a> {
         *self.roots.get(id)
     }
 
-    pub fn root_revision(&self, id: RootId) -> u64 {
-        self.work_graph.facts().revision(&FactKey::RootEntry(id)).unwrap_or(1)
-    }
-
     pub(crate) fn activation_key(&mut self, root: RootId, function: FunctionId, inputs: &[Ty]) -> ActivationKey {
         self.canonical_activation_key(root, function, inputs)
     }
@@ -313,18 +309,16 @@ impl<'a> World<'a> {
         self.activations.get(key).and_then(|slot| slot.return_ty().cloned())
     }
 
-    pub fn define_activation_analysis(&mut self, key: &ActivationKey, mut analysis: ActivationAnalysis) -> u64 {
+    pub fn define_activation_analysis(&mut self, key: &ActivationKey, mut analysis: ActivationAnalysis) -> bool {
         for ty in analysis.value_types.values_mut() {
             *ty = self.types.alpha_normalize_vars(ty);
         }
         let changed = self.activations.define_analysis(key, analysis.clone());
-        let revision = self.advance_fact(FactKey::ActivationAnalyzed(key.clone()), changed);
         self.tel.execute(
             &["fz", "compiler2", "activation_analysis", "defined"],
             &measurements! {
                 root_id: key.root.as_u32(),
                 function_id: key.function.as_u32(),
-                revision: revision,
                 reachable_clauses: analysis.reachable_clauses.len(),
                 callsites: analysis.callsites.len(),
                 values: analysis.value_types.len(),
@@ -334,29 +328,27 @@ impl<'a> World<'a> {
                 analysis: opaque_debug(&analysis),
             },
         );
-        revision
+        changed
     }
 
-    pub fn define_activation_return(&mut self, key: &ActivationKey, return_ty: Ty) -> u64 {
+    pub fn define_activation_return(&mut self, key: &ActivationKey, return_ty: Ty) -> bool {
         let return_ty = self.types.alpha_normalize_vars(&return_ty);
         let changed = self.activations.define_return(&mut self.types, key, return_ty);
-        let revision = self.advance_fact(FactKey::ReturnType(key.clone()), changed);
         self.tel.execute(
             &["fz", "compiler2", "return_type", "defined"],
             &measurements! {
                 root_id: key.root.as_u32(),
                 function_id: key.function.as_u32(),
-                revision: revision,
             },
             &metadata! {
                 activation: opaque_debug(key),
                 return_ty: opaque_debug(&return_ty),
             },
         );
-        revision
+        changed
     }
 
-    pub fn define_callsite_summary(&mut self, key: CallSiteKey, mut summary: CallSiteSummary) -> u64 {
+    pub fn define_callsite_summary(&mut self, key: CallSiteKey, mut summary: CallSiteSummary) -> bool {
         summary.input_types = summary
             .input_types
             .into_iter()
@@ -364,14 +356,12 @@ impl<'a> World<'a> {
             .collect();
         summary.return_ty = self.types.alpha_normalize_vars(&summary.return_ty);
         let changed = self.callsites.define(key.clone(), summary.clone());
-        let revision = self.advance_fact(FactKey::CallSiteSummary(key.clone()), changed);
         self.tel.execute(
             &["fz", "compiler2", "callsite", "defined"],
             &measurements! {
                 root_id: key.activation.root.as_u32(),
                 function_id: key.activation.function.as_u32(),
                 callsite_id: key.callsite.as_u32(),
-                revision: revision,
                 input_arity: summary.input_types.len(),
             },
             &metadata! {
@@ -379,7 +369,7 @@ impl<'a> World<'a> {
                 summary: opaque_debug(&summary),
             },
         );
-        revision
+        changed
     }
 
     pub fn callsite_summary(&self, key: &CallSiteKey) -> Option<&CallSiteSummary> {
@@ -391,21 +381,19 @@ impl<'a> World<'a> {
         root: RootId,
         closure: SemanticClosure,
         dependencies: super::semantic::DependencySnapshot,
-    ) -> u64 {
+    ) -> bool {
         let changed = self.semantic_closures.define(root, closure.clone(), dependencies);
-        let revision = self.advance_fact(FactKey::SemanticClosed(root), changed);
         self.tel.execute(
             &["fz", "compiler2", "semantic_closed", "defined"],
             &measurements! {
                 root_id: root.as_u32(),
-                revision: revision,
             },
             &metadata! {
                 closure: opaque_debug(&closure),
                 root_id: opaque_debug(&root),
             },
         );
-        revision
+        changed
     }
 
     pub(crate) fn semantic_closure(&self, root: RootId) -> SemanticClosure {
@@ -421,14 +409,12 @@ impl<'a> World<'a> {
             .expect("semantic closure dependencies should only be read after their fact is defined")
     }
 
-    pub(crate) fn define_materialized_program(&mut self, root: RootId, program: MaterializedProgram) -> u64 {
+    pub(crate) fn define_materialized_program(&mut self, root: RootId, program: MaterializedProgram) -> bool {
         let changed = self.artifacts.define(root, program.clone());
-        let revision = self.advance_fact(FactKey::MaterializedProgram(root), changed);
         self.tel.execute(
             &["fz", "compiler2", "materialized_program", "defined"],
             &measurements! {
                 root_id: root.as_u32(),
-                revision: revision,
                 executable_count: program.executables.len(),
             },
             &metadata! {
@@ -436,7 +422,7 @@ impl<'a> World<'a> {
                 root_id: opaque_debug(&root),
             },
         );
-        revision
+        changed
     }
 
     pub(crate) fn materialized_program(&self, root: RootId) -> MaterializedProgram {
@@ -446,14 +432,12 @@ impl<'a> World<'a> {
             .expect("materialized programs should only be read after their fact is defined")
     }
 
-    pub(crate) fn define_abi_ready_program(&mut self, root: RootId, program: AbiReadyProgram) -> u64 {
+    pub(crate) fn define_abi_ready_program(&mut self, root: RootId, program: AbiReadyProgram) -> bool {
         let changed = self.abi_ready.define(root, program.clone());
-        let revision = self.advance_fact(FactKey::AbiReadyProgram(root), changed);
         self.tel.execute(
             &["fz", "compiler2", "abi_ready_program", "defined"],
             &measurements! {
                 root_id: root.as_u32(),
-                revision: revision,
                 executable_count: program.executables.len(),
                 callable_entry_count: program.callable_entries.len(),
             },
@@ -462,7 +446,7 @@ impl<'a> World<'a> {
                 root_id: opaque_debug(&root),
             },
         );
-        revision
+        changed
     }
 
     pub(crate) fn abi_ready_program(&self, root: RootId) -> AbiReadyProgram {
@@ -472,23 +456,22 @@ impl<'a> World<'a> {
             .expect("ABI-ready programs should only be read after their fact is defined")
     }
 
-    pub(crate) fn define_emission_ready_program(&mut self, root: RootId, program: EmissionReadyProgram) -> u64 {
+    pub(crate) fn define_emission_ready_program(&mut self, root: RootId, program: EmissionReadyProgram) -> bool {
         let changed = self.emission_ready.define(root, program.clone());
-        let revision = self.advance_fact(FactKey::EmissionReadyProgram(root), changed);
         self.tel.execute(
             &["fz", "compiler2", "emission_ready_program", "defined"],
             &measurements! {
                 root_id: root.as_u32(),
-                revision: revision,
                 executable_count: program.executables.len(),
                 callable_entry_count: program.callable_entries.len(),
+                changed: changed as u64,
             },
             &metadata! {
                 program: opaque_debug(&program),
                 root_id: opaque_debug(&root),
             },
         );
-        revision
+        changed
     }
 
     pub(crate) fn emission_ready_program(&self, root: RootId) -> EmissionReadyProgram {
@@ -498,24 +481,23 @@ impl<'a> World<'a> {
             .expect("emission-ready programs should only be read after their fact is defined")
     }
 
-    pub(crate) fn define_backend_program(&mut self, root: RootId, program: BackendProgram) -> u64 {
+    pub(crate) fn define_backend_program(&mut self, root: RootId, program: BackendProgram) -> bool {
         let changed = self.backend.define(root, program.clone());
-        let revision = self.advance_fact(FactKey::BackendProgram(root), changed);
         self.tel.execute(
             &["fz", "compiler2", "backend_program", "defined"],
             &measurements! {
                 root_id: root.as_u32(),
-                revision: revision,
                 atom_count: program.atom_names.len(),
                 executable_count: program.executables.len(),
                 callable_entry_count: program.callable_entries.len(),
+                changed: changed as u64,
             },
             &metadata! {
                 program: opaque_debug(&program),
                 root_id: opaque_debug(&root),
             },
         );
-        revision
+        changed
     }
 
     pub(crate) fn backend_program(&self, root: RootId) -> BackendProgram {
@@ -525,24 +507,23 @@ impl<'a> World<'a> {
             .expect("backend programs should only be read after their fact is defined")
     }
 
-    pub(crate) fn define_native_program(&mut self, root: RootId, program: NativeProgram) -> u64 {
+    pub(crate) fn define_native_program(&mut self, root: RootId, program: NativeProgram) -> bool {
         let changed = self.native.define(root, program.clone());
-        let revision = self.advance_fact(FactKey::NativeProgram(root), changed);
         self.tel.execute(
             &["fz", "compiler2", "native_program", "defined"],
             &measurements! {
                 root_id: root.as_u32(),
-                revision: revision,
                 body_count: program.bodies.len(),
                 callable_entry_count: program.callable_entries.len(),
                 fn_count: program.module.fns.len(),
+                changed: changed as u64,
             },
             &metadata! {
                 program: opaque_debug(&program),
                 root_id: opaque_debug(&root),
             },
         );
-        revision
+        changed
     }
 
     pub(crate) fn native_program(&self, root: RootId) -> NativeProgram {
@@ -561,24 +542,22 @@ impl<'a> World<'a> {
         self.modules.reference_named(name)
     }
 
-    pub fn define_module(&mut self, id: ModuleId, namespace: Namespace, exports: Vec<ModuleExport>) -> u64 {
+    pub fn define_module(&mut self, id: ModuleId, namespace: Namespace, exports: Vec<ModuleExport>) -> bool {
         let code = self.module_definition_code(id);
         let changed = self.modules.define(id, code, namespace, exports);
-        let revision = self.advance_fact(FactKey::ModuleDefined(id), changed);
         let module = self.modules.get(id);
         self.tel.execute(
             &["fz", "compiler2", "module", "defined"],
             &measurements! {
                 code_id: code.as_u32(),
                 module_id: id.as_u32(),
-                revision: revision,
             },
             &metadata! {
                 module: opaque_debug(module),
                 module_id: opaque_debug(&id),
             },
         );
-        revision
+        changed
     }
 
     pub fn index_module_body(
@@ -589,9 +568,8 @@ impl<'a> World<'a> {
         local_name: String,
         source: QuotedSourceRoot,
         surface: super::quoted_surface::ScopeSurface,
-    ) -> u64 {
-        let changed = self.modules.index_body(id, code, parent, local_name, source, surface);
-        self.advance_fact(FactKey::ModuleIndexed(id), changed)
+    ) -> bool {
+        self.modules.index_body(id, code, parent, local_name, source, surface)
     }
 
     pub fn index_protocol_module(
@@ -602,11 +580,9 @@ impl<'a> World<'a> {
         local_name: String,
         source: QuotedSourceRoot,
         surface: super::quoted_surface::ScopeSurface,
-    ) -> u64 {
-        let changed = self
-            .modules
-            .index_protocol(id, code, parent, local_name, source, surface);
-        self.advance_fact(FactKey::ModuleIndexed(id), changed)
+    ) -> bool {
+        self.modules
+            .index_protocol(id, code, parent, local_name, source, surface)
     }
 
     pub fn scope_module(&mut self, id: ModuleId, base_namespace: Namespace) {
@@ -713,34 +689,33 @@ impl<'a> World<'a> {
     /// Publishes a resolved type definition under `name` and emits the
     /// callee-tier `type defined` signal. The rendered type rides the event so
     /// tests and tooling can read the resolved surface without the interner.
-    pub(crate) fn define_type_def(&mut self, name: TypeName, def: TypeDef) -> u64 {
+    pub(crate) fn define_type_def(&mut self, name: TypeName, def: TypeDef) -> bool {
         let rendered = self.types.display(&def.ty);
         let has_vars = self.types.has_vars(&def.ty);
         let params = def.params.len();
         let changed = self.type_defs.define(name.clone(), def);
-        let revision = self.advance_fact(FactKey::TypeDefined(name.clone()), changed);
         self.tel.execute(
             &["fz", "compiler2", "type", "defined"],
             &measurements! {
                 module_id: name.module.as_u32(),
                 arity: name.arity,
                 params: params,
-                revision: revision,
                 has_vars: has_vars,
+                changed: changed as u64,
             },
             &metadata! {
                 name: name.name.clone(),
                 ty: rendered,
             },
         );
-        revision
+        changed
     }
 
     pub(crate) fn type_def(&self, name: &TypeName) -> Option<&TypeDef> {
         self.type_defs.get(name)
     }
 
-    pub(crate) fn refresh_protocol_domain_facts(&mut self, protocol: ModuleId) -> Vec<(FactKey, u64)> {
+    pub(crate) fn refresh_protocol_domain_facts(&mut self, protocol: ModuleId) -> Vec<(FactKey, bool)> {
         let mut outputs = Vec::new();
         for name in [
             protocol_domain_type_name(protocol, 0),
@@ -749,8 +724,8 @@ impl<'a> World<'a> {
             let Some(def) = self.protocol_domain_type_def(&name) else {
                 continue;
             };
-            let revision = self.define_type_def(name.clone(), def);
-            outputs.push((FactKey::TypeDefined(name), revision));
+            let changed = self.define_type_def(name.clone(), def);
+            outputs.push((FactKey::TypeDefined(name), changed));
         }
         outputs
     }
@@ -797,24 +772,22 @@ impl<'a> World<'a> {
         Some(TypeDef { ty, params })
     }
 
-    pub(crate) fn define_protocol_dispatch(&mut self, protocol: ModuleId, dispatch: ProtocolDispatch) -> u64 {
+    pub(crate) fn define_protocol_dispatch(&mut self, protocol: ModuleId, dispatch: ProtocolDispatch) -> bool {
         let changed = self.protocol_dispatches.define(protocol, dispatch.clone());
-        let revision = self.advance_fact(FactKey::ProtocolDispatch(protocol), changed);
         self.tel.execute(
             &["fz", "compiler2", "protocol_dispatch", "defined"],
             &measurements! {
                 protocol_id: protocol.as_u32(),
-                revision: revision,
                 arms: dispatch.arms.len(),
             },
             &metadata! {
                 dispatch: opaque_debug(&dispatch),
             },
         );
-        revision
+        changed
     }
 
-    pub(crate) fn refresh_protocol_dispatch_fact(&mut self, protocol: ModuleId) -> (FactKey, u64) {
+    pub(crate) fn refresh_protocol_dispatch_fact(&mut self, protocol: ModuleId) -> (FactKey, bool) {
         let dispatch = ProtocolDispatch {
             arms: self
                 .protocol_impls_for(protocol)
@@ -825,8 +798,8 @@ impl<'a> World<'a> {
                 })
                 .collect(),
         };
-        let revision = self.define_protocol_dispatch(protocol, dispatch);
-        (FactKey::ProtocolDispatch(protocol), revision)
+        let changed = self.define_protocol_dispatch(protocol, dispatch);
+        (FactKey::ProtocolDispatch(protocol), changed)
     }
 
     pub(crate) fn protocol_dispatch(&self, protocol: ModuleId) -> Option<&ProtocolDispatch> {
@@ -886,7 +859,7 @@ impl<'a> World<'a> {
         namespace: Namespace,
         source: QuotedSourceRoot,
         surface: FunctionSurface,
-    ) -> (FunctionId, u64) {
+    ) -> (FunctionId, bool) {
         let arity = surface.arity();
         let clauses = surface.clauses.len();
         let id = self.functions.reference(module, local_name, arity);
@@ -899,7 +872,6 @@ impl<'a> World<'a> {
             source,
         };
         let changed = self.functions.define(id, fn_source, surface);
-        let revision = self.advance_fact(FactKey::FunctionDefined(id), changed);
         if changed {
             let function = self.functions.get(id);
             let function_ref = self.functions.reference_for(id);
@@ -910,7 +882,6 @@ impl<'a> World<'a> {
                     module_id: module.as_u32(),
                     owner_module_id: owner_module.as_u32(),
                     function_id: id.as_u32(),
-                    revision: revision,
                     arity: arity,
                     clauses: clauses,
                     source_heap_id: function.state_source_heap_id().unwrap_or_default(),
@@ -925,12 +896,11 @@ impl<'a> World<'a> {
                 },
             );
         }
-        (id, revision)
+        (id, changed)
     }
 
-    pub(crate) fn note_function_source(&mut self, function: FunctionId, source: FunctionSource) -> u64 {
+    pub(crate) fn note_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
         let changed = self.functions.note(function, source.clone());
-        let revision = self.advance_fact(FactKey::FunctionSource(function), changed);
         let function_ref = self.functions.reference_for(function);
         let source_owner_module = source.owner_module;
         let source_module_id = function_ref.module;
@@ -941,7 +911,6 @@ impl<'a> World<'a> {
                 module_id: function_ref.module.as_u32(),
                 owner_module_id: source.owner_module.as_u32(),
                 function_id: function.as_u32(),
-                revision: revision,
                 arity: function_ref.arity,
                 clauses: function_source_clause_count(&source),
                 source_heap_id: source.source.key().heap_id,
@@ -955,7 +924,7 @@ impl<'a> World<'a> {
                 owner_module_id: opaque_debug(&source_owner_module),
             },
         );
-        revision
+        changed
     }
 
     pub(crate) fn function_source(&self, function: FunctionId) -> Option<FunctionSource> {
@@ -966,15 +935,13 @@ impl<'a> World<'a> {
         }
     }
 
-    pub(crate) fn define_function_contract(&mut self, function: FunctionId, contract: FunctionContract) -> u64 {
+    pub(crate) fn define_function_contract(&mut self, function: FunctionId, contract: FunctionContract) -> bool {
         let changed = self.function_contracts.define(function, contract.clone());
-        let revision = self.advance_fact(FactKey::FunctionContract(function), changed);
         let function_ref = self.functions.reference_for(function);
         self.tel.execute(
             &["fz", "compiler2", "function_contract", "defined"],
             &measurements! {
                 function_id: function.as_u32(),
-                revision: revision,
                 arity: function_ref.arity,
             },
             &metadata! {
@@ -982,7 +949,7 @@ impl<'a> World<'a> {
                 contract: opaque_debug(&contract),
             },
         );
-        revision
+        changed
     }
 
     pub(crate) fn function_contract(&self, function: FunctionId) -> Option<&FunctionContract> {
@@ -1066,7 +1033,7 @@ impl<'a> World<'a> {
         namespace: Namespace,
         capture_params: Vec<String>,
         surface: FunctionSurface,
-    ) -> (FunctionId, u64) {
+    ) -> (FunctionId, bool) {
         let (owner_source, _) = self.function_definition(owner);
         let owner_module = self.functions.reference_for(owner).module;
         let owner_code = owner_source.code;
@@ -1082,7 +1049,6 @@ impl<'a> World<'a> {
             source: owner_source.source.clone(),
         };
         let changed = self.functions.define(id, fn_source, surface.clone());
-        let revision = self.advance_fact(FactKey::FunctionDefined(id), changed);
         if changed {
             let function = self.functions.get(id);
             let function_ref = self.functions.reference_for(id);
@@ -1093,7 +1059,6 @@ impl<'a> World<'a> {
                     module_id: owner_module.as_u32(),
                     owner_module_id: owner_source.owner_module.as_u32(),
                     function_id: id.as_u32(),
-                    revision: revision,
                     arity: surface.arity(),
                     clauses: surface.clauses.len(),
                     owner_function_id: owner.as_u32(),
@@ -1110,12 +1075,11 @@ impl<'a> World<'a> {
                 },
             );
         }
-        (id, revision)
+        (id, changed)
     }
 
-    pub(crate) fn define_lowered_body(&mut self, function: FunctionId, body: LoweredBody) -> u64 {
+    pub(crate) fn define_lowered_body(&mut self, function: FunctionId, body: LoweredBody) -> bool {
         let changed = self.bodies.define(function, body.clone());
-        let revision = self.advance_fact(FactKey::LoweredBody(function), changed);
         let function_ref = self.functions.reference_for(function);
         let slot = self.functions.get(function);
         let (fn_source, fn_surface) = match slot {
@@ -1134,7 +1098,6 @@ impl<'a> World<'a> {
                 code_id: fn_source.code.as_u32(),
                 module_id: function_ref.module.as_u32(),
                 function_id: function.as_u32(),
-                revision: revision,
                 arity: arity,
                 clauses: clauses,
                 generated: generated,
@@ -1146,12 +1109,11 @@ impl<'a> World<'a> {
                 function_id: opaque_debug(&function),
             },
         );
-        revision
+        changed
     }
 
-    pub(crate) fn define_guard_dispatch(&mut self, function: FunctionId, dispatch: PatternGuardDispatch<Ty>) -> u64 {
+    pub(crate) fn define_guard_dispatch(&mut self, function: FunctionId, dispatch: PatternGuardDispatch<Ty>) -> bool {
         let changed = self.guard_dispatches.define(function, dispatch.clone());
-        let revision = self.advance_fact(FactKey::GuardDispatch(function), changed);
         let function_ref = self.functions.reference_for(function);
         let slot = self.functions.get(function);
         let (fn_source, fn_surface) = match slot {
@@ -1166,7 +1128,6 @@ impl<'a> World<'a> {
                 code_id: fn_source.code.as_u32(),
                 module_id: function_ref.module.as_u32(),
                 function_id: function.as_u32(),
-                revision: revision,
                 arity: fn_surface.arity(),
                 bodies: dispatch.bodies.len(),
                 guards: dispatch.plan.guards.len(),
@@ -1179,12 +1140,11 @@ impl<'a> World<'a> {
                 function_id: opaque_debug(&function),
             },
         );
-        revision
+        changed
     }
 
-    pub(crate) fn define_entry_dispatch(&mut self, function: FunctionId, plan: PatternDispatchPlan<Ty>) -> u64 {
+    pub(crate) fn define_entry_dispatch(&mut self, function: FunctionId, plan: PatternDispatchPlan<Ty>) -> bool {
         let changed = self.entry_dispatches.define(function, plan.clone());
-        let revision = self.advance_fact(FactKey::EntryDispatch(function), changed);
         let function_ref = self.functions.reference_for(function);
         let slot = self.functions.get(function);
         let (fn_source, fn_surface) = match slot {
@@ -1199,7 +1159,6 @@ impl<'a> World<'a> {
                 code_id: fn_source.code.as_u32(),
                 module_id: function_ref.module.as_u32(),
                 function_id: function.as_u32(),
-                revision: revision,
                 arity: fn_surface.arity(),
                 outcomes: plan.outcomes.len(),
                 guards: plan.guards.len(),
@@ -1212,17 +1171,15 @@ impl<'a> World<'a> {
                 function_id: opaque_debug(&function),
             },
         );
-        revision
+        changed
     }
 
-    pub(crate) fn define_recursive(&mut self, function: FunctionId, recursive: bool) -> u64 {
-        let changed = self.recursive.define(function, recursive);
-        self.advance_fact(FactKey::Recursive(function), changed)
+    pub(crate) fn define_recursive(&mut self, function: FunctionId, recursive: bool) -> bool {
+        self.recursive.define(function, recursive)
     }
 
-    pub(crate) fn define_dispatch_mask(&mut self, function: FunctionId, mask: Vec<bool>) -> u64 {
-        let changed = self.dispatch_masks.define(function, mask);
-        self.advance_fact(FactKey::DispatchMask(function), changed)
+    pub(crate) fn define_dispatch_mask(&mut self, function: FunctionId, mask: Vec<bool>) -> bool {
+        self.dispatch_masks.define(function, mask)
     }
 
     pub(crate) fn entry_dispatch(&self, function: FunctionId) -> PatternDispatchPlan<Ty> {
@@ -1301,14 +1258,12 @@ impl<'a> World<'a> {
         self.modules.named_struct_schemas()
     }
 
-    pub fn finish_code_index(&mut self, id: CodeId, source: QuotedCodeSource) -> u64 {
-        let changed = self.code.index(id, source);
-        self.advance_fact(FactKey::CodeIndexed(id), changed)
+    pub fn finish_code_index(&mut self, id: CodeId, source: QuotedCodeSource) -> bool {
+        self.code.index(id, source)
     }
 
-    pub fn finish_code_scope(&mut self, id: CodeId, namespace: Namespace) -> u64 {
-        let changed = self.code.scope(id, namespace);
-        self.advance_fact(FactKey::CodeScoped(id), changed)
+    pub fn finish_code_scope(&mut self, id: CodeId, namespace: Namespace) -> bool {
+        self.code.scope(id, namespace)
     }
 
     pub fn module_defined_revision(&self, module: ModuleId) -> Option<u64> {
@@ -1406,11 +1361,6 @@ impl<'a> World<'a> {
         self.work_graph.facts().revision(key).is_some()
     }
 
-    fn advance_fact(&self, key: FactKey, changed: bool) -> u64 {
-        let current = self.fact_revision(key).unwrap_or(0);
-        if changed { current + 1 } else { current }
-    }
-
     #[cfg(test)]
     pub(crate) fn scope_lexical_context(
         &self,
@@ -1468,10 +1418,6 @@ impl<'a> World<'a> {
                 builder.int(scope.namespace().as_u32() as i64),
             ),
         ])
-    }
-
-    pub(crate) fn fact_would_change(&self, key: FactKey, revision: u64) -> bool {
-        self.fact_revision(key) != Some(revision)
     }
 
     pub(crate) fn require_activation_key_facts(
