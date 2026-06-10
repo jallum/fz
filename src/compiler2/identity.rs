@@ -659,20 +659,44 @@ impl RootMap {
     }
 }
 
-trait SameState {
-    fn same_state(&self, other: &Self) -> bool;
+/// Reconciles a fact's value when it is (re)produced. `current` is `None`
+/// until the fact is first computed — distinct from any value, so fixpoint
+/// facts never mistake "not yet known" for a result. The returned `u64` is
+/// whatever the fact chooses to mean by "version" (here, a monotonic bump on
+/// change); the value itself never carries the revision — the fact system
+/// holds and threads it.
+trait Reconcile: Sized {
+    fn reconcile(current: Option<&Self>, incoming: Self, revision: u64) -> (Self, u64);
 }
 
-fn replace_if_changed<T: SameState>(state: &mut T, revision: &mut u64, next: T) -> u64 {
-    if !state.same_state(&next) {
-        *state = next;
-        *revision += 1;
+/// The monotonic reconcile policy: keep the revision when `same` holds against
+/// the current value, otherwise bump it. `same` is evaluated before `incoming`
+/// is moved into the result.
+fn monotonic<T>(current: Option<&T>, incoming: T, revision: u64, same: impl Fn(&T, &T) -> bool) -> (T, u64) {
+    let unchanged = current.is_some_and(|current| same(current, &incoming));
+    let revision = if unchanged { revision } else { revision + 1 };
+    (incoming, revision)
+}
+
+fn replace_if_changed<T: Reconcile>(state: &mut T, revision: &mut u64, next: T) -> u64 {
+    let (value, next_revision) = T::reconcile(Some(state), next, *revision);
+    // Store-on-change for now; fz-knf.3 lifts this to store-fresh-always where
+    // the value-vs-revision split matters (the code.index body-discard trap).
+    if next_revision != *revision {
+        *state = value;
+        *revision = next_revision;
     }
     *revision
 }
 
-impl SameState for ModuleState {
-    fn same_state(&self, other: &Self) -> bool {
+impl Reconcile for ModuleState {
+    fn reconcile(current: Option<&Self>, incoming: Self, revision: u64) -> (Self, u64) {
+        monotonic(current, incoming, revision, ModuleState::same)
+    }
+}
+
+impl ModuleState {
+    fn same(&self, other: &Self) -> bool {
         match (self, other) {
             (ModuleState::Placeholder, ModuleState::Placeholder) => true,
             (ModuleState::Indexed(left), ModuleState::Indexed(right)) => left.same_source(right),
@@ -710,8 +734,14 @@ impl ModuleSource {
     }
 }
 
-impl SameState for FunctionState {
-    fn same_state(&self, other: &Self) -> bool {
+impl Reconcile for FunctionState {
+    fn reconcile(current: Option<&Self>, incoming: Self, revision: u64) -> (Self, u64) {
+        monotonic(current, incoming, revision, FunctionState::same)
+    }
+}
+
+impl FunctionState {
+    fn same(&self, other: &Self) -> bool {
         match (self, other) {
             (FunctionState::Placeholder, FunctionState::Placeholder) => true,
             (FunctionState::Defined { def: left }, FunctionState::Defined { def: right }) => {
@@ -726,8 +756,14 @@ impl SameState for FunctionState {
     }
 }
 
-impl SameState for FunctionSourceState {
-    fn same_state(&self, other: &Self) -> bool {
+impl Reconcile for FunctionSourceState {
+    fn reconcile(current: Option<&Self>, incoming: Self, revision: u64) -> (Self, u64) {
+        monotonic(current, incoming, revision, FunctionSourceState::same)
+    }
+}
+
+impl FunctionSourceState {
+    fn same(&self, other: &Self) -> bool {
         match (self, other) {
             (FunctionSourceState::Placeholder, FunctionSourceState::Placeholder) => true,
             (FunctionSourceState::Noted { source: left }, FunctionSourceState::Noted { source: right }) => {
@@ -740,5 +776,30 @@ impl SameState for FunctionSourceState {
             }
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod reconcile_test {
+    use super::monotonic;
+
+    // The reconcile contract: the stored value is always the incoming one
+    // (fresh content is never dropped), and the revision advances iff the new
+    // value differs from the current — where `None` ("not yet computed") always
+    // counts as a difference.
+    #[test]
+    fn monotonic_advances_only_when_the_value_changes() {
+        let eq = |a: &u32, b: &u32| a == b;
+        assert_eq!(monotonic(None, 5, 10, eq), (5, 11), "first computation advances");
+        assert_eq!(
+            monotonic(Some(&5), 5, 10, eq),
+            (5, 10),
+            "an unchanged value keeps the revision"
+        );
+        assert_eq!(
+            monotonic(Some(&5), 7, 10, eq),
+            (7, 11),
+            "a change advances and stores the incoming value"
+        );
     }
 }
