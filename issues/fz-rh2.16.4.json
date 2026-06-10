@@ -9,7 +9,7 @@
     "fz-rh2.16.6"
   ],
   "created": "2026-06-10T08:05:46Z",
-  "description": "Resolve the remaining fz2 source-surface failures from the fz-rh2.9 sweep after the upstream macro/runtime split and source-spine cleanup are in place: keyword_lists, no_parens_call, no_parens_do, no_parens_keyword, sample_tests, sample_tests_module. The item-macro portion is no longer a place to patch around macro executable churn; that must be fixed upstream by fz-rh2.16.9. What remains here are the front-door/source-surface contract gaps that sit above the artifact seam: unsupported compiler2 prefixes for keyword/no-parens forms, item-level test macro handling once macro expansion has a stable fixed point, and test module main/root policy. Signal: each surface is either supported through normal source expansion and fixture-matrix fz2 paths, or explicitly declared outside the compiler2 cutover contract.",
+  "description": "Resolve the remaining fz2 source-surface failures from the fz-rh2.9 sweep after compiler2 has finished the upstream definition-macro cutover in `fz-rh2.16.11`: keyword_lists, no_parens_call, no_parens_do, no_parens_keyword, sample_tests, sample_tests_module.\n\nThis ticket is no longer allowed to patch around definition/publication structure. By the time it starts, top-level scope-shaping definitions should already enter compiler2 through compiler macros plus `Fz.Compiler.define(..., __ENV__)`, with raw function facts staying lazy behind demand. What remains here are front-door/source-surface contract gaps above that seam: unsupported keyword/no-parens surface forms, item-level test macro handling once the definition model is unified, and test module main/root policy.\n\nSignal: each remaining surface is either supported through normal source expansion and fixture-matrix fz2 paths on top of the unified definition model, or explicitly declared outside the compiler2 cutover contract.",
   "id": "fz-rh2.16.4",
   "labels": [],
   "parent": "fz-rh2.16",
@@ -17,5 +17,5 @@
   "status": "open",
   "title": "Fix fz2 source-surface parser and item macro gaps",
   "type": "task",
-  "updated_at": "2026-06-10T21:05:30Z"
+  "updated_at": "2026-06-10T21:05:37Z"
 }
