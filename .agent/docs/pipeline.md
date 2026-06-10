@@ -18,8 +18,9 @@ definition fact and never grows an activation.
 All families share one agenda; "stratum" is a write boundary, not a pass.
 
 ```text
-source    IndexCode, ScopeCode, DefineModule, DefineFunction
-            parse/read quoted source, apply Fz.Compiler publication, define modules/functions -> *Defined facts
+source    IndexCode, ScopeCode, DefineModule, ExpandFunctionSource, DefineFunction
+            parse/read quoted source, apply Fz.Compiler publication, stage demanded function bodies,
+            define modules/functions -> *Defined facts
 body      LowerFunction
             one demanded function -> LoweredBody (+ generated lambda defs)
 dispatch  ReifyGuardDispatch, PlanEntryDispatch
@@ -108,26 +109,27 @@ The macro root does not schedule `LowerNativeProgram`; compile-time macro
 execution uses the backend interpreter over the quoted source heap.
 
 `Fz.Compiler.define(source_root, __ENV__)` is the source-tier publication point
-for expanded definitions. It receives Fz-shaped quoted AST on the active source
-heap and applies that root through the live `ScopeSession` in source order.
-Function-source facts are saved there; downstream `DefineFunction` still reads
-only `FunctionSource(function)` and does not need to know whether the source
-root came from literal code or macro expansion.
+for definitions. It receives Fz-shaped quoted AST on the active source heap and
+applies that root through the live `ScopeSession` in source order.
+`FunctionSource(function)` facts are saved there as raw grouped quoted source;
+downstream `DefineFunction` reads `ExpandedFunctionSource(function)` and does
+not need to know whether the source root came from literal code or macro
+expansion.
 
-Source publication expands macros and normalizes source-only sugar before
-function bodies become `FunctionSource` facts. The expansion is body-only:
-function heads establish the function identity and are not expression positions.
-Literal source and macro-returned AST both re-enter the same expansion loop on
-the same quoted heap, so body lowering should not see pipe forms, placeholder
-capture shorthand, multi/guarded anonymous-function sugar, or source operator
-sugar heads. Local macros, imported macros, and required remote macros all
-converge on the same `MacroExecutable(function)` fact. Exact imports reserve
-names lazily, but a body that calls a reserved exact import waits for the
-provider `ModuleDefined` fact so the source tier can bind the real `Function` or
-`Macro` export before saving the body. `require` waits on the provider surface
-and the selected macro executables up front, records that exact remote macro set
-for the source scope, then only those required remote macro calls expand in
-source order.
+Source publication expands only scope-shaping source: item macros and sibling
+definitions that can change what exists in the surrounding scope. Ordinary
+function bodies stay raw in `FunctionSource(function)`. When a caller later
+demands that function, `ExpandFunctionSource(function)` recursively expands
+body-local macros and normalizes source-only sugar on the same quoted heap
+before `DefineFunction(function)` decodes the body. Function heads establish
+identity and are not expression positions. Local macros, imported macros, and
+required remote macros all converge on the same `MacroExecutable(function)`
+fact. Exact imports reserve names lazily, but a demanded body that calls a
+reserved exact import waits for the provider `ModuleDefined` fact so the source
+tier can bind the real `Function` or `Macro` export before staged expansion
+continues. `require` waits on the provider surface and the selected macro
+executables up front, records that exact remote macro set for the source scope,
+then only those required remote macro calls expand in source order.
 
 Item macro calls are source-order work, not body-lowering work. The macro call
 expands through `MacroExecutable(function)`, the returned Fz-shaped root is read

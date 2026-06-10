@@ -57,9 +57,10 @@ the `fz-rh2.11.7.*` arc.
   structure.
 - Capture refs cover local names, remote names, and bare/operator refs such as
   `&Kernel.+/2` and `&+/2`.
-- Source-only sugars may appear in raw quoted source, but not in published
-  function source. `src/compiler2/source_sugar.rs` rewrites them during source
-  publication, on the same quoted heap, before `FunctionSource` is saved.
+- Source-only sugars may appear in raw quoted source and in raw
+  `FunctionSource` facts. `src/compiler2/source_sugar.rs` rewrites them during
+  staged function expansion, on the same quoted heap, before
+  `DefineFunction` decodes a demanded body.
 - Source-sugar rewrites emit ordinary quoted forms: `|>` becomes a normal call
   or a subject-bearing `case`, capture placeholders become direct lambdas,
   multi/guarded lambdas become one lambda whose body is a `case`, and operators
@@ -87,10 +88,14 @@ the `fz-rh2.11.7.*` arc.
   must yield the same `{heap, root}` for the same logical function surface.
 - Protocol-impl callback bodies use that same grouped-root substrate; they are
   not a second special-case function source format.
-- `FactKey::FunctionSource(FunctionId)` is the lazy authoritative function
+- `FactKey::FunctionSource(FunctionId)` is the lazy authoritative raw function
   source fact. Source production saves it through the `Fz.Compiler.define`
-  compiler-service boundary; `FunctionDefined` is derived on demand from that
-  fact.
+  compiler-service boundary.
+- `FactKey::ExpandedFunctionSource(FunctionId)` is the staged demanded-body
+  fact. `ExpandFunctionSource(function)` expands body-local macros and rewrites
+  source sugar only when something actually demands that function.
+- `FunctionDefined` is derived on demand from `ExpandedFunctionSource`, not
+  directly from raw `FunctionSource`.
 - `FunctionDefined` now carries a compiler2-owned `FunctionSurface` decoded
   from grouped quoted source. Source-defined functions and generated lambdas
   both use that same callable-surface model.
@@ -154,8 +159,8 @@ the `fz-rh2.11.7.*` arc.
 - `jobs/source.rs` schedules jobs and publishes final job facts, but does not
   own source-form rules. It parses/reads quoted source, delegates discovery to
   `source_publish::discover_modules`, delegates scope/module publication to
-  `publish_scope` / `publish_protocol_surface`, and derives
-  `FunctionDefined` from the lazy `FunctionSource` fact.
+  `publish_scope` / `publish_protocol_surface`, stages demanded body expansion,
+  and derives `FunctionDefined` from `ExpandedFunctionSource`.
 - `Fz.Compiler.define(source_root, __ENV__)` is the compiler-service entry into
   this boundary. The first argument is an Fz `AnyValueRef` source root on the
   active quoted source heap; the second argument is the caller environment root
@@ -167,28 +172,29 @@ the `fz-rh2.11.7.*` arc.
   `__ENV__`. There is no second raw function-body save path during module
   indexing.
 - Source publication notes `@type` declarations, records function/type
-  reference wait sets, binds aliases/imports/requires, saves expanded grouped
+  reference wait sets, binds aliases/imports/requires, saves raw grouped
   function roots as `FunctionSource` through `Fz.Compiler.define`, scopes child
   modules, notes protocol-domain type declarations, publishes protocol
   callback/dispatch facts, and records protocol impl callback sources.
-- Function source expansion is body-only. Function heads define identity; they
-  are not expression positions and are never macro-expanded. Each grouped
-  function source keeps attached attributes and clause heads intact while
-  recursively expanding only each `do:` body before publication.
-- Body expansion also normalizes source-only sugar recursively. Macro-returned
-  AST re-enters the same expansion loop on the same quoted heap, so downstream
-  function decoding and lowering never need separate support for pipe,
-  placeholder captures, guarded anonymous-function sugar, or source operator
-  sugar.
+- Function source expansion is body-only and demand-time. Function heads define
+  identity; they are not expression positions and are never macro-expanded.
+  Each grouped function source keeps attached attributes and clause heads
+  intact while `ExpandFunctionSource(function)` recursively expands only each
+  `do:` body when that function is demanded.
+- Demand-time body expansion also normalizes source-only sugar recursively.
+  Macro-returned AST re-enters the same expansion loop on the same quoted heap,
+  so downstream function decoding and lowering never need separate support for
+  pipe, placeholder captures, guarded anonymous-function sugar, or source
+  operator sugar.
 - `%Module{...}` source must decode as a struct literal before `%/2` is
   considered as an operator. That ordering keeps runtime structs such as
   `%Range{}` on the struct path after `Range.new` has been introduced by source
   sugar rewriting.
 - Exact `import Mod, only: [...]` may reserve placeholder function bindings
-  before `Mod` is defined, but a body that calls such a binding waits for the
-  provider `ModuleDefined` fact before the body can be saved. Once the provider
-  surface is known, import binds the real exported symbol kind. Imported macros
-  additionally wait for `MacroExecutable(function)`.
+  before `Mod` is defined, but a demanded body that calls such a binding waits
+  for the provider `ModuleDefined` fact before staged expansion can continue.
+  Once the provider surface is known, import binds the real exported symbol
+  kind. Imported macros additionally wait for `MacroExecutable(function)`.
 - `require Mod` waits for the provider surface, selects the requested macro
   exports (`only:` or all macros minus `except:`), and waits for those exact
   `MacroExecutable` facts. It records exactly those macro function ids as
@@ -199,9 +205,9 @@ the `fz-rh2.11.7.*` arc.
   read as a source fragment, local definitions are reserved, and the fragment is
   applied immediately in source order.
 - Remote calls to user modules may wait for the provider `ModuleDefined` fact
-  during body expansion so source production can distinguish ordinary functions
-  from macros before saving `FunctionSource`. If the provider exports a macro
-  and the current scope did not `require` it, source publication emits
+  during staged body expansion so compiler2 can distinguish ordinary functions
+  from macros before the demanded body can settle. If the provider exports a
+  macro and the current scope did not `require` it, source publication emits
   `macro/not-required` instead of letting a macro call leak into body lowering.
   Current-module remote calls use the live source-session callable map instead
   of waiting for the module fact the active job is producing. Runtime helper

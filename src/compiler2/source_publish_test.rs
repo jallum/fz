@@ -350,6 +350,11 @@ fn source_publication_defers_local_macro_expansion_until_function_demand() {
         capture.find(&["fz", "compiler2", "macro", "expanded"]).is_empty(),
         "ScopeCode should not expand body-local macros for an undemanded function",
     );
+    assert_eq!(
+        capture.count(&["fz", "compiler2", "function", "source", "expanded"]),
+        0,
+        "ScopeCode should not stage expanded function source for an undemanded function",
+    );
 
     assert!(
         world.demand(Job::DefineFunction(main)),
@@ -372,12 +377,21 @@ fn source_publication_defers_local_macro_expansion_until_function_demand() {
         !tokens.iter().any(|token| token == "inc" || token == "double"),
         "macro calls should not survive in staged expanded function source; tokens={tokens:?}",
     );
-    let expanded = capture.find(&["fz", "compiler2", "macro", "expanded"]);
+    let macro_expanded = capture.find(&["fz", "compiler2", "macro", "expanded"]);
     assert!(
-        expanded.len() >= 4,
+        macro_expanded.len() >= 4,
         "recursive expansion should emit macro invocation telemetry",
     );
-    for event in expanded {
+    let expanded = capture.find(&["fz", "compiler2", "function", "source", "expanded"]);
+    let main_expanded = expanded
+        .iter()
+        .filter(|event| measurement_u64(event, "function_id") == main.as_u32() as u64)
+        .count();
+    assert_eq!(
+        main_expanded, 1,
+        "the demanded function should stage its expanded source exactly once",
+    );
+    for event in macro_expanded {
         assert_eq!(
             measurement_u64(&event, "input_heap_id"),
             measurement_u64(&event, "output_heap_id"),

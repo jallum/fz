@@ -12,8 +12,9 @@ There are now two source paths:
   (`++`, `<>`, `..`), captures, and multi-clause `fn` in the frontend desugar
   pass (`src/frontend/macros.rs`) before old IR lowering.
 - The compiler2 quoted-source path quotes those forms as Fz-shaped source data
-  first, then normalizes them during source publication
-  (`src/compiler2/source_sugar.rs`) before `FunctionSource` is saved.
+  first, then normalizes them during staged demanded-function expansion
+  (`src/compiler2/source_sugar.rs`) after raw `FunctionSource` publication and
+  before `DefineFunction` decodes the body.
 
 Three files carry the work:
 

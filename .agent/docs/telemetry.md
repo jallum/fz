@@ -224,6 +224,14 @@ continues. Measurements carry `function_id`, `module_id`, expansion `depth`,
 expansion and for proving that a returned root stayed in the same quoted-source
 transport world.
 
+Demand-time body staging emits `[fz, compiler2, function, source, expanded]`
+when `ExpandFunctionSource(function)` materializes `ExpandedFunctionSource`.
+Measurements carry the same raw function/code ids and quoted-source
+`heap_id`/`root_ref` pair as `function.source.noted`, but the event should only
+appear once a function is actually demanded. `ScopeCode` should not emit this
+event for ordinary undemanded function bodies; item-macro publication is still
+scope-order work, body-local macro expansion is not.
+
 Source-order compiler services emit `[fz, compiler2, compiler_service, define]`
 when `Fz.Compiler.define` publishes an expanded source root. Measurements carry
 raw compiler ids (`code_id`, `module_id`, `owner_module_id`, `function_id`),

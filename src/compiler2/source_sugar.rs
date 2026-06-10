@@ -1,7 +1,7 @@
 //! Source-only rewrites over compiler2 quoted AST.
 //!
-//! These rules remove syntax sugar before `FunctionSource` is published, so
-//! body lowering sees ordinary calls, lambdas, and case forms.
+//! These rules remove syntax sugar during staged function expansion, after raw
+//! `FunctionSource` publication and before `DefineFunction` decodes the body.
 
 use fz_runtime::any_value::{AnyValueRef, ValueKind};
 
