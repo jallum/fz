@@ -44,17 +44,18 @@ Recording a spec does not require its type names to be resolved.
 @spec foo(SomeModule.t(float), integer) :: integer
 ```
 
-Indexing `foo` mints `SomeModule`'s `ModuleId` and the identity
-`TypeName(SomeModule, "t", 1)`, records the dependency, and demands
-`DefineModule(SomeModule)` — the same way a plain `import` waits on its provider.
-Nothing is resolved yet, and nothing needs to be. `DeriveFunctionContract(foo)`
-waits on `TypeDefined(SomeModule, "t", 1)`; once it and every other type name in
-the spec are present, `resolve_spec_decls` runs against hard `Ty` and publishes
-`FunctionContract(foo)` (see [`specs`](specs.md)). Knowing a function's spec before
-processing it is just: the contract is a fact with upstream facts. A name whose
-arity at the use site disagrees with its definition, or that no module ever
-defines, is an unresolved-frontier diagnostic surfaced when the drive goes quiet —
-the same machinery as an unknown import.
+Scoping `foo` resolves the module path through the namespace, mints
+`SomeModule`'s `ModuleId` and the identity `TypeName(SomeModule, "t", 1)`, and
+records that identity in the function's type-reference wait set. Nothing is
+resolved yet, and nothing needs to be. `DeriveFunctionContract(foo)` waits on
+`TypeDefined(SomeModule, "t", 1)`; once it and every other type name in the spec
+are present, compiler2 resolves the spec against the namespace captured on the
+function definition and publishes `FunctionContract(foo)` (see
+[`specs`](specs.md)). Knowing a function's spec before processing it is just:
+the contract is a fact with upstream facts. A name whose arity at the use site
+disagrees with its definition, or that no module ever defines, is an
+unresolved-frontier diagnostic surfaced when the drive goes quiet — the same
+machinery as an unknown import.
 
 ## Naming settles below the semantic frontier
 
@@ -63,9 +64,10 @@ definition — never on activations, return types, or callsite summaries. The ti
 and the one-way rule between them:
 
 ```text
-INDEX     CodeIndexed, ModuleIndexed, ProtocolDeclared, ProtocolImplSites
-SURFACE   ModuleDefined, FunctionDefined, TypeDefined, FunctionContract,
-          LoweredBody, EntryDispatch, …
+INDEX     CodeIndexed, ModuleIndexed
+SURFACE   CodeScoped, ModuleDefined, FunctionSource, FunctionDefined,
+          TypeDefined, ProtocolDispatch, FunctionContract, LoweredBody,
+          EntryDispatch, …
 SEMANTIC  Activation, Executable, ReturnType, CallSiteSummary, SemanticClosed
 ARTIFACT  MaterializedProgram → AbiReady → …
 ```
@@ -89,25 +91,33 @@ becomes a symbol, so it is the single place the inner is established.
 ## Protocol domains are markers, not unions
 
 A protocol name in type position — `Enumerable.t`, `SomeModule.t` — resolves to a
-nominal **domain marker**: an opaque tag for "the protocol's domain,"
-element-parametric, and nothing more. It depends on `ProtocolDeclared`, never on
-the impl set. *Which* implementations a program contains is a reachability
-question, answered by demand-driven dispatch as concrete values flow to protocol
-positions, not a property baked into the domain type (see
-[`protocols`](protocols.md)). A program that never mentions a `Range` never pulls
-the `Range` impl, and only the callbacks actually called are lowered. The domain's
-meaning is fixed at the surface tier; the reached impl set accretes at the semantic
-tier the same way any reached function does.
+nominal **domain marker**: an opaque tag for "the protocol's domain," and nothing
+more. Protocol publication notes `t/0` and `t/1` as normal type declarations;
+`DeriveTypeDef` resolves both to the same protocol-owned marker. The marker
+depends on the protocol declaration, never on the impl set. *Which*
+implementations a program contains is a dispatch fact and a reachability question,
+answered as concrete values flow to protocol positions, not a property baked into
+the domain type (see [`protocols`](protocols.md)). A program that never mentions
+a `Range` never pulls the `Range` impl, and only the callbacks actually called are
+lowered. The domain's meaning is fixed at the surface tier; the reached impl set
+accretes at the semantic tier the same way any reached function does.
 
 ## Where it lives
 
 ```text
-namespace.rs    NamespaceSymbol::Type(TypeName) — the bridge
-identity.rs     TypeName { module, name, arity }; the TypeName → Ty store
-drive.rs        FactKey::TypeDefined(TypeName); Job::DeriveTypeDef(TypeName)
-jobs/types.rs   derive_type_def — read the @type body, mint the symbol, publish
-type_expr/      parse_type_expr resolves a name by reading TypeDefined, not a
-                per-call ModuleTypeEnv
+namespace.rs       NamespaceSymbol::Type(TypeName) — the bridge
+identity.rs        TypeName { module, name, arity }; NotedTypeDecl captures
+                   the parsed body and the namespace where it appeared
+type_expr.rs       compiler2-owned syntax parser; names stay bare TypeExpr::Name
+resolve.rs         classifies names against the captured Namespace, reads
+                   TypeDefined stores, and mints hard Ty through World.types
+source_publish.rs  notes @type declarations, binds NamespaceSymbol::Type, and
+                   records exact TypeDefined wait sets for @type/@spec/extern
+drive.rs           FactKey::TypeDefined(TypeName); Job::DeriveTypeDef(TypeName)
+jobs/types.rs      derive_type_def — wait on referenced TypeDefined facts,
+                   resolve the noted body, publish TypeDefined
+jobs/contract.rs   derive_function_contract — wait on function TypeDefined refs,
+                   resolve @spec/extern contracts, publish FunctionContract
 ```
 
 ## Proof gates
@@ -118,6 +128,7 @@ internals:
 ```text
 cargo test --lib compiler2::drive_test::compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer
 cargo test --lib compiler2::drive_test::compiler2_materialization_freezes_only_the_selected_enum_reduce_path
+cargo test --lib compiler2::world_test::compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_captured_namespace
 cargo test --test fixture_matrix enumerable_protocol_dispatch
 cargo test --lib specs::          # scheme matching over the resolved model
 ```

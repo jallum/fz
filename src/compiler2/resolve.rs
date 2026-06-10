@@ -88,8 +88,9 @@ impl World<'_> {
     /// Resolves a noted `@type` declaration to its [`TypeDef`]. Formal
     /// parameters take variable ids `0..params.len()` in declaration order, so a
     /// parametric body resolves to a template a use site instantiates by
-    /// substitution. A `refines`/`opaque` nominal brands or seals the inner type
-    /// under the type's qualified tag — the brand carries its inner in-symbol.
+    /// substitution. A `refines` nominal brands the inner type under the type's
+    /// qualified tag; an `opaque` declaration validates its body but publishes a
+    /// pure nominal tag.
     pub(crate) fn resolve_type_def(&mut self, name: &TypeName, decl: &NotedTypeDecl) -> Result<TypeDef, TypeExprError> {
         let mut vars: HashMap<String, TypeVarId> = HashMap::new();
         let params: Vec<TypeVarId> = decl

@@ -61,25 +61,29 @@ not-yet-pulled runtime module waits on its `CodeIndexed` after
 Name resolution is an append-only chain. A `Namespace` is a `BindingId` — a
 savepoint into `NamespaceStore.bindings`. Binding a name pushes a
 `{ name, symbol, prev }` and returns the new head; lookup walks from a head
-backward and the first match wins. A `NamespaceSymbol` is a `Module`, `Function`,
-or `Macro`.
+backward and the first matching symbol wins. A `NamespaceSymbol` is a `Module`,
+`Function`, `Macro`, or `Type`.
 
 ```text
 bind(head, "add", Function(f))  -> head'      (a new savepoint over head)
 lookup(head', "add")            -> Function(f)
+bind(head, "t", Type(type_t))    -> head''     (type names use the same chain)
 ```
 
 This is what lets a scope extend its parent's visibility without copying: a child
 scope's base is its parent's head, and entering/leaving a scope is just choosing
-which head to bind onto.
+which head to bind onto. Type lookups filter for `NamespaceSymbol::Type`, while
+value/callable lookups filter for modules/functions/macros, so a type name and a
+value name can share spelling without becoming one binding kind.
 
 ## Scoping a body
 
 `define_scope` walks a scope's items in two passes so bodies can reference names
 declared later in the same scope:
 
-1. **Reserve.** Bind every local function (as `Function`/`Macro`) and every child
-   module / protocol name, so forward references resolve.
+1. **Reserve.** Bind every local function (as `Function`/`Macro`), every noted
+   `@type` name (as `Type`), and every child module / protocol name, so forward
+   references resolve in both value and type positions.
 2. **Apply, in source order.** Resolve `alias`, `import`, and `require`.
    An import waits on the provider's `ModuleDefined`, then binds the selected
    exports. A require waits on the provider surface, selects the requested macro

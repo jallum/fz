@@ -78,9 +78,8 @@ Binary -> str       Map -> map_top    <other> -> struct_impl_target_type(name)
 ```
 
 A named source struct (e.g. `Range`) maps to its nominal opaque tag
-`opaque(impl-target::Range)` over its field tuple (see
-[`set-theoretic-types`](set-theoretic-types.md)), which keeps it distinct from
-any structurally-similar value.
+`opaque(impl-target::Range)` (see [`set-theoretic-types`](set-theoretic-types.md)),
+which keeps it distinct from any structurally-similar value.
 
 ## Dispatch is receiver-subtype selection
 

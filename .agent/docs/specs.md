@@ -8,12 +8,17 @@ caller.
 
 The split of duties:
 
-- `type_expr::resolve_spec_decls` resolves source `@spec` syntax into the
-  `ResolvedSpecSet` model (the construction seam).
+- Compiler2's construction seam is fact-backed: `DeriveFunctionContract` waits
+  for the function's recorded `TypeDefined` dependencies, then
+  `World::resolve_spec_decl` resolves each `@spec`/extern contract against the
+  namespace captured on the function definition. There is no per-call
+  `ModuleTypeEnv` rebuild on the compiler2 path.
 - `crate::specs` owns the operations over that model.
 - `crate::types` supplies the set-theoretic algebra the operations decide on
   (subtype, intersect, instantiate, projections — see
   [`set-theoretic-types`](set-theoretic-types.md)).
+- The legacy frontend still adapts its parsed specs through `crate::type_expr`;
+  that compatibility path is outside compiler2's fact construction seam.
 
 Scheme matching is generic over the type trait, so it runs over either type
 kernel; the application and coverage helpers are written against the concrete
@@ -150,11 +155,11 @@ accumulator shapes — not the initial accumulator frozen at the first callsite.
 
 A declared `@spec` is an **upper bound**, not a precise signature. The semantic
 rule `declared_specs_cover_inferred_spec` passes when the inferred narrow result
-is a subtype of some declared arrow's instantiated result. The frontend spec
-checker resolves each `@spec` against its `ModuleTypeEnv`, compares it to the
-function's inferred behavior, and renders a `spec/violation`
-(`codes::SPEC_VIOLATION`) on a coverage gap. The check is non-fatal: it reports,
-it does not block. All-`any` fallback specs are skipped.
+is a subtype of some declared arrow's instantiated result. The legacy frontend
+still runs the rendered `spec/violation` coverage check over its `ModuleTypeEnv`
+adapter. Compiler2 consumes the same resolved contract model after
+`DeriveFunctionContract` has read `TypeDefined` facts and published
+`FunctionContract(function)`.
 
 Protocol callbacks and module interfaces store ordered spec lists so overloaded
 public contracts survive interface collection and fingerprinting (see

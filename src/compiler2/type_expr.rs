@@ -68,7 +68,7 @@ pub enum NominalKind {
     Plain,
     /// `@type B :: refines T` — a brand over the structural inner `T`.
     Refines,
-    /// `@type T :: opaque U` — a nominal opaque over inner `U`.
+    /// `@type T :: opaque U` — a nominal opaque declaration with body `U`.
     Opaque,
 }
 
