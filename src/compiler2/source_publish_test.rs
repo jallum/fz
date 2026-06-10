@@ -270,7 +270,7 @@ fn main(), do: answer()
 }
 
 #[test]
-fn source_publication_expands_local_macros_before_saving_function_source() {
+fn source_publication_defers_local_macro_expansion_until_function_demand() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&["fz", "compiler2"], capture.handler());
@@ -283,19 +283,41 @@ fn source_publication_expands_local_macros_before_saving_function_source() {
     assert!(world.demand(Job::ScopeCode(code)), "code scoping should be demandable");
     assert!(
         matches!(world.drive(), DriveOutcome::Resolved),
-        "source publication should drive local macro executables and resume scoping",
+        "source publication should complete without expanding ordinary function bodies",
     );
 
     let main = world.reference_function(ModuleId::GLOBAL, "main", 0);
     let source = world.function_source(main).expect("main source should be published");
     let tokens = quoted_tokens(&source.source);
     assert!(
+        tokens.iter().any(|token| token == "inc") && tokens.iter().any(|token| token == "double"),
+        "raw function source should retain macro calls until the function is demanded; tokens={tokens:?}",
+    );
+    assert!(
+        capture.find(&["fz", "compiler2", "macro", "expanded"]).is_empty(),
+        "ScopeCode should not expand body-local macros for an undemanded function",
+    );
+
+    assert!(
+        world.demand(Job::DefineFunction(main)),
+        "the function should be demandable"
+    );
+    assert!(
+        matches!(world.drive(), DriveOutcome::Resolved),
+        "demanding the function should stage its expanded source and define it",
+    );
+
+    let expanded = world
+        .expanded_function_source(main)
+        .expect("the demanded function should materialize staged expanded source");
+    let tokens = quoted_tokens(&expanded.source);
+    assert!(
         tokens.iter().any(|token| token == "+") && tokens.iter().any(|token| token == "*"),
         "expanded source should contain the operators returned by the macros; tokens={tokens:?}",
     );
     assert!(
         !tokens.iter().any(|token| token == "inc" || token == "double"),
-        "macro calls should not be saved in FunctionSource after expansion; tokens={tokens:?}",
+        "macro calls should not survive in staged expanded function source; tokens={tokens:?}",
     );
     let expanded = capture.find(&["fz", "compiler2", "macro", "expanded"]);
     assert!(
@@ -317,7 +339,7 @@ fn source_publication_expands_local_macros_before_saving_function_source() {
 }
 
 #[test]
-fn source_publication_rewrites_source_sugars_before_saving_function_source() {
+fn source_publication_defers_source_sugar_rewrite_until_function_demand() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
@@ -349,16 +371,34 @@ end
     );
     assert!(
         matches!(world.drive(), DriveOutcome::Resolved),
-        "source publication should normalize source-only sugars before saving FunctionSource",
+        "source publication should not rewrite source-only sugars inside ordinary functions",
     );
 
     let main = world.reference_function(ModuleId::GLOBAL, "main", 0);
     let source = world.function_source(main).expect("main source should be published");
     let tokens = quoted_tokens(&source.source);
+    for sugar in ["|>", "&", "++", "--", "<>", "..", "//"] {
+        assert!(
+            tokens.iter().any(|token| token == sugar),
+            "raw FunctionSource should retain source-only sugar `{sugar}` before demand; tokens={tokens:?}",
+        );
+    }
+    assert!(
+        world.demand(Job::DefineFunction(main)),
+        "the function should be demandable"
+    );
+    assert!(
+        matches!(world.drive(), DriveOutcome::Resolved),
+        "demanding the function should rewrite sugars into staged expanded source",
+    );
+    let expanded = world
+        .expanded_function_source(main)
+        .expect("the demanded function should materialize staged expanded source");
+    let tokens = quoted_tokens(&expanded.source);
     for sugar in ["|>", "&", "++", "--", "<>", "..", "//", "not in"] {
         assert!(
             !tokens.iter().any(|token| token == sugar),
-            "FunctionSource should not retain source-only sugar `{sugar}`; tokens={tokens:?}",
+            "expanded function source should not retain source-only sugar `{sugar}`; tokens={tokens:?}",
         );
     }
     for rewritten in [
@@ -373,7 +413,7 @@ end
     ] {
         assert!(
             tokens.iter().any(|token| token == rewritten),
-            "FunctionSource should contain rewritten form token `{rewritten}`; tokens={tokens:?}",
+            "expanded function source should contain rewritten form token `{rewritten}`; tokens={tokens:?}",
         );
     }
     assert_eq!(

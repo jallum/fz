@@ -209,6 +209,7 @@ pub struct FunctionSource {
     pub owner_module: ModuleId,
     pub namespace: Namespace,
     pub capture_params: Vec<String>,
+    pub required_remote_macros: Vec<FunctionId>,
     pub variadic: bool,
     pub source: QuotedSourceRoot,
 }
@@ -712,6 +713,7 @@ fn source_same(left: &FunctionSource, right: &FunctionSource) -> bool {
         && left.owner_module == right.owner_module
         && left.namespace == right.namespace
         && left.capture_params == right.capture_params
+        && left.required_remote_macros == right.required_remote_macros
         && left.variadic == right.variadic
         && left.source.semantically_eq(&right.source, Horizon::Full)
 }

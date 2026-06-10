@@ -964,6 +964,7 @@ impl<'a> World<'a> {
         local_name: String,
         code: CodeId,
         namespace: Namespace,
+        required_remote_macros: Vec<FunctionId>,
         source: QuotedSourceRoot,
         surface: FunctionSurface,
     ) -> (FunctionId, bool) {
@@ -975,6 +976,7 @@ impl<'a> World<'a> {
             owner_module,
             namespace,
             capture_params: Vec::new(),
+            required_remote_macros,
             variadic: surface.variadic,
             source,
         };
@@ -1188,6 +1190,7 @@ impl<'a> World<'a> {
             owner_module: owner_source.owner_module,
             namespace,
             capture_params,
+            required_remote_macros: owner_source.required_remote_macros.clone(),
             variadic: surface.variadic,
             source: owner_source.source.clone(),
         };

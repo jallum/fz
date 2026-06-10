@@ -59,11 +59,6 @@ struct PendingType {
     span: Span,
 }
 
-enum ExpandedFunction {
-    Complete(FunctionForm),
-    Blocked(JobEffects),
-}
-
 enum ExpandedRoot {
     Complete(QuotedSourceRoot),
     Blocked(JobEffects),
@@ -74,13 +69,11 @@ enum ExpandedValue {
     Blocked(JobEffects),
 }
 
-enum FunctionDefinition {
-    Complete(FunctionPublication),
-    Blocked(JobEffects),
-}
-
-enum ProtocolImplDefinition {
-    Complete { outputs: Outputs },
+pub(crate) enum FunctionSourceExpansion {
+    Complete {
+        source: FunctionSource,
+        reads: Vec<FactKey>,
+    },
     Blocked(JobEffects),
 }
 
@@ -298,16 +291,13 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             function.name.clone(),
             NamespaceSymbol::Function(function_id),
         );
-        let publication = match self.define_source_function(
+        let publication = self.define_source_function(
             self.current_module,
             self.current_module,
             self.namespace,
             &function,
             true,
-        )? {
-            FunctionDefinition::Complete(publication) => publication,
-            FunctionDefinition::Blocked(effects) => return Ok(Some(effects)),
-        };
+        )?;
         self.outputs.push(publication.output);
         if let Some(export) = publication.export {
             self.exports.push(export);
@@ -441,16 +431,13 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                     self.apply_compiler_service(service)?;
                 }
                 ScopeForm::Function(function) => {
-                    let publication = match self.define_source_function(
+                    let publication = self.define_source_function(
                         self.current_module,
                         self.current_module,
                         self.namespace,
                         function,
                         true,
-                    )? {
-                        FunctionDefinition::Complete(publication) => publication,
-                        FunctionDefinition::Blocked(effects) => return Ok(Some(self.blocked_effects(effects))),
-                    };
+                    )?;
                     self.outputs.push(publication.output);
                     if let Some(export) = publication.export {
                         self.exports.push(export);
@@ -465,12 +452,10 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                         reference_declared_protocol_module(self.world, self.current_module, &protocol.name);
                     self.world.scope_module(protocol_id, self.namespace);
                 }
-                ScopeForm::ProtocolImpl(protocol_impl) => match self.define_protocol_impl(protocol_impl)? {
-                    ProtocolImplDefinition::Complete { mut outputs } => {
-                        self.outputs.append(&mut outputs);
-                    }
-                    ProtocolImplDefinition::Blocked(effects) => return Ok(Some(self.blocked_effects(effects))),
-                },
+                ScopeForm::ProtocolImpl(protocol_impl) => {
+                    let mut outputs = self.define_protocol_impl(protocol_impl)?;
+                    self.outputs.append(&mut outputs);
+                }
                 ScopeForm::MacroCall(macro_call) => {
                     if let Some(blocked) = self.apply_item_macro_call(macro_call)? {
                         return Ok(Some(self.blocked_effects(blocked)));
@@ -523,6 +508,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                     self.namespace,
                     &function,
                     true,
+                    required_remote_macro_list(&self.required_remote_macros),
                     &service.env,
                 );
                 self.outputs.push(publication.output);
@@ -580,20 +566,11 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 self.world.scope_module(protocol_id, self.namespace);
                 Ok(())
             }
-            ScopeForm::ProtocolImpl(protocol_impl) => match self.define_protocol_impl(&protocol_impl)? {
-                ProtocolImplDefinition::Complete { mut outputs } => {
-                    self.outputs.append(&mut outputs);
-                    Ok(())
-                }
-                ProtocolImplDefinition::Blocked(_) => Err(emit_job_diagnostic(
-                    self.world,
-                    Diagnostic::error(
-                        codes::INTERNAL_POST_RESOLUTION_LEFTOVER,
-                        "Fz.Compiler.define cannot block while applying a protocol implementation",
-                        service.span,
-                    ),
-                )),
-            },
+            ScopeForm::ProtocolImpl(protocol_impl) => {
+                let mut outputs = self.define_protocol_impl(&protocol_impl)?;
+                self.outputs.append(&mut outputs);
+                Ok(())
+            }
             ScopeForm::Alias(alias) => {
                 let module_id = self.world.reference_module(alias.path.join("."));
                 self.namespace = self.world.bind_namespace(
@@ -648,26 +625,23 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         namespace: Namespace,
         function: &FunctionForm,
         export_public: bool,
-    ) -> Result<FunctionDefinition, FatalError> {
+    ) -> Result<FunctionPublication, FatalError> {
         let function_id = self
             .world
             .reference_function(function_module, function.name.clone(), function.arity);
         let function_scope = ScopeSnapshot::function(function_module, namespace, function_id);
-        let function = match self.expand_function_form(function, function_scope)? {
-            ExpandedFunction::Complete(function) => function,
-            ExpandedFunction::Blocked(effects) => return Ok(FunctionDefinition::Blocked(effects)),
-        };
         let env = self.project_compiler_define_env(&function.source, function_scope)?;
-        Ok(FunctionDefinition::Complete(publish_function_source(
+        Ok(publish_function_source(
             self.world,
             self.code_id,
             function_module,
             owner_module,
             namespace,
-            &function,
+            function,
             export_public,
+            required_remote_macro_list(&self.required_remote_macros),
             &env,
-        )))
+        ))
     }
 
     fn project_compiler_define_env(
@@ -764,181 +738,6 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 span,
             ),
         )
-    }
-
-    fn expand_function_form(
-        &mut self,
-        function: &FunctionForm,
-        scope: ScopeSnapshot,
-    ) -> Result<ExpandedFunction, FatalError> {
-        match self.expand_function_source(function.source.clone(), scope, 0)? {
-            ExpandedRoot::Complete(source) => {
-                let mut function = function.clone();
-                function.source = source;
-                Ok(ExpandedFunction::Complete(function))
-            }
-            ExpandedRoot::Blocked(effects) => Ok(ExpandedFunction::Blocked(effects)),
-        }
-    }
-
-    fn expand_function_source(
-        &mut self,
-        source: QuotedSourceRoot,
-        scope: ScopeSnapshot,
-        depth: usize,
-    ) -> Result<ExpandedRoot, FatalError> {
-        let cursor = source.cursor();
-        if cursor
-            .ast_node()
-            .map_err(|error| emit_internal_surface_error(self.world, format!("function source read failed: {error}")))?
-            .is_some()
-        {
-            return match self.expand_function_clause(&source, &cursor, scope, depth)? {
-                ExpandedValue::Complete(value) => Ok(ExpandedRoot::Complete(source.subroot(value))),
-                ExpandedValue::Blocked(effects) => Ok(ExpandedRoot::Blocked(effects)),
-            };
-        }
-
-        let items = cursor.list_items().map_err(|error| {
-            emit_internal_surface_error(self.world, format!("grouped function source read failed: {error}"))
-        })?;
-        let mut changed = false;
-        let mut expanded = Vec::with_capacity(items.len());
-        for item in items {
-            let Some(node) = item.ast_node().map_err(|error| {
-                emit_internal_surface_error(self.world, format!("grouped function item read failed: {error}"))
-            })?
-            else {
-                return Err(emit_internal_surface_error(
-                    self.world,
-                    "grouped function source expected quoted AST items".to_string(),
-                ));
-            };
-            let head = node.head.atom_name().map_err(|error| {
-                emit_internal_surface_error(self.world, format!("grouped function item head read failed: {error}"))
-            })?;
-            if head.starts_with('@') {
-                expanded.push(item.root());
-                continue;
-            }
-            match self.expand_function_clause(&source, &item, scope, depth)? {
-                ExpandedValue::Complete(value) => {
-                    changed |= value != item.root();
-                    expanded.push(value);
-                }
-                ExpandedValue::Blocked(effects) => return Ok(ExpandedRoot::Blocked(effects)),
-            }
-        }
-
-        if changed {
-            let root = source.builder().list(&expanded).map_err(|error| {
-                emit_internal_surface_error(self.world, format!("grouped function source rebuild failed: {error}"))
-            })?;
-            Ok(ExpandedRoot::Complete(source.subroot(root)))
-        } else {
-            Ok(ExpandedRoot::Complete(source))
-        }
-    }
-
-    fn expand_function_clause(
-        &mut self,
-        owner: &QuotedSourceRoot,
-        cursor: &QuotedSourceCursor,
-        scope: ScopeSnapshot,
-        depth: usize,
-    ) -> Result<ExpandedValue, FatalError> {
-        let Some(node) = cursor.ast_node().map_err(|error| {
-            emit_internal_surface_error(self.world, format!("function clause read failed: {error}"))
-        })?
-        else {
-            return Err(emit_internal_surface_error(
-                self.world,
-                "function source expected a quoted AST node".to_string(),
-            ));
-        };
-        let head = node.head.atom_name().map_err(|error| {
-            emit_internal_surface_error(self.world, format!("function clause head read failed: {error}"))
-        })?;
-        if head == "extern" {
-            return Ok(ExpandedValue::Complete(cursor.root()));
-        }
-        if !matches!(head.as_str(), "fn" | "fnp" | "defmacro") {
-            return Err(emit_internal_surface_error(
-                self.world,
-                format!("function source expected fn/fnp/defmacro/extern, got `{head}`"),
-            ));
-        }
-
-        let args = node.tail.list_items().map_err(|error| {
-            emit_internal_surface_error(self.world, format!("function clause args read failed: {error}"))
-        })?;
-        let Some(kwargs) = args.get(1) else {
-            return Ok(ExpandedValue::Complete(cursor.root()));
-        };
-        let kw_items = kwargs.list_items().map_err(|error| {
-            emit_internal_surface_error(self.world, format!("function clause keyword args read failed: {error}"))
-        })?;
-
-        let mut changed = false;
-        let mut expanded_kw = Vec::with_capacity(kw_items.len());
-        for kw in kw_items {
-            let tuple = kw.tuple_items().map_err(|error| {
-                emit_internal_surface_error(self.world, format!("function clause keyword read failed: {error}"))
-            })?;
-            if tuple.len() != 2 {
-                return Err(emit_internal_surface_error(
-                    self.world,
-                    "function clause expected keyword tuples".to_string(),
-                ));
-            }
-            if tuple[0].atom_name().map_err(|error| {
-                emit_internal_surface_error(self.world, format!("function clause keyword name read failed: {error}"))
-            })? != "do"
-            {
-                expanded_kw.push(kw.root());
-                continue;
-            }
-
-            match self.expand_cursor(owner, &tuple[1], scope, depth)? {
-                ExpandedValue::Complete(body) => {
-                    if body == tuple[1].root() {
-                        expanded_kw.push(kw.root());
-                    } else {
-                        let rebuilt = owner.builder().tuple(&[tuple[0].root(), body]).map_err(|error| {
-                            emit_internal_surface_error(
-                                self.world,
-                                format!("function clause keyword rebuild failed: {error}"),
-                            )
-                        })?;
-                        expanded_kw.push(rebuilt);
-                        changed = true;
-                    }
-                }
-                ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
-            }
-        }
-        if !changed {
-            return Ok(ExpandedValue::Complete(cursor.root()));
-        }
-
-        let kw_root = owner.builder().list(&expanded_kw).map_err(|error| {
-            emit_internal_surface_error(
-                self.world,
-                format!("function clause keyword list rebuild failed: {error}"),
-            )
-        })?;
-        let mut expanded_args = args.iter().map(QuotedSourceCursor::root).collect::<Vec<_>>();
-        expanded_args[1] = kw_root;
-        let tail = owner.builder().list(&expanded_args).map_err(|error| {
-            emit_internal_surface_error(self.world, format!("function clause arg list rebuild failed: {error}"))
-        })?;
-        let rebuilt = owner
-            .builder()
-            .tuple(&[node.head.root(), node.meta.root(), tail])
-            .map_err(|error| {
-                emit_internal_surface_error(self.world, format!("function clause rebuild failed: {error}"))
-            })?;
-        Ok(ExpandedValue::Complete(rebuilt))
     }
 
     fn expand_root(
@@ -1548,7 +1347,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         }
         (!effects.waits.is_empty()).then_some(effects)
     }
-    fn define_protocol_impl(&mut self, protocol_impl: &ProtocolImplForm) -> Result<ProtocolImplDefinition, FatalError> {
+    fn define_protocol_impl(&mut self, protocol_impl: &ProtocolImplForm) -> Result<Outputs, FatalError> {
         let protocol = reference_impl_protocol_module(
             self.world,
             self.current_module,
@@ -1601,10 +1400,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         let mut callbacks = HashMap::new();
         for function in functions {
             let publication =
-                match self.define_source_function(impl_module, self.current_module, impl_scope, &function, false)? {
-                    FunctionDefinition::Complete(publication) => publication,
-                    FunctionDefinition::Blocked(effects) => return Ok(ProtocolImplDefinition::Blocked(effects)),
-                };
+                self.define_source_function(impl_module, self.current_module, impl_scope, &function, false)?;
             outputs.push(publication.output);
             callbacks.insert(
                 (function.name.clone(), function.arity),
@@ -1616,7 +1412,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         }
         self.world.define_protocol_impl(protocol, target, callbacks);
         outputs.push(self.world.refresh_protocol_dispatch_fact(protocol));
-        Ok(ProtocolImplDefinition::Complete { outputs })
+        Ok(outputs)
     }
 
     fn complete(self) -> ScopePublication {
@@ -1749,10 +1545,606 @@ fn is_list_like(cursor: &QuotedSourceCursor) -> bool {
     cursor.root().is_empty_list() || cursor.root().tag() == ValueKind::LIST
 }
 
+fn required_remote_macro_list(required_remote_macros: &HashSet<FunctionId>) -> Vec<FunctionId> {
+    let mut macros = required_remote_macros.iter().copied().collect::<Vec<_>>();
+    macros.sort_by_key(|function| function.as_u32());
+    macros
+}
+
 struct FunctionPublication {
     function: FunctionId,
     output: Output,
     export: Option<ModuleExport>,
+}
+
+struct FunctionSourceExpander<'world, 'tel> {
+    world: &'world mut World<'tel>,
+    function: FunctionId,
+    current_module: ModuleId,
+    namespace: Namespace,
+    required_remote_macros: HashSet<FunctionId>,
+    reads: Vec<FactKey>,
+}
+
+pub(crate) fn expand_noted_function_source(
+    world: &mut World<'_>,
+    function: FunctionId,
+    source: &FunctionSource,
+) -> Result<FunctionSourceExpansion, FatalError> {
+    FunctionSourceExpander::new(world, function, source).expand(source)
+}
+
+impl<'world, 'tel> FunctionSourceExpander<'world, 'tel> {
+    fn new(world: &'world mut World<'tel>, function: FunctionId, source: &FunctionSource) -> Self {
+        let current_module = world.function_module(function);
+        Self {
+            world,
+            function,
+            current_module,
+            namespace: source.namespace,
+            required_remote_macros: source.required_remote_macros.iter().copied().collect(),
+            reads: Vec::new(),
+        }
+    }
+
+    fn expand(mut self, source: &FunctionSource) -> Result<FunctionSourceExpansion, FatalError> {
+        let scope = ScopeSnapshot::function(self.current_module, self.namespace, self.function);
+        let expanded = match self.expand_function_source(source.source.clone(), scope, 0)? {
+            ExpandedRoot::Complete(expanded) => expanded,
+            ExpandedRoot::Blocked(effects) => {
+                return Ok(FunctionSourceExpansion::Blocked(self.blocked_effects(effects)));
+            }
+        };
+        let mut source = source.clone();
+        source.source = expanded;
+        Ok(FunctionSourceExpansion::Complete {
+            source,
+            reads: self.reads,
+        })
+    }
+
+    fn expand_function_source(
+        &mut self,
+        source: QuotedSourceRoot,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedRoot, FatalError> {
+        let cursor = source.cursor();
+        if cursor
+            .ast_node()
+            .map_err(|error| emit_internal_surface_error(self.world, format!("function source read failed: {error}")))?
+            .is_some()
+        {
+            return match self.expand_function_clause(&source, &cursor, scope, depth)? {
+                ExpandedValue::Complete(value) => Ok(ExpandedRoot::Complete(source.subroot(value))),
+                ExpandedValue::Blocked(effects) => Ok(ExpandedRoot::Blocked(effects)),
+            };
+        }
+
+        let items = cursor.list_items().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("grouped function source read failed: {error}"))
+        })?;
+        let mut changed = false;
+        let mut expanded = Vec::with_capacity(items.len());
+        for item in items {
+            let Some(node) = item.ast_node().map_err(|error| {
+                emit_internal_surface_error(self.world, format!("grouped function item read failed: {error}"))
+            })?
+            else {
+                return Err(emit_internal_surface_error(
+                    self.world,
+                    "grouped function source expected quoted AST items".to_string(),
+                ));
+            };
+            let head = node.head.atom_name().map_err(|error| {
+                emit_internal_surface_error(self.world, format!("grouped function item head read failed: {error}"))
+            })?;
+            if head.starts_with('@') {
+                expanded.push(item.root());
+                continue;
+            }
+            match self.expand_function_clause(&source, &item, scope, depth)? {
+                ExpandedValue::Complete(value) => {
+                    changed |= value != item.root();
+                    expanded.push(value);
+                }
+                ExpandedValue::Blocked(effects) => return Ok(ExpandedRoot::Blocked(effects)),
+            }
+        }
+
+        if changed {
+            let root = source.builder().list(&expanded).map_err(|error| {
+                emit_internal_surface_error(self.world, format!("grouped function source rebuild failed: {error}"))
+            })?;
+            Ok(ExpandedRoot::Complete(source.subroot(root)))
+        } else {
+            Ok(ExpandedRoot::Complete(source))
+        }
+    }
+
+    fn expand_function_clause(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, FatalError> {
+        let Some(node) = cursor.ast_node().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("function clause read failed: {error}"))
+        })?
+        else {
+            return Err(emit_internal_surface_error(
+                self.world,
+                "function source expected a quoted AST node".to_string(),
+            ));
+        };
+        let head = node.head.atom_name().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("function clause head read failed: {error}"))
+        })?;
+        if head == "extern" {
+            return Ok(ExpandedValue::Complete(cursor.root()));
+        }
+        if !matches!(head.as_str(), "fn" | "fnp" | "defmacro") {
+            return Err(emit_internal_surface_error(
+                self.world,
+                format!("function source expected fn/fnp/defmacro/extern, got `{head}`"),
+            ));
+        }
+
+        let args = node.tail.list_items().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("function clause args read failed: {error}"))
+        })?;
+        let Some(kwargs) = args.get(1) else {
+            return Ok(ExpandedValue::Complete(cursor.root()));
+        };
+        let kw_items = kwargs.list_items().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("function clause keyword args read failed: {error}"))
+        })?;
+
+        let mut changed = false;
+        let mut expanded_kw = Vec::with_capacity(kw_items.len());
+        for kw in kw_items {
+            let tuple = kw.tuple_items().map_err(|error| {
+                emit_internal_surface_error(self.world, format!("function clause keyword read failed: {error}"))
+            })?;
+            if tuple.len() != 2 {
+                return Err(emit_internal_surface_error(
+                    self.world,
+                    "function clause expected keyword tuples".to_string(),
+                ));
+            }
+            if tuple[0].atom_name().map_err(|error| {
+                emit_internal_surface_error(self.world, format!("function clause keyword name read failed: {error}"))
+            })? != "do"
+            {
+                expanded_kw.push(kw.root());
+                continue;
+            }
+
+            match self.expand_cursor(owner, &tuple[1], scope, depth)? {
+                ExpandedValue::Complete(body) => {
+                    if body == tuple[1].root() {
+                        expanded_kw.push(kw.root());
+                    } else {
+                        let rebuilt = owner.builder().tuple(&[tuple[0].root(), body]).map_err(|error| {
+                            emit_internal_surface_error(
+                                self.world,
+                                format!("function clause keyword rebuild failed: {error}"),
+                            )
+                        })?;
+                        expanded_kw.push(rebuilt);
+                        changed = true;
+                    }
+                }
+                ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+            }
+        }
+        if !changed {
+            return Ok(ExpandedValue::Complete(cursor.root()));
+        }
+
+        let kw_root = owner.builder().list(&expanded_kw).map_err(|error| {
+            emit_internal_surface_error(
+                self.world,
+                format!("function clause keyword list rebuild failed: {error}"),
+            )
+        })?;
+        let mut expanded_args = args.iter().map(QuotedSourceCursor::root).collect::<Vec<_>>();
+        expanded_args[1] = kw_root;
+        let tail = owner.builder().list(&expanded_args).map_err(|error| {
+            emit_internal_surface_error(self.world, format!("function clause arg list rebuild failed: {error}"))
+        })?;
+        let rebuilt = owner
+            .builder()
+            .tuple(&[node.head.root(), node.meta.root(), tail])
+            .map_err(|error| {
+                emit_internal_surface_error(self.world, format!("function clause rebuild failed: {error}"))
+            })?;
+        Ok(ExpandedValue::Complete(rebuilt))
+    }
+
+    fn expand_root(
+        &mut self,
+        root: QuotedSourceRoot,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedRoot, FatalError> {
+        match self.expand_cursor(&root, &root.cursor(), scope, depth)? {
+            ExpandedValue::Complete(value) => Ok(ExpandedRoot::Complete(root.subroot(value))),
+            ExpandedValue::Blocked(effects) => Ok(ExpandedRoot::Blocked(effects)),
+        }
+    }
+
+    fn expand_cursor(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, FatalError> {
+        if depth > MAX_MACRO_EXPANSION_DEPTH {
+            return Err(emit_job_diagnostic(
+                self.world,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    format!("compiler2 macro expansion exceeded depth budget {MAX_MACRO_EXPANSION_DEPTH}"),
+                    Span::DUMMY,
+                ),
+            ));
+        }
+
+        if let Some(node) = cursor.ast_node().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("quoted expansion read failed: {error}"))
+        })? {
+            if let Some(rewritten) = rewrite_source_sugar(owner, &node).map_err(|error| {
+                emit_internal_surface_error(self.world, format!("source sugar rewrite failed: {error}"))
+            })? {
+                return match self.expand_root(owner.subroot(rewritten), scope, depth)? {
+                    ExpandedRoot::Complete(root) => Ok(ExpandedValue::Complete(root.root())),
+                    ExpandedRoot::Blocked(effects) => Ok(ExpandedValue::Blocked(effects)),
+                };
+            }
+            if let Some(result) = self.expand_ast_call(owner, cursor, &node, scope, depth)? {
+                return Ok(result);
+            }
+            return self.expand_ast_node(owner, cursor, &node, scope, depth);
+        }
+
+        match cursor.root().tag() {
+            ValueKind::LIST => self.expand_list(owner, cursor, scope, depth),
+            ValueKind::STRUCT => self.expand_tuple(owner, cursor, scope, depth),
+            ValueKind::MAP => self.expand_map(owner, cursor, scope, depth),
+            _ => Ok(ExpandedValue::Complete(cursor.root())),
+        }
+    }
+
+    fn expand_ast_node(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        node: &super::source::QuotedAstNode,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, FatalError> {
+        let head = match self.expand_cursor(owner, &node.head, scope, depth)? {
+            ExpandedValue::Complete(root) => root,
+            ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+        };
+        let tail = match self.expand_cursor(owner, &node.tail, scope, depth)? {
+            ExpandedValue::Complete(root) => root,
+            ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+        };
+        if head == node.head.root() && tail == node.tail.root() {
+            return Ok(ExpandedValue::Complete(cursor.root()));
+        }
+        let rebuilt = owner
+            .builder()
+            .tuple(&[head, node.meta.root(), tail])
+            .map_err(|error| emit_internal_surface_error(self.world, format!("quoted AST rebuild failed: {error}")))?;
+        Ok(ExpandedValue::Complete(rebuilt))
+    }
+
+    fn expand_ast_call(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        node: &super::source::QuotedAstNode,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<Option<ExpandedValue>, FatalError> {
+        if !is_list_like(&node.tail) {
+            return Ok(None);
+        }
+        let args = node.tail.list_items().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("quoted call arg read failed: {error}"))
+        })?;
+
+        if let Some(result) = self.expand_remote_ast_call(owner, node, scope, depth, cursor.root(), &args)? {
+            return Ok(Some(result));
+        }
+
+        let Ok(head) = node.head.atom_name() else {
+            return Ok(None);
+        };
+        if head == "quote" {
+            return Ok(Some(ExpandedValue::Complete(cursor.root())));
+        }
+        let Some(symbol) = self
+            .world
+            .lookup_callable_namespace(scope.namespace(), &head, args.len())
+        else {
+            return Ok(None);
+        };
+        let function = match symbol {
+            NamespaceSymbol::Macro(function) => function,
+            NamespaceSymbol::Function(_) | NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) => return Ok(None),
+        };
+        self.expand_macro_invocation(owner, cursor.root(), function, scope, depth, &args)
+            .map(Some)
+    }
+
+    fn expand_remote_ast_call(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        node: &super::source::QuotedAstNode,
+        scope: ScopeSnapshot,
+        depth: usize,
+        input_root: AnyValueRef,
+        args: &[QuotedSourceCursor],
+    ) -> Result<Option<ExpandedValue>, FatalError> {
+        let Some(head_node) = node.head.ast_node().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("quoted remote call read failed: {error}"))
+        })?
+        else {
+            return Ok(None);
+        };
+        if head_node.head.atom_name().as_deref() != Ok(".") {
+            return Ok(None);
+        }
+        let target = head_node.tail.list_items().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("quoted remote target read failed: {error}"))
+        })?;
+        let [module_cursor, function_cursor] = target.as_slice() else {
+            return Ok(None);
+        };
+        let module_path = match alias_path(module_cursor) {
+            Ok(path) => path,
+            Err(_) => return Ok(None),
+        };
+        let function_name = function_cursor.atom_name().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("quoted remote function name read failed: {error}"))
+        })?;
+        let Some(module) = self.world.lookup_module_path(scope.namespace(), &module_path.join(".")) else {
+            return Ok(None);
+        };
+        if module == self.current_module {
+            return self.expand_current_module_remote_ast_call(
+                owner,
+                scope,
+                depth,
+                input_root,
+                args,
+                &function_name,
+                &module_path,
+            );
+        }
+        if self.world.module_defined_revision(module).is_none() {
+            if self.world.is_runtime_module(module) {
+                return Ok(None);
+            }
+            let follow_up = if module.is_global() {
+                Vec::new()
+            } else {
+                vec![Job::DefineModule(module)]
+            };
+            return Ok(Some(ExpandedValue::Blocked(JobEffects::wait_on(
+                FactKey::ModuleDefined(module),
+                follow_up,
+            ))));
+        }
+        self.reads.push(FactKey::ModuleDefined(module));
+        let Some(NamespaceSymbol::Macro(function)) =
+            self.world.lookup_module_callable(module, &function_name, args.len())
+        else {
+            return Ok(None);
+        };
+        if !self.required_remote_macros.contains(&function) {
+            return Err(self.remote_macro_not_required(&function_name, args.len(), &module_path));
+        }
+        self.expand_macro_invocation(owner, input_root, function, scope, depth, args)
+            .map(Some)
+    }
+
+    fn expand_current_module_remote_ast_call(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        scope: ScopeSnapshot,
+        depth: usize,
+        input_root: AnyValueRef,
+        args: &[QuotedSourceCursor],
+        function_name: &str,
+        module_path: &[String],
+    ) -> Result<Option<ExpandedValue>, FatalError> {
+        let Some(current_name) = self.world.module_name(self.current_module) else {
+            return Ok(None);
+        };
+        if current_name != module_path.join(".") {
+            return Ok(None);
+        }
+        let Some(symbol) = self
+            .world
+            .lookup_callable_namespace(scope.namespace(), function_name, args.len())
+        else {
+            return Ok(None);
+        };
+        let NamespaceSymbol::Macro(function) = symbol else {
+            return Ok(None);
+        };
+        if self.world.function_module(function) != self.current_module {
+            return Ok(None);
+        }
+        if !self.required_remote_macros.contains(&function) {
+            return Err(self.remote_macro_not_required(function_name, args.len(), module_path));
+        }
+        self.expand_macro_invocation(owner, input_root, function, scope, depth, args)
+            .map(Some)
+    }
+
+    fn remote_macro_not_required(&mut self, function_name: &str, arity: usize, module_path: &[String]) -> FatalError {
+        let module_name = module_path.join(".");
+        emit_job_diagnostic(
+            self.world,
+            Diagnostic::error(
+                codes::MACRO_NOT_REQUIRED,
+                format!(
+                    "remote macro `{}.{}/{}` requires `require {}` before source expansion",
+                    module_name, function_name, arity, module_name
+                ),
+                Span::DUMMY,
+            ),
+        )
+    }
+
+    fn expand_macro_invocation(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        input_root: AnyValueRef,
+        function: FunctionId,
+        scope: ScopeSnapshot,
+        depth: usize,
+        args: &[QuotedSourceCursor],
+    ) -> Result<ExpandedValue, FatalError> {
+        let macro_fact = FactKey::MacroExecutable(function);
+        if self.world.fact_revision(macro_fact.clone()).is_none() {
+            return Ok(ExpandedValue::Blocked(JobEffects::wait_on(
+                macro_fact,
+                [Job::BuildMacroExecutable(function)],
+            )));
+        }
+        self.reads.push(macro_fact);
+
+        let builder = owner.builder();
+        let caller = self
+            .world
+            .project_env_value(&builder, scope, QuotedLexicalContextKind::Caller)
+            .map_err(|error| emit_internal_surface_error(self.world, format!("__ENV__ projection failed: {error}")))?;
+        let arg_roots = args.iter().map(QuotedSourceCursor::root).collect::<Vec<_>>();
+        let expanded = self
+            .world
+            .run_macro_on_source(function, owner, caller, &arg_roots)
+            .map_err(|error| {
+                emit_job_diagnostic(
+                    self.world,
+                    Diagnostic::error(codes::LOWER_UNSUPPORTED, error, Span::DUMMY),
+                )
+            })?;
+        emit_macro_expanded(self.world, function, owner, input_root, &expanded, depth, args.len());
+        match self.expand_root(expanded, scope, depth + 1)? {
+            ExpandedRoot::Complete(root) => Ok(ExpandedValue::Complete(root.root())),
+            ExpandedRoot::Blocked(effects) => Ok(ExpandedValue::Blocked(effects)),
+        }
+    }
+
+    fn expand_list(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, FatalError> {
+        let items = cursor.list_items().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("quoted list expansion failed: {error}"))
+        })?;
+        let mut changed = false;
+        let mut expanded = Vec::with_capacity(items.len());
+        for item in items {
+            match self.expand_cursor(owner, &item, scope, depth)? {
+                ExpandedValue::Complete(value) => {
+                    changed |= value != item.root();
+                    expanded.push(value);
+                }
+                ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+            }
+        }
+        if changed {
+            let root = owner.builder().list(&expanded).map_err(|error| {
+                emit_internal_surface_error(self.world, format!("quoted list rebuild failed: {error}"))
+            })?;
+            Ok(ExpandedValue::Complete(root))
+        } else {
+            Ok(ExpandedValue::Complete(cursor.root()))
+        }
+    }
+
+    fn expand_tuple(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, FatalError> {
+        let items = cursor.tuple_items().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("quoted tuple expansion failed: {error}"))
+        })?;
+        let mut changed = false;
+        let mut expanded = Vec::with_capacity(items.len());
+        for item in items {
+            match self.expand_cursor(owner, &item, scope, depth)? {
+                ExpandedValue::Complete(value) => {
+                    changed |= value != item.root();
+                    expanded.push(value);
+                }
+                ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+            }
+        }
+        if changed {
+            let root = owner.builder().tuple(&expanded).map_err(|error| {
+                emit_internal_surface_error(self.world, format!("quoted tuple rebuild failed: {error}"))
+            })?;
+            Ok(ExpandedValue::Complete(root))
+        } else {
+            Ok(ExpandedValue::Complete(cursor.root()))
+        }
+    }
+
+    fn expand_map(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, FatalError> {
+        let entries = cursor.map_entries().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("quoted map expansion failed: {error}"))
+        })?;
+        let mut changed = false;
+        let mut expanded = Vec::with_capacity(entries.len());
+        for (key, value) in entries {
+            let key_root = match self.expand_cursor(owner, &key, scope, depth)? {
+                ExpandedValue::Complete(root) => root,
+                ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+            };
+            let value_root = match self.expand_cursor(owner, &value, scope, depth)? {
+                ExpandedValue::Complete(root) => root,
+                ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+            };
+            changed |= key_root != key.root() || value_root != value.root();
+            expanded.push((key_root, value_root));
+        }
+        if changed {
+            let root = owner.builder().map(&expanded).map_err(|error| {
+                emit_internal_surface_error(self.world, format!("quoted map rebuild failed: {error}"))
+            })?;
+            Ok(ExpandedValue::Complete(root))
+        } else {
+            Ok(ExpandedValue::Complete(cursor.root()))
+        }
+    }
+
+    fn blocked_effects(&self, mut effects: JobEffects) -> JobEffects {
+        effects.reads.extend(self.reads.clone());
+        effects
+    }
 }
 
 fn publish_function_source(
@@ -1763,6 +2155,7 @@ fn publish_function_source(
     namespace: Namespace,
     function: &FunctionForm,
     export_public: bool,
+    required_remote_macros: Vec<FunctionId>,
     env: &super::source::QuotedSourceRoot,
 ) -> FunctionPublication {
     let function_id = world.reference_function(function_module, function.name.clone(), function.arity);
@@ -1773,6 +2166,7 @@ fn publish_function_source(
             owner_module,
             namespace,
             capture_params: Vec::new(),
+            required_remote_macros,
             variadic: function.variadic,
             source: function.source.clone(),
         },
