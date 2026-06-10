@@ -578,22 +578,41 @@ impl<'a> FrontDoorParser<'a> {
                 lhs = ParsedExpr::plain(self.builder.call("not in", &meta, &[lhs.root, rhs.root])?, span);
                 continue;
             }
-            let Some((lbp, rbp, op)) = self.infix_bp(self.peek()) else {
-                break;
-            };
-            if lbp < min_bp {
-                break;
+            // Direct infix operator on the same line.
+            if let Some((lbp, rbp, op)) = self.infix_bp(self.peek()) {
+                if lbp < min_bp {
+                    break;
+                }
+                self.bump();
+                let rhs = self.parse_bp(rbp, module_path, scope)?;
+                let span = lhs.span.merge(rhs.span);
+                let meta = self.meta(module_path, scope, span)?;
+                lhs = ParsedExpr::plain(self.builder.call(op, &meta, &[lhs.root, rhs.root])?, span);
+                continue;
             }
-            self.bump();
-            let rhs = self.parse_bp(rbp, module_path, scope)?;
-            let span = lhs.span.merge(rhs.span);
-            let meta = self.meta(module_path, scope, span)?;
-            lhs = ParsedExpr::plain(self.builder.call(op, &meta, &[lhs.root, rhs.root])?, span);
+            // Line-continuation: a binary operator at the start of the next line continues this
+            // expression (e.g. `expr\n  |> next`). Skip newlines and recheck for an infix op.
+            if self.peek_is(&Tok::Newline) {
+                let offset = self.newline_run_len();
+                if let Some((lbp, rbp, op)) = self.infix_bp(self.peek_at(offset))
+                    && lbp >= min_bp
+                {
+                    self.skip_newlines();
+                    self.bump();
+                    let rhs = self.parse_bp(rbp, module_path, scope)?;
+                    let span = lhs.span.merge(rhs.span);
+                    let meta = self.meta(module_path, scope, span)?;
+                    lhs = ParsedExpr::plain(self.builder.call(op, &meta, &[lhs.root, rhs.root])?, span);
+                    continue;
+                }
+            }
+            break;
         }
         Ok(lhs)
     }
 
     fn parse_prefix(&mut self, module_path: &[String], scope: &[String]) -> Result<ParsedExpr, FrontDoorError> {
+        self.skip_newlines();
         let start = self.cur_span();
         match self.bump() {
             Tok::Int(value) => Ok(ParsedExpr::plain(self.builder.int(value), start)),
@@ -1574,6 +1593,14 @@ impl<'a> FrontDoorParser<'a> {
         } else {
             self.err(format!("expected {}, got {:?}", label, self.peek()))
         }
+    }
+
+    fn newline_run_len(&self) -> usize {
+        let mut off = 0;
+        while matches!(self.peek_at(off), Tok::Newline) {
+            off += 1;
+        }
+        off
     }
 
     fn skip_newlines(&mut self) {

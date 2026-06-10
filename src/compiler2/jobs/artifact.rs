@@ -1613,17 +1613,14 @@ fn record_callable_boundary_args(
             ));
         }
 
-        let arg_ty = executable.value_types.get(&arg.value).copied().ok_or_else(|| {
-            incomplete_semantic_plan(
-                world,
-                root_id,
-                format!(
-                    "ABI-ready executable is missing the settled type for call argument value {} at callsite {}",
-                    arg.value.as_u32(),
-                    callsite.as_u32()
-                ),
-            )
-        })?;
+        // Parameters whose activation was compiled with no input types (e.g., root activations)
+        // are absent from value_types. The type inference treated them as `any`, so `any` is the
+        // correct semantic equivalent — and `any` is non-callable by construction.
+        let arg_ty = executable
+            .value_types
+            .get(&arg.value)
+            .copied()
+            .unwrap_or_else(|| world.types_mut().any());
         match resolve_callable_entries_for_type(world, root_id, executables, arg_ty)? {
             CallableResolution::NotCallable => {
                 if boundary_expects_callable(world, executable, callsite, closure_callee, arg_index) {

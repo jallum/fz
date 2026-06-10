@@ -370,14 +370,17 @@ fn parse_alias_form(source: QuotedSourceRoot, ctx: &SurfaceSourceContext<'_>) ->
     }
     let path = parse_alias_segments(&args[0])?;
     let as_name = if let Some(kwargs) = args.get(1) {
-        parse_import_keyword_args(kwargs)?
-            .into_iter()
-            .find_map(|(kind, values)| {
-                (kind == "as")
-                    .then(|| values.into_iter().next())
-                    .flatten()
-                    .map(|(name, _)| name)
-            })
+        // alias ... as: ModuleName — the value is a module alias, not an import filter list.
+        let mut found = None;
+        for entry in kwargs.list_items()? {
+            let pair = entry.tuple_items()?;
+            if pair.len() == 2 && pair[0].atom_name()? == "as" {
+                let segments = parse_alias_segments(&pair[1])?;
+                found = segments.last().cloned();
+                break;
+            }
+        }
+        found
     } else {
         None
     }

@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    AfterClause, BitField, BitSize, Expr, FnClause, LambdaClause, MatchClause, Pattern, Spanned, WithBinding,
+    AfterClause, BinOp, BitField, BitSize, Expr, FnClause, LambdaClause, MatchClause, Pattern, Spanned, WithBinding,
 };
 use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
@@ -812,6 +812,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 });
                 Ok(value)
             }
+            Expr::BinOp(BinOp::Pipe, left, right) => self.lower_pipe(expr.span, left, right, env, steps),
             Expr::BinOp(op, left, right) => {
                 let left = self.lower_expr(left, env, steps)?;
                 let right = self.lower_expr(right, env, steps)?;
@@ -939,6 +940,68 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 }
             },
         )
+    }
+
+    fn lower_pipe(
+        &mut self,
+        span: Span,
+        left: &Spanned<Expr>,
+        right: &Spanned<Expr>,
+        env: &mut HashMap<String, ValueId>,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        let piped = self.lower_expr(left, env, steps)?;
+        let piped_arg = CallArg {
+            value: piped,
+            ascription: None,
+        };
+        match &right.node {
+            Expr::Call(target, args) => {
+                let mut lowered_args = vec![piped_arg];
+                lowered_args.extend(self.lower_call_args(args, env, steps)?);
+                let callsite = self.fresh_callsite();
+                if let Some(name) = direct_call_name(target, env) {
+                    let value = self.fresh_value();
+                    steps.push(ExprStep::DirectCall {
+                        value,
+                        callsite,
+                        callee: self.resolve_direct_callee(&name, args.len() + 1, target.span)?,
+                        args: lowered_args,
+                    });
+                    return Ok(value);
+                }
+                let callee = self.lower_expr(target, env, steps)?;
+                let value = self.fresh_value();
+                steps.push(ExprStep::ClosureCall {
+                    value,
+                    callsite,
+                    callee,
+                    args: lowered_args,
+                });
+                Ok(value)
+            }
+            Expr::ClosureCall(target, args) => {
+                let callee = self.lower_expr(target, env, steps)?;
+                let mut lowered_args = vec![piped_arg];
+                lowered_args.extend(self.lower_call_args(args, env, steps)?);
+                let value = self.fresh_value();
+                steps.push(ExprStep::ClosureCall {
+                    value,
+                    callsite: self.fresh_callsite(),
+                    callee,
+                    args: lowered_args,
+                });
+                Ok(value)
+            }
+            _ => Err(emit_job_diagnostic(
+                self.world,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    "pipe `|>` right-hand side must be a function call".to_string(),
+                    span,
+                ),
+            )),
+        }
     }
 
     fn lower_call_args(

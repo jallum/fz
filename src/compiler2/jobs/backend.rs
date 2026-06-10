@@ -420,11 +420,13 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
         args.iter()
             .enumerate()
             .map(|(arg_index, arg)| {
+                // Parameters with empty-input activations have no entry in value_types; `any` is
+                // the semantic equivalent and is non-callable by construction.
                 let arg_ty = executable
                     .value_types
                     .get(&arg.value)
                     .copied()
-                    .expect("emission-ready executables should carry settled types for every call argument value");
+                    .unwrap_or_else(|| self.world.types_mut().any());
                 let callable_entries = match self.resolve_callable_entries_for_type(arg_ty)? {
                     CallableResolution::NotCallable => {
                         if self.boundary_expects_callable(executable, callsite, closure_callee, arg_index) {

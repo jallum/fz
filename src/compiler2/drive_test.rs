@@ -7485,6 +7485,10 @@ pub(crate) fn assert_resolved(outcome: DriveOutcome<Job, FactKey>, message: &str
     assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
 }
 
+pub(crate) fn assert_fatal(outcome: DriveOutcome<Job, FactKey>, message: &str) {
+    assert!(matches!(outcome, DriveOutcome::Fatal { .. }), "{message}: {outcome:?}");
+}
+
 pub(crate) fn function_id(capture: &FunctionCapture, name: &str, arity: u64) -> FunctionId {
     capture.id(name, arity)
 }
