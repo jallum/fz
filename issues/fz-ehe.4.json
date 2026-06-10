@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-10T04:05:11Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-ehe",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-knf-d: drop Module and Function wrapper structs; operate on state enums directly",
   "type": "task",
-  "updated_at": "2026-06-10T04:05:11Z"
+  "updated_at": "2026-06-10T04:12:40Z"
 }
