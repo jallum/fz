@@ -1213,7 +1213,7 @@ pub(super) fn resolve_backend_callable_executable(
         .filter_map(|entry| {
             let executable = &program.executables[entry.target];
             (executable.key.need == ExecutableNeed::Value
-                && executable.key.activation.function == FunctionId::from_u32(fn_id.0)
+                && executable.key.activation.function == FunctionId::from_fn_id(fn_id)
                 && entry.capture_count == captures.len()
                 && executable.key.activation.input.len() == captures.len() + args.len())
             .then_some(entry.target)

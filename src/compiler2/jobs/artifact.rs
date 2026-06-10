@@ -23,7 +23,7 @@ use super::super::body::{
     LoweredTail, ValueId,
 };
 use super::super::drive::{FactKey, Job, JobEffects};
-use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, RootId};
+use super::super::identity::{ExecutableKey, ExecutableNeed, RootId, function_id_of_closure_target};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, SelectedCallee};
 use super::super::types::Ty;
@@ -1704,7 +1704,7 @@ fn resolve_callable_entries_for_type(
         let Some(closure) = clause.closure else {
             return Ok(CallableResolution::Opaque);
         };
-        let function = FunctionId::from_u32(closure.target.0);
+        let function = function_id_of_closure_target(closure.target);
         let capture_count = closure.captures.len();
         let fixed_arity = clause.args.len();
         let variadic = world.function_variadic(function);

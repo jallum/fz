@@ -4716,13 +4716,7 @@ fn compiler2_submit_root_before_code_reports_unresolved_until_entry_is_defined()
         need: ExecutableNeed::Value,
     });
 
-    let submitted = capture
-        .last(&["fz", "compiler2", "root", "submitted"])
-        .expect("root submitted event");
-    let function_id = match submitted.measurements.get("function_id") {
-        Some(Value::U64(id)) => FunctionId::from_u32(*id as u32),
-        other => panic!("root submission missing function_id measurement: {other:?}"),
-    };
+    let function_id = compiler.root_function(root_id);
 
     let outcome = compiler.drive();
     match outcome {
@@ -6883,16 +6877,27 @@ impl Handler for FunctionCaptureHandler {
             ["fz", "compiler2", "function", "source", "noted"] => true,
             _ => return,
         };
-        let Some(Value::U64(function_id)) = event.measurements.get("function_id") else {
+        let Some(function_id) = event
+            .metadata
+            .get("function_id")
+            .and_then(|v| v.downcast_ref::<FunctionId>())
+            .copied()
+        else {
             return;
         };
-        let Some(Value::U64(module_id)) = event.measurements.get("module_id") else {
+        let Some(module_id) = event
+            .metadata
+            .get("module_id")
+            .and_then(|v| v.downcast_ref::<ModuleId>())
+            .copied()
+        else {
             return;
         };
-        let owner_module_id = match event.measurements.get("owner_module_id") {
-            Some(Value::U64(owner_module_id)) => Some(ModuleId::from_u32(*owner_module_id as u32)),
-            _ => None,
-        };
+        let owner_module_id = event
+            .metadata
+            .get("owner_module_id")
+            .and_then(|v| v.downcast_ref::<ModuleId>())
+            .copied();
         let Some(Value::U64(arity)) = event.measurements.get("arity") else {
             return;
         };
@@ -6906,20 +6911,20 @@ impl Handler for FunctionCaptureHandler {
         else {
             return;
         };
-        let function_id = FunctionId::from_u32(*function_id as u32);
         let owner_function_id = if from_source {
             None
         } else {
-            match event.measurements.get("owner_function_id") {
-                Some(Value::U64(owner)) => Some(FunctionId::from_u32(*owner as u32)),
-                _ => None,
-            }
+            event
+                .metadata
+                .get("owner_function_id")
+                .and_then(|v| v.downcast_ref::<FunctionId>())
+                .copied()
         };
         self.defs.borrow_mut().insert(
             function_id,
             FunctionDefinedRecord {
                 function_id,
-                module_id: ModuleId::from_u32(*module_id as u32),
+                module_id,
                 owner_module_id,
                 arity: *arity,
                 clauses: *clauses,
@@ -6935,7 +6940,12 @@ impl Handler for ModuleCaptureHandler {
         if event.name != ["fz", "compiler2", "module", "defined"] || event.kind != EventKind::Event {
             return;
         }
-        let Some(Value::U64(module_id)) = event.measurements.get("module_id") else {
+        let Some(module_id) = event
+            .metadata
+            .get("module_id")
+            .and_then(|v| v.downcast_ref::<ModuleId>())
+            .copied()
+        else {
             return;
         };
         let Some(module) = event
@@ -6947,7 +6957,7 @@ impl Handler for ModuleCaptureHandler {
         };
         self.defs
             .borrow_mut()
-            .entry(ModuleId::from_u32(*module_id as u32))
+            .entry(module_id)
             .or_default()
             .push(module.clone());
     }
@@ -6984,7 +6994,12 @@ impl Handler for SemanticClosedCaptureHandler {
         if event.name != ["fz", "compiler2", "semantic_closed", "defined"] || event.kind != EventKind::Event {
             return;
         }
-        let Some(Value::U64(root_id)) = event.measurements.get("root_id") else {
+        let Some(root_id) = event
+            .metadata
+            .get("root_id")
+            .and_then(|v| v.downcast_ref::<crate::compiler2::RootId>())
+            .copied()
+        else {
             return;
         };
         let Some(closure) = event
@@ -6995,7 +7010,7 @@ impl Handler for SemanticClosedCaptureHandler {
             return;
         };
         self.defs.borrow_mut().push(SemanticClosedRecord {
-            root_id: crate::compiler2::RootId::from_u32(*root_id as u32),
+            root_id,
             activations: closure.activations.clone(),
             executables: closure.executables.clone(),
         });
@@ -7033,7 +7048,12 @@ impl Handler for MaterializedProgramCaptureHandler {
         if event.name != ["fz", "compiler2", "materialized_program", "defined"] || event.kind != EventKind::Event {
             return;
         }
-        let Some(Value::U64(root_id)) = event.measurements.get("root_id") else {
+        let Some(root_id) = event
+            .metadata
+            .get("root_id")
+            .and_then(|v| v.downcast_ref::<crate::compiler2::RootId>())
+            .copied()
+        else {
             return;
         };
         let Some(program) = event
@@ -7044,7 +7064,7 @@ impl Handler for MaterializedProgramCaptureHandler {
             return;
         };
         self.defs.borrow_mut().push(MaterializedProgramRecord {
-            root_id: crate::compiler2::RootId::from_u32(*root_id as u32),
+            root_id,
             program: program.clone(),
         });
     }
@@ -7055,7 +7075,12 @@ impl Handler for AbiReadyProgramCaptureHandler {
         if event.name != ["fz", "compiler2", "abi_ready_program", "defined"] || event.kind != EventKind::Event {
             return;
         }
-        let Some(Value::U64(root_id)) = event.measurements.get("root_id") else {
+        let Some(root_id) = event
+            .metadata
+            .get("root_id")
+            .and_then(|v| v.downcast_ref::<crate::compiler2::RootId>())
+            .copied()
+        else {
             return;
         };
         let Some(program) = event
@@ -7066,7 +7091,7 @@ impl Handler for AbiReadyProgramCaptureHandler {
             return;
         };
         self.defs.borrow_mut().push(AbiReadyProgramRecord {
-            root_id: crate::compiler2::RootId::from_u32(*root_id as u32),
+            root_id,
             program: program.clone(),
         });
     }
@@ -7077,7 +7102,12 @@ impl Handler for EmissionReadyProgramCaptureHandler {
         if event.name != ["fz", "compiler2", "emission_ready_program", "defined"] || event.kind != EventKind::Event {
             return;
         }
-        let Some(Value::U64(root_id)) = event.measurements.get("root_id") else {
+        let Some(root_id) = event
+            .metadata
+            .get("root_id")
+            .and_then(|v| v.downcast_ref::<crate::compiler2::RootId>())
+            .copied()
+        else {
             return;
         };
         let Some(Value::U64(revision)) = event.measurements.get("revision") else {
@@ -7091,7 +7121,7 @@ impl Handler for EmissionReadyProgramCaptureHandler {
             return;
         };
         self.defs.borrow_mut().push(EmissionReadyProgramRecord {
-            root_id: crate::compiler2::RootId::from_u32(*root_id as u32),
+            root_id,
             revision: *revision,
             program: program.clone(),
         });
@@ -7103,7 +7133,12 @@ impl Handler for BackendProgramCaptureHandler {
         if event.name != ["fz", "compiler2", "backend_program", "defined"] || event.kind != EventKind::Event {
             return;
         }
-        let Some(Value::U64(root_id)) = event.measurements.get("root_id") else {
+        let Some(root_id) = event
+            .metadata
+            .get("root_id")
+            .and_then(|v| v.downcast_ref::<crate::compiler2::RootId>())
+            .copied()
+        else {
             return;
         };
         let Some(Value::U64(revision)) = event.measurements.get("revision") else {
@@ -7117,7 +7152,7 @@ impl Handler for BackendProgramCaptureHandler {
             return;
         };
         self.defs.borrow_mut().push(BackendProgramRecord {
-            root_id: crate::compiler2::RootId::from_u32(*root_id as u32),
+            root_id,
             revision: *revision,
             program: program.clone(),
         });
@@ -7129,7 +7164,12 @@ impl Handler for NativeProgramCaptureHandler {
         if event.name != ["fz", "compiler2", "native_program", "defined"] || event.kind != EventKind::Event {
             return;
         }
-        let Some(Value::U64(root_id)) = event.measurements.get("root_id") else {
+        let Some(root_id) = event
+            .metadata
+            .get("root_id")
+            .and_then(|v| v.downcast_ref::<crate::compiler2::RootId>())
+            .copied()
+        else {
             return;
         };
         let Some(Value::U64(revision)) = event.measurements.get("revision") else {
@@ -7143,7 +7183,7 @@ impl Handler for NativeProgramCaptureHandler {
             return;
         };
         self.defs.borrow_mut().push(NativeProgramRecord {
-            root_id: crate::compiler2::RootId::from_u32(*root_id as u32),
+            root_id,
             revision: *revision,
             program: program.clone(),
         });
@@ -7155,7 +7195,12 @@ impl Handler for GuardDispatchCaptureHandler {
         if event.name != ["fz", "compiler2", "guard_dispatch", "defined"] || event.kind != EventKind::Event {
             return;
         }
-        let Some(Value::U64(function_id)) = event.measurements.get("function_id") else {
+        let Some(function_id) = event
+            .metadata
+            .get("function_id")
+            .and_then(|v| v.downcast_ref::<FunctionId>())
+            .copied()
+        else {
             return;
         };
         let Some(dispatch) = event
@@ -7167,7 +7212,7 @@ impl Handler for GuardDispatchCaptureHandler {
         };
         self.dispatches
             .borrow_mut()
-            .entry(FunctionId::from_u32(*function_id as u32))
+            .entry(function_id)
             .or_default()
             .push(dispatch.clone());
     }
@@ -7178,7 +7223,12 @@ impl Handler for EntryDispatchCaptureHandler {
         if event.name != ["fz", "compiler2", "entry_dispatch", "defined"] || event.kind != EventKind::Event {
             return;
         }
-        let Some(Value::U64(function_id)) = event.measurements.get("function_id") else {
+        let Some(function_id) = event
+            .metadata
+            .get("function_id")
+            .and_then(|v| v.downcast_ref::<FunctionId>())
+            .copied()
+        else {
             return;
         };
         let Some(plan) = event
@@ -7190,7 +7240,7 @@ impl Handler for EntryDispatchCaptureHandler {
         };
         self.plans
             .borrow_mut()
-            .entry(FunctionId::from_u32(*function_id as u32))
+            .entry(function_id)
             .or_default()
             .push(plan.clone());
     }
@@ -7201,7 +7251,12 @@ impl Handler for LoweredBodyCaptureHandler {
         if event.name != ["fz", "compiler2", "lowered_body", "defined"] || event.kind != EventKind::Event {
             return;
         }
-        let Some(Value::U64(function_id)) = event.measurements.get("function_id") else {
+        let Some(function_id) = event
+            .metadata
+            .get("function_id")
+            .and_then(|v| v.downcast_ref::<FunctionId>())
+            .copied()
+        else {
             return;
         };
         let Some(body) = event
@@ -7213,7 +7268,7 @@ impl Handler for LoweredBodyCaptureHandler {
         };
         self.bodies
             .borrow_mut()
-            .entry(FunctionId::from_u32(*function_id as u32))
+            .entry(function_id)
             .or_default()
             .push(body.clone());
     }

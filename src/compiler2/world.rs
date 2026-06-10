@@ -172,6 +172,10 @@ impl<'a> World<'a> {
         self.tel
     }
 
+    pub fn root_function(&self, root: RootId) -> FunctionId {
+        self.roots.get(root).function
+    }
+
     pub(crate) fn types(&self) -> &Types {
         &self.types
     }
@@ -402,6 +406,7 @@ impl<'a> World<'a> {
             },
             &metadata! {
                 closure: opaque_debug(&closure),
+                root_id: opaque_debug(&root),
             },
         );
         revision
@@ -432,6 +437,7 @@ impl<'a> World<'a> {
             },
             &metadata! {
                 program: opaque_debug(&program),
+                root_id: opaque_debug(&root),
             },
         );
         revision
@@ -457,6 +463,7 @@ impl<'a> World<'a> {
             },
             &metadata! {
                 program: opaque_debug(&program),
+                root_id: opaque_debug(&root),
             },
         );
         revision
@@ -482,6 +489,7 @@ impl<'a> World<'a> {
             },
             &metadata! {
                 program: opaque_debug(&program),
+                root_id: opaque_debug(&root),
             },
         );
         revision
@@ -508,6 +516,7 @@ impl<'a> World<'a> {
             },
             &metadata! {
                 program: opaque_debug(&program),
+                root_id: opaque_debug(&root),
             },
         );
         revision
@@ -534,6 +543,7 @@ impl<'a> World<'a> {
             },
             &metadata! {
                 program: opaque_debug(&program),
+                root_id: opaque_debug(&root),
             },
         );
         revision
@@ -569,6 +579,7 @@ impl<'a> World<'a> {
             },
             &metadata! {
                 module: opaque_debug(module),
+                module_id: opaque_debug(&id),
             },
         );
         revision
@@ -913,6 +924,9 @@ impl<'a> World<'a> {
                 &metadata! {
                     function: opaque_debug(function),
                     function_ref: opaque_debug(function_ref),
+                    function_id: opaque_debug(&id),
+                    module_id: opaque_debug(&module),
+                    owner_module_id: opaque_debug(&owner_module),
                 },
             );
         }
@@ -923,6 +937,8 @@ impl<'a> World<'a> {
         let current = self.fact_revision(FactKey::FunctionSource(function)).unwrap_or(0);
         let revision = self.functions.note(function, source.clone(), current);
         let function_ref = self.functions.reference_for(function);
+        let source_owner_module = source.owner_module;
+        let source_module_id = function_ref.module;
         self.tel.execute(
             &["fz", "compiler2", "function", "source", "noted"],
             &measurements! {
@@ -939,6 +955,9 @@ impl<'a> World<'a> {
             &metadata! {
                 function_ref: opaque_debug(function_ref),
                 source: opaque_debug(&source),
+                function_id: opaque_debug(&function),
+                module_id: opaque_debug(&source_module_id),
+                owner_module_id: opaque_debug(&source_owner_module),
             },
         );
         revision
@@ -1089,6 +1108,10 @@ impl<'a> World<'a> {
                 &metadata! {
                     function: opaque_debug(function),
                     function_ref: opaque_debug(function_ref),
+                    function_id: opaque_debug(&id),
+                    module_id: opaque_debug(&owner_module),
+                    owner_module_id: opaque_debug(&owner_source.owner_module),
+                    owner_function_id: opaque_debug(&owner),
                 },
             );
         }
@@ -1125,6 +1148,7 @@ impl<'a> World<'a> {
             &metadata! {
                 function_ref: opaque_debug(function_ref),
                 body: opaque_debug(&body),
+                function_id: opaque_debug(&function),
             },
         );
         revision
@@ -1157,6 +1181,7 @@ impl<'a> World<'a> {
             &metadata! {
                 function_ref: opaque_debug(function_ref),
                 dispatch: opaque_debug(&dispatch),
+                function_id: opaque_debug(&function),
             },
         );
         revision
@@ -1189,6 +1214,7 @@ impl<'a> World<'a> {
             &metadata! {
                 function_ref: opaque_debug(function_ref),
                 plan: opaque_debug(&plan),
+                function_id: opaque_debug(&function),
             },
         );
         revision

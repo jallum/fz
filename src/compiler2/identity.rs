@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::compiler::source::Span;
 use crate::function_surface::FunctionSurface;
+use crate::types::ClosureTarget;
 
 use super::code::CodeId;
 use super::namespace::{Namespace, NamespaceSymbol};
@@ -16,10 +17,6 @@ pub struct ModuleId(u32);
 impl ModuleId {
     pub const GLOBAL: Self = Self(0);
 
-    pub fn from_u32(value: u32) -> Self {
-        Self(value)
-    }
-
     pub fn as_u32(self) -> u32 {
         self.0
     }
@@ -33,23 +30,30 @@ impl ModuleId {
 pub struct FunctionId(u32);
 
 impl FunctionId {
-    pub fn from_u32(value: u32) -> Self {
-        Self(value)
-    }
-
     pub fn as_u32(self) -> u32 {
         self.0
     }
+
+    /// Convert an IR-layer `FnId` to a `FunctionId`. These carry the same raw
+    /// index: compiler2 assigns `FunctionId` values and the IR layer stores
+    /// them verbatim as `FnId`. Only use this at the interpreter/backend
+    /// boundary where the two layers meet.
+    pub fn from_fn_id(fn_id: crate::fz_ir::FnId) -> Self {
+        Self(fn_id.0)
+    }
+}
+
+/// Recover a `FunctionId` from a `ClosureTarget` whose `u32` was produced by
+/// `function.as_u32()`. This is a typed round-trip for use within compiler2
+/// jobs — not a free constructor.
+pub(crate) fn function_id_of_closure_target(ct: ClosureTarget) -> FunctionId {
+    FunctionId(ct.0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RootId(u32);
 
 impl RootId {
-    pub fn from_u32(value: u32) -> Self {
-        Self(value)
-    }
-
     pub fn as_u32(self) -> u32 {
         self.0
     }

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use super::identity::{FunctionMap, ModuleId, RootEntry, RootMap};
 use super::{AbiValueRepr, ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, ReturnAbi, RootId, Types};
 use crate::compiler2::artifact::{
     EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableEntry, NativeEntryAbi, NativeProgram,
@@ -10,16 +11,25 @@ use crate::fz_ir::{
 use crate::type_expr::ResolvedSpecDecl;
 use crate::types::Types as _;
 
+fn stub_activation_key(_types: &mut Types, input: Vec<super::types::Ty>) -> (RootId, FunctionId, ActivationKey) {
+    let mut functions = FunctionMap::new();
+    let function = functions.reference(ModuleId::GLOBAL, "main", 0);
+    let mut roots = RootMap::new();
+    let root = roots.define(RootEntry {
+        function,
+        need: ExecutableNeed::Value,
+    });
+    let activation = ActivationKey { root, function, input };
+    (root, function, activation)
+}
+
 #[test]
 fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
     let mut types = Types::new();
     let int = types.int();
+    let (_, _, activation) = stub_activation_key(&mut types, vec![int]);
     let executable = ExecutableKey {
-        activation: ActivationKey {
-            root: RootId::from_u32(0),
-            function: FunctionId::from_u32(0),
-            input: vec![int],
-        },
+        activation,
         need: ExecutableNeed::Value,
     };
     let entry_fn = FnId(0);
@@ -118,12 +128,9 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
 fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
     let mut types = Types::new();
     let int = types.int();
+    let (_, _, activation) = stub_activation_key(&mut types, vec![int]);
     let executable = ExecutableKey {
-        activation: ActivationKey {
-            root: RootId::from_u32(0),
-            function: FunctionId::from_u32(0),
-            input: vec![int],
-        },
+        activation,
         need: ExecutableNeed::Value,
     };
     let entry_fn = FnId(0);
@@ -295,6 +302,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
 fn compiler2_native_program_contract_treats_old_extern_semantics_as_cleanup_not_authority() {
     let mut types = Types::new();
     let int = types.int();
+    let (_, _, stub_activation) = stub_activation_key(&mut types, vec![int]);
     let entry_fn = FnId(0);
 
     let mut legacy_types = crate::types::new();
@@ -345,11 +353,7 @@ fn compiler2_native_program_contract_treats_old_extern_semantics_as_cleanup_not_
         bodies: vec![NativeBody {
             fn_id: entry_fn,
             origin: NativeBodyOrigin::Executable(ExecutableKey {
-                activation: ActivationKey {
-                    root: RootId::from_u32(0),
-                    function: FunctionId::from_u32(0),
-                    input: vec![int],
-                },
+                activation: stub_activation,
                 need: ExecutableNeed::Value,
             }),
             entry_abi: NativeEntryAbi::Direct,

@@ -4,7 +4,7 @@ use super::ExecutableNeed;
 use super::Job;
 use super::NativeProgram;
 use super::code::CodeId;
-use super::identity::RootId;
+use super::identity::{FunctionId, RootId};
 use super::scheduler::DriveOutcome;
 use super::world::World;
 
@@ -50,6 +50,11 @@ impl<'a> Compiler2<'a> {
             need,
         } = submission;
         self.world.submit_root(module_name, name, arity, need)
+    }
+
+    /// Returns the entry `FunctionId` for the given root.
+    pub fn root_function(&self, root: RootId) -> FunctionId {
+        self.world.root_function(root)
     }
 
     pub fn demand(&mut self, job: Job) -> bool {

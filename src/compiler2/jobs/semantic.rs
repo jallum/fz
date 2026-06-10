@@ -19,7 +19,9 @@ use super::super::body::{
 };
 use super::super::contract::FunctionContract;
 use super::super::drive::{FactKey, Job, JobEffects};
-use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, ModuleId};
+use super::super::identity::{
+    ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, ModuleId, function_id_of_closure_target,
+};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallSiteSummary, SelectedCallee};
 use super::super::types::{ClosureTarget, Ty};
@@ -964,7 +966,7 @@ fn resolve_closure_call(
             continue;
         }
 
-        let function = FunctionId::from_u32(closure.target.0);
+        let function = function_id_of_closure_target(closure.target);
         match selected_function {
             Some(current) if current != function => return Ok((None, any_ty(world))),
             None => selected_function = Some(function),
@@ -1179,7 +1181,7 @@ fn resolve_callable_activations_from_type(
         let Some(closure) = clause.closure else {
             continue;
         };
-        let function = FunctionId::from_u32(closure.target.0);
+        let function = function_id_of_closure_target(closure.target);
         if !world.require_activation_key_facts(function, reads, waits, follow_up) {
             continue;
         }
