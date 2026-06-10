@@ -2,13 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-10T17:58:12Z",
+  "close_reason": "goal (single revision authority via Reconcile) achieved by .1-.3 + fz-uku; .4/.5 closed as superseded/split into everything-is-incremental (see their comments)",
   "created": "2026-06-10T01:53:14Z",
   "description": "SPINE (locked with architect)\nCollapse the two-layer revision model and ~7 hand-rolled reconcile patterns onto ONE trait. Each fact's VALUE type implements:\n\n  trait Reconcile: Sized {\n      // None = not-yet-computed (distinct from any value; fixpoint correctness).\n      // revision is an opaque 64-bit the fact mints: revision+1, a content hash,\n      // or unchanged. The value NEVER stores the revision; the fact system holds\n      // and threads it. reconcile did the comparison, so it emits the revision\n      // directly (no double-compare -- the quoted walk is the expensive thing).\n      fn reconcile(current: Option\u003c\u0026Self\u003e, incoming: Self, revision: u64) -\u003e (Self, u64);\n  }\n\nFact system: let (value, rev) = T::reconcile(store.get(key), incoming, fact.rev(key)); store.put(key, value); if rev != old { propagate }. Change == rev != prior. Fact owns the 64-bit MEANING; system owns STORAGE + PROPAGATION.\n\nWHY (measured + grokked)\n- Downstream change-detection already reads the FACT revision (artifact.rs:1830), never the slot revision -\u003e the per-slot revision is a redundant intermediary.\n- Value stores are single-authority (one owner per key; FunctionDefined multi-writers target disjoint instances) -\u003e the contributions/join/Presence(u64) multi-contributor layer is vestigial and retires.\n- The quoted-source fingerprint eagerly canonical-serializes+hashes every parse (O(n*depth), retained, ~27% of IndexCode) only to feed a digest compare. reconcile replaces it with a lazy fast-fail horizon walk.\n- replace_if_changed FUSES store+bump (if changed { store AND bump }) -\u003e the code.index trap: surface-same discards freshly-parsed bodies =\u003e stale function facts. Separating value from revision-advance dissolves it by construction.\n\nTHREE reconcile behaviors, one interface:\n- mechanical (~12 facts: Dispatch/Projection/Body/TypeDef/Protocol x3/CallSite/Contract/FunctionFact): (incoming, revision + (current != Some(incoming)) as u64). Blanket over PartialEq.\n- horizon (Code/Module = surface walk skipping do: bodies; Function/FunctionSource = full walk): value always fresh source; revision advances iff the scoped walk differs. Kills fingerprint + key() over-invalidation.\n- lattice (Activation return = widen; SemanticClosure = composite): (join(current, incoming), advance iff moved).\n\nContent-hash-as-revision becomes an OPT-IN per fact (the fingerprint's one good idea: same content =\u003e same id, order-independent) instead of an eager mandate.\n\nCHILD TICKETS (dependency-ordered) created separately.",
   "id": "fz-knf",
   "labels": [],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "[EPIC] Unify compiler2 fact/revision on a Reconcile trait",
   "type": "task",
-  "updated_at": "2026-06-10T01:53:14Z"
+  "updated_at": "2026-06-10T17:58:12Z"
 }
