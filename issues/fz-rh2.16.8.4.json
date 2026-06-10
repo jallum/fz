@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.16.8.2"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.16.8.5"
+  ],
   "created": "2026-06-10T12:05:22Z",
   "description": "Goal: jobs/body lowers runtime bodies plus quoted-source values honestly, without letting source-phase concerns bleed across the whole lowerer. Signal: macro runtime lowering, quote/unquote lowering, and runtime body lowering have explicit boundaries; runtime bodies still reject unexpanded macro calls; quote/unquote-specific traversals live in a narrow quoted-lowering area instead of smearing through generic body logic. Strategy: factor quote/unquote lowering helpers behind a dedicated interface, keep compile-time macro bodies and runtime bodies on the same truthful lowering substrate, and remove duplicated source-only traversal where it no longer belongs.",
   "id": "fz-rh2.16.8.4",
