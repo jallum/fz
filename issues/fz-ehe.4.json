@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-10T04:05:11Z",
+  "description": "Both are single-field structs (pub(crate) state: ModuleState, pub state: FunctionState) whose helper methods are only called inside the map's own impl, while external callers match .state directly. The wrapper adds indirection without encapsulation. ModuleMap and FunctionMap should operate on ModuleState and FunctionState directly; helper logic moves onto impl ModuleState / impl FunctionState.",
+  "id": "fz-ehe.4",
+  "labels": [],
+  "parent": "fz-ehe",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-knf-d: drop Module and Function wrapper structs; operate on state enums directly",
+  "type": "task",
+  "updated_at": "2026-06-10T04:05:11Z"
+}
