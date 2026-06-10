@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.16.6"
+  ],
   "created": "2026-06-10T08:05:46Z",
   "description": "Resolve fz2 source-surface failures from the fz-rh2.9 sweep: keyword_lists, no_parens_call, no_parens_do, no_parens_keyword, sample_tests, sample_tests_module.\n\nThese are above the artifact seam: unsupported compiler2 front-door prefixes for keyword/no-parens source forms, item-level test macro handling, and test module main/root policy.\n\nSignal: each surface is either supported through normal source expansion and fixture-matrix fz2 paths, or explicitly declared outside the compiler2 cutover contract.",
   "id": "fz-rh2.16.4",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Fix fz2 source-surface parser and item macro gaps",
   "type": "task",
-  "updated_at": "2026-06-10T08:05:46Z"
+  "updated_at": "2026-06-10T08:05:55Z"
 }
