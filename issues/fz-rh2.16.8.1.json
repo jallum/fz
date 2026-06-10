@@ -1,5 +1,5 @@
 {
-  "assignee": "Jason Allum",
+  "assignee": "",
   "blocked_by": [],
   "blocks": [
     "fz-rh2.16.8.2",
@@ -11,8 +11,8 @@
   "labels": [],
   "parent": "fz-rh2.16.8",
   "priority": 2,
-  "status": "in_progress",
+  "status": "open",
   "title": "Compiler2 source publication: collapse compiler-service and ordinary forms onto one transaction",
   "type": "task",
-  "updated_at": "2026-06-10T17:49:09Z"
+  "updated_at": "2026-06-10T17:49:43Z"
 }
