@@ -222,7 +222,8 @@ continues. Measurements carry `function_id`, `module_id`, expansion `depth`,
 `depth_budget`, `arg_count`, and the input/output quoted-source
 `heap_id`/`root_ref` pairs. This is the deterministic signal for runaway
 expansion and for proving that a returned root stayed in the same quoted-source
-transport world.
+transport world. The event is emitted by the shared quoted expander, so item
+macros and demanded function-body macros both report through the same path.
 
 Demand-time body staging emits `[fz, compiler2, function, source, expanded]`
 when `ExpandFunctionSource(function)` materializes `ExpandedFunctionSource`.

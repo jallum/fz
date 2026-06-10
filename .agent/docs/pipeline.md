@@ -131,6 +131,11 @@ continues. `require` waits on the provider surface and the selected macro
 executables up front, records that exact remote macro set for the source scope,
 then only those required remote macro calls expand in source order.
 
+The recursive quoted-tree rewrite itself is single-sourced in
+`src/compiler2/quoted_expander.rs`. Scope publication and
+`ExpandFunctionSource(function)` choose different entry roots and different
+post-expansion handling, but they do not carry separate walkers anymore.
+
 Item macro calls are source-order work, not body-lowering work. The macro call
 expands through `MacroExecutable(function)`, the returned Fz-shaped root is read
 as a source fragment, and any function source inside that fragment is published

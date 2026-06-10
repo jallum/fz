@@ -176,7 +176,7 @@ logic inline.
 
 That quote seam treats quote/unquote specially:
 
-- `Expr::Quote(inner)` lowers through `lower_quote_expr(...)`
+- `Expr::Quote(inner)` hands off to the dedicated `QuoteLowerer`
 - `Expr::Unquote(inner)` is legal only inside `quote`
 - inside quote lowering, `unquote(...)` evaluates the inner expression and
   splices its runtime value into the quoted tree being constructed

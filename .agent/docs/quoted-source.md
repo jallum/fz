@@ -95,6 +95,10 @@ the `fz-rh2.11.7.*` arc.
 - `FactKey::ExpandedFunctionSource(FunctionId)` is the staged demanded-body
   fact. `ExpandFunctionSource(function)` expands body-local macros and rewrites
   source sugar only when something actually demands that function.
+- `src/compiler2/quoted_expander.rs` owns the recursive quoted-source rewrite
+  engine. Scope publication and `ExpandFunctionSource(function)` both call that
+  same engine; they only differ in which root they start from and which facts
+  they publish after expansion settles.
 - `FunctionDefined` is derived on demand from `ExpandedFunctionSource`, not
   directly from raw `FunctionSource`.
 - `FunctionDefined` now carries a compiler2-owned `FunctionSurface` decoded
