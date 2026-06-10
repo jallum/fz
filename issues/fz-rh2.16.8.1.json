@@ -2,7 +2,6 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-rh2.16.8.2",
     "fz-rh2.16.8.3"
   ],
   "created": "2026-06-10T12:05:22Z",
@@ -14,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 quoted expander: extract the shared quoted-source expansion engine and delete duplicate walkers",
   "type": "task",
-  "updated_at": "2026-06-10T20:00:46Z"
+  "updated_at": "2026-06-10T20:00:47Z"
 }
