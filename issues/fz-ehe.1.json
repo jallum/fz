@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-10T04:05:01Z",
+  "description": "Value already has From\u003cu32\u003e. Every measurement site in compiler2 does .as_u32() as u64 explicitly (~40 occurrences). Remove the redundant cast and let the From impl convert. No behavioral change.",
+  "id": "fz-ehe.1",
+  "labels": [],
+  "parent": "fz-ehe",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-knf-a: remove redundant as_u32() as u64 casts at telemetry callsites",
+  "type": "task",
+  "updated_at": "2026-06-10T04:05:01Z"
+}
