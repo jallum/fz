@@ -7,14 +7,16 @@
   "blocks": [
     "fz-rh2.11.6"
   ],
+  "closed_at": "2026-06-10T06:44:23Z",
+  "close_reason": "done",
   "created": "2026-06-08T11:49:30Z",
   "description": "Goal: close the original compiler2 frontend-surface gap after the source-production mini-epic lands.\n\nCurrent plan: implementation lives in `fz-rh2.11.7`, which replaces the stale pre-expanded-input idea with compiler2-owned parser/source AST, quoted source production, compiler services, macro availability, and source-sugar rewrites. This ticket resumes after that mini-epic and proves the original surface-parity claim.\n\nSignal:\n- representative fixtures that previously failed on leftover macros or capture sugar (`\u0026(\u00261 + \u00262)`, `macro_inc`, `cross_module_macro`, item-macro test surface, and pipe/headless case) run through `fz2`\n- compiler2 indexing/lowering no longer expects user code to have skipped macro expansion by magic\n- downstream compiler2 body/dispatch/semantic/artifact jobs still consume ordinary function/module/type/protocol facts and do not know whether source was literal or macro-produced\n\nChange:\n- run the closeout fixture/telemetry matrix after `fz-rh2.11.7`\n- remove any last stale diagnostics/tests/docs that still describe compiler2 as receiving pre-expanded old-frontend AST\n- hand off to `fz-rh2.11.6` for broader fz2 parity harness coverage\n\nWhy:\n- the original problem remains the same, but the right solution is now the source-production mini-epic, not a bridge from the old frontend macro pass",
   "id": "fz-rh2.11.5",
   "labels": [],
   "parent": "fz-rh2.11",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 frontend surface closeout: prove source production feeds macro-free bodies",
   "type": "task",
-  "updated_at": "2026-06-10T06:41:05Z"
+  "updated_at": "2026-06-10T06:44:23Z"
 }
