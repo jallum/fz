@@ -6,7 +6,7 @@
     "fz-rh2.16.8.3"
   ],
   "created": "2026-06-10T12:05:22Z",
-  "description": "Goal: ordinary source publication, item-macro-expanded source publication, and Fz.Compiler.define publication all become the same semantic operation with one implementation. Signal: source_publish no longer carries a second per-form dispatcher for compiler services; publication of a source fragment is parameterized by scope/env/owner context instead of by call path; identical expanded definitions publish identical facts regardless of whether they came from direct source or a compiler service. Strategy: introduce one publication request/transaction shape, route CompilerService::Define through it, delete the duplicated per-form publication match, and add focused regressions proving fact equivalence across entry paths.",
+  "description": "Goal: once ordinary function-body expansion has moved behind function demand, ordinary source publication, item-macro-expanded source publication, and Fz.Compiler.define publication all become the same raw definition-publication operation with one implementation. Signal: source_publish no longer carries a second per-form dispatcher for compiler services; publication of a raw source fragment is parameterized by scope/env/owner context instead of by call path; identical raw definitions publish identical facts regardless of whether they came from direct source or a compiler service. Strategy: rebuild publication around one raw fragment transaction after function staging lands, route CompilerService::Define through it, delete the duplicated per-form publication match, and add focused regressions proving fact equivalence across entry paths.",
   "id": "fz-rh2.16.8.1",
   "labels": [],
   "parent": "fz-rh2.16.8",
@@ -14,5 +14,5 @@
   "status": "in_progress",
   "title": "Compiler2 source publication: collapse compiler-service and ordinary forms onto one transaction",
   "type": "task",
-  "updated_at": "2026-06-10T17:27:11Z"
+  "updated_at": "2026-06-10T17:49:09Z"
 }
