@@ -8,13 +8,13 @@
     "fz-rh2.16.8.5"
   ],
   "created": "2026-06-10T12:05:22Z",
-  "description": "Goal: expansion decides what top-level quoted source exists, while publication decides what scope-tier facts that source defines. Ordinary function-body expansion is no longer part of this layer. Signal: source sugar rewrites, require/import macro readiness, and item-level expansion live behind one explicit expander API; publication consumes already-expanded scope fragments and no longer mixes tree rewriting with scope mutation logic; ordinary function-body expansion happens on function demand, not during scope publication. Strategy: extract the item/scope expansion walk out of source_publish after the function-staging epic, reuse it for item-level expansion and surface fragments, preserve fact-graph blocking semantics, and leave publication with reserve/apply responsibilities only.",
+  "description": "Goal: source publication owns scope facts, not recursive quoted-tree rewriting. Signal: source_publish reads expanded scope fragments, reserves names, applies forms, and publishes facts, while item-macro expansion itself lives behind QuotedExpander; publication no longer carries its own recursive macro/sugar walker; direct source and Fz.Compiler.define remain one raw publication transaction. Strategy: after QuotedExpander exists, route item-macro handling and any other scope-tier expansion through it, keep publish_scope focused on reserve/apply/publish work, and delete the remaining expansion logic from ScopeSession.",
   "id": "fz-rh2.16.8.2",
   "labels": [],
   "parent": "fz-rh2.16.8",
   "priority": 2,
   "status": "open",
-  "title": "Compiler2 source expansion: split quoted root rewriting from fact publication",
+  "title": "Compiler2 source publication: consume expanded scope fragments only",
   "type": "task",
-  "updated_at": "2026-06-10T17:49:15Z"
+  "updated_at": "2026-06-10T20:00:46Z"
 }
