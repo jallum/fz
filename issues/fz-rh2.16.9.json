@@ -5,14 +5,15 @@
     "fz-rh2.16.4",
     "fz-rh2.16.8"
   ],
+  "closed_at": "2026-06-10T17:15:59Z",
   "created": "2026-06-10T15:38:19Z",
   "description": "Goal: make compiler2 macros compile-time-only facts. A defmacro should be published, defined, lowered to an interpreter-ready backend artifact, used to expand quoted AST, and then stop; it must not seed a semantic/runtime root or enter materialize/abi/emission/native pipelines. Signal: item/local/required macro expansion waits only on compile-time macro readiness; macro definitions no longer churn FunctionSource/FunctionDefined via BackendProgram-\u003eMacroExecutable feedback; telemetry proves defmacro jobs never enter runtime root/materialization/codegen loops. Strategy: first produce the interpreter-ready macro backend directly from defined macro bodies, then rewire source expansion to depend on that fact alone, then delete macro-root/artifact scaffolding and restate the invariant in tests/docs.",
   "id": "fz-rh2.16.9",
   "labels": [],
   "parent": "fz-rh2.16",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 macro pipeline: stop defmacro at interpreter-ready backend",
   "type": "epic",
-  "updated_at": "2026-06-10T15:39:02Z"
+  "updated_at": "2026-06-10T17:15:59Z"
 }
