@@ -185,7 +185,7 @@ impl<'a> World<'a> {
     }
 
     pub fn submit_code(&mut self, name: Option<String>, text: String) -> CodeId {
-        let bytes = text.len() as u64;
+        let bytes = text.len();
         let code_id = self.code.define(name, text);
         self.work_graph.enqueue(Job::IndexCode(code_id));
         if !self.roots.is_empty() {
@@ -194,7 +194,7 @@ impl<'a> World<'a> {
         self.tel.execute(
             &["fz", "compiler2", "code", "submitted"],
             &measurements! {
-                code_id: code_id.as_u32() as u64,
+                code_id: code_id.as_u32(),
                 bytes: bytes,
             },
             &metadata! {},
@@ -224,11 +224,11 @@ impl<'a> World<'a> {
         self.tel.execute(
             &["fz", "compiler2", "root", "submitted"],
             &measurements! {
-                root_id: root_id.as_u32() as u64,
-                module_id: module.as_u32() as u64,
-                function_id: function.as_u32() as u64,
-                arity: arity as u64,
-                pending_codes: self.code.len() as u64,
+                root_id: root_id.as_u32(),
+                module_id: module.as_u32(),
+                function_id: function.as_u32(),
+                arity: arity,
+                pending_codes: self.code.len(),
             },
             &metadata! {
                 root: opaque_debug(root),
@@ -324,12 +324,12 @@ impl<'a> World<'a> {
         self.tel.execute(
             &["fz", "compiler2", "activation_analysis", "defined"],
             &measurements! {
-                root_id: key.root.as_u32() as u64,
-                function_id: key.function.as_u32() as u64,
+                root_id: key.root.as_u32(),
+                function_id: key.function.as_u32(),
                 revision: revision,
-                reachable_clauses: analysis.reachable_clauses.len() as u64,
-                callsites: analysis.callsites.len() as u64,
-                values: analysis.value_types.len() as u64,
+                reachable_clauses: analysis.reachable_clauses.len(),
+                callsites: analysis.callsites.len(),
+                values: analysis.value_types.len(),
             },
             &metadata! {
                 activation: opaque_debug(key),
@@ -346,8 +346,8 @@ impl<'a> World<'a> {
         self.tel.execute(
             &["fz", "compiler2", "return_type", "defined"],
             &measurements! {
-                root_id: key.root.as_u32() as u64,
-                function_id: key.function.as_u32() as u64,
+                root_id: key.root.as_u32(),
+                function_id: key.function.as_u32(),
                 revision: revision,
             },
             &metadata! {
@@ -370,11 +370,11 @@ impl<'a> World<'a> {
         self.tel.execute(
             &["fz", "compiler2", "callsite", "defined"],
             &measurements! {
-                root_id: key.activation.root.as_u32() as u64,
-                function_id: key.activation.function.as_u32() as u64,
-                callsite_id: key.callsite.as_u32() as u64,
+                root_id: key.activation.root.as_u32(),
+                function_id: key.activation.function.as_u32(),
+                callsite_id: key.callsite.as_u32(),
                 revision: revision,
-                input_arity: summary.input_types.len() as u64,
+                input_arity: summary.input_types.len(),
             },
             &metadata! {
                 callsite: opaque_debug(&key),
@@ -401,7 +401,7 @@ impl<'a> World<'a> {
         self.tel.execute(
             &["fz", "compiler2", "semantic_closed", "defined"],
             &measurements! {
-                root_id: root.as_u32() as u64,
+                root_id: root.as_u32(),
                 revision: revision,
             },
             &metadata! {
@@ -430,9 +430,9 @@ impl<'a> World<'a> {
         self.tel.execute(
             &["fz", "compiler2", "materialized_program", "defined"],
             &measurements! {
-                root_id: root.as_u32() as u64,
+                root_id: root.as_u32(),
                 revision: revision,
-                executable_count: program.executables.len() as u64,
+                executable_count: program.executables.len(),
             },
             &metadata! {
                 program: opaque_debug(&program),
@@ -454,10 +454,10 @@ impl<'a> World<'a> {
         self.tel.execute(
             &["fz", "compiler2", "abi_ready_program", "defined"],
             &measurements! {
-                root_id: root.as_u32() as u64,
+                root_id: root.as_u32(),
                 revision: revision,
-                executable_count: program.executables.len() as u64,
-                callable_entry_count: program.callable_entries.len() as u64,
+                executable_count: program.executables.len(),
+                callable_entry_count: program.callable_entries.len(),
             },
             &metadata! {
                 program: opaque_debug(&program),
@@ -479,10 +479,10 @@ impl<'a> World<'a> {
         self.tel.execute(
             &["fz", "compiler2", "emission_ready_program", "defined"],
             &measurements! {
-                root_id: root.as_u32() as u64,
+                root_id: root.as_u32(),
                 revision: revision,
-                executable_count: program.executables.len() as u64,
-                callable_entry_count: program.callable_entries.len() as u64,
+                executable_count: program.executables.len(),
+                callable_entry_count: program.callable_entries.len(),
             },
             &metadata! {
                 program: opaque_debug(&program),
@@ -504,11 +504,11 @@ impl<'a> World<'a> {
         self.tel.execute(
             &["fz", "compiler2", "backend_program", "defined"],
             &measurements! {
-                root_id: root.as_u32() as u64,
+                root_id: root.as_u32(),
                 revision: revision,
-                atom_count: program.atom_names.len() as u64,
-                executable_count: program.executables.len() as u64,
-                callable_entry_count: program.callable_entries.len() as u64,
+                atom_count: program.atom_names.len(),
+                executable_count: program.executables.len(),
+                callable_entry_count: program.callable_entries.len(),
             },
             &metadata! {
                 program: opaque_debug(&program),
@@ -530,11 +530,11 @@ impl<'a> World<'a> {
         self.tel.execute(
             &["fz", "compiler2", "native_program", "defined"],
             &measurements! {
-                root_id: root.as_u32() as u64,
+                root_id: root.as_u32(),
                 revision: revision,
-                body_count: program.bodies.len() as u64,
-                callable_entry_count: program.callable_entries.len() as u64,
-                fn_count: program.module.fns.len() as u64,
+                body_count: program.bodies.len(),
+                callable_entry_count: program.callable_entries.len(),
+                fn_count: program.module.fns.len(),
             },
             &metadata! {
                 program: opaque_debug(&program),
@@ -567,8 +567,8 @@ impl<'a> World<'a> {
         self.tel.execute(
             &["fz", "compiler2", "module", "defined"],
             &measurements! {
-                code_id: code.as_u32() as u64,
-                module_id: id.as_u32() as u64,
+                code_id: code.as_u32(),
+                module_id: id.as_u32(),
                 revision: revision,
             },
             &metadata! {
@@ -623,9 +623,9 @@ impl<'a> World<'a> {
         self.tel.execute(
             &["fz", "compiler2", "type", "noted"],
             &measurements! {
-                module_id: name.module.as_u32() as u64,
-                arity: name.arity as u64,
-                namespace: decl.namespace.as_u32() as u64,
+                module_id: name.module.as_u32(),
+                arity: name.arity,
+                namespace: decl.namespace.as_u32(),
             },
             &metadata! {
                 name: name.name.clone(),
@@ -720,11 +720,11 @@ impl<'a> World<'a> {
         self.tel.execute(
             &["fz", "compiler2", "type", "defined"],
             &measurements! {
-                module_id: name.module.as_u32() as u64,
-                arity: name.arity as u64,
-                params: params as u64,
+                module_id: name.module.as_u32(),
+                arity: name.arity,
+                params: params,
                 revision: revision,
-                has_vars: has_vars as u64,
+                has_vars: has_vars,
             },
             &metadata! {
                 name: name.name.clone(),
@@ -801,9 +801,9 @@ impl<'a> World<'a> {
         self.tel.execute(
             &["fz", "compiler2", "protocol_dispatch", "defined"],
             &measurements! {
-                protocol_id: protocol.as_u32() as u64,
+                protocol_id: protocol.as_u32(),
                 revision: revision,
-                arms: dispatch.arms.len() as u64,
+                arms: dispatch.arms.len(),
             },
             &metadata! {
                 dispatch: opaque_debug(&dispatch),
@@ -865,8 +865,8 @@ impl<'a> World<'a> {
         self.tel.execute(
             &["fz", "compiler2", "type", "referenced"],
             &measurements! {
-                ref_module_id: referenced.module.as_u32() as u64,
-                ref_arity: referenced.arity as u64,
+                ref_module_id: referenced.module.as_u32(),
+                ref_arity: referenced.arity,
             },
             &metadata! {
                 ref_name: referenced.name.clone(),
@@ -886,7 +886,7 @@ impl<'a> World<'a> {
         surface: FunctionSurface,
     ) -> (FunctionId, u64) {
         let arity = surface.arity();
-        let clauses = surface.clauses.len() as u64;
+        let clauses = surface.clauses.len();
         let id = self.functions.reference(module, local_name, arity);
         let current = self.fact_revision(FactKey::FunctionDefined(id)).unwrap_or(0);
         let revision = self.functions.define(
@@ -907,14 +907,14 @@ impl<'a> World<'a> {
             self.tel.execute(
                 &["fz", "compiler2", "function", "defined"],
                 &measurements! {
-                    code_id: code.as_u32() as u64,
-                    module_id: module.as_u32() as u64,
-                    owner_module_id: owner_module.as_u32() as u64,
-                    function_id: id.as_u32() as u64,
+                    code_id: code.as_u32(),
+                    module_id: module.as_u32(),
+                    owner_module_id: owner_module.as_u32(),
+                    function_id: id.as_u32(),
                     revision: revision,
-                    arity: arity as u64,
+                    arity: arity,
                     clauses: clauses,
-                    source_heap_id: function.state_source_heap_id().unwrap_or_default() as u64,
+                    source_heap_id: function.state_source_heap_id().unwrap_or_default(),
                     source_root_ref: function.state_source_root_word().unwrap_or_default(),
                 },
                 &metadata! {
@@ -933,14 +933,14 @@ impl<'a> World<'a> {
         self.tel.execute(
             &["fz", "compiler2", "function", "source", "noted"],
             &measurements! {
-                code_id: source.code.as_u32() as u64,
-                module_id: function_ref.module.as_u32() as u64,
-                owner_module_id: source.owner_module.as_u32() as u64,
-                function_id: function.as_u32() as u64,
+                code_id: source.code.as_u32(),
+                module_id: function_ref.module.as_u32(),
+                owner_module_id: source.owner_module.as_u32(),
+                function_id: function.as_u32(),
                 revision: revision,
-                arity: function_ref.arity as u64,
+                arity: function_ref.arity,
                 clauses: function_source_clause_count(&source),
-                source_heap_id: source.source.key().heap_id as u64,
+                source_heap_id: source.source.key().heap_id,
                 source_root_ref: source.source.root().raw_word(),
             },
             &metadata! {
@@ -965,9 +965,9 @@ impl<'a> World<'a> {
         self.tel.execute(
             &["fz", "compiler2", "function_contract", "defined"],
             &measurements! {
-                function_id: function.as_u32() as u64,
+                function_id: function.as_u32(),
                 revision: revision,
-                arity: function_ref.arity as u64,
+                arity: function_ref.arity,
             },
             &metadata! {
                 function_ref: opaque_debug(function_ref),
@@ -1002,9 +1002,9 @@ impl<'a> World<'a> {
         self.tel.execute(
             &["fz", "compiler2", "protocol_callback", "defined"],
             &measurements! {
-                protocol_id: protocol.as_u32() as u64,
-                function_id: function.as_u32() as u64,
-                arity: function_ref.arity as u64,
+                protocol_id: protocol.as_u32(),
+                function_id: function.as_u32(),
+                arity: function_ref.arity,
             },
             &metadata! {
                 callback: opaque_debug(&callback),
@@ -1031,9 +1031,9 @@ impl<'a> World<'a> {
         self.tel.execute(
             &["fz", "compiler2", "protocol_impl", "defined"],
             &measurements! {
-                protocol_id: protocol.as_u32() as u64,
-                target_id: target.as_u32() as u64,
-                callbacks: protocol_impl.callbacks.len() as u64,
+                protocol_id: protocol.as_u32(),
+                target_id: target.as_u32(),
+                callbacks: protocol_impl.callbacks.len(),
             },
             &metadata! {
                 key: opaque_debug(&key),
@@ -1085,15 +1085,15 @@ impl<'a> World<'a> {
             self.tel.execute(
                 &["fz", "compiler2", "function", "defined"],
                 &measurements! {
-                    code_id: owner_code.as_u32() as u64,
-                    module_id: owner_module.as_u32() as u64,
-                    owner_module_id: owner_def.owner_module.as_u32() as u64,
-                    function_id: id.as_u32() as u64,
+                    code_id: owner_code.as_u32(),
+                    module_id: owner_module.as_u32(),
+                    owner_module_id: owner_def.owner_module.as_u32(),
+                    function_id: id.as_u32(),
                     revision: revision,
-                    arity: surface.arity() as u64,
-                    clauses: surface.clauses.len() as u64,
-                    owner_function_id: owner.as_u32() as u64,
-                    source_heap_id: function.state_source_heap_id().unwrap_or_default() as u64,
+                    arity: surface.arity(),
+                    clauses: surface.clauses.len(),
+                    owner_function_id: owner.as_u32(),
+                    source_heap_id: function.state_source_heap_id().unwrap_or_default(),
                     source_root_ref: function.state_source_root_word().unwrap_or_default(),
                 },
                 &metadata! {
@@ -1117,17 +1117,15 @@ impl<'a> World<'a> {
             }
         };
         let (clauses, generated, arity) = match &body {
-            LoweredBody::Extern { signature } => (0_u64, 0_u64, signature.params.len() as u64),
-            LoweredBody::Clauses { clauses, generated, .. } => {
-                (clauses.len() as u64, generated.len() as u64, def.surface.arity() as u64)
-            }
+            LoweredBody::Extern { signature } => (0_usize, 0_usize, signature.params.len()),
+            LoweredBody::Clauses { clauses, generated, .. } => (clauses.len(), generated.len(), def.surface.arity()),
         };
         self.tel.execute(
             &["fz", "compiler2", "lowered_body", "defined"],
             &measurements! {
-                code_id: def.code.as_u32() as u64,
-                module_id: function_ref.module.as_u32() as u64,
-                function_id: function.as_u32() as u64,
+                code_id: def.code.as_u32(),
+                module_id: function_ref.module.as_u32(),
+                function_id: function.as_u32(),
                 revision: revision,
                 arity: arity,
                 clauses: clauses,
@@ -1156,14 +1154,14 @@ impl<'a> World<'a> {
         self.tel.execute(
             &["fz", "compiler2", "guard_dispatch", "defined"],
             &measurements! {
-                code_id: def.code.as_u32() as u64,
-                module_id: function_ref.module.as_u32() as u64,
-                function_id: function.as_u32() as u64,
+                code_id: def.code.as_u32(),
+                module_id: function_ref.module.as_u32(),
+                function_id: function.as_u32(),
                 revision: revision,
-                arity: def.surface.arity() as u64,
-                bodies: dispatch.bodies.len() as u64,
-                guards: dispatch.plan.guards.len() as u64,
-                pinned: dispatch.plan.pinned.len() as u64,
+                arity: def.surface.arity(),
+                bodies: dispatch.bodies.len(),
+                guards: dispatch.plan.guards.len(),
+                pinned: dispatch.plan.pinned.len(),
                 source_root_ref: def.source.root().raw_word(),
             },
             &metadata! {
@@ -1188,14 +1186,14 @@ impl<'a> World<'a> {
         self.tel.execute(
             &["fz", "compiler2", "entry_dispatch", "defined"],
             &measurements! {
-                code_id: def.code.as_u32() as u64,
-                module_id: function_ref.module.as_u32() as u64,
-                function_id: function.as_u32() as u64,
+                code_id: def.code.as_u32(),
+                module_id: function_ref.module.as_u32(),
+                function_id: function.as_u32(),
                 revision: revision,
-                arity: def.surface.arity() as u64,
-                outcomes: plan.outcomes.len() as u64,
-                guards: plan.guards.len() as u64,
-                pinned: plan.pinned.len() as u64,
+                arity: def.surface.arity(),
+                outcomes: plan.outcomes.len(),
+                guards: plan.guards.len(),
+                pinned: plan.pinned.len(),
                 source_root_ref: def.source.root().raw_word(),
             },
             &metadata! {
