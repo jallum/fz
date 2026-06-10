@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.16.8"
+  ],
   "created": "2026-06-10T17:48:13Z",
   "description": "Goal: restore the layer split in compiler2 source handling. ScopeCode should only publish what exists at module scope; ordinary function bodies should remain raw quoted source until that function is demanded. Signal: source publication no longer waits on body-local macro readiness for ordinary functions; a staged function-local expansion fact gates DefineFunction; item-level expansion remains eager because it can mutate sibling scope; direct source and Fz.Compiler.define publish identical raw definition facts; docs and telemetry state the split explicitly. Strategy: first introduce staged expanded-function facts and teach DefineFunction to demand them, then delete eager body expansion from source_publish while keeping item-level expansion, then rebuild direct and compiler-service publication around raw definition transactions and close out the old eager paths.",
   "id": "fz-rh2.16.10",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 function staging: move function-body expansion behind demand",
   "type": "epic",
-  "updated_at": "2026-06-10T17:48:13Z"
+  "updated_at": "2026-06-10T17:48:53Z"
 }

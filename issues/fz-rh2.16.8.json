@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-rh2.16.10",
     "fz-rh2.16.9"
   ],
   "blocks": [
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Compiler2 source spine cleanup: unify publication, expansion, and fragment transport",
   "type": "epic",
-  "updated_at": "2026-06-10T15:39:09Z"
+  "updated_at": "2026-06-10T17:48:53Z"
 }
