@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-10T17:58:32Z",
+  "description": "Goal: isolate the current rustfmt-only churn into a standalone commit so the remaining function-staging tickets do not keep inheriting formatter noise from the hook. Signal: only pure formatting edits land; subsequent semantic tickets start from a formatter-stable baseline. Strategy: run cargo fmt, review the resulting diff, commit only the formatting changes, and close the ticket immediately.",
+  "id": "fz-rh2.16.10.5",
+  "labels": [],
+  "parent": "fz-rh2.16.10",
+  "priority": 3,
+  "status": "open",
+  "title": "Normalize rustfmt drift around function staging",
+  "type": "task",
+  "updated_at": "2026-06-10T17:58:32Z"
+}
