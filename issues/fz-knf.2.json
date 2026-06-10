@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-uku"
+  ],
   "created": "2026-06-10T01:53:47Z",
   "description": "QuotedSourceRoot::semantically_eq(\u0026self, other, Horizon{Full,Surface}) -\u003e bool. Two-sided lockstep walk mirroring fingerprint_value across two heaps: atoms by rendered name, structs by schema name+arity, lists by spine, maps skipping __fz_span__/__fz_namespace_id__. Surface horizon additionally skips the value of any do keyword 2-tuple (uniformly drops fn+module+protocol bodies; each its own fact). Unit tests: identical=eq; span/ns differ=eq; literal differs=full-neq surface-eq; head/sig differs=neq; fast-fail. Independently testable; unblocks fingerprint kill.",
   "id": "fz-knf.2",
