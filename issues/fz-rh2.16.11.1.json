@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-10T21:04:56Z",
-  "description": "Define the canonical post-expansion fragments that compiler2 accepts for scope-shaping definitions and make `Fz.Compiler.define(source, __ENV__)` the sole publication boundary for them. The compiler callback should own one honest publication contract for function/module/protocol/impl fragments and stop depending on a parallel direct-publication path for the same semantic act.\n\nThis ticket should: lock down the canonical quoted fragment shapes, make compiler-service application the explicit definition boundary, and remove source-publication assumptions that those same definition families may bypass that boundary.\n\nSignal: equivalent canonical fragments publish identical facts regardless of origin, and compiler2 has one real definition callback for these forms.",
+  "description": "Goal: make the first definition family (`fn`, `fnp`, `defmacro`) enter compiler2 through one compiler callback while preserving raw function staging.\n\nGrounding: trying to separate “canonical compiler fragments” from “function definition macros” leaves an artificial split. The source-vs-fragment distinction only becomes real once the compiler prelude actually uses it; otherwise compiler fragments exist but no source-spelled definition family crosses the callback.\n\nStrategy: introduce explicit compiler-fragment surface reading, make ordinary source read top-level function-definition spellings as scope macros instead of direct function forms, define the matching compiler-owned macros in `runtime.fz`, keep `Fz.Compiler.define(source, __CALLER__)` opaque as a transport envelope, and keep function bodies lazy behind `ExpandedFunctionSource`.\n\nSignal: source-spelled `fn`/`fnp`/`defmacro` publish through the same `Fz.Compiler.define` boundary as macro-produced definitions; grouped attrs/multi-clause source survives intact; anonymous/body-local `fn` continues to behave as expression syntax; `ScopeCode` still avoids demand-time body expansion.",
   "id": "fz-rh2.16.11.1",
   "labels": [],
   "parent": "fz-rh2.16.11",
   "priority": 2,
   "status": "open",
-  "title": "Compiler2 definition callback: define canonical compiler fragments and narrow publication to Fz.Compiler.define",
+  "title": "Compiler2 function definition-macro cutover: define canonical fragments and route fn/fnp/defmacro through Fz.Compiler.define",
   "type": "task",
   "updated_at": "2026-06-10T21:52:52Z"
 }
