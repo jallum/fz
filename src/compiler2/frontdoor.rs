@@ -62,6 +62,7 @@ struct FrontDoorParser<'a> {
     builder: QuotedSourceBuilder,
     allow_trailing_do: bool,
     allow_extern_symbol_folding: bool,
+    emit_type_payloads: bool,
 }
 
 #[derive(Clone)]
@@ -101,6 +102,7 @@ impl<'a> FrontDoorParser<'a> {
             builder,
             allow_trailing_do: true,
             allow_extern_symbol_folding: true,
+            emit_type_payloads: true,
         }
     }
 
@@ -585,6 +587,18 @@ impl<'a> FrontDoorParser<'a> {
             if lbp < min_bp {
                 break;
             }
+            if self.emit_type_payloads && self.peek_is(&Tok::ColonColon) {
+                self.bump();
+                let rhs_tokens = self.collect_type_fragment_tokens(rbp)?;
+                if rhs_tokens.is_empty() {
+                    return self.err("expected type expression after `::`");
+                }
+                let rhs = token_payload::encode_tokens(&self.builder, &rhs_tokens)?;
+                let span = lhs.span.merge(self.prev_span());
+                let meta = self.meta(module_path, scope, span)?;
+                lhs = ParsedExpr::plain(self.builder.call("::", &meta, &[lhs.root, rhs])?, span);
+                continue;
+            }
             self.bump();
             let rhs = self.parse_bp(rbp, module_path, scope)?;
             let span = lhs.span.merge(rhs.span);
@@ -866,7 +880,7 @@ impl<'a> FrontDoorParser<'a> {
         start: Span,
     ) -> Result<ParsedExpr, FrontDoorError> {
         let segments = self.with_extern_symbol_folding_suppressed(|parser| {
-            parser.parse_exprs_until(&Tok::RBitstr, module_path, scope)
+            parser.with_type_payloads_suppressed(|parser| parser.parse_exprs_until(&Tok::RBitstr, module_path, scope))
         })?;
         self.expect(&Tok::RBitstr, "`>>`")?;
         let span = start.merge(self.prev_span());
@@ -1578,6 +1592,59 @@ impl<'a> FrontDoorParser<'a> {
         Ok(self.toks[start..self.pos].to_vec())
     }
 
+    fn collect_type_fragment_tokens(&mut self, min_bp: u8) -> Result<Vec<Token>, FrontDoorError> {
+        let start = self.pos;
+        let mut parens = 0_u32;
+        let mut brackets = 0_u32;
+        let mut braces = 0_u32;
+        let mut bitstrings = 0_u32;
+        while !self.peek_is(&Tok::Eof) {
+            let tok = self.peek().clone();
+            let at_top_level = parens == 0 && brackets == 0 && braces == 0 && bitstrings == 0;
+            if at_top_level {
+                if matches!(
+                    tok,
+                    Tok::Comma
+                        | Tok::Newline
+                        | Tok::Eof
+                        | Tok::End
+                        | Tok::Do
+                        | Tok::RParen
+                        | Tok::RBrack
+                        | Tok::RBrace
+                        | Tok::RBitstr
+                        | Tok::Arrow
+                ) {
+                    break;
+                }
+                if self.peek_is(&Tok::Eq) && 5 < min_bp {
+                    break;
+                }
+                if self.peek_is(&Tok::Not) && self.peek_is_at(1, &Tok::In) && 70 < min_bp {
+                    break;
+                }
+                if let Some((lbp, _, _)) = self.infix_bp(&tok)
+                    && lbp < min_bp
+                {
+                    break;
+                }
+            }
+            match tok {
+                Tok::LParen => parens += 1,
+                Tok::RParen if parens > 0 => parens -= 1,
+                Tok::LBrack => brackets += 1,
+                Tok::RBrack if brackets > 0 => brackets -= 1,
+                Tok::LBrace => braces += 1,
+                Tok::RBrace if braces > 0 => braces -= 1,
+                Tok::LBitstr => bitstrings += 1,
+                Tok::RBitstr if bitstrings > 0 => bitstrings -= 1,
+                _ => {}
+            }
+            self.bump();
+        }
+        Ok(self.toks[start..self.pos].to_vec())
+    }
+
     fn meta(
         &self,
         module_path: &[String],
@@ -1702,6 +1769,17 @@ impl<'a> FrontDoorParser<'a> {
         self.allow_extern_symbol_folding = false;
         let out = f(self);
         self.allow_extern_symbol_folding = old;
+        out
+    }
+
+    fn with_type_payloads_suppressed<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, FrontDoorError>,
+    ) -> Result<T, FrontDoorError> {
+        let old = self.emit_type_payloads;
+        self.emit_type_payloads = false;
+        let out = f(self);
+        self.emit_type_payloads = old;
         out
     }
 

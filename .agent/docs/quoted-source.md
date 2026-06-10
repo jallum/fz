@@ -45,12 +45,13 @@ the `fz-rh2.11.7.*` arc.
 - FZ `extern` items are quoted as `{:extern, meta, [abi_binary, options_map]}`.
   `options_map` carries the symbol `name`, `variadic`, and token payloads for
   `params`, `return`, and optional `when` constraints.
-- `@spec`, `@type`, and extern type-position surfaces carry compiler2 token
-  payloads produced by the frontdoor while it is already walking the source
-  token stream. A token payload is Fz-shaped quoted data, not a source string:
-  a list of encoded lexer tokens with kind, payload, span bounds, and
-  `space_before`. Quoted readers decode those payloads directly; they never
-  re-enter `Lexer` for type fragments.
+- `@spec`, `@type`, extern type-position surfaces, and ordinary `::`
+  ascription RHS payloads carry compiler2 token payloads produced by the
+  frontdoor while it is already walking the source token stream. A token
+  payload is Fz-shaped quoted data, not a source string: a list of encoded
+  lexer tokens with kind, payload, span bounds, and `space_before`. Quoted
+  readers decode those payloads directly; they never re-enter `Lexer` or
+  reconstruct type tokens from quoted AST.
 - Postfix bracket access quotes through an Elixir-shaped `Access.get` remote
   callee form.
 - `cond do` quotes through ordinary `{:cond, meta, [[do: [{:->, ...}, ...]]]}`.
@@ -121,9 +122,10 @@ the `fz-rh2.11.7.*` arc.
 - Runtime library sources are expected to reach quoted roots without an old-AST
   fallback path.
 - Compiler2 source ingestion lexes each submitted source once. Type fragments,
-  attributes, and extern signatures are transported as quoted token payloads
-  from that pass, so there is no fragment re-lexing under synthetic source
-  names such as `<quoted-type-alias>`.
+  attributes, extern signatures, and `::` RHS payloads are transported as
+  quoted token payloads from that pass, so there is no fragment re-lexing or
+  quoted-AST token reconstruction under synthetic source names such as
+  `<quoted-type-alias>`.
 
 ## Private Metadata Keys
 

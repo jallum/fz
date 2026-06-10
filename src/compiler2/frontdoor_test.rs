@@ -142,6 +142,51 @@ fn compiler2_frontdoor_threads_source_context_through_nested_modules() {
 }
 
 #[test]
+fn compiler2_frontdoor_encodes_type_ascriptions_as_token_payloads() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program("typed.fz", "fn pack(x :: integer), do: x :: list(integer)\n", &tel)
+        .expect("quoted parse");
+
+    let items = root.cursor().list_items().expect("top-level items");
+    let function = items[0].ast_node().expect("function cursor").expect("function node");
+    let function_args = function.tail.list_items().expect("function args");
+    let head = function_args[0]
+        .ast_node()
+        .expect("function head cursor")
+        .expect("function head node");
+    let head_args = head.tail.list_items().expect("head args");
+    let annotated_param = head_args[0]
+        .ast_node()
+        .expect("annotated param cursor")
+        .expect("annotated param node");
+    assert_eq!(head_name(&annotated_param), "::");
+    let param_parts = annotated_param.tail.list_items().expect("annotated param parts");
+    assert_eq!(
+        token_kinds(&param_parts[1]),
+        vec![Tok::Ident("integer".to_string())],
+        "parameter annotation rhs should stay as a token payload",
+    );
+
+    let body_kw = function_args[1].list_items().expect("function kw list");
+    let body_expr = body_kw[0].tuple_items().expect("do keyword tuple")[1]
+        .ast_node()
+        .expect("body ascription cursor")
+        .expect("body ascription node");
+    assert_eq!(head_name(&body_expr), "::");
+    let body_parts = body_expr.tail.list_items().expect("body ascription parts");
+    assert_eq!(
+        token_kinds(&body_parts[1]),
+        vec![
+            Tok::Ident("list".to_string()),
+            Tok::LParen,
+            Tok::Ident("integer".to_string()),
+            Tok::RParen,
+        ],
+        "expression ascription rhs should stay as a token payload",
+    );
+}
+
+#[test]
 fn compiler2_frontdoor_surface_root_is_real_quoted_source_not_old_ast() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
