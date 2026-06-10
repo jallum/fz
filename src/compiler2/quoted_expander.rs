@@ -12,7 +12,10 @@ use super::code::CodeId;
 use super::drive::{FactKey, Job, JobEffects};
 use super::identity::{FunctionId, ModuleId};
 use super::namespace::NamespaceSymbol;
-use super::quoted_surface::{MacroCallForm, ScopeForm, ScopeSurface, SurfaceSourceContext, read_scope_surface};
+use super::quoted_surface::{
+    MacroCallForm, ScopeForm, ScopeSurface, SurfaceSourceContext, is_function_definition_head,
+    read_compiler_fragment_surface, read_scope_surface,
+};
 use super::scope::ScopeSnapshot;
 use super::source::{QuotedAstNode, QuotedLexicalContextKind, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
 use super::source_sugar::rewrite_source_sugar;
@@ -139,6 +142,14 @@ pub(crate) trait QuotedExpansionCtx<'tel> {
         let args = node.tail.list_items().map_err(|error| {
             emit_internal_surface_error(self.world(), format!("quoted call arg read failed: {error}"))
         })?;
+        if is_compiler_define_call(node, &args).map_err(|error| {
+            emit_internal_surface_error(
+                self.world(),
+                format!("quoted compiler-service detection failed: {error}"),
+            )
+        })? {
+            return Ok(Some(ExpandedValue::Complete(cursor.root())));
+        }
 
         if let Some(result) = self.expand_remote_ast_call(owner, node, scope, depth, cursor.root(), &args)? {
             return Ok(Some(result));
@@ -149,6 +160,9 @@ pub(crate) trait QuotedExpansionCtx<'tel> {
         };
         if head == "quote" {
             return Ok(Some(ExpandedValue::Complete(cursor.root())));
+        }
+        if is_function_definition_head(&head) {
+            return Ok(None);
         }
         let symbol = {
             let world = self.world();
@@ -437,17 +451,26 @@ pub(crate) fn expand_item_macro_fragment<'tel, C: QuotedExpansionCtx<'tel>>(
     scope: ScopeSnapshot,
 ) -> Result<ExpandedScopeFragment, super::scheduler::FatalError> {
     let owner = &macro_call.source;
-    let cursor = owner.cursor();
-    let Some(node) = cursor
-        .ast_node()
-        .map_err(|error| emit_internal_surface_error(ctx.world(), format!("item macro source read failed: {error}")))?
-    else {
-        return Err(item_macro_not_defmacro(ctx.world(), "item", macro_call.span));
+    let invocation = item_macro_invocation(ctx.world(), owner, scope, macro_call.span)?;
+    let result = if let Some(node) = invocation.node.as_ref() {
+        ctx.expand_ast_call(owner, &owner.cursor(), node, scope, 0)?
+    } else {
+        ctx.expand_macro_invocation(
+            owner,
+            invocation.input_root,
+            invocation
+                .function
+                .expect("grouped item macro should resolve a compiler macro"),
+            scope,
+            0,
+            &invocation.args,
+        )
+        .map(Some)?
     };
-    let Some(result) = ctx.expand_ast_call(owner, &cursor, &node, scope, 0)? else {
+    let Some(result) = result else {
         return Err(item_macro_not_defmacro(
             ctx.world(),
-            &item_macro_display_name(&node),
+            &invocation.display_name,
             macro_call.span,
         ));
     };
@@ -469,11 +492,94 @@ pub(crate) fn expand_item_macro_fragment<'tel, C: QuotedExpansionCtx<'tel>>(
     Ok(ExpandedScopeFragment::Complete(surface))
 }
 
+struct ItemMacroInvocation {
+    function: Option<FunctionId>,
+    args: Vec<QuotedSourceCursor>,
+    input_root: AnyValueRef,
+    display_name: String,
+    node: Option<QuotedAstNode>,
+}
+
+fn item_macro_invocation(
+    world: &mut World<'_>,
+    owner: &QuotedSourceRoot,
+    scope: ScopeSnapshot,
+    span: Span,
+) -> Result<ItemMacroInvocation, super::scheduler::FatalError> {
+    let cursor = owner.cursor();
+    if let Some(node) = cursor
+        .ast_node()
+        .map_err(|error| emit_internal_surface_error(world, format!("item macro source read failed: {error}")))?
+    {
+        return Ok(ItemMacroInvocation {
+            function: None,
+            args: Vec::new(),
+            input_root: cursor.root(),
+            display_name: item_macro_display_name(&node),
+            node: Some(node),
+        });
+    }
+
+    let items = cursor
+        .list_items()
+        .map_err(|error| emit_internal_surface_error(world, format!("grouped item macro read failed: {error}")))?;
+    let mut display_name = "item".to_string();
+    for item in items {
+        let Some(node) = item.ast_node().map_err(|error| {
+            emit_internal_surface_error(world, format!("grouped item macro item read failed: {error}"))
+        })?
+        else {
+            return Err(item_macro_not_defmacro(world, "item", span));
+        };
+        let Ok(head) = node.head.atom_name() else {
+            return Err(item_macro_not_defmacro(world, "item", span));
+        };
+        if head.starts_with('@') {
+            continue;
+        }
+        display_name = head.clone();
+        let Some(symbol) = world.lookup_callable_namespace(scope.namespace(), &head, 1) else {
+            return Err(item_macro_not_defmacro(world, &display_name, span));
+        };
+        let NamespaceSymbol::Macro(function) = symbol else {
+            return Err(item_macro_not_defmacro(world, &display_name, span));
+        };
+        return Ok(ItemMacroInvocation {
+            function: Some(function),
+            args: vec![owner.cursor()],
+            input_root: owner.root(),
+            display_name,
+            node: None,
+        });
+    }
+
+    Err(item_macro_not_defmacro(world, &display_name, span))
+}
+
 pub(crate) fn read_scope_surface_root(
     world: &World<'_>,
     code_id: CodeId,
     root: &QuotedSourceRoot,
     context: &str,
+) -> Result<ScopeSurface, super::scheduler::FatalError> {
+    read_surface_root_with(world, code_id, root, context, read_scope_surface)
+}
+
+pub(crate) fn read_compiler_fragment_root(
+    world: &World<'_>,
+    code_id: CodeId,
+    root: &QuotedSourceRoot,
+    context: &str,
+) -> Result<ScopeSurface, super::scheduler::FatalError> {
+    read_surface_root_with(world, code_id, root, context, read_compiler_fragment_surface)
+}
+
+fn read_surface_root_with(
+    world: &World<'_>,
+    code_id: CodeId,
+    root: &QuotedSourceRoot,
+    context: &str,
+    read: fn(&QuotedSourceRoot, &SurfaceSourceContext<'_>) -> Result<ScopeSurface, QuotedSourceError>,
 ) -> Result<ScopeSurface, super::scheduler::FatalError> {
     let code_text = world.code_text(code_id).to_owned();
     let ctx = SurfaceSourceContext::new(code_id, &code_text);
@@ -483,8 +589,7 @@ pub(crate) fn read_scope_surface_root(
         root.interned_list_subroot(&[root.root()])
             .map_err(|error| emit_internal_surface_error(world, format!("{context} wrapper failed: {error}")))?
     };
-    read_scope_surface(&source, &ctx)
-        .map_err(|error| emit_internal_surface_error(world, format!("{context} read failed: {error}")))
+    read(&source, &ctx).map_err(|error| emit_internal_surface_error(world, format!("{context} read failed: {error}")))
 }
 
 pub(crate) fn emit_macro_expanded(
@@ -579,4 +684,24 @@ fn item_macro_display_name(node: &QuotedAstNode) -> String {
         return format!("{}.{}", path.join("."), function);
     }
     "item".to_string()
+}
+
+fn is_compiler_define_call(node: &QuotedAstNode, args: &[QuotedSourceCursor]) -> Result<bool, QuotedSourceError> {
+    if args.len() != 2 {
+        return Ok(false);
+    }
+    let Some(callee) = node.head.ast_node()? else {
+        return Ok(false);
+    };
+    if callee.head.atom_name()? != "." {
+        return Ok(false);
+    }
+    let target = callee.tail.list_items()?;
+    let [module_cursor, function_cursor] = target.as_slice() else {
+        return Ok(false);
+    };
+    Ok(alias_path(module_cursor)
+        .map(|path| path == ["Fz".to_string(), "Compiler".to_string()])
+        .unwrap_or(false)
+        && function_cursor.atom_name().as_deref() == Ok("define"))
 }

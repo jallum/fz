@@ -44,6 +44,19 @@ item macro           changes surrounding scope     => eager
 body-local macro     changes only one function     => lazy
 ```
 
+There is one important sub-case inside the eager bucket:
+
+- `runtime.fz` defines compiler-owned top-level definition macros such as
+  `fn`, `fnp`, and `defmacro`
+- those names are treated as item-level source forms in
+  `quoted_surface.rs`, not as ordinary expression macros
+- the recursive body expander must therefore ignore those heads when it sees
+  anonymous-function syntax or rewritten body-local quoted AST
+
+That is why definition macros are resolved from grouped scope fragments, while
+ordinary expression-position macro calls still flow through
+`expand_ast_call(...)`.
+
 ## What Source Publication Owns
 
 `publish_scope(...)` in `src/compiler2/source_publish.rs` owns source-order
@@ -70,6 +83,10 @@ It does four macro-relevant jobs:
    `apply_item_macro_call(...)` expands the call through the same macro runtime
    used elsewhere, but treats the result as a source fragment instead of a body
    expression.
+
+For compiler-owned definition macros, the returned fragment is expected to cross
+back into the compiler through `Fz.Compiler.define(source, __CALLER__)`. That
+callback is the single source-publication authority for top-level definitions.
 
 The important invariant is that source publication owns scope shape, not
 function internals.

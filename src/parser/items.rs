@@ -494,11 +494,8 @@ impl Parser {
         // `Ident (`, so existing clauses parse exactly as before; only an
         // operator in the head position selects the infix form.
         let (name, params, param_annotations) =
-            if matches!(self.peek(), Tok::Ident(_)) && matches!(self.peek_at(1), Tok::LParen) {
-                let name = match self.bump() {
-                    Tok::Ident(n) => n,
-                    _ => unreachable!("guarded by peek"),
-                };
+            if self.callable_name_token(self.peek()).is_some() && matches!(self.peek_at(1), Tok::LParen) {
+                let name = self.bump_callable_name().expect("guarded by callable_name_token");
                 self.expect(&Tok::LParen, "`(`")?;
                 let (params, anns) = self.parse_fn_params()?;
                 self.expect(&Tok::RParen, "`)`")?;
@@ -558,6 +555,42 @@ impl Parser {
             is_macro,
             is_private,
         ))
+    }
+
+    fn callable_name_token<'tok>(&self, tok: &'tok Tok) -> Option<&'tok str> {
+        match tok {
+            Tok::Ident(name) => Some(name.as_str()),
+            Tok::Fn => Some("fn"),
+            Tok::Fnp => Some("fnp"),
+            Tok::Defmacro => Some("defmacro"),
+            Tok::Defmodule => Some("defmodule"),
+            Tok::Defprotocol => Some("defprotocol"),
+            Tok::Defimpl => Some("defimpl"),
+            Tok::Defstruct => Some("defstruct"),
+            Tok::Alias => Some("alias"),
+            Tok::Import => Some("import"),
+            Tok::Require => Some("require"),
+            Tok::Extern => Some("extern"),
+            _ => None,
+        }
+    }
+
+    fn bump_callable_name(&mut self) -> Option<String> {
+        match self.bump() {
+            Tok::Ident(name) => Some(name),
+            Tok::Fn => Some("fn".to_string()),
+            Tok::Fnp => Some("fnp".to_string()),
+            Tok::Defmacro => Some("defmacro".to_string()),
+            Tok::Defmodule => Some("defmodule".to_string()),
+            Tok::Defprotocol => Some("defprotocol".to_string()),
+            Tok::Defimpl => Some("defimpl".to_string()),
+            Tok::Defstruct => Some("defstruct".to_string()),
+            Tok::Alias => Some("alias".to_string()),
+            Tok::Import => Some("import".to_string()),
+            Tok::Require => Some("require".to_string()),
+            Tok::Extern => Some("extern".to_string()),
+            _ => None,
+        }
     }
 
     /// `extern "C" fn name(type, type) :: RetType`

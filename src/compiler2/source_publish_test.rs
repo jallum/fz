@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use super::quoted_surface::{SurfaceSourceContext, read_scope_surface};
+use super::quoted_surface::{SurfaceSourceContext, read_compiler_fragment_surface};
 use super::source_publish::{ScopePublication, publish_scope};
 use super::source_test::quoted_tokens;
 use super::{
@@ -61,16 +61,20 @@ fn metadata_str<'a>(event: &'a crate::telemetry::capture::OwnedEvent, key: &str)
     }
 }
 
-fn publish_global_scope(world: &mut World<'_>, code: super::CodeId, root: &QuotedSourceRoot) -> ScopePublication {
+fn publish_compiler_fragment_scope(
+    world: &mut World<'_>,
+    code: super::CodeId,
+    root: &QuotedSourceRoot,
+) -> ScopePublication {
     let ctx = SurfaceSourceContext::new(code, world.code_text(code));
-    let surface = read_scope_surface(root, &ctx).expect("scope surface");
+    let surface = read_compiler_fragment_surface(root, &ctx).expect("compiler fragment surface");
     publish_scope(
         world,
         code,
         ScopeSnapshot::module(ModuleId::GLOBAL, Namespace::default()),
         &surface,
     )
-    .expect("publish source scope")
+    .expect("publish compiler fragment scope")
 }
 
 #[test]
@@ -89,7 +93,7 @@ fn compiler_service_define_publishes_function_source_and_threads_namespace_forwa
     let bar_body = builder.call("foo", &meta(), &[]).expect("bar calls foo");
     let bar = function_form(&builder, "bar", bar_body);
     let root = root_list(&builder, &[service, bar]);
-    let publication = publish_global_scope(&mut world, code, &root);
+    let publication = publish_compiler_fragment_scope(&mut world, code, &root);
     let ScopePublication::Complete { outputs, .. } = publication else {
         panic!("compiler-service scope should not block");
     };
@@ -147,12 +151,12 @@ fn compiler_service_define_and_direct_source_publish_identical_raw_function_fact
     let mut direct_world = World::new(&tel);
     let direct_code = direct_world.submit_code(Some("direct.fz".to_string()), String::new());
     let direct_root = root_list(&builder, std::slice::from_ref(&foo));
-    let direct_publication = publish_global_scope(&mut direct_world, direct_code, &direct_root);
+    let direct_publication = publish_compiler_fragment_scope(&mut direct_world, direct_code, &direct_root);
 
     let mut service_world = World::new(&tel);
     let service_code = service_world.submit_code(Some("service.fz".to_string()), String::new());
     let service_root = root_list(&builder, &[compiler_define_form(&builder, foo, env)]);
-    let service_publication = publish_global_scope(&mut service_world, service_code, &service_root);
+    let service_publication = publish_compiler_fragment_scope(&mut service_world, service_code, &service_root);
 
     let ScopePublication::Complete {
         outputs: direct_outputs,
@@ -215,7 +219,7 @@ fn compiler_service_define_groups_single_function_source_before_define_function(
     let foo = function_form(&builder, "foo", builder.int(42));
     let service = compiler_define_form(&builder, foo, builder.map(&[]).expect("__ENV__"));
     let root = root_list(&builder, &[service]);
-    let publication = publish_global_scope(&mut world, code, &root);
+    let publication = publish_compiler_fragment_scope(&mut world, code, &root);
     assert!(matches!(publication, ScopePublication::Complete { .. }));
 
     let foo_id = world.reference_function(ModuleId::GLOBAL, "foo", 0);
@@ -244,7 +248,7 @@ fn compiler_service_define_inside_a_function_body_has_no_source_publication_auth
     let body_service = compiler_define_form(&builder, sneaky, builder.map(&[]).expect("__ENV__"));
     let main = function_form(&builder, "main", body_service);
     let root = root_list(&builder, &[main]);
-    let publication = publish_global_scope(&mut world, code, &root);
+    let publication = publish_compiler_fragment_scope(&mut world, code, &root);
     let ScopePublication::Complete { outputs, .. } = publication else {
         panic!("function-body compiler-service shape should not block source publication");
     };
@@ -284,7 +288,14 @@ fn source_publication_expands_item_macros_as_scope_fragments() {
         Some("item-macro.fz".to_string()),
         r#"
 defmacro make_answer() do
-  {:fn, %{}, [{:answer, %{}, []}, [{:do, 42}]]}
+  source = {:fn, %{}, [{:answer, %{}, []}, [{:do, 42}]]}
+
+  quote do
+    Fz.Compiler.define(
+      unquote(source),
+      unquote(__CALLER__)
+    )
+  end
 end
 
 make_answer()
@@ -302,6 +313,7 @@ fn main(), do: answer()
 
     let answer = world.reference_function(ModuleId::GLOBAL, "answer", 0);
     let main = world.reference_function(ModuleId::GLOBAL, "main", 0);
+    let make_answer = world.reference_function(ModuleId::GLOBAL, "make_answer", 0);
     assert!(
         world.function_source(answer).is_some(),
         "item macro should publish the function source it returned",
@@ -310,9 +322,13 @@ fn main(), do: answer()
         world.function_source(main).is_some(),
         "later source forms should publish after item macro expansion updates the namespace",
     );
-    assert_eq!(
-        capture.count(&["fz", "compiler2", "macro", "expanded"]),
-        1,
+    assert!(
+        capture
+            .find(&["fz", "compiler2", "macro", "expanded"])
+            .into_iter()
+            .filter(|event| measurement_u64(event, "function_id") == make_answer.as_u32() as u64)
+            .count()
+            >= 1,
         "item macro expansion should run through the ordinary macro executable path",
     );
     assert_eq!(
@@ -340,18 +356,34 @@ fn source_publication_defers_local_macro_expansion_until_function_demand() {
     );
 
     let main = world.reference_function(ModuleId::GLOBAL, "main", 0);
+    let inc = world.reference_function(ModuleId::GLOBAL, "inc", 1);
+    let double = world.reference_function(ModuleId::GLOBAL, "double", 1);
     let source = world.function_source(main).expect("main source should be published");
     let tokens = quoted_tokens(&source.source);
     assert!(
         tokens.iter().any(|token| token == "inc") && tokens.iter().any(|token| token == "double"),
         "raw function source should retain macro calls until the function is demanded; tokens={tokens:?}",
     );
-    assert!(
-        capture.find(&["fz", "compiler2", "macro", "expanded"]).is_empty(),
+    let body_macro_expanded_before = capture
+        .find(&["fz", "compiler2", "macro", "expanded"])
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                measurement_u64(event, "function_id"),
+                id if id == inc.as_u32() as u64 || id == double.as_u32() as u64
+            )
+        })
+        .count();
+    assert_eq!(
+        body_macro_expanded_before, 0,
         "ScopeCode should not expand body-local macros for an undemanded function",
     );
     assert_eq!(
-        capture.count(&["fz", "compiler2", "function", "source", "expanded"]),
+        capture
+            .find(&["fz", "compiler2", "function", "source", "expanded"])
+            .into_iter()
+            .filter(|event| measurement_u64(event, "function_id") == main.as_u32() as u64)
+            .count(),
         0,
         "ScopeCode should not stage expanded function source for an undemanded function",
     );
@@ -378,9 +410,18 @@ fn source_publication_defers_local_macro_expansion_until_function_demand() {
         "macro calls should not survive in staged expanded function source; tokens={tokens:?}",
     );
     let macro_expanded = capture.find(&["fz", "compiler2", "macro", "expanded"]);
+    let body_macro_expanded = macro_expanded
+        .iter()
+        .filter(|event| {
+            matches!(
+                measurement_u64(event, "function_id"),
+                id if id == inc.as_u32() as u64 || id == double.as_u32() as u64
+            )
+        })
+        .count();
     assert!(
-        macro_expanded.len() >= 4,
-        "recursive expansion should emit macro invocation telemetry",
+        body_macro_expanded >= 4,
+        "demand-time body expansion should emit macro invocation telemetry for the body-local macros",
     );
     let expanded = capture.find(&["fz", "compiler2", "function", "source", "expanded"]);
     let main_expanded = expanded

@@ -5,8 +5,8 @@ use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
     AbiReadyProgram, AbiValueRepr, ActivationKey, BackendProgram, CallSiteId, CallSiteKey, CallSiteSummary,
     CallableEntry, ControlEntryOrigin, EmissionReadyProgram, ExecutableKey, FactKey, FunctionId, FunctionRef,
-    LoweredBody, LoweredStep, LoweredTail, MaterializedProgram, ModuleId, ModuleState, QuotedSourceHeap, ReturnAbi,
-    SelectedCallee, SemanticClosure, Ty, TypeName, TypeVarId, Types, ValueId,
+    LoweredBody, LoweredStep, LoweredTail, MaterializedProgram, ModuleId, ModuleState, QuotedSourceHeap,
+    QuotedSourceMetadata, ReturnAbi, SelectedCallee, SemanticClosure, Ty, TypeName, TypeVarId, Types, ValueId,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
@@ -1040,7 +1040,7 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("macro_inc.fz".to_string()),
-        text: "defmacro inc(x) do\n  quote do: unquote(x) + 1\nend\n\ndefmacro quoted_var() do\n  quote do: x\nend\n"
+        text: "defmacro inc(x) do\n  quote do: unquote(x) + 1\nend\n\ndefmacro quoted_var() do\n  quote do: x\nend\n\ndefmacro forward_define(source) do\n  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))\nend\n"
             .to_string(),
     });
     assert!(compiler.demand(Job::ScopeCode(code_id)));
@@ -1127,6 +1127,57 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
         var_node.tail.atom_name().expect("quoted variable context"),
         "nil",
         "quote lowering should use the canonical no-context variable shape"
+    );
+
+    let forward_define = function_id(&functions, "forward_define", 1);
+    assert!(compiler.demand(Job::BuildMacroExecutable(forward_define)));
+    assert_resolved(
+        compiler.drive(),
+        "macro executable readiness should lower quoted remote compiler-service calls",
+    );
+    let forwarded_source = builder
+        .call(
+            "fn",
+            &QuotedSourceMetadata::default(),
+            &[
+                builder
+                    .call("answer", &QuotedSourceMetadata::default(), &[])
+                    .expect("head"),
+                builder
+                    .list(&[builder.keyword("do", builder.int(42)).expect("do keyword")])
+                    .expect("kw list"),
+            ],
+        )
+        .expect("forwarded function source");
+    let forwarded = compiler
+        .run_macro_on_source(forward_define, &carrier, caller, &[forwarded_source])
+        .expect("macro should return a quoted compiler-service call");
+    let forwarded_node = forwarded
+        .cursor()
+        .ast_node()
+        .expect("forwarded cursor")
+        .expect("forwarded AST node");
+    let callee = forwarded_node
+        .head
+        .ast_node()
+        .expect("forwarded callee")
+        .expect("forwarded callee node");
+    assert_eq!(
+        callee.head.atom_name().expect("forwarded callee head"),
+        ".",
+        "quote lowering should preserve remote-call callee shape for compiler services",
+    );
+    let callee_parts = callee.tail.list_items().expect("forwarded callee parts");
+    assert_eq!(
+        callee_parts[1].atom_name().expect("forwarded function name"),
+        "define",
+        "quoted compiler-service call should target define/2",
+    );
+    let forwarded_args = forwarded_node.tail.list_items().expect("forwarded args");
+    assert_eq!(
+        forwarded_args[0].root(),
+        forwarded_source,
+        "unquote(source) should splice the grouped source fragment itself, not re-render it",
     );
 }
 

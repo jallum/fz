@@ -23,7 +23,7 @@ use super::namespace::{Namespace, NamespaceSymbol};
 use super::protocol::ProtocolCallbackImpl;
 use super::quoted_expander::{
     ExpandedScopeFragment, QuotedExpansionCtx, emit_internal_surface_error, emit_job_diagnostic,
-    expand_item_macro_fragment, read_scope_surface_root,
+    expand_item_macro_fragment, read_compiler_fragment_root,
 };
 use super::quoted_surface::{
     CompilerService, CompilerServiceForm, FunctionForm, MacroCallForm, ProtocolImplForm, ScopeForm, ScopeSurface,
@@ -482,7 +482,8 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     }
 
     fn apply_compiler_define(&mut self, service: &CompilerServiceForm) -> Result<(), FatalError> {
-        let surface = read_scope_surface_root(self.world, self.code_id, &service.source, "Fz.Compiler.define source")?;
+        let surface =
+            read_compiler_fragment_root(self.world, self.code_id, &service.source, "Fz.Compiler.define source")?;
         if !surface.attrs.is_empty() || surface.forms.len() != 1 {
             return Err(emit_job_diagnostic(
                 self.world,

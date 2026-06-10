@@ -1,4 +1,7 @@
-use super::quoted_surface::{ScopeForm, SurfaceSourceContext, read_protocol_impl_body_surface, read_scope_surface};
+use super::quoted_surface::{
+    ScopeForm, SurfaceSourceContext, read_compiler_fragment_surface, read_protocol_impl_body_surface,
+    read_scope_surface,
+};
 use super::{CodeMap, parse_quoted_program};
 use crate::telemetry::ConfiguredTelemetry;
 
@@ -39,6 +42,41 @@ fn compiler2_quoted_surface_groups_multiclause_functions_into_one_logical_form()
         "quoted surface grouping should produce one logical form per function, not per clause",
     );
     match &surface.forms[0] {
+        ScopeForm::MacroCall(form) => {
+            assert_eq!(
+                form.source
+                    .cursor()
+                    .list_items()
+                    .expect("alpha grouped source items")
+                    .len(),
+                2,
+                "source mode should still group multi-clause function macros into one quoted list",
+            );
+        }
+        other => panic!("first grouped source form should be a macro call, got {other:?}"),
+    }
+    match &surface.forms[1] {
+        ScopeForm::MacroCall(form) => {
+            assert_eq!(
+                form.source
+                    .cursor()
+                    .list_items()
+                    .expect("beta grouped source items")
+                    .len(),
+                1,
+                "single-clause source-mode defs should use the same grouped quoted list shape",
+            );
+        }
+        other => panic!("second grouped source form should be a macro call, got {other:?}"),
+    }
+
+    let fragment_surface = read_compiler_fragment_surface(&root, &ctx).expect("fragment surface read");
+    assert_eq!(
+        fragment_surface.forms.len(),
+        2,
+        "compiler fragments should preserve the same logical grouping count",
+    );
+    match &fragment_surface.forms[0] {
         ScopeForm::Function(form) => {
             assert_eq!(form.name, "alpha");
             assert_eq!(form.arity, 1);
@@ -54,7 +92,7 @@ fn compiler2_quoted_surface_groups_multiclause_functions_into_one_logical_form()
         }
         other => panic!("first grouped form should be alpha/1, got {other:?}"),
     }
-    match &surface.forms[1] {
+    match &fragment_surface.forms[1] {
         ScopeForm::Function(form) => {
             assert_eq!(form.name, "beta");
             assert_eq!(form.arity, 1);
@@ -71,8 +109,8 @@ fn compiler2_quoted_surface_groups_multiclause_functions_into_one_logical_form()
         other => panic!("second grouped form should be beta/1, got {other:?}"),
     }
 
-    let surface_again = read_scope_surface(&root, &ctx).expect("surface reread");
-    match (&surface.forms[0], &surface_again.forms[0]) {
+    let surface_again = read_compiler_fragment_surface(&root, &ctx).expect("fragment surface reread");
+    match (&fragment_surface.forms[0], &surface_again.forms[0]) {
         (ScopeForm::Function(first), ScopeForm::Function(second)) => {
             assert_eq!(
                 first.source.key(),
@@ -96,6 +134,49 @@ fn compiler2_quoted_surface_keeps_attached_function_attrs_inside_grouped_source(
     let surface = read_scope_surface(&root, &ctx).expect("surface read");
 
     match &surface.forms[0] {
+        ScopeForm::MacroCall(form) => {
+            let items = form.source.cursor().list_items().expect("grouped source items");
+            assert_eq!(
+                items.len(),
+                3,
+                "source mode should keep attrs attached to the grouped macro-call source"
+            );
+            assert_eq!(
+                items[0]
+                    .ast_node()
+                    .expect("doc cursor")
+                    .expect("doc node")
+                    .head
+                    .atom_name()
+                    .expect("doc head"),
+                "@doc"
+            );
+            assert_eq!(
+                items[1]
+                    .ast_node()
+                    .expect("spec cursor")
+                    .expect("spec node")
+                    .head
+                    .atom_name()
+                    .expect("spec head"),
+                "@spec"
+            );
+            assert_eq!(
+                items[2]
+                    .ast_node()
+                    .expect("fn cursor")
+                    .expect("fn node")
+                    .head
+                    .atom_name()
+                    .expect("fn head"),
+                "fn"
+            );
+        }
+        other => panic!("expected grouped alpha macro call in source mode, got {other:?}"),
+    }
+
+    let fragment_surface = read_compiler_fragment_surface(&root, &ctx).expect("fragment surface read");
+    match &fragment_surface.forms[0] {
         ScopeForm::Function(form) => {
             assert_eq!(form.name, "alpha");
             assert_eq!(form.arity, 1);

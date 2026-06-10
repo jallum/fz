@@ -489,11 +489,8 @@ impl<'a> FrontDoorParser<'a> {
 
     fn parse_function_head(&mut self, module_path: &[String]) -> Result<(String, AnyValueRef), FrontDoorError> {
         let start = self.cur_span();
-        if matches!(self.peek(), Tok::Ident(_)) && matches!(self.peek_at(1), Tok::LParen) {
-            let name = match self.bump() {
-                Tok::Ident(name) => name,
-                other => unreachable!("guarded fn head ident: {:?}", other),
-            };
+        if self.callable_name_token(self.peek()).is_some() && matches!(self.peek_at(1), Tok::LParen) {
+            let name = self.bump_callable_name().expect("guarded callable head name");
             let scope = vec![name.clone()];
             self.expect(&Tok::LParen, "`(`")?;
             let params = self.parse_exprs_until(&Tok::RParen, module_path, &scope)?;
@@ -515,6 +512,42 @@ impl<'a> FrontDoorParser<'a> {
         let meta = self.meta(module_path, &[op.to_string()], start.merge(self.prev_span()))?;
         let head = self.builder.call(op, &meta, &[left.root, right.root])?;
         Ok((op.to_string(), head))
+    }
+
+    fn callable_name_token<'tok>(&self, tok: &'tok Tok) -> Option<&'tok str> {
+        match tok {
+            Tok::Ident(name) => Some(name.as_str()),
+            Tok::Fn => Some("fn"),
+            Tok::Fnp => Some("fnp"),
+            Tok::Defmacro => Some("defmacro"),
+            Tok::Defmodule => Some("defmodule"),
+            Tok::Defprotocol => Some("defprotocol"),
+            Tok::Defimpl => Some("defimpl"),
+            Tok::Defstruct => Some("defstruct"),
+            Tok::Alias => Some("alias"),
+            Tok::Import => Some("import"),
+            Tok::Require => Some("require"),
+            Tok::Extern => Some("extern"),
+            _ => None,
+        }
+    }
+
+    fn bump_callable_name(&mut self) -> Option<String> {
+        match self.bump() {
+            Tok::Ident(name) => Some(name),
+            Tok::Fn => Some("fn".to_string()),
+            Tok::Fnp => Some("fnp".to_string()),
+            Tok::Defmacro => Some("defmacro".to_string()),
+            Tok::Defmodule => Some("defmodule".to_string()),
+            Tok::Defprotocol => Some("defprotocol".to_string()),
+            Tok::Defimpl => Some("defimpl".to_string()),
+            Tok::Defstruct => Some("defstruct".to_string()),
+            Tok::Alias => Some("alias".to_string()),
+            Tok::Import => Some("import".to_string()),
+            Tok::Require => Some("require".to_string()),
+            Tok::Extern => Some("extern".to_string()),
+            _ => None,
+        }
     }
 
     fn parse_function_body(&mut self, module_path: &[String], scope: &[String]) -> Result<AnyValueRef, FrontDoorError> {

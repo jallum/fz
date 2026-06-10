@@ -734,6 +734,7 @@ impl<'a, 'w, 'tel, 'env, 'steps> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps> {
                 let keyword_list = self.push_list(keywords, None);
                 self.lower_atom_node("if", vec![cond, keyword_list])
             }
+            Expr::Index(base, key) => self.lower_index(base, key, expr.span),
             Expr::Quote(_)
             | Expr::FnRef { .. }
             | Expr::Capture(_)
@@ -741,7 +742,6 @@ impl<'a, 'w, 'tel, 'env, 'steps> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps> {
             | Expr::Bitstring(_)
             | Expr::MapUpdate(_, _)
             | Expr::Struct { .. }
-            | Expr::Index(_, _)
             | Expr::ClosureCall(_, _)
             | Expr::Case(_, _)
             | Expr::Cond(_)
@@ -784,9 +784,44 @@ impl<'a, 'w, 'tel, 'env, 'steps> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps> {
     }
 
     fn lower_variable(&mut self, name: &str) -> Result<ValueId, FatalError> {
+        if quoted_alias_segments(name).is_some() {
+            return self.lower_alias(name);
+        }
         let head = self.lowerer.push_const(self.steps, Literal::Atom(name.to_string()));
         let tail = self.lowerer.push_const(self.steps, Literal::Nil);
         Ok(self.push_ast_node(head, tail))
+    }
+
+    fn lower_alias(&mut self, name: &str) -> Result<ValueId, FatalError> {
+        let segments = quoted_alias_segments(name).expect("checked quoted alias name");
+        let head = self
+            .lowerer
+            .push_const(self.steps, Literal::Atom("__aliases__".to_string()));
+        let mut items = Vec::with_capacity(segments.len());
+        for segment in segments {
+            items.push(self.lowerer.push_const(self.steps, Literal::Atom(segment.to_string())));
+        }
+        let tail = self.push_list(items, None);
+        Ok(self.push_ast_node(head, tail))
+    }
+
+    fn lower_index(&mut self, base: &Spanned<Expr>, key: &Spanned<Expr>, span: Span) -> Result<ValueId, FatalError> {
+        let Expr::Atom(field) = &key.node else {
+            return Err(emit_job_diagnostic(
+                self.lowerer.world,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    "compiler2 quote only lowers atom field access today".to_string(),
+                    span,
+                ),
+            ));
+        };
+        let base = self.lower(base)?;
+        let field = self.lowerer.push_const(self.steps, Literal::Atom(field.clone()));
+        let head = self.lowerer.push_const(self.steps, Literal::Atom(".".to_string()));
+        let meta = self.push_map(Vec::new());
+        let tail = self.push_list(vec![base, field], None);
+        Ok(self.push_tuple(vec![head, meta, tail]))
     }
 
     fn lower_atom_node(&mut self, name: &str, args: Vec<ValueId>) -> Result<ValueId, FatalError> {
@@ -3494,6 +3529,21 @@ fn direct_call_name(expr: &Spanned<Expr>, env: &HashMap<String, ValueId>) -> Opt
             }
             _ => return None,
         }
+    }
+}
+
+fn quoted_alias_segments(name: &str) -> Option<Vec<&str>> {
+    let segments = name.split('.').collect::<Vec<_>>();
+    if segments.len() < 2 {
+        return None;
+    }
+    if segments.iter().all(|segment| {
+        let mut chars = segment.chars();
+        matches!(chars.next(), Some(ch) if ch.is_uppercase()) && chars.all(|ch| ch.is_alphanumeric() || ch == '_')
+    }) {
+        Some(segments)
+    } else {
+        None
     }
 }
 

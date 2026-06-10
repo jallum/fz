@@ -30,3 +30,15 @@ import Kernel, only: [
   spawn: 1,
   spawn: 2
 ]
+
+defmacro fn(source) do
+  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
+end
+
+defmacro fnp(source) do
+  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
+end
+
+defmacro defmacro(source) do
+  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
+end
