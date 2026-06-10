@@ -5,14 +5,15 @@
     "fz-rh2.16.8.2",
     "fz-rh2.16.8.3"
   ],
+  "closed_at": "2026-06-10T20:13:27Z",
   "created": "2026-06-10T12:05:22Z",
   "description": "Goal: compiler2 has exactly one recursive quoted-source expansion engine for source sugar rewrite, macro resolution, require gating, MacroExecutable waits, __CALLER__ projection, interpreter invocation, recursive re-expansion, and macro telemetry. Signal: the duplicated expansion walkers disappear from source_publish and jobs/source; item-level expansion and ExpandFunctionSource both call the same subsystem; new expansion rules land in one place instead of two. Strategy: carve the common engine out of the current scope-tier and function-demand walkers, give it the minimal policy surface it needs to distinguish scope-fragment and function-body entry modes, and delete the mirrored traversal code once both call sites are moved over.",
   "id": "fz-rh2.16.8.1",
   "labels": [],
   "parent": "fz-rh2.16.8",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 quoted expander: extract the shared quoted-source expansion engine and delete duplicate walkers",
   "type": "task",
-  "updated_at": "2026-06-10T20:00:47Z"
+  "updated_at": "2026-06-10T20:13:27Z"
 }
