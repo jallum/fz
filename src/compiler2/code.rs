@@ -1,3 +1,4 @@
+use super::namespace::Namespace;
 use super::quoted_surface::ScopeSurface;
 use super::source::{Horizon, QuotedSourceRoot};
 
@@ -24,6 +25,11 @@ pub enum CodeState {
     /// is a compiler2-owned read model derived from that quoted root.
     Indexed {
         source: QuotedCodeSource,
+    },
+    /// Imports resolved and top-level names bound; records the resulting namespace.
+    Scoped {
+        source: QuotedCodeSource,
+        namespace: Namespace,
     },
 }
 
@@ -67,6 +73,21 @@ impl CodeMap {
         }
     }
 
+    pub fn scope(&mut self, id: CodeId, namespace: Namespace, current_revision: u64) -> u64 {
+        let code = &mut self.slots[id.0 as usize];
+        let source = match &code.state {
+            CodeState::Indexed { source } | CodeState::Scoped { source, .. } => source.clone(),
+            CodeState::Pending => panic!("code must be indexed before scoping"),
+        };
+        let changed = !matches!(&code.state, CodeState::Scoped { namespace: n, .. } if *n == namespace);
+        code.state = CodeState::Scoped { source, namespace };
+        if changed {
+            current_revision + 1
+        } else {
+            current_revision
+        }
+    }
+
     pub fn get(&self, id: CodeId) -> &Code {
         self.slots
             .get(id.0 as usize)
@@ -99,10 +120,11 @@ impl CodeMap {
 fn same_code_state(left: &CodeState, right: &CodeState) -> bool {
     match (left, right) {
         (CodeState::Pending, CodeState::Pending) => true,
-        (CodeState::Indexed { source: left }, CodeState::Indexed { source: right }) => {
+        (CodeState::Indexed { source: l }, CodeState::Indexed { source: r })
+        | (CodeState::Scoped { source: l, .. }, CodeState::Scoped { source: r, .. }) => {
             // Code identity is its module surface — bodies belong to their own
             // per-function facts, so a body-only edit does not move it.
-            left.quoted.semantically_eq(&right.quoted, Horizon::Surface)
+            l.quoted.semantically_eq(&r.quoted, Horizon::Surface)
         }
         _ => false,
     }

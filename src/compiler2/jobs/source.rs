@@ -108,7 +108,8 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
                 world.set_prelude_head(namespace);
             }
             reads.extend(scope_reads);
-            outputs.push((FactKey::CodeScoped(code_id), world.code_revision(code_id)));
+            let scoped_revision = world.finish_code_scope(code_id, namespace);
+            outputs.push((FactKey::CodeScoped(code_id), scoped_revision));
             Ok(JobEffects {
                 reads,
                 outputs,

@@ -1296,8 +1296,9 @@ impl<'a> World<'a> {
         self.code.index(id, source, current)
     }
 
-    pub fn code_revision(&self, id: CodeId) -> u64 {
-        self.work_graph.facts().revision(&FactKey::CodeIndexed(id)).unwrap_or(0)
+    pub fn finish_code_scope(&mut self, id: CodeId, namespace: Namespace) -> u64 {
+        let current = self.fact_revision(FactKey::CodeScoped(id)).unwrap_or(0);
+        self.code.scope(id, namespace, current)
     }
 
     pub fn module_defined_revision(&self, module: ModuleId) -> Option<u64> {
@@ -1564,14 +1565,18 @@ impl<'a> World<'a> {
 
     pub fn code_source(&self, id: CodeId) -> Option<QuotedCodeSource> {
         match &self.code.get(id).state {
-            super::code::CodeState::Indexed { source, .. } => Some(source.clone()),
+            super::code::CodeState::Indexed { source } | super::code::CodeState::Scoped { source, .. } => {
+                Some(source.clone())
+            }
             super::code::CodeState::Pending => None,
         }
     }
 
     pub fn code_surface(&self, id: CodeId) -> Option<&super::quoted_surface::ScopeSurface> {
         match &self.code.get(id).state {
-            super::code::CodeState::Indexed { source } => Some(&source.surface),
+            super::code::CodeState::Indexed { source } | super::code::CodeState::Scoped { source, .. } => {
+                Some(&source.surface)
+            }
             super::code::CodeState::Pending => None,
         }
     }
