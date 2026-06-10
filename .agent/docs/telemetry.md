@@ -250,23 +250,32 @@ when expected, and no legacy frontend/planner/type-infer events. Its
 `Enum.reduce` CLI probe also asserts that `lexer.pass` span-start events match
 the exact submitted source set one-for-one: user source plus the demanded
 runtime sources, with no duplicate pass and no fragment pseudo-source. The
-ignored JSONL dump is the occasional deep trace.
+quicksort CLI probe carries the original perf question: on 2026-06-10,
+running `target/debug/fz2` with telemetry on `fixtures/quicksort/input.fz`
+emitted four lexer span-starts, exactly
+`fixtures/quicksort/input.fz`, `runtime:runtime.fz`, `runtime:Kernel.fz`, and
+`runtime:Process.fz`. The old source-fragment re-lex and its hidden per-call
+type-env rebuild are gone by construction on the compiler2 path. The same trace
+showed the remaining tail clearly: `fz.compiler2.drive` took 57.955 ms, then
+post-drive `fz.codegen.compile` took 47.749 ms before runtime exit. That backend
+accounting problem is tracked as `fz-rh2.12.13`; it is not a source-production
+re-lex problem. The ignored JSONL dump is the occasional deep trace.
 
 Useful reruns:
 
 - `cargo test --lib compiler2_ -- --nocapture`
-- `cargo test --lib compiler2_quicksort_root_closes_with_a_finite_recursive_frontier -- --exact --nocapture`
-- `cargo test --lib compiler2_materialization_projects_only_the_closed_quicksort_frontier -- --exact --nocapture`
-- `cargo test --lib compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer -- --exact --nocapture`
-- `cargo test --lib compiler2_materialization_freezes_only_the_selected_enum_reduce_path -- --exact --nocapture`
-- `cargo test --lib compiler2_artifact_ladder_consumes_only_the_previous_rung -- --exact --nocapture`
-- `cargo test --lib compiler2_emission_ready_preserves_variadic_extern_inventory_and_marshals -- --exact --nocapture`
-- `cargo test --lib compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen -- --nocapture`
-- `cargo test --lib compiler2_native_program_jit_runs_enum_reduce_through_compiler2_codegen -- --nocapture`
-- `cargo test --lib compiler2_native_program_jit_runs_variadic_extern_through_compiler2_codegen -- --nocapture`
-- `cargo test --lib compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare -- --exact --nocapture`
-- `cargo test --lib compiler2_run_root_jit_executes_resources_without_legacy_prepare -- --exact --nocapture`
-- `cargo test --lib compiler2_compile_root_aot_consumes_native_program_without_legacy_prepare -- --exact --nocapture`
+- `cargo test --lib compiler2::drive_test::compiler2_quicksort_root_closes_with_a_finite_recursive_frontier -- --exact --nocapture`
+- `cargo test --lib compiler2::drive_test::compiler2_materialization_projects_only_the_closed_quicksort_frontier -- --exact --nocapture`
+- `cargo test --lib compiler2::drive_test::compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer -- --exact --nocapture`
+- `cargo test --lib compiler2::drive_test::compiler2_materialization_freezes_only_the_selected_enum_reduce_path -- --exact --nocapture`
+- `cargo test --lib compiler2::drive_test::compiler2_artifact_ladder_consumes_only_the_previous_rung -- --exact --nocapture`
+- `cargo test --lib compiler2::drive_test::compiler2_emission_ready_preserves_variadic_extern_inventory_and_marshals -- --exact --nocapture`
+- `cargo test --lib compiler2::drive_test::compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen -- --exact --nocapture`
+- `cargo test --lib compiler2::drive_test::compiler2_native_program_jit_runs_enum_reduce_through_compiler2_codegen -- --exact --nocapture`
+- `cargo test --lib compiler2::drive_test::compiler2_native_program_jit_runs_variadic_extern_through_compiler2_codegen -- --exact --nocapture`
+- `cargo test --lib compiler2::compiler2_test::compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare -- --exact --nocapture`
+- `cargo test --lib compiler2::compiler2_test::compiler2_run_root_jit_executes_resources_without_legacy_prepare -- --exact --nocapture`
+- `cargo test --lib compiler2::compiler2_test::compiler2_compile_root_aot_consumes_native_program_without_legacy_prepare -- --exact --nocapture`
 - `cargo test --test fz2_cli -- --nocapture`
 - `cargo test --lib compiler2::telemetry_dump_test::dump_quicksort_compiler2_telemetry_to_jsonl -- --ignored --exact --nocapture`
 

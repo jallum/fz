@@ -196,6 +196,35 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
 }
 
 #[test]
+fn quicksort_run_lexes_each_source_once() {
+    let telemetry_path = unique_temp_path("fz2_quicksort", ".jsonl");
+    let fixture = "fixtures/quicksort/input.fz";
+    let expected_lexer_sources = vec![
+        fixture.to_string(),
+        "runtime:runtime.fz".to_string(),
+        "runtime:Kernel.fz".to_string(),
+        "runtime:Process.fz".to_string(),
+    ];
+
+    let out = run_fz2(&[
+        OsStr::new("--log-telemetry"),
+        telemetry_path.as_os_str(),
+        OsStr::new("run"),
+        OsStr::new(fixture),
+    ]);
+    assert!(
+        out.status.success(),
+        "fz2 quicksort run should succeed; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_compiler2_telemetry_only(&telemetry_path, "fz2 run quicksort");
+    assert_lexer_passes_match_submitted_sources(&telemetry_path, "fz2 run quicksort", &expected_lexer_sources);
+
+    let _ = remove_file(&telemetry_path);
+}
+
+#[test]
 fn build_stays_on_compiler2_telemetry_and_links_a_native_binary() {
     let source_path = unique_temp_path("fz2_build", ".fz");
     let out_bin = unique_temp_path("fz2_build", ".bin");
