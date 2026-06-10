@@ -141,10 +141,28 @@ the `fz-rh2.11.7.*` arc.
   one place while the next macro-expansion ticket replaces literal `fn` item
   capture with explicit compiler-service forms.
 - Source publication notes `@type` declarations, records function/type
-  reference wait sets, binds aliases/imports/requires where supported today,
-  saves expanded grouped function roots as `FunctionSource` through
-  `Fz.Compiler.define`, scopes child modules, publishes protocol
-  callback/domain/dispatch facts, and records protocol impl callback sources.
+  reference wait sets, binds aliases/imports/requires, saves expanded grouped
+  function roots as `FunctionSource` through `Fz.Compiler.define`, scopes child
+  modules, publishes protocol callback/domain/dispatch facts, and records
+  protocol impl callback sources.
+- Function source expansion is body-only. Function heads define identity; they
+  are not expression positions and are never macro-expanded. Each grouped
+  function source keeps attached attributes and clause heads intact while
+  recursively expanding only each `do:` body before publication.
+- Exact `import Mod, only: [...]` may reserve placeholder function bindings
+  before `Mod` is defined, but a body that calls such a binding waits for the
+  provider `ModuleDefined` fact before the body can be saved. Once the provider
+  surface is known, import binds the real exported symbol kind. Imported macros
+  additionally wait for `MacroExecutable(function)`.
+- `require Mod` waits for the provider surface, selects the requested macro
+  exports (`only:` or all macros minus `except:`), and waits for those exact
+  `MacroExecutable` facts. It records exactly those macro function ids as
+  required in the source session. It does not import bare names; only required
+  remote macro calls such as `Mod.m(...)` are available to source expansion.
+- Module publication synthesizes a normal `__info__/1` function for non-global
+  modules that do not define one. The body is ordinary quoted source
+  (`case kind do ... end`) derived from the module exports, so reflection uses
+  the same `FunctionSource`/export path as user functions.
 
 ## Macro Runtime
 
@@ -167,6 +185,11 @@ the `fz-rh2.11.7.*` arc.
   values (`Const`, `Tuple`, `List`, `Map`) on the active process heap.
   `unquote` is the only part of a quote that is evaluated while building the
   quoted source value.
+- Quoted callable heads are canonicalized against the macro definition
+  namespace while lowering `quote`. A quoted `double(...)` inside
+  `Helpers.twice/1` becomes `Helpers.double(...)` before the macro returns, so
+  expanded source carries the definition-context callable identity downstream
+  without a second scoped-expression representation.
 - Macro execution lends the owning `QuotedSourceHeap` process to the backend
   interpreter and restores it after the run. Macro arguments and returns are
   `AnyValueRef` roots in that same heap; the returned root becomes another

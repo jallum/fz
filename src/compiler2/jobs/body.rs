@@ -1158,7 +1158,8 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                     .map(|arg| self.lower_quote_expr(arg, env, steps))
                     .collect::<Result<Vec<_>, _>>()?;
                 if let Expr::Var(name) = &callee.node {
-                    self.lower_quoted_atom_node(name, values, steps)
+                    let name = self.quoted_callable_name(name, values.len());
+                    self.lower_quoted_atom_node(&name, values, steps)
                 } else {
                     let head = self.lower_quote_expr(callee, env, steps)?;
                     let tail = self.push_list(steps, values, None);
@@ -1229,6 +1230,27 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 ),
             )),
         }
+    }
+
+    fn quoted_callable_name(&mut self, name: &str, arity: usize) -> String {
+        if name.contains('.') {
+            return name.to_string();
+        }
+        let Some(symbol) = self.world.lookup_callable_namespace(self.namespace, name, arity) else {
+            return name.to_string();
+        };
+        let function = match symbol {
+            NamespaceSymbol::Function(function) | NamespaceSymbol::Macro(function) => function,
+            NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) => return name.to_string(),
+        };
+        let module = self.world.function_module(function);
+        if module.is_global() {
+            return name.to_string();
+        }
+        let Some(module_name) = self.world.module_name(module) else {
+            return name.to_string();
+        };
+        format!("{module_name}.{name}")
     }
 
     fn lower_quoted_variable(&mut self, name: &str, steps: &mut Vec<ExprStep>) -> Result<ValueId, FatalError> {

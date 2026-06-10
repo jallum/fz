@@ -80,14 +80,19 @@ declared later in the same scope:
 
 1. **Reserve.** Bind every local function (as `Function`/`Macro`) and every child
    module / protocol name, so forward references resolve.
-2. **Apply, in source order.** Resolve `alias`/`import` (an import waits on the
-   provider's `ModuleDefined`, then binds the selected exports), define each
-   reserved function, and scope each child module onto the current head.
+2. **Apply, in source order.** Resolve `alias`, `import`, and `require`.
+   An import waits on the provider's `ModuleDefined`, then binds the selected
+   exports. A require waits on the provider surface, selects the requested macro
+   exports, waits on their `MacroExecutable` facts, and records those exact
+   remote macro function ids as available to source expansion. Then define each
+   reserved function and scope each child module onto the current head.
 
-A non-private, non-macro function becomes a `ModuleExport`; private (`fnp`)
-functions stay callable in-module but out of the surface. The pass returns the
-finished namespace head plus the export list, which `define_module` freezes into
-the `ModuleSurface`.
+A non-private function or macro becomes a `ModuleExport`; private (`fnp`)
+functions stay callable in-module but out of the surface. Non-global modules
+that do not define `__info__/1` get a synthesized ordinary function source for
+their public function/macro export lists. The pass returns the finished
+namespace head plus the export list, which `define_module` freezes into the
+`ModuleSurface`.
 
 ## Runtime library and the prelude
 

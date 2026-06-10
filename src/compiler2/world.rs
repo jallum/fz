@@ -48,10 +48,9 @@ use super::scope::ScopeSnapshot;
 use super::semantic::{
     ActivationAnalysis, ActivationMap, CallSiteKey, CallSiteMap, CallSiteSummary, SemanticClosure, SemanticClosureMap,
 };
-use super::source::QuotedSourceRoot;
-#[cfg(test)]
 use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
+    QuotedSourceRoot,
 };
 use super::typedef::{TypeDef, TypeDefMap};
 use super::types::{ClosureTarget, Ty, Types};
@@ -1457,7 +1456,10 @@ impl<'a> World<'a> {
         self.work_graph.facts().revision(key).is_some()
     }
 
-    #[cfg(test)]
+    fn advance_fact(&self, key: FactKey, changed: bool) -> u64 {
+        let current = self.fact_revision(key).unwrap_or(0);
+        if changed { current + 1 } else { current }
+    }
     pub(crate) fn scope_lexical_context(
         &self,
         scope: ScopeSnapshot,
@@ -1474,7 +1476,6 @@ impl<'a> World<'a> {
         QuotedLexicalContext::new(kind, module, function_scope).with_namespace_id(scope.namespace().as_u32())
     }
 
-    #[cfg(test)]
     pub(crate) fn project_module_value(
         &self,
         builder: &QuotedSourceBuilder,
@@ -1492,7 +1493,6 @@ impl<'a> World<'a> {
         builder.alias(&metadata, &segments)
     }
 
-    #[cfg(test)]
     pub(crate) fn project_env_value(
         &self,
         builder: &QuotedSourceBuilder,
@@ -1564,7 +1564,12 @@ impl<'a> World<'a> {
             .cloned()
     }
 
-    fn lookup_module_callable(&mut self, module: ModuleId, name: &str, arity: usize) -> Option<NamespaceSymbol> {
+    pub(crate) fn lookup_module_callable(
+        &mut self,
+        module: ModuleId,
+        name: &str,
+        arity: usize,
+    ) -> Option<NamespaceSymbol> {
         if self.module_defined_revision(module).is_none() {
             return Some(NamespaceSymbol::Function(self.reference_function(
                 module,
@@ -1789,7 +1794,7 @@ impl<'a> World<'a> {
             .or_else(|| Some(self.reference_module(dotted)))
     }
 
-    fn lookup_module_path(&mut self, head: Namespace, path: &str) -> Option<ModuleId> {
+    pub(crate) fn lookup_module_path(&mut self, head: Namespace, path: &str) -> Option<ModuleId> {
         let mut segments = path.split('.');
         let first = segments.next()?;
         let mut module = match self.namespaces.lookup(head, first) {
@@ -1949,7 +1954,6 @@ fn dedup_type_names(refs: &mut Vec<TypeName>) {
     refs.retain(|name| seen.insert(name.clone()));
 }
 
-#[cfg(test)]
 fn module_name_segments(name: &str) -> Vec<String> {
     name.split('.')
         .filter(|segment| !segment.is_empty())

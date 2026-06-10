@@ -216,6 +216,14 @@ as opaque debug metadata. The event is observational only; tests that care
 about correctness should still assert the `JobEffects` facts and the absence of
 `NativeProgram(macro_root)` for macro roots.
 
+Macro expansion emits `[fz, compiler2, macro, expanded]` after a
+`MacroExecutable` runs over quoted source and before recursive expansion
+continues. Measurements carry `function_id`, `module_id`, expansion `depth`,
+`depth_budget`, `arg_count`, and the input/output quoted-source
+`heap_id`/`root_ref` pairs. This is the deterministic signal for runaway
+expansion and for proving that a returned root stayed in the same quoted-source
+transport world.
+
 Source-order compiler services emit `[fz, compiler2, compiler_service, define]`
 when `Fz.Compiler.define` publishes an expanded source root. Measurements carry
 raw compiler ids (`code_id`, `module_id`, `owner_module_id`, `function_id`),

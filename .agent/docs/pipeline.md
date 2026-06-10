@@ -114,6 +114,17 @@ Function-source facts are saved there; downstream `DefineFunction` still reads
 only `FunctionSource(function)` and does not need to know whether the source
 root came from literal code or macro expansion.
 
+Source publication expands macros before function bodies become
+`FunctionSource` facts. The expansion is body-only: function heads establish the
+function identity and are not expression positions. Local macros, imported
+macros, and required remote macros all converge on the same
+`MacroExecutable(function)` fact. Exact imports reserve names lazily, but a body
+that calls a reserved exact import waits for the provider `ModuleDefined` fact
+so the source tier can bind the real `Function` or `Macro` export before saving
+the body. `require` waits on the provider surface and the selected macro
+executables up front, records that exact remote macro set for the source scope,
+then only those required remote macro calls expand in source order.
+
 ## Runtime and built-ins are ordinary, lazy code
 
 `Enum`, `Kernel`, and friends are not a special class and not a prelude phase.

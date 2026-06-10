@@ -5619,7 +5619,7 @@ fn compiler2_index_code_recurses_through_nested_modules() {
     let function_defined = functions
         .all()
         .into_iter()
-        .next()
+        .find(|record| record.function_ref.name != "__info__")
         .expect("nested function.defined event");
     assert_eq!(
         function_module_name(&function_defined, &modules),
@@ -5671,7 +5671,7 @@ fn compiler2_index_code_recurses_through_nested_modules() {
 }
 
 #[test]
-fn compiler2_import_only_binds_exact_refs_and_pulls_provider_when_used() {
+fn compiler2_import_only_classifies_exact_refs_when_body_uses_them() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
@@ -5706,18 +5706,20 @@ fn compiler2_import_only_binds_exact_refs_and_pulls_provider_when_used() {
     );
     assert_resolved(
         compiler.drive(),
-        "third drive should define User without warming exact-import providers",
+        "third drive should classify the exact imported call before saving User.run",
     );
     let mut names = functions
         .all()
         .into_iter()
+        .filter(|record| record.function_ref.name != "__info__")
         .map(|record| (function_fq_name(&record, &modules), record.arity))
         .collect::<Vec<_>>();
     names.sort();
-    assert_eq!(
-        names,
-        vec![("User.run".to_string(), 0)],
-        "defining the importing module should not define exact-import providers"
+    assert!(
+        names.contains(&("Math.add".to_string(), 1))
+            && names.contains(&("Math.add".to_string(), 2))
+            && names.contains(&("User.run".to_string(), 0)),
+        "source publication should define the provider surface before saving a body that calls an exact import: {names:?}"
     );
 
     compiler.submit_root(RootSubmission {
@@ -5733,18 +5735,233 @@ fn compiler2_import_only_binds_exact_refs_and_pulls_provider_when_used() {
     let mut names = functions
         .all()
         .into_iter()
+        .filter(|record| record.function_ref.name != "__info__")
         .map(|record| (function_fq_name(&record, &modules), record.arity))
         .collect::<Vec<_>>();
     names.sort();
-    assert_eq!(
-        names,
-        vec![
-            ("Math.add".to_string(), 1),
-            ("Math.add".to_string(), 2),
-            ("User.run".to_string(), 0),
-        ],
-        "demand should pull the provider surface when an exact import is reached"
+    assert!(
+        names.contains(&("Math.add".to_string(), 1))
+            && names.contains(&("Math.add".to_string(), 2))
+            && names.contains(&("User.run".to_string(), 0)),
+        "root demand should keep the classified exact import callable without reverting to a guessed target: {names:?}"
     );
+}
+
+#[test]
+fn compiler2_imported_macro_expands_in_provider_definition_namespace() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    let bodies = LoweredBodyCapture::new();
+    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/cross_module_macro.fz".to_string()),
+        text: r#"
+defmodule Helpers do
+  fn double(x), do: x * 2
+
+  defmacro twice(x) do
+    quote do: double(unquote(x))
+  end
+end
+
+defmodule App do
+  import Helpers, only: [twice: 1]
+
+  fn run(), do: twice(21)
+end
+"#
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: Some("App".to_string()),
+        name: "run".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "imported macro expansion should settle through provider surface and executable facts",
+    );
+
+    let records = functions.all();
+    let run = records
+        .iter()
+        .find(|record| function_fq_name(record, &modules) == "App.run")
+        .expect("App.run/0 should be defined")
+        .function_id;
+    let double = records
+        .iter()
+        .find(|record| function_fq_name(record, &modules) == "Helpers.double")
+        .expect("Helpers.double/1 should be defined")
+        .function_id;
+    direct_call_in_body(lowered_body(&bodies, run), double);
+}
+
+#[test]
+fn compiler2_require_except_selects_remote_macro_set() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    let bodies = LoweredBodyCapture::new();
+    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/require_except_remote_macro.fz".to_string()),
+        text: r#"
+defmodule Helpers do
+  fn double(x), do: x * 2
+  fn triple(x), do: x * 3
+
+  defmacro twice(x) do
+    quote do: double(unquote(x))
+  end
+
+  defmacro thrice(x) do
+    quote do: triple(unquote(x))
+  end
+end
+
+defmodule App do
+  require Helpers, except: [twice: 1]
+
+  fn run(), do: Helpers.thrice(14)
+end
+"#
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: Some("App".to_string()),
+        name: "run".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "require except should make only the remaining remote macros available",
+    );
+
+    let records = functions.all();
+    let run = records
+        .iter()
+        .find(|record| function_fq_name(record, &modules) == "App.run")
+        .expect("App.run/0 should be defined")
+        .function_id;
+    let triple = records
+        .iter()
+        .find(|record| function_fq_name(record, &modules) == "Helpers.triple")
+        .expect("Helpers.triple/1 should be defined")
+        .function_id;
+    direct_call_in_body(lowered_body(&bodies, run), triple);
+}
+
+#[test]
+fn compiler2_remote_macro_requires_explicit_require() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/remote_macro_without_require.fz".to_string()),
+        text: r#"
+defmodule Helpers do
+  fn double(x), do: x * 2
+
+  defmacro twice(x) do
+    quote do: double(unquote(x))
+  end
+end
+
+defmodule App do
+  fn run(), do: Helpers.twice(21)
+end
+"#
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: Some("App".to_string()),
+        name: "run".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    match compiler.drive() {
+        DriveOutcome::Fatal {
+            job: Job::LowerFunction(_),
+        } => {}
+        other => panic!("unrequired remote macro call should reach macro-free lowering as a fatal error: {other:?}"),
+    }
+    assert_eq!(
+        capture.count(&["fz", "compiler2", "macro", "expanded"]),
+        0,
+        "remote macros must not expand unless the current source scope required them",
+    );
+}
+
+#[test]
+fn compiler2_require_remote_macro_waits_executable_and_expands() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    let bodies = LoweredBodyCapture::new();
+    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/require_remote_macro.fz".to_string()),
+        text: r#"
+defmodule Helpers do
+  fn double(x), do: x * 2
+
+  defmacro twice(x) do
+    quote do: double(unquote(x))
+  end
+end
+
+defmodule App do
+  require Helpers, only: [twice: 1]
+
+  fn run(), do: Helpers.twice(21)
+end
+"#
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: Some("App".to_string()),
+        name: "run".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "required remote macro expansion should settle through provider surface and executable facts",
+    );
+
+    let records = functions.all();
+    let run = records
+        .iter()
+        .find(|record| function_fq_name(record, &modules) == "App.run")
+        .expect("App.run/0 should be defined")
+        .function_id;
+    let double = records
+        .iter()
+        .find(|record| function_fq_name(record, &modules) == "Helpers.double")
+        .expect("Helpers.double/1 should be defined")
+        .function_id;
+    direct_call_in_body(lowered_body(&bodies, run), double);
 }
 
 #[test]
@@ -5775,27 +5992,9 @@ fn compiler2_import_only_missing_target_is_unresolved_when_used() {
         compiler.demand(Job::DefineModule(module_ids[0])),
         "demanding User should enqueue the consumer module only"
     );
-    assert_resolved(
-        compiler.drive(),
-        "third drive should define User without validating cold exact imports",
-    );
-
-    compiler.submit_root(RootSubmission {
-        module_name: Some("User".to_string()),
-        name: "run".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
     match compiler.drive() {
-        DriveOutcome::Unresolved { waits } => {
-            assert!(
-                waits
-                    .iter()
-                    .any(|wait| matches!(wait.fact, FactKey::FunctionDefined(_))),
-                "using a missing exact import should leave precise function-definition demand unresolved"
-            );
-        }
-        other => panic!("missing exact import should become unresolved demand: {other:?}"),
+        DriveOutcome::Fatal { job } if job == Job::DefineModule(module_ids[0]) => {}
+        other => panic!("missing exact import should fail while publishing the importing body: {other:?}"),
     }
     assert!(
         capture.contains(&["fz", "diag", "error"]),
@@ -5849,6 +6048,7 @@ fn compiler2_import_all_waits_for_defined_module_surface() {
     let mut names = functions
         .all()
         .into_iter()
+        .filter(|record| record.function_ref.name != "__info__")
         .map(|record| (function_fq_name(&record, &modules), record.arity))
         .collect::<Vec<_>>();
     names.sort();
@@ -5896,6 +6096,7 @@ fn compiler2_import_except_waits_for_defined_module_surface() {
     let mut names = functions
         .all()
         .into_iter()
+        .filter(|record| record.function_ref.name != "__info__")
         .map(|record| (function_fq_name(&record, &modules), record.arity))
         .collect::<Vec<_>>();
     names.sort();

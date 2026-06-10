@@ -465,7 +465,7 @@ impl QuotedSourceRoot {
         self.heap.cursor(self.root)
     }
 
-    fn builder(&self) -> QuotedSourceBuilder {
+    pub(crate) fn builder(&self) -> QuotedSourceBuilder {
         self.heap.builder()
     }
 

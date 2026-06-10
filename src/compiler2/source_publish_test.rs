@@ -2,11 +2,12 @@ use std::rc::Rc;
 
 use super::quoted_surface::{SurfaceSourceContext, read_scope_surface};
 use super::source_publish::{ScopePublication, publish_scope};
+use super::source_test::quoted_tokens;
 use super::{
-    FactKey, ModuleId, Namespace, NamespaceSymbol, QuotedSourceBuilder, QuotedSourceHeap, QuotedSourceMetadata,
-    QuotedSourceRoot, ScopeSnapshot, World,
+    DriveOutcome, FactKey, Job, ModuleId, Namespace, NamespaceSymbol, QuotedSourceBuilder, QuotedSourceHeap,
+    QuotedSourceMetadata, QuotedSourceRoot, ScopeSnapshot, World,
 };
-use crate::telemetry::{Capture, ConfiguredTelemetry};
+use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 
 fn meta() -> QuotedSourceMetadata {
     QuotedSourceMetadata::default()
@@ -44,6 +45,13 @@ fn root_list(builder: &QuotedSourceBuilder, items: &[fz_runtime::any_value::AnyV
     builder
         .root(builder.list(items).expect("quoted root list"))
         .expect("quoted source root")
+}
+
+fn measurement_u64(event: &crate::telemetry::capture::OwnedEvent, key: &str) -> u64 {
+    match event.measurements.get(key) {
+        Some(Value::U64(value)) => *value,
+        other => panic!("measurement key `{key}` missing or not u64: {other:?}"),
+    }
 }
 
 #[test]
@@ -158,4 +166,51 @@ fn compiler_service_define_inside_a_function_body_has_no_source_publication_auth
         1,
         "only the literal main/0 source publication should cross the compiler-service boundary",
     );
+}
+
+#[test]
+fn source_publication_expands_local_macros_before_saving_function_source() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "compiler2"], capture.handler());
+    let mut world = World::new(&tel);
+    let code = world.submit_code(
+        Some("macro_inc.fz".to_string()),
+        include_str!("../../fixtures/macro_inc/input.fz").to_string(),
+    );
+
+    assert!(world.demand(Job::ScopeCode(code)), "code scoping should be demandable");
+    assert!(
+        matches!(world.drive(), DriveOutcome::Resolved),
+        "source publication should drive local macro executables and resume scoping",
+    );
+
+    let main = world.reference_function(ModuleId::GLOBAL, "main", 0);
+    let source = world.function_source(main).expect("main source should be published");
+    let tokens = quoted_tokens(&source.source);
+    assert!(
+        tokens.iter().any(|token| token == "+") && tokens.iter().any(|token| token == "*"),
+        "expanded source should contain the operators returned by the macros; tokens={tokens:?}",
+    );
+    assert!(
+        !tokens.iter().any(|token| token == "inc" || token == "double"),
+        "macro calls should not be saved in FunctionSource after expansion; tokens={tokens:?}",
+    );
+    let expanded = capture.find(&["fz", "compiler2", "macro", "expanded"]);
+    assert!(
+        expanded.len() >= 4,
+        "recursive expansion should emit macro invocation telemetry",
+    );
+    for event in expanded {
+        assert_eq!(
+            measurement_u64(&event, "input_heap_id"),
+            measurement_u64(&event, "output_heap_id"),
+            "macro expansion should return a new root in the same quoted-source heap",
+        );
+        assert_ne!(
+            measurement_u64(&event, "input_root_ref"),
+            0,
+            "macro expansion telemetry should identify the source call root",
+        );
+    }
 }

@@ -4,6 +4,9 @@
 //! quoted surface readers into namespace mutations and compiler2 fact outputs.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+
+use fz_runtime::any_value::{AnyValueRef, ValueKind};
 
 use crate::ast::{Attribute, SpecDecl, TypeExprBody};
 use crate::compiler::source::Span;
@@ -26,11 +29,16 @@ use super::quoted_surface::{
 };
 use super::scheduler::FatalError;
 use super::scope::ScopeSnapshot;
+use super::source::{
+    QuotedLexicalContextKind, QuotedSourceCursor, QuotedSourceError, QuotedSourceHeap, QuotedSourceMetadata,
+    QuotedSourceRoot,
+};
 use super::type_expr::{NominalKind, TypeDefBody, TypeExpr, parse_type_def_body, parse_type_expr};
 use super::world::World;
 
 type Output = (FactKey, u64);
 type Outputs = Vec<Output>;
+const MAX_MACRO_EXPANSION_DEPTH: usize = 64;
 
 pub(crate) enum ScopePublication {
     Complete {
@@ -50,6 +58,21 @@ struct PendingType {
     span: Span,
 }
 
+enum ExpandedFunction {
+    Complete(FunctionForm),
+    Blocked(JobEffects),
+}
+
+enum ExpandedRoot {
+    Complete(QuotedSourceRoot),
+    Blocked(JobEffects),
+}
+
+enum ExpandedValue {
+    Complete(AnyValueRef),
+    Blocked(JobEffects),
+}
+
 struct ScopeSession<'world, 'tel> {
     world: &'world mut World<'tel>,
     code_id: CodeId,
@@ -57,6 +80,7 @@ struct ScopeSession<'world, 'tel> {
     namespace: Namespace,
     local_protocols: HashSet<String>,
     pending_types: Vec<PendingType>,
+    required_remote_macros: HashSet<FunctionId>,
     reads: Vec<FactKey>,
     outputs: Outputs,
     exports: Vec<ModuleExport>,
@@ -207,6 +231,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             namespace: current_scope.namespace(),
             local_protocols: HashSet::new(),
             pending_types: Vec::new(),
+            required_remote_macros: HashSet::new(),
             reads: Vec::new(),
             outputs: Vec::new(),
             exports: Vec::new(),
@@ -224,7 +249,56 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         if let Some(blocked) = self.apply_ordered_forms(&surface.forms)? {
             return Ok(ScopePublication::Blocked(blocked));
         }
+        self.publish_module_info()?;
         Ok(self.complete())
+    }
+
+    fn publish_module_info(&mut self) -> Result<(), FatalError> {
+        if self.current_module.is_global()
+            || self
+                .exports
+                .iter()
+                .any(|export| export.name == "__info__" && export.arity == 1)
+        {
+            return Ok(());
+        }
+
+        let module_name = self
+            .world
+            .module_name(self.current_module)
+            .ok_or_else(|| {
+                emit_internal_surface_error(
+                    self.world,
+                    "module info synthesis expected a named current module".to_string(),
+                )
+            })?
+            .to_string();
+        let function = build_module_info_function(&self.exports, &module_name).map_err(|error| {
+            emit_internal_surface_error(self.world, format!("module info source synthesis failed: {error}"))
+        })?;
+        let function_id = self
+            .world
+            .reference_function(self.current_module, function.name.clone(), function.arity);
+        self.namespace = self.world.bind_namespace(
+            self.namespace,
+            function.name.clone(),
+            NamespaceSymbol::Function(function_id),
+        );
+        let publication = publish_function_source(
+            self.world,
+            self.code_id,
+            self.current_module,
+            self.current_module,
+            self.namespace,
+            &function,
+            true,
+            CompilerDefineOrigin::LiteralFunction,
+        );
+        self.outputs.push(publication.output);
+        if let Some(export) = publication.export {
+            self.exports.push(export);
+        }
+        Ok(())
     }
 
     fn reserve_types(&mut self, attrs: &[Attribute]) -> Result<(), FatalError> {
@@ -348,20 +422,33 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 }
                 ScopeForm::Import(import) => {
                     if let Some(blocked) = self.apply_import(import)? {
-                        return Ok(Some(blocked));
+                        return Ok(Some(self.blocked_effects(blocked)));
+                    }
+                }
+                ScopeForm::Require(import) => {
+                    if let Some(blocked) = self.apply_require(import)? {
+                        return Ok(Some(self.blocked_effects(blocked)));
                     }
                 }
                 ScopeForm::CompilerService(service) => {
                     self.apply_compiler_service(service)?;
                 }
                 ScopeForm::Function(function) => {
+                    let function_id =
+                        self.world
+                            .reference_function(self.current_module, function.name.clone(), function.arity);
+                    let function_scope = ScopeSnapshot::function(self.current_module, self.namespace, function_id);
+                    let function = match self.expand_function_form(function, function_scope)? {
+                        ExpandedFunction::Complete(function) => function,
+                        ExpandedFunction::Blocked(effects) => return Ok(Some(self.blocked_effects(effects))),
+                    };
                     let publication = publish_function_source(
                         self.world,
                         self.code_id,
                         self.current_module,
                         self.current_module,
                         self.namespace,
-                        function,
+                        &function,
                         true,
                         CompilerDefineOrigin::LiteralFunction,
                     );
@@ -383,7 +470,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                     let mut outputs = self.define_protocol_impl(protocol_impl)?;
                     self.outputs.append(&mut outputs);
                 }
-                ScopeForm::Require(_) | ScopeForm::Struct(_) | ScopeForm::MacroCall(_) => {}
+                ScopeForm::Struct(_) | ScopeForm::MacroCall(_) => {}
             }
         }
         Ok(None)
@@ -490,8 +577,21 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 );
                 Ok(())
             }
-            ScopeForm::Import(import) | ScopeForm::Require(import) => {
+            ScopeForm::Import(import) => {
                 if self.apply_import(&import)?.is_some() {
+                    return Err(emit_job_diagnostic(
+                        self.world,
+                        Diagnostic::error(
+                            codes::INTERNAL_POST_RESOLUTION_LEFTOVER,
+                            "Fz.Compiler.define cannot block while applying nested import/require",
+                            service.span,
+                        ),
+                    ));
+                }
+                Ok(())
+            }
+            ScopeForm::Require(import) => {
+                if self.apply_require(&import)?.is_some() {
                     return Err(emit_job_diagnostic(
                         self.world,
                         Diagnostic::error(
@@ -515,20 +615,584 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         }
     }
 
-    fn apply_import(&mut self, import: &super::quoted_surface::ImportForm) -> Result<Option<JobEffects>, FatalError> {
-        let imported_module = self.world.reference_module(import.path.join("."));
-        if let Some(only) = import.only.as_deref() {
-            for (name, arity) in only {
-                let function = self.world.reference_function(imported_module, name.clone(), *arity);
-                self.namespace =
-                    self.world
-                        .bind_namespace(self.namespace, name.clone(), NamespaceSymbol::Function(function));
+    fn expand_function_form(
+        &mut self,
+        function: &FunctionForm,
+        scope: ScopeSnapshot,
+    ) -> Result<ExpandedFunction, FatalError> {
+        match self.expand_function_source(function.source.clone(), scope, 0)? {
+            ExpandedRoot::Complete(source) => {
+                let mut function = function.clone();
+                function.source = source;
+                Ok(ExpandedFunction::Complete(function))
             }
-            return Ok(None);
+            ExpandedRoot::Blocked(effects) => Ok(ExpandedFunction::Blocked(effects)),
+        }
+    }
+
+    fn expand_function_source(
+        &mut self,
+        source: QuotedSourceRoot,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedRoot, FatalError> {
+        let cursor = source.cursor();
+        if cursor
+            .ast_node()
+            .map_err(|error| emit_internal_surface_error(self.world, format!("function source read failed: {error}")))?
+            .is_some()
+        {
+            return match self.expand_function_clause(&source, &cursor, scope, depth)? {
+                ExpandedValue::Complete(value) => Ok(ExpandedRoot::Complete(source.subroot(value))),
+                ExpandedValue::Blocked(effects) => Ok(ExpandedRoot::Blocked(effects)),
+            };
         }
 
+        let items = cursor.list_items().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("grouped function source read failed: {error}"))
+        })?;
+        let mut changed = false;
+        let mut expanded = Vec::with_capacity(items.len());
+        for item in items {
+            let Some(node) = item.ast_node().map_err(|error| {
+                emit_internal_surface_error(self.world, format!("grouped function item read failed: {error}"))
+            })?
+            else {
+                return Err(emit_internal_surface_error(
+                    self.world,
+                    "grouped function source expected quoted AST items".to_string(),
+                ));
+            };
+            let head = node.head.atom_name().map_err(|error| {
+                emit_internal_surface_error(self.world, format!("grouped function item head read failed: {error}"))
+            })?;
+            if head.starts_with('@') {
+                expanded.push(item.root());
+                continue;
+            }
+            match self.expand_function_clause(&source, &item, scope, depth)? {
+                ExpandedValue::Complete(value) => {
+                    changed |= value != item.root();
+                    expanded.push(value);
+                }
+                ExpandedValue::Blocked(effects) => return Ok(ExpandedRoot::Blocked(effects)),
+            }
+        }
+
+        if changed {
+            let root = source.builder().list(&expanded).map_err(|error| {
+                emit_internal_surface_error(self.world, format!("grouped function source rebuild failed: {error}"))
+            })?;
+            Ok(ExpandedRoot::Complete(source.subroot(root)))
+        } else {
+            Ok(ExpandedRoot::Complete(source))
+        }
+    }
+
+    fn expand_function_clause(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, FatalError> {
+        let Some(node) = cursor.ast_node().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("function clause read failed: {error}"))
+        })?
+        else {
+            return Err(emit_internal_surface_error(
+                self.world,
+                "function source expected a quoted AST node".to_string(),
+            ));
+        };
+        let head = node.head.atom_name().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("function clause head read failed: {error}"))
+        })?;
+        if head == "extern" {
+            return Ok(ExpandedValue::Complete(cursor.root()));
+        }
+        if !matches!(head.as_str(), "fn" | "fnp" | "defmacro") {
+            return Err(emit_internal_surface_error(
+                self.world,
+                format!("function source expected fn/fnp/defmacro/extern, got `{head}`"),
+            ));
+        }
+
+        let args = node.tail.list_items().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("function clause args read failed: {error}"))
+        })?;
+        let Some(kwargs) = args.get(1) else {
+            return Ok(ExpandedValue::Complete(cursor.root()));
+        };
+        let kw_items = kwargs.list_items().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("function clause keyword args read failed: {error}"))
+        })?;
+
+        let mut changed = false;
+        let mut expanded_kw = Vec::with_capacity(kw_items.len());
+        for kw in kw_items {
+            let tuple = kw.tuple_items().map_err(|error| {
+                emit_internal_surface_error(self.world, format!("function clause keyword read failed: {error}"))
+            })?;
+            if tuple.len() != 2 {
+                return Err(emit_internal_surface_error(
+                    self.world,
+                    "function clause expected keyword tuples".to_string(),
+                ));
+            }
+            if tuple[0].atom_name().map_err(|error| {
+                emit_internal_surface_error(self.world, format!("function clause keyword name read failed: {error}"))
+            })? != "do"
+            {
+                expanded_kw.push(kw.root());
+                continue;
+            }
+
+            match self.expand_cursor(owner, &tuple[1], scope, depth)? {
+                ExpandedValue::Complete(body) => {
+                    if body == tuple[1].root() {
+                        expanded_kw.push(kw.root());
+                    } else {
+                        let rebuilt = owner.builder().tuple(&[tuple[0].root(), body]).map_err(|error| {
+                            emit_internal_surface_error(
+                                self.world,
+                                format!("function clause keyword rebuild failed: {error}"),
+                            )
+                        })?;
+                        expanded_kw.push(rebuilt);
+                        changed = true;
+                    }
+                }
+                ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+            }
+        }
+        if !changed {
+            return Ok(ExpandedValue::Complete(cursor.root()));
+        }
+
+        let kw_root = owner.builder().list(&expanded_kw).map_err(|error| {
+            emit_internal_surface_error(
+                self.world,
+                format!("function clause keyword list rebuild failed: {error}"),
+            )
+        })?;
+        let mut expanded_args = args.iter().map(QuotedSourceCursor::root).collect::<Vec<_>>();
+        expanded_args[1] = kw_root;
+        let tail = owner.builder().list(&expanded_args).map_err(|error| {
+            emit_internal_surface_error(self.world, format!("function clause arg list rebuild failed: {error}"))
+        })?;
+        let rebuilt = owner
+            .builder()
+            .tuple(&[node.head.root(), node.meta.root(), tail])
+            .map_err(|error| {
+                emit_internal_surface_error(self.world, format!("function clause rebuild failed: {error}"))
+            })?;
+        Ok(ExpandedValue::Complete(rebuilt))
+    }
+
+    fn expand_root(
+        &mut self,
+        root: QuotedSourceRoot,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedRoot, FatalError> {
+        match self.expand_cursor(&root, &root.cursor(), scope, depth)? {
+            ExpandedValue::Complete(value) => Ok(ExpandedRoot::Complete(root.subroot(value))),
+            ExpandedValue::Blocked(effects) => Ok(ExpandedRoot::Blocked(effects)),
+        }
+    }
+
+    fn expand_cursor(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, FatalError> {
+        if depth > MAX_MACRO_EXPANSION_DEPTH {
+            return Err(emit_job_diagnostic(
+                self.world,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    format!("compiler2 macro expansion exceeded depth budget {MAX_MACRO_EXPANSION_DEPTH}"),
+                    Span::DUMMY,
+                ),
+            ));
+        }
+
+        if let Some(node) = cursor.ast_node().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("quoted expansion read failed: {error}"))
+        })? && let Some(result) = self.expand_ast_call(owner, cursor, &node, scope, depth)?
+        {
+            return Ok(result);
+        }
+
+        match cursor.root().tag() {
+            ValueKind::LIST => self.expand_list(owner, cursor, scope, depth),
+            ValueKind::STRUCT => self.expand_tuple(owner, cursor, scope, depth),
+            ValueKind::MAP => self.expand_map(owner, cursor, scope, depth),
+            _ => Ok(ExpandedValue::Complete(cursor.root())),
+        }
+    }
+
+    fn expand_ast_call(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        node: &super::source::QuotedAstNode,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<Option<ExpandedValue>, FatalError> {
+        if !is_list_like(&node.tail) {
+            return Ok(None);
+        }
+        let args = node.tail.list_items().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("quoted call arg read failed: {error}"))
+        })?;
+
+        if let Some(result) = self.expand_remote_ast_call(owner, node, scope, depth, cursor.root(), &args)? {
+            return Ok(Some(result));
+        }
+
+        let Ok(head) = node.head.atom_name() else {
+            return Ok(None);
+        };
+        if head == "quote" {
+            return Ok(Some(ExpandedValue::Complete(cursor.root())));
+        }
+        let Some(symbol) = self
+            .world
+            .lookup_callable_namespace(scope.namespace(), &head, args.len())
+        else {
+            return Ok(None);
+        };
+        let function = match symbol {
+            NamespaceSymbol::Macro(function) => function,
+            NamespaceSymbol::Function(_) | NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) => return Ok(None),
+        };
+        self.expand_macro_invocation(owner, cursor.root(), function, scope, depth, &args)
+            .map(Some)
+    }
+
+    fn expand_remote_ast_call(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        node: &super::source::QuotedAstNode,
+        scope: ScopeSnapshot,
+        depth: usize,
+        input_root: AnyValueRef,
+        args: &[QuotedSourceCursor],
+    ) -> Result<Option<ExpandedValue>, FatalError> {
+        let Some(head_node) = node.head.ast_node().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("quoted remote call read failed: {error}"))
+        })?
+        else {
+            return Ok(None);
+        };
+        if head_node.head.atom_name().as_deref() != Ok(".") {
+            return Ok(None);
+        }
+        let target = head_node.tail.list_items().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("quoted remote target read failed: {error}"))
+        })?;
+        let [module_cursor, function_cursor] = target.as_slice() else {
+            return Ok(None);
+        };
+        let module_path = match alias_path(module_cursor) {
+            Ok(path) => path,
+            Err(_) => return Ok(None),
+        };
+        let function_name = function_cursor.atom_name().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("quoted remote function name read failed: {error}"))
+        })?;
+        let Some(module) = self.world.lookup_module_path(scope.namespace(), &module_path.join(".")) else {
+            return Ok(None);
+        };
+        if self.world.module_defined_revision(module).is_none() {
+            return Ok(None);
+        }
+        let Some(NamespaceSymbol::Macro(function)) =
+            self.world.lookup_module_callable(module, &function_name, args.len())
+        else {
+            return Ok(None);
+        };
+        if !self.required_remote_macros.contains(&function) {
+            return Ok(None);
+        }
+        self.expand_macro_invocation(owner, input_root, function, scope, depth, args)
+            .map(Some)
+    }
+
+    fn expand_macro_invocation(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        input_root: AnyValueRef,
+        function: FunctionId,
+        scope: ScopeSnapshot,
+        depth: usize,
+        args: &[QuotedSourceCursor],
+    ) -> Result<ExpandedValue, FatalError> {
+        let macro_fact = FactKey::MacroExecutable(function);
+        if self.world.fact_revision(macro_fact.clone()).is_none() {
+            return Ok(ExpandedValue::Blocked(JobEffects::wait_on(
+                macro_fact,
+                [Job::BuildMacroExecutable(function)],
+            )));
+        }
+        self.reads.push(macro_fact);
+
+        let builder = owner.builder();
+        let caller = self
+            .world
+            .project_env_value(&builder, scope, QuotedLexicalContextKind::Caller)
+            .map_err(|error| emit_internal_surface_error(self.world, format!("__ENV__ projection failed: {error}")))?;
+        let arg_roots = args.iter().map(QuotedSourceCursor::root).collect::<Vec<_>>();
+        let expanded = self
+            .world
+            .run_macro_on_source(function, owner, caller, &arg_roots)
+            .map_err(|error| {
+                emit_job_diagnostic(
+                    self.world,
+                    Diagnostic::error(codes::LOWER_UNSUPPORTED, error, Span::DUMMY),
+                )
+            })?;
+        emit_macro_expanded(self.world, function, owner, input_root, &expanded, depth, args.len());
+        match self.expand_root(expanded, scope, depth + 1)? {
+            ExpandedRoot::Complete(root) => Ok(ExpandedValue::Complete(root.root())),
+            ExpandedRoot::Blocked(effects) => Ok(ExpandedValue::Blocked(effects)),
+        }
+    }
+
+    fn expand_list(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, FatalError> {
+        let items = cursor.list_items().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("quoted list expansion failed: {error}"))
+        })?;
+        let mut changed = false;
+        let mut expanded = Vec::with_capacity(items.len());
+        for item in items {
+            match self.expand_cursor(owner, &item, scope, depth)? {
+                ExpandedValue::Complete(value) => {
+                    changed |= value != item.root();
+                    expanded.push(value);
+                }
+                ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+            }
+        }
+        if changed {
+            let root = owner.builder().list(&expanded).map_err(|error| {
+                emit_internal_surface_error(self.world, format!("quoted list rebuild failed: {error}"))
+            })?;
+            Ok(ExpandedValue::Complete(root))
+        } else {
+            Ok(ExpandedValue::Complete(cursor.root()))
+        }
+    }
+
+    fn expand_tuple(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, FatalError> {
+        let items = cursor.tuple_items().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("quoted tuple expansion failed: {error}"))
+        })?;
+        let mut changed = false;
+        let mut expanded = Vec::with_capacity(items.len());
+        for item in items {
+            match self.expand_cursor(owner, &item, scope, depth)? {
+                ExpandedValue::Complete(value) => {
+                    changed |= value != item.root();
+                    expanded.push(value);
+                }
+                ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+            }
+        }
+        if changed {
+            let root = owner.builder().tuple(&expanded).map_err(|error| {
+                emit_internal_surface_error(self.world, format!("quoted tuple rebuild failed: {error}"))
+            })?;
+            Ok(ExpandedValue::Complete(root))
+        } else {
+            Ok(ExpandedValue::Complete(cursor.root()))
+        }
+    }
+
+    fn expand_map(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, FatalError> {
+        let entries = cursor.map_entries().map_err(|error| {
+            emit_internal_surface_error(self.world, format!("quoted map expansion failed: {error}"))
+        })?;
+        let mut changed = false;
+        let mut expanded = Vec::with_capacity(entries.len());
+        for (key, value) in entries {
+            let key_root = match self.expand_cursor(owner, &key, scope, depth)? {
+                ExpandedValue::Complete(root) => root,
+                ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+            };
+            let value_root = match self.expand_cursor(owner, &value, scope, depth)? {
+                ExpandedValue::Complete(root) => root,
+                ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+            };
+            changed |= key_root != key.root() || value_root != value.root();
+            expanded.push((key_root, value_root));
+        }
+        if changed {
+            let root = owner.builder().map(&expanded).map_err(|error| {
+                emit_internal_surface_error(self.world, format!("quoted map rebuild failed: {error}"))
+            })?;
+            Ok(ExpandedValue::Complete(root))
+        } else {
+            Ok(ExpandedValue::Complete(cursor.root()))
+        }
+    }
+
+    fn blocked_effects(&self, mut effects: JobEffects) -> JobEffects {
+        effects.reads.extend(self.reads.clone());
+        effects.outputs.extend(self.outputs.clone());
+        effects
+    }
+
+    fn apply_require(&mut self, import: &super::quoted_surface::ImportForm) -> Result<Option<JobEffects>, FatalError> {
+        let required_module = self.world.reference_module(import.path.join("."));
+        let surface_fact = FactKey::ModuleDefined(required_module);
+        if self.world.module_defined_revision(required_module).is_none() {
+            let follow_up = if required_module.is_global() {
+                Vec::new()
+            } else {
+                vec![Job::DefineModule(required_module)]
+            };
+            return Ok(Some(JobEffects::wait_on(surface_fact, follow_up)));
+        }
+        self.reads.push(surface_fact);
+
+        let exports = self.world.module_exports(required_module);
+        let selected = self.select_required_macro_exports(import, &exports)?;
+        if let Some(blocked) = self.wait_for_imported_macro_executables(&selected) {
+            return Ok(Some(blocked));
+        }
+        self.record_required_remote_macros(&selected);
+        Ok(None)
+    }
+
+    fn select_required_macro_exports(
+        &mut self,
+        import: &super::quoted_surface::ImportForm,
+        exports: &[ModuleExport],
+    ) -> Result<Vec<ModuleExport>, FatalError> {
+        if let Some(only) = import.only.as_deref() {
+            let mut selected = Vec::with_capacity(only.len());
+            for (name, arity) in only {
+                let Some(export) = find_export(exports, name, *arity) else {
+                    return Err(emit_job_diagnostic(
+                        self.world,
+                        Diagnostic::error(
+                            codes::RESOLVE_UNKNOWN_IMPORT,
+                            format!(
+                                "module `{}` does not export macro `{}/{}`",
+                                import.path.join("."),
+                                name,
+                                arity
+                            ),
+                            import.span,
+                        ),
+                    ));
+                };
+                if !matches!(export.symbol, NamespaceSymbol::Macro(_)) {
+                    return Err(emit_job_diagnostic(
+                        self.world,
+                        Diagnostic::error(
+                            codes::RESOLVE_UNKNOWN_IMPORT,
+                            format!(
+                                "module `{}` does not export macro `{}/{}`",
+                                import.path.join("."),
+                                name,
+                                arity
+                            ),
+                            import.span,
+                        ),
+                    ));
+                }
+                selected.push(export.clone());
+            }
+            return Ok(selected);
+        }
+
+        let mut denied = HashSet::new();
+        for (name, arity) in import.except.as_deref().unwrap_or(&[]) {
+            let Some(export) = find_export(exports, name, *arity) else {
+                return Err(emit_job_diagnostic(
+                    self.world,
+                    Diagnostic::error(
+                        codes::RESOLVE_UNKNOWN_IMPORT,
+                        format!(
+                            "module `{}` does not export macro `{}/{}`",
+                            import.path.join("."),
+                            name,
+                            arity
+                        ),
+                        import.span,
+                    ),
+                ));
+            };
+            if !matches!(export.symbol, NamespaceSymbol::Macro(_)) {
+                return Err(emit_job_diagnostic(
+                    self.world,
+                    Diagnostic::error(
+                        codes::RESOLVE_UNKNOWN_IMPORT,
+                        format!(
+                            "module `{}` does not export macro `{}/{}`",
+                            import.path.join("."),
+                            name,
+                            arity
+                        ),
+                        import.span,
+                    ),
+                ));
+            }
+            denied.insert((name.as_str(), *arity));
+        }
+        Ok(exports
+            .iter()
+            .filter(|export| matches!(export.symbol, NamespaceSymbol::Macro(_)))
+            .filter(|export| !denied.contains(&(export.name.as_str(), export.arity)))
+            .cloned()
+            .collect())
+    }
+
+    fn apply_import(&mut self, import: &super::quoted_surface::ImportForm) -> Result<Option<JobEffects>, FatalError> {
+        let imported_module = self.world.reference_module(import.path.join("."));
         let surface_fact = FactKey::ModuleDefined(imported_module);
         if self.world.module_defined_revision(imported_module).is_none() {
+            if let Some(only) = import.only.as_deref() {
+                if !self.world.is_runtime_prelude(self.code_id) {
+                    let follow_up = if imported_module.is_global() {
+                        Vec::new()
+                    } else {
+                        vec![Job::DefineModule(imported_module)]
+                    };
+                    return Ok(Some(JobEffects::wait_on(surface_fact, follow_up)));
+                }
+                for (name, arity) in only {
+                    let function = self.world.reference_function(imported_module, name.clone(), *arity);
+                    self.namespace =
+                        self.world
+                            .bind_namespace(self.namespace, name.clone(), NamespaceSymbol::Function(function));
+                }
+                return Ok(None);
+            }
             let follow_up = if imported_module.is_global() {
                 Vec::new()
             } else {
@@ -539,7 +1203,28 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         self.reads.push(surface_fact);
 
         let exports = self.world.module_exports(imported_module);
-        if let Some(except) = import.except.as_deref() {
+        let selected = if let Some(only) = import.only.as_deref() {
+            let mut selected = Vec::with_capacity(only.len());
+            for (name, arity) in only {
+                let Some(export) = find_export(&exports, name, *arity) else {
+                    return Err(emit_job_diagnostic(
+                        self.world,
+                        Diagnostic::error(
+                            codes::RESOLVE_UNKNOWN_IMPORT,
+                            format!(
+                                "module `{}` does not export `{}/{}`",
+                                import.path.join("."),
+                                name,
+                                arity
+                            ),
+                            import.span,
+                        ),
+                    ));
+                };
+                selected.push(export.clone());
+            }
+            selected
+        } else if let Some(except) = import.except.as_deref() {
             let mut deny = HashSet::new();
             for (name, arity) in except {
                 if find_export(&exports, name, *arity).is_none() {
@@ -559,20 +1244,48 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 }
                 deny.insert((name.as_str(), *arity));
             }
-            for export in exports
+            exports
                 .iter()
                 .filter(|export| !deny.contains(&(export.name.as_str(), export.arity)))
-            {
-                self.namespace = bind_export(self.world, self.namespace, export);
-            }
+                .cloned()
+                .collect()
         } else {
-            for export in &exports {
-                self.namespace = bind_export(self.world, self.namespace, export);
-            }
+            exports
+        };
+
+        if let Some(blocked) = self.wait_for_imported_macro_executables(&selected) {
+            return Ok(Some(blocked));
+        }
+        for export in &selected {
+            self.namespace = bind_export(self.world, self.namespace, export);
         }
         Ok(None)
     }
 
+    fn record_required_remote_macros(&mut self, exports: &[ModuleExport]) {
+        for export in exports {
+            if let NamespaceSymbol::Macro(function) = export.symbol {
+                self.required_remote_macros.insert(function);
+            }
+        }
+    }
+
+    fn wait_for_imported_macro_executables(&mut self, exports: &[ModuleExport]) -> Option<JobEffects> {
+        let mut effects = JobEffects::default();
+        for export in exports {
+            let NamespaceSymbol::Macro(function) = export.symbol else {
+                continue;
+            };
+            let fact = FactKey::MacroExecutable(function);
+            if self.world.fact_revision(fact.clone()).is_some() {
+                self.reads.push(fact);
+            } else {
+                effects.waits.push(fact);
+                effects.follow_up.push(Job::BuildMacroExecutable(function));
+            }
+        }
+        (!effects.waits.is_empty()).then_some(effects)
+    }
     fn define_protocol_impl(&mut self, protocol_impl: &ProtocolImplForm) -> Result<Outputs, FatalError> {
         let protocol = reference_impl_protocol_module(
             self.world,
@@ -674,6 +1387,96 @@ fn local_protocol_names(surface: &ScopeSurface) -> HashSet<String> {
         .collect()
 }
 
+fn build_module_info_function(exports: &[ModuleExport], module_name: &str) -> Result<FunctionForm, QuotedSourceError> {
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let meta = QuotedSourceMetadata::default();
+    let functions = module_info_pairs(&builder, exports, |symbol| {
+        matches!(symbol, NamespaceSymbol::Function(_))
+    })?;
+    let macros = module_info_pairs(&builder, exports, |symbol| matches!(symbol, NamespaceSymbol::Macro(_)))?;
+    let kind = builder.variable("kind", &meta)?;
+    let body = module_info_case(&builder, &meta, kind, functions, macros, builder.atom(module_name))?;
+    let clause = module_info_function_clause(&builder, &meta, kind, body)?;
+    Ok(FunctionForm {
+        source: builder.root(builder.list(&[clause])?)?,
+        name: "__info__".to_string(),
+        arity: 1,
+        is_macro: false,
+        is_private: false,
+        variadic: false,
+        span: Span::DUMMY,
+    })
+}
+
+fn module_info_pairs(
+    builder: &super::source::QuotedSourceBuilder,
+    exports: &[ModuleExport],
+    keep: impl Fn(&NamespaceSymbol) -> bool,
+) -> Result<AnyValueRef, QuotedSourceError> {
+    let pairs = exports
+        .iter()
+        .filter(|export| keep(&export.symbol))
+        .map(|export| builder.tuple(&[builder.atom(&export.name), builder.int(export.arity as i64)]))
+        .collect::<Result<Vec<_>, _>>()?;
+    builder.list(&pairs)
+}
+
+fn module_info_function_clause(
+    builder: &super::source::QuotedSourceBuilder,
+    meta: &QuotedSourceMetadata,
+    param: AnyValueRef,
+    body: AnyValueRef,
+) -> Result<AnyValueRef, QuotedSourceError> {
+    let head = builder.call("__info__", meta, &[param])?;
+    let do_kw = builder.keyword("do", body)?;
+    let kw = builder.list(&[do_kw])?;
+    builder.call("fn", meta, &[head, kw])
+}
+
+fn module_info_case(
+    builder: &super::source::QuotedSourceBuilder,
+    meta: &QuotedSourceMetadata,
+    subject: AnyValueRef,
+    functions: AnyValueRef,
+    macros: AnyValueRef,
+    module: AnyValueRef,
+) -> Result<AnyValueRef, QuotedSourceError> {
+    let clauses = [
+        module_info_match_clause(builder, meta, builder.atom("functions"), functions)?,
+        module_info_match_clause(builder, meta, builder.atom("macros"), macros)?,
+        module_info_match_clause(builder, meta, builder.atom("module"), module)?,
+        module_info_match_clause(builder, meta, builder.variable("_", meta)?, builder.nil())?,
+    ];
+    let body = builder.list(&clauses)?;
+    let kw = builder.list(&[builder.keyword("do", body)?])?;
+    builder.call("case", meta, &[subject, kw])
+}
+
+fn module_info_match_clause(
+    builder: &super::source::QuotedSourceBuilder,
+    meta: &QuotedSourceMetadata,
+    pattern: AnyValueRef,
+    body: AnyValueRef,
+) -> Result<AnyValueRef, QuotedSourceError> {
+    let patterns = builder.list(&[pattern])?;
+    builder.call("->", meta, &[patterns, body])
+}
+
+fn alias_path(cursor: &QuotedSourceCursor) -> Result<Vec<String>, QuotedSourceError> {
+    let Some(node) = cursor.ast_node()? else {
+        return Err(QuotedSourceError::new("expected quoted module alias"));
+    };
+    if node.head.atom_name()? != "__aliases__" {
+        return Err(QuotedSourceError::new("expected quoted module alias"));
+    }
+    node.tail.list_atom_names()
+}
+
+fn is_list_like(cursor: &QuotedSourceCursor) -> bool {
+    cursor.root().is_empty_list() || cursor.root().tag() == ValueKind::LIST
+}
+
 struct FunctionPublication {
     function: FunctionId,
     output: Output,
@@ -758,6 +1561,35 @@ fn emit_compiler_service_define(
         },
         &metadata! {
             origin: origin_name,
+            function_ref: opaque_debug(function_ref),
+        },
+    );
+}
+
+fn emit_macro_expanded(
+    world: &World<'_>,
+    function: FunctionId,
+    input: &QuotedSourceRoot,
+    input_root: AnyValueRef,
+    output: &QuotedSourceRoot,
+    depth: usize,
+    arg_count: usize,
+) {
+    let function_ref = world.function_ref(function);
+    world.tel().execute(
+        &["fz", "compiler2", "macro", "expanded"],
+        &measurements! {
+            function_id: function.as_u32() as u64,
+            module_id: function_ref.module.as_u32() as u64,
+            depth: depth as u64,
+            depth_budget: MAX_MACRO_EXPANSION_DEPTH as u64,
+            arg_count: arg_count as u64,
+            input_heap_id: input.key().heap_id as u64,
+            input_root_ref: input_root.raw_word(),
+            output_heap_id: output.key().heap_id as u64,
+            output_root_ref: output.root().raw_word(),
+        },
+        &metadata! {
             function_ref: opaque_debug(function_ref),
         },
     );
