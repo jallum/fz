@@ -5,14 +5,15 @@
     "fz-rh2.16.9.2"
   ],
   "blocks": [],
+  "closed_at": "2026-06-10T17:16:00Z",
   "created": "2026-06-10T15:38:41Z",
   "description": "Delete the now-unnecessary machinery that treated macros like ordinary executable roots: macro-root bookkeeping, root/artifact special cases that only existed to carry defmacro toward runtime codegen, and stale tests/docs that imply macros belong in the final program. Signal: the remaining code reads like one model—defmacro is compile-time-only, BackendProgram is the interpreter handoff, and no macro path reaches native/codegen; docs and telemetry-based tests state that invariant explicitly.",
   "id": "fz-rh2.16.9.3",
   "labels": [],
   "parent": "fz-rh2.16.9",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 macro cleanup: delete macro-root runtime scaffolding and restate the invariant",
   "type": "task",
-  "updated_at": "2026-06-10T17:13:26Z"
+  "updated_at": "2026-06-10T17:16:00Z"
 }
