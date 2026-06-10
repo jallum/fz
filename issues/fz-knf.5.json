@@ -6,6 +6,8 @@
     "fz-uku"
   ],
   "blocks": [],
+  "closed_at": "2026-06-10T17:58:05Z",
+  "close_reason": "split: edit-driven stability tests belong to D3 of everything-is-incremental (submit_code is append-only; comparators gate on CodeId); green verification already done at fz-knf.3 close",
   "created": "2026-06-10T01:53:47Z",
   "description": "Tests via submit/drive: body edit =\u003e function fact bumps, module/code stable; reposition/whitespace/ns =\u003e all stable; signature/@spec edit =\u003e module bumps. Verify ScopeCode re-runs on resubmission off freshly-stored source. lib+matrix 0 failed, zero warnings. Update .agent docs on fact/revision identity. Remove any temp scaffolding.",
   "id": "fz-knf.5",
@@ -18,7 +20,7 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Revision-stability tests + full green + docs; strip remaining scaffolding",
   "type": "task",
   "updated_at": "2026-06-10T17:58:05Z"
