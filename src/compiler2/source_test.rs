@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use super::{
-    QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceFingerprintPolicy, QuotedSourceHeap,
+    Horizon, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceFingerprintPolicy, QuotedSourceHeap,
     QuotedSourceMetadata, QuotedSourceRoot, QuotedSourceSpan, parse_quoted_program,
 };
 use crate::modules::runtime_library;
@@ -372,4 +372,68 @@ fn semantic_fingerprint_walks_long_lists_of_bitstring_heavy_nodes() {
         semantic.canonical.contains("atom:@spec") && semantic.canonical.contains("bits:"),
         "semantic fingerprint should walk long lists of bitstring-heavy quoted nodes safely"
     );
+}
+
+fn parse_src(name: &str, text: &str) -> QuotedSourceRoot {
+    parse_quoted_program(name.to_string(), text, &ConfiguredTelemetry::new()).expect("parse quoted program")
+}
+
+// Spans and source positions are not semantic content: the same code parsed
+// under a different name or shifted by blank lines is semantically equal at
+// every horizon.
+#[test]
+fn semantically_eq_ignores_span_and_position() {
+    let a = parse_src("a.fz", "fn foo(x), do: x + 1\n");
+    let b = parse_src("b.fz", "\n\nfn foo(x), do: x + 1\n");
+    assert!(
+        a.semantically_eq(&b, Horizon::Full),
+        "position is not semantic content (full)"
+    );
+    assert!(
+        a.semantically_eq(&b, Horizon::Surface),
+        "position is not semantic content (surface)"
+    );
+}
+
+// The function body is part of its definition (Full) but below the module
+// surface (Surface): a body-only edit is a function change, not a module change.
+#[test]
+fn semantically_eq_full_sees_body_changes_but_surface_does_not() {
+    let a = parse_src("f.fz", "fn foo(x), do: x + 1\n");
+    let b = parse_src("f.fz", "fn foo(x), do: x + 2\n");
+    assert!(
+        !a.semantically_eq(&b, Horizon::Full),
+        "the body is part of the function definition"
+    );
+    assert!(
+        a.semantically_eq(&b, Horizon::Surface),
+        "the do: body is below the module surface"
+    );
+}
+
+// Signatures (name, arity, guards) are surface — they are above the do: body,
+// so the surface horizon sees them change.
+#[test]
+fn semantically_eq_surface_sees_signature_changes() {
+    let base = parse_src("f.fz", "fn foo(x), do: x + 1\n");
+    let renamed = parse_src("f.fz", "fn bar(x), do: x + 1\n");
+    let widened = parse_src("f.fz", "fn foo(x, y), do: x + 1\n");
+    let guarded = parse_src("f.fz", "fn foo(x) when x > 0, do: x + 1\n");
+    assert!(
+        !base.semantically_eq(&renamed, Horizon::Surface),
+        "the function name is surface"
+    );
+    assert!(!base.semantically_eq(&widened, Horizon::Surface), "arity is surface");
+    assert!(!base.semantically_eq(&guarded, Horizon::Surface), "guards are surface");
+}
+
+// A multi-clause module re-parsed verbatim is equal at both horizons — the
+// walk handles guards, multiple clauses, and patterns without false negatives.
+#[test]
+fn semantically_eq_is_stable_across_reparse_of_multi_clause_source() {
+    let src = "fn foo(x) when x > 0, do: x + 1\nfn foo(_), do: 0\n";
+    let a = parse_src("a.fz", src);
+    let b = parse_src("b.fz", src);
+    assert!(a.semantically_eq(&b, Horizon::Full));
+    assert!(a.semantically_eq(&b, Horizon::Surface));
 }

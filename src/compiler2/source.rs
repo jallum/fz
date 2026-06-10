@@ -447,6 +447,16 @@ pub struct QuotedSourceRoot {
     key: QuotedSourceKey,
 }
 
+/// How deep a semantic comparison descends. `Full` compares to the leaves —
+/// function identity, where the body is part of the definition. `Surface` stops
+/// at each `do:` body — module/code identity, where bodies belong to their own
+/// per-function facts, so a body-only edit leaves the surface unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Horizon {
+    Full,
+    Surface,
+}
+
 impl QuotedSourceRoot {
     /// The owning quoted-source carrier.
     ///
@@ -475,6 +485,18 @@ impl QuotedSourceRoot {
         policy: QuotedSourceFingerprintPolicy,
     ) -> Result<QuotedSourceFingerprint, QuotedSourceError> {
         fingerprint_root(&self.heap, self.root, policy)
+    }
+
+    /// Semantic structural equality, fast-failing at the first difference.
+    /// Spans and namespace-ids are not semantic content and are ignored; at the
+    /// `Surface` horizon each `do:` body is skipped (those are owned by their
+    /// own per-function facts). A structural error in either graph is treated as
+    /// "not equal" — conservative: it forces a revision bump rather than risk a
+    /// missed change.
+    pub fn semantically_eq(&self, other: &QuotedSourceRoot, horizon: Horizon) -> bool {
+        let left = self.heap.process.borrow();
+        let right = other.heap.process.borrow();
+        values_eq(&left, self.root, &right, other.root, horizon).unwrap_or(false)
     }
 
     pub fn cursor(&self) -> QuotedSourceCursor {
@@ -854,6 +876,224 @@ fn fingerprint_bitstring(value: AnyValueRef) -> Result<String, QuotedSourceError
     }
     write!(&mut rendered, "/{bit_len}").expect("write to string");
     Ok(rendered)
+}
+
+/// Two-sided semantic equality over two quoted graphs in (possibly) different
+/// heaps. Mirrors `fingerprint_value`'s traversal but compares in lockstep and
+/// fast-fails — no canonical string is ever built. Atoms compare by rendered
+/// name (atom ids differ per heap); structs by schema name + fields; lists by
+/// spine; maps by content (storage order is not cross-heap-stable).
+fn values_eq(
+    pa: &Process,
+    a: AnyValueRef,
+    pb: &Process,
+    b: AnyValueRef,
+    horizon: Horizon,
+) -> Result<bool, QuotedSourceError> {
+    let tag = a.tag();
+    if tag != b.tag() {
+        return Ok(false);
+    }
+    match tag {
+        ValueKind::NULL => Ok(true),
+        ValueKind::INT => {
+            Ok(a.load_int().map_err(QuotedSourceError::from)? == b.load_int().map_err(QuotedSourceError::from)?)
+        }
+        ValueKind::FLOAT => Ok(a.load_float().map_err(QuotedSourceError::from)?.to_bits()
+            == b.load_float().map_err(QuotedSourceError::from)?.to_bits()),
+        ValueKind::ATOM => {
+            let left = render_atom_name(pa, a.load_atom().map_err(QuotedSourceError::from)? as u32)?;
+            let right = render_atom_name(pb, b.load_atom().map_err(QuotedSourceError::from)? as u32)?;
+            Ok(left == right)
+        }
+        ValueKind::LIST => list_eq(pa, a, pb, b, horizon),
+        ValueKind::MAP => map_eq(pa, a, pb, b, horizon),
+        ValueKind::STRUCT => struct_eq(pa, a, pb, b, horizon),
+        ValueKind::BITSTRING | ValueKind::PROCBIN => bitstring_eq(a, b),
+        other => Err(QuotedSourceError::new(format!(
+            "quoted source value cannot contain runtime kind {other:?}"
+        ))),
+    }
+}
+
+fn list_eq(
+    pa: &Process,
+    a: AnyValueRef,
+    pb: &Process,
+    b: AnyValueRef,
+    horizon: Horizon,
+) -> Result<bool, QuotedSourceError> {
+    let mut left = a;
+    let mut right = b;
+    loop {
+        let (left_empty, right_empty) = (left.is_empty_list(), right.is_empty_list());
+        if left_empty || right_empty {
+            return Ok(left_empty == right_empty);
+        }
+        let left_head = pa.heap.read_list_head_ref(left).map_err(QuotedSourceError::from)?;
+        let right_head = pb.heap.read_list_head_ref(right).map_err(QuotedSourceError::from)?;
+        if !values_eq(pa, left_head, pb, right_head, horizon)? {
+            return Ok(false);
+        }
+        left = pa.heap.read_list_tail_ref(left).map_err(QuotedSourceError::from)?;
+        right = pb.heap.read_list_tail_ref(right).map_err(QuotedSourceError::from)?;
+    }
+}
+
+/// Map entries minus the metadata keys the Semantic policy drops (span +
+/// namespace-id). Storage order is not cross-heap-stable (atom ids and pointer
+/// payloads differ), so callers match by content.
+fn included_map_entries(
+    proc: &Process,
+    value: AnyValueRef,
+) -> Result<Vec<(AnyValueRef, AnyValueRef)>, QuotedSourceError> {
+    let addr = value.map_addr().map_err(QuotedSourceError::from)?;
+    let count = unsafe { map_count(addr as *const u8) };
+    let mut entries = Vec::with_capacity(count);
+    for index in 0..count {
+        let tag = unsafe { ptr::read(map_tag_ptr(addr as *const u8).add(index)) };
+        let keys = unsafe { map_keys_ptr(addr as *const u8, count) };
+        let values = unsafe { map_values_ptr(addr as *const u8, count) };
+        let key_ref = storage_ref(unsafe { keys.add(index) }, map_key_kind(tag))?;
+        if key_ref.tag() == ValueKind::ATOM {
+            let atom_name = render_atom_name(proc, key_ref.load_atom().map_err(QuotedSourceError::from)? as u32)?;
+            if atom_name == META_NAMESPACE_ID_KEY || atom_name == META_SPAN_KEY {
+                continue;
+            }
+        }
+        let value_ref = storage_ref(unsafe { values.add(index) }, map_value_kind(tag))?;
+        entries.push((key_ref, value_ref));
+    }
+    Ok(entries)
+}
+
+fn map_eq(
+    pa: &Process,
+    a: AnyValueRef,
+    pb: &Process,
+    b: AnyValueRef,
+    horizon: Horizon,
+) -> Result<bool, QuotedSourceError> {
+    let left = included_map_entries(pa, a)?;
+    let mut right = included_map_entries(pb, b)?;
+    if left.len() != right.len() {
+        return Ok(false);
+    }
+    // Metadata maps are tiny; match each left entry to an unused right entry by
+    // content (key + value), consuming it, since order is not comparable.
+    for (left_key, left_value) in &left {
+        let mut matched = None;
+        for (index, (right_key, right_value)) in right.iter().enumerate() {
+            if values_eq(pa, *left_key, pb, *right_key, horizon)?
+                && values_eq(pa, *left_value, pb, *right_value, horizon)?
+            {
+                matched = Some(index);
+                break;
+            }
+        }
+        match matched {
+            Some(index) => {
+                right.swap_remove(index);
+            }
+            None => return Ok(false),
+        }
+    }
+    Ok(true)
+}
+
+struct StructLayout {
+    name: String,
+    offsets: Vec<u32>,
+}
+
+/// Schema name + field offsets, cloned so the registry borrow is released
+/// before recursing (nested structs in the same heap would otherwise double
+/// borrow). Mirrors `fingerprint_struct`'s AnyValue-only validation.
+fn struct_layout(proc: &Process, value: AnyValueRef) -> Result<StructLayout, QuotedSourceError> {
+    let addr = value.struct_addr().map_err(QuotedSourceError::from)?;
+    let schema_id = unsafe { struct_schema_id(addr as *const u8) };
+    let schema = proc.heap.schemas_registry().borrow().get(schema_id).clone();
+    if schema
+        .fields
+        .iter()
+        .any(|field| field.kind != fz_runtime::heap::FieldKind::AnyValue)
+    {
+        return Err(QuotedSourceError::new(format!(
+            "quoted source struct {} contains raw fields",
+            schema.name
+        )));
+    }
+    Ok(StructLayout {
+        name: schema.name.clone(),
+        offsets: schema.fields.iter().map(|field| field.offset).collect(),
+    })
+}
+
+fn struct_eq(
+    pa: &Process,
+    a: AnyValueRef,
+    pb: &Process,
+    b: AnyValueRef,
+    horizon: Horizon,
+) -> Result<bool, QuotedSourceError> {
+    let left = struct_layout(pa, a)?;
+    let right = struct_layout(pb, b)?;
+    if left.name != right.name || left.offsets.len() != right.offsets.len() {
+        return Ok(false);
+    }
+
+    // Surface horizon: a `do:` keyword is a 2-tuple (atom "do", body). Compare
+    // the key but skip the body — bodies belong to their own per-function facts,
+    // so a body-only edit must not move the surface.
+    if horizon == Horizon::Surface && tuple_arity(&left.name) == Some(2) {
+        let left_key = pa
+            .heap
+            .read_struct_field_ref(a, left.offsets[0])
+            .map_err(QuotedSourceError::from)?;
+        if is_atom_named(pa, left_key, "do")? {
+            let right_key = pb
+                .heap
+                .read_struct_field_ref(b, right.offsets[0])
+                .map_err(QuotedSourceError::from)?;
+            return values_eq(pa, left_key, pb, right_key, horizon);
+        }
+    }
+
+    for (&left_offset, &right_offset) in left.offsets.iter().zip(&right.offsets) {
+        let left_field = pa
+            .heap
+            .read_struct_field_ref(a, left_offset)
+            .map_err(QuotedSourceError::from)?;
+        let right_field = pb
+            .heap
+            .read_struct_field_ref(b, right_offset)
+            .map_err(QuotedSourceError::from)?;
+        if !values_eq(pa, left_field, pb, right_field, horizon)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn is_atom_named(proc: &Process, value: AnyValueRef, name: &str) -> Result<bool, QuotedSourceError> {
+    if value.tag() != ValueKind::ATOM {
+        return Ok(false);
+    }
+    Ok(render_atom_name(proc, value.load_atom().map_err(QuotedSourceError::from)? as u32)? == name)
+}
+
+fn bitstring_eq(a: AnyValueRef, b: AnyValueRef) -> Result<bool, QuotedSourceError> {
+    Ok(bitstring_payload(a)? == bitstring_payload(b)?)
+}
+
+fn bitstring_payload(value: AnyValueRef) -> Result<(usize, Vec<u8>), QuotedSourceError> {
+    let heap_word = value.heap_object_word().map_err(QuotedSourceError::from)?;
+    let tagged_ptr = heap_word as *const u8;
+    let byte_ptr = unsafe { procbin_byte_ptr(tagged_ptr) };
+    let bit_len = unsafe { tagged_bitstring_bit_len(tagged_ptr) } as usize;
+    let byte_len = bit_len.div_ceil(8);
+    let bytes = unsafe { slice::from_raw_parts(byte_ptr, byte_len) }.to_vec();
+    Ok((bit_len, bytes))
 }
 
 fn storage_ref(raw_slot: *const u64, kind: ValueKind) -> Result<AnyValueRef, QuotedSourceError> {

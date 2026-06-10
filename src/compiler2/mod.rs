@@ -69,7 +69,7 @@ pub use semantic::{
     SemanticClosure, SemanticClosureMap,
 };
 pub use source::{
-    QuotedAstNode, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceCarrier,
+    Horizon, QuotedAstNode, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceCarrier,
     QuotedSourceCursor, QuotedSourceError, QuotedSourceFingerprint, QuotedSourceFingerprintPolicy, QuotedSourceHeap,
     QuotedSourceKey, QuotedSourceMetadata, QuotedSourceRoot, QuotedSourceSpan,
 };
