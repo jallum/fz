@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-10T21:05:11Z",
+  "description": "Extend the same compiler-macro model to the remaining top-level scope-shaping definition families: `defmodule`, `defprotocol`, and `defimpl`. Their source spellings should expand into canonical compiler-defined fragments, and nested discovery/indexing/publication should proceed from those fragments rather than from special direct raw-source handlers.\n\nThis ticket should absorb the pain of reworking nested discovery, publication ordering, export binding, and protocol/impl indexing so that those forms no longer need their own parallel direct-publication semantics.\n\nSignal: nested module/protocol/impl discovery and publication happen from compiler-defined fragments, not bespoke direct source handlers, and import/require/test surfaces still resolve through normal source expansion.",
+  "id": "fz-rh2.16.11.3",
+  "labels": [],
+  "parent": "fz-rh2.16.11",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 scope-shaping definition macros: move defmodule/defprotocol/defimpl onto compiler-defined fragments",
+  "type": "task",
+  "updated_at": "2026-06-10T21:05:11Z"
+}
