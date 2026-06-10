@@ -8,7 +8,7 @@
     "fz-rh2.16.4"
   ],
   "created": "2026-06-10T12:05:05Z",
-  "description": "Goal: once defmacro has been cut off from the runtime root pipeline, reduce the quoted-source/source-surface spine to one coherent model: quoted roots are the only source authority, macro expansion is root-\u003eroot over one heap, publication is one transaction, and compiler2 type/spec/extern fragments travel as preserved token payloads instead of being reconstructed or re-lexed. Signal: ordinary source forms, item-macro expansions, and Fz.Compiler.define all feed the same publication engine; expansion is separated from publication; compiler2 no longer re-renders quoted type fragments back into tokens; the relevant fz2 source-surface fixtures become tractable without bespoke paths. Strategy: first collapse duplicate publication logic, then split expansion from publication, then standardize fragment transport, then narrow quote/unquote lowering, and finally remove retired code paths and restate the design in docs/telemetry.",
+  "description": "Goal: once defmacro has been cut off from the runtime root pipeline and ordinary function-body expansion has been moved behind function demand, reduce the quoted-source/source-surface spine to one coherent scope-tier model: quoted roots are the only source authority, item-level expansion is root-\u003eroot over one heap, publication is one transaction, and compiler2 type/spec/extern fragments travel as preserved token payloads instead of being reconstructed or re-lexed. Signal: ordinary source forms, item-macro-expanded source fragments, and Fz.Compiler.define all feed the same raw publication engine; item-level expansion is separated from publication; compiler2 no longer re-renders quoted type fragments back into tokens; the relevant fz2 source-surface fixtures become tractable without bespoke paths. Strategy: after function staging lands, collapse duplicate raw publication logic, then split item/source expansion from publication, then standardize fragment transport, then narrow quote/unquote lowering, and finally remove retired code paths and restate the design in docs and telemetry.",
   "id": "fz-rh2.16.8",
   "labels": [],
   "parent": "fz-rh2.16",
@@ -16,5 +16,5 @@
   "status": "open",
   "title": "Compiler2 source spine cleanup: unify publication, expansion, and fragment transport",
   "type": "epic",
-  "updated_at": "2026-06-10T17:48:53Z"
+  "updated_at": "2026-06-10T17:49:02Z"
 }
