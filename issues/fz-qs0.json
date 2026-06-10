@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-10T02:58:28Z",
+  "description": "Pre-existing on fz-tkf at HEAD (verified with stashed tree): tests/modules_interfaces.rs fz_dump_emits_interfaces expects 'interface Math abi=1' and 'abi=1' fingerprint inputs, but src/modules/interface.rs has no abi concept at all (grep abi/ABI_VERSION: no hits). Either the abi line was removed from the dump without updating the golden, or the golden was written ahead of an unimplemented abi field. Reconcile the dump format and the golden. Unrelated to compiler2/quoted-source work.",
+  "id": "fz-qs0",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "modules_interfaces golden drift: fz dump lacks abi=1 the test expects",
+  "type": "bug",
+  "updated_at": "2026-06-10T02:58:28Z"
+}
