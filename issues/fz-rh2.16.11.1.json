@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.16.11.3"
+  ],
   "created": "2026-06-10T21:04:56Z",
   "description": "Goal: make the first definition family (`fn`, `fnp`, `defmacro`) enter compiler2 through one compiler callback while preserving raw function staging.\n\nGrounding: trying to separate “canonical compiler fragments” from “function definition macros” leaves an artificial split. The source-vs-fragment distinction only becomes real once the compiler prelude actually uses it; otherwise compiler fragments exist but no source-spelled definition family crosses the callback.\n\nStrategy: introduce explicit compiler-fragment surface reading, make ordinary source read top-level function-definition spellings as scope macros instead of direct function forms, define the matching compiler-owned macros in `runtime.fz`, keep `Fz.Compiler.define(source, __CALLER__)` opaque as a transport envelope, and keep function bodies lazy behind `ExpandedFunctionSource`.\n\nSignal: source-spelled `fn`/`fnp`/`defmacro` publish through the same `Fz.Compiler.define` boundary as macro-produced definitions; grouped attrs/multi-clause source survives intact; anonymous/body-local `fn` continues to behave as expression syntax; `ScopeCode` still avoids demand-time body expansion.",
   "id": "fz-rh2.16.11.1",
