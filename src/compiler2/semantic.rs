@@ -87,15 +87,9 @@ impl ActivationMap {
         self.slots.get(key)
     }
 
-    pub fn define_return(
-        &mut self,
-        types: &mut Types,
-        key: &ActivationKey,
-        return_ty: Ty,
-        current_revision: u64,
-    ) -> u64 {
+    pub fn define_return(&mut self, types: &mut Types, key: &ActivationKey, return_ty: Ty) -> bool {
         let slot = self.slots.entry(key.clone()).or_insert_with(ActivationSlot::new);
-        let changed = match &slot.return_ty {
+        match &slot.return_ty {
             Some(current) => {
                 let next = if current == &return_ty {
                     *current
@@ -112,25 +106,16 @@ impl ActivationMap {
                 slot.return_ty = Some(return_ty);
                 true
             }
-        };
-        if changed {
-            current_revision + 1
-        } else {
-            current_revision
         }
     }
 
-    pub fn define_analysis(&mut self, key: &ActivationKey, analysis: ActivationAnalysis, current_revision: u64) -> u64 {
+    pub fn define_analysis(&mut self, key: &ActivationKey, analysis: ActivationAnalysis) -> bool {
         let slot = self.slots.entry(key.clone()).or_insert_with(ActivationSlot::new);
         let changed = slot.analysis.as_ref() != Some(&analysis);
         if changed {
             slot.analysis = Some(analysis);
         }
-        if changed {
-            current_revision + 1
-        } else {
-            current_revision
-        }
+        changed
     }
 }
 
@@ -156,14 +141,10 @@ impl CallSiteMap {
         Self::default()
     }
 
-    pub fn define(&mut self, key: CallSiteKey, summary: CallSiteSummary, current_revision: u64) -> u64 {
+    pub fn define(&mut self, key: CallSiteKey, summary: CallSiteSummary) -> bool {
         let changed = self.slots.get(&key) != Some(&summary);
         self.slots.insert(key, summary);
-        if changed {
-            current_revision + 1
-        } else {
-            current_revision
-        }
+        changed
     }
 
     pub fn get(&self, key: &CallSiteKey) -> Option<&CallSiteSummary> {
@@ -196,23 +177,13 @@ impl SemanticClosureMap {
         Self::default()
     }
 
-    pub fn define(
-        &mut self,
-        root: RootId,
-        closure: SemanticClosure,
-        dependencies: DependencySnapshot,
-        current_revision: u64,
-    ) -> u64 {
+    pub fn define(&mut self, root: RootId, closure: SemanticClosure, dependencies: DependencySnapshot) -> bool {
         self.ensure(root);
         let slot = &mut self.slots[root.as_u32() as usize];
         let changed =
             !matches!(slot, Some(existing) if existing.closure == closure && existing.dependencies == dependencies);
         *slot = Some(SemanticClosureSlot { closure, dependencies });
-        if changed {
-            current_revision + 1
-        } else {
-            current_revision
-        }
+        changed
     }
 
     pub fn get(&self, root: RootId) -> Option<&SemanticClosure> {

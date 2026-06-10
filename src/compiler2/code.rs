@@ -54,19 +54,15 @@ impl CodeMap {
         id
     }
 
-    pub fn index(&mut self, id: CodeId, source: QuotedCodeSource, current_revision: u64) -> u64 {
+    pub fn index(&mut self, id: CodeId, source: QuotedCodeSource) -> bool {
         let slot = &mut self.slots[id.0 as usize];
         let next = CodeState::Indexed { source };
         let changed = !same_code_state(slot, &next);
         *slot = next;
-        if changed {
-            current_revision + 1
-        } else {
-            current_revision
-        }
+        changed
     }
 
-    pub fn scope(&mut self, id: CodeId, namespace: Namespace, current_revision: u64) -> u64 {
+    pub fn scope(&mut self, id: CodeId, namespace: Namespace) -> bool {
         let slot = &mut self.slots[id.0 as usize];
         let source = match slot {
             CodeState::Indexed { source } | CodeState::Scoped { source, .. } => source.clone(),
@@ -74,11 +70,7 @@ impl CodeMap {
         };
         let changed = !matches!(&*slot, CodeState::Scoped { namespace: n, .. } if *n == namespace);
         *slot = CodeState::Scoped { source, namespace };
-        if changed {
-            current_revision + 1
-        } else {
-            current_revision
-        }
+        changed
     }
 
     pub fn get(&self, id: CodeId) -> &CodeState {

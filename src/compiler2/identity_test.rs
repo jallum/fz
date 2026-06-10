@@ -53,15 +53,16 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
 
     let math_ref = modules.reference_named("Math");
     let math_def = math_ref;
-    let math_revision = modules.define(math_def, code_id, namespace, Vec::new(), 0);
+    let math_changed = modules.define(math_def, code_id, namespace, Vec::new());
     assert_eq!(
         math_ref, math_def,
         "module definition should fill the referenced placeholder"
     );
-    let same_math_revision = modules.define(math_def, code_id, namespace, Vec::new(), math_revision);
-    assert_eq!(
-        same_math_revision, math_revision,
-        "replaying the same module definition should not bump the revision"
+    assert!(math_changed, "first module define should be a change");
+    let same_math_changed = modules.define(math_def, code_id, namespace, Vec::new());
+    assert!(
+        !same_math_changed,
+        "replaying the same module definition should not signal a change"
     );
     assert_eq!(modules.name(math_def), Some("Math"));
     let module = modules.get(math_def);
@@ -75,40 +76,40 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
 
     let scoped_ref = modules.reference_named("Scoped");
     let scoped_source = quoted_source("scoped.fz", "defmodule Scoped do\nend\n");
-    let indexed_revision = modules.index_body(
+    let indexed_changed = modules.index_body(
         scoped_ref,
         code_id,
         ModuleId::GLOBAL,
         "Scoped".to_string(),
         scoped_source.clone(),
         empty_scope_surface(),
-        0,
     );
-    let same_indexed_revision = modules.index_body(
+    let same_indexed_changed = modules.index_body(
         scoped_ref,
         code_id,
         ModuleId::GLOBAL,
         "Scoped".to_string(),
         scoped_source,
         empty_scope_surface(),
-        indexed_revision,
     );
-    assert_eq!(
-        same_indexed_revision, indexed_revision,
-        "replaying the same module index should not bump the revision"
+    assert!(indexed_changed, "first module index_body should be a change");
+    assert!(
+        !same_indexed_changed,
+        "replaying the same module index should not signal a change"
     );
-    let scoped_revision = modules.scope(scoped_ref, namespace, 0);
-    let same_scoped_revision = modules.scope(scoped_ref, namespace, scoped_revision);
-    assert_eq!(
-        same_scoped_revision, scoped_revision,
-        "replaying the same module scope should not bump the revision"
+    let scoped_changed = modules.scope(scoped_ref, namespace);
+    let same_scoped_changed = modules.scope(scoped_ref, namespace);
+    assert!(scoped_changed, "first module scope should be a change");
+    assert!(
+        !same_scoped_changed,
+        "replaying the same module scope should not signal a change"
     );
 
     let add_ref = functions.reference(math_def, "add", 2);
     let add_def = add_ref;
     let add_ast = function_surface("Math.add");
     let add_source = quoted_source("math.fz", "fn add(x, y), do: 42\n");
-    let add_revision = functions.define(
+    let add_changed = functions.define(
         add_def,
         FunctionSource {
             code: code_id,
@@ -119,9 +120,8 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
             source: add_source.clone(),
         },
         add_ast.clone(),
-        0,
     );
-    let same_add_revision = functions.define(
+    let same_add_changed = functions.define(
         add_def,
         FunctionSource {
             code: code_id,
@@ -132,11 +132,11 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
             source: add_source,
         },
         add_ast.clone(),
-        add_revision,
     );
-    assert_eq!(
-        same_add_revision, add_revision,
-        "replaying the same function definition should not bump the revision"
+    assert!(add_changed, "first function define should be a change");
+    assert!(
+        !same_add_changed,
+        "replaying the same function definition should not signal a change"
     );
     assert_eq!(
         add_ref, add_def,
@@ -176,25 +176,24 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         "new code should remain pending until indexing runs"
     );
     let code_source = quoted_source("math.fz", "fn add(x, y), do: x + y\n");
-    let indexed_code_revision = code.index(
+    let indexed_code_changed = code.index(
         code_id,
         QuotedCodeSource {
             quoted: code_source.clone(),
             surface: empty_scope_surface(),
         },
-        0,
     );
-    let same_indexed_code_revision = code.index(
+    let same_indexed_code_changed = code.index(
         code_id,
         QuotedCodeSource {
             quoted: code_source,
             surface: empty_scope_surface(),
         },
-        indexed_code_revision,
     );
-    assert_eq!(
-        same_indexed_code_revision, indexed_code_revision,
-        "replaying the same code index should not bump the revision"
+    assert!(indexed_code_changed, "first code index should be a change");
+    assert!(
+        !same_indexed_code_changed,
+        "replaying the same code index should not signal a change"
     );
 
     let mut namespaces = namespaces;
@@ -219,26 +218,25 @@ fn compiler2_code_index_revisions_ignore_quoted_heap_identity_when_semantics_mat
         "fresh quoted parses should prove this test is exercising cross-heap equality rather than root reuse",
     );
 
-    let first_revision = code.index(
+    let first_changed = code.index(
         code_id,
         QuotedCodeSource {
             quoted: first,
             surface: empty_scope_surface(),
         },
-        0,
     );
-    let second_revision = code.index(
+    let second_changed = code.index(
         code_id,
         QuotedCodeSource {
             quoted: second,
             surface: empty_scope_surface(),
         },
-        first_revision,
     );
 
-    assert_eq!(
-        second_revision, first_revision,
-        "code indexing should key revisions on semantic quoted-source equality, not transport identity",
+    assert!(first_changed, "first index should be a change");
+    assert!(
+        !second_changed,
+        "code indexing should key on semantic quoted-source equality, not transport identity",
     );
 }
 
@@ -260,7 +258,7 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
         "fresh quoted parses should prove this test is exercising a replacement source root",
     );
 
-    let first_revision = functions.define(
+    let first_changed = functions.define(
         function,
         FunctionSource {
             code: code_id,
@@ -271,9 +269,8 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
             source: first,
         },
         def_ast.clone(),
-        0,
     );
-    let second_revision = functions.define(
+    let second_changed = functions.define(
         function,
         FunctionSource {
             code: code_id,
@@ -284,9 +281,8 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
             source: second,
         },
         def_ast.clone(),
-        first_revision,
     );
-    let third_revision = functions.define(
+    let third_changed = functions.define(
         function,
         FunctionSource {
             code: code_id,
@@ -297,16 +293,12 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
             source: third,
         },
         def_ast,
-        second_revision,
     );
 
-    assert_eq!(
-        second_revision, first_revision,
-        "re-defining with semantically identical source must not bump the revision — transport identity is not content",
+    assert!(first_changed, "first define should be a change");
+    assert!(
+        !second_changed,
+        "re-defining with semantically identical source must not signal a change — transport identity is not content",
     );
-    assert_eq!(
-        third_revision,
-        first_revision + 1,
-        "a real body change (42 -> 43) must bump the function definition revision",
-    );
+    assert!(third_changed, "a real body change (42 -> 43) must signal a change",);
 }

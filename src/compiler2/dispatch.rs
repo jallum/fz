@@ -31,17 +31,13 @@ where
         Self { slots: Vec::new() }
     }
 
-    pub(crate) fn define(&mut self, id: FunctionId, value: T, current_revision: u64) -> u64 {
+    pub(crate) fn define(&mut self, id: FunctionId, value: T) -> bool {
         self.ensure(id);
         let slot = &mut self.slots[id.as_u32() as usize];
         let next = DispatchState::Defined(value);
         let changed = !slot.same_state(&next);
         *slot = next;
-        if changed {
-            current_revision + 1
-        } else {
-            current_revision
-        }
+        changed
     }
 
     pub(crate) fn get(&self, id: FunctionId) -> Option<&T> {

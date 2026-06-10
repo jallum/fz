@@ -288,14 +288,7 @@ impl ModuleMap {
         id
     }
 
-    pub fn define(
-        &mut self,
-        id: ModuleId,
-        code: CodeId,
-        namespace: Namespace,
-        exports: Vec<ModuleExport>,
-        current_revision: u64,
-    ) -> u64 {
+    pub fn define(&mut self, id: ModuleId, code: CodeId, namespace: Namespace, exports: Vec<ModuleExport>) -> bool {
         let module = &mut self.slots[id.0 as usize];
         let source = module.source().cloned().unwrap_or_else(|| ModuleSource::empty(code));
         let next = ModuleState::Defined {
@@ -307,10 +300,10 @@ impl ModuleMap {
             },
             source,
         };
-        update_if_changed(module, current_revision, next)
+        update_if_changed(module, next)
     }
 
-    pub fn scope(&mut self, id: ModuleId, base_namespace: Namespace, current_revision: u64) -> u64 {
+    pub fn scope(&mut self, id: ModuleId, base_namespace: Namespace) -> bool {
         let module = self
             .slots
             .get_mut(id.0 as usize)
@@ -329,7 +322,7 @@ impl ModuleMap {
                 base: base_namespace,
             }
         };
-        update_if_changed(module, current_revision, next)
+        update_if_changed(module, next)
     }
 
     pub fn index_body(
@@ -340,8 +333,7 @@ impl ModuleMap {
         local_name: String,
         source: QuotedSourceRoot,
         surface: ScopeSurface,
-        current_revision: u64,
-    ) -> u64 {
+    ) -> bool {
         let module = &mut self.slots[id.0 as usize];
         let next = ModuleState::Indexed(ModuleSource {
             code,
@@ -350,7 +342,7 @@ impl ModuleMap {
             source,
             kind: ModuleSourceKind::Body(surface),
         });
-        update_if_changed(module, current_revision, next)
+        update_if_changed(module, next)
     }
 
     pub fn index_protocol(
@@ -361,8 +353,7 @@ impl ModuleMap {
         local_name: String,
         source: QuotedSourceRoot,
         surface: ScopeSurface,
-        current_revision: u64,
-    ) -> u64 {
+    ) -> bool {
         let module = &mut self.slots[id.0 as usize];
         let next = ModuleState::Indexed(ModuleSource {
             code,
@@ -371,7 +362,7 @@ impl ModuleMap {
             source,
             kind: ModuleSourceKind::Protocol(surface),
         });
-        update_if_changed(module, current_revision, next)
+        update_if_changed(module, next)
     }
 
     pub fn define_anonymous(&mut self, code: CodeId, namespace: Namespace) -> ModuleId {
@@ -475,27 +466,21 @@ impl FunctionMap {
         id
     }
 
-    pub fn note(&mut self, id: FunctionId, source: FunctionSource, current_revision: u64) -> u64 {
+    pub fn note(&mut self, id: FunctionId, source: FunctionSource) -> bool {
         let function = &mut self.slots[id.0 as usize];
         let next = FunctionState::Noted {
             source: Box::new(source),
         };
-        update_if_changed(function, current_revision, next)
+        update_if_changed(function, next)
     }
 
-    pub fn define(
-        &mut self,
-        id: FunctionId,
-        source: FunctionSource,
-        surface: FunctionSurface,
-        current_revision: u64,
-    ) -> u64 {
+    pub fn define(&mut self, id: FunctionId, source: FunctionSource, surface: FunctionSurface) -> bool {
         let function = &mut self.slots[id.0 as usize];
         let next = FunctionState::Defined {
             source: Box::new(source),
             surface,
         };
-        update_if_changed(function, current_revision, next)
+        update_if_changed(function, next)
     }
 
     pub fn get(&self, id: FunctionId) -> &FunctionState {
@@ -599,36 +584,32 @@ impl RootMap {
 
 /// Reconciles a fact's value when it is (re)produced. `current` is `None`
 /// until the fact is first computed — distinct from any value, so fixpoint
-/// facts never mistake "not yet known" for a result. The returned `u64` is
-/// whatever the fact chooses to mean by "version" (here, a monotonic bump on
-/// change); the value itself never carries the revision — the fact system
-/// holds and threads it.
+/// facts never mistake "not yet known" for a result. Returns the settled value
+/// and whether it changed; revision arithmetic belongs to the caller.
 trait Reconcile: Sized {
-    fn reconcile(current: Option<&Self>, incoming: Self, revision: u64) -> (Self, u64);
+    fn reconcile(current: Option<&Self>, incoming: Self) -> (Self, bool);
 }
 
-/// The monotonic reconcile policy: keep the revision when `same` holds against
-/// the current value, otherwise bump it. `same` is evaluated before `incoming`
-/// is moved into the result.
-fn monotonic<T>(current: Option<&T>, incoming: T, revision: u64, same: impl Fn(&T, &T) -> bool) -> (T, u64) {
-    let unchanged = current.is_some_and(|current| same(current, &incoming));
-    let revision = if unchanged { revision } else { revision + 1 };
-    (incoming, revision)
+/// The monotonic reconcile policy: the value always advances to `incoming`;
+/// `changed` is true unless `same` holds against the current value.
+fn monotonic<T>(current: Option<&T>, incoming: T, same: impl Fn(&T, &T) -> bool) -> (T, bool) {
+    let changed = !current.is_some_and(|current| same(current, &incoming));
+    (incoming, changed)
 }
 
-fn update_if_changed<T: Reconcile>(state: &mut T, current_revision: u64, next: T) -> u64 {
-    let (value, new_revision) = T::reconcile(Some(state), next, current_revision);
-    // Always store the fresh value; advance the revision only when the fact's
-    // horizon deems it changed. A module's body-only edit keeps its revision put
+fn update_if_changed<T: Reconcile>(state: &mut T, next: T) -> bool {
+    let (value, changed) = T::reconcile(Some(state), next);
+    // Always store the fresh value; signal changed only when the fact's
+    // horizon deems it so. A module's body-only edit keeps its revision put
     // but still refreshes the stored source for the per-function facts that
     // re-derive from it.
     *state = value;
-    new_revision
+    changed
 }
 
 impl Reconcile for ModuleState {
-    fn reconcile(current: Option<&Self>, incoming: Self, revision: u64) -> (Self, u64) {
-        monotonic(current, incoming, revision, ModuleState::same)
+    fn reconcile(current: Option<&Self>, incoming: Self) -> (Self, bool) {
+        monotonic(current, incoming, ModuleState::same)
     }
 }
 
@@ -672,8 +653,8 @@ impl ModuleSource {
 }
 
 impl Reconcile for FunctionState {
-    fn reconcile(current: Option<&Self>, incoming: Self, revision: u64) -> (Self, u64) {
-        monotonic(current, incoming, revision, FunctionState::same)
+    fn reconcile(current: Option<&Self>, incoming: Self) -> (Self, bool) {
+        monotonic(current, incoming, FunctionState::same)
     }
 }
 
@@ -702,22 +683,22 @@ mod reconcile_test {
     use super::monotonic;
 
     // The reconcile contract: the stored value is always the incoming one
-    // (fresh content is never dropped), and the revision advances iff the new
-    // value differs from the current — where `None` ("not yet computed") always
-    // counts as a difference.
+    // (fresh content is never dropped), and changed is true iff the new value
+    // differs from the current — where `None` ("not yet computed") always counts
+    // as a difference.
     #[test]
-    fn monotonic_advances_only_when_the_value_changes() {
+    fn monotonic_signals_changed_only_when_the_value_moves() {
         let eq = |a: &u32, b: &u32| a == b;
-        assert_eq!(monotonic(None, 5, 10, eq), (5, 11), "first computation advances");
+        assert_eq!(monotonic(None, 5, eq), (5, true), "first computation is always changed");
         assert_eq!(
-            monotonic(Some(&5), 5, 10, eq),
-            (5, 10),
-            "an unchanged value keeps the revision"
+            monotonic(Some(&5), 5, eq),
+            (5, false),
+            "an unchanged value is not changed"
         );
         assert_eq!(
-            monotonic(Some(&5), 7, 10, eq),
-            (7, 11),
-            "a change advances and stores the incoming value"
+            monotonic(Some(&5), 7, eq),
+            (7, true),
+            "a different value is changed and stores the incoming value"
         );
     }
 }

@@ -317,10 +317,8 @@ impl<'a> World<'a> {
         for ty in analysis.value_types.values_mut() {
             *ty = self.types.alpha_normalize_vars(ty);
         }
-        let current = self
-            .fact_revision(FactKey::ActivationAnalyzed(key.clone()))
-            .unwrap_or(0);
-        let revision = self.activations.define_analysis(key, analysis.clone(), current);
+        let changed = self.activations.define_analysis(key, analysis.clone());
+        let revision = self.advance_fact(FactKey::ActivationAnalyzed(key.clone()), changed);
         self.tel.execute(
             &["fz", "compiler2", "activation_analysis", "defined"],
             &measurements! {
@@ -341,8 +339,8 @@ impl<'a> World<'a> {
 
     pub fn define_activation_return(&mut self, key: &ActivationKey, return_ty: Ty) -> u64 {
         let return_ty = self.types.alpha_normalize_vars(&return_ty);
-        let current = self.fact_revision(FactKey::ReturnType(key.clone())).unwrap_or(0);
-        let revision = self.activations.define_return(&mut self.types, key, return_ty, current);
+        let changed = self.activations.define_return(&mut self.types, key, return_ty);
+        let revision = self.advance_fact(FactKey::ReturnType(key.clone()), changed);
         self.tel.execute(
             &["fz", "compiler2", "return_type", "defined"],
             &measurements! {
@@ -365,8 +363,8 @@ impl<'a> World<'a> {
             .map(|input| self.types.alpha_normalize_vars(&input))
             .collect();
         summary.return_ty = self.types.alpha_normalize_vars(&summary.return_ty);
-        let current = self.fact_revision(FactKey::CallSiteSummary(key.clone())).unwrap_or(0);
-        let revision = self.callsites.define(key.clone(), summary.clone(), current);
+        let changed = self.callsites.define(key.clone(), summary.clone());
+        let revision = self.advance_fact(FactKey::CallSiteSummary(key.clone()), changed);
         self.tel.execute(
             &["fz", "compiler2", "callsite", "defined"],
             &measurements! {
@@ -394,10 +392,8 @@ impl<'a> World<'a> {
         closure: SemanticClosure,
         dependencies: super::semantic::DependencySnapshot,
     ) -> u64 {
-        let current = self.fact_revision(FactKey::SemanticClosed(root)).unwrap_or(0);
-        let revision = self
-            .semantic_closures
-            .define(root, closure.clone(), dependencies, current);
+        let changed = self.semantic_closures.define(root, closure.clone(), dependencies);
+        let revision = self.advance_fact(FactKey::SemanticClosed(root), changed);
         self.tel.execute(
             &["fz", "compiler2", "semantic_closed", "defined"],
             &measurements! {
@@ -426,8 +422,8 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_materialized_program(&mut self, root: RootId, program: MaterializedProgram) -> u64 {
-        let current = self.fact_revision(FactKey::MaterializedProgram(root)).unwrap_or(0);
-        let revision = self.artifacts.define(root, program.clone(), current);
+        let changed = self.artifacts.define(root, program.clone());
+        let revision = self.advance_fact(FactKey::MaterializedProgram(root), changed);
         self.tel.execute(
             &["fz", "compiler2", "materialized_program", "defined"],
             &measurements! {
@@ -451,8 +447,8 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_abi_ready_program(&mut self, root: RootId, program: AbiReadyProgram) -> u64 {
-        let current = self.fact_revision(FactKey::AbiReadyProgram(root)).unwrap_or(0);
-        let revision = self.abi_ready.define(root, program.clone(), current);
+        let changed = self.abi_ready.define(root, program.clone());
+        let revision = self.advance_fact(FactKey::AbiReadyProgram(root), changed);
         self.tel.execute(
             &["fz", "compiler2", "abi_ready_program", "defined"],
             &measurements! {
@@ -477,8 +473,8 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_emission_ready_program(&mut self, root: RootId, program: EmissionReadyProgram) -> u64 {
-        let current = self.fact_revision(FactKey::EmissionReadyProgram(root)).unwrap_or(0);
-        let revision = self.emission_ready.define(root, program.clone(), current);
+        let changed = self.emission_ready.define(root, program.clone());
+        let revision = self.advance_fact(FactKey::EmissionReadyProgram(root), changed);
         self.tel.execute(
             &["fz", "compiler2", "emission_ready_program", "defined"],
             &measurements! {
@@ -503,8 +499,8 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_backend_program(&mut self, root: RootId, program: BackendProgram) -> u64 {
-        let current = self.fact_revision(FactKey::BackendProgram(root)).unwrap_or(0);
-        let revision = self.backend.define(root, program.clone(), current);
+        let changed = self.backend.define(root, program.clone());
+        let revision = self.advance_fact(FactKey::BackendProgram(root), changed);
         self.tel.execute(
             &["fz", "compiler2", "backend_program", "defined"],
             &measurements! {
@@ -530,8 +526,8 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_native_program(&mut self, root: RootId, program: NativeProgram) -> u64 {
-        let current = self.fact_revision(FactKey::NativeProgram(root)).unwrap_or(0);
-        let revision = self.native.define(root, program.clone(), current);
+        let changed = self.native.define(root, program.clone());
+        let revision = self.advance_fact(FactKey::NativeProgram(root), changed);
         self.tel.execute(
             &["fz", "compiler2", "native_program", "defined"],
             &measurements! {
@@ -566,9 +562,9 @@ impl<'a> World<'a> {
     }
 
     pub fn define_module(&mut self, id: ModuleId, namespace: Namespace, exports: Vec<ModuleExport>) -> u64 {
-        let current = self.fact_revision(FactKey::ModuleDefined(id)).unwrap_or(0);
         let code = self.module_definition_code(id);
-        let revision = self.modules.define(id, code, namespace, exports, current);
+        let changed = self.modules.define(id, code, namespace, exports);
+        let revision = self.advance_fact(FactKey::ModuleDefined(id), changed);
         let module = self.modules.get(id);
         self.tel.execute(
             &["fz", "compiler2", "module", "defined"],
@@ -594,9 +590,8 @@ impl<'a> World<'a> {
         source: QuotedSourceRoot,
         surface: super::quoted_surface::ScopeSurface,
     ) -> u64 {
-        let current = self.fact_revision(FactKey::ModuleIndexed(id)).unwrap_or(0);
-        self.modules
-            .index_body(id, code, parent, local_name, source, surface, current)
+        let changed = self.modules.index_body(id, code, parent, local_name, source, surface);
+        self.advance_fact(FactKey::ModuleIndexed(id), changed)
     }
 
     pub fn index_protocol_module(
@@ -608,14 +603,14 @@ impl<'a> World<'a> {
         source: QuotedSourceRoot,
         surface: super::quoted_surface::ScopeSurface,
     ) -> u64 {
-        let current = self.fact_revision(FactKey::ModuleIndexed(id)).unwrap_or(0);
-        self.modules
-            .index_protocol(id, code, parent, local_name, source, surface, current)
+        let changed = self
+            .modules
+            .index_protocol(id, code, parent, local_name, source, surface);
+        self.advance_fact(FactKey::ModuleIndexed(id), changed)
     }
 
     pub fn scope_module(&mut self, id: ModuleId, base_namespace: Namespace) {
-        let current = self.fact_revision(FactKey::ModuleDefined(id)).unwrap_or(0);
-        self.modules.scope(id, base_namespace, current);
+        self.modules.scope(id, base_namespace);
     }
 
     pub fn reference_function(&mut self, module: ModuleId, name: impl Into<String>, arity: usize) -> FunctionId {
@@ -722,8 +717,8 @@ impl<'a> World<'a> {
         let rendered = self.types.display(&def.ty);
         let has_vars = self.types.has_vars(&def.ty);
         let params = def.params.len();
-        let current = self.fact_revision(FactKey::TypeDefined(name.clone())).unwrap_or(0);
-        let revision = self.type_defs.define(name.clone(), def, current);
+        let changed = self.type_defs.define(name.clone(), def);
+        let revision = self.advance_fact(FactKey::TypeDefined(name.clone()), changed);
         self.tel.execute(
             &["fz", "compiler2", "type", "defined"],
             &measurements! {
@@ -803,8 +798,8 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_protocol_dispatch(&mut self, protocol: ModuleId, dispatch: ProtocolDispatch) -> u64 {
-        let current = self.fact_revision(FactKey::ProtocolDispatch(protocol)).unwrap_or(0);
-        let revision = self.protocol_dispatches.define(protocol, dispatch.clone(), current);
+        let changed = self.protocol_dispatches.define(protocol, dispatch.clone());
+        let revision = self.advance_fact(FactKey::ProtocolDispatch(protocol), changed);
         self.tel.execute(
             &["fz", "compiler2", "protocol_dispatch", "defined"],
             &measurements! {
@@ -895,7 +890,6 @@ impl<'a> World<'a> {
         let arity = surface.arity();
         let clauses = surface.clauses.len();
         let id = self.functions.reference(module, local_name, arity);
-        let current = self.fact_revision(FactKey::FunctionDefined(id)).unwrap_or(0);
         let fn_source = FunctionSource {
             code,
             owner_module,
@@ -904,8 +898,9 @@ impl<'a> World<'a> {
             variadic: surface.variadic,
             source,
         };
-        let revision = self.functions.define(id, fn_source, surface, current);
-        if revision != current {
+        let changed = self.functions.define(id, fn_source, surface);
+        let revision = self.advance_fact(FactKey::FunctionDefined(id), changed);
+        if changed {
             let function = self.functions.get(id);
             let function_ref = self.functions.reference_for(id);
             self.tel.execute(
@@ -934,8 +929,8 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn note_function_source(&mut self, function: FunctionId, source: FunctionSource) -> u64 {
-        let current = self.fact_revision(FactKey::FunctionSource(function)).unwrap_or(0);
-        let revision = self.functions.note(function, source.clone(), current);
+        let changed = self.functions.note(function, source.clone());
+        let revision = self.advance_fact(FactKey::FunctionSource(function), changed);
         let function_ref = self.functions.reference_for(function);
         let source_owner_module = source.owner_module;
         let source_module_id = function_ref.module;
@@ -972,8 +967,8 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_function_contract(&mut self, function: FunctionId, contract: FunctionContract) -> u64 {
-        let current = self.fact_revision(FactKey::FunctionContract(function)).unwrap_or(0);
-        let revision = self.function_contracts.define(function, contract.clone(), current);
+        let changed = self.function_contracts.define(function, contract.clone());
+        let revision = self.advance_fact(FactKey::FunctionContract(function), changed);
         let function_ref = self.functions.reference_for(function);
         self.tel.execute(
             &["fz", "compiler2", "function_contract", "defined"],
@@ -1078,7 +1073,6 @@ impl<'a> World<'a> {
         let id = self
             .functions
             .reference_generated(owner, owner_module, surface.span, surface.arity());
-        let current = self.fact_revision(FactKey::FunctionDefined(id)).unwrap_or(0);
         let fn_source = FunctionSource {
             code: owner_code,
             owner_module: owner_source.owner_module,
@@ -1087,8 +1081,9 @@ impl<'a> World<'a> {
             variadic: surface.variadic,
             source: owner_source.source.clone(),
         };
-        let revision = self.functions.define(id, fn_source, surface.clone(), current);
-        if revision != current {
+        let changed = self.functions.define(id, fn_source, surface.clone());
+        let revision = self.advance_fact(FactKey::FunctionDefined(id), changed);
+        if changed {
             let function = self.functions.get(id);
             let function_ref = self.functions.reference_for(id);
             self.tel.execute(
@@ -1119,8 +1114,8 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_lowered_body(&mut self, function: FunctionId, body: LoweredBody) -> u64 {
-        let current = self.fact_revision(FactKey::LoweredBody(function)).unwrap_or(0);
-        let revision = self.bodies.define(function, body.clone(), current);
+        let changed = self.bodies.define(function, body.clone());
+        let revision = self.advance_fact(FactKey::LoweredBody(function), changed);
         let function_ref = self.functions.reference_for(function);
         let slot = self.functions.get(function);
         let (fn_source, fn_surface) = match slot {
@@ -1155,8 +1150,8 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_guard_dispatch(&mut self, function: FunctionId, dispatch: PatternGuardDispatch<Ty>) -> u64 {
-        let current = self.fact_revision(FactKey::GuardDispatch(function)).unwrap_or(0);
-        let revision = self.guard_dispatches.define(function, dispatch.clone(), current);
+        let changed = self.guard_dispatches.define(function, dispatch.clone());
+        let revision = self.advance_fact(FactKey::GuardDispatch(function), changed);
         let function_ref = self.functions.reference_for(function);
         let slot = self.functions.get(function);
         let (fn_source, fn_surface) = match slot {
@@ -1188,8 +1183,8 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_entry_dispatch(&mut self, function: FunctionId, plan: PatternDispatchPlan<Ty>) -> u64 {
-        let current = self.fact_revision(FactKey::EntryDispatch(function)).unwrap_or(0);
-        let revision = self.entry_dispatches.define(function, plan.clone(), current);
+        let changed = self.entry_dispatches.define(function, plan.clone());
+        let revision = self.advance_fact(FactKey::EntryDispatch(function), changed);
         let function_ref = self.functions.reference_for(function);
         let slot = self.functions.get(function);
         let (fn_source, fn_surface) = match slot {
@@ -1221,13 +1216,13 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_recursive(&mut self, function: FunctionId, recursive: bool) -> u64 {
-        let current = self.fact_revision(FactKey::Recursive(function)).unwrap_or(0);
-        self.recursive.define(function, recursive, current)
+        let changed = self.recursive.define(function, recursive);
+        self.advance_fact(FactKey::Recursive(function), changed)
     }
 
     pub(crate) fn define_dispatch_mask(&mut self, function: FunctionId, mask: Vec<bool>) -> u64 {
-        let current = self.fact_revision(FactKey::DispatchMask(function)).unwrap_or(0);
-        self.dispatch_masks.define(function, mask, current)
+        let changed = self.dispatch_masks.define(function, mask);
+        self.advance_fact(FactKey::DispatchMask(function), changed)
     }
 
     pub(crate) fn entry_dispatch(&self, function: FunctionId) -> PatternDispatchPlan<Ty> {
@@ -1307,13 +1302,13 @@ impl<'a> World<'a> {
     }
 
     pub fn finish_code_index(&mut self, id: CodeId, source: QuotedCodeSource) -> u64 {
-        let current = self.fact_revision(FactKey::CodeIndexed(id)).unwrap_or(0);
-        self.code.index(id, source, current)
+        let changed = self.code.index(id, source);
+        self.advance_fact(FactKey::CodeIndexed(id), changed)
     }
 
     pub fn finish_code_scope(&mut self, id: CodeId, namespace: Namespace) -> u64 {
-        let current = self.fact_revision(FactKey::CodeScoped(id)).unwrap_or(0);
-        self.code.scope(id, namespace, current)
+        let changed = self.code.scope(id, namespace);
+        self.advance_fact(FactKey::CodeScoped(id), changed)
     }
 
     pub fn module_defined_revision(&self, module: ModuleId) -> Option<u64> {
@@ -1409,6 +1404,11 @@ impl<'a> World<'a> {
 
     pub fn has_fact(&self, key: &FactKey) -> bool {
         self.work_graph.facts().revision(key).is_some()
+    }
+
+    fn advance_fact(&self, key: FactKey, changed: bool) -> u64 {
+        let current = self.fact_revision(key).unwrap_or(0);
+        if changed { current + 1 } else { current }
     }
 
     #[cfg(test)]

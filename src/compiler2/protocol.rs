@@ -100,14 +100,10 @@ impl ProtocolDispatchMap {
         Self::default()
     }
 
-    pub(crate) fn define(&mut self, protocol: ModuleId, dispatch: ProtocolDispatch, current_revision: u64) -> u64 {
+    pub(crate) fn define(&mut self, protocol: ModuleId, dispatch: ProtocolDispatch) -> bool {
         let changed = self.slots.get(&protocol) != Some(&dispatch);
         self.slots.insert(protocol, dispatch);
-        if changed {
-            current_revision + 1
-        } else {
-            current_revision
-        }
+        changed
     }
 
     pub(crate) fn get(&self, protocol: ModuleId) -> Option<&ProtocolDispatch> {

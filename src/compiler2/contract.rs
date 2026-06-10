@@ -75,16 +75,12 @@ impl FunctionContractMap {
         Self::default()
     }
 
-    pub fn define(&mut self, function: FunctionId, contract: FunctionContract, current_revision: u64) -> u64 {
+    pub fn define(&mut self, function: FunctionId, contract: FunctionContract) -> bool {
         self.ensure(function);
         let slot = &mut self.slots[function.as_u32() as usize];
         let changed = slot.as_ref() != Some(&contract);
         *slot = Some(contract);
-        if changed {
-            current_revision + 1
-        } else {
-            current_revision
-        }
+        changed
     }
 
     pub fn get(&self, function: FunctionId) -> Option<&FunctionContract> {

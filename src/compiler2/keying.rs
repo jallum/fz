@@ -18,16 +18,12 @@ where
         Self { slots: Vec::new() }
     }
 
-    pub(crate) fn define(&mut self, function: FunctionId, value: T, current_revision: u64) -> u64 {
+    pub(crate) fn define(&mut self, function: FunctionId, value: T) -> bool {
         self.ensure(function);
         let slot = &mut self.slots[function.as_u32() as usize];
         let changed = slot.as_ref() != Some(&value);
         *slot = Some(value);
-        if changed {
-            current_revision + 1
-        } else {
-            current_revision
-        }
+        changed
     }
 
     pub(crate) fn get(&self, function: FunctionId) -> Option<&T> {

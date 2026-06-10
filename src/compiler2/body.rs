@@ -366,17 +366,13 @@ impl LoweredBodyMap {
         Self::default()
     }
 
-    pub fn define(&mut self, id: FunctionId, body: LoweredBody, current_revision: u64) -> u64 {
+    pub fn define(&mut self, id: FunctionId, body: LoweredBody) -> bool {
         self.ensure(id);
         let slot = &mut self.slots[id.as_u32() as usize];
         let next = BodyState::Lowered(body);
         let changed = !slot.same_state(&next);
         *slot = next;
-        if changed {
-            current_revision + 1
-        } else {
-            current_revision
-        }
+        changed
     }
 
     pub fn get(&self, id: FunctionId) -> Option<&BodyState> {

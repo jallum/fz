@@ -52,14 +52,10 @@ impl TypeDefMap {
     /// Publishes `def` under `name`. An unchanged definition keeps its
     /// revision; a changed one bumps it, so the `TypeDefined` fact only wakes
     /// consumers when the resolved type actually moved.
-    pub fn define(&mut self, name: TypeName, def: TypeDef, current_revision: u64) -> u64 {
+    pub fn define(&mut self, name: TypeName, def: TypeDef) -> bool {
         let changed = self.slots.get(&name) != Some(&def);
         self.slots.insert(name, def);
-        if changed {
-            current_revision + 1
-        } else {
-            current_revision
-        }
+        changed
     }
 
     pub fn get(&self, name: &TypeName) -> Option<&TypeDef> {
