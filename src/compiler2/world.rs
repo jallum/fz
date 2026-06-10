@@ -285,7 +285,7 @@ impl<'a> World<'a> {
     }
 
     pub fn root_entry(&self, id: RootId) -> RootEntry {
-        self.roots.get(id).entry
+        *self.roots.get(id)
     }
 
     pub fn root_revision(&self, id: RootId) -> u64 {

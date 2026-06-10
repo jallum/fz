@@ -57,8 +57,8 @@ pub use frontdoor::{FrontDoorError, parse_quoted_program};
 pub use identity::{
     ActivationKey, ExecutableKey, ExecutableNeed, Function, FunctionDef, FunctionId, FunctionMap, FunctionRef,
     FunctionSource, FunctionSourceMap, FunctionSourceSlot, FunctionSourceState, FunctionState, Module, ModuleExport,
-    ModuleId, ModuleMap, ModuleSource, ModuleSourceKind, ModuleState, ModuleSurface, NotedTypeDecl, Root, RootEntry,
-    RootId, RootMap, TypeName,
+    ModuleId, ModuleMap, ModuleSource, ModuleSourceKind, ModuleState, ModuleSurface, NotedTypeDecl, RootEntry, RootId,
+    RootMap, TypeName,
 };
 pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
 pub use quoted_surface::SurfaceSourceContext;

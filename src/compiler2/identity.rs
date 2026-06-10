@@ -81,11 +81,6 @@ pub struct RootEntry {
 }
 
 #[derive(Debug, Clone)]
-pub struct Root {
-    pub entry: RootEntry,
-}
-
-#[derive(Debug, Clone)]
 pub struct Module {
     pub(crate) state: ModuleState,
 }
@@ -634,7 +629,7 @@ impl TypeRefMap {
 
 #[derive(Debug, Default)]
 pub struct RootMap {
-    slots: Vec<Root>,
+    slots: Vec<RootEntry>,
 }
 
 impl RootMap {
@@ -644,11 +639,11 @@ impl RootMap {
 
     pub fn define(&mut self, entry: RootEntry) -> RootId {
         let id = RootId(self.slots.len() as u32);
-        self.slots.push(Root { entry });
+        self.slots.push(entry);
         id
     }
 
-    pub fn get(&self, id: RootId) -> &Root {
+    pub fn get(&self, id: RootId) -> &RootEntry {
         self.slots
             .get(id.0 as usize)
             .expect("root ids should be known before reading root slots")
