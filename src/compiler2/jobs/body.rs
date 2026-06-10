@@ -622,6 +622,208 @@ struct Lowerer<'w, 'tel> {
     generated_ids: Vec<FunctionId>,
 }
 
+struct QuoteLowerer<'a, 'w, 'tel, 'env, 'steps> {
+    lowerer: &'a mut Lowerer<'w, 'tel>,
+    env: &'env mut HashMap<String, ValueId>,
+    steps: &'steps mut Vec<ExprStep>,
+}
+
+impl<'a, 'w, 'tel, 'env, 'steps> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps> {
+    fn new(
+        lowerer: &'a mut Lowerer<'w, 'tel>,
+        env: &'env mut HashMap<String, ValueId>,
+        steps: &'steps mut Vec<ExprStep>,
+    ) -> Self {
+        Self { lowerer, env, steps }
+    }
+
+    fn lower(&mut self, expr: &Spanned<Expr>) -> Result<ValueId, FatalError> {
+        match &expr.node {
+            Expr::Unquote(inner) => self.lowerer.lower_expr(inner, self.env, self.steps),
+            Expr::Ascribe(inner, _) => self.lower(inner),
+            Expr::Int(value) => Ok(self.lowerer.push_const(self.steps, Literal::Int(*value))),
+            Expr::Float(value) => Ok(self.lowerer.push_const(self.steps, Literal::Float(*value))),
+            Expr::Binary(value) => Ok(self.lowerer.push_const(self.steps, Literal::Binary(value.clone()))),
+            Expr::Atom(value) => Ok(self.lowerer.push_const(self.steps, Literal::Atom(value.clone()))),
+            Expr::Bool(value) => Ok(self.lowerer.push_const(self.steps, Literal::Bool(*value))),
+            Expr::Nil => Ok(self.lowerer.push_const(self.steps, Literal::Nil)),
+            Expr::Var(name) => self.lower_variable(name),
+            Expr::List(items, None) => {
+                let values = items
+                    .iter()
+                    .map(|item| self.lower(item))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(self.push_list(values, None))
+            }
+            Expr::List(_, Some(_)) => Err(emit_job_diagnostic(
+                self.lowerer.world,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    "compiler2 quote does not lower improper source lists yet".to_string(),
+                    expr.span,
+                ),
+            )),
+            Expr::Tuple(items) => {
+                let values = items
+                    .iter()
+                    .map(|item| self.lower(item))
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.lower_atom_node("{}", values)
+            }
+            Expr::Map(entries) => {
+                let values = entries
+                    .iter()
+                    .map(|(key, value)| {
+                        let key = self.lower(key)?;
+                        let value = self.lower(value)?;
+                        Ok(self.push_tuple(vec![key, value]))
+                    })
+                    .collect::<Result<Vec<_>, FatalError>>()?;
+                self.lower_atom_node("%{}", values)
+            }
+            Expr::Call(callee, args) => {
+                let values = args.iter().map(|arg| self.lower(arg)).collect::<Result<Vec<_>, _>>()?;
+                if let Expr::Var(name) = &callee.node {
+                    let name = self.quoted_callable_name(name, values.len());
+                    self.lower_atom_node(&name, values)
+                } else {
+                    let head = self.lower(callee)?;
+                    let tail = self.push_list(values, None);
+                    Ok(self.push_ast_node(head, tail))
+                }
+            }
+            Expr::BinOp(op, left, right) => {
+                let left = self.lower(left)?;
+                let right = self.lower(right)?;
+                self.lower_atom_node(quoted_binop_atom(*op), vec![left, right])
+            }
+            Expr::UnOp(op, input) => {
+                let input = self.lower(input)?;
+                self.lower_atom_node(quoted_unop_atom(*op), vec![input])
+            }
+            Expr::Match(pattern, rhs) => {
+                let Pattern::Var(name) = &pattern.node else {
+                    return Err(emit_job_diagnostic(
+                        self.lowerer.world,
+                        Diagnostic::error(
+                            codes::LOWER_UNSUPPORTED,
+                            "compiler2 quote only supports variable match patterns today".to_string(),
+                            pattern.span,
+                        ),
+                    ));
+                };
+                let lhs = self.lower_variable(name)?;
+                let rhs = self.lower(rhs)?;
+                self.lower_atom_node("=", vec![lhs, rhs])
+            }
+            Expr::Block(exprs) => {
+                let values = exprs
+                    .iter()
+                    .map(|expr| self.lower(expr))
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.lower_atom_node("__block__", values)
+            }
+            Expr::If(cond, then_expr, else_expr) => {
+                let cond = self.lower(cond)?;
+                let then_value = self.lower(then_expr)?;
+                let mut keywords = vec![self.push_keyword("do", then_value)];
+                if let Some(else_expr) = else_expr {
+                    let else_value = self.lower(else_expr)?;
+                    keywords.push(self.push_keyword("else", else_value));
+                }
+                let keyword_list = self.push_list(keywords, None);
+                self.lower_atom_node("if", vec![cond, keyword_list])
+            }
+            Expr::Quote(_)
+            | Expr::FnRef { .. }
+            | Expr::Capture(_)
+            | Expr::CaptureArg(_)
+            | Expr::Bitstring(_)
+            | Expr::MapUpdate(_, _)
+            | Expr::Struct { .. }
+            | Expr::Index(_, _)
+            | Expr::ClosureCall(_, _)
+            | Expr::Case(_, _)
+            | Expr::Cond(_)
+            | Expr::With(_, _, _)
+            | Expr::Receive { .. }
+            | Expr::Lambda(_) => Err(emit_job_diagnostic(
+                self.lowerer.world,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    format!("compiler2 quote does not lower `{}` yet", expr_name(&expr.node)),
+                    expr.span,
+                ),
+            )),
+        }
+    }
+
+    fn quoted_callable_name(&mut self, name: &str, arity: usize) -> String {
+        if name.contains('.') {
+            return name.to_string();
+        }
+        let Some(symbol) = self
+            .lowerer
+            .world
+            .lookup_callable_namespace(self.lowerer.namespace, name, arity)
+        else {
+            return name.to_string();
+        };
+        let function = match symbol {
+            NamespaceSymbol::Function(function) | NamespaceSymbol::Macro(function) => function,
+            NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) => return name.to_string(),
+        };
+        let module = self.lowerer.world.function_module(function);
+        if module.is_global() {
+            return name.to_string();
+        }
+        let Some(module_name) = self.lowerer.world.module_name(module) else {
+            return name.to_string();
+        };
+        format!("{module_name}.{name}")
+    }
+
+    fn lower_variable(&mut self, name: &str) -> Result<ValueId, FatalError> {
+        let head = self.lowerer.push_const(self.steps, Literal::Atom(name.to_string()));
+        let tail = self.lowerer.push_const(self.steps, Literal::Nil);
+        Ok(self.push_ast_node(head, tail))
+    }
+
+    fn lower_atom_node(&mut self, name: &str, args: Vec<ValueId>) -> Result<ValueId, FatalError> {
+        let head = self.lowerer.push_const(self.steps, Literal::Atom(name.to_string()));
+        let tail = self.push_list(args, None);
+        Ok(self.push_ast_node(head, tail))
+    }
+
+    fn push_ast_node(&mut self, head: ValueId, tail: ValueId) -> ValueId {
+        let meta = self.push_map(Vec::new());
+        self.push_tuple(vec![head, meta, tail])
+    }
+
+    fn push_keyword(&mut self, key: &str, value: ValueId) -> ValueId {
+        let key = self.lowerer.push_const(self.steps, Literal::Atom(key.to_string()));
+        self.push_tuple(vec![key, value])
+    }
+
+    fn push_tuple(&mut self, items: Vec<ValueId>) -> ValueId {
+        let value = self.lowerer.fresh_value();
+        self.steps.push(ExprStep::Tuple { value, items });
+        value
+    }
+
+    fn push_list(&mut self, items: Vec<ValueId>, tail: Option<ValueId>) -> ValueId {
+        let value = self.lowerer.fresh_value();
+        self.steps.push(ExprStep::List { value, items, tail });
+        value
+    }
+
+    fn push_map(&mut self, entries: Vec<(ValueId, ValueId)>) -> ValueId {
+        let value = self.lowerer.fresh_value();
+        self.steps.push(ExprStep::Map { value, entries });
+        value
+    }
+}
+
 impl<'w, 'tel> Lowerer<'w, 'tel> {
     fn new(world: &'w mut World<'tel>, owner: FunctionId, source: FunctionSource, surface: FunctionSurface) -> Self {
         let namespace = source.namespace;
@@ -1020,7 +1222,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             }
             Expr::Receive { clauses, after } => self.lower_receive(expr.span, clauses, after.as_deref(), env, steps),
             Expr::Lambda(clauses) => self.lower_lambda(expr.span, clauses, env, steps),
-            Expr::Quote(inner) => self.lower_quote_expr(inner, env, steps),
+            Expr::Quote(inner) => QuoteLowerer::new(self, env, steps).lower(inner),
             Expr::Unquote(_) => Err(emit_job_diagnostic(
                 self.world,
                 Diagnostic::error(
@@ -1101,201 +1303,6 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             });
         }
         Ok(lowered)
-    }
-
-    fn lower_quote_expr(
-        &mut self,
-        expr: &Spanned<Expr>,
-        env: &mut HashMap<String, ValueId>,
-        steps: &mut Vec<ExprStep>,
-    ) -> Result<ValueId, FatalError> {
-        match &expr.node {
-            Expr::Unquote(inner) => self.lower_expr(inner, env, steps),
-            Expr::Ascribe(inner, _) => self.lower_quote_expr(inner, env, steps),
-            Expr::Int(value) => Ok(self.push_const(steps, Literal::Int(*value))),
-            Expr::Float(value) => Ok(self.push_const(steps, Literal::Float(*value))),
-            Expr::Binary(value) => Ok(self.push_const(steps, Literal::Binary(value.clone()))),
-            Expr::Atom(value) => Ok(self.push_const(steps, Literal::Atom(value.clone()))),
-            Expr::Bool(value) => Ok(self.push_const(steps, Literal::Bool(*value))),
-            Expr::Nil => Ok(self.push_const(steps, Literal::Nil)),
-            Expr::Var(name) => self.lower_quoted_variable(name, steps),
-            Expr::List(items, None) => {
-                let values = items
-                    .iter()
-                    .map(|item| self.lower_quote_expr(item, env, steps))
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(self.push_list(steps, values, None))
-            }
-            Expr::List(_, Some(_)) => Err(emit_job_diagnostic(
-                self.world,
-                Diagnostic::error(
-                    codes::LOWER_UNSUPPORTED,
-                    "compiler2 quote does not lower improper source lists yet".to_string(),
-                    expr.span,
-                ),
-            )),
-            Expr::Tuple(items) => {
-                let values = items
-                    .iter()
-                    .map(|item| self.lower_quote_expr(item, env, steps))
-                    .collect::<Result<Vec<_>, _>>()?;
-                self.lower_quoted_atom_node("{}", values, steps)
-            }
-            Expr::Map(entries) => {
-                let values = entries
-                    .iter()
-                    .map(|(key, value)| {
-                        let key = self.lower_quote_expr(key, env, steps)?;
-                        let value = self.lower_quote_expr(value, env, steps)?;
-                        Ok(self.push_tuple(steps, vec![key, value]))
-                    })
-                    .collect::<Result<Vec<_>, FatalError>>()?;
-                self.lower_quoted_atom_node("%{}", values, steps)
-            }
-            Expr::Call(callee, args) => {
-                let values = args
-                    .iter()
-                    .map(|arg| self.lower_quote_expr(arg, env, steps))
-                    .collect::<Result<Vec<_>, _>>()?;
-                if let Expr::Var(name) = &callee.node {
-                    let name = self.quoted_callable_name(name, values.len());
-                    self.lower_quoted_atom_node(&name, values, steps)
-                } else {
-                    let head = self.lower_quote_expr(callee, env, steps)?;
-                    let tail = self.push_list(steps, values, None);
-                    Ok(self.push_ast_node(steps, head, tail))
-                }
-            }
-            Expr::BinOp(op, left, right) => {
-                let left = self.lower_quote_expr(left, env, steps)?;
-                let right = self.lower_quote_expr(right, env, steps)?;
-                self.lower_quoted_atom_node(quoted_binop_atom(*op), vec![left, right], steps)
-            }
-            Expr::UnOp(op, input) => {
-                let input = self.lower_quote_expr(input, env, steps)?;
-                self.lower_quoted_atom_node(quoted_unop_atom(*op), vec![input], steps)
-            }
-            Expr::Match(pattern, rhs) => {
-                let Pattern::Var(name) = &pattern.node else {
-                    return Err(emit_job_diagnostic(
-                        self.world,
-                        Diagnostic::error(
-                            codes::LOWER_UNSUPPORTED,
-                            "compiler2 quote only supports variable match patterns today".to_string(),
-                            pattern.span,
-                        ),
-                    ));
-                };
-                let lhs = self.lower_quoted_variable(name, steps)?;
-                let rhs = self.lower_quote_expr(rhs, env, steps)?;
-                self.lower_quoted_atom_node("=", vec![lhs, rhs], steps)
-            }
-            Expr::Block(exprs) => {
-                let values = exprs
-                    .iter()
-                    .map(|expr| self.lower_quote_expr(expr, env, steps))
-                    .collect::<Result<Vec<_>, _>>()?;
-                self.lower_quoted_atom_node("__block__", values, steps)
-            }
-            Expr::If(cond, then_expr, else_expr) => {
-                let cond = self.lower_quote_expr(cond, env, steps)?;
-                let then_value = self.lower_quote_expr(then_expr, env, steps)?;
-                let mut keywords = vec![self.push_keyword(steps, "do", then_value)];
-                if let Some(else_expr) = else_expr {
-                    let else_value = self.lower_quote_expr(else_expr, env, steps)?;
-                    keywords.push(self.push_keyword(steps, "else", else_value));
-                }
-                let keyword_list = self.push_list(steps, keywords, None);
-                self.lower_quoted_atom_node("if", vec![cond, keyword_list], steps)
-            }
-            Expr::Quote(_)
-            | Expr::FnRef { .. }
-            | Expr::Capture(_)
-            | Expr::CaptureArg(_)
-            | Expr::Bitstring(_)
-            | Expr::MapUpdate(_, _)
-            | Expr::Struct { .. }
-            | Expr::Index(_, _)
-            | Expr::ClosureCall(_, _)
-            | Expr::Case(_, _)
-            | Expr::Cond(_)
-            | Expr::With(_, _, _)
-            | Expr::Receive { .. }
-            | Expr::Lambda(_) => Err(emit_job_diagnostic(
-                self.world,
-                Diagnostic::error(
-                    codes::LOWER_UNSUPPORTED,
-                    format!("compiler2 quote does not lower `{}` yet", expr_name(&expr.node)),
-                    expr.span,
-                ),
-            )),
-        }
-    }
-
-    fn quoted_callable_name(&mut self, name: &str, arity: usize) -> String {
-        if name.contains('.') {
-            return name.to_string();
-        }
-        let Some(symbol) = self.world.lookup_callable_namespace(self.namespace, name, arity) else {
-            return name.to_string();
-        };
-        let function = match symbol {
-            NamespaceSymbol::Function(function) | NamespaceSymbol::Macro(function) => function,
-            NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) => return name.to_string(),
-        };
-        let module = self.world.function_module(function);
-        if module.is_global() {
-            return name.to_string();
-        }
-        let Some(module_name) = self.world.module_name(module) else {
-            return name.to_string();
-        };
-        format!("{module_name}.{name}")
-    }
-
-    fn lower_quoted_variable(&mut self, name: &str, steps: &mut Vec<ExprStep>) -> Result<ValueId, FatalError> {
-        let head = self.push_const(steps, Literal::Atom(name.to_string()));
-        let tail = self.push_const(steps, Literal::Nil);
-        Ok(self.push_ast_node(steps, head, tail))
-    }
-
-    fn lower_quoted_atom_node(
-        &mut self,
-        name: &str,
-        args: Vec<ValueId>,
-        steps: &mut Vec<ExprStep>,
-    ) -> Result<ValueId, FatalError> {
-        let head = self.push_const(steps, Literal::Atom(name.to_string()));
-        let tail = self.push_list(steps, args, None);
-        Ok(self.push_ast_node(steps, head, tail))
-    }
-
-    fn push_ast_node(&mut self, steps: &mut Vec<ExprStep>, head: ValueId, tail: ValueId) -> ValueId {
-        let meta = self.push_map(steps, Vec::new());
-        self.push_tuple(steps, vec![head, meta, tail])
-    }
-
-    fn push_keyword(&mut self, steps: &mut Vec<ExprStep>, key: &str, value: ValueId) -> ValueId {
-        let key = self.push_const(steps, Literal::Atom(key.to_string()));
-        self.push_tuple(steps, vec![key, value])
-    }
-
-    fn push_tuple(&mut self, steps: &mut Vec<ExprStep>, items: Vec<ValueId>) -> ValueId {
-        let value = self.fresh_value();
-        steps.push(ExprStep::Tuple { value, items });
-        value
-    }
-
-    fn push_list(&mut self, steps: &mut Vec<ExprStep>, items: Vec<ValueId>, tail: Option<ValueId>) -> ValueId {
-        let value = self.fresh_value();
-        steps.push(ExprStep::List { value, items, tail });
-        value
-    }
-
-    fn push_map(&mut self, steps: &mut Vec<ExprStep>, entries: Vec<(ValueId, ValueId)>) -> ValueId {
-        let value = self.fresh_value();
-        steps.push(ExprStep::Map { value, entries });
-        value
     }
 
     fn lower_struct_expr(

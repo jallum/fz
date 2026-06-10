@@ -169,7 +169,12 @@ and quoted `unquote` into `Expr::Unquote(...)`.
 - if `surface.is_macro`, `lower_clause(...)` prepends a `__CALLER__` parameter
   before captures and user parameters
 
-The body lowerer treats quote/unquote specially:
+The body lowerer now keeps quote-specific work behind the dedicated
+`QuoteLowerer` helper in `jobs/body.rs`, so the ordinary body lowerer only
+hands off `Expr::Quote(...)` instead of owning the quoted-AST construction
+logic inline.
+
+That quote seam treats quote/unquote specially:
 
 - `Expr::Quote(inner)` lowers through `lower_quote_expr(...)`
 - `Expr::Unquote(inner)` is legal only inside `quote`
