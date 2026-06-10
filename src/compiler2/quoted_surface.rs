@@ -5,11 +5,11 @@ use fz_runtime::any_value::AnyValueRef;
 use crate::ast::{Attribute, TypeAliasDecl, TypeExprBody};
 use crate::compiler::source::{Id as SourceId, Span};
 use crate::modules::identity::ModuleName;
-use crate::parser::lexer::{Lexer, Tok};
-use crate::telemetry::Telemetry;
+use crate::parser::lexer::Tok;
 
 use super::code::CodeId;
 use super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
+use super::token_payload;
 
 const META_SPAN_KEY: &str = "__fz_span__";
 
@@ -17,16 +17,11 @@ const META_SPAN_KEY: &str = "__fz_span__";
 pub struct SurfaceSourceContext<'a> {
     pub code_id: CodeId,
     pub code_text: &'a str,
-    pub tel: &'a dyn Telemetry,
 }
 
 impl<'a> SurfaceSourceContext<'a> {
-    pub fn new(code_id: CodeId, code_text: &'a str, tel: &'a dyn Telemetry) -> Self {
-        Self {
-            code_id,
-            code_text,
-            tel,
-        }
+    pub fn new(code_id: CodeId, code_text: &'a str) -> Self {
+        Self { code_id, code_text }
     }
 }
 
@@ -359,21 +354,15 @@ fn parse_scope_attr(
     let span = span_from_meta(&node.meta, ctx)?;
     match head.as_str() {
         "@moduledoc" => Ok(Attribute::ModuleDoc(value.utf8_binary_text()?)),
-        "@type" => decode_type_alias_attr(&value.utf8_binary_text()?, span, ctx),
+        "@type" => decode_type_alias_attr(value, span),
         other => Err(QuotedSourceError::new(format!(
             "unsupported quoted scope attribute `{other}`"
         ))),
     }
 }
 
-fn decode_type_alias_attr(
-    raw: &str,
-    span: Span,
-    ctx: &SurfaceSourceContext<'_>,
-) -> Result<Attribute, QuotedSourceError> {
-    let mut tokens = Lexer::with_source_name(raw, "<quoted-type-alias>")
-        .tokenize(ctx.tel)
-        .map_err(|error| QuotedSourceError::new(error.msg))?
+fn decode_type_alias_attr(payload: &QuotedSourceCursor, span: Span) -> Result<Attribute, QuotedSourceError> {
+    let mut tokens = token_payload::decode_tokens(payload)?
         .into_iter()
         .filter(|token| !matches!(token.tok, Tok::Newline | Tok::Eof))
         .peekable();

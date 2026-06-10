@@ -5,11 +5,11 @@ use crate::ast::{
 use crate::compiler::source::{Id as SourceId, Span};
 use crate::function_surface::FunctionSurface;
 use crate::modules::identity::ModuleName;
-use crate::parser::lexer::{Lexer, Tok, Token};
-use crate::telemetry::Telemetry;
+use crate::parser::lexer::{Tok, Token};
 
 use super::code::CodeId;
 use super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
+use super::token_payload;
 
 const META_SPAN_KEY: &str = "__fz_span__";
 
@@ -40,9 +40,7 @@ impl From<QuotedSourceError> for QuotedFunctionError {
 
 struct DecodeCtx<'a> {
     code_id: CodeId,
-    code_name: &'a str,
     code_text: &'a str,
-    tel: &'a dyn Telemetry,
 }
 
 type DecodedFnHead = (
@@ -58,24 +56,18 @@ type ExprPair = (Spanned<Expr>, Spanned<Expr>);
 pub(crate) fn derive_function_surface(
     root: &QuotedSourceRoot,
     code_id: CodeId,
-    code_name: Option<&str>,
+    _code_name: Option<&str>,
     code_text: &str,
-    tel: &dyn Telemetry,
+    _tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<FunctionSurface, QuotedFunctionError> {
-    let code_name = code_name.unwrap_or("<quoted-function>");
-    let ctx = DecodeCtx {
-        code_id,
-        code_name,
-        code_text,
-        tel,
-    };
+    let ctx = DecodeCtx { code_id, code_text };
     let mut attrs = Vec::new();
     let mut forms = Vec::new();
     for item in root.cursor().list_items()? {
         let node = expect_ast_node(&item, "grouped function item")?;
         let head = atom_name(&node.head)?;
         if head.starts_with('@') {
-            attrs.push(decode_attribute(&item, &ctx)?);
+            attrs.push(decode_attribute(&item)?);
         } else {
             forms.push(item);
         }
@@ -162,7 +154,7 @@ pub(crate) fn derive_function_surface(
     })
 }
 
-fn decode_attribute(cursor: &QuotedSourceCursor, ctx: &DecodeCtx<'_>) -> Result<Attribute, QuotedFunctionError> {
+fn decode_attribute(cursor: &QuotedSourceCursor) -> Result<Attribute, QuotedFunctionError> {
     let node = expect_ast_node(cursor, "function attribute")?;
     let head = atom_name(&node.head)?;
     let args = node.tail.list_items()?;
@@ -173,7 +165,7 @@ fn decode_attribute(cursor: &QuotedSourceCursor, ctx: &DecodeCtx<'_>) -> Result<
     };
     match head.as_str() {
         "@doc" => Ok(Attribute::Doc(value.utf8_binary_text()?)),
-        "@spec" => decode_spec_attribute(&value.utf8_binary_text()?, ctx),
+        "@spec" => decode_spec_attribute(value),
         other => Err(QuotedFunctionError::new(format!(
             "unsupported quoted function attribute `{other}`"
         ))),
@@ -192,21 +184,21 @@ fn decode_extern_fn(
     let abi = args[0].utf8_binary_text()?;
     let details = &args[1];
     let name = required_map_utf8(details, "name")?;
-    let params = required_map_list_utf8(details, "params")?;
-    let ret = required_map_utf8(details, "return")?;
+    let params = required_map_list_tokens(details, "params")?;
+    let ret = required_map_tokens(details, "return")?;
     let variadic = required_map_bool(details, "variadic")?;
-    let constraints = optional_map_keyword_utf8(details, "when")?;
+    let constraints = optional_map_keyword_tokens(details, "when")?;
     let span = span_from_meta(&node.meta, ctx).unwrap_or(Span::DUMMY);
 
     let extern_param_tokens = params
         .into_iter()
-        .map(|text| lex_fragment_tokens(ctx, &text).and_then(strip_extern_param_name))
+        .map(strip_extern_param_name)
         .map(|result| result.map(TypeExprBody))
         .collect::<Result<Vec<_>, _>>()?;
-    let extern_ret_tokens = TypeExprBody(lex_fragment_tokens(ctx, &ret)?);
+    let extern_ret_tokens = TypeExprBody(ret);
     let extern_constraints = constraints
         .into_iter()
-        .map(|(name, body)| Ok((name, TypeExprBody(lex_fragment_tokens(ctx, &body)?))))
+        .map(|(name, body)| Ok((name, TypeExprBody(body))))
         .collect::<Result<Vec<_>, QuotedFunctionError>>()?;
 
     Ok(FunctionSurface {
@@ -281,7 +273,7 @@ fn decode_function_head(
                 return Err(QuotedFunctionError::new("quoted `::` parameter expects lhs and rhs"));
             }
             params.push(decode_pattern(&parts[0], ctx, Some(span))?);
-            annotations.push(Some(rendered_type_expr_body(&parts[1], ctx)?));
+            annotations.push(Some(quoted_type_expr_body(&parts[1])?));
             continue;
         }
         params.push(decode_pattern(&arg, ctx, Some(span))?);
@@ -407,7 +399,7 @@ fn decode_named_expr(
         }
         ("::", 2) => {
             let value = decode_expr(&args[0], ctx, Some(span))?;
-            let ty = rendered_type_expr_body(&args[1], ctx)?;
+            let ty = quoted_type_expr_body(&args[1])?;
             Ok(Spanned::new(Expr::Ascribe(Box::new(value), ty), span))
         }
         ("__aliases__", _) => Ok(Spanned::new(Expr::Var(alias_name_from_args(args)?), span)),
@@ -1239,15 +1231,14 @@ fn pattern_var_name(
     })
 }
 
-fn rendered_type_expr_body(
-    cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx<'_>,
-) -> Result<TypeExprBody, QuotedFunctionError> {
-    Ok(TypeExprBody(lex_fragment_tokens(ctx, &render_type_expr(cursor)?)?))
+fn quoted_type_expr_body(cursor: &QuotedSourceCursor) -> Result<TypeExprBody, QuotedFunctionError> {
+    let mut tokens = Vec::new();
+    push_type_expr_tokens(cursor, &mut tokens)?;
+    Ok(TypeExprBody(tokens))
 }
 
-fn decode_spec_attribute(raw: &str, ctx: &DecodeCtx<'_>) -> Result<Attribute, QuotedFunctionError> {
-    let mut parser = FragmentCursor::new(lex_fragment_stream(ctx, raw)?);
+fn decode_spec_attribute(payload: &QuotedSourceCursor) -> Result<Attribute, QuotedFunctionError> {
+    let mut parser = FragmentCursor::new(token_payload::decode_tokens(payload)?);
     let (name, param_body_tokens) =
         if matches!(parser.peek(), Tok::Ident(_)) && matches!(parser.peek_at(1), Some(Tok::LParen)) {
             let name = match parser.bump() {
@@ -1338,72 +1329,145 @@ fn decode_spec_attribute(raw: &str, ctx: &DecodeCtx<'_>) -> Result<Attribute, Qu
     }))
 }
 
-fn render_type_expr(cursor: &QuotedSourceCursor) -> Result<String, QuotedFunctionError> {
+fn push_type_expr_tokens(cursor: &QuotedSourceCursor, out: &mut Vec<Token>) -> Result<(), QuotedFunctionError> {
     if let Some(node) = cursor.ast_node()? {
         if !is_list_like(&node.tail) {
-            return atom_name(&node.head);
+            out.push(type_token_for_name(atom_name(&node.head)?));
+            return Ok(());
         }
         let args = node.tail.list_items()?;
         return match atom_name(&node.head)?.as_str() {
-            "__aliases__" => alias_name_from_args(&args),
-            "{}" => Ok(format!(
-                "{{{}}}",
-                args.iter()
-                    .map(render_type_expr)
-                    .collect::<Result<Vec<_>, _>>()?
-                    .join(", ")
-            )),
-            "%" => {
-                let module = render_type_expr(&args[0])?;
-                let fields = render_struct_field_entries(&args[1])?;
-                Ok(format!("%{module}{{{fields}}}"))
+            "__aliases__" => push_alias_type_tokens(&args, out),
+            "{}" => {
+                out.push(type_token(Tok::LBrace));
+                push_type_expr_list_tokens(&args, out)?;
+                out.push(type_token(Tok::RBrace));
+                Ok(())
             }
-            name if args.is_empty() => Ok(name.to_string()),
-            name if args.len() == 2 && matches!(name, "|" | "||") => Ok(format!(
-                "{} | {}",
-                render_type_expr(&args[0])?,
-                render_type_expr(&args[1])?
-            )),
-            name => Ok(format!(
-                "{name}({})",
-                args.iter()
-                    .map(render_type_expr)
-                    .collect::<Result<Vec<_>, _>>()?
-                    .join(", ")
-            )),
+            "%" => {
+                if args.len() != 2 {
+                    return Err(QuotedFunctionError::new("quoted struct type expects module and fields"));
+                }
+                out.push(type_token(Tok::Percent));
+                push_type_expr_tokens(&args[0], out)?;
+                push_struct_field_type_tokens(&args[1], out)
+            }
+            name if args.is_empty() => {
+                out.push(type_token_for_name(name.to_string()));
+                Ok(())
+            }
+            name if args.len() == 2 && matches!(name, "|" | "||") => {
+                push_type_expr_tokens(&args[0], out)?;
+                out.push(type_token(Tok::Bar));
+                push_type_expr_tokens(&args[1], out)
+            }
+            name => {
+                out.push(type_token_for_name(name.to_string()));
+                out.push(type_token(Tok::LParen));
+                push_type_expr_list_tokens(&args, out)?;
+                out.push(type_token(Tok::RParen));
+                Ok(())
+            }
         };
     }
     match cursor.root().tag() {
-        fz_runtime::any_value::ValueKind::INT => Ok(cursor.int_value()?.to_string()),
+        fz_runtime::any_value::ValueKind::INT => {
+            out.push(type_token(Tok::Int(cursor.int_value()?)));
+            Ok(())
+        }
         fz_runtime::any_value::ValueKind::FLOAT => {
-            Ok(cursor.root().load_float().map_err(QuotedSourceError::from)?.to_string())
+            out.push(type_token(Tok::Float(
+                cursor.root().load_float().map_err(QuotedSourceError::from)?,
+            )));
+            Ok(())
         }
-        fz_runtime::any_value::ValueKind::ATOM => Ok(cursor.atom_name()?),
+        fz_runtime::any_value::ValueKind::ATOM => {
+            out.push(type_token(Tok::Atom(cursor.atom_name()?)));
+            Ok(())
+        }
         fz_runtime::any_value::ValueKind::BITSTRING | fz_runtime::any_value::ValueKind::PROCBIN => {
-            Ok(cursor.utf8_binary_text()?)
+            out.push(type_token_for_name(cursor.utf8_binary_text()?));
+            Ok(())
         }
-        fz_runtime::any_value::ValueKind::LIST => Ok(format!(
-            "[{}]",
-            cursor
-                .list_items()?
-                .into_iter()
-                .map(|item| render_type_expr(&item))
-                .collect::<Result<Vec<_>, _>>()?
-                .join(", ")
-        )),
-        fz_runtime::any_value::ValueKind::STRUCT => Ok(format!(
-            "{{{}}}",
-            cursor
-                .tuple_items()?
-                .into_iter()
-                .map(|item| render_type_expr(&item))
-                .collect::<Result<Vec<_>, _>>()?
-                .join(", ")
-        )),
+        fz_runtime::any_value::ValueKind::LIST => {
+            out.push(type_token(Tok::LBrack));
+            push_type_expr_list_tokens(&cursor.list_items()?, out)?;
+            out.push(type_token(Tok::RBrack));
+            Ok(())
+        }
+        fz_runtime::any_value::ValueKind::STRUCT => {
+            out.push(type_token(Tok::LBrace));
+            push_type_expr_list_tokens(&cursor.tuple_items()?, out)?;
+            out.push(type_token(Tok::RBrace));
+            Ok(())
+        }
         other => Err(QuotedFunctionError::new(format!(
             "unsupported quoted type fragment kind {:?}",
             other
         ))),
+    }
+}
+
+fn push_type_expr_list_tokens(items: &[QuotedSourceCursor], out: &mut Vec<Token>) -> Result<(), QuotedFunctionError> {
+    for (index, item) in items.iter().enumerate() {
+        if index > 0 {
+            out.push(type_token(Tok::Comma));
+        }
+        push_type_expr_tokens(item, out)?;
+    }
+    Ok(())
+}
+
+fn push_alias_type_tokens(args: &[QuotedSourceCursor], out: &mut Vec<Token>) -> Result<(), QuotedFunctionError> {
+    for (index, arg) in args.iter().enumerate() {
+        if index > 0 {
+            out.push(type_token(Tok::Dot));
+        }
+        out.push(type_token(Tok::Upper(arg.atom_name()?)));
+    }
+    Ok(())
+}
+
+fn push_struct_field_type_tokens(cursor: &QuotedSourceCursor, out: &mut Vec<Token>) -> Result<(), QuotedFunctionError> {
+    let node = expect_ast_node(cursor, "struct field map")?;
+    if atom_name(&node.head)? != "%{}" {
+        return Err(QuotedFunctionError::new(
+            "quoted struct fields must be wrapped in `%{}`",
+        ));
+    }
+    out.push(type_token(Tok::LBrace));
+    for (index, entry) in node.tail.list_items()?.iter().enumerate() {
+        if index > 0 {
+            out.push(type_token(Tok::Comma));
+        }
+        let pair = entry.tuple_items()?;
+        if pair.len() != 2 {
+            return Err(QuotedFunctionError::new("quoted struct field expects a 2-tuple"));
+        }
+        out.push(type_token(Tok::KwKey(pair[0].atom_name()?)));
+        push_type_expr_tokens(&pair[1], out)?;
+    }
+    out.push(type_token(Tok::RBrace));
+    Ok(())
+}
+
+fn type_token_for_name(name: String) -> Token {
+    let tok = match name.as_str() {
+        "_" => Tok::Underscore,
+        "nil" => Tok::Nil,
+        "true" => Tok::True,
+        "false" => Tok::False,
+        _ if name.chars().next().is_some_and(char::is_uppercase) => Tok::Upper(name),
+        _ => Tok::Ident(name),
+    };
+    type_token(tok)
+}
+
+fn type_token(tok: Tok) -> Token {
+    Token {
+        tok,
+        span: Span::DUMMY,
+        space_before: false,
     }
 }
 
@@ -1503,37 +1567,6 @@ fn apply_bit_modifier_name(spec: &mut BitFieldSpec, name: &str) -> Result<(), Qu
     Ok(())
 }
 
-fn render_struct_field_entries(cursor: &QuotedSourceCursor) -> Result<String, QuotedFunctionError> {
-    let node = expect_ast_node(cursor, "struct field map")?;
-    if atom_name(&node.head)? != "%{}" {
-        return Err(QuotedFunctionError::new(
-            "quoted struct fields must be wrapped in `%{}`",
-        ));
-    }
-    let mut fields = Vec::new();
-    for entry in node.tail.list_items()? {
-        let pair = entry.tuple_items()?;
-        if pair.len() != 2 {
-            return Err(QuotedFunctionError::new("quoted struct field expects a 2-tuple"));
-        }
-        fields.push(format!("{}: {}", pair[0].atom_name()?, render_type_expr(&pair[1])?));
-    }
-    Ok(fields.join(", "))
-}
-
-fn lex_fragment_stream(ctx: &DecodeCtx<'_>, text: &str) -> Result<Vec<Token>, QuotedFunctionError> {
-    Lexer::with_source_name(text, ctx.code_name.to_string())
-        .tokenize(ctx.tel)
-        .map_err(|error| QuotedFunctionError::new(error.msg))
-}
-
-fn lex_fragment_tokens(ctx: &DecodeCtx<'_>, text: &str) -> Result<Vec<Token>, QuotedFunctionError> {
-    Ok(lex_fragment_stream(ctx, text)?
-        .into_iter()
-        .filter(|token| !matches!(token.tok, Tok::Eof | Tok::Newline))
-        .collect())
-}
-
 fn strip_extern_param_name(tokens: Vec<Token>) -> Result<Vec<Token>, QuotedFunctionError> {
     let mut depth = 0_i32;
     for (index, token) in tokens.iter().enumerate() {
@@ -1628,7 +1661,14 @@ impl FragmentCursor {
     }
 
     fn expect_eof(&mut self, label: &str) -> Result<(), QuotedFunctionError> {
-        self.expect(|tok| matches!(tok, Tok::Eof), label)
+        match self.peek_at(0) {
+            None => Ok(()),
+            Some(Tok::Eof) => {
+                self.pos += 1;
+                Ok(())
+            }
+            Some(other) => Err(QuotedFunctionError::new(format!("expected {label}, got {:?}", other))),
+        }
     }
 
     fn collect_type_tokens(&mut self, boundary: TypeTokenBoundary) -> Vec<Token> {
@@ -1692,13 +1732,20 @@ fn required_map_utf8(cursor: &QuotedSourceCursor, key: &str) -> Result<String, Q
         .map_err(QuotedFunctionError::from)
 }
 
-fn required_map_list_utf8(cursor: &QuotedSourceCursor, key: &str) -> Result<Vec<String>, QuotedFunctionError> {
+fn required_map_tokens(cursor: &QuotedSourceCursor, key: &str) -> Result<Vec<Token>, QuotedFunctionError> {
+    let value = cursor
+        .map_value(key)?
+        .ok_or_else(|| QuotedFunctionError::new(format!("quoted map is missing `{key}`")))?;
+    token_payload::decode_tokens(&value).map_err(QuotedFunctionError::from)
+}
+
+fn required_map_list_tokens(cursor: &QuotedSourceCursor, key: &str) -> Result<Vec<Vec<Token>>, QuotedFunctionError> {
     cursor
         .map_value(key)?
         .ok_or_else(|| QuotedFunctionError::new(format!("quoted map is missing `{key}`")))?
         .list_items()?
         .into_iter()
-        .map(|item| item.utf8_binary_text().map_err(QuotedFunctionError::from))
+        .map(|item| token_payload::decode_tokens(&item).map_err(QuotedFunctionError::from))
         .collect::<Result<Vec<_>, _>>()
 }
 
@@ -1715,10 +1762,10 @@ fn required_map_bool(cursor: &QuotedSourceCursor, key: &str) -> Result<bool, Quo
     }
 }
 
-fn optional_map_keyword_utf8(
+fn optional_map_keyword_tokens(
     cursor: &QuotedSourceCursor,
     key: &str,
-) -> Result<Vec<(String, String)>, QuotedFunctionError> {
+) -> Result<Vec<(String, Vec<Token>)>, QuotedFunctionError> {
     let Some(list) = cursor.map_value(key)? else {
         return Ok(Vec::new());
     };
@@ -1728,7 +1775,10 @@ fn optional_map_keyword_utf8(
         if items.len() != 2 {
             return Err(QuotedFunctionError::new("quoted keyword entry expects a 2-tuple"));
         }
-        out.push((items[0].atom_name()?, items[1].utf8_binary_text()?));
+        out.push((
+            items[0].atom_name()?,
+            token_payload::decode_tokens(&items[1]).map_err(QuotedFunctionError::from)?,
+        ));
     }
     Ok(out)
 }

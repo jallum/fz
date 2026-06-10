@@ -1,6 +1,6 @@
 ---
 purpose: "source-order item macro returns Fz-shaped function source"
-paths: [jit, interp, fz2-run, fz2-interp, fz2-build]
+paths: [fz2-run, fz2-interp, fz2-build]
 kind: run
 ---
 

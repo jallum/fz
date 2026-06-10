@@ -53,7 +53,7 @@ use super::source::{
 };
 use super::typedef::{TypeDef, TypeDefMap};
 use super::types::{ClosureTarget, Ty, Types};
-use crate::ir_interp::AnyValue as InterpValue;
+use crate::ir_interp::AnyValue as RuntimeValue;
 use fz_runtime::any_value::AnyValueRef;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -638,8 +638,8 @@ impl<'a> World<'a> {
             .ok_or_else(|| format!("macro {} is not executable", function.as_u32()))?
             .clone();
         let mut runtime_args = Vec::with_capacity(1 + args.len());
-        runtime_args.push(InterpValue::Ref(caller));
-        runtime_args.extend(args.iter().copied().map(InterpValue::Ref));
+        runtime_args.push(RuntimeValue::Ref(caller));
+        runtime_args.extend(args.iter().copied().map(RuntimeValue::Ref));
         let value = source.lend_process(|process| {
             crate::ir_interp::run_backend_entry_on_process(
                 &mut self.types,
@@ -650,7 +650,7 @@ impl<'a> World<'a> {
             )
         })?;
         match value {
-            InterpValue::Ref(root) => Ok(source.subroot(root)),
+            RuntimeValue::Ref(root) => Ok(source.subroot(root)),
             other => Err(format!(
                 "macro {} returned non-source value {}",
                 function.as_u32(),

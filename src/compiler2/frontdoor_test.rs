@@ -1,10 +1,30 @@
 use super::parse_quoted_program;
 use super::source_test::assert_quoted_mentions;
 use crate::modules::runtime_library;
+use crate::parser::lexer::Tok;
 use crate::telemetry::ConfiguredTelemetry;
 
 fn head_name(node: &super::QuotedAstNode) -> String {
     node.head.atom_name().expect("ast head atom")
+}
+
+fn map_value<'a>(
+    entries: &'a [(super::QuotedSourceCursor, super::QuotedSourceCursor)],
+    key: &str,
+) -> &'a super::QuotedSourceCursor {
+    entries
+        .iter()
+        .find(|(entry_key, _)| entry_key.atom_name().ok().as_deref() == Some(key))
+        .map(|(_, value)| value)
+        .unwrap_or_else(|| panic!("quoted map should contain `{key}`"))
+}
+
+fn token_kinds(cursor: &super::QuotedSourceCursor) -> Vec<Tok> {
+    super::token_payload::decode_tokens(cursor)
+        .expect("decode token payload")
+        .into_iter()
+        .map(|token| token.tok)
+        .collect()
 }
 
 #[test]
@@ -554,7 +574,47 @@ fn compiler2_frontdoor_parses_complex_extern_signatures() {
         &tel,
     )
     .expect("quoted parse");
-    // Complex extern signatures should quote raw parameter/return surfaces
-    // directly, as binary payloads carrying the raw token text.
-    assert_quoted_mentions(&root, &["extern", "() -> any", "resource(t)"]);
+    let items = root.cursor().list_items().expect("top-level externs");
+    assert_eq!(items.len(), 2);
+
+    let first = items[0].ast_node().expect("first extern cursor").expect("first extern");
+    let first_args = first.tail.list_items().expect("first extern args");
+    let first_options = first_args[1].map_entries().expect("first extern options");
+    let first_params = map_value(&first_options, "params").list_items().expect("first params");
+    assert_eq!(
+        token_kinds(&first_params[0]),
+        vec![Tok::LParen, Tok::RParen, Tok::Arrow, Tok::Ident("any".to_string())],
+        "extern parameter signatures should be quoted as token payloads"
+    );
+
+    let second = items[1]
+        .ast_node()
+        .expect("second extern cursor")
+        .expect("second extern");
+    let second_args = second.tail.list_items().expect("second extern args");
+    let second_options = second_args[1].map_entries().expect("second extern options");
+    assert_eq!(
+        token_kinds(map_value(&second_options, "return")),
+        vec![
+            Tok::Ident("resource".to_string()),
+            Tok::LParen,
+            Tok::Ident("t".to_string()),
+            Tok::RParen,
+        ],
+        "extern return signatures should be quoted as token payloads"
+    );
+    let constraints = map_value(&second_options, "when")
+        .list_items()
+        .expect("second constraints");
+    let constraint = constraints[0].tuple_items().expect("constraint keyword");
+    assert_eq!(constraint[0].atom_name().expect("constraint name"), "t");
+    assert_eq!(
+        token_kinds(&constraint[1]),
+        vec![
+            Tok::Ident("integer".to_string()),
+            Tok::Bar,
+            Tok::Ident("cpointer".to_string()),
+        ],
+        "extern constraints should be quoted as token payloads"
+    );
 }

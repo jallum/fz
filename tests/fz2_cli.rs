@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::env::temp_dir;
 use std::ffi::OsStr;
 use std::fs::{metadata, read_to_string, remove_file, write};
@@ -65,6 +66,41 @@ fn assert_compiler2_telemetry_only(path: &Path, context: &str) {
     );
 }
 
+fn assert_lexer_passes_match_submitted_sources(path: &Path, context: &str, expected_sources: &[String]) {
+    let log = read_to_string(path).unwrap_or_else(|error| panic!("read telemetry log {}: {error}", path.display()));
+    let mut counts = BTreeMap::<String, usize>::new();
+    for line in log.lines() {
+        if !line.contains("\"name\":[\"fz\",\"lexer\",\"pass\"]") || !line.contains("\"kind\":\"span_start\"") {
+            continue;
+        }
+        let source = json_string_field(line, "source_name")
+            .unwrap_or_else(|| panic!("{context} lexer.pass span_start should carry source_name; line={line}"));
+        *counts.entry(source).or_insert(0) += 1;
+    }
+
+    let mut expected = expected_sources.to_vec();
+    expected.sort();
+    let actual = counts.keys().cloned().collect::<Vec<_>>();
+    assert_eq!(
+        actual, expected,
+        "{context} should lex exactly the submitted sources, with no fragment pseudo-sources; counts={counts:?}"
+    );
+    let pass_count = counts.values().sum::<usize>();
+    assert_eq!(
+        pass_count,
+        expected_sources.len(),
+        "{context} should lex each submitted source exactly once; counts={counts:?}"
+    );
+}
+
+fn json_string_field(line: &str, field: &str) -> Option<String> {
+    let marker = format!("\"{field}\":\"");
+    let start = line.find(&marker)? + marker.len();
+    let rest = &line[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
 fn assert_source_production_telemetry(path: &Path, context: &str, expect_macro_expansion: bool) {
     assert_compiler2_telemetry_only(path, context);
     let log = read_to_string(path).unwrap_or_else(|error| panic!("read telemetry log {}: {error}", path.display()));
@@ -128,6 +164,13 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
 
     for command in ["run", "interp"] {
         let telemetry_path = unique_temp_path(&format!("fz2_{command}"), ".jsonl");
+        let expected_lexer_sources = vec![
+            source_path.to_string_lossy().into_owned(),
+            "runtime:runtime.fz".to_string(),
+            "runtime:Enum.fz".to_string(),
+            "runtime:Enumerable.fz".to_string(),
+            "runtime:List.fz".to_string(),
+        ];
         let out = run_fz2(&[
             OsStr::new("--log-telemetry"),
             telemetry_path.as_os_str(),
@@ -141,6 +184,11 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
             String::from_utf8_lossy(&out.stderr)
         );
         assert_compiler2_telemetry_only(&telemetry_path, &format!("fz2 {command}"));
+        assert_lexer_passes_match_submitted_sources(
+            &telemetry_path,
+            &format!("fz2 {command}"),
+            &expected_lexer_sources,
+        );
         let _ = remove_file(&telemetry_path);
     }
 

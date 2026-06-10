@@ -246,8 +246,11 @@ falling back to planner or type-preparation
 telemetry. `tests/fz2_cli.rs` extends that proof to the real `fz2` binary
 surface; its source-production macro/sugar fixture test asserts
 `FunctionSource` publication, `Fz.Compiler.define` publication, macro expansion
-when expected, and no legacy frontend/planner/type-infer events. The ignored
-JSONL dump is the occasional deep trace.
+when expected, and no legacy frontend/planner/type-infer events. Its
+`Enum.reduce` CLI probe also asserts that `lexer.pass` span-start events match
+the exact submitted source set one-for-one: user source plus the demanded
+runtime sources, with no duplicate pass and no fragment pseudo-source. The
+ignored JSONL dump is the occasional deep trace.
 
 Useful reruns:
 

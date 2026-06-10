@@ -8,6 +8,7 @@ use crate::parser::lexer::{Lexer, Tok, Token};
 use crate::telemetry::Telemetry;
 use fz_runtime::any_value::AnyValueRef;
 
+use super::token_payload;
 use super::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceHeap,
     QuotedSourceMetadata, QuotedSourceRoot, QuotedSourceSpan,
@@ -158,12 +159,15 @@ impl<'a> FrontDoorParser<'a> {
                 (name, value)
             }
             Tok::Ident(name) if name == "spec" => {
-                let raw = self.collect_line_source()?;
-                (name, self.builder.utf8_binary(&raw)?)
+                let tokens = self.collect_line_tokens()?;
+                (name, token_payload::encode_tokens(&self.builder, &tokens)?)
             }
             Tok::Type => {
-                let raw = self.collect_line_source()?;
-                ("type".to_string(), self.builder.utf8_binary(&raw)?)
+                let tokens = self.collect_line_tokens()?;
+                (
+                    "type".to_string(),
+                    token_payload::encode_tokens(&self.builder, &tokens)?,
+                )
             }
             other => return Err(self.error(format!("unsupported compiler2 attribute head {:?}", other))),
         };
@@ -409,11 +413,11 @@ impl<'a> FrontDoorParser<'a> {
                     }
                     break;
                 }
-                let param = self.collect_balanced_source_until(&[Tok::Comma, Tok::RParen])?;
+                let param = self.collect_balanced_tokens_until(&[Tok::Comma, Tok::RParen])?;
                 if param.is_empty() {
                     return self.err("expected extern parameter type");
                 }
-                params.push(param);
+                params.push(token_payload::encode_tokens(&self.builder, &param)?);
                 if !self.eat(&Tok::Comma) {
                     break;
                 }
@@ -430,10 +434,11 @@ impl<'a> FrontDoorParser<'a> {
         }
         self.expect(&Tok::RParen, "`)`")?;
         self.expect(&Tok::ColonColon, "`::`")?;
-        let ret = self.collect_balanced_source_until(&[Tok::When, Tok::Newline, Tok::Eof, Tok::End])?;
+        let ret = self.collect_balanced_tokens_until(&[Tok::When, Tok::Newline, Tok::Eof, Tok::End])?;
         if ret.is_empty() {
             return self.err("expected extern return type after `::`");
         }
+        let ret = token_payload::encode_tokens(&self.builder, &ret)?;
         let mut constraints = Vec::new();
         if self.eat(&Tok::When) {
             loop {
@@ -445,11 +450,11 @@ impl<'a> FrontDoorParser<'a> {
                 if !colon_consumed {
                     self.expect(&Tok::Colon, "`:`")?;
                 }
-                let ty = self.collect_balanced_source_until(&[Tok::Comma, Tok::Newline, Tok::Eof, Tok::End])?;
+                let ty = self.collect_balanced_tokens_until(&[Tok::Comma, Tok::Newline, Tok::Eof, Tok::End])?;
                 if ty.is_empty() {
                     return self.err(format!("expected constraint type expression after `{var}:`"));
                 }
-                constraints.push((var, ty));
+                constraints.push((var, token_payload::encode_tokens(&self.builder, &ty)?));
                 if !self.eat(&Tok::Comma) {
                     break;
                 }
@@ -458,18 +463,14 @@ impl<'a> FrontDoorParser<'a> {
         }
         let span = start.merge(self.prev_span());
         let meta = self.meta(module_path, &[], span)?;
-        let params = params
-            .iter()
-            .map(|param| self.builder.utf8_binary(param))
-            .collect::<Result<Vec<_>, _>>()?;
         let constraints = constraints
             .iter()
-            .map(|(name, ty)| self.builder.keyword(name, self.builder.utf8_binary(ty)?))
+            .map(|(name, ty)| self.builder.keyword(name, *ty))
             .collect::<Result<Vec<_>, _>>()?;
         let mut entries = vec![
             (self.builder.atom("name"), self.builder.utf8_binary(&name)?),
             (self.builder.atom("params"), self.builder.list(&params)?),
-            (self.builder.atom("return"), self.builder.utf8_binary(&ret)?),
+            (self.builder.atom("return"), ret),
             (self.builder.atom("variadic"), self.builder.bool(variadic)),
         ];
         if !constraints.is_empty() {
@@ -1541,7 +1542,7 @@ impl<'a> FrontDoorParser<'a> {
         }
     }
 
-    fn collect_balanced_source_until(&mut self, terminators: &[Tok]) -> Result<String, FrontDoorError> {
+    fn collect_balanced_tokens_until(&mut self, terminators: &[Tok]) -> Result<Vec<Token>, FrontDoorError> {
         self.skip_newlines();
         let start = self.pos;
         let mut parens = 0_u32;
@@ -1572,11 +1573,9 @@ impl<'a> FrontDoorParser<'a> {
             self.bump();
         }
         if self.pos == start {
-            return Ok(String::new());
+            return Ok(Vec::new());
         }
-        let start_byte = self.toks[start].span.start as usize;
-        let end_byte = self.toks[self.pos - 1].span.end as usize;
-        Ok(self.source_text[start_byte..end_byte].trim().to_string())
+        Ok(self.toks[start..self.pos].to_vec())
     }
 
     fn meta(
@@ -1664,18 +1663,16 @@ impl<'a> FrontDoorParser<'a> {
         }
     }
 
-    fn collect_line_source(&mut self) -> Result<String, FrontDoorError> {
+    fn collect_line_tokens(&mut self) -> Result<Vec<Token>, FrontDoorError> {
         self.skip_newlines();
-        let start = self.cur_span().start as usize;
-        let mut end = start;
+        let start = self.pos;
         while !matches!(self.peek(), Tok::Newline | Tok::Eof | Tok::End) {
-            end = self.cur_span().end as usize;
             self.bump();
         }
-        if end <= start {
+        if self.pos == start {
             return self.err("expected attribute payload");
         }
-        Ok(self.source_text[start..end].trim().to_string())
+        Ok(self.toks[start..self.pos].to_vec())
     }
 
     fn err<T>(&self, msg: impl Into<String>) -> Result<T, FrontDoorError> {

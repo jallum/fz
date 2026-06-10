@@ -77,7 +77,7 @@ fn compiler_service_define_publishes_function_source_and_threads_namespace_forwa
     let bar_body = builder.call("foo", &meta(), &[]).expect("bar calls foo");
     let bar = function_form(&builder, "bar", bar_body);
     let root = root_list(&builder, &[service, bar]);
-    let ctx = SurfaceSourceContext::new(code, world.code_text(code), world.tel());
+    let ctx = SurfaceSourceContext::new(code, world.code_text(code));
     let surface = read_scope_surface(&root, &ctx).expect("source surface with compiler service");
 
     let publication = publish_scope(
@@ -144,7 +144,7 @@ fn compiler_service_define_groups_single_function_source_before_define_function(
     let foo = function_form(&builder, "foo", builder.int(42));
     let service = compiler_define_form(&builder, foo, builder.map(&[]).expect("__ENV__"));
     let root = root_list(&builder, &[service]);
-    let ctx = SurfaceSourceContext::new(code, world.code_text(code), world.tel());
+    let ctx = SurfaceSourceContext::new(code, world.code_text(code));
     let surface = read_scope_surface(&root, &ctx).expect("source surface with compiler service");
 
     let publication = publish_scope(
@@ -182,7 +182,7 @@ fn compiler_service_define_inside_a_function_body_has_no_source_publication_auth
     let body_service = compiler_define_form(&builder, sneaky, builder.map(&[]).expect("__ENV__"));
     let main = function_form(&builder, "main", body_service);
     let root = root_list(&builder, &[main]);
-    let ctx = SurfaceSourceContext::new(code, world.code_text(code), world.tel());
+    let ctx = SurfaceSourceContext::new(code, world.code_text(code));
     let surface = read_scope_surface(&root, &ctx).expect("source surface");
 
     let publication = publish_scope(

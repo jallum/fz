@@ -491,7 +491,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     fn apply_compiler_define(&mut self, service: &CompilerServiceForm) -> Result<(), FatalError> {
         let mut surface = self.scope_surface_from_root(&service.source, "Fz.Compiler.define source")?;
         let code_text = self.world.code_text(self.code_id).to_owned();
-        let ctx = SurfaceSourceContext::new(self.code_id, &code_text, self.world.tel());
+        let ctx = SurfaceSourceContext::new(self.code_id, &code_text);
         if !surface.attrs.is_empty() || surface.forms.len() != 1 {
             return Err(emit_job_diagnostic(
                 self.world,
@@ -736,7 +736,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
 
     fn scope_surface_from_root(&self, root: &QuotedSourceRoot, context: &str) -> Result<ScopeSurface, FatalError> {
         let code_text = self.world.code_text(self.code_id).to_owned();
-        let ctx = SurfaceSourceContext::new(self.code_id, &code_text, self.world.tel());
+        let ctx = SurfaceSourceContext::new(self.code_id, &code_text);
         let source = if root.root().is_empty_list() || root.root().tag() == ValueKind::LIST {
             root.clone()
         } else {
@@ -1558,7 +1558,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         let target = reference_impl_target_module(self.world, self.current_module, &protocol_impl.target);
         let impl_module = reference_protocol_impl_module(self.world, protocol, target);
         let code_text = self.world.code_text(self.code_id).to_owned();
-        let ctx = SurfaceSourceContext::new(self.code_id, &code_text, self.world.tel());
+        let ctx = SurfaceSourceContext::new(self.code_id, &code_text);
         let body_surface = read_protocol_impl_body_surface(protocol_impl, &ctx).map_err(|error| {
             emit_internal_surface_error(self.world, format!("quoted protocol impl body read failed: {error}"))
         })?;

@@ -9,7 +9,7 @@ fn compiler2_quoted_surface_reads_alias_as_keyword_value() {
     let mut code = CodeMap::new();
     let code_id = code.define(Some("alias_as.fz".to_string()), source.to_string());
     let root = parse_quoted_program("alias_as.fz", source, &tel).expect("quoted parse");
-    let ctx = SurfaceSourceContext::new(code_id, source, &tel);
+    let ctx = SurfaceSourceContext::new(code_id, source);
 
     let surface = read_scope_surface(&root, &ctx).expect("surface read");
 
@@ -29,7 +29,7 @@ fn compiler2_quoted_surface_groups_multiclause_functions_into_one_logical_form()
     let mut code = CodeMap::new();
     let code_id = code.define(Some("surface.fz".to_string()), source.to_string());
     let root = parse_quoted_program("surface.fz", source, &tel).expect("quoted parse");
-    let ctx = SurfaceSourceContext::new(code_id, source, &tel);
+    let ctx = SurfaceSourceContext::new(code_id, source);
 
     let surface = read_scope_surface(&root, &ctx).expect("surface read");
 
@@ -91,7 +91,7 @@ fn compiler2_quoted_surface_keeps_attached_function_attrs_inside_grouped_source(
     let mut code = CodeMap::new();
     let code_id = code.define(Some("surface.fz".to_string()), source.to_string());
     let root = parse_quoted_program("surface.fz", source, &tel).expect("quoted parse");
-    let ctx = SurfaceSourceContext::new(code_id, source, &tel);
+    let ctx = SurfaceSourceContext::new(code_id, source);
 
     let surface = read_scope_surface(&root, &ctx).expect("surface read");
 
@@ -151,7 +151,7 @@ fn compiler2_quoted_surface_reads_protocol_impl_callbacks_through_grouped_source
     let mut code = CodeMap::new();
     let code_id = code.define(Some("surface.fz".to_string()), source.to_string());
     let root = parse_quoted_program("surface.fz", source, &tel).expect("quoted parse");
-    let ctx = SurfaceSourceContext::new(code_id, source, &tel);
+    let ctx = SurfaceSourceContext::new(code_id, source);
 
     let surface = read_scope_surface(&root, &ctx).expect("surface read");
 
