@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.16.10.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.16.10.3"
+  ],
   "created": "2026-06-10T17:48:24Z",
   "description": "Goal: source publication mutates scope only for scope-shaping reasons. Signal: source_publish no longer walks inside ordinary function do-bodies; item macro fragments, module/protocol discovery, and scope threading still work; no source-publication path blocks on body-local macro readiness for an undemanded function. Strategy: collapse source publication to reserve, bind, and publish raw definition facts; keep item-level expansion in place because it can create sibling definitions; delete the eager function-body traversal and waits from the publication layer.",
   "id": "fz-rh2.16.10.2",
