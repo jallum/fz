@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-10T04:12:37Z",
   "created": "2026-06-10T04:05:02Z",
   "description": "ModuleMap::define accumulates code IDs into a vec with containment-check dedup. surface.codes is never read outside define itself and one identity test. A module has exactly one source; the field should be a single CodeId and the accumulation logic disappears with it.",
   "id": "fz-ehe.3",
   "labels": [],
   "parent": "fz-ehe",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-knf-c: collapse ModuleSurface.codes from Vec\u003cCodeId\u003e to CodeId",
   "type": "task",
-  "updated_at": "2026-06-10T04:10:52Z"
+  "updated_at": "2026-06-10T04:12:37Z"
 }
