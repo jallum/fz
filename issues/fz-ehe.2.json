@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-10T04:05:02Z",
+  "description": "scope_code publishes (FactKey::CodeScoped(id), world.code_revision(id)) — pinning CodeScoped's revision to CodeIndexed's. Every other fact gets an independent revision via reconcile. CodeScoped is a distinct event (imports resolved, names bound) and should produce its own revision. code_revision() is vestigial once fixed.",
+  "id": "fz-ehe.2",
+  "labels": [],
+  "parent": "fz-ehe",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-knf-b: give CodeScoped its own revision instead of borrowing CodeIndexed's",
+  "type": "task",
+  "updated_at": "2026-06-10T04:05:02Z"
+}
