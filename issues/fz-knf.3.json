@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-knf",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Fact system owns/threads the 64-bit revision; strip revision from slots; retire join",
   "type": "task",
-  "updated_at": "2026-06-10T01:53:48Z"
+  "updated_at": "2026-06-10T03:01:59Z"
 }
