@@ -5,7 +5,7 @@
     "fz-rh2.16.6"
   ],
   "created": "2026-06-10T08:05:46Z",
-  "description": "Classify the fz-rh2.9 no-fail mismatch set: append, bsx_guard_eq, enum_list_allocations, enum_sort, filter, process_heap_stats, quicksort, reverse, tree.\n\nMost are allocation-stat or path-specific golden questions; choose explicit expected.fz2-run/interp/build files where the behavior is correct but the allocation contract differs. bsx_guard_eq needs a semantic check because fz2 interp selects a different branch.\n\nSignal: each fixture either has fz2 matrix paths with intentional fz2 goldens, a bug ticket for a semantic mismatch, or a documented out-of-scope reason.",
+  "description": "Classify the fz-rh2.9 no-fail mismatch set plus the fz-rh2.16.3 newly-running allocation mismatch: append, bsx_guard_eq, enum_list_allocations, enum_reduce_suspend, enum_sort, filter, process_heap_stats, quicksort, reverse, tree.\n\nMost are allocation-stat or path-specific golden questions; choose explicit expected.fz2-run/interp/build files where the behavior is correct but the allocation contract differs. bsx_guard_eq needs a semantic check because fz2 interp selects a different branch. enum_reduce_suspend now runs through fz2 run/interp/build, but fz2 native allocates additional closure/scalar boxes versus the old native golden, so it needs an explicit fz2 allocation contract before matrix promotion.\n\nSignal: each fixture either has fz2 matrix paths with intentional fz2 goldens, a bug ticket for a semantic mismatch, or a documented out-of-scope reason.",
   "id": "fz-rh2.16.2",
   "labels": [],
   "parent": "fz-rh2.16",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "Decide fz2 goldens for mismatch-without-failure fixtures",
   "type": "task",
-  "updated_at": "2026-06-10T08:05:55Z"
+  "updated_at": "2026-06-10T08:22:32Z"
 }
