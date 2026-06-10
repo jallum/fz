@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-rh2.16.8.1"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-rh2.16.8.5"
   ],
@@ -15,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 type fragments: standardize on token-payload transport and delete quoted re-rendering",
   "type": "task",
-  "updated_at": "2026-06-10T20:00:46Z"
+  "updated_at": "2026-06-10T20:00:47Z"
 }
