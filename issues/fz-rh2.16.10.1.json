@@ -4,14 +4,15 @@
   "blocks": [
     "fz-rh2.16.10.2"
   ],
+  "closed_at": "2026-06-10T17:55:41Z",
   "created": "2026-06-10T17:48:19Z",
   "description": "Goal: FunctionSource becomes raw quoted source, and function-local expansion moves behind function demand. Signal: ScopeCode publishes raw function source without expanding ordinary do-bodies; DefineFunction waits on a staged expanded-function fact and only then decodes FunctionSurface; the final expanded quoted source still matches what the eager path would have produced. Strategy: introduce the new fact/job, move the existing function-body expansion walk there, and add tests/telemetry proving scope jobs no longer wait on body-local macros for undemanded functions.",
   "id": "fz-rh2.16.10.1",
   "labels": [],
   "parent": "fz-rh2.16.10",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 function staging: add staged expanded-function facts and make DefineFunction demand them",
   "type": "task",
-  "updated_at": "2026-06-10T17:50:48Z"
+  "updated_at": "2026-06-10T17:55:41Z"
 }
