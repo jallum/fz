@@ -16,6 +16,7 @@ mod keying;
 mod namespace;
 mod native_codegen;
 mod protocol;
+mod quoted_expander;
 mod quoted_function;
 mod quoted_surface;
 mod resolve;
