@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.12.7"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-rh2.12",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Promote .agent/targets -\u003e .agent/docs; specs.md/modules.md deltas; northstar reconcile",
   "type": "task",
-  "updated_at": "2026-06-08T21:34:18Z"
+  "updated_at": "2026-06-10T07:39:40Z"
 }
