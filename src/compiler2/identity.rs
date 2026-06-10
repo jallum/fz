@@ -81,30 +81,6 @@ pub struct RootEntry {
 }
 
 #[derive(Debug, Clone)]
-pub struct Module {
-    pub(crate) state: ModuleState,
-}
-
-impl Module {
-    fn source(&self) -> Option<&ModuleSource> {
-        match &self.state {
-            ModuleState::Placeholder => None,
-            ModuleState::Indexed(source) | ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. } => {
-                Some(source)
-            }
-        }
-    }
-
-    fn base_namespace(&self) -> Option<Namespace> {
-        match &self.state {
-            ModuleState::Scoped { base, .. } => Some(*base),
-            ModuleState::Defined { surface, .. } => Some(surface.base),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
 pub enum ModuleState {
     Placeholder,
     Indexed(ModuleSource),
@@ -116,6 +92,25 @@ pub enum ModuleState {
         source: ModuleSource,
         surface: ModuleSurface,
     },
+}
+
+impl ModuleState {
+    fn source(&self) -> Option<&ModuleSource> {
+        match self {
+            ModuleState::Placeholder => None,
+            ModuleState::Indexed(source) | ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. } => {
+                Some(source)
+            }
+        }
+    }
+
+    fn base_namespace(&self) -> Option<Namespace> {
+        match self {
+            ModuleState::Scoped { base, .. } => Some(*base),
+            ModuleState::Defined { surface, .. } => Some(surface.base),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -165,30 +160,25 @@ pub struct ModuleExport {
 }
 
 #[derive(Debug, Clone)]
-pub struct Function {
-    pub state: FunctionState,
+pub enum FunctionState {
+    Placeholder,
+    Defined { def: Box<FunctionDef> },
 }
 
-impl Function {
+impl FunctionState {
     pub fn state_source_heap_id(&self) -> Option<usize> {
-        match &self.state {
+        match self {
             FunctionState::Placeholder => None,
             FunctionState::Defined { def } => Some(def.source.key().heap_id),
         }
     }
 
     pub fn state_source_root_word(&self) -> Option<u64> {
-        match &self.state {
+        match self {
             FunctionState::Placeholder => None,
             FunctionState::Defined { def } => Some(def.source.root().raw_word()),
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub enum FunctionState {
-    Placeholder,
-    Defined { def: Box<FunctionDef> },
 }
 
 #[derive(Debug, Clone)]
@@ -271,7 +261,7 @@ pub struct NotedTypeDecl {
 
 #[derive(Debug, Default)]
 pub struct ModuleMap {
-    slots: Vec<Module>,
+    slots: Vec<ModuleState>,
     names: Vec<Option<String>>,
     by_name: HashMap<String, ModuleId>,
 }
@@ -313,15 +303,13 @@ impl FunctionSourceMap {
 impl ModuleMap {
     pub fn new() -> Self {
         Self {
-            slots: vec![Module {
-                state: ModuleState::Defined {
-                    source: ModuleSource::empty(CodeId::ZERO),
-                    surface: ModuleSurface {
-                        code: CodeId::ZERO,
-                        base: Namespace::default(),
-                        namespace: Namespace::default(),
-                        exports: Vec::new(),
-                    },
+            slots: vec![ModuleState::Defined {
+                source: ModuleSource::empty(CodeId::ZERO),
+                surface: ModuleSurface {
+                    code: CodeId::ZERO,
+                    base: Namespace::default(),
+                    namespace: Namespace::default(),
+                    exports: Vec::new(),
                 },
             }],
             names: vec![None],
@@ -335,9 +323,7 @@ impl ModuleMap {
             return *id;
         }
         let id = ModuleId(self.slots.len() as u32);
-        self.slots.push(Module {
-            state: ModuleState::Placeholder,
-        });
+        self.slots.push(ModuleState::Placeholder);
         self.names.push(Some(name.clone()));
         self.by_name.insert(name, id);
         id
@@ -362,7 +348,7 @@ impl ModuleMap {
             },
             source,
         };
-        update_if_changed(&mut module.state, current_revision, next)
+        update_if_changed(module, current_revision, next)
     }
 
     pub fn scope(&mut self, id: ModuleId, base_namespace: Namespace, current_revision: u64) -> u64 {
@@ -374,7 +360,7 @@ impl ModuleMap {
             .source()
             .expect("modules should be indexed before scoping")
             .clone();
-        let next = if let ModuleState::Defined { surface, .. } = &module.state {
+        let next = if let ModuleState::Defined { surface, .. } = &*module {
             let mut surface = surface.clone();
             surface.base = base_namespace;
             ModuleState::Defined { source, surface }
@@ -384,7 +370,7 @@ impl ModuleMap {
                 base: base_namespace,
             }
         };
-        update_if_changed(&mut module.state, current_revision, next)
+        update_if_changed(module, current_revision, next)
     }
 
     pub fn index_body(
@@ -405,7 +391,7 @@ impl ModuleMap {
             source,
             kind: ModuleSourceKind::Body(surface),
         });
-        update_if_changed(&mut module.state, current_revision, next)
+        update_if_changed(module, current_revision, next)
     }
 
     pub fn index_protocol(
@@ -426,27 +412,25 @@ impl ModuleMap {
             source,
             kind: ModuleSourceKind::Protocol(surface),
         });
-        update_if_changed(&mut module.state, current_revision, next)
+        update_if_changed(module, current_revision, next)
     }
 
     pub fn define_anonymous(&mut self, code: CodeId, namespace: Namespace) -> ModuleId {
         let id = ModuleId(self.slots.len() as u32);
-        self.slots.push(Module {
-            state: ModuleState::Defined {
-                source: ModuleSource::empty(code),
-                surface: ModuleSurface {
-                    code,
-                    base: namespace,
-                    namespace,
-                    exports: Vec::new(),
-                },
+        self.slots.push(ModuleState::Defined {
+            source: ModuleSource::empty(code),
+            surface: ModuleSurface {
+                code,
+                base: namespace,
+                namespace,
+                exports: Vec::new(),
             },
         });
         self.names.push(None);
         id
     }
 
-    pub fn get(&self, id: ModuleId) -> &Module {
+    pub fn get(&self, id: ModuleId) -> &ModuleState {
         self.slots
             .get(id.0 as usize)
             .expect("module ids should be known before reading module slots")
@@ -466,7 +450,7 @@ impl ModuleMap {
                 continue;
             };
             let module = &self.slots[index];
-            let Some(fields) = (match &module.state {
+            let Some(fields) = (match module {
                 ModuleState::Placeholder => None,
                 ModuleState::Indexed(source)
                 | ModuleState::Scoped { source, .. }
@@ -488,7 +472,7 @@ impl ModuleMap {
 
 #[derive(Debug, Default)]
 pub struct FunctionMap {
-    slots: Vec<Function>,
+    slots: Vec<FunctionState>,
     refs: Vec<FunctionRef>,
     by_key: HashMap<FunctionKey, FunctionId>,
     generated_by_key: HashMap<GeneratedFunctionKey, FunctionId>,
@@ -510,9 +494,7 @@ impl FunctionMap {
             return *id;
         }
         let id = FunctionId(self.slots.len() as u32);
-        self.slots.push(Function {
-            state: FunctionState::Placeholder,
-        });
+        self.slots.push(FunctionState::Placeholder);
         self.refs.push(FunctionRef { module, name, arity });
         self.by_key.insert(key, id);
         id
@@ -524,9 +506,7 @@ impl FunctionMap {
             return *id;
         }
         let id = FunctionId(self.slots.len() as u32);
-        self.slots.push(Function {
-            state: FunctionState::Placeholder,
-        });
+        self.slots.push(FunctionState::Placeholder);
         self.refs.push(FunctionRef {
             module,
             name: format!("#lambda:{}:{}-{}", owner.as_u32(), span.start, span.end),
@@ -539,10 +519,10 @@ impl FunctionMap {
     pub fn define(&mut self, id: FunctionId, def: FunctionDef, current_revision: u64) -> u64 {
         let function = &mut self.slots[id.0 as usize];
         let next = FunctionState::Defined { def: Box::new(def) };
-        update_if_changed(&mut function.state, current_revision, next)
+        update_if_changed(function, current_revision, next)
     }
 
-    pub fn get(&self, id: FunctionId) -> &Function {
+    pub fn get(&self, id: FunctionId) -> &FunctionState {
         self.slots
             .get(id.0 as usize)
             .expect("function ids should be known before reading function slots")

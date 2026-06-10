@@ -5,7 +5,7 @@ use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
     AbiReadyProgram, AbiValueRepr, ActivationKey, BackendProgram, CallSiteId, CallSiteKey, CallSiteSummary,
     CallableEntry, ControlEntryOrigin, EmissionReadyProgram, ExecutableKey, FactKey, FunctionId, FunctionRef,
-    LoweredBody, LoweredStep, LoweredTail, MaterializedProgram, Module, ModuleId, ReturnAbi, SelectedCallee,
+    LoweredBody, LoweredStep, LoweredTail, MaterializedProgram, ModuleId, ModuleState, ReturnAbi, SelectedCallee,
     SemanticClosure, Ty, TypeName, TypeVarId, Types, ValueId,
 };
 use crate::diag::codes;
@@ -33,7 +33,7 @@ type GuardDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternGuardDispatch<
 type LoweredBodyDefs = Rc<RefCell<HashMap<FunctionId, Vec<LoweredBody>>>>;
 type SpanJobs = Rc<RefCell<HashMap<u64, Job>>>;
 type FunctionDefs = Rc<RefCell<HashMap<FunctionId, FunctionDefinedRecord>>>;
-type ModuleDefs = Rc<RefCell<HashMap<ModuleId, Vec<Module>>>>;
+type ModuleDefs = Rc<RefCell<HashMap<ModuleId, Vec<ModuleState>>>>;
 type CallsiteDefs = Rc<RefCell<Vec<CallsiteDefinedRecord>>>;
 type SemanticClosedDefs = Rc<RefCell<Vec<SemanticClosedRecord>>>;
 type MaterializedProgramDefs = Rc<RefCell<Vec<MaterializedProgramRecord>>>;
@@ -6436,8 +6436,8 @@ impl ModuleCapture {
         Some(Self::qualified_name_from(module, self))
     }
 
-    fn qualified_name_from(module: Module, modules: &Self) -> String {
-        match &module.state {
+    fn qualified_name_from(module: ModuleState, modules: &Self) -> String {
+        match &module {
             crate::compiler2::ModuleState::Defined { source, .. }
             | crate::compiler2::ModuleState::Scoped { source, .. }
             | crate::compiler2::ModuleState::Indexed(source) => {
@@ -6941,7 +6941,7 @@ impl Handler for ModuleCaptureHandler {
         let Some(module) = event
             .metadata
             .get("module")
-            .and_then(|value| value.downcast_ref::<Module>())
+            .and_then(|value| value.downcast_ref::<ModuleState>())
         else {
             return;
         };

@@ -835,7 +835,7 @@ impl<'a> World<'a> {
         name.name == "t"
             && matches!(name.arity, 0 | 1)
             && matches!(
-                &self.modules.get(name.module).state,
+                self.modules.get(name.module),
                 ModuleState::Indexed(source) | ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. }
                     if matches!(source.kind, ModuleSourceKind::Protocol(_))
             )
@@ -982,7 +982,7 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn function_declares_contract(&self, function: FunctionId) -> bool {
-        match &self.functions.get(function).state {
+        match self.functions.get(function) {
             super::identity::FunctionState::Defined { def } => {
                 def.surface.extern_abi.is_some()
                     || def
@@ -1110,7 +1110,7 @@ impl<'a> World<'a> {
         let revision = self.bodies.define(function, body.clone(), current);
         let function_ref = self.functions.reference_for(function);
         let slot = self.functions.get(function);
-        let def = match &slot.state {
+        let def = match slot {
             super::identity::FunctionState::Defined { def } => def.as_ref(),
             super::identity::FunctionState::Placeholder => {
                 panic!("lowered bodies should only be defined for known functions")
@@ -1145,7 +1145,7 @@ impl<'a> World<'a> {
         let revision = self.guard_dispatches.define(function, dispatch.clone(), current);
         let function_ref = self.functions.reference_for(function);
         let slot = self.functions.get(function);
-        let def = match &slot.state {
+        let def = match slot {
             super::identity::FunctionState::Defined { def } => def.as_ref(),
             super::identity::FunctionState::Placeholder => {
                 panic!("guard dispatch should only be defined for known functions")
@@ -1177,7 +1177,7 @@ impl<'a> World<'a> {
         let revision = self.entry_dispatches.define(function, plan.clone(), current);
         let function_ref = self.functions.reference_for(function);
         let slot = self.functions.get(function);
-        let def = match &slot.state {
+        let def = match slot {
             super::identity::FunctionState::Defined { def } => def.as_ref(),
             super::identity::FunctionState::Placeholder => {
                 panic!("entry dispatch should only be defined for known functions")
@@ -1260,7 +1260,7 @@ impl<'a> World<'a> {
     }
 
     pub fn module_exports(&self, module: ModuleId) -> Vec<ModuleExport> {
-        match &self.modules.get(module).state {
+        match self.modules.get(module) {
             ModuleState::Defined { surface, .. } => surface.exports.clone(),
             ModuleState::Placeholder | ModuleState::Indexed(_) | ModuleState::Scoped { .. } => {
                 panic!("module exports should only be read from defined modules")
@@ -1269,7 +1269,7 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn module_struct_fields(&self, module: ModuleId) -> Option<&[String]> {
-        match &self.modules.get(module).state {
+        match self.modules.get(module) {
             ModuleState::Placeholder => None,
             ModuleState::Indexed(source) | ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. } => {
                 match &source.kind {
@@ -1301,7 +1301,7 @@ impl<'a> World<'a> {
     }
 
     pub fn module_defined_revision(&self, module: ModuleId) -> Option<u64> {
-        if !matches!(&self.modules.get(module).state, ModuleState::Defined { .. }) {
+        if !matches!(self.modules.get(module), ModuleState::Defined { .. }) {
             return None;
         }
         self.work_graph.facts().revision(&FactKey::ModuleDefined(module))
@@ -1309,7 +1309,7 @@ impl<'a> World<'a> {
 
     pub fn function_defined_revision(&self, function: FunctionId) -> Option<u64> {
         if !matches!(
-            self.functions.get(function).state,
+            *self.functions.get(function),
             super::identity::FunctionState::Defined { .. }
         ) {
             return None;
@@ -1322,7 +1322,7 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn function_definition(&self, function: FunctionId) -> super::identity::FunctionDef {
-        match &self.functions.get(function).state {
+        match self.functions.get(function) {
             super::identity::FunctionState::Defined { def } => def.as_ref().clone(),
             super::identity::FunctionState::Placeholder => {
                 panic!("function definitions should only be read from defined functions")
@@ -1340,7 +1340,7 @@ impl<'a> World<'a> {
 
     #[cfg(test)]
     pub(crate) fn function_scope(&self, function: FunctionId) -> Option<ScopeSnapshot> {
-        match &self.functions.get(function).state {
+        match self.functions.get(function) {
             super::identity::FunctionState::Defined { def } => {
                 Some(ScopeSnapshot::function(def.owner_module, def.namespace, function))
             }
@@ -1355,7 +1355,7 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn function_variadic(&self, function: FunctionId) -> bool {
-        match &self.functions.get(function).state {
+        match self.functions.get(function) {
             super::identity::FunctionState::Defined { def } => def.surface.variadic,
             super::identity::FunctionState::Placeholder => {
                 self.function_source(function).is_some_and(|source| source.variadic)
@@ -1577,7 +1577,7 @@ impl<'a> World<'a> {
     }
 
     pub fn module_scope(&self, module: ModuleId) -> Option<(super::identity::ModuleSource, ScopeSnapshot)> {
-        match &self.modules.get(module).state {
+        match self.modules.get(module) {
             ModuleState::Scoped { source, base } => Some((source.clone(), ScopeSnapshot::module(module, *base))),
             ModuleState::Defined { source, surface } => {
                 Some((source.clone(), ScopeSnapshot::module(module, surface.base)))
@@ -1587,14 +1587,14 @@ impl<'a> World<'a> {
     }
 
     pub fn module_indexed_parent(&self, module: ModuleId) -> Option<(CodeId, ModuleId)> {
-        match &self.modules.get(module).state {
+        match self.modules.get(module) {
             ModuleState::Indexed(source) => Some((source.code, source.parent)),
             _ => None,
         }
     }
 
     fn module_definition_code(&self, module: ModuleId) -> CodeId {
-        match &self.modules.get(module).state {
+        match self.modules.get(module) {
             ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. } => source.code,
             ModuleState::Placeholder | ModuleState::Indexed(_) => {
                 panic!("modules should be scoped before definition")
@@ -1744,7 +1744,7 @@ impl<'a> World<'a> {
     fn derived_protocol_callback(&self, function: FunctionId) -> Option<ProtocolCallback> {
         let function_ref = self.functions.reference_for(function);
         let module = self.modules.get(function_ref.module);
-        let source = match &module.state {
+        let source = match module {
             ModuleState::Indexed(source) | ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. } => {
                 source
             }

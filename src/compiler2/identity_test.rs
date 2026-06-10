@@ -65,7 +65,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
     );
     assert_eq!(modules.name(math_def), Some("Math"));
     let module = modules.get(math_def);
-    match &module.state {
+    match module {
         ModuleState::Defined { surface, .. } => {
             assert_eq!(surface.code, code_id);
             assert_eq!(surface.namespace, namespaces.prelude_head());
@@ -161,7 +161,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         "generated function identity should be stable per owner and source site"
     );
     let function = functions.get(add_def);
-    match &function.state {
+    match function {
         FunctionState::Defined { def } => {
             assert_eq!(def.code, code_id);
             assert_eq!(def.surface.name, "Math.add");
