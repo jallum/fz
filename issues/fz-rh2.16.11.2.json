@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-rh2.16.11.1"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-rh2.16.11.3"
   ],
@@ -15,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 function definition macros: route def/defp/defmacro/defmacrop through the compiler callback and keep bodies lazy",
   "type": "task",
-  "updated_at": "2026-06-10T21:05:29Z"
+  "updated_at": "2026-06-10T21:52:52Z"
 }
