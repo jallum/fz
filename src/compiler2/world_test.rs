@@ -1,4 +1,4 @@
-use super::{DriveOutcome, Job, ModuleId, Namespace, TypeName, TypeVarId, Types, World};
+use super::{DriveOutcome, FactKey, Job, ModuleId, Namespace, TypeName, TypeVarId, Types, World};
 use crate::ast::Attribute;
 use crate::specs::ResolvedTypeShape;
 use crate::telemetry::ConfiguredTelemetry;
@@ -151,5 +151,52 @@ fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_capt
         world.types_mut().display(&bound),
         expect.display(&list_int),
         "tkf_box(tkf_elem) instantiates to a list of integer",
+    );
+}
+
+#[test]
+fn compiler2_define_function_stages_expanded_source_before_definition() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    let code = world.submit_code(Some("staged_source.fz".to_string()), "fn main(), do: 42\n".to_string());
+    assert!(
+        matches!(world.drive(), DriveOutcome::Resolved),
+        "indexing should resolve"
+    );
+    assert!(world.demand(Job::ScopeCode(code)), "scoping should be demandable");
+    assert!(
+        matches!(world.drive(), DriveOutcome::Resolved),
+        "scoping should resolve"
+    );
+
+    let main = world.reference_function(ModuleId::GLOBAL, "main", 0);
+    let raw = world
+        .function_source(main)
+        .expect("scoping should note raw function source");
+    assert!(
+        world.fact_revision(FactKey::ExpandedFunctionSource(main)).is_none(),
+        "scoping alone should not yet stage expanded function source",
+    );
+
+    assert!(
+        world.demand(Job::DefineFunction(main)),
+        "DefineFunction should be demandable"
+    );
+    assert!(
+        matches!(world.drive(), DriveOutcome::Resolved),
+        "demanding the function should stage expanded source and then define it",
+    );
+
+    let expanded = world
+        .expanded_function_source(main)
+        .expect("DefineFunction should first materialize staged expanded source");
+    assert_eq!(
+        raw.source.key(),
+        expanded.source.key(),
+        "before raw publication flips over, staged expanded source should preserve the same quoted root",
+    );
+    assert!(
+        world.function_defined_revision(main).is_some(),
+        "the function should end the drive in the defined state",
     );
 }

@@ -32,9 +32,9 @@ use super::deps::UnresolvedWait;
 use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
 use super::drive::{FactKey, Job, JobEffects, WorkGraph};
 use super::identity::{
-    ActivationKey, ExecutableNeed, FunctionId, FunctionMap, FunctionSource, ModuleExport, ModuleId, ModuleMap,
-    ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName,
-    TypeRefMap,
+    ActivationKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId, FunctionMap, FunctionSource, ModuleExport,
+    ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootKind, RootMap,
+    TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::keying::{DispatchMaskMap, RecursiveMap};
 use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
@@ -96,6 +96,7 @@ pub struct World<'a> {
     code: CodeMap,
     modules: ModuleMap,
     functions: FunctionMap,
+    expanded_function_sources: ExpandedFunctionSourceMap,
     type_decls: TypeDeclMap,
     type_refs: TypeRefMap,
     type_defs: TypeDefMap,
@@ -153,6 +154,7 @@ impl<'a> World<'a> {
             code: CodeMap::new(),
             modules: ModuleMap::new(),
             functions: FunctionMap::new(),
+            expanded_function_sources: ExpandedFunctionSourceMap::new(),
             type_decls: TypeDeclMap::new(),
             type_refs: TypeRefMap::new(),
             type_defs: TypeDefMap::new(),
@@ -977,6 +979,7 @@ impl<'a> World<'a> {
             source,
         };
         let changed = self.functions.define(id, fn_source, surface);
+        let revision = self.advance_fact(FactKey::FunctionDefined(id), changed);
         if changed {
             let function = self.functions.get(id);
             let function_ref = self.functions.reference_for(id);
@@ -987,6 +990,7 @@ impl<'a> World<'a> {
                     module_id: module.as_u32(),
                     owner_module_id: owner_module.as_u32(),
                     function_id: id.as_u32(),
+                    revision: revision,
                     arity: arity,
                     clauses: clauses,
                     source_heap_id: function.state_source_heap_id().unwrap_or_default(),
@@ -1001,11 +1005,12 @@ impl<'a> World<'a> {
                 },
             );
         }
-        (id, changed)
+        (id, revision)
     }
 
-    pub(crate) fn note_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
+    pub(crate) fn note_function_source(&mut self, function: FunctionId, source: FunctionSource) -> u64 {
         let changed = self.functions.note(function, source.clone());
+        let revision = self.advance_fact(FactKey::FunctionSource(function), changed);
         let function_ref = self.functions.reference_for(function);
         let source_owner_module = source.owner_module;
         let source_module_id = function_ref.module;
@@ -1016,6 +1021,7 @@ impl<'a> World<'a> {
                 module_id: function_ref.module.as_u32(),
                 owner_module_id: source.owner_module.as_u32(),
                 function_id: function.as_u32(),
+                revision: revision,
                 arity: function_ref.arity,
                 clauses: function_source_clause_count(&source),
                 source_heap_id: source.source.key().heap_id,
@@ -1029,7 +1035,7 @@ impl<'a> World<'a> {
                 owner_module_id: opaque_debug(&source_owner_module),
             },
         );
-        changed
+        revision
     }
 
     pub(crate) fn function_source(&self, function: FunctionId) -> Option<FunctionSource> {
@@ -1040,13 +1046,45 @@ impl<'a> World<'a> {
         }
     }
 
-    pub(crate) fn define_function_contract(&mut self, function: FunctionId, contract: FunctionContract) -> bool {
+    pub(crate) fn note_expanded_function_source(&mut self, function: FunctionId, source: FunctionSource) -> u64 {
+        let changed = self.expanded_function_sources.define(function, source.clone());
+        let revision = self.advance_fact(FactKey::ExpandedFunctionSource(function), changed);
+        let function_ref = self.functions.reference_for(function);
+        self.tel.execute(
+            &["fz", "compiler2", "function", "source", "expanded"],
+            &measurements! {
+                code_id: source.code.as_u32(),
+                module_id: function_ref.module.as_u32(),
+                owner_module_id: source.owner_module.as_u32(),
+                function_id: function.as_u32(),
+                revision: revision,
+                arity: function_ref.arity,
+                clauses: function_source_clause_count(&source),
+                source_heap_id: source.source.key().heap_id,
+                source_root_ref: source.source.root().raw_word(),
+            },
+            &metadata! {
+                function_ref: opaque_debug(function_ref),
+                source: opaque_debug(&source),
+                function_id: opaque_debug(&function),
+            },
+        );
+        revision
+    }
+
+    pub(crate) fn expanded_function_source(&self, function: FunctionId) -> Option<FunctionSource> {
+        self.expanded_function_sources.get(function).cloned()
+    }
+
+    pub(crate) fn define_function_contract(&mut self, function: FunctionId, contract: FunctionContract) -> u64 {
         let changed = self.function_contracts.define(function, contract.clone());
+        let revision = self.advance_fact(FactKey::FunctionContract(function), changed);
         let function_ref = self.functions.reference_for(function);
         self.tel.execute(
             &["fz", "compiler2", "function_contract", "defined"],
             &measurements! {
                 function_id: function.as_u32(),
+                revision: revision,
                 arity: function_ref.arity,
             },
             &metadata! {
@@ -1054,7 +1092,7 @@ impl<'a> World<'a> {
                 contract: opaque_debug(&contract),
             },
         );
-        changed
+        revision
     }
 
     pub(crate) fn function_contract(&self, function: FunctionId) -> Option<&FunctionContract> {
@@ -1448,6 +1486,10 @@ impl<'a> World<'a> {
         }
         self.ensure_runtime_module(module);
         vec![Job::DefineModule(module)]
+    }
+
+    pub(crate) fn ensure_expanded_function_source(&mut self, function: FunctionId) -> Vec<Job> {
+        vec![Job::ExpandFunctionSource(function)]
     }
 
     pub(crate) fn wait_for_function_definition(&mut self, function: FunctionId) -> JobEffects {
@@ -1887,6 +1929,7 @@ impl<'a> World<'a> {
                 ),
             }),
             FactKey::FunctionSource(function) => self.unresolved_function_issue(frontier, *function),
+            FactKey::ExpandedFunctionSource(function) => self.unresolved_function_issue(frontier, *function),
             FactKey::FunctionDefined(function) => self.unresolved_function_issue(frontier, *function),
             _ => None,
         }

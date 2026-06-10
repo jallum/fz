@@ -203,7 +203,7 @@ impl FunctionState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionSource {
     pub code: CodeId,
     pub owner_module: ModuleId,
@@ -501,6 +501,36 @@ impl FunctionMap {
         self.refs
             .get(id.0 as usize)
             .expect("function ids should be known before reading reverse references")
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct ExpandedFunctionSourceMap {
+    slots: Vec<Option<FunctionSource>>,
+}
+
+impl ExpandedFunctionSourceMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn define(&mut self, function: FunctionId, source: FunctionSource) -> bool {
+        self.ensure(function);
+        let slot = &mut self.slots[function.as_u32() as usize];
+        let changed = slot.as_ref() != Some(&source);
+        *slot = Some(source);
+        changed
+    }
+
+    pub fn get(&self, function: FunctionId) -> Option<&FunctionSource> {
+        self.slots.get(function.as_u32() as usize)?.as_ref()
+    }
+
+    fn ensure(&mut self, function: FunctionId) {
+        let index = function.as_u32() as usize;
+        if self.slots.len() <= index {
+            self.slots.resize_with(index + 1, || None);
+        }
     }
 }
 
