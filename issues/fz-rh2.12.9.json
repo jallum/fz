@@ -9,9 +9,15 @@
   "id": "fz-rh2.12.9",
   "labels": [],
   "parent": "fz-rh2.12",
+  "comments": [
+    {
+      "text": "Measurement from target/debug/fz2 --log-telemetry /tmp/fz2_quicksort_12_9.jsonl run fixtures/quicksort/input.fz on 2026-06-10:\n\n- Result: command exited 0 and printed the sorted quicksort output.\n- Lexer span-starts: exactly 4, one each for fixtures/quicksort/input.fz, runtime:runtime.fz, runtime:Kernel.fz, runtime:Process.fz. No fragment pseudo-sources and no duplicate source lexing.\n- Lexer elapsed total from span stops: 0.352 ms. The old visible ~26 ms source-fragment re-lex is gone.\n- Legacy frontend/planner/type_infer telemetry: absent on fz2 path. The hidden per-call ModuleTypeEnv/reparse path is gone by construction after compiler2 contract/type resolution moved to TypeDefined facts.\n- Remaining tail: fz.compiler2.drive 57.955 ms, then post-drive fz.codegen.compile 47.749 ms before fz.runtime.process_exited. Filed as fz-rh2.12.13.",
+      "timestamp": "2026-06-10T07:53:21Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Back here: re-examine quicksort.log; confirm/quantify the re-lex is gone",
   "type": "task",
-  "updated_at": "2026-06-10T07:48:13Z"
+  "updated_at": "2026-06-10T07:53:21Z"
 }
