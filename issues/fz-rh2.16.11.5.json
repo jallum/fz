@@ -13,5 +13,5 @@
   "status": "open",
   "title": "Forward-port the definition-macro arc onto current fz-tkf and recover old-world ir_codegen/ir_planner parity",
   "type": "task",
-  "updated_at": "2026-06-10T22:37:48Z"
+  "updated_at": "2026-06-10T23:00:14Z"
 }
