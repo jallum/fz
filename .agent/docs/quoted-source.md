@@ -116,6 +116,29 @@ the `fz-rh2.11.7.*` arc.
   and tests line contexts back up with the live namespace chain, but it is not
   semantic identity.
 
+## Publication Authority
+
+- `src/compiler2/source_publish.rs` is the compiler-owned publication boundary
+  for quoted source forms.
+- `ScopeSession` is the mutable in-progress scope state for one scope walk:
+  it carries the current `ScopeSnapshot`, namespace head, local protocol names,
+  pending type declarations, deferred function-source publications, reads,
+  outputs, exports, and the revision floor a module definition must absorb.
+- `jobs/source.rs` schedules jobs and publishes final job facts, but does not
+  own source-form rules. It parses/reads quoted source, delegates discovery to
+  `source_publish::discover_modules`, delegates scope/module publication to
+  `publish_scope` / `publish_protocol_surface`, and derives
+  `FunctionDefined` from the lazy `FunctionSource` fact.
+- Literal source currently enters this boundary. Macro-produced source and
+  future `Fz.Compiler` host submissions should enter the same boundary so
+  downstream jobs do not learn whether a definition came from source text,
+  macro expansion, or a compiler-service call.
+- Source publication notes `@type` declarations, records function/type
+  reference wait sets, binds aliases/imports/requires where supported today,
+  notes grouped function roots as `FunctionSource`, scopes child modules,
+  publishes protocol callback/domain/dispatch facts, and records protocol impl
+  callback sources.
+
 ## Discovery Authority
 
 - `QuotedCodeSource` now carries two compiler2-owned views of one source

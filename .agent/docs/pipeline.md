@@ -18,8 +18,8 @@ definition fact and never grows an activation.
 All families share one agenda; "stratum" is a write boundary, not a pass.
 
 ```text
-source    IndexCode, ScopeCode, DefineModule
-            parse, build namespaces, define modules/functions  -> *Defined facts
+source    IndexCode, ScopeCode, DefineModule, DefineFunction
+            parse/read quoted source, publish FunctionSource, define modules/functions -> *Defined facts
 body      LowerFunction
             one demanded function -> LoweredBody (+ generated lambda defs)
 dispatch  ReifyGuardDispatch, PlanEntryDispatch

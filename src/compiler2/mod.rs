@@ -24,6 +24,7 @@ mod scheduler;
 mod scope;
 mod semantic;
 mod source;
+mod source_publish;
 mod type_expr;
 mod typedef;
 mod types;
