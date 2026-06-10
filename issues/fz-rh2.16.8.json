@@ -7,14 +7,15 @@
   "blocks": [
     "fz-rh2.16.4"
   ],
+  "closed_at": "2026-06-10T20:29:09Z",
   "created": "2026-06-10T12:05:05Z",
   "description": "Goal: reduce compiler2\\047s quoted-source spine to one coherent model: QuotedExpander owns quoted root rewriting, source publication owns one raw definition/publication transaction, ordinary function bodies expand only behind demand, and compiler2 type/spec/extern fragments travel as preserved token payloads. Signal: item macros and demanded function bodies use one shared quoted expansion engine; source_publish consumes expanded scope fragments instead of owning a second recursive walker; compiler2 no longer reconstructs or re-lexes quoted fragment islands; quote/unquote lowering sits in a narrow, explicit seam; the relevant fz2 source-surface fixtures become tractable without bespoke paths. Strategy: first extract the shared quoted expansion engine and delete the duplicate walkers, then make publication consume expanded scope fragments only, then standardize fragment transport, then narrow quote/unquote lowering, and finally remove leftovers and restate the invariants in docs and telemetry.",
   "id": "fz-rh2.16.8",
   "labels": [],
   "parent": "fz-rh2.16",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 source spine cleanup: one expander, one publication engine, one fragment transport",
   "type": "epic",
-  "updated_at": "2026-06-10T20:00:46Z"
+  "updated_at": "2026-06-10T20:29:09Z"
 }
