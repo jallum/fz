@@ -171,9 +171,8 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         other => panic!("function should promote from placeholder to defined, got {other:?}"),
     }
 
-    let code_slot = code.get(code_id);
     assert!(
-        matches!(code_slot.state, CodeState::Pending),
+        matches!(code.get(code_id), CodeState::Pending),
         "new code should remain pending until indexing runs"
     );
     let code_source = quoted_source("math.fz", "fn add(x, y), do: x + y\n");

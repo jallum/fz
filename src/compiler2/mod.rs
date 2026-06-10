@@ -47,7 +47,7 @@ pub use body::{
     ReceiveClause, ValueId,
 };
 pub use cli::run as run_cli;
-pub use code::{Code, CodeId, CodeMap, CodeState, QuotedCodeSource};
+pub use code::{CodeId, CodeMap, CodeState, QuotedCodeSource};
 pub use compiler::{CodeSubmission, Compiler2, RootSubmission};
 pub use contract::{FunctionContract, FunctionContractMap};
 pub use deps::{DependencyIndex, UnresolvedWait};

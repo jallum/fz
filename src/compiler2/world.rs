@@ -1583,7 +1583,7 @@ impl<'a> World<'a> {
     }
 
     pub fn code_source(&self, id: CodeId) -> Option<QuotedCodeSource> {
-        match &self.code.get(id).state {
+        match self.code.get(id) {
             super::code::CodeState::Indexed { source } | super::code::CodeState::Scoped { source, .. } => {
                 Some(source.clone())
             }
@@ -1592,7 +1592,7 @@ impl<'a> World<'a> {
     }
 
     pub fn code_surface(&self, id: CodeId) -> Option<&super::quoted_surface::ScopeSurface> {
-        match &self.code.get(id).state {
+        match self.code.get(id) {
             super::code::CodeState::Indexed { source } | super::code::CodeState::Scoped { source, .. } => {
                 Some(&source.surface)
             }

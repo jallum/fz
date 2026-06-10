@@ -14,11 +14,6 @@ impl CodeId {
 }
 
 #[derive(Debug, Clone)]
-pub struct Code {
-    pub(crate) state: CodeState,
-}
-
-#[derive(Debug, Clone)]
 pub enum CodeState {
     Pending,
     /// Compiler-owned quoted source is the authority. The decoded scope surface
@@ -41,7 +36,7 @@ pub struct QuotedCodeSource {
 
 #[derive(Debug, Default)]
 pub struct CodeMap {
-    slots: Vec<Code>,
+    slots: Vec<CodeState>,
     names: Vec<Option<String>>,
     texts: Vec<String>,
 }
@@ -53,19 +48,17 @@ impl CodeMap {
 
     pub fn define(&mut self, name: Option<String>, text: String) -> CodeId {
         let id = CodeId(self.slots.len() as u32);
-        self.slots.push(Code {
-            state: CodeState::Pending,
-        });
+        self.slots.push(CodeState::Pending);
         self.names.push(name);
         self.texts.push(text);
         id
     }
 
     pub fn index(&mut self, id: CodeId, source: QuotedCodeSource, current_revision: u64) -> u64 {
-        let code = &mut self.slots[id.0 as usize];
+        let slot = &mut self.slots[id.0 as usize];
         let next = CodeState::Indexed { source };
-        let changed = !same_code_state(&code.state, &next);
-        code.state = next;
+        let changed = !same_code_state(slot, &next);
+        *slot = next;
         if changed {
             current_revision + 1
         } else {
@@ -74,13 +67,13 @@ impl CodeMap {
     }
 
     pub fn scope(&mut self, id: CodeId, namespace: Namespace, current_revision: u64) -> u64 {
-        let code = &mut self.slots[id.0 as usize];
-        let source = match &code.state {
+        let slot = &mut self.slots[id.0 as usize];
+        let source = match slot {
             CodeState::Indexed { source } | CodeState::Scoped { source, .. } => source.clone(),
             CodeState::Pending => panic!("code must be indexed before scoping"),
         };
-        let changed = !matches!(&code.state, CodeState::Scoped { namespace: n, .. } if *n == namespace);
-        code.state = CodeState::Scoped { source, namespace };
+        let changed = !matches!(&*slot, CodeState::Scoped { namespace: n, .. } if *n == namespace);
+        *slot = CodeState::Scoped { source, namespace };
         if changed {
             current_revision + 1
         } else {
@@ -88,7 +81,7 @@ impl CodeMap {
         }
     }
 
-    pub fn get(&self, id: CodeId) -> &Code {
+    pub fn get(&self, id: CodeId) -> &CodeState {
         self.slots
             .get(id.0 as usize)
             .expect("code ids should be known before reading code slots")
