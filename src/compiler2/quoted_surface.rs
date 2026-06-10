@@ -9,7 +9,7 @@ use crate::parser::lexer::{Lexer, Tok};
 use crate::telemetry::Telemetry;
 
 use super::code::CodeId;
-use super::source::{QuotedAstNode, QuotedSourceCarrier, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
+use super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
 
 const META_SPAN_KEY: &str = "__fz_span__";
 
@@ -68,7 +68,7 @@ pub struct ImportForm {
 
 #[derive(Debug, Clone)]
 pub struct FunctionForm {
-    pub source: QuotedSourceCarrier,
+    pub source: QuotedSourceRoot,
     pub name: String,
     pub arity: usize,
     pub is_macro: bool,
@@ -79,21 +79,21 @@ pub struct FunctionForm {
 
 #[derive(Debug, Clone)]
 pub struct ModuleForm {
-    pub source: QuotedSourceCarrier,
+    pub source: QuotedSourceRoot,
     pub name: String,
     pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub struct ProtocolForm {
-    pub source: QuotedSourceCarrier,
+    pub source: QuotedSourceRoot,
     pub name: ModuleName,
     pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub struct ProtocolImplForm {
-    pub source: QuotedSourceCarrier,
+    pub source: QuotedSourceRoot,
     pub protocol: ModuleName,
     pub target: ModuleName,
     pub span: Span,
@@ -102,7 +102,7 @@ pub struct ProtocolImplForm {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct StructForm {
-    pub source: QuotedSourceCarrier,
+    pub source: QuotedSourceRoot,
     pub fields: Vec<String>,
     pub span: Span,
 }
@@ -110,7 +110,7 @@ pub struct StructForm {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct MacroCallForm {
-    pub source: QuotedSourceCarrier,
+    pub source: QuotedSourceRoot,
     pub span: Span,
 }
 
@@ -178,16 +178,13 @@ pub fn read_scope_surface(
                 flush_function_groups(source, ctx, &mut forms, &mut group_order, &mut groups)?;
                 let mut item_roots = std::mem::take(&mut pending_function_attrs);
                 item_roots.push(quoted_item.root());
-                let grouped = grouped_surface_carrier(source, &item_roots)?;
+                let grouped = source.interned_list_subroot(&item_roots)?;
                 forms.push(build_form(grouped, ctx)?);
             }
             _ => {
                 flush_function_groups(source, ctx, &mut forms, &mut group_order, &mut groups)?;
                 pending_function_attrs.clear();
-                forms.push(build_form(
-                    QuotedSourceCarrier::new(source.subroot(quoted_item.root()))?,
-                    ctx,
-                )?);
+                forms.push(build_form(source.subroot(quoted_item.root()), ctx)?);
             }
         }
     }
@@ -218,10 +215,10 @@ pub fn read_protocol_impl_body_surface(
 }
 
 fn read_do_body_surface(
-    source: &QuotedSourceCarrier,
+    source: &QuotedSourceRoot,
     ctx: &SurfaceSourceContext<'_>,
 ) -> Result<ScopeSurface, QuotedSourceError> {
-    let body = extract_do_body_list_root(&source.root)?;
+    let body = extract_do_body_list_root(source)?;
     read_scope_surface(&body, ctx)
 }
 
@@ -234,23 +231,15 @@ fn flush_function_groups(
 ) -> Result<(), QuotedSourceError> {
     for key in order.drain(..) {
         if let Some(group) = groups.remove(&key) {
-            let carrier = grouped_surface_carrier(source, &group.item_roots)?;
-            forms.push(build_form(carrier, ctx)?);
+            let grouped = source.interned_list_subroot(&group.item_roots)?;
+            forms.push(build_form(grouped, ctx)?);
         }
     }
     Ok(())
 }
 
-fn grouped_surface_carrier(
-    source: &QuotedSourceRoot,
-    item_roots: &[AnyValueRef],
-) -> Result<QuotedSourceCarrier, QuotedSourceError> {
-    let root = source.interned_list_subroot(item_roots)?;
-    QuotedSourceCarrier::new(root)
-}
-
-fn build_form(source: QuotedSourceCarrier, ctx: &SurfaceSourceContext<'_>) -> Result<ScopeForm, QuotedSourceError> {
-    let head = surface_head_name(&source.root)?;
+fn build_form(source: QuotedSourceRoot, ctx: &SurfaceSourceContext<'_>) -> Result<ScopeForm, QuotedSourceError> {
+    let head = surface_head_name(&source)?;
     match head.as_str() {
         "alias" => Ok(ScopeForm::Alias(parse_alias_form(source, ctx)?)),
         "import" => Ok(ScopeForm::Import(parse_import_form(source, ctx)?)),
@@ -261,7 +250,7 @@ fn build_form(source: QuotedSourceCarrier, ctx: &SurfaceSourceContext<'_>) -> Re
         "defimpl" => Ok(ScopeForm::ProtocolImpl(parse_protocol_impl_form(source, ctx)?)),
         "defstruct" => Ok(ScopeForm::Struct(parse_struct_form(source, ctx)?)),
         _ => Ok(ScopeForm::MacroCall(MacroCallForm {
-            span: surface_span(&source.root, ctx)?,
+            span: surface_span(&source, ctx)?,
             source,
         })),
     }
@@ -372,11 +361,8 @@ fn decode_type_alias_attr(
     }))
 }
 
-fn parse_alias_form(
-    source: QuotedSourceCarrier,
-    ctx: &SurfaceSourceContext<'_>,
-) -> Result<AliasForm, QuotedSourceError> {
-    let node = expect_surface_node(&source.root)?;
+fn parse_alias_form(source: QuotedSourceRoot, ctx: &SurfaceSourceContext<'_>) -> Result<AliasForm, QuotedSourceError> {
+    let node = expect_surface_node(&source)?;
     let span = span_from_meta(&node.meta, ctx)?;
     let args = node.tail.list_items()?;
     if args.is_empty() {
@@ -400,10 +386,10 @@ fn parse_alias_form(
 }
 
 fn parse_import_form(
-    source: QuotedSourceCarrier,
+    source: QuotedSourceRoot,
     ctx: &SurfaceSourceContext<'_>,
 ) -> Result<ImportForm, QuotedSourceError> {
-    let node = expect_surface_node(&source.root)?;
+    let node = expect_surface_node(&source)?;
     let span = span_from_meta(&node.meta, ctx)?;
     let args = node.tail.list_items()?;
     if args.is_empty() {
@@ -430,13 +416,13 @@ fn parse_import_form(
 }
 
 fn parse_function_form(
-    source: QuotedSourceCarrier,
+    source: QuotedSourceRoot,
     ctx: &SurfaceSourceContext<'_>,
 ) -> Result<FunctionForm, QuotedSourceError> {
-    let span = surface_span(&source.root, ctx)?;
-    let head = surface_head_name(&source.root)?;
+    let span = surface_span(&source, ctx)?;
+    let head = surface_head_name(&source)?;
     if head == "extern" {
-        let node = first_non_attr_node(&source.root)?;
+        let node = first_non_attr_node(&source)?;
         let args = node.tail.list_items()?;
         if args.len() != 2 {
             return Err(QuotedSourceError::new("quoted extern expects ABI and detail map"));
@@ -467,7 +453,7 @@ fn parse_function_form(
         });
     }
 
-    let FunctionGroupKey { name, arity } = parse_function_group_key(&source.root)?;
+    let FunctionGroupKey { name, arity } = parse_function_group_key(&source)?;
     Ok(FunctionForm {
         source,
         name,
@@ -480,10 +466,10 @@ fn parse_function_form(
 }
 
 fn parse_module_form(
-    source: QuotedSourceCarrier,
+    source: QuotedSourceRoot,
     ctx: &SurfaceSourceContext<'_>,
 ) -> Result<ModuleForm, QuotedSourceError> {
-    let node = expect_surface_node(&source.root)?;
+    let node = expect_surface_node(&source)?;
     let span = span_from_meta(&node.meta, ctx)?;
     let args = node.tail.list_items()?;
     if args.is_empty() {
@@ -494,10 +480,10 @@ fn parse_module_form(
 }
 
 fn parse_protocol_form(
-    source: QuotedSourceCarrier,
+    source: QuotedSourceRoot,
     ctx: &SurfaceSourceContext<'_>,
 ) -> Result<ProtocolForm, QuotedSourceError> {
-    let node = expect_surface_node(&source.root)?;
+    let node = expect_surface_node(&source)?;
     let span = span_from_meta(&node.meta, ctx)?;
     let args = node.tail.list_items()?;
     if args.is_empty() {
@@ -508,10 +494,10 @@ fn parse_protocol_form(
 }
 
 fn parse_protocol_impl_form(
-    source: QuotedSourceCarrier,
+    source: QuotedSourceRoot,
     ctx: &SurfaceSourceContext<'_>,
 ) -> Result<ProtocolImplForm, QuotedSourceError> {
-    let node = expect_surface_node(&source.root)?;
+    let node = expect_surface_node(&source)?;
     let span = span_from_meta(&node.meta, ctx)?;
     let args = node.tail.list_items()?;
     if args.len() != 2 {
@@ -540,10 +526,10 @@ fn parse_protocol_impl_form(
 }
 
 fn parse_struct_form(
-    source: QuotedSourceCarrier,
+    source: QuotedSourceRoot,
     ctx: &SurfaceSourceContext<'_>,
 ) -> Result<StructForm, QuotedSourceError> {
-    let node = expect_surface_node(&source.root)?;
+    let node = expect_surface_node(&source)?;
     let span = span_from_meta(&node.meta, ctx)?;
     let args = node.tail.list_items()?;
     let Some(fields) = args.first() else {

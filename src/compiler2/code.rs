@@ -1,5 +1,5 @@
 use super::quoted_surface::ScopeSurface;
-use super::source::QuotedSourceCarrier;
+use super::source::{Horizon, QuotedSourceRoot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CodeId(u32);
@@ -30,7 +30,7 @@ pub enum CodeState {
 
 #[derive(Debug, Clone)]
 pub struct QuotedCodeSource {
-    pub quoted: QuotedSourceCarrier,
+    pub quoted: QuotedSourceRoot,
     pub surface: ScopeSurface,
 }
 
@@ -60,11 +60,13 @@ impl CodeMap {
     pub fn index(&mut self, id: CodeId, source: QuotedCodeSource) -> u64 {
         let code = &mut self.slots[id.0 as usize];
         let next = CodeState::Indexed { source };
-        if same_code_state(&code.state, &next) {
-            return code.revision;
+        // Always store the freshly parsed source: a body-only edit leaves the
+        // surface (CodeIndexed) revision put, but the new bodies must still
+        // reach the per-function facts that re-derive from this source.
+        if !same_code_state(&code.state, &next) {
+            code.revision += 1;
         }
         code.state = next;
-        code.revision += 1;
         code.revision
     }
 
@@ -101,7 +103,9 @@ fn same_code_state(left: &CodeState, right: &CodeState) -> bool {
     match (left, right) {
         (CodeState::Pending, CodeState::Pending) => true,
         (CodeState::Indexed { source: left }, CodeState::Indexed { source: right }) => {
-            left.quoted.semantic.digest == right.quoted.semantic.digest
+            // Code identity is its module surface — bodies belong to their own
+            // per-function facts, so a body-only edit does not move it.
+            left.quoted.semantically_eq(&right.quoted, Horizon::Surface)
         }
         _ => false,
     }

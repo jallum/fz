@@ -1,4 +1,5 @@
-use super::{QuotedSourceFingerprintPolicy, parse_quoted_program};
+use super::parse_quoted_program;
+use super::source_test::assert_quoted_mentions;
 use crate::modules::runtime_library;
 use crate::telemetry::ConfiguredTelemetry;
 
@@ -130,15 +131,9 @@ fn compiler2_frontdoor_surface_root_is_real_quoted_source_not_old_ast() {
     )
     .expect("quoted parse");
 
-    let semantic = root
-        .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-        .expect("semantic fingerprint");
-    assert!(
-        semantic.canonical.contains("atom:require")
-            && semantic.canonical.contains("atom:import")
-            && semantic.canonical.contains("atom:defmodule"),
-        "front-door parse should produce one quoted source graph, not old AST authority"
-    );
+    // Front-door parse should produce one quoted source graph, not old AST
+    // authority.
+    assert_quoted_mentions(&root, &["require", "import", "defmodule"]);
 }
 
 #[test]
@@ -243,17 +238,9 @@ fn compiler2_frontdoor_parses_remote_calls_captures_and_headless_case_from_fixtu
         &tel,
     )
     .expect("cross-module macro parse");
-    let cross_semantic = cross
-        .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-        .expect("cross semantic");
-    assert!(
-        cross_semantic.canonical.contains("atom:defmodule")
-            && cross_semantic.canonical.contains("atom:defmacro")
-            && cross_semantic.canonical.contains("atom:import")
-            && cross_semantic.canonical.contains("atom:.")
-            && cross_semantic.canonical.contains("atom:__info__"),
-        "cross-module macro fixture should parse remote calls and module source forms directly to quoted source"
-    );
+    // Cross-module macro fixture should parse remote calls and module source
+    // forms directly to quoted source.
+    assert_quoted_mentions(&cross, &["defmodule", "defmacro", "import", ".", "__info__"]);
 
     let pipe_case = parse_quoted_program(
         "pipe_headless_case.fz",
@@ -261,15 +248,9 @@ fn compiler2_frontdoor_parses_remote_calls_captures_and_headless_case_from_fixtu
         &tel,
     )
     .expect("pipe/headless-case parse");
-    let pipe_semantic = pipe_case
-        .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-        .expect("pipe semantic");
-    assert!(
-        pipe_semantic.canonical.contains("atom:|>")
-            && pipe_semantic.canonical.contains("atom:case")
-            && pipe_semantic.canonical.contains("atom:->"),
-        "pipe/headless-case fixture should parse pipe and headless case directly to quoted source"
-    );
+    // Pipe/headless-case fixture should parse pipe and headless case directly
+    // to quoted source.
+    assert_quoted_mentions(&pipe_case, &["|>", "case", "->"]);
 
     let fn_ref = parse_quoted_program(
         "fn_ref.fz",
@@ -277,15 +258,9 @@ fn compiler2_frontdoor_parses_remote_calls_captures_and_headless_case_from_fixtu
         &tel,
     )
     .expect("fn-ref parse");
-    let fn_ref_semantic = fn_ref
-        .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-        .expect("fn-ref semantic");
-    assert!(
-        fn_ref_semantic.canonical.contains("atom:&")
-            && fn_ref_semantic.canonical.contains("atom:/")
-            && fn_ref_semantic.canonical.contains("atom:."),
-        "function-reference fixture should parse captures and closure calls directly to quoted source"
-    );
+    // Function-reference fixture should parse captures and closure calls
+    // directly to quoted source.
+    assert_quoted_mentions(&fn_ref, &["&", "/", "."]);
 }
 
 #[test]
@@ -298,17 +273,9 @@ fn compiler2_frontdoor_parses_cond_and_remote_operator_capture_refs() {
     )
     .expect("quoted parse");
 
-    let semantic = root
-        .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-        .expect("semantic fingerprint");
-    assert!(
-        semantic.canonical.contains("atom:cond")
-            && semantic.canonical.contains("atom:&")
-            && semantic.canonical.contains("atom:/")
-            && semantic.canonical.contains("atom:+")
-            && semantic.canonical.contains("atom:Kernel"),
-        "front door should quote cond arms and both remote and bare operator capture refs directly"
-    );
+    // Front door should quote cond arms and both remote and bare operator
+    // capture refs directly.
+    assert_quoted_mentions(&root, &["cond", "&", "/", "+", "Kernel"]);
 }
 
 #[test]
@@ -321,17 +288,11 @@ fn compiler2_frontdoor_parses_attributes_protocols_impls_and_structs() {
     )
     .expect("quoted parse");
 
-    let semantic = root
-        .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-        .expect("semantic fingerprint");
-    assert!(
-        semantic.canonical.contains("atom:@moduledoc")
-            && semantic.canonical.contains("atom:@type")
-            && semantic.canonical.contains("atom:@spec")
-            && semantic.canonical.contains("atom:defstruct")
-            && semantic.canonical.contains("atom:defprotocol")
-            && semantic.canonical.contains("atom:defimpl"),
-        "front door should parse attribute/protocol/source-declaration forms directly to quoted source"
+    // Front door should parse attribute/protocol/source-declaration forms
+    // directly to quoted source.
+    assert_quoted_mentions(
+        &root,
+        &["@moduledoc", "@type", "@spec", "defstruct", "defprotocol", "defimpl"],
     );
 }
 
@@ -345,21 +306,9 @@ fn compiler2_frontdoor_parses_maps_structs_bitstrings_and_patterns() {
     )
     .expect("quoted parse");
 
-    let semantic = root
-        .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-        .expect("semantic fingerprint");
-    assert!(
-        semantic.canonical.contains("atom:::")
-            && semantic.canonical.contains("atom:%{}")
-            && semantic.canonical.contains("atom:%")
-            && semantic.canonical.contains("atom:<<>>")
-            && semantic.canonical.contains("atom:|")
-            && semantic.canonical.contains("atom:^")
-            && semantic.canonical.contains("atom:when")
-            && semantic.canonical.contains("atom:binary")
-            && semantic.canonical.contains("atom:size"),
-        "front door should parse typed params, maps, structs, bitstrings, and pattern forms directly to quoted source"
-    );
+    // Front door should parse typed params, maps, structs, bitstrings, and
+    // pattern forms directly to quoted source.
+    assert_quoted_mentions(&root, &["::", "%{}", "%", "<<>>", "|", "^", "when", "binary", "size"]);
 }
 
 #[test]
@@ -407,15 +356,8 @@ fn compiler2_frontdoor_parses_runtime_bootstrap_sources_directly() {
 
     let prelude = parse_quoted_program("runtime:runtime.fz", runtime_library::prelude_source(), &tel)
         .expect("runtime prelude quoted parse");
-    let prelude_semantic = prelude
-        .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-        .expect("runtime prelude semantic fingerprint");
-    assert!(
-        prelude_semantic.canonical.contains("atom:import")
-            && prelude_semantic.canonical.contains("atom:+")
-            && prelude_semantic.canonical.contains("atom:dbg"),
-        "runtime prelude should quote operator import filters directly"
-    );
+    // Runtime prelude should quote operator import filters directly.
+    assert_quoted_mentions(&prelude, &["import", "+", "dbg"]);
 
     for (name, source) in runtime_library::module_sources() {
         let root = parse_quoted_program(format!("runtime:{name}.fz"), source, &tel)
@@ -448,16 +390,9 @@ fn compiler2_frontdoor_quotes_bootstrap_control_and_ffi_forms() {
         &tel,
     )
     .expect("quoted parse");
-    let semantic = root
-        .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-        .expect("bootstrap surface semantic fingerprint");
-    assert!(
-        semantic.canonical.contains("atom:extern")
-            && semantic.canonical.contains("atom:if")
-            && semantic.canonical.contains("atom:receive")
-            && semantic.canonical.contains("atom:fn"),
-        "bootstrap-shaped surface should fingerprint through extern/control/lambda forms directly"
-    );
+    // Bootstrap-shaped surface should quote extern/control/lambda forms
+    // directly.
+    assert_quoted_mentions(&root, &["extern", "if", "receive", "fn"]);
 
     let items = root.cursor().list_items().expect("top-level items");
     assert_eq!(items.len(), 2);
@@ -581,13 +516,8 @@ fn compiler2_frontdoor_parses_operator_headed_function_defs() {
     let tel = ConfiguredTelemetry::new();
     let root =
         parse_quoted_program("operator_head.fz", "fn left + right, do: left + right\n", &tel).expect("quoted parse");
-    let semantic = root
-        .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-        .expect("operator head semantic fingerprint");
-    assert!(
-        semantic.canonical.contains("atom:fn") && semantic.canonical.contains("atom:+"),
-        "operator-headed function definitions should quote and fingerprint directly"
-    );
+    // Operator-headed function definitions should quote directly.
+    assert_quoted_mentions(&root, &["fn", "+"]);
 }
 
 #[test]
@@ -599,13 +529,7 @@ fn compiler2_frontdoor_parses_complex_extern_signatures() {
         &tel,
     )
     .expect("quoted parse");
-    let semantic = root
-        .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-        .expect("complex extern semantic fingerprint");
-    assert!(
-        semantic.canonical.contains("atom:extern")
-            && semantic.canonical.contains("bits:2829202d3e20616e79/72")
-            && semantic.canonical.contains("bits:7265736f75726365287429/88"),
-        "complex extern signatures should quote raw parameter/return surfaces directly"
-    );
+    // Complex extern signatures should quote raw parameter/return surfaces
+    // directly, as binary payloads carrying the raw token text.
+    assert_quoted_mentions(&root, &["extern", "() -> any", "resource(t)"]);
 }

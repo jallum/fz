@@ -48,7 +48,7 @@ use super::scope::ScopeSnapshot;
 use super::semantic::{
     ActivationAnalysis, ActivationMap, CallSiteKey, CallSiteMap, CallSiteSummary, SemanticClosure, SemanticClosureMap,
 };
-use super::source::QuotedSourceCarrier;
+use super::source::QuotedSourceRoot;
 #[cfg(test)]
 use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
@@ -581,7 +581,7 @@ impl<'a> World<'a> {
         code: CodeId,
         parent: ModuleId,
         local_name: String,
-        source: QuotedSourceCarrier,
+        source: QuotedSourceRoot,
         surface: super::quoted_surface::ScopeSurface,
     ) -> u64 {
         self.modules.index_body(id, code, parent, local_name, source, surface)
@@ -593,7 +593,7 @@ impl<'a> World<'a> {
         code: CodeId,
         parent: ModuleId,
         local_name: String,
-        source: QuotedSourceCarrier,
+        source: QuotedSourceRoot,
         surface: super::quoted_surface::ScopeSurface,
     ) -> u64 {
         self.modules
@@ -873,7 +873,7 @@ impl<'a> World<'a> {
         local_name: String,
         code: CodeId,
         namespace: Namespace,
-        source: QuotedSourceCarrier,
+        source: QuotedSourceRoot,
         surface: FunctionSurface,
     ) -> (FunctionId, u64) {
         let arity = surface.arity();
@@ -929,8 +929,8 @@ impl<'a> World<'a> {
                 revision: revision,
                 arity: function_ref.arity as u64,
                 clauses: function_source_clause_count(&source),
-                source_heap_id: source.source.root.key().heap_id as u64,
-                source_root_ref: source.source.root.root().raw_word(),
+                source_heap_id: source.source.key().heap_id as u64,
+                source_root_ref: source.source.root().raw_word(),
             },
             &metadata! {
                 function_ref: opaque_debug(function_ref),
@@ -1122,7 +1122,7 @@ impl<'a> World<'a> {
                 arity: arity,
                 clauses: clauses,
                 generated: generated,
-                source_root_ref: def.source.root.root().raw_word(),
+                source_root_ref: def.source.root().raw_word(),
             },
             &metadata! {
                 function_ref: opaque_debug(function_ref),
@@ -1153,7 +1153,7 @@ impl<'a> World<'a> {
                 bodies: dispatch.bodies.len() as u64,
                 guards: dispatch.plan.guards.len() as u64,
                 pinned: dispatch.plan.pinned.len() as u64,
-                source_root_ref: def.source.root.root().raw_word(),
+                source_root_ref: def.source.root().raw_word(),
             },
             &metadata! {
                 function_ref: opaque_debug(function_ref),
@@ -1184,7 +1184,7 @@ impl<'a> World<'a> {
                 outcomes: plan.outcomes.len() as u64,
                 guards: plan.guards.len() as u64,
                 pinned: plan.pinned.len() as u64,
-                source_root_ref: def.source.root.root().raw_word(),
+                source_root_ref: def.source.root().raw_word(),
             },
             &metadata! {
                 function_ref: opaque_debug(function_ref),
@@ -1838,7 +1838,7 @@ fn callable_match_score(fixed_arity: usize, variadic: bool, actual_arity: usize)
 }
 
 fn function_source_clause_count(source: &FunctionSource) -> u64 {
-    let Ok(items) = source.source.root.cursor().list_items() else {
+    let Ok(items) = source.source.cursor().list_items() else {
         return 0;
     };
     let mut clauses = 0_u64;

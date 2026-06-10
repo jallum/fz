@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::fmt::{self, Write};
+use std::fmt;
 use std::ptr;
 use std::rc::Rc;
 use std::slice;
@@ -48,22 +48,6 @@ impl From<AnyValueRefError> for QuotedSourceError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QuotedSourceFingerprintPolicy {
-    Semantic,
-    Diagnostic,
-}
-
-impl QuotedSourceFingerprintPolicy {
-    fn includes_meta_key(self, key: &str) -> bool {
-        match key {
-            META_NAMESPACE_ID_KEY => false,
-            META_SPAN_KEY => matches!(self, Self::Diagnostic),
-            _ => true,
-        }
-    }
-}
-
 /// Non-owning comparison key for a quoted source root.
 ///
 /// This is only meaningful while some `QuotedSourceRoot` (or equivalent owner)
@@ -74,36 +58,6 @@ impl QuotedSourceFingerprintPolicy {
 pub struct QuotedSourceKey {
     pub heap_id: usize,
     pub root: AnyValueRef,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QuotedSourceFingerprint {
-    pub policy: QuotedSourceFingerprintPolicy,
-    pub digest: String,
-    pub canonical: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QuotedSourceCarrier {
-    pub root: QuotedSourceRoot,
-    pub semantic: QuotedSourceFingerprint,
-}
-
-impl QuotedSourceCarrier {
-    pub fn new(root: QuotedSourceRoot) -> Result<Self, QuotedSourceError> {
-        let semantic = root.fingerprint(QuotedSourceFingerprintPolicy::Semantic)?;
-        Ok(Self { root, semantic })
-    }
-
-    pub fn empty() -> Self {
-        let heap = Rc::new(QuotedSourceHeap::new());
-        let root = QuotedSourceRoot::new(heap, AnyValueRef::empty_list());
-        Self::new(root).expect("empty quoted source carrier should fingerprint")
-    }
-
-    pub fn key(&self) -> QuotedSourceKey {
-        self.root.key()
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -458,7 +412,7 @@ pub enum Horizon {
 }
 
 impl QuotedSourceRoot {
-    /// The owning quoted-source carrier.
+    /// The owning quoted-source transport unit.
     ///
     /// Keeping this object alive keeps the source heap alive. Compiler2 state
     /// that persists quoted source must store this owner (or another object
@@ -472,19 +426,16 @@ impl QuotedSourceRoot {
         }
     }
 
+    pub fn empty() -> Self {
+        Self::new(Rc::new(QuotedSourceHeap::new()), AnyValueRef::empty_list())
+    }
+
     pub fn root(&self) -> AnyValueRef {
         self.root
     }
 
     pub fn key(&self) -> QuotedSourceKey {
         self.key
-    }
-
-    pub fn fingerprint(
-        &self,
-        policy: QuotedSourceFingerprintPolicy,
-    ) -> Result<QuotedSourceFingerprint, QuotedSourceError> {
-        fingerprint_root(&self.heap, self.root, policy)
     }
 
     /// Semantic structural equality, fast-failing at the first difference.
@@ -686,203 +637,13 @@ impl QuotedSourceCursor {
             tail: items[2].clone(),
         }))
     }
-
-    pub fn fingerprint(
-        &self,
-        policy: QuotedSourceFingerprintPolicy,
-    ) -> Result<QuotedSourceFingerprint, QuotedSourceError> {
-        fingerprint_root(&self.heap, self.root, policy)
-    }
-}
-
-fn fingerprint_root(
-    heap: &QuotedSourceHeap,
-    root: AnyValueRef,
-    policy: QuotedSourceFingerprintPolicy,
-) -> Result<QuotedSourceFingerprint, QuotedSourceError> {
-    let proc = heap.process.borrow();
-    let canonical = fingerprint_value(&proc, root, policy, &mut Vec::new())?;
-    Ok(QuotedSourceFingerprint {
-        policy,
-        digest: digest_fnv64(&canonical),
-        canonical,
-    })
-}
-
-fn fingerprint_value(
-    proc: &Process,
-    value: AnyValueRef,
-    policy: QuotedSourceFingerprintPolicy,
-    stack: &mut Vec<(ValueKind, usize)>,
-) -> Result<String, QuotedSourceError> {
-    let needs_cycle_guard = value.is_heap_root();
-    if needs_cycle_guard {
-        let key = (value.tag(), value.storage_addr() as usize);
-        if stack.contains(&key) {
-            return Err(QuotedSourceError::new("quoted source graph contains a cycle"));
-        }
-        stack.push(key);
-    }
-
-    let rendered = match value.tag() {
-        ValueKind::NULL => "null".to_string(),
-        ValueKind::INT => format!("int:{}", value.load_int().map_err(QuotedSourceError::from)?),
-        ValueKind::FLOAT => format!(
-            "float:{:016x}",
-            value.load_float().map_err(QuotedSourceError::from)?.to_bits()
-        ),
-        ValueKind::ATOM => {
-            let atom_id = value.load_atom().map_err(QuotedSourceError::from)? as u32;
-            format!("atom:{}", render_atom_name(proc, atom_id)?)
-        }
-        ValueKind::LIST if value.is_empty_list() => "list[]".to_string(),
-        ValueKind::LIST => {
-            let mut cursor = value;
-            let mut items = Vec::new();
-            while !cursor.is_empty_list() {
-                let head = proc.heap.read_list_head_ref(cursor).map_err(QuotedSourceError::from)?;
-                let tail = proc.heap.read_list_tail_ref(cursor).map_err(QuotedSourceError::from)?;
-                items.push(head);
-                cursor = tail;
-            }
-            let mut parts = Vec::with_capacity(items.len());
-            for item in items {
-                parts.push(fingerprint_value(proc, item, policy, stack)?);
-            }
-            format!("list[{}]", parts.join(","))
-        }
-        ValueKind::MAP => fingerprint_map(proc, value, policy, stack)?,
-        ValueKind::STRUCT => fingerprint_struct(proc, value, policy, stack)?,
-        ValueKind::BITSTRING | ValueKind::PROCBIN => fingerprint_bitstring(value)?,
-        other => {
-            return Err(QuotedSourceError::new(format!(
-                "quoted source value cannot contain runtime kind {:?}",
-                other
-            )));
-        }
-    };
-
-    if needs_cycle_guard {
-        stack.pop();
-    }
-
-    Ok(rendered)
-}
-
-fn fingerprint_map(
-    proc: &Process,
-    value: AnyValueRef,
-    policy: QuotedSourceFingerprintPolicy,
-    stack: &mut Vec<(ValueKind, usize)>,
-) -> Result<String, QuotedSourceError> {
-    let addr = value.map_addr().map_err(QuotedSourceError::from)?;
-    let count = unsafe { map_count(addr as *const u8) };
-    let mut entries = Vec::with_capacity(count);
-    for index in 0..count {
-        let tag = unsafe { ptr::read(map_tag_ptr(addr as *const u8).add(index)) };
-        let keys = unsafe { map_keys_ptr(addr as *const u8, count) };
-        let values = unsafe { map_values_ptr(addr as *const u8, count) };
-        let key_ref = storage_ref(unsafe { keys.add(index) }, map_key_kind(tag))?;
-        if key_ref.tag() == ValueKind::ATOM {
-            let atom_id = key_ref.load_atom().map_err(QuotedSourceError::from)? as u32;
-            let atom_name = render_atom_name(proc, atom_id)?;
-            if !policy.includes_meta_key(&atom_name) {
-                continue;
-            }
-        }
-        let value_ref = storage_ref(unsafe { values.add(index) }, map_value_kind(tag))?;
-        let key = fingerprint_value(proc, key_ref, policy, stack)?;
-        let value = fingerprint_value(proc, value_ref, policy, stack)?;
-        entries.push((key, value));
-    }
-    entries.sort();
-    let mut rendered = String::from("map{");
-    for (index, (key, value)) in entries.iter().enumerate() {
-        if index > 0 {
-            rendered.push(',');
-        }
-        write!(&mut rendered, "{}=>{}", key, value).expect("write to string");
-    }
-    rendered.push('}');
-    Ok(rendered)
-}
-
-fn fingerprint_struct(
-    proc: &Process,
-    value: AnyValueRef,
-    policy: QuotedSourceFingerprintPolicy,
-    stack: &mut Vec<(ValueKind, usize)>,
-) -> Result<String, QuotedSourceError> {
-    let addr = value.struct_addr().map_err(QuotedSourceError::from)?;
-    let schema_id = unsafe { struct_schema_id(addr as *const u8) };
-    let schema_handle = proc.heap.schemas_registry();
-    let schema_borrow = schema_handle.borrow();
-    let schema = schema_borrow.get(schema_id).clone();
-
-    if schema
-        .fields
-        .iter()
-        .any(|field| field.kind != fz_runtime::heap::FieldKind::AnyValue)
-    {
-        return Err(QuotedSourceError::new(format!(
-            "quoted source struct {} contains raw fields",
-            schema.name
-        )));
-    }
-
-    let mut values = Vec::with_capacity(schema.fields.len());
-    for field in &schema.fields {
-        let field_value = proc
-            .heap
-            .read_struct_field_ref(value, field.offset)
-            .map_err(QuotedSourceError::from)?;
-        values.push((field.name.clone(), fingerprint_value(proc, field_value, policy, stack)?));
-    }
-
-    if let Some(arity) = tuple_arity(&schema.name) {
-        let rendered = values.into_iter().map(|(_, value)| value).collect::<Vec<_>>();
-        return Ok(format!("tuple{}[{}]", arity, rendered.join(",")));
-    }
-
-    let mut rendered = format!("struct:{}{{", schema.name);
-    for (index, (name, value)) in values.iter().enumerate() {
-        if index > 0 {
-            rendered.push(',');
-        }
-        write!(&mut rendered, "{}={}", name.as_deref().unwrap_or("_"), value).expect("write to string");
-    }
-    rendered.push('}');
-    Ok(rendered)
-}
-
-fn fingerprint_bitstring(value: AnyValueRef) -> Result<String, QuotedSourceError> {
-    let heap_word = match value.tag() {
-        ValueKind::BITSTRING | ValueKind::PROCBIN => value.heap_object_word().map_err(QuotedSourceError::from)?,
-        other => {
-            return Err(QuotedSourceError::new(format!(
-                "expected bitstring-like root, got {:?}",
-                other
-            )));
-        }
-    };
-    let tagged_ptr = heap_word as *const u8;
-    let byte_ptr = unsafe { procbin_byte_ptr(tagged_ptr) };
-    let bit_len = unsafe { tagged_bitstring_bit_len(tagged_ptr) } as usize;
-    let byte_len = bit_len.div_ceil(8);
-    let bytes = unsafe { slice::from_raw_parts(byte_ptr, byte_len) };
-    let mut rendered = String::from("bits:");
-    for byte in bytes {
-        write!(&mut rendered, "{byte:02x}").expect("write to string");
-    }
-    write!(&mut rendered, "/{bit_len}").expect("write to string");
-    Ok(rendered)
 }
 
 /// Two-sided semantic equality over two quoted graphs in (possibly) different
-/// heaps. Mirrors `fingerprint_value`'s traversal but compares in lockstep and
-/// fast-fails — no canonical string is ever built. Atoms compare by rendered
-/// name (atom ids differ per heap); structs by schema name + fields; lists by
-/// spine; maps by content (storage order is not cross-heap-stable).
+/// heaps, comparing in lockstep and fast-failing — no canonical rendering is
+/// ever built. Atoms compare by rendered name (atom ids differ per heap);
+/// structs by schema name + fields; lists by spine; maps by content (storage
+/// order is not cross-heap-stable).
 fn values_eq(
     pa: &Process,
     a: AnyValueRef,
@@ -940,9 +701,9 @@ fn list_eq(
     }
 }
 
-/// Map entries minus the metadata keys the Semantic policy drops (span +
-/// namespace-id). Storage order is not cross-heap-stable (atom ids and pointer
-/// payloads differ), so callers match by content.
+/// Map entries minus the non-semantic metadata keys (span + namespace-id).
+/// Storage order is not cross-heap-stable (atom ids and pointer payloads
+/// differ), so callers match by content.
 fn included_map_entries(
     proc: &Process,
     value: AnyValueRef,
@@ -1008,7 +769,8 @@ struct StructLayout {
 
 /// Schema name + field offsets, cloned so the registry borrow is released
 /// before recursing (nested structs in the same heap would otherwise double
-/// borrow). Mirrors `fingerprint_struct`'s AnyValue-only validation.
+/// borrow). Quoted source structs must be AnyValue-only — raw fields are an
+/// error, not a comparison miss.
 fn struct_layout(proc: &Process, value: AnyValueRef) -> Result<StructLayout, QuotedSourceError> {
     let addr = value.struct_addr().map_err(QuotedSourceError::from)?;
     let schema_id = unsafe { struct_schema_id(addr as *const u8) };
@@ -1120,18 +882,6 @@ fn render_atom_name(proc: &Process, atom_id: u32) -> Result<String, QuotedSource
 
 fn any_value_from_ref(value: AnyValueRef) -> Result<AnyValue, QuotedSourceError> {
     AnyValue::from_ref(value).map_err(QuotedSourceError::from)
-}
-
-fn digest_fnv64(text: &str) -> String {
-    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
-
-    let mut hash = FNV_OFFSET;
-    for byte in text.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    format!("{hash:016x}")
 }
 
 fn tuple_arity(name: &str) -> Option<usize> {

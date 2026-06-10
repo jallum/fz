@@ -11,21 +11,26 @@ the `fz-rh2.11.7.*` arc.
 - The durable source key is `{heap, root}`:
   `QuotedSourceKey { heap_id, root }`.
 - Structural comparison is separate:
-  `QuotedSourceFingerprint { policy, digest, canonical }`.
+  `QuotedSourceRoot::semantically_eq(&other, Horizon)` — a two-sided lockstep
+  walk over both graphs that fast-fails at the first difference. No canonical
+  rendering or digest is ever materialized.
 
 ## Why The Split Matters
 
 - `{heap, root}` answers "which quoted source root is this?"
-- The fingerprint answers "what quoted source shape does this root contain?"
-- A rebuilt equivalent graph on a different heap gets a different key and the
-  same semantic fingerprint.
-- Compiler2 now uses that split deliberately:
-  code/module source revisions compare semantic fingerprints,
-  while function-definition revisions treat replacement of the stored
-  `{heap, root}` transport as a source bump.
-
-That keeps identity honest and still gives compiler2 a stable semantic
-comparison surface when it wants one.
+- `semantically_eq` answers "do these roots contain the same source shape?"
+- A rebuilt equivalent graph on a different heap gets a different key but
+  compares semantically equal — atoms compare by rendered name, not id, so the
+  walk is cross-heap stable.
+- `Horizon` selects how deep the comparison descends:
+  `Horizon::Full` compares to the leaves (function identity — the body is part
+  of the definition), `Horizon::Surface` skips each `do:` body (module/code
+  identity — bodies belong to their own per-function facts, so a body-only
+  edit leaves the surface unchanged).
+- Compiler2 uses that split deliberately:
+  code/module source revisions compare at `Horizon::Surface`,
+  function-definition revisions compare at `Horizon::Full`. Transport identity
+  (a fresh heap from a re-parse) never bumps a revision by itself.
 
 ## Source Shape
 
@@ -90,11 +95,12 @@ comparison surface when it wants one.
 
 ## Private Metadata Keys
 
-- `__fz_lexical__`: stable lexical context for semantic comparison.
-- `__fz_span__`: diagnostic-only span payload; included only under the
-  diagnostic fingerprint policy.
-- `__fz_namespace_id__`: transport-only namespace handle; excluded from every
-  fingerprint policy.
+- `__fz_lexical__`: stable lexical context; semantic content, compared by
+  `semantically_eq`.
+- `__fz_span__`: diagnostic-only span payload; not semantic content, skipped
+  by `semantically_eq`.
+- `__fz_namespace_id__`: transport-only namespace handle; not semantic
+  content, skipped by `semantically_eq`.
 
 ## Scope Authority
 
@@ -135,4 +141,7 @@ comparison surface when it wants one.
 - The raw `AnyValueRef` is never treated as durable without its heap owner.
 - Runtime bitstring/procbin readers operate on heap-object words
   (`AnyValueRef::heap_object_word()`), not `AnyValueRef::raw_word()`.
-- The fingerprint walk rejects cycles and unsupported runtime-only value kinds.
+- Quoted graphs are built bottom-up on an immutable heap, so they are acyclic
+  by construction. The semantic walk treats unsupported runtime-only value
+  kinds as a structural error, which `semantically_eq` reports conservatively
+  as "not equal" (forcing a revision bump rather than risking a missed change).

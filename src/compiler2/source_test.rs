@@ -1,11 +1,60 @@
 use std::rc::Rc;
 
+use fz_runtime::any_value::ValueKind;
+
 use super::{
-    Horizon, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceFingerprintPolicy, QuotedSourceHeap,
+    Horizon, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceCursor, QuotedSourceHeap,
     QuotedSourceMetadata, QuotedSourceRoot, QuotedSourceSpan, parse_quoted_program,
 };
 use crate::modules::runtime_library;
 use crate::telemetry::ConfiguredTelemetry;
+
+/// Every atom name and UTF-8 binary payload reachable in a quoted graph, in
+/// traversal order. Tests use this to assert a parse carried specific forms
+/// without re-inventing a canonical rendering of the graph.
+pub(super) fn quoted_tokens(root: &QuotedSourceRoot) -> Vec<String> {
+    let mut tokens = Vec::new();
+    collect_tokens(&root.cursor(), &mut tokens);
+    tokens
+}
+
+fn collect_tokens(cursor: &QuotedSourceCursor, tokens: &mut Vec<String>) {
+    match cursor.root().tag() {
+        ValueKind::ATOM => tokens.push(cursor.atom_name().expect("atom name")),
+        ValueKind::LIST => {
+            for item in cursor.list_items().expect("list items") {
+                collect_tokens(&item, tokens);
+            }
+        }
+        ValueKind::STRUCT => {
+            for item in cursor.tuple_items().expect("tuple items") {
+                collect_tokens(&item, tokens);
+            }
+        }
+        ValueKind::MAP => {
+            for (key, value) in cursor.map_entries().expect("map entries") {
+                collect_tokens(&key, tokens);
+                collect_tokens(&value, tokens);
+            }
+        }
+        ValueKind::BITSTRING | ValueKind::PROCBIN => {
+            if let Ok(text) = cursor.utf8_binary_text() {
+                tokens.push(text);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub(super) fn assert_quoted_mentions(root: &QuotedSourceRoot, expected: &[&str]) {
+    let tokens = quoted_tokens(root);
+    for name in expected {
+        assert!(
+            tokens.iter().any(|token| token == name),
+            "quoted source should mention `{name}`; tokens: {tokens:?}"
+        );
+    }
+}
 
 fn context(kind: QuotedLexicalContextKind, module: &[&str], scope: &[&str], namespace_id: u32) -> QuotedLexicalContext {
     QuotedLexicalContext::new(
@@ -67,86 +116,51 @@ fn heap_and_root_form_the_stable_source_key() {
     );
 }
 
+// Builder-constructed graphs (as opposed to parsed ones) carry hand-placed
+// span metadata; spans are still not semantic content.
 #[test]
-fn semantic_fingerprint_ignores_span_noise() {
+fn built_graphs_compare_semantically_across_span_noise() {
     let left = build_simple_def("left.fz", 10, 11, &["App"], 1);
     let right = build_simple_def("right.fz", 90, 11, &["App"], 1);
 
-    assert_eq!(
-        left.fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-            .expect("left semantic fingerprint")
-            .digest,
-        right
-            .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-            .expect("right semantic fingerprint")
-            .digest,
-        "semantic fingerprint should follow source shape and lexical context, not span metadata"
+    assert!(
+        left.semantically_eq(&right, Horizon::Full),
+        "semantic equality should follow source shape and lexical context, not span metadata"
     );
-
-    let left_diag = left
-        .fingerprint(QuotedSourceFingerprintPolicy::Diagnostic)
-        .expect("left diagnostic fingerprint");
-    let right_diag = right
-        .fingerprint(QuotedSourceFingerprintPolicy::Diagnostic)
-        .expect("right diagnostic fingerprint");
-    assert_ne!(
-        left_diag.digest, right_diag.digest,
-        "diagnostic fingerprint should change when the caller opts spans into the fingerprint"
+    assert!(
+        left.semantically_eq(&right, Horizon::Surface),
+        "span noise should not move the surface horizon either"
     );
 }
 
 #[test]
-fn namespace_id_is_transport_only_and_not_part_of_fingerprint() {
+fn namespace_id_is_transport_only_not_semantic_content() {
     let left = build_simple_def("app.fz", 10, 11, &["App"], 1);
     let right = build_simple_def("app.fz", 10, 77, &["App"], 1);
 
-    assert_eq!(
-        left.fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-            .expect("left semantic")
-            .digest,
-        right
-            .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-            .expect("right semantic")
-            .digest,
-        "ephemeral namespace ids should not churn semantic fingerprints"
-    );
-    assert_eq!(
-        left.fingerprint(QuotedSourceFingerprintPolicy::Diagnostic)
-            .expect("left diagnostic")
-            .digest,
-        right
-            .fingerprint(QuotedSourceFingerprintPolicy::Diagnostic)
-            .expect("right diagnostic")
-            .digest,
-        "diagnostic fingerprint should stay stable across namespace-id transport changes too"
+    assert!(
+        left.semantically_eq(&right, Horizon::Full),
+        "ephemeral namespace ids should not churn semantic equality"
     );
 }
 
 #[test]
-fn lexical_context_and_literals_both_move_semantic_fingerprint() {
+fn lexical_context_and_literals_both_move_semantic_equality() {
     let app = build_simple_def("app.fz", 10, 11, &["App"], 1);
     let helpers = build_simple_def("app.fz", 10, 11, &["Helpers"], 1);
     let changed_body = build_simple_def("app.fz", 10, 11, &["App"], 2);
 
-    assert_ne!(
-        app.fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-            .expect("app semantic")
-            .digest,
-        helpers
-            .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-            .expect("helpers semantic")
-            .digest,
-        "semantic fingerprint should include lexical context"
+    assert!(
+        !app.semantically_eq(&helpers, Horizon::Full),
+        "lexical context is semantic content"
     );
-    assert_ne!(
-        app.fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-            .expect("app semantic")
-            .digest,
-        changed_body
-            .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-            .expect("changed semantic")
-            .digest,
-        "semantic fingerprint should change when the quoted body changes"
+    assert!(
+        !app.semantically_eq(&changed_body, Horizon::Full),
+        "a changed quoted body is a semantic change at full depth"
+    );
+    assert!(
+        app.semantically_eq(&changed_body, Horizon::Surface),
+        "the changed literal lives under do: — below the surface horizon"
     );
 }
 
@@ -293,84 +307,105 @@ fn worked_surface_examples_fit_in_one_quoted_source_model() {
                 .expect("surface list"),
         )
         .expect("surface root");
-    let semantic = root
-        .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-        .expect("surface semantic fingerprint");
 
-    assert!(
-        semantic.canonical.contains("atom:defmacro")
-            && semantic.canonical.contains("atom:defmodule")
-            && semantic.canonical.contains("atom:import")
-            && semantic.canonical.contains("atom:test"),
-        "one quoted-source graph should carry macro defs, module defs, imports, and item-level macro surfaces"
-    );
+    // One quoted-source graph should carry macro defs, module defs, imports,
+    // and item-level macro surfaces.
+    assert_quoted_mentions(&root, &["defmacro", "defmodule", "import", "test"]);
 }
 
-#[test]
-fn semantic_fingerprint_walks_long_lists_of_ast_nodes() {
+fn build_bulk_ast_list(last: i64) -> QuotedSourceRoot {
     let heap = Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
     let ctx = context(QuotedLexicalContextKind::Source, &["App"], &["bulk"], 99);
-    let meta = meta(&ctx, "bulk.fz", 1);
+    let node_meta = meta(&ctx, "bulk.fz", 1);
     let mut items = Vec::new();
     for n in 0..64 {
-        items.push(builder.call("dbg", &meta, &[builder.int(n)]).expect("bulk dbg call"));
+        let value = if n == 63 { last } else { n };
+        items.push(
+            builder
+                .call("dbg", &node_meta, &[builder.int(value)])
+                .expect("bulk dbg call"),
+        );
     }
-    let root = builder
+    builder
         .root(builder.list(&items).expect("bulk root list"))
-        .expect("bulk root");
-    let semantic = root
-        .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-        .expect("bulk semantic fingerprint");
+        .expect("bulk root")
+}
+
+// Equality with an independently built copy can only hold if the walk visits
+// every node; a difference confined to the final leaf proves it gets there.
+#[test]
+fn semantic_walk_reaches_the_last_leaf_of_long_ast_lists() {
+    let first = build_bulk_ast_list(63);
+    let second = build_bulk_ast_list(63);
+    let tail_changed = build_bulk_ast_list(999);
+
     assert!(
-        semantic.canonical.contains("atom:dbg") && semantic.canonical.contains("int:63"),
-        "semantic fingerprint should walk long lists of quoted AST nodes without corrupting the graph"
+        first.semantically_eq(&second, Horizon::Full),
+        "independently built copies of a long quoted list should compare equal"
+    );
+    assert!(
+        !first.semantically_eq(&tail_changed, Horizon::Full),
+        "a difference in the final list item must be seen — the walk reaches the last leaf"
     );
 }
 
 #[test]
-fn semantic_fingerprint_walks_runtime_sized_quoted_roots() {
+fn semantic_walk_handles_runtime_sized_quoted_roots() {
     let tel = ConfiguredTelemetry::new();
     for (name, source) in runtime_library::module_sources() {
-        let root = parse_quoted_program(format!("runtime:{name}.fz"), source, &tel)
+        let left = parse_quoted_program(format!("runtime:{name}.fz"), source, &tel)
             .unwrap_or_else(|error| panic!("runtime source `{name}` should parse to quoted root: {error}"));
-        let semantic = root
-            .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-            .unwrap_or_else(|error| panic!("runtime source `{name}` root should fingerprint semantically: {error}"));
+        let right = parse_quoted_program(format!("runtime:{name}.fz"), source, &tel)
+            .unwrap_or_else(|error| panic!("runtime source `{name}` should re-parse to quoted root: {error}"));
         assert!(
-            semantic.canonical.contains("atom:defmodule") || semantic.canonical.contains("atom:defprotocol"),
-            "runtime source `{name}` should fingerprint as ordinary quoted module/protocol source"
+            left.semantically_eq(&right, Horizon::Full),
+            "runtime source `{name}` should walk to the leaves and compare equal across re-parse"
+        );
+        assert!(
+            left.semantically_eq(&right, Horizon::Surface),
+            "runtime source `{name}` should compare equal at the surface horizon across re-parse"
         );
     }
 }
 
-#[test]
-fn semantic_fingerprint_walks_long_lists_of_bitstring_heavy_nodes() {
+fn build_bitstring_heavy_list(last_payload: &str) -> QuotedSourceRoot {
     let heap = Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
     let ctx = context(QuotedLexicalContextKind::Source, &["App"], &["bulk_bits"], 101);
-    let meta = meta(&ctx, "bulk_bits.fz", 1);
+    let node_meta = meta(&ctx, "bulk_bits.fz", 1);
     let payload = "abcdefghijklmnopqrstuvwxyz0123456789".repeat(8);
     let mut items = Vec::new();
-    for _ in 0..48 {
+    for n in 0..48 {
+        let text = if n == 47 { last_payload } else { payload.as_str() };
         let node = builder
             .call(
                 "@spec",
-                &meta,
-                &[builder.utf8_binary(&payload).expect("payload binary")],
+                &node_meta,
+                &[builder.utf8_binary(text).expect("payload binary")],
             )
             .expect("bitstring-heavy node");
         items.push(node);
     }
-    let root = builder
+    builder
         .root(builder.list(&items).expect("bitstring-heavy root list"))
-        .expect("bitstring-heavy root");
-    let semantic = root
-        .fingerprint(QuotedSourceFingerprintPolicy::Semantic)
-        .expect("bitstring-heavy semantic fingerprint");
+        .expect("bitstring-heavy root")
+}
+
+#[test]
+fn semantic_walk_compares_bitstring_payloads_in_long_lists() {
+    let payload = "abcdefghijklmnopqrstuvwxyz0123456789".repeat(8);
+    let first = build_bitstring_heavy_list(&payload);
+    let second = build_bitstring_heavy_list(&payload);
+    let tail_changed = build_bitstring_heavy_list("different payload");
+
     assert!(
-        semantic.canonical.contains("atom:@spec") && semantic.canonical.contains("bits:"),
-        "semantic fingerprint should walk long lists of bitstring-heavy quoted nodes safely"
+        first.semantically_eq(&second, Horizon::Full),
+        "independently built bitstring-heavy lists should compare equal"
+    );
+    assert!(
+        !first.semantically_eq(&tail_changed, Horizon::Full),
+        "a payload difference in the final bitstring must be seen — bitstrings compare by content"
     );
 }
 

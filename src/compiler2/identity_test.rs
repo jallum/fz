@@ -1,16 +1,15 @@
 use super::quoted_surface::ScopeSurface;
 use super::{
     CodeMap, CodeState, FunctionDef, FunctionMap, FunctionState, ModuleId, ModuleMap, ModuleState, NamespaceStore,
-    NamespaceSymbol, QuotedCodeSource, QuotedSourceCarrier, parse_quoted_program,
+    NamespaceSymbol, QuotedCodeSource, QuotedSourceRoot, parse_quoted_program,
 };
 use crate::ast::{Expr, FnClause, Spanned, TypeExprBody};
 use crate::function_surface::FunctionSurface;
 use crate::telemetry::ConfiguredTelemetry;
 
-fn quoted_carrier(source_name: &str, text: &str) -> QuotedSourceCarrier {
+fn quoted_source(source_name: &str, text: &str) -> QuotedSourceRoot {
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program(source_name, text, &tel).expect("quoted parse should succeed");
-    QuotedSourceCarrier::new(root).expect("quoted source should fingerprint")
+    parse_quoted_program(source_name, text, &tel).expect("quoted parse should succeed")
 }
 
 fn function_surface(name: &str) -> FunctionSurface {
@@ -76,7 +75,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
     }
 
     let scoped_ref = modules.reference_named("Scoped");
-    let scoped_source = quoted_carrier("scoped.fz", "defmodule Scoped do\nend\n");
+    let scoped_source = quoted_source("scoped.fz", "defmodule Scoped do\nend\n");
     let indexed_revision = modules.index_body(
         scoped_ref,
         code_id,
@@ -107,7 +106,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
     let add_ref = functions.reference(math_def, "add", 2);
     let add_def = add_ref;
     let add_ast = function_surface("Math.add");
-    let add_source = quoted_carrier("math.fz", "fn add(x, y), do: 42\n");
+    let add_source = quoted_source("math.fz", "fn add(x, y), do: 42\n");
     let add_revision = functions.define(
         add_def,
         FunctionDef {
@@ -173,7 +172,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         matches!(code_slot.state, CodeState::Pending),
         "new code should remain pending until indexing runs"
     );
-    let code_source = quoted_carrier("math.fz", "fn add(x, y), do: x + y\n");
+    let code_source = quoted_source("math.fz", "fn add(x, y), do: x + y\n");
     let indexed_code_revision = code.index(
         code_id,
         QuotedCodeSource {
@@ -207,12 +206,12 @@ fn compiler2_code_index_revisions_ignore_quoted_heap_identity_when_semantics_mat
     let mut code = CodeMap::new();
     let code_id = code.define(Some("math.fz".to_string()), "fn add(x, y), do: x + y\n".to_string());
 
-    let first = quoted_carrier("math.fz", "fn add(x, y), do: x + y\n");
-    let second = quoted_carrier("math.fz", "fn add(x, y), do: x + y\n");
+    let first = quoted_source("math.fz", "fn add(x, y), do: x + y\n");
+    let second = quoted_source("math.fz", "fn add(x, y), do: x + y\n");
     assert_ne!(
         first.key(),
         second.key(),
-        "fresh quoted parses should prove this test is exercising cross-heap equality rather than carrier reuse",
+        "fresh quoted parses should prove this test is exercising cross-heap equality rather than root reuse",
     );
 
     let first_revision = code.index(
@@ -237,7 +236,7 @@ fn compiler2_code_index_revisions_ignore_quoted_heap_identity_when_semantics_mat
 }
 
 #[test]
-fn compiler2_function_definition_revisions_bump_when_quoted_transport_changes() {
+fn compiler2_function_definition_revisions_track_semantic_content_not_transport() {
     let mut functions = FunctionMap::new();
     let mut code = CodeMap::new();
     let namespaces = NamespaceStore::new();
@@ -245,12 +244,13 @@ fn compiler2_function_definition_revisions_bump_when_quoted_transport_changes() 
     let namespace = namespaces.prelude_head();
     let function = functions.reference(ModuleId::GLOBAL, "add", 2);
     let def_ast = function_surface("add");
-    let first = quoted_carrier("math.fz", "fn add(x, y), do: 42\n");
-    let second = quoted_carrier("math.fz", "fn add(x, y), do: 42\n");
+    let first = quoted_source("math.fz", "fn add(x, y), do: 42\n");
+    let second = quoted_source("math.fz", "fn add(x, y), do: 42\n");
+    let third = quoted_source("math.fz", "fn add(x, y), do: 43\n");
     assert_ne!(
         first.key(),
         second.key(),
-        "fresh quoted parses should prove this test is exercising a replacement source carrier",
+        "fresh quoted parses should prove this test is exercising a replacement source root",
     );
 
     let first_revision = functions.define(
@@ -272,13 +272,28 @@ fn compiler2_function_definition_revisions_bump_when_quoted_transport_changes() 
             namespace,
             capture_params: Vec::new(),
             source: second,
+            surface: def_ast.clone(),
+        },
+    );
+    let third_revision = functions.define(
+        function,
+        FunctionDef {
+            code: code_id,
+            owner_module: ModuleId::GLOBAL,
+            namespace,
+            capture_params: Vec::new(),
+            source: third,
             surface: def_ast,
         },
     );
 
     assert_eq!(
-        second_revision,
+        second_revision, first_revision,
+        "re-defining with semantically identical source must not bump the revision — transport identity is not content",
+    );
+    assert_eq!(
+        third_revision,
         first_revision + 1,
-        "function definitions should treat any replacement of {{heap, root}} as a new source revision",
+        "a real body change (42 -> 43) must bump the function definition revision",
     );
 }

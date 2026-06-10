@@ -24,7 +24,6 @@ fn compiler2_quoted_surface_groups_multiclause_functions_into_one_logical_form()
             assert_eq!(form.arity, 1);
             assert_eq!(
                 form.source
-                    .root
                     .cursor()
                     .list_items()
                     .expect("alpha grouped source items")
@@ -41,13 +40,12 @@ fn compiler2_quoted_surface_groups_multiclause_functions_into_one_logical_form()
             assert_eq!(form.arity, 1);
             assert_eq!(
                 form.source
-                    .root
                     .cursor()
                     .list_items()
                     .expect("beta grouped source items")
                     .len(),
                 1,
-                "single-clause functions should still use the same grouped-source carrier shape",
+                "single-clause functions should still use the same grouped-source shape",
             );
         }
         other => panic!("second grouped form should be beta/1, got {other:?}"),
@@ -83,7 +81,6 @@ fn compiler2_quoted_surface_keeps_attached_function_attrs_inside_grouped_source(
             assert_eq!(form.arity, 1);
             let items = form
                 .source
-                .root
                 .cursor()
                 .list_items()
                 .expect("grouped function source items");
@@ -150,12 +147,7 @@ fn compiler2_quoted_surface_reads_protocol_impl_callbacks_through_grouped_source
                 ScopeForm::Function(function) => {
                     assert_eq!(function.name, "to_string");
                     assert_eq!(function.arity, 1);
-                    let items = function
-                        .source
-                        .root
-                        .cursor()
-                        .list_items()
-                        .expect("callback grouped items");
+                    let items = function.source.cursor().list_items().expect("callback grouped items");
                     assert_eq!(
                         items.len(),
                         3,

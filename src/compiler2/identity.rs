@@ -6,7 +6,7 @@ use crate::function_surface::FunctionSurface;
 use super::code::CodeId;
 use super::namespace::{Namespace, NamespaceSymbol};
 use super::quoted_surface::{ScopeForm, ScopeSurface};
-use super::source::QuotedSourceCarrier;
+use super::source::{Horizon, QuotedSourceRoot};
 use super::type_expr::TypeDefBody;
 use super::types::Ty;
 
@@ -138,7 +138,7 @@ pub struct ModuleSource {
     pub code: CodeId,
     pub parent: ModuleId,
     pub local_name: String,
-    pub source: QuotedSourceCarrier,
+    pub source: QuotedSourceRoot,
     pub kind: ModuleSourceKind,
 }
 
@@ -154,7 +154,7 @@ impl ModuleSource {
             code,
             parent: ModuleId::GLOBAL,
             local_name: String::new(),
-            source: QuotedSourceCarrier::empty(),
+            source: QuotedSourceRoot::empty(),
             kind: ModuleSourceKind::Body(ScopeSurface {
                 attrs: Vec::new(),
                 forms: Vec::new(),
@@ -189,14 +189,14 @@ impl Function {
     pub fn state_source_heap_id(&self) -> Option<usize> {
         match &self.state {
             FunctionState::Placeholder => None,
-            FunctionState::Defined { def } => Some(def.source.root.key().heap_id),
+            FunctionState::Defined { def } => Some(def.source.key().heap_id),
         }
     }
 
     pub fn state_source_root_word(&self) -> Option<u64> {
         match &self.state {
             FunctionState::Placeholder => None,
-            FunctionState::Defined { def } => Some(def.source.root.root().raw_word()),
+            FunctionState::Defined { def } => Some(def.source.root().raw_word()),
         }
     }
 }
@@ -225,7 +225,7 @@ pub struct FunctionDef {
     pub owner_module: ModuleId,
     pub namespace: Namespace,
     pub capture_params: Vec<String>,
-    pub source: QuotedSourceCarrier,
+    pub source: QuotedSourceRoot,
     pub(crate) surface: FunctionSurface,
 }
 
@@ -236,7 +236,7 @@ pub struct FunctionSource {
     pub namespace: Namespace,
     pub capture_params: Vec<String>,
     pub variadic: bool,
-    pub source: QuotedSourceCarrier,
+    pub source: QuotedSourceRoot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -410,7 +410,7 @@ impl ModuleMap {
         code: CodeId,
         parent: ModuleId,
         local_name: String,
-        source: QuotedSourceCarrier,
+        source: QuotedSourceRoot,
         surface: ScopeSurface,
     ) -> u64 {
         let module = &mut self.slots[id.0 as usize];
@@ -430,7 +430,7 @@ impl ModuleMap {
         code: CodeId,
         parent: ModuleId,
         local_name: String,
-        source: QuotedSourceCarrier,
+        source: QuotedSourceRoot,
         surface: ScopeSurface,
     ) -> u64 {
         let module = &mut self.slots[id.0 as usize];
@@ -680,12 +680,12 @@ fn monotonic<T>(current: Option<&T>, incoming: T, revision: u64, same: impl Fn(&
 
 fn replace_if_changed<T: Reconcile>(state: &mut T, revision: &mut u64, next: T) -> u64 {
     let (value, next_revision) = T::reconcile(Some(state), next, *revision);
-    // Store-on-change for now; fz-knf.3 lifts this to store-fresh-always where
-    // the value-vs-revision split matters (the code.index body-discard trap).
-    if next_revision != *revision {
-        *state = value;
-        *revision = next_revision;
-    }
+    // Always store the fresh value; advance the revision only when the fact's
+    // horizon deems it changed. A module's body-only edit keeps its revision put
+    // but still refreshes the stored source for the per-function facts that
+    // re-derive from it.
+    *state = value;
+    *revision = next_revision;
     *revision
 }
 
@@ -730,7 +730,7 @@ impl ModuleSource {
         self.code == other.code
             && self.parent == other.parent
             && self.local_name == other.local_name
-            && self.source.semantic.digest == other.source.semantic.digest
+            && self.source.semantically_eq(&other.source, Horizon::Surface)
     }
 }
 
@@ -749,7 +749,7 @@ impl FunctionState {
                     && left.owner_module == right.owner_module
                     && left.namespace == right.namespace
                     && left.capture_params == right.capture_params
-                    && left.source.key() == right.source.key()
+                    && left.source.semantically_eq(&right.source, Horizon::Full)
             }
             _ => false,
         }
@@ -772,7 +772,7 @@ impl FunctionSourceState {
                     && left.namespace == right.namespace
                     && left.capture_params == right.capture_params
                     && left.variadic == right.variadic
-                    && left.source.key() == right.source.key()
+                    && left.source.semantically_eq(&right.source, Horizon::Full)
             }
             _ => false,
         }

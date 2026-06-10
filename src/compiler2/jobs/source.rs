@@ -21,7 +21,7 @@ use super::super::scheduler::FatalError;
 use super::super::scope::ScopeSnapshot;
 use super::super::type_expr::{NominalKind, TypeDefBody, TypeExpr, parse_type_def_body, parse_type_expr};
 use super::super::world::World;
-use super::super::{FactValue, FunctionSource, QuotedCodeSource, QuotedSourceCarrier, parse_quoted_program};
+use super::super::{FactValue, FunctionSource, QuotedCodeSource, parse_quoted_program};
 
 type Output = (FactKey, FactValue);
 type Outputs = Vec<Output>;
@@ -54,9 +54,7 @@ pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
     let surface = read_scope_surface(&quoted_root, &ctx)
         .map_err(|error| emit_internal_surface_error(world, format!("quoted surface read failed: {error}")))?;
     let quoted = QuotedCodeSource {
-        quoted: QuotedSourceCarrier::new(quoted_root.clone()).map_err(|error| {
-            emit_internal_surface_error(world, format!("quoted source fingerprint failed: {error}"))
-        })?,
+        quoted: quoted_root.clone(),
         surface: surface.clone(),
     };
 
@@ -556,7 +554,7 @@ pub(super) fn define_function(
     };
 
     let surface = crate::compiler2::quoted_function::derive_function_surface(
-        &source.source.root,
+        &source.source,
         source.code,
         world.code_name(source.code),
         world.code_text(source.code),

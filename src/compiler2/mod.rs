@@ -69,9 +69,8 @@ pub use semantic::{
     SemanticClosure, SemanticClosureMap,
 };
 pub use source::{
-    Horizon, QuotedAstNode, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceCarrier,
-    QuotedSourceCursor, QuotedSourceError, QuotedSourceFingerprint, QuotedSourceFingerprintPolicy, QuotedSourceHeap,
-    QuotedSourceKey, QuotedSourceMetadata, QuotedSourceRoot, QuotedSourceSpan,
+    Horizon, QuotedAstNode, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceCursor,
+    QuotedSourceError, QuotedSourceHeap, QuotedSourceKey, QuotedSourceMetadata, QuotedSourceRoot, QuotedSourceSpan,
 };
 pub use types::{
     CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, Nominals, OpaqueVisibilityError, Sigma,
