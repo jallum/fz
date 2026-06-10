@@ -6,13 +6,13 @@
     "fz-rh2.16.8.3"
   ],
   "created": "2026-06-10T12:05:22Z",
-  "description": "Goal: once ordinary function-body expansion has moved behind function demand, ordinary source publication, item-macro-expanded source publication, and Fz.Compiler.define publication all become the same raw definition-publication operation with one implementation. Signal: source_publish no longer carries a second per-form dispatcher for compiler services; publication of a raw source fragment is parameterized by scope/env/owner context instead of by call path; identical raw definitions publish identical facts regardless of whether they came from direct source or a compiler service. Strategy: rebuild publication around one raw fragment transaction after function staging lands, route CompilerService::Define through it, delete the duplicated per-form publication match, and add focused regressions proving fact equivalence across entry paths.",
+  "description": "Goal: compiler2 has exactly one recursive quoted-source expansion engine for source sugar rewrite, macro resolution, require gating, MacroExecutable waits, __CALLER__ projection, interpreter invocation, recursive re-expansion, and macro telemetry. Signal: the duplicated expansion walkers disappear from source_publish and jobs/source; item-level expansion and ExpandFunctionSource both call the same subsystem; new expansion rules land in one place instead of two. Strategy: carve the common engine out of the current scope-tier and function-demand walkers, give it the minimal policy surface it needs to distinguish scope-fragment and function-body entry modes, and delete the mirrored traversal code once both call sites are moved over.",
   "id": "fz-rh2.16.8.1",
   "labels": [],
   "parent": "fz-rh2.16.8",
   "priority": 2,
   "status": "open",
-  "title": "Compiler2 source publication: collapse compiler-service and ordinary forms onto one transaction",
+  "title": "Compiler2 quoted expander: extract the shared quoted-source expansion engine and delete duplicate walkers",
   "type": "task",
-  "updated_at": "2026-06-10T17:49:43Z"
+  "updated_at": "2026-06-10T20:00:46Z"
 }
