@@ -6,14 +6,15 @@
   "blocks": [
     "fz-rh2.16.10.4"
   ],
+  "closed_at": "2026-06-10T18:11:39Z",
   "created": "2026-06-10T17:48:30Z",
   "description": "Goal: once function publication is raw, direct source and Fz.Compiler.define become the same definition-publication operation. Signal: identical raw definition fragments publish identical FunctionSource, module, and namespace facts regardless of entry path; apply_compiler_define becomes boundary validation plus delegation; regressions prove fact equivalence across entry paths. Strategy: salvage the good part of the current local refactor — the equivalence contract and shared fragment transaction — but rebuild it on top of raw publication instead of eager function expansion.",
   "id": "fz-rh2.16.10.3",
   "labels": [],
   "parent": "fz-rh2.16.10",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 definition publication: unify direct and Fz.Compiler.define on raw source facts",
   "type": "task",
-  "updated_at": "2026-06-10T18:08:02Z"
+  "updated_at": "2026-06-10T18:11:39Z"
 }
