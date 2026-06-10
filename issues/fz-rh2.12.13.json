@@ -7,9 +7,15 @@
   "id": "fz-rh2.12.13",
   "labels": [],
   "parent": "fz-rh2.12",
+  "comments": [
+    {
+      "text": "Post-fix measurement from target/debug/fz2 --log-telemetry /tmp/fz2_quicksort_12_13.jsonl run fixtures/quicksort/input.fz on 2026-06-10:\n\n- Lexer span-starts remain exactly 4: fixtures/quicksort/input.fz, runtime:runtime.fz, runtime:Kernel.fz, runtime:Process.fz.\n- fz.compiler2.drive: 58.109 ms.\n- fz.compiler2.native_backend.compile: 47.207 ms, metadata backend=jit, root_id=0, backend_revision=1, entry_fn_id=0, body_count=42, callable_entry_count=0.\n- Nested fz.codegen.compile: 47.136 ms, parent_span_id equals the compiler2 native_backend compile span.\n- fz.runtime.process_exited at ~106.034 ms.\n\nThe backend tail is now named at the compiler2 artifact boundary; codegen-internal phase accounting remains under fz.codegen.compile.",
+      "timestamp": "2026-06-10T08:00:01Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Account post-drive native backend tail in compiler2 telemetry",
   "type": "task",
-  "updated_at": "2026-06-10T07:54:06Z"
+  "updated_at": "2026-06-10T08:00:01Z"
 }
