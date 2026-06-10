@@ -7,7 +7,7 @@
   ],
   "blocks": [],
   "created": "2026-06-10T12:05:22Z",
-  "description": "Goal: finish the cleanup by deleting retired code paths and making the new model explicit in docs and telemetry. Signal: no dead duplicate publication/fragment-transport helpers remain; docs state the invariants clearly (quoted roots are the only source authority, expansion is root-\u003eroot, publication is one transaction, type fragments are token payloads); telemetry/fixture checks prove compiler2 is not silently falling back to old-world behavior. Strategy: remove leftovers from the earlier split paths, update the agent docs and migration docs, and add the narrow regression/telemetry checks that keep this spine honest.",
+  "description": "Goal: finish the scope-spine cleanup by deleting retired code paths and making the new model explicit in docs and telemetry. Signal: no dead duplicate publication or fragment-transport helpers remain; docs state the invariants clearly (quoted roots are the only source authority, item-level expansion is root-\u003eroot, publication is one transaction, ordinary function bodies expand on function demand, and type fragments are token payloads); telemetry and fixture checks prove compiler2 is not silently falling back to old-world behavior. Strategy: remove leftovers from the earlier split paths, update the agent docs and migration docs, and add the narrow regression and telemetry checks that keep this spine honest.",
   "id": "fz-rh2.16.8.5",
   "labels": [],
   "parent": "fz-rh2.16.8",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "Compiler2 source spine closeout: remove retired paths and restate the design",
   "type": "task",
-  "updated_at": "2026-06-10T12:05:35Z"
+  "updated_at": "2026-06-10T17:49:23Z"
 }
