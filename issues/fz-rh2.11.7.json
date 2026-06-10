@@ -53,11 +53,15 @@
     {
       "text": "Elixir reference point for the re-scoped .13/.14 seam, replacing the shell-mangled note above:\n\n`Kernel.define/4` keeps parser output as ordinary quoted forms, then `elixir_def` groups/stores definitions in compiler-owned state keyed by `{name, arity}` and later reassembles them for consumers.\n\nThat reinforces the current shape of this arc: no parser-level grouped AST authority, one quoted term world, compiler-owned grouped source state, then any temporary downstream legacy artifact derived from that state rather than from the parser.",
       "timestamp": "2026-06-09T20:56:58Z"
+    },
+    {
+      "text": "Elixir implementation review tightened the remaining seam in this arc:\n\n1. `.11.7.4` is now explicitly only the compiler-owned publication boundary over quoted source forms. Its job is the in-progress scope/session that stores definitions, updates namespace/export state, and publishes compiler2 facts.\n2. `.11.7.5` now explicitly absorbs the compile-time runtime/interpreter side of the seam: shared macro lowering/execution plus the `Fz.Compiler` host/runtime wiring that lets running macro code call back into the `.4` publication boundary.\n3. This matches Elixir more honestly: `Kernel.define/4` / `elixir_def.store_definition` are the compiler authority, while macro execution calls compiled functions with a hidden caller argument and reaches compiler behavior through that execution path, not through a second publication authority.\n4. No DAG change was needed; the dependency order was already correct. This was a boundary correction so the tickets point at the right layers.",
+      "timestamp": "2026-06-10T01:58:29Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 source production: quoted AST, macro facts, and compiler services",
   "type": "epic",
-  "updated_at": "2026-06-09T20:56:58Z"
+  "updated_at": "2026-06-10T01:58:29Z"
 }
