@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-10T04:05:11Z",
+  "description": "FunctionState (Placeholder -\u003e Defined) and FunctionSourceState (Placeholder -\u003e Noted) are parallel slot vectors over the same ID space storing near-identical data with near-identical same() logic. define_function consumes FunctionSource wholesale and promotes it into FunctionDef, which is just FunctionSource + surface. After definition the source map is never read again. Correct model: Placeholder -\u003e Noted { source } -\u003e Defined { source, surface }. FunctionDef, FunctionSourceSlot, FunctionSourceState, and FunctionSourceMap all disappear.",
+  "id": "fz-ehe.6",
+  "labels": [],
+  "parent": "fz-ehe",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-knf-f: unify FunctionMap and FunctionSourceMap into a single three-state machine",
+  "type": "task",
+  "updated_at": "2026-06-10T04:05:11Z"
+}
