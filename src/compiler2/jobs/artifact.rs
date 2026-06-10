@@ -1540,7 +1540,58 @@ fn callable_entries_in_steps(
     steps: &[LoweredStep],
     out: &mut Vec<CallableEntry>,
 ) -> Result<(), FatalError> {
-    let _ = (world, root_id, executables, executable, named_refs, steps, out);
+    for step in steps {
+        match step {
+            LoweredStep::FunctionRef { value, .. } | LoweredStep::Lambda { value, .. } => {
+                record_callable_value_entries(
+                    world,
+                    root_id,
+                    executables,
+                    executable,
+                    named_refs,
+                    *value,
+                    "callable constructor",
+                    true,
+                    out,
+                )?;
+            }
+            LoweredStep::NamedFunctionRef { value, .. } => {
+                record_callable_value_entries(
+                    world,
+                    root_id,
+                    executables,
+                    executable,
+                    named_refs,
+                    *value,
+                    "named callable constructor",
+                    true,
+                    out,
+                )?;
+            }
+            LoweredStep::Const { .. }
+            | LoweredStep::Tuple { .. }
+            | LoweredStep::List { .. }
+            | LoweredStep::Map { .. }
+            | LoweredStep::MapUpdate { .. }
+            | LoweredStep::Struct { .. }
+            | LoweredStep::Bitstring { .. }
+            | LoweredStep::BinaryOp { .. }
+            | LoweredStep::UnaryOp { .. }
+            | LoweredStep::MapIndex { .. }
+            | LoweredStep::FieldAccess { .. }
+            | LoweredStep::AssertLiteral { .. }
+            | LoweredStep::AssertStruct { .. }
+            | LoweredStep::RequireMapValue { .. }
+            | LoweredStep::AssertTuple { .. }
+            | LoweredStep::TupleField { .. }
+            | LoweredStep::AssertEmptyList { .. }
+            | LoweredStep::AssertSame { .. }
+            | LoweredStep::SplitList { .. }
+            | LoweredStep::BitstringInit { .. }
+            | LoweredStep::BitstringRead { .. }
+            | LoweredStep::AssertBitstringDone { .. } => {}
+        }
+    }
     Ok(())
 }
 
@@ -1579,11 +1630,71 @@ fn callable_entries_in_tail(
             args,
             out,
         ),
-        LoweredTail::Value { .. }
-        | LoweredTail::If { .. }
-        | LoweredTail::Dispatch { .. }
-        | LoweredTail::Receive(_)
-        | LoweredTail::Halt { .. } => Ok(()),
+        LoweredTail::Value { value, .. } => record_callable_value_entries(
+            world,
+            root_id,
+            executables,
+            executable,
+            named_refs,
+            *value,
+            "returned value",
+            false,
+            out,
+        ),
+        LoweredTail::If { .. } | LoweredTail::Dispatch { .. } | LoweredTail::Receive(_) | LoweredTail::Halt { .. } => {
+            Ok(())
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_callable_value_entries(
+    world: &mut World<'_>,
+    root_id: RootId,
+    executables: &HashMap<ExecutableKey, AbiReadyExecutable>,
+    executable: &AbiReadyExecutable,
+    named_refs: &HashMap<ValueId, (String, usize)>,
+    value: ValueId,
+    context: &'static str,
+    expect_callable: bool,
+    out: &mut Vec<CallableEntry>,
+) -> Result<(), FatalError> {
+    if let Some((name, arity)) = named_refs.get(&value) {
+        return Err(incomplete_semantic_plan(
+            world,
+            root_id,
+            format!("{context} carries unresolved named function ref `&{name}/{arity}`"),
+        ));
+    }
+    let Some(ty) = executable.value_types.get(&value).copied() else {
+        if expect_callable {
+            return Err(incomplete_semantic_plan(
+                world,
+                root_id,
+                format!(
+                    "ABI-ready executable is missing the settled type for {context} value {}",
+                    value.as_u32()
+                ),
+            ));
+        }
+        return Ok(());
+    };
+    match resolve_callable_entries_for_type(world, root_id, executables, ty)? {
+        CallableResolution::Resolved(entries) => {
+            out.extend(entries);
+            Ok(())
+        }
+        CallableResolution::NotCallable if !expect_callable => Ok(()),
+        CallableResolution::NotCallable => Err(incomplete_semantic_plan(
+            world,
+            root_id,
+            format!("{context} value {} is not a callable value", value.as_u32()),
+        )),
+        CallableResolution::Opaque => Err(incomplete_semantic_plan(
+            world,
+            root_id,
+            format!("{context} value {} is an opaque callable value", value.as_u32()),
+        )),
     }
 }
 

@@ -3,11 +3,17 @@
 `src/parser` turns tokens into the `ast::Expr` / `ast::Item` tree. Its job is to
 mirror Elixir's surface syntax while keeping the tree ordinary: keyword lists are
 plain lists of two-tuples, do-blocks are sugar for a trailing `do:` keyword entry,
-and the Elixir-flavored operators (`++`, `<>`, `..`, captures, multi-clause `fn`)
-are syntax the **frontend desugar pass** (`src/frontend/macros.rs`) rewrites into
-calls and lambdas before IR lowering. The parser introduces no keyword-list node
-and no runtime keyword type — that policy is what lets the rest of the compiler
-stay simple.
+and the parser introduces no keyword-list node and no runtime keyword type. That
+policy is what lets the rest of the compiler stay simple.
+
+There are now two source paths:
+
+- The legacy parser/frontend path rewrites the Elixir-flavored operators
+  (`++`, `<>`, `..`), captures, and multi-clause `fn` in the frontend desugar
+  pass (`src/frontend/macros.rs`) before old IR lowering.
+- The compiler2 quoted-source path quotes those forms as Fz-shaped source data
+  first, then normalizes them during source publication
+  (`src/compiler2/source_sugar.rs`) before `FunctionSource` is saved.
 
 Three files carry the work:
 
@@ -199,9 +205,11 @@ body), so `parse_lambda` and `parse_case` stay in lockstep. The AST is
 `Expr::Lambda(Vec<LambdaClause>)`; each `LambdaClause` carries `params`, an
 optional `guard`, a `body`, and its span.
 
-`lambda_direct_clause` names the one shape the interpreter and IR lowering run
-directly: exactly one clause with no guard. Every other shape is desugared first
-(below), so both execution paths agree on what is runnable.
+`lambda_direct_clause` names the one shape the legacy interpreter and old IR
+lowering run directly: exactly one clause with no guard. Every other legacy
+shape is desugared first (below). Compiler2 quoted source keeps the raw lambda
+source until source publication, then rewrites multi/guarded anonymous functions
+into a single direct lambda whose body is a `case`.
 
 ## Captures
 
@@ -226,12 +234,22 @@ the operator name `/` plus a consumed slash.
 The unparenthesized capture-of-call form `&Mod.fun(&1, &2)` is not parsed: after
 `&name` the parser requires `/arity`.
 
-## Desugaring (frontend macros pass)
+Compiler2 frontdoor source quotes captures as ordinary `&` forms: adjacent
+`&N` is `{:&, meta, [N]}`, `&(...)` is `{:&, meta, [body]}`, and function refs
+remain `&name/arity` payloads. Source publication rewrites placeholders and
+capture bodies into direct lambdas before body lowering, while preserving
+function-reference captures as refs.
 
+## Source Sugar Rewrites
+
+The old frontend path and compiler2 source-publication path intentionally erase
+the same user-facing sugars before executable lowering. In the legacy path,
 `Expr::Capture` and `Expr::CaptureArg` have no runtime meaning on their own; the
 interpreter (`src/exec/eval.rs`) and IR lowering (`src/ir_lower/expr.rs`) reject
 them if they survive. `src/frontend/macros.rs` rewrites them, and the
-Elixir-flavored operators, before lowering:
+Elixir-flavored operators, before old lowering. In compiler2, the same rewrite
+policy lives in `src/compiler2/source_sugar.rs` and runs on quoted source before
+`FunctionSource` publication:
 
 - `&(… &N …)` becomes a `Lambda` whose params are `__fz_capture_arg_1..N` (N is
   the highest placeholder in the body) and whose body is the capture body with

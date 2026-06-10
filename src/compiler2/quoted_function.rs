@@ -381,6 +381,9 @@ fn decode_named_expr(
     ctx: &DecodeCtx<'_>,
     span: Span,
 ) -> Result<Spanned<Expr>, QuotedFunctionError> {
+    if name == "%" && args.len() == 2 && is_alias(&args[0]) {
+        return decode_struct_expr(args, ctx, span);
+    }
     if let Some(op) = binop_from_name(&name)
         && args.len() == 2
     {
@@ -426,7 +429,6 @@ fn decode_named_expr(
         }
         ("{}", _) => Ok(Spanned::new(Expr::Tuple(decode_exprs(args, ctx, Some(span))?), span)),
         ("%{}", _) => decode_map_expr(args, ctx, span),
-        ("%", 2) if is_alias(&args[0]) => decode_struct_expr(args, ctx, span),
         ("<<>>", _) => decode_bitstring_expr(args, ctx, span),
         ("&", 1) => decode_fn_ref_expr(&args[0], ctx, span),
         _ => {

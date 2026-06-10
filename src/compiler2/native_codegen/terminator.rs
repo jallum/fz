@@ -1016,12 +1016,13 @@ fn emit_call_closure<M: cranelift_module::Module>(
         // at [K..., arg_descrs...] and call it directly with the body's
         // narrow ABI. Opaque / polymorphic closures fall through to the
         // all-ValueRef indirect seam below.
-        let lit_resolved: Option<(u32, FuncId, usize)> = resolve_native_closure_sid(env, blk.id).map(|body_sid| {
-            let body_fn_id = spec_fn_id(env, body_sid);
-            let body_fid = *fn_ids.get(&body_sid).expect("native closure target fn_id missing");
-            let n_caps = closure_capture_counts.get(&body_fn_id).copied().unwrap_or(0);
-            (body_sid, body_fid, n_caps)
-        });
+        let lit_resolved: Option<(u32, FuncId, Option<usize>)> =
+            resolve_native_closure_sid(env, blk.id).map(|body_sid| {
+                let body_fn_id = spec_fn_id(env, body_sid);
+                let body_fid = *fn_ids.get(&body_sid).expect("native closure target fn_id missing");
+                let n_caps = closure_capture_counts.get(&body_fn_id).copied();
+                (body_sid, body_fid, n_caps)
+            });
         let cont_payload = ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, &continuation.captured);
         let can_use_lazy_cont = false;
         let continuation_plan = plan_closure_shaped_continuation(cont_payload, can_use_lazy_cont);
@@ -1046,16 +1047,20 @@ fn emit_call_closure<M: cranelift_module::Module>(
                 continuation_storage: continuation_storage,
             },
         );
-        if let Some((body_sid, body_fid, n_caps)) = lit_resolved {
+        if let Some((body_sid, body_fid, closure_target_n_caps)) = lit_resolved {
             let body_param_reprs = &param_reprs[body_sid as usize];
             let body_fref = body.jmod.declare_func_in_func(body_fid, body.b.func);
-            let mut direct_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
+            let n_caps = closure_target_n_caps.unwrap_or(0);
+            let mut direct_args: Vec<ir::Value> =
+                Vec::with_capacity(arg_vals.len() + 1 + usize::from(closure_target_n_caps.is_some()));
             for (i, _v) in arg_vals.iter().enumerate() {
                 let binding = *var_env.get(&args[i].0).expect("unbound callclosure arg");
                 let to = body_param_reprs.get(n_caps + i).copied().unwrap_or(ArgRepr::ValueRef);
                 body.push_binding_as_abi_arg(&mut direct_args, binding, to);
             }
-            direct_args.push(cl_val);
+            if closure_target_n_caps.is_some() {
+                direct_args.push(cl_val);
+            }
             direct_args.push(cf);
             let _ = host_ctx;
             if can_use_lazy_cont {
@@ -1158,12 +1163,13 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
             }
         };
 
-        let lit_resolved: Option<(u32, FuncId, usize)> = resolve_native_closure_sid(env, blk.id).map(|body_sid| {
-            let body_fn_id = spec_fn_id(env, body_sid);
-            let body_fid = *fn_ids.get(&body_sid).expect("native closure target fn_id missing");
-            let n_caps = closure_capture_counts.get(&body_fn_id).copied().unwrap_or(0);
-            (body_sid, body_fid, n_caps)
-        });
+        let lit_resolved: Option<(u32, FuncId, Option<usize>)> =
+            resolve_native_closure_sid(env, blk.id).map(|body_sid| {
+                let body_fn_id = spec_fn_id(env, body_sid);
+                let body_fid = *fn_ids.get(&body_sid).expect("native closure target fn_id missing");
+                let n_caps = closure_capture_counts.get(&body_fn_id).copied();
+                (body_sid, body_fid, n_caps)
+            });
         env.telemetry.execute(
             &["fz", "codegen", "closure_call_lowered"],
             &measurements! {
@@ -1178,29 +1184,22 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
             },
         );
 
-        if let Some((body_sid, body_fid, n_caps)) = lit_resolved {
+        if let Some((body_sid, body_fid, closure_target_n_caps)) = lit_resolved {
             let body_param_reprs = &param_reprs[body_sid as usize];
-            let mut sig = Signature::new(CallConv::Tail);
-            // Closure-target sig: only arg slots [n_caps..] go on
-            // the wire; capture slots live inside the closure heap
-            // object and the body's entry harness loads them.
-            for r in &body_param_reprs[n_caps..] {
-                push_repr_param(&mut sig, *r);
-            }
-            sig.params.push(AbiParam::new(types::I64)); // self
-            sig.params.push(AbiParam::new(types::I64)); // cont
-            sig.returns.push(AbiParam::new(types::I64));
             let body_fref = body.jmod.declare_func_in_func(body_fid, body.b.func);
-            let mut direct_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
+            let n_caps = closure_target_n_caps.unwrap_or(0);
+            let mut direct_args: Vec<ir::Value> =
+                Vec::with_capacity(arg_vals.len() + 1 + usize::from(closure_target_n_caps.is_some()));
             for (i, _v) in arg_vals.iter().enumerate() {
                 let binding = *var_env.get(&args[i].0).expect("unbound tailcallclosure arg");
                 let to = body_param_reprs.get(n_caps + i).copied().unwrap_or(ArgRepr::ValueRef);
                 body.push_binding_as_abi_arg(&mut direct_args, binding, to);
             }
-            direct_args.push(cl_val);
+            if closure_target_n_caps.is_some() {
+                direct_args.push(cl_val);
+            }
             direct_args.push(my_cont);
             let _ = host_ctx;
-            let _ = sig; // body_fref carries the signature implicitly.
             if is_native {
                 body.b.ins().return_call(body_fref, &direct_args);
             } else {

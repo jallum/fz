@@ -261,6 +261,16 @@ fn compiler2_frontdoor_parses_remote_calls_captures_and_headless_case_from_fixtu
     // Function-reference fixture should parse captures and closure calls
     // directly to quoted source.
     assert_quoted_mentions(&fn_ref, &["&", "/", "."]);
+
+    let lambda_sugars = parse_quoted_program(
+        "lambda_sugars.fz",
+        include_str!("../../fixtures/lambda_sugars/input.fz"),
+        &tel,
+    )
+    .expect("lambda sugar parse");
+    // Capture placeholders and capture expressions should enter quoted source
+    // as compiler2-owned AST, not as old frontend nodes.
+    assert_quoted_mentions(&lambda_sugars, &["&", "+", "fn", "when", "->"]);
 }
 
 #[test]

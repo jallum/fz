@@ -114,16 +114,20 @@ Function-source facts are saved there; downstream `DefineFunction` still reads
 only `FunctionSource(function)` and does not need to know whether the source
 root came from literal code or macro expansion.
 
-Source publication expands macros before function bodies become
-`FunctionSource` facts. The expansion is body-only: function heads establish the
-function identity and are not expression positions. Local macros, imported
-macros, and required remote macros all converge on the same
-`MacroExecutable(function)` fact. Exact imports reserve names lazily, but a body
-that calls a reserved exact import waits for the provider `ModuleDefined` fact
-so the source tier can bind the real `Function` or `Macro` export before saving
-the body. `require` waits on the provider surface and the selected macro
-executables up front, records that exact remote macro set for the source scope,
-then only those required remote macro calls expand in source order.
+Source publication expands macros and normalizes source-only sugar before
+function bodies become `FunctionSource` facts. The expansion is body-only:
+function heads establish the function identity and are not expression positions.
+Literal source and macro-returned AST both re-enter the same expansion loop on
+the same quoted heap, so body lowering should not see pipe forms, placeholder
+capture shorthand, multi/guarded anonymous-function sugar, or source operator
+sugar heads. Local macros, imported macros, and required remote macros all
+converge on the same `MacroExecutable(function)` fact. Exact imports reserve
+names lazily, but a body that calls a reserved exact import waits for the
+provider `ModuleDefined` fact so the source tier can bind the real `Function` or
+`Macro` export before saving the body. `require` waits on the provider surface
+and the selected macro executables up front, records that exact remote macro set
+for the source scope, then only those required remote macro calls expand in
+source order.
 
 ## Runtime and built-ins are ordinary, lazy code
 
@@ -223,6 +227,16 @@ The next two rungs narrow the contract:
   bodies, clause helpers, continuations, callable-constructor metadata, and
   extern-marshal facts instead of rebuilt `ModulePlan`, `PlannedProgram`, or
   `AbiFacts`.
+
+Callable entry inventory is an artifact fact, not a native-codegen guess.
+`LowerBackendProgram` records callable-entry candidates from settled value types
+for callable constructor values, returned callable values, and explicit
+callable-boundary arguments. A closure-call callee is a consumer of an already
+materialized callable value, not a constructor obligation. Native codegen
+consumes callable-entry inventory for `MakeFnRef` / `MakeClosure`. Direct
+closure-call ABI shape is selected from `NativeProgram.closure_capture_counts`:
+entries with a capture count use the closure-target ABI `(args..., self, cont)`,
+while plain native executable bodies use `(args..., cont)`.
 
 Things that belong in Compiler2 artifact facts:
 

@@ -2155,9 +2155,10 @@ fn compiler2_abi_ready_fails_for_unresolved_named_function_refs_at_callable_boun
         codes::ARTIFACT_INCOMPLETE_SEMANTIC_PLAN.0,
         "unresolved callable-boundary failures should surface as incomplete closed-artifact facts",
     );
+    let message = metadata_str(&diagnostic, "message");
     assert!(
-        metadata_str(&diagnostic, "message").contains("missing/1"),
-        "the fatal should identify the unresolved named callable boundary",
+        message.contains("missing/1"),
+        "the fatal should identify the unresolved named callable boundary, got: {message}",
     );
 }
 
@@ -3420,6 +3421,62 @@ fn compiler2_native_program_jit_runs_enum_reduce_through_compiler2_codegen() {
     assert_no_legacy_planner_or_type_infer(
         &capture,
         "Compiler2-native Enum.reduce JIT should not reopen legacy planning or type inference",
+    );
+}
+
+#[test]
+fn compiler2_native_program_jit_runs_source_lambda_sugars_through_compiler2_codegen() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/lambda_sugars/input.fz".to_string()),
+        text: include_str!("../../fixtures/lambda_sugars/input.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "Compiler2 native lowering should settle before compiler2-owned codegen consumes source lambda sugars: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let program = native.last(root_id).program;
+    assert!(
+        !program.callable_entries.is_empty() && !native_callable_constructor_uses(&program).is_empty(),
+        "zero-capture lambda constructors should publish callable-entry inventory for native materialization",
+    );
+    let compiled = jit_compile_native_program(&mut compiler, &program);
+    let _ = compiled.run(&tel, program.entry);
+    assert_eq!(
+        dbg.lines(),
+        vec!["42".to_string(), "{:zero, :pos, :other}".to_string()],
+        "compiler2-owned native codegen should preserve capture and multi-clause lambda sugar behavior",
+    );
+    assert_no_legacy_planner_or_type_infer(
+        &capture,
+        "Compiler2-native source lambda sugar JIT should not reopen legacy planning or type inference",
+    );
+    assert_eq!(
+        capture.count(&["fz", "frontend", "lowered"]),
+        0,
+        "Compiler2-native source lambda sugar JIT should not call the old frontend lowerer",
     );
 }
 

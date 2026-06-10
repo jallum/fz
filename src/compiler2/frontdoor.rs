@@ -1038,6 +1038,30 @@ impl<'a> FrontDoorParser<'a> {
         scope: &[String],
         start: Span,
     ) -> Result<ParsedExpr, FrontDoorError> {
+        if let Tok::Int(index) = self.peek()
+            && *index >= 1
+            && start.end == self.cur_span().start
+        {
+            let index = match self.bump() {
+                Tok::Int(index) => index,
+                _ => unreachable!("guarded by peek"),
+            };
+            let span = start.merge(self.prev_span());
+            let meta = self.meta(module_path, scope, span)?;
+            return Ok(ParsedExpr::plain(
+                self.builder.call("&", &meta, &[self.builder.int(index)])?,
+                span,
+            ));
+        }
+
+        if self.eat(&Tok::LParen) {
+            let body = self.parse_expr(module_path, scope)?;
+            self.expect(&Tok::RParen, "`)` to close `&(...)` capture")?;
+            let span = start.merge(self.prev_span());
+            let meta = self.meta(module_path, scope, span)?;
+            return Ok(ParsedExpr::plain(self.builder.call("&", &meta, &[body.root])?, span));
+        }
+
         let target = self.parse_capture_target(module_path, scope, start)?;
         self.expect(&Tok::Slash, "`/` in capture")?;
         let arity = match self.bump() {

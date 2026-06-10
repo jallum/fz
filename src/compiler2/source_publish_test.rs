@@ -214,3 +214,70 @@ fn source_publication_expands_local_macros_before_saving_function_source() {
         );
     }
 }
+
+#[test]
+fn source_publication_rewrites_source_sugars_before_saving_function_source() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let mut world = World::new(&tel);
+    let code = world.submit_code(
+        Some("source-sugar.fz".to_string()),
+        r#"
+fn main() do
+  add = &(&1 + &2)
+  classify = fn
+    0 -> :zero
+    n when n > 0 -> :pos
+    _ -> :other
+  end
+  list = [1, 2] ++ [3] -- [1]
+  text = "foo" <> "bar"
+  range = 1..5//2
+  1 |> case do
+    1 -> {add.(20, 22), classify.(0), list, text, range}
+  end
+end
+"#
+        .to_string(),
+    );
+
+    assert!(
+        world.demand(Job::ScopeCode(code)),
+        "source scoping should be demandable"
+    );
+    assert!(
+        matches!(world.drive(), DriveOutcome::Resolved),
+        "source publication should normalize source-only sugars before saving FunctionSource",
+    );
+
+    let main = world.reference_function(ModuleId::GLOBAL, "main", 0);
+    let source = world.function_source(main).expect("main source should be published");
+    let tokens = quoted_tokens(&source.source);
+    for sugar in ["|>", "&", "++", "--", "<>", "..", "//", "not in"] {
+        assert!(
+            !tokens.iter().any(|token| token == sugar),
+            "FunctionSource should not retain source-only sugar `{sugar}`; tokens={tokens:?}",
+        );
+    }
+    for rewritten in [
+        "case",
+        "List",
+        "concat",
+        "subtract",
+        "Kernel",
+        "fz_binary_concat",
+        "Range",
+        "new",
+    ] {
+        assert!(
+            tokens.iter().any(|token| token == rewritten),
+            "FunctionSource should contain rewritten form token `{rewritten}`; tokens={tokens:?}",
+        );
+    }
+    assert_eq!(
+        capture.count(&["fz", "frontend", "lowered"]),
+        0,
+        "source publication must not invoke the old frontend lowerer",
+    );
+}

@@ -51,6 +51,17 @@ the `fz-rh2.11.7.*` arc.
   structure.
 - Capture refs cover local names, remote names, and bare/operator refs such as
   `&Kernel.+/2` and `&+/2`.
+- Source-only sugars may appear in raw quoted source, but not in published
+  function source. `src/compiler2/source_sugar.rs` rewrites them during source
+  publication, on the same quoted heap, before `FunctionSource` is saved.
+- Source-sugar rewrites emit ordinary quoted forms: `|>` becomes a normal call
+  or a subject-bearing `case`, capture placeholders become direct lambdas,
+  multi/guarded lambdas become one lambda whose body is a `case`, and operators
+  become ordinary helper calls such as `List.concat`, `Enum.member?`,
+  `Kernel.fz_binary_concat`, and `Range.new`.
+- Remote helper calls are emitted in canonical quoted remote-call shape with
+  `{:., meta, [{:__aliases__, meta, [...]}, :fun]}` heads. Dotted atom names are
+  not a compiler2 source interchange format.
 - Extern-symbol folding for adjacent `ident::ident` names is only valid in
   ordinary expression/capture position. Bitstring segment parsing suppresses
   that folding so forms like `payload::binary-size(len)` stay quoted as
@@ -149,6 +160,15 @@ the `fz-rh2.11.7.*` arc.
   are not expression positions and are never macro-expanded. Each grouped
   function source keeps attached attributes and clause heads intact while
   recursively expanding only each `do:` body before publication.
+- Body expansion also normalizes source-only sugar recursively. Macro-returned
+  AST re-enters the same expansion loop on the same quoted heap, so downstream
+  function decoding and lowering never need separate support for pipe,
+  placeholder captures, guarded anonymous-function sugar, or source operator
+  sugar.
+- `%Module{...}` source must decode as a struct literal before `%/2` is
+  considered as an operator. That ordering keeps runtime structs such as
+  `%Range{}` on the struct path after `Range.new` has been introduced by source
+  sugar rewriting.
 - Exact `import Mod, only: [...]` may reserve placeholder function bindings
   before `Mod` is defined, but a body that calls such a binding waits for the
   provider `ModuleDefined` fact before the body can be saved. Once the provider

@@ -33,6 +33,7 @@ use super::source::{
     QuotedLexicalContextKind, QuotedSourceCursor, QuotedSourceError, QuotedSourceHeap, QuotedSourceMetadata,
     QuotedSourceRoot,
 };
+use super::source_sugar::rewrite_source_sugar;
 use super::type_expr::{NominalKind, TypeDefBody, TypeExpr, parse_type_def_body, parse_type_expr};
 use super::world::World;
 
@@ -822,9 +823,18 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
 
         if let Some(node) = cursor.ast_node().map_err(|error| {
             emit_internal_surface_error(self.world, format!("quoted expansion read failed: {error}"))
-        })? && let Some(result) = self.expand_ast_call(owner, cursor, &node, scope, depth)?
-        {
-            return Ok(result);
+        })? {
+            if let Some(rewritten) = rewrite_source_sugar(owner, &node).map_err(|error| {
+                emit_internal_surface_error(self.world, format!("source sugar rewrite failed: {error}"))
+            })? {
+                return match self.expand_root(owner.subroot(rewritten), scope, depth)? {
+                    ExpandedRoot::Complete(root) => Ok(ExpandedValue::Complete(root.root())),
+                    ExpandedRoot::Blocked(effects) => Ok(ExpandedValue::Blocked(effects)),
+                };
+            }
+            if let Some(result) = self.expand_ast_call(owner, cursor, &node, scope, depth)? {
+                return Ok(result);
+            }
         }
 
         match cursor.root().tag() {

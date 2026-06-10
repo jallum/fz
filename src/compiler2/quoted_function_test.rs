@@ -79,3 +79,23 @@ fn left + right, do: left + right
         matches!(spec.result_body_tokens.0.as_slice(), [token] if matches!(token.tok, Tok::Ident(ref name) if name == "integer"))
     );
 }
+
+#[test]
+fn compiler2_quoted_function_surface_decodes_struct_literals_before_percent_operator() {
+    let source = r#"
+fn new(first, last, step), do: %Range{first: first, last: last, step: step}
+"#;
+    let root = grouped_function_root("range.fz", source);
+    let tel = ConfiguredTelemetry::new();
+    let surface =
+        derive_function_surface(&root, CodeId::ZERO, Some("range.fz"), source, &tel).expect("derive function surface");
+
+    let Expr::Struct { module, fields } = &surface.clauses[0].body.node else {
+        panic!("expected %Range{{}} to decode as a struct literal");
+    };
+    assert_eq!(module.dotted(), "Range");
+    assert_eq!(
+        fields.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
+        ["first", "last", "step"]
+    );
+}
