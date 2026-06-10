@@ -38,7 +38,6 @@ pub struct AppliedFunctionContract {
 #[derive(Debug, Clone)]
 struct FunctionContractSlot {
     contract: FunctionContract,
-    revision: u64,
 }
 
 #[derive(Debug, Default)]
@@ -81,21 +80,15 @@ impl FunctionContractMap {
         Self::default()
     }
 
-    pub fn define(&mut self, function: FunctionId, contract: FunctionContract) -> u64 {
+    pub fn define(&mut self, function: FunctionId, contract: FunctionContract, current_revision: u64) -> u64 {
         self.ensure(function);
         let slot = &mut self.slots[function.as_u32() as usize];
-        match slot {
-            Some(existing) => {
-                if existing.contract != contract {
-                    existing.contract = contract;
-                    existing.revision += 1;
-                }
-                existing.revision
-            }
-            None => {
-                self.slots[function.as_u32() as usize] = Some(FunctionContractSlot { contract, revision: 1 });
-                1
-            }
+        let changed = slot.as_ref().map(|s| s.contract != contract).unwrap_or(true);
+        *slot = Some(FunctionContractSlot { contract });
+        if changed {
+            current_revision + 1
+        } else {
+            current_revision
         }
     }
 
@@ -104,13 +97,6 @@ impl FunctionContractMap {
             .get(function.as_u32() as usize)
             .and_then(Option::as_ref)
             .map(|slot| &slot.contract)
-    }
-
-    pub fn revision(&self, function: FunctionId) -> Option<u64> {
-        self.slots
-            .get(function.as_u32() as usize)
-            .and_then(Option::as_ref)
-            .map(|slot| slot.revision)
     }
 
     fn ensure(&mut self, function: FunctionId) {

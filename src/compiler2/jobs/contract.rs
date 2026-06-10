@@ -13,7 +13,6 @@ use crate::type_expr::ResolvedSpecDecl;
 
 use super::super::contract::FunctionContract;
 use super::super::drive::{FactKey, Job, JobEffects};
-use super::super::facts::FactValue;
 use super::super::identity::FunctionId;
 use super::super::scheduler::FatalError;
 use super::super::world::World;
@@ -94,7 +93,7 @@ fn publish_contract(
     let revision = world.define_function_contract(function, FunctionContract::from_resolved(contract));
     JobEffects {
         reads,
-        outputs: vec![(FactKey::FunctionContract(function), FactValue::presence(revision))],
+        outputs: vec![(FactKey::FunctionContract(function), revision)],
         ..JobEffects::default()
     }
 }

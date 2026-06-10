@@ -40,7 +40,6 @@ impl TypeDef {
 #[derive(Debug, Clone)]
 struct TypeDefSlot {
     def: TypeDef,
-    revision: u64,
 }
 
 /// Type-name → resolved definition, keyed by the full [`TypeName`] identity so
@@ -58,19 +57,13 @@ impl TypeDefMap {
     /// Publishes `def` under `name`. An unchanged definition keeps its
     /// revision; a changed one bumps it, so the `TypeDefined` fact only wakes
     /// consumers when the resolved type actually moved.
-    pub fn define(&mut self, name: TypeName, def: TypeDef) -> u64 {
-        match self.slots.get_mut(&name) {
-            Some(existing) => {
-                if existing.def != def {
-                    existing.def = def;
-                    existing.revision += 1;
-                }
-                existing.revision
-            }
-            None => {
-                self.slots.insert(name, TypeDefSlot { def, revision: 1 });
-                1
-            }
+    pub fn define(&mut self, name: TypeName, def: TypeDef, current_revision: u64) -> u64 {
+        let changed = self.slots.get(&name).map(|s| s.def != def).unwrap_or(true);
+        self.slots.insert(name, TypeDefSlot { def });
+        if changed {
+            current_revision + 1
+        } else {
+            current_revision
         }
     }
 

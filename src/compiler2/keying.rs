@@ -5,7 +5,6 @@ use super::identity::FunctionId;
 #[derive(Debug, Clone)]
 pub(crate) struct FunctionFactSlot<T> {
     value: Option<T>,
-    revision: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -24,14 +23,16 @@ where
         Self { slots: Vec::new() }
     }
 
-    pub(crate) fn define(&mut self, function: FunctionId, value: T) -> u64 {
+    pub(crate) fn define(&mut self, function: FunctionId, value: T, current_revision: u64) -> u64 {
         self.ensure(function);
         let slot = &mut self.slots[function.as_u32() as usize];
-        if slot.value.as_ref() != Some(&value) {
-            slot.value = Some(value);
-            slot.revision += 1;
+        let changed = slot.value.as_ref() != Some(&value);
+        slot.value = Some(value);
+        if changed {
+            current_revision + 1
+        } else {
+            current_revision
         }
-        slot.revision
     }
 
     pub(crate) fn get(&self, function: FunctionId) -> Option<&T> {
@@ -43,10 +44,7 @@ where
     fn ensure(&mut self, function: FunctionId) {
         let needed = function.as_u32() as usize + 1;
         if self.slots.len() < needed {
-            self.slots.resize_with(needed, || FunctionFactSlot {
-                value: None,
-                revision: 0,
-            });
+            self.slots.resize_with(needed, || FunctionFactSlot { value: None });
         }
     }
 }

@@ -52,7 +52,7 @@ pub use compiler::{CodeSubmission, Compiler2, RootSubmission};
 pub use contract::{FunctionContract, FunctionContractMap};
 pub use deps::{DependencyIndex, UnresolvedWait};
 pub use drive::{FactKey, Job, WorkGraph};
-pub use facts::{FactChange, FactReplace, FactSlot, FactTable, FactValue};
+pub use facts::{FactChange, FactReplace, FactTable};
 pub use frontdoor::{FrontDoorError, parse_quoted_program};
 pub use identity::{
     ActivationKey, ExecutableKey, ExecutableNeed, Function, FunctionDef, FunctionId, FunctionMap, FunctionRef,

@@ -30,7 +30,7 @@ fn compiler2_world_scope_module_panics_for_unindexed_module() {
     let mut world = World::new(&tel);
     let module = world.reference_module("Unindexed");
 
-    let _ = world.scope_module(module, Namespace::default());
+    world.scope_module(module, Namespace::default());
 }
 
 #[test]

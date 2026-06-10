@@ -1,8 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
-use super::{Ty, Types};
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactChange<F> {
     pub key: F,
@@ -16,103 +14,28 @@ pub struct FactReplace<F> {
     pub output_keys: HashSet<F>,
 }
 
+/// One fact: the revisions its publishers last published. State facts
+/// (ModuleDefined, FunctionDefined, ...) have one authority job. Demand facts
+/// (Activation, Executable) are published by every demander and stay present
+/// until the last one retracts. The settled revision is the max over
+/// publishers — the revision itself is whatever 64-bit value the fact's
+/// reconcile chose; the table only stores it and propagates when it moves.
 #[derive(Debug, Clone)]
-pub struct FactSlot<J> {
-    value: Option<FactValue>,
-    revision: u64,
-    contributions: HashMap<J, FactValue>,
+struct FactSlot<J> {
+    publishers: HashMap<J, u64>,
 }
 
 impl<J> Default for FactSlot<J> {
     fn default() -> Self {
         Self {
-            value: None,
-            revision: 0,
-            contributions: HashMap::new(),
+            publishers: HashMap::new(),
         }
     }
 }
 
 impl<J> FactSlot<J> {
-    pub fn revision(&self) -> Option<u64> {
-        self.value.as_ref().map(|_| self.revision)
-    }
-
-    pub fn value(&self) -> Option<&FactValue> {
-        self.value.as_ref()
-    }
-
-    pub fn contributions(&self) -> &HashMap<J, FactValue> {
-        &self.contributions
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FactValue {
-    Presence(u64),
-    Inputs(Vec<Ty>),
-}
-
-impl FactValue {
-    pub fn presence(revision: u64) -> Self {
-        Self::Presence(revision)
-    }
-
-    pub fn inputs(types: &mut Types, inputs: Vec<Ty>) -> Self {
-        Self::Inputs(
-            inputs
-                .into_iter()
-                .map(|input| types.alpha_normalize_vars(&input))
-                .collect(),
-        )
-    }
-
-    pub(crate) fn join<'a>(types: &mut Types, values: impl IntoIterator<Item = &'a FactValue>) -> Option<FactValue> {
-        let mut values = values.into_iter();
-        let first = values.next()?.clone();
-        Some(match first {
-            FactValue::Presence(first) => {
-                let mut max = first;
-                for value in values {
-                    let FactValue::Presence(revision) = value else {
-                        panic!("fact contributions for one key should use one value family")
-                    };
-                    max = max.max(*revision);
-                }
-                FactValue::Presence(max)
-            }
-            FactValue::Inputs(first) => {
-                let mut joined = first;
-                for value in values {
-                    let FactValue::Inputs(inputs) = value else {
-                        panic!("fact contributions for one key should use one value family")
-                    };
-                    assert_eq!(
-                        joined.len(),
-                        inputs.len(),
-                        "activation input contributions for one key should have stable arity"
-                    );
-                    joined = joined
-                        .into_iter()
-                        .zip(inputs.iter().cloned())
-                        .map(|(current, observed)| {
-                            if current == observed {
-                                current
-                            } else {
-                                types.refine_widen(&current, &observed)
-                            }
-                        })
-                        .collect();
-                }
-                FactValue::inputs(types, joined)
-            }
-        })
-    }
-}
-
-impl From<u64> for FactValue {
-    fn from(revision: u64) -> Self {
-        Self::Presence(revision)
+    fn revision(&self) -> Option<u64> {
+        self.publishers.values().copied().max()
     }
 }
 
@@ -140,21 +63,19 @@ where
         self.slots.get(key).and_then(FactSlot::revision)
     }
 
-    pub fn slot(&self, key: &F) -> Option<&FactSlot<J>> {
-        self.slots.get(key)
-    }
-
-    pub fn replace_contributions(
+    /// Replaces one job's published facts. Keys the job previously published
+    /// but no longer does lose that job's entry; a fact with no publishers
+    /// left is retracted.
+    pub fn replace_outputs(
         &mut self,
-        types: &mut Types,
         job: &J,
         previous_output_keys: &HashSet<F>,
-        outputs: Vec<(F, FactValue)>,
+        outputs: Vec<(F, u64)>,
     ) -> FactReplace<F> {
         let mut new_outputs = HashMap::new();
-        for (key, value) in outputs {
+        for (key, revision) in outputs {
             assert!(
-                new_outputs.insert(key, value).is_none(),
+                new_outputs.insert(key, revision).is_none(),
                 "job emitted duplicate fact output for one key"
             );
         }
@@ -170,19 +91,16 @@ where
             let mut slot = self.slots.remove(&key).unwrap_or_default();
             let old_revision = slot.revision();
 
-            if let Some(value) = new_outputs.remove(&key) {
-                slot.contributions.insert(job.clone(), value);
+            if let Some(revision) = new_outputs.remove(&key) {
+                slot.publishers.insert(job.clone(), revision);
             } else {
-                slot.contributions.remove(job);
+                slot.publishers.remove(job);
             }
 
-            let new_value = FactValue::join(types, slot.contributions.values());
-            if slot.value != new_value {
-                slot.revision += 1;
-            }
-            slot.value = new_value;
             let new_revision = slot.revision();
-            self.slots.insert(key.clone(), slot);
+            if !slot.publishers.is_empty() {
+                self.slots.insert(key.clone(), slot);
+            }
 
             if old_revision != new_revision {
                 changed.push(FactChange {

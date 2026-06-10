@@ -514,7 +514,6 @@ impl EffectSummary {
 #[derive(Debug, Clone)]
 struct ProjectionSlot<T> {
     state: ProjectionState<T>,
-    revision: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -558,8 +557,8 @@ impl MaterializedProgramMap {
         Self::default()
     }
 
-    pub fn define(&mut self, root: RootId, program: MaterializedProgram) -> u64 {
-        self.inner.define(root, program)
+    pub fn define(&mut self, root: RootId, program: MaterializedProgram, current_revision: u64) -> u64 {
+        self.inner.define(root, program, current_revision)
     }
 
     pub fn get(&self, root: RootId) -> Option<&MaterializedProgram> {
@@ -572,8 +571,8 @@ impl AbiReadyProgramMap {
         Self::default()
     }
 
-    pub fn define(&mut self, root: RootId, program: AbiReadyProgram) -> u64 {
-        self.inner.define(root, program)
+    pub fn define(&mut self, root: RootId, program: AbiReadyProgram, current_revision: u64) -> u64 {
+        self.inner.define(root, program, current_revision)
     }
 
     pub fn get(&self, root: RootId) -> Option<&AbiReadyProgram> {
@@ -586,8 +585,8 @@ impl EmissionReadyProgramMap {
         Self::default()
     }
 
-    pub fn define(&mut self, root: RootId, program: EmissionReadyProgram) -> u64 {
-        self.inner.define(root, program)
+    pub fn define(&mut self, root: RootId, program: EmissionReadyProgram, current_revision: u64) -> u64 {
+        self.inner.define(root, program, current_revision)
     }
 
     pub fn get(&self, root: RootId) -> Option<&EmissionReadyProgram> {
@@ -600,8 +599,8 @@ impl BackendProgramMap {
         Self::default()
     }
 
-    pub fn define(&mut self, root: RootId, program: BackendProgram) -> u64 {
-        self.inner.define(root, program)
+    pub fn define(&mut self, root: RootId, program: BackendProgram, current_revision: u64) -> u64 {
+        self.inner.define(root, program, current_revision)
     }
 
     pub fn get(&self, root: RootId) -> Option<&BackendProgram> {
@@ -614,15 +613,17 @@ impl NativeProgramMap {
         Self::default()
     }
 
-    pub fn define(&mut self, root: RootId, program: NativeProgram) -> u64 {
+    pub fn define(&mut self, root: RootId, program: NativeProgram, current_revision: u64) -> u64 {
         self.ensure(root);
         let slot = &mut self.slots[root.as_u32() as usize];
         let next = ProjectionState::Defined(program);
-        if !native_program_same_state(&slot.state, &next) {
-            slot.state = next;
-            slot.revision += 1;
+        let changed = !native_program_same_state(&slot.state, &next);
+        slot.state = next;
+        if changed {
+            current_revision + 1
+        } else {
+            current_revision
         }
-        slot.revision
     }
 
     pub fn get(&self, root: RootId) -> Option<&NativeProgram> {
@@ -637,7 +638,6 @@ impl NativeProgramMap {
         if self.slots.len() < needed {
             self.slots.resize_with(needed, || ProjectionSlot {
                 state: ProjectionState::Placeholder,
-                revision: 0,
             });
         }
     }
@@ -647,15 +647,17 @@ impl<T> RootProjectionMap<T>
 where
     T: PartialEq,
 {
-    fn define(&mut self, root: RootId, value: T) -> u64 {
+    fn define(&mut self, root: RootId, value: T, current_revision: u64) -> u64 {
         self.ensure(root);
         let slot = &mut self.slots[root.as_u32() as usize];
         let next = ProjectionState::Defined(value);
-        if !slot.state.same_state(&next) {
-            slot.state = next;
-            slot.revision += 1;
+        let changed = !slot.state.same_state(&next);
+        slot.state = next;
+        if changed {
+            current_revision + 1
+        } else {
+            current_revision
         }
-        slot.revision
     }
 
     fn get(&self, root: RootId) -> Option<&T> {
@@ -670,7 +672,6 @@ where
         if self.slots.len() < needed {
             self.slots.resize_with(needed, || ProjectionSlot {
                 state: ProjectionState::Placeholder,
-                revision: 0,
             });
         }
     }

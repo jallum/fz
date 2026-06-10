@@ -26,14 +26,13 @@ use super::super::body::{
     LoweredEntry, LoweredExtern, LoweredStep, LoweredTail, ReceiveAfter, ReceiveClause, ValueId,
 };
 use super::super::drive::{FactKey, Job, JobEffects};
-use super::super::facts::FactValue;
 use super::super::identity::{FunctionDef, FunctionId};
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::scheduler::FatalError;
 use super::super::world::World;
 use super::dispatch::{collect_guard_calls_in_expr, resolve_guard_callee, resolve_guard_callee_checked};
 
-type Output = (FactKey, FactValue);
+type Output = (FactKey, u64);
 
 #[derive(Debug, Clone)]
 struct ExprClause {
@@ -289,7 +288,7 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
     let mut lowerer = Lowerer::new(world, function, &def);
     let (body, mut outputs) = lowerer.lower()?;
     let revision = lowerer.world.define_lowered_body(function, body);
-    outputs.push((FactKey::LoweredBody(function), FactValue::presence(revision)));
+    outputs.push((FactKey::LoweredBody(function), revision));
     Ok(JobEffects {
         reads,
         outputs,
@@ -1620,8 +1619,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         let (function, revision) =
             self.world
                 .define_generated_function(self.owner, self.namespace, capture_params, surface);
-        self.generated
-            .push((FactKey::FunctionDefined(function), FactValue::presence(revision)));
+        self.generated.push((FactKey::FunctionDefined(function), revision));
         self.generated_ids.push(function);
 
         let captures = captures.into_iter().collect::<Vec<_>>();

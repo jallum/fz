@@ -43,25 +43,19 @@ pub(crate) struct ProtocolDispatch {
     pub(crate) arms: Vec<ProtocolDispatchArm>,
 }
 
-#[derive(Debug, Clone)]
-struct Revisioned<T> {
-    value: T,
-    revision: u64,
-}
-
 #[derive(Debug, Default)]
 pub(crate) struct ProtocolCallbackMap {
-    slots: HashMap<FunctionId, Revisioned<ProtocolCallback>>,
+    slots: HashMap<FunctionId, ProtocolCallback>,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct ProtocolImplMap {
-    slots: HashMap<ProtocolImplKey, Revisioned<ProtocolImpl>>,
+    slots: HashMap<ProtocolImplKey, ProtocolImpl>,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct ProtocolDispatchMap {
-    slots: HashMap<ModuleId, Revisioned<ProtocolDispatch>>,
+    slots: HashMap<ModuleId, ProtocolDispatch>,
 }
 
 impl ProtocolCallbackMap {
@@ -69,30 +63,12 @@ impl ProtocolCallbackMap {
         Self::default()
     }
 
-    pub(crate) fn define(&mut self, function: FunctionId, callback: ProtocolCallback) -> u64 {
-        match self.slots.get_mut(&function) {
-            Some(slot) => {
-                if slot.value != callback {
-                    slot.value = callback;
-                    slot.revision += 1;
-                }
-                slot.revision
-            }
-            None => {
-                self.slots.insert(
-                    function,
-                    Revisioned {
-                        value: callback,
-                        revision: 1,
-                    },
-                );
-                1
-            }
-        }
+    pub(crate) fn define(&mut self, function: FunctionId, callback: ProtocolCallback) {
+        self.slots.insert(function, callback);
     }
 
     pub(crate) fn get(&self, function: FunctionId) -> Option<ProtocolCallback> {
-        self.slots.get(&function).map(|slot| slot.value)
+        self.slots.get(&function).copied()
     }
 }
 
@@ -101,30 +77,12 @@ impl ProtocolImplMap {
         Self::default()
     }
 
-    pub(crate) fn define(&mut self, key: ProtocolImplKey, protocol_impl: ProtocolImpl) -> u64 {
-        match self.slots.get_mut(&key) {
-            Some(slot) => {
-                if slot.value != protocol_impl {
-                    slot.value = protocol_impl;
-                    slot.revision += 1;
-                }
-                slot.revision
-            }
-            None => {
-                self.slots.insert(
-                    key,
-                    Revisioned {
-                        value: protocol_impl,
-                        revision: 1,
-                    },
-                );
-                1
-            }
-        }
+    pub(crate) fn define(&mut self, key: ProtocolImplKey, protocol_impl: ProtocolImpl) {
+        self.slots.insert(key, protocol_impl);
     }
 
     pub(crate) fn impl_for(&self, key: &ProtocolImplKey) -> Option<&ProtocolImpl> {
-        self.slots.get(key).map(|slot| &slot.value)
+        self.slots.get(key)
     }
 
     pub(crate) fn impls_for_protocol(
@@ -133,7 +91,7 @@ impl ProtocolImplMap {
     ) -> impl Iterator<Item = (&ProtocolImplKey, &ProtocolImpl)> {
         self.slots
             .iter()
-            .filter_map(move |(key, slot)| (key.protocol == protocol).then_some((key, &slot.value)))
+            .filter_map(move |(key, value)| (key.protocol == protocol).then_some((key, value)))
     }
 }
 
@@ -142,29 +100,17 @@ impl ProtocolDispatchMap {
         Self::default()
     }
 
-    pub(crate) fn define(&mut self, protocol: ModuleId, dispatch: ProtocolDispatch) -> u64 {
-        match self.slots.get_mut(&protocol) {
-            Some(slot) => {
-                if slot.value != dispatch {
-                    slot.value = dispatch;
-                    slot.revision += 1;
-                }
-                slot.revision
-            }
-            None => {
-                self.slots.insert(
-                    protocol,
-                    Revisioned {
-                        value: dispatch,
-                        revision: 1,
-                    },
-                );
-                1
-            }
+    pub(crate) fn define(&mut self, protocol: ModuleId, dispatch: ProtocolDispatch, current_revision: u64) -> u64 {
+        let changed = self.slots.get(&protocol) != Some(&dispatch);
+        self.slots.insert(protocol, dispatch);
+        if changed {
+            current_revision + 1
+        } else {
+            current_revision
         }
     }
 
     pub(crate) fn get(&self, protocol: ModuleId) -> Option<&ProtocolDispatch> {
-        self.slots.get(&protocol).map(|slot| &slot.value)
+        self.slots.get(&protocol)
     }
 }

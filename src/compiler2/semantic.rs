@@ -54,9 +54,7 @@ pub struct DependencySnapshot {
 #[derive(Debug, Clone)]
 pub struct ActivationSlot {
     return_ty: Option<Ty>,
-    return_revision: u64,
     analysis: Option<ActivationAnalysis>,
-    analysis_revision: u64,
 }
 
 #[derive(Debug, Default)]
@@ -66,25 +64,18 @@ pub struct ActivationMap {
 
 #[derive(Debug, Default)]
 pub struct CallSiteMap {
-    slots: HashMap<CallSiteKey, Revisioned<CallSiteSummary>>,
+    slots: HashMap<CallSiteKey, CallSiteSummary>,
 }
 
 #[derive(Debug, Clone)]
 pub struct SemanticClosureSlot {
     closure: SemanticClosure,
     dependencies: DependencySnapshot,
-    revision: u64,
 }
 
 #[derive(Debug, Default)]
 pub struct SemanticClosureMap {
     slots: Vec<Option<SemanticClosureSlot>>,
-}
-
-#[derive(Debug, Clone)]
-struct Revisioned<T> {
-    value: T,
-    revision: u64,
 }
 
 impl ActivationMap {
@@ -96,35 +87,50 @@ impl ActivationMap {
         self.slots.get(key)
     }
 
-    pub fn define_return(&mut self, types: &mut Types, key: &ActivationKey, return_ty: Ty) -> u64 {
+    pub fn define_return(
+        &mut self,
+        types: &mut Types,
+        key: &ActivationKey,
+        return_ty: Ty,
+        current_revision: u64,
+    ) -> u64 {
         let slot = self.slots.entry(key.clone()).or_insert_with(ActivationSlot::new);
-        match &slot.return_ty {
+        let changed = match &slot.return_ty {
             Some(current) => {
                 let next = if current == &return_ty {
                     *current
                 } else {
                     types.refine_widen(current, &return_ty)
                 };
-                if &next != current {
+                let changed = &next != current;
+                if changed {
                     slot.return_ty = Some(next);
-                    slot.return_revision += 1;
                 }
+                changed
             }
             None => {
                 slot.return_ty = Some(return_ty);
-                slot.return_revision += 1;
+                true
             }
+        };
+        if changed {
+            current_revision + 1
+        } else {
+            current_revision
         }
-        slot.return_revision
     }
 
-    pub fn define_analysis(&mut self, key: &ActivationKey, analysis: ActivationAnalysis) -> u64 {
+    pub fn define_analysis(&mut self, key: &ActivationKey, analysis: ActivationAnalysis, current_revision: u64) -> u64 {
         let slot = self.slots.entry(key.clone()).or_insert_with(ActivationSlot::new);
-        if slot.analysis.as_ref() != Some(&analysis) {
+        let changed = slot.analysis.as_ref() != Some(&analysis);
+        if changed {
             slot.analysis = Some(analysis);
-            slot.analysis_revision += 1;
         }
-        slot.analysis_revision
+        if changed {
+            current_revision + 1
+        } else {
+            current_revision
+        }
     }
 }
 
@@ -132,14 +138,8 @@ impl ActivationSlot {
     fn new() -> Self {
         Self {
             return_ty: None,
-            return_revision: 0,
             analysis: None,
-            analysis_revision: 0,
         }
-    }
-
-    pub fn return_revision(&self) -> u64 {
-        self.return_revision
     }
 
     pub fn return_ty(&self) -> Option<&Ty> {
@@ -149,10 +149,6 @@ impl ActivationSlot {
     pub fn analysis(&self) -> Option<&ActivationAnalysis> {
         self.analysis.as_ref()
     }
-
-    pub fn analysis_revision(&self) -> u64 {
-        self.analysis_revision
-    }
 }
 
 impl CallSiteMap {
@@ -160,34 +156,18 @@ impl CallSiteMap {
         Self::default()
     }
 
-    pub fn define(&mut self, key: CallSiteKey, summary: CallSiteSummary) -> u64 {
-        match self.slots.get_mut(&key) {
-            Some(slot) => {
-                if slot.value != summary {
-                    slot.revision += 1;
-                }
-                slot.value = summary;
-                slot.revision
-            }
-            None => {
-                self.slots.insert(
-                    key,
-                    Revisioned {
-                        value: summary,
-                        revision: 1,
-                    },
-                );
-                1
-            }
+    pub fn define(&mut self, key: CallSiteKey, summary: CallSiteSummary, current_revision: u64) -> u64 {
+        let changed = self.slots.get(&key) != Some(&summary);
+        self.slots.insert(key, summary);
+        if changed {
+            current_revision + 1
+        } else {
+            current_revision
         }
     }
 
     pub fn get(&self, key: &CallSiteKey) -> Option<&CallSiteSummary> {
-        self.slots.get(key).map(|slot| &slot.value)
-    }
-
-    pub fn revision(&self, key: &CallSiteKey) -> Option<u64> {
-        self.slots.get(key).map(|slot| slot.revision)
+        self.slots.get(key)
     }
 }
 
@@ -216,20 +196,23 @@ impl SemanticClosureMap {
         Self::default()
     }
 
-    pub fn define(&mut self, root: RootId, closure: SemanticClosure, dependencies: DependencySnapshot) -> u64 {
+    pub fn define(
+        &mut self,
+        root: RootId,
+        closure: SemanticClosure,
+        dependencies: DependencySnapshot,
+        current_revision: u64,
+    ) -> u64 {
         self.ensure(root);
         let slot = &mut self.slots[root.as_u32() as usize];
-        let revision = match slot {
-            Some(existing) if existing.closure == closure && existing.dependencies == dependencies => existing.revision,
-            Some(existing) => existing.revision + 1,
-            None => 1,
-        };
-        *slot = Some(SemanticClosureSlot {
-            closure,
-            dependencies,
-            revision,
-        });
-        revision
+        let changed =
+            !matches!(slot, Some(existing) if existing.closure == closure && existing.dependencies == dependencies);
+        *slot = Some(SemanticClosureSlot { closure, dependencies });
+        if changed {
+            current_revision + 1
+        } else {
+            current_revision
+        }
     }
 
     pub fn get(&self, root: RootId) -> Option<&SemanticClosure> {
@@ -242,12 +225,6 @@ impl SemanticClosureMap {
         self.slots
             .get(root.as_u32() as usize)
             .and_then(|slot| slot.as_ref().map(|slot| &slot.dependencies))
-    }
-
-    pub fn revision(&self, root: RootId) -> Option<u64> {
-        self.slots
-            .get(root.as_u32() as usize)
-            .and_then(|slot| slot.as_ref().map(|slot| slot.revision))
     }
 
     fn ensure(&mut self, root: RootId) {

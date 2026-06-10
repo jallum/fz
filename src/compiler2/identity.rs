@@ -83,13 +83,11 @@ pub struct RootEntry {
 #[derive(Debug, Clone)]
 pub struct Root {
     pub entry: RootEntry,
-    pub revision: u64,
 }
 
 #[derive(Debug, Clone)]
 pub struct Module {
     pub(crate) state: ModuleState,
-    pub(crate) revision: u64,
 }
 
 impl Module {
@@ -182,7 +180,6 @@ pub struct ModuleExport {
 #[derive(Debug, Clone)]
 pub struct Function {
     pub state: FunctionState,
-    pub revision: u64,
 }
 
 impl Function {
@@ -210,7 +207,6 @@ pub enum FunctionState {
 #[derive(Debug, Clone)]
 pub struct FunctionSourceSlot {
     pub state: FunctionSourceState,
-    pub revision: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -303,13 +299,13 @@ impl FunctionSourceMap {
         Self::default()
     }
 
-    pub fn note(&mut self, id: FunctionId, source: FunctionSource) -> u64 {
+    pub fn note(&mut self, id: FunctionId, source: FunctionSource, current_revision: u64) -> u64 {
         self.ensure_slot(id);
         let slot = &mut self.slots[id.0 as usize];
         let next = FunctionSourceState::Noted {
             source: Box::new(source),
         };
-        replace_if_changed(&mut slot.state, &mut slot.revision, next)
+        update_if_changed(&mut slot.state, current_revision, next)
     }
 
     pub fn get(&self, id: FunctionId) -> Option<&FunctionSourceSlot> {
@@ -323,7 +319,6 @@ impl FunctionSourceMap {
         }
         self.slots.resize_with(needed, || FunctionSourceSlot {
             state: FunctionSourceState::Placeholder,
-            revision: 0,
         });
     }
 }
@@ -341,7 +336,6 @@ impl ModuleMap {
                         exports: Vec::new(),
                     },
                 },
-                revision: 0,
             }],
             names: vec![None],
             by_name: HashMap::new(),
@@ -356,14 +350,20 @@ impl ModuleMap {
         let id = ModuleId(self.slots.len() as u32);
         self.slots.push(Module {
             state: ModuleState::Placeholder,
-            revision: 0,
         });
         self.names.push(Some(name.clone()));
         self.by_name.insert(name, id);
         id
     }
 
-    pub fn define(&mut self, id: ModuleId, code: CodeId, namespace: Namespace, exports: Vec<ModuleExport>) -> u64 {
+    pub fn define(
+        &mut self,
+        id: ModuleId,
+        code: CodeId,
+        namespace: Namespace,
+        exports: Vec<ModuleExport>,
+        current_revision: u64,
+    ) -> u64 {
         let module = &mut self.slots[id.0 as usize];
         let source = module.source().cloned().unwrap_or_else(|| ModuleSource::empty(code));
         let mut codes = module.codes().unwrap_or_else(|| vec![source.code]);
@@ -379,10 +379,10 @@ impl ModuleMap {
                 exports,
             },
         };
-        replace_if_changed(&mut module.state, &mut module.revision, next)
+        update_if_changed(&mut module.state, current_revision, next)
     }
 
-    pub fn scope(&mut self, id: ModuleId, base_namespace: Namespace) -> u64 {
+    pub fn scope(&mut self, id: ModuleId, base_namespace: Namespace, current_revision: u64) -> u64 {
         let module = self
             .slots
             .get_mut(id.0 as usize)
@@ -401,7 +401,7 @@ impl ModuleMap {
                 base: base_namespace,
             }
         };
-        replace_if_changed(&mut module.state, &mut module.revision, next)
+        update_if_changed(&mut module.state, current_revision, next)
     }
 
     pub fn index_body(
@@ -412,6 +412,7 @@ impl ModuleMap {
         local_name: String,
         source: QuotedSourceRoot,
         surface: ScopeSurface,
+        current_revision: u64,
     ) -> u64 {
         let module = &mut self.slots[id.0 as usize];
         let next = ModuleState::Indexed(ModuleSource {
@@ -421,7 +422,7 @@ impl ModuleMap {
             source,
             kind: ModuleSourceKind::Body(surface),
         });
-        replace_if_changed(&mut module.state, &mut module.revision, next)
+        update_if_changed(&mut module.state, current_revision, next)
     }
 
     pub fn index_protocol(
@@ -432,6 +433,7 @@ impl ModuleMap {
         local_name: String,
         source: QuotedSourceRoot,
         surface: ScopeSurface,
+        current_revision: u64,
     ) -> u64 {
         let module = &mut self.slots[id.0 as usize];
         let next = ModuleState::Indexed(ModuleSource {
@@ -441,7 +443,7 @@ impl ModuleMap {
             source,
             kind: ModuleSourceKind::Protocol(surface),
         });
-        replace_if_changed(&mut module.state, &mut module.revision, next)
+        update_if_changed(&mut module.state, current_revision, next)
     }
 
     pub fn define_anonymous(&mut self, code: CodeId, namespace: Namespace) -> ModuleId {
@@ -456,7 +458,6 @@ impl ModuleMap {
                     exports: Vec::new(),
                 },
             },
-            revision: 1,
         });
         self.names.push(None);
         id
@@ -528,7 +529,6 @@ impl FunctionMap {
         let id = FunctionId(self.slots.len() as u32);
         self.slots.push(Function {
             state: FunctionState::Placeholder,
-            revision: 0,
         });
         self.refs.push(FunctionRef { module, name, arity });
         self.by_key.insert(key, id);
@@ -543,7 +543,6 @@ impl FunctionMap {
         let id = FunctionId(self.slots.len() as u32);
         self.slots.push(Function {
             state: FunctionState::Placeholder,
-            revision: 0,
         });
         self.refs.push(FunctionRef {
             module,
@@ -554,10 +553,10 @@ impl FunctionMap {
         id
     }
 
-    pub fn define(&mut self, id: FunctionId, def: FunctionDef) -> u64 {
+    pub fn define(&mut self, id: FunctionId, def: FunctionDef, current_revision: u64) -> u64 {
         let function = &mut self.slots[id.0 as usize];
         let next = FunctionState::Defined { def: Box::new(def) };
-        replace_if_changed(&mut function.state, &mut function.revision, next)
+        update_if_changed(&mut function.state, current_revision, next)
     }
 
     pub fn get(&self, id: FunctionId) -> &Function {
@@ -645,7 +644,7 @@ impl RootMap {
 
     pub fn define(&mut self, entry: RootEntry) -> RootId {
         let id = RootId(self.slots.len() as u32);
-        self.slots.push(Root { entry, revision: 1 });
+        self.slots.push(Root { entry });
         id
     }
 
@@ -678,15 +677,14 @@ fn monotonic<T>(current: Option<&T>, incoming: T, revision: u64, same: impl Fn(&
     (incoming, revision)
 }
 
-fn replace_if_changed<T: Reconcile>(state: &mut T, revision: &mut u64, next: T) -> u64 {
-    let (value, next_revision) = T::reconcile(Some(state), next, *revision);
+fn update_if_changed<T: Reconcile>(state: &mut T, current_revision: u64, next: T) -> u64 {
+    let (value, new_revision) = T::reconcile(Some(state), next, current_revision);
     // Always store the fresh value; advance the revision only when the fact's
     // horizon deems it changed. A module's body-only edit keeps its revision put
     // but still refreshes the stored source for the per-function facts that
     // re-derive from it.
     *state = value;
-    *revision = next_revision;
-    *revision
+    new_revision
 }
 
 impl Reconcile for ModuleState {

@@ -4,9 +4,9 @@ use crate::compiler2::artifact::{NativeBodyOrigin, NativeEntryAbi, NativeProgram
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
     AbiReadyProgram, AbiValueRepr, ActivationKey, BackendProgram, CallSiteId, CallSiteKey, CallSiteSummary,
-    CallableEntry, ControlEntryOrigin, EmissionReadyProgram, ExecutableKey, FactKey, FactValue, FunctionId,
-    FunctionRef, LoweredBody, LoweredStep, LoweredTail, MaterializedProgram, Module, ModuleId, ReturnAbi,
-    SelectedCallee, SemanticClosure, Ty, TypeName, TypeVarId, Types, ValueId,
+    CallableEntry, ControlEntryOrigin, EmissionReadyProgram, ExecutableKey, FactKey, FunctionId, FunctionRef,
+    LoweredBody, LoweredStep, LoweredTail, MaterializedProgram, Module, ModuleId, ReturnAbi, SelectedCallee,
+    SemanticClosure, Ty, TypeName, TypeVarId, Types, ValueId,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
@@ -25,7 +25,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-type OutputFacts = Vec<(FactKey, FactValue)>;
+type OutputFacts = Vec<(FactKey, u64)>;
 type JobOutputMap = Rc<RefCell<HashMap<Job, Vec<OutputFacts>>>>;
 type AppliedSteps = Rc<RefCell<Vec<AppliedStep<Job, FactKey>>>>;
 type EntryDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternDispatchPlan<Ty>>>>>;
@@ -59,8 +59,8 @@ fn assert_no_legacy_planner_or_type_infer(capture: &Capture, context: &str) {
     );
 }
 
-fn presence(fact: FactKey, revision: u64) -> (FactKey, FactValue) {
-    (fact, FactValue::presence(revision))
+fn presence(fact: FactKey, revision: u64) -> (FactKey, u64) {
+    (fact, revision)
 }
 
 #[test]

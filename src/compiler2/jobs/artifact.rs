@@ -23,7 +23,6 @@ use super::super::body::{
     LoweredTail, ValueId,
 };
 use super::super::drive::{FactKey, Job, JobEffects};
-use super::super::facts::FactValue;
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, SelectedCallee};
@@ -116,7 +115,7 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
     let changed = world.fact_would_change(materialized_fact.clone(), revision);
     Ok(JobEffects {
         reads,
-        outputs: vec![(materialized_fact, FactValue::presence(revision))],
+        outputs: vec![(materialized_fact, revision)],
         follow_up: changed.then_some(Job::DeriveAbiReady(root_id)).into_iter().collect(),
         ..JobEffects::default()
     })
@@ -170,7 +169,7 @@ pub(super) fn derive_abi_ready(world: &mut World<'_>, root_id: RootId) -> Result
     let changed = world.fact_would_change(abi_ready_fact.clone(), revision);
     Ok(JobEffects {
         reads,
-        outputs: vec![(abi_ready_fact, FactValue::presence(revision))],
+        outputs: vec![(abi_ready_fact, revision)],
         follow_up: changed
             .then_some(Job::DeriveEmissionReady(root_id))
             .into_iter()
@@ -269,7 +268,7 @@ pub(super) fn derive_emission_ready(world: &mut World<'_>, root_id: RootId) -> R
     let changed = world.fact_would_change(emission_ready_fact.clone(), revision);
     Ok(JobEffects {
         reads,
-        outputs: vec![(emission_ready_fact, FactValue::presence(revision))],
+        outputs: vec![(emission_ready_fact, revision)],
         follow_up: changed
             .then_some(Job::LowerBackendProgram(root_id))
             .into_iter()

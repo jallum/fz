@@ -15,7 +15,6 @@ impl CodeId {
 #[derive(Debug, Clone)]
 pub struct Code {
     pub(crate) state: CodeState,
-    pub(crate) revision: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -50,24 +49,22 @@ impl CodeMap {
         let id = CodeId(self.slots.len() as u32);
         self.slots.push(Code {
             state: CodeState::Pending,
-            revision: 0,
         });
         self.names.push(name);
         self.texts.push(text);
         id
     }
 
-    pub fn index(&mut self, id: CodeId, source: QuotedCodeSource) -> u64 {
+    pub fn index(&mut self, id: CodeId, source: QuotedCodeSource, current_revision: u64) -> u64 {
         let code = &mut self.slots[id.0 as usize];
         let next = CodeState::Indexed { source };
-        // Always store the freshly parsed source: a body-only edit leaves the
-        // surface (CodeIndexed) revision put, but the new bodies must still
-        // reach the per-function facts that re-derive from this source.
-        if !same_code_state(&code.state, &next) {
-            code.revision += 1;
-        }
+        let changed = !same_code_state(&code.state, &next);
         code.state = next;
-        code.revision
+        if changed {
+            current_revision + 1
+        } else {
+            current_revision
+        }
     }
 
     pub fn get(&self, id: CodeId) -> &Code {

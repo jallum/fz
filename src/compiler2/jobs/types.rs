@@ -11,7 +11,6 @@ use crate::diag::codes;
 use crate::diag::driver::emit_through;
 
 use super::super::drive::{FactKey, Job, JobEffects};
-use super::super::facts::FactValue;
 use super::super::identity::TypeName;
 use super::super::scheduler::FatalError;
 use super::super::world::World;
@@ -20,7 +19,7 @@ pub(super) fn derive_type_def(world: &mut World<'_>, name: &TypeName) -> Result<
     if let Some(def) = world.protocol_domain_type_def(name) {
         let revision = world.define_type_def(name.clone(), def);
         return Ok(JobEffects {
-            outputs: vec![(FactKey::TypeDefined(name.clone()), FactValue::presence(revision))],
+            outputs: vec![(FactKey::TypeDefined(name.clone()), revision)],
             ..JobEffects::default()
         });
     }
@@ -73,7 +72,7 @@ pub(super) fn derive_type_def(world: &mut World<'_>, name: &TypeName) -> Result<
     let revision = world.define_type_def(name.clone(), def);
     Ok(JobEffects {
         reads,
-        outputs: vec![(FactKey::TypeDefined(name.clone()), FactValue::presence(revision))],
+        outputs: vec![(FactKey::TypeDefined(name.clone()), revision)],
         ..JobEffects::default()
     })
 }

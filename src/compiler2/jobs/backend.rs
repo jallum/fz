@@ -24,7 +24,6 @@ use super::super::body::{
     LoweredTail, ValueId,
 };
 use super::super::drive::{FactKey, Job, JobEffects};
-use super::super::facts::FactValue;
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::super::scheduler::FatalError;
 use super::super::types::Ty;
@@ -75,7 +74,7 @@ pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> R
     let changed = world.fact_would_change(backend_fact.clone(), revision);
     Ok(JobEffects {
         reads: vec![emission_ready_fact],
-        outputs: vec![(backend_fact, FactValue::presence(revision))],
+        outputs: vec![(backend_fact, revision)],
         follow_up: changed
             .then_some(Job::LowerNativeProgram(root_id))
             .into_iter()

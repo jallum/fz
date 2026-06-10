@@ -33,7 +33,6 @@ use super::super::artifact::{
 };
 use super::super::body::{ControlDestination, ControlEntryId, Literal, LoweredExtern, ValueId};
 use super::super::drive::{FactKey, Job, JobEffects};
-use super::super::facts::FactValue;
 use super::super::identity::{FunctionId, RootId};
 use super::super::scheduler::FatalError;
 use super::super::types::Ty;
@@ -86,7 +85,7 @@ pub(super) fn lower_native_program(world: &mut World<'_>, root_id: RootId) -> Re
     let revision = world.define_native_program(root_id, program);
     Ok(JobEffects {
         reads: vec![backend_fact],
-        outputs: vec![(FactKey::NativeProgram(root_id), FactValue::presence(revision))],
+        outputs: vec![(FactKey::NativeProgram(root_id), revision)],
         ..JobEffects::default()
     })
 }

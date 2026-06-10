@@ -19,11 +19,10 @@ use super::super::body::{
 };
 use super::super::contract::FunctionContract;
 use super::super::drive::{FactKey, Job, JobEffects};
-use super::super::facts::FactValue;
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, ModuleId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallSiteSummary, SelectedCallee};
-use super::super::types::{ClosureTarget, Ty, Types};
+use super::super::types::{ClosureTarget, Ty};
 use super::super::world::World;
 
 type DispatchPlan = PatternDispatchPlan<Ty>;
@@ -139,30 +138,23 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
 
     for call in &analysis_calls {
         let revision = world.define_callsite_summary(call.key.clone(), call.summary.clone());
-        outputs.push((
-            FactKey::CallSiteSummary(call.key.clone()),
-            FactValue::presence(revision),
-        ));
+        outputs.push((FactKey::CallSiteSummary(call.key.clone()), revision));
         for callee_activation in &call.activations {
-            outputs.push((
-                FactKey::Activation(callee_activation.key.clone()),
-                FactValue::inputs(world.types_mut(), callee_activation.key.input.clone()),
-            ));
+            // An activation fact is fully determined by its key (the
+            // canonical inputs live there), so once present it never changes.
+            outputs.push((FactKey::Activation(callee_activation.key.clone()), 1));
             if !callee_activation.already_present {
                 follow_up.insert(Job::AnalyzeActivation(callee_activation.key.clone()));
             }
             follow_up.insert(Job::SealSemanticClosure(activation.root));
         }
         for executable in &call.latent_executables {
-            outputs.push((FactKey::Executable(executable.clone()), FactValue::presence(1)));
+            outputs.push((FactKey::Executable(executable.clone()), 1));
         }
     }
 
     let return_revision = world.define_activation_return(activation, return_ty);
-    outputs.push((
-        FactKey::ReturnType(activation.clone()),
-        FactValue::presence(return_revision),
-    ));
+    outputs.push((FactKey::ReturnType(activation.clone()), return_revision));
 
     let analysis_revision = world.define_activation_analysis(
         activation,
@@ -181,15 +173,12 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
             value_types,
         },
     );
-    outputs.push((
-        FactKey::ActivationAnalyzed(activation.clone()),
-        FactValue::presence(analysis_revision),
-    ));
+    outputs.push((FactKey::ActivationAnalyzed(activation.clone()), analysis_revision));
 
     follow_up.insert(Job::SealSemanticClosure(activation.root));
     Ok(JobEffects {
         reads,
-        outputs: dedupe_outputs(world.types_mut(), outputs),
+        outputs: dedupe_outputs(outputs),
         follow_up: follow_up.into_iter().collect(),
         ..JobEffects::default()
     })
@@ -1841,17 +1830,15 @@ fn unop_ty(world: &mut World<'_>, op: UnOp, input: Ty) -> Ty {
     }
 }
 
-fn dedupe_outputs(types: &mut Types, outputs: Vec<(FactKey, FactValue)>) -> Vec<(FactKey, FactValue)> {
-    let mut deduped: HashMap<FactKey, FactValue> = HashMap::new();
-    for (fact, value) in outputs {
+/// One body can demand the same callee activation from several call sites;
+/// those duplicates are the same fact — we take the highest revision among them.
+fn dedupe_outputs(outputs: Vec<(FactKey, u64)>) -> Vec<(FactKey, u64)> {
+    let mut deduped: HashMap<FactKey, u64> = HashMap::new();
+    for (fact, revision) in outputs {
         deduped
             .entry(fact)
-            .and_modify(|current| {
-                let joined = FactValue::join(types, [&*current, &value])
-                    .expect("deduping one current value with one new value should produce a value");
-                *current = joined;
-            })
-            .or_insert(value);
+            .and_modify(|r| *r = (*r).max(revision))
+            .or_insert(revision);
     }
     deduped.into_iter().collect()
 }

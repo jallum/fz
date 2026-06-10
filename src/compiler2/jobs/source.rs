@@ -21,15 +21,14 @@ use super::super::scheduler::FatalError;
 use super::super::scope::ScopeSnapshot;
 use super::super::type_expr::{NominalKind, TypeDefBody, TypeExpr, parse_type_def_body, parse_type_expr};
 use super::super::world::World;
-use super::super::{FactValue, FunctionSource, QuotedCodeSource, parse_quoted_program};
+use super::super::{FunctionSource, QuotedCodeSource, parse_quoted_program};
 
-type Output = (FactKey, FactValue);
+type Output = (FactKey, u64);
 type Outputs = Vec<Output>;
 
 enum ScopeResult {
     Complete {
         namespace: Namespace,
-        revision_floor: u64,
         reads: Vec<FactKey>,
         outputs: Outputs,
         exports: Vec<ModuleExport>,
@@ -62,7 +61,7 @@ pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
     discover_modules(world, code_id, ModuleId::GLOBAL, &surface, &ctx, &mut outputs)?;
 
     let code_revision = world.finish_code_index(code_id, quoted);
-    outputs.push((FactKey::CodeIndexed(code_id), FactValue::presence(code_revision)));
+    outputs.push((FactKey::CodeIndexed(code_id), code_revision));
 
     Ok(JobEffects {
         outputs,
@@ -109,10 +108,7 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
                 world.set_prelude_head(namespace);
             }
             reads.extend(scope_reads);
-            outputs.push((
-                FactKey::CodeScoped(code_id),
-                FactValue::presence(world.code_revision(code_id)),
-            ));
+            outputs.push((FactKey::CodeScoped(code_id), world.code_revision(code_id)));
             Ok(JobEffects {
                 reads,
                 outputs,
@@ -139,13 +135,12 @@ pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Resul
         return match result {
             ScopeResult::Complete {
                 namespace,
-                revision_floor,
                 reads,
                 mut outputs,
                 exports,
             } => {
-                let revision = world.define_module(module_id, namespace, exports).max(revision_floor);
-                outputs.push((FactKey::ModuleDefined(module_id), FactValue::presence(revision)));
+                let revision = world.define_module(module_id, namespace, exports);
+                outputs.push((FactKey::ModuleDefined(module_id), revision));
                 Ok(JobEffects {
                     reads,
                     outputs,
@@ -293,7 +288,6 @@ fn define_scope(
     let mut reads = Vec::new();
     let mut function_plans = Vec::new();
     let mut protocol_outputs = Vec::new();
-    let mut revision_floor = 0;
     for form in &surface.forms {
         match form {
             ScopeForm::Alias(alias) => {
@@ -366,10 +360,9 @@ fn define_scope(
                 world.scope_module(protocol_id, scope);
             }
             ScopeForm::ProtocolImpl(protocol_impl) => {
-                let (mut outputs, revision) =
+                let mut outputs =
                     define_protocol_impl(world, code_id, current_module, scope, &local_protocols, protocol_impl)?;
                 protocol_outputs.append(&mut outputs);
-                revision_floor = revision_floor.max(revision);
             }
             ScopeForm::Require(_) | ScopeForm::Struct(_) | ScopeForm::MacroCall(_) => {}
         }
@@ -388,7 +381,6 @@ fn define_scope(
 
     Ok(ScopeResult::Complete {
         namespace: scope,
-        revision_floor,
         reads,
         outputs,
         exports,
@@ -426,10 +418,7 @@ fn index_function(
             NamespaceSymbol::Function(function_id)
         },
     });
-    Ok((
-        (FactKey::FunctionSource(function_id), FactValue::presence(revision)),
-        export,
-    ))
+    Ok(((FactKey::FunctionSource(function_id), revision), export))
 }
 
 /// Walks a parsed type expression, recording each name that resolves to a type
@@ -573,7 +562,7 @@ pub(super) fn define_function(
     );
     Ok(JobEffects {
         reads: vec![FactKey::FunctionSource(function_id)],
-        outputs: vec![(FactKey::FunctionDefined(function_id), FactValue::presence(revision))],
+        outputs: vec![(FactKey::FunctionDefined(function_id), revision)],
         ..JobEffects::default()
     })
 }
@@ -606,13 +595,12 @@ fn define_protocol_surface(
     let mut outputs = world.refresh_protocol_domain_facts(module_id);
     outputs.push(world.refresh_protocol_dispatch_fact(module_id));
     let mut exports = Vec::new();
-    let mut revision_floor = 0;
     for form in &surface.forms {
         let ScopeForm::Function(callback) = form else {
             continue;
         };
         let function = world.reference_function(module_id, callback.name.clone(), callback.arity);
-        revision_floor = revision_floor.max(world.define_protocol_callback(function, module_id));
+        world.define_protocol_callback(function, module_id);
         let symbol = NamespaceSymbol::Function(function);
         scope = world.bind_namespace(scope, callback.name.clone(), symbol.clone());
         exports.push(ModuleExport {
@@ -624,7 +612,6 @@ fn define_protocol_surface(
     }
     ScopeResult::Complete {
         namespace: scope,
-        revision_floor,
         reads: Vec::new(),
         outputs,
         exports,
@@ -654,7 +641,7 @@ fn define_protocol_impl(
     namespace: Namespace,
     local_protocols: &HashSet<String>,
     protocol_impl: &ProtocolImplForm,
-) -> Result<(Outputs, u64), FatalError> {
+) -> Result<Outputs, FatalError> {
     let protocol = reference_impl_protocol_module(world, current_module, &protocol_impl.protocol, local_protocols);
     let target = reference_impl_target_module(world, current_module, &protocol_impl.target);
     let impl_module = reference_protocol_impl_module(world, protocol, target);
@@ -711,7 +698,7 @@ fn define_protocol_impl(
                 source: function.source.clone(),
             },
         );
-        outputs.push((FactKey::FunctionSource(function_id), FactValue::presence(revision)));
+        outputs.push((FactKey::FunctionSource(function_id), revision));
         callbacks.insert(
             (function.name.clone(), function.arity),
             ProtocolCallbackImpl {
@@ -720,10 +707,10 @@ fn define_protocol_impl(
             },
         );
     }
-    let revision = world.define_protocol_impl(protocol, target, callbacks);
+    world.define_protocol_impl(protocol, target, callbacks);
     outputs.extend(world.refresh_protocol_domain_facts(protocol));
     outputs.push(world.refresh_protocol_dispatch_fact(protocol));
-    Ok((outputs, revision))
+    Ok(outputs)
 }
 
 fn emit_job_diagnostic(world: &World<'_>, diagnostic: Diagnostic) -> FatalError {
@@ -771,7 +758,7 @@ fn discover_modules(
                     module.source.clone(),
                     nested.clone(),
                 );
-                outputs.push((FactKey::ModuleIndexed(module_id), FactValue::presence(revision)));
+                outputs.push((FactKey::ModuleIndexed(module_id), revision));
                 discover_modules(world, code_id, module_id, &nested, ctx, outputs)?;
             }
             ScopeForm::Protocol(protocol) => {
@@ -787,7 +774,7 @@ fn discover_modules(
                     protocol.source.clone(),
                     protocol_surface,
                 );
-                outputs.push((FactKey::ModuleIndexed(module_id), FactValue::presence(revision)));
+                outputs.push((FactKey::ModuleIndexed(module_id), revision));
             }
             _ => {}
         }

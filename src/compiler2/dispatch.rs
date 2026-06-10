@@ -12,7 +12,6 @@ use super::types::Ty;
 #[derive(Debug, Clone)]
 pub(crate) struct DispatchSlot<T> {
     state: DispatchState<T>,
-    pub(crate) revision: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -37,15 +36,17 @@ where
         Self { slots: Vec::new() }
     }
 
-    pub(crate) fn define(&mut self, id: FunctionId, value: T) -> u64 {
+    pub(crate) fn define(&mut self, id: FunctionId, value: T, current_revision: u64) -> u64 {
         self.ensure(id);
         let slot = &mut self.slots[id.as_u32() as usize];
         let next = DispatchState::Defined(value);
-        if !slot.state.same_state(&next) {
-            slot.state = next;
-            slot.revision += 1;
+        let changed = !slot.state.same_state(&next);
+        slot.state = next;
+        if changed {
+            current_revision + 1
+        } else {
+            current_revision
         }
-        slot.revision
     }
 
     pub(crate) fn get(&self, id: FunctionId) -> Option<&T> {
@@ -60,7 +61,6 @@ where
         if self.slots.len() < needed {
             self.slots.resize_with(needed, || DispatchSlot {
                 state: DispatchState::Placeholder,
-                revision: 0,
             });
         }
     }

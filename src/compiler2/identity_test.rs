@@ -53,19 +53,18 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
 
     let math_ref = modules.reference_named("Math");
     let math_def = math_ref;
-    let math_revision = modules.define(math_def, code_id, namespace, Vec::new());
+    let math_revision = modules.define(math_def, code_id, namespace, Vec::new(), 0);
     assert_eq!(
         math_ref, math_def,
         "module definition should fill the referenced placeholder"
     );
-    let same_math_revision = modules.define(math_def, code_id, namespace, Vec::new());
+    let same_math_revision = modules.define(math_def, code_id, namespace, Vec::new(), math_revision);
     assert_eq!(
         same_math_revision, math_revision,
         "replaying the same module definition should not bump the revision"
     );
     assert_eq!(modules.name(math_def), Some("Math"));
     let module = modules.get(math_def);
-    assert_eq!(module.revision, math_revision);
     match &module.state {
         ModuleState::Defined { surface, .. } => {
             assert_eq!(surface.codes, vec![code_id]);
@@ -83,6 +82,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         "Scoped".to_string(),
         scoped_source.clone(),
         empty_scope_surface(),
+        0,
     );
     let same_indexed_revision = modules.index_body(
         scoped_ref,
@@ -91,13 +91,14 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         "Scoped".to_string(),
         scoped_source,
         empty_scope_surface(),
+        indexed_revision,
     );
     assert_eq!(
         same_indexed_revision, indexed_revision,
         "replaying the same module index should not bump the revision"
     );
-    let scoped_revision = modules.scope(scoped_ref, namespace);
-    let same_scoped_revision = modules.scope(scoped_ref, namespace);
+    let scoped_revision = modules.scope(scoped_ref, namespace, 0);
+    let same_scoped_revision = modules.scope(scoped_ref, namespace, scoped_revision);
     assert_eq!(
         same_scoped_revision, scoped_revision,
         "replaying the same module scope should not bump the revision"
@@ -117,6 +118,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
             source: add_source.clone(),
             surface: add_ast.clone(),
         },
+        0,
     );
     let same_add_revision = functions.define(
         add_def,
@@ -128,6 +130,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
             source: add_source,
             surface: add_ast.clone(),
         },
+        add_revision,
     );
     assert_eq!(
         same_add_revision, add_revision,
@@ -158,7 +161,6 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         "generated function identity should be stable per owner and source site"
     );
     let function = functions.get(add_def);
-    assert_eq!(function.revision, add_revision);
     match &function.state {
         FunctionState::Defined { def } => {
             assert_eq!(def.code, code_id);
@@ -179,6 +181,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
             quoted: code_source.clone(),
             surface: empty_scope_surface(),
         },
+        0,
     );
     let same_indexed_code_revision = code.index(
         code_id,
@@ -186,6 +189,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
             quoted: code_source,
             surface: empty_scope_surface(),
         },
+        indexed_code_revision,
     );
     assert_eq!(
         same_indexed_code_revision, indexed_code_revision,
@@ -220,6 +224,7 @@ fn compiler2_code_index_revisions_ignore_quoted_heap_identity_when_semantics_mat
             quoted: first,
             surface: empty_scope_surface(),
         },
+        0,
     );
     let second_revision = code.index(
         code_id,
@@ -227,6 +232,7 @@ fn compiler2_code_index_revisions_ignore_quoted_heap_identity_when_semantics_mat
             quoted: second,
             surface: empty_scope_surface(),
         },
+        first_revision,
     );
 
     assert_eq!(
@@ -263,6 +269,7 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
             source: first,
             surface: def_ast.clone(),
         },
+        0,
     );
     let second_revision = functions.define(
         function,
@@ -274,6 +281,7 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
             source: second,
             surface: def_ast.clone(),
         },
+        first_revision,
     );
     let third_revision = functions.define(
         function,
@@ -285,6 +293,7 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
             source: third,
             surface: def_ast,
         },
+        second_revision,
     );
 
     assert_eq!(
