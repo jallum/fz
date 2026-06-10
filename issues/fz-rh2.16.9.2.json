@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-10T15:38:35Z",
+  "description": "Rewire ScopeCode/source expansion/import-require macro waits so they depend on the compile-time macro backend fact only, not on a macro's participation in the runtime root graph. The core signal is that expanding a defmacro cannot republish the same macro's own FunctionSource/FunctionDefined in a self-sustaining loop. Signal: the item-macro/source-publication traces settle; macro executable/backend revisions do not churn stable macro source facts; local and remote macro expansion tests pass with fixed-point telemetry.",
+  "id": "fz-rh2.16.9.2",
+  "labels": [],
+  "parent": "fz-rh2.16.9",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 macro expansion: depend only on compile-time macro readiness and recover a fixed point",
+  "type": "task",
+  "updated_at": "2026-06-10T15:38:35Z"
+}
