@@ -2,14 +2,16 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-10T07:00:51Z",
+  "close_reason": "done",
   "created": "2026-06-10T06:49:35Z",
   "description": "While adding fz2 fixture-matrix paths in fz-rh2.11.6, case_tuple_pattern_sequential could not be used as the fz2 case/with representative because old fz paths emit expected type/no-matching-clause warnings for partial case/with, while fz2/compiler2 currently emits no diagnostics. Keep case_tuple_pattern_sequential as the old diagnostic oracle and use case_with_total for fz2 parity now. Follow-up goal: make compiler2 source/body analysis emit the same warning facts/diagnostics for partial case and with clauses, then consider adding fz2-* paths back to the partial diagnostic fixture.",
   "id": "fz-rh2.11.8",
   "labels": [],
   "parent": "fz-rh2.11",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 diagnostics: emit type/no-matching-clause for partial case/with",
   "type": "bug",
-  "updated_at": "2026-06-10T06:51:15Z"
+  "updated_at": "2026-06-10T07:00:51Z"
 }
