@@ -8,7 +8,7 @@
     "fz-rh2.16.8.5"
   ],
   "created": "2026-06-10T12:05:22Z",
-  "description": "Goal: expansion decides what quoted source exists, publication decides what facts that source defines. Signal: source sugar rewrites, recursive macro expansion, require/import macro readiness, and item/function-body expansion live behind one explicit expander API; publication consumes already-expanded roots/surfaces and no longer mixes tree rewriting with scope mutation logic. Strategy: extract the expansion walk out of source_publish, reuse it for item-level and function-level expansion, preserve fact-graph blocking semantics, and leave publication with reserve/apply responsibilities only.",
+  "description": "Goal: expansion decides what top-level quoted source exists, while publication decides what scope-tier facts that source defines. Ordinary function-body expansion is no longer part of this layer. Signal: source sugar rewrites, require/import macro readiness, and item-level expansion live behind one explicit expander API; publication consumes already-expanded scope fragments and no longer mixes tree rewriting with scope mutation logic; ordinary function-body expansion happens on function demand, not during scope publication. Strategy: extract the item/scope expansion walk out of source_publish after the function-staging epic, reuse it for item-level expansion and surface fragments, preserve fact-graph blocking semantics, and leave publication with reserve/apply responsibilities only.",
   "id": "fz-rh2.16.8.2",
   "labels": [],
   "parent": "fz-rh2.16.8",
@@ -16,5 +16,5 @@
   "status": "open",
   "title": "Compiler2 source expansion: split quoted root rewriting from fact publication",
   "type": "task",
-  "updated_at": "2026-06-10T12:05:35Z"
+  "updated_at": "2026-06-10T17:49:15Z"
 }
