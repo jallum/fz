@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-10T08:05:17Z",
+  "description": "Goal: make the fz2 fixture matrix, not ad hoc CLI probes, the authoritative cutover oracle for replacing the old fz surface.\n\nGrounding: fz-rh2.9 found that backend/type-name/native seams are no longer blockers, but fixture parity above the seam is incomplete. As of 2026-06-10, 14 fixtures declare fz2 paths, quicksort is telemetry-only, an ad hoc fz2 run/interp sweep passed both paths for 88 fixtures, found 9 no-fail mismatches, and found 21 fixtures with fz2 failures.\n\nStrategy: promote passing fixtures into matrix coverage in batches, decide fz2-specific goldens where outputs legitimately differ, fix real source/artifact/runtime gaps, and only then file old-compiler deletion tickets.\n\nSignal: every agreed source/contract fixture is either represented by fz2-run/fz2-interp/fz2-build matrix paths or explicitly documented out of scope; old fz scrap tickets remain blocked until that is true.",
+  "id": "fz-rh2.16",
+  "labels": [],
+  "parent": "fz-rh2",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 cutover parity: make fz2 fixture matrix the migration oracle",
+  "type": "epic",
+  "updated_at": "2026-06-10T08:05:17Z"
+}
