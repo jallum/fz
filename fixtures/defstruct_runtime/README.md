@@ -1,6 +1,6 @@
 ---
 purpose: "source defstruct construction and field access works for named structs"
-paths: [jit, interp, aot, repl]
+paths: [jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build]
 ---
 
 # defstruct runtime

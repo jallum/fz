@@ -1,0 +1,20 @@
+fn f(v) do
+  case v do
+    {:ok, x} -> x
+    :err -> 0
+    _ -> -1
+  end
+end
+
+fn g(v) do
+  with {:ok, x} <- v do
+    x
+  else
+    :err -> 0
+    _ -> -1
+  end
+end
+
+fn main() do
+  dbg({f({:ok, 7}), f(:err), f(:other), g({:ok, 8}), g(:err), g(:other)})
+end
