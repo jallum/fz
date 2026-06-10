@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-10T08:05:46Z",
+  "description": "Blocked until the agreed fixture surface is covered by fz2 matrix paths or explicitly declared out of scope, and until fz-rh2.15 removes the remaining legacy extern semantic payload substrate.\n\nOnly after that, identify old-world modules, docs, tests, and CLI fallback surfaces that can be deleted. No deletion tickets should be filed before the coverage decision is factual.\n\nSignal: a deletion DAG with one ticket per removable subsystem, each backed by fz2 matrix coverage or explicit out-of-scope documentation.",
+  "id": "fz-rh2.16.6",
+  "labels": [],
+  "parent": "fz-rh2.16",
+  "priority": 2,
+  "status": "open",
+  "title": "Plan old fz compiler deletion after fz2 fixture contract coverage",
+  "type": "task",
+  "updated_at": "2026-06-10T08:05:46Z"
+}
