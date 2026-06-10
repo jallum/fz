@@ -164,6 +164,9 @@ adapter. Compiler2 consumes the same resolved contract model after
 Protocol callbacks and module interfaces store ordered spec lists so overloaded
 public contracts survive interface collection and fingerprinting (see
 [`protocols`](protocols.md)).
+Module interface dumps and fingerprint inputs include the explicit interface ABI
+version (`abi=1`), so future interface-format changes have a visible compatibility
+boundary.
 
 ## Tests
 

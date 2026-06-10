@@ -237,12 +237,123 @@ fn declare_callable_entry_fns<M: cranelift_module::Module>(
     Ok(callable_entry_fn_ids)
 }
 
+#[derive(Default)]
+struct CallableReturnAdapters {
+    raw_int: Option<FuncId>,
+    raw_f64: Option<FuncId>,
+    raw_atom: Option<FuncId>,
+}
+
+impl CallableReturnAdapters {
+    fn id_for(&self, repr: ArgRepr) -> Option<FuncId> {
+        match repr {
+            ArgRepr::ValueRef => None,
+            ArgRepr::RawInt => self.raw_int,
+            ArgRepr::RawF64 => self.raw_f64,
+            ArgRepr::RawAtom => self.raw_atom,
+            ArgRepr::Condition => unreachable!("condition is never a callable return ABI"),
+        }
+    }
+
+    fn entries(&self) -> impl Iterator<Item = (ArgRepr, FuncId)> {
+        [
+            (ArgRepr::RawInt, self.raw_int),
+            (ArgRepr::RawF64, self.raw_f64),
+            (ArgRepr::RawAtom, self.raw_atom),
+        ]
+        .into_iter()
+        .filter_map(|(repr, id)| id.map(|id| (repr, id)))
+    }
+}
+
+fn build_callable_return_adapter_signature(repr: ArgRepr) -> Signature {
+    let mut sig = Signature::new(CallConv::Tail);
+    push_repr_param(&mut sig, repr);
+    sig.params.push(AbiParam::new(types::I64)); // self
+    sig.returns.push(AbiParam::new(types::I64));
+    sig
+}
+
+fn declare_callable_return_adapters<M: cranelift_module::Module>(
+    m: &mut M,
+    surface: &NativeCodegenSurface<'_>,
+) -> Result<CallableReturnAdapters, CodegenError> {
+    let mut adapters = CallableReturnAdapters::default();
+    for &body_sid in surface.callable_entries.keys() {
+        match surface.return_reprs[body_sid as usize] {
+            ArgRepr::ValueRef => {}
+            ArgRepr::RawInt if adapters.raw_int.is_none() => {
+                adapters.raw_int = Some(declare_callable_return_adapter(m, ArgRepr::RawInt)?);
+            }
+            ArgRepr::RawF64 if adapters.raw_f64.is_none() => {
+                adapters.raw_f64 = Some(declare_callable_return_adapter(m, ArgRepr::RawF64)?);
+            }
+            ArgRepr::RawAtom if adapters.raw_atom.is_none() => {
+                adapters.raw_atom = Some(declare_callable_return_adapter(m, ArgRepr::RawAtom)?);
+            }
+            ArgRepr::RawInt | ArgRepr::RawF64 | ArgRepr::RawAtom => {}
+            ArgRepr::Condition => unreachable!("condition is never a callable return ABI"),
+        }
+    }
+    Ok(adapters)
+}
+
+fn declare_callable_return_adapter<M: cranelift_module::Module>(
+    m: &mut M,
+    repr: ArgRepr,
+) -> Result<FuncId, CodegenError> {
+    let sig = build_callable_return_adapter_signature(repr);
+    let name = format!("fz_callable_return_{}_to_any", repr.as_str());
+    m.declare_function(&name, Linkage::Local, &sig)
+        .map_err(|e| CodegenError::new(format!("declare {name}: {e}")))
+}
+
+fn emit_callable_return_adapter_bodies<M: cranelift_module::Module>(
+    m: &mut M,
+    fbctx: &mut FunctionBuilderContext,
+    runtime: &RuntimeRefs,
+    adapters: &CallableReturnAdapters,
+) -> Result<(), CodegenError> {
+    for (repr, adapter_id) in adapters.entries() {
+        let sig = build_callable_return_adapter_signature(repr);
+        let name = format!("callable_return_{}_to_any", repr.as_str());
+        emit_fn_body(m, fbctx, sig, adapter_id, |m, b| {
+            let entry = b.create_block();
+            b.append_block_params_for_function_params(entry);
+            b.switch_to_block(entry);
+            b.seal_block(entry);
+            let params = b.block_params(entry).to_vec();
+            let raw_value = params[0];
+            let self_value = params[1];
+            let mut shim_cache = CodegenCache::default();
+            let mut cg = CodegenFn::for_runtime_shim(runtime, b, m, &mut shim_cache);
+            let value_ref = match repr {
+                ArgRepr::RawInt => cg.box_int_for_any(raw_value),
+                ArgRepr::RawF64 => cg.box_float_for_any(raw_value),
+                ArgRepr::RawAtom => cg.box_atom_for_any(raw_value),
+                ArgRepr::ValueRef | ArgRepr::Condition => unreachable!("adapter only exists for raw callable returns"),
+            };
+            let outer_cont = cg.closure_capture_ref_at(self_value, 0);
+            let code = cg.closure_code_ref(outer_cont);
+            let mut cont_sig = Signature::new(CallConv::Tail);
+            push_repr_param(&mut cont_sig, ArgRepr::ValueRef);
+            cont_sig.params.push(AbiParam::new(types::I64));
+            cont_sig.returns.push(AbiParam::new(types::I64));
+            let sig_ref = cg.b.func.import_signature(cont_sig);
+            cg.b.ins().return_call_indirect(sig_ref, code, &[value_ref, outer_cont]);
+        })
+        .map_err(|e| CodegenError::new(format!("define {name}: {e}")))?;
+    }
+    Ok(())
+}
+
 fn emit_callable_entry_bodies<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
     runtime: &RuntimeRefs,
     fn_ids: &HashMap<u32, FuncId>,
     callable_entry_fn_ids: &HashMap<u32, FuncId>,
+    return_adapters: &CallableReturnAdapters,
     surface: &NativeCodegenSurface<'_>,
     tel: &dyn Telemetry,
     module_path: &str,
@@ -256,6 +367,17 @@ fn emit_callable_entry_bodies<M: cranelift_module::Module>(
             .ok_or_else(|| CodegenError::new(format!("missing callable-entry FuncId for spec {body_sid}")))?;
         let reprs = &surface.param_reprs[body_sid as usize];
         let arg_reprs = &reprs[entry.capture_count..];
+        let return_repr = surface.return_reprs[body_sid as usize];
+        let return_adapter_id = if return_repr == ArgRepr::ValueRef {
+            None
+        } else {
+            Some(return_adapters.id_for(return_repr).ok_or_else(|| {
+                CodegenError::new(format!(
+                    "missing callable return adapter for spec {body_sid} return {}",
+                    return_repr.as_str()
+                ))
+            })?)
+        };
         let sig = build_callable_entry_signature(arg_reprs.len());
         let entry_name = format!("callable_entry_s{body_sid}");
         tel.execute(
@@ -287,8 +409,20 @@ fn emit_callable_entry_bodies<M: cranelift_module::Module>(
                 let binding = CodegenValue::AnyRef(params[idx]);
                 cg.push_binding_as_abi_arg(&mut direct_args, binding, repr);
             }
+            let target_cont = if let Some(adapter_id) = return_adapter_id {
+                let adapter_addr = cg.func_addr(adapter_id);
+                let adapter_schema = cg.b.ins().iconst(types::I32, 0);
+                let captured_count = cg.b.ins().iconst(types::I32, 1);
+                let halt_kind = cg.b.ins().iconst(types::I32, 0);
+                let adapter_cont = cg.alloc_closure(adapter_schema, captured_count, halt_kind, adapter_addr);
+                let outer_cont = cg.materialize_cont(cont_value);
+                cg.store_closure_capture_ref_word(adapter_cont, 0, outer_cont);
+                adapter_cont
+            } else {
+                cont_value
+            };
             direct_args.push(self_value);
-            direct_args.push(cont_value);
+            direct_args.push(target_cont);
             cg.b.ins().return_call(body_fref, &direct_args);
         })
         .map_err(|e| CodegenError::new(format!("define {entry_name}: {e}")))?;
@@ -1094,6 +1228,7 @@ pub(crate) fn compile_with_backend_surface<
     let linkage = backend.fn_linkage();
     let fn_ids = declare_spec_fns(backend.module_mut(), linkage, body_slots, &fn_sigs)?;
     let callable_entry_fn_ids = declare_callable_entry_fns(backend.module_mut(), surface)?;
+    let callable_return_adapters = declare_callable_return_adapters(backend.module_mut(), surface)?;
 
     let (mid_flight_cont_fn_ids, mid_flight_cont_tail_fn_ids) =
         declare_mid_flight_conts(backend.module_mut(), surface)?;
@@ -1251,12 +1386,14 @@ pub(crate) fn compile_with_backend_surface<
         &mid_flight_cont_fn_ids,
         &mid_flight_cont_tail_fn_ids,
     )?;
+    emit_callable_return_adapter_bodies(backend.module_mut(), &mut fbctx, &runtime, &callable_return_adapters)?;
     emit_callable_entry_bodies(
         backend.module_mut(),
         &mut fbctx,
         &runtime,
         &fn_ids,
         &callable_entry_fn_ids,
+        &callable_return_adapters,
         surface,
         tel,
         module.module_path(),

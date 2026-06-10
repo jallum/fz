@@ -903,8 +903,10 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         "native closure call referenced an unbound argument",
                     )
                 })?;
-                let target_fn = self.executable_fns[*target];
-                ctx.closure_call_targets.insert(ctx.current_block, target_fn);
+                if let Some(target) = target {
+                    let target_fn = self.executable_fns[*target];
+                    ctx.closure_call_targets.insert(ctx.current_block, target_fn);
+                }
                 match dest {
                     ControlDestination::Return => {
                         ctx.set_term(Term::TailCallClosure {

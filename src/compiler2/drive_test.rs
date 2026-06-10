@@ -2170,6 +2170,190 @@ fn compiler2_abi_ready_derives_only_the_closed_enum_reduce_callable_entries() {
 }
 
 #[test]
+fn compiler2_abi_ready_keeps_returned_suspend_continuation_callable_entry() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    let abi_ready = AbiReadyProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "abi_ready_program", "defined"],
+        abi_ready.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/enum_reduce_suspend_callable_frontier.fz".to_string()),
+        text: r#"
+fn main() do
+  Enumerable.reduce([1, 2, 3], {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "returned suspend continuations should be closed before ABI-ready callable inventory is derived",
+    );
+
+    let list_reduce_id = function_id_in_module(&functions, &modules, "List", "reduce", 3);
+    let continuation_id = generated_functions_owned_by(&functions, list_reduce_id)
+        .into_iter()
+        .find(|record| record.arity == 0)
+        .expect("List.reduce suspend branch should generate a zero-arity continuation")
+        .function_id;
+
+    let program = abi_ready.last(root_id).program;
+    let continuation_entries = abi_ready_callable_entries(&program, continuation_id);
+    assert!(
+        continuation_entries.iter().all(|entry| entry.capture_count == 3),
+        "the suspend continuation captures the list, accumulator, and reducer"
+    );
+    assert!(
+        continuation_entries
+            .iter()
+            .all(|entry| entry.target.need == ExecutableNeed::Value),
+        "callable entries should target value-return executables"
+    );
+    assert!(
+        continuation_entries
+            .iter()
+            .all(|entry| program.executables.contains_key(&entry.target)),
+        "returned continuation callable-entry targets must already exist in the closed executable frontier",
+    );
+}
+
+#[test]
+fn compiler2_abi_ready_matches_callable_entries_by_canonical_activation_key() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let abi_ready = AbiReadyProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "abi_ready_program", "defined"],
+        abi_ready.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/callable_canonical_capture_frontier.fz".to_string()),
+        text: r#"
+fn reduce_plain([], acc, _reducer), do: acc
+fn reduce_plain([head | tail], acc, reducer), do: reduce_plain(tail, reducer.(head, acc), reducer)
+
+fn main() do
+  predicate = fn x -> x > 2 end
+  reducer = fn (entry, acc) ->
+    if predicate.(entry), do: acc + 1, else: acc
+  end
+
+  reduce_plain([1, 2, 3, 4], 0, reducer)
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "callable entries should resolve through canonical activation keys, not raw capture Ty ids",
+    );
+
+    let main_id = function_id(&functions, "main", 0);
+    let reducer_id = generated_functions_owned_by(&functions, main_id)
+        .into_iter()
+        .find(|record| record.arity == 2)
+        .expect("main should generate the captured reducer closure")
+        .function_id;
+
+    let program = abi_ready.last(root_id).program;
+    let reducer_entries = abi_ready_callable_entries(&program, reducer_id);
+    assert!(
+        reducer_entries.iter().all(|entry| entry.capture_count == 1),
+        "the reducer callable captures the predicate closure"
+    );
+    assert!(
+        reducer_entries
+            .iter()
+            .all(|entry| program.executables.contains_key(&entry.target)),
+        "captured callable-entry targets must resolve to canonical executable keys in the closed frontier",
+    );
+}
+
+#[test]
+fn compiler2_abi_ready_does_not_publish_unused_callable_constructors() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let abi_ready = AbiReadyProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "abi_ready_program", "defined"],
+        abi_ready.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/unused_callable_constructor_frontier.fz".to_string()),
+        text: r#"
+fn ignore(_fun), do: 0
+
+fn main() do
+  fun = fn x -> x + 1 end
+  ignore(fun)
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "constructing and passing a callable should not publish its executable unless a call or escape demands it",
+    );
+
+    let main_id = function_id(&functions, "main", 0);
+    let lambda_id = generated_functions_owned_by(&functions, main_id)
+        .into_iter()
+        .next()
+        .expect("main should generate the unused closure body")
+        .function_id;
+
+    let program = abi_ready.last(root_id).program;
+    assert!(
+        program
+            .callable_entries
+            .iter()
+            .all(|entry| entry.target.activation.function != lambda_id),
+        "callable constructors should not create callable-entry inventory without a demand site",
+    );
+    assert!(
+        program
+            .executables
+            .keys()
+            .all(|key| key.activation.function != lambda_id),
+        "the unused closure body should stay outside the closed executable frontier",
+    );
+}
+
+#[test]
 fn compiler2_materialization_projects_variadic_extern_signatures_and_callsite_marshals() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -2724,9 +2908,10 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
                 program.executables[*callee].key.activation.function, qsort_id,
                 "backend direct-call steps should point at settled executable inventory indices",
             );
-            assert!(
-                args.iter().all(|arg| arg.callable_entries.is_empty()),
-                "the main/0 quicksort call should not carry callable-boundary obligations",
+            assert_eq!(
+                args.len(),
+                1,
+                "the main/0 quicksort call should carry one plain argument"
             );
         }
         other => panic!("expected backend direct-call step to qsort/1, got {other:?}"),
@@ -2797,19 +2982,12 @@ fn compiler2_backend_program_attaches_the_closed_enum_reduce_callable_boundaries
         "the backend callable-entry inventory should keep exactly the user reducer and bridge reducer entries",
     );
 
-    let used_entries = backend_callable_entry_uses(&program);
-    let expected_entries = program
-        .callable_entries
-        .iter()
-        .enumerate()
-        .filter_map(|(index, entry)| {
+    assert!(
+        program.callable_entries.iter().all(|entry| {
             let function = program.executables[entry.target].key.activation.function;
-            matches!(function, id if id == user_reducer_id || id == bridge_reducer_id).then_some(index)
-        })
-        .collect::<HashSet<_>>();
-    assert_eq!(
-        used_entries, expected_entries,
-        "backend call arguments should carry exactly the callable-entry obligations that survive the closed Enum.reduce path",
+            function == user_reducer_id || function == bridge_reducer_id
+        }),
+        "backend callable-entry inventory should be the single source of callable dispatch obligations",
     );
 }
 
@@ -2873,9 +3051,10 @@ fn compiler2_backend_program_preserves_variadic_extern_wire_classes() {
                 Some(&[ExternTy::CString, ExternTy::I64, ExternTy::I64][..]),
                 "backend direct-call steps should carry the exact settled C wire classes for a variadic extern site",
             );
-            assert!(
-                args.iter().all(|arg| arg.callable_entries.is_empty()),
-                "plain variadic extern arguments should not carry callable-entry obligations",
+            assert_eq!(
+                args.len(),
+                3,
+                "plain variadic extern calls should carry every source value argument without callable side-channel obligations"
             );
         }
         other => panic!("expected backend direct-call step to libc::open/2, got {other:?}"),
@@ -3101,6 +3280,65 @@ fn compiler2_native_program_keeps_the_closed_enum_reduce_callable_entries() {
     assert_eq!(
         used_entries, expected_entries,
         "native callable constructors should point at exactly the callable-entry obligations that survive the closed Enum.reduce path",
+    );
+}
+
+#[test]
+fn compiler2_native_program_joins_callable_resume_before_materializing_closure_call() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/opaque_fn_value_join/input.fz".to_string()),
+        text: include_str!("../../fixtures/opaque_fn_value_join/input.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!("opaque joined function values should settle before native lowering: {outcome:?}; diagnostic={message}");
+    }
+
+    let add_a_id = function_id(&functions, "add_a", 2);
+    let add_b_id = function_id(&functions, "add_b", 2);
+    let program = native.last(root_id).program;
+    let callable_functions = program
+        .callable_entries
+        .iter()
+        .map(|entry| entry.target.activation.function)
+        .collect::<HashSet<_>>();
+    assert!(
+        callable_functions.contains(&add_a_id) && callable_functions.contains(&add_b_id),
+        "native callable inventory should include both concrete functions flowing through the case join",
+    );
+
+    let branch_entry_targets = program
+        .callable_entries
+        .iter()
+        .filter_map(|entry| {
+            matches!(entry.target.activation.function, id if id == add_a_id || id == add_b_id)
+                .then_some(entry.target_fn.0 as usize)
+        })
+        .collect::<HashSet<_>>();
+    let constructor_targets = native_callable_constructor_uses(&program);
+    assert!(
+        branch_entry_targets.is_subset(&constructor_targets),
+        "native constructors for both case branches should resolve to callable-entry candidates",
     );
 }
 
@@ -7554,21 +7792,6 @@ fn backend_direct_call_in_entry<'a>(
     }
 }
 
-fn backend_callable_entry_uses(program: &BackendProgram) -> HashSet<usize> {
-    let mut out = HashSet::new();
-    for executable in &program.executables {
-        match &executable.body {
-            crate::compiler2::BackendBody::Extern { .. } => {}
-            crate::compiler2::BackendBody::Clauses { clauses, entries, .. } => {
-                for clause in clauses {
-                    collect_backend_callable_entry_uses(entries, clause.entry, &mut out);
-                }
-            }
-        }
-    }
-    out
-}
-
 fn native_executable_functions(program: &NativeProgram) -> HashSet<FunctionId> {
     program
         .bodies
@@ -7875,42 +8098,6 @@ fn native_callsite_ids_match(left: &IrCallsiteId, right: &IrCallsiteId) -> bool 
 
 fn native_callsite_idents_match(left: &CallsiteIdent, right: &CallsiteIdent) -> bool {
     left.span() == right.span()
-}
-
-fn collect_backend_callable_entry_uses(
-    entries: &[BackendEntry],
-    entry_id: crate::compiler2::ControlEntryId,
-    out: &mut HashSet<usize>,
-) {
-    let entry = &entries[entry_id.as_u32() as usize];
-    match &entry.tail {
-        BackendTail::DirectCall { args, .. } | BackendTail::ClosureCall { args, .. } => {
-            for arg in args {
-                out.extend(arg.callable_entries.iter().copied());
-            }
-        }
-        BackendTail::If {
-            then_entry, else_entry, ..
-        } => {
-            collect_backend_callable_entry_uses(entries, *then_entry, out);
-            collect_backend_callable_entry_uses(entries, *else_entry, out);
-        }
-        BackendTail::Dispatch { dispatch, .. } => {
-            for arm_entry in &dispatch.arm_entries {
-                collect_backend_callable_entry_uses(entries, *arm_entry, out);
-            }
-            collect_backend_callable_entry_uses(entries, dispatch.miss_entry, out);
-        }
-        BackendTail::Receive(receive) => {
-            for clause in &receive.clauses {
-                collect_backend_callable_entry_uses(entries, clause.entry, out);
-            }
-            if let Some(after) = &receive.after {
-                collect_backend_callable_entry_uses(entries, after.entry, out);
-            }
-        }
-        BackendTail::Value { .. } | BackendTail::Halt { .. } => {}
-    }
 }
 
 fn direct_call_in_body(body: LoweredBody, callee: FunctionId) -> (CallSiteId, ValueId) {

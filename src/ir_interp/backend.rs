@@ -553,8 +553,20 @@ fn eval_entry(
             dest,
             ..
         } => {
-            let mut call_args = closure_captures(runtime.cur_proc(), env_get(&env, *callee)?)?;
-            call_args.extend(eval_call_args(&env, args)?);
+            let callee_value = env_get(&env, *callee)?;
+            let (fn_id, captures) = match callee_value {
+                AnyValue::FnRef(fn_id) => (fn_id, Vec::new()),
+                other => unpack_closure(other.value(runtime.cur_proc())?)?,
+            };
+            let arg_values = eval_call_args(&env, args)?;
+            let executable_target = match target {
+                Some(target) => *target,
+                None => {
+                    resolve_backend_callable_executable(runtime, types, module, program, fn_id, &captures, &arg_values)?
+                }
+            };
+            let mut call_args = captures;
+            call_args.extend(arg_values);
             let continuations = match dest {
                 ControlDestination::Return => continuations,
                 ControlDestination::Deliver(target) => {
@@ -567,7 +579,16 @@ fn eval_entry(
                     continuations
                 }
             };
-            run_backend_executable(runtime, types, tel, program, module, *target, call_args, continuations)
+            run_backend_executable(
+                runtime,
+                types,
+                tel,
+                program,
+                module,
+                executable_target,
+                call_args,
+                continuations,
+            )
         }
         BackendTail::If {
             cond,
@@ -1174,16 +1195,6 @@ fn make_closure(runtime: &mut IrInterpRuntime, code: u32, captures: Vec<AnyValue
     Ok(AnyValue::Ref(
         AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr).expect("backend closure ref"),
     ))
-}
-
-fn closure_captures(proc: *mut Process, value: AnyValue) -> Result<Vec<AnyValue>, String> {
-    match value {
-        AnyValue::FnRef(_) => Ok(Vec::new()),
-        other => {
-            let (_, captures) = unpack_closure(other.value(proc)?)?;
-            Ok(captures)
-        }
-    }
 }
 
 fn drain_pending_dtors_backend(

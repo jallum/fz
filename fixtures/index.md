@@ -75,7 +75,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `no_parens_call/` | no-parens calls (double 21; sum3 1, 2, 3) parse and run; output matches Elixir | jit, interp, aot, repl |
 | `no_parens_do/` | A do/end block on a no-parens call becomes a trailing do: keyword arg. | jit, interp, aot, repl |
 | `no_parens_keyword/` | trailing/leading keyword lists in no-parens calls parse into one list arg; output matches Elixir | jit, interp, aot, repl |
-| `opaque_fn_value_join/` | opaque join of zero-capture function values remains callable through Enum.reduce/3 | jit, interp, aot, repl |
+| `opaque_fn_value_join/` | opaque join of zero-capture function values remains callable through Enum.reduce/3 | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
 | `operator_sugars/` | operator desugaring rewrites ++, --, <>, .., and ..// to runtime-library calls | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
 | `pipe_headless_case/` | pipe macro rewrite for call RHS and headless case RHS | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
 | `polymorphic/` | parametric `id` exercised over int, atom, and bool | jit, interp, aot, repl |
@@ -95,7 +95,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `receive_shared_tuple_arity/` | selective receive with consecutive same-arity tuple clauses | jit, interp, aot, repl |
 | `refute_abort_message/` | a failed refute aborts with the caller's message on every path | jit, interp, aot, repl |
 | `relay/` | one-hop relay — spawned child blocks on receive before parent sends; exercises non-blocking spawn + receive-parks semantics | jit, interp, aot, repl |
-| `repr_seam_closure_predicate/` | Closure predicate results stay truth-preserving across native representation seams | jit, interp, aot, repl |
+| `repr_seam_closure_predicate/` | Closure predicate results stay truth-preserving across native representation seams | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
 | `repr_seam_enum_count_after_reduce2/` | Enum.count/2 remains correct after Enum.reduce/3 retains the same list | jit, interp, aot, repl |
 | `resource_aot_dtor/` | AOT-compiled binary fires user-supplied resource dtors at heap drop | aot, repl |
 | `resource_lifecycle/` | fz-swt.12 — resource lifecycle (make_resource + .value + dtor) is observably identical across interp, JIT, AOT | interp, repl |
@@ -109,7 +109,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `spec_ok/` | fz-ul4.31.6 — declared @spec matches inferred behavior; | jit, interp, aot, repl |
 | `spec_violation/` | a wrong @spec is rejected with a spec/violation diagnostic on every path | interp, jit, aot, repl |
 | `tail_recursion/` | 100k-deep self-recursion must TCO — exits cleanly with the accumulated count | jit, interp, aot, repl |
-| `tailcall_closure_captures/` | TailCallClosure with captured singleton closure-lit preserves narrow arg ABI through recursive HOF | jit, interp, aot, repl |
+| `tailcall_closure_captures/` | TailCallClosure with captured singleton closure-lit preserves narrow arg ABI through recursive HOF | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
 | `three_process_chain/` | two-hop process relay — main → first_relay → second_relay → main; exercises multi-process message chaining | jit, interp, aot, repl |
 | `tree/` | source-level tuple-tree traversal allocation baseline | jit, interp, aot, repl |
 | `type_dispatch/` | multi-clause fn dispatches on parameter type at runtime (fz-ty1.8/1.9) | interp, jit, aot, repl |

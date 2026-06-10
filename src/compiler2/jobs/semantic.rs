@@ -4,7 +4,7 @@
 //! dispatch, derives direct-call summaries, and settles per-activation return
 //! types without calling the legacy whole-program pipeline.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, hash_map::Entry};
 
 use crate::ast::{BinOp, UnOp};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
@@ -34,7 +34,7 @@ type RefinedCallSurface = (Vec<Ty>, Option<Ty>);
 #[derive(Debug, Clone)]
 struct CallEmission {
     key: CallSiteKey,
-    summary: CallSiteSummary,
+    summary: Option<CallSiteSummary>,
     activations: Vec<ActivationContribution>,
     latent_executables: Vec<super::super::identity::ExecutableKey>,
 }
@@ -43,6 +43,12 @@ struct CallEmission {
 struct ActivationContribution {
     key: ActivationKey,
     already_present: bool,
+}
+
+#[derive(Debug, Clone)]
+struct CoalescedCallEmission {
+    call: CallEmission,
+    observations: usize,
 }
 
 /// Analyzes one rooted function activation against its lowered body.
@@ -138,25 +144,79 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         });
     }
 
+    analysis_calls = coalesce_call_emissions(
+        world,
+        activation,
+        analysis_calls,
+        &mut reads,
+        &mut waits,
+        &mut follow_up,
+    )?;
+    if !waits.is_empty() {
+        return Ok(JobEffects {
+            reads,
+            waits: waits.into_iter().collect(),
+            follow_up: follow_up.into_iter().collect(),
+            ..JobEffects::default()
+        });
+    }
+
+    let covered_callable_activations = covered_callable_activations(&analysis_calls);
+    let latent_callable_activations = resolve_escaping_callable_activations_from_type(
+        world,
+        activation,
+        return_ty,
+        &covered_callable_activations,
+        &mut reads,
+        &mut waits,
+        &mut follow_up,
+    );
+    if !waits.is_empty() {
+        return Ok(JobEffects {
+            reads,
+            waits: waits.into_iter().collect(),
+            follow_up: follow_up.into_iter().collect(),
+            ..JobEffects::default()
+        });
+    }
+
+    let mut emitted_activations = HashSet::new();
+    let mut emitted_executables = HashSet::new();
     for call in &analysis_calls {
-        let changed = world.define_callsite_summary(call.key.clone(), call.summary.clone());
-        outputs.push((FactKey::CallSiteSummary(call.key.clone()), changed));
+        if let Some(summary) = &call.summary {
+            let revision = world.define_callsite_summary(call.key.clone(), summary.clone());
+            outputs.push((FactKey::CallSiteSummary(call.key.clone()), revision));
+        }
         for callee_activation in &call.activations {
             // An activation fact is fully determined by its key (the
             // canonical inputs live there), so once present it never changes.
-            outputs.push((FactKey::Activation(callee_activation.key.clone()), false));
+            if emitted_activations.insert(callee_activation.key.clone()) {
+                outputs.push((FactKey::Activation(callee_activation.key.clone()), 1));
+            }
             if !callee_activation.already_present {
                 follow_up.insert(Job::AnalyzeActivation(callee_activation.key.clone()));
             }
             follow_up.insert(Job::SealSemanticClosure(activation.root));
         }
         for executable in &call.latent_executables {
-            outputs.push((FactKey::Executable(executable.clone()), false));
+            if emitted_executables.insert(executable.clone()) {
+                outputs.push((FactKey::Executable(executable.clone()), 1));
+            }
         }
     }
 
-    let return_changed = world.define_activation_return(activation, return_ty);
-    outputs.push((FactKey::ReturnType(activation.clone()), return_changed));
+    for callable_activation in &latent_callable_activations {
+        if emitted_activations.insert(callable_activation.key.clone()) {
+            outputs.push((FactKey::Activation(callable_activation.key.clone()), 1));
+        }
+        if !callable_activation.already_present {
+            follow_up.insert(Job::AnalyzeActivation(callable_activation.key.clone()));
+        }
+        follow_up.insert(Job::SealSemanticClosure(activation.root));
+    }
+
+    let return_revision = world.define_activation_return(activation, return_ty);
+    outputs.push((FactKey::ReturnType(activation.clone()), return_revision));
 
     let analysis_changed = world.define_activation_analysis(
         activation,
@@ -167,10 +227,17 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
                 entries.sort_by_key(|entry| entry.as_u32());
                 entries
             },
-            callsites: analysis_calls.iter().map(|call| call.key.callsite).collect(),
+            callsites: analysis_calls
+                .iter()
+                .filter_map(|call| call.summary.as_ref().map(|_| call.key.callsite))
+                .collect(),
             latent_executables: analysis_calls
                 .iter()
                 .flat_map(|call| call.latent_executables.iter().cloned())
+                .chain(latent_callable_activations.iter().map(|activation| ExecutableKey {
+                    activation: activation.key.clone(),
+                    need: ExecutableNeed::Value,
+                }))
                 .collect(),
             value_types,
         },
@@ -719,7 +786,7 @@ fn resolve_direct_call(
                     activation: caller.clone(),
                     callsite,
                 },
-                summary,
+                summary: Some(summary),
                 activations: Vec::new(),
                 latent_executables: Vec::new(),
             }),
@@ -766,7 +833,7 @@ fn resolve_direct_call(
                 activation: caller.clone(),
                 callsite,
             },
-            summary,
+            summary: Some(summary),
             latent_executables,
             activations,
         }),
@@ -785,6 +852,170 @@ fn merge_value_types(world: &mut World<'_>, merged: &mut ValueTypes, observed: &
                 merged.insert(value, ty);
             }
         }
+    }
+}
+
+fn coalesce_call_emissions(
+    world: &mut World<'_>,
+    caller: &ActivationKey,
+    calls: Vec<CallEmission>,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Result<Vec<CallEmission>, FatalError> {
+    let mut order = Vec::new();
+    let mut grouped = HashMap::<CallSiteKey, CoalescedCallEmission>::new();
+    for call in calls {
+        match grouped.entry(call.key.clone()) {
+            Entry::Vacant(entry) => {
+                order.push(call.key.clone());
+                entry.insert(CoalescedCallEmission { call, observations: 1 });
+            }
+            Entry::Occupied(mut entry) => {
+                let grouped = entry.get_mut();
+                grouped.observations += 1;
+                merge_call_emission(world, &mut grouped.call, call)?;
+            }
+        }
+    }
+
+    let mut coalesced = Vec::with_capacity(order.len());
+    for key in order {
+        let grouped = grouped
+            .remove(&key)
+            .expect("callsite order should resolve to a coalesced call");
+        if grouped.observations == 1 {
+            coalesced.push(grouped.call);
+            continue;
+        }
+        coalesced.push(rebuild_coalesced_call_emission(
+            world,
+            caller,
+            grouped.call,
+            reads,
+            waits,
+            follow_up,
+        )?);
+    }
+    Ok(coalesced)
+}
+
+fn merge_call_emission(
+    world: &mut World<'_>,
+    current: &mut CallEmission,
+    observed: CallEmission,
+) -> Result<(), FatalError> {
+    match (&mut current.summary, observed.summary) {
+        (Some(current_summary), Some(observed_summary)) => {
+            if current_summary.callee != observed_summary.callee {
+                return Err(FatalError);
+            }
+            merge_call_input_vec(world, &mut current_summary.input_types, &observed_summary.input_types);
+            current_summary.return_ty = merge_observed_ty(world, current_summary.return_ty, observed_summary.return_ty);
+        }
+        (None, None) => {}
+        (Some(_), None) | (None, Some(_)) => return Err(FatalError),
+    }
+    current.activations.extend(observed.activations);
+    current.latent_executables.extend(observed.latent_executables);
+    Ok(())
+}
+
+fn rebuild_coalesced_call_emission(
+    world: &mut World<'_>,
+    caller: &ActivationKey,
+    call: CallEmission,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Result<CallEmission, FatalError> {
+    let Some(summary) = &call.summary else {
+        return Ok(call);
+    };
+    let SelectedCallee::Function(function) = summary.callee else {
+        return Ok(call);
+    };
+    let Some(mut rebuilt) = call_emission_for_function(
+        world,
+        caller,
+        call.key.clone(),
+        function,
+        summary.input_types.clone(),
+        reads,
+        waits,
+        follow_up,
+    )?
+    else {
+        return Ok(call);
+    };
+    // Keep latent callable-target activations discovered while analyzing each
+    // observed branch; rebuilding the merged direct callee does not rediscover
+    // all escaped callable bodies needed to close the frontier.
+    rebuilt.activations.extend(call.activations);
+    Ok(rebuilt)
+}
+
+fn call_emission_for_function(
+    world: &mut World<'_>,
+    caller: &ActivationKey,
+    key: CallSiteKey,
+    function: FunctionId,
+    input_types: Vec<Ty>,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Result<Option<CallEmission>, FatalError> {
+    let Some((input_types, contract_return_ty)) =
+        refine_function_call_surface(world, function, input_types, reads, waits, follow_up)?
+    else {
+        return Ok(None);
+    };
+    let Some((activation, already_present, return_ty)) =
+        prepare_function_call(world, caller, function, input_types.clone(), reads, waits, follow_up)
+    else {
+        return Ok(None);
+    };
+    let return_ty = refine_call_return(world, return_ty, contract_return_ty);
+    let mut activations = vec![ActivationContribution {
+        key: activation,
+        already_present,
+    }];
+    let runtime_activations = resolve_runtime_callable_boundary_activations(
+        world,
+        caller,
+        function,
+        input_types.as_slice(),
+        reads,
+        waits,
+        follow_up,
+    )?;
+    let latent_executables = runtime_activations
+        .iter()
+        .map(|activation| ExecutableKey {
+            activation: activation.key.clone(),
+            need: ExecutableNeed::Value,
+        })
+        .collect();
+    activations.extend(runtime_activations);
+    Ok(Some(CallEmission {
+        key,
+        summary: Some(CallSiteSummary {
+            callee: SelectedCallee::Function(function),
+            input_types,
+            return_ty,
+        }),
+        activations,
+        latent_executables,
+    }))
+}
+
+fn merge_observed_ty(world: &mut World<'_>, current: Ty, observed: Ty) -> Ty {
+    if world.types().is_empty(&current) {
+        observed
+    } else if world.types().is_empty(&observed) {
+        current
+    } else {
+        world.types_mut().union(current, observed)
     }
 }
 
@@ -953,9 +1184,11 @@ fn resolve_closure_call(
     let Some(clauses) = world.types_mut().callable_value_clauses(&callee_ty) else {
         return Ok((None, any_ty(world)));
     };
-    let mut selected_function = None;
-    let mut summary_inputs = None;
+    let mut selected_functions = Vec::new();
+    let mut singleton_summary_inputs = None;
     let mut activations = Vec::new();
+    let mut callable_target_executables = Vec::new();
+    let mut latent_executables = Vec::new();
     let mut return_ty = none_ty(world);
 
     for clause in clauses {
@@ -967,10 +1200,8 @@ fn resolve_closure_call(
         }
 
         let function = function_id_of_closure_target(closure.target);
-        match selected_function {
-            Some(current) if current != function => return Ok((None, any_ty(world))),
-            None => selected_function = Some(function),
-            Some(_) => {}
+        if !selected_functions.contains(&function) {
+            selected_functions.push(function);
         }
 
         let refined_args = refine_contract_inputs(world, arg_types.clone(), std::iter::once(clause.args.as_slice()));
@@ -978,6 +1209,15 @@ fn resolve_closure_call(
         inputs.extend(refined_args);
         let (summary, clause_activations, observed_return) =
             resolve_function_call(world, caller, function, inputs, reads, waits, follow_up)?;
+        for activation in &clause_activations {
+            let executable = ExecutableKey {
+                activation: activation.key.clone(),
+                need: ExecutableNeed::Value,
+            };
+            if !callable_target_executables.contains(&executable) {
+                callable_target_executables.push(executable);
+            }
+        }
         let clause_return = refine_call_return(world, observed_return, Some(clause.ret));
         return_ty = if world.types().is_empty(&return_ty) {
             clause_return
@@ -986,38 +1226,41 @@ fn resolve_closure_call(
         };
 
         if let Some(summary) = summary {
-            merge_call_inputs(world, &mut summary_inputs, &summary.input_types);
+            merge_call_inputs(world, &mut singleton_summary_inputs, &summary.input_types);
+            let runtime_activations = resolve_runtime_callable_boundary_activations(
+                world,
+                caller,
+                function,
+                summary.input_types.as_slice(),
+                reads,
+                waits,
+                follow_up,
+            )?;
+            latent_executables.extend(runtime_activations.iter().map(|activation| ExecutableKey {
+                activation: activation.key.clone(),
+                need: ExecutableNeed::Value,
+            }));
+            activations.extend(runtime_activations);
             activations.extend(clause_activations);
         }
     }
 
-    let Some(function) = selected_function else {
+    if selected_functions.is_empty() {
         return Ok((None, any_ty(world)));
     };
-    let summary = summary_inputs.map(|input_types| CallSiteSummary {
-        callee: SelectedCallee::Function(function),
-        input_types,
-        return_ty,
-    });
-    let mut latent_executables = Vec::new();
-    if let Some(summary) = summary.as_ref() {
-        let runtime_activations = resolve_runtime_callable_boundary_activations(
-            world,
-            caller,
-            function,
-            summary.input_types.as_slice(),
-            reads,
-            waits,
-            follow_up,
-        )?;
-        latent_executables.extend(runtime_activations.iter().map(|activation| ExecutableKey {
-            activation: activation.key.clone(),
-            need: ExecutableNeed::Value,
-        }));
-        activations.extend(runtime_activations);
-    }
+    let summary = if selected_functions.len() == 1 {
+        let function = selected_functions[0];
+        singleton_summary_inputs.map(|input_types| CallSiteSummary {
+            callee: SelectedCallee::Function(function),
+            input_types,
+            return_ty,
+        })
+    } else {
+        latent_executables.extend(callable_target_executables);
+        None
+    };
     Ok((
-        summary.map(|summary| CallEmission {
+        Some(CallEmission {
             key: CallSiteKey {
                 activation: caller.clone(),
                 callsite,
@@ -1065,6 +1308,107 @@ fn resolve_runtime_callable_boundary_activations(
         ));
     }
     Ok(activations)
+}
+
+fn covered_callable_activations(calls: &[CallEmission]) -> HashSet<ActivationKey> {
+    calls
+        .iter()
+        .flat_map(|call| call.activations.iter())
+        .map(|activation| activation.key.clone())
+        .collect()
+}
+
+fn resolve_escaping_callable_activations_from_type(
+    world: &mut World<'_>,
+    caller: &ActivationKey,
+    ty: Ty,
+    covered_activations: &HashSet<ActivationKey>,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Vec<ActivationContribution> {
+    let mut callable_types = Vec::new();
+    collect_escaping_callable_types(world, ty, &mut HashSet::new(), &mut callable_types);
+    let mut seen = HashSet::new();
+    let mut activations = Vec::new();
+    for callable_ty in callable_types {
+        for activation in resolve_uncovered_callable_activations_from_type(
+            world,
+            caller,
+            callable_ty,
+            covered_activations,
+            reads,
+            waits,
+            follow_up,
+        ) {
+            if seen.insert(activation.key.clone()) {
+                activations.push(activation);
+            }
+        }
+    }
+    activations
+}
+
+fn collect_escaping_callable_types(world: &mut World<'_>, ty: Ty, seen: &mut HashSet<Ty>, out: &mut Vec<Ty>) {
+    if !seen.insert(ty) || world.types().is_empty(&ty) {
+        return;
+    }
+    if world.types_mut().callable_value_clauses(&ty).is_some() {
+        out.push(ty);
+    }
+
+    for index in 0..world.types().max_tuple_arity(&ty) {
+        let field = world.types_mut().tuple_field_type(&ty, index);
+        collect_escaping_callable_types(world, field, seen, out);
+    }
+
+    if world.types().has_list_shape(&ty) {
+        let elem = world.types_mut().list_element_type(&ty);
+        collect_escaping_callable_types(world, elem, seen, out);
+    }
+
+    let map_keys = world.types().map_known_keys(&ty);
+    for key in map_keys {
+        if let Some(field) = world.types_mut().map_field_lookup(&ty, &key) {
+            collect_escaping_callable_types(world, field, seen, out);
+        }
+    }
+}
+
+fn resolve_uncovered_callable_activations_from_type(
+    world: &mut World<'_>,
+    caller: &ActivationKey,
+    callable_ty: Ty,
+    covered_activations: &HashSet<ActivationKey>,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Vec<ActivationContribution> {
+    let Some(clauses) = world.types_mut().callable_value_clauses(&callable_ty) else {
+        return Vec::new();
+    };
+    let mut activations = Vec::new();
+    for clause in clauses {
+        let Some(closure) = clause.closure else {
+            continue;
+        };
+        let function = function_id_of_closure_target(closure.target);
+        if !world.require_activation_key_facts(function, reads, waits, follow_up) {
+            continue;
+        }
+        let mut input_types = closure.captures;
+        input_types.extend(clause.args);
+        let activation = world.activation_key(caller.root, function, &input_types);
+        if covered_activations.contains(&activation) {
+            continue;
+        }
+        let already_present = world.fact_revision(FactKey::Activation(activation.clone())).is_some();
+        activations.push(ActivationContribution {
+            key: activation,
+            already_present,
+        });
+    }
+    activations
 }
 
 fn refine_function_call_surface(
@@ -1290,17 +1634,19 @@ fn call_summary(callee: Option<SelectedCallee>, input_types: Vec<Ty>, return_ty:
 
 fn merge_call_inputs(world: &mut World<'_>, merged: &mut Option<Vec<Ty>>, observed: &[Ty]) {
     match merged {
-        Some(current) => {
-            if current.len() < observed.len() {
-                current.resize_with(observed.len(), || any_ty(world));
-            }
-            for (slot, observed_ty) in observed.iter().copied().enumerate() {
-                current[slot] = world.types_mut().union(current[slot], observed_ty);
-            }
-        }
+        Some(current) => merge_call_input_vec(world, current, observed),
         None => {
             *merged = Some(observed.to_vec());
         }
+    }
+}
+
+fn merge_call_input_vec(world: &mut World<'_>, current: &mut Vec<Ty>, observed: &[Ty]) {
+    if current.len() < observed.len() {
+        current.resize_with(observed.len(), || any_ty(world));
+    }
+    for (slot, observed_ty) in observed.iter().copied().enumerate() {
+        current[slot] = world.types_mut().union(current[slot], observed_ty);
     }
 }
 

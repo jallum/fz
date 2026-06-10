@@ -15,6 +15,8 @@ use crate::parser::lexer::Tok;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+const INTERFACE_ABI_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleInterface {
     pub name: ModuleName,
@@ -373,7 +375,7 @@ fn fingerprint_inputs(
     protocol_impls: &[InterfaceProtocolImpl],
     docs: Option<&str>,
 ) -> Vec<String> {
-    let mut inputs = vec![format!("module={}", name)];
+    let mut inputs = vec![format!("abi={}", INTERFACE_ABI_VERSION), format!("module={}", name)];
     if let Some(docs) = docs {
         inputs.push(format!("moduledoc={}", docs));
     }
@@ -464,7 +466,7 @@ fn render_import_filter(fns: &[InterfaceImportFn]) -> String {
 pub fn render_interfaces(interfaces: &BTreeMap<ModuleName, ModuleInterface>) -> String {
     let mut out = String::new();
     for interface in interfaces.values() {
-        out.push_str(&format!("interface {}\n", interface.name));
+        out.push_str(&format!("interface {} abi={}\n", interface.name, INTERFACE_ABI_VERSION));
         if let Some(docs) = &interface.docs {
             out.push_str(&format!("  moduledoc {:?}\n", docs));
         }

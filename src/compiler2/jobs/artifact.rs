@@ -180,7 +180,8 @@ struct ExecutableAbiPlan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DeliverySource {
     Value(ValueId),
-    Call(CallSiteId),
+    DirectCall(CallSiteId),
+    ClosureCall(CallSiteId),
 }
 
 /// Derives one emission-ready inventory from one ABI-ready closed artifact.
@@ -955,7 +956,7 @@ fn delivery_repr(
 ) -> Result<Option<AbiValueRepr>, FatalError> {
     match delivery {
         DeliverySource::Value(value) => Ok(plan.value_reprs.get(&value).copied()),
-        DeliverySource::Call(callsite) => {
+        DeliverySource::DirectCall(callsite) => {
             let edge = executable.call_edges.get(&callsite).ok_or_else(|| {
                 incomplete_semantic_plan(
                     world,
@@ -966,6 +967,12 @@ fn delivery_repr(
                     ),
                 )
             })?;
+            Ok(return_abis.get(&edge.callee).map(return_repr_for_delivery))
+        }
+        DeliverySource::ClosureCall(callsite) => {
+            let Some(edge) = executable.call_edges.get(&callsite) else {
+                return Ok(Some(AbiValueRepr::ValueRef));
+            };
             Ok(return_abis.get(&edge.callee).map(return_repr_for_delivery))
         }
     }
@@ -1026,18 +1033,27 @@ fn resolve_entry_return_abi(
                 resolve_entry_return_abi(world, root_id, executable, plan, entries, *target, return_abis, seen)?
             }
         },
-        LoweredTail::DirectCall { callsite, dest, .. } | LoweredTail::ClosureCall { callsite, dest, .. } => {
-            match dest {
-                ControlDestination::Return => executable
-                    .call_edges
-                    .get(callsite)
-                    .and_then(|edge| return_abis.get(&edge.callee))
-                    .cloned(),
-                ControlDestination::Deliver(target) => {
-                    resolve_entry_return_abi(world, root_id, executable, plan, entries, *target, return_abis, seen)?
-                }
+        LoweredTail::DirectCall { callsite, dest, .. } => match dest {
+            ControlDestination::Return => executable
+                .call_edges
+                .get(callsite)
+                .and_then(|edge| return_abis.get(&edge.callee))
+                .cloned(),
+            ControlDestination::Deliver(target) => {
+                resolve_entry_return_abi(world, root_id, executable, plan, entries, *target, return_abis, seen)?
             }
-        }
+        },
+        LoweredTail::ClosureCall { callsite, dest, .. } => match dest {
+            ControlDestination::Return => executable
+                .call_edges
+                .get(callsite)
+                .and_then(|edge| return_abis.get(&edge.callee))
+                .cloned()
+                .or(Some(ReturnAbi::Value(AbiValueRepr::ValueRef))),
+            ControlDestination::Deliver(target) => {
+                resolve_entry_return_abi(world, root_id, executable, plan, entries, *target, return_abis, seen)?
+            }
+        },
         LoweredTail::If {
             then_entry, else_entry, ..
         } => {
@@ -1368,15 +1384,18 @@ fn record_delivery(tail: &LoweredTail, deliveries: &mut HashMap<ControlEntryId, 
             callsite,
             dest: ControlDestination::Deliver(entry_id),
             ..
-        }
-        | LoweredTail::ClosureCall {
+        } => deliveries
+            .entry(*entry_id)
+            .or_default()
+            .push(DeliverySource::DirectCall(*callsite)),
+        LoweredTail::ClosureCall {
             callsite,
             dest: ControlDestination::Deliver(entry_id),
             ..
         } => deliveries
             .entry(*entry_id)
             .or_default()
-            .push(DeliverySource::Call(*callsite)),
+            .push(DeliverySource::ClosureCall(*callsite)),
         LoweredTail::Value { .. } | LoweredTail::DirectCall { .. } | LoweredTail::ClosureCall { .. } => {}
         LoweredTail::If { .. } | LoweredTail::Dispatch { .. } | LoweredTail::Receive(_) | LoweredTail::Halt { .. } => {}
     }
@@ -1510,89 +1529,13 @@ fn callable_entries_in_body(
 ) -> Result<(), FatalError> {
     match &executable.body {
         LoweredBody::Extern { .. } => Ok(()),
-        LoweredBody::Clauses { clauses, entries, .. } => {
-            for clause in clauses {
-                callable_entries_in_steps(
-                    world,
-                    root_id,
-                    executables,
-                    executable,
-                    named_refs,
-                    &clause.projections,
-                    out,
-                )?;
-            }
+        LoweredBody::Clauses { entries, .. } => {
             for entry in entries {
-                callable_entries_in_steps(world, root_id, executables, executable, named_refs, &entry.steps, out)?;
                 callable_entries_in_tail(world, root_id, executables, executable, named_refs, &entry.tail, out)?;
             }
             Ok(())
         }
     }
-}
-
-fn callable_entries_in_steps(
-    world: &mut World<'_>,
-    root_id: RootId,
-    executables: &HashMap<ExecutableKey, AbiReadyExecutable>,
-    executable: &AbiReadyExecutable,
-    named_refs: &HashMap<ValueId, (String, usize)>,
-    steps: &[LoweredStep],
-    out: &mut Vec<CallableEntry>,
-) -> Result<(), FatalError> {
-    for step in steps {
-        match step {
-            LoweredStep::FunctionRef { value, .. } | LoweredStep::Lambda { value, .. } => {
-                record_callable_value_entries(
-                    world,
-                    root_id,
-                    executables,
-                    executable,
-                    named_refs,
-                    *value,
-                    "callable constructor",
-                    true,
-                    out,
-                )?;
-            }
-            LoweredStep::NamedFunctionRef { value, .. } => {
-                record_callable_value_entries(
-                    world,
-                    root_id,
-                    executables,
-                    executable,
-                    named_refs,
-                    *value,
-                    "named callable constructor",
-                    true,
-                    out,
-                )?;
-            }
-            LoweredStep::Const { .. }
-            | LoweredStep::Tuple { .. }
-            | LoweredStep::List { .. }
-            | LoweredStep::Map { .. }
-            | LoweredStep::MapUpdate { .. }
-            | LoweredStep::Struct { .. }
-            | LoweredStep::Bitstring { .. }
-            | LoweredStep::BinaryOp { .. }
-            | LoweredStep::UnaryOp { .. }
-            | LoweredStep::MapIndex { .. }
-            | LoweredStep::FieldAccess { .. }
-            | LoweredStep::AssertLiteral { .. }
-            | LoweredStep::AssertStruct { .. }
-            | LoweredStep::RequireMapValue { .. }
-            | LoweredStep::AssertTuple { .. }
-            | LoweredStep::TupleField { .. }
-            | LoweredStep::AssertEmptyList { .. }
-            | LoweredStep::AssertSame { .. }
-            | LoweredStep::SplitList { .. }
-            | LoweredStep::BitstringInit { .. }
-            | LoweredStep::BitstringRead { .. }
-            | LoweredStep::AssertBitstringDone { .. } => {}
-        }
-    }
-    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1619,18 +1562,34 @@ fn callable_entries_in_tail(
         ),
         LoweredTail::ClosureCall {
             callsite, callee, args, ..
-        } => record_callable_boundary_args(
-            world,
-            root_id,
-            executables,
-            executable,
-            named_refs,
-            *callsite,
-            Some(*callee),
-            args,
-            out,
-        ),
-        LoweredTail::Value { value, .. } => record_callable_value_entries(
+        } => {
+            record_callable_value_entries(
+                world,
+                root_id,
+                executables,
+                executable,
+                named_refs,
+                *callee,
+                "closure callee",
+                false,
+                out,
+            )?;
+            record_callable_boundary_args(
+                world,
+                root_id,
+                executables,
+                executable,
+                named_refs,
+                *callsite,
+                Some(*callee),
+                args,
+                out,
+            )
+        }
+        LoweredTail::Value {
+            value,
+            dest: ControlDestination::Return,
+        } => record_callable_value_entries(
             world,
             root_id,
             executables,
@@ -1641,6 +1600,10 @@ fn callable_entries_in_tail(
             false,
             out,
         ),
+        LoweredTail::Value {
+            dest: ControlDestination::Deliver(_),
+            ..
+        } => Ok(()),
         LoweredTail::If { .. } | LoweredTail::Dispatch { .. } | LoweredTail::Receive(_) | LoweredTail::Halt { .. } => {
             Ok(())
         }
@@ -1679,7 +1642,7 @@ fn record_callable_value_entries(
         }
         return Ok(());
     };
-    match resolve_callable_entries_for_type(world, root_id, executables, ty)? {
+    match resolve_escaped_callable_entries_for_type(world, root_id, executables, ty)? {
         CallableResolution::Resolved(entries) => {
             out.extend(entries);
             Ok(())
@@ -1723,6 +1686,9 @@ fn record_callable_boundary_args(
                 ),
             ));
         }
+        if !boundary_expects_callable(world, executables, executable, callsite, closure_callee, arg_index) {
+            continue;
+        }
 
         let arg_ty = executable.value_types.get(&arg.value).copied().ok_or_else(|| {
             incomplete_semantic_plan(
@@ -1737,17 +1703,15 @@ fn record_callable_boundary_args(
         })?;
         match resolve_callable_entries_for_type(world, root_id, executables, arg_ty)? {
             CallableResolution::NotCallable => {
-                if boundary_expects_callable(world, executable, callsite, closure_callee, arg_index) {
-                    return Err(incomplete_semantic_plan(
-                        world,
-                        root_id,
-                        format!(
-                            "callable boundary at callsite {} expects a resolved callable entry for arg {}",
-                            callsite.as_u32(),
-                            arg_index
-                        ),
-                    ));
-                }
+                return Err(incomplete_semantic_plan(
+                    world,
+                    root_id,
+                    format!(
+                        "callable boundary at callsite {} expects a resolved callable entry for arg {}",
+                        callsite.as_u32(),
+                        arg_index
+                    ),
+                ));
             }
             CallableResolution::Opaque => {
                 return Err(incomplete_semantic_plan(
@@ -1768,6 +1732,7 @@ fn record_callable_boundary_args(
 
 fn boundary_expects_callable(
     world: &mut World<'_>,
+    executables: &HashMap<ExecutableKey, AbiReadyExecutable>,
     executable: &AbiReadyExecutable,
     callsite: CallSiteId,
     closure_callee: Option<ValueId>,
@@ -1776,6 +1741,12 @@ fn boundary_expects_callable(
     let Some(edge) = executable.call_edges.get(&callsite) else {
         return false;
     };
+    let Some(callee) = executables.get(&edge.callee) else {
+        return false;
+    };
+    if !matches!(callee.body, LoweredBody::Extern { .. }) {
+        return false;
+    }
     let offset = closure_callee
         .and_then(|callee| executable.value_types.get(&callee))
         .and_then(|callee_ty| world.types().closure_lit_parts(callee_ty))
@@ -1784,6 +1755,76 @@ fn boundary_expects_callable(
         return false;
     };
     world.types_mut().callable_clauses(expected_ty).is_some()
+}
+
+fn resolve_escaped_callable_entries_for_type(
+    world: &mut World<'_>,
+    root_id: RootId,
+    executables: &HashMap<ExecutableKey, AbiReadyExecutable>,
+    ty: Ty,
+) -> Result<CallableResolution, FatalError> {
+    let mut entries = Vec::new();
+    let mut saw_callable = false;
+    let mut saw_opaque = false;
+    collect_escaped_callable_entries(
+        world,
+        root_id,
+        executables,
+        ty,
+        &mut HashSet::new(),
+        &mut entries,
+        &mut saw_callable,
+        &mut saw_opaque,
+    )?;
+    if saw_opaque {
+        Ok(CallableResolution::Opaque)
+    } else if saw_callable {
+        Ok(CallableResolution::Resolved(entries))
+    } else {
+        Ok(CallableResolution::NotCallable)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_escaped_callable_entries(
+    world: &mut World<'_>,
+    root_id: RootId,
+    executables: &HashMap<ExecutableKey, AbiReadyExecutable>,
+    ty: Ty,
+    seen: &mut HashSet<Ty>,
+    out: &mut Vec<CallableEntry>,
+    saw_callable: &mut bool,
+    saw_opaque: &mut bool,
+) -> Result<(), FatalError> {
+    if !seen.insert(ty) || world.types().is_empty(&ty) {
+        return Ok(());
+    }
+    match resolve_callable_entries_for_type(world, root_id, executables, ty)? {
+        CallableResolution::Resolved(entries) => {
+            *saw_callable = true;
+            out.extend(entries);
+        }
+        CallableResolution::Opaque => {
+            *saw_opaque = true;
+        }
+        CallableResolution::NotCallable => {}
+    }
+
+    for index in 0..world.types().max_tuple_arity(&ty) {
+        let field = world.types_mut().tuple_field_type(&ty, index);
+        collect_escaped_callable_entries(world, root_id, executables, field, seen, out, saw_callable, saw_opaque)?;
+    }
+    if world.types().has_list_shape(&ty) {
+        let elem = world.types_mut().list_element_type(&ty);
+        collect_escaped_callable_entries(world, root_id, executables, elem, seen, out, saw_callable, saw_opaque)?;
+    }
+    let map_keys = world.types().map_known_keys(&ty);
+    for key in map_keys {
+        if let Some(field) = world.types_mut().map_field_lookup(&ty, &key) {
+            collect_escaped_callable_entries(world, root_id, executables, field, seen, out, saw_callable, saw_opaque)?;
+        }
+    }
+    Ok(())
 }
 
 fn resolve_callable_entries_for_type(
@@ -1809,12 +1850,16 @@ fn resolve_callable_entries_for_type(
         let fixed_arity = clause.args.len();
         let variadic = world.function_variadic(function);
         let mut matched = false;
-        for (target, target_executable) in executables.iter().filter(|(key, _)| {
-            key.activation.function == function
-                && key.need == ExecutableNeed::Value
-                && has_capture_prefix(&key.activation.input, &closure.captures)
-                && callable_entry_arity_matches(key, capture_count, fixed_arity, variadic)
-        }) {
+        for (target, target_executable) in executables {
+            if target.activation.function != function || target.need != ExecutableNeed::Value {
+                continue;
+            }
+            if !callable_entry_arity_matches(target, capture_count, fixed_arity, variadic) {
+                continue;
+            }
+            if !capture_prefix_matches(world, &target.activation.input, &closure.captures) {
+                continue;
+            }
             matched = true;
             entries.push(CallableEntry {
                 target: target.clone(),
@@ -1883,8 +1928,18 @@ fn compare_emission_callable_entries(
         .then_with(|| left.capture_count.cmp(&right.capture_count))
 }
 
-fn has_capture_prefix(input: &[Ty], captures: &[Ty]) -> bool {
-    input.starts_with(captures)
+fn capture_prefix_matches(world: &mut World<'_>, input: &[Ty], captures: &[Ty]) -> bool {
+    if input.len() < captures.len() {
+        return false;
+    }
+    input
+        .iter()
+        .copied()
+        .zip(captures.iter().copied())
+        .all(|(target, capture)| {
+            let overlap = world.types_mut().intersect(target, capture);
+            !world.types().is_empty(&overlap)
+        })
 }
 
 fn callable_entry_arity_matches(

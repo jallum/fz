@@ -1,6 +1,6 @@
 ---
 purpose: "opaque join of zero-capture function values remains callable through Enum.reduce/3"
-paths: [jit, interp, aot, repl]
+paths: [jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build]
 ---
 
 # opaque_fn_value_join

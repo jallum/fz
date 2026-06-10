@@ -24,7 +24,7 @@ covers more source/runtime behavior than the fz2 matrix declares.
 
 ## Fixture Signal
 
-As of 2026-06-10, fixture metadata declares fz2 matrix paths for 14 fixtures:
+As of 2026-06-10, fixture metadata declares fz2 matrix paths for 17 fixtures:
 
 - `case_tuple_pattern_sequential`
 - `case_with_total`
@@ -36,9 +36,12 @@ As of 2026-06-10, fixture metadata declares fz2 matrix paths for 14 fixtures:
 - `macro_inc`
 - `map_three_path_parity`
 - `operator_sugars`
+- `opaque_fn_value_join`
 - `pipe_headless_case`
 - `receive_float_pattern`
 - `receive_selective_refs`
+- `repr_seam_closure_predicate`
+- `tailcall_closure_captures`
 - `utf8_smart_constructor`
 
 `tests/fz2_cli.rs` also probes `quicksort` as a telemetry contract, but
@@ -82,17 +85,22 @@ tree
 
 Most are allocation-stat or path-golden questions. `bsx_guard_eq` needs a
 semantic check because fz2 interp returns a different branch.
+After `fz-rh2.16.3`, `enum_reduce_suspend` also runs through fz2
+run/interp/build but needs fz2-specific allocation goldens before it can enter
+the matrix.
 
 **Source-surface gaps.** Current fz2 failures include syntax or item-surface
 support that the old frontend still owns: `keyword_lists`, `no_parens_call`,
 `no_parens_do`, `no_parens_keyword`, `sample_tests`, and `sample_tests_module`.
 
-**Callable/protocol/Enum artifact gaps.** Current fz2 failures include missing
-closed callable entries or direct-call delivery edges: `enum_map_family`,
-`enum_reduce_suspend`, `enum_take_drop_split`, `enum_tier0`,
-`enumerable_protocol_dispatch`, `map_enumerable`, `membership_operator`,
-`opaque_fn_value_join`, `range_enumerable`, `repr_seam_closure_predicate`, and
-`tailcall_closure_captures`.
+**Callable/protocol/Enum artifact gaps.** `fz-rh2.16.3` fixed the closed
+callable-entry side of this class by deriving latent callable executables from
+reachable value types and by matching callable inventory against compatible
+closed activation keys instead of raw capture `Ty` ids. The remaining artifact
+gap is multi-target protocol dispatch for union receivers, tracked by
+`fz-rh2.16.7`. Current fz2 failures in that class are `enum_map_family`,
+`enum_take_drop_split`, `enum_tier0`, `enumerable_protocol_dispatch`,
+`map_enumerable`, `membership_operator`, and `range_enumerable`.
 
 **Runtime/interpreter gaps.** Current fz2 failures also include
 `resource_lifecycle`, `tail_recursion` on `fz2 interp`, `utf8_pattern_match` on

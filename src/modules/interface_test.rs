@@ -385,10 +385,11 @@ end
     let first = interfaces[&module(&["M"])].fingerprint_inputs.clone();
     let second = interfaces[&module(&["M"])].fingerprint_inputs.clone();
     assert_eq!(first, second);
-    assert_eq!(first[0], "module=M");
-    assert!(first[1].starts_with("type=T:Alias:"));
-    assert!(first[2].starts_with("fn=a/0:"));
-    assert!(first[3].starts_with("fn=b/1:"));
+    assert_eq!(first[0], "abi=1");
+    assert_eq!(first[1], "module=M");
+    assert!(first[2].starts_with("type=T:Alias:"));
+    assert!(first[3].starts_with("fn=a/0:"));
+    assert!(first[4].starts_with("fn=b/1:"));
 }
 
 #[test]

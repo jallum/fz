@@ -321,7 +321,6 @@ impl BackendEntryOrigin {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendCallArg {
     pub value: ValueId,
-    pub callable_entries: Vec<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -342,7 +341,7 @@ pub enum BackendTail {
         value: ValueId,
         callsite: CallSiteId,
         callee: ValueId,
-        target: usize,
+        target: Option<usize>,
         args: Vec<BackendCallArg>,
         dest: ControlDestination,
     },

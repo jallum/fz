@@ -24,7 +24,8 @@ use super::super::body::{
     LoweredTail, ValueId,
 };
 use super::super::drive::{FactKey, Job, JobEffects};
-use super::super::identity::{ExecutableKey, ExecutableNeed, RootId, RootKind, function_id_of_closure_target};
+use super::super::identity::RootKind;
+use super::super::identity::{ExecutableNeed, RootId};
 use super::super::scheduler::FatalError;
 use super::super::types::Ty;
 use super::super::world::World;
@@ -369,18 +370,12 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
                 args,
                 dest,
             } => {
-                let edge = call_edge(executable, *callsite).ok_or_else(|| {
-                    incomplete_backend_program(
-                        self.world,
-                        self.root_id,
-                        format!("missing settled closure-call edge for callsite {}", callsite.as_u32()),
-                    )
-                })?;
+                let edge = call_edge(executable, *callsite);
                 BackendTail::ClosureCall {
                     value: *value,
                     callsite: *callsite,
                     callee: *callee,
-                    target: edge.callee,
+                    target: edge.map(|edge| edge.callee),
                     args: self.lower_call_args(executable, *callsite, Some(*callee), args)?,
                     dest: dest.clone(),
                 }
@@ -415,124 +410,12 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
 
     fn lower_call_args(
         &mut self,
-        executable: &super::super::artifact::EmissionReadyExecutable,
-        callsite: CallSiteId,
-        closure_callee: Option<super::super::body::ValueId>,
+        _executable: &super::super::artifact::EmissionReadyExecutable,
+        _callsite: CallSiteId,
+        _closure_callee: Option<super::super::body::ValueId>,
         args: &[CallArg],
     ) -> Result<Vec<BackendCallArg>, FatalError> {
-        args.iter()
-            .enumerate()
-            .map(|(arg_index, arg)| {
-                let arg_ty = executable
-                    .value_types
-                    .get(&arg.value)
-                    .copied()
-                    .expect("emission-ready executables should carry settled types for every call argument value");
-                let callable_entries = match self.resolve_callable_entries_for_type(arg_ty)? {
-                    CallableResolution::NotCallable => {
-                        if self.boundary_expects_callable(executable, callsite, closure_callee, arg_index) {
-                            return Err(incomplete_backend_program(
-                                self.world,
-                                self.root_id,
-                                format!(
-                                    "callable boundary at callsite {} expects a resolved callable entry for arg {}",
-                                    callsite.as_u32(),
-                                    arg_index
-                                ),
-                            ));
-                        }
-                        Vec::new()
-                    }
-                    CallableResolution::Opaque => {
-                        return Err(incomplete_backend_program(
-                            self.world,
-                            self.root_id,
-                            format!(
-                                "callable boundary at callsite {} carries an opaque callable arg {}",
-                                callsite.as_u32(),
-                                arg_index
-                            ),
-                        ));
-                    }
-                    CallableResolution::Resolved(entries) => entries,
-                };
-                Ok(BackendCallArg {
-                    value: arg.value,
-                    callable_entries,
-                })
-            })
-            .collect()
-    }
-
-    fn boundary_expects_callable(
-        &mut self,
-        executable: &super::super::artifact::EmissionReadyExecutable,
-        callsite: CallSiteId,
-        closure_callee: Option<super::super::body::ValueId>,
-        arg_index: usize,
-    ) -> bool {
-        let Some(edge) = call_edge(executable, callsite) else {
-            return false;
-        };
-        let offset = closure_callee
-            .and_then(|callee| executable.value_types.get(&callee))
-            .and_then(|callee_ty| self.world.types().closure_lit_parts(callee_ty))
-            .map_or(0, |parts| parts.captures.len());
-        let Some(expected_ty) = self.program.executables[edge.callee]
-            .key
-            .activation
-            .input
-            .get(offset + arg_index)
-        else {
-            return false;
-        };
-        self.world.types_mut().callable_clauses(expected_ty).is_some()
-    }
-
-    fn resolve_callable_entries_for_type(&mut self, ty: Ty) -> Result<CallableResolution, FatalError> {
-        let Some(clauses) = self.world.types_mut().callable_value_clauses(&ty) else {
-            return Ok(CallableResolution::NotCallable);
-        };
-        if clauses.is_empty() {
-            return Ok(CallableResolution::NotCallable);
-        }
-
-        let mut entries = Vec::new();
-        for clause in clauses {
-            let Some(closure) = clause.closure else {
-                return Ok(CallableResolution::Opaque);
-            };
-            let function = function_id_of_closure_target(closure.target);
-            let capture_count = closure.captures.len();
-            let fixed_arity = clause.args.len();
-            let variadic = self.world.function_variadic(function);
-            let mut matched = false;
-            for (index, _entry) in self.program.callable_entries.iter().enumerate().filter(|(_, entry)| {
-                let executable = &self.program.executables[entry.target];
-                executable.key.activation.function == function
-                    && executable.key.need == ExecutableNeed::Value
-                    && has_capture_prefix(&executable.key.activation.input, &closure.captures)
-                    && callable_entry_arity_matches(&executable.key, capture_count, fixed_arity, variadic)
-            }) {
-                matched = true;
-                entries.push(index);
-            }
-            if !matched {
-                return Err(incomplete_backend_program(
-                    self.world,
-                    self.root_id,
-                    format!(
-                        "callable entry target {} with {} capture(s) and arity {} is missing from backend inventory",
-                        function.as_u32(),
-                        capture_count,
-                        fixed_arity
-                    ),
-                ));
-            }
-        }
-        entries.sort_unstable();
-        entries.dedup();
-        Ok(CallableResolution::Resolved(entries))
+        args.iter().map(|arg| Ok(BackendCallArg { value: arg.value })).collect()
     }
 }
 
@@ -846,7 +729,7 @@ fn publish_entry_input_abis(
                 merge_resume_abi(world, root_id, *target, abi, out)?;
             }
         }
-        LoweredTail::DirectCall { callsite, dest, .. } | LoweredTail::ClosureCall { callsite, dest, .. } => {
+        LoweredTail::DirectCall { callsite, dest, .. } => {
             if let ControlDestination::Deliver(target) = dest
                 && matches!(
                     entries[target.as_u32() as usize].origin,
@@ -864,6 +747,19 @@ fn publish_entry_input_abis(
                     )
                 })?;
                 let abi = program.executables[edge.callee].return_abi.clone();
+                merge_resume_abi(world, root_id, *target, abi, out)?;
+            }
+        }
+        LoweredTail::ClosureCall { callsite, dest, .. } => {
+            if let ControlDestination::Deliver(target) = dest
+                && matches!(
+                    entries[target.as_u32() as usize].origin,
+                    ControlEntryOrigin::CallResume { .. }
+                )
+            {
+                let abi = call_edge(executable, *callsite)
+                    .map(|edge| program.executables[edge.callee].return_abi.clone())
+                    .unwrap_or(ReturnAbi::Value(AbiValueRepr::ValueRef));
                 merge_resume_abi(world, root_id, *target, abi, out)?;
             }
         }
@@ -946,30 +842,6 @@ fn call_edge(
     callsite: CallSiteId,
 ) -> Option<&super::super::artifact::EmissionReadyCallEdge> {
     executable.call_edges.iter().find(|edge| edge.callsite == callsite)
-}
-
-fn has_capture_prefix(input: &[Ty], captures: &[Ty]) -> bool {
-    input.starts_with(captures)
-}
-
-fn callable_entry_arity_matches(
-    target: &ExecutableKey,
-    capture_count: usize,
-    fixed_arity: usize,
-    variadic: bool,
-) -> bool {
-    let actual_arity = target.activation.input.len().saturating_sub(capture_count);
-    if variadic {
-        actual_arity >= fixed_arity
-    } else {
-        actual_arity == fixed_arity
-    }
-}
-
-enum CallableResolution {
-    NotCallable,
-    Opaque,
-    Resolved(Vec<usize>),
 }
 
 fn collect_backend_atom_names(world: &mut World<'_>, executables: &[BackendExecutable]) -> Vec<String> {

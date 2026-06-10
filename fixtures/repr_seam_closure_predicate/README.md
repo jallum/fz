@@ -1,6 +1,6 @@
 ---
 purpose: "Closure predicate results stay truth-preserving across native representation seams"
-paths: [jit, interp, aot, repl]
+paths: [jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build]
 ---
 
 Pins callback shapes used by `Enum.count/2`: a closure returns a boolean, the
