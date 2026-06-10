@@ -16,14 +16,6 @@ use super::super::scheduler::FatalError;
 use super::super::world::World;
 
 pub(super) fn derive_type_def(world: &mut World<'_>, name: &TypeName) -> Result<JobEffects, FatalError> {
-    if let Some(def) = world.protocol_domain_type_def(name) {
-        let changed = world.define_type_def(name.clone(), def);
-        return Ok(JobEffects {
-            outputs: vec![(FactKey::TypeDefined(name.clone()), changed)],
-            ..JobEffects::default()
-        });
-    }
-
     let Some(decl) = world.type_decl(name).cloned() else {
         // The owning scope has not noted this name yet. A module type is noted
         // when its module is defined, so demand that and wait. A global name
@@ -69,10 +61,10 @@ pub(super) fn derive_type_def(world: &mut World<'_>, name: &TypeName) -> Result<
         .iter()
         .map(|referenced| FactKey::TypeDefined(referenced.clone()))
         .collect();
-    let changed = world.define_type_def(name.clone(), def);
+    let revision = world.define_type_def(name.clone(), def);
     Ok(JobEffects {
         reads,
-        outputs: vec![(FactKey::TypeDefined(name.clone()), changed)],
+        outputs: vec![(FactKey::TypeDefined(name.clone()), revision)],
         ..JobEffects::default()
     })
 }

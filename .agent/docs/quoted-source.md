@@ -159,8 +159,8 @@ the `fz-rh2.11.7.*` arc.
 - Source publication notes `@type` declarations, records function/type
   reference wait sets, binds aliases/imports/requires, saves expanded grouped
   function roots as `FunctionSource` through `Fz.Compiler.define`, scopes child
-  modules, publishes protocol callback/domain/dispatch facts, and records
-  protocol impl callback sources.
+  modules, notes protocol-domain type declarations, publishes protocol
+  callback/dispatch facts, and records protocol impl callback sources.
 - Function source expansion is body-only. Function heads define identity; they
   are not expression positions and are never macro-expanded. Each grouped
   function source keeps attached attributes and clause heads intact while

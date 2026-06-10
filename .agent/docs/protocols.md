@@ -5,8 +5,8 @@ two things:
 
 - a **callback surface** — the function names and arities an implementation must
   provide;
-- a **domain type** — `Protocol.t(...)`, the set of values known to have an
-  implementation.
+- a **domain type marker** — `Protocol.t(...)`, the protocol-owned opaque type
+  name specs can refer to without depending on the current impl set.
 
 fz keeps Elixir's source shape (`defprotocol` / `defimpl`, plus a convenience
 module like `Enum`), but the semantic object is a registry fact. The pieces:
@@ -56,6 +56,9 @@ returns plain accumulator values.
   where a `ProtocolImpl` maps each `(name, arity)` to a
   `ProtocolCallbackImpl { function, owner_module }`. `define_protocol_impl` fills
   it while indexing a `defimpl`.
+- **`ProtocolDispatchMap`** — `protocol -> ProtocolDispatch { arms }`, derived
+  from the impl registry. Protocol definition publishes the empty dispatch fact;
+  each `defimpl` revises this dispatch fact and only this dispatch fact.
 
 `protocol_callback(fn)` answers "is this function a protocol callback?". It reads
 the registry, and `derived_protocol_callback` covers two cases the registry does
@@ -109,15 +112,17 @@ summary names that concrete callee, no stub and no runtime lookup table.
 
 ## The domain type
 
-`Protocol.t(...)` is the union of each implementing target's type (with the
-protocol's opaque domain tag), not `any`. It is the type a declared spec uses to
-require "a value with an implementation": a spec parameter typed
-`Enumerable.t(a)` rejects an `Integer` because `Integer` is disjoint from the
-domain union. The element parameter is a real refinement — `Enumerable.t(integer)`
-refines an element-parametric target like `List` to `list(integer)`. The domain
-alias is resolved by `type_expr` and checked through the ordinary spec coverage
-rule (see [`specs`](specs.md)); runtime dispatch instead matches the receiver
-against impl-target types directly.
+`Protocol.t(...)` is a declaration-owned opaque marker:
+`opaque(protocol_domain_tag(protocol))`. Protocol publication notes `t/0` and
+`t/1` as normal type declarations; `DeriveTypeDef` resolves them only when a
+consumer demands their `TypeDefined` fact. `t/1` keeps its formal parameter, but
+the resolved hard type is the same interned marker as `t/0`; the impl set never
+widens or revises the type fact.
+
+This keeps the type layer separate from the dispatch layer. A protocol marker is
+not a dispatch matrix and is not the union of known implementations. Runtime
+dispatch still matches the receiver against implementation-target types directly
+inside `resolve_protocol_call`.
 
 ## Callback surface vs domain
 
@@ -126,8 +131,9 @@ implementation time: an impl must define every required callback at the required
 arity and none the protocol never declared, and when both protocol and impl carry
 `@spec`s their arrows are compared per position, rejecting only on proved
 set-theoretic disjointness (so free variables and `any` never false-positive).
-The **domain type** is checked at use sites: a spec requiring `P.t(...)` needs
-proof the argument is inside `P`'s domain.
+The **domain type** is a normal `TypeDefined` dependency: consumers that mention
+`P.t(...)` demand `DeriveTypeDef(P.t)` and read the protocol-owned marker. It is
+not revised by `defimpl`.
 
 ## Where the facts live
 
@@ -136,7 +142,8 @@ jobs/source.rs   indexes defprotocol (define_protocol_surface ->
                  define_protocol_callback) and defimpl (define_protocol_impl);
                  reference_protocol_impl_module names the protocol.child(target) module
 compiler2/protocol.rs  the ProtocolCallback / ProtocolImpl fact shapes + maps
-world.rs         define/read protocol facts; impl_target_ty; runtime_impl_target_modules
+world.rs         define/read protocol facts; impl_target_ty; runtime_impl_target_modules;
+                 protocol-domain tags for normal TypeDefined derivation
 jobs/semantic.rs resolve_protocol_call — the receiver-subtype selection above
 ```
 

@@ -133,8 +133,7 @@ pub(crate) fn publish_protocol_surface(
         vec!["a".to_string()],
     );
 
-    let mut outputs = world.refresh_protocol_domain_facts(module_id);
-    outputs.push(world.refresh_protocol_dispatch_fact(module_id));
+    let outputs = vec![world.refresh_protocol_dispatch_fact(module_id)];
     let mut exports = Vec::new();
     for form in &surface.forms {
         let ScopeForm::Function(callback) = form else {
@@ -1616,7 +1615,6 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             );
         }
         self.world.define_protocol_impl(protocol, target, callbacks);
-        outputs.extend(self.world.refresh_protocol_domain_facts(protocol));
         outputs.push(self.world.refresh_protocol_dispatch_fact(protocol));
         Ok(ProtocolImplDefinition::Complete { outputs })
     }

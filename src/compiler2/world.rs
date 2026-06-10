@@ -14,9 +14,7 @@ use crate::diag::diagnostic::Severity;
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch};
-use crate::frontend::protocols::{
-    ImplTarget as InterfaceImplTarget, PROTOCOL_ELEM_VAR, impl_target_type_with_element, protocol_domain_tag,
-};
+use crate::frontend::protocols::protocol_domain_tag;
 use crate::modules::runtime_library;
 use crate::telemetry::{Telemetry, opaque_debug};
 use crate::{FunctionSurface, measurements, metadata};
@@ -869,79 +867,24 @@ impl<'a> World<'a> {
         self.type_defs.get(name)
     }
 
-    pub(crate) fn refresh_protocol_domain_facts(&mut self, protocol: ModuleId) -> Vec<(FactKey, bool)> {
-        let mut outputs = Vec::new();
-        for name in [
-            protocol_domain_type_name(protocol, 0),
-            protocol_domain_type_name(protocol, 1),
-        ] {
-            let Some(def) = self.protocol_domain_type_def(&name) else {
-                continue;
-            };
-            let changed = self.define_type_def(name.clone(), def);
-            outputs.push((FactKey::TypeDefined(name), changed));
-        }
-        outputs
-    }
-
-    pub(crate) fn protocol_domain_type_def(&mut self, name: &TypeName) -> Option<TypeDef> {
-        if !self.is_protocol_domain_type(name) {
-            return None;
-        }
-        let protocol = self
-            .module_name(name.module)
-            .and_then(|path| crate::modules::identity::ModuleName::parse_dotted(path).ok())?;
-        let (ty, params) = match name.arity {
-            0 => {
-                let any = self.types.any();
-                let mut domain = self.types.opaque_of(&protocol_domain_tag(&protocol));
-                for (key, _protocol_impl) in self.protocol_impls_for(name.module) {
-                    let target_name = self
-                        .module_name(key.target)
-                        .and_then(|path| crate::modules::identity::ModuleName::parse_dotted(path).ok())?;
-                    let target_ty =
-                        impl_target_type_with_element(&mut self.types, &InterfaceImplTarget::module(target_name), any);
-                    domain = self.types.union(domain, target_ty);
-                }
-                (domain, Vec::new())
-            }
-            1 => {
-                let element = self.types.type_var(PROTOCOL_ELEM_VAR);
-                let mut domain = self.types.opaque_of(&protocol_domain_tag(&protocol));
-                for (key, _protocol_impl) in self.protocol_impls_for(name.module) {
-                    let target_name = self
-                        .module_name(key.target)
-                        .and_then(|path| crate::modules::identity::ModuleName::parse_dotted(path).ok())?;
-                    let target_ty = impl_target_type_with_element(
-                        &mut self.types,
-                        &InterfaceImplTarget::module(target_name),
-                        element,
-                    );
-                    domain = self.types.union(domain, target_ty);
-                }
-                (domain, vec![PROTOCOL_ELEM_VAR])
-            }
-            _ => return None,
-        };
-        Some(TypeDef { ty, params })
-    }
-
-    pub(crate) fn define_protocol_dispatch(&mut self, protocol: ModuleId, dispatch: ProtocolDispatch) -> bool {
+    pub(crate) fn define_protocol_dispatch(&mut self, protocol: ModuleId, dispatch: ProtocolDispatch) -> u64 {
         let changed = self.protocol_dispatches.define(protocol, dispatch.clone());
+        let revision = self.advance_fact(FactKey::ProtocolDispatch(protocol), changed);
         self.tel.execute(
             &["fz", "compiler2", "protocol_dispatch", "defined"],
             &measurements! {
                 protocol_id: protocol.as_u32(),
+                revision: revision,
                 arms: dispatch.arms.len(),
             },
             &metadata! {
                 dispatch: opaque_debug(&dispatch),
             },
         );
-        changed
+        revision
     }
 
-    pub(crate) fn refresh_protocol_dispatch_fact(&mut self, protocol: ModuleId) -> (FactKey, bool) {
+    pub(crate) fn refresh_protocol_dispatch_fact(&mut self, protocol: ModuleId) -> (FactKey, u64) {
         let dispatch = ProtocolDispatch {
             arms: self
                 .protocol_impls_for(protocol)
@@ -952,8 +895,8 @@ impl<'a> World<'a> {
                 })
                 .collect(),
         };
-        let changed = self.define_protocol_dispatch(protocol, dispatch);
-        (FactKey::ProtocolDispatch(protocol), changed)
+        let revision = self.define_protocol_dispatch(protocol, dispatch);
+        (FactKey::ProtocolDispatch(protocol), revision)
     }
 
     pub(crate) fn protocol_dispatch(&self, protocol: ModuleId) -> Option<&ProtocolDispatch> {
@@ -2022,14 +1965,6 @@ fn module_name_segments(name: &str) -> Vec<String> {
         .filter(|segment| !segment.is_empty())
         .map(str::to_string)
         .collect()
-}
-
-fn protocol_domain_type_name(protocol: ModuleId, arity: usize) -> TypeName {
-    TypeName {
-        module: protocol,
-        name: "t".to_string(),
-        arity,
-    }
 }
 
 fn impl_target_ty<T: crate::types::Types<Ty = Ty>>(t: &mut T, module_name: &str) -> Ty {

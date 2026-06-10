@@ -441,7 +441,7 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
 }
 
 #[test]
-fn compiler2_protocol_domain_and_dispatch_facts_revise_when_impls_land() {
+fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when_impls_land() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
@@ -507,13 +507,56 @@ fn compiler2_protocol_domain_and_dispatch_facts_revise_when_impls_land() {
         arity: 1,
     };
     assert!(
-        protocol_defined.contains(&presence(FactKey::TypeDefined(t0.clone()), true))
-            && protocol_defined.contains(&presence(FactKey::TypeDefined(t1.clone()), true))
-            && protocol_defined.contains(&presence(FactKey::ProtocolDispatch(protocol), true)),
-        "defining the protocol should publish both protocol-domain type facts and an initial dispatch fact",
+        protocol_defined.contains(&presence(FactKey::ProtocolDispatch(protocol), 1)),
+        "defining the protocol should publish the initial dispatch fact",
+    );
+    assert!(
+        !protocol_defined
+            .iter()
+            .any(|(fact, _)| matches!(fact, FactKey::TypeDefined(name) if name == &t0 || name == &t1)),
+        "protocol definition should note t/0 and t/1 but leave TypeDefined facts to DeriveTypeDef",
+    );
+    assert_eq!(
+        world.fact_revision(FactKey::TypeDefined(t0.clone())),
+        None,
+        "t/0 should stay unresolved until a type consumer demands it",
+    );
+    assert_eq!(
+        world.fact_revision(FactKey::TypeDefined(t1.clone())),
+        None,
+        "t/1 should stay unresolved until a type consumer demands it",
     );
 
-    let initial = capture
+    assert!(
+        world.demand(Job::DeriveTypeDef(t0.clone())),
+        "t/0 derivation should be demandable"
+    );
+    assert!(
+        world.demand(Job::DeriveTypeDef(t1.clone())),
+        "t/1 derivation should be demandable"
+    );
+    assert_resolved(
+        world.drive(),
+        "demanded protocol-domain types should resolve through the normal DeriveTypeDef path",
+    );
+    let t0_derived = outputs
+        .take(Job::DeriveTypeDef(t0.clone()))
+        .expect("DeriveTypeDef job effects for protocol t/0");
+    let t1_derived = outputs
+        .take(Job::DeriveTypeDef(t1.clone()))
+        .expect("DeriveTypeDef job effects for protocol t/1");
+    assert_eq!(
+        t0_derived,
+        vec![presence(FactKey::TypeDefined(t0.clone()), 1)],
+        "t/0 should publish exactly one marker type fact",
+    );
+    assert_eq!(
+        t1_derived,
+        vec![presence(FactKey::TypeDefined(t1.clone()), 1)],
+        "t/1 should publish exactly one marker type fact",
+    );
+
+    let mut type_events = capture
         .find(&["fz", "compiler2", "type", "defined"])
         .into_iter()
         .filter(|event| metadata_str(event, "name") == "t")
@@ -525,10 +568,19 @@ fn compiler2_protocol_domain_and_dispatch_facts_revise_when_impls_land() {
             )
         })
         .collect::<Vec<_>>();
+    type_events.sort();
+    let t0_def = world
+        .type_def(&t0)
+        .cloned()
+        .expect("the demanded monomorphic protocol-domain type should be stored");
+    let t1_def = world
+        .type_def(&t1)
+        .cloned()
+        .expect("the demanded parametric protocol-domain type should be stored");
     assert_eq!(
-        initial.len(),
+        type_events.len(),
         2,
-        "the initial protocol surface should publish both t arities once"
+        "only the demanded protocol-domain type derivations should publish type-defined events"
     );
 
     let mut expect = Types::new();
@@ -537,9 +589,29 @@ fn compiler2_protocol_domain_and_dispatch_facts_revise_when_impls_land() {
     ));
     let rendered = expect.display(&marker).to_string();
     assert_eq!(
-        initial,
+        type_events,
         vec![(0, 1, rendered.clone()), (1, 1, rendered.clone())],
-        "before any impl lands, both protocol-domain facts should resolve to the protocol marker",
+        "both protocol-domain arities should resolve to the same protocol marker",
+    );
+    assert_eq!(t0_def.params, Vec::new(), "t/0 should remain monomorphic");
+    assert_eq!(
+        t1_def.params,
+        vec![TypeVarId(0)],
+        "t/1 should remain a parametric type definition",
+    );
+    let world_marker = world
+        .types_mut()
+        .opaque_of(&crate::frontend::protocols::protocol_domain_tag(
+            &crate::modules::identity::ModuleName::parse_dotted("Proof").expect("protocol name should parse"),
+        ));
+    assert_eq!(t0_def.ty, world_marker, "t/0 should resolve to the marker opaque");
+    assert_eq!(
+        t1_def.ty, world_marker,
+        "t/1 should resolve to the same interned marker opaque"
+    );
+    assert_eq!(
+        t0_def.ty, t1_def.ty,
+        "protocol t/0 and t/1 should literally name the same interned marker type",
     );
 
     assert!(
@@ -554,46 +626,40 @@ fn compiler2_protocol_domain_and_dispatch_facts_revise_when_impls_land() {
         .take(Job::DefineModule(owner))
         .expect("DefineModule job effects for the impl owner");
     assert!(
-        owner_defined.contains(&presence(FactKey::TypeDefined(t0.clone()), true))
-            && owner_defined.contains(&presence(FactKey::TypeDefined(t1.clone()), true))
-            && owner_defined.contains(&presence(FactKey::ProtocolDispatch(protocol), true)),
-        "adding an impl should revise both protocol-domain type facts and the dispatch fact",
+        owner_defined.contains(&presence(FactKey::ProtocolDispatch(protocol), 2)),
+        "adding an impl should revise the dispatch fact",
     );
-
-    let any = world.types_mut().any();
-    let list_any = world.types_mut().list(any);
-    let widened_t0 = world
+    assert!(
+        !owner_defined
+            .iter()
+            .any(|(fact, _)| matches!(fact, FactKey::TypeDefined(name) if name == &t0 || name == &t1)),
+        "adding an impl should not revise protocol-domain type facts",
+    );
+    assert_eq!(
+        world.fact_revision(FactKey::TypeDefined(t0.clone())),
+        Some(1),
+        "t/0 should keep its original type fact revision after the impl lands",
+    );
+    assert_eq!(
+        world.fact_revision(FactKey::TypeDefined(t1.clone())),
+        Some(1),
+        "t/1 should keep its original type fact revision after the impl lands",
+    );
+    let stable_t0 = world
         .type_def(&t0)
-        .expect("the monomorphic protocol-domain fact should stay stored after widening")
-        .ty;
-    let marker_t0 = world
-        .types_mut()
-        .opaque_of(&crate::frontend::protocols::protocol_domain_tag(
-            &crate::modules::identity::ModuleName::parse_dotted("Proof").expect("protocol name should parse"),
-        ));
-    assert_eq!(
-        widened_t0,
-        world.types_mut().union(marker_t0, list_any),
-        "t/0 should widen from the marker to the marker-or-list(any) domain when List implements the protocol",
-    );
-
-    let elem = world
-        .types_mut()
-        .type_var(crate::frontend::protocols::PROTOCOL_ELEM_VAR);
-    let list_elem = world.types_mut().list(elem);
-    let widened_t1 = world
+        .cloned()
+        .expect("the monomorphic protocol-domain type should stay stored after the impl lands");
+    let stable_t1 = world
         .type_def(&t1)
-        .expect("the parametric protocol-domain fact should stay stored after widening")
-        .ty;
-    let marker_t1 = world
-        .types_mut()
-        .opaque_of(&crate::frontend::protocols::protocol_domain_tag(
-            &crate::modules::identity::ModuleName::parse_dotted("Proof").expect("protocol name should parse"),
-        ));
+        .cloned()
+        .expect("the parametric protocol-domain type should stay stored after the impl lands");
     assert_eq!(
-        widened_t1,
-        world.types_mut().union(marker_t1, list_elem),
-        "t(a) should widen from the marker to the marker-or-list(a) domain when List implements the protocol",
+        stable_t0, t0_def,
+        "the impl set should not mutate the stored t/0 definition",
+    );
+    assert_eq!(
+        stable_t1, t1_def,
+        "the impl set should not mutate the stored t/1 definition",
     );
 
     let dispatch = world
@@ -1434,14 +1500,13 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
 
     let main_return = returns.last_for_function(root_id, main_id).return_ty;
     let enum_reduce_return = returns.last_for_function(root_id, enum_reduce_id).return_ty;
-    let user_reducer_return = returns.last_for_function(root_id, user_reducer_id).return_ty;
     let list_impl_return = returns.last_for_function(root_id, list_impl_reduce_id).return_ty;
-    assert!(
-        main_return == enum_reduce_return && main_return == user_reducer_return,
-        "the selected reduce path should settle main/0, Enum.reduce/3, and the user reducer to one shared return type",
+    assert_eq!(
+        main_return, enum_reduce_return,
+        "the selected reduce path should settle main/0 and Enum.reduce/3 to one return type",
     );
-    assert!(
-        list_impl_return != main_return,
+    assert_ne!(
+        list_impl_return, main_return,
         "the selected List-backed protocol callback should keep a distinct wrapper return from the reduced accumulator value",
     );
 }
