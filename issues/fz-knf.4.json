@@ -6,6 +6,8 @@
   "blocks": [
     "fz-knf.5"
   ],
+  "closed_at": "2026-06-10T17:57:56Z",
+  "close_reason": "superseded by everything-is-incremental: B1 deletes the SemanticClosure composite; widen does not fit the pure Reconcile trait — surviving folds carried to the incremental epic (see comment)",
   "created": "2026-06-10T01:53:47Z",
   "description": "Activation return: reconcile = (widen(current, incoming), advance iff widened != current) -- replaces define_return's bespoke path; keep Option current = not-computed (unknown-is-not-none). define_analysis + SemanticClosure composite likewise. Removes the last special-case reconcilers.",
   "id": "fz-knf.4",
@@ -18,8 +20,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Fold Activation widen + SemanticClosure composite into Reconcile impls",
   "type": "task",
-  "updated_at": "2026-06-10T17:57:55Z"
+  "updated_at": "2026-06-10T17:57:56Z"
 }
