@@ -11,9 +11,15 @@
   "id": "fz-knf.4",
   "labels": [],
   "parent": "fz-knf",
+  "comments": [
+    {
+      "text": "Closed as superseded by everything-is-incremental (.agent/targets/everything-is-incremental.md). Carry-overs for the incremental epic ticketing: (1) trivial fold of ActivationMap::define_analysis (semantic.rs:112) and CallSiteMap::define (semantic.rs:144) onto monotonic() — these stores survive B2; (2) the define_return widen (semantic.rs:90) needs \u0026mut Types and cannot fit the pure Reconcile trait (identity.rs:589) — the widen-vs-trait decision travels with whatever ticket reshapes ReturnType reconciliation; (3) the SemanticClosure-composite half is deleted outright by arc B1 (SemanticClosureMap, DependencySnapshot, semantic_closure_is_current, wait_for_fresh_closure).",
+      "timestamp": "2026-06-10T17:57:55Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Fold Activation widen + SemanticClosure composite into Reconcile impls",
   "type": "task",
-  "updated_at": "2026-06-10T01:53:48Z"
+  "updated_at": "2026-06-10T17:57:55Z"
 }
