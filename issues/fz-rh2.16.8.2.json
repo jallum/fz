@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.16.8.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.16.8.4"
+  ],
   "created": "2026-06-10T12:05:22Z",
   "description": "Goal: source publication owns scope facts, not recursive quoted-tree rewriting. Signal: source_publish reads expanded scope fragments, reserves names, applies forms, and publishes facts, while item-macro expansion itself lives behind QuotedExpander; publication no longer carries its own recursive macro/sugar walker; direct source and Fz.Compiler.define remain one raw publication transaction. Strategy: after QuotedExpander exists, route item-macro handling and any other scope-tier expansion through it, keep publish_scope focused on reserve/apply/publish work, and delete the remaining expansion logic from ScopeSession.",
   "id": "fz-rh2.16.8.2",
