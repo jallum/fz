@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use fz_runtime::any_value::{AnyValueRef, ValueKind};
+use fz_runtime::any_value::AnyValueRef;
 
 use crate::ast::{Attribute, SpecDecl, TypeExprBody};
 use crate::compiler::source::Span;
@@ -22,12 +22,12 @@ use super::identity::{FunctionId, FunctionSource, ModuleExport, ModuleId, NotedT
 use super::namespace::{Namespace, NamespaceSymbol};
 use super::protocol::ProtocolCallbackImpl;
 use super::quoted_expander::{
-    ExpandedRoot, ExpandedValue, QuotedExpansionCtx, alias_path, emit_internal_surface_error, emit_job_diagnostic,
+    ExpandedScopeFragment, QuotedExpansionCtx, emit_internal_surface_error, emit_job_diagnostic,
+    expand_item_macro_fragment, read_scope_surface_root,
 };
 use super::quoted_surface::{
     CompilerService, CompilerServiceForm, FunctionForm, MacroCallForm, ProtocolImplForm, ScopeForm, ScopeSurface,
     SurfaceSourceContext, read_module_body_surface, read_protocol_body_surface, read_protocol_impl_body_surface,
-    read_scope_surface,
 };
 use super::scheduler::FatalError;
 use super::scope::ScopeSnapshot;
@@ -482,7 +482,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     }
 
     fn apply_compiler_define(&mut self, service: &CompilerServiceForm) -> Result<(), FatalError> {
-        let surface = self.scope_surface_from_root(&service.source, "Fz.Compiler.define source")?;
+        let surface = read_scope_surface_root(self.world, self.code_id, &service.source, "Fz.Compiler.define source")?;
         if !surface.attrs.is_empty() || surface.forms.len() != 1 {
             return Err(emit_job_diagnostic(
                 self.world,
@@ -579,68 +579,12 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
 
     fn apply_item_macro_call(&mut self, macro_call: &MacroCallForm) -> Result<Option<JobEffects>, FatalError> {
         let scope = ScopeSnapshot::module(self.current_module, self.namespace);
-        let expanded = match self.expand_item_macro_call(macro_call, scope)? {
-            ExpandedRoot::Complete(root) => root,
-            ExpandedRoot::Blocked(effects) => return Ok(Some(effects)),
+        let surface = match expand_item_macro_fragment(self, self.code_id, macro_call, scope)? {
+            ExpandedScopeFragment::Complete(surface) => surface,
+            ExpandedScopeFragment::Blocked(effects) => return Ok(Some(effects)),
         };
-        let surface = self.surface_from_expanded_item_macro(&expanded, macro_call.span)?;
         let context = FragmentPublicationContext::expanded_fragment(self.current_module);
         self.apply_surface_fragment(&surface, &context)
-    }
-
-    fn expand_item_macro_call(
-        &mut self,
-        macro_call: &MacroCallForm,
-        scope: ScopeSnapshot,
-    ) -> Result<ExpandedRoot, FatalError> {
-        let owner = &macro_call.source;
-        let cursor = owner.cursor();
-        let Some(node) = cursor.ast_node().map_err(|error| {
-            emit_internal_surface_error(self.world, format!("item macro source read failed: {error}"))
-        })?
-        else {
-            return Err(self.item_macro_not_defmacro("item", macro_call.span));
-        };
-        let Some(result) = self.expand_ast_call(owner, &cursor, &node, scope, 0)? else {
-            return Err(self.item_macro_not_defmacro(&item_macro_display_name(&node), macro_call.span));
-        };
-        match result {
-            ExpandedValue::Complete(root) => Ok(ExpandedRoot::Complete(owner.subroot(root))),
-            ExpandedValue::Blocked(effects) => Ok(ExpandedRoot::Blocked(effects)),
-        }
-    }
-
-    fn surface_from_expanded_item_macro(
-        &self,
-        root: &QuotedSourceRoot,
-        span: Span,
-    ) -> Result<ScopeSurface, FatalError> {
-        let surface = self.scope_surface_from_root(root, "item macro expanded source")?;
-        if surface.forms.iter().any(|form| matches!(form, ScopeForm::MacroCall(_))) {
-            return Err(emit_job_diagnostic(
-                self.world,
-                Diagnostic::error(
-                    codes::MACRO_NOT_A_DEFMACRO,
-                    "item macro expansion returned a non-definition call",
-                    span,
-                ),
-            ));
-        }
-        Ok(surface)
-    }
-
-    fn scope_surface_from_root(&self, root: &QuotedSourceRoot, context: &str) -> Result<ScopeSurface, FatalError> {
-        let code_text = self.world.code_text(self.code_id).to_owned();
-        let ctx = SurfaceSourceContext::new(self.code_id, &code_text);
-        let source = if root.root().is_empty_list() || root.root().tag() == ValueKind::LIST {
-            root.clone()
-        } else {
-            root.interned_list_subroot(&[root.root()]).map_err(|error| {
-                emit_internal_surface_error(self.world, format!("{context} wrapper failed: {error}"))
-            })?
-        };
-        read_scope_surface(&source, &ctx)
-            .map_err(|error| emit_internal_surface_error(self.world, format!("{context} read failed: {error}")))
     }
 
     fn apply_surface_fragment(
@@ -719,17 +663,6 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             ScopeForm::MacroCall(macro_call) => self.apply_item_macro_call(macro_call),
             ScopeForm::Struct(_) => Ok(None),
         }
-    }
-
-    fn item_macro_not_defmacro(&self, name: &str, span: Span) -> FatalError {
-        emit_job_diagnostic(
-            self.world,
-            Diagnostic::error(
-                codes::MACRO_NOT_A_DEFMACRO,
-                format!("item-level call `{name}(...)` is not a defmacro"),
-                span,
-            ),
-        )
     }
 
     fn blocked_effects(&self, mut effects: JobEffects) -> JobEffects {
@@ -1131,22 +1064,6 @@ fn module_info_match_clause(
 ) -> Result<AnyValueRef, QuotedSourceError> {
     let patterns = builder.list(&[pattern])?;
     builder.call("->", meta, &[patterns, body])
-}
-
-fn item_macro_display_name(node: &super::source::QuotedAstNode) -> String {
-    if let Ok(name) = node.head.atom_name() {
-        return name;
-    }
-    if let Ok(Some(head_node)) = node.head.ast_node()
-        && head_node.head.atom_name().as_deref() == Ok(".")
-        && let Ok(parts) = head_node.tail.list_items()
-        && let [module, function] = parts.as_slice()
-        && let Ok(path) = alias_path(module)
-        && let Ok(function) = function.atom_name()
-    {
-        return format!("{}.{}", path.join("."), function);
-    }
-    "item".to_string()
 }
 
 fn required_remote_macro_list(required_remote_macros: &HashSet<FunctionId>) -> Vec<FunctionId> {

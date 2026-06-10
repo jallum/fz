@@ -8,9 +8,11 @@ use crate::diag::{Diagnostic, codes};
 use crate::telemetry::opaque_debug;
 use crate::{measurements, metadata};
 
+use super::code::CodeId;
 use super::drive::{FactKey, Job, JobEffects};
 use super::identity::{FunctionId, ModuleId};
 use super::namespace::NamespaceSymbol;
+use super::quoted_surface::{MacroCallForm, ScopeForm, ScopeSurface, SurfaceSourceContext, read_scope_surface};
 use super::scope::ScopeSnapshot;
 use super::source::{QuotedAstNode, QuotedLexicalContextKind, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
 use super::source_sugar::rewrite_source_sugar;
@@ -25,6 +27,11 @@ pub(crate) enum ExpandedRoot {
 
 pub(crate) enum ExpandedValue {
     Complete(AnyValueRef),
+    Blocked(JobEffects),
+}
+
+pub(crate) enum ExpandedScopeFragment {
+    Complete(ScopeSurface),
     Blocked(JobEffects),
 }
 
@@ -423,6 +430,63 @@ pub(crate) fn is_list_like(cursor: &QuotedSourceCursor) -> bool {
     cursor.root().is_empty_list() || cursor.root().tag() == ValueKind::LIST
 }
 
+pub(crate) fn expand_item_macro_fragment<'tel, C: QuotedExpansionCtx<'tel>>(
+    ctx: &mut C,
+    code_id: CodeId,
+    macro_call: &MacroCallForm,
+    scope: ScopeSnapshot,
+) -> Result<ExpandedScopeFragment, super::scheduler::FatalError> {
+    let owner = &macro_call.source;
+    let cursor = owner.cursor();
+    let Some(node) = cursor
+        .ast_node()
+        .map_err(|error| emit_internal_surface_error(ctx.world(), format!("item macro source read failed: {error}")))?
+    else {
+        return Err(item_macro_not_defmacro(ctx.world(), "item", macro_call.span));
+    };
+    let Some(result) = ctx.expand_ast_call(owner, &cursor, &node, scope, 0)? else {
+        return Err(item_macro_not_defmacro(
+            ctx.world(),
+            &item_macro_display_name(&node),
+            macro_call.span,
+        ));
+    };
+    let expanded = match result {
+        ExpandedValue::Complete(root) => owner.subroot(root),
+        ExpandedValue::Blocked(effects) => return Ok(ExpandedScopeFragment::Blocked(effects)),
+    };
+    let surface = read_scope_surface_root(ctx.world(), code_id, &expanded, "item macro expanded source")?;
+    if surface.forms.iter().any(|form| matches!(form, ScopeForm::MacroCall(_))) {
+        return Err(emit_job_diagnostic(
+            ctx.world(),
+            Diagnostic::error(
+                codes::MACRO_NOT_A_DEFMACRO,
+                "item macro expansion returned a non-definition call",
+                macro_call.span,
+            ),
+        ));
+    }
+    Ok(ExpandedScopeFragment::Complete(surface))
+}
+
+pub(crate) fn read_scope_surface_root(
+    world: &World<'_>,
+    code_id: CodeId,
+    root: &QuotedSourceRoot,
+    context: &str,
+) -> Result<ScopeSurface, super::scheduler::FatalError> {
+    let code_text = world.code_text(code_id).to_owned();
+    let ctx = SurfaceSourceContext::new(code_id, &code_text);
+    let source = if root.root().is_empty_list() || root.root().tag() == ValueKind::LIST {
+        root.clone()
+    } else {
+        root.interned_list_subroot(&[root.root()])
+            .map_err(|error| emit_internal_surface_error(world, format!("{context} wrapper failed: {error}")))?
+    };
+    read_scope_surface(&source, &ctx)
+        .map_err(|error| emit_internal_surface_error(world, format!("{context} read failed: {error}")))
+}
+
 pub(crate) fn emit_macro_expanded(
     world: &World<'_>,
     function: FunctionId,
@@ -482,4 +546,37 @@ fn remote_macro_not_required(
             Span::DUMMY,
         ),
     )
+}
+
+fn item_macro_not_defmacro(world: &World<'_>, name: &str, span: Span) -> super::scheduler::FatalError {
+    emit_job_diagnostic(
+        world,
+        Diagnostic::error(
+            codes::MACRO_NOT_A_DEFMACRO,
+            format!("item-level call `{name}(...)` is not a defmacro"),
+            span,
+        ),
+    )
+}
+
+fn item_macro_display_name(node: &QuotedAstNode) -> String {
+    if let Ok(function) = node.head.atom_name() {
+        return function;
+    }
+    let Ok(Some(head_node)) = node.head.ast_node() else {
+        return "item".to_string();
+    };
+    let Ok(parts) = head_node.tail.list_items() else {
+        return "item".to_string();
+    };
+    let [module, function] = parts.as_slice() else {
+        return "item".to_string();
+    };
+    if head_node.head.atom_name().as_deref() == Ok(".")
+        && let Ok(path) = alias_path(module)
+        && let Ok(function) = function.atom_name()
+    {
+        return format!("{}.{}", path.join("."), function);
+    }
+    "item".to_string()
 }
