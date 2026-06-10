@@ -72,10 +72,7 @@ fn compiler2_runtime_prelude_does_not_run_frontend_before_drive() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: format!(
-            "{}\nfn foo(), do: 42\n",
-            include_str!("../../fixtures/quicksort/input.fz")
-        ),
+        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     });
     compiler.submit_root(RootSubmission {
         module_name: None,
@@ -117,7 +114,7 @@ fn compiler2_notes_top_level_types_into_the_global_scope() {
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("types.fz".to_string()),
-        text: "@type tkf_alpha :: integer\n@type tkf_beta(a) :: {a, a}\n\nfn main(), do: 1\n".to_string(),
+        text: include_str!("../../fixtures2/00002_types_top_level.fz").to_string(),
     });
     assert_resolved(compiler.drive(), "first drive should index the source");
     assert!(
@@ -167,15 +164,7 @@ fn compiler2_records_type_references_as_consumer_dependencies() {
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("refs.fz".to_string()),
-        text: concat!(
-            "@type tkf_target :: integer\n",
-            "@type tkf_param :: integer\n",
-            "@type tkf_box(a) :: list(a)\n",
-            "@type tkf_wrapper :: tkf_box(tkf_target)\n",
-            "@spec tkf_uses(tkf_target, a) :: a\n",
-            "fn tkf_uses(x :: tkf_param, y), do: x\n",
-        )
-        .to_string(),
+        text: include_str!("../../fixtures2/00003_type_refs.fz").to_string(),
     });
     assert_resolved(compiler.drive(), "first drive should index the source");
     assert!(
@@ -256,14 +245,7 @@ fn compiler2_derive_type_def_pulls_a_referenced_type_and_its_wait_set_leaving_ot
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("typedefs.fz".to_string()),
-        text: concat!(
-            "@type tkf_int :: integer\n",
-            "@type tkf_box(a) :: list(a)\n",
-            "@type tkf_wrapper :: tkf_box(tkf_int)\n",
-            "@type tkf_cold :: {tkf_int, tkf_int}\n",
-            "fn main(), do: 1\n",
-        )
-        .to_string(),
+        text: include_str!("../../fixtures2/00004_typedefs.fz").to_string(),
     });
     assert_resolved(compiler.drive(), "first drive should index the source");
     assert!(
@@ -365,7 +347,7 @@ fn compiler2_derive_type_def_mints_a_refines_brand_inner_in_symbol() {
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("brand.fz".to_string()),
-        text: "@type tkf_pos :: refines integer\n\nfn main(), do: 1\n".to_string(),
+        text: include_str!("../../fixtures2/00005_brand.fz").to_string(),
     });
     assert_resolved(compiler.drive(), "first drive should index the source");
     assert!(
@@ -421,20 +403,7 @@ fn compiler2_protocol_domain_and_dispatch_facts_revise_when_impls_land() {
     let mut world = crate::compiler2::World::new(&tel);
     let code_id = world.submit_code(
         Some("protocol_domain.fz".to_string()),
-        concat!(
-            "defprotocol Proof do\n",
-            "  @spec pick(t(a), a) :: a\n",
-            "  fn pick(value, fallback)\n",
-            "end\n",
-            "\n",
-            "defmodule Box do\n",
-            "  fn pick(value, _fallback), do: value\n",
-            "  defimpl Proof, for: List do\n",
-            "    fn pick(value, fallback), do: Box.pick(value, fallback)\n",
-            "  end\n",
-            "end\n",
-        )
-        .to_string(),
+        include_str!("../../fixtures2/00006_protocol_domain.fz").to_string(),
     );
     assert_resolved(
         world.drive(),
@@ -609,10 +578,7 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
 
     let mut compiler = Compiler2::new(&tel);
-    let source = format!(
-        "{}\nfn foo(), do: 42\n",
-        include_str!("../../fixtures/quicksort/input.fz")
-    );
+    let source = include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string();
 
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
@@ -776,10 +742,7 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
     let mut compiler = Compiler2::new(&tel);
     let _code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: format!(
-            "{}\nfn foo(), do: 42\n",
-            include_str!("../../fixtures/quicksort/input.fz")
-        ),
+        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -970,7 +933,7 @@ fn compiler2_runtime_refs_pull_only_the_reached_runtime_modules() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("runtime_refs.fz".to_string()),
-        text: "fn main(), do: dbg(Process.heap_alloc_stats())\n".to_string(),
+        text: include_str!("../../fixtures2/00007_runtime_refs.fz").to_string(),
     });
     assert_resolved(
         compiler.drive(),
@@ -1059,7 +1022,7 @@ fn compiler2_analyze_activation_publishes_one_whole_callsite_fact_per_call() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/callsite_fact_surface.fz".to_string()),
-        text: "fn foo(), do: 42\nfn main(), do: foo()\n".to_string(),
+        text: include_str!("../../fixtures2/00008_callsite_fact_surface.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -1107,7 +1070,7 @@ fn compiler2_unused_runtime_library_stays_cold() {
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("no_runtime.fz".to_string()),
-        text: "fn main(), do: 42\n".to_string(),
+        text: include_str!("../../fixtures2/00009_no_runtime.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -1160,10 +1123,7 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
-        text: r#"
-fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -1423,10 +1383,7 @@ fn compiler2_materialization_projects_only_the_closed_quicksort_frontier() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: format!(
-            "{}\nfn foo(), do: 42\n",
-            include_str!("../../fixtures/quicksort/input.fz")
-        ),
+        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -1545,15 +1502,7 @@ fn compiler2_materialization_turns_semantically_cold_cond_arms_into_halt_stubs()
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("cond_specialization.fz".to_string()),
-        text: r#"
-fn main() do
-  cond do
-    false -> dbg(:bad)
-    2 + 2 == 4 -> dbg(:ok)
-  end
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00011_cond_specialization.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -1624,10 +1573,7 @@ fn compiler2_materialization_freezes_only_the_selected_enum_reduce_path() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
-        text: r#"
-fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -1747,10 +1693,7 @@ fn compiler2_abi_ready_makes_tuple_field_return_delivery_explicit_for_quicksort(
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: format!(
-            "{}\nfn foo(), do: 42\n",
-            include_str!("../../fixtures/quicksort/input.fz")
-        ),
+        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -1824,18 +1767,7 @@ fn compiler2_abi_ready_boxes_heap_projection_returns_at_function_boundaries() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/compiler2_projection_boundary_abi.fz".to_string()),
-        text: r#"
-fn tuple_first({value, _}), do: value
-fn map_first(map), do: map[:value]
-
-fn main() do
-  {
-    tuple_first({2, :ok}),
-    map_first(%{value: 3})
-  }
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00012_projection_boundary_abi.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -1881,10 +1813,7 @@ fn compiler2_abi_ready_derives_only_the_closed_enum_reduce_callable_entries() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
-        text: r#"
-fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -2013,14 +1942,7 @@ fn compiler2_materialization_projects_variadic_extern_signatures_and_callsite_ma
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/variadic_open_compiler2.fz".to_string()),
-        text: r#"
-extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
-
-fn main() do
-  libc::open("x", 0, 0o644 :: integer)
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00013_variadic_open.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -2075,12 +1997,7 @@ fn compiler2_abi_ready_fails_for_unresolved_named_function_refs_at_callable_boun
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/unresolved_callable_boundary.fz".to_string()),
-        text: r#"
-fn apply(f, x), do: f.(x)
-
-fn main(), do: apply(&missing/1, 42)
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00014_unresolved_callable_boundary.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -2131,10 +2048,7 @@ fn compiler2_emission_ready_projects_only_the_closed_quicksort_inventory() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: format!(
-            "{}\nfn foo(), do: 42\n",
-            include_str!("../../fixtures/quicksort/input.fz")
-        ),
+        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -2228,10 +2142,7 @@ fn compiler2_emission_ready_includes_the_required_enum_reduce_callable_entries()
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
-        text: r#"
-fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -2327,10 +2238,7 @@ fn compiler2_emission_ready_revision_stays_stable_for_identical_recompute() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: format!(
-            "{}\nfn foo(), do: 42\n",
-            include_str!("../../fixtures/quicksort/input.fz")
-        ),
+        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -2377,10 +2285,7 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: format!(
-            "{}\nfn foo(), do: 42\n",
-            include_str!("../../fixtures/quicksort/input.fz")
-        ),
+        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -2521,10 +2426,7 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: format!(
-            "{}\nfn foo(), do: 42\n",
-            include_str!("../../fixtures/quicksort/input.fz")
-        ),
+        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -2612,10 +2514,7 @@ fn compiler2_backend_program_attaches_the_closed_enum_reduce_callable_boundaries
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
-        text: r#"
-fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -2683,14 +2582,7 @@ fn compiler2_backend_program_preserves_variadic_extern_wire_classes() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/variadic_open_compiler2.fz".to_string()),
-        text: r#"
-extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
-
-fn main() do
-  libc::open("x", 0, 0o644 :: integer)
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00013_variadic_open.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -2764,10 +2656,7 @@ fn compiler2_native_program_keeps_only_the_closed_quicksort_inventory() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: format!(
-            "{}\nfn foo(), do: 42\n",
-            include_str!("../../fixtures/quicksort/input.fz")
-        ),
+        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -2828,10 +2717,7 @@ fn compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: format!(
-            "{}\nfn foo(), do: 42\n",
-            include_str!("../../fixtures/quicksort/input.fz")
-        ),
+        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -2911,10 +2797,7 @@ fn compiler2_native_program_keeps_the_closed_enum_reduce_callable_entries() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
-        text: r#"
-fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -2990,14 +2873,7 @@ fn compiler2_native_program_preserves_variadic_extern_wrappers_and_marshals() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/variadic_open_compiler2.fz".to_string()),
-        text: r#"
-extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
-
-fn main() do
-  libc::open("x", 0, 0o644 :: integer)
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00013_variadic_open.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -3048,10 +2924,7 @@ fn compiler2_native_program_revision_stays_stable_for_identical_recompute() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: format!(
-            "{}\nfn foo(), do: 42\n",
-            include_str!("../../fixtures/quicksort/input.fz")
-        ),
+        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -3112,10 +2985,7 @@ fn compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: format!(
-            "{}\nfn foo(), do: 42\nfn entry() do\n  dbg(qsort([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5]))\n  42\nend\n",
-            include_str!("../../fixtures/quicksort/input.fz")
-        ),
+        text: include_str!("../../fixtures2/00020_quicksort_jit_entry.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -3164,10 +3034,7 @@ fn compiler2_native_codegen_brackets_every_phase_under_one_compile_span() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_entry.fz".to_string()),
-        text: format!(
-            "{}\nfn entry() do\n  dbg(qsort([3, 1, 2]))\n  0\nend\n",
-            include_str!("../../fixtures/quicksort/input.fz")
-        ),
+        text: include_str!("../../fixtures2/00019_quicksort_entry.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -3270,17 +3137,7 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/compiler2_spawn_then_receive.fz".to_string()),
-        text: r#"
-fn child(), do: send(1, 42)
-
-fn main() do
-  spawn(child)
-  receive do
-    x -> x
-  end
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00016_spawn_then_receive.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -3358,19 +3215,7 @@ fn compiler2_native_program_jit_runs_spawn_receive_and_assert_through_compiler2_
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/compiler2_spawn_receive_assert.fz".to_string()),
-        text: r#"
-fn child(), do: send(1, 42)
-
-fn main() do
-  spawn(child)
-  got = receive do
-    x -> x
-  end
-  assert(got == 42, "parent blocks on receive until the child sends")
-  0
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00017_spawn_receive_assert.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -3414,10 +3259,7 @@ fn compiler2_native_program_jit_runs_enum_reduce_through_compiler2_codegen() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
-        text: r#"
-fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -3461,14 +3303,7 @@ fn compiler2_native_program_jit_runs_variadic_extern_through_compiler2_codegen()
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/variadic_open_compiler2_jit.fz".to_string()),
-        text: r#"
-extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
-
-fn main() do
-  libc::open("/fz_compiler2_missing_9cc0c1d0", 0, 0o644 :: integer)
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00015_variadic_open_jit.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -3547,12 +3382,7 @@ fn compiler2_native_program_jit_keeps_tail_recursion_bounded() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/tail_recursion/input.fz".to_string()),
-        text: r#"
-fn count(0, acc), do: acc
-fn count(n, acc), do: count(n - 1, acc + 1)
-fn main(), do: count(100000, 0)
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00018_tail_recursion.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -3596,10 +3426,7 @@ fn compiler2_interp_runs_quicksort_from_backend_artifacts() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: format!(
-            "{}\nfn foo(), do: 42\nfn entry() do\n  dbg(qsort([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5]))\n  42\nend\n",
-            include_str!("../../fixtures/quicksort/input.fz")
-        ),
+        text: include_str!("../../fixtures2/00020_quicksort_jit_entry.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -3639,10 +3466,7 @@ fn compiler2_interp_runs_enum_reduce_from_backend_artifacts() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
-        text: r#"
-fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -3673,14 +3497,7 @@ fn compiler2_interp_runs_variadic_extern_from_backend_artifacts() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/variadic_printf_compiler2.fz".to_string()),
-        text: r#"
-extern "C" fn libc::printf(fmt :: cstring, ...) :: integer
-
-fn main() do
-  libc::printf("%d", 7)
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00021_variadic_printf.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -3709,12 +3526,7 @@ fn compiler2_interp_honors_typed_entry_dispatch_from_backend_artifacts() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/typed_dispatch_backend_interp.fz".to_string()),
-        text: r#"
-fn check(x :: integer), do: 10
-fn check(_), do: 2
-fn main(), do: check(42) + check(:foo)
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00022_typed_dispatch.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -3742,14 +3554,7 @@ fn compiler2_interp_uses_backend_runtime_self_and_send_intrinsics() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/backend_interp_self_send.fz".to_string()),
-        text: r#"
-fn main() do
-  me = self()
-  send(me, 42)
-  me
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00023_backend_interp_self_send.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -3786,13 +3591,7 @@ fn compiler2_interp_runs_spawned_children_from_backend_runtime_intrinsics() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/backend_interp_spawn.fz".to_string()),
-        text: r#"
-fn main() do
-  spawn(fn () -> dbg(42) end)
-  0
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00024_backend_interp_spawn.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -3832,13 +3631,7 @@ fn compiler2_interp_runs_spawn_opt_children_from_backend_runtime_intrinsics() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/backend_interp_spawn_opt.fz".to_string()),
-        text: r#"
-fn main() do
-  spawn(fn () -> dbg(7) end, 4096)
-  0
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00025_backend_interp_spawn_opt.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -3907,15 +3700,7 @@ fn compiler2_interp_runs_resource_dtors_from_backend_runtime_intrinsics() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/backend_interp_make_resource.fz".to_string()),
-        text: r#"
-extern "C" fn _resource_test_dtor(integer) :: nil
-
-fn main() do
-  make_resource(42, fn (x) -> _resource_test_dtor(x) end)
-  0
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00026_make_resource.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -3968,15 +3753,7 @@ fn compiler2_native_program_resource_fixture_shapes_callable_entries_explicitly(
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/compiler2_resource_callable_shape.fz".to_string()),
-        text: r#"
-extern "C" fn _resource_test_dtor(integer) :: nil
-
-fn main() do
-  make_resource(42, fn (x) -> _resource_test_dtor(x) end)
-  0
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00026_make_resource.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -4049,10 +3826,7 @@ fn compiler2_backend_program_revision_stays_stable_for_identical_recompute() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: format!(
-            "{}\nfn foo(), do: 42\n",
-            include_str!("../../fixtures/quicksort/input.fz")
-        ),
+        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -4101,14 +3875,7 @@ fn compiler2_abi_ready_preserves_variadic_extern_marshals_and_integer_lanes() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/variadic_open_compiler2.fz".to_string()),
-        text: r#"
-extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
-
-fn main() do
-  libc::open("x", 0, 0o644 :: integer)
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00013_variadic_open.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -4169,14 +3936,7 @@ fn compiler2_emission_ready_preserves_variadic_extern_inventory_and_marshals() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/variadic_open_compiler2.fz".to_string()),
-        text: r#"
-extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
-
-fn main() do
-  libc::open("x", 0, 0o644 :: integer)
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00013_variadic_open.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -4237,14 +3997,7 @@ fn compiler2_materialization_resolves_auto_variadic_marshals_from_value_types() 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/variadic_printf_compiler2.fz".to_string()),
-        text: r#"
-extern "C" fn libc::printf(fmt :: cstring, ...) :: integer
-
-fn main() do
-  libc::printf("%d", 7)
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00021_variadic_printf.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -4285,14 +4038,7 @@ fn compiler2_variadic_extern_too_few_args_is_a_lower_diagnostic() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/variadic_open_too_few_compiler2.fz".to_string()),
-        text: r#"
-extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
-
-fn main() do
-  libc::open("x")
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00052_variadic_open_too_few.fz").to_string(),
     });
     compiler.submit_root(RootSubmission {
         module_name: None,
@@ -4343,10 +4089,7 @@ fn compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_nee
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: format!(
-            "{}\nfn foo(), do: 42\n",
-            include_str!("../../fixtures/quicksort/input.fz")
-        ),
+        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -4429,10 +4172,7 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: format!(
-            "{}\nfn foo(), do: 42\n",
-            include_str!("../../fixtures/quicksort/input.fz")
-        ),
+        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -4545,10 +4285,7 @@ fn compiler2_redefining_uncalled_foo_does_not_reopen_quicksort_root() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo_v1.fz".to_string()),
-        text: format!(
-            "{}\nfn foo(), do: 42\n",
-            include_str!("../../fixtures/quicksort/input.fz")
-        ),
+        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -4563,7 +4300,7 @@ fn compiler2_redefining_uncalled_foo_does_not_reopen_quicksort_root() {
 
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo_v2.fz".to_string()),
-        text: "fn foo(), do: 99\n".to_string(),
+        text: include_str!("../../fixtures2/00027_foo_99.fz").to_string(),
     });
     assert_resolved(
         compiler.drive(),
@@ -4593,10 +4330,7 @@ fn compiler2_redefining_main_retracts_the_old_root_frontier_and_activates_foo() 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo_v1.fz".to_string()),
-        text: format!(
-            "{}\nfn foo(), do: 42\n",
-            include_str!("../../fixtures/quicksort/input.fz")
-        ),
+        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -4614,7 +4348,7 @@ fn compiler2_redefining_main_retracts_the_old_root_frontier_and_activates_foo() 
 
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo_v2.fz".to_string()),
-        text: "fn foo(), do: 42\nfn main(), do: foo()\n".to_string(),
+        text: include_str!("../../fixtures2/00008_callsite_fact_surface.fz").to_string(),
     });
     assert_resolved(
         compiler.drive(),
@@ -4660,16 +4394,7 @@ fn compiler2_helper_redefinition_republishes_only_the_dependent_root_frontier() 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/helper_roots_v1.fz".to_string()),
-        text: r#"
-fn positive(n), do: n > 0
-fn wanted(n) when positive(n), do: :yes
-fn wanted(_), do: :no
-fn other(n) when n > 0, do: :yes
-fn other(_), do: :no
-fn main(), do: wanted(1)
-fn other_main(), do: other(1)
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00028_helper_roots.fz").to_string(),
     });
     let main_root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -4690,7 +4415,7 @@ fn other_main(), do: other(1)
 
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/helper_roots_v2.fz".to_string()),
-        text: "fn positive(n), do: n >= 0\n".to_string(),
+        text: include_str!("../../fixtures2/00029_positive_gte.fz").to_string(),
     });
     assert_resolved(
         compiler.drive(),
@@ -4771,7 +4496,7 @@ fn compiler2_submit_root_before_code_reports_unresolved_until_entry_is_defined()
 
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/late_main.fz".to_string()),
-        text: "fn main(), do: 42\n".to_string(),
+        text: include_str!("../../fixtures2/00009_no_runtime.fz").to_string(),
     });
     assert_resolved(
         compiler.drive(),
@@ -4840,7 +4565,7 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_only.fz".to_string()),
-        text: "fn main(), do: 42\n".to_string(),
+        text: include_str!("../../fixtures2/00009_no_runtime.fz").to_string(),
     });
     let _root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -4861,7 +4586,7 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
 
     let late_code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/late_foo.fz".to_string()),
-        text: "fn foo(), do: 42\n".to_string(),
+        text: include_str!("../../fixtures2/00030_foo_42.fz").to_string(),
     });
     assert_resolved(
         compiler.drive(),
@@ -4910,7 +4635,7 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/local_lambda.fz".to_string()),
-        text: "fn main(), do: (fn (x) -> x + 1 end).(41)\n".to_string(),
+        text: include_str!("../../fixtures2/00031_local_lambda.fz").to_string(),
     });
     let _root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -4999,19 +4724,7 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/compiler2_lambda_recursion_keying.fz".to_string()),
-        text: r#"
-fn build(acc, n) do
-  if n == 0 do
-    acc
-  else
-    step = fn () -> build([n | acc], n - 1) end
-    step.()
-  end
-end
-
-fn main(), do: dbg(build([], 5))
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00032_lambda_recursion.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -5079,12 +4792,7 @@ fn compiler2_lowered_body_keeps_clause_projections_separate_from_entry_matching(
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/lowered_clause_projections.fz".to_string()),
-        text: r#"
-fn positive(n), do: n > 0
-fn wanted({:ok, {n, _}}) when positive(n), do: n
-fn wanted(_), do: 0
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00033_clause_projections.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index the clause fixture");
@@ -5143,7 +4851,7 @@ fn compiler2_generated_lambda_body_binds_captures_as_leading_inputs() {
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/lambda_capture_inputs.fz".to_string()),
-        text: "fn main(k), do: fn (x) -> x + k end\n".to_string(),
+        text: include_str!("../../fixtures2/00034_lambda_capture.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index the capture fixture");
@@ -5215,13 +4923,7 @@ fn compiler2_lowered_body_keeps_local_match_asserts_inside_the_body() {
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/lowered_local_match.fz".to_string()),
-        text: r#"
-fn main() do
-  {:ok, n} = {:ok, 42}
-  n
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00035_local_match.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index the local match fixture");
@@ -5281,11 +4983,7 @@ fn compiler2_guard_dispatch_reifies_single_clause_and_transitive_helpers() {
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/guard_helpers.fz".to_string()),
-        text: r#"
-fn positive(n), do: n > 0
-fn wanted(n), do: positive(n)
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00036_guard_helpers.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index helper functions");
@@ -5353,13 +5051,7 @@ fn compiler2_guard_dispatch_threads_call_arguments_and_destructuring() {
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/guard_destructure.fz".to_string()),
-        text: r#"
-fn positive(n), do: n > 0
-fn within(limit, n), do: positive(n + limit)
-fn wanted({:ok, {n, _}}), do: within(1, n)
-fn wanted(_), do: false
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00037_guard_destructure.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index destructuring helpers");
@@ -5418,11 +5110,7 @@ fn compiler2_guard_dispatch_rejects_cycles() {
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/guard_cycle.fz".to_string()),
-        text: r#"
-fn a(n), do: b(n)
-fn b(n), do: a(n)
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00038_guard_cycle.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index cyclic helpers");
@@ -5471,16 +5159,7 @@ fn compiler2_guard_dispatch_rejects_impure_helpers() {
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/guard_impure.fz".to_string()),
-        text: r#"
-fn bad(n) do
-  if n > 0 do
-    true
-  else
-    false
-  end
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00039_guard_impure.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index impure helpers");
@@ -5535,18 +5214,7 @@ fn compiler2_entry_dispatch_plans_clause_heads_with_preconditions_and_helper_gua
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_dispatch_aliases.fz".to_string()),
-        text: r#"
-defmodule Sample do
-  @type count :: integer
-
-  fn positive(n), do: n > 0
-
-  fn wanted(n :: count) when positive(n), do: {:pos, n}
-  fn wanted(0), do: :zero
-  fn wanted(_), do: :fallback
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00040_entry_dispatch_aliases.fz").to_string(),
     });
 
     assert_resolved(
@@ -5626,7 +5294,7 @@ fn compiler2_entry_dispatch_plans_trivial_single_clause_functions() {
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_dispatch_single_clause.fz".to_string()),
-        text: "fn wanted(n), do: n\n".to_string(),
+        text: include_str!("../../fixtures2/00041_entry_dispatch_single.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index the single-clause function");
@@ -5679,14 +5347,7 @@ fn compiler2_entry_dispatch_recomputes_only_the_dependent_helper_blast_radius() 
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_dispatch_blast_radius_v1.fz".to_string()),
-        text: r#"
-fn positive(n), do: n > 0
-fn wanted(n) when positive(n), do: true
-fn wanted(_), do: false
-fn other(n) when n > 0, do: true
-fn other(_), do: false
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00042_blast_radius_v1.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index helper users");
@@ -5727,7 +5388,7 @@ fn other(_), do: false
 
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_dispatch_blast_radius_v2.fz".to_string()),
-        text: "fn positive(n), do: n >= 0\n".to_string(),
+        text: include_str!("../../fixtures2/00029_positive_gte.fz").to_string(),
     });
     assert!(
         compiler.demand(Job::ScopeCode(code_id)),
@@ -5776,16 +5437,7 @@ fn compiler2_index_code_recurses_through_nested_modules() {
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/nested_modules.fz".to_string()),
-        text: r#"
-defmodule X do
-  defmodule Y do
-    defmodule Z do
-      fn func(), do: 20
-    end
-  end
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00044_nested_modules.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index nested module scopes");
@@ -5902,18 +5554,7 @@ fn compiler2_import_only_binds_exact_refs_and_pulls_provider_when_used() {
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_only.fz".to_string()),
-        text: r#"
-defmodule User do
-  import Math, only: [add: 1, add: 2]
-  fn run(), do: add(20, 22)
-end
-
-defmodule Math do
-  fn add(a), do: a
-  fn add(a, b), do: a + b
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00045_import_only.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index import-only scope");
@@ -5986,17 +5627,7 @@ fn compiler2_import_only_missing_target_is_unresolved_when_used() {
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_only_unknown.fz".to_string()),
-        text: r#"
-defmodule User do
-  import Math, only: [missing: 1]
-  fn run(), do: missing(20)
-end
-
-defmodule Math do
-  fn add(a), do: a
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00046_import_only_unknown.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index import-only unknown scope");
@@ -6069,18 +5700,7 @@ fn compiler2_import_all_waits_for_defined_module_surface() {
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_all.fz".to_string()),
-        text: r#"
-defmodule User do
-  import Math
-  fn run(), do: add(20, 22)
-end
-
-defmodule Math do
-  fn add(a), do: a
-  fn add(a, b), do: a + b
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00047_import_all.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index import-all scope");
@@ -6127,19 +5747,7 @@ fn compiler2_import_except_waits_for_defined_module_surface() {
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_except.fz".to_string()),
-        text: r#"
-defmodule User do
-  import Math, except: [add: 1]
-  fn run(), do: add(20, 22)
-end
-
-defmodule Math do
-  fn add(a), do: a
-  fn add(a, b), do: a + b
-  fn sub(a, b), do: a - b
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00048_import_except.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index import-except scope");

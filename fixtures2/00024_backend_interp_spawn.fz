@@ -1,0 +1,5 @@
+
+fn main() do
+  spawn(fn () -> dbg(42) end)
+  0
+end

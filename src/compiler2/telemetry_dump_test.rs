@@ -15,10 +15,7 @@ fn dump_quicksort_compiler2_telemetry_to_jsonl() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: format!(
-            "{}\nfn foo(), do: 42\n",
-            include_str!("../../fixtures/quicksort/input.fz")
-        ),
+        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     });
     compiler.submit_root(RootSubmission {
         module_name: None,
@@ -43,10 +40,7 @@ fn dump_enum_reduce_compiler2_telemetry_to_jsonl() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
-        text: r#"
-fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
     });
     compiler.submit_root(RootSubmission {
         module_name: None,

@@ -21,7 +21,7 @@ fn compiler2_contract_harness_keeps_code_ingest_isolated_from_production_compile
         ContractCase {
             name: "inline_main",
             source_name: "inline_main.fz",
-            source_text: "fn main(), do: 42\n",
+            source_text: include_str!("../../fixtures2/00009_no_runtime.fz"),
         },
         ContractCase {
             name: "fixture_add1",
@@ -252,10 +252,7 @@ struct NativeEntryCase<'a> {
 
 #[test]
 fn compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare() {
-    let quicksort = format!(
-        "{}\nfn foo(), do: 42\nfn entry() do\n  dbg(qsort([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5]))\n  42\nend\n",
-        include_str!("../../fixtures/quicksort/input.fz")
-    );
+    let quicksort = include_str!("../../fixtures2/00020_quicksort_jit_entry.fz").to_string();
     let cases = [
         NativeEntryCase {
             name: "quicksort",
@@ -268,10 +265,7 @@ fn compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare() {
         NativeEntryCase {
             name: "enum_reduce",
             source_name: "fixtures/enum_reduce_compiler2_jit.fz",
-            source_text: r#"
-fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
-"#
-            .to_string(),
+            source_text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
             root_name: "main",
             expected_halt: 15,
             expected_dbg: None,
@@ -279,14 +273,7 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
         NativeEntryCase {
             name: "variadic_extern",
             source_name: "fixtures/variadic_open_compiler2_jit.fz",
-            source_text: r#"
-extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
-
-fn main() do
-  libc::open("/fz_compiler2_missing_9cc0c1d0", 0, 0o644 :: integer)
-end
-"#
-            .to_string(),
+            source_text: include_str!("../../fixtures2/00015_variadic_open_jit.fz").to_string(),
             root_name: "main",
             expected_halt: -1,
             expected_dbg: None,
@@ -347,23 +334,13 @@ fn compiler2_compile_root_aot_consumes_native_program_without_legacy_prepare() {
         (
             "enum_reduce",
             "fixtures/enum_reduce_compiler2_aot.fz",
-            r#"
-fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
-"#
-            .to_string(),
+            include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
             "enum_reduce_compiler2",
         ),
         (
             "variadic_extern",
             "fixtures/variadic_open_compiler2_aot.fz",
-            r#"
-extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
-
-fn main() do
-  libc::open("/fz_compiler2_missing_9cc0c1d0", 0, 0o644 :: integer)
-end
-"#
-            .to_string(),
+            include_str!("../../fixtures2/00015_variadic_open_jit.fz").to_string(),
             "variadic_open_compiler2",
         ),
     ];
@@ -415,15 +392,7 @@ fn compiler2_run_root_jit_executes_resources_without_legacy_prepare() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/compiler2_run_root_jit_resource.fz".to_string()),
-        text: r#"
-extern "C" fn _resource_test_dtor(integer) :: nil
-
-fn main() do
-  make_resource(42, fn (x) -> _resource_test_dtor(x) end)
-  0
-end
-"#
-        .to_string(),
+        text: include_str!("../../fixtures2/00026_make_resource.fz").to_string(),
     });
     let root_id = compiler.submit_root(super::RootSubmission {
         module_name: None,

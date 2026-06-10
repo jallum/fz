@@ -1,0 +1,28 @@
+fn append([], ys), do: ys
+fn append([h | t], ys), do: [h | append(t, ys)]
+
+fn partition(_, [], lo, hi), do: {lo, hi}
+fn partition(p, [h | t], lo, hi) when h < p, do: partition(p, t, [h | lo], hi)
+fn partition(p, [h | t], lo, hi), do: partition(p, t, lo, [h | hi])
+
+fn qsort([]), do: []
+fn qsort([p | rest]) do
+  {lo, hi} = partition(p, rest, [], [])
+  append(qsort(lo), [p | qsort(hi)])
+end
+
+fn main() do
+  sorted = qsort([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5])
+  dbg(sorted)
+
+  stats = Process.heap_alloc_stats()
+  dbg(stats)
+  heap_bytes = stats[:list_cons_bytes] + stats[:struct_bytes] + stats[:map_bytes]
+  dbg(heap_bytes)
+end
+
+fn foo(), do: 42
+fn entry() do
+  dbg(qsort([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5]))
+  42
+end

@@ -1,0 +1,6 @@
+
+fn positive(n), do: n > 0
+fn wanted(n) when positive(n), do: true
+fn wanted(_), do: false
+fn other(n) when n > 0, do: true
+fn other(_), do: false

@@ -1,0 +1,8 @@
+
+fn bad(n) do
+  if n > 0 do
+    true
+  else
+    false
+  end
+end

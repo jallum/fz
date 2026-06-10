@@ -1,0 +1,10 @@
+
+fn tuple_first({value, _}), do: value
+fn map_first(map), do: map[:value]
+
+fn main() do
+  {
+    tuple_first({2, :ok}),
+    map_first(%{value: 3})
+  }
+end

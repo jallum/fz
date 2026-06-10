@@ -39,13 +39,7 @@ fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_capt
     let mut world = World::new(&tel);
     let code = world.submit_code(
         Some("spec.fz".to_string()),
-        concat!(
-            "@type tkf_elem :: integer\n",
-            "@type tkf_box(a) :: [a]\n",
-            "@spec tkf_f(tkf_box(float), tkf_elem) :: x when x: tkf_box(tkf_elem)\n",
-            "fn tkf_f(p, q), do: q\n",
-        )
-        .to_string(),
+        include_str!("../../fixtures2/00049_resolve_spec.fz").to_string(),
     );
     assert!(
         matches!(world.drive(), DriveOutcome::Resolved),

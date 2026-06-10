@@ -1,0 +1,8 @@
+
+fn positive(n), do: n > 0
+fn wanted(n) when positive(n), do: :yes
+fn wanted(_), do: :no
+fn other(n) when n > 0, do: :yes
+fn other(_), do: :no
+fn main(), do: wanted(1)
+fn other_main(), do: other(1)

@@ -1,0 +1,5 @@
+@type tkf_int :: integer
+@type tkf_box(a) :: list(a)
+@type tkf_wrapper :: tkf_box(tkf_int)
+@type tkf_cold :: {tkf_int, tkf_int}
+fn main(), do: 1

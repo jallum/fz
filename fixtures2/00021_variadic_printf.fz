@@ -1,0 +1,6 @@
+
+extern "C" fn libc::printf(fmt :: cstring, ...) :: integer
+
+fn main() do
+  libc::printf("%d", 7)
+end

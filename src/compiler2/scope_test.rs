@@ -80,7 +80,10 @@ fn compiler2_scope_snapshot_projects_module_alias_and_env_from_one_authority() {
 fn compiler2_module_scope_returns_a_scope_snapshot_not_just_a_namespace() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new(&tel);
-    let code = world.submit_code(Some("scoped.fz".to_string()), String::new());
+    let code = world.submit_code(
+        Some("scoped.fz".to_string()),
+        include_str!("../../fixtures2/00050_empty.fz").to_string(),
+    );
     assert!(matches!(world.drive(), super::DriveOutcome::Resolved));
 
     let module = world.reference_module("Scoped");
@@ -111,7 +114,7 @@ fn compiler2_source_scoping_threads_function_scope_through_module_definition() {
     let mut world = World::new(&tel);
     let code = world.submit_code(
         Some("app.fz".to_string()),
-        "defmodule App do\n  fn run(x), do: x\nend\n".to_string(),
+        include_str!("../../fixtures2/00051_module_app_run.fz").to_string(),
     );
     assert!(
         matches!(world.drive(), super::DriveOutcome::Resolved),
