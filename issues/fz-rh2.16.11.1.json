@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-10T21:04:56Z",
+  "description": "Define the canonical post-expansion fragments that compiler2 accepts for scope-shaping definitions and make `Fz.Compiler.define(source, __ENV__)` the sole publication boundary for them. The compiler callback should own one honest publication contract for function/module/protocol/impl fragments and stop depending on a parallel direct-publication path for the same semantic act.\n\nThis ticket should: lock down the canonical quoted fragment shapes, make compiler-service application the explicit definition boundary, and remove source-publication assumptions that those same definition families may bypass that boundary.\n\nSignal: equivalent canonical fragments publish identical facts regardless of origin, and compiler2 has one real definition callback for these forms.",
+  "id": "fz-rh2.16.11.1",
+  "labels": [],
+  "parent": "fz-rh2.16.11",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 definition callback: define canonical compiler fragments and narrow publication to Fz.Compiler.define",
+  "type": "task",
+  "updated_at": "2026-06-10T21:04:56Z"
+}
