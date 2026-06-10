@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-uku"
+  ],
   "blocks": [],
   "created": "2026-06-10T01:53:47Z",
   "description": "Tests via submit/drive: body edit =\u003e function fact bumps, module/code stable; reposition/whitespace/ns =\u003e all stable; signature/@spec edit =\u003e module bumps. Verify ScopeCode re-runs on resubmission off freshly-stored source. lib+matrix 0 failed, zero warnings. Update .agent docs on fact/revision identity. Remove any temp scaffolding.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Revision-stability tests + full green + docs; strip remaining scaffolding",
   "type": "task",
-  "updated_at": "2026-06-10T01:53:47Z"
+  "updated_at": "2026-06-10T01:53:48Z"
 }
