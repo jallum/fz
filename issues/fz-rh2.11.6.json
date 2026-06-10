@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.11.3",
     "fz-rh2.11.4",
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-rh2.11",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 parity harness: add fz2 fixture coverage before cutover",
   "type": "task",
-  "updated_at": "2026-06-08T11:49:50Z"
+  "updated_at": "2026-06-10T06:44:37Z"
 }
