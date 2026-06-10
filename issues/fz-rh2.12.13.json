@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-10T08:00:05Z",
   "created": "2026-06-10T07:50:09Z",
   "description": "Problem: the fz2 quicksort trace now proves source re-lexing is gone, but the terminal run still has a separate native backend tail after the compiler2 drive closes. On 2026-06-10, target/debug/fz2 --log-telemetry /tmp/fz2_quicksort_12_9.jsonl run fixtures/quicksort/input.fz produced: drive span 57.955 ms, then fz.codegen.compile 47.749 ms from ~58.487 ms to ~106.240 ms before process_exited at ~106.466 ms. This is visible in codegen telemetry, but it is not represented as compiler2 fact work, so drive-only telemetry makes the backend tail look like a gap.\n\nGoal: make native backend time accounted for in the compiler2 artifact boundary without shims/adapters. Either the native backend becomes first-class work/facts with telemetry that composes with the compiler2 drive, or the artifact boundary explicitly reports the post-drive compile/link span so perf traces cannot misattribute it.\n\nSignal: quicksort fz2 trace can explain total compile time from source submission through process exit, with drive time and native backend time both named. No source fragment re-lexing should return.\n\nReferences: fz-rh2.12.9 measurement; /tmp/fz2_quicksort_12_9.jsonl during that ticket run.",
   "id": "fz-rh2.12.13",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Account post-drive native backend tail in compiler2 telemetry",
   "type": "task",
-  "updated_at": "2026-06-10T08:00:01Z"
+  "updated_at": "2026-06-10T08:00:05Z"
 }
