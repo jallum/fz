@@ -67,7 +67,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
     let module = modules.get(math_def);
     match &module.state {
         ModuleState::Defined { surface, .. } => {
-            assert_eq!(surface.codes, vec![code_id]);
+            assert_eq!(surface.code, code_id);
             assert_eq!(surface.namespace, namespaces.prelude_head());
         }
         other => panic!("module should promote from placeholder to defined, got {other:?}"),

@@ -102,14 +102,6 @@ impl Module {
             _ => None,
         }
     }
-
-    fn codes(&self) -> Option<Vec<CodeId>> {
-        match &self.state {
-            ModuleState::Defined { surface, .. } => Some(surface.codes.clone()),
-            ModuleState::Indexed(source) | ModuleState::Scoped { source, .. } => Some(vec![source.code]),
-            ModuleState::Placeholder => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -158,7 +150,7 @@ impl ModuleSource {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleSurface {
-    pub codes: Vec<CodeId>,
+    pub code: CodeId,
     pub base: Namespace,
     pub namespace: Namespace,
     pub exports: Vec<ModuleExport>,
@@ -325,7 +317,7 @@ impl ModuleMap {
                 state: ModuleState::Defined {
                     source: ModuleSource::empty(CodeId::ZERO),
                     surface: ModuleSurface {
-                        codes: Vec::new(),
+                        code: CodeId::ZERO,
                         base: Namespace::default(),
                         namespace: Namespace::default(),
                         exports: Vec::new(),
@@ -361,18 +353,14 @@ impl ModuleMap {
     ) -> u64 {
         let module = &mut self.slots[id.0 as usize];
         let source = module.source().cloned().unwrap_or_else(|| ModuleSource::empty(code));
-        let mut codes = module.codes().unwrap_or_else(|| vec![source.code]);
-        if !codes.contains(&code) {
-            codes.push(code);
-        }
         let next = ModuleState::Defined {
-            source,
             surface: ModuleSurface {
-                codes,
+                code: source.code,
                 base: module.base_namespace().unwrap_or(namespace),
                 namespace,
                 exports,
             },
+            source,
         };
         update_if_changed(&mut module.state, current_revision, next)
     }
@@ -447,7 +435,7 @@ impl ModuleMap {
             state: ModuleState::Defined {
                 source: ModuleSource::empty(code),
                 surface: ModuleSurface {
-                    codes: vec![code],
+                    code,
                     base: namespace,
                     namespace,
                     exports: Vec::new(),
