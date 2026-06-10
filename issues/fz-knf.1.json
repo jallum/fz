@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-knf.3",
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-knf",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Reconcile trait + route reconcile machinery through it (behavior-preserving)",
   "type": "task",
-  "updated_at": "2026-06-10T01:53:48Z"
+  "updated_at": "2026-06-10T01:55:07Z"
 }
