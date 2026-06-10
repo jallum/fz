@@ -123,6 +123,8 @@ mod scheduler_test;
 #[cfg(test)]
 mod scope_test;
 #[cfg(test)]
+mod source_publish_test;
+#[cfg(test)]
 mod source_test;
 #[cfg(test)]
 mod telemetry_dump_test;

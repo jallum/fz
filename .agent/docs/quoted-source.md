@@ -70,9 +70,10 @@ the `fz-rh2.11.7.*` arc.
   must yield the same `{heap, root}` for the same logical function surface.
 - Protocol-impl callback bodies use that same grouped-root substrate; they are
   not a second special-case function source format.
-- `FactKey::FunctionSource(FunctionId)` is now the lazy authoritative function
-  fact. Source jobs note grouped quoted roots first; `FunctionDefined` is
-  derived on demand from that fact.
+- `FactKey::FunctionSource(FunctionId)` is the lazy authoritative function
+  source fact. Source production saves it through the `Fz.Compiler.define`
+  compiler-service boundary; `FunctionDefined` is derived on demand from that
+  fact.
 - `FunctionDefined` now carries a compiler2-owned `FunctionSurface` decoded
   from grouped quoted source. Source-defined functions and generated lambdas
   both use that same callable-surface model.
@@ -121,23 +122,29 @@ the `fz-rh2.11.7.*` arc.
 - `src/compiler2/source_publish.rs` is the compiler-owned publication boundary
   for quoted source forms.
 - `ScopeSession` is the mutable in-progress scope state for one scope walk:
-  it carries the current `ScopeSnapshot`, namespace head, local protocol names,
-  pending type declarations, deferred function-source publications, reads,
-  outputs, exports, and the revision floor a module definition must absorb.
+  it carries the current module, namespace head, local protocol names, pending
+  type declarations, reads, outputs, exports, and the revision floor a module
+  definition must absorb.
 - `jobs/source.rs` schedules jobs and publishes final job facts, but does not
   own source-form rules. It parses/reads quoted source, delegates discovery to
   `source_publish::discover_modules`, delegates scope/module publication to
   `publish_scope` / `publish_protocol_surface`, and derives
   `FunctionDefined` from the lazy `FunctionSource` fact.
-- Literal source currently enters this boundary. Macro-produced source and
-  future `Fz.Compiler` host submissions should enter the same boundary so
-  downstream jobs do not learn whether a definition came from source text,
-  macro expansion, or a compiler-service call.
+- `Fz.Compiler.define(source_root, __ENV__)` is the compiler-service entry into
+  this boundary. The first argument is an Fz `AnyValueRef` source root on the
+  active quoted source heap; the second argument is the caller environment root
+  that records the source-session authority. The service reads the source root
+  as a scope form and applies it in source order through the live
+  `ScopeSession`.
+- Literal function forms are published through the same compiler-service helper
+  as explicit `Fz.Compiler.define` forms. That keeps function-source saving in
+  one place while the next macro-expansion ticket replaces literal `fn` item
+  capture with explicit compiler-service forms.
 - Source publication notes `@type` declarations, records function/type
   reference wait sets, binds aliases/imports/requires where supported today,
-  notes grouped function roots as `FunctionSource`, scopes child modules,
-  publishes protocol callback/domain/dispatch facts, and records protocol impl
-  callback sources.
+  saves expanded grouped function roots as `FunctionSource` through
+  `Fz.Compiler.define`, scopes child modules, publishes protocol
+  callback/domain/dispatch facts, and records protocol impl callback sources.
 
 ## Macro Runtime
 
@@ -165,10 +172,10 @@ the `fz-rh2.11.7.*` arc.
   `AnyValueRef` roots in that same heap; the returned root becomes another
   `QuotedSourceRoot` over the same owner. There is no AST codec, copied scratch
   heap, or old `CompileTimeEvaluator` on this path.
-- `Fz.Compiler` host callbacks are not part of macro executable readiness.
-  `fz-rh2.11.7.18` owns the compile-time host command buffer and source-session
-  publication so compiler service calls enter this publication boundary with
-  real authority instead of mutating `World` from inside interpreter execution.
+- `Fz.Compiler` host services are not part of macro executable readiness.
+  Source production owns their authority: expanded forms call compiler services
+  in source order, and those services publish through the active `ScopeSession`
+  instead of mutating `World` from inside interpreter execution.
 
 ## Discovery Authority
 
@@ -177,7 +184,8 @@ the `fz-rh2.11.7.*` arc.
   the authoritative quoted root and a derived `ScopeSurface` read model.
 - `ScopeSurface` is intentionally narrow:
   top-level attrs plus decoded scope forms for `alias`, `import`, `require`,
-  functions, modules, protocols, protocol impls, structs, and macro-call
+  compiler services, functions, modules, protocols, protocol impls, structs,
+  and macro-call
   surface forms.
 - Code/module/protocol discovery facts read those decoded forms directly from
   quoted roots; they no longer store or zip against old parser `Rc<Item>`

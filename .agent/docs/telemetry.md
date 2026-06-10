@@ -216,6 +216,14 @@ as opaque debug metadata. The event is observational only; tests that care
 about correctness should still assert the `JobEffects` facts and the absence of
 `NativeProgram(macro_root)` for macro roots.
 
+Source-order compiler services emit `[fz, compiler2, compiler_service, define]`
+when `Fz.Compiler.define` publishes an expanded source root. Measurements carry
+raw compiler ids (`code_id`, `module_id`, `owner_module_id`, `function_id`),
+the publication `revision`, the captured `namespace`, the quoted-source
+`source_heap_id` / `source_root_ref`, and `env_root_ref` for explicit
+`Fz.Compiler` calls. Literal function forms currently cross the same helper
+with `origin=literal_function`; explicit service forms use `origin=fz_compiler`.
+
 **Compiler2 tests should observe telemetry, not world internals.** The common
 captures live in `src/compiler2/drive_test.rs` and assert on emitted
 definitions, work-graph steps, callsite summaries, semantic closure, and the

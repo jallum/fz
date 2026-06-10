@@ -19,7 +19,7 @@ All families share one agenda; "stratum" is a write boundary, not a pass.
 
 ```text
 source    IndexCode, ScopeCode, DefineModule, DefineFunction
-            parse/read quoted source, publish FunctionSource, define modules/functions -> *Defined facts
+            parse/read quoted source, apply Fz.Compiler publication, define modules/functions -> *Defined facts
 body      LowerFunction
             one demanded function -> LoweredBody (+ generated lambda defs)
 dispatch  ReifyGuardDispatch, PlanEntryDispatch
@@ -106,6 +106,13 @@ demand BuildMacroExecutable(inc/1)
 
 The macro root does not schedule `LowerNativeProgram`; compile-time macro
 execution uses the backend interpreter over the quoted source heap.
+
+`Fz.Compiler.define(source_root, __ENV__)` is the source-tier publication point
+for expanded definitions. It receives Fz-shaped quoted AST on the active source
+heap and applies that root through the live `ScopeSession` in source order.
+Function-source facts are saved there; downstream `DefineFunction` still reads
+only `FunctionSource(function)` and does not need to know whether the source
+root came from literal code or macro expansion.
 
 ## Runtime and built-ins are ordinary, lazy code
 

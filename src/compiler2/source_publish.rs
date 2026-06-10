@@ -11,6 +11,8 @@ use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
 use crate::function_surface::FunctionSurface;
 use crate::modules::identity::ModuleName;
+use crate::telemetry::opaque_debug;
+use crate::{measurements, metadata};
 
 use super::code::CodeId;
 use super::drive::{FactKey, Job, JobEffects};
@@ -18,8 +20,9 @@ use super::identity::{FunctionId, FunctionSource, ModuleExport, ModuleId, NotedT
 use super::namespace::{Namespace, NamespaceSymbol};
 use super::protocol::ProtocolCallbackImpl;
 use super::quoted_surface::{
-    FunctionForm, ProtocolImplForm, ScopeForm, ScopeSurface, SurfaceSourceContext, read_module_body_surface,
-    read_protocol_body_surface, read_protocol_impl_body_surface,
+    CompilerService, CompilerServiceForm, FunctionForm, ProtocolImplForm, ScopeForm, ScopeSurface,
+    SurfaceSourceContext, read_module_body_surface, read_protocol_body_surface, read_protocol_impl_body_surface,
+    read_scope_form,
 };
 use super::scheduler::FatalError;
 use super::scope::ScopeSnapshot;
@@ -47,20 +50,13 @@ struct PendingType {
     span: Span,
 }
 
-struct FunctionPlan {
-    scope: ScopeSnapshot,
-    function: FunctionForm,
-}
-
 struct ScopeSession<'world, 'tel> {
     world: &'world mut World<'tel>,
     code_id: CodeId,
-    current_scope: ScopeSnapshot,
     current_module: ModuleId,
     namespace: Namespace,
     local_protocols: HashSet<String>,
     pending_types: Vec<PendingType>,
-    function_plans: Vec<FunctionPlan>,
     reads: Vec<FactKey>,
     outputs: Outputs,
     exports: Vec<ModuleExport>,
@@ -207,12 +203,10 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         Self {
             world,
             code_id,
-            current_scope,
             current_module: current_scope.module_id(),
             namespace: current_scope.namespace(),
             local_protocols: HashSet::new(),
             pending_types: Vec::new(),
-            function_plans: Vec::new(),
             reads: Vec::new(),
             outputs: Vec::new(),
             exports: Vec::new(),
@@ -230,7 +224,6 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         if let Some(blocked) = self.apply_ordered_forms(&surface.forms)? {
             return Ok(ScopePublication::Blocked(blocked));
         }
-        self.publish_functions();
         Ok(self.complete())
     }
 
@@ -301,6 +294,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 ScopeForm::Alias(_)
                 | ScopeForm::Import(_)
                 | ScopeForm::Require(_)
+                | ScopeForm::CompilerService(_)
                 | ScopeForm::Struct(_)
                 | ScopeForm::ProtocolImpl(_) => {}
                 ScopeForm::MacroCall(macro_call) => {
@@ -357,11 +351,24 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                         return Ok(Some(blocked));
                     }
                 }
+                ScopeForm::CompilerService(service) => {
+                    self.apply_compiler_service(service)?;
+                }
                 ScopeForm::Function(function) => {
-                    self.function_plans.push(FunctionPlan {
-                        scope: self.current_scope.with_namespace(self.namespace),
-                        function: function.clone(),
-                    });
+                    let publication = publish_function_source(
+                        self.world,
+                        self.code_id,
+                        self.current_module,
+                        self.current_module,
+                        self.namespace,
+                        function,
+                        true,
+                        CompilerDefineOrigin::LiteralFunction,
+                    );
+                    self.outputs.push(publication.output);
+                    if let Some(export) = publication.export {
+                        self.exports.push(export);
+                    }
                 }
                 ScopeForm::Module(module) => {
                     let module_id = self.world.reference_child_module(self.current_module, &module.name);
@@ -380,6 +387,132 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             }
         }
         Ok(None)
+    }
+
+    fn apply_compiler_service(&mut self, service: &CompilerServiceForm) -> Result<(), FatalError> {
+        match service.service {
+            CompilerService::Define => self.apply_compiler_define(service),
+        }
+    }
+
+    fn apply_compiler_define(&mut self, service: &CompilerServiceForm) -> Result<(), FatalError> {
+        let code_text = self.world.code_text(self.code_id).to_owned();
+        let ctx = SurfaceSourceContext::new(self.code_id, &code_text, self.world.tel());
+        match read_scope_form(service.source.clone(), &ctx).map_err(|error| {
+            emit_internal_surface_error(self.world, format!("Fz.Compiler.define source read failed: {error}"))
+        })? {
+            ScopeForm::Function(function) => {
+                let function_id =
+                    self.world
+                        .reference_function(self.current_module, function.name.clone(), function.arity);
+                let symbol = if function.is_macro {
+                    NamespaceSymbol::Macro(function_id)
+                } else {
+                    NamespaceSymbol::Function(function_id)
+                };
+                self.namespace = self.world.bind_namespace(self.namespace, function.name.clone(), symbol);
+                let publication = publish_function_source(
+                    self.world,
+                    self.code_id,
+                    self.current_module,
+                    self.current_module,
+                    self.namespace,
+                    &function,
+                    true,
+                    CompilerDefineOrigin::CompilerService { env: &service.env },
+                );
+                self.outputs.push(publication.output);
+                if let Some(export) = publication.export {
+                    self.exports.push(export);
+                }
+                Ok(())
+            }
+            ScopeForm::Module(module) => {
+                let module_id = self.world.reference_child_module(self.current_module, &module.name);
+                let nested = read_module_body_surface(&module, &ctx).map_err(|error| {
+                    emit_internal_surface_error(
+                        self.world,
+                        format!("Fz.Compiler.define module body read failed: {error}"),
+                    )
+                })?;
+                let revision = self.world.index_module_body(
+                    module_id,
+                    self.code_id,
+                    self.current_module,
+                    module.name.clone(),
+                    module.source.clone(),
+                    nested.clone(),
+                );
+                self.outputs.push((FactKey::ModuleIndexed(module_id), revision));
+                discover_modules(self.world, self.code_id, module_id, &nested, &ctx, &mut self.outputs)?;
+                self.namespace =
+                    self.world
+                        .bind_namespace(self.namespace, module.name.clone(), NamespaceSymbol::Module(module_id));
+                self.world.scope_module(module_id, self.namespace);
+                Ok(())
+            }
+            ScopeForm::Protocol(protocol) => {
+                let protocol_id = reference_declared_protocol_module(self.world, self.current_module, &protocol.name);
+                let protocol_surface = read_protocol_body_surface(&protocol, &ctx).map_err(|error| {
+                    emit_internal_surface_error(
+                        self.world,
+                        format!("Fz.Compiler.define protocol body read failed: {error}"),
+                    )
+                })?;
+                let revision = self.world.index_protocol_module(
+                    protocol_id,
+                    self.code_id,
+                    self.current_module,
+                    protocol.name.last_segment().to_string(),
+                    protocol.source.clone(),
+                    protocol_surface,
+                );
+                self.outputs.push((FactKey::ModuleIndexed(protocol_id), revision));
+                self.namespace = self.world.bind_namespace(
+                    self.namespace,
+                    protocol.name.last_segment().to_string(),
+                    NamespaceSymbol::Module(protocol_id),
+                );
+                self.world.scope_module(protocol_id, self.namespace);
+                Ok(())
+            }
+            ScopeForm::ProtocolImpl(protocol_impl) => {
+                let mut outputs = self.define_protocol_impl(&protocol_impl)?;
+                self.outputs.append(&mut outputs);
+                Ok(())
+            }
+            ScopeForm::Alias(alias) => {
+                let module_id = self.world.reference_module(alias.path.join("."));
+                self.namespace = self.world.bind_namespace(
+                    self.namespace,
+                    alias.as_name.clone(),
+                    NamespaceSymbol::Module(module_id),
+                );
+                Ok(())
+            }
+            ScopeForm::Import(import) | ScopeForm::Require(import) => {
+                if self.apply_import(&import)?.is_some() {
+                    return Err(emit_job_diagnostic(
+                        self.world,
+                        Diagnostic::error(
+                            codes::INTERNAL_POST_RESOLUTION_LEFTOVER,
+                            "Fz.Compiler.define cannot block while applying nested import/require",
+                            service.span,
+                        ),
+                    ));
+                }
+                Ok(())
+            }
+            ScopeForm::Struct(_) => Ok(()),
+            ScopeForm::CompilerService(_) | ScopeForm::MacroCall(_) => Err(emit_job_diagnostic(
+                self.world,
+                Diagnostic::error(
+                    codes::INTERNAL_POST_RESOLUTION_LEFTOVER,
+                    "Fz.Compiler.define expected one fully expanded source definition",
+                    service.span,
+                ),
+            )),
+        }
     }
 
     fn apply_import(&mut self, import: &super::quoted_surface::ImportForm) -> Result<Option<JobEffects>, FatalError> {
@@ -492,25 +625,21 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         let mut outputs = Vec::new();
         let mut callbacks = HashMap::new();
         for function in functions {
-            let function_id = self
-                .world
-                .reference_function(impl_module, function.name.clone(), function.arity);
-            let revision = self.world.note_function_source(
-                function_id,
-                FunctionSource {
-                    code: self.code_id,
-                    owner_module: self.current_module,
-                    namespace: impl_scope,
-                    capture_params: Vec::new(),
-                    variadic: function.variadic,
-                    source: function.source.clone(),
-                },
+            let publication = publish_function_source(
+                self.world,
+                self.code_id,
+                impl_module,
+                self.current_module,
+                impl_scope,
+                &function,
+                false,
+                CompilerDefineOrigin::LiteralFunction,
             );
-            outputs.push((FactKey::FunctionSource(function_id), revision));
+            outputs.push(publication.output);
             callbacks.insert(
                 (function.name.clone(), function.arity),
                 ProtocolCallbackImpl {
-                    function: function_id,
+                    function: publication.function,
                     owner_module: self.current_module,
                 },
             );
@@ -519,16 +648,6 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         outputs.extend(self.world.refresh_protocol_domain_facts(protocol));
         outputs.push(self.world.refresh_protocol_dispatch_fact(protocol));
         Ok(outputs)
-    }
-
-    fn publish_functions(&mut self) {
-        for FunctionPlan { scope, function } in self.function_plans.drain(..) {
-            let (output, export) = index_function(self.world, self.code_id, scope, &function);
-            self.outputs.push(output);
-            if let Some(export) = export {
-                self.exports.push(export);
-            }
-        }
     }
 
     fn complete(self) -> ScopePublication {
@@ -555,20 +674,34 @@ fn local_protocol_names(surface: &ScopeSurface) -> HashSet<String> {
         .collect()
 }
 
-fn index_function(
+struct FunctionPublication {
+    function: FunctionId,
+    output: Output,
+    export: Option<ModuleExport>,
+}
+
+#[derive(Clone, Copy)]
+enum CompilerDefineOrigin<'a> {
+    LiteralFunction,
+    CompilerService { env: &'a super::source::QuotedSourceRoot },
+}
+
+fn publish_function_source(
     world: &mut World<'_>,
     code_id: CodeId,
-    scope: ScopeSnapshot,
+    function_module: ModuleId,
+    owner_module: ModuleId,
+    namespace: Namespace,
     function: &FunctionForm,
-) -> (Output, Option<ModuleExport>) {
-    let current_module = scope.module_id();
-    let namespace = scope.namespace();
-    let function_id = world.reference_function(current_module, function.name.clone(), function.arity);
+    export_public: bool,
+    origin: CompilerDefineOrigin<'_>,
+) -> FunctionPublication {
+    let function_id = world.reference_function(function_module, function.name.clone(), function.arity);
     let revision = world.note_function_source(
         function_id,
         FunctionSource {
             code: code_id,
-            owner_module: current_module,
+            owner_module,
             namespace,
             capture_params: Vec::new(),
             variadic: function.variadic,
@@ -576,20 +709,58 @@ fn index_function(
         },
     );
 
-    let export = (!function.is_private).then(|| ModuleExport {
+    let symbol = if function.is_macro {
+        NamespaceSymbol::Macro(function_id)
+    } else {
+        NamespaceSymbol::Function(function_id)
+    };
+    let export = (export_public && !function.is_private).then(|| ModuleExport {
         name: function.name.clone(),
         arity: function.arity,
         variadic: function.variadic,
-        symbol: if function.is_macro {
-            NamespaceSymbol::Macro(function_id)
-        } else {
-            NamespaceSymbol::Function(function_id)
-        },
+        symbol: symbol.clone(),
     });
-    (
-        (FactKey::FunctionSource(function_id), revision),
+    let source = world
+        .function_source(function_id)
+        .expect("function source should exist immediately after compiler service publication");
+    emit_compiler_service_define(world, function_id, &source, revision, origin);
+    FunctionPublication {
+        function: function_id,
+        output: (FactKey::FunctionSource(function_id), revision),
         export,
-    )
+    }
+}
+
+fn emit_compiler_service_define(
+    world: &World<'_>,
+    function: FunctionId,
+    source: &FunctionSource,
+    revision: u64,
+    origin: CompilerDefineOrigin<'_>,
+) {
+    let function_ref = world.function_ref(function);
+    let (origin_name, env_root_ref) = match origin {
+        CompilerDefineOrigin::LiteralFunction => ("literal_function", 0),
+        CompilerDefineOrigin::CompilerService { env } => ("fz_compiler", env.root().raw_word()),
+    };
+    world.tel().execute(
+        &["fz", "compiler2", "compiler_service", "define"],
+        &measurements! {
+            code_id: source.code.as_u32() as u64,
+            module_id: function_ref.module.as_u32() as u64,
+            owner_module_id: source.owner_module.as_u32() as u64,
+            function_id: function.as_u32() as u64,
+            revision: revision,
+            namespace: source.namespace.as_u32() as u64,
+            source_heap_id: source.source.key().heap_id as u64,
+            source_root_ref: source.source.root().raw_word(),
+            env_root_ref: env_root_ref,
+        },
+        &metadata! {
+            origin: origin_name,
+            function_ref: opaque_debug(function_ref),
+        },
+    );
 }
 
 /// Walks a parsed type expression, recording each name that resolves to a type

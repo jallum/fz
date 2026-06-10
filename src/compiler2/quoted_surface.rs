@@ -42,6 +42,7 @@ pub enum ScopeForm {
     Alias(AliasForm),
     Import(ImportForm),
     Require(ImportForm),
+    CompilerService(CompilerServiceForm),
     Function(FunctionForm),
     Module(ModuleForm),
     Protocol(ProtocolForm),
@@ -64,6 +65,19 @@ pub struct ImportForm {
     pub only: Option<Vec<(String, usize)>>,
     pub except: Option<Vec<(String, usize)>>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompilerServiceForm {
+    pub service: CompilerService,
+    pub source: QuotedSourceRoot,
+    pub env: QuotedSourceRoot,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompilerService {
+    Define,
 }
 
 #[derive(Debug, Clone)]
@@ -144,7 +158,15 @@ pub fn read_scope_surface(
         let Some(node) = quoted_item.ast_node()? else {
             return Err(QuotedSourceError::new("expected quoted item AST node"));
         };
-        let head_name = node.head.atom_name()?;
+        let head_name = match node.head.atom_name() {
+            Ok(head_name) => head_name,
+            Err(_) => {
+                flush_function_groups(source, ctx, &mut forms, &mut group_order, &mut groups)?;
+                pending_function_attrs.clear();
+                forms.push(build_form(source.subroot(quoted_item.root()), ctx)?);
+                continue;
+            }
+        };
         if head_name.starts_with('@') {
             if matches!(head_name.as_str(), "@doc" | "@spec") {
                 pending_function_attrs.push(quoted_item.root());
@@ -239,7 +261,20 @@ fn flush_function_groups(
 }
 
 fn build_form(source: QuotedSourceRoot, ctx: &SurfaceSourceContext<'_>) -> Result<ScopeForm, QuotedSourceError> {
-    let head = surface_head_name(&source)?;
+    if let Some(service) = parse_compiler_service_form(source.clone(), ctx)? {
+        return Ok(ScopeForm::CompilerService(service));
+    }
+
+    let head = match surface_head_name(&source) {
+        Ok(head) => head,
+        Err(_error) if source.cursor().ast_node()?.is_some() => {
+            return Ok(ScopeForm::MacroCall(MacroCallForm {
+                span: surface_span(&source, ctx)?,
+                source,
+            }));
+        }
+        Err(error) => return Err(error),
+    };
     match head.as_str() {
         "alias" => Ok(ScopeForm::Alias(parse_alias_form(source, ctx)?)),
         "import" => Ok(ScopeForm::Import(parse_import_form(source, ctx)?)),
@@ -254,6 +289,66 @@ fn build_form(source: QuotedSourceRoot, ctx: &SurfaceSourceContext<'_>) -> Resul
             source,
         })),
     }
+}
+
+pub fn read_scope_form(
+    source: QuotedSourceRoot,
+    ctx: &SurfaceSourceContext<'_>,
+) -> Result<ScopeForm, QuotedSourceError> {
+    build_form(source, ctx)
+}
+
+fn parse_compiler_service_form(
+    source: QuotedSourceRoot,
+    ctx: &SurfaceSourceContext<'_>,
+) -> Result<Option<CompilerServiceForm>, QuotedSourceError> {
+    let Some(node) = source.cursor().ast_node()? else {
+        return Ok(None);
+    };
+    let Some(callee) = node.head.ast_node()? else {
+        return Ok(None);
+    };
+    if callee.head.atom_name()? != "." {
+        return Ok(None);
+    }
+    let callee_parts = callee.tail.list_items()?;
+    if callee_parts.len() != 2 {
+        return Ok(None);
+    }
+    if !matches_alias(&callee_parts[0], &["Fz", "Compiler"])? {
+        return Ok(None);
+    }
+    let service = match callee_parts[1].atom_name()?.as_str() {
+        "define" => CompilerService::Define,
+        other => {
+            return Err(QuotedSourceError::new(format!(
+                "unsupported Fz.Compiler service `{other}`"
+            )));
+        }
+    };
+    let args = node.tail.list_items()?;
+    if args.len() != 2 {
+        return Err(QuotedSourceError::new(
+            "Fz.Compiler.define expects source root and __ENV__ arguments",
+        ));
+    }
+    Ok(Some(CompilerServiceForm {
+        service,
+        source: source.subroot(args[0].root()),
+        env: source.subroot(args[1].root()),
+        span: span_from_meta(&node.meta, ctx)?,
+    }))
+}
+
+fn matches_alias(cursor: &QuotedSourceCursor, expected: &[&str]) -> Result<bool, QuotedSourceError> {
+    let Some(node) = cursor.ast_node()? else {
+        return Ok(false);
+    };
+    if node.head.atom_name()? != "__aliases__" {
+        return Ok(false);
+    }
+    let segments = node.tail.list_atom_names()?;
+    Ok(segments.iter().map(String::as_str).eq(expected.iter().copied()))
 }
 
 fn parse_scope_attr(
