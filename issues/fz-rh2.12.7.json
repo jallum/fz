@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.12.4",
     "fz-rh2.12.5",
@@ -14,8 +14,8 @@
   "labels": [],
   "parent": "fz-rh2.12",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Sever old-world naming imports + lexer-passes-per-compile telemetry guard",
   "type": "task",
-  "updated_at": "2026-06-08T20:52:15Z"
+  "updated_at": "2026-06-10T07:14:35Z"
 }
