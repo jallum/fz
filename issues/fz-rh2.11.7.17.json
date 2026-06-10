@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-10T02:48:25Z",
+  "description": "Pre-existing on fz-tkf at bd174ea76 (verified via clean worktree): tests/fz2_cli.rs build_executes_map_struct_and_bitstring_fixtures and run_and_interp_execute_map_struct_and_bitstring_fixtures fail on fixtures/defstruct_runtime/input.fz with 'error[lower/unbound]: compiler2 lowering found unresolved value Point'. Struct type name resolution regressed somewhere in the fz-rh2.11.7.* quoted-surface authority swap. Blocks any 'full green' gate that includes the fz2_cli integration tests (e.g. fz-knf.5).",
+  "id": "fz-rh2.11.7.17",
+  "labels": [],
+  "parent": "fz-rh2.11.7",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 lowering: defstruct_runtime unresolved value Point",
+  "type": "bug",
+  "updated_at": "2026-06-10T02:48:25Z"
+}
