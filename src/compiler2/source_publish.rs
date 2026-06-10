@@ -77,6 +77,55 @@ pub(crate) enum FunctionSourceExpansion {
     Blocked(JobEffects),
 }
 
+#[derive(Clone)]
+enum FunctionEnvSource {
+    ProjectDefinition,
+    Fixed(QuotedSourceRoot),
+}
+
+#[derive(Clone, Copy)]
+enum FragmentDiscovery {
+    AlreadyIndexed,
+    DiscoverNestedModules,
+}
+
+#[derive(Clone)]
+struct FragmentPublicationContext {
+    owner_module: ModuleId,
+    export_public: bool,
+    function_env: FunctionEnvSource,
+    discovery: FragmentDiscovery,
+}
+
+impl FragmentPublicationContext {
+    fn module_surface(current_module: ModuleId) -> Self {
+        Self {
+            owner_module: current_module,
+            export_public: true,
+            function_env: FunctionEnvSource::ProjectDefinition,
+            discovery: FragmentDiscovery::AlreadyIndexed,
+        }
+    }
+
+    fn expanded_fragment(current_module: ModuleId) -> Self {
+        Self {
+            owner_module: current_module,
+            export_public: true,
+            function_env: FunctionEnvSource::ProjectDefinition,
+            discovery: FragmentDiscovery::DiscoverNestedModules,
+        }
+    }
+
+    fn compiler_define(current_module: ModuleId, env: QuotedSourceRoot) -> Self {
+        Self {
+            owner_module: current_module,
+            export_public: true,
+            function_env: FunctionEnvSource::Fixed(env),
+            discovery: FragmentDiscovery::DiscoverNestedModules,
+        }
+    }
+}
+
 struct ScopeSession<'world, 'tel> {
     world: &'world mut World<'tel>,
     code_id: CodeId,
@@ -248,10 +297,8 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     /// defines through this session's accumulated state.
     fn publish(mut self, surface: &ScopeSurface) -> Result<ScopePublication, FatalError> {
         self.local_protocols = local_protocol_names(surface);
-        self.reserve_types(&surface.attrs)?;
-        self.reserve_local_forms(&surface.forms)?;
-        self.note_pending_types();
-        if let Some(blocked) = self.apply_ordered_forms(&surface.forms)? {
+        let context = FragmentPublicationContext::module_surface(self.current_module);
+        if let Some(blocked) = self.apply_surface_fragment(surface, &context)? {
             return Ok(ScopePublication::Blocked(blocked));
         }
         if let Some(blocked) = self.publish_module_info()? {
@@ -291,12 +338,13 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             function.name.clone(),
             NamespaceSymbol::Function(function_id),
         );
+        let context = FragmentPublicationContext::module_surface(self.current_module);
         let publication = self.define_source_function(
             self.current_module,
             self.current_module,
             self.namespace,
             &function,
-            true,
+            &context,
         )?;
         self.outputs.push(publication.output);
         if let Some(export) = publication.export {
@@ -406,62 +454,14 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         }
     }
 
-    fn apply_ordered_forms(&mut self, forms: &[ScopeForm]) -> Result<Option<JobEffects>, FatalError> {
+    fn apply_ordered_forms(
+        &mut self,
+        forms: &[ScopeForm],
+        context: &FragmentPublicationContext,
+    ) -> Result<Option<JobEffects>, FatalError> {
         for form in forms {
-            match form {
-                ScopeForm::Alias(alias) => {
-                    let module_id = self.world.reference_module(alias.path.join("."));
-                    self.namespace = self.world.bind_namespace(
-                        self.namespace,
-                        alias.as_name.clone(),
-                        NamespaceSymbol::Module(module_id),
-                    );
-                }
-                ScopeForm::Import(import) => {
-                    if let Some(blocked) = self.apply_import(import)? {
-                        return Ok(Some(self.blocked_effects(blocked)));
-                    }
-                }
-                ScopeForm::Require(import) => {
-                    if let Some(blocked) = self.apply_require(import)? {
-                        return Ok(Some(self.blocked_effects(blocked)));
-                    }
-                }
-                ScopeForm::CompilerService(service) => {
-                    self.apply_compiler_service(service)?;
-                }
-                ScopeForm::Function(function) => {
-                    let publication = self.define_source_function(
-                        self.current_module,
-                        self.current_module,
-                        self.namespace,
-                        function,
-                        true,
-                    )?;
-                    self.outputs.push(publication.output);
-                    if let Some(export) = publication.export {
-                        self.exports.push(export);
-                    }
-                }
-                ScopeForm::Module(module) => {
-                    let module_id = self.world.reference_child_module(self.current_module, &module.name);
-                    self.world.scope_module(module_id, self.namespace);
-                }
-                ScopeForm::Protocol(protocol) => {
-                    let protocol_id =
-                        reference_declared_protocol_module(self.world, self.current_module, &protocol.name);
-                    self.world.scope_module(protocol_id, self.namespace);
-                }
-                ScopeForm::ProtocolImpl(protocol_impl) => {
-                    let mut outputs = self.define_protocol_impl(protocol_impl)?;
-                    self.outputs.append(&mut outputs);
-                }
-                ScopeForm::MacroCall(macro_call) => {
-                    if let Some(blocked) = self.apply_item_macro_call(macro_call)? {
-                        return Ok(Some(self.blocked_effects(blocked)));
-                    }
-                }
-                ScopeForm::Struct(_) => {}
+            if let Some(blocked) = self.apply_scope_form(form, context)? {
+                return Ok(Some(self.blocked_effects(blocked)));
             }
         }
         Ok(None)
@@ -474,9 +474,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     }
 
     fn apply_compiler_define(&mut self, service: &CompilerServiceForm) -> Result<(), FatalError> {
-        let mut surface = self.scope_surface_from_root(&service.source, "Fz.Compiler.define source")?;
-        let code_text = self.world.code_text(self.code_id).to_owned();
-        let ctx = SurfaceSourceContext::new(self.code_id, &code_text);
+        let surface = self.scope_surface_from_root(&service.source, "Fz.Compiler.define source")?;
         if !surface.attrs.is_empty() || surface.forms.len() != 1 {
             return Err(emit_job_diagnostic(
                 self.world,
@@ -487,135 +485,41 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 ),
             ));
         }
-        match surface.forms.remove(0) {
-            ScopeForm::Function(function) => {
-                let function_id =
-                    self.world
-                        .reference_function(self.current_module, function.name.clone(), function.arity);
-                let symbol = if function.is_macro {
-                    NamespaceSymbol::Macro(function_id)
-                } else {
-                    NamespaceSymbol::Function(function_id)
-                };
-                self.local_callables
-                    .insert((function.name.clone(), function.arity), symbol.clone());
-                self.namespace = self.world.bind_namespace(self.namespace, function.name.clone(), symbol);
-                let publication = publish_function_source(
-                    self.world,
-                    self.code_id,
-                    self.current_module,
-                    self.current_module,
-                    self.namespace,
-                    &function,
-                    true,
-                    required_remote_macro_list(&self.required_remote_macros),
-                    &service.env,
-                );
-                self.outputs.push(publication.output);
-                if let Some(export) = publication.export {
-                    self.exports.push(export);
-                }
-                Ok(())
-            }
-            ScopeForm::Module(module) => {
-                let module_id = self.world.reference_child_module(self.current_module, &module.name);
-                let nested = read_module_body_surface(&module, &ctx).map_err(|error| {
-                    emit_internal_surface_error(
-                        self.world,
-                        format!("Fz.Compiler.define module body read failed: {error}"),
-                    )
-                })?;
-                let revision = self.world.index_module_body(
-                    module_id,
-                    self.code_id,
-                    self.current_module,
-                    module.name.clone(),
-                    module.source.clone(),
-                    nested.clone(),
-                );
-                self.outputs.push((FactKey::ModuleIndexed(module_id), revision));
-                discover_modules(self.world, self.code_id, module_id, &nested, &ctx, &mut self.outputs)?;
-                self.namespace =
-                    self.world
-                        .bind_namespace(self.namespace, module.name.clone(), NamespaceSymbol::Module(module_id));
-                self.world.scope_module(module_id, self.namespace);
-                Ok(())
-            }
-            ScopeForm::Protocol(protocol) => {
-                let protocol_id = reference_declared_protocol_module(self.world, self.current_module, &protocol.name);
-                let protocol_surface = read_protocol_body_surface(&protocol, &ctx).map_err(|error| {
-                    emit_internal_surface_error(
-                        self.world,
-                        format!("Fz.Compiler.define protocol body read failed: {error}"),
-                    )
-                })?;
-                let revision = self.world.index_protocol_module(
-                    protocol_id,
-                    self.code_id,
-                    self.current_module,
-                    protocol.name.last_segment().to_string(),
-                    protocol.source.clone(),
-                    protocol_surface,
-                );
-                self.outputs.push((FactKey::ModuleIndexed(protocol_id), revision));
-                self.namespace = self.world.bind_namespace(
-                    self.namespace,
-                    protocol.name.last_segment().to_string(),
-                    NamespaceSymbol::Module(protocol_id),
-                );
-                self.world.scope_module(protocol_id, self.namespace);
-                Ok(())
-            }
-            ScopeForm::ProtocolImpl(protocol_impl) => {
-                let mut outputs = self.define_protocol_impl(&protocol_impl)?;
-                self.outputs.append(&mut outputs);
-                Ok(())
-            }
-            ScopeForm::Alias(alias) => {
-                let module_id = self.world.reference_module(alias.path.join("."));
-                self.namespace = self.world.bind_namespace(
-                    self.namespace,
-                    alias.as_name.clone(),
-                    NamespaceSymbol::Module(module_id),
-                );
-                Ok(())
-            }
-            ScopeForm::Import(import) => {
-                if self.apply_import(&import)?.is_some() {
-                    return Err(emit_job_diagnostic(
-                        self.world,
-                        Diagnostic::error(
-                            codes::INTERNAL_POST_RESOLUTION_LEFTOVER,
-                            "Fz.Compiler.define cannot block while applying nested import/require",
-                            service.span,
-                        ),
-                    ));
-                }
-                Ok(())
-            }
-            ScopeForm::Require(import) => {
-                if self.apply_require(&import)?.is_some() {
-                    return Err(emit_job_diagnostic(
-                        self.world,
-                        Diagnostic::error(
-                            codes::INTERNAL_POST_RESOLUTION_LEFTOVER,
-                            "Fz.Compiler.define cannot block while applying nested import/require",
-                            service.span,
-                        ),
-                    ));
-                }
-                Ok(())
-            }
-            ScopeForm::Struct(_) => Ok(()),
-            ScopeForm::CompilerService(_) | ScopeForm::MacroCall(_) => Err(emit_job_diagnostic(
+        let Some(form) = surface.forms.first() else {
+            return Err(emit_job_diagnostic(
                 self.world,
                 Diagnostic::error(
                     codes::INTERNAL_POST_RESOLUTION_LEFTOVER,
                     "Fz.Compiler.define expected one fully expanded source definition",
                     service.span,
                 ),
-            )),
+            ));
+        };
+        if matches!(form, ScopeForm::CompilerService(_) | ScopeForm::MacroCall(_)) {
+            return Err(emit_job_diagnostic(
+                self.world,
+                Diagnostic::error(
+                    codes::INTERNAL_POST_RESOLUTION_LEFTOVER,
+                    "Fz.Compiler.define expected one fully expanded source definition",
+                    service.span,
+                ),
+            ));
         }
+        let context = FragmentPublicationContext::compiler_define(self.current_module, service.env.clone());
+        if let Some(blocked) = self.apply_surface_fragment(&surface, &context)? {
+            return Err(emit_job_diagnostic(
+                self.world,
+                Diagnostic::error(
+                    codes::INTERNAL_POST_RESOLUTION_LEFTOVER,
+                    format!(
+                        "Fz.Compiler.define cannot block while applying a source fragment: waits={:?}",
+                        blocked.waits
+                    ),
+                    service.span,
+                ),
+            ));
+        }
+        Ok(())
     }
 
     fn define_source_function(
@@ -624,13 +528,13 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         owner_module: ModuleId,
         namespace: Namespace,
         function: &FunctionForm,
-        export_public: bool,
+        context: &FragmentPublicationContext,
     ) -> Result<FunctionPublication, FatalError> {
         let function_id = self
             .world
             .reference_function(function_module, function.name.clone(), function.arity);
         let function_scope = ScopeSnapshot::function(function_module, namespace, function_id);
-        let env = self.project_compiler_define_env(&function.source, function_scope)?;
+        let env = self.function_env(&function.source, function_scope, &context.function_env)?;
         Ok(publish_function_source(
             self.world,
             self.code_id,
@@ -638,23 +542,31 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             owner_module,
             namespace,
             function,
-            export_public,
+            context.export_public,
             required_remote_macro_list(&self.required_remote_macros),
             &env,
         ))
     }
 
-    fn project_compiler_define_env(
+    fn function_env(
         &self,
         source: &QuotedSourceRoot,
         scope: ScopeSnapshot,
+        env_source: &FunctionEnvSource,
     ) -> Result<QuotedSourceRoot, FatalError> {
-        let builder = source.builder();
-        let env = self
-            .world
-            .project_env_value(&builder, scope, QuotedLexicalContextKind::Definition)
-            .map_err(|error| emit_internal_surface_error(self.world, format!("__ENV__ projection failed: {error}")))?;
-        Ok(source.subroot(env))
+        match env_source {
+            FunctionEnvSource::ProjectDefinition => {
+                let builder = source.builder();
+                let env = self
+                    .world
+                    .project_env_value(&builder, scope, QuotedLexicalContextKind::Definition)
+                    .map_err(|error| {
+                        emit_internal_surface_error(self.world, format!("__ENV__ projection failed: {error}"))
+                    })?;
+                Ok(source.subroot(env))
+            }
+            FunctionEnvSource::Fixed(env) => Ok(env.clone()),
+        }
     }
 
     fn apply_item_macro_call(&mut self, macro_call: &MacroCallForm) -> Result<Option<JobEffects>, FatalError> {
@@ -664,7 +576,8 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             ExpandedRoot::Blocked(effects) => return Ok(Some(effects)),
         };
         let surface = self.surface_from_expanded_item_macro(&expanded, macro_call.span)?;
-        self.apply_surface_fragment(&surface)
+        let context = FragmentPublicationContext::expanded_fragment(self.current_module);
+        self.apply_surface_fragment(&surface, &context)
     }
 
     fn expand_item_macro_call(
@@ -722,11 +635,82 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             .map_err(|error| emit_internal_surface_error(self.world, format!("{context} read failed: {error}")))
     }
 
-    fn apply_surface_fragment(&mut self, surface: &ScopeSurface) -> Result<Option<JobEffects>, FatalError> {
+    fn apply_surface_fragment(
+        &mut self,
+        surface: &ScopeSurface,
+        context: &FragmentPublicationContext,
+    ) -> Result<Option<JobEffects>, FatalError> {
+        if matches!(context.discovery, FragmentDiscovery::DiscoverNestedModules) {
+            let code_text = self.world.code_text(self.code_id).to_owned();
+            let ctx = SurfaceSourceContext::new(self.code_id, &code_text);
+            discover_modules(
+                self.world,
+                self.code_id,
+                self.current_module,
+                surface,
+                &ctx,
+                &mut self.outputs,
+            )?;
+        }
         self.reserve_types(&surface.attrs)?;
         self.reserve_local_forms(&surface.forms)?;
         self.note_pending_types();
-        self.apply_ordered_forms(&surface.forms)
+        self.apply_ordered_forms(&surface.forms, context)
+    }
+
+    fn apply_scope_form(
+        &mut self,
+        form: &ScopeForm,
+        context: &FragmentPublicationContext,
+    ) -> Result<Option<JobEffects>, FatalError> {
+        match form {
+            ScopeForm::Alias(alias) => {
+                let module_id = self.world.reference_module(alias.path.join("."));
+                self.namespace = self.world.bind_namespace(
+                    self.namespace,
+                    alias.as_name.clone(),
+                    NamespaceSymbol::Module(module_id),
+                );
+                Ok(None)
+            }
+            ScopeForm::Import(import) => self.apply_import(import),
+            ScopeForm::Require(import) => self.apply_require(import),
+            ScopeForm::CompilerService(service) => {
+                self.apply_compiler_service(service)?;
+                Ok(None)
+            }
+            ScopeForm::Function(function) => {
+                let publication = self.define_source_function(
+                    self.current_module,
+                    context.owner_module,
+                    self.namespace,
+                    function,
+                    context,
+                )?;
+                self.outputs.push(publication.output);
+                if let Some(export) = publication.export {
+                    self.exports.push(export);
+                }
+                Ok(None)
+            }
+            ScopeForm::Module(module) => {
+                let module_id = self.world.reference_child_module(self.current_module, &module.name);
+                self.world.scope_module(module_id, self.namespace);
+                Ok(None)
+            }
+            ScopeForm::Protocol(protocol) => {
+                let protocol_id = reference_declared_protocol_module(self.world, self.current_module, &protocol.name);
+                self.world.scope_module(protocol_id, self.namespace);
+                Ok(None)
+            }
+            ScopeForm::ProtocolImpl(protocol_impl) => {
+                let mut outputs = self.define_protocol_impl(protocol_impl)?;
+                self.outputs.append(&mut outputs);
+                Ok(None)
+            }
+            ScopeForm::MacroCall(macro_call) => self.apply_item_macro_call(macro_call),
+            ScopeForm::Struct(_) => Ok(None),
+        }
     }
 
     fn item_macro_not_defmacro(&self, name: &str, span: Span) -> FatalError {
@@ -1398,9 +1382,15 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
 
         let mut outputs = Vec::new();
         let mut callbacks = HashMap::new();
+        let context = FragmentPublicationContext {
+            owner_module: self.current_module,
+            export_public: false,
+            function_env: FunctionEnvSource::ProjectDefinition,
+            discovery: FragmentDiscovery::AlreadyIndexed,
+        };
         for function in functions {
             let publication =
-                self.define_source_function(impl_module, self.current_module, impl_scope, &function, false)?;
+                self.define_source_function(impl_module, self.current_module, impl_scope, &function, &context)?;
             outputs.push(publication.output);
             callbacks.insert(
                 (function.name.clone(), function.arity),

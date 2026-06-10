@@ -61,6 +61,18 @@ fn metadata_str<'a>(event: &'a crate::telemetry::capture::OwnedEvent, key: &str)
     }
 }
 
+fn publish_global_scope(world: &mut World<'_>, code: super::CodeId, root: &QuotedSourceRoot) -> ScopePublication {
+    let ctx = SurfaceSourceContext::new(code, world.code_text(code));
+    let surface = read_scope_surface(root, &ctx).expect("scope surface");
+    publish_scope(
+        world,
+        code,
+        ScopeSnapshot::module(ModuleId::GLOBAL, Namespace::default()),
+        &surface,
+    )
+    .expect("publish source scope")
+}
+
 #[test]
 fn compiler_service_define_publishes_function_source_and_threads_namespace_forward() {
     let tel = ConfiguredTelemetry::new();
@@ -77,16 +89,7 @@ fn compiler_service_define_publishes_function_source_and_threads_namespace_forwa
     let bar_body = builder.call("foo", &meta(), &[]).expect("bar calls foo");
     let bar = function_form(&builder, "bar", bar_body);
     let root = root_list(&builder, &[service, bar]);
-    let ctx = SurfaceSourceContext::new(code, world.code_text(code));
-    let surface = read_scope_surface(&root, &ctx).expect("source surface with compiler service");
-
-    let publication = publish_scope(
-        &mut world,
-        code,
-        ScopeSnapshot::module(ModuleId::GLOBAL, Namespace::default()),
-        &surface,
-    )
-    .expect("publish source scope");
+    let publication = publish_global_scope(&mut world, code, &root);
     let ScopePublication::Complete { outputs, .. } = publication else {
         panic!("compiler-service scope should not block");
     };
@@ -134,6 +137,74 @@ fn compiler_service_define_publishes_function_source_and_threads_namespace_forwa
 }
 
 #[test]
+fn compiler_service_define_and_direct_source_publish_identical_raw_function_facts() {
+    let tel = ConfiguredTelemetry::new();
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let foo = function_form(&builder, "foo", builder.int(41));
+    let env = builder.map(&[]).expect("__ENV__");
+
+    let mut direct_world = World::new(&tel);
+    let direct_code = direct_world.submit_code(Some("direct.fz".to_string()), String::new());
+    let direct_root = root_list(&builder, std::slice::from_ref(&foo));
+    let direct_publication = publish_global_scope(&mut direct_world, direct_code, &direct_root);
+
+    let mut service_world = World::new(&tel);
+    let service_code = service_world.submit_code(Some("service.fz".to_string()), String::new());
+    let service_root = root_list(&builder, &[compiler_define_form(&builder, foo, env)]);
+    let service_publication = publish_global_scope(&mut service_world, service_code, &service_root);
+
+    let ScopePublication::Complete {
+        outputs: direct_outputs,
+        ..
+    } = direct_publication
+    else {
+        panic!("direct publication should complete");
+    };
+    let ScopePublication::Complete {
+        outputs: service_outputs,
+        ..
+    } = service_publication
+    else {
+        panic!("compiler-service publication should complete");
+    };
+
+    let direct_id = direct_world.reference_function(ModuleId::GLOBAL, "foo", 0);
+    let service_id = service_world.reference_function(ModuleId::GLOBAL, "foo", 0);
+    assert_eq!(
+        direct_id, service_id,
+        "both entry paths should mint the same function identity"
+    );
+    assert_eq!(
+        direct_outputs.iter().map(|(fact, _)| fact.clone()).collect::<Vec<_>>(),
+        service_outputs.iter().map(|(fact, _)| fact.clone()).collect::<Vec<_>>(),
+        "direct source and compiler-service publication should emit the same fact keys",
+    );
+
+    let direct_source = direct_world.function_source(direct_id).expect("direct function source");
+    let service_source = service_world
+        .function_source(service_id)
+        .expect("service function source");
+    assert_eq!(direct_source.owner_module, service_source.owner_module);
+    assert_eq!(direct_source.namespace, service_source.namespace);
+    assert_eq!(
+        direct_source.required_remote_macros,
+        service_source.required_remote_macros
+    );
+    assert_eq!(direct_source.variadic, service_source.variadic);
+    assert_eq!(direct_source.source.key(), service_source.source.key());
+    assert_eq!(
+        world_lookup(&direct_world, direct_source.namespace, "foo"),
+        world_lookup(&service_world, service_source.namespace, "foo"),
+        "both entry paths should capture the same namespace self-binding",
+    );
+}
+
+fn world_lookup(world: &World<'_>, namespace: Namespace, name: &str) -> Option<NamespaceSymbol> {
+    world.lookup_namespace(namespace, name)
+}
+
+#[test]
 fn compiler_service_define_groups_single_function_source_before_define_function() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new(&tel);
@@ -144,16 +215,7 @@ fn compiler_service_define_groups_single_function_source_before_define_function(
     let foo = function_form(&builder, "foo", builder.int(42));
     let service = compiler_define_form(&builder, foo, builder.map(&[]).expect("__ENV__"));
     let root = root_list(&builder, &[service]);
-    let ctx = SurfaceSourceContext::new(code, world.code_text(code));
-    let surface = read_scope_surface(&root, &ctx).expect("source surface with compiler service");
-
-    let publication = publish_scope(
-        &mut world,
-        code,
-        ScopeSnapshot::module(ModuleId::GLOBAL, Namespace::default()),
-        &surface,
-    )
-    .expect("publish source scope");
+    let publication = publish_global_scope(&mut world, code, &root);
     assert!(matches!(publication, ScopePublication::Complete { .. }));
 
     let foo_id = world.reference_function(ModuleId::GLOBAL, "foo", 0);
@@ -182,16 +244,7 @@ fn compiler_service_define_inside_a_function_body_has_no_source_publication_auth
     let body_service = compiler_define_form(&builder, sneaky, builder.map(&[]).expect("__ENV__"));
     let main = function_form(&builder, "main", body_service);
     let root = root_list(&builder, &[main]);
-    let ctx = SurfaceSourceContext::new(code, world.code_text(code));
-    let surface = read_scope_surface(&root, &ctx).expect("source surface");
-
-    let publication = publish_scope(
-        &mut world,
-        code,
-        ScopeSnapshot::module(ModuleId::GLOBAL, Namespace::default()),
-        &surface,
-    )
-    .expect("publish source scope");
+    let publication = publish_global_scope(&mut world, code, &root);
     let ScopePublication::Complete { outputs, .. } = publication else {
         panic!("function-body compiler-service shape should not block source publication");
     };
