@@ -1460,7 +1460,7 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
         callsites.iter().any(|record| {
             record.key.activation.root == root_id
                 && record.key.activation.function == enum_reduce_id
-                && record.summary.callee == SelectedCallee::Function(list_impl_reduce_id)
+                && summary_is_single_callee(&record.summary, SelectedCallee::Function(list_impl_reduce_id))
         }),
         "Enum.reduce/3 should devirtualize Enumerable.reduce/3 to the List-backed protocol callback",
     );
@@ -1468,7 +1468,7 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
         callsites.iter().any(|record| {
             record.key.activation.root == root_id
                 && record.key.activation.function == bridge_reducer_id
-                && record.summary.callee == SelectedCallee::Function(user_reducer_id)
+                && summary_is_single_callee(&record.summary, SelectedCallee::Function(user_reducer_id))
         }),
         "the bridge reducer should activate the user reducer closure directly",
     );
@@ -1564,13 +1564,14 @@ fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
         callsites.iter().any(|record| {
             record.key.activation.root == root_id
                 && record.key.activation.function == enum_reduce_id
-                && record.summary.callee == SelectedCallee::Function(list_impl_reduce_id)
+                && summary_is_single_callee(&record.summary, SelectedCallee::Function(list_impl_reduce_id))
         }),
         "Enum.reduce/3 should still devirtualize through the List-backed protocol callback for operator refs",
     );
     assert!(
         callsites.iter().any(|record| {
-            record.key.activation.root == root_id && record.summary.callee == SelectedCallee::Function(kernel_plus_id)
+            record.key.activation.root == root_id
+                && summary_is_single_callee(&record.summary, SelectedCallee::Function(kernel_plus_id))
         }),
         "function-ref reducers should surface Kernel.+/2 as an ordinary callable edge",
     );
@@ -4653,7 +4654,7 @@ fn compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_nee
         callsites.iter().any(|record| {
             record.key.activation.root == root_id
                 && record.key.activation.function == main_id
-                && record.summary.callee == SelectedCallee::Function(qsort_id)
+                && summary_is_single_callee(&record.summary, SelectedCallee::Function(qsort_id))
         }),
         "semantic analysis should publish the rooted main/0 -> qsort/1 direct edge"
     );
@@ -4661,7 +4662,7 @@ fn compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_nee
         callsites.iter().any(|record| {
             record.key.activation.root == root_id
                 && record.key.activation.function == qsort_id
-                && record.summary.callee == SelectedCallee::Function(partition_id)
+                && summary_is_single_callee(&record.summary, SelectedCallee::Function(partition_id))
         }),
         "semantic analysis should publish qsort/1's reachable partition/4 direct edge"
     );
@@ -4677,14 +4678,14 @@ fn compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_nee
         callsites.iter().any(|record| {
             record.key.activation.root == root_id
                 && record.key.activation.function == qsort_id
-                && record.summary.callee == SelectedCallee::Function(append_id)
+                && summary_is_single_callee(&record.summary, SelectedCallee::Function(append_id))
         }),
         "semantic analysis should publish qsort/1's reachable append/2 direct edge"
     );
     assert!(
         callsites
             .iter()
-            .all(|record| record.summary.callee != SelectedCallee::Function(foo_id)),
+            .all(|record| !summary_has_callee(&record.summary, SelectedCallee::Function(foo_id))),
         "uncalled foo/0 should stay semantically cold"
     );
     assert_eq!(
@@ -4696,6 +4697,141 @@ fn compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_nee
         capture.find(&["fz", "planner"]).len(),
         0,
         "Compiler2 semantic analysis should not invoke the legacy planner pipeline"
+    );
+}
+
+#[test]
+fn compiler2_materializes_closed_union_protocol_dispatch_as_local_dispatch() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "diag", "error"], capture.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let callsites = CallsiteCapture::new();
+    tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+    let materialized = MaterializedProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "materialized_program", "defined"],
+        materialized.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/compiler2_protocol_union_dispatch.fz".to_string()),
+        text: r#"
+defprotocol Sizer do
+  fn size(value)
+end
+
+defimpl Sizer, for: Range do
+  fn size(value), do: 7
+end
+
+defimpl Sizer, for: List do
+  fn size(value), do: 100
+end
+
+fn describe(value), do: Sizer.size(value)
+
+fn main() do
+  case [1..3, [1, 2, 3]] do
+    [a, b] -> describe(a) + describe(b)
+    _ -> 0
+  end
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    match compiler.drive() {
+        DriveOutcome::Resolved => {}
+        DriveOutcome::Fatal { job } => panic!(
+            "closed-union protocol receivers should materialize as local dispatch instead of dying with a missing direct edge: {job:?}; diag={:?}",
+            capture
+                .last(&["fz", "diag", "error"])
+                .map(|event| metadata_str(&event, "message").to_string())
+        ),
+        other => panic!(
+            "closed-union protocol receivers should materialize as local dispatch instead of dying with a missing direct edge: {other:?}"
+        ),
+    }
+
+    let describe_id = function_id(&functions, "describe", 1);
+    let describe_summary = callsites
+        .all()
+        .into_iter()
+        .find(|record| record.key.activation.root == root_id && record.key.activation.function == describe_id)
+        .unwrap_or_else(|| panic!("callsite.defined for describe/1"));
+    let expected_targets = describe_summary
+        .summary
+        .targets
+        .iter()
+        .map(|target| match target.callee {
+            SelectedCallee::Function(function) => function,
+            SelectedCallee::Named { .. } => panic!("protocol callsite summary should not keep named targets"),
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        expected_targets.len(),
+        2,
+        "describe/1 should record one semantic callsite fact with exactly two viable protocol impls",
+    );
+
+    let program = materialized.last(root_id).program;
+    let (_, describe_exec) = materialized_executable(&program, describe_id);
+    let LoweredBody::Clauses { entries, .. } = &describe_exec.body else {
+        panic!("describe/1 should materialize as clauses");
+    };
+    let dispatch = entries
+        .iter()
+        .find_map(|entry| match &entry.tail {
+            LoweredTail::Dispatch { dispatch, .. } => Some(dispatch),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("materialized describe/1 should contain a dispatch tail"));
+    assert_eq!(
+        dispatch.arm_entries.len(),
+        2,
+        "closed-union protocol dispatch should materialize one direct arm per viable impl",
+    );
+    let arm_targets = dispatch
+        .arm_entries
+        .iter()
+        .map(|entry_id| {
+            let entry = &entries[entry_id.as_u32() as usize];
+            let LoweredTail::DirectCall { callsite, .. } = entry.tail else {
+                panic!("protocol dispatch arm entry should lower to one direct call");
+            };
+            describe_exec
+                .call_edges
+                .get(&callsite)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "materialized call edge for synthetic protocol arm {}",
+                        callsite.as_u32()
+                    )
+                })
+                .callee
+                .activation
+                .function
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        arm_targets, expected_targets,
+        "the synthetic arm entries should target the two settled impl executables from the semantic summary",
+    );
+    assert!(
+        matches!(
+            entries[dispatch.miss_entry.as_u32() as usize].tail,
+            LoweredTail::Halt { .. }
+        ),
+        "protocol dispatch should keep an explicit no-match halt entry instead of an unlowerable stub",
     );
 }
 
@@ -7684,6 +7820,14 @@ fn lowered_body(capture: &LoweredBodyCapture, function: FunctionId) -> LoweredBo
     capture
         .take(function)
         .unwrap_or_else(|| panic!("lowered_body.defined for {function:?}"))
+}
+
+fn summary_has_callee(summary: &CallSiteSummary, callee: SelectedCallee) -> bool {
+    summary.targets.iter().any(|target| target.callee == callee)
+}
+
+fn summary_is_single_callee(summary: &CallSiteSummary, callee: SelectedCallee) -> bool {
+    matches!(summary.single_target(), Some(target) if target.callee == callee)
 }
 
 fn materialized_executable(

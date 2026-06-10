@@ -271,9 +271,10 @@ impl<'a> World<'a> {
     pub(crate) fn complete_job(&mut self, job: Job, effects: JobEffects) -> super::AppliedStep<Job, FactKey> {
         let reads = effects.reads.into_iter().collect();
         let waits = effects.waits.into_iter().collect();
+        let outputs = dedupe_job_outputs(effects.outputs);
         let step = self
             .work_graph
-            .complete(job.clone(), reads, waits, effects.outputs, effects.follow_up);
+            .complete(job.clone(), reads, waits, outputs, effects.follow_up);
         self.tel.event(
             &["fz", "compiler2", "work_graph", "applied"],
             metadata! {
@@ -415,28 +416,35 @@ impl<'a> World<'a> {
         changed
     }
 
-    pub fn define_callsite_summary(&mut self, key: CallSiteKey, mut summary: CallSiteSummary) -> bool {
-        summary.input_types = summary
-            .input_types
-            .into_iter()
-            .map(|input| self.types.alpha_normalize_vars(&input))
-            .collect();
+    pub fn define_callsite_summary(&mut self, key: CallSiteKey, mut summary: CallSiteSummary) -> u64 {
+        for target in &mut summary.targets {
+            target.input_types = target
+                .input_types
+                .iter()
+                .copied()
+                .map(|input| self.types.alpha_normalize_vars(&input))
+                .collect();
+            target.return_ty = self.types.alpha_normalize_vars(&target.return_ty);
+        }
         summary.return_ty = self.types.alpha_normalize_vars(&summary.return_ty);
         let changed = self.callsites.define(key.clone(), summary.clone());
+        let revision = self.advance_fact(FactKey::CallSiteSummary(key.clone()), changed);
         self.tel.execute(
             &["fz", "compiler2", "callsite", "defined"],
             &measurements! {
                 root_id: key.activation.root.as_u32(),
                 function_id: key.activation.function.as_u32(),
                 callsite_id: key.callsite.as_u32(),
-                input_arity: summary.input_types.len(),
+                revision: revision,
+                input_arity: summary.arity(),
+                target_count: summary.targets.len(),
             },
             &metadata! {
                 callsite: opaque_debug(&key),
                 summary: opaque_debug(&summary),
             },
         );
-        changed
+        revision
     }
 
     pub fn callsite_summary(&self, key: &CallSiteKey) -> Option<&CallSiteSummary> {
@@ -1918,6 +1926,17 @@ impl<'a> World<'a> {
             ),
         })
     }
+}
+
+fn dedupe_job_outputs(outputs: Vec<(FactKey, u64)>) -> Vec<(FactKey, u64)> {
+    let mut deduped = HashMap::new();
+    for (fact, revision) in outputs {
+        deduped
+            .entry(fact)
+            .and_modify(|current: &mut u64| *current = (*current).max(revision))
+            .or_insert(revision);
+    }
+    deduped.into_iter().collect()
 }
 
 fn callable_match_score(fixed_arity: usize, variadic: bool, actual_arity: usize) -> Option<CallableMatchScore> {

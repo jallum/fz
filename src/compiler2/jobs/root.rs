@@ -215,34 +215,36 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
                 .callsite_summary(&key)
                 .expect("callsite facts should have a summary value")
                 .clone();
-            let SelectedCallee::Function(function) = summary.callee else {
-                continue;
-            };
-            if !world.require_activation_key_facts(function, &mut reads, &mut waits, &mut follow_up) {
-                continue;
-            }
-            let need = callsite_needs
-                .get(&callsite)
-                .copied()
-                .unwrap_or(super::super::identity::ExecutableNeed::Value);
-            let callee_activation = world.activation_key(root_id, function, &summary.input_types);
-            let callee_executable = ExecutableKey {
-                activation: callee_activation.clone(),
-                need,
-            };
-            let callee_activation_ready = read_fact(
-                world,
-                FactKey::Activation(callee_activation.clone()),
-                &mut reads,
-                &mut dependencies,
-                &mut waits,
-            );
-            if !callee_activation_ready {
-                follow_up.insert(Job::AnalyzeActivation(callee_activation));
-                continue;
-            }
-            if !executables.contains(&callee_executable) {
-                pending.push_back(callee_executable);
+            for target in &summary.targets {
+                let SelectedCallee::Function(function) = target.callee else {
+                    continue;
+                };
+                if !world.require_activation_key_facts(function, &mut reads, &mut waits, &mut follow_up) {
+                    continue;
+                }
+                let need = callsite_needs
+                    .get(&callsite)
+                    .copied()
+                    .unwrap_or(super::super::identity::ExecutableNeed::Value);
+                let callee_activation = world.activation_key(root_id, function, &target.input_types);
+                let callee_executable = ExecutableKey {
+                    activation: callee_activation.clone(),
+                    need,
+                };
+                let callee_activation_ready = read_fact(
+                    world,
+                    FactKey::Activation(callee_activation.clone()),
+                    &mut reads,
+                    &mut dependencies,
+                    &mut waits,
+                );
+                if !callee_activation_ready {
+                    follow_up.insert(Job::AnalyzeActivation(callee_activation));
+                    continue;
+                }
+                if !executables.contains(&callee_executable) {
+                    pending.push_back(callee_executable);
+                }
             }
         }
     }
@@ -265,10 +267,8 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
             },
             dependencies,
         );
-        outputs.push((semantic_closed_fact, closure_changed));
-        if closure_changed {
-            follow_up.insert(Job::MaterializeRoot(root_id));
-        }
+        outputs.push((semantic_closed_fact, semantic_closed));
+        follow_up.insert(Job::MaterializeRoot(root_id));
     }
 
     Ok(JobEffects {

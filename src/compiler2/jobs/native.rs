@@ -1472,13 +1472,18 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 Ok(())
             }
             DispatchNode::Outcome { outcome, .. } => {
-                let body_id = plan.outcome(outcome).map(|outcome| outcome.body_id).ok_or_else(|| {
-                    incomplete_native_program(
-                        self.world,
-                        self.root_id,
-                        format!("local dispatch outcome {:?} is out of bounds", outcome),
-                    )
-                })?;
+                let Some(body_id) = plan.outcome(outcome).map(|outcome| outcome.body_id) else {
+                    let args = self.entry_capture_args(entries, miss_entry, env)?;
+                    ctx.set_term(Term::TailCall {
+                        ident: CallsiteIdent::from_source(Span::DUMMY),
+                        callee: *entry_fns
+                            .get(&miss_entry)
+                            .expect("local dispatch miss entry should have a helper fn"),
+                        args,
+                        is_back_edge: false,
+                    });
+                    return Ok(());
+                };
                 let arm_entry = *arm_entries.get(body_id as usize).ok_or_else(|| {
                     incomplete_native_program(
                         self.world,

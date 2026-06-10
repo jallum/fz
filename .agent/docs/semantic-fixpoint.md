@@ -24,7 +24,7 @@ activation see?" is answered by *who calls it*, not by a field someone set.
 return types, and for each resolved callsite emits:
 
 ```text
-CallSiteSummary(callsite)          # callee + input_types + need + return_ty
+CallSiteSummary(callsite)          # one or more {callee, input_types, return_ty} targets + joined return_ty
 Activation(callee_key)  += inputs  # contributes the callee's inputs (join)
 Executable(callee_key, need)       # the callee must be built for this need
 ```

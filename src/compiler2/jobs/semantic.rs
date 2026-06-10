@@ -23,7 +23,7 @@ use super::super::identity::{
     ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, ModuleId, function_id_of_closure_target,
 };
 use super::super::scheduler::FatalError;
-use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallSiteSummary, SelectedCallee};
+use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallSiteSummary, CallTargetSummary, SelectedCallee};
 use super::super::types::{ClosureTarget, Ty};
 use super::super::world::World;
 
@@ -188,8 +188,6 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
             outputs.push((FactKey::CallSiteSummary(call.key.clone()), revision));
         }
         for callee_activation in &call.activations {
-            // An activation fact is fully determined by its key (the
-            // canonical inputs live there), so once present it never changes.
             if emitted_activations.insert(callee_activation.key.clone()) {
                 outputs.push((FactKey::Activation(callee_activation.key.clone()), 1));
             }
@@ -778,20 +776,7 @@ fn resolve_direct_call(
     follow_up: &mut HashSet<Job>,
 ) -> Result<(Option<CallEmission>, Ty), FatalError> {
     if arg_types.iter().any(|arg| world.types().is_empty(arg)) {
-        let none = none_ty(world);
-        let summary = call_summary(selected_callee(callee), arg_types, none);
-        return Ok((
-            summary.map(|summary| CallEmission {
-                key: CallSiteKey {
-                    activation: caller.clone(),
-                    callsite,
-                },
-                summary: Some(summary),
-                activations: Vec::new(),
-                latent_executables: Vec::new(),
-            }),
-            none,
-        ));
+        return Ok((None, none_ty(world)));
     }
 
     let (summary, mut activations, return_ty) = match callee {
@@ -805,27 +790,26 @@ fn resolve_direct_call(
         ),
     };
     let mut latent_executables = Vec::new();
-    if let Some((function, runtime_inputs)) = summary.as_ref().and_then(|summary| {
-        match summary.callee {
-            SelectedCallee::Function(function) => Some(function),
-            SelectedCallee::Named { .. } => None,
+    if let Some(summary) = &summary {
+        for target in &summary.targets {
+            let SelectedCallee::Function(function) = target.callee else {
+                continue;
+            };
+            let runtime_activations = resolve_runtime_callable_boundary_activations(
+                world,
+                caller,
+                function,
+                target.input_types.as_slice(),
+                reads,
+                waits,
+                follow_up,
+            )?;
+            latent_executables.extend(runtime_activations.iter().map(|activation| ExecutableKey {
+                activation: activation.key.clone(),
+                need: ExecutableNeed::Value,
+            }));
+            activations.extend(runtime_activations);
         }
-        .map(|function| (function, summary.input_types.as_slice()))
-    }) {
-        let runtime_activations = resolve_runtime_callable_boundary_activations(
-            world,
-            caller,
-            function,
-            runtime_inputs,
-            reads,
-            waits,
-            follow_up,
-        )?;
-        latent_executables.extend(runtime_activations.iter().map(|activation| ExecutableKey {
-            activation: activation.key.clone(),
-            need: ExecutableNeed::Value,
-        }));
-        activations.extend(runtime_activations);
     }
     Ok((
         summary.map(|summary| CallEmission {
@@ -907,10 +891,7 @@ fn merge_call_emission(
 ) -> Result<(), FatalError> {
     match (&mut current.summary, observed.summary) {
         (Some(current_summary), Some(observed_summary)) => {
-            if current_summary.callee != observed_summary.callee {
-                return Err(FatalError);
-            }
-            merge_call_input_vec(world, &mut current_summary.input_types, &observed_summary.input_types);
+            merge_call_targets(world, &mut current_summary.targets, observed_summary.targets)?;
             current_summary.return_ty = merge_observed_ty(world, current_summary.return_ty, observed_summary.return_ty);
         }
         (None, None) => {}
@@ -932,27 +913,56 @@ fn rebuild_coalesced_call_emission(
     let Some(summary) = &call.summary else {
         return Ok(call);
     };
-    let SelectedCallee::Function(function) = summary.callee else {
-        return Ok(call);
-    };
-    let Some(mut rebuilt) = call_emission_for_function(
-        world,
-        caller,
-        call.key.clone(),
-        function,
-        summary.input_types.clone(),
-        reads,
-        waits,
-        follow_up,
-    )?
-    else {
-        return Ok(call);
-    };
-    // Keep latent callable-target activations discovered while analyzing each
-    // observed branch; rebuilding the merged direct callee does not rediscover
-    // all escaped callable bodies needed to close the frontier.
-    rebuilt.activations.extend(call.activations);
-    Ok(rebuilt)
+    let mut rebuilt_targets = Vec::new();
+    let mut rebuilt_return = none_ty(world);
+    let mut rebuilt_activations = Vec::new();
+    let mut rebuilt_latent = Vec::new();
+
+    for target in &summary.targets {
+        match target.callee.clone() {
+            SelectedCallee::Function(function) => {
+                let Some(rebuilt) = call_emission_for_function(
+                    world,
+                    caller,
+                    call.key.clone(),
+                    function,
+                    target.input_types.clone(),
+                    reads,
+                    waits,
+                    follow_up,
+                )?
+                else {
+                    return Ok(call);
+                };
+                let Some(rebuilt_summary) = rebuilt.summary else {
+                    return Ok(call);
+                };
+                let Some(rebuilt_target) = rebuilt_summary.single_target().cloned() else {
+                    return Ok(call);
+                };
+                rebuilt_return = merge_observed_ty(world, rebuilt_return, rebuilt_target.return_ty);
+                rebuilt_targets.push(rebuilt_target);
+                rebuilt_activations.extend(rebuilt.activations);
+                rebuilt_latent.extend(rebuilt.latent_executables);
+            }
+            SelectedCallee::Named { .. } => {
+                rebuilt_return = merge_observed_ty(world, rebuilt_return, target.return_ty);
+                rebuilt_targets.push(target.clone());
+            }
+        }
+    }
+
+    rebuilt_activations.extend(call.activations);
+    rebuilt_latent.extend(call.latent_executables);
+    Ok(CallEmission {
+        key: call.key,
+        summary: Some(CallSiteSummary {
+            targets: rebuilt_targets,
+            return_ty: rebuilt_return,
+        }),
+        activations: rebuilt_activations,
+        latent_executables: rebuilt_latent,
+    })
 }
 
 fn call_emission_for_function(
@@ -1000,8 +1010,11 @@ fn call_emission_for_function(
     Ok(Some(CallEmission {
         key,
         summary: Some(CallSiteSummary {
-            callee: SelectedCallee::Function(function),
-            input_types,
+            targets: vec![CallTargetSummary {
+                callee: SelectedCallee::Function(function),
+                input_types,
+                return_ty,
+            }],
             return_ty,
         }),
         activations,
@@ -1056,8 +1069,11 @@ fn resolve_function_call(
     let return_ty = refine_call_return(world, return_ty, contract_return_ty);
     Ok((
         Some(CallSiteSummary {
-            callee: SelectedCallee::Function(function),
-            input_types,
+            targets: vec![call_target_summary(
+                SelectedCallee::Function(function),
+                input_types,
+                return_ty,
+            )],
             return_ty,
         }),
         vec![ActivationContribution {
@@ -1102,7 +1118,8 @@ fn resolve_protocol_call(
         .clone();
     for arm in dispatch.arms {
         let target_ty = world.module_impl_target_ty(arm.target);
-        if !world.types().is_subtype(&receiver_ty, &target_ty) {
+        let overlap = world.types_mut().intersect(receiver_ty, target_ty);
+        if world.types().is_empty(&overlap) {
             continue;
         }
         let callback = arm
@@ -1110,7 +1127,7 @@ fn resolve_protocol_call(
             .get(&(function_ref.name.clone(), function_ref.arity))
             .copied();
         if let Some(callback) = callback {
-            matches.push(callback);
+            matches.push((callback, overlap));
         }
     }
 
@@ -1124,48 +1141,48 @@ fn resolve_protocol_call(
         return Ok((None, Vec::new(), any_ty(world)));
     }
 
-    if matches.len() != 1 {
-        return Ok((None, Vec::new(), any_ty(world)));
-    }
+    let mut targets = Vec::new();
+    let mut activations = Vec::new();
+    let mut return_ty = none_ty(world);
+    for (selected, overlap) in matches {
+        let owner_fact = FactKey::ModuleDefined(selected.owner_module);
+        if world.module_defined_revision(selected.owner_module).is_none() {
+            waits.insert(owner_fact);
+            follow_up.insert(Job::DefineModule(selected.owner_module));
+            return Ok((None, Vec::new(), any_ty(world)));
+        }
+        reads.push(owner_fact);
 
-    let selected = matches[0];
-    let owner_fact = FactKey::ModuleDefined(selected.owner_module);
-    if world.module_defined_revision(selected.owner_module).is_none() {
-        waits.insert(owner_fact);
-        follow_up.insert(Job::DefineModule(selected.owner_module));
-        return Ok((None, Vec::new(), any_ty(world)));
-    }
-    reads.push(owner_fact);
-
-    let Some((input_types, contract_return_ty)) =
-        refine_function_call_surface(world, selected.function, input_types, reads, waits, follow_up)?
-    else {
-        return Ok((None, Vec::new(), any_ty(world)));
-    };
-    let Some((activation, already_present, return_ty)) = prepare_function_call(
-        world,
-        caller,
-        selected.function,
-        input_types.clone(),
-        reads,
-        waits,
-        follow_up,
-    ) else {
-        return Ok((None, Vec::new(), any_ty(world)));
-    };
-    let return_ty = refine_call_return(world, return_ty, contract_return_ty);
-    Ok((
-        Some(CallSiteSummary {
-            callee: SelectedCallee::Function(selected.function),
-            input_types,
-            return_ty,
-        }),
-        vec![ActivationContribution {
+        let refined_inputs = refine_protocol_target_inputs(world, &input_types, receiver_ty, overlap);
+        let Some((refined_inputs, contract_return_ty)) =
+            refine_function_call_surface(world, selected.function, refined_inputs, reads, waits, follow_up)?
+        else {
+            return Ok((None, Vec::new(), any_ty(world)));
+        };
+        let Some((activation, already_present, observed_return)) = prepare_function_call(
+            world,
+            caller,
+            selected.function,
+            refined_inputs.clone(),
+            reads,
+            waits,
+            follow_up,
+        ) else {
+            return Ok((None, Vec::new(), any_ty(world)));
+        };
+        let target_return = refine_call_return(world, observed_return, contract_return_ty);
+        return_ty = merge_observed_ty(world, return_ty, target_return);
+        targets.push(call_target_summary(
+            SelectedCallee::Function(selected.function),
+            refined_inputs,
+            target_return,
+        ));
+        activations.push(ActivationContribution {
             key: activation,
             already_present,
-        }],
-        return_ty,
-    ))
+        });
+    }
+    Ok((Some(CallSiteSummary { targets, return_ty }), activations, return_ty))
 }
 
 fn resolve_closure_call(
@@ -1226,12 +1243,15 @@ fn resolve_closure_call(
         };
 
         if let Some(summary) = summary {
-            merge_call_inputs(world, &mut singleton_summary_inputs, &summary.input_types);
+            let Some(target) = summary.single_target() else {
+                return Err(FatalError);
+            };
+            merge_call_inputs(world, &mut singleton_summary_inputs, &target.input_types);
             let runtime_activations = resolve_runtime_callable_boundary_activations(
                 world,
                 caller,
                 function,
-                summary.input_types.as_slice(),
+                target.input_types.as_slice(),
                 reads,
                 waits,
                 follow_up,
@@ -1251,8 +1271,11 @@ fn resolve_closure_call(
     let summary = if selected_functions.len() == 1 {
         let function = selected_functions[0];
         singleton_summary_inputs.map(|input_types| CallSiteSummary {
-            callee: SelectedCallee::Function(function),
-            input_types,
+            targets: vec![call_target_summary(
+                SelectedCallee::Function(function),
+                input_types,
+                return_ty,
+            )],
             return_ty,
         })
     } else {
@@ -1626,10 +1649,35 @@ fn selected_callee(callee: &DirectCallee) -> Option<SelectedCallee> {
 
 fn call_summary(callee: Option<SelectedCallee>, input_types: Vec<Ty>, return_ty: Ty) -> Option<CallSiteSummary> {
     Some(CallSiteSummary {
-        callee: callee?,
-        input_types,
+        targets: vec![CallTargetSummary {
+            callee: callee?,
+            input_types,
+            return_ty,
+        }],
         return_ty,
     })
+}
+
+fn merge_call_targets(
+    world: &mut World<'_>,
+    current: &mut Vec<CallTargetSummary>,
+    observed: Vec<CallTargetSummary>,
+) -> Result<(), FatalError> {
+    for observed_target in observed {
+        if let Some(current_target) = current
+            .iter_mut()
+            .find(|target| target.callee == observed_target.callee)
+        {
+            merge_call_input_vec(world, &mut current_target.input_types, &observed_target.input_types);
+            current_target.return_ty = merge_observed_ty(world, current_target.return_ty, observed_target.return_ty);
+            continue;
+        }
+        current.push(observed_target);
+    }
+    if current.is_empty() {
+        return Err(FatalError);
+    }
+    Ok(())
 }
 
 fn merge_call_inputs(world: &mut World<'_>, merged: &mut Option<Vec<Ty>>, observed: &[Ty]) {
@@ -1647,6 +1695,22 @@ fn merge_call_input_vec(world: &mut World<'_>, current: &mut Vec<Ty>, observed: 
     }
     for (slot, observed_ty) in observed.iter().copied().enumerate() {
         current[slot] = world.types_mut().union(current[slot], observed_ty);
+    }
+}
+
+fn refine_protocol_target_inputs(world: &mut World<'_>, input_types: &[Ty], receiver_ty: Ty, target_ty: Ty) -> Vec<Ty> {
+    let mut refined = input_types.to_vec();
+    if let Some(receiver) = refined.first_mut() {
+        *receiver = world.types_mut().intersect(receiver_ty, target_ty);
+    }
+    refined
+}
+
+fn call_target_summary(callee: SelectedCallee, input_types: Vec<Ty>, return_ty: Ty) -> CallTargetSummary {
+    CallTargetSummary {
+        input_types,
+        callee,
+        return_ty,
     }
 }
 

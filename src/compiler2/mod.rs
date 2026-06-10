@@ -68,8 +68,8 @@ pub use quoted_surface::SurfaceSourceContext;
 pub use scheduler::{AppliedStep, DriveOutcome, FatalError, Scheduler};
 pub use scope::ScopeSnapshot;
 pub use semantic::{
-    ActivationAnalysis, ActivationMap, ActivationSlot, CallSiteKey, CallSiteMap, CallSiteSummary, SelectedCallee,
-    SemanticClosure, SemanticClosureMap,
+    ActivationAnalysis, ActivationMap, ActivationSlot, CallSiteKey, CallSiteMap, CallSiteSummary, CallTargetSummary,
+    SelectedCallee, SemanticClosure, SemanticClosureMap,
 };
 pub use source::{
     Horizon, QuotedAstNode, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceCursor,

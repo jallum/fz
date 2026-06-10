@@ -17,16 +17,22 @@ pub struct CallSiteKey {
     pub callsite: CallSiteId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SelectedCallee {
     Function(FunctionId),
     Named { name: String, arity: usize },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CallSiteSummary {
+pub struct CallTargetSummary {
     pub callee: SelectedCallee,
     pub input_types: Vec<Ty>,
+    pub return_ty: Ty,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallSiteSummary {
+    pub targets: Vec<CallTargetSummary>,
     pub return_ty: Ty,
 }
 
@@ -149,6 +155,16 @@ impl CallSiteMap {
 
     pub fn get(&self, key: &CallSiteKey) -> Option<&CallSiteSummary> {
         self.slots.get(key)
+    }
+}
+
+impl CallSiteSummary {
+    pub fn arity(&self) -> usize {
+        self.targets.first().map(|target| target.input_types.len()).unwrap_or(0)
+    }
+
+    pub fn single_target(&self) -> Option<&CallTargetSummary> {
+        (self.targets.len() == 1).then_some(&self.targets[0])
     }
 }
 

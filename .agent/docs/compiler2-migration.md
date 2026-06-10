@@ -96,11 +96,12 @@ support that the old frontend still owns: `keyword_lists`, `no_parens_call`,
 **Callable/protocol/Enum artifact gaps.** `fz-rh2.16.3` fixed the closed
 callable-entry side of this class by deriving latent callable executables from
 reachable value types and by matching callable inventory against compatible
-closed activation keys instead of raw capture `Ty` ids. The remaining artifact
-gap is multi-target protocol dispatch for union receivers, tracked by
-`fz-rh2.16.7`. Current fz2 failures in that class are `enum_map_family`,
-`enum_take_drop_split`, `enum_tier0`, `enumerable_protocol_dispatch`,
-`map_enumerable`, `membership_operator`, and `range_enumerable`.
+closed activation keys instead of raw capture `Ty` ids. `fz-rh2.16.7` closes
+the remaining multi-target protocol dispatch gap for union receivers by
+materializing local dispatch from the settled multi-target semantic fact, so
+`enum_map_family`, `enum_take_drop_split`, `enum_tier0`,
+`enumerable_protocol_dispatch`, `map_enumerable`, `membership_operator`, and
+`range_enumerable` all run through fz2 again.
 
 **Runtime/interpreter gaps.** Current fz2 failures also include
 `resource_lifecycle`, `tail_recursion` on `fz2 interp`, `utf8_pattern_match` on
