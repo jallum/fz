@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-10T04:00:34Z",
+  "description": "Goal: give compile-time macro execution a real compiler-host surface that records compiler service requests as source-production commands and applies them through the .11.7.4 publication boundary with the live scope/session, without giving runtime/native code compiler authority.\n\nSignal:\n- macro code can call Fz.Compiler compiler-host externs with AST roots from the active quoted source heap; the interpreter records host commands with raw roots, source identity, and caller scope\n- source production drains those commands through source_publish / ScopeSession, producing the same FunctionSource, module, type, protocol, and impl facts as literal source\n- normal backend/native execution has no compiler-host context; attempts to call compiler-host externs fail without authority instead of silently mutating compiler state\n- no World mutation occurs through unsafe interpreter aliases while Types is borrowed; host commands are applied at the source-production boundary\n- telemetry records host calls as raw compiler ids and quoted-source keys so tests can compare command publication to literal-source publication\n\nChange:\n- add a compile-time host context / command buffer to backend interpreter runs used by macro execution\n- define the Fz.Compiler surface and extern dispatch only for compile-time macro runs\n- apply recorded compiler commands through the quoted-source publication boundary and ScopeSession, not directly from the interpreter\n- add tests proving compiler-service definitions publish the same facts as literal source definitions and proving runtime roots cannot access compiler authority\n\nWhy:\n- Fz.Compiler needs source-session authority; doing it inside macro runtime readiness would either fake the authority or alias World unsafely while interpreting\n- compiler-service calls are source production, not macro execution mechanics\n- recursive macro expansion should consume this command stream rather than grow a second publication path",
+  "id": "fz-rh2.11.7.18",
+  "labels": [],
+  "parent": "fz-rh2.11.7",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 macro host services: Fz.Compiler command publication",
+  "type": "task",
+  "updated_at": "2026-06-10T04:00:34Z"
+}
