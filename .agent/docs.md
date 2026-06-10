@@ -11,6 +11,7 @@ Read:
 - [fact engine](docs/fact-engine.md) — the domain-free fixpoint spine: jobs as rules, reads/waits/owned outputs, the deduped agenda, value-based fact slots with revisions, and the drive loop.
 - [semantic fixpoint](docs/semantic-fixpoint.md) — the heart: activation inputs as joined facts, emergent discovery vs. the observe-only seal job, the key/value split, and the `Recursive`/`DispatchMask` keying facts.
 - [pipeline](docs/pipeline.md) — source→artifact across the job families: demand from a root, lazy runtime code, the one-way artifact boundary, and retraction by fact ownership.
+- [compiler2 migration](docs/compiler2-migration.md) — cutover status: compiler2 is ready below the artifact seam; old `fz` remains the oracle until the agreed fixture surface is represented by fz2 matrix paths.
 - [type world](docs/type-world.md) — the World-owned interned type kernel: `Ty` as an id, one threaded `Types`, and why cheap id-equality lets facts detect change without hashing.
 - [type naming](docs/type-naming.md) — source type names resolve through namespaces to `TypeName` identities, then to hard `Ty` through `TypeDefined` facts.
 - [quoted source](docs/quoted-source.md) — compiler2's Fz-shaped quoted-source substrate: `{heap, root}` keys, fast-fail `semantically_eq` comparison with `Horizon` depth, Elixir-shaped AST tuples, private metadata keys, and `ScopeSnapshot`-based `__MODULE__` / `__ENV__` projection.

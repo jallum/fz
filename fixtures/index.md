@@ -56,7 +56,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `interp_only_main/` | tiny module with a single helper and a main — historical interp-tier-0 smoke test | jit, interp, aot, repl |
 | `item_macro_source/` | source-order item macro returns Fz-shaped function source | fz2-run, fz2-interp, fz2-build |
 | `keyword_lists/` | Elixir-style keyword lists lower to ordinary lists of atom/value tuples | jit, interp, aot, repl |
-| `lambda_sugars/` | capture shorthand and multi-clause anonymous fn desugar to ordinary lambda dispatch | jit, interp, aot, repl |
+| `lambda_sugars/` | capture shorthand and multi-clause anonymous fn desugar to ordinary lambda dispatch | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
 | `list_primitives/` | list primitives from scratch — length / reverse / map / foldl exercising cons-pattern dispatch and first-class fns | jit, interp, aot, repl |
 | `macro_inc/` | defmacro + quote/unquote round-trip — two macros, one nested in the other | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
 | `make_ref_distinct/` | fz-ht5 — make_ref() returns a distinct opaque ref on every call | jit, interp, aot, repl |
@@ -76,7 +76,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `no_parens_do/` | A do/end block on a no-parens call becomes a trailing do: keyword arg. | jit, interp, aot, repl |
 | `no_parens_keyword/` | trailing/leading keyword lists in no-parens calls parse into one list arg; output matches Elixir | jit, interp, aot, repl |
 | `opaque_fn_value_join/` | opaque join of zero-capture function values remains callable through Enum.reduce/3 | jit, interp, aot, repl |
-| `operator_sugars/` | operator desugaring rewrites ++, --, <>, .., and ..// to runtime-library calls | jit, interp, aot, repl |
+| `operator_sugars/` | operator desugaring rewrites ++, --, <>, .., and ..// to runtime-library calls | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
 | `pipe_headless_case/` | pipe macro rewrite for call RHS and headless case RHS | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
 | `polymorphic/` | parametric `id` exercised over int, atom, and bool | jit, interp, aot, repl |
 | `process_heap_stats/` | Process.heap_alloc_stats/0 exposes deterministic current-process heap allocation counters as ordinary runtime output | jit, interp, aot, repl |

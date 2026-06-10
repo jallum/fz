@@ -1,0 +1,123 @@
+# Compiler2 Migration
+
+Compiler2 is ready below the artifact seam, but the old compiler is still the
+oracle for the full source surface. The cutover decision is therefore not
+"backend readiness"; it is fixture-contract parity.
+
+## Current Decision
+
+Do not scrap the old `fz` surface yet.
+
+The backend and type-name questions that blocked migration are settled:
+
+- compiler2 owns source submission, type naming, contract resolution, semantic
+  closure, and the artifact ladder through `NativeProgram(root)`;
+- `fz2 run`, `fz2 interp`, and `fz2 build` submit source directly to compiler2
+  and assert that old frontend/planner/type-infer telemetry stays absent;
+- native backend time is named at the compiler2 artifact boundary by
+  `fz.compiler2.native_backend.compile`, with raw codegen phases nested below it;
+- source-fragment re-lexing and per-call `ModuleTypeEnv` rebuilds are gone on the
+  compiler2 path.
+
+The remaining blocker is above that seam: the checked fixture oracle still
+covers more source/runtime behavior than the fz2 matrix declares.
+
+## Fixture Signal
+
+As of 2026-06-10, fixture metadata declares fz2 matrix paths for 14 fixtures:
+
+- `case_tuple_pattern_sequential`
+- `case_with_total`
+- `concurrency_ping_pong`
+- `cross_module_macro`
+- `defstruct_runtime`
+- `item_macro_source`
+- `lambda_sugars`
+- `macro_inc`
+- `map_three_path_parity`
+- `operator_sugars`
+- `pipe_headless_case`
+- `receive_float_pattern`
+- `receive_selective_refs`
+- `utf8_smart_constructor`
+
+`tests/fz2_cli.rs` also probes `quicksort` as a telemetry contract, but
+quicksort is not yet a fixture-matrix fz2 path because its fz2 allocation output
+does not match the old native goldens and needs an explicit fz2 golden decision.
+
+An ad hoc sweep of success fixtures through `target/debug/fz2 run` and
+`target/debug/fz2 interp` against `expected.txt` produced this fixture-level
+shape:
+
+```text
+pass both run/interp:      88 fixtures
+mismatch, no fz2 failure:   9 fixtures
+has fz2 failure:           21 fixtures
+```
+
+This sweep is a triage signal, not the committed oracle. It excludes abort /
+diagnostic fixtures and compares only against `expected.txt`, so allocation
+fixtures with per-path goldens naturally appear as mismatches until fz2-specific
+goldens are chosen.
+
+## Remaining Classes
+
+**Matrix coverage gap.** Many fixtures already pass fz2 run/interp in the sweep
+but are not declared in fixture metadata. Those should move into the matrix in
+batches, with fz2-build included only after it is observed for that batch.
+
+**Golden/allocation decisions.** The no-fail mismatch set is:
+
+```text
+append
+bsx_guard_eq
+enum_list_allocations
+enum_sort
+filter
+process_heap_stats
+quicksort
+reverse
+tree
+```
+
+Most are allocation-stat or path-golden questions. `bsx_guard_eq` needs a
+semantic check because fz2 interp returns a different branch.
+
+**Source-surface gaps.** Current fz2 failures include syntax or item-surface
+support that the old frontend still owns: `keyword_lists`, `no_parens_call`,
+`no_parens_do`, `no_parens_keyword`, `sample_tests`, and `sample_tests_module`.
+
+**Callable/protocol/Enum artifact gaps.** Current fz2 failures include missing
+closed callable entries or direct-call delivery edges: `enum_map_family`,
+`enum_reduce_suspend`, `enum_take_drop_split`, `enum_tier0`,
+`enumerable_protocol_dispatch`, `map_enumerable`, `membership_operator`,
+`opaque_fn_value_join`, `range_enumerable`, `repr_seam_closure_predicate`, and
+`tailcall_closure_captures`.
+
+**Runtime/interpreter gaps.** Current fz2 failures also include
+`resource_lifecycle`, `tail_recursion` on `fz2 interp`, `utf8_pattern_match` on
+`fz2 interp`, and `enum_predicate_search` on `fz2 interp`.
+
+## What Remains Load-Bearing
+
+- The old `fz` CLI and fixture matrix paths remain the executable oracle for
+  source surfaces not yet represented by fz2 matrix paths.
+- The legacy frontend/parser/lowering/spec environment remains load-bearing for
+  that old surface until the fz2 fixture matrix covers the agreed contract.
+- `crate::type_expr` / `ModuleTypeEnv` remain frozen for the old frontend only;
+  compiler2 does not reuse them.
+- `ExternDecl.ret_descr` and `ExternDecl.semantic_contract` are a native
+  substrate cleanup, already tracked by `fz-rh2.15`.
+
+## What Is Not A Cutover Blocker
+
+- Compiler2 does not need the old planner or type-infer pipeline for fz2 runs.
+- Compiler2 does not need the old `function_type_env` runtime-library re-lex path.
+- Compiler2 does not need the old native `prepare_preplanned_native` path for its
+  public JIT/AOT front doors.
+
+## Cutover Rule
+
+The old compiler can be scrapped only after the agreed source/contract fixture
+surface is represented by fz2 matrix paths or explicitly declared out of scope.
+Deletion tickets come after that coverage decision, not before it.
