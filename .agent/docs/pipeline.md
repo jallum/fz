@@ -24,6 +24,8 @@ body      LowerFunction
             one demanded function -> LoweredBody (+ generated lambda defs)
 dispatch  ReifyGuardDispatch, PlanEntryDispatch
             guard-pure helpers and clause matching -> GuardDispatch/EntryDispatch
+macro     BuildMacroExecutable
+            one demanded defmacro -> hidden macro root -> BackendProgram -> MacroExecutable
 keying    DeriveRecursive, DeriveDispatchMask
             stable per-function facts used to canonicalize activation keys
 semantic  SeedRoot, AnalyzeActivation, SealSemanticClosure
@@ -54,6 +56,16 @@ do not reopen semantic discovery. `NativeProgram(root)` is intentionally a
 separate lowering step above `BackendProgram(root)`, not an adapter-side query
 back into semantic or planner state.
 
+`RootEntry.kind` decides where a root is allowed to go:
+
+- `RootKind::Runtime` is a user/runtime entry request. It uses the submitted
+  entry arity, rejects macro entry functions, and continues from
+  `BackendProgram(root)` to `NativeProgram(root)`.
+- `RootKind::Macro` is a hidden compile-time entry request created only by
+  `BuildMacroExecutable`. It uses the macro ABI input vector
+  `__CALLER__ + captures + quoted args`, stops at `BackendProgram(root)`, and
+  publishes `MacroExecutable(function)` for the macro expander.
+
 ## A root's journey
 
 ```text
@@ -79,6 +91,21 @@ submit_root(main/0)
 Each callee pulls its own `LowerFunction` / `PlanEntryDispatch` /
 `DeriveRecursive` / `DeriveDispatchMask` as the analysis needs them, so the
 strata interleave per function rather than running front-to-back.
+
+Macro executable readiness follows the same artifact ladder but with a hidden
+macro root:
+
+```text
+demand BuildMacroExecutable(inc/1)
+  waits for FunctionDefined(inc/1)
+  creates macro root input [Any(__CALLER__), Any(x)]
+  waits on BackendProgram(macro_root)
+    follow-ups: SeedRoot(macro_root), LowerBackendProgram(macro_root)
+  publishes MacroExecutable(inc/1)
+```
+
+The macro root does not schedule `LowerNativeProgram`; compile-time macro
+execution uses the backend interpreter over the quoted source heap.
 
 ## Runtime and built-ins are ordinary, lazy code
 

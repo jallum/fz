@@ -6,7 +6,7 @@ use crate::compiler2::{
     AbiReadyProgram, AbiValueRepr, ActivationKey, BackendProgram, CallSiteId, CallSiteKey, CallSiteSummary,
     CallableEntry, ControlEntryOrigin, EmissionReadyProgram, ExecutableKey, FactKey, FunctionId, FunctionRef,
     LoweredBody, LoweredStep, LoweredTail, MaterializedProgram, ModuleId, ModuleState, ReturnAbi, SelectedCallee,
-    SemanticClosure, Ty, TypeName, TypeVarId, Types, ValueId,
+    QuotedSourceHeap, SemanticClosure, Ty, TypeName, TypeVarId, Types, ValueId,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
@@ -913,6 +913,137 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         capture.find(&["fz", "type_infer"]).len(),
         0,
         "root seeding should not invoke the legacy type inference pipeline"
+    );
+}
+
+#[test]
+fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let code_id = compiler.submit_code(CodeSubmission {
+        name: Some("macro_inc.fz".to_string()),
+        text: "defmacro inc(x) do\n  quote do: unquote(x) + 1\nend\n\ndefmacro quoted_var() do\n  quote do: x\nend\n"
+            .to_string(),
+    });
+    assert!(compiler.demand(Job::ScopeCode(code_id)));
+    assert_resolved(
+        compiler.drive(),
+        "scoping should publish the macro source without lowering it",
+    );
+
+    let inc = function_id(&functions, "inc", 1);
+    assert!(compiler.demand(Job::BuildMacroExecutable(inc)));
+    assert_resolved(
+        compiler.drive(),
+        "macro executable readiness should drive the shared backend artifact ladder",
+    );
+    let macro_outputs = outputs
+        .take(Job::BuildMacroExecutable(inc))
+        .expect("BuildMacroExecutable job effects");
+    assert!(
+        macro_outputs.contains(&presence(FactKey::MacroExecutable(inc), 1)),
+        "macro readiness should publish a first-class macro executable fact"
+    );
+    assert!(
+        outputs
+            .all()
+            .into_iter()
+            .any(|(fact, _)| matches!(fact, FactKey::BackendProgram(_))),
+        "macro readiness should reuse the existing BackendProgram artifact, not a separate evaluator"
+    );
+    assert!(
+        !outputs
+            .all()
+            .into_iter()
+            .any(|(fact, _)| matches!(fact, FactKey::NativeProgram(_))),
+        "compile-time macro roots should stop at backend interpreter readiness and not enter native codegen"
+    );
+
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let arg = builder.int(41);
+    let caller = builder.map(&[]).expect("caller env map");
+    let carrier_root = builder.list(&[caller, arg]).expect("carrier source root");
+    let carrier = builder.root(carrier_root).expect("carrier source");
+
+    let expanded = compiler
+        .run_macro_on_source(inc, &carrier, caller, &[arg])
+        .expect("macro should run over the source heap");
+    assert_eq!(
+        expanded.key().heap_id,
+        carrier.key().heap_id,
+        "macro expansion must return a root in the same quoted source heap"
+    );
+    let node = expanded
+        .cursor()
+        .ast_node()
+        .expect("expanded cursor")
+        .expect("expanded AST node");
+    assert_eq!(node.head.atom_name().expect("expanded head"), "+");
+    let args = node.tail.list_items().expect("expanded args");
+    assert_eq!(args.len(), 2, "inc should expand to a binary + call");
+    assert_eq!(args[0].int_value().expect("spliced arg"), 41);
+    assert_eq!(args[1].int_value().expect("literal increment"), 1);
+
+    let quoted_var = function_id(&functions, "quoted_var", 0);
+    assert!(compiler.demand(Job::BuildMacroExecutable(quoted_var)));
+    assert_resolved(
+        compiler.drive(),
+        "macro executable readiness should also handle quoted variables",
+    );
+    let quoted = compiler
+        .run_macro_on_source(quoted_var, &carrier, caller, &[])
+        .expect("macro should return the quoted variable");
+    assert_eq!(
+        quoted.key().heap_id,
+        carrier.key().heap_id,
+        "quoted variables should stay rooted in the same source heap"
+    );
+    let var_node = quoted
+        .cursor()
+        .ast_node()
+        .expect("quoted variable cursor")
+        .expect("quoted variable AST node");
+    assert_eq!(var_node.head.atom_name().expect("quoted variable head"), "x");
+    assert_eq!(
+        var_node.tail.atom_name().expect("quoted variable context"),
+        "nil",
+        "quote lowering should use the canonical no-context variable shape"
+    );
+}
+
+#[test]
+fn compiler2_runtime_roots_reject_macro_entries() {
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("macro_root.fz".to_string()),
+        text: "defmacro inc(x) do\n  quote do: unquote(x) + 1\nend\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "inc".to_string(),
+        arity: 1,
+        need: ExecutableNeed::Value,
+    });
+
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { job } if job == Job::SeedRoot(root)),
+        "runtime root seeding should reject macro entries before backend/native execution can gain compiler authority"
+    );
+    assert!(
+        outputs
+            .stops_matching(|job| matches!(job, Job::LowerBackendProgram(_) | Job::LowerNativeProgram(_)))
+            .is_empty(),
+        "rejected macro runtime roots must not reach backend or native lowering"
     );
 }
 
@@ -5937,6 +6068,15 @@ impl OutputCapture {
             outputs.remove(&job);
         }
         output
+    }
+
+    fn all(&self) -> Vec<(FactKey, u64)> {
+        self.outputs
+            .borrow()
+            .values()
+            .flat_map(|outputs| outputs.iter())
+            .flat_map(|facts| facts.iter().cloned())
+            .collect()
     }
 
     fn stop(&self, job: Job) -> JobSpanStop {

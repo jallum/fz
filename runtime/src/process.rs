@@ -311,6 +311,10 @@ impl Node {
         self.atoms.borrow().name(id).map(str::to_owned)
     }
 
+    pub fn atom_names(&self) -> Vec<String> {
+        self.atoms.borrow().by_id.clone()
+    }
+
     /// Replace the atom table (interpreter REPL code-image refresh).
     pub fn reset_atoms(&self, names: &[String]) {
         self.atoms.borrow_mut().reset_from(names);

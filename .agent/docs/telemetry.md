@@ -201,10 +201,20 @@ tests assert that:
 - `DeriveEmissionReady(root)` reads only `AbiReadyProgram(root)`
 - `LowerBackendProgram(root)` reads only `EmissionReadyProgram(root)`
 - `LowerNativeProgram(root)` reads only `BackendProgram(root)`
+- `BuildMacroExecutable(function)` waits on `BackendProgram(macro_root)` and
+  publishes `MacroExecutable(function)` without scheduling
+  `LowerNativeProgram(macro_root)`
 
 So a backend adapter that asks semantic, type, or reachability questions after
 the artifact boundary is visible as the wrong `reads`/`waits` shape on the job
 span, not just as a vague architectural complaint.
+
+Macro executable readiness also emits
+`[fz, compiler2, macro_executable, defined]` with raw `function_id`,
+`root_id`, backend revision, macro executable revision, and the backend program
+as opaque debug metadata. The event is observational only; tests that care
+about correctness should still assert the `JobEffects` facts and the absence of
+`NativeProgram(macro_root)` for macro roots.
 
 **Compiler2 tests should observe telemetry, not world internals.** The common
 captures live in `src/compiler2/drive_test.rs` and assert on emitted

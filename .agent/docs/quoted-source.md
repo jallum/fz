@@ -139,6 +139,37 @@ the `fz-rh2.11.7.*` arc.
   publishes protocol callback/domain/dispatch facts, and records protocol impl
   callback sources.
 
+## Macro Runtime
+
+- `FactKey::MacroExecutable(FunctionId)` is the readiness fact for a compiled
+  macro function. `Job::BuildMacroExecutable(function)` waits for
+  `FunctionDefined(function)`, creates one hidden macro root, waits for the
+  ordinary `BackendProgram(root)`, then publishes the executable fact.
+- A macro root is `RootKind::Macro`. Its input vector is explicit:
+  `__CALLER__` followed by capture inputs and user-visible macro arguments, all
+  typed as `Any`. That input vector is part of the activation key and the
+  published `Activation` fact value.
+- A runtime root is `RootKind::Runtime`. Runtime roots reject macro entry
+  functions during `SeedRoot`, and `LowerBackendProgram` only schedules
+  `LowerNativeProgram` for runtime roots. Compile-time macro roots stop at the
+  backend interpreter-ready rung.
+- `LowerFunction` and `PlanEntryDispatch` are shared by runtime functions and
+  macros. The difference is the hidden compile-time ABI slot, not a second
+  macro-only body or dispatch implementation.
+- `quote` / `unquote` lower to normal compiler2 body steps that construct Fz
+  values (`Const`, `Tuple`, `List`, `Map`) on the active process heap.
+  `unquote` is the only part of a quote that is evaluated while building the
+  quoted source value.
+- Macro execution lends the owning `QuotedSourceHeap` process to the backend
+  interpreter and restores it after the run. Macro arguments and returns are
+  `AnyValueRef` roots in that same heap; the returned root becomes another
+  `QuotedSourceRoot` over the same owner. There is no AST codec, copied scratch
+  heap, or old `CompileTimeEvaluator` on this path.
+- `Fz.Compiler` host callbacks are not part of macro executable readiness.
+  `fz-rh2.11.7.18` owns the compile-time host command buffer and source-session
+  publication so compiler service calls enter this publication boundary with
+  real authority instead of mutating `World` from inside interpreter execution.
+
 ## Discovery Authority
 
 - `QuotedCodeSource` now carries two compiler2-owned views of one source

@@ -238,16 +238,6 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
         return Ok(world.wait_for_function_definition(function));
     };
     let (source, surface) = world.function_definition(function);
-    if surface.is_macro {
-        return Err(emit_job_diagnostic(
-            world,
-            Diagnostic::error(
-                codes::LOWER_UNSUPPORTED,
-                format!("compiler2 cannot lower macro `{}` as a runtime body", surface.name),
-                surface.span,
-            ),
-        ));
-    }
 
     let mut reads = vec![FactKey::FunctionDefined(function)];
     let mut waits = HashSet::new();
@@ -381,13 +371,11 @@ fn collect_local_dispatch_requirements(
                 collect_local_dispatch_requirements(world, namespace, &after.body, reads, waits, follow_up)?;
             }
         }
-        Expr::Match(_, rhs)
-        | Expr::Ascribe(rhs, _)
-        | Expr::UnOp(_, rhs)
-        | Expr::Capture(rhs)
-        | Expr::Quote(rhs)
-        | Expr::Unquote(rhs) => {
+        Expr::Match(_, rhs) | Expr::Ascribe(rhs, _) | Expr::UnOp(_, rhs) | Expr::Capture(rhs) | Expr::Unquote(rhs) => {
             collect_local_dispatch_requirements(world, namespace, rhs, reads, waits, follow_up)?;
+        }
+        Expr::Quote(rhs) => {
+            collect_unquote_dispatch_requirements(world, namespace, rhs, reads, waits, follow_up)?;
         }
         Expr::BinOp(_, left, right) | Expr::Index(left, right) => {
             collect_local_dispatch_requirements(world, namespace, left, reads, waits, follow_up)?;
@@ -448,6 +436,146 @@ fn collect_local_dispatch_requirements(
         | Expr::Nil => {}
     }
     Ok(())
+}
+
+fn collect_unquote_dispatch_requirements(
+    world: &mut World<'_>,
+    namespace: Namespace,
+    expr: &Spanned<Expr>,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Result<(), FatalError> {
+    match &expr.node {
+        Expr::Unquote(inner) => collect_local_dispatch_requirements(world, namespace, inner, reads, waits, follow_up),
+        Expr::Ascribe(inner, _) | Expr::Quote(inner) => {
+            collect_unquote_dispatch_requirements(world, namespace, inner, reads, waits, follow_up)
+        }
+        Expr::Case(subject, clauses) => {
+            if let Some(subject) = subject {
+                collect_unquote_dispatch_requirements(world, namespace, subject, reads, waits, follow_up)?;
+            }
+            for clause in clauses {
+                if let Some(guard) = &clause.guard {
+                    collect_unquote_dispatch_requirements(world, namespace, guard, reads, waits, follow_up)?;
+                }
+                collect_unquote_dispatch_requirements(world, namespace, &clause.body, reads, waits, follow_up)?;
+            }
+            Ok(())
+        }
+        Expr::With(bindings, body, else_clauses) => {
+            for binding in bindings {
+                match binding {
+                    WithBinding::Match(_, expr) | WithBinding::Bare(expr) => {
+                        collect_unquote_dispatch_requirements(world, namespace, expr, reads, waits, follow_up)?;
+                    }
+                }
+            }
+            collect_unquote_dispatch_requirements(world, namespace, body, reads, waits, follow_up)?;
+            for clause in else_clauses {
+                if let Some(guard) = &clause.guard {
+                    collect_unquote_dispatch_requirements(world, namespace, guard, reads, waits, follow_up)?;
+                }
+                collect_unquote_dispatch_requirements(world, namespace, &clause.body, reads, waits, follow_up)?;
+            }
+            Ok(())
+        }
+        Expr::If(cond, then_expr, else_expr) => {
+            collect_unquote_dispatch_requirements(world, namespace, cond, reads, waits, follow_up)?;
+            collect_unquote_dispatch_requirements(world, namespace, then_expr, reads, waits, follow_up)?;
+            if let Some(else_expr) = else_expr {
+                collect_unquote_dispatch_requirements(world, namespace, else_expr, reads, waits, follow_up)?;
+            }
+            Ok(())
+        }
+        Expr::Cond(arms) => {
+            for (cond, body) in arms {
+                collect_unquote_dispatch_requirements(world, namespace, cond, reads, waits, follow_up)?;
+                collect_unquote_dispatch_requirements(world, namespace, body, reads, waits, follow_up)?;
+            }
+            Ok(())
+        }
+        Expr::Receive { clauses, after } => {
+            for clause in clauses {
+                if let Some(guard) = &clause.guard {
+                    collect_unquote_dispatch_requirements(world, namespace, guard, reads, waits, follow_up)?;
+                }
+                collect_unquote_dispatch_requirements(world, namespace, &clause.body, reads, waits, follow_up)?;
+            }
+            if let Some(after) = after {
+                collect_unquote_dispatch_requirements(world, namespace, &after.timeout, reads, waits, follow_up)?;
+                collect_unquote_dispatch_requirements(world, namespace, &after.body, reads, waits, follow_up)?;
+            }
+            Ok(())
+        }
+        Expr::Match(_, rhs) | Expr::UnOp(_, rhs) | Expr::Capture(rhs) => {
+            collect_unquote_dispatch_requirements(world, namespace, rhs, reads, waits, follow_up)
+        }
+        Expr::BinOp(_, left, right) | Expr::Index(left, right) => {
+            collect_unquote_dispatch_requirements(world, namespace, left, reads, waits, follow_up)?;
+            collect_unquote_dispatch_requirements(world, namespace, right, reads, waits, follow_up)
+        }
+        Expr::Call(target, args) | Expr::ClosureCall(target, args) => {
+            collect_unquote_dispatch_requirements(world, namespace, target, reads, waits, follow_up)?;
+            for arg in args {
+                collect_unquote_dispatch_requirements(world, namespace, arg, reads, waits, follow_up)?;
+            }
+            Ok(())
+        }
+        Expr::List(items, tail) => {
+            for item in items {
+                collect_unquote_dispatch_requirements(world, namespace, item, reads, waits, follow_up)?;
+            }
+            if let Some(tail) = tail {
+                collect_unquote_dispatch_requirements(world, namespace, tail, reads, waits, follow_up)?;
+            }
+            Ok(())
+        }
+        Expr::Tuple(items) => {
+            for item in items {
+                collect_unquote_dispatch_requirements(world, namespace, item, reads, waits, follow_up)?;
+            }
+            Ok(())
+        }
+        Expr::Bitstring(fields) => {
+            for field in fields {
+                collect_unquote_dispatch_requirements(world, namespace, &field.value, reads, waits, follow_up)?;
+            }
+            Ok(())
+        }
+        Expr::Map(entries) | Expr::MapUpdate(_, entries) => {
+            if let Expr::MapUpdate(base, _) = &expr.node {
+                collect_unquote_dispatch_requirements(world, namespace, base, reads, waits, follow_up)?;
+            }
+            for (key, value) in entries {
+                collect_unquote_dispatch_requirements(world, namespace, key, reads, waits, follow_up)?;
+                collect_unquote_dispatch_requirements(world, namespace, value, reads, waits, follow_up)?;
+            }
+            Ok(())
+        }
+        Expr::Struct { fields, .. } => {
+            for (_, value) in fields {
+                collect_unquote_dispatch_requirements(world, namespace, value, reads, waits, follow_up)?;
+            }
+            Ok(())
+        }
+        Expr::Block(exprs) => {
+            for expr in exprs {
+                collect_unquote_dispatch_requirements(world, namespace, expr, reads, waits, follow_up)?;
+            }
+            Ok(())
+        }
+        Expr::Lambda(_)
+        | Expr::CaptureArg(_)
+        | Expr::FnRef { .. }
+        | Expr::Var(_)
+        | Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Binary(_)
+        | Expr::Atom(_)
+        | Expr::Bool(_)
+        | Expr::Nil => Ok(()),
+    }
 }
 
 fn collect_local_guard_requirements(
@@ -604,6 +732,11 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         let mut env = HashMap::new();
         let mut projections = Vec::new();
         let mut params = Vec::new();
+        if self.surface.is_macro {
+            let value = self.fresh_value();
+            params.push(value);
+            env.insert("__CALLER__".to_string(), value);
+        }
         for capture in self.source.capture_params.clone() {
             let value = self.fresh_value();
             params.push(value);
@@ -887,7 +1020,16 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             }
             Expr::Receive { clauses, after } => self.lower_receive(expr.span, clauses, after.as_deref(), env, steps),
             Expr::Lambda(clauses) => self.lower_lambda(expr.span, clauses, env, steps),
-            Expr::Capture(_) | Expr::CaptureArg(_) | Expr::Quote(_) | Expr::Unquote(_) => Err(emit_job_diagnostic(
+            Expr::Quote(inner) => self.lower_quote_expr(inner, env, steps),
+            Expr::Unquote(_) => Err(emit_job_diagnostic(
+                self.world,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    "compiler2 lowering found `unquote` outside `quote`".to_string(),
+                    expr.span,
+                ),
+            )),
+            Expr::Capture(_) | Expr::CaptureArg(_) => Err(emit_job_diagnostic(
                 self.world,
                 Diagnostic::error(
                     codes::LOWER_UNSUPPORTED,
@@ -959,6 +1101,179 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             });
         }
         Ok(lowered)
+    }
+
+    fn lower_quote_expr(
+        &mut self,
+        expr: &Spanned<Expr>,
+        env: &mut HashMap<String, ValueId>,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        match &expr.node {
+            Expr::Unquote(inner) => self.lower_expr(inner, env, steps),
+            Expr::Ascribe(inner, _) => self.lower_quote_expr(inner, env, steps),
+            Expr::Int(value) => Ok(self.push_const(steps, Literal::Int(*value))),
+            Expr::Float(value) => Ok(self.push_const(steps, Literal::Float(*value))),
+            Expr::Binary(value) => Ok(self.push_const(steps, Literal::Binary(value.clone()))),
+            Expr::Atom(value) => Ok(self.push_const(steps, Literal::Atom(value.clone()))),
+            Expr::Bool(value) => Ok(self.push_const(steps, Literal::Bool(*value))),
+            Expr::Nil => Ok(self.push_const(steps, Literal::Nil)),
+            Expr::Var(name) => self.lower_quoted_variable(name, steps),
+            Expr::List(items, None) => {
+                let values = items
+                    .iter()
+                    .map(|item| self.lower_quote_expr(item, env, steps))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(self.push_list(steps, values, None))
+            }
+            Expr::List(_, Some(_)) => Err(emit_job_diagnostic(
+                self.world,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    "compiler2 quote does not lower improper source lists yet".to_string(),
+                    expr.span,
+                ),
+            )),
+            Expr::Tuple(items) => {
+                let values = items
+                    .iter()
+                    .map(|item| self.lower_quote_expr(item, env, steps))
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.lower_quoted_atom_node("{}", values, steps)
+            }
+            Expr::Map(entries) => {
+                let values = entries
+                    .iter()
+                    .map(|(key, value)| {
+                        let key = self.lower_quote_expr(key, env, steps)?;
+                        let value = self.lower_quote_expr(value, env, steps)?;
+                        Ok(self.push_tuple(steps, vec![key, value]))
+                    })
+                    .collect::<Result<Vec<_>, FatalError>>()?;
+                self.lower_quoted_atom_node("%{}", values, steps)
+            }
+            Expr::Call(callee, args) => {
+                let values = args
+                    .iter()
+                    .map(|arg| self.lower_quote_expr(arg, env, steps))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if let Expr::Var(name) = &callee.node {
+                    self.lower_quoted_atom_node(name, values, steps)
+                } else {
+                    let head = self.lower_quote_expr(callee, env, steps)?;
+                    let tail = self.push_list(steps, values, None);
+                    Ok(self.push_ast_node(steps, head, tail))
+                }
+            }
+            Expr::BinOp(op, left, right) => {
+                let left = self.lower_quote_expr(left, env, steps)?;
+                let right = self.lower_quote_expr(right, env, steps)?;
+                self.lower_quoted_atom_node(quoted_binop_atom(*op), vec![left, right], steps)
+            }
+            Expr::UnOp(op, input) => {
+                let input = self.lower_quote_expr(input, env, steps)?;
+                self.lower_quoted_atom_node(quoted_unop_atom(*op), vec![input], steps)
+            }
+            Expr::Match(pattern, rhs) => {
+                let Pattern::Var(name) = &pattern.node else {
+                    return Err(emit_job_diagnostic(
+                        self.world,
+                        Diagnostic::error(
+                            codes::LOWER_UNSUPPORTED,
+                            "compiler2 quote only supports variable match patterns today".to_string(),
+                            pattern.span,
+                        ),
+                    ));
+                };
+                let lhs = self.lower_quoted_variable(name, steps)?;
+                let rhs = self.lower_quote_expr(rhs, env, steps)?;
+                self.lower_quoted_atom_node("=", vec![lhs, rhs], steps)
+            }
+            Expr::Block(exprs) => {
+                let values = exprs
+                    .iter()
+                    .map(|expr| self.lower_quote_expr(expr, env, steps))
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.lower_quoted_atom_node("__block__", values, steps)
+            }
+            Expr::If(cond, then_expr, else_expr) => {
+                let cond = self.lower_quote_expr(cond, env, steps)?;
+                let then_value = self.lower_quote_expr(then_expr, env, steps)?;
+                let mut keywords = vec![self.push_keyword(steps, "do", then_value)];
+                if let Some(else_expr) = else_expr {
+                    let else_value = self.lower_quote_expr(else_expr, env, steps)?;
+                    keywords.push(self.push_keyword(steps, "else", else_value));
+                }
+                let keyword_list = self.push_list(steps, keywords, None);
+                self.lower_quoted_atom_node("if", vec![cond, keyword_list], steps)
+            }
+            Expr::Quote(_)
+            | Expr::FnRef { .. }
+            | Expr::Capture(_)
+            | Expr::CaptureArg(_)
+            | Expr::Bitstring(_)
+            | Expr::MapUpdate(_, _)
+            | Expr::Struct { .. }
+            | Expr::Index(_, _)
+            | Expr::ClosureCall(_, _)
+            | Expr::Case(_, _)
+            | Expr::Cond(_)
+            | Expr::With(_, _, _)
+            | Expr::Receive { .. }
+            | Expr::Lambda(_) => Err(emit_job_diagnostic(
+                self.world,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    format!("compiler2 quote does not lower `{}` yet", expr_name(&expr.node)),
+                    expr.span,
+                ),
+            )),
+        }
+    }
+
+    fn lower_quoted_variable(&mut self, name: &str, steps: &mut Vec<ExprStep>) -> Result<ValueId, FatalError> {
+        let head = self.push_const(steps, Literal::Atom(name.to_string()));
+        let tail = self.push_const(steps, Literal::Nil);
+        Ok(self.push_ast_node(steps, head, tail))
+    }
+
+    fn lower_quoted_atom_node(
+        &mut self,
+        name: &str,
+        args: Vec<ValueId>,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        let head = self.push_const(steps, Literal::Atom(name.to_string()));
+        let tail = self.push_list(steps, args, None);
+        Ok(self.push_ast_node(steps, head, tail))
+    }
+
+    fn push_ast_node(&mut self, steps: &mut Vec<ExprStep>, head: ValueId, tail: ValueId) -> ValueId {
+        let meta = self.push_map(steps, Vec::new());
+        self.push_tuple(steps, vec![head, meta, tail])
+    }
+
+    fn push_keyword(&mut self, steps: &mut Vec<ExprStep>, key: &str, value: ValueId) -> ValueId {
+        let key = self.push_const(steps, Literal::Atom(key.to_string()));
+        self.push_tuple(steps, vec![key, value])
+    }
+
+    fn push_tuple(&mut self, steps: &mut Vec<ExprStep>, items: Vec<ValueId>) -> ValueId {
+        let value = self.fresh_value();
+        steps.push(ExprStep::Tuple { value, items });
+        value
+    }
+
+    fn push_list(&mut self, steps: &mut Vec<ExprStep>, items: Vec<ValueId>, tail: Option<ValueId>) -> ValueId {
+        let value = self.fresh_value();
+        steps.push(ExprStep::List { value, items, tail });
+        value
+    }
+
+    fn push_map(&mut self, steps: &mut Vec<ExprStep>, entries: Vec<(ValueId, ValueId)>) -> ValueId {
+        let value = self.fresh_value();
+        steps.push(ExprStep::Map { value, entries });
+        value
     }
 
     fn lower_struct_expr(
@@ -3091,6 +3406,40 @@ fn expr_name(expr: &Expr) -> &'static str {
         Expr::Lambda(_) => "Lambda",
         Expr::Quote(_) => "Quote",
         Expr::Unquote(_) => "Unquote",
+    }
+}
+
+fn quoted_binop_atom(op: crate::ast::BinOp) -> &'static str {
+    match op {
+        crate::ast::BinOp::Add => "+",
+        crate::ast::BinOp::Sub => "-",
+        crate::ast::BinOp::Mul => "*",
+        crate::ast::BinOp::Div => "/",
+        crate::ast::BinOp::Rem => "%",
+        crate::ast::BinOp::Eq => "==",
+        crate::ast::BinOp::Neq => "!=",
+        crate::ast::BinOp::Lt => "<",
+        crate::ast::BinOp::LtEq => "<=",
+        crate::ast::BinOp::Gt => ">",
+        crate::ast::BinOp::GtEq => ">=",
+        crate::ast::BinOp::And => "and",
+        crate::ast::BinOp::Or => "or",
+        crate::ast::BinOp::Pipe => "|>",
+        crate::ast::BinOp::Cons => "|",
+        crate::ast::BinOp::ListConcat => "++",
+        crate::ast::BinOp::ListSubtract => "--",
+        crate::ast::BinOp::BinConcat => "<>",
+        crate::ast::BinOp::Range => "..",
+        crate::ast::BinOp::RangeStep => "//",
+        crate::ast::BinOp::In => "in",
+        crate::ast::BinOp::NotIn => "not in",
+    }
+}
+
+fn quoted_unop_atom(op: crate::ast::UnOp) -> &'static str {
+    match op {
+        crate::ast::UnOp::Neg => "-",
+        crate::ast::UnOp::Not => "not",
     }
 }
 

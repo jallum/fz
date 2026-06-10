@@ -67,6 +67,39 @@ pub(crate) fn run_backend_main(
     Ok(halt_val)
 }
 
+pub(crate) fn run_backend_entry_on_process(
+    types: &mut crate::compiler2::Types,
+    tel: &dyn Telemetry,
+    program: &BackendProgram,
+    process: Process,
+    args: Vec<AnyValue>,
+) -> (Process, Result<AnyValue, String>) {
+    let mut runtime = IrInterpRuntime::with_process(process, &program.atom_names);
+    let atom_names = runtime
+        .process_ref(1)
+        .expect("macro runtime should own pid 1")
+        .node
+        .atom_names();
+    let module = Module {
+        atom_names,
+        struct_schemas: program.struct_schemas.clone(),
+        ..Module::default()
+    };
+    let result = (|| {
+        runtime.enqueue_backend_entry(1, program.entry, args)?;
+        let completions = drive_backend_until_idle(&mut runtime, types, tel, program, &module)?;
+        completions
+            .into_iter()
+            .rev()
+            .find_map(|(pid, value)| (pid == 1).then_some(value))
+            .ok_or_else(|| "backend macro entry produced no completion".to_string())
+    })();
+    let process = runtime
+        .take_process(1)
+        .expect("macro runtime should return its source process");
+    (process, result)
+}
+
 impl IrInterpRuntime {
     fn enqueue_backend_entry(&mut self, pid: u32, executable: usize, args: Vec<AnyValue>) -> Result<(), String> {
         self.enqueue_backend_executable(pid, executable, args, Vec::new())

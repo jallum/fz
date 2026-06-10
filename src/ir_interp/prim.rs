@@ -12,11 +12,10 @@ use crate::types::{ClosureTypes, Ty, Types, ty_descr};
 use fz_runtime::any_value::{AnyValueRef, NIL_ATOM_ID, ValueKind, closure_addr_from_tagged, struct_schema_id};
 use fz_runtime::heap::Schema;
 use fz_runtime::ir_runtime::{
-    fz_alloc_bitstring_const, fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_cons_atom,
-    fz_list_cons_float, fz_list_cons_int, fz_list_cons_ref, fz_list_head_ref, fz_list_tail_ref, fz_map_dest_begin,
-    fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_put_parts, fz_map_empty, fz_map_get_atom_key_ref,
-    fz_map_get_ref, fz_map_put_atom, fz_map_put_float, fz_map_put_int, fz_map_put_ref, fz_matcher_map_get_ref,
-    fz_struct_get_field_ref,
+    fz_alloc_bitstring_const, fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_head_ref, fz_list_tail_ref,
+    fz_map_dest_begin, fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_put_parts, fz_map_empty,
+    fz_map_get_atom_key_ref, fz_map_get_ref, fz_map_put_atom, fz_map_put_float, fz_map_put_int, fz_map_put_ref,
+    fz_matcher_map_get_ref, fz_struct_get_field_ref,
 };
 use fz_runtime::process::Process;
 
@@ -26,18 +25,17 @@ pub(super) fn interp_list_cons(
     tail: AnyValue,
     context: &str,
 ) -> Result<AnyValue, String> {
-    let bits = with_value_ref(proc, tail, context, |tail_ref| match head {
-        AnyValue::Int(value) => Ok::<u64, String>(fz_list_cons_int(proc, value, tail_ref)),
-        AnyValue::Float(value) => Ok::<u64, String>(fz_list_cons_float(proc, value, tail_ref)),
-        AnyValue::Atom(value) => Ok::<u64, String>(fz_list_cons_atom(proc, value as u64, tail_ref)),
-        AnyValue::Null | AnyValue::EmptyList | AnyValue::FnRef(_) | AnyValue::Ref(_) => {
-            let head = head
-                .as_ref_word(proc)
-                .map_err(|err| format!("{context}: cannot create head ref: {err}"))?;
-            Ok(fz_list_cons_ref(proc, head, tail_ref))
-        }
-    })??;
-    interp_value_from_ref_word(bits, context)
+    let head = head
+        .value(proc)
+        .map_err(|err| format!("{context}: cannot materialize list head: {err}"))?;
+    let tail = tail
+        .as_any_value_ref(proc)
+        .map_err(|err| format!("{context}: cannot materialize list tail: {err}"))?;
+    let list = unsafe { &mut *proc }
+        .heap
+        .alloc_list_cons_any(head, tail)
+        .map_err(|err| format!("{context}: cannot allocate list cons: {err:?}"))?;
+    Ok(AnyValue::Ref(list))
 }
 
 pub(super) fn interp_map_put(

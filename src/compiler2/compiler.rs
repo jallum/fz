@@ -134,6 +134,18 @@ impl<'a> Compiler2<'a> {
         Ok(())
     }
 
+    /// Runs an executable macro over a quoted source heap and returns the
+    /// macro-produced root in that same heap.
+    pub fn run_macro_on_source(
+        &mut self,
+        function: super::FunctionId,
+        source: &super::QuotedSourceRoot,
+        caller: fz_runtime::any_value::AnyValueRef,
+        args: &[fz_runtime::any_value::AnyValueRef],
+    ) -> Result<super::QuotedSourceRoot, String> {
+        self.world.run_macro_on_source(function, source, caller, args)
+    }
+
     #[cfg(test)]
     pub(crate) fn compile_native_program_jit_for_test(
         &mut self,

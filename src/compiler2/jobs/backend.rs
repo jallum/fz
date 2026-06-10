@@ -24,7 +24,7 @@ use super::super::body::{
     LoweredTail, ValueId,
 };
 use super::super::drive::{FactKey, Job, JobEffects};
-use super::super::identity::{ExecutableKey, ExecutableNeed, RootId, function_id_of_closure_target};
+use super::super::identity::{ExecutableKey, ExecutableNeed, RootId, RootKind, function_id_of_closure_target};
 use super::super::scheduler::FatalError;
 use super::super::types::Ty;
 use super::super::world::World;
@@ -70,14 +70,17 @@ pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> R
         callable_entries,
     };
     let backend_fact = FactKey::BackendProgram(root_id);
-    let changed = world.define_backend_program(root_id, program);
+    let revision = world.define_backend_program(root_id, program);
+    let changed = world.fact_would_change(backend_fact.clone(), revision);
+    let follow_up = if changed && world.root_entry(root_id).kind == RootKind::Runtime {
+        vec![Job::LowerNativeProgram(root_id)]
+    } else {
+        Vec::new()
+    };
     Ok(JobEffects {
         reads: vec![emission_ready_fact],
-        outputs: vec![(backend_fact, changed)],
-        follow_up: changed
-            .then_some(Job::LowerNativeProgram(root_id))
-            .into_iter()
-            .collect(),
+        outputs: vec![(backend_fact, revision)],
+        follow_up,
         ..JobEffects::default()
     })
 }

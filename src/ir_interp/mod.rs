@@ -50,7 +50,7 @@ mod value;
 #[cfg(test)]
 mod ir_interp_test;
 
-pub(crate) use backend::run_backend_main;
+pub(crate) use backend::{run_backend_entry_on_process, run_backend_main};
 use binop::*;
 use dispatch_exec::*;
 use extern_call::*;
@@ -223,6 +223,27 @@ impl IrInterpRuntime {
         ));
         runtime.insert_task(1, process);
         runtime
+    }
+
+    pub(crate) fn with_process(mut process: Process, atom_names: &[String]) -> Self {
+        for atom in atom_names {
+            process.node.intern_atom(atom);
+        }
+        let mut runtime = Self::fresh();
+        runtime.node = Rc::clone(&process.node);
+        runtime.schemas = process.heap.schemas_registry();
+        let (bs_tuple_arity1_schema, bs_tuple_arity3_schema) = runtime.register_bitstring_tuple_schemas();
+        process.bs_tuple_arity1_schema = Some(bs_tuple_arity1_schema);
+        process.bs_tuple_arity3_schema = Some(bs_tuple_arity3_schema);
+        process.pid = 1;
+        process.state = ProcessState::New;
+        process.ctx = std::ptr::null_mut();
+        runtime.insert_task(1, Box::new(process));
+        runtime
+    }
+
+    pub(crate) fn take_process(&mut self, pid: u32) -> Option<Process> {
+        self.tasks.remove(&pid).map(|process| *process)
     }
 
     /// The process running in the current quantum. Call sites that allocate or

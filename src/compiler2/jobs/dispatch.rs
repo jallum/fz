@@ -105,20 +105,6 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
     };
 
     let (source, surface) = world.function_definition(function);
-    if surface.is_macro {
-        return Err(emit_job_diagnostic(
-            world,
-            Diagnostic::error(
-                codes::LOWER_UNSUPPORTED,
-                format!(
-                    "compiler2 cannot plan macro `{}` as runtime entry dispatch",
-                    function_label(&surface)
-                ),
-                surface.span,
-            ),
-        ));
-    }
-
     let mut reads = vec![FactKey::FunctionDefined(function)];
     let module = source.owner_module;
     if !module.is_global() {
@@ -259,7 +245,13 @@ fn entry_source_patterns(
         .iter()
         .map(|name| Spanned::new(Pattern::Var(name.clone()), surface.span))
         .collect::<Vec<_>>();
-    let input_count = capture_patterns.len() + surface.arity();
+    let macro_caller_patterns = surface
+        .is_macro
+        .then(|| Spanned::new(Pattern::Wildcard, surface.span))
+        .into_iter()
+        .collect::<Vec<_>>();
+    let macro_offset = macro_caller_patterns.len();
+    let input_count = macro_offset + capture_patterns.len() + surface.arity();
     if surface.extern_abi.is_some() {
         return Ok(SourcePatternRows {
             input_count,
@@ -295,12 +287,16 @@ fn entry_source_patterns(
                                 error.msg
                             ),
                             error.span,
-                        ),
+                            ),
                     )
                 })?;
-            preconditions.push((PatternSubjectRef::Input((capture_patterns.len() + index) as u32), ty));
+            preconditions.push((
+                PatternSubjectRef::Input((macro_offset + capture_patterns.len() + index) as u32),
+                ty,
+            ));
         }
-        let mut patterns = capture_patterns.clone();
+        let mut patterns = macro_caller_patterns.clone();
+        patterns.extend(capture_patterns.clone());
         patterns.extend(clause.params.clone());
         rows.push(PatternRow {
             patterns,

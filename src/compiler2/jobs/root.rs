@@ -1,8 +1,13 @@
 use std::collections::HashSet;
 use std::collections::VecDeque;
 
+use crate::compiler::source::Span;
+use crate::diag::Diagnostic;
+use crate::diag::codes;
+use crate::diag::driver::emit_through;
+
 use super::super::drive::{FactKey, Job, JobEffects};
-use super::super::identity::{ExecutableKey, RootId};
+use super::super::identity::{ExecutableKey, RootId, RootKind};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{CallSiteKey, DependencySnapshot, SelectedCallee, SemanticClosure};
 use super::super::world::World;
@@ -31,6 +36,18 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
     };
 
     effects.reads.push(function_fact);
+    let (_, surface) = world.function_definition(root.function);
+    if root.kind == RootKind::Runtime && surface.is_macro {
+        return Err(emit_root_error(
+            world,
+            surface.span,
+            format!(
+                "compiler2 runtime root cannot target macro `{}/{}`",
+                surface.name,
+                surface.arity()
+            ),
+        ));
+    }
     let mut waits = HashSet::new();
     let mut follow_up = HashSet::new();
     if !world.require_activation_key_facts(root.function, &mut effects.reads, &mut waits, &mut follow_up) {
@@ -39,24 +56,28 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
         return Ok(effects);
     }
 
-    let entry_activation = world.activation_key(root_id, root.function, &[]);
-    // An activation fact is fully determined by its key (the canonical
-    // inputs live there), so once present it never changes.
-    effects
-        .outputs
-        .push((FactKey::Activation(entry_activation.clone()), false));
+    let entry_activation = world.activation_key(root_id, root.function, &root.input);
+    let activation_fact = FactKey::Activation(entry_activation.clone());
+    let activation_revision = world.fact_revision(activation_fact.clone()).unwrap_or(1);
+    effects.outputs.push((activation_fact, activation_revision));
     effects.outputs.push((
         FactKey::Executable(ExecutableKey {
             activation: entry_activation.clone(),
             need: root.need,
         }),
-        false,
+        1,
     ));
     effects.follow_up.push(Job::LowerFunction(root.function));
     effects.follow_up.push(Job::PlanEntryDispatch(root.function));
     effects.follow_up.push(Job::AnalyzeActivation(entry_activation));
     effects.follow_up.push(Job::SealSemanticClosure(root_id));
     Ok(effects)
+}
+
+fn emit_root_error(world: &World<'_>, span: Span, message: impl Into<String>) -> FatalError {
+    let diagnostic = Diagnostic::error(codes::LOWER_UNSUPPORTED, message.into(), span);
+    emit_through(world.tel(), None, std::slice::from_ref(&diagnostic));
+    FatalError
 }
 
 /// Seals a root's semantic closure once its activation frontier has settled.
@@ -113,7 +134,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
     }
 
     let entry = ExecutableKey {
-        activation: world.activation_key(root_id, root.function, &[]),
+        activation: world.activation_key(root_id, root.function, &root.input),
         need: root.need,
     };
     let entry_activation_fact = FactKey::Activation(entry.activation.clone());

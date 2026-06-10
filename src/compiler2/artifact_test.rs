@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::identity::{FunctionMap, ModuleId, RootEntry, RootMap};
+use super::identity::{FunctionMap, ModuleId, RootEntry, RootKind, RootMap};
 use super::{AbiValueRepr, ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, ReturnAbi, RootId, Types};
 use crate::compiler2::artifact::{
     EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableEntry, NativeEntryAbi, NativeProgram,
@@ -17,7 +17,9 @@ fn stub_activation_key(_types: &mut Types, input: Vec<super::types::Ty>) -> (Roo
     let mut roots = RootMap::new();
     let root = roots.define(RootEntry {
         function,
+        input: input.clone(),
         need: ExecutableNeed::Value,
+        kind: RootKind::Runtime,
     });
     let activation = ActivationKey { root, function, input };
     (root, function, activation)

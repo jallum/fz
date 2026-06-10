@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
+use std::mem;
 use std::ptr;
 use std::rc::Rc;
 use std::slice;
@@ -162,23 +163,33 @@ impl Default for QuotedSourceHeap {
 
 impl QuotedSourceHeap {
     pub fn new() -> Self {
+        Self {
+            process: RefCell::new(Self::fresh_process()),
+            tuple_schemas: RefCell::new(HashMap::new()),
+            interned_lists: RefCell::new(HashMap::new()),
+        }
+    }
+
+    fn fresh_process() -> Process {
         let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
         let node = Rc::new(Node::new(
             vec![NIL_ATOM.to_string(), TRUE_ATOM.to_string(), FALSE_ATOM.to_string()],
             Vec::new(),
         ));
-        let process = Process::from_consts(
+        Process::from_consts(
             node,
             schemas,
             &CompiledModuleConsts::empty(),
             0,
             DEFAULT_REDUCTIONS_PER_QUANTUM,
-        );
-        Self {
-            process: RefCell::new(process),
-            tuple_schemas: RefCell::new(HashMap::new()),
-            interned_lists: RefCell::new(HashMap::new()),
-        }
+        )
+    }
+
+    pub(crate) fn lend_process<R, E>(&self, f: impl FnOnce(Process) -> (Process, Result<R, E>)) -> Result<R, E> {
+        let process = mem::replace(&mut *self.process.borrow_mut(), Self::fresh_process());
+        let (process, result) = f(process);
+        let _placeholder = mem::replace(&mut *self.process.borrow_mut(), process);
+        result
     }
 
     pub fn builder(self: &Rc<Self>) -> QuotedSourceBuilder {
@@ -465,6 +476,10 @@ impl QuotedSourceRoot {
 
     pub fn subroot(&self, root: AnyValueRef) -> Self {
         Self::new(self.heap.clone(), root)
+    }
+
+    pub(crate) fn lend_process<R, E>(&self, f: impl FnOnce(Process) -> (Process, Result<R, E>)) -> Result<R, E> {
+        self.heap.lend_process(f)
     }
 }
 

@@ -23,7 +23,8 @@ use crate::{FunctionSurface, measurements, metadata};
 use super::CodeId;
 use super::artifact::{
     AbiReadyProgram, AbiReadyProgramMap, BackendProgram, BackendProgramMap, EmissionReadyProgram,
-    EmissionReadyProgramMap, MaterializedProgram, MaterializedProgramMap, NativeProgram, NativeProgramMap,
+    EmissionReadyProgramMap, MacroExecutable, MacroExecutableMap, MaterializedProgram, MaterializedProgramMap,
+    NativeProgram, NativeProgramMap,
 };
 use super::body::{LoweredBody, LoweredBodyMap};
 use super::code::{CodeMap, QuotedCodeSource};
@@ -33,7 +34,8 @@ use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
 use super::drive::{FactKey, Job, JobEffects, WorkGraph};
 use super::identity::{
     ActivationKey, ExecutableNeed, FunctionId, FunctionMap, FunctionSource, ModuleExport, ModuleId, ModuleMap,
-    ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootMap, TypeDeclMap, TypeName, TypeRefMap,
+    ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName,
+    TypeRefMap,
 };
 use super::keying::{DispatchMaskMap, RecursiveMap};
 use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
@@ -53,7 +55,7 @@ use super::source::{
 };
 use super::typedef::{TypeDef, TypeDefMap};
 use super::types::{ClosureTarget, Ty, Types};
-#[cfg(test)]
+use crate::ir_interp::AnyValue as InterpValue;
 use fz_runtime::any_value::AnyValueRef;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -98,8 +100,10 @@ pub struct World<'a> {
     abi_ready: AbiReadyProgramMap,
     emission_ready: EmissionReadyProgramMap,
     backend: BackendProgramMap,
+    macro_executables: MacroExecutableMap,
     native: NativeProgramMap,
     roots: RootMap,
+    macro_roots: HashMap<FunctionId, RootId>,
     namespaces: NamespaceStore,
     types: Types,
     runtime_prelude: CodeId,
@@ -151,8 +155,10 @@ impl<'a> World<'a> {
             abi_ready: AbiReadyProgramMap::new(),
             emission_ready: EmissionReadyProgramMap::new(),
             backend: BackendProgramMap::new(),
+            macro_executables: MacroExecutableMap::new(),
             native: NativeProgramMap::new(),
             roots: RootMap::new(),
+            macro_roots: HashMap::new(),
             namespaces: NamespaceStore::new(),
             types: Types::new(),
             runtime_prelude: CodeId::ZERO,
@@ -214,7 +220,12 @@ impl<'a> World<'a> {
             None => ModuleId::GLOBAL,
         };
         let function = self.reference_function(module, name.clone(), arity);
-        let root_id = self.roots.define(RootEntry { function, need });
+        let root_id = self.roots.define(RootEntry {
+            function,
+            input: Vec::new(),
+            need,
+            kind: RootKind::Runtime,
+        });
         for code_id in self.code.ids() {
             self.work_graph.enqueue(Job::ScopeCode(code_id));
         }
@@ -285,7 +296,7 @@ impl<'a> World<'a> {
     }
 
     pub fn root_entry(&self, id: RootId) -> RootEntry {
-        *self.roots.get(id)
+        self.roots.get(id).clone()
     }
 
     pub(crate) fn activation_key(&mut self, root: RootId, function: FunctionId, inputs: &[Ty]) -> ActivationKey {
@@ -507,7 +518,92 @@ impl<'a> World<'a> {
             .expect("backend programs should only be read after their fact is defined")
     }
 
-    pub(crate) fn define_native_program(&mut self, root: RootId, program: NativeProgram) -> bool {
+    pub(crate) fn macro_root(&mut self, function: FunctionId) -> RootId {
+        if let Some(root) = self.macro_roots.get(&function).copied() {
+            return root;
+        }
+        let (source, surface) = self.function_definition(function);
+        let any = self.types.any();
+        let input = vec![any; 1 + source.capture_params.len() + surface.arity()];
+        let root = self.roots.define(RootEntry {
+            function,
+            input,
+            need: ExecutableNeed::Value,
+            kind: RootKind::Macro,
+        });
+        self.macro_roots.insert(function, root);
+        root
+    }
+
+    pub(crate) fn define_macro_executable(
+        &mut self,
+        function: FunctionId,
+        root: RootId,
+        backend_revision: u64,
+        program: BackendProgram,
+    ) -> u64 {
+        let revision = self.macro_executables.define(
+            function,
+            MacroExecutable {
+                root,
+                backend_revision,
+                program: program.clone(),
+            },
+        );
+        self.tel.execute(
+            &["fz", "compiler2", "macro_executable", "defined"],
+            &measurements! {
+                function_id: function.as_u32() as u64,
+                root_id: root.as_u32() as u64,
+                backend_revision: backend_revision,
+                revision: revision,
+                executable_count: program.executables.len() as u64,
+            },
+            &metadata! {
+                program: opaque_debug(&program),
+            },
+        );
+        revision
+    }
+
+    pub(crate) fn macro_executable(&self, function: FunctionId) -> Option<&MacroExecutable> {
+        self.macro_executables.get(function)
+    }
+
+    pub(crate) fn run_macro_on_source(
+        &mut self,
+        function: FunctionId,
+        source: &QuotedSourceRoot,
+        caller: AnyValueRef,
+        args: &[AnyValueRef],
+    ) -> Result<QuotedSourceRoot, String> {
+        let executable = self
+            .macro_executable(function)
+            .ok_or_else(|| format!("macro {} is not executable", function.as_u32()))?
+            .clone();
+        let mut runtime_args = Vec::with_capacity(1 + args.len());
+        runtime_args.push(InterpValue::Ref(caller));
+        runtime_args.extend(args.iter().copied().map(InterpValue::Ref));
+        let value = source.lend_process(|process| {
+            crate::ir_interp::run_backend_entry_on_process(
+                &mut self.types,
+                self.tel,
+                &executable.program,
+                process,
+                runtime_args,
+            )
+        })?;
+        match value {
+            InterpValue::Ref(root) => Ok(source.subroot(root)),
+            other => Err(format!(
+                "macro {} returned non-source value {}",
+                function.as_u32(),
+                other.render(std::ptr::null_mut())
+            )),
+        }
+    }
+
+    pub(crate) fn define_native_program(&mut self, root: RootId, program: NativeProgram) -> u64 {
         let changed = self.native.define(root, program.clone());
         self.tel.execute(
             &["fz", "compiler2", "native_program", "defined"],

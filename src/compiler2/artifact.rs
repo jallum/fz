@@ -80,6 +80,13 @@ pub struct BackendProgram {
     pub callable_entries: Vec<BackendCallableEntry>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MacroExecutable {
+    pub root: RootId,
+    pub backend_revision: u64,
+    pub program: BackendProgram,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct NativeProgram {
     /// Revision of the `BackendProgram(root)` snapshot this native handoff
@@ -517,6 +524,12 @@ enum ProjectionState<T> {
     Defined(T),
 }
 
+#[derive(Debug, Clone)]
+struct ProjectionSlot<T> {
+    state: ProjectionState<T>,
+    revision: u64,
+}
+
 #[derive(Debug)]
 struct RootProjectionMap<T> {
     slots: Vec<ProjectionState<T>>,
@@ -540,6 +553,11 @@ pub struct EmissionReadyProgramMap {
 #[derive(Debug, Default)]
 pub struct BackendProgramMap {
     inner: RootProjectionMap<BackendProgram>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct MacroExecutableMap {
+    slots: Vec<ProjectionSlot<MacroExecutable>>,
 }
 
 #[derive(Debug, Default)]
@@ -600,6 +618,40 @@ impl BackendProgramMap {
 
     pub fn get(&self, root: RootId) -> Option<&BackendProgram> {
         self.inner.get(root)
+    }
+}
+
+impl MacroExecutableMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn define(&mut self, function: FunctionId, executable: MacroExecutable) -> u64 {
+        self.ensure(function);
+        let slot = &mut self.slots[function.as_u32() as usize];
+        let next = ProjectionState::Defined(executable);
+        if !slot.state.same_state(&next) {
+            slot.state = next;
+            slot.revision += 1;
+        }
+        slot.revision
+    }
+
+    pub fn get(&self, function: FunctionId) -> Option<&MacroExecutable> {
+        match &self.slots.get(function.as_u32() as usize)?.state {
+            ProjectionState::Placeholder => None,
+            ProjectionState::Defined(value) => Some(value),
+        }
+    }
+
+    fn ensure(&mut self, function: FunctionId) {
+        let needed = function.as_u32() as usize + 1;
+        if self.slots.len() < needed {
+            self.slots.resize_with(needed, || ProjectionSlot {
+                state: ProjectionState::Placeholder,
+                revision: 0,
+            });
+        }
     }
 }
 

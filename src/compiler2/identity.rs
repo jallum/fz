@@ -78,10 +78,18 @@ pub struct ExecutableKey {
     pub need: ExecutableNeed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RootEntry {
     pub function: FunctionId,
+    pub input: Vec<Ty>,
     pub need: ExecutableNeed,
+    pub kind: RootKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootKind {
+    Runtime,
+    Macro,
 }
 
 #[derive(Debug, Clone)]
