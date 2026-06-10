@@ -351,11 +351,6 @@ pub enum LoweredStep {
 }
 
 #[derive(Debug, Clone)]
-pub struct BodySlot {
-    pub(crate) state: BodyState,
-}
-
-#[derive(Debug, Clone)]
 pub enum BodyState {
     Placeholder,
     Lowered(LoweredBody),
@@ -363,7 +358,7 @@ pub enum BodyState {
 
 #[derive(Debug, Default)]
 pub struct LoweredBodyMap {
-    slots: Vec<BodySlot>,
+    slots: Vec<BodyState>,
 }
 
 impl LoweredBodyMap {
@@ -375,8 +370,8 @@ impl LoweredBodyMap {
         self.ensure(id);
         let slot = &mut self.slots[id.as_u32() as usize];
         let next = BodyState::Lowered(body);
-        let changed = !slot.state.same_state(&next);
-        slot.state = next;
+        let changed = !slot.same_state(&next);
+        *slot = next;
         if changed {
             current_revision + 1
         } else {
@@ -384,16 +379,14 @@ impl LoweredBodyMap {
         }
     }
 
-    pub fn get(&self, id: FunctionId) -> Option<&BodySlot> {
+    pub fn get(&self, id: FunctionId) -> Option<&BodyState> {
         self.slots.get(id.as_u32() as usize)
     }
 
     fn ensure(&mut self, id: FunctionId) {
         let needed = id.as_u32() as usize + 1;
         if self.slots.len() < needed {
-            self.slots.resize_with(needed, || BodySlot {
-                state: BodyState::Placeholder,
-            });
+            self.slots.resize_with(needed, || BodyState::Placeholder);
         }
     }
 }

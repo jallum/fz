@@ -3,13 +3,8 @@
 use super::identity::FunctionId;
 
 #[derive(Debug, Clone)]
-pub(crate) struct FunctionFactSlot<T> {
-    value: Option<T>,
-}
-
-#[derive(Debug, Clone)]
 pub(crate) struct FunctionFactMap<T> {
-    slots: Vec<FunctionFactSlot<T>>,
+    slots: Vec<Option<T>>,
 }
 
 pub(crate) type RecursiveMap = FunctionFactMap<bool>;
@@ -26,8 +21,8 @@ where
     pub(crate) fn define(&mut self, function: FunctionId, value: T, current_revision: u64) -> u64 {
         self.ensure(function);
         let slot = &mut self.slots[function.as_u32() as usize];
-        let changed = slot.value.as_ref() != Some(&value);
-        slot.value = Some(value);
+        let changed = slot.as_ref() != Some(&value);
+        *slot = Some(value);
         if changed {
             current_revision + 1
         } else {
@@ -36,15 +31,13 @@ where
     }
 
     pub(crate) fn get(&self, function: FunctionId) -> Option<&T> {
-        self.slots
-            .get(function.as_u32() as usize)
-            .and_then(|slot| slot.value.as_ref())
+        self.slots.get(function.as_u32() as usize)?.as_ref()
     }
 
     fn ensure(&mut self, function: FunctionId) {
         let needed = function.as_u32() as usize + 1;
         if self.slots.len() < needed {
-            self.slots.resize_with(needed, || FunctionFactSlot { value: None });
+            self.slots.resize_with(needed, || None);
         }
     }
 }

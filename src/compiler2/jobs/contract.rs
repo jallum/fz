@@ -47,7 +47,7 @@ pub(super) fn derive_function_contract(world: &mut World<'_>, function: Function
     let mut follow_up = Vec::new();
     for referenced in world.function_type_refs(function).iter().cloned() {
         let fact = FactKey::TypeDefined(referenced.clone());
-        if world.fact_revision(fact.clone()).is_some() {
+        if world.has_fact(&fact) {
             reads.push(fact);
         } else {
             waits.push(fact);

@@ -123,7 +123,7 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
     let module = source.owner_module;
     if !module.is_global() {
         let module_fact = FactKey::ModuleDefined(module);
-        if world.fact_revision(module_fact.clone()).is_some() {
+        if world.has_fact(&module_fact) {
             reads.push(module_fact);
         } else {
             return Ok(JobEffects::wait_on(module_fact, [Job::DefineModule(module)]));
@@ -133,7 +133,7 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
     let mut follow_up = HashSet::new();
     for referenced in world.function_type_refs(function).iter().cloned() {
         let fact = FactKey::TypeDefined(referenced.clone());
-        if world.fact_revision(fact.clone()).is_some() {
+        if world.has_fact(&fact) {
             reads.push(fact);
         } else {
             waits.insert(fact);
@@ -145,7 +145,7 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
     {
         let callee = resolve_guard_callee(world, source.namespace, &call)?;
         let fact = FactKey::GuardDispatch(callee);
-        if world.fact_revision(fact.clone()).is_some() {
+        if world.has_fact(&fact) {
             reads.push(fact);
         } else {
             waits.insert(fact);

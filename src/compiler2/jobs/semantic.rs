@@ -63,14 +63,14 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     };
 
     let lowered_fact = FactKey::LoweredBody(function);
-    let Some(_) = world.fact_revision(lowered_fact.clone()) else {
+    if !world.has_fact(&lowered_fact) {
         return Ok(JobEffects::wait_on(lowered_fact, [Job::LowerFunction(function)]));
-    };
+    }
 
     let dispatch_fact = FactKey::EntryDispatch(function);
-    let Some(_) = world.fact_revision(dispatch_fact.clone()) else {
+    if !world.has_fact(&dispatch_fact) {
         return Ok(JobEffects::wait_on(dispatch_fact, [Job::PlanEntryDispatch(function)]));
-    };
+    }
 
     let mut reads = vec![activation_fact, function_fact, lowered_fact, dispatch_fact];
     let mut waits = HashSet::new();
@@ -854,7 +854,7 @@ fn resolve_protocol_call(
     }
     reads.push(protocol_fact);
     let dispatch_fact = FactKey::ProtocolDispatch(protocol);
-    if world.fact_revision(dispatch_fact.clone()).is_none() {
+    if !world.has_fact(&dispatch_fact) {
         waits.insert(dispatch_fact);
         follow_up.insert(Job::DefineModule(protocol));
         return Ok((None, Vec::new(), any_ty(world)));
@@ -1040,11 +1040,11 @@ fn resolve_runtime_callable_boundary_activations(
     follow_up: &mut HashSet<Job>,
 ) -> Result<Vec<ActivationContribution>, FatalError> {
     let lowered_fact = FactKey::LoweredBody(function);
-    let Some(_) = world.fact_revision(lowered_fact.clone()) else {
+    if !world.has_fact(&lowered_fact) {
         waits.insert(lowered_fact);
         follow_up.insert(Job::LowerFunction(function));
         return Ok(Vec::new());
-    };
+    }
     reads.push(lowered_fact);
     let LoweredBody::Extern { signature: _ } = world.lowered_body(function) else {
         return Ok(Vec::new());
@@ -1188,7 +1188,7 @@ fn resolve_callable_activations_from_type(
         let mut input_types = closure.captures;
         input_types.extend(clause.args);
         let activation = world.activation_key(caller.root, function, &input_types);
-        let already_present = world.fact_revision(FactKey::Activation(activation.clone())).is_some();
+        let already_present = world.has_fact(&FactKey::Activation(activation.clone()));
         activations.push(ActivationContribution {
             key: activation,
             already_present,
@@ -1211,7 +1211,7 @@ fn prepare_function_call(
     }
 
     let activation = world.activation_key(caller.root, function, &arg_types);
-    let already_present = world.fact_revision(FactKey::Activation(activation.clone())).is_some();
+    let already_present = world.has_fact(&FactKey::Activation(activation.clone()));
     reads.push(FactKey::ReturnType(activation.clone()));
     follow_up.insert(Job::SealSemanticClosure(caller.root));
     let return_ty = world.activation_return(&activation).unwrap_or_else(|| none_ty(world));
@@ -1226,7 +1226,7 @@ fn wait_for_runtime_module(
 ) {
     if let Some(code_id) = world.ensure_runtime_module(module) {
         let indexed_fact = FactKey::CodeIndexed(code_id);
-        if world.fact_revision(indexed_fact.clone()).is_none() {
+        if !world.has_fact(&indexed_fact) {
             waits.insert(indexed_fact);
             follow_up.insert(Job::IndexCode(code_id));
         }
@@ -1243,7 +1243,7 @@ fn wait_for_protocol_module(
 ) {
     if let Some(code_id) = world.ensure_runtime_module(protocol) {
         let indexed_fact = FactKey::CodeIndexed(code_id);
-        if world.fact_revision(indexed_fact.clone()).is_none() {
+        if !world.has_fact(&indexed_fact) {
             waits.insert(indexed_fact);
             follow_up.insert(Job::IndexCode(code_id));
         }

@@ -512,11 +512,6 @@ impl EffectSummary {
 }
 
 #[derive(Debug, Clone)]
-struct ProjectionSlot<T> {
-    state: ProjectionState<T>,
-}
-
-#[derive(Debug, Clone)]
 enum ProjectionState<T> {
     Placeholder,
     Defined(T),
@@ -524,7 +519,7 @@ enum ProjectionState<T> {
 
 #[derive(Debug)]
 struct RootProjectionMap<T> {
-    slots: Vec<ProjectionSlot<T>>,
+    slots: Vec<ProjectionState<T>>,
 }
 
 #[derive(Debug, Default)]
@@ -549,7 +544,7 @@ pub struct BackendProgramMap {
 
 #[derive(Debug, Default)]
 pub(crate) struct NativeProgramMap {
-    slots: Vec<ProjectionSlot<NativeProgram>>,
+    slots: Vec<ProjectionState<NativeProgram>>,
 }
 
 impl MaterializedProgramMap {
@@ -617,8 +612,8 @@ impl NativeProgramMap {
         self.ensure(root);
         let slot = &mut self.slots[root.as_u32() as usize];
         let next = ProjectionState::Defined(program);
-        let changed = !native_program_same_state(&slot.state, &next);
-        slot.state = next;
+        let changed = !native_program_same_state(slot, &next);
+        *slot = next;
         if changed {
             current_revision + 1
         } else {
@@ -627,7 +622,7 @@ impl NativeProgramMap {
     }
 
     pub fn get(&self, root: RootId) -> Option<&NativeProgram> {
-        match &self.slots.get(root.as_u32() as usize)?.state {
+        match self.slots.get(root.as_u32() as usize)? {
             ProjectionState::Placeholder => None,
             ProjectionState::Defined(value) => Some(value),
         }
@@ -636,9 +631,7 @@ impl NativeProgramMap {
     fn ensure(&mut self, root: RootId) {
         let needed = root.as_u32() as usize + 1;
         if self.slots.len() < needed {
-            self.slots.resize_with(needed, || ProjectionSlot {
-                state: ProjectionState::Placeholder,
-            });
+            self.slots.resize_with(needed, || ProjectionState::Placeholder);
         }
     }
 }
@@ -651,8 +644,8 @@ where
         self.ensure(root);
         let slot = &mut self.slots[root.as_u32() as usize];
         let next = ProjectionState::Defined(value);
-        let changed = !slot.state.same_state(&next);
-        slot.state = next;
+        let changed = !slot.same_state(&next);
+        *slot = next;
         if changed {
             current_revision + 1
         } else {
@@ -661,7 +654,7 @@ where
     }
 
     fn get(&self, root: RootId) -> Option<&T> {
-        match &self.slots.get(root.as_u32() as usize)?.state {
+        match self.slots.get(root.as_u32() as usize)? {
             ProjectionState::Placeholder => None,
             ProjectionState::Defined(value) => Some(value),
         }
@@ -670,9 +663,7 @@ where
     fn ensure(&mut self, root: RootId) {
         let needed = root.as_u32() as usize + 1;
         if self.slots.len() < needed {
-            self.slots.resize_with(needed, || ProjectionSlot {
-                state: ProjectionState::Placeholder,
-            });
+            self.slots.resize_with(needed, || ProjectionState::Placeholder);
         }
     }
 }

@@ -255,7 +255,7 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
     if surface.extern_abi.is_some() {
         for referenced in world.function_type_refs(function).iter().cloned() {
             let fact = FactKey::TypeDefined(referenced.clone());
-            if world.fact_revision(fact.clone()).is_some() {
+            if world.has_fact(&fact) {
                 reads.push(fact);
             } else {
                 waits.insert(fact);

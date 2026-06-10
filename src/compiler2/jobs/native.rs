@@ -76,9 +76,9 @@ where
 /// reopen semantic closure, type inference, or planner discovery.
 pub(super) fn lower_native_program(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let backend_fact = FactKey::BackendProgram(root_id);
-    let Some(_backend_revision) = world.fact_revision(backend_fact.clone()) else {
+    if !world.has_fact(&backend_fact) {
         return Ok(JobEffects::wait_on(backend_fact, [Job::LowerBackendProgram(root_id)]));
-    };
+    }
 
     let backend = world.backend_program(root_id);
     let program = NativeLowerer::new(world, root_id, &backend)?.lower()?;

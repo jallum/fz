@@ -57,19 +57,11 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
     let mut executables = HashMap::new();
 
     for executable in &closure.executables {
-        if world.fact_revision(FactKey::Executable(executable.clone())).is_none()
-            || world
-                .fact_revision(FactKey::ActivationAnalyzed(executable.activation.clone()))
-                .is_none()
-            || world
-                .fact_revision(FactKey::ReturnType(executable.activation.clone()))
-                .is_none()
-            || world
-                .fact_revision(FactKey::LoweredBody(executable.activation.function))
-                .is_none()
-            || world
-                .fact_revision(FactKey::EntryDispatch(executable.activation.function))
-                .is_none()
+        if !world.has_fact(&FactKey::Executable(executable.clone()))
+            || !world.has_fact(&FactKey::ActivationAnalyzed(executable.activation.clone()))
+            || !world.has_fact(&FactKey::ReturnType(executable.activation.clone()))
+            || !world.has_fact(&FactKey::LoweredBody(executable.activation.function))
+            || !world.has_fact(&FactKey::EntryDispatch(executable.activation.function))
         {
             return Ok(wait_for_fresh_closure(root_id));
         }
@@ -292,7 +284,7 @@ fn materialize_call_edges(
             activation: executable.activation.clone(),
             callsite: *callsite,
         };
-        if world.fact_revision(FactKey::CallSiteSummary(key.clone())).is_none() {
+        if !world.has_fact(&FactKey::CallSiteSummary(key.clone())) {
             return Ok(None);
         }
         let Some(summary) = world.callsite_summary(&key).cloned() else {

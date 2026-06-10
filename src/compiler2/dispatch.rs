@@ -10,11 +10,6 @@ use super::identity::FunctionId;
 use super::types::Ty;
 
 #[derive(Debug, Clone)]
-pub(crate) struct DispatchSlot<T> {
-    state: DispatchState<T>,
-}
-
-#[derive(Debug, Clone)]
 enum DispatchState<T> {
     Placeholder,
     Defined(T),
@@ -22,7 +17,7 @@ enum DispatchState<T> {
 
 #[derive(Debug)]
 pub(crate) struct FunctionDispatchMap<T> {
-    slots: Vec<DispatchSlot<T>>,
+    slots: Vec<DispatchState<T>>,
 }
 
 pub(crate) type GuardDispatchMap = FunctionDispatchMap<PatternGuardDispatch<Ty>>;
@@ -40,8 +35,8 @@ where
         self.ensure(id);
         let slot = &mut self.slots[id.as_u32() as usize];
         let next = DispatchState::Defined(value);
-        let changed = !slot.state.same_state(&next);
-        slot.state = next;
+        let changed = !slot.same_state(&next);
+        *slot = next;
         if changed {
             current_revision + 1
         } else {
@@ -50,7 +45,7 @@ where
     }
 
     pub(crate) fn get(&self, id: FunctionId) -> Option<&T> {
-        match &self.slots.get(id.as_u32() as usize)?.state {
+        match self.slots.get(id.as_u32() as usize)? {
             DispatchState::Placeholder => None,
             DispatchState::Defined(value) => Some(value),
         }
@@ -59,9 +54,7 @@ where
     fn ensure(&mut self, id: FunctionId) {
         let needed = id.as_u32() as usize + 1;
         if self.slots.len() < needed {
-            self.slots.resize_with(needed, || DispatchSlot {
-                state: DispatchState::Placeholder,
-            });
+            self.slots.resize_with(needed, || DispatchState::Placeholder);
         }
     }
 }

@@ -71,7 +71,7 @@ pub(super) fn derive_recursive(world: &mut World<'_>, function: FunctionId) -> R
 /// Derives which function inputs participate in entry dispatch.
 pub(super) fn derive_dispatch_mask(world: &mut World<'_>, function: FunctionId) -> Result<JobEffects, FatalError> {
     let dispatch_fact = FactKey::EntryDispatch(function);
-    if world.fact_revision(dispatch_fact.clone()).is_none() {
+    if !world.has_fact(&dispatch_fact) {
         return Ok(JobEffects::wait_on(dispatch_fact, [Job::PlanEntryDispatch(function)]));
     }
 
@@ -114,7 +114,7 @@ fn collect_static_graph(
     }
 
     let lowered_fact = FactKey::LoweredBody(function);
-    if world.fact_revision(lowered_fact.clone()).is_none() {
+    if !world.has_fact(&lowered_fact) {
         waits.insert(lowered_fact);
         follow_up.insert(Job::LowerFunction(function));
         return;

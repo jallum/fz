@@ -1238,11 +1238,10 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn lowered_body(&self, function: FunctionId) -> LoweredBody {
-        match &self
+        match self
             .bodies
             .get(function)
             .expect("body slots should exist before reading lowered bodies")
-            .state
         {
             super::body::BodyState::Lowered(body) => body.clone(),
             super::body::BodyState::Placeholder => {
@@ -1408,6 +1407,10 @@ impl<'a> World<'a> {
         self.work_graph.facts().revision(&key)
     }
 
+    pub fn has_fact(&self, key: &FactKey) -> bool {
+        self.work_graph.facts().revision(key).is_some()
+    }
+
     #[cfg(test)]
     pub(crate) fn scope_lexical_context(
         &self,
@@ -1479,7 +1482,7 @@ impl<'a> World<'a> {
         follow_up: &mut HashSet<Job>,
     ) -> bool {
         let recursive = FactKey::Recursive(function);
-        let recursive_ready = self.fact_revision(recursive.clone()).is_some();
+        let recursive_ready = self.has_fact(&recursive);
         if recursive_ready {
             reads.push(recursive);
         } else {
@@ -1488,7 +1491,7 @@ impl<'a> World<'a> {
         }
 
         let dispatch_mask = FactKey::DispatchMask(function);
-        let dispatch_mask_ready = self.fact_revision(dispatch_mask.clone()).is_some();
+        let dispatch_mask_ready = self.has_fact(&dispatch_mask);
         if dispatch_mask_ready {
             reads.push(dispatch_mask);
         } else {

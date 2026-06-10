@@ -116,7 +116,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
         need: root.need,
     };
     let entry_activation_fact = FactKey::Activation(entry.activation.clone());
-    if world.fact_revision(entry_activation_fact.clone()).is_none() {
+    if !world.has_fact(&entry_activation_fact) {
         waits.insert(entry_activation_fact);
         follow_up.insert(Job::SeedRoot(root_id));
     }

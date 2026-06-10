@@ -37,16 +37,11 @@ impl TypeDef {
     }
 }
 
-#[derive(Debug, Clone)]
-struct TypeDefSlot {
-    def: TypeDef,
-}
-
 /// Type-name → resolved definition, keyed by the full [`TypeName`] identity so
 /// `t` and `t(a)` (distinct arities) never conflate.
 #[derive(Debug, Default)]
 pub struct TypeDefMap {
-    slots: HashMap<TypeName, TypeDefSlot>,
+    slots: HashMap<TypeName, TypeDef>,
 }
 
 impl TypeDefMap {
@@ -58,8 +53,8 @@ impl TypeDefMap {
     /// revision; a changed one bumps it, so the `TypeDefined` fact only wakes
     /// consumers when the resolved type actually moved.
     pub fn define(&mut self, name: TypeName, def: TypeDef, current_revision: u64) -> u64 {
-        let changed = self.slots.get(&name).map(|s| s.def != def).unwrap_or(true);
-        self.slots.insert(name, TypeDefSlot { def });
+        let changed = self.slots.get(&name) != Some(&def);
+        self.slots.insert(name, def);
         if changed {
             current_revision + 1
         } else {
@@ -68,6 +63,6 @@ impl TypeDefMap {
     }
 
     pub fn get(&self, name: &TypeName) -> Option<&TypeDef> {
-        self.slots.get(name).map(|slot| &slot.def)
+        self.slots.get(name)
     }
 }

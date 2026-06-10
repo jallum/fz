@@ -41,7 +41,7 @@ pub(super) fn derive_type_def(world: &mut World<'_>, name: &TypeName) -> Result<
     let mut waits = Vec::new();
     let mut follow_up = Vec::new();
     for referenced in &refs {
-        if world.fact_revision(FactKey::TypeDefined(referenced.clone())).is_none() {
+        if !world.has_fact(&FactKey::TypeDefined(referenced.clone())) {
             waits.push(FactKey::TypeDefined(referenced.clone()));
             follow_up.push(Job::DeriveTypeDef(referenced.clone()));
         }

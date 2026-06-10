@@ -35,14 +35,9 @@ pub struct AppliedFunctionContract {
     pub result: Option<Ty>,
 }
 
-#[derive(Debug, Clone)]
-struct FunctionContractSlot {
-    contract: FunctionContract,
-}
-
 #[derive(Debug, Default)]
 pub struct FunctionContractMap {
-    slots: Vec<Option<FunctionContractSlot>>,
+    slots: Vec<Option<FunctionContract>>,
 }
 
 impl FunctionContract {
@@ -83,8 +78,8 @@ impl FunctionContractMap {
     pub fn define(&mut self, function: FunctionId, contract: FunctionContract, current_revision: u64) -> u64 {
         self.ensure(function);
         let slot = &mut self.slots[function.as_u32() as usize];
-        let changed = slot.as_ref().map(|s| s.contract != contract).unwrap_or(true);
-        *slot = Some(FunctionContractSlot { contract });
+        let changed = slot.as_ref() != Some(&contract);
+        *slot = Some(contract);
         if changed {
             current_revision + 1
         } else {
@@ -93,10 +88,7 @@ impl FunctionContractMap {
     }
 
     pub fn get(&self, function: FunctionId) -> Option<&FunctionContract> {
-        self.slots
-            .get(function.as_u32() as usize)
-            .and_then(Option::as_ref)
-            .map(|slot| &slot.contract)
+        self.slots.get(function.as_u32() as usize)?.as_ref()
     }
 
     fn ensure(&mut self, function: FunctionId) {

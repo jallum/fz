@@ -86,7 +86,7 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
     } else {
         let prelude = world.runtime_prelude();
         let prelude_fact = FactKey::CodeScoped(prelude);
-        if world.fact_revision(prelude_fact.clone()).is_none() {
+        if !world.has_fact(&prelude_fact) {
             return Ok(JobEffects::wait_on(prelude_fact, [Job::ScopeCode(prelude)]));
         }
         reads.push(prelude_fact);
