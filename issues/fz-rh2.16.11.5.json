@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.16.11.4"
+  ],
   "created": "2026-06-10T22:37:27Z",
   "description": "",
   "id": "fz-rh2.16.11.5",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Forward-port the definition-macro arc onto current fz-tkf and recover old-world ir_codegen/ir_planner parity",
   "type": "task",
-  "updated_at": "2026-06-10T22:37:27Z"
+  "updated_at": "2026-06-10T22:37:38Z"
 }
