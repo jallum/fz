@@ -244,7 +244,10 @@ compiler2-owned native JIT fixture tests prove the in-house backend can consume
 runtime setup now stays on that same compiler2-owned backend path without
 falling back to planner or type-preparation
 telemetry. `tests/fz2_cli.rs` extends that proof to the real `fz2` binary
-surface. The ignored JSONL dump is the occasional deep trace.
+surface; its source-production macro/sugar fixture test asserts
+`FunctionSource` publication, `Fz.Compiler.define` publication, macro expansion
+when expected, and no legacy frontend/planner/type-infer events. The ignored
+JSONL dump is the occasional deep trace.
 
 Useful reruns:
 

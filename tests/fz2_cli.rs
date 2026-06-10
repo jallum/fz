@@ -59,6 +59,29 @@ fn assert_compiler2_telemetry_only(path: &Path, context: &str) {
         !log.contains("\"type_infer\""),
         "{context} should not emit legacy type_infer telemetry; log=\n{log}",
     );
+    assert!(
+        !log.contains("\"frontend\""),
+        "{context} should not invoke the old frontend path; log=\n{log}",
+    );
+}
+
+fn assert_source_production_telemetry(path: &Path, context: &str, expect_macro_expansion: bool) {
+    assert_compiler2_telemetry_only(path, context);
+    let log = read_to_string(path).unwrap_or_else(|error| panic!("read telemetry log {}: {error}", path.display()));
+    assert!(
+        log.contains("\"function\",\"source\",\"noted\""),
+        "{context} should publish FunctionSource facts; log=\n{log}",
+    );
+    assert!(
+        log.contains("\"compiler_service\",\"define\""),
+        "{context} should define source through the Fz.Compiler boundary; log=\n{log}",
+    );
+    if expect_macro_expansion {
+        assert!(
+            log.contains("\"macro\",\"expanded\""),
+            "{context} should execute macro expansion in source production; log=\n{log}",
+        );
+    }
 }
 
 fn output_text(out: &Output) -> String {
@@ -183,18 +206,30 @@ fn run_and_interp_execute_map_struct_and_bitstring_fixtures() {
 
 #[test]
 fn run_and_interp_execute_source_production_macro_and_sugar_fixtures() {
-    for fixture in [
-        "fixtures/macro_inc/input.fz",
-        "fixtures/cross_module_macro/input.fz",
-        "fixtures/item_macro_source/input.fz",
-        "fixtures/pipe_headless_case/input.fz",
-        "fixtures/lambda_sugars/input.fz",
-        "fixtures/operator_sugars/input.fz",
+    for (fixture, expect_macro_expansion) in [
+        ("fixtures/macro_inc/input.fz", true),
+        ("fixtures/cross_module_macro/input.fz", true),
+        ("fixtures/item_macro_source/input.fz", true),
+        ("fixtures/pipe_headless_case/input.fz", false),
+        ("fixtures/lambda_sugars/input.fz", false),
+        ("fixtures/operator_sugars/input.fz", false),
     ] {
         let expected = fixture_expected_stdout(fixture);
         for command in ["run", "interp"] {
-            let out = run_fz2(&[OsStr::new(command), OsStr::new(fixture)]);
+            let telemetry_path = unique_temp_path("fz2_source_production", ".jsonl");
+            let out = run_fz2(&[
+                OsStr::new("--log-telemetry"),
+                telemetry_path.as_os_str(),
+                OsStr::new(command),
+                OsStr::new(fixture),
+            ]);
             assert_successful_stdout(&out, &expected, &format!("fz2 {command} {fixture}"));
+            assert_source_production_telemetry(
+                &telemetry_path,
+                &format!("fz2 {command} {fixture}"),
+                expect_macro_expansion,
+            );
+            let _ = remove_file(&telemetry_path);
         }
     }
 }
