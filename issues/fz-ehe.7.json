@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-10T04:10:48Z",
+  "description": "ModuleId, FunctionId, RootId, CodeId all expose from_u32() or equivalent constructors, letting callers mint IDs outside the owning map. This bypasses the map's invariants (slot existence, reverse-lookup consistency). Each ID type should have only a private constructor; the owning map (ModuleMap, FunctionMap, RootMap, CodeMap) is the exclusive minting authority. Remove from_u32, any pub(crate) tuple constructors, and any test-only shims that create raw IDs. Callers that use from_u32 in tests need to go through the map's reference/define path instead.",
+  "id": "fz-ehe.7",
+  "labels": [],
+  "parent": "fz-ehe",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-ehe.7: seal ID minting — only owning Maps can create ModuleId/FunctionId/RootId/CodeId; remove from_u32 and all external constructors",
+  "type": "task",
+  "updated_at": "2026-06-10T04:10:48Z"
+}
