@@ -2,14 +2,16 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-10T06:34:29Z",
+  "close_reason": "done",
   "created": "2026-06-10T02:48:17Z",
   "description": "Pre-existing on fz-tkf at bd174ea76 (verified via clean worktree): tests/fz2_cli.rs build_executes_case_and_with_fixtures and run_and_interp_execute_case_and_with_fixtures fail with 'error[parse/expected-token]: unsupported expression prefix in compiler2 front door: With' on fixtures/case_tuple_pattern_sequential/input.fz. src/compiler2/frontdoor.rs:638-664 handles If/Cond/Receive/Case/Fn but has no Tok::With arm. fz-rh2.11.3 lowered case/with/cond through dispatch_matrix, but the quoted front door never gained with. Blocks any 'full green' gate that includes the fz2_cli integration tests (e.g. fz-knf.5).",
   "id": "fz-rh2.11.7.16",
   "labels": [],
   "parent": "fz-rh2.11.7",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 front door: parse with expressions",
   "type": "bug",
-  "updated_at": "2026-06-10T06:29:34Z"
+  "updated_at": "2026-06-10T06:34:29Z"
 }
