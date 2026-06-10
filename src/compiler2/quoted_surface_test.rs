@@ -3,6 +3,26 @@ use super::{CodeMap, parse_quoted_program};
 use crate::telemetry::ConfiguredTelemetry;
 
 #[test]
+fn compiler2_quoted_surface_reads_alias_as_keyword_value() {
+    let tel = ConfiguredTelemetry::new();
+    let source = "alias Utf8, as: U\n";
+    let mut code = CodeMap::new();
+    let code_id = code.define(Some("alias_as.fz".to_string()), source.to_string());
+    let root = parse_quoted_program("alias_as.fz", source, &tel).expect("quoted parse");
+    let ctx = SurfaceSourceContext::new(code_id, source, &tel);
+
+    let surface = read_scope_surface(&root, &ctx).expect("surface read");
+
+    match &surface.forms[0] {
+        ScopeForm::Alias(alias) => {
+            assert_eq!(alias.path, vec!["Utf8"]);
+            assert_eq!(alias.as_name, "U");
+        }
+        other => panic!("expected alias form, got {other:?}"),
+    }
+}
+
+#[test]
 fn compiler2_quoted_surface_groups_multiclause_functions_into_one_logical_form() {
     let tel = ConfiguredTelemetry::new();
     let source = "fn alpha(0), do: 0\nfn beta(x), do: x\nfn alpha(x), do: x\n";

@@ -458,14 +458,7 @@ fn parse_alias_form(source: QuotedSourceRoot, ctx: &SurfaceSourceContext<'_>) ->
     }
     let path = parse_alias_segments(&args[0])?;
     let as_name = if let Some(kwargs) = args.get(1) {
-        parse_import_keyword_args(kwargs)?
-            .into_iter()
-            .find_map(|(kind, values)| {
-                (kind == "as")
-                    .then(|| values.into_iter().next())
-                    .flatten()
-                    .map(|(name, _)| name)
-            })
+        parse_alias_keyword_args(kwargs)?
     } else {
         None
     }
@@ -689,6 +682,24 @@ fn parse_import_keyword_args(cursor: &QuotedSourceCursor) -> Result<ImportKeywor
         out.push((kind, values));
     }
     Ok(out)
+}
+
+fn parse_alias_keyword_args(cursor: &QuotedSourceCursor) -> Result<Option<String>, QuotedSourceError> {
+    for entry in cursor.list_items()? {
+        let tuple = entry.tuple_items()?;
+        if tuple.len() != 2 {
+            return Err(QuotedSourceError::new("expected alias keyword tuple"));
+        }
+        if tuple[0].atom_name()? == "as" {
+            let path = parse_alias_segments(&tuple[1])?;
+            return path
+                .last()
+                .cloned()
+                .map(Some)
+                .ok_or_else(|| QuotedSourceError::new("alias `as:` expects a module alias"));
+        }
+    }
+    Ok(None)
 }
 
 fn decode_bool(cursor: &QuotedSourceCursor) -> Result<bool, QuotedSourceError> {
