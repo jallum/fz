@@ -1,4 +1,4 @@
-use crate::ast::{Attribute, BitSize, BitType, Expr};
+use crate::ast::{Attribute, BitSize, BitType, Expr, Pattern, WithBinding};
 use crate::parser::lexer::Tok;
 use crate::telemetry::ConfiguredTelemetry;
 
@@ -78,6 +78,31 @@ fn left + right, do: left + right
     assert!(
         matches!(spec.result_body_tokens.0.as_slice(), [token] if matches!(token.tok, Tok::Ident(ref name) if name == "integer"))
     );
+}
+
+#[test]
+fn compiler2_quoted_function_surface_derives_with_from_quoted_source() {
+    let source = r#"
+fn pick(v) do
+  with {:ok, x} <- v do x else :err -> 0 end
+end
+"#;
+    let root = grouped_function_root("with.fz", source);
+    let tel = ConfiguredTelemetry::new();
+    let surface =
+        derive_function_surface(&root, CodeId::ZERO, Some("with.fz"), source, &tel).expect("derive function surface");
+
+    let Expr::With(bindings, body, else_clauses) = &surface.clauses[0].body.node else {
+        panic!("expected with body");
+    };
+    assert_eq!(bindings.len(), 1);
+    let WithBinding::Match(pattern, expr) = &bindings[0] else {
+        panic!("expected match binding");
+    };
+    assert!(matches!(&pattern.node, Pattern::Tuple(parts) if parts.len() == 2));
+    assert!(matches!(&expr.node, Expr::Var(name) if name == "v"));
+    assert!(matches!(&body.node, Expr::Var(name) if name == "x"));
+    assert_eq!(else_clauses.len(), 1);
 }
 
 #[test]

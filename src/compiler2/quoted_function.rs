@@ -1,6 +1,6 @@
 use crate::ast::{
     AfterClause, Attribute, BinOp, BitField, BitFieldSpec, BitSize, BitType, Endian, Expr, FnClause, LambdaClause,
-    MatchClause, Pattern, Spanned, SpecDecl, TypeExprBody, UnOp,
+    MatchClause, Pattern, Spanned, SpecDecl, TypeExprBody, UnOp, WithBinding,
 };
 use crate::compiler::source::{Id as SourceId, Span};
 use crate::function_surface::FunctionSurface;
@@ -420,6 +420,7 @@ fn decode_named_expr(
         ("if", 2) => decode_if(args, ctx, span),
         ("case", 1 | 2) => decode_case(args, ctx, span),
         ("cond", 1) => decode_cond(args, ctx, span),
+        ("with", _) => decode_with(args, ctx, span),
         ("receive", 1) => decode_receive(args, ctx, span),
         ("fn", _) => decode_lambda(args, ctx, span),
         ("quote", 1) => decode_quote(args, ctx, span),
@@ -616,6 +617,65 @@ fn decode_cond(
         ));
     }
     Ok(Spanned::new(Expr::Cond(clauses), span))
+}
+
+fn decode_with(
+    args: &[QuotedSourceCursor],
+    ctx: &DecodeCtx<'_>,
+    span: Span,
+) -> Result<Spanned<Expr>, QuotedFunctionError> {
+    let Some((kw_cursor, binding_args)) = args.split_last() else {
+        return Err(QuotedFunctionError::new("quoted `with` expects bindings and a body"));
+    };
+    let entries = decode_keyword_entries(kw_cursor)?;
+    let mut body = None;
+    let mut else_clauses = Vec::new();
+    for (key, value) in entries {
+        match key.as_str() {
+            "do" => body = Some(decode_expr(&value, ctx, Some(span))?),
+            "else" => {
+                else_clauses = value
+                    .list_items()?
+                    .into_iter()
+                    .map(|clause| decode_match_clause(&clause, ctx, Some(span)))
+                    .collect::<Result<Vec<_>, _>>()?;
+            }
+            other => {
+                return Err(QuotedFunctionError::new(format!(
+                    "unsupported quoted `with` keyword `{other}`"
+                )));
+            }
+        }
+    }
+
+    let mut bindings = Vec::new();
+    for binding in binding_args {
+        if let Some(node) = binding.ast_node()?
+            && atom_name(&node.head)? == "<-"
+        {
+            let parts = node.tail.list_items()?;
+            if parts.len() != 2 {
+                return Err(QuotedFunctionError::new(
+                    "quoted `with` match binding expects pattern and expression",
+                ));
+            }
+            bindings.push(WithBinding::Match(
+                decode_pattern(&parts[0], ctx, Some(span))?,
+                decode_expr(&parts[1], ctx, Some(span))?,
+            ));
+            continue;
+        }
+        bindings.push(WithBinding::Bare(decode_expr(binding, ctx, Some(span))?));
+    }
+
+    Ok(Spanned::new(
+        Expr::With(
+            bindings,
+            Box::new(body.ok_or_else(|| QuotedFunctionError::new("quoted `with` is missing `do`"))?),
+            else_clauses,
+        ),
+        span,
+    ))
 }
 
 fn decode_receive(

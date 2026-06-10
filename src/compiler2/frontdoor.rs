@@ -659,6 +659,7 @@ impl<'a> FrontDoorParser<'a> {
             Tok::Cond => self.parse_cond_expr(module_path, scope, start),
             Tok::Receive => self.parse_receive_expr(module_path, scope, start),
             Tok::Case => self.parse_case_expr(module_path, scope, start),
+            Tok::With => self.parse_with_expr(module_path, scope, start),
             Tok::Fn => self.parse_lambda_expr(module_path, scope, start),
             Tok::Amp => self.parse_capture_expr(module_path, scope, start),
             Tok::Caret => self.parse_pin_expr(module_path, scope, start),
@@ -1196,6 +1197,63 @@ impl<'a> FrontDoorParser<'a> {
         }
         args.push(kw);
         Ok(ParsedExpr::plain(self.builder.call("case", &meta, &args)?, span))
+    }
+
+    fn parse_with_expr(
+        &mut self,
+        module_path: &[String],
+        scope: &[String],
+        start: Span,
+    ) -> Result<ParsedExpr, FrontDoorError> {
+        let mut args = Vec::new();
+        loop {
+            self.skip_newlines();
+            let binding_start = self.cur_span();
+            let left = self.with_trailing_do_suppressed(|parser| parser.parse_expr(module_path, scope))?;
+            let binding = if self.eat(&Tok::LArrow) {
+                let right = self.with_trailing_do_suppressed(|parser| parser.parse_expr(module_path, scope))?;
+                let span = binding_start.merge(right.span);
+                let meta = self.meta(module_path, scope, span)?;
+                self.builder.call("<-", &meta, &[left.root, right.root])?
+            } else {
+                left.root
+            };
+            args.push(binding);
+            self.skip_newlines();
+            if self.peek_is(&Tok::Comma) && !matches!(self.peek_at(1), Tok::KwKey(key) if key == "do") {
+                self.bump();
+                continue;
+            }
+            break;
+        }
+
+        let mut kw_entries = Vec::new();
+        if self.peek_is(&Tok::Comma) && matches!(self.peek_at(1), Tok::KwKey(key) if key == "do") {
+            self.bump();
+            self.bump();
+            let body = self.parse_expr(module_path, scope)?.root;
+            kw_entries.push(self.builder.keyword("do", body)?);
+        } else {
+            self.expect(&Tok::Do, "`do`")?;
+            self.skip_newlines();
+            let body = self.parse_block_until(&[Tok::Else, Tok::End], module_path, scope)?;
+            kw_entries.push(self.builder.keyword("do", body)?);
+            if self.eat(&Tok::Else) {
+                self.skip_newlines();
+                let mut clauses = Vec::new();
+                while !matches!(self.peek(), Tok::End | Tok::Eof) {
+                    clauses.push(self.parse_case_clause(module_path, scope)?);
+                    self.skip_newlines();
+                }
+                kw_entries.push(self.builder.keyword("else", self.builder.list(&clauses)?)?);
+            }
+            self.expect(&Tok::End, "`end`")?;
+        }
+
+        let span = start.merge(self.prev_span());
+        let meta = self.meta(module_path, scope, span)?;
+        args.push(self.builder.list(&kw_entries)?);
+        Ok(ParsedExpr::plain(self.builder.call("with", &meta, &args)?, span))
     }
 
     fn parse_case_clause(&mut self, module_path: &[String], scope: &[String]) -> Result<AnyValueRef, FrontDoorError> {

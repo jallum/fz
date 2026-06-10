@@ -100,6 +100,7 @@ the `fz-rh2.11.7.*` arc.
   `extern`,
   runtime-prelude operator import filters such as `only: [+: 2]`,
   `if`,
+  `with`,
   `receive ... after`,
   and anonymous `fn ... end`.
 - Runtime library sources are expected to reach quoted roots without an old-AST

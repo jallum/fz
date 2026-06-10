@@ -274,6 +274,21 @@ fn compiler2_frontdoor_parses_remote_calls_captures_and_headless_case_from_fixtu
 }
 
 #[test]
+fn compiler2_frontdoor_parses_with_expressions() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "with.fz",
+        "fn main(v) do\n  with {:ok, x} <- v do x else :err -> 0 end\nend\n",
+        &tel,
+    )
+    .expect("quoted with parse");
+
+    // Front door should quote `with` directly, including match bindings and
+    // ordinary else clauses, instead of relying on the old parser AST.
+    assert_quoted_mentions(&root, &["with", "<-", "else", "->"]);
+}
+
+#[test]
 fn compiler2_frontdoor_parses_cond_and_remote_operator_capture_refs() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
