@@ -9,9 +9,15 @@
   "id": "fz-rh2.16.3",
   "labels": [],
   "parent": "fz-rh2.16",
+  "comments": [
+    {
+      "text": "Completed callable/protocol/Enum artifact parity work. Semantic closure now coalesces repeated callsite observations, carries latent callable activations from escaped callable types, and treats multi-target closure calls as indirect dispatch instead of forcing a direct call edge. ABI/emission ready now derives callable entries from demanded callable facts instead of constructor scans, backend call args no longer carry callable side-channel obligations, and native/interp closure calls can resolve indirect targets at runtime. Native callable entries now adapt raw target returns back to the AnyRef closure-call continuation seam. Promoted opaque_fn_value_join, repr_seam_closure_predicate, and tailcall_closure_captures to fz2 matrix coverage. Split remaining protocol-union direct dispatch to fz-rh2.16.7. Also restored module-interface abi=1 rendering/fingerprints discovered by the full test suite.",
+      "timestamp": "2026-06-10T09:21:36Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Fix fz2 callable/protocol/Enum artifact parity gaps",
   "type": "task",
-  "updated_at": "2026-06-10T08:09:07Z"
+  "updated_at": "2026-06-10T09:21:36Z"
 }
