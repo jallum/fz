@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-rh2.11.7.18",
     "fz-rh2.11.7.5"
   ],
   "blocks": [
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Compiler2 macro availability: pre-scan require/import, wait provider surface, and expand recursively",
   "type": "task",
-  "updated_at": "2026-06-09T17:25:52Z"
+  "updated_at": "2026-06-10T04:00:42Z"
 }
