@@ -42,3 +42,18 @@ end
 defmacro defmacro(source) do
   quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
 end
+
+defmacro defmodule(name, kw) do
+  source = {:defmodule, %{}, [name, kw]}
+  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
+end
+
+defmacro defprotocol(name, kw) do
+  source = {:defprotocol, %{}, [name, kw]}
+  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
+end
+
+defmacro defimpl(protocol, kw) do
+  source = {:defimpl, %{}, [protocol, kw]}
+  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
+end

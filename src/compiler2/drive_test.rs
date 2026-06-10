@@ -6148,7 +6148,7 @@ fn compiler2_entry_dispatch_recomputes_only_the_dependent_helper_blast_radius() 
 }
 
 #[test]
-fn compiler2_index_code_recurses_through_nested_modules() {
+fn compiler2_scope_code_discovers_nested_modules_through_definition_macros() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
@@ -6165,10 +6165,16 @@ fn compiler2_index_code_recurses_through_nested_modules() {
         text: include_str!("../../fixtures2/00044_nested_modules.fz").to_string(),
     });
 
-    assert_resolved(compiler.drive(), "first drive should index nested module scopes");
+    assert_resolved(compiler.drive(), "first drive should only index the raw source");
     let indexed_outputs = outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects");
-    let module_ids = module_indexed_ids(&indexed_outputs);
-    assert_eq!(module_ids.len(), 3, "nested indexing should discover X, X.Y, and X.Y.Z");
+    assert_eq!(
+        indexed_outputs
+            .iter()
+            .filter(|(fact, _)| matches!(fact, FactKey::ModuleIndexed(_)))
+            .count(),
+        0,
+        "raw source indexing should no longer pre-discover nested modules directly",
+    );
 
     let indexed_stop = outputs.stop(Job::IndexCode(code_id));
     assert!(indexed_stop.effects_present, "indexing job should finish with effects");
@@ -6179,7 +6185,14 @@ fn compiler2_index_code_recurses_through_nested_modules() {
     );
     assert_resolved(
         compiler.drive(),
-        "second drive should scope the root module declarations",
+        "second drive should expand root definition macros and discover nested modules from compiler fragments",
+    );
+
+    let scoped_outputs = outputs.take(Job::ScopeCode(code_id)).expect("ScopeCode job effects");
+    assert_eq!(
+        module_indexed_ids(&scoped_outputs).len(),
+        1,
+        "root scope should index the outer module fragment but leave nested modules to parent-definition expansion",
     );
 
     assert_eq!(
@@ -6187,19 +6200,24 @@ fn compiler2_index_code_recurses_through_nested_modules() {
         0,
         "root definition should not eagerly define nested modules"
     );
-    assert_eq!(
-        capture.count(&["fz", "compiler2", "function", "defined"]),
-        0,
-        "root definition should not eagerly define nested functions"
+    assert!(
+        functions
+            .all()
+            .into_iter()
+            .filter(|record| record.function_ref.name != "__info__")
+            .all(|record| record.function_ref.name != "func"),
+        "root definition should not eagerly define the nested user function",
     );
 
-    assert!(
-        compiler.demand(Job::DefineModule(*module_ids.last().expect("deepest module id"))),
-        "explicit demand should enqueue the nested module definition"
-    );
+    compiler.submit_root(RootSubmission {
+        module_name: Some("X.Y.Z".to_string()),
+        name: "func".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
     assert_resolved(
         compiler.drive(),
-        "third drive should define the demanded nested module and its parents",
+        "demanding a nested runtime entry should walk the parent chain and index nested modules from compiler-defined fragments",
     );
 
     let mut defined_modules = modules.defined_names();
@@ -6213,7 +6231,7 @@ fn compiler2_index_code_recurses_through_nested_modules() {
     let function_defined = functions
         .all()
         .into_iter()
-        .find(|record| record.function_ref.name != "__info__")
+        .find(|record| record.function_ref.name == "func")
         .expect("nested function.defined event");
     assert_eq!(
         function_module_name(&function_defined, &modules),
@@ -6235,32 +6253,28 @@ fn compiler2_index_code_recurses_through_nested_modules() {
     );
 
     assert_eq!(
-        indexed_outputs
+        scoped_outputs
             .iter()
             .filter(|(fact, _)| matches!(fact, FactKey::ModuleIndexed(_)))
             .count(),
-        3,
-        "nested indexing should surface one module-indexed fact per nested module"
+        1,
+        "scope-time discovery should surface one module-indexed fact for the outer fragment"
     );
     assert_eq!(
-        indexed_outputs
+        scoped_outputs
             .iter()
             .filter(|(fact, _)| matches!(fact, FactKey::FunctionDefined(_)))
             .count(),
         0,
-        "nested indexing should not define functions directly"
+        "scope-time discovery should not define functions directly"
     );
     assert_eq!(
-        indexed_outputs
+        scoped_outputs
             .iter()
             .filter(|(fact, _)| matches!(fact, FactKey::ModuleDefined(_)))
             .count(),
         0,
-        "nested indexing should not define modules directly"
-    );
-    assert!(
-        indexed_outputs.contains(&presence(FactKey::CodeIndexed(code_id), true)),
-        "nested indexing should include the final code-indexed fact"
+        "scope-time discovery should not define modules directly"
     );
 }
 

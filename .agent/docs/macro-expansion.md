@@ -47,7 +47,7 @@ body-local macro     changes only one function     => lazy
 There is one important sub-case inside the eager bucket:
 
 - `runtime.fz` defines compiler-owned top-level definition macros such as
-  `fn`, `fnp`, and `defmacro`
+  `fn`, `fnp`, `defmacro`, `defmodule`, `defprotocol`, and `defimpl`
 - those names are treated as item-level source forms in
   `quoted_surface.rs`, not as ordinary expression macros
 - the recursive body expander must therefore ignore those heads when it sees
@@ -87,6 +87,15 @@ It does four macro-relevant jobs:
 For compiler-owned definition macros, the returned fragment is expected to cross
 back into the compiler through `Fz.Compiler.define(source, __CALLER__)`. That
 callback is the single source-publication authority for top-level definitions.
+
+For module/protocol/impl fragments, nested indexing now advances through the
+same callback path:
+
+- `ScopeCode` indexes the outer fragment when its definition macro expands
+- `DefineModule(parent)` expands nested scope-definition macros inside the
+  parent body and indexes child modules from those compiler-defined fragments
+- direct demands on a placeholder nested module wait on the dotted parent
+  module definition instead of on a raw-source pre-index pass
 
 The important invariant is that source publication owns scope shape, not
 function internals.

@@ -1726,6 +1726,12 @@ impl<'a> World<'a> {
         }
     }
 
+    pub(crate) fn module_named_parent(&mut self, module: ModuleId) -> Option<ModuleId> {
+        let name = self.module_name(module)?.to_string();
+        let (parent, _) = name.rsplit_once('.')?;
+        Some(self.reference_module(parent.to_string()))
+    }
+
     fn module_definition_code(&self, module: ModuleId) -> CodeId {
         match self.modules.get(module) {
             ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. } => source.code,

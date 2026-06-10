@@ -41,6 +41,10 @@ pub(crate) fn is_function_definition_head(head: &str) -> bool {
     matches!(head, "fn" | "fnp" | "defmacro")
 }
 
+pub(crate) fn is_scope_definition_head(head: &str) -> bool {
+    is_function_definition_head(head) || matches!(head, "defmodule" | "defprotocol" | "defimpl")
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum ScopeForm {
@@ -312,17 +316,20 @@ fn build_form(
         "alias" => Ok(ScopeForm::Alias(parse_alias_form(source, ctx)?)),
         "import" => Ok(ScopeForm::Import(parse_import_form(source, ctx)?)),
         "require" => Ok(ScopeForm::Require(parse_import_form(source, ctx)?)),
-        head if is_function_definition_head(head) => Ok(match mode {
+        head if is_scope_definition_head(head) => Ok(match mode {
             ScopeSurfaceMode::Source => ScopeForm::MacroCall(MacroCallForm {
                 span: surface_span(&source, ctx)?,
                 source,
             }),
-            ScopeSurfaceMode::CompilerFragment => ScopeForm::Function(parse_function_form(source, ctx)?),
+            ScopeSurfaceMode::CompilerFragment => match head {
+                head if is_function_definition_head(head) => ScopeForm::Function(parse_function_form(source, ctx)?),
+                "defmodule" => ScopeForm::Module(parse_module_form(source, ctx)?),
+                "defprotocol" => ScopeForm::Protocol(parse_protocol_form(source, ctx)?),
+                "defimpl" => ScopeForm::ProtocolImpl(parse_protocol_impl_form(source, ctx)?),
+                _ => unreachable!("covered by is_scope_definition_head"),
+            },
         }),
         "extern" => Ok(ScopeForm::Function(parse_function_form(source, ctx)?)),
-        "defmodule" => Ok(ScopeForm::Module(parse_module_form(source, ctx)?)),
-        "defprotocol" => Ok(ScopeForm::Protocol(parse_protocol_form(source, ctx)?)),
-        "defimpl" => Ok(ScopeForm::ProtocolImpl(parse_protocol_impl_form(source, ctx)?)),
         "defstruct" => Ok(ScopeForm::Struct(parse_struct_form(source, ctx)?)),
         _ => Ok(ScopeForm::MacroCall(MacroCallForm {
             span: surface_span(&source, ctx)?,

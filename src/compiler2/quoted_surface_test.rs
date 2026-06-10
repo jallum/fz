@@ -237,6 +237,26 @@ fn compiler2_quoted_surface_reads_protocol_impl_callbacks_through_grouped_source
     let surface = read_scope_surface(&root, &ctx).expect("surface read");
 
     match &surface.forms[0] {
+        ScopeForm::MacroCall(form) => {
+            let protocol_impl_head = form
+                .source
+                .cursor()
+                .ast_node()
+                .expect("protocol impl cursor")
+                .expect("protocol impl node")
+                .head
+                .atom_name()
+                .expect("protocol impl head");
+            assert_eq!(
+                protocol_impl_head, "defimpl",
+                "source mode should surface protocol impl definitions as macro calls",
+            );
+        }
+        other => panic!("expected source-mode protocol impl macro call, got {other:?}"),
+    }
+
+    let fragment_surface = read_compiler_fragment_surface(&root, &ctx).expect("fragment surface read");
+    match &fragment_surface.forms[0] {
         ScopeForm::ProtocolImpl(form) => {
             let body = read_protocol_impl_body_surface(form, &ctx).expect("protocol impl body surface");
             assert_eq!(
@@ -258,6 +278,6 @@ fn compiler2_quoted_surface_reads_protocol_impl_callbacks_through_grouped_source
                 other => panic!("expected grouped callback function, got {other:?}"),
             }
         }
-        other => panic!("expected protocol impl form, got {other:?}"),
+        other => panic!("expected compiler-fragment protocol impl form, got {other:?}"),
     }
 }

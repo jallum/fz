@@ -13,7 +13,7 @@ use super::drive::{FactKey, Job, JobEffects};
 use super::identity::{FunctionId, ModuleId};
 use super::namespace::NamespaceSymbol;
 use super::quoted_surface::{
-    MacroCallForm, ScopeForm, ScopeSurface, SurfaceSourceContext, is_function_definition_head,
+    MacroCallForm, ScopeForm, ScopeSurface, SurfaceSourceContext, is_scope_definition_head,
     read_compiler_fragment_surface, read_scope_surface,
 };
 use super::scope::ScopeSnapshot;
@@ -161,7 +161,7 @@ pub(crate) trait QuotedExpansionCtx<'tel> {
         if head == "quote" {
             return Ok(Some(ExpandedValue::Complete(cursor.root())));
         }
-        if is_function_definition_head(&head) {
+        if is_scope_definition_head(&head) {
             return Ok(None);
         }
         let symbol = {
@@ -511,6 +511,27 @@ fn item_macro_invocation(
         .ast_node()
         .map_err(|error| emit_internal_surface_error(world, format!("item macro source read failed: {error}")))?
     {
+        if let Ok(head) = node.head.atom_name()
+            && is_scope_definition_head(&head)
+        {
+            let args = node
+                .tail
+                .list_items()
+                .map_err(|error| emit_internal_surface_error(world, format!("item macro arg read failed: {error}")))?;
+            let Some(symbol) = world.lookup_callable_namespace(scope.namespace(), &head, args.len()) else {
+                return Err(item_macro_not_defmacro(world, &head, span));
+            };
+            let NamespaceSymbol::Macro(function) = symbol else {
+                return Err(item_macro_not_defmacro(world, &head, span));
+            };
+            return Ok(ItemMacroInvocation {
+                function: Some(function),
+                args,
+                input_root: cursor.root(),
+                display_name: head,
+                node: None,
+            });
+        }
         return Ok(ItemMacroInvocation {
             function: None,
             args: Vec::new(),
