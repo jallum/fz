@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-10T17:48:36Z",
+  "description": "Goal: finish the staging cleanup by deleting eager function-expansion leftovers and making the new layering explicit in docs and telemetry. Signal: docs say source publication decides what exists while function demand decides body-local meaning; telemetry exposes no ScopeCode waits on body-local macro readiness; eager function expansion helpers are gone from source_publish; the false-start local refactor has been deliberately discarded rather than carried forward. Strategy: remove dead helpers and tests, update agent-facing docs and pipeline docs, and add narrow regressions that lock in the new boundary.",
+  "id": "fz-rh2.16.10.4",
+  "labels": [],
+  "parent": "fz-rh2.16.10",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 function staging closeout: delete eager leftovers and restate the layer split",
+  "type": "task",
+  "updated_at": "2026-06-10T17:48:36Z"
+}
