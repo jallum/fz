@@ -18,6 +18,7 @@ fn render(diag: &Diagnostic, sm: &SourceMap) -> String {
     String::from_utf8(buf).unwrap()
 }
 
+// DROP: diagnostic header/location rendering layout; pure infrastructure
 #[test]
 fn header_and_location_layout() {
     let src = "fn main() do\n  if x == 1, do: :ok\nend\n";
@@ -48,6 +49,7 @@ fn dummy_span_emits_generated_marker() {
     assert!(out.contains("note: background context"));
 }
 
+// DROP: diagnostic notes and help lines rendering; pure infrastructure
 #[test]
 fn notes_and_helps_render() {
     let src = "fn main() do 1 end\n";
@@ -62,6 +64,7 @@ fn notes_and_helps_render() {
     assert!(out.contains("= help: did you mean `fn`?"));
 }
 
+// DROP: secondary span rendered as own block; pure infrastructure
 #[test]
 fn secondary_span_gets_its_own_block() {
     let src = "fn main() do\n  x = 1\n  y = 2\nend\n";
@@ -80,6 +83,7 @@ fn secondary_span_gets_its_own_block() {
     assert!(out.contains("- second binding shadows"));
 }
 
+// DROP: tab expansion aligns caret in diagnostic output; pure infrastructure
 #[test]
 fn tab_expansion_aligns_caret() {
     // Source uses a tab before `let x`. The caret on `x` should land
@@ -100,6 +104,7 @@ fn tab_expansion_aligns_caret() {
     assert_eq!(pos - after_pipe, 8, "got line {:?}", underline_line);
 }
 
+// DROP: color-disabled mode emits no ANSI escapes; pure infrastructure
 #[test]
 fn color_off_produces_no_escapes() {
     let src = "fn main(), do: 1\n";
@@ -143,6 +148,7 @@ fn run_pipeline_for_fixture(src: &str, id: CodeId, sm: &SourceMap, rel: &str, te
 /// and compares the rendered diagnostic to the golden file. Fixtures
 /// with only `input.fz` (no expected) are reserved for later tickets
 /// and silently skipped.
+// DROP: diagnostic rendering golden-file comparison; pure infrastructure
 #[test]
 fn fixture_golden_outputs_match() {
     use std::fs;

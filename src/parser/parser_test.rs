@@ -26,6 +26,7 @@ mod do_block_sugar_tests {
         Parser::new(toks).parse_expr_eof().unwrap().node
     }
 
+    // DROP: do-block sugar AST shape, pure parse structure
     #[test]
     fn trailing_do_block_appended_as_arg() {
         let e = parse_fn_body(
@@ -44,6 +45,7 @@ mod do_block_sugar_tests {
         assert_keyword_list(&args[1], &[("do", "block")]);
     }
 
+    // DROP: do-block keyword arg AST shape, pure parse structure
     #[test]
     fn comma_do_kw_appended_as_keyword_arg() {
         let e = parse_fn_body(r#"f("x"), do: 42"#, &crate::telemetry::ConfiguredTelemetry::new());
@@ -52,12 +54,14 @@ mod do_block_sugar_tests {
         assert_keyword_list(&args[1], &[("do", "int")]);
     }
 
+    // DROP: keyword list desugars to atom-pair list, pure parse structure
     #[test]
     fn list_keyword_sugar_is_list_of_atom_pairs() {
         let e = parse_expr("[a: 1, b: 2]", &crate::telemetry::ConfiguredTelemetry::new());
         assert_keyword_list(&Spanned::dummy(e), &[("a", "int"), ("b", "int")]);
     }
 
+    // DROP: keyword args collapse to single trailing list, pure parse structure
     #[test]
     fn call_keywords_are_single_trailing_list_arg() {
         let e = parse_expr("f(1, a: 2, b: 3)", &crate::telemetry::ConfiguredTelemetry::new());
@@ -67,6 +71,7 @@ mod do_block_sugar_tests {
         assert_keyword_list(&args[1], &[("a", "int"), ("b", "int")]);
     }
 
+    // DROP: do-block merges with existing keyword list, pure parse structure
     #[test]
     fn trailing_do_merges_with_existing_keyword_arg() {
         let e = parse_expr(
@@ -78,6 +83,7 @@ mod do_block_sugar_tests {
         assert_keyword_list(&args[1], &[("timeout", "int"), ("do", "int")]);
     }
 
+    // DROP: do-block vs explicit list non-merge boundary, pure parse structure
     #[test]
     fn trailing_do_does_not_merge_with_explicit_atom_pair_list() {
         let e = parse_expr(
@@ -93,6 +99,7 @@ mod do_block_sugar_tests {
         assert_keyword_list(&args[1], &[("do", "int")]);
     }
 
+    // DROP: keyword list pattern shape, pure parse structure
     #[test]
     fn list_keyword_sugar_works_in_patterns() {
         let toks = Lexer::with_source_name("fn opts([do: body, else: fallback]), do: body", "<test>")
@@ -107,6 +114,7 @@ mod do_block_sugar_tests {
         assert_keyword_pattern(&def.clauses[0].params[0], &[("do", "body"), ("else", "fallback")]);
     }
 
+    // PICK: top-level macro call form with do-block body
     #[test]
     fn item_level_call_parses_as_macro_call() {
         let toks = Lexer::with_source_name(
@@ -171,6 +179,7 @@ end
         }
     }
 
+    // PICK: macro call nested inside defmodule body
     #[test]
     fn item_level_call_inside_module() {
         let toks = Lexer::with_source_name(
@@ -199,6 +208,7 @@ end
         assert!(m.items.iter().any(|it| matches!(&**it, Item::MacroCall { .. })));
     }
 
+    // PICK: protocol definition with @doc/@spec attributed callbacks
     #[test]
     fn parses_protocol_callbacks_with_specs() {
         let toks = Lexer::with_source_name(
@@ -227,6 +237,7 @@ end
         assert!(protocol.callbacks[0].attrs.iter().any(|attr| matches!(attr, Spec(_))));
     }
 
+    // PICK: defimpl block with a concrete function body
     #[test]
     fn parses_protocol_impl_with_function_body() {
         let toks = Lexer::with_source_name(
@@ -251,6 +262,7 @@ end
         assert!(matches!(&*protocol_impl.items[0], Item::Fn(def) if def.name == "reduce"));
     }
 
+    // PICK: protocol callbacks must not have bodies — language invariant
     #[test]
     fn protocol_callback_rejects_body() {
         let toks = Lexer::with_source_name(
@@ -269,6 +281,7 @@ end
         assert!(err.msg.contains("cannot have bodies"), "unexpected error: {:?}", err);
     }
 
+    // PICK: defimpl must supply for: target — language invariant
     #[test]
     fn protocol_impl_requires_for_target() {
         let toks = Lexer::with_source_name("defimpl Enumerable, target: List do\nend\n", "<test>")
@@ -280,6 +293,7 @@ end
         assert!(err.msg.contains("for:"), "unexpected error: {:?}", err);
     }
 
+    // DROP: plain call arg count, pure parse structure
     #[test]
     fn plain_call_no_extra_arg() {
         let e = parse_fn_body("f(1, 2)", &crate::telemetry::ConfiguredTelemetry::new());
@@ -287,12 +301,14 @@ end
         assert_eq!(args.len(), 2);
     }
 
+    // DROP: newline continuation rule for match operator, pure parse structure
     #[test]
     fn newline_before_match_operator_continues_expression() {
         let e = parse_expr("x\n  =\n    41", &crate::telemetry::ConfiguredTelemetry::new());
         assert!(matches!(e, Expr::Match(_, _)));
     }
 
+    // DROP: newline before `[` starts new statement, pure parse structure
     #[test]
     fn newline_before_list_starts_next_expression_not_index() {
         let wrapped = r#"
@@ -318,6 +334,7 @@ end
         assert!(matches!(exprs[1].node, Expr::List(ref items, None) if items.is_empty()));
     }
 
+    // PICK: same-name different-arity functions are distinct definitions
     #[test]
     fn same_name_different_arity_forms_distinct_fn_defs() {
         let toks = Lexer::with_source_name(
@@ -343,6 +360,7 @@ fn spawn(fun, opts), do: fun.()
         assert_eq!(arities, vec![1, 2]);
     }
 
+    // PICK: `fnp` keyword marks function as private
     #[test]
     fn fnp_parses_as_private_function_def() {
         let toks = Lexer::with_source_name("fnp helper(x), do: x\n", "<test>")
@@ -363,6 +381,7 @@ fn spawn(fun, opts), do: fun.()
     /// cond position; otherwise `if pred(h) do … end` parses the
     /// then-arm as a second arg to `pred`, leaving `else`/`end`
     /// floating.
+    // PICK: if-cond call does not consume the then-arm as an argument
     #[test]
     fn cond_call_in_if_does_not_swallow_do_block() {
         let e = parse_fn_body(
@@ -388,6 +407,7 @@ fn spawn(fun, opts), do: fun.()
     // fz-5vj — `receive do … after … end` parser tests
     // ──────────────────────────────────────────────────────────────
 
+    // PICK: receive with single clause and no after-timeout
     #[test]
     fn receive_single_clause_no_after_parses() {
         let e = parse_fn_body(
@@ -405,6 +425,7 @@ fn spawn(fun, opts), do: fun.()
         assert!(clauses[0].guard.is_none());
     }
 
+    // PICK: receive dispatches on multiple message patterns
     #[test]
     fn receive_multi_clause_parses() {
         let e = parse_fn_body(
@@ -422,6 +443,7 @@ fn spawn(fun, opts), do: fun.()
         assert!(after.is_none());
     }
 
+    // PICK: receive clause carries a when-guard on the pattern
     #[test]
     fn receive_clause_with_guard_parses() {
         let e = parse_fn_body(
@@ -437,6 +459,7 @@ fn spawn(fun, opts), do: fun.()
         assert!(clauses[0].guard.is_some());
     }
 
+    // PICK: receive after-timeout clause with deadline and body
     #[test]
     fn receive_with_after_parses() {
         let e = parse_fn_body(
@@ -456,6 +479,7 @@ fn spawn(fun, opts), do: fun.()
         assert!(matches!(af.body.node, Expr::Atom(ref a) if a == "timeout"));
     }
 
+    // PICK: receive after 0 is the non-blocking peek form
     #[test]
     fn receive_with_after_zero_parses() {
         // `after 0` is the peek form.
@@ -474,6 +498,7 @@ fn spawn(fun, opts), do: fun.()
         assert!(matches!(af.timeout.node, Expr::Int(0)));
     }
 
+    // PICK: receive after :infinity timeout atom is preserved
     #[test]
     fn receive_with_after_infinity_parses() {
         let e = parse_fn_body(
@@ -491,6 +516,7 @@ fn spawn(fun, opts), do: fun.()
         assert!(matches!(af.timeout.node, Expr::Atom(ref a) if a == "infinity"));
     }
 
+    // PICK: pinned variable `^ref` in receive pattern
     #[test]
     fn receive_pinned_pattern_var_parses() {
         let e = parse_fn_body(
@@ -511,6 +537,7 @@ fn spawn(fun, opts), do: fun.()
         assert!(matches!(elems[2].node, Pattern::Var(ref v) if v == "v"));
     }
 
+    // PICK: `receive()` call form is rejected — language invariant
     #[test]
     fn bare_receive_call_is_rejected() {
         let wrapped = "fn _t() do receive() end";
@@ -531,6 +558,7 @@ fn spawn(fun, opts), do: fun.()
     /// are all cond-position and must suppress the sugar.
     // fz-swt.5 — explicit `&name/arity` fn references.
 
+    // PICK: `&name/arity` function reference expression
     #[test]
     fn fn_ref_bare_name_parses() {
         let e = parse_fn_body("&foo/1", &crate::telemetry::ConfiguredTelemetry::new());
@@ -543,6 +571,7 @@ fn spawn(fun, opts), do: fun.()
         }
     }
 
+    // PICK: `&name/0` zero-arity function reference
     #[test]
     fn fn_ref_zero_arity_parses() {
         let e = parse_fn_body("&do_it/0", &crate::telemetry::ConfiguredTelemetry::new());
@@ -555,6 +584,7 @@ fn spawn(fun, opts), do: fun.()
         }
     }
 
+    // PICK: `&Mod.fun/2` module-qualified function reference
     #[test]
     fn fn_ref_module_qualified_parses() {
         // `&Mod.fun/2` captures the full dotted path as the name.
@@ -568,6 +598,7 @@ fn spawn(fun, opts), do: fun.()
         }
     }
 
+    // PICK: `&+/2` operator function references for higher-order use
     #[test]
     fn fn_ref_bare_arithmetic_operators_parse() {
         for (src, expected_name) in [
@@ -587,6 +618,7 @@ fn spawn(fun, opts), do: fun.()
         }
     }
 
+    // PICK: `&Kernel.+/2` module-qualified operator function references
     #[test]
     fn fn_ref_module_qualified_arithmetic_operators_parse() {
         for (src, expected_name) in [
@@ -606,6 +638,7 @@ fn spawn(fun, opts), do: fun.()
         }
     }
 
+    // PICK: `&A.B.run/3` deep module-qualified function reference
     #[test]
     fn fn_ref_nested_module_qualified_parses() {
         let e = parse_fn_body("&A.B.run/3", &crate::telemetry::ConfiguredTelemetry::new());
@@ -618,6 +651,7 @@ fn spawn(fun, opts), do: fun.()
         }
     }
 
+    // PICK: function reference passed as argument to a call
     #[test]
     fn fn_ref_as_call_arg_parses() {
         // Ensures &name/arity composes naturally inside argument lists.
@@ -628,6 +662,7 @@ fn spawn(fun, opts), do: fun.()
             if name == "foo" && *arity == 1));
     }
 
+    // PICK: `and`/`or` keyword boolean operators over C-style `&&`/`||`
     #[test]
     fn and_or_keywords_parse_as_boolean_binops() {
         // fz uses Elixir's `and`/`or`, not C-style `&&`/`||`.
@@ -643,6 +678,7 @@ fn spawn(fun, opts), do: fun.()
         assert!(matches!(op, Or));
     }
 
+    // PICK: `&&`/`||`/`!` are removed — language-level migration invariant
     #[test]
     fn c_style_boolean_operators_are_lex_errors() {
         // `&&`/`||`/`!` were removed in favour of `and`/`or`/`not`; the lexer
@@ -665,6 +701,7 @@ fn spawn(fun, opts), do: fun.()
         );
     }
 
+    // PICK: case when-guard call does not consume the clause body
     #[test]
     fn cond_call_in_case_when_guard_does_not_swallow_do_block() {
         // when-guard pred(h) followed by `->` body that itself contains
@@ -706,6 +743,7 @@ mod extern_parse_tests {
         }
     }
 
+    // DROP: extern FFI declaration AST shape, no compiler2 analogue yet
     #[test]
     fn extern_fn_no_params() {
         let d = parse_extern("extern \"C\" fn fz_halt() :: never\n");
@@ -715,12 +753,14 @@ mod extern_parse_tests {
         assert!(d.clauses.is_empty());
     }
 
+    // DROP: extern FFI param count, no compiler2 analogue yet
     #[test]
     fn extern_fn_one_param() {
         let d = parse_extern("extern \"C\" fn fz_print(any) :: unit\n");
         assert_eq!(d.extern_param_tokens.len(), 1);
     }
 
+    // DROP: extern FFI two-param and return tokens, no compiler2 analogue yet
     #[test]
     fn extern_fn_two_params() {
         let d = parse_extern("extern \"C\" fn fz_pair(any, any) :: unit\n");
@@ -729,6 +769,7 @@ mod extern_parse_tests {
         assert!(!d.extern_ret_tokens.0.is_empty());
     }
 
+    // DROP: extern FFI variadic `...` marker, no compiler2 analogue yet
     #[test]
     fn extern_fn_variadic_marker() {
         let d = parse_extern("extern \"C\" fn libc::open(path :: cstring, flags :: integer, ...) :: integer\n");
@@ -739,6 +780,7 @@ mod extern_parse_tests {
         assert!(d.variadic);
     }
 
+    // DROP: extern FFI complex param shapes and type constraints, no compiler2 analogue yet
     #[test]
     fn extern_fn_preserves_param_shapes_and_constraints() {
         let d = parse_extern(
@@ -756,6 +798,7 @@ mod extern_parse_tests {
         );
     }
 
+    // DROP: extern FFI rejects non-final `...`, no compiler2 analogue yet
     #[test]
     fn extern_fn_variadic_marker_must_be_final() {
         let toks = Lexer::with_source_name("extern \"C\" fn bad(integer, ..., integer) :: integer\n", "<test>")
@@ -767,6 +810,7 @@ mod extern_parse_tests {
         assert!(err.msg.contains("must be the final parameter"), "{err:?}");
     }
 
+    // DROP: type ascription on call arg preserved in AST, pure parse structure
     #[test]
     fn call_arg_ascription_is_preserved() {
         let toks = Lexer::with_source_name("fn main(), do: libc::open(path, flags, mode :: integer)\n", "<test>")
@@ -795,6 +839,7 @@ mod telemetry_tests {
     use super::*;
     use crate::parser::lexer::Lexer;
 
+    // DROP: parser telemetry span and item count, infrastructure
     #[test]
     fn telemetry_emits_pass_span_and_item_count() {
         use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind, Value};
@@ -821,6 +866,7 @@ mod telemetry_tests {
         }
     }
 
+    // DROP: parser telemetry span_id inheritance, infrastructure
     #[test]
     fn telemetry_user_event_inherits_span_id() {
         use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind};
@@ -845,6 +891,7 @@ mod telemetry_tests {
         assert!(start.span_id > 0);
     }
 
+    // DROP: null telemetry no-op, pure infrastructure
     #[test]
     fn null_telemetry_is_a_silent_no_op() {
         let toks = Lexer::with_source_name("fn main(), do: :ok", "<test>")
@@ -878,6 +925,7 @@ mod elixir_operator_precedence_tests {
         }
     }
 
+    // PICK: `++`, `--`, `<>`, `..`, `in`, `not in` map to correct BinOps
     #[test]
     fn new_operators_parse_to_their_binops() {
         assert!(matches!(
@@ -906,6 +954,7 @@ mod elixir_operator_precedence_tests {
         ));
     }
 
+    // PICK: `++` list concat is right-associative
     #[test]
     fn concat_is_right_associative() {
         // a ++ b ++ c  =>  a ++ (b ++ c)
@@ -917,6 +966,7 @@ mod elixir_operator_precedence_tests {
         );
     }
 
+    // PICK: arithmetic binds tighter than list concat
     #[test]
     fn arithmetic_binds_tighter_than_concat() {
         // a ++ b + c  =>  a ++ (b + c)
@@ -925,6 +975,7 @@ mod elixir_operator_precedence_tests {
         assert!(matches!(rhs, Expr::BinOp(Add, _, _)));
     }
 
+    // PICK: `1..10//2` stepped range precedence — range then step
     #[test]
     fn stepped_range_groups_as_range_then_step() {
         // 1..10//2  =>  (1..10) // 2
@@ -933,6 +984,7 @@ mod elixir_operator_precedence_tests {
         assert!(matches!(lhs, Expr::BinOp(Range, _, _)));
     }
 
+    // PICK: unary negation binds tighter than multiplication
     #[test]
     fn unary_binds_tighter_than_multiplication() {
         // -a * b  =>  (-a) * b
@@ -941,6 +993,7 @@ mod elixir_operator_precedence_tests {
         assert!(matches!(lhs, Expr::UnOp(Neg, _)));
     }
 
+    // PICK: `not x` prefix keyword parses as UnOp::Not
     #[test]
     fn prefix_not_parses_as_unop_not() {
         assert!(matches!(
@@ -949,6 +1002,7 @@ mod elixir_operator_precedence_tests {
         ));
     }
 
+    // PICK: pipe `|>` binds tighter than equality comparison
     #[test]
     fn pipe_binds_tighter_than_comparison() {
         // a |> f() == b  =>  (a |> f()) == b
@@ -957,6 +1011,7 @@ mod elixir_operator_precedence_tests {
         assert!(matches!(lhs, Expr::BinOp(Pipe, _, _)));
     }
 
+    // PICK: `in` membership binds looser than arithmetic
     #[test]
     fn membership_is_looser_than_arithmetic() {
         // 1 + 2 in xs  =>  (1 + 2) in xs
@@ -993,6 +1048,7 @@ mod no_parens_call_tests {
         }
     }
 
+    // DROP: no-parens call single argument, pure parse structure
     #[test]
     fn single_arg() {
         let (c, args) = call("foo a", &crate::telemetry::ConfiguredTelemetry::new());
@@ -1001,6 +1057,7 @@ mod no_parens_call_tests {
         assert_eq!(var(&args[0]), "a");
     }
 
+    // DROP: no-parens call multiple arguments, pure parse structure
     #[test]
     fn many_args() {
         let (c, args) = call("foo a, b, c", &crate::telemetry::ConfiguredTelemetry::new());
@@ -1008,6 +1065,7 @@ mod no_parens_call_tests {
         assert_eq!(args.len(), 3);
     }
 
+    // DROP: no-parens call arg is a full expression, pure parse structure
     #[test]
     fn arg_is_a_full_expression() {
         // foo a + b  =>  foo(a + b)
@@ -1016,6 +1074,7 @@ mod no_parens_call_tests {
         assert!(matches!(args[0], Expr::BinOp(Add, _, _)));
     }
 
+    // DROP: nested no-parens calls grab greedy argument span, pure parse structure
     #[test]
     fn nested_call_grabs_all_args() {
         // f g a, b  =>  f(g(a, b))
@@ -1029,6 +1088,7 @@ mod no_parens_call_tests {
         assert_eq!(inner_args.len(), 2, "inner call grabbed both args");
     }
 
+    // DROP: no-parens outer arg then nested call, pure parse structure
     #[test]
     fn arg_then_nested_call() {
         // f a, g b  =>  f(a, g(b))
@@ -1038,6 +1098,7 @@ mod no_parens_call_tests {
         assert!(matches!(&args[1], Expr::Call(_, a) if a.len() == 1));
     }
 
+    // DROP: no-parens call in operand position inside binop, pure parse structure
     #[test]
     fn recognized_in_operand_position() {
         // 1 + foo a  =>  1 + foo(a)
@@ -1048,6 +1109,7 @@ mod no_parens_call_tests {
                 if matches!(&c.node, Expr::Var(n) if n == "foo") && a.len() == 1));
     }
 
+    // DROP: spacing disambiguates unary vs binary in no-parens call, pure parse structure
     #[test]
     fn dual_op_spacing_selects_unary_argument() {
         // foo -1  =>  foo(-1)  (unary, because space before `-`, none after)
@@ -1062,6 +1124,7 @@ mod no_parens_call_tests {
         ));
     }
 
+    // DROP: module-qualified no-parens call head shape, pure parse structure
     #[test]
     fn module_qualified_head() {
         // Enum.map xs, f  =>  (Enum.map)(xs, f)
@@ -1070,6 +1133,7 @@ mod no_parens_call_tests {
         assert_eq!(args.len(), 2);
     }
 
+    // DROP: comma inside container limits no-parens call arg span, pure parse structure
     #[test]
     fn container_keeps_its_comma() {
         // [foo a, b]  =>  [foo(a), b]: the comma belongs to the list, so the
@@ -1083,6 +1147,7 @@ mod no_parens_call_tests {
         assert_eq!(var(&items[1].node), "b");
     }
 
+    // DROP: bare variable without args is not a call, pure parse structure
     #[test]
     fn bare_var_is_not_a_call() {
         assert!(matches!(
@@ -1095,6 +1160,7 @@ mod no_parens_call_tests {
         ));
     }
 
+    // DROP: parenthesized call unaffected by no-parens rules, pure parse structure
     #[test]
     fn paren_call_unaffected() {
         let (c, args) = call("foo(a, b)", &crate::telemetry::ConfiguredTelemetry::new());
@@ -1120,6 +1186,7 @@ mod no_parens_call_tests {
             .collect()
     }
 
+    // DROP: trailing keyword in no-parens call becomes one list arg, pure parse structure
     #[test]
     fn trailing_keyword_collapses_into_one_list() {
         // foo a, b: 1  =>  foo(a, [b: 1])
@@ -1130,6 +1197,7 @@ mod no_parens_call_tests {
         assert_eq!(kw_keys(&args[1]), vec!["b"]);
     }
 
+    // DROP: multiple trailing keywords stay in one list arg, pure parse structure
     #[test]
     fn many_trailing_keywords_stay_in_one_list() {
         // foo a, b: 1, c: 2  =>  foo(a, [b: 1, c: 2])
@@ -1138,6 +1206,7 @@ mod no_parens_call_tests {
         assert_eq!(kw_keys(&args[1]), vec!["b", "c"]);
     }
 
+    // DROP: leading keyword in no-parens call is a lone list arg, pure parse structure
     #[test]
     fn leading_keyword_is_a_lone_list() {
         // foo b: 1  =>  foo([b: 1])
@@ -1147,6 +1216,7 @@ mod no_parens_call_tests {
         assert_eq!(kw_keys(&args[0]), vec!["b"]);
     }
 
+    // DROP: nested no-parens call captures trailing keywords, pure parse structure
     #[test]
     fn nested_call_grabs_trailing_keywords() {
         // f g a, b: 1  =>  f(g(a, [b: 1]))
@@ -1188,24 +1258,28 @@ mod no_parens_keyword_ambiguity_tests {
         capture.count(WARNING)
     }
 
+    // DROP: ambiguous no-parens keyword value emits diagnostic warning, infrastructure
     #[test]
     fn no_parens_value_before_keyword_warns() {
         // foo a, b: bar x, c: 2 — `bar x` is a no-parens call, `c: 2` follows.
         assert_eq!(warnings_for("foo a, b: bar x, c: 2"), 1);
     }
 
+    // DROP: parenthesized keyword value emits no warning, infrastructure
     #[test]
     fn parenthesized_value_is_unambiguous() {
         // bar(x) has explicit parens — no ambiguity, no warning.
         assert_eq!(warnings_for("foo a, b: bar(x), c: 2"), 0);
     }
 
+    // DROP: no trailing keyword means no ambiguity warning, infrastructure
     #[test]
     fn no_trailing_keyword_is_unambiguous() {
         // bar x is the last entry; nothing could bind past it.
         assert_eq!(warnings_for("foo a, b: bar x"), 0);
     }
 
+    // DROP: literal keyword value emits no ambiguity warning, infrastructure
     #[test]
     fn literal_value_before_keyword_does_not_warn() {
         // foo a, b: 1, c: 2 — the value is a literal, not a no-parens call.
@@ -1238,6 +1312,7 @@ mod lambda_tests {
         }
     }
 
+    // PICK: single-clause unguarded lambda is directly callable
     #[test]
     fn single_clause_fn_is_one_clause() {
         let Expr::Lambda(clauses) = body(
@@ -1253,6 +1328,7 @@ mod lambda_tests {
         assert!(lambda_direct_clause(&clauses).is_some());
     }
 
+    // DROP: parenthesized lambda params, pure parse structure
     #[test]
     fn parenthesized_params_parse() {
         let Expr::Lambda(clauses) = body(
@@ -1265,6 +1341,7 @@ mod lambda_tests {
         assert_eq!(clauses[0].params.len(), 2);
     }
 
+    // PICK: multi-clause lambda collects all clauses and is not directly callable
     #[test]
     fn multi_clause_fn_collects_every_clause() {
         let Expr::Lambda(clauses) = body(
@@ -1278,6 +1355,7 @@ mod lambda_tests {
         assert!(lambda_direct_clause(&clauses).is_none());
     }
 
+    // PICK: guarded lambda clause carries the when-guard, not directly callable
     #[test]
     fn guard_is_captured_on_the_clause() {
         let Expr::Lambda(clauses) = body(
@@ -1292,6 +1370,7 @@ mod lambda_tests {
         assert!(lambda_direct_clause(&clauses).is_none());
     }
 
+    // PICK: single guarded clause is not directly callable — needs desugar
     #[test]
     fn single_guarded_clause_is_not_direct() {
         let Expr::Lambda(clauses) = body(
@@ -1305,6 +1384,7 @@ mod lambda_tests {
         assert!(lambda_direct_clause(&clauses).is_none());
     }
 
+    // DROP: lambda without `end` is a parse error, parser error recovery
     #[test]
     fn missing_end_is_a_parse_error() {
         // Without `end`, the lambda swallows the enclosing `end`; the fn item
@@ -1319,6 +1399,7 @@ mod lambda_tests {
         );
     }
 
+    // DROP: lambda in do-shorthand body must have its own `end`, parse boundary
     #[test]
     fn do_shorthand_lambda_body_needs_end_before_next_item() {
         // `fn make(), do: fn x -> x end` is the lambda as a `do:` body. The
@@ -1337,6 +1418,7 @@ mod lambda_tests {
         assert_eq!(clauses.len(), 1, "lambda must not absorb the next item");
     }
 
+    // DROP: lambda in do-shorthand without `end` is a parse error, parser error recovery
     #[test]
     fn do_shorthand_lambda_without_end_is_a_parse_error() {
         // Drop the `end`: the lambda runs past the newline into `fn main`,
@@ -1369,12 +1451,14 @@ mod capture_tests {
         Parser::new(toks).parse_expr_eof().unwrap().node
     }
 
+    // PICK: `&1`, `&3` positional placeholders parse as CaptureArg
     #[test]
     fn placeholder_parses_to_capture_arg() {
         assert!(matches!(expr("&1"), Expr::CaptureArg(1)));
         assert!(matches!(expr("&3"), Expr::CaptureArg(3)));
     }
 
+    // PICK: `&(expr)` capture wraps body expression with placeholder
     #[test]
     fn capture_expr_wraps_its_body() {
         // &(&1 + 1) => Capture(BinOp(Add, CaptureArg(1), Int(1)))
@@ -1388,6 +1472,7 @@ mod capture_tests {
         assert!(matches!(rhs.node, Expr::Int(1)));
     }
 
+    // PICK: capture expression with multiple positional placeholders
     #[test]
     fn capture_expr_holds_multiple_placeholders() {
         let Expr::Capture(body) = expr("&(&1 + &2)") else {
@@ -1400,6 +1485,7 @@ mod capture_tests {
         assert!(matches!(rhs.node, Expr::CaptureArg(2)));
     }
 
+    // PICK: `&foo/1` still produces FnRef, not Capture
     #[test]
     fn fn_reference_still_parses_to_fnref() {
         assert!(matches!(expr("&foo/1"), Expr::FnRef { arity: 1, .. }));
@@ -1410,6 +1496,7 @@ mod capture_tests {
         assert_eq!(arity, 2);
     }
 
+    // PICK: capture expression passed as argument in a function call
     #[test]
     fn capture_appears_as_a_call_argument() {
         // Enum.map(xs, &(&1 * 2)) — the capture rides in as the last arg.
@@ -1420,6 +1507,7 @@ mod capture_tests {
         assert!(matches!(args[1].node, Expr::Capture(_)));
     }
 
+    // PICK: anonymous function call uses `fun.(args)` dot-call syntax
     #[test]
     fn anonymous_function_call_uses_dot_parens() {
         let Expr::ClosureCall(callee, args) = expr("fun.(1, 2)") else {
@@ -1429,6 +1517,7 @@ mod capture_tests {
         assert_eq!(args.len(), 2);
     }
 
+    // DROP: named call vs local variable disambiguation, pure parse structure
     #[test]
     fn bare_call_stays_named_call_even_when_target_name_looks_like_a_local() {
         let Expr::Call(callee, args) = expr("count(1)") else {

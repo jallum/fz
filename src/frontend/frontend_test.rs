@@ -13,6 +13,7 @@ fn compile_source(src: String, source_name: String, tel: &dyn Telemetry) -> Fron
     compile_source_with_types(&mut t, src, source_name, tel)
 }
 
+// PICK: inexhaustive pattern match produces no-matching-clause warning
 #[test]
 fn returns_warning_diagnostics_without_rendering() {
     let src = "\
@@ -36,6 +37,7 @@ fn main(), do: classify(7)
     );
 }
 
+// DROP: parse error diagnostic infrastructure, no language behaviour
 #[test]
 fn returns_error_diagnostics_without_rendering() {
     let err = match compile_source(
@@ -101,6 +103,7 @@ impl Handler for StructuralHandler {
     }
 }
 
+// DROP: old-world planner telemetry artifacts, no compiler2 analogue
 #[test]
 fn structural_telemetry_exposes_compiler_artifacts_to_handlers() {
     let tel = ConfiguredTelemetry::new();
@@ -142,6 +145,7 @@ fn parse_expr_with_source_map(src: &str, source_name: &str, tel: &dyn Telemetry)
     (expr, sm)
 }
 
+// DROP: old-world pipeline plumbing, not a language behaviour
 #[test]
 fn compile_program_with_types_compiles_parsed_program() {
     let src = "fn id(x), do: x\nfn main(), do: id(41)\n";
@@ -154,6 +158,7 @@ fn compile_program_with_types_compiles_parsed_program() {
     assert!(out.module.fn_by_name("main").is_some());
 }
 
+// DROP: old-world pipeline equivalence check, not a language behaviour
 #[test]
 fn compile_program_with_types_matches_source_pipeline() {
     let src = "fn add(a, b), do: a + b\nfn main(), do: add(20, 22)\n";
@@ -176,6 +181,7 @@ fn compile_program_with_types_matches_source_pipeline() {
     assert_eq!(parsed_out.diagnostics.len(), source_out.diagnostics.len());
 }
 
+// PICK: unbound name in expression is a compile-time error
 #[test]
 fn compile_program_with_types_preserves_diagnostics() {
     let src = "fn main(), do: missing + 1\n";
@@ -188,6 +194,7 @@ fn compile_program_with_types_preserves_diagnostics() {
     assert!(err.diagnostics.as_slice().iter().any(|d| d.severity == Severity::Error));
 }
 
+// PICK: cross-module import from external interface resolves call edges
 #[test]
 fn compile_source_accepts_loaded_interfaces_without_provider_body() {
     let mut t = crate::types::new();
@@ -242,6 +249,7 @@ end
     );
 }
 
+// DROP: old-world pipeline equivalence for macros, not a language behaviour
 #[test]
 fn compile_program_with_types_preserves_macro_expansion() {
     let src = r#"
@@ -269,6 +277,7 @@ fn main(), do: inc(41)
     assert!(parsed_out.module.fn_by_name("main").is_some());
 }
 
+// DROP: REPL session mechanics, no compiler2 surface
 #[test]
 fn compile_repl_expr_returns_entry_and_frame_layout_for_plain_expression() {
     let (expr, sm) = parse_expr_with_source_map("x + 1", "repl.fz", &crate::telemetry::ConfiguredTelemetry::new());
@@ -291,6 +300,7 @@ fn compile_repl_expr_returns_entry_and_frame_layout_for_plain_expression() {
     assert_eq!(entry.category, FnCategory::ReplEntry);
 }
 
+// DROP: REPL session frame layout, no compiler2 surface
 #[test]
 fn compile_repl_expr_extends_frame_for_simple_and_destructuring_bindings() {
     let cases = [
@@ -322,6 +332,7 @@ fn compile_repl_expr_extends_frame_for_simple_and_destructuring_bindings() {
     }
 }
 
+// DROP: REPL session state and old-world IR Term::Halt, no compiler2 analogue
 #[test]
 fn compile_repl_expr_lowers_match_failure_path() {
     let (expr, sm) = parse_expr_with_source_map(

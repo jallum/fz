@@ -34,6 +34,7 @@ fn lower_src_err(src: &str, tel: &dyn Telemetry) -> LowerError {
     lower_program(&mut crate::types::new(), &prog, tel).expect_err("expected lower error")
 }
 
+// DROP: old-world IR opaque-tuple shape, no compiler2 analogue
 #[test]
 fn struct_record_type_registers_opaque_underlying_tuple_in_schema_order() {
     let (mut ct, m) = lower_flat_src(
@@ -127,6 +128,7 @@ fn first_make_fn_ref(f: &FnIr) -> FnId {
         .expect("expected fn ref construction")
 }
 
+// DROP: old-world IR node shape, no compiler2 analogue
 #[test]
 fn lower_const_int_returns_in_entry_block() {
     let m = lower_src("fn f() do 42 end", &crate::telemetry::ConfiguredTelemetry::new());
@@ -135,6 +137,7 @@ fn lower_const_int_returns_in_entry_block() {
     assert!(s.contains("return v"), "{}", s);
 }
 
+// DROP: old-world IR node shape, no compiler2 analogue
 #[test]
 fn lower_var_lookup() {
     let m = lower_src("fn id(x), do: x", &crate::telemetry::ConfiguredTelemetry::new());
@@ -142,6 +145,7 @@ fn lower_var_lookup() {
     assert!(s.contains("return v0"), "got:\n{}", s);
 }
 
+// DROP: old-world IR node shape, no compiler2 analogue
 #[test]
 fn lower_binop_add() {
     let m = lower_src("fn add1(x), do: x + 1", &crate::telemetry::ConfiguredTelemetry::new());
@@ -150,6 +154,7 @@ fn lower_binop_add() {
     assert!(s.contains(" + "), "{}", s);
 }
 
+// DROP: old-world IR node shape, no compiler2 analogue
 #[test]
 fn lower_unop_neg() {
     let m = lower_src("fn neg(x), do: -x", &crate::telemetry::ConfiguredTelemetry::new());
@@ -157,6 +162,7 @@ fn lower_unop_neg() {
     assert!(s.contains("- v0"));
 }
 
+// DROP: old-world IR CPS shape, not language behaviour
 #[test]
 fn lower_tail_call_uses_tail_call() {
     let m = lower_src(
@@ -167,6 +173,7 @@ fn lower_tail_call_uses_tail_call() {
     assert!(s.contains("tail_call"), "got:\n{}", s);
 }
 
+// DROP: old-world CPS continuation shape, no compiler2 analogue
 #[test]
 fn lower_nontail_call_splits_into_continuation() {
     let m = lower_src(
@@ -185,6 +192,7 @@ fn lower_nontail_call_splits_into_continuation() {
     );
 }
 
+// DROP: old-world CPS capture-pruning telemetry, no compiler2 analogue
 #[test]
 fn lower_program_returns_normalized_call_continuation_captures() {
     let (m, cap) = lower_src_with_capture(
@@ -235,6 +243,7 @@ fn lower_program_returns_normalized_call_continuation_captures() {
     );
 }
 
+// DROP: old-world IR declared_specs table, no compiler2 analogue
 #[test]
 fn lower_records_declared_spec_overload_set() {
     let m = lower_src(
@@ -248,6 +257,7 @@ fn lower_records_declared_spec_overload_set() {
     assert_eq!(specs.arrows.len(), 2);
 }
 
+// DROP: old-world structural correspondence table, no compiler2 analogue
 #[test]
 fn lower_records_source_function_correspondence() {
     let m = lower_src(
@@ -277,6 +287,7 @@ fn lower_records_source_function_correspondence() {
     );
 }
 
+// DROP: old-world continuation correspondence table, no compiler2 analogue
 #[test]
 fn lower_synthesizes_direct_call_continuation_correspondence() {
     let m = lower_src(
@@ -323,6 +334,7 @@ fn lower_synthesizes_direct_call_continuation_correspondence() {
     );
 }
 
+// DROP: old-world CPS continuation provenance table, no compiler2 analogue
 #[test]
 fn lower_persists_direct_call_continuation_provenance() {
     let m = lower_src(
@@ -359,6 +371,7 @@ fn lower_persists_direct_call_continuation_provenance() {
     );
 }
 
+// DROP: old-world continuation correspondence table, no compiler2 analogue
 #[test]
 fn lower_synthesizes_closure_call_continuation_correspondence() {
     let m = lower_src(
@@ -410,6 +423,7 @@ fn lower_synthesizes_closure_call_continuation_correspondence() {
     );
 }
 
+// DROP: old-world matcher-body provenance table, no compiler2 analogue
 #[test]
 fn lower_persists_matcher_body_continuation_provenance() {
     let m = lower_src(
@@ -438,6 +452,7 @@ fn lower_persists_matcher_body_continuation_provenance() {
     }
 }
 
+// DROP: old-world CPS if-arm IR shape, not language behaviour
 #[test]
 fn lower_if_uses_continuation_fns() {
     // fz-duq.2 — `if` lowers to: outer fn with Term::If + per-arm
@@ -460,6 +475,7 @@ fn lower_if_uses_continuation_fns() {
     );
 }
 
+// PICK: if with constant condition routes to correct branch
 #[test]
 fn fz_84m_repro_a_prints_99() {
     // fz-84m repro A — constant cond + non-tail call in if-arm.
@@ -475,6 +491,7 @@ fn fz_84m_repro_a_prints_99() {
     assert_eq!(out, "99");
 }
 
+// PICK: if arm with tail call returns correct value at runtime
 #[test]
 fn fz_84m_repro_b_prints_7_then_99() {
     // fz-84m repro B — tail-call in if-arm + per-callsite narrowing.
@@ -490,6 +507,7 @@ fn fz_84m_repro_b_prints_7_then_99() {
     assert_eq!(out, "7\n99");
 }
 
+// DROP: old-world CPS case-clause IR shape, not language behaviour
 #[test]
 fn lower_case_uses_per_clause_cont_fns() {
     // fz-duq.3 — `case` lowers each clause body into its own cont fn
@@ -515,6 +533,7 @@ fn lower_case_uses_per_clause_cont_fns() {
     );
 }
 
+// DROP: old-world CPS cond-arm IR shape, not language behaviour
 #[test]
 fn lower_cond_uses_per_arm_cont_fns() {
     // fz-duq.4 — cond arms each lower into their own cont fn so that
@@ -535,6 +554,7 @@ fn lower_cond_uses_per_arm_cont_fns() {
     assert!(s.contains("cond_fail"), "expected fail cont: {}", s);
 }
 
+// DROP: old-world CPS with-else IR shape, not language behaviour
 #[test]
 fn lower_with_uses_continuation_fns() {
     // fz-duq.4 — `with`'s mismatch funnel becomes a continuation fn
@@ -554,6 +574,7 @@ fn lower_with_uses_continuation_fns() {
     assert!(s.contains("with_else_0"), "expected else clause cont: {}", s);
 }
 
+// PICK: case clause with non-tail call compiles without error
 #[test]
 fn lower_case_with_call_in_clause_no_panic() {
     // case body with a call (was silently broken via Bug 2 — same
@@ -574,6 +595,7 @@ fn lower_case_with_call_in_clause_no_panic() {
     );
 }
 
+// PICK: with-else routes non-matching pattern to else clause at runtime
 #[test]
 fn fz_ben_tuple_pattern_typetest_routes_non_tuple_to_else() {
     // fz-ben — `{:ok, x}` pattern on `:err` (a non-tuple). Pre-fix,
@@ -594,6 +616,7 @@ fn fz_ben_tuple_pattern_typetest_routes_non_tuple_to_else() {
     assert_eq!(out, "0");
 }
 
+// PICK: if with comparison condition routes both arms correctly
 #[test]
 fn fz_84m_repro_c_prints_7_then_99_no_narrowing() {
     // fz-84m repro C — same bug shape as B but with `n > 0` rather
@@ -608,6 +631,7 @@ fn fz_84m_repro_c_prints_7_then_99_no_narrowing() {
     assert_eq!(out, "7\n99");
 }
 
+// DROP: old-world CPS if-join IR shape, not language behaviour
 #[test]
 fn lower_if_nontail_uses_join_fn() {
     // Non-tail if (used as call argument): all three cont fns minted.
@@ -622,6 +646,7 @@ fn lower_if_nontail_uses_join_fn() {
     assert!(s.contains("if_join"), "expected join fn for non-tail: {}", s);
 }
 
+// PICK: non-tail if with call arm; result flows into enclosing expression
 #[test]
 fn non_tail_if_call_arm_flows_through_join() {
     // The branch body is not final tail position when the if has a join.
@@ -641,6 +666,7 @@ fn non_tail_if_call_arm_flows_through_join() {
     assert_eq!(out, "[100, 2, 300, 4]");
 }
 
+// PICK: non-tail case with call arm; result flows into enclosing expression
 #[test]
 fn non_tail_case_call_arm_flows_through_join() {
     let out = run_and_capture(
@@ -657,6 +683,7 @@ fn non_tail_case_call_arm_flows_through_join() {
     assert_eq!(out, "[1]");
 }
 
+// PICK: non-tail cond with call arm; result flows into enclosing expression
 #[test]
 fn non_tail_cond_call_arm_flows_through_join() {
     let out = run_and_capture(
@@ -673,6 +700,7 @@ fn non_tail_cond_call_arm_flows_through_join() {
     assert_eq!(out, "[1]");
 }
 
+// DROP: old-world IR node shape, no compiler2 analogue
 #[test]
 fn lower_block_evaluates_last_expr() {
     let m = lower_src(
@@ -686,6 +714,7 @@ fn lower_block_evaluates_last_expr() {
     assert!(s.contains("return v"), "{}", s);
 }
 
+// DROP: old-world IR list primitive shape, no compiler2 analogue
 #[test]
 fn lower_list_makes_list_prim() {
     let m = lower_src("fn l(), do: [1, 2]", &crate::telemetry::ConfiguredTelemetry::new());
@@ -694,6 +723,7 @@ fn lower_list_makes_list_prim() {
     assert!(!s.contains("list([] |"), "no-tail list shouldn't have | sep: {}", s);
 }
 
+// DROP: old-world IR list-with-tail primitive shape, no compiler2 analogue
 #[test]
 fn lower_list_with_tail() {
     let m = lower_src("fn l(t), do: [1 | t]", &crate::telemetry::ConfiguredTelemetry::new());
@@ -701,6 +731,7 @@ fn lower_list_with_tail() {
     assert!(s.contains("] | v0)"), "expected list with v0 (param t) tail: {}", s);
 }
 
+// DROP: old-world IR tuple primitive shape, no compiler2 analogue
 #[test]
 fn lower_tuple_makes_tuple_prim() {
     let m = lower_src("fn t(), do: {1, :ok}", &crate::telemetry::ConfiguredTelemetry::new());
@@ -708,6 +739,7 @@ fn lower_tuple_makes_tuple_prim() {
     assert!(s.contains("tuple(["), "{}", s);
 }
 
+// DROP: old-world IR tuple_field projection shape, no compiler2 analogue
 #[test]
 fn lower_tuple_pattern_projects_fields() {
     let m = lower_src("fn first({a, b}), do: a", &crate::telemetry::ConfiguredTelemetry::new());
@@ -716,6 +748,7 @@ fn lower_tuple_pattern_projects_fields() {
     assert!(s.contains("tuple_field(v0, 1)"), "got:\n{}", s);
 }
 
+// DROP: old-world IR node shape, no compiler2 analogue
 #[test]
 fn lower_match_expr_binds_var() {
     let m = lower_src(
@@ -732,6 +765,7 @@ fn lower_match_expr_binds_var() {
 /// should warn. User-authored Ifs whose dead branch the planner can
 /// prove (here: `if true do A else B` where the else is structurally
 /// unreachable) still do.
+// PICK: synthesized dispatch branches do not generate unreachable-arm warnings
 #[test]
 fn unreachable_arm_silenced_on_synthesized_ifs() {
     let m = lower_src(
@@ -763,6 +797,7 @@ fn unreachable_arm_silenced_on_synthesized_ifs() {
 /// fz-bsx.5 — the dead-binop ("always false") diagnostic is observed
 /// through the telemetry bus ([fz, diag, warning] carrying
 /// type/dead-binop), per the project's telemetry-over-stderr policy.
+// DROP: diagnostic telemetry infrastructure, not language behaviour
 #[test]
 fn dead_binop_diagnostic_observable_via_telemetry() {
     let m = lower_src(
@@ -814,6 +849,7 @@ fn generated_dead_binop_diagnostic_is_not_rendered() {
 /// for shared-body mutation. Narrow recursive list-dispatch facts stay on
 /// the individual `SpecPlan`, because folding the canonical body with them
 /// would make the body invalid for wider keys.
+// DROP: old-world planner dead_branches table, no compiler2 analogue
 #[test]
 fn dead_branches_published_for_destructure_and_recursive_list_dispatch() {
     // Irrefutable destructure on a known-2-tuple — the planner proves
@@ -859,6 +895,7 @@ fn dead_branches_published_for_destructure_and_recursive_list_dispatch() {
 /// fz-fyq.1 — every lowering path that synthesizes a `Term::If` tags it
 /// with the right `BranchOrigin`. Cover one source program that exercises
 /// each origin and assert the right set appears in the lowered module.
+// DROP: old-world BranchOrigin IR tagging, no compiler2 analogue
 #[test]
 fn branch_origin_tagged_per_lowering_path() {
     let m = lower_src(
@@ -904,6 +941,7 @@ fn branch_origin_tagged_per_lowering_path() {
     );
 }
 
+// DROP: old-world inline dispatch IR shape, no compiler2 analogue
 #[test]
 fn multi_clause_dispatch_lowers_dispatch_graph_inline() {
     // fz-puj.52.7 — multi-clause fns lower the DispatchGraph inline
@@ -920,6 +958,7 @@ fn multi_clause_dispatch_lowers_dispatch_graph_inline() {
     assert!(s.contains(":atom_"), "expected interned atom in fail block:\n{}", s);
 }
 
+// DROP: old-world IR closure/lambda primitive shape, no compiler2 analogue
 #[test]
 fn lower_lambda_creates_separate_fn_and_closure() {
     let m = lower_src(
@@ -941,6 +980,7 @@ fn lower_lambda_creates_separate_fn_and_closure() {
     );
 }
 
+// DROP: old-world MakeFnRef vs MakeClosure IR distinction, no compiler2 analogue
 #[test]
 fn lower_named_fn_ref_emits_thin_fn_ref_prim() {
     let m = lower_src(
@@ -954,6 +994,7 @@ fn lower_named_fn_ref_emits_thin_fn_ref_prim() {
     assert_eq!(count_prims_in_fn(main, |prim| matches!(prim, Prim::MakeClosure(..))), 0);
 }
 
+// DROP: old-world MakeFnRef vs MakeClosure IR distinction, no compiler2 analogue
 #[test]
 fn lower_bare_top_level_fn_value_emits_thin_fn_ref_prim() {
     let m = lower_src(
@@ -967,6 +1008,7 @@ fn lower_bare_top_level_fn_value_emits_thin_fn_ref_prim() {
     assert_eq!(count_prims_in_fn(main, |prim| matches!(prim, Prim::MakeClosure(..))), 0);
 }
 
+// PICK: closure captures only variables referenced in its body
 #[test]
 fn lower_lambda_captures_only_referenced_outer_names() {
     let m = lower_src(
@@ -990,6 +1032,7 @@ fn lower_lambda_captures_only_referenced_outer_names() {
     );
 }
 
+// PICK: closure with no outer references has no captured variables
 #[test]
 fn lower_lambda_with_no_outer_reads_has_no_captures() {
     let m = lower_src(
@@ -1017,6 +1060,7 @@ fn lower_lambda_with_no_outer_reads_has_no_captures() {
 /// `fz_dbg_value(any)` extern. It must not create a call edge to the
 /// polymorphic runtime-library wrapper, or the planner specializes the
 /// wrapper and its trivial continuations once per concrete argument type.
+// DROP: old-world IR extern intrinsic lowering shape, no compiler2 analogue
 #[test]
 fn dbg_call_lowers_to_identity_extern_intrinsic() {
     let m = lower_src("fn p(), do: dbg(1)", &crate::telemetry::ConfiguredTelemetry::new());
@@ -1051,6 +1095,7 @@ fn dbg_call_lowers_to_identity_extern_intrinsic() {
 /// Function references still target the runtime-library wrapper, because a
 /// named callable needs a stable `FnId`; only direct source calls are
 /// intrinsic-lowered.
+// DROP: old-world IR prelude wrapper routing, no compiler2 analogue
 #[test]
 fn dbg_function_reference_routes_through_runtime_fz_wrapper() {
     let m = lower_src("fn p(), do: &dbg/1", &crate::telemetry::ConfiguredTelemetry::new());
@@ -1067,6 +1112,7 @@ fn dbg_function_reference_routes_through_runtime_fz_wrapper() {
 
 /// `spawn(x)` routes through the runtime.fz prelude import to
 /// `Kernel.spawn/1`, whose implementation owns the raw extern.
+// DROP: old-world IR spawn routing shape, no compiler2 analogue
 #[test]
 fn spawn_callsite_routes_through_runtime_fz_wrapper() {
     let m = lower_src(
@@ -1098,6 +1144,7 @@ fn spawn_callsite_routes_through_runtime_fz_wrapper() {
     );
 }
 
+// DROP: old-world IR extern boundary span metadata, no compiler2 analogue
 #[test]
 fn spawn_wrapper_extern_keeps_intrinsic_boundary_identity() {
     let m = lower_src(
@@ -1127,6 +1174,7 @@ fn spawn_wrapper_extern_keeps_intrinsic_boundary_identity() {
     );
 }
 
+// PICK: receive inside spawned lambda does not leak into enclosing function
 #[test]
 fn lambda_tail_receive_does_not_terminate_enclosing_spawn_call() {
     let m = lower_src(
@@ -1154,6 +1202,7 @@ fn lambda_tail_receive_does_not_terminate_enclosing_spawn_call() {
 }
 
 /// `spawn/2` follows the same prelude-import path as `spawn/1`.
+// DROP: old-world IR spawn/2 routing shape, no compiler2 analogue
 #[test]
 fn spawn2_routes_through_runtime_fz_wrapper() {
     let m = lower_src(
@@ -1185,6 +1234,7 @@ fn spawn2_routes_through_runtime_fz_wrapper() {
 }
 
 /// The lowerer no longer synthesizes fz_spawn_thunk for any program.
+// DROP: old-world IR spawn thunk artifact, no compiler2 analogue
 #[test]
 fn spawn_free_program_has_no_compiler_spawn_thunk() {
     let m = lower_src("fn p(), do: 0", &crate::telemetry::ConfiguredTelemetry::new());
@@ -1194,6 +1244,7 @@ fn spawn_free_program_has_no_compiler_spawn_thunk() {
     );
 }
 
+// PICK: unbound variable reference is a compile-time error
 #[test]
 fn unbound_var_returns_lower_error() {
     let err = lower_src_err("fn f(), do: missing", &crate::telemetry::ConfiguredTelemetry::new());
@@ -1202,6 +1253,7 @@ fn unbound_var_returns_lower_error() {
 
 /// .21 step 3: lower errors carry a real Span of the offending node,
 /// not Span::DUMMY.
+// DROP: diagnostic span metadata infrastructure, not language behaviour
 #[test]
 fn unbound_var_diag_has_real_span() {
     let err = lower_src_err("fn f(), do: missing", &crate::telemetry::ConfiguredTelemetry::new());
@@ -1214,12 +1266,14 @@ fn unbound_var_diag_has_real_span() {
     assert_eq!(d.code, codes::LOWER_UNBOUND);
 }
 
+// PICK: call to undefined function is a compile-time error
 #[test]
 fn unbound_callee_returns_lower_error() {
     let err = lower_src_err("fn f(), do: nonesuch(1)", &crate::telemetry::ConfiguredTelemetry::new());
     assert!(matches!(err, LowerError::Unbound { .. }));
 }
 
+// PICK: empty case expression is a compile-time error
 #[test]
 fn empty_case_returns_unsupported() {
     let err = lower_src_err(
@@ -1229,6 +1283,7 @@ fn empty_case_returns_unsupported() {
     assert!(matches!(err, LowerError::Unsupported { .. }));
 }
 
+// DROP: old-world IR map primitive shape, no compiler2 analogue
 #[test]
 fn map_lowers_to_make_map() {
     let m = lower_src("fn m(), do: %{k: 1}", &crate::telemetry::ConfiguredTelemetry::new());
@@ -1236,6 +1291,7 @@ fn map_lowers_to_make_map() {
     assert!(s.contains("map({"), "got:\n{}", s);
 }
 
+// DROP: old-world IR map_update primitive shape, no compiler2 analogue
 #[test]
 fn map_update_lowers() {
     let m = lower_src(
@@ -1246,6 +1302,7 @@ fn map_update_lowers() {
     assert!(s.contains("map_update("), "got:\n{}", s);
 }
 
+// DROP: old-world IR map_get primitive shape, no compiler2 analogue
 #[test]
 fn index_lowers_to_map_get() {
     let m = lower_src("fn g(m), do: m[:k]", &crate::telemetry::ConfiguredTelemetry::new());
@@ -1253,6 +1310,7 @@ fn index_lowers_to_map_get() {
     assert!(s.contains("map_get("), "got:\n{}", s);
 }
 
+// DROP: old-world IR bitstring primitive shape, no compiler2 analogue
 #[test]
 fn bitstring_expr_lowers() {
     let m = lower_src("fn b(), do: << 0xA5 >>", &crate::telemetry::ConfiguredTelemetry::new());
@@ -1260,6 +1318,7 @@ fn bitstring_expr_lowers() {
     assert!(s.contains("bitstring(["), "got:\n{}", s);
 }
 
+// DROP: old-world inline dispatch IR shape, no compiler2 analogue
 #[test]
 fn case_lowers_dispatch_graph_inline() {
     // fz-puj.52.7 — case sites lower the DispatchGraph inline so the
@@ -1285,6 +1344,7 @@ end
     assert!(s.contains("tail_call"), "expected tail_call to clause cont fns: {}", s);
 }
 
+// DROP: old-world IR If terminator shape for cond, no compiler2 analogue
 #[test]
 fn cond_lowers() {
     // cond is parsed; lowering should emit If terminators.
@@ -1303,6 +1363,7 @@ end
     assert!(s.contains("if v"), "got:\n{}", s);
 }
 
+// DROP: old-world IR with/tuple_field projection shape, no compiler2 analogue
 #[test]
 fn with_simple_lowers() {
     let m = lower_src(
@@ -1317,6 +1378,7 @@ end
     assert!(s.contains("tuple_field"), "expected pattern projection: {}", s);
 }
 
+// DROP: old-world IR map_get pattern check shape, no compiler2 analogue
 #[test]
 fn map_pattern_uses_map_get_check() {
     let m = lower_src(
@@ -1327,6 +1389,7 @@ fn map_pattern_uses_map_get_check() {
     assert!(s.contains("map_get("), "got:\n{}", s);
 }
 
+// PICK: guard and binding share a single tuple field projection, not two
 #[test]
 fn inline_dispatch_reuses_tuple_subject_across_test_guard_and_binding() {
     let m = lower_src(
@@ -1349,6 +1412,7 @@ fn inline_dispatch_reuses_tuple_subject_across_test_guard_and_binding() {
     );
 }
 
+// PICK: guard and binding share a single list head extraction, not two
 #[test]
 fn inline_dispatch_reuses_list_head_across_guard_and_binding() {
     let m = lower_src(
@@ -1371,6 +1435,7 @@ fn inline_dispatch_reuses_list_head_across_guard_and_binding() {
     );
 }
 
+// PICK: guard and binding share a single map_get extraction, not two
 #[test]
 fn inline_dispatch_reuses_map_value_across_guard_and_binding() {
     let m = lower_src(
@@ -1392,6 +1457,7 @@ fn inline_dispatch_reuses_map_value_across_guard_and_binding() {
     );
 }
 
+// DROP: old-world IR bit_reader_init/read_field/done shape, no compiler2 analogue
 #[test]
 fn bitstring_pattern_lowers_to_per_field_reads() {
     let m = lower_src("fn p(<<x::8>>), do: x", &crate::telemetry::ConfiguredTelemetry::new());
@@ -1401,6 +1467,7 @@ fn bitstring_pattern_lowers_to_per_field_reads() {
     assert!(s.contains("bit_reader_done("), "got:\n{}", s);
 }
 
+// PICK: unexpanded quote node is a compile-time error
 #[test]
 fn quote_returns_post_expansion_node() {
     // Skip macro expansion to surface the leftover-quote error path.
@@ -1410,6 +1477,7 @@ fn quote_returns_post_expansion_node() {
 
 /// Span round-trip: AST nodes parsed by the parser carry non-DUMMY spans
 /// that slice back to their source lexemes.
+// DROP: parser span infrastructure, not language behaviour
 #[test]
 fn parser_attaches_real_spans_to_expressions() {
     let src = "fn ident(x), do: x + 1";
@@ -1435,6 +1503,7 @@ fn parser_attaches_real_spans_to_expressions() {
 }
 
 /// FnDef.name_span pinpoints the source name token (not the whole def).
+// DROP: parser fn-name span infrastructure, not language behaviour
 #[test]
 fn parser_records_fn_name_span() {
     let src = "fn foobar(), do: 0";
@@ -1456,6 +1525,7 @@ fn parser_records_fn_name_span() {
 /// Pattern-bound parameters record their name + binding span in
 /// `Module.source`. The ticket's canonical test: lower a `double(x)`
 /// function and verify the param's Var → "x", span → the `x` token.
+// DROP: source-info side-table infrastructure, not language behaviour
 #[test]
 fn pattern_var_records_source_name_and_span() {
     let src = "fn double(x), do: x * 2";
@@ -1482,6 +1552,7 @@ fn pattern_var_records_source_name_and_span() {
 
 /// Every top-level fn gets its source span recorded under
 /// `fn_span[fn_id.0]`.
+// DROP: source-info fn_span side-table infrastructure, not language behaviour
 #[test]
 fn fn_span_records_def_position() {
     let src = "fn alpha(), do: 1\nfn beta(), do: 2";
@@ -1507,6 +1578,7 @@ fn fn_span_records_def_position() {
 /// originating call expression's span as their `fn_span`, so a
 /// diagnostic on the continuation can point at where the work
 /// originated in source.
+// DROP: source-info continuation span metadata, not language behaviour
 #[test]
 fn continuation_fn_span_points_at_originating_call() {
     // `callee(x) + 1` forces a non-tail Call -> CPS split.
@@ -1555,6 +1627,7 @@ fn continuation_fn_span_points_at_originating_call() {
 /// keep their source-expression span on `var_span` and an empty
 /// name on `var_name`. .20.8's diagnostic renderer uses the empty-
 /// name signal to render "this value" instead of "`<name>`".
+// DROP: source-info temp-var span metadata, not language behaviour
 #[test]
 fn temp_var_records_span_and_empty_name() {
     // `x + 1` produces a Const(1) Var whose source position is the
@@ -1592,6 +1665,7 @@ fn temp_var_records_span_and_empty_name() {
     assert_eq!(txt, "1");
 }
 
+// DROP: old-world IR back-edge flag, no compiler2 analogue
 #[test]
 fn self_recursive_fn_has_back_edge() {
     // fz-qbg.2: with multi-clause body cont fns, prelude multi-clause
@@ -1620,6 +1694,7 @@ fn self_recursive_fn_has_back_edge() {
     assert!(is_back_edge, "self-recursion must be a back-edge; callee={:?}", callee);
 }
 
+// DROP: old-world IR back-edge flag, no compiler2 analogue
 #[test]
 fn non_recursive_call_is_not_back_edge() {
     let m = lower_src(
@@ -1641,6 +1716,7 @@ fn non_recursive_call_is_not_back_edge() {
     assert!(found, "no TailCall from main");
 }
 
+// DROP: old-world module externs table layout, no compiler2 analogue
 #[test]
 fn extern_fn_registers_in_module_externs() {
     let toks = Lexer::with_source_name(
@@ -1678,6 +1754,7 @@ fn extern_fn_registers_in_module_externs() {
 
 /// fz-0cv — `binary` lowers to ExternTy::Binary; `cstring` lowers to
 /// ExternTy::CString. Both are distinct from ExternTy::Any.
+// DROP: old-world ExternTy encoding details, no compiler2 analogue
 #[test]
 fn binary_and_cstring_lower_to_distinct_extern_tys() {
     let src = "\
@@ -1713,6 +1790,7 @@ fn main() do fz_open(\"x\", 0) end
     assert_ne!(write.params[1], ExternTy::Any);
 }
 
+// DROP: old-world ExternTy resource encoding, no compiler2 analogue
 #[test]
 fn constrained_resource_extern_uses_raw_payload_and_boxed_return() {
     let src = "\
@@ -1750,6 +1828,7 @@ fn main() do fz_make_resource(42, fn (x) -> nil end) end
 /// runtime so `make_resource(_, &libc::close/1)` resolves to
 /// libc::close. The wrapper has zero captures so the AOT static dtor
 /// table accepts it.
+// DROP: old-world IR extern wrapper synthesis, no compiler2 analogue
 #[test]
 fn fn_ref_to_extern_synthesizes_wrapper() {
     let src = "\
@@ -1788,6 +1867,7 @@ fn main() do &libc::close/1 end
 /// produces an extern whose fz_name carries the `libc::` prefix while
 /// the linker-visible symbol is the bare last segment. Named-typed
 /// params (`path :: cstring`) parse identically to positional ones.
+// DROP: old-world extern fz_name/symbol split metadata, no compiler2 analogue
 #[test]
 fn extern_with_library_prefix_splits_fz_name_from_symbol() {
     let src = "\
@@ -1818,6 +1898,7 @@ fn main() do libc::open(\"x\", 0) end
 /// fz-jex — calling an extern with the wrong arg count must produce a
 /// LowerError at compile time, not a silent codegen truncation that
 /// panics at runtime in fz_unbox_int with a tag mismatch.
+// PICK: extern call with wrong argument count is a compile-time error
 #[test]
 fn extern_call_arity_mismatch_is_lower_error() {
     let src = "\
@@ -1837,6 +1918,7 @@ fn main() do libc::open(\"x\", \"x\", 0, 0) end
     }
 }
 
+// DROP: old-world ExternMarshal variadic call encoding, no compiler2 analogue
 #[test]
 fn variadic_extern_records_decl_and_call_marshal_specs() {
     let src = "\
@@ -1868,6 +1950,7 @@ fn main() do libc::open(\"x\", 0, 0o644 :: integer) end
     assert_eq!(extern_args[2].marshal, ExternMarshal::Ascribed(ExternTy::I64));
 }
 
+// DROP: old-world ExternMarshal::Auto variadic encoding, no compiler2 analogue
 #[test]
 fn variadic_extern_unascribed_extra_arg_stays_auto() {
     let src = "\
@@ -1888,6 +1971,7 @@ fn main() do libc::printf(\"%d\", 7) end
     assert_eq!(extern_args[1].marshal, ExternMarshal::Auto);
 }
 
+// PICK: variadic extern call with too few args is a compile-time error
 #[test]
 fn variadic_extern_too_few_args_is_lower_error() {
     let src = "\
@@ -1907,6 +1991,7 @@ fn main() do libc::open(\"x\") end
     }
 }
 
+// DROP: old-world extern_idx internal consistency, no compiler2 analogue
 #[test]
 fn extern_id_is_stable_and_extern_idx_is_consistent() {
     let toks = Lexer::with_source_name(
@@ -1945,6 +2030,7 @@ fn extern_id_is_stable_and_extern_idx_is_consistent() {
 /// `User`, and the well-known synthesized cont families
 /// (fn_clause_, k_, lambda_, if_, case_) map to their respective
 /// variants based on name prefix.
+// DROP: old-world FnCategory tagging plumbing, no compiler2 analogue
 #[test]
 fn fn_category_tags_match_origin() {
     // Mix user fns covering: multi-clause dispatch (-> MultiClauseCont),
@@ -2035,6 +2121,7 @@ fn parse_receive_clauses(src: &str, tel: &dyn Telemetry) -> Vec<MatchClause> {
     panic!("no receive clauses found in source");
 }
 
+// DROP: old-world receive pattern-rows builder internals, no compiler2 analogue
 #[test]
 fn build_receive_pattern_rows_one_clause_shape() {
     let clauses = parse_receive_clauses(
@@ -2050,6 +2137,7 @@ fn build_receive_pattern_rows_one_clause_shape() {
     assert_eq!(source_patterns.rows[0].body_id, 0);
 }
 
+// DROP: old-world receive pattern-rows builder internals, no compiler2 analogue
 #[test]
 fn build_receive_pattern_rows_multi_clause_preserves_order_and_ids() {
     let clauses = parse_receive_clauses(
@@ -2070,6 +2158,7 @@ fn build_receive_pattern_rows_multi_clause_preserves_order_and_ids() {
     }
 }
 
+// DROP: old-world receive pattern-rows builder internals, no compiler2 analogue
 #[test]
 fn build_receive_pattern_rows_carries_guard() {
     let clauses = parse_receive_clauses(
@@ -2088,6 +2177,7 @@ fn build_receive_pattern_rows_carries_guard() {
     assert!(source_patterns.rows[1].guard.is_none());
 }
 
+// PICK: case guard calling a user function compiles without error
 #[test]
 fn case_guard_with_pure_user_fn_inlines_and_lowers() {
     let src = "fn is_pos(n) do n > 0 end
@@ -2100,6 +2190,7 @@ fn case_guard_with_pure_user_fn_inlines_and_lowers() {
     let _ = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
 }
 
+// PICK: case guard calling multi-clause function dispatches correctly at runtime
 #[test]
 fn case_guard_with_multi_clause_user_fn_lowers_dispatch() {
     let src = "fn is_pos(0) do false end
@@ -2116,6 +2207,7 @@ fn case_guard_with_multi_clause_user_fn_lowers_dispatch() {
     );
 }
 
+// PICK: guarded list-cons pattern clause dispatches correctly at runtime
 #[test]
 fn guarded_list_cons_clause_survives_compiled_folding() {
     let src = "fn partition(_, [], lo, hi), do: {lo, hi}
@@ -2130,6 +2222,7 @@ fn guarded_list_cons_clause_survives_compiled_folding() {
 
 // ----- fz-yxs (E2) — selective receive lowering -----
 
+// DROP: old-world Term::ReceiveMatched IR shape, no compiler2 analogue
 #[test]
 fn lower_receive_one_clause_emits_receive_matched() {
     let src = "fn loop_one() do
@@ -2151,6 +2244,7 @@ fn lower_receive_one_clause_emits_receive_matched() {
     );
 }
 
+// DROP: old-world receive-after IR shape, no compiler2 analogue
 #[test]
 fn lower_receive_after_clause_emits_after_body() {
     let src = "fn rx_timeout() do
@@ -2169,6 +2263,7 @@ fn lower_receive_after_clause_emits_after_body() {
     );
 }
 
+// PICK: pinned variable in receive pattern resolves from outer scope
 #[test]
 fn lower_receive_pinned_resolves_outer_scope() {
     let src = "fn rx_pinned(want) do
@@ -2185,6 +2280,7 @@ fn lower_receive_pinned_resolves_outer_scope() {
     );
 }
 
+// PICK: pinned variable in receive pattern referencing unbound name is an error
 #[test]
 fn lower_receive_pinned_unbound_is_error() {
     let src = "fn rx() do
@@ -2201,6 +2297,7 @@ fn lower_receive_pinned_unbound_is_error() {
     }
 }
 
+// PICK: well-formed receive with multiple message patterns compiles cleanly
 #[test]
 fn lower_receive_planner_accepts_well_formed() {
     // Acceptance bullet: planner accepts well-formed selective receive.
@@ -2226,6 +2323,7 @@ fn lower_receive_planner_accepts_well_formed() {
     assert!(impure.is_empty(), "unexpected purity diags: {:?}", impure);
 }
 
+// PICK: receive guard calling an extern-backed function is a compile-time error
 #[test]
 fn lower_receive_rejects_impure_guard() {
     // The helper body calls an extern-backed runtime fn, so it cannot
@@ -2271,6 +2369,7 @@ fn dispatch_has_guard_dispatch(
     dispatch.guards.iter().any(expr_has_dispatch)
 }
 
+// DROP: old-world receive PatternDispatchPlan internals, no compiler2 analogue
 #[test]
 fn receive_guard_with_single_clause_helper_lowers_into_dispatch() {
     let src = "fn positive(n), do: n > 0
@@ -2289,6 +2388,7 @@ fn receive_guard_with_single_clause_helper_lowers_into_dispatch() {
     );
 }
 
+// DROP: old-world receive PatternDispatchPlan pinned-input internals, no compiler2 analogue
 #[test]
 fn receive_guard_capture_walks_helper_call_args() {
     let src = "fn positive(n), do: n > 0
@@ -2307,6 +2407,7 @@ fn receive_guard_capture_walks_helper_call_args() {
     );
 }
 
+// DROP: old-world receive PatternDispatchPlan internals, no compiler2 analogue
 #[test]
 fn receive_guard_with_transitive_helper_lowers_into_dispatch() {
     let src = "fn positive(n), do: n > 0
@@ -2326,6 +2427,7 @@ fn receive_guard_with_transitive_helper_lowers_into_dispatch() {
     );
 }
 
+// DROP: old-world receive PatternDispatchPlan internals, no compiler2 analogue
 #[test]
 fn receive_guard_with_multi_clause_helper_lowers_dispatch() {
     let src = "fn wanted({:ok, n}), do: n > 0
@@ -2345,6 +2447,7 @@ fn receive_guard_with_multi_clause_helper_lowers_dispatch() {
     );
 }
 
+// DROP: old-world receive PatternDispatchPlan internals, no compiler2 analogue
 #[test]
 fn receive_guard_helper_dispatch_handles_destructuring() {
     let src = "fn wanted({:ok, {n, _}}), do: n > 0
@@ -2364,6 +2467,7 @@ fn receive_guard_helper_dispatch_handles_destructuring() {
     );
 }
 
+// DROP: old-world receive PatternDispatchPlan prepared_keys internals, no compiler2 analogue
 #[test]
 fn receive_dispatch_prepares_heap_map_keys_outside_graph() {
     let src = "fn rx() do

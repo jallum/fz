@@ -96,11 +96,13 @@ fn checked_halt_and_capture(src: &str) -> (i64, String, Module) {
     (halt, dbg.lines().join("\n"), frontend.module)
 }
 
+// PICK: large integer arithmetic does not lose high-order bits
 #[test]
 fn interp_typed_int_arithmetic_full_i64() {
     assert_eq!(run("fn main(), do: 4611686018427387904 + 7"), 4611686018427387911);
 }
 
+// PICK: protocol dispatch selects correct implementation for Integer
 #[test]
 fn interp_static_protocol_dispatch_uses_planned_impl() {
     assert_eq!(
@@ -121,16 +123,19 @@ fn main(), do: Integerish.id(41)
     );
 }
 
+// PICK: float addition produces correct IEEE-754 result
 #[test]
 fn interp_typed_float_raw() {
     assert_eq!(f64::from_bits(run("fn main(), do: 1.5 + 2.5") as u64), 4.0);
 }
 
+// PICK: float inside list renders correctly via dbg
 #[test]
 fn interp_render_raw_float_in_container() {
     assert_eq!(capture("fn main(), do: dbg([1.5])"), "[1.5]");
 }
 
+// PICK: named function reference passed as value without heap allocation
 #[test]
 fn interp_named_fn_ref_does_not_allocate_closure_object() {
     let (halt, closure_allocs) = checked_halt_and_closure_allocs(
@@ -151,6 +156,7 @@ fn interp_named_fn_ref_does_not_allocate_closure_object() {
     );
 }
 
+// PICK: zero-capture lambda passed as value without heap allocation
 #[test]
 fn interp_zero_capture_lambda_does_not_allocate_closure_object() {
     let (halt, closure_allocs) = checked_halt_and_closure_allocs(
@@ -170,6 +176,7 @@ fn interp_zero_capture_lambda_does_not_allocate_closure_object() {
     );
 }
 
+// PICK: lambda capturing outer variable executes correctly with capture
 #[test]
 fn interp_captured_lambda_still_allocates_closure_object() {
     let (halt, closure_allocs) = checked_halt_and_closure_allocs(
@@ -187,6 +194,7 @@ fn interp_captured_lambda_still_allocates_closure_object() {
     assert_eq!(closure_allocs, 1, "captured lambdas remain heap closures in interp",);
 }
 
+// PICK: case-joined function reference remains callable after branch
 #[test]
 fn interp_checked_joined_thin_fn_refs_remain_callable_locally() {
     assert_eq!(
@@ -208,6 +216,7 @@ end
     );
 }
 
+// PICK: Enum.reduce over list with inline lambda accumulates correctly
 #[test]
 fn interp_runtime_graph_enum_reduce_wrapper_runs() {
     assert_eq!(
@@ -222,6 +231,7 @@ end
     );
 }
 
+// PICK: Enum.take with list and range in chained non-tail call sequence
 #[test]
 fn interp_runtime_graph_preserves_planned_continuation_specs_after_non_tail_calls() {
     let got = capture_runtime_graph(
@@ -244,6 +254,7 @@ end
     );
 }
 
+// PICK: case-joined function reference used as Enum.reduce reducer
 #[test]
 fn interp_runtime_graph_joined_thin_fn_refs_remain_callable_across_enum_reduce() {
     assert_eq!(
@@ -267,6 +278,7 @@ end
     );
 }
 
+// DROP: old-world unlinked module sentinel, no compiler2 analogue
 #[test]
 fn frontend_only_checked_interp_surfaces_unlinked_process_heap_alloc_stats_halt() {
     let (halt, got, module) = checked_halt_and_capture(
@@ -287,6 +299,7 @@ end
     assert_eq!(got, "");
 }
 
+// DROP: runtime heap allocation telemetry BIF, no compiler2 analogue
 #[test]
 fn interp_runtime_graph_heap_alloc_stats_exposes_closure_allocs_key() {
     let got = capture_runtime_graph(
@@ -311,6 +324,7 @@ end
     );
 }
 
+// DROP: runtime heap allocation telemetry BIF, no compiler2 analogue
 #[test]
 fn interp_runtime_graph_heap_alloc_stats_reports_captured_closure_allocs() {
     let got = capture_runtime_graph(
@@ -332,11 +346,13 @@ end
     );
 }
 
+// PICK: float equality inside list compares by value
 #[test]
 fn interp_equality_float_in_container() {
     assert_eq!(run("fn main(), do: [1.5] == [1.5]"), 1);
 }
 
+// PICK: receive pattern matches float inside a list
 #[test]
 fn interp_receive_matcher_float_in_container() {
     assert_eq!(
@@ -352,6 +368,7 @@ fn interp_receive_matcher_float_in_container() {
     );
 }
 
+// DROP: old-world runtime heap internals inspection, no compiler2 analogue
 #[test]
 fn interp_deep_copy_float_in_container_preserves_raw_slot() {
     let m = lower_src(
@@ -373,6 +390,7 @@ fn interp_deep_copy_float_in_container_preserves_raw_slot() {
     assert_eq!(f64::from_bits(head.raw()), 2.5);
 }
 
+// DROP: old-world IrInterpRuntime persistent-drive API, no compiler2 analogue
 #[test]
 fn persistent_runtime_drives_entries_without_resetting_mailbox() {
     let m = lower_src(
@@ -418,6 +436,7 @@ fn persistent_runtime_drives_entries_without_resetting_mailbox() {
     );
 }
 
+// DROP: old-world scheduler reduction-yield accounting, no compiler2 analogue
 #[test]
 fn interp_reductions_yield_allocation_light_loops() {
     let m = lower_src(
@@ -460,6 +479,7 @@ fn interp_reductions_yield_allocation_light_loops() {
     assert_eq!(child.interpreter_yields, 0, "test should be allocation-light");
 }
 
+// DROP: old-world scheduler quiet-quanta accounting, no compiler2 analogue
 #[test]
 fn interp_quiet_quanta_moves_only_at_scheduler_boundaries() {
     let m = lower_src(
@@ -493,6 +513,7 @@ fn interp_quiet_quanta_moves_only_at_scheduler_boundaries() {
     assert_eq!(task.interpreter_yields, 0);
 }
 
+// DROP: old-world heap allocation-pressure yield counters, no compiler2 analogue
 #[test]
 fn interp_allocation_pressure_yields_before_budget_exhaustion() {
     let m = lower_src(
@@ -550,6 +571,7 @@ fn interp_allocation_pressure_yields_before_budget_exhaustion() {
     );
 }
 
+// PICK: large integer survives send/receive message boundary intact
 #[test]
 fn interp_typed_int_send_receive_boundary() {
     assert_eq!(
@@ -565,6 +587,7 @@ fn interp_typed_int_send_receive_boundary() {
     );
 }
 
+// PICK: large integer extracted via list head pattern match
 #[test]
 fn interp_typed_int_list_head_boundary() {
     assert_eq!(
@@ -576,6 +599,7 @@ fn interp_typed_int_list_head_boundary() {
     );
 }
 
+// PICK: large integer extracted via map field access
 #[test]
 fn interp_typed_int_map_get_boundary() {
     assert_eq!(
@@ -584,6 +608,7 @@ fn interp_typed_int_map_get_boundary() {
     );
 }
 
+// PICK: scalars read from list head, map field, and tuple slot destructuring
 #[test]
 fn interp_ref_bifs_read_scalars_from_list_map_and_tuple() {
     assert_eq!(
@@ -600,6 +625,7 @@ fn interp_ref_bifs_read_scalars_from_list_map_and_tuple() {
     );
 }
 
+// PICK: heap values (lists) extracted from list, map, and tuple containers
 #[test]
 fn interp_ref_bifs_read_heap_values_from_list_map_and_tuple() {
     assert_eq!(
@@ -616,6 +642,7 @@ fn interp_ref_bifs_read_heap_values_from_list_map_and_tuple() {
     );
 }
 
+// PICK: typed integer clause guard dispatches to correct function body
 #[test]
 fn interp_typed_int_dispatch_and_return_flow() {
     assert_eq!(
@@ -628,6 +655,7 @@ fn interp_typed_int_dispatch_and_return_flow() {
     );
 }
 
+// PICK: large integer delivered from spawned process to blocked receive
 #[test]
 fn interp_typed_int_sender_wakes_blocked_receiver() {
     assert_eq!(

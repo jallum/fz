@@ -7,6 +7,7 @@ use crate::parser::lexer::Lexer;
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use fz_runtime::any_value::NIL_ATOM_ID;
 
+// DROP: old-world compiler LTO telemetry, infrastructure not language
 #[test]
 fn compiler_prepares_execution_graph_from_source_and_emits_lto_telemetry() {
     let src = r#"
@@ -46,6 +47,7 @@ fn main(), do: User.run()
     assert!(capture.contains(&["fz", "lto", "boundaries_erased"]));
 }
 
+// DROP: old-world compiler frontend→graph path, planner internals
 #[test]
 fn compiler_prepares_execution_graph_from_frontend_output() {
     let src = "fn main(), do: 42";
@@ -66,6 +68,7 @@ fn compiler_prepares_execution_graph_from_frontend_output() {
     assert_eq!(main_fn.name, "main");
 }
 
+// DROP: old-world compiler program→graph path, planner internals
 #[test]
 fn compiler_prepares_execution_graph_from_program_input() {
     let src = "fn main(), do: 7";
@@ -84,6 +87,7 @@ fn compiler_prepares_execution_graph_from_program_input() {
     );
 }
 
+// PICK: spawn with captured variables runs correctly through full compiler
 #[test]
 fn compiler_compile_planned_runs_spawn_with_captures_through_single_plan_path() {
     let tel = ConfiguredTelemetry::new();
@@ -115,6 +119,7 @@ fn compiler_compile_planned_runs_spawn_with_captures_through_single_plan_path() 
     );
 }
 
+// DROP: planner re-planning telemetry guard, old-world planner internals
 #[test]
 fn compiler_compile_planned_consumes_authoritative_plan_without_replanning() {
     let src = "fn main(), do: 42";
@@ -142,6 +147,7 @@ fn compiler_compile_planned_consumes_authoritative_plan_without_replanning() {
     );
 }
 
+// DROP: AOT compile emits main symbol; low-level no compiler2 analogue yet
 #[test]
 fn compiler_compile_aot_planned_produces_main_symbol() {
     let src = "fn main(), do: 7";

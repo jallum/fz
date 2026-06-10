@@ -47,6 +47,7 @@ fn drive_main(runtime: &mut IrInterpRuntime, module: &Module, tel: &dyn crate::t
     runtime.drive_until_idle(&mut t, tel, None).expect("drive");
 }
 
+// DROP: old-world IrInterpRuntime isolation plumbing, no compiler2 analogue
 #[test]
 fn two_interpreters_coexist_with_isolated_telemetry() {
     let mod_a = lower_src("fn main() do dbg(:from_a) end");
@@ -71,6 +72,7 @@ fn two_interpreters_coexist_with_isolated_telemetry() {
     assert_eq!(cap_b.lines(), vec![":from_b".to_string()]);
 }
 
+// DROP: old-world IrInterpRuntime interleaved-drive isolation, no compiler2 analogue
 #[test]
 fn interleaved_rounds_keep_each_runtimes_state_isolated() {
     // Two runtimes whose `main` emits a marker and whose heaps accumulate

@@ -16,6 +16,7 @@ fn parse(src: &str, tel: &dyn Telemetry) -> Program {
     flatten_modules(&mut ct, prog, tel).unwrap()
 }
 
+// PICK: wildcard clause makes subsequent specific clauses unreachable
 #[test]
 fn detects_unreachable_after_wildcard_in_multi_clause_fn() {
     let prog = parse(
@@ -32,6 +33,7 @@ fn detects_unreachable_after_wildcard_in_multi_clause_fn() {
     );
 }
 
+// PICK: wildcard arm in case makes subsequent arms unreachable
 #[test]
 fn detects_unreachable_after_wildcard_in_case() {
     let prog = parse(
@@ -48,6 +50,7 @@ fn detects_unreachable_after_wildcard_in_case() {
     assert!(diags.iter().any(|d| d.code == codes::TYPE_UNREACHABLE_ARM));
 }
 
+// PICK: specific clause before wildcard is reachable, no spurious warning
 #[test]
 fn no_warning_when_specific_then_wildcard() {
     let prog = parse(
@@ -64,6 +67,7 @@ fn no_warning_when_specific_then_wildcard() {
     );
 }
 
+// PICK: fn with only literal clauses and no wildcard is inexhaustive
 #[test]
 fn detects_inexhaustive_multi_clause_fn() {
     let prog = parse(
@@ -80,6 +84,7 @@ fn detects_inexhaustive_multi_clause_fn() {
     );
 }
 
+// PICK: case with only literal arms and no wildcard is inexhaustive
 #[test]
 fn detects_inexhaustive_case() {
     let prog = parse(
@@ -96,6 +101,7 @@ fn detects_inexhaustive_case() {
     assert!(diags.iter().any(|d| d.code == codes::TYPE_NO_MATCHING_CLAUSE));
 }
 
+// PICK: wildcard clause makes pattern set exhaustive, no warning
 #[test]
 fn no_inexhaustive_with_wildcard() {
     let prog = parse(

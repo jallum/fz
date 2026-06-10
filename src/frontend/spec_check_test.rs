@@ -19,6 +19,7 @@ fn pipeline<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     (prog, ir, mt)
 }
 
+// PICK: @spec param type matching inferred callsite type passes validation
 #[test]
 fn spec_matching_inferred_passes() {
     let mut ct = crate::types::new();
@@ -37,6 +38,7 @@ fn main(), do: dbg(M.add1(41))
     assert!(diags.is_empty(), "unexpected diags: {:?}", diags);
 }
 
+// PICK: @spec wider than inferred callsite type still passes (success typing)
 #[test]
 fn spec_wider_than_inferred_passes_success_typing_style() {
     // Declared spec accepts `integer`; inferred is the narrower
@@ -61,6 +63,7 @@ fn main(), do: dbg(M.add1(41))
     );
 }
 
+// PICK: @spec disjoint from inferred callsite type produces a subtype violation
 #[test]
 fn spec_disjoint_from_inferred_fails() {
     // Declared accepts `float`; inferred from callsite is int.
@@ -87,6 +90,7 @@ fn main(), do: dbg(M.add1(41))
     );
 }
 
+// PICK: multi-overload @spec each cover their respective inferred specialisation
 #[test]
 fn multi_spec_overload_arrows_cover_each_inferred_shape() {
     let mut ct = crate::types::new();
@@ -114,6 +118,7 @@ end
     );
 }
 
+// PICK: spec overloads are checked per-arrow not by unioning all inputs and results
 #[test]
 fn multi_spec_validation_preserves_param_result_correlation() {
     let mut ct = crate::types::new();
@@ -141,6 +146,7 @@ end
     assert!(diags[0].message.contains("not a subtype"));
 }
 
+// PICK: @spec using a local @type alias resolves and passes validation
 #[test]
 fn spec_resolves_against_module_type_env() {
     let mut ct = crate::types::new();
@@ -164,6 +170,7 @@ fn main(), do: dbg(M.lookup(7))
     );
 }
 
+// PICK: @spec with protocol domain type accepts a type with a known impl
 #[test]
 fn protocol_domain_spec_accepts_known_impl_target() {
     let mut ct = crate::types::new();
@@ -194,6 +201,7 @@ fn main(), do: dbg(M.use([1]))
     );
 }
 
+// PICK: @spec with protocol domain type rejects a type with no protocol impl
 #[test]
 fn protocol_domain_spec_rejects_disjoint_target_without_impl() {
     let mut ct = crate::types::new();
@@ -221,6 +229,7 @@ fn main(), do: dbg(M.use(1))
     assert!(diags[0].message.contains("not a subtype"));
 }
 
+// PICK: @spec with unknown type alias surfaces unknown-type error at validation
 #[test]
 fn spec_with_unknown_alias_fails_at_validation() {
     let mut ct = crate::types::new();
@@ -245,6 +254,7 @@ fn main(), do: dbg(M.one(0))
     );
 }
 
+// DROP: planner any-key spec internals, no compiler2 analogue
 #[test]
 fn spec_validation_skips_any_key_specs() {
     // Validation must skip any-key specs when they exist (they have
@@ -276,6 +286,7 @@ fn main(), do: dbg(M.add1(41))
     );
 }
 
+// PICK: fn with no @spec annotation produces no type validation diagnostics
 #[test]
 fn fn_without_spec_is_not_validated() {
     let mut ct = crate::types::new();
@@ -297,6 +308,7 @@ fn main(), do: dbg(M.double(7))
     );
 }
 
+// PICK: @spec on a top-level fn with only builtin types passes without module env
 #[test]
 fn spec_on_top_level_fn_uses_empty_env() {
     let mut ct = crate::types::new();

@@ -1,6 +1,7 @@
 use super::*;
 use crate::compiler::source::{Id, SourceMap};
 
+// DROP: lexer infrastructure — span accuracy, no language semantics
 #[test]
 fn tokens_carry_accurate_byte_spans() {
     let src = "fn foo(x), do: x + 1";
@@ -22,6 +23,7 @@ fn tokens_carry_accurate_byte_spans() {
     }
 }
 
+// DROP: SourceMap line-resolution, pure infrastructure
 #[test]
 fn locate_resolves_to_correct_line() {
     let src = "fn a(), do: 1\nfn b(), do: 2\n";
@@ -40,6 +42,7 @@ fn locate_resolves_to_correct_line() {
     assert_eq!(loc.col, 4);
 }
 
+// DROP: multi-file span bookkeeping, pure infrastructure
 #[test]
 fn multi_file_spans_keep_their_code_id() {
     let mut sm = SourceMap::new();
@@ -73,6 +76,7 @@ fn multi_file_spans_keep_their_code_id() {
 
 // fz-axu.9 (L1) — byte-oriented quoted binary literals.
 
+// DROP: token payload encoding, lexer infrastructure
 #[test]
 fn binary_literal_carries_raw_bytes() {
     let toks = Lexer::with_source_name(r#""hi""#, "<test>")
@@ -84,6 +88,7 @@ fn binary_literal_carries_raw_bytes() {
     }
 }
 
+// DROP: UTF-8 byte passthrough in lexer, infrastructure
 #[test]
 fn binary_literal_preserves_non_ascii_utf8_bytes() {
     // "héllo" — `é` is 0xC3 0xA9 in UTF-8. Pre-L1 the lexer was
@@ -99,6 +104,7 @@ fn binary_literal_preserves_non_ascii_utf8_bytes() {
     }
 }
 
+// DROP: escape-sequence decoding in lexer, infrastructure
 #[test]
 fn binary_literal_handles_canonical_escapes() {
     let toks = Lexer::with_source_name(r#""a\nb\tc\\d\"e""#, "<test>")
@@ -110,6 +116,7 @@ fn binary_literal_handles_canonical_escapes() {
     }
 }
 
+// DROP: lexer error on bad escape, infrastructure
 #[test]
 fn binary_literal_rejects_unknown_escape() {
     let err = Lexer::with_source_name(r#""bad\q""#, "<test>")
@@ -127,6 +134,7 @@ fn binary_literal_rejects_unknown_escape() {
 /// every Tok::Binary payload produced by the lexer must be valid UTF-8.
 /// If `\x`-style byte escapes are added later, this test should fail
 /// and force a re-evaluation of where validation lives.
+// DROP: Tok::Binary UTF-8 invariant, lexer infrastructure
 #[test]
 fn str_tokens_are_invariantly_utf8() {
     let inputs = [
@@ -162,6 +170,7 @@ fn toks_of(src: &str) -> Vec<Tok> {
         .collect()
 }
 
+// DROP: token shape for new binary operators, pure lexer
 #[test]
 fn lexes_new_binary_operators() {
     assert_eq!(toks_of("a ++ b"), vec![id("a"), Tok::PlusPlus, id("b")]);
@@ -169,6 +178,7 @@ fn lexes_new_binary_operators() {
     assert_eq!(toks_of("a <> b"), vec![id("a"), Tok::Concat, id("b")]);
 }
 
+// DROP: range and step token shapes, pure lexer
 #[test]
 fn lexes_range_and_step() {
     // `..` is its own token, distinct from `.` and `...`.
@@ -180,6 +190,7 @@ fn lexes_range_and_step() {
     );
 }
 
+// DROP: `..` vs `...` vs float disambiguation, pure lexer
 #[test]
 fn dotdot_does_not_steal_from_ellipsis_or_float() {
     // `...` stays a single Ellipsis (more specific arm wins).
@@ -190,6 +201,7 @@ fn dotdot_does_not_steal_from_ellipsis_or_float() {
     assert_eq!(toks_of("1.0..2.0"), vec![Tok::Float(1.0), Tok::DotDot, Tok::Float(2.0)]);
 }
 
+// DROP: `<>` vs `<<`/`>>` token disambiguation, pure lexer
 #[test]
 fn concat_does_not_collide_with_bitstring_delimiters() {
     // `<>` is concat; `<<` / `>>` remain bitstring delimiters.
@@ -197,18 +209,21 @@ fn concat_does_not_collide_with_bitstring_delimiters() {
     assert_eq!(toks_of("a <> b"), vec![id("a"), Tok::Concat, id("b")]);
 }
 
+// DROP: `//` vs `/` token disambiguation, pure lexer
 #[test]
 fn slashslash_distinct_from_slash() {
     assert_eq!(toks_of("a / b"), vec![id("a"), Tok::Slash, id("b")]);
     assert_eq!(toks_of("a // b"), vec![id("a"), Tok::SlashSlash, id("b")]);
 }
 
+// DROP: `in` / `not in` token shapes, pure lexer
 #[test]
 fn lexes_membership_keywords() {
     assert_eq!(toks_of("x in xs"), vec![id("x"), Tok::In, id("xs")]);
     assert_eq!(toks_of("x not in xs"), vec![id("x"), Tok::Not, Tok::In, id("xs")]);
 }
 
+// DROP: `require` keyword token shape, pure lexer
 #[test]
 fn lexes_require_as_a_first_class_keyword() {
     assert_eq!(
@@ -248,6 +263,7 @@ fn op_is_unary_positioned(src: &str) -> bool {
     s[op].1 && !s[op + 1].1
 }
 
+// DROP: space_before metadata recording, lexer infrastructure
 #[test]
 fn records_space_before_for_each_token() {
     // Leading token has no space before it; the rest are space-separated.
@@ -257,6 +273,7 @@ fn records_space_before_for_each_token() {
     );
 }
 
+// DROP: space-sensitive unary/binary disambiguation, lexer metadata
 #[test]
 fn dual_op_spacing_distinguishes_unary_from_binary() {
     // `foo -1`: space before `-`, none before `1` → unary (the call foo(-1)).
@@ -270,6 +287,7 @@ fn dual_op_spacing_distinguishes_unary_from_binary() {
     assert!(!op_is_unary_positioned("foo + 1"));
 }
 
+// DROP: adjacency flag for call heads, lexer metadata
 #[test]
 fn adjacency_visible_for_call_and_access_heads() {
     // `foo(` — no space before `(` marks a call head; `foo (` has space.
@@ -281,6 +299,7 @@ fn adjacency_visible_for_call_and_access_heads() {
     assert!(spaced[lp2].1, "spaced `(` is not a call head");
 }
 
+// DROP: lex error span position, pure infrastructure
 #[test]
 fn lex_error_carries_span_at_offending_byte() {
     let src = "fn `";
@@ -294,6 +313,7 @@ fn lex_error_carries_span_at_offending_byte() {
 
 // -- Telemetry integration (fz-ndf.8) --
 
+// DROP: lexer telemetry span and token count, infrastructure
 #[test]
 fn telemetry_emits_pass_span_and_token_count() {
     use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind, Value};
@@ -319,6 +339,7 @@ fn telemetry_emits_pass_span_and_token_count() {
     }
 }
 
+// DROP: lexer telemetry span_id inheritance, infrastructure
 #[test]
 fn telemetry_user_event_inherits_span_id() {
     use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind};
@@ -342,6 +363,7 @@ fn telemetry_user_event_inherits_span_id() {
     assert!(start.span_id > 0);
 }
 
+// DROP: null telemetry no-op, pure infrastructure
 #[test]
 fn null_telemetry_is_a_silent_no_op() {
     // Same call path; just verifies the null impl compiles + runs.

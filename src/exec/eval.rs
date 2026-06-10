@@ -770,12 +770,14 @@ mod quote_tests {
         interp.call_named("_go", vec![]).expect("eval")
     }
 
+    // PICK: quote of literal int/atom returns the literal value unchanged
     #[test]
     fn quote_literal_is_self() {
         assert!(matches!(eval_in_main("quote do: 42"), Value::Int(42)));
         assert!(matches!(eval_in_main("quote do: :ok"), Value::Atom(s) if &*s == "ok"));
     }
 
+    // PICK: quote of a variable produces a 3-tuple AST node
     #[test]
     fn quote_var_is_3_tuple() {
         let v = eval_in_main("quote do: foo");
@@ -786,6 +788,7 @@ mod quote_tests {
         assert!(matches!(&t[0], Value::Atom(s) if &**s == "foo"));
     }
 
+    // PICK: quote of a binary operator reifies to {op_atom, meta, [l, r]}
     #[test]
     fn quote_binop_reifies() {
         let v = eval_in_main("quote do: 1 + 2");
@@ -797,6 +800,7 @@ mod quote_tests {
         assert!(matches!(&args[1], Value::Int(2)));
     }
 
+    // PICK: unquote inside quote splices runtime value into AST node
     #[test]
     fn unquote_splices_value() {
         // x = 5; quote do: 1 + unquote(x)  →  {:+, %{}, [1, 5]}
@@ -807,6 +811,7 @@ mod quote_tests {
         assert!(matches!(&args[1], Value::Int(5)));
     }
 
+    // PICK: unquote in call argument position splices value into arg list
     #[test]
     fn unquote_in_call_args() {
         let v = eval_in_main("y = :hello\nquote do: dbg(unquote(y), 1)");
@@ -817,6 +822,7 @@ mod quote_tests {
         assert!(matches!(&args[1], Value::Int(1)));
     }
 
+    // PICK: unquote outside quote context is a runtime error
     #[test]
     fn unquote_outside_quote_errors() {
         let src = "fn main() do unquote(1) end";
@@ -837,6 +843,7 @@ mod quote_tests {
         );
     }
 
+    // PICK: make_ref/0 returns distinct opaque ref values each call
     #[test]
     fn make_ref_returns_distinct_opaque_refs() {
         let v = eval_in_main("{make_ref(), make_ref()}");
@@ -852,12 +859,14 @@ mod quote_tests {
         );
     }
 
+    // PICK: map update syntax inserts new keys into existing map
     #[test]
     fn map_update_inserts_missing_keys() {
         let v = eval_in_main("m = %{a: 1}\nn = %{m | b: 2}\nn[:b]");
         assert!(matches!(v, Value::Int(2)), "got {}", v);
     }
 
+    // PICK: type-annotated parameter dispatches to correct clause by value type
     #[test]
     fn typed_param_annotations_filter_clause_dispatch() {
         let src = "\
@@ -881,12 +890,14 @@ fn main() do {check(42), check(:foo)} end
         assert!(matches!(&items[1], Value::Atom(atom) if atom.as_ref() == "other"));
     }
 
+    // PICK: closure call via dot-parens syntax evaluates correctly
     #[test]
     fn anonymous_function_calls_require_dot_parens() {
         let v = eval_in_main("f = fn (x) -> x + 1 end\nf.(2)");
         assert!(matches!(v, Value::Int(3)), "got {}", v);
     }
 
+    // PICK: bare named call does not resolve to a local closure binding
     #[test]
     fn bare_named_calls_do_not_dispatch_to_local_values() {
         let src = "fn main() do\n  count = fn (x) -> x + 1 end\n  count(2)\nend";

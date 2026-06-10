@@ -65,50 +65,62 @@ fn debug_value(v: &Value) -> String {
     format!("{}", v)
 }
 
+// DROP: macro AST round-trip for int literal; old-world AST value encoding
 #[test]
 fn literal_int() {
     round_trip("42", &crate::telemetry::ConfiguredTelemetry::new());
 }
+// DROP: macro AST round-trip for float literal; old-world AST value encoding
 #[test]
 fn literal_float() {
     round_trip("3.14", &crate::telemetry::ConfiguredTelemetry::new());
 }
+// DROP: macro AST round-trip for bool literal; old-world AST value encoding
 #[test]
 fn literal_bool() {
     round_trip("true", &crate::telemetry::ConfiguredTelemetry::new());
 }
+// DROP: macro AST round-trip for nil literal; old-world AST value encoding
 #[test]
 fn literal_nil() {
     round_trip("nil", &crate::telemetry::ConfiguredTelemetry::new());
 }
+// DROP: macro AST round-trip for atom literal; old-world AST value encoding
 #[test]
 fn literal_atom() {
     round_trip(":ok", &crate::telemetry::ConfiguredTelemetry::new());
 }
+// DROP: macro AST round-trip for binary string; old-world AST value encoding
 #[test]
 fn literal_binary() {
     round_trip("\"hello\"", &crate::telemetry::ConfiguredTelemetry::new());
 }
+// DROP: macro AST round-trip for variable reference; old-world AST encoding
 #[test]
 fn var() {
     round_trip("x", &crate::telemetry::ConfiguredTelemetry::new());
 }
+// DROP: macro AST round-trip for list literal; old-world AST value encoding
 #[test]
 fn list() {
     round_trip("[1, 2, 3]", &crate::telemetry::ConfiguredTelemetry::new());
 }
+// DROP: macro AST round-trip for 2-tuple; old-world AST value encoding
 #[test]
 fn tuple_2() {
     round_trip("{1, 2}", &crate::telemetry::ConfiguredTelemetry::new());
 }
+// DROP: macro AST round-trip for 3-tuple wraps in node; old-world encoding
 #[test]
 fn tuple_3() {
     round_trip("{1, 2, 3}", &crate::telemetry::ConfiguredTelemetry::new());
 }
+// DROP: macro AST round-trip for add binop; old-world AST value encoding
 #[test]
 fn binop_add() {
     round_trip("1 + 2", &crate::telemetry::ConfiguredTelemetry::new());
 }
+// DROP: macro AST round-trip for equality binop; old-world AST encoding
 #[test]
 fn binop_eq() {
     round_trip("a == b", &crate::telemetry::ConfiguredTelemetry::new());
@@ -116,6 +128,7 @@ fn binop_eq() {
 
 // fz-g58.2.2 — the Elixir-aligned operators have AST representations that
 // round-trip through the quoted-atom reflection used by macros/quote.
+// PICK: Elixir-aligned binops round-trip through quoted-atom encoding
 #[test]
 fn binop_atom_round_trips_elixir_operators() {
     for op in [
@@ -144,10 +157,12 @@ fn unop_not() {
     let e2 = value_to_expr(&v).unwrap();
     assert!(matches!(e2.node, Expr::UnOp(UnOp::Not, _)));
 }
+// DROP: macro AST round-trip for fn call; old-world AST value encoding
 #[test]
 fn call() {
     round_trip("foo(1, 2)", &crate::telemetry::ConfiguredTelemetry::new());
 }
+// DROP: macro AST round-trip for nested call; old-world AST value encoding
 #[test]
 fn nested_call() {
     round_trip("foo(bar(x), 2 + 3)", &crate::telemetry::ConfiguredTelemetry::new());
@@ -169,10 +184,12 @@ fn block() {
     let e2 = value_to_expr(&v).unwrap();
     assert!(value_struct_eq(&v, &expr_to_value(&e2).unwrap()));
 }
+// DROP: macro AST round-trip for if-else; old-world AST value encoding
 #[test]
 fn if_with_else() {
     round_trip("if true, do: 1, else: 2", &crate::telemetry::ConfiguredTelemetry::new());
 }
+// DROP: macro AST round-trip for match assignment; old-world AST encoding
 #[test]
 fn match_var() {
     round_trip("x = 42", &crate::telemetry::ConfiguredTelemetry::new());
@@ -196,6 +213,7 @@ fn unsupported_expr_errors_cleanly() {
     assert!(expr_to_value(&e).is_err());
 }
 
+// DROP: macro AST var shape is 3-tuple; old-world AST value encoding
 #[test]
 fn shape_of_var_is_3_tuple() {
     let e = parse_expr("foo", &crate::telemetry::ConfiguredTelemetry::new());
@@ -209,6 +227,7 @@ fn shape_of_var_is_3_tuple() {
     assert!(matches!(&t[2], Value::Atom(s) if &**s == USER_CTX));
 }
 
+// DROP: macro AST binop shape is 3-tuple with args list; old-world encoding
 #[test]
 fn shape_of_binop_is_3_tuple_with_args_list() {
     let e = parse_expr("1 + 2", &crate::telemetry::ConfiguredTelemetry::new());
@@ -222,6 +241,7 @@ fn shape_of_binop_is_3_tuple_with_args_list() {
     assert_eq!(args.len(), 2);
 }
 
+// DROP: macro AST 3-tuple wrapped in {} node; old-world AST value encoding
 #[test]
 fn three_tuple_literal_is_wrapped() {
     let e = parse_expr("{1, 2, 3}", &crate::telemetry::ConfiguredTelemetry::new());
@@ -231,6 +251,7 @@ fn three_tuple_literal_is_wrapped() {
     assert!(matches!(&t[0], Value::Atom(s) if &**s == "{}"));
 }
 
+// DROP: macro AST decoded nodes carry DUMMY span; old-world AST encoding
 #[test]
 fn decoded_nodes_carry_dummy_span() {
     let e = parse_expr("foo(1)", &crate::telemetry::ConfiguredTelemetry::new());

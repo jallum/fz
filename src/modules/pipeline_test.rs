@@ -4,6 +4,7 @@ use crate::ir_interp::run_main;
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use fz_runtime::any_value::TRUE_ATOM_ID;
 
+// DROP: runtime module import loaded without user-side storage; old-world planner
 #[test]
 fn execution_graph_loads_runtime_import_without_user_storage() {
     let mut concrete_types = crate::types::new();
@@ -31,6 +32,7 @@ end
     assert!(!modules.contains(&"Process".to_string()));
 }
 
+// PICK: recursive protocol reduce callback converges without oscillation
 #[test]
 fn protocol_impl_reduce_callback_plans_to_fixed_point() {
     let mut concrete_types = crate::types::new();
@@ -83,6 +85,7 @@ end
     );
 }
 
+// DROP: old-world planner Cont dispatch edges for Enum; SpecKey/planner internals
 #[test]
 fn linked_runtime_graph_keeps_cont_dispatches_for_enum_take_drop_split() {
     use crate::fz_ir::{CallsiteId, EmitSlot, Term};
@@ -128,6 +131,7 @@ fn linked_runtime_graph_keeps_cont_dispatches_for_enum_take_drop_split() {
     }
 }
 
+// DROP: old-world planner Cont dispatch edges for spawn; SpecKey/planner internals
 #[test]
 fn linked_runtime_graph_keeps_cont_dispatches_for_spawn_with_captures() {
     use crate::fz_ir::{CallsiteId, EmitSlot, Term};
@@ -173,6 +177,7 @@ fn linked_runtime_graph_keeps_cont_dispatches_for_spawn_with_captures() {
     }
 }
 
+// PICK: Utf8.valid? on a valid binary returns true through linked runtime
 #[test]
 fn runtime_library_units_link_and_run() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();

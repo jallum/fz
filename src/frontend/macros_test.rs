@@ -31,6 +31,7 @@ fn expanded_main_body(src: &str, tel: &dyn Telemetry) -> Expr {
     def.clauses[0].body.node.clone()
 }
 
+// PICK: macro quote+unquote expands arithmetic at compile time
 #[test]
 fn defmacro_increments_arg() {
     // Classic Elixir-shape macro: receives arg as quoted form, returns
@@ -49,6 +50,7 @@ end
     ));
 }
 
+// PICK: macro called multiple times inside a fn body
 #[test]
 fn macro_inside_fn_body() {
     let src = r#"
@@ -68,6 +70,7 @@ fn main() do run() end
     ));
 }
 
+// PICK: macro expansion splices a call to a regular function
 #[test]
 fn macro_returns_a_call() {
     // Macro that splices its arg into a call to a regular fn.
@@ -84,6 +87,7 @@ fn main() do use_helper(7) end
     ));
 }
 
+// PICK: nested macro wraps inner macro and expander re-expands result
 #[test]
 fn nested_macro_expansion() {
     // Macro M2 wraps M1's output. Expander must re-expand the result.
@@ -98,6 +102,7 @@ fn main() do m2(40) end
     ));
 }
 
+// PICK: macro args are passed as quoted AST, not pre-evaluated
 #[test]
 fn macro_args_are_not_pre_expanded() {
     // If macro args were expanded first, m2(m1(0)) would call m1 first
@@ -116,6 +121,7 @@ fn main() do m2(m1(0)) end
     ));
 }
 
+// PICK: self-referencing macro hits depth limit without stack overflow
 #[test]
 fn runaway_macro_caught() {
     // A macro that expands to itself: m(x) -> m(x). Should bail at the
@@ -135,6 +141,7 @@ fn main() do loop_m(0) end
     );
 }
 
+// PICK: macro-introduced binding does not capture caller's variable
 #[test]
 fn hygiene_macro_local_does_not_shadow_caller() {
     // Without hygiene, the macro's `t = 99` would clobber the
@@ -158,6 +165,7 @@ end
     );
 }
 
+// PICK: unquoted variable splices caller's value into macro expansion
 #[test]
 fn hygiene_unquoted_var_keeps_caller_name() {
     // Vars spliced via unquote come from the caller's evaluation
@@ -178,6 +186,7 @@ end
     ));
 }
 
+// PICK: same macro-introduced name maps to one gensym within an invocation
 #[test]
 fn hygiene_consistent_within_one_invocation() {
     // The same macro-introduced name used twice in the body must map
@@ -202,6 +211,7 @@ end
     ));
 }
 
+// PICK: cross-module macro expansion qualifies bare names against home module
 #[test]
 fn cross_module_macro_resolves_quote_against_home_module() {
     // Macro M.bump's body refers to bare `helper`. Resolution
@@ -229,6 +239,7 @@ fn main() do User.run() end
     );
 }
 
+// PICK: imported macro is callable unqualified in importing module
 #[test]
 fn imported_macro_works_unqualified() {
     let src = r#"
@@ -247,6 +258,7 @@ fn main() do User.run() end
     ));
 }
 
+// PICK: item-level macro returns :fn_def tuple splicing a callable function
 #[test]
 fn item_macro_produces_fn_def() {
     // `make_const(name, value)` builds a zero-arg fn that returns the
@@ -273,6 +285,7 @@ end
     );
 }
 
+// PICK: item macro returning a list of :fn_def tuples splices multiple fns
 #[test]
 fn item_macro_produces_list_of_fns() {
     // Returning a list of :fn_def tuples splices multiple items.
@@ -296,6 +309,7 @@ end
     ));
 }
 
+// PICK: item macro inside defmodule qualifies spliced fn names with module path
 #[test]
 fn item_macro_inside_defmodule_qualifies_names() {
     // .16.5: the resolver stamps the parent module path on the
@@ -320,6 +334,7 @@ end
     );
 }
 
+// PICK: expansion pipeline without macros evaluates plain arithmetic correctly
 #[test]
 fn no_macros_is_a_noop() {
     // Pipeline without macros must not regress.
@@ -332,6 +347,7 @@ fn no_macros_is_a_noop() {
     assert!(matches!(v, Value::Int(3)));
 }
 
+// PICK: pipe operator |> rewrites to regular call at expansion time
 #[test]
 fn pipe_into_call_rewrites_during_expansion() {
     let src = "fn add2(x), do: x + 2\nfn main(), do: 1 |> add2()";
@@ -341,6 +357,7 @@ fn pipe_into_call_rewrites_during_expansion() {
     ));
 }
 
+// PICK: ++, --, <>, .. and //2 operators desugar to stdlib function calls
 #[test]
 fn operator_sugars_rewrite_to_runtime_calls() {
     let body = expanded_main_body(
@@ -366,6 +383,7 @@ end"#,
     assert_call_name(&values[4], "Range.new", 3);
 }
 
+// PICK: `in` and `not in` desugar to Enum.member? at expansion time
 #[test]
 fn membership_sugars_rewrite_to_enum_member() {
     let body = expanded_main_body(
@@ -399,6 +417,7 @@ fn assert_call_name(expr: &Spanned<Expr>, expected: &str, arity: usize) {
     assert_eq!(args.len(), arity);
 }
 
+// PICK: & capture shorthand desugars to a callable lambda
 #[test]
 fn capture_shorthand_desugars_to_runnable_lambda() {
     let src = "fn main() do\n  f = &(&1 + &2)\n  f.(20, 22)\nend";
@@ -408,6 +427,7 @@ fn capture_shorthand_desugars_to_runnable_lambda() {
     ));
 }
 
+// PICK: bare &1 desugars to identity lambda returning its first argument
 #[test]
 fn bare_capture_arg_desugars_to_identity_lambda() {
     let src = "fn main() do\n  f = &1\n  f.(42)\nend";
@@ -417,6 +437,7 @@ fn bare_capture_arg_desugars_to_identity_lambda() {
     ));
 }
 
+// PICK: multi-clause fn literal desugars to case expression with pattern dispatch
 #[test]
 fn multi_clause_lambda_desugars_to_case_dispatch() {
     let src = r#"
@@ -438,6 +459,7 @@ end
 /// Source-only fn bodies retain `SpanOrigin::Source` after expansion.
 /// (Sanity-checks the default — without this we couldn't trust any
 /// of the Expanded checks below.)
+// DROP: SpanOrigin AST infrastructure, no compiler2 analogue
 #[test]
 fn parser_nodes_have_source_origin() {
     let src = "fn main(), do: 1 + 2";
@@ -452,6 +474,7 @@ fn parser_nodes_have_source_origin() {
 /// `SpanOrigin::Expanded { macro_call: <call-site span> }`. The
 /// `macro_call` span equals the body before expansion (the call
 /// expression at the post-resolution AST).
+// DROP: SpanOrigin lineage tracking on expanded AST nodes, no compiler2 analogue
 #[test]
 fn macro_expansion_stamps_expanded_origin() {
     let src = r#"
@@ -520,6 +543,7 @@ fn main() do plus_one(41) end
 
 /// Children of an expanded tree inherit the same macro_call lineage.
 /// (v1: every decoded node was DUMMY, so the walker stamps them all.)
+// DROP: SpanOrigin lineage propagation to child nodes, no compiler2 analogue
 #[test]
 fn macro_expansion_lineage_reaches_children() {
     let src = r#"
@@ -565,6 +589,7 @@ fn main() do plus_one(41) end
 /// (Each re-expansion stamps with its own call_span, overwriting the
 /// previous Expanded marker. Since `expand_expr` recurses depth-first
 /// after the rewrite, the OUTER expansion runs last and wins.)
+// DROP: SpanOrigin lineage for nested macros points at outermost call, no compiler2 analogue
 #[test]
 fn nested_macro_lineage_keeps_outermost_call_site() {
     let src = r#"
@@ -616,6 +641,7 @@ fn main() do m2(40) end
 /// `Item::MacroCall` that produced it. `make_const(:answer, 42)`
 /// splices an `answer/0` fn whose body should point at the
 /// `make_const(...)` call site.
+// DROP: SpanOrigin lineage on item-macro spliced fn body, no compiler2 analogue
 #[test]
 fn item_macro_splice_body_carries_expanded_lineage() {
     let src = r#"
@@ -674,6 +700,7 @@ fn main(), do: answer()
 /// A runaway macro produces an `ExpansionLoop` whose Span points at
 /// the offending expression (the recursive `loop_m(...)` node), not
 /// `Span::DUMMY`. The renderer relies on this to underline source.
+// DROP: diagnostic span infrastructure for expansion loop errors
 #[test]
 fn expansion_loop_diag_has_real_span() {
     let src = r#"
@@ -691,6 +718,7 @@ fn main() do loop_m(0) end
 
 /// A body-failure carries both the call-site span (primary) and the
 /// defmacro span (secondary), so the renderer can show both locations.
+// DROP: diagnostic span infrastructure for macro body failure, not language behaviour
 #[test]
 fn body_failed_diag_has_call_and_def_spans() {
     // Macro body that calls a non-existent function: the body errors at
@@ -726,6 +754,7 @@ fn main() do bad() end
 /// (This case is reachable from the REPL when a macro is referenced
 /// before its defining input has been processed; the planner/expander
 /// errors out earlier today, but the lineage path stays safe.)
+// DROP: SpanOrigin fallback infrastructure, no language behaviour
 #[test]
 fn missing_def_span_falls_back_to_none() {
     use crate::compiler::source::{Id as CodeId, Span};
