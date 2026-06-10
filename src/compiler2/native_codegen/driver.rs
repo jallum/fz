@@ -1042,6 +1042,22 @@ pub(crate) fn compile_with_backend_surface<
     mut backend: B,
     tel: &dyn Telemetry,
 ) -> Result<B::Output, CodegenError> {
+    // Enclosing span: the denominator that makes codegen wall time account as
+    // compile = declare + per-spec(lower + define) + emit_runtime + finalize.
+    // Parent linkage is threaded by the bus from the open-span stack, so every
+    // phase span below nests under this one automatically.
+    let _compile_span = tel.span(
+        &["fz", "codegen", "compile"],
+        crate::metadata! {
+            module_path: surface.module.module_path().to_owned(),
+            backend: backend.kind(),
+            spec_count: surface.body_slots.iter().filter(|slot| slot.is_some()).count() as u64,
+        },
+    );
+    let declare_span = tel.span(
+        &["fz", "codegen", "declare"],
+        crate::metadata! { module_path: surface.module.module_path().to_owned() },
+    );
     let runtime = declare_runtime_symbols(backend.module_mut())?;
 
     let mut fbctx = FunctionBuilderContext::new();
@@ -1086,6 +1102,7 @@ pub(crate) fn compile_with_backend_surface<
     let (receive_dispatch_fn_ids, receive_matched_sites) =
         declare_receive_dispatch_fns(backend.module_mut(), module, tel)?;
     let verifier_isa = host_isa();
+    drop(declare_span);
 
     for body_slot in body_slots {
         let Some(body_slot) = body_slot.as_ref() else {
@@ -1122,6 +1139,7 @@ pub(crate) fn compile_with_backend_surface<
             closure_capture_counts: &surface.closure_capture_counts,
             receive_dispatch_fn_ids: &receive_dispatch_fn_ids,
         };
+        let cranelift_instruction_count;
         {
             let _span = tel.span(
                 &["fz", "codegen", "lower_function"],
@@ -1145,6 +1163,7 @@ pub(crate) fn compile_with_backend_surface<
                 &module.source,
             )?;
             let (block_count, instruction_count) = cranelift_body_stats(&ctx.func);
+            cranelift_instruction_count = instruction_count;
             tel.execute(
                 &["fz", "codegen", "function_lowered"],
                 &crate::measurements! {
@@ -1162,6 +1181,20 @@ pub(crate) fn compile_with_backend_surface<
             );
         }
         let fn_span = module.source.fn_span_of(f.id);
+        // The native-compile step: verify the lowered Cranelift IR, then hand it
+        // to the backend to produce machine code. This is the dominant per-spec
+        // cost and was previously the unattributed gap between `lower_function`
+        // spans; its stop payload carries the emitted code size.
+        let define_span = tel.span(
+            &["fz", "codegen", "define_function"],
+            crate::metadata! {
+                body_kind: "fz_spec",
+                module_path: module.module_path().to_owned(),
+                fn_name: display_name.clone(),
+                fn_id: body_slot.fn_id.0 as u64,
+                spec_id: sid as u64,
+            },
+        );
         cranelift_codegen::verifier::verify_function(&ctx.func, verifier_isa.as_ref()).map_err(|e| {
             CodegenError::new(format!(
                 "verify {}:\n{}\n--- IR ---\n{}",
@@ -1175,9 +1208,27 @@ pub(crate) fn compile_with_backend_surface<
             .module_mut()
             .define_function(func_id, &mut ctx)
             .map_err(|e| CodegenError::new(format!("define {}: {}", display_name, e)).with_span(fn_span))?;
+        let code_bytes = ctx.compiled_code().map(|cc| cc.code_buffer().len() as u64).unwrap_or(0);
+        define_span.stop_with(
+            &crate::measurements! {
+                fn_id: body_slot.fn_id.0 as u64,
+                spec_id: sid as u64,
+                instruction_count: cranelift_instruction_count as u64,
+                code_bytes: code_bytes,
+            },
+            &crate::metadata! {
+                body_kind: "fz_spec",
+                module_path: module.module_path().to_owned(),
+                fn_name: display_name.clone(),
+            },
+        );
         backend.module_mut().clear_context(&mut ctx);
     }
 
+    let emit_runtime_span = tel.span(
+        &["fz", "codegen", "emit_runtime"],
+        crate::metadata! { module_path: module.module_path().to_owned() },
+    );
     emit_receive_dispatch_bodies(
         backend.module_mut(),
         &mut fbctx,
@@ -1211,6 +1262,7 @@ pub(crate) fn compile_with_backend_surface<
         module.module_path(),
     )?;
     let resume_id = emit_resume(backend.module_mut(), &mut fbctx, &runtime)?;
+    drop(emit_runtime_span);
 
     let metadata = CompiledMetadata {
         fn_ids,
@@ -1241,6 +1293,12 @@ pub(crate) fn compile_with_backend_surface<
         resume_id,
     };
 
+    let finalize_span = tel.span(
+        &["fz", "codegen", "finalize"],
+        crate::metadata! { module_path: module.module_path().to_owned() },
+    );
     backend.emit_metadata_carriers(&mut fbctx, &metadata)?;
-    backend.finalize(metadata)
+    let output = backend.finalize(metadata)?;
+    drop(finalize_span);
+    Ok(output)
 }

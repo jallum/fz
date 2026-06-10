@@ -3146,6 +3146,110 @@ fn compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen() {
 }
 
 #[test]
+fn compiler2_native_codegen_brackets_every_phase_under_one_compile_span() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_entry.fz".to_string()),
+        text: format!(
+            "{}\nfn entry() do\n  dbg(qsort([3, 1, 2]))\n  0\nend\n",
+            include_str!("../../fixtures/quicksort/input.fz")
+        ),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "entry".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let outcome = compiler.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Resolved),
+        "native lowering should settle before codegen consumes it: {outcome:?}"
+    );
+
+    let program = native.last(root_id).program;
+    let _compiled = jit_compile_native_program(&mut compiler, &program);
+
+    // Intent: codegen telemetry mirrors the surface's own phase structure under
+    // a single enclosing `compile` span. Because the bus threads parent linkage
+    // from the open-span stack, every phase nests under `compile`, so wall time
+    // accounts as compile = declare + per-spec(lower + define) + emit_runtime +
+    // finalize, with no unattributed gaps left at the codegen layer.
+    let starts = |name: &[&str]| {
+        capture
+            .find(name)
+            .into_iter()
+            .filter(|e| e.kind == EventKind::SpanStart)
+            .collect::<Vec<_>>()
+    };
+
+    let compile = starts(&["fz", "codegen", "compile"]);
+    assert_eq!(
+        compile.len(),
+        1,
+        "exactly one enclosing codegen `compile` span per compile"
+    );
+    let compile_id = compile[0].span_id;
+
+    for phase in [
+        ["fz", "codegen", "declare"],
+        ["fz", "codegen", "emit_runtime"],
+        ["fz", "codegen", "finalize"],
+    ] {
+        let phase_starts = starts(&phase);
+        assert_eq!(phase_starts.len(), 1, "phase {phase:?} is spanned exactly once");
+        assert_eq!(
+            phase_starts[0].parent_span_id, compile_id,
+            "phase {phase:?} nests under the compile span"
+        );
+    }
+
+    let lowered = starts(&["fz", "codegen", "lower_function"]);
+    let defined = starts(&["fz", "codegen", "define_function"]);
+    assert!(!lowered.is_empty(), "quicksort lowers at least one spec body");
+    assert_eq!(
+        lowered.len(),
+        defined.len(),
+        "every lowered spec is also native-compiled: one define per lower"
+    );
+    for span_start in lowered.iter().chain(defined.iter()) {
+        assert_eq!(
+            span_start.parent_span_id, compile_id,
+            "per-spec codegen spans nest under the compile span"
+        );
+    }
+
+    // The native-compile span exists to make machine-code cost measurable, so
+    // every define carries the emitted code size.
+    let define_stops = capture
+        .find(&["fz", "codegen", "define_function"])
+        .into_iter()
+        .filter(|e| e.kind == EventKind::SpanStop)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        define_stops.len(),
+        defined.len(),
+        "each define span closes exactly once"
+    );
+    for stop in &define_stops {
+        let code_bytes = match stop.measurements.get("code_bytes") {
+            Some(Value::U64(n)) => *n,
+            other => panic!("define_function stop must carry code_bytes: {other:?}"),
+        };
+        assert!(
+            code_bytes >= 1,
+            "native compile emits machine code, so code_bytes must be positive"
+        );
+    }
+}
+
+#[test]
 fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
