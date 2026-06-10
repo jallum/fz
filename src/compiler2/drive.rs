@@ -96,6 +96,7 @@ impl World<'_> {
     /// fatal job closes its span, closes the drive span as fatal, and stops the
     /// loop.
     pub fn drive(&mut self) -> DriveOutcome<Job, FactKey> {
+        self.clear_reported_warnings();
         let mut span = self.tel().span(
             &["fz", "compiler2", "drive"],
             metadata! {
@@ -126,6 +127,7 @@ impl World<'_> {
                 Err(_) => {
                     job_span.stop_with(&measurements! {}, &metadata! {});
                     self.clear_unresolved_diagnostics();
+                    self.flush_reported_warnings();
                     span.stop_with(
                         &measurements! { jobs_ran: jobs_ran },
                         &metadata! { job: opaque_debug(&job) },
@@ -136,11 +138,13 @@ impl World<'_> {
         }
         if !self.work_graph.has_unresolved() {
             self.clear_unresolved_diagnostics();
+            self.flush_reported_warnings();
             span.close_with(measurements! { jobs_ran: jobs_ran }, metadata! {});
             DriveOutcome::Resolved
         } else {
             let unresolved = self.work_graph.unresolved();
             self.emit_unresolved_diagnostics(&unresolved);
+            self.flush_reported_warnings();
             span.stop_with(
                 &measurements! { jobs_ran: jobs_ran },
                 &metadata! {

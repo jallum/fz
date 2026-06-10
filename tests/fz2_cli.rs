@@ -304,7 +304,7 @@ fn build_executes_map_struct_and_bitstring_fixtures() {
 
 #[test]
 fn run_and_interp_execute_case_and_with_fixtures() {
-    let fixture = "fixtures/case_tuple_pattern_sequential/input.fz";
+    let fixture = "fixtures/case_with_total/input.fz";
     let expected = fixture_expected_stdout(fixture);
     for command in ["run", "interp"] {
         let out = run_fz2(&[OsStr::new(command), OsStr::new(fixture)]);
@@ -313,8 +313,37 @@ fn run_and_interp_execute_case_and_with_fixtures() {
 }
 
 #[test]
-fn build_executes_case_and_with_fixtures() {
+fn run_and_interp_report_partial_case_and_with_warnings() {
     let fixture = "fixtures/case_tuple_pattern_sequential/input.fz";
+    let expected = fixture_expected_stdout(fixture);
+    for command in ["run", "interp"] {
+        let out = run_fz2(&[OsStr::new(command), OsStr::new(fixture)]);
+        assert!(
+            out.status.success(),
+            "fz2 {command} {fixture} should succeed; stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(out.stdout.clone()).expect("stdout is utf-8"),
+            expected,
+            "fz2 {command} {fixture} should print the expected stdout"
+        );
+        let stderr = String::from_utf8(out.stderr.clone()).expect("stderr is utf-8");
+        assert!(
+            stderr.contains("warning[type/no-matching-clause]: `case` clauses don't cover every input"),
+            "fz2 {command} should warn for partial case clauses; stderr={stderr}"
+        );
+        assert!(
+            stderr.contains("warning[type/no-matching-clause]: `with else` clauses don't cover every input"),
+            "fz2 {command} should warn for partial with else clauses; stderr={stderr}"
+        );
+    }
+}
+
+#[test]
+fn build_executes_case_and_with_fixtures() {
+    let fixture = "fixtures/case_with_total/input.fz";
     let expected = fixture_expected_stdout(fixture);
     let out_bin = unique_temp_path("fz2_control_fixture_build", ".bin");
     let build = run_fz2(&[

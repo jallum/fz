@@ -10,6 +10,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::compiler::source::Span;
+use crate::diag::diagnostic::Severity;
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch};
@@ -69,6 +70,23 @@ struct UnresolvedIssue {
     diagnostic: Diagnostic,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct WarningDiagnosticKey {
+    code: &'static str,
+    message: String,
+    primary: Span,
+}
+
+impl WarningDiagnosticKey {
+    fn from_diagnostic(diagnostic: &Diagnostic) -> Self {
+        Self {
+            code: diagnostic.code.0,
+            message: diagnostic.message.clone(),
+            primary: diagnostic.primary.span,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum CallableMatchScore {
     VariadicPrefix(usize),
@@ -108,6 +126,8 @@ pub struct World<'a> {
     runtime_prelude: CodeId,
     runtime_modules: HashMap<ModuleId, RuntimeModuleCode>,
     reported_unresolved: HashSet<UnresolvedIssueKey>,
+    reported_warnings: HashSet<WarningDiagnosticKey>,
+    warning_diagnostics: Vec<Diagnostic>,
     pub(crate) work_graph: WorkGraph,
 }
 
@@ -163,6 +183,8 @@ impl<'a> World<'a> {
             runtime_prelude: CodeId::ZERO,
             runtime_modules: HashMap::new(),
             reported_unresolved: HashSet::new(),
+            reported_warnings: HashSet::new(),
+            warning_diagnostics: Vec::new(),
             work_graph: WorkGraph::new(),
         };
         world.runtime_modules = runtime::bootstrap(&mut world.modules);
@@ -282,8 +304,45 @@ impl<'a> World<'a> {
         self.reported_unresolved = next;
     }
 
+    pub(crate) fn emit_warning_once(&mut self, diagnostic: Diagnostic) {
+        if diagnostic.severity != Severity::Warning {
+            emit_through(self.tel, None, std::slice::from_ref(&diagnostic));
+            return;
+        }
+        if self
+            .reported_warnings
+            .insert(WarningDiagnosticKey::from_diagnostic(&diagnostic))
+        {
+            self.warning_diagnostics.push(diagnostic);
+        }
+    }
+
+    pub(crate) fn flush_reported_warnings(&mut self) {
+        self.warning_diagnostics.sort_by(|left, right| {
+            let left_span = left.primary.span;
+            let right_span = right.primary.span;
+            left_span
+                .code_id
+                .0
+                .cmp(&right_span.code_id.0)
+                .then(left_span.start.cmp(&right_span.start))
+                .then(left_span.end.cmp(&right_span.end))
+                .then(left.code.0.cmp(right.code.0))
+                .then(left.message.cmp(&right.message))
+        });
+        if !self.warning_diagnostics.is_empty() {
+            emit_through(self.tel, None, &self.warning_diagnostics);
+        }
+        self.warning_diagnostics.clear();
+    }
+
     pub(crate) fn clear_unresolved_diagnostics(&mut self) {
         self.reported_unresolved.clear();
+    }
+
+    pub(crate) fn clear_reported_warnings(&mut self) {
+        self.reported_warnings.clear();
+        self.warning_diagnostics.clear();
     }
 
     pub fn code_name(&self, id: CodeId) -> Option<&str> {

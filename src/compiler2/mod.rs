@@ -24,6 +24,7 @@ mod scheduler;
 mod scope;
 mod semantic;
 mod source;
+mod source_diagnostics;
 mod source_publish;
 mod source_sugar;
 mod type_expr;
