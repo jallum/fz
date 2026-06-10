@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-10T08:05:46Z",
+  "description": "Use the fz-rh2.9 sweep as the seed: 88 success fixtures passed both target/debug/fz2 run and target/debug/fz2 interp against expected.txt. Promote them into fixture metadata in batches, adding fz2-run/fz2-interp and fz2-build only after each path is observed.\n\nDo not promote allocation/path-golden fixtures blindly; route those through the golden-decision ticket.\n\nSignal: fixture_matrix covers the promoted fz2 paths, fixtures/index.md is regenerated/updated, and fz2_cli does not carry matrix-worthy one-off fixture coverage except for targeted telemetry checks.",
+  "id": "fz-rh2.16.1",
+  "labels": [],
+  "parent": "fz-rh2.16",
+  "priority": 2,
+  "status": "open",
+  "title": "Promote passing fz2 sweep fixtures into the matrix in batches",
+  "type": "task",
+  "updated_at": "2026-06-10T08:05:46Z"
+}
