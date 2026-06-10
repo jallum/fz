@@ -6,7 +6,8 @@
     "fz-rh2.16.2",
     "fz-rh2.16.3",
     "fz-rh2.16.4",
-    "fz-rh2.16.5"
+    "fz-rh2.16.5",
+    "fz-rh2.16.7"
   ],
   "blocks": [],
   "created": "2026-06-10T08:05:46Z",
@@ -18,5 +19,5 @@
   "status": "open",
   "title": "Plan old fz compiler deletion after fz2 fixture contract coverage",
   "type": "task",
-  "updated_at": "2026-06-10T08:05:56Z"
+  "updated_at": "2026-06-10T08:21:50Z"
 }
