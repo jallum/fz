@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-rh2.16.11",
     "fz-rh2.16.8",
     "fz-rh2.16.9"
   ],
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "Fix fz2 source-surface parser and item macro gaps",
   "type": "task",
-  "updated_at": "2026-06-10T15:39:15Z"
+  "updated_at": "2026-06-10T21:05:30Z"
 }

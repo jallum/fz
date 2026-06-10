@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.16.4"
+  ],
   "created": "2026-06-10T21:04:50Z",
   "description": "Goal: make top-level definition syntax in compiler2 work the Elixir way: definition spellings expand as compiler macros and hand canonical quoted fragments back through `Fz.Compiler.define(..., __ENV__)`, while function-body expansion stays lazy behind demand.\n\nGrounding: compiler2 now has a stable quoted-source transport, a fact-based macro pipeline, a compile-time-only macro backend, and a staged `FunctionSource -\u003e ExpandedFunctionSource -\u003e FunctionDefined` boundary. The remaining architectural split is that source-spelled top-level defs/modules/protocols/impls can still enter publication directly instead of through the same compiler callback path macro-produced definitions use.\n\nStrategy: define one canonical compiler-definition surface, move top-level definition families onto compiler macros in the compiler prelude, keep raw function facts lazy, then delete the direct publication path and restate the invariants.\n\nSignal: top-level scope-shaping definitions enter compiler2 through one compiler callback, `FunctionSource` remains raw and demand-expanded, nested discovery/publication follows the same fragment path, and the remaining `fz-rh2.16.4` surface work sits above a simpler seam.",
   "id": "fz-rh2.16.11",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 definition macros: make top-level defs expand through one compiler callback",
   "type": "epic",
-  "updated_at": "2026-06-10T21:04:50Z"
+  "updated_at": "2026-06-10T21:05:30Z"
 }
