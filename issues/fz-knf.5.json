@@ -11,9 +11,15 @@
   "id": "fz-knf.5",
   "labels": [],
   "parent": "fz-knf",
+  "comments": [
+    {
+      "text": "Closed as split. Edit-driven revision-stability tests (body edit =\u003e function fact bumps; whitespace/reposition =\u003e stable) are unimplementable through submit/drive today: submit_code is append-only (world.rs:187-203) and both horizon comparators gate on CodeId equality (identity.rs:648, 673) — any resubmission mints a new CodeId and bumps everything. Those tests become the acceptance tests of D3 (code-resubmission) in everything-is-incremental. Identical-recompute revision stability is already covered (drive_test.rs:2319, 3041, 4044). Arc verified green at fz-knf.3 close: 1686 lib + 510 matrix, 0 failed, zero warnings; no remaining knf scaffolding found (candidates are B1 deletions).",
+      "timestamp": "2026-06-10T17:58:05Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Revision-stability tests + full green + docs; strip remaining scaffolding",
   "type": "task",
-  "updated_at": "2026-06-10T01:53:48Z"
+  "updated_at": "2026-06-10T17:58:05Z"
 }
