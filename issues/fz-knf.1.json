@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-10T01:53:47Z",
+  "description": "Introduce: trait Reconcile { fn reconcile(current: Option\u003c\u0026Self\u003e, incoming: Self, revision: u64) -\u003e (Self, u64); }. Reimplement replace_if_changed + the inherent same_state/free-fn reconcilers in terms of it, KEEPING current monotonic behavior (reconcile returns (incoming, if same {rev} else {rev+1})). Slots still hold revision for now. Green, behavior-identical, proves the interface. Foundation for the rest.",
+  "id": "fz-knf.1",
+  "labels": [],
+  "parent": "fz-knf",
+  "priority": 1,
+  "status": "open",
+  "title": "Reconcile trait + route reconcile machinery through it (behavior-preserving)",
+  "type": "task",
+  "updated_at": "2026-06-10T01:53:47Z"
+}
