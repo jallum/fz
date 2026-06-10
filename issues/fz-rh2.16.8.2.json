@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.16.8.1"
+  ],
   "blocks": [],
   "created": "2026-06-10T12:05:22Z",
   "description": "Goal: expansion decides what quoted source exists, publication decides what facts that source defines. Signal: source sugar rewrites, recursive macro expansion, require/import macro readiness, and item/function-body expansion live behind one explicit expander API; publication consumes already-expanded roots/surfaces and no longer mixes tree rewriting with scope mutation logic. Strategy: extract the expansion walk out of source_publish, reuse it for item-level and function-level expansion, preserve fact-graph blocking semantics, and leave publication with reserve/apply responsibilities only.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 source expansion: split quoted root rewriting from fact publication",
   "type": "task",
-  "updated_at": "2026-06-10T12:05:22Z"
+  "updated_at": "2026-06-10T12:05:35Z"
 }
