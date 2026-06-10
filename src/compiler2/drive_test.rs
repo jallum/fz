@@ -5,8 +5,8 @@ use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
     AbiReadyProgram, AbiValueRepr, ActivationKey, BackendProgram, CallSiteId, CallSiteKey, CallSiteSummary,
     CallableEntry, ControlEntryOrigin, EmissionReadyProgram, ExecutableKey, FactKey, FunctionId, FunctionRef,
-    LoweredBody, LoweredStep, LoweredTail, MaterializedProgram, ModuleId, ModuleState, ReturnAbi, SelectedCallee,
-    QuotedSourceHeap, SemanticClosure, Ty, TypeName, TypeVarId, Types, ValueId,
+    LoweredBody, LoweredStep, LoweredTail, MaterializedProgram, ModuleId, ModuleState, QuotedSourceHeap, ReturnAbi,
+    SelectedCallee, SemanticClosure, Ty, TypeName, TypeVarId, Types, ValueId,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;

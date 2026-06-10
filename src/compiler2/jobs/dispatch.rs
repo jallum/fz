@@ -287,7 +287,7 @@ fn entry_source_patterns(
                                 error.msg
                             ),
                             error.span,
-                            ),
+                        ),
                     )
                 })?;
             preconditions.push((
