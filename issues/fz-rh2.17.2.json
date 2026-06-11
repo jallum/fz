@@ -6,14 +6,15 @@
   "blocks": [
     "fz-rh2.17.3"
   ],
+  "closed_at": "2026-06-11T19:30:17Z",
   "created": "2026-06-11T09:57:05Z",
   "description": "Teach the compiler to publish interface facts from the new substrate. `DefineModule` should derive and publish `ModuleInterface(module)` from already-minted callable identities for local source-defined modules, including protocol modules and synthesized helpers like `__info__/1`. Add the runtime/external seeding path so a module can publish `ModuleInterface` without requiring `ModuleDefined`.\n\nProtocol modules should become ordinary module-interface producers: their callback functions belong to the protocol module's callable surface, which downstream protocol facts can then consume by `FunctionId`.\n\nSignal: local, protocol, runtime, and external modules share one interface fact shape, and external-interface consumers no longer need placeholder `ModuleDefined` waits just to see callables.",
   "id": "fz-rh2.17.2",
   "labels": [],
   "parent": "fz-rh2.17",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 interface publication: publish one callable surface for local, protocol, and runtime/external modules",
   "type": "task",
-  "updated_at": "2026-06-11T19:30:10Z"
+  "updated_at": "2026-06-11T19:30:17Z"
 }
