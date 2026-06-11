@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-11T17:18:56Z",
+  "description": "The frontdoor parser currently handles multiline expression continuation by skipping newlines when the next non-newline token looks like a continuation. That is a local heuristic, not the Elixir-shaped model we want. Elixir tokenizes physical newlines as first-class eol tokens, treats backslash-newline as line splicing without eol, and lets grammar productions decide where eol is accepted: operator productions accept optional trailing eol, dot accepts optional trailing eol, and expression lists are separated by explicit eoe. Replace compiler2 frontdoor newline continuation handling with a grammar-owned model: keep newline/eol tokens, have block/statement parsing consume eoe, let infix/postfix parselets decide whether they accept trailing eol, let dot consume trailing eol by construction, and let container/call argument parsing accept eol only in delimiter-specific positions. Remove starts_expr_continuation / peek_after_newlines style lookahead. Add regression tests for newline after operators, newline after dot, block expression separation, and cases where a leading operator starts a new expression rather than continuing the previous one. References verified locally against ../elixir: lib/elixir/src/elixir_tokenizer.erl lines 643-653, 933, 1496-1503; lib/elixir/src/elixir_parser.yrl lines 101-110, 430-475, 832-838.",
+  "id": "fz-rh2.17.5.6.7",
+  "labels": [],
+  "parent": "fz-rh2.17.5.6",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 frontdoor: replace newline continuation heuristic with grammar-owned EOL handling",
+  "type": "task",
+  "updated_at": "2026-06-11T17:18:56Z"
+}
