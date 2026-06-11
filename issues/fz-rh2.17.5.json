@@ -1,7 +1,6 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-rh2.17.2",
     "fz-rh2.17.3",
     "fz-rh2.17.4"
   ],
