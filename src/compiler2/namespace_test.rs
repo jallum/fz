@@ -40,7 +40,12 @@ fn compiler2_namespace_store_shadows_and_restores_by_head() {
 
     let code_id = code.define(Some("kernel.fz".to_string()), String::new());
     let kernel = modules.reference_named("Kernel");
-    let _ = modules.define(kernel, code_id, BindingId::END, Vec::new());
+    let _ = modules.define(
+        kernel,
+        code_id,
+        BindingId::END,
+        crate::compiler2::ModuleInterface::default(),
+    );
     let dbg_fn = functions.reference(kernel, "dbg", 1);
     let plus_fn = functions.reference(kernel, "+", 2);
 
@@ -84,7 +89,12 @@ fn compiler2_namespace_store_reuses_identical_binding_chains() {
 
     let code_id = code.define(Some("kernel.fz".to_string()), String::new());
     let kernel = modules.reference_named("Kernel");
-    let _ = modules.define(kernel, code_id, BindingId::END, Vec::new());
+    let _ = modules.define(
+        kernel,
+        code_id,
+        BindingId::END,
+        crate::compiler2::ModuleInterface::default(),
+    );
     let dbg_fn = functions.reference(kernel, "dbg", 1);
 
     let first = namespaces.bind(BindingId::END, "dbg", NamespaceSymbol::Function(dbg_fn));

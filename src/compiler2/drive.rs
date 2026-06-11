@@ -44,6 +44,7 @@ pub enum FactKey {
     CodeScoped(CodeId),
     ModuleIndexed(ModuleId),
     ModuleDefined(ModuleId),
+    ModuleInterface(ModuleId),
     FunctionSource(FunctionId),
     ExpandedFunctionSource(FunctionId),
     TypeDefined(TypeName),

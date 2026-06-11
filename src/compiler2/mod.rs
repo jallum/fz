@@ -13,6 +13,7 @@ mod frontdoor;
 mod identity;
 mod jobs;
 mod keying;
+mod module_interface;
 mod namespace;
 mod native_codegen;
 mod protocol;
@@ -61,8 +62,12 @@ pub use facts::{FactChange, FactReplace, FactTable};
 pub use frontdoor::{FrontDoorError, parse_quoted_program};
 pub use identity::{
     ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, FunctionMap, FunctionRef, FunctionSource, FunctionState,
-    ModuleExport, ModuleId, ModuleMap, ModuleSource, ModuleSourceKind, ModuleState, ModuleSurface, NotedTypeDecl,
-    RootEntry, RootId, RootKind, RootMap, TypeName,
+    ModuleId, ModuleMap, ModuleSource, ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootKind,
+    RootMap, TypeName,
+};
+pub use module_interface::{
+    InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleInterfaceCallable,
+    ReadyOrPending,
 };
 pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
 pub use quoted_surface::SurfaceSourceContext;

@@ -5,7 +5,8 @@ use crate::function_surface::FunctionSurface;
 use crate::types::ClosureTarget;
 
 use super::code::CodeId;
-use super::namespace::{Namespace, NamespaceSymbol};
+use super::module_interface::ModuleInterface;
+use super::namespace::Namespace;
 use super::quoted_surface::{ScopeForm, ScopeSurface};
 use super::source::{Horizon, QuotedSourceRoot};
 use super::type_expr::TypeDefBody;
@@ -102,7 +103,8 @@ pub enum ModuleState {
     },
     Defined {
         source: ModuleSource,
-        surface: ModuleSurface,
+        base: Namespace,
+        interface: ModuleInterface,
     },
 }
 
@@ -119,7 +121,7 @@ impl ModuleState {
     fn base_namespace(&self) -> Option<Namespace> {
         match self {
             ModuleState::Scoped { base, .. } => Some(*base),
-            ModuleState::Defined { surface, .. } => Some(surface.base),
+            ModuleState::Defined { base, .. } => Some(*base),
             _ => None,
         }
     }
@@ -153,22 +155,6 @@ impl ModuleSource {
             }),
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModuleSurface {
-    pub code: CodeId,
-    pub base: Namespace,
-    pub namespace: Namespace,
-    pub exports: Vec<ModuleExport>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModuleExport {
-    pub name: String,
-    pub arity: usize,
-    pub variadic: bool,
-    pub symbol: NamespaceSymbol,
 }
 
 #[derive(Debug, Clone)]
@@ -273,12 +259,8 @@ impl ModuleMap {
         Self {
             slots: vec![ModuleState::Defined {
                 source: ModuleSource::empty(CodeId::ZERO),
-                surface: ModuleSurface {
-                    code: CodeId::ZERO,
-                    base: Namespace::default(),
-                    namespace: Namespace::default(),
-                    exports: Vec::new(),
-                },
+                base: Namespace::default(),
+                interface: ModuleInterface::default(),
             }],
             names: vec![None],
             by_name: HashMap::new(),
@@ -297,16 +279,12 @@ impl ModuleMap {
         id
     }
 
-    pub fn define(&mut self, id: ModuleId, code: CodeId, namespace: Namespace, exports: Vec<ModuleExport>) -> bool {
+    pub fn define(&mut self, id: ModuleId, code: CodeId, base: Namespace, interface: ModuleInterface) -> bool {
         let module = &mut self.slots[id.0 as usize];
         let source = module.source().cloned().unwrap_or_else(|| ModuleSource::empty(code));
         let next = ModuleState::Defined {
-            surface: ModuleSurface {
-                code: source.code,
-                base: module.base_namespace().unwrap_or(namespace),
-                namespace,
-                exports,
-            },
+            base: module.base_namespace().unwrap_or(base),
+            interface,
             source,
         };
         update_if_changed(module, next)
@@ -321,10 +299,12 @@ impl ModuleMap {
             .source()
             .expect("modules should be indexed before scoping")
             .clone();
-        let next = if let ModuleState::Defined { surface, .. } = &*module {
-            let mut surface = surface.clone();
-            surface.base = base_namespace;
-            ModuleState::Defined { source, surface }
+        let next = if let ModuleState::Defined { interface, .. } = &*module {
+            ModuleState::Defined {
+                source,
+                base: base_namespace,
+                interface: interface.clone(),
+            }
         } else {
             ModuleState::Scoped {
                 source,
@@ -378,12 +358,8 @@ impl ModuleMap {
         let id = ModuleId(self.slots.len() as u32);
         self.slots.push(ModuleState::Defined {
             source: ModuleSource::empty(code),
-            surface: ModuleSurface {
-                code,
-                base: namespace,
-                namespace,
-                exports: Vec::new(),
-            },
+            base: namespace,
+            interface: ModuleInterface::default(),
         });
         self.names.push(None);
         id
@@ -676,13 +652,15 @@ impl ModuleState {
             (
                 ModuleState::Defined {
                     source: left_source,
-                    surface: left_surface,
+                    base: left_base,
+                    interface: left_interface,
                 },
                 ModuleState::Defined {
                     source: right_source,
-                    surface: right_surface,
+                    base: right_base,
+                    interface: right_interface,
                 },
-            ) => left_source.same_source(right_source) && left_surface == right_surface,
+            ) => left_source.same_source(right_source) && left_base == right_base && left_interface == right_interface,
             _ => false,
         }
     }

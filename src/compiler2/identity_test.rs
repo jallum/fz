@@ -53,13 +53,23 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
 
     let math_ref = modules.reference_named("Math");
     let math_def = math_ref;
-    let math_changed = modules.define(math_def, code_id, namespace, Vec::new());
+    let math_changed = modules.define(
+        math_def,
+        code_id,
+        namespace,
+        crate::compiler2::ModuleInterface::default(),
+    );
     assert_eq!(
         math_ref, math_def,
         "module definition should fill the referenced placeholder"
     );
     assert!(math_changed, "first module define should be a change");
-    let same_math_changed = modules.define(math_def, code_id, namespace, Vec::new());
+    let same_math_changed = modules.define(
+        math_def,
+        code_id,
+        namespace,
+        crate::compiler2::ModuleInterface::default(),
+    );
     assert!(
         !same_math_changed,
         "replaying the same module definition should not signal a change"
@@ -67,9 +77,9 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
     assert_eq!(modules.name(math_def), Some("Math"));
     let module = modules.get(math_def);
     match module {
-        ModuleState::Defined { surface, .. } => {
-            assert_eq!(surface.code, code_id);
-            assert_eq!(surface.namespace, namespaces.prelude_head());
+        ModuleState::Defined { base, interface, .. } => {
+            assert_eq!(*base, namespaces.prelude_head());
+            assert!(interface.callables().is_empty());
         }
         other => panic!("module should promote from placeholder to defined, got {other:?}"),
     }

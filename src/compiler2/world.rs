@@ -32,11 +32,12 @@ use super::deps::UnresolvedWait;
 use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
 use super::drive::{FactKey, Job, JobEffects, WorkGraph};
 use super::identity::{
-    ActivationKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId, FunctionMap, FunctionSource, ModuleExport,
-    ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootKind, RootMap,
-    TypeDeclMap, TypeName, TypeRefMap,
+    ActivationKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId, FunctionMap, FunctionSource, ModuleId,
+    ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootKind, RootMap, TypeDeclMap,
+    TypeName, TypeRefMap,
 };
 use super::keying::{DispatchMaskMap, RecursiveMap};
+use super::module_interface::ModuleInterface;
 use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
 use super::protocol::{
     ProtocolCallback, ProtocolCallbackImpl, ProtocolCallbackMap, ProtocolDispatch, ProtocolDispatchArm,
@@ -703,9 +704,9 @@ impl<'a> World<'a> {
         self.modules.reference_named(name)
     }
 
-    pub fn define_module(&mut self, id: ModuleId, namespace: Namespace, exports: Vec<ModuleExport>) -> bool {
+    pub fn define_module(&mut self, id: ModuleId, base: Namespace, interface: ModuleInterface) -> bool {
         let code = self.module_definition_code(id);
-        let changed = self.modules.define(id, code, namespace, exports);
+        let changed = self.modules.define(id, code, base, interface);
         let module = self.modules.get(id);
         self.tel.execute(
             &["fz", "compiler2", "module", "defined"],
@@ -1376,11 +1377,11 @@ impl<'a> World<'a> {
         self.namespaces.lookup(head, name).cloned()
     }
 
-    pub fn module_exports(&self, module: ModuleId) -> Vec<ModuleExport> {
+    pub fn module_interface(&self, module: ModuleId) -> ModuleInterface {
         match self.modules.get(module) {
-            ModuleState::Defined { surface, .. } => surface.exports.clone(),
+            ModuleState::Defined { interface, .. } => interface.clone(),
             ModuleState::Placeholder | ModuleState::Indexed(_) | ModuleState::Scoped { .. } => {
-                panic!("module exports should only be read from defined modules")
+                panic!("module interface should only be read from defined modules")
             }
         }
     }
@@ -1421,6 +1422,10 @@ impl<'a> World<'a> {
             return None;
         }
         self.work_graph.facts().revision(&FactKey::ModuleDefined(module))
+    }
+
+    pub fn module_interface_revision(&self, module: ModuleId) -> Option<u64> {
+        self.work_graph.facts().revision(&FactKey::ModuleInterface(module))
     }
 
     pub fn function_defined_revision(&self, function: FunctionId) -> Option<u64> {
@@ -1633,18 +1638,18 @@ impl<'a> World<'a> {
             )));
         }
         let mut best = None;
-        for export in self.module_exports(module) {
-            if export.name != name {
+        for callable in self.module_interface(module).callables() {
+            if callable.reference.name != name {
                 continue;
             }
-            let Some(score) = callable_match_score(export.arity, export.variadic, arity) else {
+            let Some(score) = callable_match_score(callable.reference.arity, callable.variadic, arity) else {
                 continue;
             };
             let replace = best
                 .as_ref()
                 .is_none_or(|(current, _): &(CallableMatchScore, NamespaceSymbol)| score > *current);
             if replace {
-                best = Some((score, export.symbol));
+                best = Some((score, callable.namespace_symbol()));
             }
         }
         best.map(|(_, symbol)| symbol)
@@ -1655,10 +1660,11 @@ impl<'a> World<'a> {
             let module = self.lookup_module_path(head, module_path)?;
             self.module_defined_revision(module)?;
             return self
-                .module_exports(module)
-                .into_iter()
-                .filter(|export| export.name == local_name && export.variadic)
-                .map(|export| export.arity)
+                .module_interface(module)
+                .callables()
+                .iter()
+                .filter(|callable| callable.reference.name == local_name && callable.variadic)
+                .map(|callable| callable.reference.arity)
                 .min();
         }
         self.namespaces
@@ -1708,9 +1714,7 @@ impl<'a> World<'a> {
     pub fn module_scope(&self, module: ModuleId) -> Option<(super::identity::ModuleSource, ScopeSnapshot)> {
         match self.modules.get(module) {
             ModuleState::Scoped { source, base } => Some((source.clone(), ScopeSnapshot::module(module, *base))),
-            ModuleState::Defined { source, surface } => {
-                Some((source.clone(), ScopeSnapshot::module(module, surface.base)))
-            }
+            ModuleState::Defined { source, base, .. } => Some((source.clone(), ScopeSnapshot::module(module, *base))),
             _ => None,
         }
     }

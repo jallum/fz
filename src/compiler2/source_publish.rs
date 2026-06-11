@@ -18,7 +18,8 @@ use crate::{measurements, metadata};
 
 use super::code::CodeId;
 use super::drive::{FactKey, Job, JobEffects};
-use super::identity::{FunctionId, FunctionSource, ModuleExport, ModuleId, NotedTypeDecl, TypeName};
+use super::identity::{FunctionId, FunctionSource, ModuleId, NotedTypeDecl, TypeName};
+use super::module_interface::{InterfaceCallableKind, ModuleInterface, ModuleInterfaceCallable};
 use super::namespace::{Namespace, NamespaceSymbol};
 use super::protocol::ProtocolCallbackImpl;
 use super::quoted_expander::{
@@ -47,7 +48,7 @@ pub(crate) enum ScopePublication {
         revision_floor: u64,
         reads: Vec<FactKey>,
         outputs: Outputs,
-        exports: Vec<ModuleExport>,
+        interface: ModuleInterface,
     },
     Blocked(JobEffects),
 }
@@ -118,7 +119,7 @@ struct ScopeSession<'world, 'tel> {
     required_remote_macros: HashSet<FunctionId>,
     reads: Vec<FactKey>,
     outputs: Outputs,
-    exports: Vec<ModuleExport>,
+    callables: Vec<ModuleInterfaceCallable>,
     revision_floor: u64,
 }
 
@@ -185,7 +186,7 @@ pub(crate) fn publish_protocol_surface(
     );
 
     let mut outputs = Vec::new();
-    let mut exports = Vec::new();
+    let mut callables = Vec::new();
     for form in &surface.forms {
         let ScopeForm::Function(callback) = form else {
             continue;
@@ -194,11 +195,11 @@ pub(crate) fn publish_protocol_surface(
         world.define_protocol_callback(function, module_id);
         let symbol = NamespaceSymbol::Function(function);
         scope = world.bind_namespace(scope, callback.name.clone(), symbol.clone());
-        exports.push(ModuleExport {
-            name: callback.name.clone(),
-            arity: callback.arity,
+        callables.push(ModuleInterfaceCallable {
+            function,
+            reference: world.function_ref(function).clone(),
+            kind: InterfaceCallableKind::PublicFunction,
             variadic: false,
-            symbol,
         });
     }
 
@@ -211,7 +212,7 @@ pub(crate) fn publish_protocol_surface(
             )
         })?
         .to_string();
-    let function = build_module_info_function(&exports, &module_name).map_err(|error| {
+    let function = build_module_info_function(&callables, &module_name).map_err(|error| {
         emit_internal_surface_error(world, format!("protocol module info synthesis failed: {error}"))
     })?;
     let function_id = world.reference_function(module_id, function.name.clone(), function.arity);
@@ -236,8 +237,8 @@ pub(crate) fn publish_protocol_surface(
         &env,
     );
     outputs.push(publication.output);
-    if let Some(export) = publication.export {
-        exports.push(export);
+    if let Some(callable) = publication.callable {
+        callables.push(callable);
     }
 
     outputs.push(world.refresh_protocol_dispatch_fact(module_id));
@@ -246,7 +247,7 @@ pub(crate) fn publish_protocol_surface(
         revision_floor: 0,
         reads: Vec::new(),
         outputs,
-        exports,
+        interface: ModuleInterface::new(callables),
     })
 }
 
@@ -383,7 +384,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             required_remote_macros: HashSet::new(),
             reads: Vec::new(),
             outputs: Vec::new(),
-            exports: Vec::new(),
+            callables: Vec::new(),
             revision_floor: 0,
         }
     }
@@ -404,9 +405,9 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     fn publish_module_info(&mut self) -> Result<Option<JobEffects>, FatalError> {
         if self.current_module.is_global()
             || self
-                .exports
+                .callables
                 .iter()
-                .any(|export| export.name == "__info__" && export.arity == 1)
+                .any(|callable| callable.matches_name_arity("__info__", 1))
         {
             return Ok(None);
         }
@@ -421,7 +422,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 )
             })?
             .to_string();
-        let function = build_module_info_function(&self.exports, &module_name).map_err(|error| {
+        let function = build_module_info_function(&self.callables, &module_name).map_err(|error| {
             emit_internal_surface_error(self.world, format!("module info source synthesis failed: {error}"))
         })?;
         let function_id = self
@@ -441,8 +442,8 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             &context,
         )?;
         self.outputs.push(publication.output);
-        if let Some(export) = publication.export {
-            self.exports.push(export);
+        if let Some(callable) = publication.callable {
+            self.callables.push(callable);
         }
         Ok(None)
     }
@@ -763,8 +764,8 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                     context,
                 )?;
                 self.outputs.push(publication.output);
-                if let Some(export) = publication.export {
-                    self.exports.push(export);
+                if let Some(callable) = publication.callable {
+                    self.callables.push(callable);
                 }
                 Ok(None)
             }
@@ -807,8 +808,8 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         }
         self.reads.push(surface_fact);
 
-        let exports = self.world.module_exports(required_module);
-        let selected = self.select_required_macro_exports(import, &exports)?;
+        let interface = self.world.module_interface(required_module);
+        let selected = self.select_required_macro_exports(import, interface.callables())?;
         if let Some(blocked) = self.wait_for_imported_macro_executables(&selected) {
             return Ok(Some(blocked));
         }
@@ -819,12 +820,12 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     fn select_required_macro_exports(
         &mut self,
         import: &super::quoted_surface::ImportForm,
-        exports: &[ModuleExport],
-    ) -> Result<Vec<ModuleExport>, FatalError> {
+        callables: &[ModuleInterfaceCallable],
+    ) -> Result<Vec<ModuleInterfaceCallable>, FatalError> {
         if let Some(only) = import.only.as_deref() {
             let mut selected = Vec::with_capacity(only.len());
             for (name, arity) in only {
-                let Some(export) = find_export(exports, name, *arity) else {
+                let Some(callable) = find_callable(callables, name, *arity) else {
                     return Err(emit_job_diagnostic(
                         self.world,
                         Diagnostic::error(
@@ -839,7 +840,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                         ),
                     ));
                 };
-                if !matches!(export.symbol, NamespaceSymbol::Macro(_)) {
+                if !matches!(callable.kind, InterfaceCallableKind::Macro) {
                     return Err(emit_job_diagnostic(
                         self.world,
                         Diagnostic::error(
@@ -854,14 +855,14 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                         ),
                     ));
                 }
-                selected.push(export.clone());
+                selected.push(callable.clone());
             }
             return Ok(selected);
         }
 
         let mut denied = HashSet::new();
         for (name, arity) in import.except.as_deref().unwrap_or(&[]) {
-            let Some(export) = find_export(exports, name, *arity) else {
+            let Some(callable) = find_callable(callables, name, *arity) else {
                 return Err(emit_job_diagnostic(
                     self.world,
                     Diagnostic::error(
@@ -876,7 +877,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                     ),
                 ));
             };
-            if !matches!(export.symbol, NamespaceSymbol::Macro(_)) {
+            if !matches!(callable.kind, InterfaceCallableKind::Macro) {
                 return Err(emit_job_diagnostic(
                     self.world,
                     Diagnostic::error(
@@ -893,10 +894,10 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             }
             denied.insert((name.as_str(), *arity));
         }
-        Ok(exports
+        Ok(callables
             .iter()
-            .filter(|export| matches!(export.symbol, NamespaceSymbol::Macro(_)))
-            .filter(|export| !denied.contains(&(export.name.as_str(), export.arity)))
+            .filter(|callable| matches!(callable.kind, InterfaceCallableKind::Macro))
+            .filter(|callable| !denied.contains(&(callable.reference.name.as_str(), callable.reference.arity)))
             .cloned()
             .collect())
     }
@@ -931,11 +932,12 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         }
         self.reads.push(surface_fact);
 
-        let exports = self.world.module_exports(imported_module);
+        let interface = self.world.module_interface(imported_module);
+        let callables = interface.callables();
         let selected = if let Some(only) = import.only.as_deref() {
             let mut selected = Vec::with_capacity(only.len());
             for (name, arity) in only {
-                let Some(export) = find_export(&exports, name, *arity) else {
+                let Some(callable) = find_callable(callables, name, *arity) else {
                     return Err(emit_job_diagnostic(
                         self.world,
                         Diagnostic::error(
@@ -950,13 +952,13 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                         ),
                     ));
                 };
-                selected.push(export.clone());
+                selected.push(callable.clone());
             }
             selected
         } else if let Some(except) = import.except.as_deref() {
             let mut deny = HashSet::new();
             for (name, arity) in except {
-                if find_export(&exports, name, *arity).is_none() {
+                if find_callable(callables, name, *arity).is_none() {
                     return Err(emit_job_diagnostic(
                         self.world,
                         Diagnostic::error(
@@ -973,38 +975,39 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 }
                 deny.insert((name.as_str(), *arity));
             }
-            exports
+            callables
                 .iter()
-                .filter(|export| !deny.contains(&(export.name.as_str(), export.arity)))
+                .filter(|callable| !deny.contains(&(callable.reference.name.as_str(), callable.reference.arity)))
                 .cloned()
                 .collect()
         } else {
-            exports
+            callables.to_vec()
         };
 
         if let Some(blocked) = self.wait_for_imported_macro_executables(&selected) {
             return Ok(Some(blocked));
         }
         for export in &selected {
-            self.namespace = bind_export(self.world, self.namespace, export);
+            self.namespace = bind_callable(self.world, self.namespace, export);
         }
         Ok(None)
     }
 
-    fn record_required_remote_macros(&mut self, exports: &[ModuleExport]) {
-        for export in exports {
-            if let NamespaceSymbol::Macro(function) = export.symbol {
-                self.required_remote_macros.insert(function);
+    fn record_required_remote_macros(&mut self, callables: &[ModuleInterfaceCallable]) {
+        for callable in callables {
+            if callable.kind == InterfaceCallableKind::Macro {
+                self.required_remote_macros.insert(callable.function);
             }
         }
     }
 
-    fn wait_for_imported_macro_executables(&mut self, exports: &[ModuleExport]) -> Option<JobEffects> {
+    fn wait_for_imported_macro_executables(&mut self, callables: &[ModuleInterfaceCallable]) -> Option<JobEffects> {
         let mut effects = JobEffects::default();
-        for export in exports {
-            let NamespaceSymbol::Macro(function) = export.symbol else {
+        for callable in callables {
+            if callable.kind != InterfaceCallableKind::Macro {
                 continue;
-            };
+            }
+            let function = callable.function;
             let fact = FactKey::MacroExecutable(function);
             if self.world.fact_revision(fact.clone()).is_some() {
                 self.reads.push(fact);
@@ -1092,19 +1095,22 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             revision_floor: self.revision_floor,
             reads: self.reads,
             outputs: self.outputs,
-            exports: self.exports,
+            interface: ModuleInterface::new(self.callables),
         }
     }
 }
 
-fn build_module_info_function(exports: &[ModuleExport], module_name: &str) -> Result<FunctionForm, QuotedSourceError> {
+fn build_module_info_function(
+    callables: &[ModuleInterfaceCallable],
+    module_name: &str,
+) -> Result<FunctionForm, QuotedSourceError> {
     let heap = Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
     let meta = QuotedSourceMetadata::default();
-    let functions = module_info_pairs(&builder, exports, |symbol| {
-        matches!(symbol, NamespaceSymbol::Function(_))
+    let functions = module_info_pairs(&builder, callables, |kind| {
+        matches!(kind, InterfaceCallableKind::PublicFunction)
     })?;
-    let macros = module_info_pairs(&builder, exports, |symbol| matches!(symbol, NamespaceSymbol::Macro(_)))?;
+    let macros = module_info_pairs(&builder, callables, |kind| matches!(kind, InterfaceCallableKind::Macro))?;
     let kind = builder.variable("kind", &meta)?;
     let body = module_info_case(&builder, &meta, kind, functions, macros, builder.atom(module_name))?;
     let clause = module_info_function_clause(&builder, &meta, kind, body)?;
@@ -1121,13 +1127,18 @@ fn build_module_info_function(exports: &[ModuleExport], module_name: &str) -> Re
 
 fn module_info_pairs(
     builder: &super::source::QuotedSourceBuilder,
-    exports: &[ModuleExport],
-    keep: impl Fn(&NamespaceSymbol) -> bool,
+    callables: &[ModuleInterfaceCallable],
+    keep: impl Fn(InterfaceCallableKind) -> bool,
 ) -> Result<AnyValueRef, QuotedSourceError> {
-    let pairs = exports
+    let pairs = callables
         .iter()
-        .filter(|export| keep(&export.symbol))
-        .map(|export| builder.tuple(&[builder.atom(&export.name), builder.int(export.arity as i64)]))
+        .filter(|callable| keep(callable.kind))
+        .map(|callable| {
+            builder.tuple(&[
+                builder.atom(&callable.reference.name),
+                builder.int(callable.reference.arity as i64),
+            ])
+        })
         .collect::<Result<Vec<_>, _>>()?;
     builder.list(&pairs)
 }
@@ -1182,7 +1193,7 @@ fn required_remote_macro_list(required_remote_macros: &HashSet<FunctionId>) -> V
 struct FunctionPublication {
     function: FunctionId,
     output: Output,
-    export: Option<ModuleExport>,
+    callable: Option<ModuleInterfaceCallable>,
 }
 
 fn publish_function_source(
@@ -1210,16 +1221,15 @@ fn publish_function_source(
         },
     );
 
-    let symbol = if function.is_macro {
-        NamespaceSymbol::Macro(function_id)
-    } else {
-        NamespaceSymbol::Function(function_id)
-    };
-    let export = (export_public && !function.is_private).then(|| ModuleExport {
-        name: function.name.clone(),
-        arity: function.arity,
+    let callable = (export_public && !function.is_private).then(|| ModuleInterfaceCallable {
+        function: function_id,
+        reference: world.function_ref(function_id).clone(),
+        kind: if function.is_macro {
+            InterfaceCallableKind::Macro
+        } else {
+            InterfaceCallableKind::PublicFunction
+        },
         variadic: function.variadic,
-        symbol: symbol.clone(),
     });
     let source = world
         .function_source(function_id)
@@ -1228,7 +1238,7 @@ fn publish_function_source(
     FunctionPublication {
         function: function_id,
         output: (FactKey::FunctionSource(function_id), revision),
-        export,
+        callable,
     }
 }
 
@@ -1358,14 +1368,18 @@ fn note_protocol_domain_type(world: &mut World<'_>, name: TypeName, namespace: N
     world.record_type_def_refs(name, Vec::new());
 }
 
-fn find_export<'a>(exports: &'a [ModuleExport], name: &str, arity: usize) -> Option<&'a ModuleExport> {
-    exports
+fn find_callable<'a>(
+    callables: &'a [ModuleInterfaceCallable],
+    name: &str,
+    arity: usize,
+) -> Option<&'a ModuleInterfaceCallable> {
+    callables
         .iter()
-        .find(|export| export.name == name && export.arity == arity)
+        .find(|callable| callable.matches_name_arity(name, arity))
 }
 
-fn bind_export(world: &mut World<'_>, scope: Namespace, export: &ModuleExport) -> Namespace {
-    world.bind_namespace(scope, export.name.clone(), export.symbol.clone())
+fn bind_callable(world: &mut World<'_>, scope: Namespace, callable: &ModuleInterfaceCallable) -> Namespace {
+    world.bind_namespace(scope, callable.reference.name.clone(), callable.namespace_symbol())
 }
 
 fn reference_declared_protocol_module(world: &mut World<'_>, current_module: ModuleId, name: &ModuleName) -> ModuleId {

@@ -123,9 +123,9 @@ pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Resul
                 revision_floor: _revision_floor,
                 reads,
                 mut outputs,
-                exports,
+                interface,
             } => {
-                let changed = world.define_module(module_id, namespace, exports);
+                let changed = world.define_module(module_id, namespace, interface);
                 outputs.push((FactKey::ModuleDefined(module_id), changed));
                 Ok(JobEffects {
                     reads,

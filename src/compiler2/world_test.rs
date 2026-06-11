@@ -1,4 +1,4 @@
-use super::{DriveOutcome, FactKey, Job, ModuleId, Namespace, TypeName, TypeVarId, Types, World};
+use super::{DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, TypeName, TypeVarId, Types, World};
 use crate::ast::Attribute;
 use crate::specs::ResolvedTypeShape;
 use crate::telemetry::ConfiguredTelemetry;
@@ -10,17 +10,17 @@ fn compiler2_world_define_module_panics_for_unscoped_module() {
     let mut world = World::new(&tel);
     let module = world.reference_module("Unscoped");
 
-    let _ = world.define_module(module, Namespace::default(), Vec::new());
+    let _ = world.define_module(module, Namespace::default(), ModuleInterface::default());
 }
 
 #[test]
-#[should_panic(expected = "module exports should only be read from defined modules")]
-fn compiler2_world_module_exports_panics_for_unscoped_module() {
+#[should_panic(expected = "module interface should only be read from defined modules")]
+fn compiler2_world_module_interface_panics_for_unscoped_module() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new(&tel);
     let module = world.reference_module("Unscoped");
 
-    let _ = world.module_exports(module);
+    let _ = world.module_interface(module);
 }
 
 #[test]
