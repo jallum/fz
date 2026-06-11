@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-11T09:03:40Z",
-  "description": "Compiler2 currently has no equivalent of the old-world external interface table path. Imports that should resolve through external interfaces (for example fixtures2/00069_import_from_external_interface.fz) park forever on placeholder ModuleIndexed/ModuleDefined waits instead of resolving, and missing imported modules also never collapse into a proper unknown-module diagnostic through that path. This blocks the remaining compiler2 port_resolve import/interface tests and likely the runtime-interface-dependent cases in the same arc.",
+  "description": "Goal: make cross-module visibility a first-class compiler2 fact. `ModuleDefined(module)` will continue to mean the module body has been scoped/published, while a new `ModuleInterface(module)` fact will mean the module's exported callable surface is available. Strategy: move compiler2 from stringy `ModuleExport` vectors and ad hoc import/require filtering to a module-owned interface model built around `FunctionId`-backed callable entries, exact obligation tracking with requester provenance, and `Ready|Pending` set selection for `All`/`Except` import and require forms. Signal: local, runtime, and external modules all publish one interface shape; exact `only:` imports/requires can stay lazy through interface obligations; `All`/`Except` wait on `ModuleInterface` instead of `ModuleDefined`; missing-export diagnostics come from interface settlement with real requester spans; compiler2 no longer duplicates export selection logic across callers.",
   "id": "fz-rh2.17",
   "labels": [],
   "parent": "fz-rh2",
   "priority": 1,
   "status": "open",
-  "title": "Compiler2: add external interface import/interface resolution",
-  "type": "bug",
-  "updated_at": "2026-06-11T09:03:40Z"
+  "title": "Compiler2 module interface facts: module-owned callable visibility and external import resolution",
+  "type": "epic",
+  "updated_at": "2026-06-11T09:57:05Z"
 }
