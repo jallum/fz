@@ -15,5 +15,5 @@
   "status": "open",
   "title": "Compiler2 interface consumers: move import/require and cross-module source lookup onto interface queries",
   "type": "task",
-  "updated_at": "2026-06-11T11:38:49Z"
+  "updated_at": "2026-06-11T11:38:50Z"
 }
