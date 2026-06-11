@@ -6,14 +6,16 @@
   "blocks": [
     "fz-rh2.18.5"
   ],
+  "closed_at": "2026-06-11T22:15:45Z",
+  "close_reason": "Landed in e9dbb61e3",
   "created": "2026-06-11T21:02:58Z",
   "description": "Goal: artifact and backend work must consume engine-settled facts, not infer readiness from fact presence plus manual revision snapshots. Signal: MaterializeRoot waits on settled SemanticClosed(root); stale semantic dependencies block through the scheduler; semantic_closure_is_current and DependencySnapshot are deleted. Strategy: convert SealSemanticClosure and MaterializeRoot to the current/settled fact-use contract, move freshness authority into the engine, and remove wait_for_fresh_closure logic that manually polls dependency revisions.",
   "id": "fz-rh2.18.1",
   "labels": [],
   "parent": "fz-rh2.18",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 artifacts: consume settled semantic facts and delete manual freshness checks",
   "type": "task",
-  "updated_at": "2026-06-11T21:34:56Z"
+  "updated_at": "2026-06-11T22:15:45Z"
 }
