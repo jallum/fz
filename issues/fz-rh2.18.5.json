@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.18.1"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-rh2.18",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 semantics: split activation demand from activation input evidence",
   "type": "task",
-  "updated_at": "2026-06-11T21:03:55Z"
+  "updated_at": "2026-06-11T22:15:53Z"
 }
