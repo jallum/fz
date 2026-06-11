@@ -26,6 +26,7 @@ pub(crate) fn run(world: &mut World<'_>, job: &Job) -> Result<JobEffects, FatalE
         Job::IndexCode(code_id) => source::index_code(world, *code_id),
         Job::ScopeCode(code_id) => source::scope_code(world, *code_id),
         Job::DefineModule(module_id) => source::define_module(world, *module_id),
+        Job::DefineModuleInterface(module_id) => source::define_module_interface(world, *module_id),
         Job::ExpandFunctionSource(function_id) => source::expand_function_source(world, *function_id),
         Job::DefineFunction(function_id) => source::define_function(world, *function_id),
         Job::DeriveTypeDef(type_name) => types::derive_type_def(world, type_name),

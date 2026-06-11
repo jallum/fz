@@ -95,11 +95,17 @@ pub enum RootKind {
 
 #[derive(Debug, Clone)]
 pub enum ModuleState {
-    Placeholder,
-    Indexed(ModuleSource),
+    Placeholder {
+        interface: Option<ModuleInterface>,
+    },
+    Indexed {
+        source: ModuleSource,
+        interface: Option<ModuleInterface>,
+    },
     Scoped {
         source: ModuleSource,
         base: Namespace,
+        interface: Option<ModuleInterface>,
     },
     Defined {
         source: ModuleSource,
@@ -111,10 +117,10 @@ pub enum ModuleState {
 impl ModuleState {
     fn source(&self) -> Option<&ModuleSource> {
         match self {
-            ModuleState::Placeholder => None,
-            ModuleState::Indexed(source) | ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. } => {
-                Some(source)
-            }
+            ModuleState::Placeholder { .. } => None,
+            ModuleState::Indexed { source, .. }
+            | ModuleState::Scoped { source, .. }
+            | ModuleState::Defined { source, .. } => Some(source),
         }
     }
 
@@ -123,6 +129,14 @@ impl ModuleState {
             ModuleState::Scoped { base, .. } => Some(*base),
             ModuleState::Defined { base, .. } => Some(*base),
             _ => None,
+        }
+    }
+
+    pub(crate) fn interface(&self) -> Option<&ModuleInterface> {
+        match self {
+            ModuleState::Placeholder { interface } => interface.as_ref(),
+            ModuleState::Indexed { interface, .. } | ModuleState::Scoped { interface, .. } => interface.as_ref(),
+            ModuleState::Defined { interface, .. } => Some(interface),
         }
     }
 }
@@ -273,7 +287,7 @@ impl ModuleMap {
             return *id;
         }
         let id = ModuleId(self.slots.len() as u32);
-        self.slots.push(ModuleState::Placeholder);
+        self.slots.push(ModuleState::Placeholder { interface: None });
         self.names.push(Some(name.clone()));
         self.by_name.insert(name, id);
         id
@@ -286,6 +300,30 @@ impl ModuleMap {
             base: module.base_namespace().unwrap_or(base),
             interface,
             source,
+        };
+        update_if_changed(module, next)
+    }
+
+    pub fn define_interface(&mut self, id: ModuleId, interface: ModuleInterface) -> bool {
+        let module = &mut self.slots[id.0 as usize];
+        let next = match module.clone() {
+            ModuleState::Placeholder { .. } => ModuleState::Placeholder {
+                interface: Some(interface),
+            },
+            ModuleState::Indexed { source, .. } => ModuleState::Indexed {
+                source,
+                interface: Some(interface),
+            },
+            ModuleState::Scoped { source, base, .. } => ModuleState::Scoped {
+                source,
+                base,
+                interface: Some(interface),
+            },
+            ModuleState::Defined { source, base, .. } => ModuleState::Defined {
+                source,
+                base,
+                interface,
+            },
         };
         update_if_changed(module, next)
     }
@@ -309,6 +347,7 @@ impl ModuleMap {
             ModuleState::Scoped {
                 source,
                 base: base_namespace,
+                interface: module.interface().cloned(),
             }
         };
         update_if_changed(module, next)
@@ -324,13 +363,16 @@ impl ModuleMap {
         surface: ScopeSurface,
     ) -> bool {
         let module = &mut self.slots[id.0 as usize];
-        let next = ModuleState::Indexed(ModuleSource {
-            code,
-            parent,
-            local_name,
-            source,
-            kind: ModuleSourceKind::Body(surface),
-        });
+        let next = ModuleState::Indexed {
+            source: ModuleSource {
+                code,
+                parent,
+                local_name,
+                source,
+                kind: ModuleSourceKind::Body(surface),
+            },
+            interface: module.interface().cloned(),
+        };
         update_if_changed(module, next)
     }
 
@@ -344,13 +386,16 @@ impl ModuleMap {
         surface: ScopeSurface,
     ) -> bool {
         let module = &mut self.slots[id.0 as usize];
-        let next = ModuleState::Indexed(ModuleSource {
-            code,
-            parent,
-            local_name,
-            source,
-            kind: ModuleSourceKind::Protocol(surface),
-        });
+        let next = ModuleState::Indexed {
+            source: ModuleSource {
+                code,
+                parent,
+                local_name,
+                source,
+                kind: ModuleSourceKind::Protocol(surface),
+            },
+            interface: module.interface().cloned(),
+        };
         update_if_changed(module, next)
     }
 
@@ -386,8 +431,8 @@ impl ModuleMap {
             };
             let module = &self.slots[index];
             let Some(fields) = (match module {
-                ModuleState::Placeholder => None,
-                ModuleState::Indexed(source)
+                ModuleState::Placeholder { .. } => None,
+                ModuleState::Indexed { source, .. }
                 | ModuleState::Scoped { source, .. }
                 | ModuleState::Defined { source, .. } => match &source.kind {
                     ModuleSourceKind::Body(surface) => surface.forms.iter().find_map(|form| match form {
@@ -637,18 +682,36 @@ impl Reconcile for ModuleState {
 impl ModuleState {
     fn same(&self, other: &Self) -> bool {
         match (self, other) {
-            (ModuleState::Placeholder, ModuleState::Placeholder) => true,
-            (ModuleState::Indexed(left), ModuleState::Indexed(right)) => left.same_source(right),
+            (
+                ModuleState::Placeholder {
+                    interface: left_interface,
+                },
+                ModuleState::Placeholder {
+                    interface: right_interface,
+                },
+            ) => left_interface == right_interface,
+            (
+                ModuleState::Indexed {
+                    source: left_source,
+                    interface: left_interface,
+                },
+                ModuleState::Indexed {
+                    source: right_source,
+                    interface: right_interface,
+                },
+            ) => left_source.same_source(right_source) && left_interface == right_interface,
             (
                 ModuleState::Scoped {
                     source: left_source,
                     base: left_base,
+                    interface: left_interface,
                 },
                 ModuleState::Scoped {
                     source: right_source,
                     base: right_base,
+                    interface: right_interface,
                 },
-            ) => left_source.same_source(right_source) && left_base == right_base,
+            ) => left_source.same_source(right_source) && left_base == right_base && left_interface == right_interface,
             (
                 ModuleState::Defined {
                     source: left_source,

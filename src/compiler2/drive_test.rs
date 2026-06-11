@@ -7281,14 +7281,14 @@ impl ModuleCapture {
         match &module {
             crate::compiler2::ModuleState::Defined { source, .. }
             | crate::compiler2::ModuleState::Scoped { source, .. }
-            | crate::compiler2::ModuleState::Indexed(source) => {
+            | crate::compiler2::ModuleState::Indexed { source, .. } => {
                 if source.parent == ModuleId::GLOBAL {
                     source.local_name.clone()
                 } else {
                     format!("{}.{}", modules.qualified_name(source.parent), source.local_name)
                 }
             }
-            crate::compiler2::ModuleState::Placeholder => {
+            crate::compiler2::ModuleState::Placeholder { .. } => {
                 panic!("defined module capture should not contain placeholders")
             }
         }

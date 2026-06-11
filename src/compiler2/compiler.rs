@@ -1,12 +1,12 @@
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 
-use super::ExecutableNeed;
 use super::Job;
 use super::NativeProgram;
 use super::code::CodeId;
 use super::identity::{FunctionId, RootId};
 use super::scheduler::DriveOutcome;
 use super::world::World;
+use super::{ExecutableNeed, ModuleId, ModuleInterface};
 
 /// Public front door for the side-by-side incremental compiler.
 ///
@@ -39,6 +39,10 @@ impl<'a> Compiler2<'a> {
     pub fn submit_code(&mut self, submission: CodeSubmission) -> CodeId {
         let CodeSubmission { name, text } = submission;
         self.world.submit_code(name, text)
+    }
+
+    pub fn submit_module_interface(&mut self, module_name: String, interface: ModuleInterface) -> ModuleId {
+        self.world.submit_module_interface(module_name, interface)
     }
 
     /// Submits one root request and seeds whatever source-surface work it needs.

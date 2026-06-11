@@ -108,7 +108,8 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
 ///
 /// A module can only be defined after its parent scope exists. If the parent is
 /// not ready, this job waits on the parent fact and schedules the parent job.
-/// When ready, it scopes the module body and publishes `ModuleDefined`.
+/// When ready, it scopes the module body and publishes `ModuleDefined` and
+/// `ModuleInterface`.
 pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Result<JobEffects, FatalError> {
     if let Some((source, scope)) = world.module_scope(module_id) {
         let result = match &source.kind {
@@ -127,6 +128,7 @@ pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Resul
             } => {
                 let changed = world.define_module(module_id, namespace, interface);
                 outputs.push((FactKey::ModuleDefined(module_id), changed));
+                outputs.push((FactKey::ModuleInterface(module_id), changed));
                 Ok(JobEffects {
                     reads,
                     outputs,
@@ -165,6 +167,24 @@ pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Resul
     }
 
     Ok(JobEffects::wait_on(FactKey::ModuleIndexed(module_id), []))
+}
+
+pub(super) fn define_module_interface(world: &mut World<'_>, module_id: ModuleId) -> Result<JobEffects, FatalError> {
+    if world.module_scope(module_id).is_some() {
+        return Ok(JobEffects::wait_on(
+            FactKey::ModuleInterface(module_id),
+            [Job::DefineModule(module_id)],
+        ));
+    }
+
+    let Some(interface) = world.module_interface_if_present(module_id) else {
+        return Ok(JobEffects::wait_on(FactKey::ModuleIndexed(module_id), []));
+    };
+    let changed = world.define_module_interface(module_id, interface);
+    Ok(JobEffects {
+        outputs: vec![(FactKey::ModuleInterface(module_id), changed)],
+        ..JobEffects::default()
+    })
 }
 
 pub(super) fn define_function(

@@ -14,13 +14,29 @@ fn compiler2_world_define_module_panics_for_unscoped_module() {
 }
 
 #[test]
-#[should_panic(expected = "module interface should only be read from defined modules")]
+#[should_panic(expected = "module interface should only be read when it exists")]
 fn compiler2_world_module_interface_panics_for_unscoped_module() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new(&tel);
     let module = world.reference_module("Unscoped");
 
     let _ = world.module_interface(module);
+}
+
+#[test]
+fn compiler2_world_submitted_module_interface_is_available_without_module_definition() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    let module = world.submit_module_interface("IfaceOnly".to_string(), ModuleInterface::default());
+
+    assert_eq!(world.module_interface(module), ModuleInterface::default());
+    assert!(world.module_defined_revision(module).is_none());
+    assert!(world.module_interface_revision(module).is_none());
+    assert!(
+        matches!(world.drive(), DriveOutcome::Resolved),
+        "publishing an interface-only module should settle without body definition",
+    );
+    assert!(world.module_interface_revision(module).is_some());
 }
 
 #[test]

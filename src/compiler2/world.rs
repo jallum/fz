@@ -230,6 +230,13 @@ impl<'a> World<'a> {
         code_id
     }
 
+    pub fn submit_module_interface(&mut self, module_name: String, interface: ModuleInterface) -> ModuleId {
+        let module = self.reference_module(module_name);
+        self.define_module_interface(module, interface);
+        self.work_graph.enqueue(Job::DefineModuleInterface(module));
+        module
+    }
+
     pub fn submit_root(
         &mut self,
         module_name: Option<String>,
@@ -722,6 +729,10 @@ impl<'a> World<'a> {
         changed
     }
 
+    pub fn define_module_interface(&mut self, id: ModuleId, interface: ModuleInterface) -> bool {
+        self.modules.define_interface(id, interface)
+    }
+
     pub fn index_module_body(
         &mut self,
         id: ModuleId,
@@ -920,7 +931,9 @@ impl<'a> World<'a> {
             && matches!(name.arity, 0 | 1)
             && matches!(
                 self.modules.get(name.module),
-                ModuleState::Indexed(source) | ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. }
+                ModuleState::Indexed { source, .. }
+                    | ModuleState::Scoped { source, .. }
+                    | ModuleState::Defined { source, .. }
                     if matches!(source.kind, ModuleSourceKind::Protocol(_))
             )
     }
@@ -1378,26 +1391,29 @@ impl<'a> World<'a> {
     }
 
     pub fn module_interface(&self, module: ModuleId) -> ModuleInterface {
-        match self.modules.get(module) {
-            ModuleState::Defined { interface, .. } => interface.clone(),
-            ModuleState::Placeholder | ModuleState::Indexed(_) | ModuleState::Scoped { .. } => {
-                panic!("module interface should only be read from defined modules")
-            }
-        }
+        self.modules
+            .get(module)
+            .interface()
+            .cloned()
+            .expect("module interface should only be read when it exists")
+    }
+
+    pub fn module_interface_if_present(&self, module: ModuleId) -> Option<ModuleInterface> {
+        self.modules.get(module).interface().cloned()
     }
 
     pub(crate) fn module_struct_fields(&self, module: ModuleId) -> Option<&[String]> {
         match self.modules.get(module) {
-            ModuleState::Placeholder => None,
-            ModuleState::Indexed(source) | ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. } => {
-                match &source.kind {
-                    ModuleSourceKind::Protocol(_) => None,
-                    ModuleSourceKind::Body(body) => body.forms.iter().find_map(|form| match form {
-                        super::quoted_surface::ScopeForm::Struct(def) => Some(def.fields.as_slice()),
-                        _ => None,
-                    }),
-                }
-            }
+            ModuleState::Placeholder { .. } => None,
+            ModuleState::Indexed { source, .. }
+            | ModuleState::Scoped { source, .. }
+            | ModuleState::Defined { source, .. } => match &source.kind {
+                ModuleSourceKind::Protocol(_) => None,
+                ModuleSourceKind::Body(body) => body.forms.iter().find_map(|form| match form {
+                    super::quoted_surface::ScopeForm::Struct(def) => Some(def.fields.as_slice()),
+                    _ => None,
+                }),
+            },
         }
     }
 
@@ -1713,7 +1729,7 @@ impl<'a> World<'a> {
 
     pub fn module_scope(&self, module: ModuleId) -> Option<(super::identity::ModuleSource, ScopeSnapshot)> {
         match self.modules.get(module) {
-            ModuleState::Scoped { source, base } => Some((source.clone(), ScopeSnapshot::module(module, *base))),
+            ModuleState::Scoped { source, base, .. } => Some((source.clone(), ScopeSnapshot::module(module, *base))),
             ModuleState::Defined { source, base, .. } => Some((source.clone(), ScopeSnapshot::module(module, *base))),
             _ => None,
         }
@@ -1721,7 +1737,7 @@ impl<'a> World<'a> {
 
     pub fn module_indexed_parent(&self, module: ModuleId) -> Option<(CodeId, ModuleId)> {
         match self.modules.get(module) {
-            ModuleState::Indexed(source) => Some((source.code, source.parent)),
+            ModuleState::Indexed { source, .. } => Some((source.code, source.parent)),
             _ => None,
         }
     }
@@ -1735,7 +1751,7 @@ impl<'a> World<'a> {
     fn module_definition_code(&self, module: ModuleId) -> CodeId {
         match self.modules.get(module) {
             ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. } => source.code,
-            ModuleState::Placeholder | ModuleState::Indexed(_) => {
+            ModuleState::Placeholder { .. } | ModuleState::Indexed { .. } => {
                 panic!("modules should be scoped before definition")
             }
         }
@@ -1884,10 +1900,10 @@ impl<'a> World<'a> {
         let function_ref = self.functions.reference_for(function);
         let module = self.modules.get(function_ref.module);
         let source = match module {
-            ModuleState::Indexed(source) | ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. } => {
-                source
-            }
-            ModuleState::Placeholder => return None,
+            ModuleState::Indexed { source, .. }
+            | ModuleState::Scoped { source, .. }
+            | ModuleState::Defined { source, .. } => source,
+            ModuleState::Placeholder { .. } => return None,
         };
         match &source.kind {
             ModuleSourceKind::Protocol(protocol)
