@@ -37,7 +37,7 @@ use super::identity::{
     TypeName, TypeRefMap,
 };
 use super::keying::{DispatchMaskMap, RecursiveMap};
-use super::module_interface::ModuleInterface;
+use super::module_interface::{InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface};
 use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
 use super::protocol::{
     ProtocolCallback, ProtocolCallbackImpl, ProtocolCallbackMap, ProtocolDispatch, ProtocolDispatchArm,
@@ -1402,6 +1402,37 @@ impl<'a> World<'a> {
         self.modules.get(module).interface().cloned()
     }
 
+    pub(crate) fn module_has_source_state(&self, module: ModuleId) -> bool {
+        self.modules.get(module).source().is_some()
+    }
+
+    pub fn note_module_interface_expectation(&mut self, module: ModuleId, expectation: InterfaceExpectation) {
+        let mut interface = self.module_interface_if_present(module).unwrap_or_default();
+        interface.record_expectation(expectation);
+        self.define_module_interface(module, interface);
+    }
+
+    pub fn reference_module_interface_callable(
+        &mut self,
+        module: ModuleId,
+        name: String,
+        arity: usize,
+        kind: InterfaceCallableKind,
+        requester: Option<InterfaceRequester>,
+    ) -> FunctionId {
+        let function = self.reference_function(module, name.clone(), arity);
+        self.note_module_interface_expectation(
+            module,
+            InterfaceExpectation {
+                name,
+                arity,
+                kind,
+                requester,
+            },
+        );
+        function
+    }
+
     pub(crate) fn module_struct_fields(&self, module: ModuleId) -> Option<&[String]> {
         match self.modules.get(module) {
             ModuleState::Placeholder { .. } => None,
@@ -1646,7 +1677,7 @@ impl<'a> World<'a> {
         name: &str,
         arity: usize,
     ) -> Option<NamespaceSymbol> {
-        if self.module_defined_revision(module).is_none() {
+        if self.module_interface_revision(module).is_none() {
             return Some(NamespaceSymbol::Function(self.reference_function(
                 module,
                 name.to_string(),
@@ -1674,7 +1705,7 @@ impl<'a> World<'a> {
     pub(crate) fn min_variadic_arity(&mut self, head: Namespace, name: &str) -> Option<usize> {
         if let Some((module_path, local_name)) = name.rsplit_once('.') {
             let module = self.lookup_module_path(head, module_path)?;
-            self.module_defined_revision(module)?;
+            self.module_interface_revision(module)?;
             return self
                 .module_interface(module)
                 .callables()

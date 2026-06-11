@@ -115,7 +115,7 @@ pub enum ModuleState {
 }
 
 impl ModuleState {
-    fn source(&self) -> Option<&ModuleSource> {
+    pub(crate) fn source(&self) -> Option<&ModuleSource> {
         match self {
             ModuleState::Placeholder { .. } => None,
             ModuleState::Indexed { source, .. }

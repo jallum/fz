@@ -6577,15 +6577,14 @@ fn compiler2_import_only_classifies_exact_refs_when_body_uses_them() {
     let mut names = functions
         .all()
         .into_iter()
+        .filter(|record| module_ids.contains(&record.module_id))
         .filter(|record| record.function_ref.name != "__info__")
         .map(|record| (function_fq_name(&record, &modules), record.arity))
         .collect::<Vec<_>>();
     names.sort();
     assert!(
-        names.contains(&("Math.add".to_string(), 1))
-            && names.contains(&("Math.add".to_string(), 2))
-            && names.contains(&("User.run".to_string(), 0)),
-        "source publication should define the provider surface before saving a body that calls an exact import: {names:?}"
+        names == vec![("User.run".to_string(), 0)],
+        "exact import-only publication should keep the provider lazy until a caller actually needs it: {names:?}"
     );
 
     compiler.submit_root(RootSubmission {
@@ -6601,6 +6600,7 @@ fn compiler2_import_only_classifies_exact_refs_when_body_uses_them() {
     let mut names = functions
         .all()
         .into_iter()
+        .filter(|record| module_ids.contains(&record.module_id))
         .filter(|record| record.function_ref.name != "__info__")
         .map(|record| (function_fq_name(&record, &modules), record.arity))
         .collect::<Vec<_>>();
@@ -6851,7 +6851,7 @@ end
 }
 
 #[test]
-fn compiler2_import_only_missing_target_is_unresolved_when_used() {
+fn compiler2_import_only_missing_target_stays_lazy_until_interface_settlement() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
@@ -6878,31 +6878,18 @@ fn compiler2_import_only_missing_target_is_unresolved_when_used() {
         compiler.demand(Job::DefineModule(module_ids[0])),
         "demanding User should enqueue the consumer module only"
     );
-    match compiler.drive() {
-        DriveOutcome::Fatal { job } if job == Job::DefineModule(module_ids[0]) => {}
-        other => panic!("missing exact import should fail while publishing the importing body: {other:?}"),
-    }
+    assert_resolved(
+        compiler.drive(),
+        "missing exact import should no longer fail during source publication; it becomes an interface expectation",
+    );
     assert!(
-        capture.contains(&["fz", "diag", "error"]),
-        "using a missing exact import should emit the deferred missing-export diagnostic"
-    );
-    let diagnostic = capture
-        .last(&["fz", "diag", "error"])
-        .expect("missing exact import diagnostic");
-    assert_eq!(
-        metadata_str(&diagnostic, "code"),
-        codes::RESOLVE_UNKNOWN_IMPORT.0,
-        "missing exact imports should reuse the module-export diagnostic shape"
-    );
-    assert_eq!(
-        metadata_str(&diagnostic, "message"),
-        "module `Math` does not export `missing/1`",
-        "missing exact imports should name the unresolved export"
+        !capture.contains(&["fz", "diag", "error"]),
+        "exact import expectations should defer missing-export diagnostics until interface settlement",
     );
 }
 
 #[test]
-fn compiler2_import_all_waits_for_defined_module_surface() {
+fn compiler2_import_all_waits_for_module_interface() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
@@ -6930,10 +6917,28 @@ fn compiler2_import_all_waits_for_defined_module_surface() {
         compiler.demand(Job::DefineModule(module_ids[0])),
         "demanding User should enqueue the consumer module only"
     );
-    assert_resolved(compiler.drive(), "third drive should define Math before retrying User");
+    assert_resolved(
+        compiler.drive(),
+        "third drive should publish the provider interface before retrying User",
+    );
+    assert!(
+        outputs
+            .stops_matching(|job| *job == Job::DefineModule(module_ids[0]))
+            .into_iter()
+            .any(|stop| {
+                stop.effects.as_ref().is_some_and(|effects| {
+                    effects
+                        .waits
+                        .iter()
+                        .any(|fact| matches!(fact, FactKey::ModuleInterface(_)))
+                })
+            }),
+        "import-all should wait on provider interface visibility, not provider definition",
+    );
     let mut names = functions
         .all()
         .into_iter()
+        .filter(|record| module_ids.contains(&record.module_id))
         .filter(|record| record.function_ref.name != "__info__")
         .map(|record| (function_fq_name(&record, &modules), record.arity))
         .collect::<Vec<_>>();
@@ -6950,7 +6955,7 @@ fn compiler2_import_all_waits_for_defined_module_surface() {
 }
 
 #[test]
-fn compiler2_import_except_waits_for_defined_module_surface() {
+fn compiler2_import_except_waits_for_module_interface() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
@@ -6978,10 +6983,28 @@ fn compiler2_import_except_waits_for_defined_module_surface() {
         compiler.demand(Job::DefineModule(module_ids[0])),
         "demanding User should enqueue the consumer module only"
     );
-    assert_resolved(compiler.drive(), "third drive should define Math before retrying User");
+    assert_resolved(
+        compiler.drive(),
+        "third drive should publish the provider interface before retrying User",
+    );
+    assert!(
+        outputs
+            .stops_matching(|job| *job == Job::DefineModule(module_ids[0]))
+            .into_iter()
+            .any(|stop| {
+                stop.effects.as_ref().is_some_and(|effects| {
+                    effects
+                        .waits
+                        .iter()
+                        .any(|fact| matches!(fact, FactKey::ModuleInterface(_)))
+                })
+            }),
+        "import-except should wait on provider interface visibility, not provider definition",
+    );
     let mut names = functions
         .all()
         .into_iter()
+        .filter(|record| module_ids.contains(&record.module_id))
         .filter(|record| record.function_ref.name != "__info__")
         .map(|record| (function_fq_name(&record, &modules), record.arity))
         .collect::<Vec<_>>();

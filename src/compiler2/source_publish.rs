@@ -19,7 +19,7 @@ use crate::{measurements, metadata};
 use super::code::CodeId;
 use super::drive::{FactKey, Job, JobEffects};
 use super::identity::{FunctionId, FunctionSource, ModuleId, NotedTypeDecl, TypeName};
-use super::module_interface::{InterfaceCallableKind, ModuleInterface, ModuleInterfaceCallable};
+use super::module_interface::{InterfaceCallableKind, InterfaceRequester, ModuleInterface, ModuleInterfaceCallable};
 use super::namespace::{Namespace, NamespaceSymbol};
 use super::protocol::ProtocolCallbackImpl;
 use super::quoted_expander::{
@@ -797,19 +797,34 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
 
     fn apply_require(&mut self, import: &super::quoted_surface::ImportForm) -> Result<Option<JobEffects>, FatalError> {
         let required_module = self.world.reference_module(import.path.join("."));
-        let surface_fact = FactKey::ModuleDefined(required_module);
-        if self.world.module_defined_revision(required_module).is_none() {
-            let follow_up = if required_module.is_global() {
-                Vec::new()
+        let selected = if self.world.module_interface_revision(required_module).is_none() {
+            if let Some(only) = import.only.as_deref() {
+                only.iter()
+                    .map(|(name, arity)| {
+                        let function = self.world.reference_module_interface_callable(
+                            required_module,
+                            name.clone(),
+                            *arity,
+                            InterfaceCallableKind::Macro,
+                            Some(self.interface_requester(import.span)),
+                        );
+                        ModuleInterfaceCallable {
+                            function,
+                            reference: self.world.function_ref(function).clone(),
+                            kind: InterfaceCallableKind::Macro,
+                            variadic: false,
+                        }
+                    })
+                    .collect()
             } else {
-                vec![Job::DefineModule(required_module)]
-            };
-            return Ok(Some(JobEffects::wait_on(surface_fact, follow_up)));
-        }
-        self.reads.push(surface_fact);
-
-        let interface = self.world.module_interface(required_module);
-        let selected = self.select_required_macro_exports(import, interface.callables())?;
+                return Ok(Some(self.wait_for_module_interface(required_module)));
+            }
+        } else {
+            let fact = FactKey::ModuleInterface(required_module);
+            self.reads.push(fact);
+            let interface = self.world.module_interface(required_module);
+            self.select_required_macro_exports(import, interface.callables())?
+        };
         if let Some(blocked) = self.wait_for_imported_macro_executables(&selected) {
             return Ok(Some(blocked));
         }
@@ -904,84 +919,82 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
 
     fn apply_import(&mut self, import: &super::quoted_surface::ImportForm) -> Result<Option<JobEffects>, FatalError> {
         let imported_module = self.world.reference_module(import.path.join("."));
-        let surface_fact = FactKey::ModuleDefined(imported_module);
-        if self.world.module_defined_revision(imported_module).is_none() {
+        let selected = if self.world.module_interface_revision(imported_module).is_none() {
             if let Some(only) = import.only.as_deref() {
-                if !self.world.is_runtime_prelude(self.code_id) {
-                    let follow_up = if imported_module.is_global() {
-                        Vec::new()
-                    } else {
-                        vec![Job::DefineModule(imported_module)]
-                    };
-                    return Ok(Some(JobEffects::wait_on(surface_fact, follow_up)));
-                }
-                for (name, arity) in only {
-                    let function = self.world.reference_function(imported_module, name.clone(), *arity);
-                    self.namespace =
-                        self.world
-                            .bind_namespace(self.namespace, name.clone(), NamespaceSymbol::Function(function));
-                }
-                return Ok(None);
-            }
-            let follow_up = if imported_module.is_global() {
-                Vec::new()
+                only.iter()
+                    .map(|(name, arity)| {
+                        let function = self.world.reference_module_interface_callable(
+                            imported_module,
+                            name.clone(),
+                            *arity,
+                            InterfaceCallableKind::PublicFunction,
+                            Some(self.interface_requester(import.span)),
+                        );
+                        ModuleInterfaceCallable {
+                            function,
+                            reference: self.world.function_ref(function).clone(),
+                            kind: InterfaceCallableKind::PublicFunction,
+                            variadic: false,
+                        }
+                    })
+                    .collect()
             } else {
-                vec![Job::DefineModule(imported_module)]
-            };
-            return Ok(Some(JobEffects::wait_on(surface_fact, follow_up)));
-        }
-        self.reads.push(surface_fact);
-
-        let interface = self.world.module_interface(imported_module);
-        let callables = interface.callables();
-        let selected = if let Some(only) = import.only.as_deref() {
-            let mut selected = Vec::with_capacity(only.len());
-            for (name, arity) in only {
-                let Some(callable) = find_callable(callables, name, *arity) else {
-                    return Err(emit_job_diagnostic(
-                        self.world,
-                        Diagnostic::error(
-                            codes::RESOLVE_UNKNOWN_IMPORT,
-                            format!(
-                                "module `{}` does not export `{}/{}`",
-                                import.path.join("."),
-                                name,
-                                arity
-                            ),
-                            import.span,
-                        ),
-                    ));
-                };
-                selected.push(callable.clone());
+                return Ok(Some(self.wait_for_module_interface(imported_module)));
             }
-            selected
-        } else if let Some(except) = import.except.as_deref() {
-            let mut deny = HashSet::new();
-            for (name, arity) in except {
-                if find_callable(callables, name, *arity).is_none() {
-                    return Err(emit_job_diagnostic(
-                        self.world,
-                        Diagnostic::error(
-                            codes::RESOLVE_UNKNOWN_IMPORT,
-                            format!(
-                                "module `{}` does not export `{}/{}`",
-                                import.path.join("."),
-                                name,
-                                arity
-                            ),
-                            import.span,
-                        ),
-                    ));
-                }
-                deny.insert((name.as_str(), *arity));
-            }
-            callables
-                .iter()
-                .filter(|callable| !deny.contains(&(callable.reference.name.as_str(), callable.reference.arity)))
-                .cloned()
-                .collect()
         } else {
-            callables.to_vec()
+            let fact = FactKey::ModuleInterface(imported_module);
+            self.reads.push(fact);
+            let interface = self.world.module_interface(imported_module);
+            let callables = interface.callables();
+            if let Some(only) = import.only.as_deref() {
+                let mut selected = Vec::with_capacity(only.len());
+                for (name, arity) in only {
+                    let Some(callable) = find_callable(callables, name, *arity) else {
+                        return Err(emit_job_diagnostic(
+                            self.world,
+                            Diagnostic::error(
+                                codes::RESOLVE_UNKNOWN_IMPORT,
+                                format!(
+                                    "module `{}` does not export `{}/{}`",
+                                    import.path.join("."),
+                                    name,
+                                    arity
+                                ),
+                                import.span,
+                            ),
+                        ));
+                    };
+                    selected.push(callable.clone());
+                }
+                selected
+            } else if let Some(except) = import.except.as_deref() {
+                let mut deny = HashSet::new();
+                for (name, arity) in except {
+                    if find_callable(callables, name, *arity).is_none() {
+                        return Err(emit_job_diagnostic(
+                            self.world,
+                            Diagnostic::error(
+                                codes::RESOLVE_UNKNOWN_IMPORT,
+                                format!(
+                                    "module `{}` does not export `{}/{}`",
+                                    import.path.join("."),
+                                    name,
+                                    arity
+                                ),
+                                import.span,
+                            ),
+                        ));
+                    }
+                    deny.insert((name.as_str(), *arity));
+                }
+                callables
+                    .iter()
+                    .filter(|callable| !deny.contains(&(callable.reference.name.as_str(), callable.reference.arity)))
+                    .cloned()
+                    .collect()
+            } else {
+                callables.to_vec()
+            }
         };
 
         if let Some(blocked) = self.wait_for_imported_macro_executables(&selected) {
@@ -991,6 +1004,23 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             self.namespace = bind_callable(self.world, self.namespace, export);
         }
         Ok(None)
+    }
+
+    fn interface_requester(&self, span: Span) -> InterfaceRequester {
+        InterfaceRequester {
+            code: self.code_id,
+            module: self.current_module,
+            span,
+        }
+    }
+
+    fn wait_for_module_interface(&self, module: ModuleId) -> JobEffects {
+        let follow_up = if self.world.module_has_source_state(module) || self.world.is_runtime_module(module) {
+            Job::DefineModule(module)
+        } else {
+            Job::DefineModuleInterface(module)
+        };
+        JobEffects::wait_on(FactKey::ModuleInterface(module), [follow_up])
     }
 
     fn record_required_remote_macros(&mut self, callables: &[ModuleInterfaceCallable]) {
