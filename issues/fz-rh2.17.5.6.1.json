@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-11T14:16:36Z",
   "created": "2026-06-11T14:07:36Z",
   "description": "",
   "id": "fz-rh2.17.5.6.1",
   "labels": [],
   "parent": "fz-rh2.17.5.6",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 root unresolved diagnostics: emit unknown-module for named roots without source",
   "type": "bug",
-  "updated_at": "2026-06-11T14:07:42Z"
+  "updated_at": "2026-06-11T14:16:36Z"
 }
