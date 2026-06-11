@@ -11,9 +11,15 @@
   "id": "fz-rh2.17.5.3",
   "labels": [],
   "parent": "fz-rh2.17.5",
+  "comments": [
+    {
+      "text": "After the current batch, cargo test --lib compiler2:: -- --nocapture still ends in a signal crash after known failing tests. The latest reproduction terminated with SIGBUS, not SIGSEGV, after the remaining port_macros/port_misc/port_type_infer failures.",
+      "timestamp": "2026-06-11T14:17:03Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Compiler2 test sweep: investigate SIGSEGV after failure continuation",
   "type": "bug",
-  "updated_at": "2026-06-11T13:55:30Z"
+  "updated_at": "2026-06-11T14:17:03Z"
 }
