@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-11T14:00:56Z",
+  "description": "After clearing the callable-interface source-production blockers, cargo test --lib compiler2:: still fails in drive/resolve coverage around missing unknown-module diagnostics and import resolution. Current failing tests include compiler2_submit_module_root_without_code_reports_one_unknown_module_diag plus port_resolve import failures such as import_non_exported_name_is_error, import_wrong_arity_is_error, import_except_wrong_arity_is_error, import_undefined_module_is_error, and import_resolves_from_external_interface. Recover the intended diagnostics and interface-backed resolution behavior.",
+  "id": "fz-rh2.17.5.6",
+  "labels": [],
+  "parent": "fz-rh2.17.5",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 interface/diagnostics sweep: recover unknown-module and import-resolution failures",
+  "type": "bug",
+  "updated_at": "2026-06-11T14:00:56Z"
+}
