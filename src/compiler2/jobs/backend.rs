@@ -23,7 +23,7 @@ use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryOrigin, LoweredBody, LoweredClause, LoweredEntry, LoweredStep,
     LoweredTail, ValueId,
 };
-use super::super::drive::{FactKey, Job, JobEffects, current_uses};
+use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
 use super::super::identity::RootKind;
 use super::super::identity::{ExecutableNeed, RootId};
 use super::super::scheduler::FatalError;
@@ -38,7 +38,7 @@ use super::super::world::World;
 pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let emission_ready_fact = FactKey::EmissionReadyProgram(root_id);
     let Some(emission_ready_revision) = world.fact_revision(emission_ready_fact.clone()) else {
-        return Ok(JobEffects::wait_on_current(
+        return Ok(JobEffects::wait_on_settled(
             emission_ready_fact,
             [Job::DeriveEmissionReady(root_id)],
         ));
@@ -73,7 +73,7 @@ pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> R
     let backend_fact = FactKey::BackendProgram(root_id);
     let changed = world.define_backend_program(root_id, program);
     Ok(JobEffects {
-        reads: current_uses([emission_ready_fact]),
+        reads: settled_uses([emission_ready_fact]),
         outputs: vec![backend_fact.clone()],
         changed: changed.then_some(backend_fact).into_iter().collect(),
         follow_up: if changed && world.root_entry(root_id).kind == RootKind::Runtime {

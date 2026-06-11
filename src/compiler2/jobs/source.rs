@@ -223,18 +223,24 @@ pub(super) fn define_function(
     world: &mut World<'_>,
     function_id: super::super::FunctionId,
 ) -> Result<JobEffects, FatalError> {
-    let Some(source) = world.expanded_function_source(function_id) else {
+    let Some(expanded_source) = world.expanded_function_source(function_id) else {
         return Ok(JobEffects::wait_on_current(
             FactKey::ExpandedFunctionSource(function_id),
             world.ensure_expanded_function_source(function_id),
         ));
     };
+    let Some(raw_source) = world.function_source(function_id) else {
+        return Ok(JobEffects::wait_on_current(
+            FactKey::FunctionSource(function_id),
+            world.ensure_function_source(function_id),
+        ));
+    };
 
     let surface = crate::compiler2::quoted_function::derive_function_surface(
-        &source.source,
-        source.code,
-        world.code_name(source.code),
-        world.code_text(source.code),
+        &expanded_source.source,
+        expanded_source.code,
+        world.code_name(expanded_source.code),
+        world.code_text(expanded_source.code),
         world.tel(),
     )
     .map_err(|error| emit_internal_surface_error(world, format!("quoted function decode failed: {error}")))?;
@@ -242,18 +248,12 @@ pub(super) fn define_function(
         world.emit_warning_once(diagnostic);
     }
     source_publish::record_function_type_refs(world, function_id, &surface)?;
-    let (_, changed) = world.define_function(
-        world.function_module(function_id),
-        source.owner_module,
-        world.function_ref(function_id).name.clone(),
-        source.code,
-        source.namespace,
-        source.required_remote_macros.clone(),
-        source.source,
-        surface,
-    );
+    let changed = world.define_function(function_id, raw_source, expanded_source, surface);
     Ok(JobEffects {
-        reads: current_uses([FactKey::ExpandedFunctionSource(function_id)]),
+        reads: current_uses([
+            FactKey::FunctionSource(function_id),
+            FactKey::ExpandedFunctionSource(function_id),
+        ]),
         outputs: vec![FactKey::FunctionDefined(function_id)],
         changed: changed
             .then_some(FactKey::FunctionDefined(function_id))

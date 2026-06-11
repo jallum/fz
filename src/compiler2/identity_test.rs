@@ -1,7 +1,7 @@
 use super::quoted_surface::ScopeSurface;
 use super::{
-    CodeMap, CodeState, FunctionMap, FunctionSource, FunctionState, ModuleId, ModuleMap, ModuleState, NamespaceStore,
-    NamespaceSymbol, QuotedCodeSource, QuotedSourceRoot, parse_quoted_program,
+    CodeMap, CodeState, FunctionMap, FunctionSource, FunctionState, Horizon, ModuleId, ModuleMap, ModuleState,
+    NamespaceStore, NamespaceSymbol, QuotedCodeSource, QuotedSourceRoot, parse_quoted_program,
 };
 use crate::ast::{Expr, FnClause, Spanned, TypeExprBody};
 use crate::function_surface::FunctionSurface;
@@ -12,7 +12,7 @@ fn quoted_source(source_name: &str, text: &str) -> QuotedSourceRoot {
     parse_quoted_program(source_name, text, &tel).expect("quoted parse should succeed")
 }
 
-fn function_surface(name: &str) -> FunctionSurface {
+fn function_surface_with_int(name: &str, value: i64) -> FunctionSurface {
     FunctionSurface {
         name: name.to_string(),
         name_span: crate::compiler::source::Span::DUMMY,
@@ -20,7 +20,7 @@ fn function_surface(name: &str) -> FunctionSurface {
             params: vec![],
             param_annotations: vec![],
             guard: None,
-            body: Spanned::dummy(Expr::Int(42)),
+            body: Spanned::dummy(Expr::Int(value)),
             span: crate::compiler::source::Span::DUMMY,
         }],
         is_macro: false,
@@ -32,6 +32,10 @@ fn function_surface(name: &str) -> FunctionSurface {
         attrs: vec![],
         span: crate::compiler::source::Span::DUMMY,
     }
+}
+
+fn function_surface(name: &str) -> FunctionSurface {
+    function_surface_with_int(name, 42)
 }
 
 fn empty_scope_surface() -> ScopeSurface {
@@ -130,6 +134,15 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
             variadic: false,
             source: add_source.clone(),
         },
+        FunctionSource {
+            code: code_id,
+            owner_module: math_def,
+            namespace,
+            capture_params: Vec::new(),
+            required_remote_macros: Vec::new(),
+            variadic: false,
+            source: quoted_source("math.fz", "fn add(x, y), do: 42\n"),
+        },
         add_ast.clone(),
     );
     let same_add_changed = functions.define(
@@ -142,6 +155,15 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
             required_remote_macros: Vec::new(),
             variadic: false,
             source: add_source,
+        },
+        FunctionSource {
+            code: code_id,
+            owner_module: math_def,
+            namespace,
+            capture_params: Vec::new(),
+            required_remote_macros: Vec::new(),
+            variadic: false,
+            source: quoted_source("math.fz", "fn add(x, y), do: 42\n"),
         },
         add_ast.clone(),
     );
@@ -176,7 +198,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
     );
     let function = functions.get(add_def);
     match function {
-        FunctionState::Defined { source, surface } => {
+        FunctionState::Defined { source, surface, .. } => {
             assert_eq!(source.code, code_id);
             assert_eq!(surface.name, "Math.add");
         }
@@ -281,6 +303,15 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
             variadic: false,
             source: first,
         },
+        FunctionSource {
+            code: code_id,
+            owner_module: ModuleId::GLOBAL,
+            namespace,
+            capture_params: Vec::new(),
+            required_remote_macros: Vec::new(),
+            variadic: false,
+            source: quoted_source("math.fz", "fn add(x, y), do: 42\n"),
+        },
         def_ast.clone(),
     );
     let second_changed = functions.define(
@@ -293,6 +324,15 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
             required_remote_macros: Vec::new(),
             variadic: false,
             source: second,
+        },
+        FunctionSource {
+            code: code_id,
+            owner_module: ModuleId::GLOBAL,
+            namespace,
+            capture_params: Vec::new(),
+            required_remote_macros: Vec::new(),
+            variadic: false,
+            source: quoted_source("math.fz", "fn add(x, y), do: 42\n"),
         },
         def_ast.clone(),
     );
@@ -307,6 +347,15 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
             variadic: false,
             source: third,
         },
+        FunctionSource {
+            code: code_id,
+            owner_module: ModuleId::GLOBAL,
+            namespace,
+            capture_params: Vec::new(),
+            required_remote_macros: Vec::new(),
+            variadic: false,
+            source: quoted_source("math.fz", "fn add(x, y), do: 43\n"),
+        },
         def_ast,
     );
 
@@ -316,4 +365,165 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
         "re-defining with semantically identical source must not signal a change — transport identity is not content",
     );
     assert!(third_changed, "a real body change (42 -> 43) must signal a change",);
+}
+
+#[test]
+fn compiler2_re_noting_a_defined_function_preserves_the_defined_state() {
+    let mut functions = FunctionMap::new();
+    let mut code = CodeMap::new();
+    let namespaces = NamespaceStore::new();
+    let code_id = code.define(Some("math.fz".to_string()), "fn add(), do: 42\n".to_string());
+    let namespace = namespaces.prelude_head();
+    let function = functions.reference(ModuleId::GLOBAL, "add", 0);
+    let surface = function_surface("add");
+    let first = quoted_source("math.fz", "fn add(), do: 42\n");
+    let second = quoted_source("math.fz", "fn add(), do: 42\n");
+
+    let defined_changed = functions.define(
+        function,
+        FunctionSource {
+            code: code_id,
+            owner_module: ModuleId::GLOBAL,
+            namespace,
+            capture_params: Vec::new(),
+            required_remote_macros: Vec::new(),
+            variadic: false,
+            source: first,
+        },
+        FunctionSource {
+            code: code_id,
+            owner_module: ModuleId::GLOBAL,
+            namespace,
+            capture_params: Vec::new(),
+            required_remote_macros: Vec::new(),
+            variadic: false,
+            source: quoted_source("math.fz", "fn add(), do: 42\n"),
+        },
+        surface.clone(),
+    );
+    assert!(defined_changed, "first define should be a change");
+
+    let noted_changed = functions.note(
+        function,
+        FunctionSource {
+            code: code_id,
+            owner_module: ModuleId::GLOBAL,
+            namespace,
+            capture_params: Vec::new(),
+            required_remote_macros: Vec::new(),
+            variadic: false,
+            source: second,
+        },
+    );
+    assert!(
+        !noted_changed,
+        "re-noting semantically identical source must not manufacture a change"
+    );
+    match functions.get(function) {
+        FunctionState::Defined {
+            source, surface: kept, ..
+        } => {
+            assert_eq!(
+                kept.name, surface.name,
+                "the richer defined surface should stay in place"
+            );
+            assert!(
+                source
+                    .source
+                    .semantically_eq(&quoted_source("math.fz", "fn add(), do: 42\n"), Horizon::Full),
+                "the noted source should still refresh to the incoming source content"
+            );
+        }
+        other => panic!("re-noting a defined function must preserve the defined state, got {other:?}"),
+    }
+}
+
+#[test]
+fn compiler2_define_function_updates_a_re_noted_surface_when_expansion_changes() {
+    let mut functions = FunctionMap::new();
+    let mut code = CodeMap::new();
+    let namespaces = NamespaceStore::new();
+    let code_id = code.define(Some("math.fz".to_string()), "fn add(), do: 42\n".to_string());
+    let namespace = namespaces.prelude_head();
+    let function = functions.reference(ModuleId::GLOBAL, "add", 0);
+    let first = quoted_source("math.fz", "fn add(), do: 42\n");
+    let second = quoted_source("math.fz", "fn add(), do: 43\n");
+
+    assert!(
+        functions.define(
+            function,
+            FunctionSource {
+                code: code_id,
+                owner_module: ModuleId::GLOBAL,
+                namespace,
+                capture_params: Vec::new(),
+                required_remote_macros: Vec::new(),
+                variadic: false,
+                source: first.clone(),
+            },
+            FunctionSource {
+                code: code_id,
+                owner_module: ModuleId::GLOBAL,
+                namespace,
+                capture_params: Vec::new(),
+                required_remote_macros: Vec::new(),
+                variadic: false,
+                source: first,
+            },
+            function_surface_with_int("add", 42),
+        ),
+        "first define should be a change",
+    );
+
+    assert!(
+        functions.note(
+            function,
+            FunctionSource {
+                code: code_id,
+                owner_module: ModuleId::GLOBAL,
+                namespace,
+                capture_params: Vec::new(),
+                required_remote_macros: Vec::new(),
+                variadic: false,
+                source: second.clone(),
+            },
+        ),
+        "re-noting a changed raw source should invalidate the definition",
+    );
+
+    assert!(
+        functions.define(
+            function,
+            FunctionSource {
+                code: code_id,
+                owner_module: ModuleId::GLOBAL,
+                namespace,
+                capture_params: Vec::new(),
+                required_remote_macros: Vec::new(),
+                variadic: false,
+                source: second.clone(),
+            },
+            FunctionSource {
+                code: code_id,
+                owner_module: ModuleId::GLOBAL,
+                namespace,
+                capture_params: Vec::new(),
+                required_remote_macros: Vec::new(),
+                variadic: false,
+                source: second,
+            },
+            function_surface_with_int("add", 43),
+        ),
+        "re-defining after a raw-source refresh must still notice the changed expanded definition",
+    );
+
+    match functions.get(function) {
+        FunctionState::Defined { surface, .. } => {
+            assert!(
+                matches!(surface.clauses[0].body.node, Expr::Int(43)),
+                "re-defining should replace the stale surface after a raw-source re-note"
+            );
+        }
+        other => panic!("function should stay defined after redefine, got {other:?}"),
+    }
 }

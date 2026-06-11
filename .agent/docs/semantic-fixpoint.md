@@ -1,110 +1,104 @@
 # Semantic Fixpoint
 
-This is the heart of the Compiler: turning a root request into a settled set of
-typed, reachable function activations. It runs on the fact engine
-(`fact-engine`), so read that first. Three jobs do the work —
-`SeedRoot`, `AnalyzeActivation`, and `SealSemanticClosure` — and the surprising
-part is how little each one does on its own.
+This is the heart of Compiler2: turning a root request into a **settled**
+semantic frontier of typed, reachable activations and executables. The current
+engine distinguishes two notions of fact readiness:
 
-## An activation, and where its inputs live
+- `Current(fact)`: the fact is present and may be read by iterative semantic
+  work.
+- `Settled(fact)`: every current publisher is clean, so downstream work may
+  consume it as complete for now.
+
+Three jobs shape the frontier: `SeedRoot`, `AnalyzeActivation`, and
+`SealSemanticClosure`.
+
+## What an activation is today
 
 An **activation** is `ActivationKey { root, function, input: Vec<Ty> }`: one
-function specialized for one root at one input shape. Its return type and its
-clause/callsite analysis live in `ActivationMap`.
+function specialized for one root at one input shape. That key still carries the
+canonicalized input types today. The `Activation(key)` fact means only that the
+activation has been demanded; its body input evidence is not yet split out into
+its own fact. `world.activation_inputs(key)` currently reads `key.input` once
+the demand fact exists.
 
-Its **input is not stored as state**. It is the fact `Activation(key)`, whose
-value is `FactValue::Inputs` — the `refine_widen` join of every caller's
-argument types. Callers contribute; the engine joins. `AnalyzeActivation` reads
-its own input back with `world.activation_inputs(key)`. So "what types does this
-activation see?" is answered by *who calls it*, not by a field someone set.
-
-## Discovery is emergent; the seal job only watches
-
-`AnalyzeActivation(a)` walks `a`'s dispatch-reachable clauses, infers value and
-return types, and for each resolved callsite emits:
+That is an intentional temporary state. The next semantic ticket
+(`fz-rh2.18.5`) is to separate:
 
 ```text
-CallSiteSummary(callsite)          # one or more {callee, input_types, return_ty} targets + joined return_ty
-Activation(callee_key)  += inputs  # contributes the callee's inputs (join)
-Executable(callee_key, need)       # the callee must be built for this need
+Activation(key)       # demand / existence
+ActivationInputs(key) # joined caller evidence
 ```
 
-That contribution **is** how the frontier grows. No job walks the call graph to
-discover it.
+For now, reason about `ActivationKey.input` as both identity and body input.
 
-`SealSemanticClosure(root)` does the opposite of what its old name suggested: it
-**observes**. It reads the published `Activation`/`Executable`/`ActivationAnalyzed`
-/`ReturnType`/`CallSiteSummary` facts, assembles the reachable set, records an
-exact `DependencySnapshot` of `(fact, revision)` pairs, and writes
-`SemanticClosed(root)` only when nothing is still pending. It never calls
-`activate`. The analysis jobs fill the envelope; the seal job closes it once it
-stops changing.
+## Discovery is still producer-driven
 
-## The key and the analyzed value are different things
-
-`canonical_activation_key(function, raw_inputs)` builds the activation **key**
-(its identity for dedup). For a recursive function it collapses each
-non-dispatch input slot to its `convergence_class`, so many call shapes share
-one key — the "balloon" that keeps a recursive function from spawning endless
-specializations.
-
-The `Activation` fact's **value** is the `refine_widen` join of the *raw* input
-types, not the collapsed key. `AnalyzeActivation` types the body with the value.
+`AnalyzeActivation(a)` walks `a`'s reachable clauses, infers value and return
+types, and publishes semantic outputs:
 
 ```text
-fib(0,0,1), fib(1,0,1), fib(10,0,1), fib(20,0,1)
-  all collapse to one key:  (root, fib, [int, int, int])
-  one activation, analyzed once, value = join of the raw inputs
+ActivationAnalyzed(a)
+ReturnType(a)
+CallSiteSummary(callsite)
+Activation(callee_key)
+Executable(callee_key, need)
 ```
 
-Key = identity. Value = the types the body is analyzed under. Keeping them
-separate is what lets dedup be aggressive without making analysis imprecise.
+That publication is how the frontier grows. No separate sweep discovers
+reachable callees.
 
-## Two facts decide the key: Recursive and DispatchMask
+## The seal job now consumes settled facts
 
-`canonical_activation_key` only collapses when it must, and only the slots it
-may. Both inputs are stable per-function facts:
+`SealSemanticClosure(root)` no longer carries its own freshness machinery. It
+waits on and reads **settled** semantic prerequisites, assembles the reachable
+activation/executable set, and publishes `SemanticClosed(root)` when that set is
+clean. There is no `DependencySnapshot`, no `semantic_closure_is_current`, and
+no manual revision polling.
 
-- **`Recursive(fn)`** — does `fn` reach itself in the static call graph? Edges
-  are direct calls **and lambda creation** (`f` creating a closure over `g`
-  that calls `f` is recursion). `ClosureCall` is deliberately not an edge: the
-  target is a runtime value, not a symbol, so pure higher-order self-application
-  is invisible to this fact by construction.
-- **`DispatchMask(fn)`** — which inputs drive clause selection. The mask
-  **protects** these slots from the convergence collapse, so a recursive
-  function keeps empty-vs-cons (or tag) precision exactly where dispatch needs
-  it, while its accumulators balloon.
+That means artifact work can simply wait on `Settled(SemanticClosed(root))`
+instead of trying to infer freshness from presence plus a stored revision set.
 
-So the collapse is "recursive *and* not a dispatch slot." Both halves are facts,
-derived once, read whenever a callee is keyed.
+## Current vs settled is the key boundary
 
-## Return types flow back; analysis re-runs by subscription
+Semantic jobs iterate on **current** evidence. Artifact/backend jobs consume
+only **settled** evidence.
 
-`AnalyzeActivation` reads each callee's `ReturnType` (a subscription). A callee
-widens its inputs (a new caller, a wider argument), re-analyzes, and its return
-widens — which wakes every caller. Everything is monotone (`refine_widen` has
-finite height), so the loop settles.
-
-A callee's **first** analysis is bootstrapped explicitly: the caller enqueues
-`AnalyzeActivation(callee)` when it creates the activation
-(`already_present == false`). Later re-analyses are not enqueued by anyone — the
-callee subscribes to its own `Activation` input fact and wakes itself when the
-join widens.
-
-## Tiny walkthrough
+Examples:
 
 ```text
-qsort([p|rest]) = append(qsort(lo), [p | qsort(hi)])
-  AnalyzeActivation(qsort,[list(int)]) resolves two callsites to qsort:
-    Activation(qsort,[list(int)]) += [list(int)]   (callsite for lo)
-    Activation(qsort,[list(int)]) += [list(int)]   (callsite for hi)
-  join of two equal contributions = [list(int)]  -> value unchanged -> no wake
-  SealSemanticClosure reads the settled facts, writes SemanticClosed(root).
+AnalyzeActivation(a)      reads Current(ReturnType(callee))
+SealSemanticClosure(root) waits on Settled(ReturnType(a))
+MaterializeRoot(root)     waits on Settled(SemanticClosed(root))
+DeriveAbiReady(root)      waits on Settled(MaterializedProgram(root))
 ```
+
+This is the important line in the current design: type values are not used to
+encode readiness. `any` and `none` are semantic values. Fact readiness lives in
+the scheduler.
+
+## How recursive convergence works right now
+
+`canonical_activation_key(function, raw_inputs)` still decides activation
+identity. For recursive functions it collapses non-dispatch inputs by
+`convergence_class`, using the `Recursive(fn)` and `DispatchMask(fn)` facts to
+decide which slots may balloon.
+
+So today:
+
+```text
+key.input     = canonicalized identity and current body input
+ReturnType(a) = current return approximation
+Settled(...)  = scheduler-level proof that downstream work may rely on it
+```
+
+That is not yet the final semantic shape, but it is the current code shape and
+the basis for the remaining type-system tickets.
 
 ## Ownership boundaries
 
-- `SeedRoot` owns the entry's `Activation`/`Executable` and `RootEntry`.
-- `AnalyzeActivation(a)` owns `a`'s analysis/return/callsite facts and the
-  `Activation`/`Executable` contributions for `a`'s callees.
-- `SealSemanticClosure` owns only `SemanticClosed`. It reads everything else.
+- `SeedRoot` owns `RootEntry(root)` and seeds the entry `Activation` and
+  `Executable` demand facts.
+- `AnalyzeActivation(a)` owns `ActivationAnalyzed(a)`, `ReturnType(a)`,
+  `CallSiteSummary(...)`, and any callee demand facts it publishes.
+- `SealSemanticClosure(root)` owns only `SemanticClosed(root)`. It observes the
+  settled semantic frontier; it does not manually prove freshness anymore.

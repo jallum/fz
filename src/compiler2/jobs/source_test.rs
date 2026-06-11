@@ -1,5 +1,6 @@
-use super::source::{define_module, index_code, scope_code};
+use super::source::{define_function, define_module, expand_function_source, index_code, scope_code};
 use super::{Job, World};
+use crate::compiler2::{FactKey, ModuleId};
 use crate::telemetry::{Capture, ConfiguredTelemetry};
 
 #[test]
@@ -50,5 +51,38 @@ fn runtime_prelude_exact_imports_record_kernel_expectations_without_waiting() {
     assert!(
         capture.last(&["fz", "diag", "error"]).is_none(),
         "settling Kernel after the prelude records exact import expectations should not emit diagnostics",
+    );
+}
+
+#[test]
+fn re_scoping_the_runtime_prelude_does_not_churn_fn_macro_source() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    let prelude = world.runtime_prelude();
+
+    let index = index_code(&mut world, prelude).expect("runtime prelude should index");
+    world.complete_job(Job::IndexCode(prelude), index);
+    let scoped = scope_code(&mut world, prelude).expect("runtime prelude should scope");
+    world.complete_job(Job::ScopeCode(prelude), scoped);
+
+    let fn_macro = world.reference_function(ModuleId::GLOBAL, "fn", 1);
+    let expand = expand_function_source(&mut world, fn_macro).expect("fn/1 source should expand");
+    world.complete_job(Job::ExpandFunctionSource(fn_macro), expand);
+    let define = define_function(&mut world, fn_macro).expect("fn/1 should define from expanded source");
+    world.complete_job(Job::DefineFunction(fn_macro), define);
+
+    let initial_revision = world
+        .fact_revision(FactKey::FunctionSource(fn_macro))
+        .expect("fn/1 source fact should exist after first scope");
+    let replay = scope_code(&mut world, prelude).expect("re-scoping runtime prelude should not fatal");
+    assert!(
+        !replay.changed.contains(&FactKey::FunctionSource(fn_macro)),
+        "stable re-scoping must not republish fn/1 source as changed: {replay:?}",
+    );
+    world.complete_job(Job::ScopeCode(prelude), replay);
+    assert_eq!(
+        world.fact_revision(FactKey::FunctionSource(fn_macro)),
+        Some(initial_revision),
+        "re-scoping the unchanged prelude must keep the fn/1 source revision stable",
     );
 }

@@ -64,8 +64,8 @@ fn presence(fact: FactKey, changed: bool) -> (FactKey, bool) {
     (fact, changed)
 }
 
-fn current_fact(fact: FactKey) -> FactUse<FactKey> {
-    FactUse::current(fact)
+fn settled_fact(fact: FactKey) -> FactUse<FactKey> {
+    FactUse::settled(fact)
 }
 
 fn output_facts(effects: &JobEffects) -> OutputFacts {
@@ -3109,7 +3109,7 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
     let materialize = outputs.effects(Job::MaterializeRoot(root_id));
     assert_eq!(
         materialize.reads,
-        vec![current_fact(FactKey::SemanticClosed(root_id))],
+        vec![settled_fact(FactKey::SemanticClosed(root_id))],
         "materialization should consume only the closed semantic root fact",
     );
     assert!(
@@ -3132,7 +3132,7 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
     let abi_ready = outputs.effects(Job::DeriveAbiReady(root_id));
     assert_eq!(
         abi_ready.reads,
-        vec![current_fact(FactKey::MaterializedProgram(root_id))],
+        vec![settled_fact(FactKey::MaterializedProgram(root_id))],
         "ABI-ready derivation should consume only the materialized artifact fact",
     );
     assert!(
@@ -3155,7 +3155,7 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
     let emission_ready = outputs.effects(Job::DeriveEmissionReady(root_id));
     assert_eq!(
         emission_ready.reads,
-        vec![current_fact(FactKey::AbiReadyProgram(root_id))],
+        vec![settled_fact(FactKey::AbiReadyProgram(root_id))],
         "emission-ready derivation should consume only the ABI-ready artifact fact",
     );
     assert!(
@@ -3178,7 +3178,7 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
     let backend = outputs.effects(Job::LowerBackendProgram(root_id));
     assert_eq!(
         backend.reads,
-        vec![current_fact(FactKey::EmissionReadyProgram(root_id))],
+        vec![settled_fact(FactKey::EmissionReadyProgram(root_id))],
         "backend lowering should consume only the emission-ready artifact fact",
     );
     assert!(
@@ -3200,7 +3200,7 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
     let native = outputs.effects(Job::LowerNativeProgram(root_id));
     assert_eq!(
         native.reads,
-        vec![current_fact(FactKey::BackendProgram(root_id))],
+        vec![settled_fact(FactKey::BackendProgram(root_id))],
         "native lowering should consume only the backend handoff fact",
     );
     assert!(
@@ -3217,6 +3217,36 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
             .iter()
             .all(|fact| *fact == FactKey::NativeProgram(root_id)),
         "native lowering should publish only the native handoff fact",
+    );
+}
+
+#[test]
+fn compiler2_seed_root_does_not_depend_on_its_own_root_fact() {
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("seed_root_no_self_edge.fz".to_string()),
+        text: "fn main(), do: 0\n".to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "simple root should resolve so SeedRoot effects are captured",
+    );
+
+    let seed = outputs.effects(Job::SeedRoot(root_id));
+    assert!(
+        !seed.reads.contains(&settled_fact(FactKey::RootEntry(root_id))),
+        "SeedRoot must not subscribe to the settled transition of its own RootEntry output: {seed:?}",
     );
 }
 
@@ -5450,8 +5480,10 @@ fn compiler2_redefining_main_retracts_the_old_root_frontier_and_activates_foo() 
 }
 
 #[test]
-fn compiler2_helper_redefinition_republishes_only_the_dependent_root_frontier() {
+fn compiler2_helper_redefinition_leaves_semantic_frontiers_closed_when_reachability_is_unchanged() {
     let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let semantic = SemanticClosedCapture::new();
     tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
 
@@ -5474,8 +5506,14 @@ fn compiler2_helper_redefinition_republishes_only_the_dependent_root_frontier() 
     });
 
     assert_resolved(compiler.drive(), "initial rooted helper users should settle");
-    let main_count_before = semantic.count(main_root);
-    let other_count_before = semantic.count(other_root);
+    let main_closed_before = semantic.last(main_root);
+    let other_closed_before = semantic.last(other_root);
+    let main_seal_stops_before = outputs
+        .stops_matching(|job| matches!(job, Job::SealSemanticClosure(root) if *root == main_root))
+        .len();
+    let other_seal_stops_before = outputs
+        .stops_matching(|job| matches!(job, Job::SealSemanticClosure(root) if *root == other_root))
+        .len();
 
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/helper_roots_v2.fz".to_string()),
@@ -5483,17 +5521,51 @@ fn compiler2_helper_redefinition_republishes_only_the_dependent_root_frontier() 
     });
     assert_resolved(
         compiler.drive(),
-        "redefining a helper should republish only the dependent rooted semantic frontier",
+        "redefining a helper should keep semantic frontiers closed when rooted reachability stays the same",
     );
 
     assert!(
-        semantic.count(main_root) > main_count_before,
-        "redefining the helper should republish the dependent root frontier"
+        outputs
+            .stops_matching(|job| matches!(job, Job::SealSemanticClosure(root) if *root == main_root))
+            .len()
+            > main_seal_stops_before,
+        "helper guard changes should re-check the dependent root closure",
     );
     assert_eq!(
-        semantic.count(other_root),
-        other_count_before,
-        "redefining the helper should not republish the independent root frontier"
+        outputs
+            .stops_matching(|job| matches!(job, Job::SealSemanticClosure(root) if *root == other_root))
+            .len(),
+        other_seal_stops_before,
+        "helper guard changes should not reopen independent root closure sealing"
+    );
+    assert!(
+        outputs
+            .stops_matching(|job| matches!(job, Job::SealSemanticClosure(root) if *root == main_root))
+            .into_iter()
+            .skip(main_seal_stops_before)
+            .filter_map(|stop| stop.effects)
+            .all(|effects| !output_facts(&effects).contains(&presence(FactKey::SemanticClosed(main_root), true))),
+        "helper guard changes should not republish semantic closure when the dependent frontier is unchanged",
+    );
+    assert_eq!(
+        semantic.last(main_root).activations,
+        main_closed_before.activations,
+        "helper guard changes should leave the dependent rooted activation frontier unchanged"
+    );
+    assert_eq!(
+        semantic.last(main_root).executables,
+        main_closed_before.executables,
+        "helper guard changes should leave the dependent rooted executable frontier unchanged"
+    );
+    assert_eq!(
+        semantic.last(other_root).activations,
+        other_closed_before.activations,
+        "helper guard changes should leave the independent rooted activation frontier unchanged"
+    );
+    assert_eq!(
+        semantic.last(other_root).executables,
+        other_closed_before.executables,
+        "helper guard changes should leave the independent rooted executable frontier unchanged"
     );
 }
 
@@ -5520,7 +5592,7 @@ fn compiler2_submit_root_before_code_reports_unresolved_until_entry_is_defined()
         DriveOutcome::Unresolved { waits } => {
             assert!(
                 waits.iter().any(|wait| {
-                    wait.fact == current_fact(FactKey::FunctionDefined(function_id))
+                    wait.fact == settled_fact(FactKey::FunctionDefined(function_id))
                         && wait.jobs.contains(&Job::SeedRoot(root_id))
                 }),
                 "unresolved drive should report SeedRoot waiting on the entry definition"
@@ -5528,7 +5600,7 @@ fn compiler2_submit_root_before_code_reports_unresolved_until_entry_is_defined()
             assert!(
                 work_graph.all().into_iter().any(|step| step
                     .blocked
-                    .contains(&current_fact(FactKey::FunctionDefined(function_id)))),
+                    .contains(&settled_fact(FactKey::FunctionDefined(function_id)))),
                 "work-graph telemetry should carry the exact fact that blocked the seed job"
             );
         }
@@ -6424,6 +6496,8 @@ fn compiler2_entry_dispatch_recomputes_only_the_dependent_helper_blast_radius() 
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let guard_defs = GuardDispatchCapture::new();
+    tel.attach(&["fz", "compiler2", "guard_dispatch", "defined"], guard_defs.handler());
     let entry_defs = EntryDispatchCapture::new();
     tel.attach(&["fz", "compiler2", "entry_dispatch", "defined"], entry_defs.handler());
 
@@ -6466,8 +6540,15 @@ fn compiler2_entry_dispatch_recomputes_only_the_dependent_helper_blast_radius() 
     let other_plan_stops_before = outputs
         .stops_matching(|job| matches!(job, Job::PlanEntryDispatch(id) if *id == other_id))
         .len();
-    let _ = entry_dispatch(&entry_defs, wanted_id);
-    let _ = entry_dispatch(&entry_defs, other_id);
+    let helper_stops_before = outputs
+        .stops_matching(|job| matches!(job, Job::ReifyGuardDispatch(id) if *id == positive_id))
+        .len();
+    let wanted_plan_stops_before = outputs
+        .stops_matching(|job| matches!(job, Job::PlanEntryDispatch(id) if *id == wanted_id))
+        .len();
+    let positive_dispatch_before = latest_guard_dispatch(&guard_defs, positive_id);
+    let wanted_plan_before = latest_entry_dispatch(&entry_defs, wanted_id);
+    let other_plan_before = latest_entry_dispatch(&entry_defs, other_id);
 
     let _code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_dispatch_blast_radius_v2.fz".to_string()),
@@ -6478,19 +6559,34 @@ fn compiler2_entry_dispatch_recomputes_only_the_dependent_helper_blast_radius() 
         "late helper redefinition should auto-scope and rerun only the helper and dependent entry-dispatch plan",
     );
 
-    let helper_outputs = outputs
-        .take(Job::ReifyGuardDispatch(positive_id))
-        .expect("helper reification should rerun after helper redefinition");
     assert!(
-        helper_outputs.contains(&presence(FactKey::GuardDispatch(positive_id), true)),
-        "helper reification should publish a revised guard-dispatch fact",
+        outputs
+            .stops_matching(|job| matches!(job, Job::ReifyGuardDispatch(id) if *id == positive_id))
+            .len()
+            > helper_stops_before,
+        "helper reification should rerun after helper redefinition",
     );
-    let wanted_outputs = outputs
-        .take(Job::PlanEntryDispatch(wanted_id))
-        .expect("dependent wanted/1 entry dispatch should rerun");
     assert!(
-        wanted_outputs.contains(&presence(FactKey::EntryDispatch(wanted_id), true)),
-        "dependent wanted/1 entry dispatch should republish with a new revision",
+        outputs
+            .stops_matching(|job| matches!(job, Job::PlanEntryDispatch(id) if *id == wanted_id))
+            .len()
+            > wanted_plan_stops_before,
+        "dependent wanted/1 entry dispatch should rerun after helper redefinition",
+    );
+    assert_ne!(
+        latest_guard_dispatch(&guard_defs, positive_id),
+        positive_dispatch_before,
+        "helper redefinition should change the reified helper dispatch artifact itself",
+    );
+    assert_ne!(
+        latest_entry_dispatch(&entry_defs, wanted_id),
+        wanted_plan_before,
+        "helper redefinition should change only the dependent entry-dispatch plan",
+    );
+    assert_eq!(
+        latest_entry_dispatch(&entry_defs, other_id),
+        other_plan_before,
+        "independent other/1 entry dispatch should remain byte-for-byte unchanged",
     );
     assert_eq!(
         outputs
@@ -7665,6 +7761,14 @@ impl GuardDispatchCapture {
         }
         dispatch
     }
+
+    fn last(&self, function: FunctionId) -> Option<PatternGuardDispatch<Ty>> {
+        self.dispatches
+            .borrow()
+            .get(&function)
+            .and_then(|matches| matches.last())
+            .cloned()
+    }
 }
 
 impl EntryDispatchCapture {
@@ -7688,6 +7792,14 @@ impl EntryDispatchCapture {
             plans.remove(&function);
         }
         plan
+    }
+
+    fn last(&self, function: FunctionId) -> Option<PatternDispatchPlan<Ty>> {
+        self.plans
+            .borrow()
+            .get(&function)
+            .and_then(|matches| matches.last())
+            .cloned()
     }
 }
 
@@ -8266,6 +8378,18 @@ fn guard_dispatch(capture: &GuardDispatchCapture, function: FunctionId) -> Patte
 fn entry_dispatch(capture: &EntryDispatchCapture, function: FunctionId) -> PatternDispatchPlan<Ty> {
     capture
         .take(function)
+        .unwrap_or_else(|| panic!("entry_dispatch.defined for {function:?}"))
+}
+
+fn latest_guard_dispatch(capture: &GuardDispatchCapture, function: FunctionId) -> PatternGuardDispatch<Ty> {
+    capture
+        .last(function)
+        .unwrap_or_else(|| panic!("guard_dispatch.defined for {function:?}"))
+}
+
+fn latest_entry_dispatch(capture: &EntryDispatchCapture, function: FunctionId) -> PatternDispatchPlan<Ty> {
+    capture
+        .last(function)
         .unwrap_or_else(|| panic!("entry_dispatch.defined for {function:?}"))
 }
 

@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use crate::telemetry::capture::vec_writer;
 use crate::telemetry::{ConfiguredTelemetry, JsonlBackend, Telemetry as _};
@@ -105,5 +106,43 @@ fn dump_harness_uses_the_same_jsonl_backend_as_cli_logging() {
     assert!(
         log.contains("\"name\":[\"fz\",\"compiler2\",\"ping\"]"),
         "the manual dump harness should rely on the stock jsonl backend format:\n{log}"
+    );
+}
+
+#[test]
+fn jsonl_backend_records_compiler2_drive_timeouts() {
+    let (buf, writer) = vec_writer();
+    let tel = ConfiguredTelemetry::new();
+    tel.attach(&[], Box::new(JsonlBackend::new_writer(writer)));
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.set_drive_timeout(Duration::ZERO);
+    compiler.submit_code(CodeSubmission {
+        name: Some("timeout_main.fz".to_string()),
+        text: "fn main(), do: 0\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let error = compiler
+        .run_root_interp(root)
+        .expect_err("zero drive timeout should abort before compiler work runs");
+    assert!(
+        error.contains("exceeded 0 ms drive limit"),
+        "timeout should surface through the compiler entrypoint, got: {error}"
+    );
+
+    let log = String::from_utf8(buf.borrow().clone()).expect("jsonl log should stay utf-8");
+    assert!(
+        log.contains("\"name\":[\"fz\",\"compiler2\",\"drive\",\"timed_out\"]"),
+        "compiler2 jsonl log should record drive timeout events:\n{log}"
+    );
+    assert!(
+        log.contains("\"timeout_ms\":0"),
+        "drive timeout telemetry should record the configured timeout in milliseconds:\n{log}"
     );
 }

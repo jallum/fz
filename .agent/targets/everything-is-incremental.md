@@ -146,7 +146,8 @@ publish-then-refine pattern (`ReturnType` precedent, semantic.rs:158-159).
   `DeriveEmissionReady`, `LowerBackendProgram`, `LowerNativeProgram` (each as bridge
   first, then deleted).
 - **Code:** `seal_semantic_closure` (root.rs:68-259), `SemanticClosure` +
-  `DependencySnapshot` + `semantic_closure_is_current` + `wait_for_fresh_closure`,
+  historical `DependencySnapshot` + `semantic_closure_is_current` + `wait_for_fresh_closure`
+  (deleted by `fz-rh2.18.1`),
   `settle_effects` + `settle_return_abis` (artifact.rs:696-890), emission-index machinery
   (artifact.rs:192-267), `collect_backend_atom_names` (backend.rs:972-1071),
   `NativeLowerer` up-front allocation (native.rs:109-199), `annotate_back_edges`, the five
@@ -170,7 +171,7 @@ publish-then-refine pattern (`ReturnType` precedent, semantic.rs:158-159).
   `require_activation_key_facts` to compute the entry key), then pulls claim edges from
   the entry over `ExecutableMaterialized` facts (waits on missing with follow_up) and
   assembles `MaterializedProgram` for the untouched `DeriveAbiReady`.
-  **Deleted:** seal, `SemanticClosed`, `settle_effects`, `DependencySnapshot` machinery.
+  **Deleted:** manual seal freshness machinery, `settle_effects`, `DependencySnapshot`.
   Includes the seal-observing test estate rewrite (`SemanticClosedCapture` + ~10 tests +
   by-name assertions, drive_test.rs:799-929, 2400-2405, 4340-4996, 6210-7024). This is
   the epic's largest commit — budgeted as such.

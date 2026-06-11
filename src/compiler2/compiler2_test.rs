@@ -8,6 +8,7 @@ use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind, Value};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::Duration;
 
 struct ContractCase<'a> {
     name: &'a str,
@@ -31,6 +32,54 @@ fn compiler2_contract_harness_keeps_code_ingest_isolated_from_production_compile
     ] {
         run_contract(case);
     }
+}
+
+#[test]
+fn compiler2_root_drive_timeout_reports_the_configured_limit() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(&tel);
+    compiler.set_drive_timeout(Duration::ZERO);
+    compiler.submit_code(CodeSubmission {
+        name: Some("timeout_main.fz".to_string()),
+        text: "fn main(), do: 0\n".to_string(),
+    });
+    let root = compiler.submit_root(super::RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: super::ExecutableNeed::Value,
+    });
+
+    let error = compiler
+        .run_root_interp(root)
+        .expect_err("zero drive timeout should abort before compiler work runs");
+    assert!(
+        error.contains("exceeded 0 ms drive limit after 0 jobs"),
+        "timeout should report the configured compiler drive limit, got: {error}"
+    );
+}
+
+#[test]
+fn compiler2_drive_honors_the_configured_timeout() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(&tel);
+    compiler.set_drive_timeout(Duration::ZERO);
+    compiler.submit_code(CodeSubmission {
+        name: Some("timeout_drive.fz".to_string()),
+        text: "fn main(), do: 0\n".to_string(),
+    });
+
+    let outcome = compiler.drive();
+    assert!(
+        matches!(
+            outcome,
+            DriveOutcome::TimedOut {
+                jobs_ran: 0,
+                pending_jobs: 1
+            }
+        ),
+        "compiler.drive() should honor the configured timeout, got: {outcome:?}"
+    );
 }
 
 fn run_contract(case: ContractCase<'_>) {

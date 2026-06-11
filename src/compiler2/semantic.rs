@@ -7,7 +7,6 @@
 use std::collections::{HashMap, HashSet};
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
-use super::drive::FactKey;
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, RootId};
 use super::types::{Ty, Types};
 
@@ -52,11 +51,6 @@ pub struct SemanticClosure {
     pub executables: HashSet<ExecutableKey>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct DependencySnapshot {
-    revisions: HashMap<FactKey, u64>,
-}
-
 #[derive(Debug, Clone)]
 pub struct ActivationSlot {
     return_ty: Option<Ty>,
@@ -76,7 +70,6 @@ pub struct CallSiteMap {
 #[derive(Debug, Clone)]
 pub struct SemanticClosureSlot {
     closure: SemanticClosure,
-    dependencies: DependencySnapshot,
 }
 
 #[derive(Debug, Default)]
@@ -168,37 +161,16 @@ impl CallSiteSummary {
     }
 }
 
-impl DependencySnapshot {
-    pub fn record(&mut self, fact: FactKey, revision: u64) {
-        match self.revisions.get(&fact).copied() {
-            Some(existing) => {
-                assert_eq!(
-                    existing, revision,
-                    "dependency snapshots should not observe mixed revisions for one fact"
-                );
-            }
-            None => {
-                self.revisions.insert(fact, revision);
-            }
-        }
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&FactKey, &u64)> {
-        self.revisions.iter()
-    }
-}
-
 impl SemanticClosureMap {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn define(&mut self, root: RootId, closure: SemanticClosure, dependencies: DependencySnapshot) -> bool {
+    pub fn define(&mut self, root: RootId, closure: SemanticClosure) -> bool {
         self.ensure(root);
         let slot = &mut self.slots[root.as_u32() as usize];
-        let changed =
-            !matches!(slot, Some(existing) if existing.closure == closure && existing.dependencies == dependencies);
-        *slot = Some(SemanticClosureSlot { closure, dependencies });
+        let changed = !matches!(slot, Some(existing) if existing.closure == closure);
+        *slot = Some(SemanticClosureSlot { closure });
         changed
     }
 
@@ -207,13 +179,6 @@ impl SemanticClosureMap {
             .get(root.as_u32() as usize)
             .and_then(|slot| slot.as_ref().map(|slot| &slot.closure))
     }
-
-    pub fn dependencies(&self, root: RootId) -> Option<&DependencySnapshot> {
-        self.slots
-            .get(root.as_u32() as usize)
-            .and_then(|slot| slot.as_ref().map(|slot| &slot.dependencies))
-    }
-
     fn ensure(&mut self, root: RootId) {
         let needed = root.as_u32() as usize + 1;
         if self.slots.len() < needed {

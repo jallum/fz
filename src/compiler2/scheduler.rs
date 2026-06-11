@@ -22,6 +22,7 @@ pub enum DriveOutcome<J, F> {
     Resolved,
     Unresolved { waits: Vec<UnresolvedWait<J, F>> },
     Fatal { job: J },
+    TimedOut { jobs_ran: u64, pending_jobs: usize },
 }
 
 #[derive(Debug)]

@@ -16,9 +16,7 @@ use crate::dispatch_matrix::{
     RegionQuestion, compile_dispatch_matrix_with_type_order,
 };
 use crate::ir_lower::extern_ty_from_name;
-use crate::metadata;
 use crate::parser::lexer::Tok;
-use crate::telemetry::opaque_debug;
 
 use super::super::artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiValueRepr, CallTarget, CallableEntry, EffectSummary,
@@ -29,7 +27,7 @@ use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DispatchBindings,
     Literal, LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId,
 };
-use super::super::drive::{FactKey, Job, JobEffects, current_uses};
+use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, RootId, function_id_of_closure_target};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallTargetSummary, SelectedCallee};
@@ -50,52 +48,28 @@ const PROTOCOL_DISPATCH_UNPLANNED_ATOM: &str = "protocol_dispatch_unplanned";
 /// materialization never reopens discovery.
 pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let closed_fact = FactKey::SemanticClosed(root_id);
-    let Some(closed_revision) = world.fact_revision(closed_fact.clone()) else {
-        return Ok(JobEffects::wait_on_current(
+    if !world.fact_is_settled(&closed_fact) {
+        return Ok(JobEffects::wait_on_settled(
             closed_fact,
             [super::super::Job::SealSemanticClosure(root_id)],
         ));
-    };
-
-    let closure = world.semantic_closure(root_id);
-    if !semantic_closure_is_current(world, root_id) {
-        return Ok(wait_for_fresh_closure(
-            world,
-            root_id,
-            "semantic closure dependencies are stale",
-        ));
     }
-    let reads = current_uses([closed_fact]);
+
+    let closed_revision = world
+        .fact_revision(closed_fact.clone())
+        .expect("settled semantic closure should have a revision");
+    let closure = world.semantic_closure(root_id);
+    let reads = settled_uses([closed_fact]);
     let mut executables = HashMap::new();
 
     for executable in &closure.executables {
-        if !world.has_fact(&FactKey::Executable(executable.clone()))
-            || !world.has_fact(&FactKey::ActivationAnalyzed(executable.activation.clone()))
-            || !world.has_fact(&FactKey::ReturnType(executable.activation.clone()))
-            || !world.has_fact(&FactKey::LoweredBody(executable.activation.function))
-            || !world.has_fact(&FactKey::EntryDispatch(executable.activation.function))
-        {
-            return Ok(wait_for_fresh_closure(
-                world,
-                root_id,
-                format!("executable {:?} has missing semantic facts", executable),
-            ));
-        }
-
-        let Some(analysis) = world.activation_analysis(&executable.activation).cloned() else {
-            return Ok(wait_for_fresh_closure(
-                world,
-                root_id,
-                format!("executable {:?} has no activation analysis", executable),
-            ));
-        };
-        let Some(return_ty) = world.activation_return(&executable.activation) else {
-            return Ok(wait_for_fresh_closure(
-                world,
-                root_id,
-                format!("executable {:?} has no activation return", executable),
-            ));
-        };
+        let analysis = world
+            .activation_analysis(&executable.activation)
+            .cloned()
+            .expect("settled semantic closure should have activation analysis for every executable");
+        let return_ty = world
+            .activation_return(&executable.activation)
+            .expect("settled semantic closure should have activation return for every executable");
         let mut body = prune_lowered_body(
             world.lowered_body(executable.activation.function),
             &analysis.reachable_clauses,
@@ -113,7 +87,7 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
             &synthetic_targets,
         )?
         else {
-            return Ok(wait_for_fresh_closure(
+            return Err(incomplete_semantic_plan(
                 world,
                 root_id,
                 format!("executable {:?} has incomplete call edges", executable),
@@ -159,13 +133,13 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
 pub(super) fn derive_abi_ready(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let materialized_fact = FactKey::MaterializedProgram(root_id);
     let Some(materialized_revision) = world.fact_revision(materialized_fact.clone()) else {
-        return Ok(JobEffects::wait_on_current(
+        return Ok(JobEffects::wait_on_settled(
             materialized_fact,
             [Job::MaterializeRoot(root_id)],
         ));
     };
 
-    let reads = current_uses([materialized_fact]);
+    let reads = settled_uses([materialized_fact]);
     let materialized = world.materialized_program(root_id);
     let mut plans = materialized
         .executables
@@ -236,13 +210,13 @@ enum DeliverySource {
 pub(super) fn derive_emission_ready(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let abi_ready_fact = FactKey::AbiReadyProgram(root_id);
     let Some(abi_ready_revision) = world.fact_revision(abi_ready_fact.clone()) else {
-        return Ok(JobEffects::wait_on_current(
+        return Ok(JobEffects::wait_on_settled(
             abi_ready_fact,
             [Job::DeriveAbiReady(root_id)],
         ));
     };
 
-    let reads = current_uses([abi_ready_fact]);
+    let reads = settled_uses([abi_ready_fact]);
     let abi_ready = world.abi_ready_program(root_id);
 
     let mut executable_keys = abi_ready.executables.keys().cloned().collect::<Vec<_>>();
@@ -2339,13 +2313,6 @@ fn abi_value_repr(world: &mut World<'_>, ty: Ty) -> AbiValueRepr {
     }
 }
 
-fn semantic_closure_is_current(world: &World<'_>, root_id: RootId) -> bool {
-    world
-        .semantic_closure_dependencies(root_id)
-        .iter()
-        .all(|(fact, revision)| world.fact_revision(fact.clone()) == Some(*revision))
-}
-
 fn incomplete_semantic_plan(world: &World<'_>, root_id: RootId, message: impl Into<String>) -> FatalError {
     let message = message.into();
     let diagnostic = Diagnostic::error(
@@ -2355,19 +2322,4 @@ fn incomplete_semantic_plan(world: &World<'_>, root_id: RootId, message: impl In
     );
     emit_through(world.tel(), None, std::slice::from_ref(&diagnostic));
     FatalError
-}
-
-fn wait_for_fresh_closure(world: &World<'_>, root_id: RootId, reason: impl Into<String>) -> JobEffects {
-    let reason = reason.into();
-    world.tel().event(
-        &["fz", "compiler2", "materialize", "wait_fresh_closure"],
-        metadata! {
-            reason: reason,
-            root_id: opaque_debug(&root_id),
-        },
-    );
-    JobEffects::wait_on_current(
-        FactKey::SemanticClosed(root_id),
-        [super::super::Job::SealSemanticClosure(root_id)],
-    )
 }

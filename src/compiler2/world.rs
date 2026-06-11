@@ -463,13 +463,8 @@ impl<'a> World<'a> {
         self.callsites.get(key)
     }
 
-    pub(crate) fn define_semantic_closure(
-        &mut self,
-        root: RootId,
-        closure: SemanticClosure,
-        dependencies: super::semantic::DependencySnapshot,
-    ) -> bool {
-        let changed = self.semantic_closures.define(root, closure.clone(), dependencies);
+    pub(crate) fn define_semantic_closure(&mut self, root: RootId, closure: SemanticClosure) -> bool {
+        let changed = self.semantic_closures.define(root, closure.clone());
         self.tel.execute(
             &["fz", "compiler2", "semantic_closed", "defined"],
             &measurements! {
@@ -488,12 +483,6 @@ impl<'a> World<'a> {
             .get(root)
             .cloned()
             .expect("semantic closures should only be read after their fact is defined")
-    }
-
-    pub(crate) fn semantic_closure_dependencies(&self, root: RootId) -> &super::semantic::DependencySnapshot {
-        self.semantic_closures
-            .dependencies(root)
-            .expect("semantic closure dependencies should only be read after their fact is defined")
     }
 
     pub(crate) fn define_materialized_program(&mut self, root: RootId, program: MaterializedProgram) -> bool {
@@ -1030,31 +1019,20 @@ impl<'a> World<'a> {
 
     pub(crate) fn define_function(
         &mut self,
-        module: ModuleId,
-        owner_module: ModuleId,
-        local_name: String,
-        code: CodeId,
-        namespace: Namespace,
-        required_remote_macros: Vec<FunctionId>,
-        source: QuotedSourceRoot,
+        id: FunctionId,
+        source: FunctionSource,
+        expanded_source: FunctionSource,
         surface: FunctionSurface,
-    ) -> (FunctionId, bool) {
+    ) -> bool {
+        let function_ref = self.functions.reference_for(id).clone();
+        let module = function_ref.module;
+        let owner_module = source.owner_module;
+        let code = source.code;
         let arity = surface.arity();
         let clauses = surface.clauses.len();
-        let id = self.functions.reference(module, local_name, arity);
-        let fn_source = FunctionSource {
-            code,
-            owner_module,
-            namespace,
-            capture_params: Vec::new(),
-            required_remote_macros,
-            variadic: surface.variadic,
-            source,
-        };
-        let changed = self.functions.define(id, fn_source, surface);
+        let changed = self.functions.define(id, source, expanded_source, surface);
         if changed {
             let function = self.functions.get(id);
-            let function_ref = self.functions.reference_for(id);
             self.tel.execute(
                 &["fz", "compiler2", "function", "defined"],
                 &measurements! {
@@ -1069,14 +1047,14 @@ impl<'a> World<'a> {
                 },
                 &metadata! {
                     function: opaque_debug(function),
-                    function_ref: opaque_debug(function_ref),
+                    function_ref: opaque_debug(&function_ref),
                     function_id: opaque_debug(&id),
                     module_id: opaque_debug(&module),
                     owner_module_id: opaque_debug(&owner_module),
                 },
             );
         }
-        (id, changed)
+        changed
     }
 
     pub(crate) fn note_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
@@ -1258,7 +1236,7 @@ impl<'a> World<'a> {
             variadic: surface.variadic,
             source: owner_source.source.clone(),
         };
-        let changed = self.functions.define(id, fn_source, surface.clone());
+        let changed = self.functions.define(id, fn_source.clone(), fn_source, surface.clone());
         if changed {
             let function = self.functions.get(id);
             let function_ref = self.functions.reference_for(id);
@@ -1293,7 +1271,7 @@ impl<'a> World<'a> {
         let function_ref = self.functions.reference_for(function);
         let slot = self.functions.get(function);
         let (fn_source, fn_surface) = match slot {
-            super::identity::FunctionState::Defined { source, surface } => (source.as_ref(), surface),
+            super::identity::FunctionState::Defined { source, surface, .. } => (source.as_ref(), surface),
             super::identity::FunctionState::Placeholder | super::identity::FunctionState::Noted { .. } => {
                 panic!("lowered bodies should only be defined for known functions")
             }
@@ -1327,7 +1305,7 @@ impl<'a> World<'a> {
         let function_ref = self.functions.reference_for(function);
         let slot = self.functions.get(function);
         let (fn_source, fn_surface) = match slot {
-            super::identity::FunctionState::Defined { source, surface } => (source.as_ref(), surface),
+            super::identity::FunctionState::Defined { source, surface, .. } => (source.as_ref(), surface),
             super::identity::FunctionState::Placeholder | super::identity::FunctionState::Noted { .. } => {
                 panic!("guard dispatch should only be defined for known functions")
             }
@@ -1358,7 +1336,7 @@ impl<'a> World<'a> {
         let function_ref = self.functions.reference_for(function);
         let slot = self.functions.get(function);
         let (fn_source, fn_surface) = match slot {
-            super::identity::FunctionState::Defined { source, surface } => (source.as_ref(), surface),
+            super::identity::FunctionState::Defined { source, surface, .. } => (source.as_ref(), surface),
             super::identity::FunctionState::Placeholder | super::identity::FunctionState::Noted { .. } => {
                 panic!("entry dispatch should only be defined for known functions")
             }
@@ -1545,7 +1523,7 @@ impl<'a> World<'a> {
 
     pub(crate) fn function_definition(&self, function: FunctionId) -> (FunctionSource, FunctionSurface) {
         match self.functions.get(function) {
-            super::identity::FunctionState::Defined { source, surface } => (*source.clone(), surface.clone()),
+            super::identity::FunctionState::Defined { source, surface, .. } => (*source.clone(), *surface.clone()),
             super::identity::FunctionState::Placeholder | super::identity::FunctionState::Noted { .. } => {
                 panic!("function definitions should only be read from defined functions")
             }
@@ -1650,6 +1628,10 @@ impl<'a> World<'a> {
 
     pub fn has_fact(&self, key: &FactKey) -> bool {
         self.work_graph.facts().revision(key).is_some()
+    }
+
+    pub fn fact_is_settled(&self, key: &FactKey) -> bool {
+        self.work_graph.facts().is_settled(key)
     }
 
     pub(crate) fn scope_lexical_context(

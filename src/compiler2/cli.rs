@@ -10,6 +10,7 @@ use std::fs::read_to_string;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::rc::Rc;
+use std::time::Duration;
 
 use crate::aot_link;
 use crate::diag::diagnostic::Severity;
@@ -18,6 +19,8 @@ use crate::notify_fixture_execution_start;
 use crate::telemetry::{ConfiguredTelemetry, Event, Handler, JsonlBackend, StatsHandler, Value};
 
 use super::{CodeSubmission, Compiler2, ExecutableNeed, RootId, RootSubmission};
+
+const FZ2_COMPILER_DRIVE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub fn run() {
     let raw_args = std::env::args().skip(1).collect::<Vec<_>>();
@@ -247,6 +250,7 @@ fn load_main_root<'a>(tel: &'a ConfiguredTelemetry, path: &Path) -> Result<(Comp
     let source_name = path.display().to_string();
     let text = read_to_string(path).map_err(|error| CliError::failure(format!("read {}: {error}", path.display())))?;
     let mut compiler = Compiler2::new(tel);
+    compiler.set_drive_timeout(FZ2_COMPILER_DRIVE_TIMEOUT);
     compiler.submit_code(CodeSubmission {
         name: Some(source_name),
         text,

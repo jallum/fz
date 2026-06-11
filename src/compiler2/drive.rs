@@ -4,6 +4,8 @@
 //! effects, and the drive loop. Concrete job implementations live under
 //! `compiler2::jobs`.
 
+use std::time::{Duration, Instant};
+
 use crate::telemetry::{TelemetryExt, opaque_debug};
 use crate::{measurements, metadata};
 
@@ -92,13 +94,30 @@ impl JobEffects {
             ..Self::default()
         }
     }
+
+    pub(crate) fn wait_on_settled(fact: FactKey, follow_up: impl IntoIterator<Item = Job>) -> Self {
+        Self {
+            waits: vec![FactUse::settled(fact)],
+            follow_up: follow_up.into_iter().collect(),
+            ..Self::default()
+        }
+    }
 }
 
 pub(crate) fn current_uses<F>(facts: impl IntoIterator<Item = F>) -> Vec<FactUse<F>> {
     facts.into_iter().map(FactUse::current).collect()
 }
 
+pub(crate) fn settled_uses<F>(facts: impl IntoIterator<Item = F>) -> Vec<FactUse<F>> {
+    facts.into_iter().map(FactUse::settled).collect()
+}
+
 impl World<'_> {
+    pub(crate) fn drive_for(&mut self, timeout: Option<Duration>) -> DriveOutcome<Job, FactKey> {
+        let deadline = timeout.map(|limit| Instant::now() + limit);
+        self.drive_until(deadline, timeout)
+    }
+
     /// Runs queued jobs until the work graph has no ready work.
     ///
     /// Each job gets one telemetry span. A successful job publishes its effects
@@ -106,6 +125,10 @@ impl World<'_> {
     /// fatal job closes its span, closes the drive span as fatal, and stops the
     /// loop.
     pub fn drive(&mut self) -> DriveOutcome<Job, FactKey> {
+        self.drive_until(None, None)
+    }
+
+    fn drive_until(&mut self, deadline: Option<Instant>, timeout: Option<Duration>) -> DriveOutcome<Job, FactKey> {
         self.clear_reported_warnings();
         let mut span = self.tel().span(
             &["fz", "compiler2", "drive"],
@@ -114,7 +137,32 @@ impl World<'_> {
             },
         );
         let mut jobs_ran = 0_u64;
-        while let Some(job) = self.work_graph.pop() {
+        while self.work_graph.pending_jobs() > 0 {
+            if deadline.is_some_and(|limit| Instant::now() >= limit) {
+                let pending_jobs = self.work_graph.pending_jobs();
+                let timeout_ms = timeout.map_or(0, |limit| limit.as_millis().min(u64::MAX as u128) as u64);
+                self.tel().event(
+                    &["fz", "compiler2", "drive", "timed_out"],
+                    metadata! {
+                        pending_jobs: pending_jobs as u64,
+                        jobs_ran: jobs_ran,
+                        timeout_ms: timeout_ms,
+                    },
+                );
+                self.clear_unresolved_diagnostics();
+                self.flush_reported_warnings();
+                span.stop_with(
+                    &measurements! { jobs_ran: jobs_ran },
+                    &metadata! {
+                        pending_jobs: pending_jobs as u64,
+                        timeout_ms: timeout_ms,
+                    },
+                );
+                return DriveOutcome::TimedOut { jobs_ran, pending_jobs };
+            }
+            let Some(job) = self.work_graph.pop() else {
+                break;
+            };
             let job_span = self.tel().span(
                 &["fz", "compiler2", "job"],
                 metadata! {

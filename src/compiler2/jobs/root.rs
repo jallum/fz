@@ -6,10 +6,10 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 
-use super::super::drive::{FactKey, Job, JobEffects, current_uses};
+use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
 use super::super::identity::{ExecutableKey, RootId, RootKind};
 use super::super::scheduler::FatalError;
-use super::super::semantic::{CallSiteKey, DependencySnapshot, SelectedCallee, SemanticClosure};
+use super::super::semantic::{CallSiteKey, SelectedCallee, SemanticClosure};
 use super::super::world::World;
 use super::semantic::executable_callsite_needs;
 
@@ -21,7 +21,7 @@ use super::semantic::executable_callsite_needs;
 pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let root = world.root_entry(root_id);
     let root_fact = FactKey::RootEntry(root_id);
-    let mut reads = vec![root_fact.clone()];
+    let mut reads = Vec::new();
     let mut waits = HashSet::new();
     let mut follow_up = Vec::new();
     let mut outputs = vec![root_fact];
@@ -32,8 +32,8 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
         waits.extend(wait.waits.into_iter().map(|fact_use| fact_use.into_fact()));
         follow_up.extend(wait.follow_up);
         return Ok(JobEffects {
-            reads: current_uses(reads),
-            waits: current_uses(waits),
+            reads: settled_uses(reads),
+            waits: settled_uses(waits),
             outputs,
             follow_up,
             ..JobEffects::default()
@@ -57,8 +57,8 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
     if !world.require_activation_key_facts(root.function, &mut reads, &mut waits, &mut gated_follow_up) {
         follow_up.extend(gated_follow_up);
         return Ok(JobEffects {
-            reads: current_uses(reads),
-            waits: current_uses(waits),
+            reads: settled_uses(reads),
+            waits: settled_uses(waits),
             outputs,
             follow_up,
             ..JobEffects::default()
@@ -77,7 +77,7 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
     follow_up.push(Job::AnalyzeActivation(entry_activation));
     follow_up.push(Job::SealSemanticClosure(root_id));
     Ok(JobEffects {
-        reads: current_uses(reads),
+        reads: settled_uses(reads),
         outputs,
         follow_up,
         ..JobEffects::default()
@@ -103,21 +103,18 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
     let mut follow_up = HashSet::new();
     let mut outputs = Vec::new();
     let mut changed = Vec::new();
-    let mut dependencies = DependencySnapshot::default();
 
     let root_fact = FactKey::RootEntry(root_id);
-    if let Some(root_revision) = world.fact_revision(root_fact.clone()) {
+    if world.fact_is_settled(&root_fact) {
         reads.push(root_fact.clone());
-        dependencies.record(root_fact, root_revision);
     } else {
         waits.insert(root_fact);
         follow_up.insert(Job::SeedRoot(root_id));
     }
 
     let function_fact = FactKey::FunctionDefined(root.function);
-    let function_ready = if let Some(function_revision) = world.function_defined_revision(root.function) {
+    let function_ready = if world.fact_is_settled(&function_fact) {
         reads.push(function_fact.clone());
-        dependencies.record(function_fact, function_revision);
         true
     } else {
         let wait = world.wait_for_function_definition(root.function);
@@ -128,8 +125,8 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
 
     if !function_ready {
         return Ok(JobEffects {
-            reads: current_uses(reads),
-            waits: current_uses(waits),
+            reads: settled_uses(reads),
+            waits: settled_uses(waits),
             follow_up: follow_up.into_iter().collect(),
             ..JobEffects::default()
         });
@@ -137,8 +134,8 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
 
     if !world.require_activation_key_facts(root.function, &mut reads, &mut waits, &mut follow_up) {
         return Ok(JobEffects {
-            reads: current_uses(reads),
-            waits: current_uses(waits),
+            reads: settled_uses(reads),
+            waits: settled_uses(waits),
             follow_up: follow_up.into_iter().collect(),
             ..JobEffects::default()
         });
@@ -163,7 +160,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
     while let Some(executable) = pending.pop_front() {
         let activation = executable.activation.clone();
         let activation_fact = FactKey::Activation(activation.clone());
-        let activation_ready = read_fact(world, activation_fact, &mut reads, &mut dependencies, &mut waits);
+        let activation_ready = read_fact(world, activation_fact, &mut reads, &mut waits);
         if !activation_ready {
             continue;
         }
@@ -173,35 +170,32 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
         activations.insert(activation.clone());
 
         let analyzed_fact = FactKey::ActivationAnalyzed(activation.clone());
-        let Some(analyzed_revision) = world.fact_revision(analyzed_fact.clone()) else {
+        let Some(_analyzed_revision) = world.fact_revision(analyzed_fact.clone()) else {
             waits.insert(analyzed_fact);
             follow_up.insert(Job::AnalyzeActivation(activation.clone()));
             continue;
         };
         reads.push(analyzed_fact);
-        dependencies.record(FactKey::ActivationAnalyzed(activation.clone()), analyzed_revision);
         let analysis = world
             .activation_analysis(&activation)
             .expect("activation analysis fact should have an analysis value")
             .clone();
 
         let return_fact = FactKey::ReturnType(activation.clone());
-        let Some(return_revision) = world.fact_revision(return_fact.clone()) else {
+        let Some(_return_revision) = world.fact_revision(return_fact.clone()) else {
             waits.insert(return_fact);
             follow_up.insert(Job::AnalyzeActivation(activation.clone()));
             continue;
         };
         reads.push(return_fact);
-        dependencies.record(FactKey::ReturnType(activation.clone()), return_revision);
 
         let lowered_fact = FactKey::LoweredBody(activation.function);
-        let Some(lowered_revision) = world.fact_revision(lowered_fact.clone()) else {
+        let Some(_lowered_revision) = world.fact_revision(lowered_fact.clone()) else {
             waits.insert(lowered_fact);
             follow_up.insert(Job::LowerFunction(activation.function));
             continue;
         };
         reads.push(lowered_fact.clone());
-        dependencies.record(lowered_fact, lowered_revision);
 
         let lowered_body = world.lowered_body(activation.function);
         let callsite_needs = executable_callsite_needs(&lowered_body, &analysis.reachable_clauses, executable.need);
@@ -218,7 +212,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
                 callsite,
             };
             let callsite_fact = FactKey::CallSiteSummary(key.clone());
-            if !read_fact(world, callsite_fact, &mut reads, &mut dependencies, &mut waits) {
+            if !read_fact(world, callsite_fact, &mut reads, &mut waits) {
                 follow_up.insert(Job::AnalyzeActivation(activation.clone()));
                 continue;
             }
@@ -246,7 +240,6 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
                     world,
                     FactKey::Activation(callee_activation.clone()),
                     &mut reads,
-                    &mut dependencies,
                     &mut waits,
                 );
                 if !callee_activation_ready {
@@ -271,7 +264,6 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
                 activations,
                 executables,
             },
-            dependencies,
         );
         outputs.push(semantic_closed_fact.clone());
         if closure_changed {
@@ -283,24 +275,17 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
     }
 
     Ok(JobEffects {
-        reads: current_uses(reads),
-        waits: current_uses(waits),
+        reads: settled_uses(reads),
+        waits: settled_uses(waits),
         outputs,
         changed,
         follow_up: follow_up.into_iter().collect(),
     })
 }
 
-fn read_fact(
-    world: &World<'_>,
-    fact: FactKey,
-    reads: &mut Vec<FactKey>,
-    dependencies: &mut DependencySnapshot,
-    waits: &mut HashSet<FactKey>,
-) -> bool {
-    if let Some(revision) = world.fact_revision(fact.clone()) {
+fn read_fact(world: &World<'_>, fact: FactKey, reads: &mut Vec<FactKey>, waits: &mut HashSet<FactKey>) -> bool {
+    if world.fact_is_settled(&fact) {
         reads.push(fact.clone());
-        dependencies.record(fact, revision);
         true
     } else {
         waits.insert(fact);

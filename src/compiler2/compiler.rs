@@ -1,4 +1,5 @@
 use crate::telemetry::{Telemetry, TelemetryExt as _};
+use std::time::Duration;
 
 use super::Job;
 use super::NativeProgram;
@@ -15,6 +16,7 @@ use super::{ExecutableNeed, ModuleId, ModuleInterface};
 /// invoking the legacy lowering or planner pipeline.
 pub struct Compiler2<'a> {
     world: World<'a>,
+    drive_timeout: Option<Duration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,7 +35,14 @@ pub struct RootSubmission {
 
 impl<'a> Compiler2<'a> {
     pub fn new(tel: &'a dyn Telemetry) -> Self {
-        Self { world: World::new(tel) }
+        Self {
+            world: World::new(tel),
+            drive_timeout: None,
+        }
+    }
+
+    pub fn set_drive_timeout(&mut self, timeout: Duration) {
+        self.drive_timeout = Some(timeout);
     }
 
     pub fn submit_code(&mut self, submission: CodeSubmission) -> CodeId {
@@ -66,7 +75,7 @@ impl<'a> Compiler2<'a> {
     }
 
     pub fn drive(&mut self) -> DriveOutcome<Job, super::FactKey> {
-        self.world.drive()
+        self.world.drive_for(self.drive_timeout)
     }
 
     fn native_program_for_root(&mut self, root: RootId) -> Result<NativeProgram, String> {
@@ -101,7 +110,7 @@ impl<'a> Compiler2<'a> {
 
     fn drive_root_to(&mut self, root: RootId, job: Job) -> Result<(), String> {
         self.world.demand(job);
-        match self.world.drive() {
+        match self.world.drive_for(self.drive_timeout) {
             DriveOutcome::Resolved => Ok(()),
             DriveOutcome::Unresolved { waits } => Err(format!(
                 "compiler2 root {} stayed unresolved: {:?}",
@@ -112,6 +121,15 @@ impl<'a> Compiler2<'a> {
                 "compiler2 root {} failed before backend execution: {:?}",
                 root.as_u32(),
                 job
+            )),
+            DriveOutcome::TimedOut { jobs_ran, pending_jobs } => Err(format!(
+                "compiler2 root {} exceeded {} ms drive limit after {} jobs with {} pending",
+                root.as_u32(),
+                self.drive_timeout
+                    .expect("timed out drives should have a configured timeout")
+                    .as_millis(),
+                jobs_ran,
+                pending_jobs,
             )),
         }
     }

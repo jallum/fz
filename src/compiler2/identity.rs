@@ -179,7 +179,8 @@ pub enum FunctionState {
     },
     Defined {
         source: Box<FunctionSource>,
-        surface: FunctionSurface,
+        expanded_source: Box<FunctionSource>,
+        surface: Box<FunctionSurface>,
     },
 }
 
@@ -498,17 +499,43 @@ impl FunctionMap {
 
     pub fn note(&mut self, id: FunctionId, source: FunctionSource) -> bool {
         let function = &mut self.slots[id.0 as usize];
-        let next = FunctionState::Noted {
-            source: Box::new(source),
-        };
-        update_if_changed(function, next)
+        match function {
+            FunctionState::Placeholder => {
+                *function = FunctionState::Noted {
+                    source: Box::new(source),
+                };
+                true
+            }
+            FunctionState::Noted { source: current } => {
+                let changed = !source_same(current, &source);
+                **current = source;
+                changed
+            }
+            FunctionState::Defined { source: current, .. } => {
+                let changed = !source_same(current, &source);
+                // Re-noting source invalidates the definition fact through the
+                // scheduler, but the richer Defined state must remain in place
+                // until DefineFunction recomputes it. Otherwise stable scope
+                // publication can demote a defined function back to Noted and
+                // manufacture a revision churn loop.
+                **current = source;
+                changed
+            }
+        }
     }
 
-    pub fn define(&mut self, id: FunctionId, source: FunctionSource, surface: FunctionSurface) -> bool {
+    pub fn define(
+        &mut self,
+        id: FunctionId,
+        source: FunctionSource,
+        expanded_source: FunctionSource,
+        surface: FunctionSurface,
+    ) -> bool {
         let function = &mut self.slots[id.0 as usize];
         let next = FunctionState::Defined {
             source: Box::new(source),
-            surface,
+            expanded_source: Box::new(expanded_source),
+            surface: Box::new(surface),
         };
         update_if_changed(function, next)
     }
@@ -749,7 +776,18 @@ impl FunctionState {
         match (self, other) {
             (FunctionState::Placeholder, FunctionState::Placeholder) => true,
             (FunctionState::Noted { source: l }, FunctionState::Noted { source: r }) => source_same(l, r),
-            (FunctionState::Defined { source: l, .. }, FunctionState::Defined { source: r, .. }) => source_same(l, r),
+            (
+                FunctionState::Defined {
+                    source: l_source,
+                    expanded_source: l_expanded,
+                    ..
+                },
+                FunctionState::Defined {
+                    source: r_source,
+                    expanded_source: r_expanded,
+                    ..
+                },
+            ) => source_same(l_source, r_source) && source_same(l_expanded, r_expanded),
             _ => false,
         }
     }
