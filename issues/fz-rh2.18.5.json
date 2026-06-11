@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-11T21:03:11Z",
+  "description": "Goal: ActivationKey.input becomes identity only; body input evidence comes from a separate ActivationInputs fact backed by caller-owned contributions. Signal: semantic tests prove recursive key collapse no longer erases the raw caller evidence that AnalyzeActivation uses, and stale caller contributions retract when a caller reruns without them. Strategy: add FactKey::ActivationInputs, add a World-owned activation-input contribution store with publisher replacement semantics, have SeedRoot and AnalyzeActivation publish input contributions, and make AnalyzeActivation wait/read ActivationInputs instead of reading ActivationKey.input.",
+  "id": "fz-rh2.18.5",
+  "labels": [],
+  "parent": "fz-rh2.18",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 semantics: split activation demand from activation input evidence",
+  "type": "task",
+  "updated_at": "2026-06-11T21:03:11Z"
+}
