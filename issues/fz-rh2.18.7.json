@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-11T21:03:22Z",
+  "description": "Goal: remove the remaining places where any or none encode uncertainty or incomplete convergence rather than real source/spec semantics. Signal: the port_type_infer and port_planner acceptance assertions for fold_state_machine, Enum.reduce, Enum.reduce_while, and mixed Enum.take paths pass without local fallback shims; telemetry shows current vs settled evidence movements instead of fake top/bottom returns. Strategy: reintroduce or preserve the dirty semantic assertions as acceptance tests after the engine model lands, trace each remaining any/none to the earliest wrong fact, and repair the data model rather than downstream display or artifact code.",
+  "id": "fz-rh2.18.7",
+  "labels": [],
+  "parent": "fz-rh2.18",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 type convergence: burn down any/none poison fallbacks",
+  "type": "task",
+  "updated_at": "2026-06-11T21:03:22Z"
+}
