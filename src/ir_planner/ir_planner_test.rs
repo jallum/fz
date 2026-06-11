@@ -16,8 +16,8 @@ use crate::frontend::resolve::{InterfaceTable, ResolveError, flatten_modules};
 use crate::frontend::spec_registry::SpecRegistry;
 use crate::frontend::{compile_source_with_interface_table, compile_source_with_types};
 use crate::fz_ir::{
-    BinOp, BlockId, CallsiteId, CallsiteIdent, Const, EmitSlot, ExternDecl, ExternId, ExternTy, FnBuilder, FnId, FnIr,
-    InitTokenId, Module, ModuleBuilder, Prim, SpecId, Stmt, Term, Var,
+    BinOp, BlockId, CallsiteId, CallsiteIdent, Const, DirectCallTarget, EmitSlot, ExternDecl, ExternId, ExternTy,
+    FnBuilder, FnId, FnIr, InitTokenId, Module, ModuleBuilder, Prim, SpecId, Stmt, Term, Var,
 };
 use crate::ir_codegen::compile_planned;
 use crate::ir_dest::{lower_list_destinations, lower_map_destinations, lower_tuple_destinations};
@@ -334,7 +334,7 @@ fn effect_summary_propagates_observable_tail_calls() {
         main_entry,
         Term::TailCall {
             ident: CallsiteIdent::synthetic(),
-            callee: FnId(1),
+            callee: DirectCallTarget::Local(FnId(1)),
             args: Vec::new(),
             is_back_edge: false,
         },
@@ -1083,7 +1083,7 @@ fn entry_param_unions_across_multiple_callers() {
         aentry,
         Term::TailCall {
             ident: CallsiteIdent::from_source(Span::DUMMY),
-            callee: FnId(0),
+            callee: DirectCallTarget::Local(FnId(0)),
             args: vec![one],
             is_back_edge: false,
         },
@@ -1097,7 +1097,7 @@ fn entry_param_unions_across_multiple_callers() {
         bentry,
         Term::TailCall {
             ident: CallsiteIdent::from_source(Span::DUMMY),
-            callee: FnId(0),
+            callee: DirectCallTarget::Local(FnId(0)),
             args: vec![ok],
             is_back_edge: false,
         },
@@ -1181,7 +1181,7 @@ fn closure_target_with_direct_caller_registers_only_typed_callsite_specs() {
         mentry,
         Term::TailCall {
             ident: CallsiteIdent::from_source(Span::DUMMY),
-            callee: FnId(0),
+            callee: DirectCallTarget::Local(FnId(0)),
             args: vec![lit],
             is_back_edge: false,
         },
@@ -1615,7 +1615,7 @@ fn fn_view_returns_narrowed_spec_for_direct_caller() {
         bentry,
         Term::TailCall {
             ident: CallsiteIdent::from_source(Span::DUMMY),
-            callee: FnId(0),
+            callee: DirectCallTarget::Local(FnId(0)),
             args: vec![lit],
             is_back_edge: false,
         },
@@ -4440,7 +4440,7 @@ fn planner_publishes_dispatches_for_direct_call() {
         m_entry,
         Term::TailCall {
             ident: tc_ident.clone(),
-            callee: FnId(0),
+            callee: DirectCallTarget::Local(FnId(0)),
             args: vec![c42],
             is_back_edge: false,
         },
@@ -4553,8 +4553,9 @@ fn planner_keeps_external_module_calls_at_provider_boundary() {
 
     let edge = user
         .module
-        .external_call_edges
+        .external_call_edges()
         .first()
+        .cloned()
         .expect("lowering should record the imported Math.add callsite");
     let run = user.module.fn_by_name("User.run").expect("User.run");
     assert_eq!(edge.callsite.caller, run.id);
@@ -4564,29 +4565,27 @@ fn planner_keeps_external_module_calls_at_provider_boundary() {
         .specs
         .values()
         .find(|spec| spec.call_edges.contains_key(&edge.callsite))
-        .expect("User.run spec should carry the direct external edge");
+        .expect("User.run spec should carry the provider-boundary edge");
     let direct = run_spec.call_edges.get(&edge.callsite).expect("direct call edge");
-    assert!(matches!(&direct.target, CallEdgeTarget::External { target, .. }
+    assert!(matches!(&direct.target, CallEdgeTarget::ProviderBoundary { target, .. }
             if target.module.to_string() == "Math" && target.name == "add"));
 
     let cont_callsite = CallsiteId::new(run.id, &edge.callsite.ident, EmitSlot::Cont);
     assert!(
         run_spec.local_call_target(&cont_callsite).is_some(),
-        "external calls still need a local continuation dispatch"
+        "provider-boundary calls still need a local continuation dispatch"
     );
     assert!(
         !user.module_plan.specs.values().any(|spec| {
             spec.call_edges.values().any(|edge| {
-                edge.local_target()
-                    .map(|target| user.module.fn_by_id(target.fn_id).name.starts_with("__external__."))
-                    .unwrap_or(false)
+                matches!(edge.target, CallEdgeTarget::ProviderBoundary { .. }) && edge.local_target().is_some()
             })
         }),
-        "external boundary calls must not be planned through the synthetic stub body"
+        "provider-boundary calls must not be planned through a local stub body"
     );
 }
 
-// PICKED: cross-module protocol call stays at external boundary without local stub
+// PICKED: cross-module protocol call stays at provider boundary without local stub
 #[test]
 fn planner_keeps_provider_protocol_calls_at_external_boundary() {
     let mut t = crate::types::new();
@@ -4648,7 +4647,7 @@ fn main(), do: User.run()
         .expect("User.run spec should carry the provider-boundary protocol edge");
     let direct = run_spec.call_edges.get(&direct_callsite).expect("direct call edge");
     match &direct.target {
-        CallEdgeTarget::External { target, .. } => {
+        CallEdgeTarget::ProviderBoundary { target, .. } => {
             assert_eq!(target.name, "id");
         }
         other => panic!("expected provider-boundary protocol edge, got {other:?}"),
@@ -4771,8 +4770,8 @@ end
         .collect::<Vec<_>>();
     assert!(
         !matching_specs.is_empty(),
-        "mixed Enum.take calls must keep a range specialization; external_edges={:?}; Enum.take specs: {:?}; call edges: {:?}",
-        module.external_call_edges,
+        "mixed Enum.take calls must keep a range specialization; provider_boundary_edges={:?}; Enum.take specs: {:?}; call edges: {:?}",
+        module.external_call_edges(),
         plan.specs.keys().filter(|key| key.fn_id == take.id).collect::<Vec<_>>(),
         plan.specs
             .iter()
@@ -4826,7 +4825,7 @@ fn declared_return_fact_handles_enum_reduce_with_runtime_graph_reducer() {
         &mut t,
         &module,
         drop_positive.id,
-        *callee,
+        callee.local_fn_id().expect("Enum.reduce call should be local"),
         &arg_tys,
         &plan.effective_returns,
     )
@@ -4896,13 +4895,14 @@ fn declared_return_fact_handles_take_positive_reduce_while_in_runtime_graph() {
             &mut t,
             &module,
             take_positive.id,
-            *callee,
+            callee.local_fn_id().expect("Enum.reduce_while call should be local"),
             &arg_tys,
             &plan.effective_returns,
         )
         .unwrap_or_else(|| {
-            let callee_fn = module.fn_by_id(*callee);
-            let declared_set = module.declared_specs.get(callee);
+            let callee = callee.local_fn_id().expect("Enum.reduce_while call should be local");
+            let callee_fn = module.fn_by_id(callee);
+            let declared_set = module.declared_specs.get(&callee);
             let declared = declared_set
                 .map(|set| {
                     set.arrows
@@ -5251,7 +5251,9 @@ end
 
     // The dispatch fn no longer calls a protocol stub directly.
     let still_calls_stub = describe.blocks.iter().any(|b| match &b.terminator {
-        Term::Call { callee, .. } | Term::TailCall { callee, .. } => m.protocol_call_targets.contains_key(callee),
+        Term::Call { callee, .. } | Term::TailCall { callee, .. } => callee
+            .local_fn_id()
+            .is_some_and(|callee| m.protocol_call_targets.contains_key(&callee)),
         _ => false,
     });
     assert!(
@@ -5285,7 +5287,7 @@ end
         .blocks
         .iter()
         .filter_map(|b| match &b.terminator {
-            Term::Call { callee, .. } | Term::TailCall { callee, .. } => Some(*callee),
+            Term::Call { callee, .. } | Term::TailCall { callee, .. } => callee.local_fn_id(),
             _ => None,
         })
         .collect();
@@ -5452,9 +5454,9 @@ end
         .blocks
         .iter()
         .filter_map(|b| match &b.terminator {
-            Term::Call { callee, .. } | Term::TailCall { callee, .. } => {
-                (!m.protocol_call_targets.contains_key(callee)).then_some(*callee)
-            }
+            Term::Call { callee, .. } | Term::TailCall { callee, .. } => callee
+                .local_fn_id()
+                .filter(|callee| !m.protocol_call_targets.contains_key(callee)),
             _ => None,
         })
         .collect();
@@ -5469,7 +5471,9 @@ end
 
     // ...and a stub fallthrough survives for the residual (atom) arm.
     let keeps_stub_fallthrough = describe.blocks.iter().any(|b| match &b.terminator {
-        Term::Call { callee, .. } | Term::TailCall { callee, .. } => m.protocol_call_targets.contains_key(callee),
+        Term::Call { callee, .. } | Term::TailCall { callee, .. } => callee
+            .local_fn_id()
+            .is_some_and(|callee| m.protocol_call_targets.contains_key(&callee)),
         _ => false,
     });
     assert!(
@@ -5590,9 +5594,9 @@ end
         .blocks
         .iter()
         .filter_map(|b| match &b.terminator {
-            Term::Call { callee, .. } | Term::TailCall { callee, .. } => {
-                (!m.protocol_call_targets.contains_key(callee)).then_some(*callee)
-            }
+            Term::Call { callee, .. } | Term::TailCall { callee, .. } => callee
+                .local_fn_id()
+                .filter(|callee| !m.protocol_call_targets.contains_key(callee)),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -5602,7 +5606,9 @@ end
     assert_eq!(m.fn_by_id(direct_impl_callees[0]).name, "Sizer.Integer.size");
 
     let keeps_stub_fallthrough = describe.blocks.iter().any(|b| match &b.terminator {
-        Term::Call { callee, .. } | Term::TailCall { callee, .. } => m.protocol_call_targets.contains_key(callee),
+        Term::Call { callee, .. } | Term::TailCall { callee, .. } => callee
+            .local_fn_id()
+            .is_some_and(|callee| m.protocol_call_targets.contains_key(&callee)),
         _ => false,
     });
     assert!(

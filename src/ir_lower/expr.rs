@@ -8,8 +8,8 @@ use crate::compiler::source::Span;
 use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, SourcePatternRows};
 use crate::fz_ir::{
     BinOp, BitFieldIr, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, ContinuationProvenance,
-    ContinuationProvenanceKind, ExternArg, ExternDecl, ExternId, ExternTy, FnBuilder, FnCategory, Prim, Term, UnOp,
-    Var,
+    ContinuationProvenanceKind, DirectCallTarget, ExternArg, ExternDecl, ExternId, ExternTy, FnBuilder, FnCategory,
+    Prim, Term, UnOp, Var,
 };
 use crate::modules::identity::ModuleName;
 use crate::parser::lexer::Tok;
@@ -364,30 +364,32 @@ pub(crate) fn lower_expr<T: Types<Ty = Ty>>(
             } else {
                 None
             };
-            let callee = local_callee
-                .or_else(|| external_callee.as_ref().map(|(callee, _)| *callee))
-                .or(protocol_callee)
-                .ok_or_else(|| LowerError::Unbound {
-                    span: target.span,
-                    name: format!("fn {}/{}", callee_name, arity),
-                })?;
             if is_tail {
+                let callee = match external_callee {
+                    Some(target) => DirectCallTarget::ProviderBoundary(target),
+                    None => DirectCallTarget::Local(local_callee.or(protocol_callee).ok_or_else(|| {
+                        LowerError::Unbound {
+                            span: target.span,
+                            name: format!("fn {}/{}", callee_name, arity),
+                        }
+                    })?),
+                };
                 let term = Term::TailCall {
                     ident: CallsiteIdent::from_source(sp),
                     callee,
                     args: arg_vars,
                     is_back_edge: false, // annotate_back_edges fills this in post-lowering
                 };
-                if let Some((_, target)) = external_callee {
-                    ctx.set_external_direct_term_at(term, sp, target);
-                } else {
-                    ctx.set_term_at(term, sp);
-                }
+                ctx.set_term_at(term, sp);
                 ctx.terminated = true;
                 Ok(Var(0))
-            } else if let Some((_, target)) = external_callee {
-                cps_split_external_call(ctx, callee, target, arg_vars, sp)
+            } else if let Some(target) = external_callee {
+                cps_split_external_call(ctx, target, arg_vars, sp)
             } else {
+                let callee = local_callee.or(protocol_callee).ok_or_else(|| LowerError::Unbound {
+                    span: target.span,
+                    name: format!("fn {}/{}", callee_name, arity),
+                })?;
                 cps_split_call(ctx, callee, arg_vars, sp)
             }
         }
@@ -1193,7 +1195,7 @@ pub(super) fn lower_case<T: Types<Ty = Ty>>(
             let capture_vars = cont_call_args(ctx, &clause_cont);
             ctx.set_term(Term::TailCall {
                 ident: CallsiteIdent::from_source(clause.span),
-                callee: clause_cont.id,
+                callee: DirectCallTarget::Local(clause_cont.id),
                 args: capture_vars,
                 is_back_edge: false,
             });
@@ -1272,7 +1274,7 @@ pub(super) fn lower_cond<T: Types<Ty = Ty>>(
     let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
     ctx.set_term(Term::TailCall {
         ident: CallsiteIdent::from_source(Span::DUMMY),
-        callee: arm_conts[0].id,
+        callee: DirectCallTarget::Local(arm_conts[0].id),
         args: capture_vars,
         is_back_edge: false,
     });
@@ -1300,7 +1302,7 @@ pub(super) fn lower_cond<T: Types<Ty = Ty>>(
         ctx.cur_block = Some(fall_b);
         ctx.set_term(Term::TailCall {
             ident: CallsiteIdent::from_source(Span::DUMMY),
-            callee: next_id,
+            callee: DirectCallTarget::Local(next_id),
             args: fall_capture_vars,
             is_back_edge: false,
         });
@@ -1395,7 +1397,7 @@ pub(super) fn lower_with<T: Types<Ty = Ty>>(
                 }
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
-                    callee: with_fail_cont.id,
+                    callee: DirectCallTarget::Local(with_fail_cont.id),
                     args,
                     is_back_edge: false,
                 });
@@ -1506,7 +1508,7 @@ pub(super) fn lower_with<T: Types<Ty = Ty>>(
                 let capture_vars = cont_call_args(ctx, &cont);
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(clause.span),
-                    callee: cont.id,
+                    callee: DirectCallTarget::Local(cont.id),
                     args: capture_vars,
                     is_back_edge: false,
                 });

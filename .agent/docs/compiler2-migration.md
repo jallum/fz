@@ -125,6 +125,15 @@ materializing local dispatch from the settled multi-target semantic fact, so
 - Compiler2 does not need the old native `prepare_preplanned_native` path for its
   public JIT/AOT front doors.
 
+## Raw IR Call Target Invariant
+
+Raw `fz_ir::Term::Call` and `Term::TailCall` no longer use a bare `FnId`
+callee. Direct calls carry `DirectCallTarget`, which is either `Local(FnId)` for
+a body in the current linked module or `ProviderBoundary(Mfa)` for a provider
+symbol that must be resolved before interpreter/native execution. Import edge
+metadata is derived from provider-boundary term targets; it is not an
+authoritative side table and no `__external__` stub body should be synthesized.
+
 ## Cutover Rule
 
 The old compiler can be scrapped only after the agreed source/contract fixture

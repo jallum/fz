@@ -296,10 +296,10 @@ fn compute_tagged_return_specs<T: Types<Ty = Ty> + ClosureTypes>(
                                     .iter()
                                     .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
                                     .collect();
-                                let key = SpecKey::value(*callee, key_slots_from_tys(arg_tys));
+                                let key = SpecKey::value(callee.local_fn_id()?, key_slots_from_tys(arg_tys));
                                 spec_registry.resolve_spec_key(t, &key).map(|s| s.0)
                             })()
-                            .unwrap_or(callee.0);
+                            .unwrap_or_else(|| callee.local_fn_id().map_or(u32::MAX, |callee| callee.0));
                             set.contains(&csid)
                         }
                         Term::TailCallClosure {
@@ -343,10 +343,10 @@ fn compute_tagged_return_specs<T: Types<Ty = Ty> + ClosureTypes>(
                                     .iter()
                                     .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
                                     .collect();
-                                let key = SpecKey::value(*callee, key_slots_from_tys(arg_tys));
+                                let key = SpecKey::value(callee.local_fn_id()?, key_slots_from_tys(arg_tys));
                                 spec_registry.resolve_spec_key(t, &key).map(|s| s.0)
                             })()
-                            .unwrap_or(callee.0);
+                            .unwrap_or_else(|| callee.local_fn_id().map_or(u32::MAX, |callee| callee.0));
                             if set.insert(csid) {
                                 changed = true;
                             }
@@ -505,10 +505,10 @@ fn compute_halt_reprs<T: Types<Ty = Ty> + ClosureTypes>(
                                 .iter()
                                 .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
                                 .collect();
-                            let key = SpecKey::value(*callee, key_slots_from_tys(arg_tys));
+                            let key = SpecKey::value(callee.local_fn_id()?, key_slots_from_tys(arg_tys));
                             spec_registry.resolve_spec_key(t, &key).map(|s| s.0)
                         })()
-                        .unwrap_or(callee.0);
+                        .unwrap_or_else(|| callee.local_fn_id().map_or(u32::MAX, |callee| callee.0));
                         if let Some(c) = chain.get(csid as usize).and_then(|o| *o) {
                             contributions.push(c);
                         }
@@ -1449,9 +1449,9 @@ pub(crate) fn prepare_preplanned_native<
 ) -> Result<(Module, ModulePlan, PlannedProgram, AbiFacts), CodegenError> {
     let mut working = module.clone();
     let mut module_plan = module_plan.clone();
-    if let Some(edge) = working.external_call_edges.first() {
+    if let Some(edge) = working.external_call_edges().first() {
         return Err(CodegenError::new(format!(
-            "unresolved external module call `{}`",
+            "unresolved provider-boundary call `{}`",
             edge.target
         )));
     }

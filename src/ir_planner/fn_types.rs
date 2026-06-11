@@ -121,7 +121,7 @@ impl SpecPlan {
                 return Some(&contract.target.demand);
             }
             match &edge.target {
-                CallEdgeTarget::External { demand, .. } => Some(demand),
+                CallEdgeTarget::ProviderBoundary { demand, .. } => Some(demand),
                 CallEdgeTarget::Local(_) => None,
             }
         })
@@ -146,7 +146,7 @@ impl CallEdgePlan {
     pub fn local_target(&self) -> Option<&SpecKey> {
         match &self.target {
             CallEdgeTarget::Local(target) => Some(target),
-            CallEdgeTarget::External { .. } => None,
+            CallEdgeTarget::ProviderBoundary { .. } => None,
         }
     }
 }
@@ -188,7 +188,7 @@ impl ReturnStrategy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallEdgeTarget {
     Local(SpecKey),
-    External {
+    ProviderBoundary {
         target: Mfa,
         input: Vec<KeySlot>,
         demand: ReturnDemand,

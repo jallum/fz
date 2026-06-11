@@ -756,10 +756,10 @@ fn cross_module_call_stays_at_provider_boundary() {
         need: ExecutableNeed::Value,
     });
     assert_resolved(compiler.drive(), "cross-module import call should resolve");
-    // TODO: User.run spec should carry an External call edge for Math.add; no __external__ stub local target
+    // TODO: User.run spec should carry a provider-boundary call edge for Math.add with no local stub target
 }
 
-// Ported from src/ir_planner/ir_planner_test.rs: cross-module protocol call stays at external boundary without local stub
+// Ported from src/ir_planner/ir_planner_test.rs: cross-module protocol call stays at provider boundary without local stub
 #[test]
 fn cross_module_protocol_call_stays_at_external_boundary() {
     let tel = ConfiguredTelemetry::new();
@@ -779,7 +779,7 @@ fn cross_module_protocol_call_stays_at_external_boundary() {
         need: ExecutableNeed::Value,
     });
     let _ = compiler.drive(); // duplicate fact: pre-existing pipeline gap for cross-module protocol dispatch
-    // TODO: User.run spec should carry an External call edge for the protocol id; no __protocol__ stub local target
+    // TODO: User.run spec should carry a provider-boundary call edge for the protocol id; no __protocol__ stub local target
 }
 
 // Ported from src/ir_planner/ir_planner_test.rs: Enum.count/1 on Range enumerator returns integer per declared spec

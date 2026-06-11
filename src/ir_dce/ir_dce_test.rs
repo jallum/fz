@@ -1,6 +1,7 @@
 use super::*;
 use crate::fz_ir::{
-    BinOp, CallsiteIdent, Const, Cont, ExternArg, ExternId, ExternTy, FnBuilder, FnId, ModuleBuilder, Prim, Term,
+    BinOp, CallsiteIdent, Const, Cont, DirectCallTarget, ExternArg, ExternId, ExternTy, FnBuilder, FnId, ModuleBuilder,
+    Prim, Term,
 };
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use crate::types::Types;
@@ -122,7 +123,7 @@ fn mixed_block_dead_removed_live_kept() {
         entry,
         Term::Call {
             ident: CallsiteIdent::synthetic(),
-            callee: cont_fn,
+            callee: DirectCallTarget::Local(cont_fn),
             args: vec![live],
             continuation: Cont {
                 fn_id: cont_fn,

@@ -754,11 +754,11 @@ fn native_modules_equal(left: &IrModule, right: &IrModule) -> bool {
         && left.atom_names == right.atom_names
         && left.externs == right.externs
         && left.extern_idx == right.extern_idx
-        && left.external_call_edges.len() == right.external_call_edges.len()
+        && left.external_call_edges().len() == right.external_call_edges().len()
         && left
-            .external_call_edges
+            .external_call_edges()
             .iter()
-            .zip(right.external_call_edges.iter())
+            .zip(right.external_call_edges().iter())
             .all(|(left, right)| native_external_call_edges_equal(left, right))
         && left.protocol_call_targets == right.protocol_call_targets
 }

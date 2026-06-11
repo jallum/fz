@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use super::*;
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
-use crate::fz_ir::{CallsiteId, EmitSlot, FnId, Module, Stmt, Term, Var};
+use crate::fz_ir::{CallsiteId, DirectCallTarget, EmitSlot, FnId, Module, Stmt, Term, Var};
 use crate::ir_extern_marshal::resolve_fn_types;
 use crate::ir_planner::fn_types::SpecKey;
 use crate::ir_planner::type_fn::type_fn;
@@ -20,6 +20,15 @@ fn continuation_target(fn_types: &SpecPlan, fn_id: FnId, ident: &crate::fz_ir::C
     fn_types
         .local_call_target(&CallsiteId::new(fn_id, ident, EmitSlot::Cont))
         .cloned()
+}
+
+fn unresolved_provider_boundary(target: &DirectCallTarget) -> String {
+    match target {
+        DirectCallTarget::Local(fn_id) => format!("local callee {} was not resolved", fn_id.0),
+        DirectCallTarget::ProviderBoundary(target) => {
+            format!("unresolved provider-boundary call `{}` reached interpreter", target)
+        }
+    }
 }
 
 /// fz-yxs/fz-2v3 — try matching the message against each clause's
@@ -178,13 +187,18 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                     let arg_vals = collect(&env, call_args)?;
                     let outer_cap_vals = collect(&env, &continuation.captured)?;
                     let cont_target = continuation_target(fn_types, fn_id, ident);
+                    let callee_fn = selected_target
+                        .as_ref()
+                        .map(|target| target.fn_id)
+                        .or_else(|| callee.local_fn_id())
+                        .ok_or_else(|| unresolved_provider_boundary(callee))?;
                     match run_fn_typed(
                         runtime,
                         t,
                         module,
                         tel,
                         module_types,
-                        selected_target.as_ref().map_or(*callee, |target| target.fn_id),
+                        callee_fn,
                         arg_vals,
                         selected_target.clone(),
                     )? {
@@ -255,8 +269,13 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                         // bit already stands on `yield_reasons` and is folded in
                         // by the scheduler-boundary `finish_yield_report`.
                         if budget_exhausted {
+                            let resume_fn = selected_target
+                                .as_ref()
+                                .map(|target| target.fn_id)
+                                .or_else(|| callee.local_fn_id())
+                                .ok_or_else(|| unresolved_provider_boundary(callee))?;
                             return Ok(InterpStep::Yielded {
-                                resume_fn: selected_target.as_ref().map_or(*callee, |target| target.fn_id),
+                                resume_fn,
                                 resume_args: arg_vals,
                                 resume_spec: selected_target.clone(),
                                 after: vec![],
@@ -265,7 +284,11 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                             });
                         }
                     }
-                    fn_id = selected_target.as_ref().map_or(*callee, |target| target.fn_id);
+                    fn_id = selected_target
+                        .as_ref()
+                        .map(|target| target.fn_id)
+                        .or_else(|| callee.local_fn_id())
+                        .ok_or_else(|| unresolved_provider_boundary(callee))?;
                     args = arg_vals;
                     selected_spec = selected_target;
                     continue 'tail;

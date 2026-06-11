@@ -18,9 +18,9 @@ use crate::dispatch_matrix::{
     ComparisonValue, DispatchConst, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId,
 };
 use crate::fz_ir::{
-    BinOp as IrBinOp, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, ExternArg, ExternDecl, ExternId,
-    ExternMarshalSite, ExternTy, FnBuilder, FnCategory, FnId, InitTokenId, ModuleBuilder, Prim, ReceiveAfter,
-    ReceiveClause, Term, UnOp as IrUnOp, Var,
+    BinOp as IrBinOp, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DirectCallTarget, ExternArg,
+    ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnBuilder, FnCategory, FnId, InitTokenId, ModuleBuilder, Prim,
+    ReceiveAfter, ReceiveClause, Term, UnOp as IrUnOp, Var,
 };
 use crate::runtime_type_predicate::RuntimeTypePredicate;
 use crate::type_expr::ResolvedSpecDecl;
@@ -861,7 +861,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     ControlDestination::Return => {
                         ctx.set_term(Term::TailCall {
                             ident: CallsiteIdent::from_source(Span::DUMMY),
-                            callee: self.executable_fns[*callee],
+                            callee: DirectCallTarget::Local(self.executable_fns[*callee]),
                             args: call_args,
                             is_back_edge: false,
                         });
@@ -871,7 +871,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         let continuation = self.entry_continuation(entries, entry_fns, *entry_id, env)?;
                         ctx.set_term(Term::Call {
                             ident: CallsiteIdent::from_source(Span::DUMMY),
-                            callee: self.executable_fns[*callee],
+                            callee: DirectCallTarget::Local(self.executable_fns[*callee]),
                             args: call_args,
                             continuation,
                         });
@@ -941,7 +941,9 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 let then_args = self.entry_capture_args(entries, *then_entry, env)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
-                    callee: *entry_fns.get(then_entry).expect("branch entry should have a helper fn"),
+                    callee: DirectCallTarget::Local(
+                        *entry_fns.get(then_entry).expect("branch entry should have a helper fn"),
+                    ),
                     args: then_args,
                     is_back_edge: false,
                 });
@@ -949,7 +951,9 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 let else_args = self.entry_capture_args(entries, *else_entry, env)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
-                    callee: *entry_fns.get(else_entry).expect("branch entry should have a helper fn"),
+                    callee: DirectCallTarget::Local(
+                        *entry_fns.get(else_entry).expect("branch entry should have a helper fn"),
+                    ),
                     args: else_args,
                     is_back_edge: false,
                 });
@@ -1069,7 +1073,9 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     self.entry_call_args_from_value(ctx, executable, entries, *entry_id, env, value_id, value_var)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
-                    callee: *entry_fns.get(entry_id).expect("resume entry should have a helper fn"),
+                    callee: DirectCallTarget::Local(
+                        *entry_fns.get(entry_id).expect("resume entry should have a helper fn"),
+                    ),
                     args,
                     is_back_edge: false,
                 });
@@ -1394,7 +1400,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 let args = state.inputs.clone();
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
-                    callee: helper_ids[clause_index],
+                    callee: DirectCallTarget::Local(helper_ids[clause_index]),
                     args,
                     is_back_edge: false,
                 });
@@ -1456,9 +1462,11 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 let args = self.entry_capture_args(entries, miss_entry, env)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
-                    callee: *entry_fns
-                        .get(&miss_entry)
-                        .expect("local dispatch miss entry should have a helper fn"),
+                    callee: DirectCallTarget::Local(
+                        *entry_fns
+                            .get(&miss_entry)
+                            .expect("local dispatch miss entry should have a helper fn"),
+                    ),
                     args,
                     is_back_edge: false,
                 });
@@ -1469,9 +1477,11 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     let args = self.entry_capture_args(entries, miss_entry, env)?;
                     ctx.set_term(Term::TailCall {
                         ident: CallsiteIdent::from_source(Span::DUMMY),
-                        callee: *entry_fns
-                            .get(&miss_entry)
-                            .expect("local dispatch miss entry should have a helper fn"),
+                        callee: DirectCallTarget::Local(
+                            *entry_fns
+                                .get(&miss_entry)
+                                .expect("local dispatch miss entry should have a helper fn"),
+                        ),
                         args,
                         is_back_edge: false,
                     });
@@ -1487,9 +1497,11 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 let args = self.entry_capture_args(entries, arm_entry, env)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
-                    callee: *entry_fns
-                        .get(&arm_entry)
-                        .expect("local dispatch arm entry should have a helper fn"),
+                    callee: DirectCallTarget::Local(
+                        *entry_fns
+                            .get(&arm_entry)
+                            .expect("local dispatch arm entry should have a helper fn"),
+                    ),
                     args,
                     is_back_edge: false,
                 });
@@ -1933,8 +1945,10 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
     for function in &module.fns {
         let entry = graph.entry(function.id).or_default();
         for block in &function.blocks {
-            if let Term::TailCall { callee, .. } = &block.terminator {
-                entry.insert(*callee);
+            if let Term::TailCall { callee, .. } = &block.terminator
+                && let Some(callee) = callee.local_fn_id()
+            {
+                entry.insert(callee);
             }
         }
     }
@@ -2035,7 +2049,10 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
                 callee, is_back_edge, ..
             } = &mut block.terminator
             {
-                let callee_scc = scc_of.get(callee).copied().unwrap_or(usize::MAX);
+                let Some(callee) = callee.local_fn_id() else {
+                    continue;
+                };
+                let callee_scc = scc_of.get(&callee).copied().unwrap_or(usize::MAX);
                 if callee_scc == caller_scc {
                     *is_back_edge = true;
                 }

@@ -242,9 +242,10 @@ end
 
     assert!(out.module.fn_by_name("User.run").is_some());
     assert!(out.module.fn_by_name("Math.add").is_none());
-    assert_eq!(out.module.external_call_edges.len(), 1);
+    let external_call_edges = out.module.external_call_edges();
+    assert_eq!(external_call_edges.len(), 1);
     assert_eq!(
-        out.module.external_call_edges[0].target,
+        external_call_edges[0].target,
         Mfa::new(ModuleName::from_segments(vec!["Math".to_string()]), "add", 2,)
     );
 }

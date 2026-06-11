@@ -42,8 +42,8 @@ use crate::dispatch_matrix::{
 };
 use crate::frontend::protocols::impl_target_type;
 use crate::fz_ir::{
-    BitSizeIr, Block, BlockId, BranchOrigin, CallsiteIdent, FnId, FnIr, Module, Prim, ProtocolCallTarget, Stmt, Term,
-    Var,
+    BitSizeIr, Block, BlockId, BranchOrigin, CallsiteIdent, DirectCallTarget, FnId, FnIr, Module, Prim,
+    ProtocolCallTarget, Stmt, Term, Var,
 };
 use crate::types::{ClosureTypes, Ty, Types};
 use std::collections::HashMap;
@@ -322,7 +322,12 @@ pub(crate) fn collect_protocol_dispatch_matrix_candidates<T: Types<Ty = Ty> + Cl
         };
         for b in &f.blocks {
             let (callee, args) = match &b.terminator {
-                Term::Call { callee, args, .. } | Term::TailCall { callee, args, .. } => (*callee, args),
+                Term::Call { callee, args, .. } | Term::TailCall { callee, args, .. } => {
+                    let Some(callee) = callee.local_fn_id() else {
+                        continue;
+                    };
+                    (callee, args)
+                }
                 _ => continue,
             };
             let Some(target) = module.protocol_call_targets.get(&callee) else {
@@ -674,14 +679,14 @@ fn apply_protocol_dispatch_matrix_rewrite(module: &mut Module, rewrite: Protocol
         if is_tail {
             Term::TailCall {
                 ident,
-                callee: impl_fn,
+                callee: DirectCallTarget::Local(impl_fn),
                 args: args.clone(),
                 is_back_edge,
             }
         } else {
             Term::Call {
                 ident,
-                callee: impl_fn,
+                callee: DirectCallTarget::Local(impl_fn),
                 args: args.clone(),
                 continuation: continuation.clone().expect("non-tail call has a continuation"),
             }

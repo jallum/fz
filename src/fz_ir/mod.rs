@@ -32,7 +32,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::mem::take;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -179,6 +178,21 @@ pub struct CallsiteId {
 pub struct ExternalCallEdge {
     pub callsite: CallsiteId,
     pub target: Mfa,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DirectCallTarget {
+    Local(FnId),
+    ProviderBoundary(Mfa),
+}
+
+impl DirectCallTarget {
+    pub fn local_fn_id(&self) -> Option<FnId> {
+        match self {
+            Self::Local(fn_id) => Some(*fn_id),
+            Self::ProviderBoundary(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -710,13 +724,13 @@ pub enum Term {
     },
     Call {
         ident: CallsiteIdent,
-        callee: FnId,
+        callee: DirectCallTarget,
         args: Vec<Var>,
         continuation: Cont,
     },
     TailCall {
         ident: CallsiteIdent,
-        callee: FnId,
+        callee: DirectCallTarget,
         args: Vec<Var>,
         /// True when the callee is in the same SCC as the caller — i.e., this
         /// call is on a loop back-edge. Set by ir_lower via the SCC map from
@@ -1314,10 +1328,6 @@ pub struct Module {
     pub externs: Vec<ExternDecl>,
     /// O(1) index from ExternId to position in `externs`. Mirrors fn_idx.
     pub extern_idx: HashMap<ExternId, usize>,
-    /// First-class imported module calls. The terminator still carries a
-    /// placeholder `FnId` until link/LTO resolution loads the provider
-    /// implementation and rewrites the edge to a direct local call.
-    pub external_call_edges: Vec<ExternalCallEdge>,
     pub protocol_call_targets: HashMap<FnId, ProtocolCallTarget>,
     pub protocol_registry: ProtocolRegistry,
     /// fz-jg5.12 (RED.9) — Fns marked as reduction boundaries. Populated
@@ -1490,11 +1500,15 @@ impl Module {
                     Term::Call {
                         callee, continuation, ..
                     } => {
-                        edges.insert(*callee);
+                        if let Some(callee) = callee.local_fn_id() {
+                            edges.insert(callee);
+                        }
                         edges.insert(continuation.fn_id);
                     }
                     Term::TailCall { callee, .. } => {
-                        edges.insert(*callee);
+                        if let Some(callee) = callee.local_fn_id() {
+                            edges.insert(callee);
+                        }
                     }
                     Term::CallClosure { continuation, .. } => {
                         edges.insert(continuation.fn_id);
@@ -1521,19 +1535,42 @@ impl Module {
         graph
     }
 
+    pub fn external_call_edges(&self) -> Vec<ExternalCallEdge> {
+        let mut out = Vec::new();
+        for function in &self.fns {
+            for block in &function.blocks {
+                match &block.terminator {
+                    Term::Call {
+                        ident,
+                        callee: DirectCallTarget::ProviderBoundary(target),
+                        ..
+                    }
+                    | Term::TailCall {
+                        ident,
+                        callee: DirectCallTarget::ProviderBoundary(target),
+                        ..
+                    } => out.push(ExternalCallEdge {
+                        callsite: CallsiteId::new(function.id, ident, EmitSlot::Direct),
+                        target: target.clone(),
+                    }),
+                    _ => {}
+                }
+            }
+        }
+        out
+    }
+
     pub fn rewrite_external_calls_for_lto(
         &mut self,
         exports: &BTreeMap<Mfa, FnId>,
     ) -> Result<usize, ExternalLinkError> {
-        let edges = take(&mut self.external_call_edges);
+        let edges = self.external_call_edges();
         let mut rewritten = 0;
         for edge in edges {
             let Some(target) = exports.get(&edge.target).copied() else {
-                self.external_call_edges.push(edge.clone());
                 return Err(ExternalLinkError::MissingTarget(edge.target));
             };
             if !rewrite_external_callsite(self, &edge.callsite, target) {
-                self.external_call_edges.push(edge.clone());
                 return Err(ExternalLinkError::MissingCallsite(edge.callsite));
             }
             rewritten += 1;
@@ -1584,19 +1621,19 @@ fn rewrite_external_callsite(m: &mut Module, callsite: &CallsiteId, target: FnId
             Term::Call {
                 ident, callee, args, ..
             } if callsite.slot == EmitSlot::Direct && *ident == callsite.ident && args.len() == target_arity => {
-                if *callee == target {
+                if *callee == DirectCallTarget::Local(target) {
                     return false;
                 }
-                *callee = target;
+                *callee = DirectCallTarget::Local(target);
                 return true;
             }
             Term::TailCall {
                 ident, callee, args, ..
             } if callsite.slot == EmitSlot::Direct && *ident == callsite.ident && args.len() == target_arity => {
-                if *callee == target {
+                if *callee == DirectCallTarget::Local(target) {
                     return false;
                 }
-                *callee = target;
+                *callee = DirectCallTarget::Local(target);
                 return true;
             }
             _ => {}
@@ -1781,7 +1818,6 @@ pub struct ModuleBuilder {
     fns: Vec<FnIr>,
     fn_idx: HashMap<FnId, usize>,
     schemas: Vec<Schema>,
-    pub external_call_edges: Vec<ExternalCallEdge>,
     pub protocol_call_targets: HashMap<FnId, ProtocolCallTarget>,
 }
 
@@ -1793,7 +1829,6 @@ impl ModuleBuilder {
             fns: Vec::new(),
             fn_idx: HashMap::new(),
             schemas: Vec::new(),
-            external_call_edges: Vec::new(),
             protocol_call_targets: HashMap::new(),
         }
     }
@@ -1838,7 +1873,6 @@ impl ModuleBuilder {
             atom_names: Vec::new(),
             externs: Vec::new(),
             extern_idx: HashMap::new(),
-            external_call_edges: self.external_call_edges,
             protocol_call_targets: self.protocol_call_targets,
             protocol_registry: ProtocolRegistry::default(),
             boundary_fns: HashSet::new(),
@@ -2065,6 +2099,15 @@ impl fmt::Display for Prim {
 impl fmt::Display for Cont {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "cont({}, captured=[{}])", self.fn_id, fmt_var_list(&self.captured))
+    }
+}
+
+impl fmt::Display for DirectCallTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Local(fn_id) => write!(f, "{}", fn_id),
+            Self::ProviderBoundary(target) => write!(f, "{}", target),
+        }
     }
 }
 

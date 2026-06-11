@@ -112,7 +112,13 @@ fn tuple_arity_step(f: &FnIr, state: &HashMap<crate::fz_ir::FnId, ArityState>) -
             }
             Term::TailCall { callee, .. } => {
                 saw_exit = true;
-                acc = meet(acc, state.get(callee).copied().unwrap_or(ArityState::Bottom));
+                let callee = callee.local_fn_id();
+                acc = meet(
+                    acc,
+                    callee
+                        .and_then(|callee| state.get(&callee).copied())
+                        .unwrap_or(ArityState::Bottom),
+                );
             }
             // Internal edges and halts deliver no return value of their own.
             Term::Goto(_, _) | Term::If { .. } | Term::Halt(_) => {}

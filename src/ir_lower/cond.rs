@@ -3,8 +3,8 @@ use crate::ast::{Expr, FnDef, Spanned};
 use crate::compiler::source::Span;
 use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, PatternSubjectRef, SourcePatternRows};
 use crate::fz_ir::{
-    BlockId, BranchOrigin, CallsiteIdent, Const, ContinuationProvenance, ContinuationProvenanceKind, FnCategory, Prim,
-    Term, Var,
+    BlockId, BranchOrigin, CallsiteIdent, Const, ContinuationProvenance, ContinuationProvenanceKind, DirectCallTarget,
+    FnCategory, Prim, Term, Var,
 };
 use crate::type_expr::parse_type_expr;
 use crate::types::{Ty, Types};
@@ -124,7 +124,7 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
             let capture_vars = cont_call_args(ctx, &cont);
             ctx.set_term(Term::TailCall {
                 ident: CallsiteIdent::from_source(clause.span),
-                callee: cont.id,
+                callee: DirectCallTarget::Local(cont.id),
                 args: capture_vars,
                 is_back_edge: false,
             });
@@ -228,14 +228,14 @@ pub(crate) fn lower_if<T: Types<Ty = Ty>>(
     ctx.cur_block = Some(then_b);
     ctx.set_term(Term::TailCall {
         ident: CallsiteIdent::from_source(Span::DUMMY),
-        callee: then_cont.id,
+        callee: DirectCallTarget::Local(then_cont.id),
         args: then_capture_vars,
         is_back_edge: false,
     });
     ctx.cur_block = Some(else_b);
     ctx.set_term(Term::TailCall {
         ident: CallsiteIdent::from_source(Span::DUMMY),
-        callee: else_cont.id,
+        callee: DirectCallTarget::Local(else_cont.id),
         args: else_capture_vars,
         is_back_edge: false,
     });

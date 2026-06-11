@@ -1,6 +1,7 @@
 use super::*;
 use crate::dispatch_matrix::DispatchConst;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
+use crate::fz_ir::DirectCallTarget;
 use crate::telemetry::Telemetry;
 
 fn lower_src(src: &str, tel: &dyn Telemetry) -> Module {
@@ -1131,10 +1132,10 @@ fn spawn_callsite_routes_through_runtime_fz_wrapper() {
         .expect("Kernel.spawn/1 prelude fn missing");
     let p = m.fn_by_name("p").expect("p fn missing");
     let entry = p.block(p.entry);
-    let Term::TailCall { callee, .. } = entry.terminator else {
+    let Term::TailCall { callee, .. } = &entry.terminator else {
         panic!("expected p to tail-call spawn/1, got {:?}", entry.terminator);
     };
-    assert_eq!(callee, spawn.id);
+    assert_eq!(callee, &DirectCallTarget::Local(spawn.id));
     assert!(
         spawn.blocks.iter().any(|b| b.stmts.iter().any(|stmt| {
             let Stmt::Let(_, prim) = stmt;
@@ -1188,11 +1189,11 @@ fn lambda_tail_receive_does_not_terminate_enclosing_spawn_call() {
         .iter()
         .find(|f| f.name == "Kernel.spawn" && f.block(f.entry).params.len() == 1)
         .expect("Kernel.spawn/1 prelude fn missing");
-    let callee = match entry.terminator {
+    let callee = match &entry.terminator {
         Term::TailCall { callee, .. } => callee,
-        ref other => panic!("expected enclosing fn to tail-call spawn/1, got {:?}", other),
+        other => panic!("expected enclosing fn to tail-call spawn/1, got {:?}", other),
     };
-    assert_eq!(callee, spawn.id);
+    assert_eq!(callee, &DirectCallTarget::Local(spawn.id));
     assert!(
         !p.blocks
             .iter()
@@ -1220,10 +1221,10 @@ fn spawn2_routes_through_runtime_fz_wrapper() {
         .expect("Kernel.spawn/2 prelude fn missing");
     let p = m.fn_by_name("p").expect("p fn missing");
     let entry = p.block(p.entry);
-    let Term::TailCall { callee, .. } = entry.terminator else {
+    let Term::TailCall { callee, .. } = &entry.terminator else {
         panic!("expected p to tail-call spawn/2, got {:?}", entry.terminator);
     };
-    assert_eq!(callee, spawn.id);
+    assert_eq!(callee, &DirectCallTarget::Local(spawn.id));
     assert!(
         spawn.blocks.iter().any(|b| b.stmts.iter().any(|stmt| {
             let Stmt::Let(_, prim) = stmt;
@@ -1685,7 +1686,7 @@ fn self_recursive_fn_has_back_edge() {
                 ..
             } = &b.terminator
             {
-                Some((*callee, *is_back_edge))
+                Some((callee.clone(), *is_back_edge))
             } else {
                 None
             }

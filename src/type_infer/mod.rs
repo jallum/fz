@@ -1454,7 +1454,10 @@ impl<'m> Solver<'m> {
                 let arg_infos = arg_infos_of(args, env);
                 let ident = block.terminator.ident().expect("call terminator should carry ident");
                 let direct_callsite = CallsiteId::new(key.fn_id, ident, EmitSlot::Direct);
-                let r = self.call_target(t, key, direct_callsite, CallTarget::Direct(*callee), arg_infos);
+                let r = match callee.local_fn_id() {
+                    Some(callee) => self.call_target(t, key, direct_callsite, CallTarget::Direct(callee), arg_infos),
+                    None => Info::known(t.any()),
+                };
                 if matches!(r, Info::NoReturn) {
                     return Info::NoReturn;
                 }
@@ -1476,7 +1479,10 @@ impl<'m> Solver<'m> {
                     .ident()
                     .expect("tail-call terminator should carry ident");
                 let direct_callsite = CallsiteId::new(key.fn_id, ident, EmitSlot::Direct);
-                self.call_target(t, key, direct_callsite, CallTarget::Direct(*callee), arg_infos)
+                match callee.local_fn_id() {
+                    Some(callee) => self.call_target(t, key, direct_callsite, CallTarget::Direct(callee), arg_infos),
+                    None => Info::known(t.any()),
+                }
             }
             Term::CallClosure {
                 closure,

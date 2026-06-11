@@ -1244,8 +1244,10 @@ fn annotate_back_edges(module: &mut Module, _fn_spans: &HashMap<FnId, Span>) -> 
     for f in &module.fns {
         let entry = graph.entry(f.id).or_default();
         for block in &f.blocks {
-            if let Term::TailCall { callee, .. } = &block.terminator {
-                entry.insert(*callee);
+            if let Term::TailCall { callee, .. } = &block.terminator
+                && let Some(callee) = callee.local_fn_id()
+            {
+                entry.insert(callee);
             }
         }
     }
@@ -1351,7 +1353,10 @@ fn annotate_back_edges(module: &mut Module, _fn_spans: &HashMap<FnId, Span>) -> 
                 ..
             } = &mut block.terminator
             {
-                let callee_scc = scc_of.get(callee).copied().unwrap_or(usize::MAX);
+                let Some(callee) = callee.local_fn_id() else {
+                    continue;
+                };
+                let callee_scc = scc_of.get(&callee).copied().unwrap_or(usize::MAX);
                 if callee_scc == caller_scc {
                     *is_back_edge = true;
                 }

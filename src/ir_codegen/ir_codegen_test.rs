@@ -5,9 +5,7 @@ use crate::exec::runtime::{DbgCapture, ExitRecord, ProcessExitCapture, Runtime};
 use crate::frontend::compile_source_with_interface_table;
 use crate::frontend::compile_source_with_types;
 use crate::frontend::resolve::{InterfaceTable, flatten_modules};
-use crate::fz_ir::{
-    CallsiteId, CallsiteIdent, EmitSlot, ExternalCallEdge, FnBuilder, FnId, Module, Prim, SpecId, Stmt, Term, Var,
-};
+use crate::fz_ir::{CallsiteIdent, DirectCallTarget, FnBuilder, FnId, Module, Prim, SpecId, Stmt, Term, Var};
 use crate::ir_interp::run_main_with_plan;
 use crate::ir_lower::lower_program;
 use crate::ir_planner::fn_types::{CallEdgeTarget, ReturnDemand, SpecKey};
@@ -210,10 +208,20 @@ fn runtime_metadata_link_rejects_duplicate_exports() {
 fn runtime_unit_metadata_carries_external_import_refs() {
     let mut module = Module::new();
     let export = Mfa::new(ModuleName::from_segments(vec!["Dep".to_string()]), "run", 1);
-    module.external_call_edges.push(ExternalCallEdge {
-        callsite: CallsiteId::new(FnId(0), &CallsiteIdent::synthetic(), EmitSlot::Direct),
-        target: export.clone(),
-    });
+    let mut builder = FnBuilder::new(FnId(0), "User.run");
+    let arg = builder.fresh_var();
+    let entry = builder.block(vec![arg]);
+    builder.set_terminator(
+        entry,
+        Term::TailCall {
+            ident: CallsiteIdent::synthetic(),
+            callee: DirectCallTarget::ProviderBoundary(export.clone()),
+            args: vec![arg],
+            is_back_edge: false,
+        },
+    );
+    module.fn_idx.insert(FnId(0), module.fns.len());
+    module.fns.push(builder.build());
     let meta = RuntimeUnitMetadata::from_ir_module(None, &module);
     assert_eq!(meta.imported_refs, vec![export]);
 }
@@ -223,21 +231,22 @@ fn runtime_unit_metadata_carries_external_import_refs() {
 fn codegen_rejects_unresolved_external_module_calls() {
     let mut m = lower_src("fn main(), do: 0");
     let export = Mfa::new(ModuleName::from_segments(vec!["Dep".to_string()]), "run", 0);
-    m.external_call_edges.push(ExternalCallEdge {
-        callsite: CallsiteId::new(
-            m.fn_by_name("main").unwrap().id,
-            &CallsiteIdent::synthetic(),
-            EmitSlot::Direct,
-        ),
-        target: export,
-    });
+    let main_id = m.fn_by_name("main").unwrap().id;
+    let main_idx = m.fn_idx[&main_id];
+    let entry = m.fns[main_idx].entry;
+    m.fns[main_idx].blocks[entry.0 as usize].terminator = Term::TailCall {
+        ident: CallsiteIdent::synthetic(),
+        callee: DirectCallTarget::ProviderBoundary(export),
+        args: Vec::new(),
+        is_back_edge: false,
+    };
     let mut t = crate::types::new();
     let plan = plan_module_with_role(&mut t, &m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
     let err = match compile_planned(&mut t, &m, &plan, &crate::telemetry::ConfiguredTelemetry::new()) {
         Ok(_) => panic!("expected unresolved external call error"),
         Err(err) => err,
     };
-    assert_eq!(err.message, "unresolved external module call `Dep.run/0`");
+    assert_eq!(err.message, "unresolved provider-boundary call `Dep.run/0`");
 }
 
 fn link_test_unit(module: &str, exports: &[(&str, usize)], imports: Vec<Mfa>) -> (CompiledUnit, RuntimeUnitMetadata) {
@@ -274,10 +283,21 @@ fn link_test_unit(module: &str, exports: &[(&str, usize)], imports: Vec<Mfa>) ->
         code.fns.push(builder.build());
     }
     for import in &imports {
-        code.external_call_edges.push(ExternalCallEdge {
-            callsite: CallsiteId::new(FnId(0), &CallsiteIdent::synthetic(), EmitSlot::Direct),
-            target: import.clone(),
-        });
+        let fn_id = FnId(code.fns.len() as u32);
+        let mut builder = FnBuilder::new(fn_id, format!("__import_probe__.{}", import));
+        let params = (0..import.arity).map(|_| builder.fresh_var()).collect::<Vec<_>>();
+        let entry = builder.block(params.clone());
+        builder.set_terminator(
+            entry,
+            Term::TailCall {
+                ident: CallsiteIdent::synthetic(),
+                callee: DirectCallTarget::ProviderBoundary(import.clone()),
+                args: params,
+                is_back_edge: false,
+            },
+        );
+        code.fn_idx.insert(fn_id, code.fns.len());
+        code.fns.push(builder.build());
     }
     let unit = CompiledUnit::from_ir_module(code, Some(interface), Diagnostics::new());
     let runtime = RuntimeUnitMetadata {
@@ -336,7 +356,7 @@ fn main(), do: User.run()
 
 // PICKED: cross-module function call resolves and executes provider body
 #[test]
-fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
+fn linked_ir_units_rewrite_provider_boundary_calls_and_run_provider_body() {
     let mut t = crate::types::new();
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let math = compile_source_with_types(
@@ -364,7 +384,7 @@ fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
         &tel,
     )
     .unwrap_or_else(|err| panic!("user frontend: {:?}", err.diagnostics));
-    assert_eq!(user.module.external_call_edges.len(), 1);
+    assert_eq!(user.module.external_call_edges().len(), 1);
 
     let math_unit = CompiledUnit::from_ir_module_with_plan(
         math.module,
@@ -375,15 +395,15 @@ fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
     let user_unit =
         CompiledUnit::from_ir_module_with_plan(user.module, Some(user.module_plan), None, Diagnostics::new());
     let linked = link_ir_units(&[math_unit.clone(), user_unit.clone()]).expect("link ir units");
-    // Re-plan the linked module: after the linker rewrites external stub
-    // callsites to their resolved targets, a fresh plan must show no External
-    // call edges and no protocol-stub targets.
+    // Re-plan the linked module: after the linker rewrites provider-boundary
+    // callsites to their resolved targets, a fresh plan must show no
+    // provider-boundary call edges and no protocol-stub targets.
     let linked_plan = plan_module_with_role(&mut t, &linked, &tel, "test");
     assert!(
         !linked_plan.specs.values().any(|spec| {
             spec.call_edges
                 .values()
-                .any(|edge| matches!(edge.target, CallEdgeTarget::External { .. }))
+                .any(|edge| matches!(edge.target, CallEdgeTarget::ProviderBoundary { .. }))
         }),
         "linked protocol edge should resolve to a local impl"
     );
@@ -397,7 +417,7 @@ fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
         }),
         "linked protocol edge must not target the protocol stub"
     );
-    assert!(linked.external_call_edges.is_empty());
+    assert!(linked.external_call_edges().is_empty());
     let entry = linked.fn_by_name("main").expect("main").id;
 
     let compiled = compile_planned(&mut t, &linked, &linked_plan, &tel).expect("compile planned linked");
@@ -458,7 +478,7 @@ fn main(), do: User.run()
         user.module_plan.specs.values().any(|spec| {
             spec.call_edges
                 .values()
-                .any(|edge| matches!(edge.target, CallEdgeTarget::External { .. }))
+                .any(|edge| matches!(edge.target, CallEdgeTarget::ProviderBoundary { .. }))
         }),
         "user protocol call should be a provider-boundary call edge"
     );
@@ -1118,13 +1138,17 @@ fn image_linker_rejects_unresolved_external_imports_without_provider() {
     let mut unit_code = Module::new();
     let mut builder = FnBuilder::new(FnId(0), "User.run").with_owner_module("User");
     let entry = builder.block(Vec::new());
-    builder.set_terminator(entry, Term::Halt(Var(0)));
+    builder.set_terminator(
+        entry,
+        Term::TailCall {
+            ident: CallsiteIdent::synthetic(),
+            callee: DirectCallTarget::ProviderBoundary(target),
+            args: Vec::new(),
+            is_back_edge: false,
+        },
+    );
     unit_code.fn_idx.insert(FnId(0), unit_code.fns.len());
     unit_code.fns.push(builder.build());
-    unit_code.external_call_edges.push(ExternalCallEdge {
-        callsite: CallsiteId::new(FnId(0), &CallsiteIdent::synthetic(), EmitSlot::Direct),
-        target,
-    });
     let interface = ModuleInterface {
         name: ModuleName::from_segments(vec!["User".to_string()]),
         imports: Vec::new(),
@@ -1281,15 +1305,26 @@ fn assert_direct_call_arities(m: &Module) {
         for block in &f.blocks {
             match &block.terminator {
                 Term::Call { callee, args, .. } | Term::TailCall { callee, args, .. } => {
-                    let target = m.fn_by_id(*callee);
-                    let params = target.block(target.entry).params.len();
+                    let (target_name, target_id, params) = match callee {
+                        DirectCallTarget::Local(callee) => {
+                            let target = m.fn_by_id(*callee);
+                            (
+                                target.name.clone(),
+                                format!("{:?}", target.id),
+                                target.block(target.entry).params.len(),
+                            )
+                        }
+                        DirectCallTarget::ProviderBoundary(target) => {
+                            (target.name.clone(), target.module.to_string(), target.arity)
+                        }
+                    };
                     assert_eq!(
                         params,
                         args.len(),
                         "{} calls {}#{:?} with {} args but target has {} params\ncaller:\n{}",
                         f.name,
-                        target.name,
-                        target.id,
+                        target_name,
+                        target_id,
                         args.len(),
                         params,
                         f

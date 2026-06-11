@@ -1498,10 +1498,16 @@ fn compute_fn_effects(m: &Module) -> FnEffects {
                 Term::Call {
                     callee, continuation, ..
                 } => {
-                    callees.push(*callee);
+                    if let Some(callee) = callee.local_fn_id() {
+                        callees.push(callee);
+                    }
                     callees.push(continuation.fn_id);
                 }
-                Term::TailCall { callee, .. } => callees.push(*callee),
+                Term::TailCall { callee, .. } => {
+                    if let Some(callee) = callee.local_fn_id() {
+                        callees.push(callee);
+                    }
+                }
                 _ => {}
             }
         }
@@ -1760,7 +1766,7 @@ fn selected_external_call_return_slot0<T: Types<Ty = Ty> + ClosureTypes>(
 ) -> Option<Ty> {
     matches!(
         selected_edge.map(|edge| &edge.target),
-        Some(CallEdgeTarget::External { .. })
+        Some(CallEdgeTarget::ProviderBoundary { .. })
     )
     .then(|| {
         declared_call_return_fact(

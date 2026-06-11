@@ -1,5 +1,5 @@
 use super::*;
-use crate::fz_ir::{BlockId, CallsiteIdent, Cont, FnId, Term, Var};
+use crate::fz_ir::{BlockId, CallsiteIdent, Cont, DirectCallTarget, FnId, Term, Var};
 use crate::types::{ClosureTypes, Types};
 
 fn empty_env() -> HashMap<Var, Ty> {
@@ -25,7 +25,7 @@ fn tail_call_yields_direct_only() {
     let mut ct = crate::types::new();
     let t = Term::TailCall {
         ident: CallsiteIdent::synthetic(),
-        callee: FnId(7),
+        callee: DirectCallTarget::Local(FnId(7)),
         args: vec![Var(1), Var(2)],
         is_back_edge: false,
     };
@@ -36,7 +36,7 @@ fn tail_call_yields_direct_only() {
     assert!(matches!(cs[0].slot, EmitSlot::Direct));
     match &cs[0].kind {
         CallsiteKind::Direct { callee, args } => {
-            assert_eq!(callee.0, 7);
+            assert_eq!(callee.local_fn_id(), Some(FnId(7)));
             assert_eq!(args.len(), 2);
         }
         _ => panic!("expected Direct"),
@@ -48,7 +48,7 @@ fn call_yields_direct_then_cont() {
     let mut tct = crate::types::new();
     let t = Term::Call {
         ident: CallsiteIdent::synthetic(),
-        callee: FnId(5),
+        callee: DirectCallTarget::Local(FnId(5)),
         args: vec![Var(1)],
         continuation: Cont {
             fn_id: FnId(9),
@@ -67,7 +67,7 @@ fn call_yields_direct_then_cont() {
             source: ContSource::Call { callee, .. },
         } => {
             assert_eq!(cont.fn_id.0, 9);
-            assert_eq!(callee.0, 5);
+            assert_eq!(callee.local_fn_id(), Some(FnId(5)));
         }
         _ => panic!("expected Cont/Call source"),
     }

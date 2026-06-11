@@ -434,5 +434,5 @@ fn cross_module_import_resolves_external_call_edges() {
         "cross-module import with missing provider body should not resolve"
     );
     // TODO: submit a Math stub or use interface injection so cross-module import fully resolves
-    // TODO: once resolved, assert external_call_edges contains Math.add/2 and User.run is defined
+    // TODO: once resolved, assert the provider-boundary call view contains Math.add/2 and User.run is defined
 }

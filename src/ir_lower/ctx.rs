@@ -3,9 +3,8 @@ use crate::ast::FnDef;
 use crate::compiler::source::Span;
 use crate::frontend::protocols::ProtocolRegistry;
 use crate::fz_ir::{
-    BlockId, BranchOrigin, CallsiteId, CallsiteIdent, Const, ContinuationProvenance, EmitSlot, ExternArg, ExternDecl,
-    ExternId, ExternTy, ExternalCallEdge, FnBuilder, FnCategory, FnId, ModuleBuilder, Prim, ProtocolCallTarget, Term,
-    Var,
+    BlockId, BranchOrigin, CallsiteIdent, Const, ContinuationProvenance, ExternArg, ExternDecl, ExternId, ExternTy,
+    FnBuilder, FnCategory, FnId, ModuleBuilder, Prim, ProtocolCallTarget, Term, Var,
 };
 use crate::modules::identity::{Mfa, ModuleName};
 use crate::modules::interface::ModuleInterface;
@@ -89,7 +88,6 @@ pub struct LowerCtx {
     pub fn_defs_by_arity: HashMap<(String, usize), FnDef>,
     pub(super) prelude_imports: HashMap<(String, usize), String>,
     pub(super) external_exports: HashMap<(String, usize), Mfa>,
-    pub(super) external_stubs: HashMap<Mfa, FnId>,
     pub(super) protocol_callbacks: HashMap<(String, usize), ProtocolCallTarget>,
     pub(super) protocol_stubs: HashMap<(String, usize), FnId>,
     pub(super) struct_schemas: BTreeMap<String, Vec<String>>,
@@ -126,7 +124,6 @@ impl LowerCtx {
             fn_defs_by_arity: HashMap::new(),
             prelude_imports: HashMap::new(),
             external_exports: HashMap::new(),
-            external_stubs: HashMap::new(),
             protocol_callbacks: HashMap::new(),
             protocol_stubs: HashMap::new(),
             struct_schemas: Default::default(),
@@ -218,23 +215,8 @@ impl LowerCtx {
         Some(fn_id)
     }
 
-    pub(super) fn external_callee(&mut self, name: &str, arity: usize) -> Option<(FnId, Mfa)> {
-        let target = self.external_exports.get(&(name.to_string(), arity))?.clone();
-        let fn_id = if let Some(fn_id) = self.external_stubs.get(&target) {
-            *fn_id
-        } else {
-            let fn_id = self.mb.fresh_fn_id();
-            let mut stub = FnBuilder::new(fn_id, format!("__external__.{}", target)).with_category(FnCategory::User);
-            let params = (0..arity).map(|_| stub.fresh_var()).collect::<Vec<_>>();
-            let entry = stub.block(params);
-            let atom = self.atoms.intern("external_module_unlinked");
-            let reason = stub.let_(entry, Prim::Const(Const::Atom(atom)));
-            stub.set_terminator(entry, Term::Halt(reason));
-            self.mb.add_fn(stub.build());
-            self.external_stubs.insert(target.clone(), fn_id);
-            fn_id
-        };
-        Some((fn_id, target))
+    pub(super) fn external_callee(&mut self, name: &str, arity: usize) -> Option<Mfa> {
+        self.external_exports.get(&(name.to_string(), arity)).cloned()
     }
 
     /// Helper: emit an If terminator on the current block using the active
@@ -408,23 +390,6 @@ impl LowerCtx {
         if !span.is_dummy() {
             self.term_spans.insert((fn_id, blk), span);
         }
-    }
-
-    pub(super) fn set_external_direct_term_at(&mut self, mut term: Term, span: Span, target: Mfa) {
-        term.set_source_span(span);
-        let ident = term
-            .ident()
-            .expect("external direct call term must carry a callsite ident")
-            .clone();
-        let caller = self.cur_fn_id.expect("no current fn");
-        self.set_term_at(term, Span::DUMMY);
-        if !span.is_dummy() {
-            self.term_spans.insert((caller, self.cur_block()), span);
-        }
-        self.mb.external_call_edges.push(ExternalCallEdge {
-            callsite: CallsiteId::new(caller, &ident, EmitSlot::Direct),
-            target,
-        });
     }
 }
 

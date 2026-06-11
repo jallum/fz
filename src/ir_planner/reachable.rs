@@ -42,16 +42,19 @@ pub fn cont_slot0_descr<T: Types<Ty = Ty> + ClosureTypes>(
 ) -> T::Ty {
     match &block.terminator {
         Term::Call { callee, args, .. } => {
+            let Some(callee) = callee.local_fn_id() else {
+                return t.any();
+            };
             let env = env_at_terminator(t, caller_ft, block, module);
             let arg_tys: Vec<Ty> = args
                 .iter()
                 .map(|av| env.get(av).cloned().unwrap_or_else(|| t.any()))
                 .collect();
             let effective = module_plan
-                .effective_return_for_call_ty(t, *callee, &arg_tys)
+                .effective_return_for_call_ty(t, callee, &arg_tys)
                 .as_ref()
                 .cloned();
-            let declared = declared_call_return(t, module, *callee, &arg_tys);
+            let declared = declared_call_return(t, module, callee, &arg_tys);
             match (declared, effective) {
                 (Some(declared), Some(effective)) if t.is_subtype(&effective, &declared) => effective,
                 (Some(declared), _) => declared,

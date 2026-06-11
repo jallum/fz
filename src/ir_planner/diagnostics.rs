@@ -314,7 +314,12 @@ fn collect_protocol_no_impl_diagnostics<T: Types<Ty = Ty> + ClosureTypes + Rende
         let f = module.fn_by_id(key.fn_id);
         for b in sorted_blocks(f) {
             let (callee, args) = match &b.terminator {
-                Term::Call { callee, args, .. } | Term::TailCall { callee, args, .. } => (*callee, args),
+                Term::Call { callee, args, .. } | Term::TailCall { callee, args, .. } => {
+                    let Some(callee) = callee.local_fn_id() else {
+                        continue;
+                    };
+                    (callee, args)
+                }
                 _ => continue,
             };
             let Some(target) = module.protocol_call_targets.get(&callee) else {

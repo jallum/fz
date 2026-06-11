@@ -87,15 +87,6 @@ fn checked_halt_and_closure_allocs(src: &str) -> (i64, u64) {
     (halt, closure_allocs)
 }
 
-fn checked_halt_and_capture(src: &str) -> (i64, String, Module) {
-    let frontend = compile_source(src.to_string(), "interp-test.fz".to_string());
-    let tel = ConfiguredTelemetry::new();
-    let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
-    let (halt, _runtime) = run_main_with_runtime(&tel, &frontend.module).expect("interp run");
-    (halt, dbg.lines().join("\n"), frontend.module)
-}
-
 // PICKED: large integer arithmetic does not lose high-order bits
 #[test]
 fn interp_typed_int_arithmetic_full_i64() {
@@ -278,25 +269,28 @@ end
     );
 }
 
-// DROP: old-world unlinked module sentinel, no compiler2 analogue
+// Provider-boundary calls must be linked before interpreter execution.
 #[test]
-fn frontend_only_checked_interp_surfaces_unlinked_process_heap_alloc_stats_halt() {
-    let (halt, got, module) = checked_halt_and_capture(
+fn frontend_only_checked_interp_rejects_unlinked_process_heap_alloc_stats() {
+    let frontend = compile_source(
         r#"
 fn main() do
   stats = Process.heap_alloc_stats()
   dbg(stats[:allocs])
   dbg(stats[:closure_allocs])
 end
-"#,
+"#
+        .to_string(),
+        "interp-test.fz".to_string(),
     );
-    let expected = module
-        .atom_names
-        .iter()
-        .position(|name| name == "external_module_unlinked")
-        .expect("frontend-only module interns external_module_unlinked") as i64;
-    assert_eq!(halt, expected);
-    assert_eq!(got, "");
+    let err = match run_main_with_runtime(&ConfiguredTelemetry::new(), &frontend.module) {
+        Ok(_) => panic!("expected unresolved provider-boundary interpreter error"),
+        Err(err) => err,
+    };
+    assert_eq!(
+        err,
+        "unresolved provider-boundary call `Process.heap_alloc_stats/0` reached interpreter"
+    );
 }
 
 // DROP: runtime heap allocation telemetry BIF, no compiler2 analogue

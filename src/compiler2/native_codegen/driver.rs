@@ -1069,6 +1069,9 @@ fn collect_codegen_mid_flight_cont_keys(
             else {
                 continue;
             };
+            let Some(callee) = callee.local_fn_id() else {
+                continue;
+            };
             let callee_sid = callee.0;
             let Some(callee_reprs) = param_reprs.get(callee_sid as usize) else {
                 continue;
@@ -1079,7 +1082,7 @@ fn collect_codegen_mid_flight_cont_keys(
                 .copied()
                 .map(MidFlightArgShape::Value)
                 .collect::<Vec<_>>();
-            if closure_capture_counts.contains_key(callee) {
+            if closure_capture_counts.contains_key(&callee) {
                 arg_shapes.push(MidFlightArgShape::HeapRef);
             }
             arg_shapes.push(MidFlightArgShape::HeapRef);

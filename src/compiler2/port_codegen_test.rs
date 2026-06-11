@@ -26,7 +26,7 @@ fn two_module_cross_call_resolves_and_runs() {
 
 // Ported from src/ir_codegen/ir_codegen_test.rs: cross-module function call resolves and executes provider body
 #[test]
-fn cross_module_provider_body_rewrites_external_edges() {
+fn cross_module_provider_body_rewrites_provider_boundary_calls() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
@@ -39,8 +39,11 @@ fn cross_module_provider_body_rewrites_external_edges() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "cross_module_provider_body_rewrites_external_edges");
-    // TODO: JIT-execute and assert result == 42; verify no External call edges remain after linking
+    assert_resolved(
+        compiler.drive(),
+        "cross_module_provider_body_rewrites_provider_boundary_calls",
+    );
+    // TODO: JIT-execute and assert result == 42; verify no provider-boundary call edges remain after linking
 }
 
 // Ported from src/ir_codegen/ir_codegen_test.rs: cross-module protocol impl dispatch resolves to correct implementation

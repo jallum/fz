@@ -117,8 +117,8 @@ mod purity_tests {
     use crate::compiler::source::Span;
     use crate::diag::codes::TYPE_IMPURE_MATCHER;
     use crate::fz_ir::{
-        BinOp, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, ExternId, FnBuilder, FnCategory, FnId, Module, Prim,
-        Stmt, Term, Var,
+        BinOp, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DirectCallTarget, ExternId, FnBuilder, FnCategory,
+        FnId, Module, Prim, Stmt, Term, Var,
     };
     use crate::ir_planner::diagnostics::check_matcher_purity;
     use crate::types::Types;
@@ -312,7 +312,7 @@ mod purity_tests {
             None,
             Term::Call {
                 ident: CallsiteIdent::from_source(Span::DUMMY),
-                callee: FnId(99),
+                callee: DirectCallTarget::Local(FnId(99)),
                 args: vec![v(0)],
                 continuation: Cont {
                     fn_id: FnId(98),
@@ -331,7 +331,7 @@ mod purity_tests {
             None,
             Term::TailCall {
                 ident: CallsiteIdent::from_source(Span::DUMMY),
-                callee: FnId(99),
+                callee: DirectCallTarget::Local(FnId(99)),
                 args: vec![v(0)],
                 is_back_edge: false,
             },

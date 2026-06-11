@@ -1,7 +1,9 @@
 //! Terminator emission for fz IR blocks.
 
 use super::*;
-use crate::fz_ir::{self as fz_ir, BlockId, Cont, EmitSlot, FnId, ReceiveAfter, ReceiveClause, Term, Var};
+use crate::fz_ir::{
+    self as fz_ir, BlockId, Cont, DirectCallTarget, EmitSlot, FnId, ReceiveAfter, ReceiveClause, Term, Var,
+};
 use crate::types::{ClosureTypes, Types};
 use crate::{measurements, metadata};
 use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature, condcodes::IntCC, types};
@@ -31,7 +33,15 @@ fn resolve_cont_sid(env: &CodegenEnv<'_>, blk: &fz_ir::Block) -> u32 {
 
 fn resolve_callee_sid(env: &CodegenEnv<'_>, blk: &fz_ir::Block, slot: EmitSlot) -> u32 {
     let callee_fn_id = match (&blk.terminator, slot) {
-        (Term::Call { callee, .. } | Term::TailCall { callee, .. }, EmitSlot::Direct) => *callee,
+        (Term::Call { callee, .. } | Term::TailCall { callee, .. }, EmitSlot::Direct) => match callee {
+            DirectCallTarget::Local(callee) => *callee,
+            DirectCallTarget::ProviderBoundary(target) => {
+                panic!(
+                    "native callee `{}` reached codegen before provider-boundary link resolution",
+                    target
+                )
+            }
+        },
         _ => panic!(
             "resolve_callee_sid called with {:?} on native terminator {:?}",
             slot, blk.terminator
@@ -517,7 +527,7 @@ fn emit_call_term<M: cranelift_module::Module>(
     _this_spec_id: u32,
     frame_ptr: Option<ir::Value>,
     cont_param: Option<ir::Value>,
-    _callee: &FnId,
+    _callee: &DirectCallTarget,
     args: &[Var],
     continuation: &Cont,
 ) -> Result<(), CodegenError> {
@@ -725,7 +735,7 @@ fn emit_tail_call_term<M: cranelift_module::Module>(
     frame_ptr: Option<ir::Value>,
     host_ctx: Option<ir::Value>,
     cont_param: Option<ir::Value>,
-    _callee: &FnId,
+    _callee: &DirectCallTarget,
     args: &[Var],
     is_back_edge: bool,
 ) -> Result<(), CodegenError> {
