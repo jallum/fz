@@ -7,9 +7,15 @@
   "id": "fz-rh2.17.5.6.4",
   "labels": [],
   "parent": "fz-rh2.17.5.6",
+  "comments": [
+    {
+      "text": "Current precise gap: quoted_surface leaves trailing @spec/@doc entries in pending_function_attrs at end-of-scope and silently drops them. Rooting the missing function later degrades into an unresolved unknown-export diagnostic instead of a source-surface error.",
+      "timestamp": "2026-06-11T14:17:03Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 quoted surface: reject dangling function attrs that never attach to a function group",
   "type": "bug",
-  "updated_at": "2026-06-11T14:14:49Z"
+  "updated_at": "2026-06-11T14:17:03Z"
 }
