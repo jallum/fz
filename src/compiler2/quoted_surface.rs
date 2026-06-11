@@ -137,6 +137,13 @@ pub struct MacroCallForm {
     pub span: Span,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum ReservedSourceDefinition {
+    Function { name: String, arity: usize, is_macro: bool },
+    Module { local_name: String },
+    Protocol { name: ModuleName },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct FunctionGroupKey {
     name: String,
@@ -670,6 +677,48 @@ fn parse_function_group_key(root: &QuotedSourceRoot) -> Result<FunctionGroupKey,
         ));
     };
     parse_function_head_key(head)
+}
+
+pub(crate) fn reserved_source_definition(
+    source: &QuotedSourceRoot,
+) -> Result<Option<ReservedSourceDefinition>, QuotedSourceError> {
+    let head = match surface_head_name(source) {
+        Ok(head) => head,
+        Err(_) => return Ok(None),
+    };
+    Ok(match head.as_str() {
+        "fn" | "fnp" | "defmacro" => {
+            let FunctionGroupKey { name, arity } = parse_function_group_key(source)?;
+            Some(ReservedSourceDefinition::Function {
+                name,
+                arity,
+                is_macro: head == "defmacro",
+            })
+        }
+        "defmodule" => {
+            let node = expect_surface_node(source)?;
+            let args = node.tail.list_items()?;
+            let Some(name) = args.first() else {
+                return Err(QuotedSourceError::new("defmodule expects a module alias"));
+            };
+            let local_name = parse_alias_segments(name)?
+                .last()
+                .cloned()
+                .ok_or_else(|| QuotedSourceError::new("defmodule expects a module alias"))?;
+            Some(ReservedSourceDefinition::Module { local_name })
+        }
+        "defprotocol" => {
+            let node = expect_surface_node(source)?;
+            let args = node.tail.list_items()?;
+            let Some(name) = args.first() else {
+                return Err(QuotedSourceError::new("defprotocol expects a protocol alias"));
+            };
+            Some(ReservedSourceDefinition::Protocol {
+                name: ModuleName::from_segments(parse_alias_segments(name)?),
+            })
+        }
+        _ => None,
+    })
 }
 
 fn parse_function_head_key(cursor: &QuotedSourceCursor) -> Result<FunctionGroupKey, QuotedSourceError> {

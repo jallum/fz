@@ -625,15 +625,16 @@ impl MacroExecutableMap {
         Self::default()
     }
 
-    pub fn define(&mut self, function: FunctionId, executable: MacroExecutable) -> u64 {
+    pub fn define(&mut self, function: FunctionId, executable: MacroExecutable) -> bool {
         self.ensure(function);
         let slot = &mut self.slots[function.as_u32() as usize];
         let next = ProjectionState::Defined(executable);
+        let changed = !slot.state.same_state(&next);
         if !slot.state.same_state(&next) {
             slot.state = next;
             slot.revision += 1;
         }
-        slot.revision
+        changed
     }
 
     pub fn get(&self, function: FunctionId) -> Option<&MacroExecutable> {

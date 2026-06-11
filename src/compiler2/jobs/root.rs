@@ -58,14 +58,13 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
 
     let entry_activation = world.activation_key(root_id, root.function, &root.input);
     let activation_fact = FactKey::Activation(entry_activation.clone());
-    let activation_revision = world.fact_revision(activation_fact.clone()).unwrap_or(1);
-    effects.outputs.push((activation_fact, activation_revision));
+    effects.outputs.push((activation_fact, false));
     effects.outputs.push((
         FactKey::Executable(ExecutableKey {
             activation: entry_activation.clone(),
             need: root.need,
         }),
-        1,
+        false,
     ));
     effects.follow_up.push(Job::LowerFunction(root.function));
     effects.follow_up.push(Job::PlanEntryDispatch(root.function));
@@ -267,8 +266,10 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
             },
             dependencies,
         );
-        outputs.push((semantic_closed_fact, semantic_closed));
-        follow_up.insert(Job::MaterializeRoot(root_id));
+        outputs.push((semantic_closed_fact, closure_changed));
+        if closure_changed {
+            follow_up.insert(Job::MaterializeRoot(root_id));
+        }
     }
 
     Ok(JobEffects {

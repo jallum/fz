@@ -418,7 +418,7 @@ impl<'a> World<'a> {
         changed
     }
 
-    pub fn define_callsite_summary(&mut self, key: CallSiteKey, mut summary: CallSiteSummary) -> u64 {
+    pub fn define_callsite_summary(&mut self, key: CallSiteKey, mut summary: CallSiteSummary) -> bool {
         for target in &mut summary.targets {
             target.input_types = target
                 .input_types
@@ -430,23 +430,22 @@ impl<'a> World<'a> {
         }
         summary.return_ty = self.types.alpha_normalize_vars(&summary.return_ty);
         let changed = self.callsites.define(key.clone(), summary.clone());
-        let revision = self.advance_fact(FactKey::CallSiteSummary(key.clone()), changed);
         self.tel.execute(
             &["fz", "compiler2", "callsite", "defined"],
             &measurements! {
                 root_id: key.activation.root.as_u32(),
                 function_id: key.activation.function.as_u32(),
                 callsite_id: key.callsite.as_u32(),
-                revision: revision,
                 input_arity: summary.arity(),
                 target_count: summary.targets.len(),
+                changed: changed as u64,
             },
             &metadata! {
                 callsite: opaque_debug(&key),
                 summary: opaque_debug(&summary),
             },
         );
-        revision
+        changed
     }
 
     pub fn callsite_summary(&self, key: &CallSiteKey) -> Option<&CallSiteSummary> {
@@ -607,8 +606,8 @@ impl<'a> World<'a> {
         root: RootId,
         backend_revision: u64,
         program: BackendProgram,
-    ) -> u64 {
-        let revision = self.macro_executables.define(
+    ) -> bool {
+        let changed = self.macro_executables.define(
             function,
             MacroExecutable {
                 root,
@@ -622,14 +621,14 @@ impl<'a> World<'a> {
                 function_id: function.as_u32() as u64,
                 root_id: root.as_u32() as u64,
                 backend_revision: backend_revision,
-                revision: revision,
                 executable_count: program.executables.len() as u64,
+                changed: changed as u64,
             },
             &metadata! {
                 program: opaque_debug(&program),
             },
         );
-        revision
+        changed
     }
 
     pub(crate) fn macro_executable(&self, function: FunctionId) -> Option<&MacroExecutable> {
@@ -669,7 +668,7 @@ impl<'a> World<'a> {
         }
     }
 
-    pub(crate) fn define_native_program(&mut self, root: RootId, program: NativeProgram) -> u64 {
+    pub(crate) fn define_native_program(&mut self, root: RootId, program: NativeProgram) -> bool {
         let changed = self.native.define(root, program.clone());
         self.tel.execute(
             &["fz", "compiler2", "native_program", "defined"],
@@ -760,19 +759,20 @@ impl<'a> World<'a> {
     /// `DeriveTypeDef` to read. No resolution, no type-algebra. The event is
     /// the surface-tier signal that a type name became a referenceable identity.
     pub fn note_type_decl(&mut self, name: TypeName, decl: NotedTypeDecl) {
-        self.tel.execute(
-            &["fz", "compiler2", "type", "noted"],
-            &measurements! {
-                module_id: name.module.as_u32(),
-                arity: name.arity,
-                namespace: decl.namespace.as_u32(),
-            },
-            &metadata! {
-                name: name.name.clone(),
-                kind: format!("{:?}", decl.body.kind),
-            },
-        );
-        self.type_decls.note(name, decl);
+        if self.type_decls.note(name.clone(), decl.clone()) {
+            self.tel.execute(
+                &["fz", "compiler2", "type", "noted"],
+                &measurements! {
+                    module_id: name.module.as_u32(),
+                    arity: name.arity,
+                    namespace: decl.namespace.as_u32(),
+                },
+                &metadata! {
+                    name: name.name.clone(),
+                    kind: format!("{:?}", decl.body.kind),
+                },
+            );
+        }
     }
 
     pub fn type_decl(&self, name: &TypeName) -> Option<&NotedTypeDecl> {
@@ -819,11 +819,12 @@ impl<'a> World<'a> {
     /// later `TypeDefined` wait-set (fz-rh2.12.4).
     pub(crate) fn record_function_type_refs(&mut self, function: FunctionId, mut refs: Vec<TypeName>) {
         dedup_type_names(&mut refs);
-        let consumer = format!("fn:{}", self.functions.reference_for(function).name);
-        for referenced in &refs {
-            self.emit_type_referenced(&consumer, referenced);
+        if self.type_refs.record_function(function, refs.clone()) {
+            let consumer = format!("fn:{}", self.functions.reference_for(function).name);
+            for referenced in &refs {
+                self.emit_type_referenced(&consumer, referenced);
+            }
         }
-        self.type_refs.record_function(function, refs);
     }
 
     // Consumed by the contract re-seat (fz-rh2.12.4); recorded one inch ahead.
@@ -836,11 +837,12 @@ impl<'a> World<'a> {
     /// `DeriveTypeDef` resolves against before minting the symbol (fz-rh2.12.2).
     pub(crate) fn record_type_def_refs(&mut self, name: TypeName, mut refs: Vec<TypeName>) {
         dedup_type_names(&mut refs);
-        let consumer = format!("type:{}", name.name);
-        for referenced in &refs {
-            self.emit_type_referenced(&consumer, referenced);
+        if self.type_refs.record_type(name.clone(), refs.clone()) {
+            let consumer = format!("type:{}", name.name);
+            for referenced in &refs {
+                self.emit_type_referenced(&consumer, referenced);
+            }
         }
-        self.type_refs.record_type(name, refs);
     }
 
     /// The type names a `@type` body references — `DeriveTypeDef`'s wait-set.
@@ -877,24 +879,23 @@ impl<'a> World<'a> {
         self.type_defs.get(name)
     }
 
-    pub(crate) fn define_protocol_dispatch(&mut self, protocol: ModuleId, dispatch: ProtocolDispatch) -> u64 {
+    pub(crate) fn define_protocol_dispatch(&mut self, protocol: ModuleId, dispatch: ProtocolDispatch) -> bool {
         let changed = self.protocol_dispatches.define(protocol, dispatch.clone());
-        let revision = self.advance_fact(FactKey::ProtocolDispatch(protocol), changed);
         self.tel.execute(
             &["fz", "compiler2", "protocol_dispatch", "defined"],
             &measurements! {
                 protocol_id: protocol.as_u32(),
-                revision: revision,
                 arms: dispatch.arms.len(),
+                changed: changed as u64,
             },
             &metadata! {
                 dispatch: opaque_debug(&dispatch),
             },
         );
-        revision
+        changed
     }
 
-    pub(crate) fn refresh_protocol_dispatch_fact(&mut self, protocol: ModuleId) -> (FactKey, u64) {
+    pub(crate) fn refresh_protocol_dispatch_fact(&mut self, protocol: ModuleId) -> (FactKey, bool) {
         let dispatch = ProtocolDispatch {
             arms: self
                 .protocol_impls_for(protocol)
@@ -905,8 +906,8 @@ impl<'a> World<'a> {
                 })
                 .collect(),
         };
-        let revision = self.define_protocol_dispatch(protocol, dispatch);
-        (FactKey::ProtocolDispatch(protocol), revision)
+        let changed = self.define_protocol_dispatch(protocol, dispatch);
+        (FactKey::ProtocolDispatch(protocol), changed)
     }
 
     pub(crate) fn protocol_dispatch(&self, protocol: ModuleId) -> Option<&ProtocolDispatch> {
@@ -981,7 +982,6 @@ impl<'a> World<'a> {
             source,
         };
         let changed = self.functions.define(id, fn_source, surface);
-        let revision = self.advance_fact(FactKey::FunctionDefined(id), changed);
         if changed {
             let function = self.functions.get(id);
             let function_ref = self.functions.reference_for(id);
@@ -992,7 +992,6 @@ impl<'a> World<'a> {
                     module_id: module.as_u32(),
                     owner_module_id: owner_module.as_u32(),
                     function_id: id.as_u32(),
-                    revision: revision,
                     arity: arity,
                     clauses: clauses,
                     source_heap_id: function.state_source_heap_id().unwrap_or_default(),
@@ -1007,12 +1006,11 @@ impl<'a> World<'a> {
                 },
             );
         }
-        (id, revision)
+        (id, changed)
     }
 
-    pub(crate) fn note_function_source(&mut self, function: FunctionId, source: FunctionSource) -> u64 {
+    pub(crate) fn note_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
         let changed = self.functions.note(function, source.clone());
-        let revision = self.advance_fact(FactKey::FunctionSource(function), changed);
         let function_ref = self.functions.reference_for(function);
         let source_owner_module = source.owner_module;
         let source_module_id = function_ref.module;
@@ -1023,11 +1021,11 @@ impl<'a> World<'a> {
                 module_id: function_ref.module.as_u32(),
                 owner_module_id: source.owner_module.as_u32(),
                 function_id: function.as_u32(),
-                revision: revision,
                 arity: function_ref.arity,
                 clauses: function_source_clause_count(&source),
                 source_heap_id: source.source.key().heap_id,
                 source_root_ref: source.source.root().raw_word(),
+                changed: changed as u64,
             },
             &metadata! {
                 function_ref: opaque_debug(function_ref),
@@ -1037,7 +1035,7 @@ impl<'a> World<'a> {
                 owner_module_id: opaque_debug(&source_owner_module),
             },
         );
-        revision
+        changed
     }
 
     pub(crate) fn function_source(&self, function: FunctionId) -> Option<FunctionSource> {
@@ -1048,9 +1046,8 @@ impl<'a> World<'a> {
         }
     }
 
-    pub(crate) fn note_expanded_function_source(&mut self, function: FunctionId, source: FunctionSource) -> u64 {
+    pub(crate) fn note_expanded_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
         let changed = self.expanded_function_sources.define(function, source.clone());
-        let revision = self.advance_fact(FactKey::ExpandedFunctionSource(function), changed);
         let function_ref = self.functions.reference_for(function);
         self.tel.execute(
             &["fz", "compiler2", "function", "source", "expanded"],
@@ -1059,11 +1056,11 @@ impl<'a> World<'a> {
                 module_id: function_ref.module.as_u32(),
                 owner_module_id: source.owner_module.as_u32(),
                 function_id: function.as_u32(),
-                revision: revision,
                 arity: function_ref.arity,
                 clauses: function_source_clause_count(&source),
                 source_heap_id: source.source.key().heap_id,
                 source_root_ref: source.source.root().raw_word(),
+                changed: changed as u64,
             },
             &metadata! {
                 function_ref: opaque_debug(function_ref),
@@ -1071,30 +1068,29 @@ impl<'a> World<'a> {
                 function_id: opaque_debug(&function),
             },
         );
-        revision
+        changed
     }
 
     pub(crate) fn expanded_function_source(&self, function: FunctionId) -> Option<FunctionSource> {
         self.expanded_function_sources.get(function).cloned()
     }
 
-    pub(crate) fn define_function_contract(&mut self, function: FunctionId, contract: FunctionContract) -> u64 {
+    pub(crate) fn define_function_contract(&mut self, function: FunctionId, contract: FunctionContract) -> bool {
         let changed = self.function_contracts.define(function, contract.clone());
-        let revision = self.advance_fact(FactKey::FunctionContract(function), changed);
         let function_ref = self.functions.reference_for(function);
         self.tel.execute(
             &["fz", "compiler2", "function_contract", "defined"],
             &measurements! {
                 function_id: function.as_u32(),
-                revision: revision,
                 arity: function_ref.arity,
+                changed: changed as u64,
             },
             &metadata! {
                 function_ref: opaque_debug(function_ref),
                 contract: opaque_debug(&contract),
             },
         );
-        revision
+        changed
     }
 
     pub(crate) fn function_contract(&self, function: FunctionId) -> Option<&FunctionContract> {
@@ -1360,6 +1356,10 @@ impl<'a> World<'a> {
         code == self.runtime_prelude
     }
 
+    pub(crate) fn is_runtime_module_code(&self, code: CodeId) -> bool {
+        self.runtime_modules.values().any(|module| module.code_id == Some(code))
+    }
+
     pub(crate) fn is_runtime_module(&self, module: ModuleId) -> bool {
         self.runtime_modules.contains_key(&module)
     }
@@ -1515,10 +1515,6 @@ impl<'a> World<'a> {
         self.work_graph.facts().revision(key).is_some()
     }
 
-    fn advance_fact(&self, key: FactKey, changed: bool) -> u64 {
-        let current = self.fact_revision(key).unwrap_or(0);
-        if changed { current + 1 } else { current }
-    }
     pub(crate) fn scope_lexical_context(
         &self,
         scope: ScopeSnapshot,
@@ -1980,13 +1976,13 @@ impl<'a> World<'a> {
     }
 }
 
-fn dedupe_job_outputs(outputs: Vec<(FactKey, u64)>) -> Vec<(FactKey, u64)> {
+fn dedupe_job_outputs(outputs: Vec<(FactKey, bool)>) -> Vec<(FactKey, bool)> {
     let mut deduped = HashMap::new();
-    for (fact, revision) in outputs {
+    for (fact, changed) in outputs {
         deduped
             .entry(fact)
-            .and_modify(|current: &mut u64| *current = (*current).max(revision))
-            .or_insert(revision);
+            .and_modify(|current: &mut bool| *current |= changed)
+            .or_insert(changed);
     }
     deduped.into_iter().collect()
 }

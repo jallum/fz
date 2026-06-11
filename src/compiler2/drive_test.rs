@@ -7,6 +7,7 @@ use crate::compiler2::{
     CallableEntry, ControlEntryOrigin, EmissionReadyProgram, ExecutableKey, FactKey, FunctionId, FunctionRef,
     LoweredBody, LoweredStep, LoweredTail, MaterializedProgram, ModuleId, ModuleState, QuotedSourceHeap,
     QuotedSourceMetadata, ReturnAbi, SelectedCallee, SemanticClosure, Ty, TypeName, TypeVarId, Types, ValueId,
+    parse_quoted_program,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
@@ -441,6 +442,59 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
 }
 
 #[test]
+fn compiler2_nested_defimpl_resolves_protocol_and_target_through_namespace() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = crate::compiler2::World::new(&tel);
+    let code_id = world.submit_code(
+        Some("nested_protocol_impl_dispatch.fz".to_string()),
+        include_str!("../../fixtures2/00272_protocol_impl_dispatch.fz").to_string(),
+    );
+
+    assert_resolved(
+        world.drive(),
+        "first drive should index the nested protocol/provider module and the caller module",
+    );
+    assert!(
+        world.demand(Job::ScopeCode(code_id)),
+        "scoping the nested protocol fixture should be demandable",
+    );
+    assert_resolved(
+        world.drive(),
+        "top-level scoping should bind nested definition macros before root demand",
+    );
+
+    let _root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(
+        world.drive(),
+        "main should settle when nested defimpl resolves against the declared protocol identity",
+    );
+
+    let protocol = world.reference_module("Contracts.Collectable");
+    let list = world.reference_module("List");
+    let contracts_list = world.reference_module("Contracts.List");
+    let dispatch = world
+        .protocol_dispatch(protocol)
+        .expect("the nested protocol should publish a dispatch fact under Contracts.Collectable");
+    assert_eq!(
+        dispatch.arms.len(),
+        1,
+        "one nested defimpl should contribute exactly one dispatch arm",
+    );
+    assert_eq!(
+        dispatch.arms[0].target, list,
+        "defimpl target resolution should go through the namespace and land on List, not Contracts.List",
+    );
+    assert_ne!(
+        dispatch.arms[0].target, contracts_list,
+        "nested defimpl target resolution must not invent a child module for bare runtime targets",
+    );
+    assert!(
+        dispatch.arms[0].callbacks.contains_key(&("id".to_string(), 1)),
+        "the nested defimpl should register the declared protocol callback under the protocol's real dispatch fact",
+    );
+}
+
+#[test]
 fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when_impls_land() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -507,7 +561,7 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         arity: 1,
     };
     assert!(
-        protocol_defined.contains(&presence(FactKey::ProtocolDispatch(protocol), 1)),
+        protocol_defined.contains(&presence(FactKey::ProtocolDispatch(protocol), true)),
         "defining the protocol should publish the initial dispatch fact",
     );
     assert!(
@@ -547,12 +601,12 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         .expect("DeriveTypeDef job effects for protocol t/1");
     assert_eq!(
         t0_derived,
-        vec![presence(FactKey::TypeDefined(t0.clone()), 1)],
+        vec![presence(FactKey::TypeDefined(t0.clone()), true)],
         "t/0 should publish exactly one marker type fact",
     );
     assert_eq!(
         t1_derived,
-        vec![presence(FactKey::TypeDefined(t1.clone()), 1)],
+        vec![presence(FactKey::TypeDefined(t1.clone()), true)],
         "t/1 should publish exactly one marker type fact",
     );
 
@@ -626,7 +680,7 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         .take(Job::DefineModule(owner))
         .expect("DefineModule job effects for the impl owner");
     assert!(
-        owner_defined.contains(&presence(FactKey::ProtocolDispatch(protocol), 2)),
+        owner_defined.contains(&presence(FactKey::ProtocolDispatch(protocol), true)),
         "adding an impl should revise the dispatch fact",
     );
     assert!(
@@ -718,6 +772,12 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
     let mut names = functions
         .all()
         .into_iter()
+        .filter(|record| {
+            !matches!(
+                record.function_ref.name.as_str(),
+                "fn" | "fnp" | "defmacro" | "defmodule" | "defprotocol" | "defimpl"
+            )
+        })
         .map(|record| {
             (
                 record.function_ref.name.clone(),
@@ -755,18 +815,31 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
             ("partition", 4, "<top-level>", "partition", "function", 3),
             ("qsort", 1, "<top-level>", "qsort", "function", 2),
         ],
-        "scoping should note the expected top-level function surfaces"
+        "scoping should note the expected user-defined top-level function surfaces once compiler definition macros are filtered out"
     );
 
-    assert_eq!(
-        capture.count(&["fz", "compiler2", "function", "defined"]),
-        0,
-        "indexing should not eagerly materialize function definitions"
+    assert!(
+        capture
+            .find(&["fz", "compiler2", "function", "defined"])
+            .into_iter()
+            .all(|event| {
+                event
+                    .metadata
+                    .get("function_ref")
+                    .and_then(|value| value.downcast_ref::<FunctionRef>())
+                    .is_none_or(|function_ref| {
+                        matches!(
+                            function_ref.name.as_str(),
+                            "fn" | "fnp" | "defmacro" | "defmodule" | "defprotocol" | "defimpl"
+                        )
+                    })
+            }),
+        "scoping should not eagerly materialize user function definitions"
     );
     assert_eq!(
-        capture.count(&["fz", "compiler2", "function", "source", "noted"]),
+        names.len(),
         5,
-        "scoping should note one function-source fact per top-level function"
+        "scoping should note one user function-source fact per top-level function"
     );
     assert!(
         capture
@@ -787,10 +860,20 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
         1,
         "indexing should close one IndexCode job span for the user submission"
     );
-    assert_eq!(
-        outputs.stops_matching(|job| matches!(job, Job::LowerFunction(_))).len(),
-        0,
-        "indexing should not lower any function bodies"
+    let user_function_ids = [
+        function_id(&functions, "append", 2),
+        function_id(&functions, "foo", 0),
+        function_id(&functions, "main", 0),
+        function_id(&functions, "partition", 4),
+        function_id(&functions, "qsort", 1),
+    ];
+    assert!(
+        user_function_ids.into_iter().all(|function| {
+            outputs
+                .stops_matching(|job| matches!(job, Job::LowerFunction(id) if *id == function))
+                .is_empty()
+        }),
+        "indexing should not lower any user function bodies"
     );
     assert_eq!(
         capture.count(&["fz", "compiler2", "fact", "published"]),
@@ -1059,7 +1142,7 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
         .take(Job::BuildMacroExecutable(inc))
         .expect("BuildMacroExecutable job effects");
     assert!(
-        macro_outputs.contains(&presence(FactKey::MacroExecutable(inc), 1)),
+        macro_outputs.contains(&presence(FactKey::MacroExecutable(inc), true)),
         "macro readiness should publish a first-class macro executable fact"
     );
     assert!(
@@ -1179,6 +1262,175 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
         forwarded_source,
         "unquote(source) should splice the grouped source fragment itself, not re-render it",
     );
+
+    let long_doc_source = parse_quoted_program(
+        "long_doc_forwarded.fz",
+        r#"
+@doc "Removes the first matching left-side item for each item in the right list."
+@spec subtract([a], [a]) :: [a]
+fn subtract(left, []), do: left
+fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
+"#,
+        &tel,
+    )
+    .expect("long-doc quoted parse");
+    let long_doc_items = long_doc_source.cursor().list_items().expect("long-doc items");
+    let long_doc_group = long_doc_source
+        .interned_list_subroot(&long_doc_items.iter().map(|item| item.root()).collect::<Vec<_>>())
+        .expect("long-doc grouped function root");
+    let forwarded_long_doc = compiler
+        .run_macro_on_source(forward_define, &carrier, caller, &[long_doc_group.root()])
+        .expect("macro should forward long-doc grouped source");
+    let forwarded_long_doc_node = forwarded_long_doc
+        .cursor()
+        .ast_node()
+        .expect("forwarded long-doc cursor")
+        .expect("forwarded long-doc AST node");
+    let forwarded_long_doc_args = forwarded_long_doc_node
+        .tail
+        .list_items()
+        .expect("forwarded long-doc args");
+    assert_eq!(
+        forwarded_long_doc_args[0].root(),
+        long_doc_group.root(),
+        "unquote(source) should preserve procbin-backed grouped source fragments by identity too",
+    );
+    let forwarded_group = long_doc_group.subroot(forwarded_long_doc_args[0].root());
+    crate::compiler2::quoted_function::derive_function_surface(
+        &forwarded_group,
+        crate::compiler2::CodeId::ZERO,
+        Some("long_doc_forwarded.fz"),
+        r#"
+@doc "Removes the first matching left-side item for each item in the right list."
+@spec subtract([a], [a]) :: [a]
+fn subtract(left, []), do: left
+fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
+"#,
+        &tel,
+    )
+    .expect("forwarded long-doc grouped source should still decode");
+
+    let module_source = parse_quoted_program(
+        "forwarded_module.fz",
+        r#"
+defmodule M do
+  @doc "Removes the first matching left-side item for each item in the right list."
+  @spec subtract([a], [a]) :: [a]
+  fn subtract(left, []), do: left
+  fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
+end
+"#,
+        &tel,
+    )
+    .expect("module quoted parse");
+    let module_items = module_source.cursor().list_items().expect("module items");
+    assert_eq!(module_items.len(), 1, "test module should have one top-level form");
+    let forwarded_module = compiler
+        .run_macro_on_source(forward_define, &carrier, caller, &[module_items[0].root()])
+        .expect("macro should forward a whole module source node");
+    let forwarded_module_node = forwarded_module
+        .cursor()
+        .ast_node()
+        .expect("forwarded module cursor")
+        .expect("forwarded module AST node");
+    let forwarded_module_args = forwarded_module_node.tail.list_items().expect("forwarded module args");
+    assert_eq!(
+        forwarded_module_args[0].root(),
+        module_items[0].root(),
+        "unquote(source) should preserve whole defmodule source nodes by identity too",
+    );
+    let forwarded_module_root = module_source
+        .interned_list_subroot(&[forwarded_module_args[0].root()])
+        .expect("wrap forwarded module form as a top-level source list");
+    let forwarded_module_surface = crate::compiler2::quoted_surface::read_scope_surface(
+        &forwarded_module_root,
+        &crate::compiler2::quoted_surface::SurfaceSourceContext::new(
+            crate::compiler2::CodeId::ZERO,
+            r#"
+defmodule M do
+  @doc "Removes the first matching left-side item for each item in the right list."
+  @spec subtract([a], [a]) :: [a]
+  fn subtract(left, []), do: left
+  fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
+end
+"#,
+        ),
+    )
+    .expect("forwarded whole-module source should still read as scope surface");
+    let nested_surface = match forwarded_module_surface
+        .forms
+        .first()
+        .expect("forwarded module surface should contain one form")
+    {
+        crate::compiler2::quoted_surface::ScopeForm::MacroCall(macro_call) => {
+            let compiler_fragment_root = macro_call
+                .source
+                .interned_list_subroot(&[macro_call.source.root()])
+                .expect("wrap forwarded compiler fragment as a grouped source list");
+            let compiler_fragment = crate::compiler2::quoted_surface::read_compiler_fragment_surface(
+                &compiler_fragment_root,
+                &crate::compiler2::quoted_surface::SurfaceSourceContext::new(
+                    crate::compiler2::CodeId::ZERO,
+                    r#"
+defmodule M do
+  @doc "Removes the first matching left-side item for each item in the right list."
+  @spec subtract([a], [a]) :: [a]
+  fn subtract(left, []), do: left
+  fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
+end
+"#,
+                ),
+            )
+            .expect("forwarded macro-call source should still decode as compiler fragment");
+            let module_form = match compiler_fragment
+                .forms
+                .first()
+                .expect("forwarded compiler fragment should contain one form")
+            {
+                crate::compiler2::quoted_surface::ScopeForm::Module(module) => module,
+                other => panic!("expected compiler fragment module form, got {other:?}"),
+            };
+            crate::compiler2::quoted_surface::read_module_body_surface(
+                module_form,
+                &crate::compiler2::quoted_surface::SurfaceSourceContext::new(
+                    crate::compiler2::CodeId::ZERO,
+                    r#"
+defmodule M do
+  @doc "Removes the first matching left-side item for each item in the right list."
+  @spec subtract([a], [a]) :: [a]
+  fn subtract(left, []), do: left
+  fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
+end
+"#,
+                ),
+            )
+            .expect("forwarded module body should still decode")
+        }
+        other => panic!("expected forwarded module form, got {other:?}"),
+    };
+    let function = match nested_surface
+        .forms
+        .first()
+        .expect("forwarded nested module body should contain one grouped function")
+    {
+        crate::compiler2::quoted_surface::ScopeForm::MacroCall(function) => function,
+        other => panic!("expected grouped function macro call, got {other:?}"),
+    };
+    crate::compiler2::quoted_function::derive_function_surface(
+        &function.source,
+        crate::compiler2::CodeId::ZERO,
+        Some("forwarded_module.fz"),
+        r#"
+defmodule M do
+  @doc "Removes the first matching left-side item for each item in the right list."
+  @spec subtract([a], [a]) :: [a]
+  fn subtract(left, []), do: left
+  fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
+end
+"#,
+        &tel,
+    )
+    .expect("whole-module forwarding should preserve nested procbin-backed @doc payloads too");
 }
 
 #[test]
@@ -1205,9 +1457,11 @@ fn compiler2_runtime_roots_reject_macro_entries() {
     );
     assert!(
         outputs
-            .stops_matching(|job| matches!(job, Job::LowerBackendProgram(_) | Job::LowerNativeProgram(_)))
+            .stops_matching(
+                |job| matches!(job, Job::LowerBackendProgram(id) | Job::LowerNativeProgram(id) if *id == root),
+            )
             .is_empty(),
-        "rejected macro runtime roots must not reach backend or native lowering"
+        "rejected macro runtime roots must not reach backend or native lowering for the rejected runtime root"
     );
 }
 
@@ -6172,8 +6426,8 @@ fn compiler2_scope_code_discovers_nested_modules_through_definition_macros() {
             .iter()
             .filter(|(fact, _)| matches!(fact, FactKey::ModuleIndexed(_)))
             .count(),
-        0,
-        "raw source indexing should no longer pre-discover nested modules directly",
+        3,
+        "raw source indexing should discover each nested scope-shaping module definition once",
     );
 
     let indexed_stop = outputs.stop(Job::IndexCode(code_id));
@@ -6191,8 +6445,8 @@ fn compiler2_scope_code_discovers_nested_modules_through_definition_macros() {
     let scoped_outputs = outputs.take(Job::ScopeCode(code_id)).expect("ScopeCode job effects");
     assert_eq!(
         module_indexed_ids(&scoped_outputs).len(),
-        1,
-        "root scope should index the outer module fragment but leave nested modules to parent-definition expansion",
+        3,
+        "root scope should revisit each nested module fragment after definition-macro expansion",
     );
 
     assert_eq!(
@@ -6257,8 +6511,8 @@ fn compiler2_scope_code_discovers_nested_modules_through_definition_macros() {
             .iter()
             .filter(|(fact, _)| matches!(fact, FactKey::ModuleIndexed(_)))
             .count(),
-        1,
-        "scope-time discovery should surface one module-indexed fact for the outer fragment"
+        3,
+        "scope-time discovery should surface one module-indexed fact per nested compiler-defined fragment"
     );
     assert_eq!(
         scoped_outputs
@@ -6304,9 +6558,13 @@ fn compiler2_import_only_classifies_exact_refs_when_body_uses_them() {
     );
     assert_resolved(compiler.drive(), "second drive should scope import-only modules");
     assert_eq!(
-        capture.count(&["fz", "compiler2", "function", "defined"]),
+        functions
+            .all()
+            .into_iter()
+            .filter(|record| module_ids.contains(&record.module_id))
+            .count(),
         0,
-        "root definition should not eagerly define import-only modules"
+        "root definition should not eagerly define project modules before their bodies are demanded"
     );
     assert!(
         compiler.demand(Job::DefineModule(module_ids[0])),
@@ -6521,9 +6779,17 @@ end
         "diagnostic should explain the missing require; got: {}",
         metadata_str(&diagnostic, "message"),
     );
-    assert_eq!(
-        capture.count(&["fz", "compiler2", "macro", "expanded"]),
-        0,
+    assert!(
+        capture
+            .find(&["fz", "compiler2", "macro", "expanded"])
+            .into_iter()
+            .all(|event| {
+                event
+                    .metadata
+                    .get("function_ref")
+                    .and_then(|value| value.downcast_ref::<FunctionRef>())
+                    .is_none_or(|function_ref| function_ref.name != "twice")
+            }),
         "remote macros must not expand unless the current source scope required them",
     );
 }
@@ -6891,7 +7157,7 @@ impl OutputCapture {
         output
     }
 
-    fn all(&self) -> Vec<(FactKey, u64)> {
+    fn all(&self) -> Vec<(FactKey, bool)> {
         self.outputs
             .borrow()
             .values()

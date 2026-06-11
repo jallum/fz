@@ -235,6 +235,19 @@ It:
 The returned root is therefore still rooted in the same quoted-source heap as
 the input carrier root.
 
+One subtle but important lifetime rule lives here:
+
+- `run_backend_entry_on_process(...)` is borrowing the quoted-source process,
+  not running an ordinary throwaway runtime task
+- when that borrowed backend entry completes, compiler2 must keep the process
+  alive exactly as a quoted-source heap carrier
+- ordinary backend-task exit cleanup such as deferred procbin teardown is
+  therefore wrong on this path, because a returned quoted root may still point
+  at long shared-binary payloads nested inside the source graph
+
+That rule is what keeps forwarded whole-module source fragments with long
+`@doc` payloads readable after macro execution.
+
 That same-heap transport is the central data contract:
 
 ```text

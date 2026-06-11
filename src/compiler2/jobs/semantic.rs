@@ -184,12 +184,12 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     let mut emitted_executables = HashSet::new();
     for call in &analysis_calls {
         if let Some(summary) = &call.summary {
-            let revision = world.define_callsite_summary(call.key.clone(), summary.clone());
-            outputs.push((FactKey::CallSiteSummary(call.key.clone()), revision));
+            let changed = world.define_callsite_summary(call.key.clone(), summary.clone());
+            outputs.push((FactKey::CallSiteSummary(call.key.clone()), changed));
         }
         for callee_activation in &call.activations {
             if emitted_activations.insert(callee_activation.key.clone()) {
-                outputs.push((FactKey::Activation(callee_activation.key.clone()), 1));
+                outputs.push((FactKey::Activation(callee_activation.key.clone()), false));
             }
             if !callee_activation.already_present {
                 follow_up.insert(Job::AnalyzeActivation(callee_activation.key.clone()));
@@ -198,14 +198,14 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         }
         for executable in &call.latent_executables {
             if emitted_executables.insert(executable.clone()) {
-                outputs.push((FactKey::Executable(executable.clone()), 1));
+                outputs.push((FactKey::Executable(executable.clone()), false));
             }
         }
     }
 
     for callable_activation in &latent_callable_activations {
         if emitted_activations.insert(callable_activation.key.clone()) {
-            outputs.push((FactKey::Activation(callable_activation.key.clone()), 1));
+            outputs.push((FactKey::Activation(callable_activation.key.clone()), false));
         }
         if !callable_activation.already_present {
             follow_up.insert(Job::AnalyzeActivation(callable_activation.key.clone()));
@@ -213,8 +213,8 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         follow_up.insert(Job::SealSemanticClosure(activation.root));
     }
 
-    let return_revision = world.define_activation_return(activation, return_ty);
-    outputs.push((FactKey::ReturnType(activation.clone()), return_revision));
+    let return_changed = world.define_activation_return(activation, return_ty);
+    outputs.push((FactKey::ReturnType(activation.clone()), return_changed));
 
     let analysis_changed = world.define_activation_analysis(
         activation,

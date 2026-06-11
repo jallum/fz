@@ -26,8 +26,9 @@ use super::quoted_expander::{
     expand_item_macro_fragment, read_compiler_fragment_root,
 };
 use super::quoted_surface::{
-    CompilerService, CompilerServiceForm, FunctionForm, MacroCallForm, ProtocolImplForm, ScopeForm, ScopeSurface,
-    SurfaceSourceContext, read_module_body_surface, read_protocol_body_surface, read_protocol_impl_body_surface,
+    CompilerService, CompilerServiceForm, FunctionForm, MacroCallForm, ProtocolImplForm, ReservedSourceDefinition,
+    ScopeForm, ScopeSurface, SurfaceSourceContext, read_module_body_surface, read_protocol_body_surface,
+    read_protocol_impl_body_surface, reserved_source_definition,
 };
 use super::scheduler::FatalError;
 use super::scope::ScopeSnapshot;
@@ -37,7 +38,7 @@ use super::source::{
 use super::type_expr::{NominalKind, TypeDefBody, TypeExpr, parse_type_def_body, parse_type_expr};
 use super::world::World;
 
-type Output = (FactKey, u64);
+type Output = (FactKey, bool);
 type Outputs = Vec<Output>;
 
 pub(crate) enum ScopePublication {
@@ -112,7 +113,6 @@ struct ScopeSession<'world, 'tel> {
     code_id: CodeId,
     current_module: ModuleId,
     namespace: Namespace,
-    local_protocols: HashSet<String>,
     local_callables: HashMap<(String, usize), NamespaceSymbol>,
     pending_types: Vec<PendingType>,
     required_remote_macros: HashSet<FunctionId>,
@@ -160,10 +160,11 @@ pub(crate) fn publish_scope(
 
 pub(crate) fn publish_protocol_surface(
     world: &mut World<'_>,
+    code_id: CodeId,
     module_id: ModuleId,
     namespace: Namespace,
     surface: &ScopeSurface,
-) -> ScopePublication {
+) -> Result<ScopePublication, FatalError> {
     let mut scope = namespace;
     let protocol_t = TypeName {
         module: module_id,
@@ -183,7 +184,7 @@ pub(crate) fn publish_protocol_surface(
         vec!["a".to_string()],
     );
 
-    let outputs = vec![world.refresh_protocol_dispatch_fact(module_id)];
+    let mut outputs = Vec::new();
     let mut exports = Vec::new();
     for form in &surface.forms {
         let ScopeForm::Function(callback) = form else {
@@ -200,13 +201,53 @@ pub(crate) fn publish_protocol_surface(
             symbol,
         });
     }
-    ScopePublication::Complete {
+
+    let module_name = world
+        .module_name(module_id)
+        .ok_or_else(|| {
+            emit_internal_surface_error(
+                world,
+                "protocol modules should have reverse names before publication".to_string(),
+            )
+        })?
+        .to_string();
+    let function = build_module_info_function(&exports, &module_name).map_err(|error| {
+        emit_internal_surface_error(world, format!("protocol module info synthesis failed: {error}"))
+    })?;
+    let function_id = world.reference_function(module_id, function.name.clone(), function.arity);
+    scope = world.bind_namespace(scope, function.name.clone(), NamespaceSymbol::Function(function_id));
+    let function_scope = ScopeSnapshot::function(module_id, scope, function_id);
+    let builder = function.source.builder();
+    let env_root = world
+        .project_env_value(&builder, function_scope, QuotedLexicalContextKind::Definition)
+        .map_err(|error| {
+            emit_internal_surface_error(world, format!("protocol __info__ env projection failed: {error}"))
+        })?;
+    let env = function.source.subroot(env_root);
+    let publication = publish_function_source(
+        world,
+        code_id,
+        module_id,
+        module_id,
+        scope,
+        &function,
+        true,
+        Vec::new(),
+        &env,
+    );
+    outputs.push(publication.output);
+    if let Some(export) = publication.export {
+        exports.push(export);
+    }
+
+    outputs.push(world.refresh_protocol_dispatch_fact(module_id));
+    Ok(ScopePublication::Complete {
         namespace: scope,
         revision_floor: 0,
         reads: Vec::new(),
         outputs,
         exports,
-    }
+    })
 }
 
 pub(crate) fn discover_modules(
@@ -250,6 +291,53 @@ pub(crate) fn discover_modules(
                 );
                 outputs.push((FactKey::ModuleIndexed(module_id), revision));
             }
+            ScopeForm::MacroCall(macro_call) => {
+                let Some(definition) = reserved_source_definition(&macro_call.source).map_err(|error| {
+                    emit_internal_surface_error(world, format!("raw discovery reservation failed: {error}"))
+                })?
+                else {
+                    continue;
+                };
+                let fragment =
+                    read_compiler_fragment_root(world, code_id, &macro_call.source, "raw scope-definition fragment")?;
+                let Some(fragment_form) = fragment.forms.first() else {
+                    continue;
+                };
+                match (definition, fragment_form) {
+                    (ReservedSourceDefinition::Module { .. }, ScopeForm::Module(module)) => {
+                        let module_id = world.reference_child_module(parent_module, &module.name);
+                        let nested = read_module_body_surface(module, ctx).map_err(|error| {
+                            emit_internal_surface_error(world, format!("nested module body read failed: {error}"))
+                        })?;
+                        let revision = world.index_module_body(
+                            module_id,
+                            code_id,
+                            parent_module,
+                            module.name.clone(),
+                            module.source.clone(),
+                            nested.clone(),
+                        );
+                        outputs.push((FactKey::ModuleIndexed(module_id), revision));
+                        discover_modules(world, code_id, module_id, &nested, ctx, outputs)?;
+                    }
+                    (ReservedSourceDefinition::Protocol { .. }, ScopeForm::Protocol(protocol)) => {
+                        let module_id = reference_declared_protocol_module(world, parent_module, &protocol.name);
+                        let protocol_surface = read_protocol_body_surface(protocol, ctx).map_err(|error| {
+                            emit_internal_surface_error(world, format!("quoted protocol body read failed: {error}"))
+                        })?;
+                        let revision = world.index_protocol_module(
+                            module_id,
+                            code_id,
+                            parent_module,
+                            protocol.name.last_segment().to_string(),
+                            protocol.source.clone(),
+                            protocol_surface,
+                        );
+                        outputs.push((FactKey::ModuleIndexed(module_id), revision));
+                    }
+                    _ => {}
+                }
+            }
             _ => {}
         }
     }
@@ -290,7 +378,6 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             code_id,
             current_module: current_scope.module_id(),
             namespace: current_scope.namespace(),
-            local_protocols: HashSet::new(),
             local_callables: HashMap::new(),
             pending_types: Vec::new(),
             required_remote_macros: HashSet::new(),
@@ -304,7 +391,6 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     /// Walks one scope in source order and publishes every source-form fact it
     /// defines through this session's accumulated state.
     fn publish(mut self, surface: &ScopeSurface) -> Result<ScopePublication, FatalError> {
-        self.local_protocols = local_protocol_names(surface);
         let context = FragmentPublicationContext::module_surface(self.current_module);
         if let Some(blocked) = self.apply_surface_fragment(surface, &context)? {
             return Ok(ScopePublication::Blocked(blocked));
@@ -432,8 +518,44 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 | ScopeForm::Require(_)
                 | ScopeForm::CompilerService(_)
                 | ScopeForm::Struct(_)
-                | ScopeForm::ProtocolImpl(_)
-                | ScopeForm::MacroCall(_) => {}
+                | ScopeForm::ProtocolImpl(_) => {}
+                ScopeForm::MacroCall(macro_call) => {
+                    let Some(definition) = reserved_source_definition(&macro_call.source).map_err(|error| {
+                        emit_internal_surface_error(self.world, format!("raw definition reservation failed: {error}"))
+                    })?
+                    else {
+                        continue;
+                    };
+                    match definition {
+                        ReservedSourceDefinition::Function { name, arity, is_macro } => {
+                            let function_id = self.world.reference_function(self.current_module, name.clone(), arity);
+                            let symbol = if is_macro {
+                                NamespaceSymbol::Macro(function_id)
+                            } else {
+                                NamespaceSymbol::Function(function_id)
+                            };
+                            self.local_callables.insert((name.clone(), arity), symbol.clone());
+                            self.namespace = self.world.bind_namespace(self.namespace, name, symbol);
+                        }
+                        ReservedSourceDefinition::Module { local_name } => {
+                            let module_id = self.world.reference_child_module(self.current_module, &local_name);
+                            self.namespace = self.world.bind_namespace(
+                                self.namespace,
+                                local_name,
+                                NamespaceSymbol::Module(module_id),
+                            );
+                        }
+                        ReservedSourceDefinition::Protocol { name } => {
+                            let protocol_id =
+                                reference_declared_protocol_module(self.world, self.current_module, &name);
+                            self.namespace = self.world.bind_namespace(
+                                self.namespace,
+                                name.last_segment().to_string(),
+                                NamespaceSymbol::Module(protocol_id),
+                            );
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -894,13 +1016,10 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         (!effects.waits.is_empty()).then_some(effects)
     }
     fn define_protocol_impl(&mut self, protocol_impl: &ProtocolImplForm) -> Result<Outputs, FatalError> {
-        let protocol = reference_impl_protocol_module(
-            self.world,
-            self.current_module,
-            &protocol_impl.protocol,
-            &self.local_protocols,
-        );
-        let target = reference_impl_target_module(self.world, self.current_module, &protocol_impl.target);
+        let protocol =
+            reference_impl_protocol_module(self.world, self.current_module, self.namespace, &protocol_impl.protocol);
+        let target =
+            reference_impl_target_module(self.world, self.current_module, self.namespace, &protocol_impl.target);
         let impl_module = reference_protocol_impl_module(self.world, protocol, target);
         let code_text = self.world.code_text(self.code_id).to_owned();
         let ctx = SurfaceSourceContext::new(self.code_id, &code_text);
@@ -976,19 +1095,6 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             exports: self.exports,
         }
     }
-}
-
-fn local_protocol_names(surface: &ScopeSurface) -> HashSet<String> {
-    surface
-        .forms
-        .iter()
-        .filter_map(|form| match form {
-            ScopeForm::Protocol(protocol) if protocol.name.segments().len() == 1 => {
-                Some(protocol.name.last_segment().to_string())
-            }
-            _ => None,
-        })
-        .collect()
 }
 
 fn build_module_info_function(exports: &[ModuleExport], module_name: &str) -> Result<FunctionForm, QuotedSourceError> {
@@ -1130,7 +1236,7 @@ fn emit_compiler_service_define(
     world: &World<'_>,
     function: FunctionId,
     source: &FunctionSource,
-    revision: u64,
+    changed: bool,
     env: &super::source::QuotedSourceRoot,
 ) {
     let function_ref = world.function_ref(function);
@@ -1141,7 +1247,7 @@ fn emit_compiler_service_define(
             module_id: function_ref.module.as_u32() as u64,
             owner_module_id: source.owner_module.as_u32() as u64,
             function_id: function.as_u32() as u64,
-            revision: revision,
+            changed: changed as u64,
             namespace: source.namespace.as_u32() as u64,
             source_heap_id: source.source.key().heap_id as u64,
             source_root_ref: source.source.root().raw_word(),
@@ -1269,19 +1375,23 @@ fn reference_declared_protocol_module(world: &mut World<'_>, current_module: Mod
 fn reference_impl_protocol_module(
     world: &mut World<'_>,
     current_module: ModuleId,
+    head: Namespace,
     name: &ModuleName,
-    local_protocols: &HashSet<String>,
 ) -> ModuleId {
-    world.reference_module(qualified_impl_protocol_name(
-        world,
-        current_module,
-        name,
-        local_protocols,
-    ))
+    world
+        .resolve_module_name(current_module, head, name)
+        .expect("module resolution should always mint a module id for defimpl protocol names")
 }
 
-fn reference_impl_target_module(world: &mut World<'_>, current_module: ModuleId, name: &ModuleName) -> ModuleId {
-    world.reference_module(qualified_child_module_name(world, current_module, name))
+fn reference_impl_target_module(
+    world: &mut World<'_>,
+    current_module: ModuleId,
+    head: Namespace,
+    name: &ModuleName,
+) -> ModuleId {
+    world
+        .resolve_module_name(current_module, head, name)
+        .expect("module resolution should always mint a module id for defimpl target names")
 }
 
 fn reference_protocol_impl_module(world: &mut World<'_>, protocol: ModuleId, target: ModuleId) -> ModuleId {
@@ -1293,22 +1403,6 @@ fn reference_protocol_impl_module(world: &mut World<'_>, protocol: ModuleId, tar
         .expect("protocol impl targets should have reverse names");
     let target_local = last_segment(target_name);
     world.reference_module(format!("{protocol_name}.{target_local}"))
-}
-
-fn qualified_impl_protocol_name(
-    world: &World<'_>,
-    current_module: ModuleId,
-    name: &ModuleName,
-    local_protocols: &HashSet<String>,
-) -> String {
-    if name.segments().len() != 1 || current_module.is_global() {
-        return name.dotted();
-    }
-    let local = name.last_segment();
-    if !local_protocols.contains(local) && !same_as_current_module(world, current_module, local) {
-        return name.dotted();
-    }
-    qualify_local_child_name(world, current_module, local)
 }
 
 fn qualified_child_module_name(world: &World<'_>, current_module: ModuleId, name: &ModuleName) -> String {
@@ -1327,13 +1421,6 @@ fn qualify_local_child_name(world: &World<'_>, current_module: ModuleId, local: 
     } else {
         format!("{current_name}.{local}")
     }
-}
-
-fn same_as_current_module(world: &World<'_>, current_module: ModuleId, local: &str) -> bool {
-    let current_name = world
-        .module_name(current_module)
-        .expect("named scoped modules should have reverse lookups");
-    local == last_segment(current_name)
 }
 
 fn last_segment(name: &str) -> &str {

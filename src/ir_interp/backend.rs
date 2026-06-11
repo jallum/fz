@@ -51,7 +51,7 @@ pub(crate) fn run_backend_main(
         ..Module::default()
     };
     runtime.enqueue_backend_entry(1, program.entry, Vec::new())?;
-    let completions = drive_backend_until_idle(&mut runtime, types, tel, program, &module)?;
+    let completions = drive_backend_until_idle(&mut runtime, types, tel, program, &module, None)?;
     let halt_val = completions
         .iter()
         .rev()
@@ -87,7 +87,7 @@ pub(crate) fn run_backend_entry_on_process(
     };
     let result = (|| {
         runtime.enqueue_backend_entry(1, program.entry, args)?;
-        let completions = drive_backend_until_idle(&mut runtime, types, tel, program, &module)?;
+        let completions = drive_backend_until_idle(&mut runtime, types, tel, program, &module, Some(1))?;
         completions
             .into_iter()
             .rev()
@@ -238,6 +238,7 @@ fn drive_backend_until_idle(
     tel: &dyn Telemetry,
     program: &BackendProgram,
     module: &Module,
+    keepalive_pid: Option<u32>,
 ) -> Result<Vec<(u32, AnyValue)>, String> {
     let mut completions = Vec::new();
     let mut exec_ctx = ExecCtx {
@@ -265,6 +266,10 @@ fn drive_backend_until_idle(
         match run_backend_resume(runtime, types, tel, program, module, resume)? {
             BackendRunStep::Done(value) => {
                 completions.push((pid, value));
+                if keepalive_pid == Some(pid) {
+                    runtime.set_process_state(pid, ProcessState::Ready);
+                    continue;
+                }
                 unsafe {
                     mso_drop_all_deferred(&mut (*proc_ptr).heap);
                 }

@@ -5,7 +5,7 @@ use super::source_publish::{ScopePublication, publish_scope};
 use super::source_test::quoted_tokens;
 use super::{
     DriveOutcome, FactKey, Job, ModuleId, Namespace, NamespaceSymbol, QuotedSourceBuilder, QuotedSourceHeap,
-    QuotedSourceMetadata, QuotedSourceRoot, ScopeSnapshot, World,
+    QuotedSourceMetadata, QuotedSourceRoot, ScopeSnapshot, World, parse_quoted_program,
 };
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 
@@ -75,6 +75,15 @@ fn publish_compiler_fragment_scope(
         &surface,
     )
     .expect("publish compiler fragment scope")
+}
+
+fn grouped_function_root(source_name: &str, text: &str) -> QuotedSourceRoot {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(source_name.to_string(), text, &tel).expect("quoted parse");
+    let items = root.cursor().list_items().expect("top-level items");
+    let item_roots = items.into_iter().map(|item| item.root()).collect::<Vec<_>>();
+    root.interned_list_subroot(&item_roots)
+        .expect("grouped function root should intern")
 }
 
 #[test]
@@ -230,6 +239,64 @@ fn compiler_service_define_groups_single_function_source_before_define_function(
     assert!(
         matches!(world.drive(), DriveOutcome::Resolved),
         "Fz.Compiler.define should group a single function form before DefineFunction decodes it",
+    );
+}
+
+#[test]
+fn compiler_service_define_preserves_long_doc_procbin_payloads() {
+    let source = r#"
+@doc "Removes the first matching left-side item for each item in the right list."
+@spec subtract([a], [a]) :: [a]
+fn subtract(left, []), do: left
+fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
+"#;
+    let grouped = grouped_function_root("long-doc.fz", source);
+    let grouped_items = grouped.cursor().list_items().expect("grouped items");
+    let grouped_item_roots = grouped_items.iter().map(|item| item.root()).collect::<Vec<_>>();
+
+    let tel = ConfiguredTelemetry::new();
+
+    let mut direct_world = World::new(&tel);
+    let direct_code = direct_world.submit_code(Some("direct-long-doc.fz".to_string()), source.to_string());
+    let direct_publication = publish_compiler_fragment_scope(
+        &mut direct_world,
+        direct_code,
+        &grouped
+            .interned_list_subroot(&grouped_item_roots)
+            .expect("direct grouped root"),
+    );
+    assert!(matches!(direct_publication, ScopePublication::Complete { .. }));
+    let direct_id = direct_world.reference_function(ModuleId::GLOBAL, "subtract", 2);
+    assert!(direct_world.demand(Job::DefineFunction(direct_id)));
+    assert!(
+        matches!(direct_world.drive(), DriveOutcome::Resolved),
+        "raw grouped compiler fragments should decode long procbin-backed @doc payloads"
+    );
+
+    let mut service_world = World::new(&tel);
+    let service_code = service_world.submit_code(Some("service-long-doc.fz".to_string()), source.to_string());
+    let builder = grouped.builder();
+    let env = service_world
+        .project_env_value(
+            &builder,
+            ScopeSnapshot::module(ModuleId::GLOBAL, Namespace::default()),
+            super::QuotedLexicalContextKind::Caller,
+        )
+        .expect("__CALLER__ projection");
+    let service_root = builder
+        .root(
+            builder
+                .list(&[compiler_define_form(&builder, grouped.root(), env)])
+                .expect("service root list"),
+        )
+        .expect("service quoted root");
+    let service_publication = publish_compiler_fragment_scope(&mut service_world, service_code, &service_root);
+    assert!(matches!(service_publication, ScopePublication::Complete { .. }));
+    let service_id = service_world.reference_function(ModuleId::GLOBAL, "subtract", 2);
+    assert!(service_world.demand(Job::DefineFunction(service_id)));
+    assert!(
+        matches!(service_world.drive(), DriveOutcome::Resolved),
+        "Fz.Compiler.define should preserve long procbin-backed @doc payloads across the compiler-service boundary"
     );
 }
 

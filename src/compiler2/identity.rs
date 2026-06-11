@@ -253,7 +253,7 @@ pub struct TypeName {
 /// `DeriveTypeDef` (fz-rh2.12.2) reads this to resolve the body to a hard `Ty`
 /// against the captured namespace — the namespace, not a `ModuleTypeEnv`, is
 /// the resolution context.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotedTypeDecl {
     pub params: Vec<String>,
     pub body: TypeDefBody,
@@ -550,8 +550,10 @@ impl TypeDeclMap {
         Self::default()
     }
 
-    pub fn note(&mut self, name: TypeName, decl: NotedTypeDecl) {
+    pub fn note(&mut self, name: TypeName, decl: NotedTypeDecl) -> bool {
+        let changed = self.decls.get(&name) != Some(&decl);
         self.decls.insert(name, decl);
+        changed
     }
 
     pub fn get(&self, name: &TypeName) -> Option<&NotedTypeDecl> {
@@ -574,8 +576,10 @@ impl TypeRefMap {
         Self::default()
     }
 
-    pub fn record_function(&mut self, function: FunctionId, refs: Vec<TypeName>) {
+    pub fn record_function(&mut self, function: FunctionId, refs: Vec<TypeName>) -> bool {
+        let changed = self.by_function.get(&function) != Some(&refs);
         self.by_function.insert(function, refs);
+        changed
     }
 
     // Consumed by the contract re-seat (fz-rh2.12.4); recorded one inch ahead.
@@ -584,8 +588,10 @@ impl TypeRefMap {
         self.by_function.get(&function).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    pub fn record_type(&mut self, name: TypeName, refs: Vec<TypeName>) {
+    pub fn record_type(&mut self, name: TypeName, refs: Vec<TypeName>) -> bool {
+        let changed = self.by_type.get(&name) != Some(&refs);
         self.by_type.insert(name, refs);
+        changed
     }
 
     // Consumed by DeriveTypeDef (fz-rh2.12.2); recorded one inch ahead.

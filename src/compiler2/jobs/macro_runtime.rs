@@ -41,10 +41,10 @@ pub(super) fn build_macro_executable(world: &mut World<'_>, function: FunctionId
     };
 
     let program = world.backend_program(root);
-    let revision = world.define_macro_executable(function, root, backend_revision, program);
+    let changed = world.define_macro_executable(function, root, backend_revision, program);
     Ok(JobEffects {
         reads: vec![FactKey::FunctionDefined(function), backend_fact],
-        outputs: vec![(FactKey::MacroExecutable(function), revision)],
+        outputs: vec![(FactKey::MacroExecutable(function), changed)],
         ..JobEffects::default()
     })
 }

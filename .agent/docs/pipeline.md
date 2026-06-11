@@ -116,6 +116,11 @@ downstream `DefineFunction` reads `ExpandedFunctionSource(function)` and does
 not need to know whether the source root came from literal code or macro
 expansion.
 
+Names inside compiler-defined fragments are resolved through that same live
+namespace. `defimpl` does not keep a second "local protocol names" side table;
+its protocol and `for:` target references both resolve against the namespace
+bindings already established by source-order publication.
+
 Source publication expands only scope-shaping source: item macros and sibling
 definitions that can change what exists in the surrounding scope. Ordinary
 function bodies stay raw in `FunctionSource(function)`. When a caller later

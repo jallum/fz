@@ -1,8 +1,10 @@
 use super::quoted_surface::{
-    ScopeForm, SurfaceSourceContext, read_compiler_fragment_surface, read_protocol_impl_body_surface,
-    read_scope_surface,
+    ScopeForm, SurfaceSourceContext, read_compiler_fragment_surface, read_module_body_surface,
+    read_protocol_impl_body_surface, read_scope_surface,
 };
 use super::{CodeMap, parse_quoted_program};
+use crate::compiler2::CodeId;
+use crate::compiler2::quoted_function::derive_function_surface;
 use crate::telemetry::ConfiguredTelemetry;
 
 #[test]
@@ -223,6 +225,35 @@ fn compiler2_quoted_surface_keeps_attached_function_attrs_inside_grouped_source(
         }
         other => panic!("expected grouped alpha function, got {other:?}"),
     }
+}
+
+#[test]
+fn compiler2_quoted_surface_keeps_long_doc_payloads_inside_nested_module_function_groups() {
+    let tel = ConfiguredTelemetry::new();
+    let source = r#"
+defmodule M do
+  @doc "Removes the first matching left-side item for each item in the right list."
+  @spec subtract([a], [a]) :: [a]
+  fn subtract(left, []), do: left
+  fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
+end
+"#;
+    let mut code = CodeMap::new();
+    let code_id = code.define(Some("nested_long_doc.fz".to_string()), source.to_string());
+    let root = parse_quoted_program("nested_long_doc.fz", source, &tel).expect("quoted parse");
+    let ctx = SurfaceSourceContext::new(code_id, source);
+
+    let outer = read_compiler_fragment_surface(&root, &ctx).expect("outer fragment surface");
+    let ScopeForm::Module(module) = &outer.forms[0] else {
+        panic!("expected defmodule fragment");
+    };
+    let body = read_module_body_surface(module, &ctx).expect("nested module body surface");
+    let ScopeForm::MacroCall(function) = &body.forms[0] else {
+        panic!("expected grouped function macro call inside nested module body");
+    };
+
+    derive_function_surface(&function.source, CodeId::ZERO, Some("nested_long_doc.fz"), source, &tel)
+        .expect("nested grouped function source should still decode long procbin-backed @doc payloads");
 }
 
 #[test]

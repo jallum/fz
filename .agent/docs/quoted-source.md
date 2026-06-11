@@ -159,7 +159,7 @@ the `fz-rh2.11.7.*` arc.
 - `src/compiler2/source_publish.rs` is the compiler-owned publication boundary
   for quoted source forms.
 - `ScopeSession` is the mutable in-progress scope state for one scope walk:
-  it carries the current module, namespace head, local protocol names, pending
+  it carries the current module, namespace head, pending
   type declarations, reads, outputs, exports, and the revision floor a module
   definition must absorb.
 - `jobs/source.rs` schedules jobs and publishes final job facts, but does not
@@ -182,6 +182,11 @@ the `fz-rh2.11.7.*` arc.
   function roots as `FunctionSource` through `Fz.Compiler.define`, scopes child
   modules, notes protocol-domain type declarations, publishes protocol
   callback/dispatch facts, and records protocol impl callback sources.
+- `defimpl` module references resolve through the live namespace, not through a
+  second string-qualification helper. Bare nested protocol names such as
+  `Collectable` therefore resolve to the declared `Contracts.Collectable`
+  module binding, while bare runtime targets such as `List` stay on the
+  imported runtime module rather than being re-qualified as child modules.
 - Function source expansion is body-only and demand-time. Function heads define
   identity; they are not expression positions and are never macro-expanded.
   Each grouped function source keeps attached attributes and clause heads

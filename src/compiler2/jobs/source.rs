@@ -29,7 +29,7 @@ pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
     let quoted_root = parse_quoted_program(source_name.clone(), &source_text, world.tel())
         .map_err(|error| emit_job_diagnostic(world, error.to_diagnostic()))?;
     let ctx = SurfaceSourceContext::new(code_id, &source_text);
-    let read_surface = if world.is_runtime_prelude(code_id) {
+    let read_surface = if world.is_runtime_prelude(code_id) || world.is_runtime_module_code(code_id) {
         read_compiler_fragment_surface
     } else {
         read_scope_surface
@@ -44,8 +44,8 @@ pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
     let mut outputs = Vec::new();
     source_publish::discover_modules(world, code_id, ModuleId::GLOBAL, &surface, &ctx, &mut outputs)?;
 
-    let code_revision = world.finish_code_index(code_id, quoted);
-    outputs.push((FactKey::CodeIndexed(code_id), code_revision));
+    let code_changed = world.finish_code_index(code_id, quoted);
+    outputs.push((FactKey::CodeIndexed(code_id), code_changed));
 
     Ok(JobEffects {
         outputs,
@@ -92,8 +92,8 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
                 world.set_prelude_head(namespace);
             }
             reads.extend(scope_reads);
-            let scoped_revision = world.finish_code_scope(code_id, namespace);
-            outputs.push((FactKey::CodeScoped(code_id), scoped_revision));
+            let scoped_changed = world.finish_code_scope(code_id, namespace);
+            outputs.push((FactKey::CodeScoped(code_id), scoped_changed));
             Ok(JobEffects {
                 reads,
                 outputs,
@@ -114,19 +114,19 @@ pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Resul
         let result = match &source.kind {
             ModuleSourceKind::Body(surface) => source_publish::publish_scope(world, source.code, scope, surface)?,
             ModuleSourceKind::Protocol(surface) => {
-                source_publish::publish_protocol_surface(world, module_id, scope.namespace(), surface)
+                source_publish::publish_protocol_surface(world, source.code, module_id, scope.namespace(), surface)?
             }
         };
         return match result {
             ScopePublication::Complete {
                 namespace,
-                revision_floor,
+                revision_floor: _revision_floor,
                 reads,
                 mut outputs,
                 exports,
             } => {
-                let revision = world.define_module(module_id, namespace, exports).max(revision_floor);
-                outputs.push((FactKey::ModuleDefined(module_id), revision));
+                let changed = world.define_module(module_id, namespace, exports);
+                outputs.push((FactKey::ModuleDefined(module_id), changed));
                 Ok(JobEffects {
                     reads,
                     outputs,
@@ -190,7 +190,7 @@ pub(super) fn define_function(
         world.emit_warning_once(diagnostic);
     }
     source_publish::record_function_type_refs(world, function_id, &surface)?;
-    let (_, revision) = world.define_function(
+    let (_, changed) = world.define_function(
         world.function_module(function_id),
         source.owner_module,
         world.function_ref(function_id).name.clone(),
@@ -202,7 +202,7 @@ pub(super) fn define_function(
     );
     Ok(JobEffects {
         reads: vec![FactKey::ExpandedFunctionSource(function_id)],
-        outputs: vec![(FactKey::FunctionDefined(function_id), revision)],
+        outputs: vec![(FactKey::FunctionDefined(function_id), changed)],
         ..JobEffects::default()
     })
 }
@@ -219,12 +219,12 @@ pub(super) fn expand_function_source(
     };
     match FunctionSourceExpander::new(world, function_id, &source).expand(&source)? {
         FunctionSourceExpansion::Complete { source, reads } => {
-            let revision = world.note_expanded_function_source(function_id, source);
+            let changed = world.note_expanded_function_source(function_id, source);
             let mut reads = reads;
             reads.push(FactKey::FunctionSource(function_id));
             Ok(JobEffects {
                 reads,
-                outputs: vec![(FactKey::ExpandedFunctionSource(function_id), revision)],
+                outputs: vec![(FactKey::ExpandedFunctionSource(function_id), changed)],
                 ..JobEffects::default()
             })
         }
