@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.17.5.3"
+  ],
   "created": "2026-06-11T13:55:25Z",
   "description": "Wider cargo test --lib compiler2:: sweep shows compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them observing one extra LowerFunction stop (FunctionId(1)) beyond main/0 and the generated lambda. Determine whether the extra lowered function is legitimate fallout from the new exact-import/callable-expectation model (for example Kernel.+/2 becoming explicitly demanded) or a real eager-lowering bug, then fix code or test accordingly.",
   "id": "fz-rh2.17.5.4",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 lowering/tests: account for exact-import callable lowering in local lambda sweep",
   "type": "bug",
-  "updated_at": "2026-06-11T13:55:25Z"
+  "updated_at": "2026-06-11T13:55:30Z"
 }
