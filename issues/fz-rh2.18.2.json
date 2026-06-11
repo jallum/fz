@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-11T21:02:58Z",
+  "description": "Goal: stop encoding publisher ownership and payload movement in the same (FactKey, bool) shape. A job owns a set of output facts for this run; payload/content movement is a separate change signal. Signal: facts_test and scheduler_test prove stable republication preserves revision, output retraction remains exact, and a fact can remain present while publisher contributions or readiness move independently. Strategy: replace JobEffects.outputs Vec\u003c(FactKey,bool)\u003e with explicit owned outputs plus changed content facts, update FactTable replacement around ownership first, and remove the old tuple shape from compiler2 code and docs.",
+  "id": "fz-rh2.18.2",
+  "labels": [],
+  "parent": "fz-rh2.18",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 fact engine: split fact ownership from content movement",
+  "type": "task",
+  "updated_at": "2026-06-11T21:02:58Z"
+}
