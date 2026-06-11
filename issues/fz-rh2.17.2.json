@@ -4,7 +4,8 @@
     "fz-rh2.17.1"
   ],
   "blocks": [
-    "fz-rh2.17.3"
+    "fz-rh2.17.3",
+    "fz-rh2.17.5"
   ],
   "created": "2026-06-11T09:57:05Z",
   "description": "Teach the compiler to publish interface facts. `DefineModule` should derive and publish `ModuleInterface(module)` from already-minted callable identities for local source-defined modules, including protocol modules and synthesized helpers like `__info__/1`. Add the runtime/external seeding path so a module can publish `ModuleInterface` without requiring `ModuleDefined`. Signal: local and non-local modules share one interface fact shape, and external-interface consumers no longer need placeholder `ModuleDefined` waits just to see exports.",
