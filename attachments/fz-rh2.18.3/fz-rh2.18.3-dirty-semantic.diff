@@ -1,0 +1,520 @@
+diff --git a/src/compiler2/compiler.rs b/src/compiler2/compiler.rs
+index af3795462..bbe97ac1b 100644
+--- a/src/compiler2/compiler.rs
++++ b/src/compiler2/compiler.rs
+@@ -181,6 +181,16 @@ impl<'a> Compiler2<'a> {
+         .map_err(|err| format!("compiler2 native program JIT compile failed: {err}"))
+     }
+ 
++    #[cfg(test)]
++    pub(crate) fn world_for_test(&self) -> &World<'a> {
++        &self.world
++    }
++
++    #[cfg(test)]
++    pub(crate) fn world_mut_for_test(&mut self) -> &mut World<'a> {
++        &mut self.world
++    }
++
+     /// Drives one root to `NativeProgram` and emits an AOT object through the
+     /// shared native backend.
+     pub fn compile_root_aot(&mut self, root: RootId, obj_name: &str) -> Result<crate::ir_codegen::AotArtifact, String> {
+diff --git a/src/compiler2/jobs/semantic.rs b/src/compiler2/jobs/semantic.rs
+index bb4d118fc..16916e4cf 100644
+--- a/src/compiler2/jobs/semantic.rs
++++ b/src/compiler2/jobs/semantic.rs
+@@ -605,22 +605,25 @@ fn analyze_tail(
+             Ok(world.types_mut().union(then_ty, else_ty))
+         }
+         LoweredTail::Dispatch { inputs, dispatch, .. } => {
+-            let input_tys = inputs
+-                .iter()
+-                .map(|input| value_ty(world, values, *input))
+-                .collect::<Vec<_>>();
+-            let reachable = reachable_clause_ids(world, &dispatch.plan, &input_tys);
++            let input_tys = inputs.iter().map(|input| value_ty(world, values, *input)).collect::<Vec<_>>();
++            let reachable = reachable_dispatch_input_scopes(world, &dispatch.plan, &input_tys);
+             let mut merged = None;
+-            for body_id in reachable {
++            for (body_id, refined_inputs) in reachable {
+                 let arm_entry = *dispatch
+                     .arm_entries
+                     .get(body_id as usize)
+                     .unwrap_or_else(|| panic!("compiler2 local dispatch arm {} is out of bounds", body_id));
++                let mut arm_values = values.clone();
++                for (ordinal, input) in inputs.iter().copied().enumerate() {
++                    if let Some(refined) = refined_inputs.get(ordinal).and_then(|slot| *slot) {
++                        arm_values.insert(input, refined);
++                    }
++                }
+                 let arm_ty = analyze_entry(
+                     world,
+                     entries,
+                     arm_entry,
+-                    &entry_scope(entries, arm_entry, values, None, &[]),
++                    &entry_scope(entries, arm_entry, &arm_values, None, &[]),
+                     reachable_entries,
+                     value_types,
+                     calls,
+@@ -1539,6 +1542,9 @@ fn refine_call_return(world: &mut World<'_>, observed: Ty, contract: Option<Ty>)
+     let Some(contract) = contract else {
+         return observed;
+     };
++    if world.types().has_vars(&contract) {
++        return observed;
++    }
+     if world.types().is_empty(&observed) {
+         return contract;
+     }
+@@ -1746,6 +1752,39 @@ fn reachable_clause_ids(world: &mut World<'_>, plan: &DispatchPlan, inputs: &[Ty
+     reachable
+ }
+ 
++fn reachable_dispatch_input_scopes(
++    world: &mut World<'_>,
++    plan: &DispatchPlan,
++    inputs: &[Ty],
++) -> BTreeMap<u32, Vec<Option<Ty>>> {
++    let input_subjects = (0..plan.input_count)
++        .map(|ordinal| {
++            let subject_id = plan
++                .matrix
++                .subjects
++                .iter()
++                .find_map(|subject| match subject.source {
++                    SubjectSource::Input { ordinal: input_ordinal } if input_ordinal as usize == ordinal => {
++                        Some(subject.id)
++                    }
++                    _ => None,
++                })
++                .unwrap_or_else(|| panic!("dispatch input subject {ordinal} should exist"));
++            (ordinal, subject_id)
++        })
++        .collect::<Vec<_>>();
++
++    let mut subjects = HashMap::new();
++    for &(ordinal, subject_id) in &input_subjects {
++        let input = inputs.get(ordinal).cloned().unwrap_or_else(|| any_ty(world));
++        subjects.insert(subject_id, input);
++    }
++
++    let mut scopes = BTreeMap::<u32, Vec<Option<Ty>>>::new();
++    collect_reachable_dispatch_input_scopes(world, plan, plan.graph.root, &subjects, &input_subjects, &mut scopes);
++    scopes
++}
++
+ fn collect_reachable_outcomes(
+     world: &mut World<'_>,
+     plan: &DispatchPlan,
+@@ -1784,6 +1823,72 @@ fn collect_reachable_outcomes(
+     }
+ }
+ 
++fn collect_reachable_dispatch_input_scopes(
++    world: &mut World<'_>,
++    plan: &DispatchPlan,
++    node_id: GraphNodeId,
++    subjects: &HashMap<SubjectId, Ty>,
++    input_subjects: &[(usize, SubjectId)],
++    scopes: &mut BTreeMap<u32, Vec<Option<Ty>>>,
++) {
++    let Some(node) = plan.graph.node(node_id) else {
++        return;
++    };
++    match node {
++        DispatchNode::Fail => {}
++        DispatchNode::Outcome { outcome, .. } => {
++            let body_id = plan
++                .outcome(*outcome)
++                .map(|entry| entry.body_id)
++                .unwrap_or_else(|| panic!("dispatch outcome {outcome:?} should map to a body id"));
++            let entry = scopes.entry(body_id).or_insert_with(|| vec![None; plan.input_count]);
++            for &(ordinal, subject_id) in input_subjects {
++                let Some(observed) = subjects.get(&subject_id).copied() else {
++                    continue;
++                };
++                entry[ordinal] = Some(match entry[ordinal] {
++                    Some(current) => merge_observed_ty(world, current, observed),
++                    None => observed,
++                });
++            }
++        }
++        DispatchNode::Test {
++            predicate,
++            on_match,
++            on_miss,
++        } => {
++            let source = subjects
++                .get(&predicate.subject)
++                .cloned()
++                .unwrap_or_else(|| any_ty(world));
++            if branch_possible(world, predicate, &source, true) {
++                let mut next = subjects.clone();
++                apply_evidence(world, plan, &mut next, &source, predicate, &on_match.evidence, true);
++                collect_reachable_dispatch_input_scopes(
++                    world,
++                    plan,
++                    on_match.target,
++                    &next,
++                    input_subjects,
++                    scopes,
++                );
++            }
++            if branch_possible(world, predicate, &source, false) {
++                let mut next = subjects.clone();
++                apply_evidence(world, plan, &mut next, &source, predicate, &on_miss.evidence, false);
++                collect_reachable_dispatch_input_scopes(
++                    world,
++                    plan,
++                    on_miss.target,
++                    &next,
++                    input_subjects,
++                    scopes,
++                );
++            }
++        }
++    }
++}
++
+ fn branch_possible(world: &mut World<'_>, predicate: &RegionPredicate<Ty>, source: &Ty, is_match: bool) -> bool {
+     match &predicate.region {
+         Region::Type(ty) => {
+diff --git a/src/compiler2/mod.rs b/src/compiler2/mod.rs
+index c4cb81bf7..3c17d22c4 100644
+--- a/src/compiler2/mod.rs
++++ b/src/compiler2/mod.rs
+@@ -140,6 +140,8 @@ mod source_publish_test;
+ #[cfg(test)]
+ mod source_test;
+ #[cfg(test)]
++mod test_support;
++#[cfg(test)]
+ mod telemetry_dump_test;
+ #[cfg(test)]
+ mod type_expr_test;
+diff --git a/src/compiler2/port_planner_test.rs b/src/compiler2/port_planner_test.rs
+index 18bf7d9b0..211b073c1 100644
+--- a/src/compiler2/port_planner_test.rs
++++ b/src/compiler2/port_planner_test.rs
+@@ -2,6 +2,7 @@
+ #![allow(unused_imports)]
+ 
+ use super::drive_test::{assert_resolved, function_id, module_id};
++use super::test_support::{format_root_activations, named_activation_returns};
+ use super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
+ use crate::telemetry::ConfiguredTelemetry;
+ 
+@@ -810,14 +811,48 @@ fn enum_take_on_mixed_inputs_specializes_for_each_type() {
+         name: Some("fixtures2/00419_enum_take_mixed.fz".to_string()),
+         text: include_str!("../../fixtures2/00419_enum_take_mixed.fz").to_string(),
+     });
+-    compiler.submit_root(RootSubmission {
++    let root = compiler.submit_root(RootSubmission {
+         module_name: None,
+         name: "main".to_string(),
+         arity: 0,
+         need: ExecutableNeed::Value,
+     });
+     let _ = compiler.drive(); // DeriveAbiReady: pre-existing pipeline gap for Range Enumerable
+-    // TODO: Enum.take specs should include a Range specialization for the range input
++    let take_returns = named_activation_returns(&compiler, root, Some("Enum"), "take", 2);
++    let (list_int, range) = {
++        let world = compiler.world_mut_for_test();
++        let int = world.types_mut().int();
++        let list_int = world.types_mut().list(int);
++        let range = world.types_mut().opaque_of("impl-target::Range");
++        (list_int, range)
++    };
++    let world = compiler.world_for_test();
++    assert!(
++        take_returns.iter().any(|(activation, _)| {
++            activation
++                .input
++                .first()
++                .is_some_and(|input| world.types().is_subtype(input, &list_int))
++        }),
++        "Enum.take should keep a list specialization: {:?}",
++        take_returns
++            .iter()
++            .map(|(activation, _)| activation.input.iter().map(|ty| world.types().display(ty)).collect::<Vec<_>>())
++            .collect::<Vec<_>>()
++    );
++    assert!(
++        take_returns.iter().any(|(activation, _)| {
++            activation
++                .input
++                .first()
++                .is_some_and(|input| world.types().is_subtype(&range, input))
++        }),
++        "Enum.take should include a range specialization: {:?}",
++        take_returns
++            .iter()
++            .map(|(activation, _)| activation.input.iter().map(|ty| world.types().display(ty)).collect::<Vec<_>>())
++            .collect::<Vec<_>>()
++    );
+ }
+ 
+ // Ported from src/ir_planner/ir_planner_test.rs: Enum.reduce with runtime-graph reducer returns non-empty type
+@@ -829,14 +864,29 @@ fn enum_reduce_runtime_graph_reducer_returns_non_empty_type() {
+         name: Some("fixtures2/00420_enum_take_drop_split.fz".to_string()),
+         text: include_str!("../../fixtures2/00420_enum_take_drop_split.fz").to_string(),
+     });
+-    compiler.submit_root(RootSubmission {
++    let root = compiler.submit_root(RootSubmission {
+         module_name: None,
+         name: "main".to_string(),
+         arity: 0,
+         need: ExecutableNeed::Value,
+     });
+     let _ = compiler.drive(); // DeriveAbiReady: pre-existing pipeline gap for enum_take_drop_split
+-    // TODO: declared return fact for Enum.reduce in Enum.drop_positive should be non-bottom
++    let reduce_returns = named_activation_returns(&compiler, root, Some("Enum"), "reduce", 3);
++    let none = compiler.world_mut_for_test().types_mut().none();
++    let world = compiler.world_for_test();
++    assert!(
++        reduce_returns
++            .iter()
++            .any(|(_, return_ty)| !world.types().is_equivalent(return_ty, &none)),
++        "expected at least one reached Enum.reduce/3 activation with a non-bottom return, got {:?}",
++        reduce_returns
++            .iter()
++            .map(|(activation, return_ty)| (
++                activation.input.iter().map(|ty| world.types().display(ty)).collect::<Vec<_>>(),
++                world.types().display(return_ty),
++            ))
++            .collect::<Vec<_>>()
++    );
+ }
+ 
+ // Ported from src/ir_planner/ir_planner_test.rs: Enum.take_positive uses reduce_while with typed callback return
+@@ -848,14 +898,39 @@ fn take_positive_reduce_while_has_typed_callback_return() {
+         name: Some("fixtures2/00420_enum_take_drop_split.fz".to_string()),
+         text: include_str!("../../fixtures2/00420_enum_take_drop_split.fz").to_string(),
+     });
+-    compiler.submit_root(RootSubmission {
++    let root = compiler.submit_root(RootSubmission {
+         module_name: None,
+         name: "main".to_string(),
+         arity: 0,
+         need: ExecutableNeed::Value,
+     });
+     let _ = compiler.drive(); // DeriveAbiReady: pre-existing pipeline gap for enum_take_drop_split
+-    // TODO: declared return fact for Enum.reduce_while in Enum.take_positive should be non-bottom for int-amount spec
++    let reduce_while_returns = named_activation_returns(&compiler, root, Some("Enum"), "reduce_while", 3);
++    let (none, int) = {
++        let world = compiler.world_mut_for_test();
++        let none = world.types_mut().none();
++        let int = world.types_mut().int();
++        (none, int)
++    };
++    let world = compiler.world_for_test();
++    assert!(
++        reduce_while_returns.iter().any(|(activation, return_ty)| {
++            activation
++                .input
++                .get(1)
++                .is_some_and(|input| world.types().is_equivalent(input, &int))
++                && !world.types().is_equivalent(return_ty, &none)
++        }),
++        "expected an Enum.reduce_while/3 activation for the int amount path with a non-bottom return, got {:?}; frontier={:?}",
++        reduce_while_returns
++            .iter()
++            .map(|(activation, return_ty)| (
++                activation.input.iter().map(|ty| world.types().display(ty)).collect::<Vec<_>>(),
++                world.types().display(return_ty),
++            ))
++            .collect::<Vec<_>>(),
++        format_root_activations(&compiler, root)
++    );
+ }
+ 
+ // Ported from src/ir_planner/ir_planner_test.rs: reduce_cont/reduce_step clause structure links list param to accumulator result
+diff --git a/src/compiler2/port_type_infer_test.rs b/src/compiler2/port_type_infer_test.rs
+index 242b78655..ae901fba5 100644
+--- a/src/compiler2/port_type_infer_test.rs
++++ b/src/compiler2/port_type_infer_test.rs
+@@ -2,6 +2,7 @@
+ #![allow(unused_imports)]
+ 
+ use super::drive_test::{assert_resolved, function_id, module_id};
++use super::test_support::{format_root_activations, named_activation_returns, root_entry_return};
+ use super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
+ use crate::telemetry::ConfiguredTelemetry;
+ 
+@@ -121,7 +122,7 @@ fn fixpoint_leaves_no_reached_fn_unknown_fold_state_machine() {
+         name: Some("fixtures2/00176_fold_state_machine.fz".to_string()),
+         text: include_str!("../../fixtures2/00176_fold_state_machine.fz").to_string(),
+     });
+-    compiler.submit_root(RootSubmission {
++    let root = compiler.submit_root(RootSubmission {
+         module_name: None,
+         name: "main".to_string(),
+         arity: 0,
+@@ -131,7 +132,22 @@ fn fixpoint_leaves_no_reached_fn_unknown_fold_state_machine() {
+         compiler.drive(),
+         "fold_state_machine: type inference should converge to known returns",
+     );
+-    // TODO: assert all reached fns have Known return (no Pending/Unknown) at fixpoint
++    let world = compiler.world_for_test();
++    let missing = world
++        .semantic_closure(root)
++        .activations
++        .iter()
++        .filter(|activation| world.activation_return(activation).is_none())
++        .map(|activation| {
++            let function_ref = world.function_ref(activation.function);
++            let module = world.module_name(function_ref.module).unwrap_or("<top-level>");
++            format!("{module}.{}{:?}", function_ref.name, activation.input)
++        })
++        .collect::<Vec<_>>();
++    assert!(
++        missing.is_empty(),
++        "fold_state_machine should leave no reached activation without a settled return: {missing:?}"
++    );
+ }
+ 
+ // Ported from src/type_infer/type_infer_test.rs: Enum.reduce and Enum.count settle to int over list and range
+@@ -162,14 +178,34 @@ fn enum_reduce_named_ref_ok_settles_to_int() {
+         name: Some("fixtures2/00178_enum_reduce_named_ref_ok.fz".to_string()),
+         text: include_str!("../../fixtures2/00178_enum_reduce_named_ref_ok.fz").to_string(),
+     });
+-    compiler.submit_root(RootSubmission {
++    let root = compiler.submit_root(RootSubmission {
+         module_name: None,
+         name: "main".to_string(),
+         arity: 0,
+         need: ExecutableNeed::Value,
+     });
+     assert_resolved(compiler.drive(), "Enum.reduce named-fn ref should settle to int");
+-    // TODO: assert Enum.reduce return type is equivalent to int
++    let main_ret = root_entry_return(&compiler, root);
++    let reducer_returns = named_activation_returns(&compiler, root, Some("Main"), "reducer", 2);
++    let int = compiler.world_mut_for_test().types_mut().int();
++    let world = compiler.world_for_test();
++    assert!(
++        world.types().is_equivalent(&main_ret, &int),
++        "main/0 should settle to int, got {}",
++        world.types().display(&main_ret)
++    );
++    assert!(
++        !reducer_returns.is_empty(),
++        "expected at least one reached Main.reducer/2 activation"
++    );
++    for (activation, return_ty) in reducer_returns {
++        assert!(
++            world.types().is_equivalent(&return_ty, &int),
++            "Main.reducer/2 activation {:?} should settle to int, got {}",
++            activation.input,
++            world.types().display(&return_ty)
++        );
++    }
+ }
+ 
+ // Ported from src/type_infer/type_infer_test.rs: Enum.reduce and Enum.count settle to int over list and range
+@@ -200,14 +236,21 @@ fn enum_reduce_range_settles_to_int() {
+         name: Some("fixtures2/00180_enum_reduce_range.fz".to_string()),
+         text: include_str!("../../fixtures2/00180_enum_reduce_range.fz").to_string(),
+     });
+-    compiler.submit_root(RootSubmission {
++    let root = compiler.submit_root(RootSubmission {
+         module_name: None,
+         name: "main".to_string(),
+         arity: 0,
+         need: ExecutableNeed::Value,
+     });
+     assert_resolved(compiler.drive(), "Enum.reduce over range should settle to int");
+-    // TODO: assert Enum.reduce return type is equivalent to int
++    let main_ret = root_entry_return(&compiler, root);
++    let int = compiler.world_mut_for_test().types_mut().int();
++    let world = compiler.world_for_test();
++    assert!(
++        world.types().is_equivalent(&main_ret, &int),
++        "main/0 should settle to int, got {}",
++        world.types().display(&main_ret)
++    );
+ }
+ 
+ // Ported from src/type_infer/type_infer_test.rs: qualified and bare operator refs both settle via kernel specs
+@@ -263,7 +306,7 @@ fn mixed_enum_take_calls_preserve_list_and_range_activations() {
+         name: Some("fixtures2/00183_enum_take_list_range.fz".to_string()),
+         text: include_str!("../../fixtures2/00183_enum_take_list_range.fz").to_string(),
+     });
+-    compiler.submit_root(RootSubmission {
++    let root = compiler.submit_root(RootSubmission {
+         module_name: None,
+         name: "main".to_string(),
+         arity: 0,
+@@ -273,7 +316,42 @@ fn mixed_enum_take_calls_preserve_list_and_range_activations() {
+         compiler.drive(),
+         "mixed Enum.take calls should activate both list and range paths",
+     );
+-    // TODO: assert Enum.take activates a list-returning path and a range-input path
++    let take_returns = named_activation_returns(&compiler, root, Some("Enum"), "take", 2);
++    let (list_int, range) = {
++        let world = compiler.world_mut_for_test();
++        let int = world.types_mut().int();
++        let list_int = world.types_mut().list(int);
++        let range = world.types_mut().opaque_of("impl-target::Range");
++        (list_int, range)
++    };
++    let world = compiler.world_for_test();
++    assert!(
++        take_returns
++            .iter()
++            .any(|(_, return_ty)| world.types().is_subtype(return_ty, &list_int)),
++        "mixed Enum.take calls should infer a successful list-returning activation: {:?}; frontier={:?}",
++        take_returns
++            .iter()
++            .map(|(activation, return_ty)| (
++                activation.input.iter().map(|ty| world.types().display(ty)).collect::<Vec<_>>(),
++                world.types().display(return_ty),
++            ))
++            .collect::<Vec<_>>(),
++        format_root_activations(&compiler, root)
++    );
++    assert!(
++        take_returns.iter().any(|(activation, _)| {
++            activation
++                .input
++                .first()
++                .is_some_and(|input| world.types().is_subtype(&range, input))
++        }),
++        "mixed Enum.take calls should activate the range input path: {:?}",
++        take_returns
++            .iter()
++            .map(|(activation, _)| activation.input.iter().map(|ty| world.types().display(ty)).collect::<Vec<_>>())
++            .collect::<Vec<_>>()
++    );
+ }
+ 
+ // Ported from src/type_infer/type_infer_test.rs: selective receive threads typed captures and settles caller return
+@@ -917,12 +995,27 @@ fn corpus_folds_settle_myreduce_to_int_fold_state_machine() {
+         name: Some("fixtures2/00176_fold_state_machine.fz".to_string()),
+         text: include_str!("../../fixtures2/00176_fold_state_machine.fz").to_string(),
+     });
+-    compiler.submit_root(RootSubmission {
++    let root = compiler.submit_root(RootSubmission {
+         module_name: None,
+         name: "main".to_string(),
+         arity: 0,
+         need: ExecutableNeed::Value,
+     });
+     assert_resolved(compiler.drive(), "fold_state_machine: myreduce should settle to int");
+-    // TODO: assert myreduce return type is equivalent to int
++    let myreduce_returns = named_activation_returns(&compiler, root, None, "myreduce", 3);
++    let int = compiler.world_mut_for_test().types_mut().int();
++    let world = compiler.world_for_test();
++    assert!(
++        !myreduce_returns.is_empty(),
++        "expected at least one reached myreduce/3 activation"
++    );
++    for (activation, return_ty) in myreduce_returns {
++        assert!(
++            world.types().is_equivalent(&return_ty, &int),
++            "myreduce/3 activation {:?} should settle to int, got {}; frontier={:?}",
++            activation.input,
++            world.types().display(&return_ty),
++            format_root_activations(&compiler, root)
++        );
++    }
+ }
