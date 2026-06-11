@@ -566,12 +566,16 @@ impl<'a> FrontDoorParser<'a> {
     }
 
     fn parse_expr(&mut self, module_path: &[String], scope: &[String]) -> Result<ParsedExpr, FrontDoorError> {
+        self.skip_newlines();
         self.parse_bp(0, module_path, scope)
     }
 
     fn parse_bp(&mut self, min_bp: u8, module_path: &[String], scope: &[String]) -> Result<ParsedExpr, FrontDoorError> {
         let mut lhs = self.parse_prefix(module_path, scope)?;
         loop {
+            if self.peek_is(&Tok::Newline) && self.starts_expr_continuation(self.peek_after_newlines()) {
+                self.skip_newlines();
+            }
             if self.peek_is(&Tok::LParen) {
                 lhs = self.finish_call(lhs, module_path, scope)?;
                 continue;
@@ -633,6 +637,7 @@ impl<'a> FrontDoorParser<'a> {
                 continue;
             }
             self.bump();
+            self.skip_newlines();
             let rhs = self.parse_bp(rbp, module_path, scope)?;
             let span = lhs.span.merge(rhs.span);
             let meta = self.meta(module_path, scope, span)?;
@@ -1859,6 +1864,18 @@ impl<'a> FrontDoorParser<'a> {
             Tok::Pipe => "|>",
             _ => return None,
         })
+    }
+
+    fn starts_expr_continuation(&self, tok: &Tok) -> bool {
+        matches!(tok, Tok::Dot | Tok::Eq) || self.infix_bp(tok).is_some()
+    }
+
+    fn peek_after_newlines(&self) -> &Tok {
+        let mut offset = 0;
+        while self.peek_is_at(offset, &Tok::Newline) {
+            offset += 1;
+        }
+        self.peek_at(offset)
     }
 }
 

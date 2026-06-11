@@ -243,19 +243,33 @@ impl World<'_> {
                 Ok((acc, ResolvedTypeShape::Union(shapes)))
             }
             TypeExpr::StructRecord { module, fields } => {
+                let module_name = ModuleName::from_segments(module.clone());
+                let module_id = self
+                    .lookup_module_path(namespace, &module_name.dotted())
+                    .unwrap_or_else(|| self.reference_module(module_name.dotted()));
+                let field_order = self.module_struct_fields(module_id).map(|fields| fields.to_vec());
+                let any = self.types_mut().any();
+                let mut by_name = HashMap::new();
                 let mut field_shapes = Vec::with_capacity(fields.len());
                 for (name, field) in fields {
-                    let (_field_ty, field_shape) = self.resolve_pair(namespace, field, vars)?;
+                    let (field_ty, field_shape) = self.resolve_pair(namespace, field, vars)?;
+                    by_name.insert(name.clone(), field_ty);
                     field_shapes.push(ResolvedStructFieldShape {
                         name: name.clone(),
                         ty: field_shape,
                     });
                 }
-                let tag = format!("impl-target::{}", module.last().map(String::as_str).unwrap_or(""));
+                let ordered_names =
+                    field_order.unwrap_or_else(|| fields.iter().map(|(name, _)| name.clone()).collect());
+                let ordered_fields = ordered_names
+                    .iter()
+                    .map(|name| by_name.get(name).copied().unwrap_or(any))
+                    .collect::<Vec<_>>();
+                let ty = self.struct_value_ty(&module_name.dotted(), &ordered_names, &ordered_fields);
                 Ok((
-                    self.types_mut().opaque_of(&tag),
+                    ty,
                     ResolvedTypeShape::StructRecord {
-                        module: ModuleName::from_segments(module.clone()),
+                        module: module_name,
                         fields: field_shapes,
                     },
                 ))

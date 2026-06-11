@@ -351,9 +351,11 @@ fn apply_step(
             values.insert(*value, map_ty);
         }
         LoweredStep::Struct { value, module, fields } => {
-            let map_ty = struct_map_ty(world, values, fields);
-            let nominal = struct_nominal_ty(world, *module);
-            values.insert(*value, world.types_mut().union(nominal, map_ty));
+            let field_tys = fields
+                .iter()
+                .map(|(_, value)| value_ty(world, values, *value))
+                .collect::<Vec<_>>();
+            values.insert(*value, world.module_struct_value_ty(*module, &field_tys));
         }
         LoweredStep::Bitstring { value, .. } => {
             values.insert(*value, world.types_mut().str_t());
@@ -409,8 +411,8 @@ fn apply_step(
         }
         LoweredStep::AssertStruct { source, module } => {
             let source_ty = value_ty(world, values, *source);
-            let nominal = struct_nominal_ty(world, *module);
-            let refined = world.types_mut().intersect(source_ty, nominal);
+            let asserted = struct_assertion_ty(world, *module);
+            let refined = world.types_mut().intersect(source_ty, asserted);
             values.insert(*source, refined);
         }
         LoweredStep::RequireMapValue { value, source, key } => {
@@ -719,6 +721,9 @@ fn deliver_tail_value(
     follow_up: &mut HashSet<Job>,
 ) -> Result<Ty, FatalError> {
     let delivered_ty = value_ty(world, values, value);
+    if world.types().is_empty(&delivered_ty) {
+        return Ok(delivered_ty);
+    }
     match dest {
         ControlDestination::Return => Ok(delivered_ty),
         ControlDestination::Deliver(entry_id) => analyze_entry(
@@ -2147,28 +2152,11 @@ fn map_ty(world: &mut World<'_>, values: &ValueTypes, entries: &[(ValueId, Value
     world.types_mut().map(&fields.into_iter().collect::<Vec<_>>())
 }
 
-fn struct_map_ty(world: &mut World<'_>, values: &ValueTypes, fields: &[(String, ValueId)]) -> Ty {
-    let map_fields = fields
-        .iter()
-        .map(|(name, value)| {
-            (
-                super::super::types::MapKey::Atom(name.clone()),
-                value_ty(world, values, *value),
-            )
-        })
-        .collect::<Vec<_>>();
-    world.types_mut().map(&map_fields)
-}
-
-fn struct_nominal_ty(world: &mut World<'_>, module: ModuleId) -> Ty {
-    let name = world
-        .module_name(module)
-        .unwrap_or_else(|| panic!("named struct module {} should have a reverse lookup", module.as_u32()))
-        .to_string();
-    crate::frontend::protocols::struct_impl_target_type(
-        world.types_mut(),
-        name.rsplit('.').next().unwrap_or(name.as_str()),
-    )
+fn struct_assertion_ty(world: &mut World<'_>, module: ModuleId) -> Ty {
+    let field_count = world.module_struct_fields(module).map_or(0, |fields| fields.len());
+    let any = world.types_mut().any();
+    let fields = vec![any; field_count];
+    world.module_struct_value_ty(module, &fields)
 }
 
 fn map_key_from_ty(world: &World<'_>, ty: Ty) -> Option<super::super::types::MapKey> {

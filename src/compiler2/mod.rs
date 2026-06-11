@@ -132,6 +132,8 @@ mod scheduler_test;
 #[cfg(test)]
 mod scope_test;
 #[cfg(test)]
+mod semantic_analysis_test;
+#[cfg(test)]
 mod source_publish_test;
 #[cfg(test)]
 mod source_test;

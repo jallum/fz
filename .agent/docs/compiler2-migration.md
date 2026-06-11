@@ -150,6 +150,34 @@ facts, dispatch masks, or local recursive graph expansion. They can contribute a
 call summary and raw provider-boundary import edge, but they do not synthesize a
 stub executable or a fake local body.
 
+## Compiler2 Semantic Reachability Invariant
+
+Semantic analysis only follows control destinations that can actually receive a
+value. A tail value whose type has settled to `none` / `never` returns that
+empty type to its caller and does not mark its continuation entry reachable. The
+semantic closure should therefore contain the still-observable never-returning
+call edge, but it must not require activation analysis, call edges, or materialized
+executables for continuation code that cannot run.
+
+`fz.compiler2.materialize.wait_fresh_closure` records the reason
+`MaterializeRoot` is waiting for a sealed semantic closure. It is a diagnostic
+signal for stale or incomplete closure facts, not a retry mechanism and not a
+substitute for publishing the minimally necessary semantic facts.
+
+## Compiler2 Struct Type Invariant
+
+A compiler2 struct value type carries one shape: nominal impl-target identity
+plus ordered structural field evidence. The nominal arm preserves protocol
+identity (`impl-target::<Struct>`); the tuple arm preserves positional field
+evidence used by lowered struct patterns; the map arm preserves named field
+evidence used by field access and struct specs.
+
+Source struct expressions, `%Struct{}` type expressions, and protocol impl-target
+selection all derive this shape through `World::struct_value_ty`. User structs
+must not collapse to opaque-only impl targets, because intersecting an opaque-only
+target with a concrete struct value erases the field evidence that downstream
+semantic analysis needs.
+
 ## Cutover Rule
 
 The old compiler can be scrapped only after the agreed source/contract fixture

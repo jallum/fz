@@ -16,7 +16,9 @@ use crate::dispatch_matrix::{
     RegionQuestion, compile_dispatch_matrix_with_type_order,
 };
 use crate::ir_lower::extern_ty_from_name;
+use crate::metadata;
 use crate::parser::lexer::Tok;
+use crate::telemetry::opaque_debug;
 
 use super::super::artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiValueRepr, CallTarget, CallableEntry, EffectSummary,
@@ -57,7 +59,11 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
 
     let closure = world.semantic_closure(root_id);
     if !semantic_closure_is_current(world, root_id) {
-        return Ok(wait_for_fresh_closure(root_id));
+        return Ok(wait_for_fresh_closure(
+            world,
+            root_id,
+            "semantic closure dependencies are stale",
+        ));
     }
     let reads = vec![closed_fact];
     let mut executables = HashMap::new();
@@ -69,14 +75,26 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
             || !world.has_fact(&FactKey::LoweredBody(executable.activation.function))
             || !world.has_fact(&FactKey::EntryDispatch(executable.activation.function))
         {
-            return Ok(wait_for_fresh_closure(root_id));
+            return Ok(wait_for_fresh_closure(
+                world,
+                root_id,
+                format!("executable {:?} has missing semantic facts", executable),
+            ));
         }
 
         let Some(analysis) = world.activation_analysis(&executable.activation).cloned() else {
-            return Ok(wait_for_fresh_closure(root_id));
+            return Ok(wait_for_fresh_closure(
+                world,
+                root_id,
+                format!("executable {:?} has no activation analysis", executable),
+            ));
         };
         let Some(return_ty) = world.activation_return(&executable.activation) else {
-            return Ok(wait_for_fresh_closure(root_id));
+            return Ok(wait_for_fresh_closure(
+                world,
+                root_id,
+                format!("executable {:?} has no activation return", executable),
+            ));
         };
         let mut body = prune_lowered_body(
             world.lowered_body(executable.activation.function),
@@ -95,7 +113,11 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
             &synthetic_targets,
         )?
         else {
-            return Ok(wait_for_fresh_closure(root_id));
+            return Ok(wait_for_fresh_closure(
+                world,
+                root_id,
+                format!("executable {:?} has incomplete call edges", executable),
+            ));
         };
         let effects = local_effects(&body, &call_edges);
         executables.insert(
@@ -2326,7 +2348,15 @@ fn incomplete_semantic_plan(world: &World<'_>, root_id: RootId, message: impl In
     FatalError
 }
 
-fn wait_for_fresh_closure(root_id: RootId) -> JobEffects {
+fn wait_for_fresh_closure(world: &World<'_>, root_id: RootId, reason: impl Into<String>) -> JobEffects {
+    let reason = reason.into();
+    world.tel().event(
+        &["fz", "compiler2", "materialize", "wait_fresh_closure"],
+        metadata! {
+            reason: reason,
+            root_id: opaque_debug(&root_id),
+        },
+    );
     JobEffects::wait_on(
         FactKey::SemanticClosed(root_id),
         [super::super::Job::SealSemanticClosure(root_id)],

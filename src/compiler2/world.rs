@@ -55,7 +55,7 @@ use super::source::{
     QuotedSourceRoot,
 };
 use super::typedef::{TypeDef, TypeDefMap};
-use super::types::{ClosureTarget, Ty, Types};
+use super::types::{ClosureTarget, MapKey, Ty, Types};
 use crate::ir_interp::AnyValue as RuntimeValue;
 use fz_runtime::any_value::AnyValueRef;
 
@@ -1987,6 +1987,37 @@ impl<'a> World<'a> {
         self.module_impl_target_ty_with(module)
     }
 
+    pub(crate) fn struct_value_ty(&mut self, module_name: &str, field_names: &[String], field_tys: &[Ty]) -> Ty {
+        debug_assert_eq!(
+            field_names.len(),
+            field_tys.len(),
+            "struct type fields must be ordered against their schema"
+        );
+        let tag = format!("impl-target::{}", module_name.rsplit('.').next().unwrap_or(module_name));
+        let nominal = self.types.opaque_of(&tag);
+        let tuple = self.types.tuple(field_tys);
+        let map_fields = field_names
+            .iter()
+            .zip(field_tys.iter().copied())
+            .map(|(name, ty)| (MapKey::Atom(name.clone()), ty))
+            .collect::<Vec<_>>();
+        let map = self.types.map(&map_fields);
+        let structural = self.types.union(tuple, map);
+        self.types.union(nominal, structural)
+    }
+
+    pub(crate) fn module_struct_value_ty(&mut self, module: ModuleId, field_tys: &[Ty]) -> Ty {
+        let name = self
+            .module_name(module)
+            .unwrap_or_else(|| panic!("named struct module {} should have a reverse lookup", module.as_u32()))
+            .to_string();
+        let field_names = self
+            .module_struct_fields(module)
+            .map(|fields| fields.to_vec())
+            .unwrap_or_default();
+        self.struct_value_ty(&name, &field_names, field_tys)
+    }
+
     pub(crate) fn resolve_module_name(
         &mut self,
         current_module: ModuleId,
@@ -2031,7 +2062,16 @@ impl<'a> World<'a> {
             .module_name(module)
             .expect("impl target modules should have reverse names")
             .to_string();
-        impl_target_ty(&mut self.types, &name)
+        match name.rsplit('.').next().unwrap_or(name.as_str()) {
+            "List" | "Integer" | "Float" | "Atom" | "Binary" | "Map" => impl_target_ty(&mut self.types, &name),
+            _ if self.module_struct_fields(module).is_some() => {
+                let field_count = self.module_struct_fields(module).map_or(0, |fields| fields.len());
+                let any = self.types.any();
+                let fields = vec![any; field_count];
+                self.module_struct_value_ty(module, &fields)
+            }
+            _ => impl_target_ty(&mut self.types, &name),
+        }
     }
 
     fn unresolved_issues(&self, waits: &[UnresolvedWait<Job, FactKey>]) -> Vec<UnresolvedIssue> {

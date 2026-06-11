@@ -163,7 +163,7 @@ fn enum_reduce_named_ref_ok_settles_to_int() {
         text: include_str!("../../fixtures2/00178_enum_reduce_named_ref_ok.fz").to_string(),
     });
     compiler.submit_root(RootSubmission {
-        module_name: Some("Main".to_string()),
+        module_name: None,
         name: "main".to_string(),
         arity: 0,
         need: ExecutableNeed::Value,

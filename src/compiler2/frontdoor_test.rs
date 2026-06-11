@@ -339,6 +339,18 @@ fn compiler2_frontdoor_parses_remote_calls_captures_and_headless_case_from_fixtu
 }
 
 #[test]
+fn compiler2_frontdoor_parses_multiline_call_args_and_newline_pipe() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "multiline-call.fz",
+        "fn main() do\n  finish(loop(\n    [1, 2, 3],\n    {:cont, 0},\n    fn (entry, inner) -> {:cont, entry + inner} end\n  ))\n  |> dbg()\nend\n",
+        &tel,
+    )
+    .expect("multiline call args and newline pipe parse");
+    assert_quoted_mentions(&root, &["finish", "loop", "|>", "dbg"]);
+}
+
+#[test]
 fn compiler2_frontdoor_parses_with_expressions() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
