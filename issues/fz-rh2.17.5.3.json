@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.17.5.1"
+  ],
   "blocks": [],
   "created": "2026-06-11T13:55:13Z",
   "description": "The wider cargo test --lib compiler2:: sweep terminates with SIGSEGV after reporting test failures. First re-run after clearing known failures from the current callable-interface/source-production arc; if the segfault persists, isolate the crashing test or harness path and fix it. This ticket depends on the current sweep blockers because those panics may be poisoning later state.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 test sweep: investigate SIGSEGV after failure continuation",
   "type": "bug",
-  "updated_at": "2026-06-11T13:55:13Z"
+  "updated_at": "2026-06-11T13:55:25Z"
 }

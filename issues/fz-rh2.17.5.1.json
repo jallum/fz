@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.17.5.3"
+  ],
   "created": "2026-06-11T13:55:12Z",
   "description": "Wider cargo test --lib compiler2:: sweep panics in World::validate_module_interface_expectations during compiler2_materializes_closed_union_protocol_dispatch_as_local_dispatch. Validation currently calls module_name(id).expect(\"validated modules should have reverse names\"), but some protocol/impl-owned module ids reach validation without a reverse name. Fix the data/model boundary so expectation validation only requires a printable module name when it must emit a diagnostic, and keep unnamed modules from crashing the sweep.",
   "id": "fz-rh2.17.5.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 interface validation: stop assuming every validated module has a reverse name",
   "type": "bug",
-  "updated_at": "2026-06-11T13:55:12Z"
+  "updated_at": "2026-06-11T13:55:25Z"
 }
