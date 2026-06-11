@@ -6,7 +6,7 @@ use crate::dispatch_matrix::SubjectSource;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
 
 use super::super::body::{DirectCallee, LoweredBody, LoweredStep, LoweredTail};
-use super::super::drive::{FactKey, Job, JobEffects};
+use super::super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::super::identity::FunctionId;
 use super::super::scheduler::FatalError;
 use super::super::types::Ty;
@@ -60,8 +60,8 @@ pub(super) fn derive_recursive(world: &mut World<'_>, function: FunctionId) -> R
     );
     if !waits.is_empty() {
         return Ok(JobEffects {
-            reads,
-            waits: waits.into_iter().collect(),
+            reads: current_uses(reads),
+            waits: current_uses(waits),
             follow_up: follow_up.into_iter().collect(),
             ..JobEffects::default()
         });
@@ -70,7 +70,7 @@ pub(super) fn derive_recursive(world: &mut World<'_>, function: FunctionId) -> R
     let recursive = reaches_self(function, &graph);
     let changed = world.define_recursive(function, recursive);
     Ok(JobEffects {
-        reads,
+        reads: current_uses(reads),
         outputs: vec![FactKey::Recursive(function)],
         changed: changed.then_some(FactKey::Recursive(function)).into_iter().collect(),
         ..JobEffects::default()
@@ -81,14 +81,17 @@ pub(super) fn derive_recursive(world: &mut World<'_>, function: FunctionId) -> R
 pub(super) fn derive_dispatch_mask(world: &mut World<'_>, function: FunctionId) -> Result<JobEffects, FatalError> {
     let dispatch_fact = FactKey::EntryDispatch(function);
     if !world.has_fact(&dispatch_fact) {
-        return Ok(JobEffects::wait_on(dispatch_fact, [Job::PlanEntryDispatch(function)]));
+        return Ok(JobEffects::wait_on_current(
+            dispatch_fact,
+            [Job::PlanEntryDispatch(function)],
+        ));
     }
 
     let plan = world.entry_dispatch(function);
     let mask = dispatch_input_mask(&plan);
     let changed = world.define_dispatch_mask(function, mask);
     Ok(JobEffects {
-        reads: vec![FactKey::EntryDispatch(function)],
+        reads: current_uses([FactKey::EntryDispatch(function)]),
         outputs: vec![FactKey::DispatchMask(function)],
         changed: changed.then_some(FactKey::DispatchMask(function)).into_iter().collect(),
         ..JobEffects::default()

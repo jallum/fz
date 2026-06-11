@@ -1,14 +1,22 @@
 use std::collections::HashSet;
 
-use super::{Agenda, AppliedStep, DependencyIndex, Scheduler};
+use super::{Agenda, AppliedStep, DependencyIndex, FactUse, Scheduler};
 
 type TestScheduler = Scheduler<u32, &'static str>;
+
+fn current(fact: &'static str) -> FactUse<&'static str> {
+    FactUse::current(fact)
+}
+
+fn settled(fact: &'static str) -> FactUse<&'static str> {
+    FactUse::settled(fact)
+}
 
 fn complete(
     scheduler: &mut TestScheduler,
     job: u32,
-    reads: HashSet<&'static str>,
-    waits: HashSet<&'static str>,
+    reads: HashSet<FactUse<&'static str>>,
+    waits: HashSet<FactUse<&'static str>>,
     outputs: Vec<&'static str>,
     changed: Vec<&'static str>,
     follow_up: Vec<u32>,
@@ -36,9 +44,9 @@ fn compiler2_agenda_coalesces_and_requeues_after_pop() {
 #[test]
 fn compiler2_dependency_index_wakes_exact_waiters() {
     let mut deps = DependencyIndex::new();
-    deps.replace_waits(3_u32, HashSet::from(["foo"]));
+    deps.replace_waits(3_u32, HashSet::from([current("foo")]));
 
-    let waiters = deps.waiters(&"foo");
+    let waiters = deps.waiters(&current("foo"));
     assert_eq!(waiters, vec![3], "exact fact waiters should wake on matching fact");
 }
 
@@ -53,7 +61,7 @@ fn compiler2_scheduler_wakes_on_content_change_suppresses_stable_republication()
     let subscribe = complete(
         &mut scheduler,
         subscriber,
-        HashSet::from([fact]),
+        HashSet::from([current(fact)]),
         HashSet::new(),
         Vec::new(),
         Vec::new(),
@@ -134,7 +142,7 @@ fn compiler2_scheduler_retracts_outputs_a_job_stops_publishing() {
     complete(
         &mut scheduler,
         subscriber,
-        HashSet::from([fact]),
+        HashSet::from([current(fact)]),
         HashSet::new(),
         Vec::new(),
         Vec::new(),
@@ -184,7 +192,7 @@ fn compiler2_scheduler_wakes_waiters_when_a_matching_fact_appears() {
         &mut scheduler,
         waiter,
         HashSet::new(),
-        HashSet::from(["foo"]),
+        HashSet::from([current("foo")]),
         Vec::new(),
         Vec::new(),
         Vec::new(),
@@ -213,7 +221,7 @@ fn compiler2_scheduler_has_unresolved_tracks_waiter_presence_without_materializi
         &mut scheduler,
         4_u32,
         HashSet::new(),
-        HashSet::from(["foo"]),
+        HashSet::from([current("foo")]),
         Vec::new(),
         Vec::new(),
         Vec::new(),
@@ -293,7 +301,7 @@ fn compiler2_scheduler_reports_blocked_exact_facts() {
         &mut scheduler,
         1_u32,
         HashSet::new(),
-        HashSet::from(["module_surface", "function_defined"]),
+        HashSet::from([current("module_surface"), current("function_defined")]),
         Vec::new(),
         Vec::new(),
         Vec::new(),
@@ -301,13 +309,171 @@ fn compiler2_scheduler_reports_blocked_exact_facts() {
 
     assert_eq!(
         step.blocked.into_iter().collect::<HashSet<_>>(),
-        HashSet::from(["module_surface", "function_defined"]),
+        HashSet::from([current("module_surface"), current("function_defined")]),
         "blocked facts should be the exact keys the completed job is waiting on"
     );
     let unresolved = scheduler.unresolved();
     assert_eq!(
         unresolved.into_iter().map(|wait| wait.fact).collect::<HashSet<_>>(),
-        HashSet::from(["module_surface", "function_defined"]),
+        HashSet::from([current("module_surface"), current("function_defined")]),
         "unresolved waits should expose exact fact keys, not patterns"
     );
+}
+
+#[test]
+fn compiler2_scheduler_stable_recompute_wakes_settled_waiters_without_revision_bump() {
+    let mut scheduler = TestScheduler::new();
+    let upstream = 1_u32;
+    let producer = 2_u32;
+    let current_reader = 3_u32;
+    let settled_waiter = 4_u32;
+
+    complete(
+        &mut scheduler,
+        current_reader,
+        HashSet::from([current("bar")]),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    complete(
+        &mut scheduler,
+        producer,
+        HashSet::from([current("foo")]),
+        HashSet::new(),
+        vec!["bar"],
+        vec!["bar"],
+        Vec::new(),
+    );
+    assert!(scheduler.facts().is_settled(&"bar"));
+    let _ = scheduler.pop();
+
+    let upstream_change = complete(
+        &mut scheduler,
+        upstream,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["foo"],
+        vec!["foo"],
+        Vec::new(),
+    );
+    assert_eq!(
+        upstream_change.enqueued,
+        vec![producer],
+        "a current dependency change should dirty the producer but not wake current readers of its dirty outputs",
+    );
+    assert!(!scheduler.facts().is_settled(&"bar"));
+    assert_eq!(
+        scheduler.facts().revision(&"bar"),
+        Some(1),
+        "dirtying an output should not invent a new content revision",
+    );
+
+    complete(
+        &mut scheduler,
+        settled_waiter,
+        HashSet::new(),
+        HashSet::from([settled("bar")]),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    assert!(scheduler.has_unresolved(), "a dirty fact should block settled waiters");
+
+    let settled = complete(
+        &mut scheduler,
+        producer,
+        HashSet::from([current("foo")]),
+        HashSet::new(),
+        vec!["bar"],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert_eq!(
+        settled.enqueued,
+        vec![settled_waiter],
+        "a stable recompute should wake settled waiters when readiness flips dirty -> settled",
+    );
+    assert!(scheduler.facts().is_settled(&"bar"));
+    assert_eq!(scheduler.facts().revision(&"bar"), Some(1));
+}
+
+#[test]
+fn compiler2_scheduler_multi_publisher_fact_settles_only_when_every_publisher_is_clean() {
+    let mut scheduler = TestScheduler::new();
+    let upstream_a = 1_u32;
+    let upstream_b = 2_u32;
+    let producer_a = 10_u32;
+    let producer_b = 11_u32;
+
+    complete(
+        &mut scheduler,
+        producer_a,
+        HashSet::from([current("a")]),
+        HashSet::new(),
+        vec!["shared"],
+        vec!["shared"],
+        Vec::new(),
+    );
+    complete(
+        &mut scheduler,
+        producer_b,
+        HashSet::from([current("b")]),
+        HashSet::new(),
+        vec!["shared"],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert!(scheduler.facts().is_settled(&"shared"));
+
+    complete(
+        &mut scheduler,
+        upstream_a,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["a"],
+        vec!["a"],
+        Vec::new(),
+    );
+    assert!(
+        !scheduler.facts().is_settled(&"shared"),
+        "one dirty publisher should make a shared fact unsettled",
+    );
+
+    complete(
+        &mut scheduler,
+        upstream_b,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["b"],
+        vec!["b"],
+        Vec::new(),
+    );
+    assert!(!scheduler.facts().is_settled(&"shared"));
+
+    complete(
+        &mut scheduler,
+        producer_a,
+        HashSet::from([current("a")]),
+        HashSet::new(),
+        vec!["shared"],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert!(
+        !scheduler.facts().is_settled(&"shared"),
+        "the fact stays unsettled until every active publisher has rerun clean",
+    );
+
+    complete(
+        &mut scheduler,
+        producer_b,
+        HashSet::from([current("b")]),
+        HashSet::new(),
+        vec!["shared"],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert!(scheduler.facts().is_settled(&"shared"));
 }

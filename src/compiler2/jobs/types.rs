@@ -10,7 +10,7 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 
-use super::super::drive::{FactKey, Job, JobEffects};
+use super::super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::super::identity::TypeName;
 use super::super::scheduler::FatalError;
 use super::super::world::World;
@@ -40,7 +40,7 @@ pub(super) fn derive_type_def(world: &mut World<'_>, name: &TypeName) -> Result<
     }
     if !waits.is_empty() {
         return Ok(JobEffects {
-            waits,
+            waits: current_uses(waits),
             follow_up,
             ..JobEffects::default()
         });
@@ -57,13 +57,13 @@ pub(super) fn derive_type_def(world: &mut World<'_>, name: &TypeName) -> Result<
         )
     })?;
 
-    let reads = refs
+    let reads: Vec<_> = refs
         .iter()
         .map(|referenced| FactKey::TypeDefined(referenced.clone()))
         .collect();
     let changed = world.define_type_def(name.clone(), def);
     Ok(JobEffects {
-        reads,
+        reads: current_uses(reads),
         outputs: vec![FactKey::TypeDefined(name.clone())],
         changed: changed
             .then_some(FactKey::TypeDefined(name.clone()))

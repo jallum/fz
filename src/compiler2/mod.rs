@@ -58,7 +58,7 @@ pub use compiler::{CodeSubmission, Compiler2, RootSubmission};
 pub use contract::{FunctionContract, FunctionContractMap};
 pub use deps::{DependencyIndex, UnresolvedWait};
 pub use drive::{FactKey, Job, WorkGraph};
-pub use facts::{FactChange, FactReplace, FactTable};
+pub use facts::{FactChange, FactReadiness, FactReplace, FactTable, FactUse};
 pub use frontdoor::{FrontDoorError, parse_quoted_program};
 pub use identity::{
     ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, FunctionMap, FunctionRef, FunctionSource, FunctionState,

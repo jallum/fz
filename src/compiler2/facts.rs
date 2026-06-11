@@ -1,11 +1,64 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FactReadiness {
+    Current,
+    Settled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum FactUse<F> {
+    Current(F),
+    Settled(F),
+}
+
+impl<F> FactUse<F> {
+    pub fn current(fact: F) -> Self {
+        Self::Current(fact)
+    }
+
+    pub fn settled(fact: F) -> Self {
+        Self::Settled(fact)
+    }
+
+    pub fn fact(&self) -> &F {
+        match self {
+            Self::Current(fact) | Self::Settled(fact) => fact,
+        }
+    }
+
+    pub fn into_fact(self) -> F {
+        match self {
+            Self::Current(fact) | Self::Settled(fact) => fact,
+        }
+    }
+
+    pub fn readiness(&self) -> FactReadiness {
+        match self {
+            Self::Current(_) => FactReadiness::Current,
+            Self::Settled(_) => FactReadiness::Settled,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactChange<F> {
     pub key: F,
     pub old_revision: Option<u64>,
     pub new_revision: Option<u64>,
+    pub old_settled: bool,
+    pub new_settled: bool,
+}
+
+impl<F> FactChange<F> {
+    pub fn content_changed(&self) -> bool {
+        self.old_revision != self.new_revision
+    }
+
+    pub fn readiness_changed(&self) -> bool {
+        self.old_settled != self.new_settled
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -24,6 +77,7 @@ pub struct FactReplace<F> {
 #[derive(Debug, Clone)]
 struct FactSlot<J> {
     publishers: HashSet<J>,
+    dirty_publishers: HashSet<J>,
     revision: u64,
 }
 
@@ -31,6 +85,7 @@ impl<J> Default for FactSlot<J> {
     fn default() -> Self {
         Self {
             publishers: HashSet::new(),
+            dirty_publishers: HashSet::new(),
             revision: 0,
         }
     }
@@ -43,6 +98,10 @@ impl<J> FactSlot<J> {
         } else {
             Some(self.revision)
         }
+    }
+
+    fn is_settled(&self) -> bool {
+        !self.publishers.is_empty() && self.dirty_publishers.is_empty()
     }
 }
 
@@ -68,6 +127,17 @@ where
 
     pub fn revision(&self, key: &F) -> Option<u64> {
         self.slots.get(key).and_then(FactSlot::revision)
+    }
+
+    pub fn is_settled(&self, key: &F) -> bool {
+        self.slots.get(key).is_some_and(FactSlot::is_settled)
+    }
+
+    pub fn satisfies(&self, fact_use: &FactUse<F>) -> bool {
+        match fact_use {
+            FactUse::Current(key) => self.revision(key).is_some(),
+            FactUse::Settled(key) => self.is_settled(key),
+        }
     }
 
     /// Replaces one job's published facts. Keys the job previously published
@@ -109,10 +179,12 @@ where
         for key in touched {
             let mut slot = self.slots.remove(&key).unwrap_or_default();
             let old_revision = slot.revision();
+            let old_settled = slot.is_settled();
 
             if output_keys.contains(&key) {
                 let was_absent = slot.publishers.is_empty();
                 slot.publishers.insert(job.clone());
+                slot.dirty_publishers.remove(job);
                 if was_absent {
                     slot.revision = 1;
                 } else if changed_keys_set.remove(&key) {
@@ -120,22 +192,55 @@ where
                 }
             } else {
                 slot.publishers.remove(job);
+                slot.dirty_publishers.remove(job);
             }
 
             let new_revision = slot.revision();
+            let new_settled = slot.is_settled();
             if !slot.publishers.is_empty() {
                 self.slots.insert(key.clone(), slot);
             }
 
-            if old_revision != new_revision {
+            if old_revision != new_revision || old_settled != new_settled {
                 changed.push(FactChange {
                     key,
                     old_revision,
                     new_revision,
+                    old_settled,
+                    new_settled,
                 });
             }
         }
 
         FactReplace { changed, output_keys }
+    }
+
+    pub fn mark_dirty(&mut self, job: &J, output_keys: &HashSet<F>) -> Vec<FactChange<F>> {
+        let mut changed = Vec::new();
+        for key in output_keys {
+            let Some(slot) = self.slots.get_mut(key) else {
+                continue;
+            };
+            if !slot.publishers.contains(job) {
+                continue;
+            }
+            let old_revision = slot.revision();
+            let old_settled = slot.is_settled();
+            if !slot.dirty_publishers.insert(job.clone()) {
+                continue;
+            }
+            let new_revision = slot.revision();
+            let new_settled = slot.is_settled();
+            if old_revision != new_revision || old_settled != new_settled {
+                changed.push(FactChange {
+                    key: key.clone(),
+                    old_revision,
+                    new_revision,
+                    old_settled,
+                    new_settled,
+                });
+            }
+        }
+        changed
     }
 }

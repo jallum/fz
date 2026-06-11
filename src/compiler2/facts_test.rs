@@ -19,7 +19,9 @@ fn compiler2_fact_table_propagates_only_when_content_changes() {
         Some(1),
         "first publication should set revision to 1"
     );
+    assert!(first.changed[0].new_settled, "new publications start settled");
     assert_eq!(facts.revision(&fact), Some(1));
+    assert!(facts.is_settled(&fact));
 
     let stable = facts.replace_outputs(&1_u32, &HashSet::from([fact]), vec![fact], Vec::new());
     assert!(
@@ -36,6 +38,33 @@ fn compiler2_fact_table_propagates_only_when_content_changes() {
         "republishing with changed=true should increment the table counter"
     );
     assert_eq!(facts.revision(&fact), Some(2));
+}
+
+#[test]
+fn compiler2_fact_table_can_dirty_and_resettle_without_moving_the_revision() {
+    let mut facts = TestFacts::new();
+    let fact = "return";
+    let outputs = HashSet::from([fact]);
+
+    facts.replace_outputs(&1_u32, &HashSet::new(), vec![fact], vec![fact]);
+    let dirtied = facts.mark_dirty(&1_u32, &outputs);
+    assert_eq!(dirtied.len(), 1);
+    assert_eq!(dirtied[0].old_revision, Some(1));
+    assert_eq!(dirtied[0].new_revision, Some(1));
+    assert!(dirtied[0].old_settled);
+    assert!(!dirtied[0].new_settled);
+    assert!(!facts.is_settled(&fact));
+
+    let resettled = facts.replace_outputs(&1_u32, &outputs, vec![fact], Vec::new());
+    assert_eq!(
+        resettled.changed.len(),
+        1,
+        "stable republication should still publish a readiness transition",
+    );
+    assert_eq!(resettled.changed[0].old_revision, Some(1));
+    assert_eq!(resettled.changed[0].new_revision, Some(1));
+    assert!(!resettled.changed[0].old_settled);
+    assert!(resettled.changed[0].new_settled);
 }
 
 // A job that stops publishing a key retracts it when it was the last publisher.

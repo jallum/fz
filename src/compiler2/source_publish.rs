@@ -17,7 +17,7 @@ use crate::telemetry::opaque_debug;
 use crate::{measurements, metadata};
 
 use super::code::CodeId;
-use super::drive::{FactKey, Job, JobEffects};
+use super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::identity::{FunctionId, FunctionSource, ModuleId, NotedTypeDecl, TypeName};
 use super::module_interface::{InterfaceCallableKind, InterfaceRequester, ModuleInterface, ModuleInterfaceCallable};
 use super::namespace::{Namespace, NamespaceSymbol};
@@ -822,7 +822,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     }
 
     fn blocked_effects(&self, mut effects: JobEffects) -> JobEffects {
-        effects.reads.extend(self.reads.clone());
+        effects.reads.extend(current_uses(self.reads.clone()));
         effects.outputs.extend(self.outputs.clone());
         effects.changed.extend(self.changed.clone());
         effects
@@ -1054,7 +1054,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         } else {
             Job::DefineModuleInterface(module)
         };
-        JobEffects::wait_on(FactKey::ModuleInterface(module), [follow_up])
+        JobEffects::wait_on_current(FactKey::ModuleInterface(module), [follow_up])
     }
 
     fn record_required_remote_macros(&mut self, callables: &[ModuleInterfaceCallable]) {

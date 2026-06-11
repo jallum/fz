@@ -1,18 +1,20 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
+use super::facts::FactUse;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnresolvedWait<J, F> {
-    pub fact: F,
+    pub fact: FactUse<F>,
     pub jobs: Vec<J>,
 }
 
 #[derive(Debug)]
 pub struct DependencyIndex<J, F> {
-    reads: HashMap<J, HashSet<F>>,
-    subscribers: HashMap<F, HashSet<J>>,
-    waits: HashMap<J, HashSet<F>>,
-    waiters: HashMap<F, HashSet<J>>,
+    reads: HashMap<J, HashSet<FactUse<F>>>,
+    subscribers: HashMap<FactUse<F>, HashSet<J>>,
+    waits: HashMap<J, HashSet<FactUse<F>>>,
+    waiters: HashMap<FactUse<F>, HashSet<J>>,
     outputs: HashMap<J, HashSet<F>>,
 }
 
@@ -37,7 +39,7 @@ where
         Self::default()
     }
 
-    pub fn replace_reads(&mut self, job: J, next_reads: HashSet<F>) {
+    pub fn replace_reads(&mut self, job: J, next_reads: HashSet<FactUse<F>>) {
         if let Some(previous_reads) = self.reads.insert(job.clone(), next_reads.clone()) {
             for key in previous_reads {
                 if let Some(jobs) = self.subscribers.get_mut(&key) {
@@ -54,7 +56,7 @@ where
         }
     }
 
-    pub fn replace_waits(&mut self, job: J, next_waits: HashSet<F>) {
+    pub fn replace_waits(&mut self, job: J, next_waits: HashSet<FactUse<F>>) {
         if let Some(previous_waits) = self.waits.insert(job.clone(), next_waits.clone()) {
             for fact in previous_waits {
                 if let Some(jobs) = self.waiters.get_mut(&fact) {
@@ -83,16 +85,16 @@ where
         self.outputs.get(job).cloned().unwrap_or_default()
     }
 
-    pub fn subscribers(&self, key: &F) -> Vec<J> {
+    pub fn subscribers(&self, fact_use: &FactUse<F>) -> Vec<J> {
         self.subscribers
-            .get(key)
+            .get(fact_use)
             .map(|jobs| jobs.iter().cloned().collect())
             .unwrap_or_default()
     }
 
-    pub fn waiters(&self, key: &F) -> Vec<J> {
+    pub fn waiters(&self, fact_use: &FactUse<F>) -> Vec<J> {
         self.waiters
-            .get(key)
+            .get(fact_use)
             .map(|jobs| jobs.iter().cloned().collect())
             .unwrap_or_default()
     }

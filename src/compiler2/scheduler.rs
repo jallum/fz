@@ -4,14 +4,14 @@ use std::hash::Hash;
 
 use super::agenda::Agenda;
 use super::deps::{DependencyIndex, UnresolvedWait};
-use super::facts::{FactChange, FactTable};
+use super::facts::{FactChange, FactTable, FactUse};
 
 #[derive(Debug, Clone)]
 pub struct AppliedStep<J, F> {
     pub changed: Vec<FactChange<F>>,
     pub enqueued: Vec<J>,
     pub coalesced: Vec<J>,
-    pub blocked: Vec<F>,
+    pub blocked: Vec<FactUse<F>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,8 +81,8 @@ where
     pub fn complete(
         &mut self,
         job: J,
-        reads: HashSet<F>,
-        waits: HashSet<F>,
+        reads: HashSet<FactUse<F>>,
+        waits: HashSet<FactUse<F>>,
         outputs: Vec<F>,
         changed: Vec<F>,
         follow_up: Vec<J>,
@@ -100,12 +100,31 @@ where
         let mut enqueued = Vec::new();
         let mut coalesced = Vec::new();
         let mut coalesced_seen = HashSet::new();
-        for change in &replaced.changed {
-            for subscriber in self.deps.subscribers(&change.key) {
-                self.enqueue_step(subscriber, &mut enqueued, &mut coalesced, &mut coalesced_seen);
-            }
-            for waiter in self.deps.waiters(&change.key) {
-                self.enqueue_step(waiter, &mut enqueued, &mut coalesced, &mut coalesced_seen);
+        let mut pending_changes = replaced.changed.clone();
+        while let Some(change) = pending_changes.pop() {
+            if change.content_changed() {
+                self.enqueue_dependents(
+                    FactUse::current(change.key.clone()),
+                    &mut pending_changes,
+                    &mut enqueued,
+                    &mut coalesced,
+                    &mut coalesced_seen,
+                );
+                self.enqueue_dependents(
+                    FactUse::settled(change.key.clone()),
+                    &mut pending_changes,
+                    &mut enqueued,
+                    &mut coalesced,
+                    &mut coalesced_seen,
+                );
+            } else if change.readiness_changed() {
+                self.enqueue_dependents(
+                    FactUse::settled(change.key.clone()),
+                    &mut pending_changes,
+                    &mut enqueued,
+                    &mut coalesced,
+                    &mut coalesced_seen,
+                );
             }
         }
         for follow_up in follow_up {
@@ -125,6 +144,27 @@ where
             enqueued.push(job);
         } else if coalesced_seen.insert(job.clone()) {
             coalesced.push(job);
+        }
+    }
+
+    fn enqueue_dependents(
+        &mut self,
+        fact_use: FactUse<F>,
+        pending_changes: &mut Vec<FactChange<F>>,
+        enqueued: &mut Vec<J>,
+        coalesced: &mut Vec<J>,
+        coalesced_seen: &mut HashSet<J>,
+    ) {
+        let dependents = self
+            .deps
+            .subscribers(&fact_use)
+            .into_iter()
+            .chain(self.deps.waiters(&fact_use))
+            .collect::<Vec<_>>();
+        for job in dependents {
+            let dirtied = self.facts.mark_dirty(&job, &self.deps.output_keys(&job));
+            pending_changes.extend(dirtied);
+            self.enqueue_step(job, enqueued, coalesced, coalesced_seen);
         }
     }
 }

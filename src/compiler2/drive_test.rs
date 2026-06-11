@@ -4,7 +4,7 @@ use crate::compiler2::artifact::{NativeBodyOrigin, NativeEntryAbi, NativeProgram
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
     AbiReadyProgram, AbiValueRepr, ActivationKey, BackendProgram, CallSiteId, CallSiteKey, CallSiteSummary, CallTarget,
-    CallableEntry, ControlEntryOrigin, EmissionReadyProgram, ExecutableKey, FactKey, FunctionId, FunctionRef,
+    CallableEntry, ControlEntryOrigin, EmissionReadyProgram, ExecutableKey, FactKey, FactUse, FunctionId, FunctionRef,
     LoweredBody, LoweredStep, LoweredTail, MaterializedProgram, ModuleId, ModuleState, QuotedSourceHeap,
     QuotedSourceMetadata, ReturnAbi, SelectedCallee, SemanticClosure, Ty, TypeName, TypeVarId, Types, ValueId,
     parse_quoted_program,
@@ -62,6 +62,10 @@ fn assert_no_legacy_planner_or_type_infer(capture: &Capture, context: &str) {
 
 fn presence(fact: FactKey, changed: bool) -> (FactKey, bool) {
     (fact, changed)
+}
+
+fn current_fact(fact: FactKey) -> FactUse<FactKey> {
+    FactUse::current(fact)
 }
 
 fn output_facts(effects: &JobEffects) -> OutputFacts {
@@ -3105,7 +3109,7 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
     let materialize = outputs.effects(Job::MaterializeRoot(root_id));
     assert_eq!(
         materialize.reads,
-        vec![FactKey::SemanticClosed(root_id)],
+        vec![current_fact(FactKey::SemanticClosed(root_id))],
         "materialization should consume only the closed semantic root fact",
     );
     assert!(
@@ -3128,7 +3132,7 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
     let abi_ready = outputs.effects(Job::DeriveAbiReady(root_id));
     assert_eq!(
         abi_ready.reads,
-        vec![FactKey::MaterializedProgram(root_id)],
+        vec![current_fact(FactKey::MaterializedProgram(root_id))],
         "ABI-ready derivation should consume only the materialized artifact fact",
     );
     assert!(
@@ -3151,7 +3155,7 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
     let emission_ready = outputs.effects(Job::DeriveEmissionReady(root_id));
     assert_eq!(
         emission_ready.reads,
-        vec![FactKey::AbiReadyProgram(root_id)],
+        vec![current_fact(FactKey::AbiReadyProgram(root_id))],
         "emission-ready derivation should consume only the ABI-ready artifact fact",
     );
     assert!(
@@ -3174,7 +3178,7 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
     let backend = outputs.effects(Job::LowerBackendProgram(root_id));
     assert_eq!(
         backend.reads,
-        vec![FactKey::EmissionReadyProgram(root_id)],
+        vec![current_fact(FactKey::EmissionReadyProgram(root_id))],
         "backend lowering should consume only the emission-ready artifact fact",
     );
     assert!(
@@ -3196,7 +3200,7 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
     let native = outputs.effects(Job::LowerNativeProgram(root_id));
     assert_eq!(
         native.reads,
-        vec![FactKey::BackendProgram(root_id)],
+        vec![current_fact(FactKey::BackendProgram(root_id))],
         "native lowering should consume only the backend handoff fact",
     );
     assert!(
@@ -5516,15 +5520,15 @@ fn compiler2_submit_root_before_code_reports_unresolved_until_entry_is_defined()
         DriveOutcome::Unresolved { waits } => {
             assert!(
                 waits.iter().any(|wait| {
-                    wait.fact == FactKey::FunctionDefined(function_id) && wait.jobs.contains(&Job::SeedRoot(root_id))
+                    wait.fact == current_fact(FactKey::FunctionDefined(function_id))
+                        && wait.jobs.contains(&Job::SeedRoot(root_id))
                 }),
                 "unresolved drive should report SeedRoot waiting on the entry definition"
             );
             assert!(
-                work_graph
-                    .all()
-                    .into_iter()
-                    .any(|step| step.blocked.contains(&FactKey::FunctionDefined(function_id))),
+                work_graph.all().into_iter().any(|step| step
+                    .blocked
+                    .contains(&current_fact(FactKey::FunctionDefined(function_id)))),
                 "work-graph telemetry should carry the exact fact that blocked the seed job"
             );
         }
@@ -7025,7 +7029,7 @@ fn compiler2_import_all_waits_for_module_interface() {
                     effects
                         .waits
                         .iter()
-                        .any(|fact| matches!(fact, FactKey::ModuleInterface(_)))
+                        .any(|fact| matches!(fact, FactUse::Current(FactKey::ModuleInterface(_))))
                 })
             }),
         "import-all should wait on provider interface visibility, not provider definition",
@@ -7091,7 +7095,7 @@ fn compiler2_import_except_waits_for_module_interface() {
                     effects
                         .waits
                         .iter()
-                        .any(|fact| matches!(fact, FactKey::ModuleInterface(_)))
+                        .any(|fact| matches!(fact, FactUse::Current(FactKey::ModuleInterface(_))))
                 })
             }),
         "import-except should wait on provider interface visibility, not provider definition",

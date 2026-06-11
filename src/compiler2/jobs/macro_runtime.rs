@@ -9,7 +9,7 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 
-use super::super::drive::{FactKey, Job, JobEffects};
+use super::super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::super::identity::FunctionId;
 use super::super::scheduler::FatalError;
 use super::super::world::World;
@@ -34,7 +34,7 @@ pub(super) fn build_macro_executable(world: &mut World<'_>, function: FunctionId
     let root = world.macro_root(function);
     let backend_fact = FactKey::BackendProgram(root);
     let Some(backend_revision) = world.fact_revision(backend_fact.clone()) else {
-        return Ok(JobEffects::wait_on(
+        return Ok(JobEffects::wait_on_current(
             backend_fact,
             [Job::SeedRoot(root), Job::LowerBackendProgram(root)],
         ));
@@ -43,7 +43,7 @@ pub(super) fn build_macro_executable(world: &mut World<'_>, function: FunctionId
     let program = world.backend_program(root);
     let changed = world.define_macro_executable(function, root, backend_revision, program);
     Ok(JobEffects {
-        reads: vec![FactKey::FunctionDefined(function), backend_fact],
+        reads: current_uses([FactKey::FunctionDefined(function), backend_fact]),
         outputs: vec![FactKey::MacroExecutable(function)],
         changed: changed
             .then_some(FactKey::MacroExecutable(function))

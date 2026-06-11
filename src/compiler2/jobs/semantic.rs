@@ -18,7 +18,7 @@ use super::super::body::{
     LoweredTail, ValueId,
 };
 use super::super::contract::FunctionContract;
-use super::super::drive::{FactKey, Job, JobEffects};
+use super::super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::super::identity::{
     ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, ModuleId, function_id_of_closure_target,
 };
@@ -70,12 +70,18 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
 
     let lowered_fact = FactKey::LoweredBody(function);
     if !world.has_fact(&lowered_fact) {
-        return Ok(JobEffects::wait_on(lowered_fact, [Job::LowerFunction(function)]));
+        return Ok(JobEffects::wait_on_current(
+            lowered_fact,
+            [Job::LowerFunction(function)],
+        ));
     }
 
     let dispatch_fact = FactKey::EntryDispatch(function);
     if !world.has_fact(&dispatch_fact) {
-        return Ok(JobEffects::wait_on(dispatch_fact, [Job::PlanEntryDispatch(function)]));
+        return Ok(JobEffects::wait_on_current(
+            dispatch_fact,
+            [Job::PlanEntryDispatch(function)],
+        ));
     }
 
     let mut reads = vec![activation_fact, function_fact, lowered_fact, dispatch_fact];
@@ -138,8 +144,8 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
 
     if !waits.is_empty() {
         return Ok(JobEffects {
-            reads,
-            waits: waits.into_iter().collect(),
+            reads: current_uses(reads),
+            waits: current_uses(waits),
             follow_up: follow_up.into_iter().collect(),
             ..JobEffects::default()
         });
@@ -155,8 +161,8 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     )?;
     if !waits.is_empty() {
         return Ok(JobEffects {
-            reads,
-            waits: waits.into_iter().collect(),
+            reads: current_uses(reads),
+            waits: current_uses(waits),
             follow_up: follow_up.into_iter().collect(),
             ..JobEffects::default()
         });
@@ -174,8 +180,8 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     );
     if !waits.is_empty() {
         return Ok(JobEffects {
-            reads,
-            waits: waits.into_iter().collect(),
+            reads: current_uses(reads),
+            waits: current_uses(waits),
             follow_up: follow_up.into_iter().collect(),
             ..JobEffects::default()
         });
@@ -257,7 +263,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
 
     follow_up.insert(Job::SealSemanticClosure(activation.root));
     Ok(JobEffects {
-        reads,
+        reads: current_uses(reads),
         outputs: dedupe_facts(outputs),
         changed: dedupe_facts(changed),
         follow_up: follow_up.into_iter().collect(),

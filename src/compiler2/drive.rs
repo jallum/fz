@@ -8,6 +8,7 @@ use crate::telemetry::{TelemetryExt, opaque_debug};
 use crate::{measurements, metadata};
 
 use super::code::CodeId;
+use super::facts::FactUse;
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId, TypeName};
 use super::scheduler::{DriveOutcome, Scheduler};
 use super::semantic::CallSiteKey;
@@ -76,21 +77,25 @@ pub type WorkGraph = Scheduler<Job, FactKey>;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct JobEffects {
-    pub(crate) reads: Vec<FactKey>,
-    pub(crate) waits: Vec<FactKey>,
+    pub(crate) reads: Vec<FactUse<FactKey>>,
+    pub(crate) waits: Vec<FactUse<FactKey>>,
     pub(crate) outputs: Vec<FactKey>,
     pub(crate) changed: Vec<FactKey>,
     pub(crate) follow_up: Vec<Job>,
 }
 
 impl JobEffects {
-    pub(crate) fn wait_on(fact: FactKey, follow_up: impl IntoIterator<Item = Job>) -> Self {
+    pub(crate) fn wait_on_current(fact: FactKey, follow_up: impl IntoIterator<Item = Job>) -> Self {
         Self {
-            waits: vec![fact],
+            waits: vec![FactUse::current(fact)],
             follow_up: follow_up.into_iter().collect(),
             ..Self::default()
         }
     }
+}
+
+pub(crate) fn current_uses<F>(facts: impl IntoIterator<Item = F>) -> Vec<FactUse<F>> {
+    facts.into_iter().map(FactUse::current).collect()
 }
 
 impl World<'_> {

@@ -1633,7 +1633,7 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn wait_for_function_definition(&mut self, function: FunctionId) -> JobEffects {
-        JobEffects::wait_on(FactKey::FunctionDefined(function), vec![Job::DefineFunction(function)])
+        JobEffects::wait_on_current(FactKey::FunctionDefined(function), vec![Job::DefineFunction(function)])
     }
 
     /// Demands and waits on the module whose definition notes `module`'s
@@ -1641,7 +1641,7 @@ impl<'a> World<'a> {
     /// only for non-global modules; a top-level type is noted by its code scope.
     pub(crate) fn wait_for_type_decl(&mut self, module: ModuleId) -> JobEffects {
         self.ensure_runtime_module(module);
-        JobEffects::wait_on(FactKey::ModuleDefined(module), vec![Job::DefineModule(module)])
+        JobEffects::wait_on_current(FactKey::ModuleDefined(module), vec![Job::DefineModule(module)])
     }
 
     pub fn fact_revision(&self, key: FactKey) -> Option<u64> {
@@ -2075,10 +2075,13 @@ impl<'a> World<'a> {
     }
 
     fn unresolved_issues(&self, waits: &[UnresolvedWait<Job, FactKey>]) -> Vec<UnresolvedIssue> {
-        let frontier = waits.iter().map(|wait| wait.fact.clone()).collect::<HashSet<_>>();
+        let frontier = waits
+            .iter()
+            .map(|wait| wait.fact.clone().into_fact())
+            .collect::<HashSet<_>>();
         let mut issues = Vec::new();
         for wait in waits {
-            if let Some(issue) = self.unresolved_issue(&frontier, &wait.fact) {
+            if let Some(issue) = self.unresolved_issue(&frontier, wait.fact.fact()) {
                 issues.push(issue);
             }
         }

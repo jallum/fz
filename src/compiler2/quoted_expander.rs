@@ -52,7 +52,7 @@ pub(crate) trait QuotedExpansionCtx<'tel> {
         } else {
             Job::DefineModuleInterface(module)
         };
-        JobEffects::wait_on(FactKey::ModuleInterface(module), [follow_up])
+        JobEffects::wait_on_current(FactKey::ModuleInterface(module), [follow_up])
     }
 
     fn expand_root(
@@ -256,7 +256,7 @@ pub(crate) trait QuotedExpansionCtx<'tel> {
             } else {
                 vec![Job::DefineModule(module)]
             };
-            return Ok(Some(ExpandedValue::Blocked(JobEffects::wait_on(
+            return Ok(Some(ExpandedValue::Blocked(JobEffects::wait_on_current(
                 FactKey::ModuleDefined(module),
                 follow_up,
             ))));
@@ -325,7 +325,7 @@ pub(crate) trait QuotedExpansionCtx<'tel> {
     ) -> Result<ExpandedValue, super::scheduler::FatalError> {
         let macro_fact = FactKey::MacroExecutable(function);
         if self.world().fact_revision(macro_fact.clone()).is_none() {
-            return Ok(ExpandedValue::Blocked(JobEffects::wait_on(
+            return Ok(ExpandedValue::Blocked(JobEffects::wait_on_current(
                 macro_fact,
                 [Job::BuildMacroExecutable(function)],
             )));

@@ -29,7 +29,7 @@ use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DispatchBindings,
     Literal, LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId,
 };
-use super::super::drive::{FactKey, Job, JobEffects};
+use super::super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, RootId, function_id_of_closure_target};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallTargetSummary, SelectedCallee};
@@ -51,7 +51,7 @@ const PROTOCOL_DISPATCH_UNPLANNED_ATOM: &str = "protocol_dispatch_unplanned";
 pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let closed_fact = FactKey::SemanticClosed(root_id);
     let Some(closed_revision) = world.fact_revision(closed_fact.clone()) else {
-        return Ok(JobEffects::wait_on(
+        return Ok(JobEffects::wait_on_current(
             closed_fact,
             [super::super::Job::SealSemanticClosure(root_id)],
         ));
@@ -65,7 +65,7 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
             "semantic closure dependencies are stale",
         ));
     }
-    let reads = vec![closed_fact];
+    let reads = current_uses([closed_fact]);
     let mut executables = HashMap::new();
 
     for executable in &closure.executables {
@@ -159,10 +159,13 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
 pub(super) fn derive_abi_ready(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let materialized_fact = FactKey::MaterializedProgram(root_id);
     let Some(materialized_revision) = world.fact_revision(materialized_fact.clone()) else {
-        return Ok(JobEffects::wait_on(materialized_fact, [Job::MaterializeRoot(root_id)]));
+        return Ok(JobEffects::wait_on_current(
+            materialized_fact,
+            [Job::MaterializeRoot(root_id)],
+        ));
     };
 
-    let reads = vec![materialized_fact];
+    let reads = current_uses([materialized_fact]);
     let materialized = world.materialized_program(root_id);
     let mut plans = materialized
         .executables
@@ -233,10 +236,13 @@ enum DeliverySource {
 pub(super) fn derive_emission_ready(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let abi_ready_fact = FactKey::AbiReadyProgram(root_id);
     let Some(abi_ready_revision) = world.fact_revision(abi_ready_fact.clone()) else {
-        return Ok(JobEffects::wait_on(abi_ready_fact, [Job::DeriveAbiReady(root_id)]));
+        return Ok(JobEffects::wait_on_current(
+            abi_ready_fact,
+            [Job::DeriveAbiReady(root_id)],
+        ));
     };
 
-    let reads = vec![abi_ready_fact];
+    let reads = current_uses([abi_ready_fact]);
     let abi_ready = world.abi_ready_program(root_id);
 
     let mut executable_keys = abi_ready.executables.keys().cloned().collect::<Vec<_>>();
@@ -2360,7 +2366,7 @@ fn wait_for_fresh_closure(world: &World<'_>, root_id: RootId, reason: impl Into<
             root_id: opaque_debug(&root_id),
         },
     );
-    JobEffects::wait_on(
+    JobEffects::wait_on_current(
         FactKey::SemanticClosed(root_id),
         [super::super::Job::SealSemanticClosure(root_id)],
     )

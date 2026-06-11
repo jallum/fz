@@ -12,7 +12,7 @@ use crate::ir_lower::extern_semantic_contract;
 use crate::type_expr::ResolvedSpecDecl;
 
 use super::super::contract::FunctionContract;
-use super::super::drive::{FactKey, Job, JobEffects};
+use super::super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::super::identity::FunctionId;
 use super::super::scheduler::FatalError;
 use super::super::world::World;
@@ -56,8 +56,8 @@ pub(super) fn derive_function_contract(world: &mut World<'_>, function: Function
     }
     if !waits.is_empty() {
         return Ok(JobEffects {
-            reads,
-            waits,
+            reads: current_uses(reads),
+            waits: current_uses(waits),
             follow_up,
             ..JobEffects::default()
         });
@@ -91,7 +91,7 @@ fn publish_contract(
 ) -> JobEffects {
     let changed = world.define_function_contract(function, FunctionContract::from_resolved(contract));
     JobEffects {
-        reads,
+        reads: current_uses(reads),
         outputs: vec![FactKey::FunctionContract(function)],
         changed: changed
             .then_some(FactKey::FunctionContract(function))

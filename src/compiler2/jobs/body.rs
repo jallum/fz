@@ -25,7 +25,7 @@ use super::super::body::{
     DispatchBindings, Literal, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause,
     LoweredEntry, LoweredExtern, LoweredStep, LoweredTail, ReceiveAfter, ReceiveClause, ValueId,
 };
-use super::super::drive::{FactKey, Job, JobEffects};
+use super::super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::super::identity::{FunctionId, FunctionSource};
 use super::super::module_interface::{InterfaceCallableKind, InterfaceRequester};
 use super::super::namespace::{Namespace, NamespaceSymbol};
@@ -272,8 +272,8 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
     }
     if !waits.is_empty() {
         return Ok(JobEffects {
-            reads,
-            waits: waits.into_iter().collect(),
+            reads: current_uses(reads),
+            waits: current_uses(waits),
             follow_up: follow_up.into_iter().collect(),
             ..JobEffects::default()
         });
@@ -287,7 +287,7 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
         changed.push(FactKey::LoweredBody(function));
     }
     Ok(JobEffects {
-        reads,
+        reads: current_uses(reads),
         outputs,
         changed,
         ..JobEffects::default()

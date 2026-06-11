@@ -32,7 +32,7 @@ use super::super::artifact::{
     NativeEntryAbi, NativeProgram, ReturnAbi,
 };
 use super::super::body::{ControlDestination, ControlEntryId, Literal, LoweredExtern, ValueId};
-use super::super::drive::{FactKey, Job, JobEffects};
+use super::super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::super::identity::{FunctionId, RootId};
 use super::super::scheduler::FatalError;
 use super::super::types::Ty;
@@ -77,14 +77,17 @@ where
 pub(super) fn lower_native_program(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let backend_fact = FactKey::BackendProgram(root_id);
     if !world.has_fact(&backend_fact) {
-        return Ok(JobEffects::wait_on(backend_fact, [Job::LowerBackendProgram(root_id)]));
+        return Ok(JobEffects::wait_on_current(
+            backend_fact,
+            [Job::LowerBackendProgram(root_id)],
+        ));
     }
 
     let backend = world.backend_program(root_id);
     let program = NativeLowerer::new(world, root_id, &backend)?.lower()?;
     let changed = world.define_native_program(root_id, program);
     Ok(JobEffects {
-        reads: vec![backend_fact],
+        reads: current_uses([backend_fact]),
         outputs: vec![FactKey::NativeProgram(root_id)],
         changed: changed.then_some(FactKey::NativeProgram(root_id)).into_iter().collect(),
         ..JobEffects::default()

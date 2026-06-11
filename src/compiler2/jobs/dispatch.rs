@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::super::drive::{FactKey, Job, JobEffects};
+use super::super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::super::identity::{FunctionId, FunctionSource};
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::scheduler::FatalError;
@@ -74,8 +74,8 @@ pub(super) fn reify_guard_dispatch(world: &mut World<'_>, function: FunctionId) 
     )?;
     if !waits.is_empty() {
         return Ok(JobEffects {
-            reads,
-            waits: waits.into_iter().collect(),
+            reads: current_uses(reads),
+            waits: current_uses(waits),
             follow_up: follow_up.into_iter().collect(),
             ..JobEffects::default()
         });
@@ -87,7 +87,7 @@ pub(super) fn reify_guard_dispatch(world: &mut World<'_>, function: FunctionId) 
         .map_err(|err| emit_guard_dispatch_error(world, function, fn_span, err))?;
     let changed = world.define_guard_dispatch(function, dispatch);
     Ok(JobEffects {
-        reads,
+        reads: current_uses(reads),
         outputs: vec![FactKey::GuardDispatch(function)],
         changed: changed
             .then_some(FactKey::GuardDispatch(function))
@@ -116,7 +116,7 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
         if world.has_fact(&module_fact) {
             reads.push(module_fact);
         } else {
-            return Ok(JobEffects::wait_on(module_fact, [Job::DefineModule(module)]));
+            return Ok(JobEffects::wait_on_current(module_fact, [Job::DefineModule(module)]));
         }
     }
     let mut waits = HashSet::new();
@@ -144,8 +144,8 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
     }
     if !waits.is_empty() {
         return Ok(JobEffects {
-            reads,
-            waits: waits.into_iter().collect(),
+            reads: current_uses(reads),
+            waits: current_uses(waits),
             follow_up: follow_up.into_iter().collect(),
             ..JobEffects::default()
         });
@@ -165,7 +165,7 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
         .map_err(|error| emit_entry_dispatch_error(world, function, fn_span, error))?;
     let changed = world.define_entry_dispatch(function, plan);
     Ok(JobEffects {
-        reads,
+        reads: current_uses(reads),
         outputs: vec![FactKey::EntryDispatch(function)],
         changed: changed
             .then_some(FactKey::EntryDispatch(function))
