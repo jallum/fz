@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.17.2"
+  ],
   "blocks": [],
   "created": "2026-06-11T09:57:05Z",
   "description": "Rework cross-module source publication to consume `ModuleInterface` instead of `module_exports`. `import only:` and `require only:` should use exact interface lookup, mint callable references lazily, and record requester provenance as obligations. Bare `import`/`require` and `except:` variants should use `exported_functions` / `exported_macros` and wait on `ModuleInterface` when the full set is not yet available. Signal: `apply_import` and `apply_require` become thin orchestration over interface queries, and compiler2 stops duplicating export-selection policy in source publication.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 interface consumers: move import/require onto interface queries and lazy obligations",
   "type": "task",
-  "updated_at": "2026-06-11T09:57:05Z"
+  "updated_at": "2026-06-11T09:57:25Z"
 }
