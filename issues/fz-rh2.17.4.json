@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.17.3"
+  ],
   "blocks": [],
   "created": "2026-06-11T09:57:05Z",
   "description": "Move exact missing-export detection and related cross-module callable visibility checks into interface settlement. Use requester provenance recorded on interface obligations to emit precise diagnostics when an interface definition disagrees with prior exact references, and migrate remote callable lookup to the same interface model. Signal: compiler2 no longer reconstructs missing-export errors indirectly from unresolved function waits, and remote visibility checks stop overusing `ModuleDefined` as a stand-in for interface readiness.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 interface settlement: centralize missing-export diagnostics and remote callable lookup",
   "type": "task",
-  "updated_at": "2026-06-11T09:57:05Z"
+  "updated_at": "2026-06-11T09:57:25Z"
 }
