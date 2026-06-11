@@ -6,6 +6,7 @@
   "blocks": [
     "fz-rh2.18.1"
   ],
+  "closed_at": "2026-06-11T21:34:45Z",
   "created": "2026-06-11T21:02:58Z",
   "description": "Goal: let jobs state whether they need current evidence for iteration or settled evidence for safe downstream consumption. Signal: scheduler tests prove a dirty present fact satisfies current readers but blocks settled waiters, stable recompute can wake settled waiters without a revision bump, and multi-publisher facts settle only when every relevant producer is clean. Strategy: replace raw read/wait fact sets with FactUse keyed by readiness, track content-dirty jobs separately from present facts, compute settledness from producer cleanliness and the read dependency cone, and wake on readiness transitions as well as revision transitions.",
   "id": "fz-rh2.18.4",
@@ -18,8 +19,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 fact engine: make current and settled fact uses first-class",
   "type": "task",
-  "updated_at": "2026-06-11T21:34:22Z"
+  "updated_at": "2026-06-11T21:34:45Z"
 }
