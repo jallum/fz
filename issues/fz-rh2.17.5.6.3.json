@@ -21,11 +21,15 @@
     {
       "text": "Investigation finding: compiler2 body-authority/provenance is real, but the native handoff currently bottoms out in raw fz_ir where Term::Call/TailCall require callee: FnId. Representing provider-boundary calls there currently means creating synthetic __external__ bodies plus Module.external_call_edges and later rewriting those callsites. Under the no-shim/no-bridge rule, fz-rh2.17.5.6.5 must modernize raw IR call targets first or this ticket will simply re-encode the old-world side-table model at the boundary.",
       "timestamp": "2026-06-11T16:01:15Z"
+    },
+    {
+      "text": "Implemented provider-boundary callable authority through compiler2: FunctionId remains identity; semantic selected callees and artifact/backend direct-call targets now distinguish local executable targets from provider-boundary functions. Interface-only provider calls no longer wait for DefineFunction/local activation/recursive graph facts, and native lowering emits raw IR DirectCallTarget::ProviderBoundary(Mfa) without synthetic stubs.",
+      "timestamp": "2026-06-11T16:37:50Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Compiler2 callable provenance: separate FunctionId identity from body authority and carry provider-boundary calls without DefineFunction",
   "type": "bug",
-  "updated_at": "2026-06-11T16:01:15Z"
+  "updated_at": "2026-06-11T16:37:50Z"
 }
