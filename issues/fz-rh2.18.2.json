@@ -11,9 +11,15 @@
   "id": "fz-rh2.18.2",
   "labels": [],
   "parent": "fz-rh2.18",
+  "comments": [
+    {
+      "text": "Split compiler2 fact publication into separate output ownership and content-change channels. Verified with cargo test --lib compiler2::facts_test:: -- --nocapture, cargo test --lib compiler2::scheduler_test:: -- --nocapture, cargo test --lib compiler2::source_publish_test:: -- --nocapture, cargo test --lib compiler2::drive_test:: -- --nocapture, and cargo test --lib compiler2:: -- --nocapture.",
+      "timestamp": "2026-06-11T21:21:14Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Compiler2 fact engine: split fact ownership from content movement",
   "type": "task",
-  "updated_at": "2026-06-11T21:06:54Z"
+  "updated_at": "2026-06-11T21:21:14Z"
 }
