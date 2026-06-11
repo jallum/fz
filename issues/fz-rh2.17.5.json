@@ -7,13 +7,13 @@
   ],
   "blocks": [],
   "created": "2026-06-11T09:57:05Z",
-  "description": "Remove the retired compiler2 export path once interface facts own visibility. Delete `ModuleExport`, `module_exports`, `find_export`, and the duplicated import/require selection helpers. Update telemetry and docs to state the new boundary: `ModuleDefined` is local body/scoping readiness, `ModuleInterface` is cross-module callable visibility. Signal: the old export-selection path is gone, docs match the code, and compiler2 tests prove the interface boundary directly.",
+  "description": "Finish the cutover cleanly. Centralize exact missing-export detection and related visibility diagnostics in interface settlement using requester provenance recorded on interface obligations. Delete `World.module_exports`, `find_export`, export-shaped helper logic, and any remaining compiler2 assumptions that protocols or remote callables are special because the interface/callable substrate was incomplete.\n\nSweep later compiler2 seams and tests for leftover `Named` assumptions or protocol-specific visibility logic and remove them. Update telemetry and docs to state the new boundary: `ModuleDefined` is local body/scoping readiness, `ModuleInterface` is cross-module callable visibility, and compiler2 is functions all the way down.\n\nSignal: the old export/name fallback path is gone, docs match the code, and compiler2 tests prove the interface boundary directly.",
   "id": "fz-rh2.17.5",
   "labels": [],
   "parent": "fz-rh2.17",
   "priority": 2,
   "status": "open",
-  "title": "Compiler2 interface closeout: delete ModuleExport path, update telemetry, and restate the invariants",
+  "title": "Compiler2 interface closeout: settle obligations, sweep remaining name/protocol residue, and restate invariants",
   "type": "task",
-  "updated_at": "2026-06-11T09:57:25Z"
+  "updated_at": "2026-06-11T11:38:49Z"
 }
