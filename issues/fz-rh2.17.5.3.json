@@ -15,11 +15,15 @@
     {
       "text": "After the current batch, cargo test --lib compiler2:: -- --nocapture still ends in a signal crash after known failing tests. The latest reproduction terminated with SIGBUS, not SIGSEGV, after the remaining port_macros/port_misc/port_type_infer failures.",
       "timestamp": "2026-06-11T14:17:03Z"
+    },
+    {
+      "text": "During fz-rh2.17.5.6.3 verification, plain parallel cargo test --lib compiler2:: crashed with SIGSEGV before producing the known failure summary. The controlled single-thread run cargo test --lib compiler2:: -- --test-threads=1 completed normally with the existing 10 failures, so the crash is tied to the parallel suite/harness path rather than this provider-boundary assertion path.",
+      "timestamp": "2026-06-11T16:37:49Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Compiler2 test sweep: investigate post-failure signal crash during wider compiler2:: runs",
   "type": "bug",
-  "updated_at": "2026-06-11T14:17:03Z"
+  "updated_at": "2026-06-11T16:37:49Z"
 }
