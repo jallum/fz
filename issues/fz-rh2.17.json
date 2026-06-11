@@ -5,13 +5,13 @@
     "fz-rh2.16.6"
   ],
   "created": "2026-06-11T09:03:40Z",
-  "description": "Goal: make cross-module visibility a first-class compiler2 fact. `ModuleDefined(module)` will continue to mean the module body has been scoped/published, while a new `ModuleInterface(module)` fact will mean the module's exported callable surface is available. Strategy: move compiler2 from stringy `ModuleExport` vectors and ad hoc import/require filtering to a module-owned interface model built around `FunctionId`-backed callable entries, exact obligation tracking with requester provenance, and `Ready|Pending` set selection for `All`/`Except` import and require forms. Signal: local, runtime, and external modules all publish one interface shape; exact `only:` imports/requires can stay lazy through interface obligations; `All`/`Except` wait on `ModuleInterface` instead of `ModuleDefined`; missing-export diagnostics come from interface settlement with real requester spans; compiler2 no longer duplicates export selection logic across callers.",
+  "description": "Goal: make cross-module callable visibility a first-class compiler2 fact and collapse compiler2 onto function identities all the way down. `ModuleDefined(module)` will continue to mean the module body has been scoped/published; a new `ModuleInterface(module)` fact will mean the module's exported callable surface is available.\n\nStrategy: replace `ModuleSurface.exports`, `World.module_exports`, and string-shaped export/callee residue with a module-owned callable interface built around `FunctionId`-backed entries, exact obligation tracking with requester provenance, and `Ready|Pending` set selection for `All`/`Except` import and require forms. Protocol modules should ride this same callable surface instead of remaining special, and later compiler tiers should stop carrying `Named` callees or named function refs once interface-backed resolution exists.\n\nSignal: local, runtime, external, and protocol modules all publish one interface shape; import/require/remote lookup consume that interface; semantic/artifact/native tiers no longer carry unresolved named callable placeholders; missing-export diagnostics come from interface settlement with real requester spans; compiler2 no longer duplicates export selection or protocol-name specialness across callers.",
   "id": "fz-rh2.17",
   "labels": [],
   "parent": "fz-rh2",
   "priority": 1,
   "status": "open",
-  "title": "Compiler2 module interface facts: module-owned callable visibility and external import resolution",
+  "title": "Compiler2 callable interfaces: module-owned visibility, function identities, and external import resolution",
   "type": "epic",
-  "updated_at": "2026-06-11T09:57:25Z"
+  "updated_at": "2026-06-11T11:38:49Z"
 }
