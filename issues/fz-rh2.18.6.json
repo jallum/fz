@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.18.5"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.18.7"
+  ],
   "created": "2026-06-11T21:03:16Z",
   "description": "Goal: return facts distinguish missing evidence, produced unknown evidence, no-return control flow, and known semantic type values. Signal: semantic tests prove missing return evidence is not represented as none, underconstrained evidence is not represented as any, and recursive callers may read current ReturnEvidence during convergence while closure/materialization waits for settled evidence. Strategy: replace the ActivationMap return_ty Option\u003cTy\u003e slot and FactKey::ReturnType contract with ReturnEvidence, update call resolution to consume current return evidence honestly, and keep any and none as domain type values only.",
   "id": "fz-rh2.18.6",
