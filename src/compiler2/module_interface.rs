@@ -9,6 +9,7 @@ use super::namespace::NamespaceSymbol;
 pub enum InterfaceCallableKind {
     PublicFunction,
     Macro,
+    Callable,
 }
 
 impl InterfaceCallableKind {
@@ -16,6 +17,7 @@ impl InterfaceCallableKind {
         match self {
             Self::PublicFunction => NamespaceSymbol::Function(function),
             Self::Macro => NamespaceSymbol::Macro(function),
+            Self::Callable => NamespaceSymbol::Callable(function),
         }
     }
 }
@@ -55,7 +57,11 @@ pub struct InterfaceExpectation {
 
 impl InterfaceExpectation {
     pub fn matches_callable(&self, callable: &ModuleInterfaceCallable) -> bool {
-        self.kind == callable.kind && callable.matches_name_arity(&self.name, self.arity)
+        callable.matches_name_arity(&self.name, self.arity)
+            && match self.kind {
+                InterfaceCallableKind::Callable => true,
+                kind => kind == callable.kind,
+            }
     }
 }
 
@@ -119,6 +125,12 @@ impl ModuleInterface {
             return;
         }
         self.expectations.push(expectation);
+    }
+
+    pub fn inherit_expectations_from(&mut self, prior: &ModuleInterface) {
+        for expectation in prior.expectations() {
+            self.record_expectation(expectation.clone());
+        }
     }
 
     fn filtered_callables(

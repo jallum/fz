@@ -390,7 +390,7 @@ pub(super) fn resolve_guard_callee(
     call: &GuardCall,
 ) -> Result<FunctionId, FatalError> {
     match world.lookup_callable_namespace(namespace, &call.name, call.arity) {
-        Some(NamespaceSymbol::Function(function)) => Ok(function),
+        Some(NamespaceSymbol::Function(function)) | Some(NamespaceSymbol::Callable(function)) => Ok(function),
         Some(NamespaceSymbol::Macro(_)) => Err(emit_job_diagnostic(
             world,
             Diagnostic::error(
@@ -423,7 +423,7 @@ pub(super) fn resolve_guard_callee_checked(
     arity: usize,
 ) -> FunctionId {
     match world.lookup_callable_namespace(namespace, name, arity) {
-        Some(NamespaceSymbol::Function(function)) => function,
+        Some(NamespaceSymbol::Function(function)) | Some(NamespaceSymbol::Callable(function)) => function,
         Some(NamespaceSymbol::Macro(_)) => {
             panic!("guard analysis should reject macro calls before building dispatch artifacts")
         }

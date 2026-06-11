@@ -659,13 +659,6 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     }
                     bind_backend_value(ctx, executable, env, *value, var);
                 }
-                BackendStep::NamedFunctionRef { name, arity, .. } => {
-                    return Err(incomplete_native_program(
-                        self.world,
-                        self.root_id,
-                        format!("native lowering reached unresolved fn ref `{name}/{arity}`"),
-                    ));
-                }
                 BackendStep::Lambda {
                     value,
                     function,

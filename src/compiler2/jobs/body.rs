@@ -27,6 +27,7 @@ use super::super::body::{
 };
 use super::super::drive::{FactKey, Job, JobEffects};
 use super::super::identity::{FunctionId, FunctionSource};
+use super::super::module_interface::{InterfaceCallableKind, InterfaceRequester};
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::scheduler::FatalError;
 use super::super::world::World;
@@ -117,11 +118,6 @@ enum ExprStep {
     FunctionRef {
         value: ValueId,
         function: FunctionId,
-    },
-    NamedFunctionRef {
-        value: ValueId,
-        name: String,
-        arity: usize,
     },
     DirectCall {
         value: ValueId,
@@ -770,7 +766,9 @@ impl<'a, 'w, 'tel, 'env, 'steps> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps> {
             return name.to_string();
         };
         let function = match symbol {
-            NamespaceSymbol::Function(function) | NamespaceSymbol::Macro(function) => function,
+            NamespaceSymbol::Function(function)
+            | NamespaceSymbol::Macro(function)
+            | NamespaceSymbol::Callable(function) => function,
             NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) => return name.to_string(),
         };
         let module = self.lowerer.world.function_module(function);
@@ -1032,6 +1030,44 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                         steps.push(ExprStep::FunctionRef { value, function });
                         Ok(value)
                     }
+                    Some(NamespaceSymbol::Callable(function)) => {
+                        let module = self.world.function_module(function);
+                        if let Some(interface) = self.world.module_interface_if_present(module)
+                            && let Some(callable) = interface
+                                .callables()
+                                .iter()
+                                .find(|callable| callable.function == function)
+                        {
+                            return match callable.kind {
+                                InterfaceCallableKind::PublicFunction => {
+                                    let value = self.fresh_value();
+                                    steps.push(ExprStep::FunctionRef { value, function });
+                                    Ok(value)
+                                }
+                                InterfaceCallableKind::Macro => Err(emit_job_diagnostic(
+                                    self.world,
+                                    Diagnostic::error(
+                                        codes::LOWER_UNSUPPORTED,
+                                        format!("macro `{name}` cannot be used as a runtime value"),
+                                        expr.span,
+                                    ),
+                                )),
+                                InterfaceCallableKind::Callable => unreachable!(
+                                    "settled module interfaces should not publish unresolved callable kinds"
+                                ),
+                            };
+                        }
+                        Err(emit_job_diagnostic(
+                            self.world,
+                            Diagnostic::error(
+                                codes::LOWER_UNSUPPORTED,
+                                format!(
+                                    "compiler2 lowering needs the callable kind for `{name}` before it can use it as a runtime value"
+                                ),
+                                expr.span,
+                            ),
+                        ))
+                    }
                     Some(NamespaceSymbol::Macro(_)) => Err(emit_job_diagnostic(
                         self.world,
                         Diagnostic::error(
@@ -1054,28 +1090,8 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             }
             Expr::FnRef { name, arity } => {
                 let value = self.fresh_value();
-                match self.world.lookup_callable_namespace(self.namespace, name, *arity) {
-                    Some(NamespaceSymbol::Function(function)) => {
-                        steps.push(ExprStep::FunctionRef { value, function });
-                    }
-                    Some(NamespaceSymbol::Macro(_)) => {
-                        return Err(emit_job_diagnostic(
-                            self.world,
-                            Diagnostic::error(
-                                codes::LOWER_UNSUPPORTED,
-                                format!("macro `{name}/{arity}` cannot be captured as a runtime function reference"),
-                                expr.span,
-                            ),
-                        ));
-                    }
-                    Some(NamespaceSymbol::Module(_)) | Some(NamespaceSymbol::Type(_)) | None => {
-                        steps.push(ExprStep::NamedFunctionRef {
-                            value,
-                            name: name.clone(),
-                            arity: *arity,
-                        });
-                    }
-                }
+                let function = self.resolve_runtime_function(name, *arity, expr.span, "captured runtime function")?;
+                steps.push(ExprStep::FunctionRef { value, function });
                 Ok(value)
             }
             Expr::List(items, tail) => {
@@ -1278,45 +1294,90 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
     }
 
     fn resolve_direct_callee(&mut self, name: &str, arity: usize, span: Span) -> Result<DirectCallee, FatalError> {
-        Ok(
-            match self.world.lookup_callable_namespace(self.namespace, name, arity) {
-                Some(NamespaceSymbol::Function(function)) => DirectCallee::Function(function),
-                Some(NamespaceSymbol::Macro(_)) => {
-                    return Err(emit_job_diagnostic(
-                        self.world,
-                        Diagnostic::error(
-                            codes::LOWER_UNSUPPORTED,
-                            format!("macro call `{name}/{arity}` reached body lowering without source expansion"),
-                            span,
-                        ),
-                    ));
-                }
-                Some(NamespaceSymbol::Module(_)) | Some(NamespaceSymbol::Type(_)) => DirectCallee::Named {
-                    name: name.to_string(),
-                    arity,
-                },
-                None => {
-                    if let Some(fixed_arity) = self.world.min_variadic_arity(self.namespace, name)
-                        && arity < fixed_arity
-                    {
-                        return Err(emit_job_diagnostic(
-                            self.world,
-                            Diagnostic::error(
-                                codes::LOWER_UNSUPPORTED,
-                                format!(
-                                    "variadic fn `{}` expects at least {} arg(s), but this call provides {}",
-                                    name, fixed_arity, arity
-                                ),
-                                span,
-                            ),
-                        ));
-                    }
-                    DirectCallee::Named {
-                        name: name.to_string(),
-                        arity,
-                    }
-                }
-            },
+        let function = self.resolve_runtime_function(name, arity, span, "direct runtime callee")?;
+        Ok(DirectCallee::Function(function))
+    }
+
+    fn resolve_runtime_function(
+        &mut self,
+        name: &str,
+        arity: usize,
+        span: Span,
+        context: &str,
+    ) -> Result<FunctionId, FatalError> {
+        if let Some((module_path, local_name)) = name.rsplit_once('.') {
+            let Some(module) = self.world.lookup_module_path(self.namespace, module_path) else {
+                return Err(self.unbound_runtime_function(name, arity, span, context));
+            };
+            self.reject_too_few_variadic_args(name, arity, span)?;
+            if let Some(function) = self
+                .world
+                .module_interface_if_present(module)
+                .and_then(|interface| interface.public_function_with_name_arity(local_name, arity))
+            {
+                return Ok(function);
+            }
+            return Ok(self.world.reference_module_interface_callable(
+                module,
+                local_name.to_string(),
+                arity,
+                InterfaceCallableKind::PublicFunction,
+                Some(self.interface_requester(span)),
+            ));
+        }
+
+        match self.world.lookup_callable_namespace(self.namespace, name, arity) {
+            Some(NamespaceSymbol::Function(function)) | Some(NamespaceSymbol::Callable(function)) => Ok(function),
+            Some(NamespaceSymbol::Macro(_)) => Err(emit_job_diagnostic(
+                self.world,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    format!("macro call `{name}/{arity}` reached body lowering without source expansion"),
+                    span,
+                ),
+            )),
+            Some(NamespaceSymbol::Module(_)) | Some(NamespaceSymbol::Type(_)) | None => {
+                self.reject_too_few_variadic_args(name, arity, span)?;
+                Err(self.unbound_runtime_function(name, arity, span, context))
+            }
+        }
+    }
+
+    fn reject_too_few_variadic_args(&mut self, name: &str, arity: usize, span: Span) -> Result<(), FatalError> {
+        if let Some(fixed_arity) = self.world.min_variadic_arity(self.namespace, name)
+            && arity < fixed_arity
+        {
+            return Err(emit_job_diagnostic(
+                self.world,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    format!(
+                        "variadic fn `{}` expects at least {} arg(s), but this call provides {}",
+                        name, fixed_arity, arity
+                    ),
+                    span,
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn interface_requester(&self, span: Span) -> InterfaceRequester {
+        InterfaceRequester {
+            code: self.source.code,
+            module: self.source.owner_module,
+            span,
+        }
+    }
+
+    fn unbound_runtime_function(&mut self, name: &str, arity: usize, span: Span, context: &str) -> FatalError {
+        emit_job_diagnostic(
+            self.world,
+            Diagnostic::error(
+                codes::LOWER_UNBOUND,
+                format!("compiler2 lowering found unresolved {context} `{name}/{arity}`"),
+                span,
+            ),
         )
     }
 
@@ -2701,11 +2762,6 @@ fn lower_projection_step(step: &ExprStep) -> LoweredStep {
             value: *value,
             function: *function,
         },
-        ExprStep::NamedFunctionRef { value, name, arity } => LoweredStep::NamedFunctionRef {
-            value: *value,
-            name: name.clone(),
-            arity: *arity,
-        },
         ExprStep::Lambda {
             value,
             function,
@@ -2811,7 +2867,6 @@ fn values_defined_by_steps(steps: &[LoweredStep]) -> HashSet<ValueId> {
             | LoweredStep::Struct { value, .. }
             | LoweredStep::Bitstring { value, .. }
             | LoweredStep::FunctionRef { value, .. }
-            | LoweredStep::NamedFunctionRef { value, .. }
             | LoweredStep::Lambda { value, .. }
             | LoweredStep::BinaryOp { value, .. }
             | LoweredStep::UnaryOp { value, .. }
@@ -2942,7 +2997,7 @@ fn used_values_in_entry(entry: &LoweredEntry) -> HashSet<ValueId> {
 fn collect_used_values(steps: &[LoweredStep], out: &mut HashSet<ValueId>) {
     for step in steps {
         match step {
-            LoweredStep::Const { .. } | LoweredStep::FunctionRef { .. } | LoweredStep::NamedFunctionRef { .. } => {}
+            LoweredStep::Const { .. } | LoweredStep::FunctionRef { .. } => {}
             LoweredStep::Tuple { items, .. } => out.extend(items.iter().copied()),
             LoweredStep::List { items, tail, .. } => {
                 out.extend(items.iter().copied());

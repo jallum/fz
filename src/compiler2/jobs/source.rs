@@ -126,6 +126,8 @@ pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Resul
                 mut outputs,
                 interface,
             } => {
+                let interface = world.merge_module_interface_expectations(module_id, interface);
+                world.validate_module_interface_expectations(module_id, &interface)?;
                 let changed = world.define_module(module_id, namespace, interface);
                 outputs.push((FactKey::ModuleDefined(module_id), changed));
                 outputs.push((FactKey::ModuleInterface(module_id), changed));
@@ -180,6 +182,8 @@ pub(super) fn define_module_interface(world: &mut World<'_>, module_id: ModuleId
     let Some(interface) = world.module_interface_if_present(module_id) else {
         return Ok(JobEffects::wait_on(FactKey::ModuleIndexed(module_id), []));
     };
+    let interface = world.merge_module_interface_expectations(module_id, interface);
+    world.validate_module_interface_expectations(module_id, &interface)?;
     let changed = world.define_module_interface(module_id, interface);
     Ok(JobEffects {
         outputs: vec![(FactKey::ModuleInterface(module_id), changed)],

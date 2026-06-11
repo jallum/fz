@@ -71,7 +71,6 @@ pub enum Literal {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DirectCallee {
     Function(FunctionId),
-    Named { name: String, arity: usize },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -267,11 +266,6 @@ pub enum LoweredStep {
     FunctionRef {
         value: ValueId,
         function: FunctionId,
-    },
-    NamedFunctionRef {
-        value: ValueId,
-        name: String,
-        arity: usize,
     },
     Lambda {
         value: ValueId,

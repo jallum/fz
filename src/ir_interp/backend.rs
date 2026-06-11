@@ -857,11 +857,6 @@ fn eval_steps(
             ProgramStep::FunctionRef { value, function } => {
                 env.insert(*value, AnyValue::FnRef(FnId(function.as_u32())));
             }
-            ProgramStep::NamedFunctionRef { name, arity, .. } => {
-                return Err(format!(
-                    "backend interpreter reached unresolved fn ref `{name}/{arity}`"
-                ));
-            }
             ProgramStep::Lambda {
                 value,
                 function,

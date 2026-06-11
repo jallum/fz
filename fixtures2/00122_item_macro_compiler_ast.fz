@@ -1,5 +1,5 @@
 defmacro make_const(name, value) do
-  {:fn_def, name, value}
+  {:fn, %{}, [{name, %{}, []}, [{:do, value}]]}
 end
 
 make_const(:answer, 42)

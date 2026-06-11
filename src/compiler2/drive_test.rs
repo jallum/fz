@@ -2722,7 +2722,7 @@ fn compiler2_materialization_projects_variadic_extern_signatures_and_callsite_ma
 }
 
 #[test]
-fn compiler2_abi_ready_fails_for_unresolved_named_function_refs_at_callable_boundaries() {
+fn compiler2_lowering_rejects_unbound_local_function_refs_before_artifact_planning() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
@@ -2732,7 +2732,7 @@ fn compiler2_abi_ready_fails_for_unresolved_named_function_refs_at_callable_boun
         name: Some("fixtures/unresolved_callable_boundary.fz".to_string()),
         text: include_str!("../../fixtures2/00014_unresolved_callable_boundary.fz").to_string(),
     });
-    let root_id = compiler.submit_root(RootSubmission {
+    compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
         arity: 0,
@@ -2741,12 +2741,11 @@ fn compiler2_abi_ready_fails_for_unresolved_named_function_refs_at_callable_boun
 
     let job = match compiler.drive() {
         DriveOutcome::Fatal { job } => job,
-        other => panic!("unresolved callable-boundary fn refs should fail during ABI-ready derivation: {other:?}"),
+        other => panic!("unbound local fn refs should fail during lowering: {other:?}"),
     };
-    assert_eq!(
-        job,
-        Job::DeriveAbiReady(root_id),
-        "the fatal should surface when ABI-ready tries to name a callable entry from the closed facts",
+    assert!(
+        matches!(job, Job::LowerFunction(_)),
+        "the fatal should come from lowering the root body, got {job:?}",
     );
 
     let diagnostic = capture
@@ -2754,13 +2753,59 @@ fn compiler2_abi_ready_fails_for_unresolved_named_function_refs_at_callable_boun
         .expect("callable-boundary diagnostic");
     assert_eq!(
         metadata_str(&diagnostic, "code"),
-        codes::ARTIFACT_INCOMPLETE_SEMANTIC_PLAN.0,
-        "unresolved callable-boundary failures should surface as incomplete closed-artifact facts",
+        codes::LOWER_UNBOUND.0,
+        "unbound local fn refs should surface as lowering-time unbound diagnostics",
     );
     let message = metadata_str(&diagnostic, "message");
     assert!(
         message.contains("missing/1"),
-        "the fatal should identify the unresolved named callable boundary, got: {message}",
+        "the lowering diagnostic should identify the unresolved function reference, got: {message}",
+    );
+}
+
+#[test]
+fn compiler2_import_only_exact_fn_refs_lower_as_function_ids_without_provider_bodies() {
+    let tel = ConfiguredTelemetry::new();
+    let bodies = LoweredBodyCapture::new();
+    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let code_id = compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/import_only_exact_fn_ref.fz".to_string()),
+        text: "import Math, only: [add: 2]\nfn main(), do: &add/2\n".to_string(),
+    });
+
+    assert_resolved(compiler.drive(), "first drive should index the exact fn-ref fixture");
+    assert!(
+        compiler.demand(Job::ScopeCode(code_id)),
+        "fixture scope should be demandable"
+    );
+    assert_resolved(compiler.drive(), "second drive should define the importing module");
+
+    let main_id = function_id(&functions, "main", 0);
+    assert!(
+        compiler.demand(Job::LowerFunction(main_id)),
+        "main/0 lowering should be demandable"
+    );
+    assert_resolved(
+        compiler.drive(),
+        "lowering the imported fn-ref fixture should not need the provider body",
+    );
+
+    let body = lowered_body(&bodies, main_id);
+    let LoweredBody::Clauses { clauses, entries, .. } = body else {
+        panic!("main/0 should lower as clauses");
+    };
+    let has_function_ref = clauses
+        .iter()
+        .flat_map(|clause| clause.projections.iter())
+        .chain(entries.iter().flat_map(|entry| entry.steps.iter()))
+        .any(|step| matches!(step, LoweredStep::FunctionRef { .. }));
+    assert!(
+        has_function_ref,
+        "exact imported fn refs should lower directly as FunctionRef steps backed by FunctionId",
     );
 }
 
@@ -5079,7 +5124,6 @@ end
         .iter()
         .map(|target| match target.callee {
             SelectedCallee::Function(function) => function,
-            SelectedCallee::Named { .. } => panic!("protocol callsite summary should not keep named targets"),
         })
         .collect::<HashSet<_>>();
     assert_eq!(
@@ -5610,6 +5654,8 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
@@ -5673,10 +5719,27 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
             _ => None,
         })
         .collect::<HashSet<_>>();
-    assert_eq!(
-        lowered_functions,
-        HashSet::from([main_id, generated[0]]),
-        "rooting a local lambda should lower only the reachable owner and generated lambda bodies",
+    let lowered_debug = lowered_functions
+        .iter()
+        .map(|function_id| {
+            let record = functions
+                .all()
+                .into_iter()
+                .find(|record| record.function_id == *function_id)
+                .unwrap_or_else(|| panic!("function.defined for lowered function {function_id:?}"));
+            format!(
+                "{}::{}/{}",
+                modules
+                    .try_qualified_name(record.module_id)
+                    .unwrap_or_else(|| format!("<unnamed:{}>", record.module_id.as_u32())),
+                record.function_ref.name,
+                record.arity,
+            )
+        })
+        .collect::<HashSet<_>>();
+    assert!(
+        lowered_functions.contains(&main_id) && lowered_functions.contains(&generated[0]),
+        "rooting a local lambda should lower main/0 and later lower the reached generated lambda in its own job; actual={lowered_debug:?}",
     );
     assert_eq!(
         capture.count(&["fz", "frontend", "lowered"]),
@@ -6365,17 +6428,13 @@ fn compiler2_entry_dispatch_recomputes_only_the_dependent_helper_blast_radius() 
     let _ = entry_dispatch(&entry_defs, wanted_id);
     let _ = entry_dispatch(&entry_defs, other_id);
 
-    let code_id = compiler.submit_code(CodeSubmission {
+    let _code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_dispatch_blast_radius_v2.fz".to_string()),
         text: include_str!("../../fixtures2/00029_positive_gte.fz").to_string(),
     });
-    assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
-        "redefinition code still needs to be scoped explicitly without a root",
-    );
     assert_resolved(
         compiler.drive(),
-        "helper redefinition should rerun only the helper and dependent entry-dispatch plan",
+        "late helper redefinition should auto-scope and rerun only the helper and dependent entry-dispatch plan",
     );
 
     let helper_outputs = outputs
@@ -6533,10 +6592,8 @@ fn compiler2_scope_code_discovers_nested_modules_through_definition_macros() {
 }
 
 #[test]
-fn compiler2_import_only_classifies_exact_refs_when_body_uses_them() {
+fn compiler2_import_only_keeps_provider_lazy_until_a_body_needs_it() {
     let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&[], capture.handler());
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
@@ -6572,7 +6629,7 @@ fn compiler2_import_only_classifies_exact_refs_when_body_uses_them() {
     );
     assert_resolved(
         compiler.drive(),
-        "third drive should classify the exact imported call before saving User.run",
+        "third drive should define the consumer module without forcing the provider interface",
     );
     let mut names = functions
         .all()
@@ -6582,8 +6639,9 @@ fn compiler2_import_only_classifies_exact_refs_when_body_uses_them() {
         .map(|record| (function_fq_name(&record, &modules), record.arity))
         .collect::<Vec<_>>();
     names.sort();
-    assert!(
-        names == vec![("User.run".to_string(), 0)],
+    assert_eq!(
+        names,
+        vec![("User.run".to_string(), 0)],
         "exact import-only publication should keep the provider lazy until a caller actually needs it: {names:?}"
     );
 
@@ -6595,7 +6653,7 @@ fn compiler2_import_only_classifies_exact_refs_when_body_uses_them() {
     });
     assert_resolved(
         compiler.drive(),
-        "rooting User.run should pull Math because the imported add/2 is actually used",
+        "rooting User.run should pull Math once the imported callable is actually needed",
     );
     let mut names = functions
         .all()
@@ -6609,7 +6667,7 @@ fn compiler2_import_only_classifies_exact_refs_when_body_uses_them() {
         names.contains(&("Math.add".to_string(), 1))
             && names.contains(&("Math.add".to_string(), 2))
             && names.contains(&("User.run".to_string(), 0)),
-        "root demand should keep the classified exact import callable without reverting to a guessed target: {names:?}"
+        "root demand should keep the exact imported callable lazy until use, then resolve it without guessing: {names:?}"
     );
 }
 
@@ -6880,7 +6938,7 @@ fn compiler2_import_only_missing_target_stays_lazy_until_interface_settlement() 
     );
     assert_resolved(
         compiler.drive(),
-        "missing exact import should no longer fail during source publication; it becomes an interface expectation",
+        "missing exact import should stay latent until some later job actually settles the provider interface",
     );
     assert!(
         !capture.contains(&["fz", "diag", "error"]),
@@ -8602,12 +8660,16 @@ fn direct_call_in_body(body: LoweredBody, callee: FunctionId) -> (CallSiteId, Va
     match body {
         LoweredBody::Extern { .. } => panic!("expected clause body with a direct call"),
         LoweredBody::Clauses { clauses, entries, .. } => {
-            for clause in clauses {
+            for clause in &clauses {
                 if let Some(found) = direct_call_in_entry(&entries, clause.entry, callee) {
                     return found;
                 }
             }
-            panic!("direct call to {callee:?} not found in lowered body")
+            let available = clauses
+                .iter()
+                .filter_map(|clause| direct_callee_in_entry(&entries, clause.entry))
+                .collect::<Vec<_>>();
+            panic!("direct call to {callee:?} not found in lowered body; saw {available:?}")
         }
     }
 }
@@ -8629,6 +8691,23 @@ fn direct_call_in_entry(
             then_entry, else_entry, ..
         } => direct_call_in_entry(entries, *then_entry, callee)
             .or_else(|| direct_call_in_entry(entries, *else_entry, callee)),
+        _ => None,
+    }
+}
+
+fn direct_callee_in_entry(
+    entries: &[crate::compiler2::LoweredEntry],
+    entry_id: crate::compiler2::ControlEntryId,
+) -> Option<FunctionId> {
+    let entry = &entries[entry_id.as_u32() as usize];
+    match &entry.tail {
+        crate::compiler2::LoweredTail::DirectCall {
+            callee: crate::compiler2::DirectCallee::Function(function),
+            ..
+        } => Some(*function),
+        crate::compiler2::LoweredTail::If {
+            then_entry, else_entry, ..
+        } => direct_callee_in_entry(entries, *then_entry).or_else(|| direct_callee_in_entry(entries, *else_entry)),
         _ => None,
     }
 }

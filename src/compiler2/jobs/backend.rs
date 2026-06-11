@@ -234,11 +234,6 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
                 value: *value,
                 function: *function,
             },
-            LoweredStep::NamedFunctionRef { value, name, arity } => BackendStep::NamedFunctionRef {
-                value: *value,
-                name: name.clone(),
-                arity: *arity,
-            },
             LoweredStep::Lambda {
                 value,
                 function,
@@ -565,7 +560,6 @@ fn collect_entry_input_need(
             | LoweredStep::Struct { value, .. }
             | LoweredStep::Bitstring { value, .. }
             | LoweredStep::FunctionRef { value, .. }
-            | LoweredStep::NamedFunctionRef { value, .. }
             | LoweredStep::Lambda { value, .. }
             | LoweredStep::BinaryOp { value, .. }
             | LoweredStep::UnaryOp { value, .. }
@@ -610,7 +604,7 @@ fn collect_entry_input_need(
 
 fn collect_step_reads(step: &LoweredStep, out: &mut HashSet<ValueId>) {
     match step {
-        LoweredStep::Const { .. } | LoweredStep::FunctionRef { .. } | LoweredStep::NamedFunctionRef { .. } => {}
+        LoweredStep::Const { .. } | LoweredStep::FunctionRef { .. } => {}
         LoweredStep::Tuple { items, .. } => out.extend(items.iter().copied()),
         LoweredStep::List { items, tail, .. } => {
             out.extend(items.iter().copied());
@@ -912,7 +906,6 @@ fn collect_step_atoms(
             | BackendStep::Struct { .. }
             | BackendStep::Bitstring { .. }
             | BackendStep::FunctionRef { .. }
-            | BackendStep::NamedFunctionRef { .. }
             | BackendStep::Lambda { .. }
             | BackendStep::BinaryOp { .. }
             | BackendStep::UnaryOp { .. }

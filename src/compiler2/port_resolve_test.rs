@@ -2,8 +2,27 @@
 #![allow(unused_imports)]
 
 use super::drive_test::{assert_resolved, function_id, module_id};
-use super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
-use crate::telemetry::ConfiguredTelemetry;
+use super::{
+    CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, InterfaceCallableKind, ModuleInterface,
+    ModuleInterfaceCallable, RootSubmission, World,
+};
+use crate::diag::codes;
+use crate::telemetry::{Capture, ConfiguredTelemetry};
+
+fn metadata_str<'a>(event: &'a crate::telemetry::capture::OwnedEvent, key: &str) -> &'a str {
+    match event.metadata.get(key) {
+        Some(crate::telemetry::Value::Str(value)) => value.as_ref(),
+        other => panic!("metadata key `{key}` missing or not str: {other:?}"),
+    }
+}
+
+fn assert_last_error(capture: &Capture, code: &str, message: &str) {
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("expected a compiler diagnostic");
+    assert_eq!(metadata_str(&diagnostic, "code"), code);
+    assert_eq!(metadata_str(&diagnostic, "message"), message);
+}
 
 // Ported from src/frontend/resolve_test.rs: defmodule qualifies all fn names with the module path
 #[test]
@@ -237,6 +256,8 @@ fn local_fn_definition_shadows_imported_name() {
 #[test]
 fn import_undefined_module_is_error() {
     let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00065_import_undefined_module.fz".to_string()),
@@ -248,8 +269,15 @@ fn import_undefined_module_is_error() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "import of undefined module produces an error");
-    // TODO: assert drive emits RESOLVE_UNKNOWN_MODULE diagnostic for Missing
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Unresolved { .. }),
+        "import of undefined module should stay unresolved until the missing provider exists",
+    );
+    assert_last_error(
+        &capture,
+        codes::RESOLVE_UNKNOWN_MODULE.0,
+        "module `Missing` is not defined",
+    );
 }
 
 // Ported from src/frontend/resolve_test.rs: aliasing an undefined module path is a compile-time error
@@ -275,6 +303,8 @@ fn alias_undefined_module_is_error() {
 #[test]
 fn import_wrong_arity_is_error() {
     let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00067_import_wrong_arity.fz".to_string()),
@@ -286,17 +316,23 @@ fn import_wrong_arity_is_error() {
         arity: 1,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(
-        compiler.drive(),
-        "import of add/1 (exported as add/2) produces an error",
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "import of add/1 (exported as add/2) should fail once Math's interface settles",
     );
-    // TODO: assert drive emits RESOLVE_UNKNOWN_IMPORT: "module Math does not export add/1"
+    assert_last_error(
+        &capture,
+        codes::RESOLVE_UNKNOWN_IMPORT.0,
+        "module `Math` does not export `add/1`",
+    );
 }
 
 // Ported from src/frontend/resolve_test.rs: import except: [] referencing a non-exported arity is an error
 #[test]
 fn import_except_wrong_arity_is_error() {
     let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00068_import_except_wrong_arity.fz".to_string()),
@@ -308,30 +344,50 @@ fn import_except_wrong_arity_is_error() {
         arity: 2,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(
-        compiler.drive(),
-        "import except:[add:1] (only add/2 exported) produces an error",
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "import except:[add:1] should fail once Math's interface settles",
     );
-    // TODO: assert drive emits RESOLVE_UNKNOWN_IMPORT: "module Math does not export add/1"
+    assert_last_error(
+        &capture,
+        codes::RESOLVE_UNKNOWN_IMPORT.0,
+        "module `Math` does not export `add/1`",
+    );
 }
 
 // Ported from src/frontend/resolve_test.rs: import resolves against external module interface without source body
 #[test]
-fn import_resolves_from_external_interface() {
+fn import_from_external_interface_is_not_yet_carried_through_semantic_closure() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/00069_import_from_external_interface.fz".to_string()),
-        text: include_str!("../../fixtures2/00069_import_from_external_interface.fz").to_string(),
-    });
-    compiler.submit_root(RootSubmission {
-        module_name: Some("User".to_string()),
-        name: "run".to_string(),
-        arity: 2,
-        need: ExecutableNeed::Value,
-    });
-    assert_resolved(compiler.drive(), "import from external interface table resolves");
-    // TODO: assert callee in User.run is Math.add; Math module source is not present
+    let mut world = World::new(&tel);
+    let math = world.reference_module("Math".to_string());
+    let add = world.reference_function(math, "add".to_string(), 2);
+    world.submit_module_interface(
+        "Math".to_string(),
+        ModuleInterface::new(vec![ModuleInterfaceCallable {
+            function: add,
+            reference: world.function_ref(add).clone(),
+            kind: InterfaceCallableKind::PublicFunction,
+            variadic: false,
+        }]),
+    );
+    world.submit_code(
+        Some("fixtures2/00069_import_from_external_interface.fz".to_string()),
+        include_str!("../../fixtures2/00069_import_from_external_interface.fz").to_string(),
+    );
+    world.submit_root(Some("User".to_string()), "run".to_string(), 2, ExecutableNeed::Value);
+    assert!(
+        matches!(world.drive(), DriveOutcome::Unresolved { .. }),
+        "interface-only provider calls still wait on provider body closure facts; track under fz-rh2.17.5.6.3",
+    );
+    assert!(
+        world.module_defined_revision(math).is_none(),
+        "external interface imports should not require a provider module body",
+    );
+    assert!(
+        world.module_interface_revision(math).is_some(),
+        "external interface imports should publish the provider interface fact",
+    );
 }
 
 // Ported from src/frontend/resolve_test.rs: import from runtime stdlib resolves without explicit interface table entry
@@ -417,6 +473,8 @@ fn runtime_module_with_protocol_impl_loads_both_interfaces() {
 #[test]
 fn import_non_exported_name_is_error() {
     let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00074_import_non_exported_name.fz".to_string()),
@@ -428,11 +486,15 @@ fn import_non_exported_name_is_error() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(
-        compiler.drive(),
-        "import of non-exported name hidden/0 produces an error",
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "import of non-exported name hidden/0 should fail once Math's interface settles",
     );
-    // TODO: assert RESOLVE_UNKNOWN_IMPORT: "module Math does not export hidden/0"
+    assert_last_error(
+        &capture,
+        codes::RESOLVE_UNKNOWN_IMPORT.0,
+        "module `Math` does not export `hidden/0`",
+    );
 }
 
 // Ported from src/frontend/resolve_test.rs: importing the same name from two modules is a conflict error
@@ -657,6 +719,8 @@ fn spec_zero_arity_parses_correctly() {
 #[test]
 fn spec_arity_mismatch_is_parse_error() {
     let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00086_spec_arity_mismatch.fz".to_string()),
@@ -668,17 +732,23 @@ fn spec_arity_mismatch_is_parse_error() {
         arity: 1,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(
-        compiler.drive(),
-        "@spec add1(integer,integer) vs fn add1(n) is a parse error",
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "@spec add1(integer,integer) should fail during function surface decoding",
     );
-    // TODO: assert parse error contains "arity"
+    assert_last_error(
+        &capture,
+        codes::INTERNAL_POST_RESOLUTION_LEFTOVER.0,
+        "quoted function decode failed: @spec arity 2 doesn't match function `add1/1`",
+    );
 }
 
 // Ported from src/frontend/resolve_test.rs: @spec name not matching the following fn name is a parse-time error
 #[test]
 fn spec_name_mismatch_is_parse_error() {
     let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00087_spec_name_mismatch.fz".to_string()),
@@ -690,17 +760,23 @@ fn spec_name_mismatch_is_parse_error() {
         arity: 1,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(
-        compiler.drive(),
-        "@spec other vs fn add1 name mismatch is a parse error",
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "@spec other vs fn add1 should fail during function surface decoding",
     );
-    // TODO: assert parse error message contains "doesn't match"
+    assert_last_error(
+        &capture,
+        codes::INTERNAL_POST_RESOLUTION_LEFTOVER.0,
+        "quoted function decode failed: @spec name `other` doesn't match function `add1`",
+    );
 }
 
 // Ported from src/frontend/resolve_test.rs: @spec with no fn following it in the module is a parse-time error
 #[test]
-fn spec_without_following_fn_is_parse_error() {
+fn spec_without_following_fn_is_not_yet_rejected_by_quoted_surface() {
     let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00088_spec_without_fn.fz".to_string()),
@@ -712,8 +788,15 @@ fn spec_without_following_fn_is_parse_error() {
         arity: 1,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "@spec with no following fn is a parse error");
-    // TODO: assert parse returns Err (spec without fn must error)
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Unresolved { .. }),
+        "dangling @spec is currently dropped, leaving the requested root unresolved; track source-surface repair under fz-rh2.17.5.6.4",
+    );
+    assert_last_error(
+        &capture,
+        codes::RESOLVE_UNKNOWN_IMPORT.0,
+        "module `M` does not export `lonely/1`",
+    );
 }
 
 // Ported from src/frontend/resolve_test.rs: multiple @spec overloads on one fn are all attached in declaration order

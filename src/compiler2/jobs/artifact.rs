@@ -338,19 +338,12 @@ fn rewrite_protocol_dispatch_calls(
         let mut targets = summary.targets.clone();
         targets.sort_by_key(|target| match target.callee {
             SelectedCallee::Function(function) => function.as_u32(),
-            SelectedCallee::Named { .. } => u32::MAX,
         });
         let plan = protocol_dispatch_plan(world, root_id, receiver_ty, &targets, entry.span)?;
 
         let mut arm_entries = Vec::with_capacity(targets.len());
         for target in &targets {
-            let SelectedCallee::Function(function) = target.callee else {
-                return Err(incomplete_semantic_plan(
-                    world,
-                    root_id,
-                    "protocol dispatch rewrite cannot lower unresolved named call targets",
-                ));
-            };
+            let SelectedCallee::Function(function) = target.callee;
             let arm_entry = ControlEntryId::from_u32(next_entry_id);
             next_entry_id += 1;
             let synthetic_callsite = CallSiteId::from_u32(next_callsite_id);
@@ -549,13 +542,7 @@ fn lower_materialized_call_target(
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
     target: CallTargetSummary,
 ) -> Result<MaterializedCallEdge, FatalError> {
-    let SelectedCallee::Function(function) = target.callee else {
-        return Err(incomplete_semantic_plan(
-            world,
-            root_id,
-            "materialization cannot lower unresolved named call targets",
-        ));
-    };
+    let SelectedCallee::Function(function) = target.callee;
     let callee = ExecutableKey {
         activation: world.activation_key(root_id, function, &target.input_types),
         need,
@@ -1691,7 +1678,6 @@ fn record_step_reprs(
             | LoweredStep::Struct { value, .. }
             | LoweredStep::Bitstring { value, .. }
             | LoweredStep::FunctionRef { value, .. }
-            | LoweredStep::NamedFunctionRef { value, .. }
             | LoweredStep::Lambda { value, .. }
             | LoweredStep::MapIndex { value, .. }
             | LoweredStep::FieldAccess { value, .. }
@@ -1852,62 +1838,11 @@ fn derive_callable_entries(
 ) -> Result<Vec<CallableEntry>, FatalError> {
     let mut entries = Vec::new();
     for executable in executables.values() {
-        let named_refs = named_function_refs(&executable.body);
-        callable_entries_in_body(world, root_id, executables, executable, &named_refs, &mut entries)?;
+        callable_entries_in_body(world, root_id, executables, executable, &mut entries)?;
     }
     entries.sort_by(compare_callable_entries);
     entries.dedup_by(|left, right| left.target == right.target && left.capture_count == right.capture_count);
     Ok(entries)
-}
-
-fn named_function_refs(body: &LoweredBody) -> HashMap<ValueId, (String, usize)> {
-    let mut named = HashMap::new();
-    match body {
-        LoweredBody::Extern { .. } => {}
-        LoweredBody::Clauses { clauses, entries, .. } => {
-            for clause in clauses {
-                collect_named_function_refs(&clause.projections, &mut named);
-            }
-            for entry in entries {
-                collect_named_function_refs(&entry.steps, &mut named);
-            }
-        }
-    }
-    named
-}
-
-fn collect_named_function_refs(steps: &[LoweredStep], named: &mut HashMap<ValueId, (String, usize)>) {
-    for step in steps {
-        match step {
-            LoweredStep::NamedFunctionRef { value, name, arity } => {
-                named.insert(*value, (name.clone(), *arity));
-            }
-            LoweredStep::Const { .. }
-            | LoweredStep::Tuple { .. }
-            | LoweredStep::List { .. }
-            | LoweredStep::Map { .. }
-            | LoweredStep::MapUpdate { .. }
-            | LoweredStep::Struct { .. }
-            | LoweredStep::Bitstring { .. }
-            | LoweredStep::FunctionRef { .. }
-            | LoweredStep::Lambda { .. }
-            | LoweredStep::BinaryOp { .. }
-            | LoweredStep::UnaryOp { .. }
-            | LoweredStep::MapIndex { .. }
-            | LoweredStep::FieldAccess { .. }
-            | LoweredStep::AssertLiteral { .. }
-            | LoweredStep::AssertStruct { .. }
-            | LoweredStep::RequireMapValue { .. }
-            | LoweredStep::AssertTuple { .. }
-            | LoweredStep::TupleField { .. }
-            | LoweredStep::AssertEmptyList { .. }
-            | LoweredStep::AssertSame { .. }
-            | LoweredStep::SplitList { .. }
-            | LoweredStep::BitstringInit { .. }
-            | LoweredStep::BitstringRead { .. }
-            | LoweredStep::AssertBitstringDone { .. } => {}
-        }
-    }
 }
 
 fn callable_entries_in_body(
@@ -1915,14 +1850,13 @@ fn callable_entries_in_body(
     root_id: RootId,
     executables: &HashMap<ExecutableKey, AbiReadyExecutable>,
     executable: &AbiReadyExecutable,
-    named_refs: &HashMap<ValueId, (String, usize)>,
     out: &mut Vec<CallableEntry>,
 ) -> Result<(), FatalError> {
     match &executable.body {
         LoweredBody::Extern { .. } => Ok(()),
         LoweredBody::Clauses { entries, .. } => {
             for entry in entries {
-                callable_entries_in_tail(world, root_id, executables, executable, named_refs, &entry.tail, out)?;
+                callable_entries_in_tail(world, root_id, executables, executable, &entry.tail, out)?;
             }
             Ok(())
         }
@@ -1935,22 +1869,13 @@ fn callable_entries_in_tail(
     root_id: RootId,
     executables: &HashMap<ExecutableKey, AbiReadyExecutable>,
     executable: &AbiReadyExecutable,
-    named_refs: &HashMap<ValueId, (String, usize)>,
     tail: &LoweredTail,
     out: &mut Vec<CallableEntry>,
 ) -> Result<(), FatalError> {
     match tail {
-        LoweredTail::DirectCall { callsite, args, .. } => record_callable_boundary_args(
-            world,
-            root_id,
-            executables,
-            executable,
-            named_refs,
-            *callsite,
-            None,
-            args,
-            out,
-        ),
+        LoweredTail::DirectCall { callsite, args, .. } => {
+            record_callable_boundary_args(world, root_id, executables, executable, *callsite, None, args, out)
+        }
         LoweredTail::ClosureCall {
             callsite, callee, args, ..
         } => {
@@ -1959,7 +1884,6 @@ fn callable_entries_in_tail(
                 root_id,
                 executables,
                 executable,
-                named_refs,
                 *callee,
                 "closure callee",
                 false,
@@ -1970,7 +1894,6 @@ fn callable_entries_in_tail(
                 root_id,
                 executables,
                 executable,
-                named_refs,
                 *callsite,
                 Some(*callee),
                 args,
@@ -1985,7 +1908,6 @@ fn callable_entries_in_tail(
             root_id,
             executables,
             executable,
-            named_refs,
             *value,
             "returned value",
             false,
@@ -2007,19 +1929,11 @@ fn record_callable_value_entries(
     root_id: RootId,
     executables: &HashMap<ExecutableKey, AbiReadyExecutable>,
     executable: &AbiReadyExecutable,
-    named_refs: &HashMap<ValueId, (String, usize)>,
     value: ValueId,
     context: &'static str,
     expect_callable: bool,
     out: &mut Vec<CallableEntry>,
 ) -> Result<(), FatalError> {
-    if let Some((name, arity)) = named_refs.get(&value) {
-        return Err(incomplete_semantic_plan(
-            world,
-            root_id,
-            format!("{context} carries unresolved named function ref `&{name}/{arity}`"),
-        ));
-    }
     let Some(ty) = executable.value_types.get(&value).copied() else {
         if expect_callable {
             return Err(incomplete_semantic_plan(
@@ -2058,25 +1972,12 @@ fn record_callable_boundary_args(
     root_id: RootId,
     executables: &HashMap<ExecutableKey, AbiReadyExecutable>,
     executable: &AbiReadyExecutable,
-    named_refs: &HashMap<ValueId, (String, usize)>,
     callsite: CallSiteId,
     closure_callee: Option<ValueId>,
     args: &[CallArg],
     out: &mut Vec<CallableEntry>,
 ) -> Result<(), FatalError> {
     for (arg_index, arg) in args.iter().enumerate() {
-        if let Some((name, arity)) = named_refs.get(&arg.value) {
-            return Err(incomplete_semantic_plan(
-                world,
-                root_id,
-                format!(
-                    "callable boundary at callsite {} carries unresolved named function ref `&{}/{}`",
-                    callsite.as_u32(),
-                    name,
-                    arity
-                ),
-            ));
-        }
         if !boundary_expects_callable(world, executables, executable, callsite, closure_callee, arg_index) {
             continue;
         }
@@ -2261,14 +2162,13 @@ fn resolve_callable_entries_for_type(
             });
         }
         if !matched {
+            let function_ref = world.function_ref(function);
             return Err(incomplete_semantic_plan(
                 world,
                 root_id,
                 format!(
-                    "callable entry target {} with {} capture(s) and arity {} is missing from the closed executable frontier",
-                    function.as_u32(),
-                    capture_count,
-                    fixed_arity
+                    "callable entry target `{}/{}` with {} capture(s) is missing from the closed executable frontier",
+                    function_ref.name, function_ref.arity, capture_count,
                 ),
             ));
         }

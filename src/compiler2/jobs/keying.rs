@@ -189,7 +189,6 @@ fn collect_step_edges(steps: &[LoweredStep], edges: &mut Vec<StaticEdge>) {
             | LoweredStep::Struct { .. }
             | LoweredStep::Bitstring { .. }
             | LoweredStep::FunctionRef { .. }
-            | LoweredStep::NamedFunctionRef { .. }
             | LoweredStep::BinaryOp { .. }
             | LoweredStep::UnaryOp { .. }
             | LoweredStep::MapIndex { .. }
@@ -216,10 +215,6 @@ fn collect_tail_edges(tail: &LoweredTail, edges: &mut Vec<StaticEdge>) {
             ..
         } => edges.push(StaticEdge::Direct(*function)),
         LoweredTail::Value { .. }
-        | LoweredTail::DirectCall {
-            callee: DirectCallee::Named { .. },
-            ..
-        }
         | LoweredTail::ClosureCall { .. }
         | LoweredTail::If { .. }
         | LoweredTail::Dispatch { .. }

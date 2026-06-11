@@ -365,9 +365,6 @@ fn apply_step(
                 world.types_mut().fn_ref_lit(ClosureTarget(function.as_u32()), arity),
             );
         }
-        LoweredStep::NamedFunctionRef { value, .. } => {
-            values.insert(*value, any_ty(world));
-        }
         LoweredStep::Lambda {
             value,
             function,
@@ -779,22 +776,13 @@ fn resolve_direct_call(
         return Ok((None, none_ty(world)));
     }
 
-    let (summary, mut activations, return_ty) = match callee {
-        DirectCallee::Function(function) => {
-            resolve_function_call(world, caller, *function, arg_types.clone(), reads, waits, follow_up)?
-        }
-        DirectCallee::Named { .. } => (
-            call_summary(selected_callee(callee), arg_types.clone(), any_ty(world)),
-            Vec::new(),
-            any_ty(world),
-        ),
-    };
+    let DirectCallee::Function(function) = callee;
+    let (summary, mut activations, return_ty) =
+        resolve_function_call(world, caller, *function, arg_types.clone(), reads, waits, follow_up)?;
     let mut latent_executables = Vec::new();
     if let Some(summary) = &summary {
         for target in &summary.targets {
-            let SelectedCallee::Function(function) = target.callee else {
-                continue;
-            };
+            let SelectedCallee::Function(function) = target.callee;
             let runtime_activations = resolve_runtime_callable_boundary_activations(
                 world,
                 caller,
@@ -944,10 +932,6 @@ fn rebuild_coalesced_call_emission(
                 rebuilt_targets.push(rebuilt_target);
                 rebuilt_activations.extend(rebuilt.activations);
                 rebuilt_latent.extend(rebuilt.latent_executables);
-            }
-            SelectedCallee::Named { .. } => {
-                rebuilt_return = merge_observed_ty(world, rebuilt_return, target.return_ty);
-                rebuilt_targets.push(target.clone());
             }
         }
     }
@@ -1632,30 +1616,12 @@ fn wait_for_unresolved_function_module(
     if module.is_global() || world.module_defined_revision(module).is_some() {
         return false;
     }
+    if !world.module_has_source_state(module) && !world.is_runtime_module(module) {
+        return false;
+    }
     waits.insert(FactKey::ModuleDefined(module));
     follow_up.extend(world.ensure_function_source(function));
     true
-}
-
-fn selected_callee(callee: &DirectCallee) -> Option<SelectedCallee> {
-    Some(match callee {
-        DirectCallee::Function(function) => SelectedCallee::Function(*function),
-        DirectCallee::Named { name, arity } => SelectedCallee::Named {
-            name: name.clone(),
-            arity: *arity,
-        },
-    })
-}
-
-fn call_summary(callee: Option<SelectedCallee>, input_types: Vec<Ty>, return_ty: Ty) -> Option<CallSiteSummary> {
-    Some(CallSiteSummary {
-        targets: vec![CallTargetSummary {
-            callee: callee?,
-            input_types,
-            return_ty,
-        }],
-        return_ty,
-    })
 }
 
 fn merge_call_targets(
@@ -1984,7 +1950,6 @@ fn collect_entry_callsite_needs(
             | LoweredStep::Struct { value, .. }
             | LoweredStep::Bitstring { value, .. }
             | LoweredStep::FunctionRef { value, .. }
-            | LoweredStep::NamedFunctionRef { value, .. }
             | LoweredStep::Lambda { value, .. }
             | LoweredStep::BinaryOp { value, .. }
             | LoweredStep::UnaryOp { value, .. }

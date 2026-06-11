@@ -2,10 +2,11 @@
 
 A module is a unit of naming and definition. The module subsystem owns four
 things: stable identity, the lifecycle a module passes through from a bare
-reference to a defined surface, the namespace chain that resolves names inside a
-scope, and how runtime-library modules enter a compile. The end-to-end flow that
-drives these transitions is in [`pipeline`](pipeline.md); this doc is the data
-model behind the definition stratum.
+reference to optional source plus optional callable interface, the namespace
+chain that resolves names inside a scope, and how runtime-library modules enter
+a compile. The end-to-end flow that drives these transitions is in
+[`pipeline`](pipeline.md); this doc is the data model behind the definition
+stratum.
 
 ## Identity is allocated on reference
 
@@ -27,34 +28,44 @@ scoped. An uncalled definition stays a cold fact (see [`pipeline`](pipeline.md))
 
 ## The module lifecycle
 
-`ModuleState` is the slot behind a `ModuleId`, and it ratchets forward:
+`ModuleState` is the slot behind a `ModuleId`. Source/body state and interface
+state are separate concerns, so the slot may have either, both, or neither:
 
 ```text
-Placeholder                       referenced, no source yet
-Indexed(ModuleSource)             source discovered during code indexing
-Scoped { source, base }           a base namespace head has been chosen
-Defined { source, surface }       the module surface is built
+Placeholder { interface? }             referenced, no source yet
+Indexed { source, interface? }         source discovered during code indexing
+Scoped { source, base, interface? }    a base namespace head has been chosen
+Defined { source, base, interface }    the module body is published
 ```
 
 `ModuleSource { code, parent, local_name, attrs, kind }` carries the source
 facts, where `kind` is `Body { items }` or `Protocol { callbacks }` (see
-[`protocols`](protocols.md)). `ModuleSurface { codes, base, namespace, exports }`
-is the defined result: the namespace head the body produced and the public
-`ModuleExport { name, arity, symbol }` list.
+[`protocols`](protocols.md)). `ModuleInterface` is the module-owned callable
+surface: exported callables are represented by `FunctionId`-backed entries plus
+callable kind (`PublicFunction` or `Macro`) and variadic metadata.
 
-Three jobs drive the transitions:
+Four jobs drive the transitions:
 
 ```text
 index_code     parse a code contribution; discover_modules registers each nested
                module/protocol as Indexed, then publishes CodeIndexed
 scope_code     pick the base namespace, run define_scope over GLOBAL, publish CodeScoped
+define_module_interface
+               publish an already-known interface for a module that may not have
+               source/body state in this compiler run
 define_module  scope the module body (or protocol surface) and publish ModuleDefined
 ```
 
 `define_module` waits for what it needs and asks for it: a child waits on its
 parent's `ModuleDefined` (or `CodeScoped` when the parent is global); a
 not-yet-pulled runtime module waits on its `CodeIndexed` after
-`ensure_runtime_module` submits its source.
+`ensure_runtime_module` submits its source. `define_module` also derives and
+publishes `FactKey::ModuleInterface(module)` for source-defined modules.
+
+The important split is:
+
+- `FactKey::ModuleDefined(module)` — local body/scoping readiness
+- `FactKey::ModuleInterface(module)` — cross-module callable visibility
 
 ## Namespaces are a savepoint chain
 
@@ -62,7 +73,7 @@ Name resolution is an append-only chain. A `Namespace` is a `BindingId` — a
 savepoint into `NamespaceStore.bindings`. Binding a name pushes a
 `{ name, symbol, prev }` and returns the new head; lookup walks from a head
 backward and the first matching symbol wins. A `NamespaceSymbol` is a `Module`,
-`Function`, `Macro`, or `Type`.
+`Function`, `Callable`, `Macro`, or `Type`.
 
 ```text
 bind(head, "add", Function(f))  -> head'      (a new savepoint over head)
@@ -85,18 +96,22 @@ declared later in the same scope:
    `@type` name (as `Type`), and every child module / protocol name, so forward
    references resolve in both value and type positions.
 2. **Apply, in source order.** Resolve `alias`, `import`, and `require`.
-   An import waits on the provider's `ModuleDefined`, then binds the selected
-   exports. A require waits on the provider surface, selects the requested macro
-   exports, waits on their `MacroExecutable` facts, and records those exact
-   remote macro function ids as available to source expansion. Then define each
-   reserved function and scope each child module onto the current head.
+   Exact `only:` imports/requires can mint `FunctionId`s lazily by recording
+   interface expectations and binding `Callable` placeholders immediately.
+   Set-valued `import M` / `import M, except: ...` and the corresponding
+   `require` forms wait on `FactKey::ModuleInterface(module)`, because they
+   need the provider's full exported callable set before they can bind names.
+   Later jobs wait only when they need more than that placeholder:
+   macro expansion waits for the provider interface when it must decide whether
+   a reserved callable is a macro, and module-interface publication validates
+   that each exact expectation was actually exported. Then define each reserved
+   function and scope each child module onto the current head.
 
-A non-private function or macro becomes a `ModuleExport`; private (`fnp`)
-functions stay callable in-module but out of the surface. Non-global modules
-that do not define `__info__/1` get a synthesized ordinary function source for
-their public function/macro export lists. The pass returns the finished
-namespace head plus the export list, which `define_module` freezes into the
-`ModuleSurface`.
+A non-private function or macro becomes a `ModuleInterfaceCallable`; private
+(`fnp`) functions stay callable in-module but out of the interface. Non-global
+modules that do not define `__info__/1` get a synthesized ordinary function
+source for their callable interface. The pass returns the finished namespace head
+plus the callable interface, which `define_module` freezes onto the module slot.
 
 ## Runtime library and the prelude
 
@@ -120,7 +135,9 @@ demand. A user module is present only when its source was submitted.
 
 ```text
 identity.rs    ModuleId / FunctionId / FunctionRef, ModuleState, ModuleSource,
-               ModuleSurface, ModuleExport, ModuleMap, FunctionMap
+               ModuleMap, FunctionMap
+module_interface.rs
+               ModuleInterface, callable entries, exact expectations, ready/pending queries
 namespace.rs   NamespaceStore, BindingId (Namespace), NamespaceSymbol
 runtime.rs     bootstrap — reference runtime module names; pull source lazily
 jobs/source.rs index_code / scope_code / define_module / define_scope / discover_modules

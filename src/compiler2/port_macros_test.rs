@@ -220,14 +220,14 @@ fn imported_macro_callable_unqualified() {
     // TODO: JIT-execute and assert result == 42
 }
 
-// Ported from src/frontend/macros_test.rs: item-level macro returns :fn_def tuple splicing a callable function
+// Ported coverage: item-level macro returns compiler-shaped fn AST splicing a callable function
 #[test]
-fn item_macro_fn_def_tuple_splices_callable_fn() {
+fn item_macro_compiler_ast_splices_callable_fn() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/00122_item_macro_fn_def.fz".to_string()),
-        text: include_str!("../../fixtures2/00122_item_macro_fn_def.fz").to_string(),
+        name: Some("fixtures2/00122_item_macro_compiler_ast.fz".to_string()),
+        text: include_str!("../../fixtures2/00122_item_macro_compiler_ast.fz").to_string(),
     });
     compiler.submit_root(RootSubmission {
         module_name: None,
@@ -237,19 +237,19 @@ fn item_macro_fn_def_tuple_splices_callable_fn() {
     });
     assert_resolved(
         compiler.drive(),
-        "item macro splicing a fn via :fn_def tuple should resolve",
+        "item macro splicing a fn via compiler-shaped AST should resolve",
     );
     // TODO: JIT-execute and assert result == 42
 }
 
-// Ported from src/frontend/macros_test.rs: item macro returning a list of :fn_def tuples splices multiple fns
+// Ported coverage: item macro returning a list of compiler-shaped fn AST items splices multiple fns
 #[test]
-fn item_macro_list_of_fn_def_tuples_splices_multiple_fns() {
+fn item_macro_list_of_compiler_ast_functions_splices_multiple_fns() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/00123_item_macro_list_of_fns.fz".to_string()),
-        text: include_str!("../../fixtures2/00123_item_macro_list_of_fns.fz").to_string(),
+        name: Some("fixtures2/00123_item_macro_list_of_compiler_ast_functions.fz".to_string()),
+        text: include_str!("../../fixtures2/00123_item_macro_list_of_compiler_ast_functions.fz").to_string(),
     });
     compiler.submit_root(RootSubmission {
         module_name: None,
@@ -259,19 +259,19 @@ fn item_macro_list_of_fn_def_tuples_splices_multiple_fns() {
     });
     assert_resolved(
         compiler.drive(),
-        "item macro splicing multiple fns via list should resolve",
+        "item macro splicing multiple fns via compiler-shaped AST list should resolve",
     );
     // TODO: JIT-execute and assert result == 30 (first() + second() = 10 + 20)
 }
 
-// Ported from src/frontend/macros_test.rs: item macro inside defmodule qualifies spliced fn names with module path
+// Ported coverage: item macro inside defmodule qualifies compiler-shaped fn AST with module path
 #[test]
 fn item_macro_in_module_qualifies_spliced_fn_names() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/00124_item_macro_in_module.fz".to_string()),
-        text: include_str!("../../fixtures2/00124_item_macro_in_module.fz").to_string(),
+        name: Some("fixtures2/00124_item_macro_compiler_ast_in_module.fz".to_string()),
+        text: include_str!("../../fixtures2/00124_item_macro_compiler_ast_in_module.fz").to_string(),
     });
     compiler.submit_root(RootSubmission {
         module_name: None,

@@ -44,6 +44,7 @@ use super::protocol::{
     ProtocolDispatchMap, ProtocolImpl, ProtocolImplKey, ProtocolImplMap,
 };
 use super::runtime::{self, RuntimeModuleCode};
+use super::scheduler::FatalError;
 use super::scope::ScopeSnapshot;
 use super::semantic::{
     ActivationAnalysis, ActivationMap, CallSiteKey, CallSiteMap, CallSiteSummary, SemanticClosure, SemanticClosureMap,
@@ -733,6 +734,60 @@ impl<'a> World<'a> {
         self.modules.define_interface(id, interface)
     }
 
+    pub(crate) fn merge_module_interface_expectations(
+        &self,
+        id: ModuleId,
+        mut interface: ModuleInterface,
+    ) -> ModuleInterface {
+        if let Some(prior) = self.module_interface_if_present(id) {
+            interface.inherit_expectations_from(&prior);
+        }
+        interface
+    }
+
+    pub(crate) fn validate_module_interface_expectations(
+        &self,
+        id: ModuleId,
+        interface: &ModuleInterface,
+    ) -> Result<(), FatalError> {
+        for expectation in interface.expectations() {
+            if interface
+                .callables()
+                .iter()
+                .any(|callable| expectation.matches_callable(callable))
+            {
+                continue;
+            }
+            let module_name = self
+                .module_name(id)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("<unnamed module {}>", id.as_u32()));
+            let message = match expectation.kind {
+                InterfaceCallableKind::Macro => format!(
+                    "module `{}` does not export macro `{}/{}`",
+                    module_name, expectation.name, expectation.arity
+                ),
+                InterfaceCallableKind::PublicFunction | InterfaceCallableKind::Callable => format!(
+                    "module `{}` does not export `{}/{}`",
+                    module_name, expectation.name, expectation.arity
+                ),
+            };
+            return Err(emit_job_diagnostic(
+                self,
+                Diagnostic::error(
+                    codes::RESOLVE_UNKNOWN_IMPORT,
+                    message,
+                    expectation
+                        .requester
+                        .as_ref()
+                        .map(|requester| requester.span)
+                        .unwrap_or(Span::DUMMY),
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn index_module_body(
         &mut self,
         id: ModuleId,
@@ -1143,9 +1198,7 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn protocol_callback(&self, function: FunctionId) -> Option<ProtocolCallback> {
-        self.protocol_callbacks
-            .get(function)
-            .or_else(|| self.derived_protocol_callback(function))
+        self.protocol_callbacks.get(function)
     }
 
     pub(crate) fn define_protocol_impl(
@@ -1539,8 +1592,10 @@ impl<'a> World<'a> {
         if module.is_global() {
             return self.code.ids().into_iter().map(Job::ScopeCode).collect();
         }
-        self.ensure_runtime_module(module);
-        vec![Job::DefineModule(module)]
+        if self.module_has_source_state(module) || self.ensure_runtime_module(module).is_some() {
+            return vec![Job::DefineModule(module)];
+        }
+        Vec::new()
     }
 
     pub(crate) fn ensure_expanded_function_source(&mut self, function: FunctionId) -> Vec<Job> {
@@ -1663,12 +1718,15 @@ impl<'a> World<'a> {
         }
         self.namespaces
             .lookup_best_matching(head, name, |symbol| match symbol {
-                NamespaceSymbol::Function(function) | NamespaceSymbol::Macro(function) => {
+                NamespaceSymbol::Function(function)
+                | NamespaceSymbol::Macro(function)
+                | NamespaceSymbol::Callable(function) => {
                     callable_match_score(self.function_arity(*function), self.function_variadic(*function), arity)
                 }
                 NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) => None,
             })
             .cloned()
+            .map(|symbol| self.resolve_callable_symbol(symbol))
     }
 
     pub(crate) fn lookup_module_callable(
@@ -1678,7 +1736,7 @@ impl<'a> World<'a> {
         arity: usize,
     ) -> Option<NamespaceSymbol> {
         if self.module_interface_revision(module).is_none() {
-            return Some(NamespaceSymbol::Function(self.reference_function(
+            return Some(NamespaceSymbol::Callable(self.reference_function(
                 module,
                 name.to_string(),
                 arity,
@@ -1700,6 +1758,22 @@ impl<'a> World<'a> {
             }
         }
         best.map(|(_, symbol)| symbol)
+    }
+
+    fn resolve_callable_symbol(&mut self, symbol: NamespaceSymbol) -> NamespaceSymbol {
+        let NamespaceSymbol::Callable(function) = symbol else {
+            return symbol;
+        };
+        let module = self.function_module(function);
+        let Some(_) = self.module_interface_revision(module) else {
+            return NamespaceSymbol::Callable(function);
+        };
+        self.module_interface(module)
+            .callables()
+            .iter()
+            .find(|callable| callable.function == function)
+            .map(|callable| callable.namespace_symbol())
+            .unwrap_or(NamespaceSymbol::Callable(function))
     }
 
     pub(crate) fn min_variadic_arity(&mut self, head: Namespace, name: &str) -> Option<usize> {
@@ -1726,6 +1800,9 @@ impl<'a> World<'a> {
             .map(|symbol| match symbol {
                 NamespaceSymbol::Function(function) | NamespaceSymbol::Macro(function) => {
                     self.function_arity(*function)
+                }
+                NamespaceSymbol::Callable(_) => {
+                    unreachable!("variadic lookup should not yield unresolved callable expectations")
                 }
                 NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) => {
                     unreachable!("variadic lookup should not yield modules or types")
@@ -1927,32 +2004,6 @@ impl<'a> World<'a> {
         impl_target_ty(&mut self.types, &name)
     }
 
-    fn derived_protocol_callback(&self, function: FunctionId) -> Option<ProtocolCallback> {
-        let function_ref = self.functions.reference_for(function);
-        let module = self.modules.get(function_ref.module);
-        let source = match module {
-            ModuleState::Indexed { source, .. }
-            | ModuleState::Scoped { source, .. }
-            | ModuleState::Defined { source, .. } => source,
-            ModuleState::Placeholder { .. } => return None,
-        };
-        match &source.kind {
-            ModuleSourceKind::Protocol(protocol)
-                if protocol.forms.iter().any(|form| match form {
-                    super::quoted_surface::ScopeForm::Function(callback) => {
-                        callback.name == function_ref.name && callback.arity == function_ref.arity
-                    }
-                    _ => false,
-                }) =>
-            {
-                Some(ProtocolCallback {
-                    protocol: function_ref.module,
-                })
-            }
-            ModuleSourceKind::Body(_) | ModuleSourceKind::Protocol(_) => None,
-        }
-    }
-
     fn unresolved_issues(&self, waits: &[UnresolvedWait<Job, FactKey>]) -> Vec<UnresolvedIssue> {
         let frontier = waits.iter().map(|wait| wait.fact.clone()).collect::<HashSet<_>>();
         let mut issues = Vec::new();
@@ -1972,22 +2023,26 @@ impl<'a> World<'a> {
 
     fn unresolved_issue(&self, frontier: &HashSet<FactKey>, fact: &FactKey) -> Option<UnresolvedIssue> {
         match fact {
-            FactKey::ModuleIndexed(module) => Some(UnresolvedIssue {
-                key: UnresolvedIssueKey::Module(*module),
-                diagnostic: Diagnostic::error(
-                    codes::RESOLVE_UNKNOWN_MODULE,
-                    format!(
-                        "module `{}` is not defined",
-                        self.module_name(*module)
-                            .expect("referenced modules should have reverse names")
-                    ),
-                    Span::DUMMY,
-                ),
-            }),
+            FactKey::ModuleIndexed(module) => Some(self.unresolved_module_issue(*module)),
             FactKey::FunctionSource(function) => self.unresolved_function_issue(frontier, *function),
             FactKey::ExpandedFunctionSource(function) => self.unresolved_function_issue(frontier, *function),
             FactKey::FunctionDefined(function) => self.unresolved_function_issue(frontier, *function),
             _ => None,
+        }
+    }
+
+    fn unresolved_module_issue(&self, module: ModuleId) -> UnresolvedIssue {
+        UnresolvedIssue {
+            key: UnresolvedIssueKey::Module(module),
+            diagnostic: Diagnostic::error(
+                codes::RESOLVE_UNKNOWN_MODULE,
+                format!(
+                    "module `{}` is not defined",
+                    self.module_name(module)
+                        .expect("referenced modules should have reverse names")
+                ),
+                Span::DUMMY,
+            ),
         }
     }
 
@@ -2002,6 +2057,14 @@ impl<'a> World<'a> {
                     Span::DUMMY,
                 ),
             });
+        }
+
+        if self.module_defined_revision(function_ref.module).is_none()
+            && !self.module_has_source_state(function_ref.module)
+            && !self.is_runtime_module(function_ref.module)
+            && self.module_interface_revision(function_ref.module).is_none()
+        {
+            return Some(self.unresolved_module_issue(function_ref.module));
         }
 
         if frontier.contains(&FactKey::ModuleIndexed(function_ref.module))
@@ -2025,6 +2088,11 @@ impl<'a> World<'a> {
             ),
         })
     }
+}
+
+fn emit_job_diagnostic(world: &World<'_>, diagnostic: Diagnostic) -> FatalError {
+    emit_through(world.tel(), None, std::slice::from_ref(&diagnostic));
+    FatalError
 }
 
 fn dedupe_job_outputs(outputs: Vec<(FactKey, bool)>) -> Vec<(FactKey, bool)> {

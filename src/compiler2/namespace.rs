@@ -22,6 +22,7 @@ pub enum NamespaceSymbol {
     Module(ModuleId),
     Function(FunctionId),
     Macro(FunctionId),
+    Callable(FunctionId),
     /// A type-position name bound to its identity. Resolution (fz-rh2.12.3)
     /// reads it; value/callable lookups filter it out, so a type and a value
     /// of the same name never collide.

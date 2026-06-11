@@ -398,11 +398,6 @@ pub enum BackendStep {
         value: ValueId,
         function: FunctionId,
     },
-    NamedFunctionRef {
-        value: ValueId,
-        name: String,
-        arity: usize,
-    },
     Lambda {
         value: ValueId,
         function: FunctionId,

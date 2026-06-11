@@ -14,7 +14,7 @@ use super::identity::{FunctionId, ModuleId};
 use super::namespace::NamespaceSymbol;
 use super::quoted_surface::{
     MacroCallForm, ScopeForm, ScopeSurface, SurfaceSourceContext, is_scope_definition_head,
-    read_compiler_fragment_surface, read_scope_surface,
+    read_compiler_fragment_surface,
 };
 use super::scope::ScopeSnapshot;
 use super::source::{QuotedAstNode, QuotedLexicalContextKind, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
@@ -44,6 +44,16 @@ pub(crate) trait QuotedExpansionCtx<'tel> {
     fn required_remote_macros(&self) -> &HashSet<FunctionId>;
     fn note_read(&mut self, fact: FactKey);
     fn lookup_current_module_macro(&mut self, scope: ScopeSnapshot, name: &str, arity: usize) -> Option<FunctionId>;
+    fn wait_for_callable_module_interface(&mut self, function: FunctionId) -> JobEffects {
+        let world = self.world();
+        let module = world.function_module(function);
+        let follow_up = if world.module_has_source_state(module) || world.is_runtime_module(module) {
+            Job::DefineModule(module)
+        } else {
+            Job::DefineModuleInterface(module)
+        };
+        JobEffects::wait_on(FactKey::ModuleInterface(module), [follow_up])
+    }
 
     fn expand_root(
         &mut self,
@@ -173,6 +183,11 @@ pub(crate) trait QuotedExpansionCtx<'tel> {
         };
         let function = match symbol {
             NamespaceSymbol::Macro(function) => function,
+            NamespaceSymbol::Callable(function) => {
+                return Ok(Some(ExpandedValue::Blocked(
+                    self.wait_for_callable_module_interface(function),
+                )));
+            }
             NamespaceSymbol::Function(_) | NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) => return Ok(None),
         };
         self.expand_macro_invocation(owner, cursor.root(), function, scope, depth, &args)
@@ -251,6 +266,11 @@ pub(crate) trait QuotedExpansionCtx<'tel> {
             let world = self.world();
             match world.lookup_module_callable(module, &function_name, args.len()) {
                 Some(NamespaceSymbol::Macro(function)) => Some(function),
+                Some(NamespaceSymbol::Callable(function)) => {
+                    return Ok(Some(ExpandedValue::Blocked(
+                        self.wait_for_callable_module_interface(function),
+                    )));
+                }
                 _ => None,
             }
         };
@@ -475,10 +495,10 @@ pub(crate) fn expand_item_macro_fragment<'tel, C: QuotedExpansionCtx<'tel>>(
         ));
     };
     let expanded = match result {
-        ExpandedValue::Complete(root) => owner.subroot(root),
+        ExpandedValue::Complete(root) => item_macro_fragment_root(ctx.world(), &owner.subroot(root))?,
         ExpandedValue::Blocked(effects) => return Ok(ExpandedScopeFragment::Blocked(effects)),
     };
-    let surface = read_scope_surface_root(ctx.world(), code_id, &expanded, "item macro expanded source")?;
+    let surface = read_compiler_fragment_root(ctx.world(), code_id, &expanded, "item macro expanded source")?;
     if surface.forms.iter().any(|form| matches!(form, ScopeForm::MacroCall(_))) {
         return Err(emit_job_diagnostic(
             ctx.world(),
@@ -490,6 +510,18 @@ pub(crate) fn expand_item_macro_fragment<'tel, C: QuotedExpansionCtx<'tel>>(
         ));
     }
     Ok(ExpandedScopeFragment::Complete(surface))
+}
+
+fn item_macro_fragment_root(
+    world: &World<'_>,
+    root: &QuotedSourceRoot,
+) -> Result<QuotedSourceRoot, super::scheduler::FatalError> {
+    if root.root().tag() == ValueKind::LIST {
+        return Ok(root.clone());
+    }
+    root.interned_list_subroot(&[root.root()]).map_err(|error| {
+        emit_internal_surface_error(world, format!("item macro fragment root wrapping failed: {error}"))
+    })
 }
 
 struct ItemMacroInvocation {
@@ -521,6 +553,15 @@ fn item_macro_invocation(
             let Some(symbol) = world.lookup_callable_namespace(scope.namespace(), &head, args.len()) else {
                 return Err(item_macro_not_defmacro(world, &head, span));
             };
+            if let NamespaceSymbol::Callable(_function) = symbol {
+                return Ok(ItemMacroInvocation {
+                    function: None,
+                    args: Vec::new(),
+                    input_root: cursor.root(),
+                    display_name: head,
+                    node: Some(node),
+                });
+            }
             let NamespaceSymbol::Macro(function) = symbol else {
                 return Err(item_macro_not_defmacro(world, &head, span));
             };
@@ -562,6 +603,15 @@ fn item_macro_invocation(
         let Some(symbol) = world.lookup_callable_namespace(scope.namespace(), &head, 1) else {
             return Err(item_macro_not_defmacro(world, &display_name, span));
         };
+        if let NamespaceSymbol::Callable(_function) = symbol {
+            return Ok(ItemMacroInvocation {
+                function: None,
+                args: Vec::new(),
+                input_root: owner.root(),
+                display_name,
+                node: Some(node),
+            });
+        }
         let NamespaceSymbol::Macro(function) = symbol else {
             return Err(item_macro_not_defmacro(world, &display_name, span));
         };
@@ -575,15 +625,6 @@ fn item_macro_invocation(
     }
 
     Err(item_macro_not_defmacro(world, &display_name, span))
-}
-
-pub(crate) fn read_scope_surface_root(
-    world: &World<'_>,
-    code_id: CodeId,
-    root: &QuotedSourceRoot,
-    context: &str,
-) -> Result<ScopeSurface, super::scheduler::FatalError> {
-    read_surface_root_with(world, code_id, root, context, read_scope_surface)
 }
 
 pub(crate) fn read_compiler_fragment_root(

@@ -406,6 +406,42 @@ fn main(), do: answer()
 }
 
 #[test]
+fn source_publication_accepts_raw_compiler_fragments_from_item_macros() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    let code = world.submit_code(
+        Some("item-macro-raw-fragment.fz".to_string()),
+        r#"
+defmacro make_answer() do
+  {:fn, %{}, [{:answer, %{}, []}, [{:do, 42}]]}
+end
+
+make_answer()
+
+fn main(), do: answer()
+"#
+        .to_string(),
+    );
+
+    assert!(world.demand(Job::ScopeCode(code)), "code scoping should be demandable");
+    assert!(
+        matches!(world.drive(), DriveOutcome::Resolved),
+        "item macros returning raw compiler fragments should publish those definitions"
+    );
+
+    let answer = world.reference_function(ModuleId::GLOBAL, "answer", 0);
+    let main = world.reference_function(ModuleId::GLOBAL, "main", 0);
+    assert!(
+        world.function_source(answer).is_some(),
+        "raw compiler fragments returned from item macros should publish answer/0",
+    );
+    assert!(
+        world.function_source(main).is_some(),
+        "later source forms should still see names introduced by the raw fragment",
+    );
+}
+
+#[test]
 fn source_publication_defers_local_macro_expansion_until_function_demand() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();

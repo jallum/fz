@@ -796,7 +796,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     }
 
     fn apply_require(&mut self, import: &super::quoted_surface::ImportForm) -> Result<Option<JobEffects>, FatalError> {
-        let required_module = self.world.reference_module(import.path.join("."));
+        let required_module = self.resolve_import_module(import);
         let selected = if self.world.module_interface_revision(required_module).is_none() {
             if let Some(only) = import.only.as_deref() {
                 only.iter()
@@ -825,9 +825,6 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             let interface = self.world.module_interface(required_module);
             self.select_required_macro_exports(import, interface.callables())?
         };
-        if let Some(blocked) = self.wait_for_imported_macro_executables(&selected) {
-            return Ok(Some(blocked));
-        }
         self.record_required_remote_macros(&selected);
         Ok(None)
     }
@@ -918,7 +915,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     }
 
     fn apply_import(&mut self, import: &super::quoted_surface::ImportForm) -> Result<Option<JobEffects>, FatalError> {
-        let imported_module = self.world.reference_module(import.path.join("."));
+        let imported_module = self.resolve_import_module(import);
         let selected = if self.world.module_interface_revision(imported_module).is_none() {
             if let Some(only) = import.only.as_deref() {
                 only.iter()
@@ -927,13 +924,13 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                             imported_module,
                             name.clone(),
                             *arity,
-                            InterfaceCallableKind::PublicFunction,
+                            InterfaceCallableKind::Callable,
                             Some(self.interface_requester(import.span)),
                         );
                         ModuleInterfaceCallable {
                             function,
                             reference: self.world.function_ref(function).clone(),
-                            kind: InterfaceCallableKind::PublicFunction,
+                            kind: InterfaceCallableKind::Callable,
                             variadic: false,
                         }
                     })
@@ -997,13 +994,17 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             }
         };
 
-        if let Some(blocked) = self.wait_for_imported_macro_executables(&selected) {
-            return Ok(Some(blocked));
-        }
         for export in &selected {
             self.namespace = bind_callable(self.world, self.namespace, export);
         }
         Ok(None)
+    }
+
+    fn resolve_import_module(&mut self, import: &super::quoted_surface::ImportForm) -> ModuleId {
+        let path = ModuleName::from_segments(import.path.clone());
+        self.world
+            .resolve_module_name(self.current_module, self.namespace, &path)
+            .expect("module resolution should always mint a module id for import/require paths")
     }
 
     fn interface_requester(&self, span: Span) -> InterfaceRequester {
@@ -1029,24 +1030,6 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 self.required_remote_macros.insert(callable.function);
             }
         }
-    }
-
-    fn wait_for_imported_macro_executables(&mut self, callables: &[ModuleInterfaceCallable]) -> Option<JobEffects> {
-        let mut effects = JobEffects::default();
-        for callable in callables {
-            if callable.kind != InterfaceCallableKind::Macro {
-                continue;
-            }
-            let function = callable.function;
-            let fact = FactKey::MacroExecutable(function);
-            if self.world.fact_revision(fact.clone()).is_some() {
-                self.reads.push(fact);
-            } else {
-                effects.waits.push(fact);
-                effects.follow_up.push(Job::BuildMacroExecutable(function));
-            }
-        }
-        (!effects.waits.is_empty()).then_some(effects)
     }
     fn define_protocol_impl(&mut self, protocol_impl: &ProtocolImplForm) -> Result<Outputs, FatalError> {
         let protocol =

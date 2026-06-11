@@ -181,6 +181,7 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
             "runtime:runtime.fz".to_string(),
             "runtime:Enum.fz".to_string(),
             "runtime:Enumerable.fz".to_string(),
+            "runtime:Kernel.fz".to_string(),
             "runtime:List.fz".to_string(),
         ];
         let out = run_fz2(&[

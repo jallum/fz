@@ -19,6 +19,8 @@ mod native;
 mod root;
 mod semantic;
 mod source;
+#[cfg(test)]
+mod source_test;
 mod types;
 
 pub(crate) fn run(world: &mut World<'_>, job: &Job) -> Result<JobEffects, FatalError> {

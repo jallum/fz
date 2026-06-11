@@ -23,6 +23,9 @@ source    IndexCode, ScopeCode, DefineModule, ExpandFunctionSource, DefineFuncti
             define modules/functions -> *Defined facts
 body      LowerFunction
             one demanded function -> LoweredBody (+ generated lambda defs)
+            after this boundary compiler2 carries callable identity as FunctionId:
+            unresolved local runtime names are fatal, while exact remote references
+            survive only as interface-backed FunctionId expectations
 dispatch  ReifyGuardDispatch, PlanEntryDispatch
             guard-pure helpers and clause matching -> GuardDispatch/EntryDispatch
 macro     BuildMacroExecutable
@@ -109,8 +112,8 @@ The macro root does not schedule `LowerNativeProgram`; compile-time macro
 execution uses the backend interpreter over the quoted source heap.
 
 `Fz.Compiler.define(source_root, __ENV__)` is the source-tier publication point
-for definitions. It receives Fz-shaped quoted AST on the active source heap and
-applies that root through the live `ScopeSession` in source order.
+for definitions. It receives compiler-shaped quoted AST on the active source
+heap and applies that root through the live `ScopeSession` in source order.
 `FunctionSource(function)` facts are saved there as raw grouped quoted source;
 downstream `DefineFunction` reads `ExpandedFunctionSource(function)` and does
 not need to know whether the source root came from literal code or macro
@@ -129,12 +132,18 @@ body-local macros and normalizes source-only sugar on the same quoted heap
 before `DefineFunction(function)` decodes the body. Function heads establish
 identity and are not expression positions. Local macros, imported macros, and
 required remote macros all converge on the same `MacroExecutable(function)`
-fact. Exact imports reserve names lazily, but a demanded body that calls a
-reserved exact import waits for the provider `ModuleDefined` fact so the source
-tier can bind the real `Function` or `Macro` export before staged expansion
-continues. `require` waits on the provider surface and the selected macro
-executables up front, records that exact remote macro set for the source scope,
-then only those required remote macro calls expand in source order.
+fact. Exact `import/require ... only:` forms do not wait during scoping: they
+reserve callable identity lazily by recording a module-interface expectation and
+binding a `Callable` placeholder into the namespace immediately. A later job
+waits only if it needs more than that placeholder. In practice that means
+`ExpandFunctionSource(function)` waits on `FactKey::ModuleInterface(module)`
+when a reserved exact callable must be classified as macro vs ordinary
+function; once the interface settles, expansion either invokes the macro path
+or leaves the call alone as runtime code. Exact `require ... only:` records the
+selected remote macro expectations for the scope immediately, and
+`define_module` / `define_module_interface` prove those expectations when the
+provider surface settles, emitting the unknown-import diagnostic there if the
+export never existed.
 
 The recursive quoted-tree rewrite itself is single-sourced in
 `src/compiler2/quoted_expander.rs`. Scope publication and
@@ -142,9 +151,9 @@ The recursive quoted-tree rewrite itself is single-sourced in
 post-expansion handling, but they do not carry separate walkers anymore.
 
 Item macro calls are source-order work, not body-lowering work. The macro call
-expands through `MacroExecutable(function)`, the returned Fz-shaped root is read
-as a source fragment, and any function source inside that fragment is published
-through `Fz.Compiler.define` with a projected `__ENV__`. Literal functions,
+expands through `MacroExecutable(function)`, the returned compiler-shaped root
+is read as a source fragment, and any function source inside that fragment is
+published through `Fz.Compiler.define` with a projected `__ENV__`. Literal functions,
 protocol callbacks, synthesized module-info functions, and explicit compiler
 services all use that same publication event; module indexing does not have a
 raw function-body capture side path.
