@@ -15,7 +15,7 @@
   ],
   "priority": 1,
   "status": "in_progress",
-  "title": "Compiler2 interface-only provider calls: carry imported external call edges through semantic closure without ModuleDefined",
+  "title": "Compiler2 callable provenance: separate FunctionId identity from body authority and carry provider-boundary calls without DefineFunction",
   "type": "bug",
-  "updated_at": "2026-06-11T14:46:02Z"
+  "updated_at": "2026-06-11T15:35:15Z"
 }
