@@ -4,6 +4,7 @@
   "blocks": [
     "fz-rh2.18.2"
   ],
+  "closed_at": "2026-06-11T21:06:44Z",
   "created": "2026-06-11T21:02:58Z",
   "description": "Goal: begin the fact-readiness arc from a clean tree. Current dirty files are semantic precision assertions and helper accessors, and at least one new assertion is red: myreduce/3 settles to any instead of int. Signal: git status --short is clean before any fact-engine file changes. Strategy: either land the existing semantic work under its proper ticket only when it is green, or preserve/discard it deliberately before starting this mini-epic. Do not mix this red semantic diff into the engine commits.",
   "id": "fz-rh2.18.3",
@@ -16,8 +17,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 fact readiness: resolve the dirty semantic worktree gate",
   "type": "task",
-  "updated_at": "2026-06-11T21:06:04Z"
+  "updated_at": "2026-06-11T21:06:44Z"
 }
