@@ -7,13 +7,13 @@
     "fz-rh2.17.5"
   ],
   "created": "2026-06-11T09:57:05Z",
-  "description": "Move exact missing-export detection and related cross-module callable visibility checks into interface settlement. Use requester provenance recorded on interface obligations to emit precise diagnostics when an interface definition disagrees with prior exact references, and migrate remote callable lookup to the same interface model. Signal: compiler2 no longer reconstructs missing-export errors indirectly from unresolved function waits, and remote visibility checks stop overusing `ModuleDefined` as a stand-in for interface readiness.",
+  "description": "Carry the interface model through the later compiler pipeline. Replace `DirectCallee::Named`, `SelectedCallee::Named`, and `NamedFunctionRef` with interface-backed `FunctionId` resolution, so body lowering, semantic facts, artifact planning, backend/native lowering, and related tests no longer carry unresolved textual callable placeholders.\n\nAudit protocol handling in the same pass: protocols should ride the same callable/interface substrate, and any remaining protocol-specific name specialness that exists only because callables were not first-class should be removed rather than papered over.\n\nSignal: compiler2 later tiers are function-identity-based end to end, and downstream jobs no longer need named-callable fallback branches.",
   "id": "fz-rh2.17.4",
   "labels": [],
   "parent": "fz-rh2.17",
   "priority": 2,
   "status": "open",
-  "title": "Compiler2 interface settlement: centralize missing-export diagnostics and remote callable lookup",
+  "title": "Compiler2 callable resolution cutover: delete Named callees/fnrefs and resolve through ModuleInterface",
   "type": "task",
-  "updated_at": "2026-06-11T09:57:25Z"
+  "updated_at": "2026-06-11T11:38:49Z"
 }
