@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.17.5.3"
+  ],
   "created": "2026-06-11T13:55:12Z",
   "description": "Wider cargo test --lib compiler2:: sweep shows compiler2_entry_dispatch_recomputes_only_the_dependent_helper_blast_radius still asserting that demand(Job::ScopeCode(code_id)) returns true for late code submitted after a root exists. submit_code already auto-enqueues ScopeCode when roots are present, so these assertions are stale. Update the affected tests to assert the behavioral signal they actually care about instead of the old enqueue mechanism.",
   "id": "fz-rh2.17.5.2",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 tests: stop explicitly demanding ScopeCode once roots auto-enqueue late code",
   "type": "task",
-  "updated_at": "2026-06-11T13:55:12Z"
+  "updated_at": "2026-06-11T13:55:25Z"
 }
