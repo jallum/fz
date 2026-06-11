@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-11T16:22:10Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-rh2.17.5.6",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 type-infer sweep: recover Enum.reduce range/named-ref/fold-state-machine convergence",
   "type": "bug",
-  "updated_at": "2026-06-11T16:22:10Z"
+  "updated_at": "2026-06-11T16:38:30Z"
 }
