@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-11T10:17:09Z",
+  "description": "Fix the concrete correctness gaps exposed after the definition-macro cutover without dragging the broader reconsideration work along. Scope: runtime module code must read in compiler-fragment mode; protocol modules must synthesize and publish `__info__/1`; nested `defimpl` protocol and `for:` target names must resolve through the live namespace instead of a parallel string-qualification side path; quoted-source macro execution must preserve procbin-backed payload lifetimes when a borrowed source process returns AST. Signal: the focused protocol/quoted-source regressions pass, long `@doc` payloads survive `Fz.Compiler.define`, and runtime/source publication no longer fatals on these cases.",
+  "id": "fz-rh2.16.11.6",
+  "labels": [],
+  "parent": "fz-rh2.16.11",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 definition-macro correctness: fix protocol publication and quoted-source procbin lifetime",
+  "type": "bug",
+  "updated_at": "2026-06-11T10:17:09Z"
+}
