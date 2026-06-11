@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-11T14:12:55Z",
@@ -14,8 +14,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 interface-only provider calls: carry imported external call edges through semantic closure without ModuleDefined",
   "type": "bug",
-  "updated_at": "2026-06-11T14:17:03Z"
+  "updated_at": "2026-06-11T14:46:02Z"
 }
