@@ -4,15 +4,14 @@
   "blocks": [
     "fz-rh2.17.2"
   ],
-  "closed_at": "2026-06-11T10:26:54Z",
   "created": "2026-06-11T09:57:05Z",
   "description": "Create the compiler2-native interface data model. Add module-owned interface state under `ModuleMap`, add `FactKey::ModuleInterface(ModuleId)`, replace string-shaped compiler2 exports with `FunctionId`-backed callable entries plus callable kind/variadic metadata, and provide intentful `ModuleInterface` query methods (`public_function_with_name_arity`, `macro_with_name_arity`, `exported_functions`, `exported_macros`). Keep exact lookup and set selection distinct: exact lookup records obligations lazily; set selection returns `Ready|Pending` and takes an optional `except` filter. Signal: compiler2 has one authoritative interface payload shape and callers can express intent without open-coding export filtering.",
   "id": "fz-rh2.17.1",
   "labels": [],
   "parent": "fz-rh2.17",
   "priority": 2,
-  "status": "closed",
+  "status": "open",
   "title": "Compiler2 interface model: add module-owned callable interface state and ModuleInterface fact",
   "type": "task",
-  "updated_at": "2026-06-11T10:26:54Z"
+  "updated_at": "2026-06-11T11:20:41Z"
 }
