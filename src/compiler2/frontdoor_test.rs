@@ -351,6 +351,30 @@ fn compiler2_frontdoor_parses_multiline_call_args_and_newline_pipe() {
 }
 
 #[test]
+fn compiler2_frontdoor_parses_assignment_rhs_after_newline() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "assignment-newline.fz",
+        "fn main() do\n  x =\n    41\n  x + 1\nend\n",
+        &tel,
+    )
+    .expect("assignment rhs after newline parse");
+    assert_quoted_mentions(&root, &["fn", "=", "+"]);
+}
+
+#[test]
+fn compiler2_frontdoor_parses_keyword_list_macro_heads() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "macro-heads.fz",
+        "defmacro test(name_atom, [do: body]) do\n  {:fn, %{}, [{name_atom, %{}, []}, [{:do, body}]]}\nend\n\ndefmacro switching_macro(list, a, do: block) do\n  block\nend\n",
+        &tel,
+    )
+    .expect("keyword list macro heads parse");
+    assert_quoted_mentions(&root, &["defmacro", "test", "switching_macro", "do"]);
+}
+
+#[test]
 fn compiler2_frontdoor_parses_with_expressions() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(

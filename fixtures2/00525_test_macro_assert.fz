@@ -1,3 +1,11 @@
+# Source-surface coverage:
+# This fixture declares the macro head as `[do: body]` specifically to prove
+# compiler2 accepts the bracketed keyword-list head form, not just
+# `do: body` sugar in macro parameters.
+defmacro test(name_atom, [do: body]) do
+  {:fn, %{}, [{name_atom, %{}, []}, [{:do, body}]]}
+end
+
 test(:test_one) do
   assert(1 + 1 == 2)
 end

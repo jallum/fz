@@ -598,6 +598,7 @@ impl<'a> FrontDoorParser<'a> {
                     break;
                 }
                 self.bump();
+                self.skip_newlines();
                 let rhs = self.parse_bp(lbp, module_path, scope)?;
                 let span = lhs.span.merge(rhs.span);
                 let meta = self.meta(module_path, scope, span)?;
@@ -612,6 +613,7 @@ impl<'a> FrontDoorParser<'a> {
                 }
                 self.bump();
                 self.bump();
+                self.skip_newlines();
                 let rhs = self.parse_bp(rbp, module_path, scope)?;
                 let span = lhs.span.merge(rhs.span);
                 let meta = self.meta(module_path, scope, span)?;
@@ -842,7 +844,11 @@ impl<'a> FrontDoorParser<'a> {
             ));
         }
         loop {
-            items.push(self.parse_expr(module_path, scope)?.root);
+            if matches!(self.peek(), Tok::KwKey(_)) {
+                items.push(self.parse_keyword_entry_expr(module_path, scope)?);
+            } else {
+                items.push(self.parse_expr(module_path, scope)?.root);
+            }
             self.skip_newlines();
             if self.eat(&Tok::Bar) {
                 let tail = self.parse_expr(module_path, scope)?.root;
@@ -1340,7 +1346,11 @@ impl<'a> FrontDoorParser<'a> {
             return Ok(items);
         }
         loop {
-            items.push(self.parse_expr(module_path, scope)?.root);
+            if matches!(self.peek(), Tok::KwKey(_)) {
+                items.push(self.parse_keyword_list_expr(module_path, scope)?);
+            } else {
+                items.push(self.parse_expr(module_path, scope)?.root);
+            }
             self.skip_newlines();
             if !self.eat(&Tok::Comma) {
                 break;
@@ -1518,12 +1528,7 @@ impl<'a> FrontDoorParser<'a> {
     ) -> Result<Vec<AnyValueRef>, FrontDoorError> {
         let mut entries = Vec::new();
         loop {
-            let name = match self.bump() {
-                Tok::KwKey(name) => name,
-                other => return Err(self.error(format!("expected keyword entry after `|`, got {:?}", other))),
-            };
-            let value = self.parse_expr(module_path, scope)?;
-            entries.push(self.builder.keyword(&name, value.root)?);
+            entries.push(self.parse_keyword_entry_expr(module_path, scope)?);
             self.skip_newlines();
             if !self.eat(&Tok::Comma) {
                 break;
@@ -1531,6 +1536,39 @@ impl<'a> FrontDoorParser<'a> {
             self.skip_newlines();
         }
         Ok(entries)
+    }
+
+    fn parse_keyword_list_expr(
+        &mut self,
+        module_path: &[String],
+        scope: &[String],
+    ) -> Result<AnyValueRef, FrontDoorError> {
+        let mut entries = Vec::new();
+        loop {
+            entries.push(self.parse_keyword_entry_expr(module_path, scope)?);
+            self.skip_newlines();
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+            self.skip_newlines();
+            if !matches!(self.peek(), Tok::KwKey(_)) {
+                return Err(self.error(format!("expected keyword entry after `,`, got {:?}", self.peek())));
+            }
+        }
+        self.builder.list(&entries).map_err(FrontDoorError::from)
+    }
+
+    fn parse_keyword_entry_expr(
+        &mut self,
+        module_path: &[String],
+        scope: &[String],
+    ) -> Result<AnyValueRef, FrontDoorError> {
+        let name = match self.bump() {
+            Tok::KwKey(name) => name,
+            other => return Err(self.error(format!("expected keyword entry, got {:?}", other))),
+        };
+        let value = self.parse_expr(module_path, scope)?;
+        self.builder.keyword(&name, value.root).map_err(FrontDoorError::from)
     }
 
     fn improper_list(

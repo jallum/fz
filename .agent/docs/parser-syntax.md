@@ -81,7 +81,13 @@ entries only where they can appear:
 - list literals: `[a: 1, b: 2]`
 - call arguments: `f(x, a: 1, b: 2)`
 - call-postfix block sugar: `f(x) do … end`
-- list patterns: `[do: body]`
+- list-pattern / keyword-list heads: `[do: body]`
+
+That means compiler2 accepts both source spellings Elixir uses for block-taking
+macro heads:
+
+- `defmacro m(arg, do: body)`
+- `defmacro m(arg, [do: body])`
 
 A keyword entry is ordinary data — a two-element tuple of the key atom and the
 value, collected into a plain list. `Expr::List` carries `(elements, tail)`, and

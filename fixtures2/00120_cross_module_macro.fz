@@ -5,6 +5,7 @@ quote do: helper(unquote(x))
   end
 end
 defmodule User do
+  require M
   fn run(), do: M.bump(7)
 end
 fn main() do User.run() end
