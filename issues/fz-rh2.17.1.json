@@ -5,13 +5,13 @@
     "fz-rh2.17.2"
   ],
   "created": "2026-06-11T09:57:05Z",
-  "description": "Create the compiler2-native interface data model. Add module-owned interface state under `ModuleMap`, add `FactKey::ModuleInterface(ModuleId)`, replace string-shaped compiler2 exports with `FunctionId`-backed callable entries plus callable kind/variadic metadata, and provide intentful `ModuleInterface` query methods (`public_function_with_name_arity`, `macro_with_name_arity`, `exported_functions`, `exported_macros`). Keep exact lookup and set selection distinct: exact lookup records obligations lazily; set selection returns `Ready|Pending` and takes an optional `except` filter. Signal: compiler2 has one authoritative interface payload shape and callers can express intent without open-coding export filtering.",
+  "description": "Create the compiler2-native interface substrate. Replace `ModuleSurface` and `ModuleExport` with a split module-owned model under `ModuleMap`: definition-side state for local scoping readiness, and interface-side state for exported callable visibility. Add `FactKey::ModuleInterface(ModuleId)`, make interface entries `FunctionId`-backed with callable-kind/variadic metadata, and provide intentful `ModuleInterface` query methods (`public_function_with_name_arity`, `macro_with_name_arity`, `exported_functions`, `exported_macros`).\n\nKeep exact lookup and set selection distinct: exact lookup records obligations lazily; set selection returns `Ready|Pending` and takes an optional `except` filter.\n\nSignal: compiler2 has one authoritative callable-interface payload shape, `ModuleSurface` is gone as a concept, and callers can express intent without open-coding export filtering.",
   "id": "fz-rh2.17.1",
   "labels": [],
   "parent": "fz-rh2.17",
   "priority": 2,
   "status": "open",
-  "title": "Compiler2 interface model: add module-owned callable interface state and ModuleInterface fact",
+  "title": "Compiler2 interface substrate: replace ModuleSurface/ModuleExport with module-owned callable interface state",
   "type": "task",
-  "updated_at": "2026-06-11T11:20:41Z"
+  "updated_at": "2026-06-11T11:38:49Z"
 }
