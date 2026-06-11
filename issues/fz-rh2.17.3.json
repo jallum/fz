@@ -6,14 +6,15 @@
   "blocks": [
     "fz-rh2.17.4"
   ],
+  "closed_at": "2026-06-11T12:10:35Z",
   "created": "2026-06-11T09:57:05Z",
   "description": "Rework cross-module source publication and related lookup seams to consume `ModuleInterface` instead of `module_exports`. `import only:` and `require only:` should use exact interface lookup, mint callable references lazily, and record requester provenance as obligations. Bare `import`/`require` and `except:` variants should use `exported_functions` / `exported_macros` and wait on `ModuleInterface` when the full set is not yet available.\n\nRemote source-tier callable lookup should stop reading exports directly or treating `ModuleDefined` as a visibility gate.\n\nSignal: `apply_import`, `apply_require`, and source-tier remote callable lookup become thin orchestration over interface queries, and compiler2 stops duplicating export-selection policy in source publication.",
   "id": "fz-rh2.17.3",
   "labels": [],
   "parent": "fz-rh2.17",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 interface consumers: move import/require and cross-module source lookup onto interface queries",
   "type": "task",
-  "updated_at": "2026-06-11T11:38:50Z"
+  "updated_at": "2026-06-11T12:10:35Z"
 }
