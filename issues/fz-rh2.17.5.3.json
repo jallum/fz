@@ -19,7 +19,7 @@
   ],
   "priority": 2,
   "status": "open",
-  "title": "Compiler2 test sweep: investigate SIGSEGV after failure continuation",
+  "title": "Compiler2 test sweep: investigate post-failure signal crash during wider compiler2:: runs",
   "type": "bug",
   "updated_at": "2026-06-11T14:17:03Z"
 }
