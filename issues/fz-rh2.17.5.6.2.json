@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-11T14:07:37Z",
+  "description": "",
+  "id": "fz-rh2.17.5.6.2",
+  "labels": [],
+  "parent": "fz-rh2.17.5.6",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 port resolve tests: align import error and external-interface contracts with production behavior",
+  "type": "task",
+  "updated_at": "2026-06-11T14:07:37Z"
+}
