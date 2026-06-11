@@ -11,6 +11,10 @@
     {
       "text": "Current precise gap: source publication accepts an interface-only Math.add/2, but semantic keying still waits on Recursive/ModuleDefined for the imported provider function, so interface-only provider calls do not reach materialization as external call edges.",
       "timestamp": "2026-06-11T14:17:03Z"
+    },
+    {
+      "text": "Refined model: this is not just an interface-only import bug. Compiler2 currently collapses callable identity and executable authority by assuming every FunctionId can be discharged by DefineFunction + activation facts. The real fix is to record callable/body provenance at declaration time, then let later jobs ask which authority discharges a fnid for the purpose they need: ordinary source-backed functions via DefineFunction, protocol callback slots via protocol dispatch to impl callbacks, and interface-only provider exports via provider-boundary external call edges with no local body obligation.",
+      "timestamp": "2026-06-11T15:35:15Z"
     }
   ],
   "priority": 1,
