@@ -2,6 +2,8 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-11T17:01:56Z",
+  "close_reason": "Fixed in commit 4267485f9: all ticketed compiler2 type-infer convergence failures now pass; remaining compiler2:: sweep failures are separate source/macro tickets.",
   "created": "2026-06-11T16:22:10Z",
   "description": "The wider cargo test --lib compiler2:: sweep still has port_type_infer failures unrelated to the raw IR provider-boundary migration: enum_reduce_range_settles_to_int and mixed_enum_take_calls_preserve_list_and_range_activations remain unresolved at MaterializeRoot(RootId(0)); corpus_folds_settle_myreduce_to_int_fold_state_machine, enum_reduce_named_ref_ok_settles_to_int, and fixpoint_leaves_no_reached_fn_unknown_fold_state_machine fatal during IndexCode. Investigate with telemetry and fix the semantic/source/type-infer convergence path without reintroducing old-world planner shims.",
   "id": "fz-rh2.17.5.6.6",
@@ -14,8 +16,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 type-infer sweep: recover Enum.reduce range/named-ref/fold-state-machine convergence",
   "type": "bug",
-  "updated_at": "2026-06-11T17:01:26Z"
+  "updated_at": "2026-06-11T17:01:56Z"
 }
