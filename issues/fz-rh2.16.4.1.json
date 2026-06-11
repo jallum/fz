@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-11T18:29:14Z",
   "created": "2026-06-11T18:28:33Z",
   "description": "Pull the Elixir parser/normalizer surface corpus for keyword lists, no-parens calls, trailing do blocks, quoted keyword keys, and keyword-spacing diagnostics into fixtures2, make compiler2 frontdoor accept/reject the same source spellings and diagnostics, and unpark the dedicated compiler2 fixture test module.",
   "id": "fz-rh2.16.4.1",
   "labels": [],
   "parent": "fz-rh2.16.4",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 frontdoor: land Elixir keyword and no-parens surface corpus",
   "type": "task",
-  "updated_at": "2026-06-11T18:28:33Z"
+  "updated_at": "2026-06-11T18:29:14Z"
 }
