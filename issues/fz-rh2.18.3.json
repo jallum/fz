@@ -9,9 +9,15 @@
   "id": "fz-rh2.18.3",
   "labels": [],
   "parent": "fz-rh2.18",
+  "comments": [
+    {
+      "text": "Preserving the pre-epic dirty semantic diff before engine work. Dirty files: src/compiler2/compiler.rs, src/compiler2/jobs/semantic.rs, src/compiler2/mod.rs, src/compiler2/port_planner_test.rs, src/compiler2/port_type_infer_test.rs, src/compiler2/test_support.rs. Verified red acceptance signal: cargo test --lib compiler2::port_type_infer_test::corpus_folds_settle_myreduce_to_int_fold_state_machine -- --exact fails because myreduce/3 settles to any instead of int. The diff is attached so the acceptance assertions and local semantic refinement can be reintroduced after the fact-engine model lands rather than being mixed into engine commits.",
+      "timestamp": "2026-06-11T21:06:04Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Compiler2 fact readiness: resolve the dirty semantic worktree gate",
   "type": "task",
-  "updated_at": "2026-06-11T21:05:53Z"
+  "updated_at": "2026-06-11T21:06:04Z"
 }
