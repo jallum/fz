@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-rh2.17.5.6.3"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-rh2.17.5.6",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Modernize raw IR direct-call targets: replace external stubs/side-table edges with first-class provider-boundary call targets",
   "type": "task",
-  "updated_at": "2026-06-11T16:01:08Z"
+  "updated_at": "2026-06-11T16:01:55Z"
 }
