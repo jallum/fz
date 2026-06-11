@@ -7,9 +7,15 @@
   "id": "fz-rh2.17.5.6.3",
   "labels": [],
   "parent": "fz-rh2.17.5.6",
+  "comments": [
+    {
+      "text": "Current precise gap: source publication accepts an interface-only Math.add/2, but semantic keying still waits on Recursive/ModuleDefined for the imported provider function, so interface-only provider calls do not reach materialization as external call edges.",
+      "timestamp": "2026-06-11T14:17:03Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 interface-only provider calls: carry imported external call edges through semantic closure without ModuleDefined",
   "type": "bug",
-  "updated_at": "2026-06-11T14:12:55Z"
+  "updated_at": "2026-06-11T14:17:03Z"
 }
