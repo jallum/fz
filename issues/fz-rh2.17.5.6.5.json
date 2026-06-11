@@ -9,9 +9,15 @@
   "id": "fz-rh2.17.5.6.5",
   "labels": [],
   "parent": "fz-rh2.17.5.6",
+  "comments": [
+    {
+      "text": "Implemented raw IR provider-boundary target model: Term::Call/TailCall now carry DirectCallTarget::{Local, ProviderBoundary}; import edges are derived from provider-boundary term targets; ir_lower no longer synthesizes __external__ halt stubs; linker rewrites provider-boundary calls to Local(FnId); planner CallEdgeTarget variant is ProviderBoundary rather than External. Verified cargo check --lib, cargo test --lib --no-run, fz_ir::, runtime_unit_metadata_carries_external_import_refs, codegen_rejects_unresolved_external_module_calls, image_linker_rejects_unresolved_external_imports_without_provider, linked_ir_units_rewrite_provider_boundary_calls_and_run_provider_body, planner_keeps_external_module_calls_at_provider_boundary, planner_keeps_provider_protocol_calls_at_external_boundary, runtime_graph_mixed_enum_take_calls_plan_range_specialization, and frontend_only_checked_interp_rejects_unlinked_process_heap_alloc_stats. Wider cargo test --lib compiler2:: still has pre-existing source/macro and enum/type-infer failures tracked by fz-rh2.16.11.5.1 and fz-rh2.17.5.6.6.",
+      "timestamp": "2026-06-11T16:22:30Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Modernize raw IR direct-call targets: replace external stubs/side-table edges with first-class provider-boundary call targets",
   "type": "task",
-  "updated_at": "2026-06-11T16:01:55Z"
+  "updated_at": "2026-06-11T16:22:30Z"
 }
