@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-11T17:50:47Z",
   "created": "2026-06-11T14:00:56Z",
   "description": "The wider compiler2 sweep still fails in source-surface and macro coverage after the current arc. Current failures include port_macros_test::cross_module_macro_qualifies_names_against_home_module and port_misc_test cases around multiple test blocks, test macro passing/failing assert compilation, and whitespace assignment parsing/binding. Recover the intended compiler-defined fragment, home-module qualification, and parser behavior without reintroducing old-world shims.",
   "id": "fz-rh2.16.11.5.1",
   "labels": [],
   "parent": "fz-rh2.16.11.5",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 source-surface sweep: recover cross-module macro qualification and parser/test-macro regressions",
   "type": "bug",
-  "updated_at": "2026-06-11T14:00:56Z"
+  "updated_at": "2026-06-11T17:50:47Z"
 }
