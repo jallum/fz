@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.18.7"
+  ],
   "blocks": [],
   "created": "2026-06-11T21:03:28Z",
   "description": "Goal: close the mini-epic only after the new model is documented, observable, and old concepts are mechanically absent. Signal: cargo test --lib compiler2:: passes; fact-engine and semantic-fixpoint docs describe current/settled evidence accurately; telemetry exposes readiness transitions; grep checks prove obsolete concepts are gone, not renamed. Strategy: update .agent docs and guides, add or adjust telemetry at the World scheduler seam, run hard no-go searches for semantic_closure_is_current, DependencySnapshot, ReturnType-as-ready-Ty, ActivationKey.input body evidence, outputs Vec\u003c(FactKey,bool)\u003e, missing-return-as-none, unresolved-as-any, and stale FactValue::Inputs docs. Any survivor requires either deletion in this ticket or a new blocking ticket.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 fact readiness closeout: docs telemetry and deletion contract",
   "type": "task",
-  "updated_at": "2026-06-11T21:03:28Z"
+  "updated_at": "2026-06-11T21:03:55Z"
 }
