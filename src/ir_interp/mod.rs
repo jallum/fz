@@ -237,13 +237,21 @@ impl IrInterpRuntime {
         process.bs_tuple_arity3_schema = Some(bs_tuple_arity3_schema);
         process.pid = 1;
         process.state = ProcessState::New;
-        process.ctx = std::ptr::null_mut();
+        process.detach_runtime_state();
         runtime.insert_task(1, Box::new(process));
         runtime
     }
 
     pub(crate) fn take_process(&mut self, pid: u32) -> Option<Process> {
-        self.tasks.remove(&pid).map(|process| *process)
+        self.tasks.remove(&pid).map(|process| {
+            let proc_ptr: *mut Process = (&*process) as *const Process as *mut Process;
+            if self.current_proc == proc_ptr {
+                self.current_proc = std::ptr::null_mut();
+            }
+            let mut process = *process;
+            process.detach_runtime_state();
+            process
+        })
     }
 
     /// The process running in the current quantum. Call sites that allocate or
@@ -425,7 +433,7 @@ impl IrInterpRuntime {
                 (*proc_ptr).state = ProcessState::Running;
                 (*proc_ptr).reset_reduction_budget();
                 (*proc_ptr).ctx = &mut exec_ctx;
-                (*proc_ptr).heap.set_owner(proc_ptr);
+                (*proc_ptr).attach_heap_owner();
                 debug_assert!(!(*proc_ptr).ctx.is_null(), "interp ctx installed");
             };
             self.current_proc = proc_ptr;
@@ -696,7 +704,7 @@ where
     runtime.insert_task(1, task);
     let task_ptr = runtime.process_ptr(1).expect("run_test_fn installed pid 1");
     runtime.current_proc = task_ptr;
-    unsafe { (*task_ptr).heap.set_owner(task_ptr) };
+    unsafe { (*task_ptr).attach_heap_owner() };
     let mut module_plan = module_plan.clone();
     let diagnostics = resolve_module_types(t, module, &mut module_plan);
     if let Some(diagnostic) = diagnostics.into_iter().next() {

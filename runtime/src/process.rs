@@ -434,6 +434,20 @@ impl Process {
         )
     }
 
+    /// Install the ephemeral heap-owner backpointer used while a scheduler or
+    /// interpreter actively owns this process.
+    pub fn attach_heap_owner(&mut self) {
+        let owner: *mut Process = self;
+        self.heap.set_owner(owner);
+    }
+
+    /// Clear scheduler-owned backpointers before handing this process back to a
+    /// non-scheduler subsystem such as the quoted-source heap.
+    pub fn detach_runtime_state(&mut self) {
+        self.ctx = null_mut();
+        self.heap.clear_owner();
+    }
+
     /// fz-cps.1.7 — populate the static closure singleton table. Each
     /// target `(cl_sid, fn_id, code_ptr)` allocates one off-heap strict
     /// zero-capture closure and registers its tagged value at

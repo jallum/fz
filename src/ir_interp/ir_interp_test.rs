@@ -1,5 +1,7 @@
 #[path = "tests/coexistence.rs"]
 mod coexistence;
+#[path = "tests/process_handoff.rs"]
+mod process_handoff;
 #[path = "tests/receive.rs"]
 mod receive;
 #[path = "tests/resource_bif.rs"]

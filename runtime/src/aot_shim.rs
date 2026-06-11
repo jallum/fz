@@ -672,7 +672,7 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
         (*proc_ptr).state = ProcessState::Running;
         (*proc_ptr).reset_reduction_budget();
         (*proc_ptr).ctx = &mut (*sched).ctx;
-        (*proc_ptr).heap.set_owner(proc_ptr);
+        (*proc_ptr).attach_heap_owner();
         debug_assert!(!(*proc_ptr).ctx.is_null(), "aot ctx installed");
     };
 

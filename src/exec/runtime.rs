@@ -462,8 +462,7 @@ impl<'a> Runtime<'a> {
             task.state = ProcessState::Running;
             task.reset_reduction_budget();
             task.ctx = ctx_ptr;
-            let owner: *mut Process = &mut *task;
-            task.heap.set_owner(owner);
+            task.attach_heap_owner();
             debug_assert!(!task.ctx.is_null(), "task.ctx installed before dispatch");
             self.compiled.run_quantum(&mut task);
             // Possible post-quantum states (fz-ul4.19.3):
