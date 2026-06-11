@@ -98,6 +98,8 @@ mod contract_test;
 #[cfg(test)]
 mod drive_test;
 #[cfg(test)]
+mod elixir_surface_fixtures_test;
+#[cfg(test)]
 mod facts_test;
 #[cfg(test)]
 mod frontdoor_test;

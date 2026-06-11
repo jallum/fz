@@ -109,6 +109,9 @@ extends the collapsed keyword argument, or makes one), so
 A bare `do … end` on a block-positional literal stays separate: `f [a: 1] do … end`
 keeps `[a: 1]` positional and adds a distinct `[do: …]`, matching Elixir.
 
+Quoted string keys participate in the same sugar: `["a.b": 1]` is a list whose
+element is the tuple `{"a.b", 1}` after lexing the quoted key as `Tok::KwKey`.
+
 This matches Elixir's user-facing model without adding a keyword-list AST node or
 runtime type.
 
@@ -289,8 +292,14 @@ Ordinary call keyword parsing runs inside those forms only after their special
 parsers have set `suppress_trailing_do`, so a call's trailing-do sugar never
 swallows a block the surrounding form expects.
 
-Keyword entries are trailing. Once a call or list literal starts parsing keyword
-entries, a following positional expression is a syntax error.
+Keyword entries are trailing. Once a call, list literal, or map entry sequence
+starts parsing keyword entries, a following positional expression is a syntax
+error (`unexpected expression after keyword list`).
+
+Tuples are slightly narrower: a tuple may end with a keyword-list element
+(`{x, a: b}`), but it may not begin as a bare keyword list (`{a: b}`), which is
+rejected as `unexpected keyword list inside tuple`. Bitstrings reject keyword
+lists entirely (`unexpected keyword list inside bitstring`).
 
 ## Where it's proven
 
@@ -302,4 +311,8 @@ named-vs-anonymous call rule and bare-call resolution are covered in
 `src/modules/interface_test.rs`. End-to-end behavior across the four execution
 paths runs through the fixture corpus (`fixtures/keyword_lists`,
 `no_parens_call`, `no_parens_do`, `no_parens_keyword`) under
-`tests/fixture_matrix.rs`.
+`tests/fixture_matrix.rs`. Compiler2 mirrors the same surface contract through
+`src/compiler2/elixir_surface_fixtures_test.rs` and `fixtures2/00532`-`00546`,
+which pin the Elixir parser/normalizer cases for no-parens calls, trailing
+`do`, keyword-list boundaries, quoted keyword keys, and keyword-spacing
+diagnostics.

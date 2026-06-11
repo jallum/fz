@@ -1,0 +1,8 @@
+# Source-surface coverage:
+# Mirrors ../elixir/lib/elixir/test/elixir/code_normalizer/quoted_ast_test.exs
+# test "keyword list".
+fn main() do
+  [a: a, b: b]
+  [a: 1, b: 1 + 2]
+  ["a.b": 1, c: 1 + 2]
+end

@@ -340,8 +340,20 @@ impl<'a> Lexer<'a> {
         String::from_utf8(bytes).map_err(|e| self.err(format!("invalid UTF-8 in string: {}", e)))
     }
 
-    fn read_quoted_binary(&mut self) -> Result<Tok, LexError> {
-        Ok(Tok::Binary(self.read_quoted_binary_bytes()?))
+    fn keyword_value_starts_after_colon(&self) -> bool {
+        matches!(
+            self.peek(0),
+            None | Some(b' ')
+                | Some(b'\t')
+                | Some(b'\r')
+                | Some(b'\n')
+                | Some(b'#')
+                | Some(b')')
+                | Some(b']')
+                | Some(b'}')
+                | Some(b',')
+                | Some(b';')
+        )
     }
 
     fn err(&self, msg: String) -> LexError {
@@ -642,14 +654,33 @@ impl<'a> Lexer<'a> {
                 }
             },
 
-            b'"' => self.read_quoted_binary()?,
+            b'"' => {
+                let bytes = self.read_quoted_binary_bytes()?;
+                if self.peek(0) == Some(b':') && self.peek(1) != Some(b':') {
+                    self.bump();
+                    if self.keyword_value_starts_after_colon() {
+                        Tok::KwKey(
+                            String::from_utf8(bytes)
+                                .map_err(|e| self.err(format!("invalid UTF-8 in string: {}", e)))?,
+                        )
+                    } else {
+                        return Err(self.err("keyword argument must be followed by space after quoted key".into()));
+                    }
+                } else {
+                    Tok::Binary(bytes)
+                }
+            }
             c if c.is_ascii_digit() => self.read_number()?,
             c if Self::ident_start(c) => {
                 let name = self.read_ident();
                 // `name:` (but not `::`) is a keyword-list key like `do:`.
                 if self.peek(0) == Some(b':') && self.peek(1) != Some(b':') {
                     self.bump();
-                    Tok::KwKey(name)
+                    if self.keyword_value_starts_after_colon() {
+                        Tok::KwKey(name)
+                    } else {
+                        return Err(self.err(format!("keyword argument must be followed by space after: {}:", name)));
+                    }
                 } else {
                     Self::keyword_or_ident(name)
                 }

@@ -1,0 +1,6 @@
+# Source-surface coverage:
+# Mirrors ../elixir/lib/elixir/test/elixir/kernel/parser_test.exs
+# test "with do-blocks".
+fn main() do
+  foo do end..bar do end//baz do end
+end

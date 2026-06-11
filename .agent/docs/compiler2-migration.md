@@ -89,9 +89,11 @@ After `fz-rh2.16.3`, `enum_reduce_suspend` also runs through fz2
 run/interp/build but needs fz2-specific allocation goldens before it can enter
 the matrix.
 
-**Source-surface gaps.** Current fz2 failures include syntax or item-surface
-support that the old frontend still owns: `keyword_lists`, `no_parens_call`,
-`no_parens_do`, `no_parens_keyword`, `sample_tests`, and `sample_tests_module`.
+**Source-surface gaps.** The Elixir-surface parser batch for keyword lists,
+no-parens calls, trailing `do`, quoted keyword keys, and keyword-boundary
+diagnostics is now covered directly by compiler2's `fixtures2/00532`-`00546`
+corpus. The remaining item-surface fixtures still called out in the sweep are
+`sample_tests` and `sample_tests_module`.
 
 **Callable/protocol/Enum artifact gaps.** `fz-rh2.16.3` fixed the closed
 callable-entry side of this class by deriving latent callable executables from

@@ -1,0 +1,4 @@
+# Source-surface coverage:
+# Mirrors ../elixir/lib/elixir/test/elixir/code_normalizer/quoted_ast_test.exs
+# test "keyword list with :do as operand".
+fn main(), do: a = [do: 1]
