@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-11T09:57:05Z",
+  "description": "Remove the retired compiler2 export path once interface facts own visibility. Delete `ModuleExport`, `module_exports`, `find_export`, and the duplicated import/require selection helpers. Update telemetry and docs to state the new boundary: `ModuleDefined` is local body/scoping readiness, `ModuleInterface` is cross-module callable visibility. Signal: the old export-selection path is gone, docs match the code, and compiler2 tests prove the interface boundary directly.",
+  "id": "fz-rh2.17.5",
+  "labels": [],
+  "parent": "fz-rh2.17",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 interface closeout: delete ModuleExport path, update telemetry, and restate the invariants",
+  "type": "task",
+  "updated_at": "2026-06-11T09:57:05Z"
+}
