@@ -15,6 +15,7 @@ use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch};
 use crate::frontend::protocols::protocol_domain_tag;
+use crate::modules::identity::{Mfa, ModuleName};
 use crate::modules::runtime_library;
 use crate::telemetry::{Telemetry, opaque_debug};
 use crate::{FunctionSurface, measurements, metadata};
@@ -1562,6 +1563,35 @@ impl<'a> World<'a> {
 
     pub(crate) fn function_ref(&self, function: FunctionId) -> &super::identity::FunctionRef {
         self.functions.reference_for(function)
+    }
+
+    pub(crate) fn function_is_provider_boundary(&self, function: FunctionId) -> bool {
+        let function_ref = self.function_ref(function);
+        if function_ref.module.is_global()
+            || self.module_defined_revision(function_ref.module).is_some()
+            || self.module_has_source_state(function_ref.module)
+            || self.is_runtime_module(function_ref.module)
+            || self.function_defined_revision(function).is_some()
+            || self.module_interface_revision(function_ref.module).is_none()
+        {
+            return false;
+        }
+        self.module_interface(function_ref.module)
+            .callables()
+            .iter()
+            .any(|callable| callable.function == function)
+    }
+
+    pub(crate) fn function_mfa(&self, function: FunctionId) -> Mfa {
+        let function_ref = self.function_ref(function);
+        let module_name = self
+            .module_name(function_ref.module)
+            .expect("provider-boundary functions should belong to a named module");
+        Mfa::new(
+            ModuleName::parse_dotted(module_name).expect("compiler2 module names should be valid module paths"),
+            function_ref.name.clone(),
+            function_ref.arity,
+        )
     }
 
     #[cfg(test)]

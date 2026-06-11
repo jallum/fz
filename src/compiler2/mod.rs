@@ -40,10 +40,10 @@ pub(crate) use artifact::NativeEntryAbi;
 pub use artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiReadyProgramMap, AbiValueRepr, BackendBody,
     BackendCallArg, BackendCallableEntry, BackendClause, BackendEntry, BackendEntryOrigin, BackendExecutable,
-    BackendProgram, BackendProgramMap, BackendReceive, BackendStep, BackendTail, CallableEntry, EmissionReadyCallEdge,
-    EmissionReadyCallableEntry, EmissionReadyExecutable, EmissionReadyProgram, EmissionReadyProgramMap,
-    ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable, MaterializedProgram, MaterializedProgramMap,
-    ReturnAbi,
+    BackendProgram, BackendProgramMap, BackendReceive, BackendStep, BackendTail, CallTarget, CallableEntry,
+    EmissionReadyCallEdge, EmissionReadyCallableEntry, EmissionReadyExecutable, EmissionReadyProgram,
+    EmissionReadyProgramMap, ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable, MaterializedProgram,
+    MaterializedProgramMap, ReturnAbi,
 };
 pub(crate) use artifact::{NativeBody, NativeProgram};
 pub use body::{

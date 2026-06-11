@@ -19,7 +19,7 @@ use crate::ir_lower::extern_ty_from_name;
 use crate::parser::lexer::Tok;
 
 use super::super::artifact::{
-    AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiValueRepr, CallableEntry, EffectSummary,
+    AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiValueRepr, CallTarget, CallableEntry, EffectSummary,
     EmissionReadyCallEdge, EmissionReadyCallableEntry, EmissionReadyExecutable, EmissionReadyProgram,
     ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable, MaterializedProgram, ReturnAbi,
 };
@@ -338,12 +338,19 @@ fn rewrite_protocol_dispatch_calls(
         let mut targets = summary.targets.clone();
         targets.sort_by_key(|target| match target.callee {
             SelectedCallee::Function(function) => function.as_u32(),
+            SelectedCallee::ProviderBoundary(function) => function.as_u32(),
         });
         let plan = protocol_dispatch_plan(world, root_id, receiver_ty, &targets, entry.span)?;
 
         let mut arm_entries = Vec::with_capacity(targets.len());
         for target in &targets {
-            let SelectedCallee::Function(function) = target.callee;
+            let SelectedCallee::Function(function) = target.callee else {
+                return Err(incomplete_semantic_plan(
+                    world,
+                    root_id,
+                    "multi-target direct-call dispatch cannot target a provider boundary",
+                ));
+            };
             let arm_entry = ControlEntryId::from_u32(next_entry_id);
             next_entry_id += 1;
             let synthetic_callsite = CallSiteId::from_u32(next_callsite_id);
@@ -542,32 +549,37 @@ fn lower_materialized_call_target(
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
     target: CallTargetSummary,
 ) -> Result<MaterializedCallEdge, FatalError> {
-    let SelectedCallee::Function(function) = target.callee;
-    let callee = ExecutableKey {
-        activation: world.activation_key(root_id, function, &target.input_types),
-        need,
-    };
-    let extern_marshals = if let LoweredBody::Extern { signature } = world.lowered_body(function) {
-        let Some(args) = callsite_args.get(&callsite) else {
-            return Err(incomplete_semantic_plan(
-                world,
-                root_id,
-                format!(
-                    "missing lowered call arguments for extern callsite {}",
-                    callsite.as_u32()
-                ),
-            ));
-        };
-        Some(resolve_extern_marshals(
-            world,
-            root_id,
-            args,
-            &analysis.value_types,
-            &signature.params,
-            signature.variadic,
-        )?)
-    } else {
-        None
+    let (callee, extern_marshals) = match target.callee {
+        SelectedCallee::Function(function) => {
+            let callee = ExecutableKey {
+                activation: world.activation_key(root_id, function, &target.input_types),
+                need,
+            };
+            let extern_marshals = if let LoweredBody::Extern { signature } = world.lowered_body(function) {
+                let Some(args) = callsite_args.get(&callsite) else {
+                    return Err(incomplete_semantic_plan(
+                        world,
+                        root_id,
+                        format!(
+                            "missing lowered call arguments for extern callsite {}",
+                            callsite.as_u32()
+                        ),
+                    ));
+                };
+                Some(resolve_extern_marshals(
+                    world,
+                    root_id,
+                    args,
+                    &analysis.value_types,
+                    &signature.params,
+                    signature.variadic,
+                )?)
+            } else {
+                None
+            };
+            (CallTarget::Local(callee), extern_marshals)
+        }
+        SelectedCallee::ProviderBoundary(function) => (CallTarget::ProviderBoundary(function), None),
     };
     Ok(MaterializedCallEdge {
         callee,
@@ -1061,8 +1073,15 @@ fn tail_effects(tail: &LoweredTail, call_edges: &HashMap<CallSiteId, Materialize
         LoweredTail::ClosureCall { callsite, .. } if !call_edges.contains_key(callsite) => {
             effects.calls_opaque = true;
         }
+        LoweredTail::DirectCall { callsite, .. } => {
+            if matches!(
+                call_edges.get(callsite).map(|edge| &edge.callee),
+                Some(CallTarget::ProviderBoundary(_))
+            ) {
+                effects.calls_opaque = true;
+            }
+        }
         LoweredTail::Value { .. }
-        | LoweredTail::DirectCall { .. }
         | LoweredTail::If { .. }
         | LoweredTail::Dispatch { .. }
         | LoweredTail::Receive(_)
@@ -1086,7 +1105,10 @@ fn settle_effects(
         for (caller_key, executable) in executables.iter_mut() {
             let mut settled = local_effects(&executable.body, &executable.call_edges);
             for edge in executable.call_edges.values() {
-                let Some(callee_effects) = snapshot.get(&edge.callee).copied() else {
+                let Some(callee) = edge.callee.local() else {
+                    continue;
+                };
+                let Some(callee_effects) = snapshot.get(callee).copied() else {
                     return Err(incomplete_semantic_plan(
                         world,
                         root_id,
@@ -1162,10 +1184,13 @@ fn derive_abi_ready_executable(
                 AbiReadyCallEdge {
                     callee: edge.callee.clone(),
                     return_ty: edge.return_ty,
-                    return_abi: return_abis
-                        .get(&edge.callee)
-                        .expect("ABI-ready call edge should resolve through the settled callee return ABI")
-                        .clone(),
+                    return_abi: match &edge.callee {
+                        CallTarget::Local(callee) => return_abis
+                            .get(callee)
+                            .expect("ABI-ready local call edge should resolve through the settled callee return ABI")
+                            .clone(),
+                        CallTarget::ProviderBoundary(_) => ReturnAbi::Value(AbiValueRepr::ValueRef),
+                    },
                     extern_marshals: edge.extern_marshals.clone(),
                 },
             )
@@ -1345,13 +1370,19 @@ fn delivery_repr(
                     ),
                 )
             })?;
-            Ok(return_abis.get(&edge.callee).map(return_repr_for_delivery))
+            Ok(match &edge.callee {
+                CallTarget::Local(callee) => return_abis.get(callee).map(return_repr_for_delivery),
+                CallTarget::ProviderBoundary(_) => Some(AbiValueRepr::ValueRef),
+            })
         }
         DeliverySource::ClosureCall(callsite) => {
             let Some(edge) = executable.call_edges.get(&callsite) else {
                 return Ok(Some(AbiValueRepr::ValueRef));
             };
-            Ok(return_abis.get(&edge.callee).map(return_repr_for_delivery))
+            Ok(match &edge.callee {
+                CallTarget::Local(callee) => return_abis.get(callee).map(return_repr_for_delivery),
+                CallTarget::ProviderBoundary(_) => Some(AbiValueRepr::ValueRef),
+            })
         }
     }
 }
@@ -1412,11 +1443,10 @@ fn resolve_entry_return_abi(
             }
         },
         LoweredTail::DirectCall { callsite, dest, .. } => match dest {
-            ControlDestination::Return => executable
-                .call_edges
-                .get(callsite)
-                .and_then(|edge| return_abis.get(&edge.callee))
-                .cloned(),
+            ControlDestination::Return => executable.call_edges.get(callsite).and_then(|edge| match &edge.callee {
+                CallTarget::Local(callee) => return_abis.get(callee).cloned(),
+                CallTarget::ProviderBoundary(_) => Some(ReturnAbi::Value(AbiValueRepr::ValueRef)),
+            }),
             ControlDestination::Deliver(target) => {
                 resolve_entry_return_abi(world, root_id, executable, plan, entries, *target, return_abis, seen)?
             }
@@ -1425,8 +1455,10 @@ fn resolve_entry_return_abi(
             ControlDestination::Return => executable
                 .call_edges
                 .get(callsite)
-                .and_then(|edge| return_abis.get(&edge.callee))
-                .cloned()
+                .and_then(|edge| match &edge.callee {
+                    CallTarget::Local(callee) => return_abis.get(callee).cloned(),
+                    CallTarget::ProviderBoundary(_) => Some(ReturnAbi::Value(AbiValueRepr::ValueRef)),
+                })
                 .or(Some(ReturnAbi::Value(AbiValueRepr::ValueRef))),
             ControlDestination::Deliver(target) => {
                 resolve_entry_return_abi(world, root_id, executable, plan, entries, *target, return_abis, seen)?
@@ -1802,16 +1834,21 @@ fn derive_emission_ready_executable(
         .map(|(callsite, edge)| {
             Ok(EmissionReadyCallEdge {
                 callsite: *callsite,
-                callee: executable_index.get(&edge.callee).copied().ok_or_else(|| {
-                    incomplete_semantic_plan(
-                        world,
-                        root_id,
-                        format!(
-                            "ABI-ready call edge {:?} -> {:?} points outside the executable inventory",
-                            key, edge.callee
-                        ),
-                    )
-                })?,
+                callee: match &edge.callee {
+                    CallTarget::Local(callee) => {
+                        CallTarget::Local(executable_index.get(callee).copied().ok_or_else(|| {
+                            incomplete_semantic_plan(
+                                world,
+                                root_id,
+                                format!(
+                                    "ABI-ready call edge {:?} -> {:?} points outside the executable inventory",
+                                    key, callee
+                                ),
+                            )
+                        })?)
+                    }
+                    CallTarget::ProviderBoundary(function) => CallTarget::ProviderBoundary(*function),
+                },
                 extern_marshals: edge.extern_marshals.clone(),
             })
         })
@@ -2033,7 +2070,10 @@ fn boundary_expects_callable(
     let Some(edge) = executable.call_edges.get(&callsite) else {
         return false;
     };
-    let Some(callee) = executables.get(&edge.callee) else {
+    let Some(callee_key) = edge.callee.local() else {
+        return false;
+    };
+    let Some(callee) = executables.get(callee_key) else {
         return false;
     };
     if !matches!(callee.body, LoweredBody::Extern { .. }) {
@@ -2043,7 +2083,7 @@ fn boundary_expects_callable(
         .and_then(|callee| executable.value_types.get(&callee))
         .and_then(|callee_ty| world.types().closure_lit_parts(callee_ty))
         .map_or(0, |parts| parts.captures.len());
-    let Some(expected_ty) = edge.callee.activation.input.get(offset + arg_index) else {
+    let Some(expected_ty) = callee_key.activation.input.get(offset + arg_index) else {
         return false;
     };
     world.types_mut().callable_clauses(expected_ty).is_some()

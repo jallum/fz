@@ -782,7 +782,9 @@ fn resolve_direct_call(
     let mut latent_executables = Vec::new();
     if let Some(summary) = &summary {
         for target in &summary.targets {
-            let SelectedCallee::Function(function) = target.callee;
+            let SelectedCallee::Function(function) = target.callee else {
+                continue;
+            };
             let runtime_activations = resolve_runtime_callable_boundary_activations(
                 world,
                 caller,
@@ -933,6 +935,10 @@ fn rebuild_coalesced_call_emission(
                 rebuilt_activations.extend(rebuilt.activations);
                 rebuilt_latent.extend(rebuilt.latent_executables);
             }
+            SelectedCallee::ProviderBoundary(_) => {
+                rebuilt_return = merge_observed_ty(world, rebuilt_return, target.return_ty);
+                rebuilt_targets.push(target.clone());
+            }
         }
     }
 
@@ -964,6 +970,22 @@ fn call_emission_for_function(
     else {
         return Ok(None);
     };
+    if world.function_is_provider_boundary(function) {
+        let return_ty = contract_return_ty.unwrap_or_else(|| any_ty(world));
+        return Ok(Some(CallEmission {
+            key,
+            summary: Some(CallSiteSummary {
+                targets: vec![CallTargetSummary {
+                    callee: SelectedCallee::ProviderBoundary(function),
+                    input_types,
+                    return_ty,
+                }],
+                return_ty,
+            }),
+            activations: Vec::new(),
+            latent_executables: Vec::new(),
+        }));
+    }
     let Some((activation, already_present, return_ty)) =
         prepare_function_call(world, caller, function, input_types.clone(), reads, waits, follow_up)
     else {
@@ -1045,6 +1067,21 @@ fn resolve_function_call(
     else {
         return Ok((None, Vec::new(), any_ty(world)));
     };
+    if world.function_is_provider_boundary(function) {
+        let return_ty = contract_return_ty.unwrap_or_else(|| any_ty(world));
+        return Ok((
+            Some(CallSiteSummary {
+                targets: vec![call_target_summary(
+                    SelectedCallee::ProviderBoundary(function),
+                    input_types,
+                    return_ty,
+                )],
+                return_ty,
+            }),
+            Vec::new(),
+            return_ty,
+        ));
+    }
     let Some((activation, already_present, return_ty)) =
         prepare_function_call(world, caller, function, input_types.clone(), reads, waits, follow_up)
     else {

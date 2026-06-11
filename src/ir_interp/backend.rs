@@ -11,7 +11,7 @@ use super::value::{
 };
 use super::*;
 use crate::compiler2::{
-    BackendBody, BackendEntry, BackendExecutable, BackendProgram, BackendStep as ProgramStep, BackendTail,
+    BackendBody, BackendEntry, BackendExecutable, BackendProgram, BackendStep as ProgramStep, BackendTail, CallTarget,
     ControlDestination, ExecutableDispatch, ValueId,
 };
 use crate::compiler2::{ExecutableNeed, FunctionId};
@@ -537,20 +537,26 @@ fn eval_entry(
             extern_marshals,
             dest,
             ..
-        } => eval_direct_call(
-            runtime,
-            types,
-            tel,
-            program,
-            module,
-            *callee,
-            args,
-            extern_marshals.as_deref(),
-            env,
-            executable_index,
-            dest.clone(),
-            continuations,
-        ),
+        } => match callee {
+            CallTarget::Local(callee) => eval_direct_call(
+                runtime,
+                types,
+                tel,
+                program,
+                module,
+                *callee,
+                args,
+                extern_marshals.as_deref(),
+                env,
+                executable_index,
+                dest.clone(),
+                continuations,
+            ),
+            CallTarget::ProviderBoundary(function) => Err(format!(
+                "unresolved provider-boundary backend call to function {}",
+                function.as_u32()
+            )),
+        },
         BackendTail::ClosureCall {
             target,
             callee,

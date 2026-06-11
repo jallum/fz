@@ -20,6 +20,7 @@ pub struct CallSiteKey {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SelectedCallee {
     Function(FunctionId),
+    ProviderBoundary(FunctionId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -134,6 +134,22 @@ symbol that must be resolved before interpreter/native execution. Import edge
 metadata is derived from provider-boundary term targets; it is not an
 authoritative side table and no `__external__` stub body should be synthesized.
 
+## Compiler2 Callable Target Invariant
+
+`FunctionId` is callable identity, not proof that a local body exists.
+Compiler2 semantic summaries therefore distinguish `SelectedCallee::Function`
+from `SelectedCallee::ProviderBoundary`. Artifact, ABI-ready, emission-ready,
+and backend direct-call projections carry one generic `CallTarget<T>` with the
+same local-vs-provider-boundary shape. Local targets point into the closed
+executable frontier; provider-boundary targets keep the provider `FunctionId`
+until native lowering converts it to raw IR `DirectCallTarget::ProviderBoundary`
+with an `Mfa`.
+
+Provider-boundary functions do not wait for `DefineFunction`, local activation
+facts, dispatch masks, or local recursive graph expansion. They can contribute a
+call summary and raw provider-boundary import edge, but they do not synthesize a
+stub executable or a fake local body.
+
 ## Cutover Rule
 
 The old compiler can be scrapped only after the agreed source/contract fixture

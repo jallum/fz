@@ -215,7 +215,9 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
                 .expect("callsite facts should have a summary value")
                 .clone();
             for target in &summary.targets {
-                let SelectedCallee::Function(function) = target.callee;
+                let SelectedCallee::Function(function) = target.callee else {
+                    continue;
+                };
                 if !world.require_activation_key_facts(function, &mut reads, &mut waits, &mut follow_up) {
                     continue;
                 }

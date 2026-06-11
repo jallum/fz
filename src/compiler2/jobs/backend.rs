@@ -17,7 +17,7 @@ use crate::dispatch_matrix::{ComparisonValue, DispatchConst, DispatchNode, Proje
 
 use super::super::artifact::{
     AbiValueRepr, BackendBody, BackendCallArg, BackendCallableEntry, BackendClause, BackendEntry, BackendEntryOrigin,
-    BackendExecutable, BackendProgram, BackendStep, BackendTail, ReturnAbi,
+    BackendExecutable, BackendProgram, BackendStep, BackendTail, CallTarget, ReturnAbi,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryOrigin, LoweredBody, LoweredClause, LoweredEntry, LoweredStep,
@@ -368,7 +368,7 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
                     value: *value,
                     callsite: *callsite,
                     callee: *callee,
-                    target: edge.map(|edge| edge.callee),
+                    target: edge.and_then(|edge| edge.callee.copied_local()),
                     args: self.lower_call_args(executable, *callsite, Some(*callee), args)?,
                     dest: dest.clone(),
                 }
@@ -738,7 +738,10 @@ fn publish_entry_input_abis(
                         ),
                     )
                 })?;
-                let abi = program.executables[edge.callee].return_abi.clone();
+                let abi = match edge.callee {
+                    CallTarget::Local(callee) => program.executables[callee].return_abi.clone(),
+                    CallTarget::ProviderBoundary(_) => ReturnAbi::Value(AbiValueRepr::ValueRef),
+                };
                 merge_resume_abi(world, root_id, *target, abi, out)?;
             }
         }
@@ -750,7 +753,10 @@ fn publish_entry_input_abis(
                 )
             {
                 let abi = call_edge(executable, *callsite)
-                    .map(|edge| program.executables[edge.callee].return_abi.clone())
+                    .map(|edge| match edge.callee {
+                        CallTarget::Local(callee) => program.executables[callee].return_abi.clone(),
+                        CallTarget::ProviderBoundary(_) => ReturnAbi::Value(AbiValueRepr::ValueRef),
+                    })
                     .unwrap_or(ReturnAbi::Value(AbiValueRepr::ValueRef));
                 merge_resume_abi(world, root_id, *target, abi, out)?;
             }

@@ -28,8 +28,8 @@ use crate::types::Types as LegacyTypes;
 
 use super::super::artifact::{
     AbiValueRepr, BackendBody, BackendClause, BackendEntry, BackendEntryOrigin, BackendExecutable, BackendProgram,
-    BackendStep, BackendTail, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableEntry, NativeEntryAbi,
-    NativeProgram, ReturnAbi,
+    BackendStep, BackendTail, CallTarget, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableEntry,
+    NativeEntryAbi, NativeProgram, ReturnAbi,
 };
 use super::super::body::{ControlDestination, ControlEntryId, Literal, LoweredExtern, ValueId};
 use super::super::drive::{FactKey, Job, JobEffects};
@@ -857,11 +857,17 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         "native direct call referenced an unbound argument",
                     )
                 })?;
+                let callee = match callee {
+                    CallTarget::Local(callee) => DirectCallTarget::Local(self.executable_fns[*callee]),
+                    CallTarget::ProviderBoundary(function) => {
+                        DirectCallTarget::ProviderBoundary(self.world.function_mfa(*function))
+                    }
+                };
                 match dest {
                     ControlDestination::Return => {
                         ctx.set_term(Term::TailCall {
                             ident: CallsiteIdent::from_source(Span::DUMMY),
-                            callee: DirectCallTarget::Local(self.executable_fns[*callee]),
+                            callee,
                             args: call_args,
                             is_back_edge: false,
                         });
@@ -871,7 +877,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         let continuation = self.entry_continuation(entries, entry_fns, *entry_id, env)?;
                         ctx.set_term(Term::Call {
                             ident: CallsiteIdent::from_source(Span::DUMMY),
-                            callee: DirectCallTarget::Local(self.executable_fns[*callee]),
+                            callee,
                             args: call_args,
                             continuation,
                         });
@@ -2337,6 +2343,7 @@ fn collect_extern_marshals_in_tail(
         extern_marshals,
         ..
     } = tail
+        && let CallTarget::Local(callee) = callee
         && matches!(program.executables[*callee].body, BackendBody::Extern { .. })
     {
         let signature = match &program.executables[*callee].body {

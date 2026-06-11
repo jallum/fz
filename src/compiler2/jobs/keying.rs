@@ -32,6 +32,13 @@ impl StaticEdge {
 /// so recursion through generated closures is handled the same way as direct
 /// or mutual recursion.
 pub(super) fn derive_recursive(world: &mut World<'_>, function: FunctionId) -> Result<JobEffects, FatalError> {
+    if world.function_is_provider_boundary(function) {
+        let changed = world.define_recursive(function, false);
+        return Ok(JobEffects {
+            outputs: vec![(FactKey::Recursive(function), changed)],
+            ..JobEffects::default()
+        });
+    }
     if world.function_defined_revision(function).is_none() {
         return Ok(world.wait_for_function_definition(function));
     }
@@ -125,6 +132,9 @@ fn collect_static_graph(
     let mut ready_edges = Vec::new();
     for edge in edges {
         let target = edge.function();
+        if world.function_is_provider_boundary(target) {
+            continue;
+        }
         if matches!(edge, StaticEdge::Lambda(_)) && world.function_defined_revision(target).is_none() {
             continue;
         }

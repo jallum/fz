@@ -30,6 +30,27 @@ use super::body::{
 use super::identity::{ExecutableKey, FunctionId, RootId};
 use super::types::Ty;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallTarget<T> {
+    Local(T),
+    ProviderBoundary(FunctionId),
+}
+
+impl<T> CallTarget<T> {
+    pub fn local(&self) -> Option<&T> {
+        match self {
+            Self::Local(value) => Some(value),
+            Self::ProviderBoundary(_) => None,
+        }
+    }
+}
+
+impl<T: Copy> CallTarget<T> {
+    pub fn copied_local(&self) -> Option<T> {
+        self.local().copied()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MaterializedProgram {
     pub semantic_revision: u64,
@@ -49,7 +70,7 @@ pub struct MaterializedExecutable {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaterializedCallEdge {
-    pub callee: ExecutableKey,
+    pub callee: CallTarget<ExecutableKey>,
     pub return_ty: Ty,
     pub extern_marshals: Option<Vec<ExternTy>>,
 }
@@ -175,7 +196,7 @@ pub struct AbiReadyExecutable {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AbiReadyCallEdge {
-    pub callee: ExecutableKey,
+    pub callee: CallTarget<ExecutableKey>,
     pub return_ty: Ty,
     pub return_abi: ReturnAbi,
     pub extern_marshals: Option<Vec<ExternTy>>,
@@ -207,7 +228,7 @@ pub struct EmissionReadyExecutable {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmissionReadyCallEdge {
     pub callsite: CallSiteId,
-    pub callee: usize,
+    pub callee: CallTarget<usize>,
     pub extern_marshals: Option<Vec<ExternTy>>,
 }
 
@@ -332,7 +353,7 @@ pub enum BackendTail {
     DirectCall {
         value: ValueId,
         callsite: CallSiteId,
-        callee: usize,
+        callee: CallTarget<usize>,
         args: Vec<BackendCallArg>,
         dest: ControlDestination,
         extern_marshals: Option<Vec<ExternTy>>,

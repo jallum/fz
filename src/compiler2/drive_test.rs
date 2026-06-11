@@ -3,7 +3,7 @@ use crate::compiler2::artifact::{BackendEntry, BackendTail};
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
-    AbiReadyProgram, AbiValueRepr, ActivationKey, BackendProgram, CallSiteId, CallSiteKey, CallSiteSummary,
+    AbiReadyProgram, AbiValueRepr, ActivationKey, BackendProgram, CallSiteId, CallSiteKey, CallSiteSummary, CallTarget,
     CallableEntry, ControlEntryOrigin, EmissionReadyProgram, ExecutableKey, FactKey, FunctionId, FunctionRef,
     LoweredBody, LoweredStep, LoweredTail, MaterializedProgram, ModuleId, ModuleState, QuotedSourceHeap,
     QuotedSourceMetadata, ReturnAbi, SelectedCallee, SemanticClosure, Ty, TypeName, TypeVarId, Types, ValueId,
@@ -1990,12 +1990,13 @@ fn compiler2_materialization_projects_only_the_closed_quicksort_frontier() {
         .call_edges
         .get(&main_callsite)
         .unwrap_or_else(|| panic!("materialized call edge for main/0 -> qsort/1 at {main_callsite:?}"));
+    let qsort_callee = local_call_target(&qsort_edge.callee);
     assert_eq!(
-        qsort_edge.callee.activation.function, qsort_id,
+        qsort_callee.activation.function, qsort_id,
         "materialization should freeze main/0's qsort/1 call to an exact executable key",
     );
     assert!(
-        program.executables.contains_key(&qsort_edge.callee),
+        program.executables.contains_key(qsort_callee),
         "materialized direct-call edges should point at a reachable executable plan",
     );
     assert_eq!(
@@ -2186,7 +2187,7 @@ fn compiler2_materialization_freezes_only_the_selected_enum_reduce_path() {
     assert!(
         enum_reduce_edges
             .values()
-            .any(|edge| edge.callee.activation.function == list_impl_reduce_id),
+            .any(|edge| local_call_target(&edge.callee).activation.function == list_impl_reduce_id),
         "materialization should freeze Enum.reduce/3's protocol call to the selected List-backed callback executable",
     );
 
@@ -2200,7 +2201,7 @@ fn compiler2_materialization_freezes_only_the_selected_enum_reduce_path() {
     assert!(
         bridge_edges
             .values()
-            .any(|edge| edge.callee.activation.function == user_reducer_id),
+            .any(|edge| local_call_target(&edge.callee).activation.function == user_reducer_id),
         "materialization should freeze the bridge reducer call to the exact user reducer executable",
     );
     let (_, bridge_plan) = materialized_executable(&program, bridge_reducer_id);
@@ -2264,7 +2265,7 @@ fn compiler2_abi_ready_makes_tuple_field_return_delivery_explicit_for_quicksort(
     let partition_edge = qsort_plan
         .call_edges
         .values()
-        .find(|edge| edge.callee.activation.function == partition_id)
+        .find(|edge| local_call_target(&edge.callee).activation.function == partition_id)
         .expect("ABI-ready call edge for partition/4");
     assert_eq!(
         partition_edge.return_abi,
@@ -2708,7 +2709,7 @@ fn compiler2_materialization_projects_variadic_extern_signatures_and_callsite_ma
     let open_edge = main_plan
         .call_edges
         .values()
-        .find(|edge| edge.callee.activation.function == open_id)
+        .find(|edge| local_call_target(&edge.callee).activation.function == open_id)
         .expect("materialized call edge for libc::open");
     assert_eq!(
         open_edge.extern_marshals.as_deref(),
@@ -2876,10 +2877,20 @@ fn compiler2_emission_ready_projects_only_the_closed_quicksort_inventory() {
     let qsort_edge = main_exec
         .call_edges
         .iter()
-        .find(|edge| program.executables[edge.callee].key.activation.function == qsort_id)
+        .find(|edge| {
+            program.executables[*local_call_target(&edge.callee)]
+                .key
+                .activation
+                .function
+                == qsort_id
+        })
         .expect("emission-ready main/0 -> qsort/1 call edge");
     assert_eq!(
-        program.executables[qsort_edge.callee].key.activation.function, qsort_id,
+        program.executables[*local_call_target(&qsort_edge.callee)]
+            .key
+            .activation
+            .function,
+        qsort_id,
         "emission-ready call edges should resolve through executable inventory ids",
     );
 
@@ -3256,7 +3267,8 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
     match call {
         BackendTail::DirectCall { callee, args, .. } => {
             assert_eq!(
-                program.executables[*callee].key.activation.function, qsort_id,
+                program.executables[*local_call_target(callee)].key.activation.function,
+                qsort_id,
                 "backend direct-call steps should point at settled executable inventory indices",
             );
             assert_eq!(
@@ -3394,7 +3406,8 @@ fn compiler2_backend_program_preserves_variadic_extern_wire_classes() {
             ..
         } => {
             assert_eq!(
-                program.executables[*callee].key.activation.function, open_id,
+                program.executables[*local_call_target(callee)].key.activation.function,
+                open_id,
                 "backend extern calls should still target the settled extern executable inventory slot",
             );
             assert_eq!(
@@ -4797,7 +4810,7 @@ fn compiler2_abi_ready_preserves_variadic_extern_marshals_and_integer_lanes() {
     let open_edge = main_plan
         .call_edges
         .values()
-        .find(|edge| edge.callee.activation.function == open_id)
+        .find(|edge| local_call_target(&edge.callee).activation.function == open_id)
         .expect("ABI-ready call edge for libc::open");
     assert_eq!(
         open_edge.extern_marshals.as_deref(),
@@ -4858,7 +4871,13 @@ fn compiler2_emission_ready_preserves_variadic_extern_inventory_and_marshals() {
     let open_edge = main_exec
         .call_edges
         .iter()
-        .find(|edge| program.executables[edge.callee].key.activation.function == open_id)
+        .find(|edge| {
+            program.executables[*local_call_target(&edge.callee)]
+                .key
+                .activation
+                .function
+                == open_id
+        })
         .expect("emission-ready call edge for libc::open");
     assert_eq!(
         open_edge.extern_marshals.as_deref(),
@@ -4866,7 +4885,7 @@ fn compiler2_emission_ready_preserves_variadic_extern_inventory_and_marshals() {
         "emission-ready call edges should preserve the frozen C marshal classes for a variadic extern callsite",
     );
     assert_eq!(
-        program.executables[open_edge.callee].return_abi,
+        program.executables[*local_call_target(&open_edge.callee)].return_abi,
         ReturnAbi::Value(AbiValueRepr::RawInt),
         "emission-ready call edges should resolve through the callee inventory slot instead of re-deriving ABI",
     );
@@ -4907,7 +4926,7 @@ fn compiler2_materialization_resolves_auto_variadic_marshals_from_value_types() 
     let printf_edge = main_plan
         .call_edges
         .values()
-        .find(|edge| edge.callee.activation.function == printf_id)
+        .find(|edge| local_call_target(&edge.callee).activation.function == printf_id)
         .expect("materialized call edge for libc::printf");
     assert_eq!(
         printf_edge.extern_marshals.as_deref(),
@@ -5124,6 +5143,9 @@ end
         .iter()
         .map(|target| match target.callee {
             SelectedCallee::Function(function) => function,
+            SelectedCallee::ProviderBoundary(function) => {
+                panic!("expected local protocol target, got provider-boundary function {function:?}")
+            }
         })
         .collect::<HashSet<_>>();
     assert_eq!(
@@ -5167,6 +5189,8 @@ end
                     )
                 })
                 .callee
+                .local()
+                .expect("synthetic protocol arms should target local executables")
                 .activation
                 .function
         })
@@ -8242,6 +8266,15 @@ fn summary_is_single_callee(summary: &CallSiteSummary, callee: SelectedCallee) -
     matches!(summary.single_target(), Some(target) if target.callee == callee)
 }
 
+fn local_call_target<T>(target: &CallTarget<T>) -> &T {
+    match target {
+        CallTarget::Local(target) => target,
+        CallTarget::ProviderBoundary(function) => {
+            panic!("expected local call target, got provider-boundary function {function:?}")
+        }
+    }
+}
+
 fn materialized_executable(
     program: &MaterializedProgram,
     function: FunctionId,
@@ -8336,7 +8369,7 @@ fn backend_direct_call_in_entry<'a>(
     let entry = &entries[entry_id.as_u32() as usize];
     match &entry.tail {
         BackendTail::DirectCall { callee: target, .. }
-            if program.executables[*target].key.activation.function == callee =>
+            if program.executables[*local_call_target(target)].key.activation.function == callee =>
         {
             Some(&entry.tail)
         }

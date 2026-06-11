@@ -7,6 +7,7 @@ use super::{
     ModuleInterfaceCallable, RootSubmission, World,
 };
 use crate::diag::codes;
+use crate::fz_ir::{DirectCallTarget, Term};
 use crate::telemetry::{Capture, ConfiguredTelemetry};
 
 fn metadata_str<'a>(event: &'a crate::telemetry::capture::OwnedEvent, key: &str) -> &'a str {
@@ -355,9 +356,9 @@ fn import_except_wrong_arity_is_error() {
     );
 }
 
-// Ported from src/frontend/resolve_test.rs: import resolves against external module interface without source body
+// Ported from src/frontend/resolve_test.rs: import resolves against provider interface without source body
 #[test]
-fn import_from_external_interface_is_not_yet_carried_through_semantic_closure() {
+fn import_from_external_interface_carries_provider_boundary_call_without_provider_body() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new(&tel);
     let math = world.reference_module("Math".to_string());
@@ -375,11 +376,8 @@ fn import_from_external_interface_is_not_yet_carried_through_semantic_closure() 
         Some("fixtures2/00069_import_from_external_interface.fz".to_string()),
         include_str!("../../fixtures2/00069_import_from_external_interface.fz").to_string(),
     );
-    world.submit_root(Some("User".to_string()), "run".to_string(), 2, ExecutableNeed::Value);
-    assert!(
-        matches!(world.drive(), DriveOutcome::Unresolved { .. }),
-        "interface-only provider calls still wait on provider body closure facts; track under fz-rh2.17.5.6.3",
-    );
+    let root = world.submit_root(Some("User".to_string()), "run".to_string(), 2, ExecutableNeed::Value);
+    assert_resolved(world.drive(), "interface-only provider call should settle");
     assert!(
         world.module_defined_revision(math).is_none(),
         "external interface imports should not require a provider module body",
@@ -387,6 +385,33 @@ fn import_from_external_interface_is_not_yet_carried_through_semantic_closure() 
     assert!(
         world.module_interface_revision(math).is_some(),
         "external interface imports should publish the provider interface fact",
+    );
+    let program = world.native_program(root);
+    let edges = program.module.external_call_edges();
+    assert_eq!(
+        edges.len(),
+        1,
+        "provider-boundary call should produce one derived import edge"
+    );
+    assert_eq!(edges[0].target.module.to_string(), "Math");
+    assert_eq!(edges[0].target.name, "add");
+    assert_eq!(edges[0].target.arity, 2);
+    assert!(
+        program.module.fns.iter().any(|function| {
+            function.blocks.iter().any(|block| {
+                matches!(
+                    &block.terminator,
+                    Term::Call {
+                        callee: DirectCallTarget::ProviderBoundary(target),
+                        ..
+                    } | Term::TailCall {
+                        callee: DirectCallTarget::ProviderBoundary(target),
+                        ..
+                    } if target.module.to_string() == "Math" && target.name == "add" && target.arity == 2
+                )
+            })
+        }),
+        "native program should carry provider-boundary call in the raw IR term"
     );
 }
 
