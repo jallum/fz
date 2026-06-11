@@ -6,6 +6,8 @@
     "fz-rh2.17.5.4"
   ],
   "blocks": [],
+  "closed_at": "2026-06-11T19:50:11Z",
+  "close_reason": "Fixed by detaching runtime-owned process pointers before returning quoted-source processes from IrInterpRuntime; verified with ASan, repeated lldb runs, and cargo test --lib compiler2::.",
   "created": "2026-06-11T13:55:13Z",
   "description": "The wider cargo test --lib compiler2:: sweep terminates with SIGSEGV after reporting test failures. First re-run after clearing known failures from the current callable-interface/source-production arc; if the segfault persists, isolate the crashing test or harness path and fix it. This ticket depends on the current sweep blockers because those panics may be poisoning later state.",
   "id": "fz-rh2.17.5.3",
@@ -22,8 +24,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 test sweep: investigate post-failure signal crash during wider compiler2:: runs",
   "type": "bug",
-  "updated_at": "2026-06-11T16:37:49Z"
+  "updated_at": "2026-06-11T19:50:11Z"
 }
