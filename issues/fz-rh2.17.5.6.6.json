@@ -7,9 +7,15 @@
   "id": "fz-rh2.17.5.6.6",
   "labels": [],
   "parent": "fz-rh2.17.5.6",
+  "comments": [
+    {
+      "text": "Burn-down result: fixed all five ticketed compiler2 type-infer sweep failures. Individual green tests: enum_reduce_range_settles_to_int; mixed_enum_take_calls_preserve_list_and_range_activations; corpus_folds_settle_myreduce_to_int_fold_state_machine; enum_reduce_named_ref_ok_settles_to_int; fixpoint_leaves_no_reached_fn_unknown_fold_state_machine. Wider single-thread cargo test --lib compiler2:: now reports 657 passed, 5 failed, 5 ignored; remaining failures are the prior source/macro cases: cross_module_macro_qualifies_names_against_home_module, multiple_test_blocks_compile, test_macro_failing_assert_compiles, test_macro_passing_assert_compiles, whitespace_assignment_parses_and_binds. Verification also passed cargo check --lib, cargo clippy --all-targets -- -D warnings, cargo test --lib --no-run.",
+      "timestamp": "2026-06-11T17:01:26Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Compiler2 type-infer sweep: recover Enum.reduce range/named-ref/fold-state-machine convergence",
   "type": "bug",
-  "updated_at": "2026-06-11T16:38:30Z"
+  "updated_at": "2026-06-11T17:01:26Z"
 }
