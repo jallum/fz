@@ -1,6 +1,8 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.17.5.6.5"
+  ],
   "blocks": [],
   "created": "2026-06-11T14:12:55Z",
   "description": "",
@@ -21,5 +23,5 @@
   "status": "in_progress",
   "title": "Compiler2 callable provenance: separate FunctionId identity from body authority and carry provider-boundary calls without DefineFunction",
   "type": "bug",
-  "updated_at": "2026-06-11T15:35:15Z"
+  "updated_at": "2026-06-11T16:01:08Z"
 }

@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.17.5.6.3"
+  ],
   "created": "2026-06-11T16:01:00Z",
   "description": "Raw fz_ir Term::Call/TailCall currently require callee: FnId, so provider-boundary calls are represented as synthetic __external__ FnId bodies plus Module.external_call_edges keyed by CallsiteId. Link then rewrites those callsites to provider FnIds, planner re-derives CallEdgeTarget::External from the side table, metadata imports are collected from the side table, and native codegen rejects unresolved side-table edges. This is old-world shape: callable identity, local body identity, and provider-boundary import identity are conflated. Replace direct-call callee identity with a first-class target model that can represent local body targets and provider-boundary symbols directly; derive import metadata from call targets; remove synthetic external stubs and authoritative ExternalCallEdge side table after linker/planner/codegen/interpreter migration.",
   "id": "fz-rh2.17.5.6.5",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Modernize raw IR direct-call targets: replace external stubs/side-table edges with first-class provider-boundary call targets",
   "type": "task",
-  "updated_at": "2026-06-11T16:01:00Z"
+  "updated_at": "2026-06-11T16:01:08Z"
 }
