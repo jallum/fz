@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.17.3"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-rh2.17",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 callable resolution cutover: delete Named callees/fnrefs and resolve through ModuleInterface",
   "type": "task",
-  "updated_at": "2026-06-11T11:38:50Z"
+  "updated_at": "2026-06-11T12:10:40Z"
 }
