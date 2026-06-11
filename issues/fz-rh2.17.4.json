@@ -15,5 +15,5 @@
   "status": "open",
   "title": "Compiler2 callable resolution cutover: delete Named callees/fnrefs and resolve through ModuleInterface",
   "type": "task",
-  "updated_at": "2026-06-11T11:38:49Z"
+  "updated_at": "2026-06-11T11:38:50Z"
 }
