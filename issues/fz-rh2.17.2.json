@@ -7,15 +7,14 @@
     "fz-rh2.17.3",
     "fz-rh2.17.5"
   ],
-  "closed_at": "2026-06-11T10:37:19Z",
   "created": "2026-06-11T09:57:05Z",
   "description": "Teach the compiler to publish interface facts. `DefineModule` should derive and publish `ModuleInterface(module)` from already-minted callable identities for local source-defined modules, including protocol modules and synthesized helpers like `__info__/1`. Add the runtime/external seeding path so a module can publish `ModuleInterface` without requiring `ModuleDefined`. Signal: local and non-local modules share one interface fact shape, and external-interface consumers no longer need placeholder `ModuleDefined` waits just to see exports.",
   "id": "fz-rh2.17.2",
   "labels": [],
   "parent": "fz-rh2.17",
   "priority": 2,
-  "status": "closed",
+  "status": "open",
   "title": "Compiler2 interface publication: publish ModuleInterface for local modules and seed runtime/external interfaces",
   "type": "task",
-  "updated_at": "2026-06-11T10:37:19Z"
+  "updated_at": "2026-06-11T11:20:43Z"
 }
