@@ -35,7 +35,8 @@ pub(super) fn derive_recursive(world: &mut World<'_>, function: FunctionId) -> R
     if world.function_is_provider_boundary(function) {
         let changed = world.define_recursive(function, false);
         return Ok(JobEffects {
-            outputs: vec![(FactKey::Recursive(function), changed)],
+            outputs: vec![FactKey::Recursive(function)],
+            changed: changed.then_some(FactKey::Recursive(function)).into_iter().collect(),
             ..JobEffects::default()
         });
     }
@@ -70,7 +71,8 @@ pub(super) fn derive_recursive(world: &mut World<'_>, function: FunctionId) -> R
     let changed = world.define_recursive(function, recursive);
     Ok(JobEffects {
         reads,
-        outputs: vec![(FactKey::Recursive(function), changed)],
+        outputs: vec![FactKey::Recursive(function)],
+        changed: changed.then_some(FactKey::Recursive(function)).into_iter().collect(),
         ..JobEffects::default()
     })
 }
@@ -87,7 +89,8 @@ pub(super) fn derive_dispatch_mask(world: &mut World<'_>, function: FunctionId) 
     let changed = world.define_dispatch_mask(function, mask);
     Ok(JobEffects {
         reads: vec![FactKey::EntryDispatch(function)],
-        outputs: vec![(FactKey::DispatchMask(function), changed)],
+        outputs: vec![FactKey::DispatchMask(function)],
+        changed: changed.then_some(FactKey::DispatchMask(function)).into_iter().collect(),
         ..JobEffects::default()
     })
 }

@@ -64,6 +64,19 @@ fn presence(fact: FactKey, changed: bool) -> (FactKey, bool) {
     (fact, changed)
 }
 
+fn output_facts(effects: &JobEffects) -> OutputFacts {
+    let changed = effects.changed.iter().cloned().collect::<HashSet<_>>();
+    effects
+        .outputs
+        .iter()
+        .cloned()
+        .map(|fact| {
+            let changed = changed.contains(&fact);
+            (fact, changed)
+        })
+        .collect()
+}
+
 #[test]
 fn compiler2_runtime_prelude_does_not_run_frontend_before_drive() {
     let tel = ConfiguredTelemetry::new();
@@ -3108,7 +3121,7 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
         materialize
             .outputs
             .iter()
-            .all(|(fact, _)| *fact == FactKey::MaterializedProgram(root_id)),
+            .all(|fact| *fact == FactKey::MaterializedProgram(root_id)),
         "materialization should publish only the materialized artifact fact",
     );
 
@@ -3131,7 +3144,7 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
         abi_ready
             .outputs
             .iter()
-            .all(|(fact, _)| *fact == FactKey::AbiReadyProgram(root_id)),
+            .all(|fact| *fact == FactKey::AbiReadyProgram(root_id)),
         "ABI-ready derivation should publish only the ABI-ready artifact fact",
     );
 
@@ -3154,7 +3167,7 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
         emission_ready
             .outputs
             .iter()
-            .all(|(fact, _)| *fact == FactKey::EmissionReadyProgram(root_id)),
+            .all(|fact| *fact == FactKey::EmissionReadyProgram(root_id)),
         "emission-ready derivation should publish only the emission-ready artifact fact",
     );
 
@@ -3176,7 +3189,7 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
         backend
             .outputs
             .iter()
-            .all(|(fact, _)| *fact == FactKey::BackendProgram(root_id)),
+            .all(|fact| *fact == FactKey::BackendProgram(root_id)),
         "backend lowering should publish only the backend handoff fact",
     );
 
@@ -3198,7 +3211,7 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
         native
             .outputs
             .iter()
-            .all(|(fact, _)| *fact == FactKey::NativeProgram(root_id)),
+            .all(|fact| *fact == FactKey::NativeProgram(root_id)),
         "native lowering should publish only the native handoff fact",
     );
 }
@@ -7796,7 +7809,7 @@ impl Handler for OutputCaptureHandler {
                     .borrow_mut()
                     .entry(job)
                     .or_default()
-                    .push(effects.outputs.clone());
+                    .push(output_facts(effects));
             }
             EventKind::Event | EventKind::SpanException => {}
         }

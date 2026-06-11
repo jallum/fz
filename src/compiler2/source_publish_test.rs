@@ -110,11 +110,11 @@ fn compiler_service_define_publishes_function_source_and_threads_namespace_forwa
     let foo_id = world.reference_function(ModuleId::GLOBAL, "foo", 0);
     let bar_id = world.reference_function(ModuleId::GLOBAL, "bar", 0);
     assert!(
-        outputs.iter().any(|(fact, _)| *fact == FactKey::FunctionSource(foo_id)),
+        outputs.contains(&FactKey::FunctionSource(foo_id)),
         "Fz.Compiler.define should be the source-publication point for foo/0",
     );
     assert!(
-        outputs.iter().any(|(fact, _)| *fact == FactKey::FunctionSource(bar_id)),
+        outputs.contains(&FactKey::FunctionSource(bar_id)),
         "literal function forms should also publish through the compiler-service path",
     );
     assert_eq!(
@@ -189,8 +189,7 @@ fn compiler_service_define_and_direct_source_publish_identical_raw_function_fact
         "both entry paths should mint the same function identity"
     );
     assert_eq!(
-        direct_outputs.iter().map(|(fact, _)| fact.clone()).collect::<Vec<_>>(),
-        service_outputs.iter().map(|(fact, _)| fact.clone()).collect::<Vec<_>>(),
+        direct_outputs, service_outputs,
         "direct source and compiler-service publication should emit the same fact keys",
     );
 
@@ -323,15 +322,11 @@ fn compiler_service_define_inside_a_function_body_has_no_source_publication_auth
     let main_id = world.reference_function(ModuleId::GLOBAL, "main", 0);
     let sneaky_id = world.reference_function(ModuleId::GLOBAL, "sneaky", 0);
     assert!(
-        outputs
-            .iter()
-            .any(|(fact, _)| *fact == FactKey::FunctionSource(main_id)),
+        outputs.contains(&FactKey::FunctionSource(main_id)),
         "the containing function should publish normally",
     );
     assert!(
-        !outputs
-            .iter()
-            .any(|(fact, _)| *fact == FactKey::FunctionSource(sneaky_id)),
+        !outputs.contains(&FactKey::FunctionSource(sneaky_id)),
         "compiler-service-shaped calls inside runtime bodies must not publish source facts",
     );
     assert!(

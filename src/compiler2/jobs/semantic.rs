@@ -82,6 +82,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     let mut waits = HashSet::new();
     let mut follow_up = HashSet::from([Job::SealSemanticClosure(activation.root)]);
     let mut outputs = Vec::new();
+    let mut changed = Vec::new();
 
     let entry_dispatch = world.entry_dispatch(function);
     let lowered_body = world.lowered_body(function);
@@ -184,12 +185,16 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     let mut emitted_executables = HashSet::new();
     for call in &analysis_calls {
         if let Some(summary) = &call.summary {
-            let changed = world.define_callsite_summary(call.key.clone(), summary.clone());
-            outputs.push((FactKey::CallSiteSummary(call.key.clone()), changed));
+            let callsite_fact = FactKey::CallSiteSummary(call.key.clone());
+            let callsite_changed = world.define_callsite_summary(call.key.clone(), summary.clone());
+            outputs.push(callsite_fact.clone());
+            if callsite_changed {
+                changed.push(callsite_fact);
+            }
         }
         for callee_activation in &call.activations {
             if emitted_activations.insert(callee_activation.key.clone()) {
-                outputs.push((FactKey::Activation(callee_activation.key.clone()), false));
+                outputs.push(FactKey::Activation(callee_activation.key.clone()));
             }
             if !callee_activation.already_present {
                 follow_up.insert(Job::AnalyzeActivation(callee_activation.key.clone()));
@@ -198,14 +203,14 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         }
         for executable in &call.latent_executables {
             if emitted_executables.insert(executable.clone()) {
-                outputs.push((FactKey::Executable(executable.clone()), false));
+                outputs.push(FactKey::Executable(executable.clone()));
             }
         }
     }
 
     for callable_activation in &latent_callable_activations {
         if emitted_activations.insert(callable_activation.key.clone()) {
-            outputs.push((FactKey::Activation(callable_activation.key.clone()), false));
+            outputs.push(FactKey::Activation(callable_activation.key.clone()));
         }
         if !callable_activation.already_present {
             follow_up.insert(Job::AnalyzeActivation(callable_activation.key.clone()));
@@ -214,7 +219,11 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     }
 
     let return_changed = world.define_activation_return(activation, return_ty);
-    outputs.push((FactKey::ReturnType(activation.clone()), return_changed));
+    let return_fact = FactKey::ReturnType(activation.clone());
+    outputs.push(return_fact.clone());
+    if return_changed {
+        changed.push(return_fact);
+    }
 
     let analysis_changed = world.define_activation_analysis(
         activation,
@@ -240,12 +249,17 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
             value_types,
         },
     );
-    outputs.push((FactKey::ActivationAnalyzed(activation.clone()), analysis_changed));
+    let analyzed_fact = FactKey::ActivationAnalyzed(activation.clone());
+    outputs.push(analyzed_fact.clone());
+    if analysis_changed {
+        changed.push(analyzed_fact);
+    }
 
     follow_up.insert(Job::SealSemanticClosure(activation.root));
     Ok(JobEffects {
         reads,
-        outputs: dedupe_outputs(outputs),
+        outputs: dedupe_facts(outputs),
+        changed: dedupe_facts(changed),
         follow_up: follow_up.into_iter().collect(),
         ..JobEffects::default()
     })
@@ -2233,13 +2247,9 @@ fn unop_ty(world: &mut World<'_>, op: UnOp, input: Ty) -> Ty {
 }
 
 /// One body can demand the same callee activation from several call sites;
-/// those duplicates are the same fact — we take the highest revision among them.
-fn dedupe_outputs(outputs: Vec<(FactKey, bool)>) -> Vec<(FactKey, bool)> {
-    let mut deduped: HashMap<FactKey, bool> = HashMap::new();
-    for (fact, changed) in outputs {
-        deduped.entry(fact).and_modify(|c| *c |= changed).or_insert(changed);
-    }
-    deduped.into_iter().collect()
+/// those duplicates are the same fact.
+fn dedupe_facts(facts: Vec<FactKey>) -> Vec<FactKey> {
+    facts.into_iter().collect::<HashSet<_>>().into_iter().collect()
 }
 
 fn any_ty(world: &mut World<'_>) -> Ty {

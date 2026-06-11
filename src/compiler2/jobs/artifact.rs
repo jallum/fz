@@ -144,7 +144,8 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
     let changed = world.define_materialized_program(root_id, program);
     Ok(JobEffects {
         reads,
-        outputs: vec![(materialized_fact, changed)],
+        outputs: vec![materialized_fact.clone()],
+        changed: changed.then_some(materialized_fact).into_iter().collect(),
         follow_up: changed.then_some(Job::DeriveAbiReady(root_id)).into_iter().collect(),
         ..JobEffects::default()
     })
@@ -197,7 +198,8 @@ pub(super) fn derive_abi_ready(world: &mut World<'_>, root_id: RootId) -> Result
     let changed = world.define_abi_ready_program(root_id, program);
     Ok(JobEffects {
         reads,
-        outputs: vec![(abi_ready_fact, changed)],
+        outputs: vec![abi_ready_fact.clone()],
+        changed: changed.then_some(abi_ready_fact).into_iter().collect(),
         follow_up: changed
             .then_some(Job::DeriveEmissionReady(root_id))
             .into_iter()
@@ -296,7 +298,8 @@ pub(super) fn derive_emission_ready(world: &mut World<'_>, root_id: RootId) -> R
     let changed = world.define_emission_ready_program(root_id, program);
     Ok(JobEffects {
         reads,
-        outputs: vec![(emission_ready_fact, changed)],
+        outputs: vec![emission_ready_fact.clone()],
+        changed: changed.then_some(emission_ready_fact).into_iter().collect(),
         follow_up: changed
             .then_some(Job::LowerBackendProgram(root_id))
             .into_iter()

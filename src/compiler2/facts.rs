@@ -79,16 +79,26 @@ where
         &mut self,
         job: &J,
         previous_output_keys: &HashSet<F>,
-        outputs: Vec<(F, bool)>,
+        outputs: Vec<F>,
+        changed_keys: Vec<F>,
     ) -> FactReplace<F> {
-        let mut new_outputs = HashMap::new();
-        for (key, content_changed) in outputs {
+        let mut output_keys = HashSet::new();
+        for key in outputs {
+            assert!(output_keys.insert(key), "job emitted duplicate fact output for one key");
+        }
+        let mut changed_keys_set = HashSet::new();
+        for key in changed_keys {
             assert!(
-                new_outputs.insert(key, content_changed).is_none(),
-                "job emitted duplicate fact output for one key"
+                changed_keys_set.insert(key),
+                "job emitted duplicate changed fact for one key"
             );
         }
-        let output_keys = new_outputs.keys().cloned().collect::<HashSet<_>>();
+        for key in &changed_keys_set {
+            assert!(
+                output_keys.contains(key),
+                "job marked a fact changed that it does not publish"
+            );
+        }
         let touched = previous_output_keys
             .iter()
             .cloned()
@@ -100,12 +110,12 @@ where
             let mut slot = self.slots.remove(&key).unwrap_or_default();
             let old_revision = slot.revision();
 
-            if let Some(content_changed) = new_outputs.remove(&key) {
+            if output_keys.contains(&key) {
                 let was_absent = slot.publishers.is_empty();
                 slot.publishers.insert(job.clone());
                 if was_absent {
                     slot.revision = 1;
-                } else if content_changed {
+                } else if changed_keys_set.remove(&key) {
                     slot.revision += 1;
                 }
             } else {

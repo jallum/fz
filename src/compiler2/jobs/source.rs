@@ -42,13 +42,26 @@ pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
     };
 
     let mut outputs = Vec::new();
-    source_publish::discover_modules(world, code_id, ModuleId::GLOBAL, &surface, &ctx, &mut outputs)?;
+    let mut changed = Vec::new();
+    source_publish::discover_modules(
+        world,
+        code_id,
+        ModuleId::GLOBAL,
+        &surface,
+        &ctx,
+        &mut outputs,
+        &mut changed,
+    )?;
 
     let code_changed = world.finish_code_index(code_id, quoted);
-    outputs.push((FactKey::CodeIndexed(code_id), code_changed));
+    outputs.push(FactKey::CodeIndexed(code_id));
+    if code_changed {
+        changed.push(FactKey::CodeIndexed(code_id));
+    }
 
     Ok(JobEffects {
         outputs,
+        changed,
         ..JobEffects::default()
     })
 }
@@ -86,6 +99,7 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
             namespace,
             reads: scope_reads,
             mut outputs,
+            mut changed,
             ..
         } => {
             if world.is_runtime_prelude(code_id) {
@@ -93,10 +107,14 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
             }
             reads.extend(scope_reads);
             let scoped_changed = world.finish_code_scope(code_id, namespace);
-            outputs.push((FactKey::CodeScoped(code_id), scoped_changed));
+            outputs.push(FactKey::CodeScoped(code_id));
+            if scoped_changed {
+                changed.push(FactKey::CodeScoped(code_id));
+            }
             Ok(JobEffects {
                 reads,
                 outputs,
+                changed,
                 ..JobEffects::default()
             })
         }
@@ -124,16 +142,22 @@ pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Resul
                 revision_floor: _revision_floor,
                 reads,
                 mut outputs,
+                mut changed,
                 interface,
             } => {
                 let interface = world.merge_module_interface_expectations(module_id, interface);
                 world.validate_module_interface_expectations(module_id, &interface)?;
-                let changed = world.define_module(module_id, namespace, interface);
-                outputs.push((FactKey::ModuleDefined(module_id), changed));
-                outputs.push((FactKey::ModuleInterface(module_id), changed));
+                let module_changed = world.define_module(module_id, namespace, interface);
+                outputs.push(FactKey::ModuleDefined(module_id));
+                outputs.push(FactKey::ModuleInterface(module_id));
+                if module_changed {
+                    changed.push(FactKey::ModuleDefined(module_id));
+                    changed.push(FactKey::ModuleInterface(module_id));
+                }
                 Ok(JobEffects {
                     reads,
                     outputs,
+                    changed,
                     ..JobEffects::default()
                 })
             }
@@ -186,7 +210,11 @@ pub(super) fn define_module_interface(world: &mut World<'_>, module_id: ModuleId
     world.validate_module_interface_expectations(module_id, &interface)?;
     let changed = world.define_module_interface(module_id, interface);
     Ok(JobEffects {
-        outputs: vec![(FactKey::ModuleInterface(module_id), changed)],
+        outputs: vec![FactKey::ModuleInterface(module_id)],
+        changed: changed
+            .then_some(FactKey::ModuleInterface(module_id))
+            .into_iter()
+            .collect(),
         ..JobEffects::default()
     })
 }
@@ -226,7 +254,11 @@ pub(super) fn define_function(
     );
     Ok(JobEffects {
         reads: vec![FactKey::ExpandedFunctionSource(function_id)],
-        outputs: vec![(FactKey::FunctionDefined(function_id), changed)],
+        outputs: vec![FactKey::FunctionDefined(function_id)],
+        changed: changed
+            .then_some(FactKey::FunctionDefined(function_id))
+            .into_iter()
+            .collect(),
         ..JobEffects::default()
     })
 }
@@ -248,7 +280,11 @@ pub(super) fn expand_function_source(
             reads.push(FactKey::FunctionSource(function_id));
             Ok(JobEffects {
                 reads,
-                outputs: vec![(FactKey::ExpandedFunctionSource(function_id), changed)],
+                outputs: vec![FactKey::ExpandedFunctionSource(function_id)],
+                changed: changed
+                    .then_some(FactKey::ExpandedFunctionSource(function_id))
+                    .into_iter()
+                    .collect(),
                 ..JobEffects::default()
             })
         }

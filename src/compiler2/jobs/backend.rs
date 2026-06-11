@@ -74,7 +74,8 @@ pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> R
     let changed = world.define_backend_program(root_id, program);
     Ok(JobEffects {
         reads: vec![emission_ready_fact],
-        outputs: vec![(backend_fact, changed)],
+        outputs: vec![backend_fact.clone()],
+        changed: changed.then_some(backend_fact).into_iter().collect(),
         follow_up: if changed && world.root_entry(root_id).kind == RootKind::Runtime {
             vec![Job::LowerNativeProgram(root_id)]
         } else {

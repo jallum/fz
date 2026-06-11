@@ -33,7 +33,8 @@ use super::super::scheduler::FatalError;
 use super::super::world::World;
 use super::dispatch::{collect_guard_calls_in_expr, resolve_guard_callee, resolve_guard_callee_checked};
 
-type Output = (FactKey, bool);
+type Output = FactKey;
+type Changed = FactKey;
 
 #[derive(Debug, Clone)]
 struct ExprClause {
@@ -279,12 +280,16 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
     }
 
     let mut lowerer = Lowerer::new(world, function, source, surface);
-    let (body, mut outputs) = lowerer.lower()?;
-    let changed = lowerer.world.define_lowered_body(function, body);
-    outputs.push((FactKey::LoweredBody(function), changed));
+    let (body, mut outputs, mut changed) = lowerer.lower()?;
+    let body_changed = lowerer.world.define_lowered_body(function, body);
+    outputs.push(FactKey::LoweredBody(function));
+    if body_changed {
+        changed.push(FactKey::LoweredBody(function));
+    }
     Ok(JobEffects {
         reads,
         outputs,
+        changed,
         ..JobEffects::default()
     })
 }
@@ -615,6 +620,7 @@ struct Lowerer<'w, 'tel> {
     next_value: u32,
     next_callsite: u32,
     generated: Vec<Output>,
+    generated_changed: Vec<Changed>,
     generated_ids: Vec<FunctionId>,
 }
 
@@ -869,11 +875,12 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             next_value: 0,
             next_callsite: 0,
             generated: Vec::new(),
+            generated_changed: Vec::new(),
             generated_ids: Vec::new(),
         }
     }
 
-    fn lower(&mut self) -> Result<(LoweredBody, Vec<Output>), FatalError> {
+    fn lower(&mut self) -> Result<(LoweredBody, Vec<Output>, Vec<Changed>), FatalError> {
         if let Some(abi) = self.surface.extern_abi.clone() {
             let signature = self.resolve_extern_signature()?;
             return Ok((
@@ -888,6 +895,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                         semantic_contract: signature.semantic_contract,
                     },
                 },
+                Vec::new(),
                 Vec::new(),
             ));
         }
@@ -905,6 +913,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 generated: self.generated_ids.clone(),
             },
             std::mem::take(&mut self.generated),
+            std::mem::take(&mut self.generated_changed),
         ))
     }
 
@@ -2067,7 +2076,10 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         let (function, changed) =
             self.world
                 .define_generated_function(self.owner, self.namespace, capture_params, surface);
-        self.generated.push((FactKey::FunctionDefined(function), changed));
+        self.generated.push(FactKey::FunctionDefined(function));
+        if changed {
+            self.generated_changed.push(FactKey::FunctionDefined(function));
+        }
         self.generated_ids.push(function);
 
         let captures = captures.into_iter().collect::<Vec<_>>();

@@ -23,7 +23,7 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
     let root_fact = FactKey::RootEntry(root_id);
     let mut effects = JobEffects {
         reads: vec![root_fact.clone()],
-        outputs: vec![(root_fact, false)],
+        outputs: vec![root_fact],
         ..JobEffects::default()
     };
 
@@ -58,14 +58,11 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
 
     let entry_activation = world.activation_key(root_id, root.function, &root.input);
     let activation_fact = FactKey::Activation(entry_activation.clone());
-    effects.outputs.push((activation_fact, false));
-    effects.outputs.push((
-        FactKey::Executable(ExecutableKey {
-            activation: entry_activation.clone(),
-            need: root.need,
-        }),
-        false,
-    ));
+    effects.outputs.push(activation_fact);
+    effects.outputs.push(FactKey::Executable(ExecutableKey {
+        activation: entry_activation.clone(),
+        need: root.need,
+    }));
     effects.follow_up.push(Job::LowerFunction(root.function));
     effects.follow_up.push(Job::PlanEntryDispatch(root.function));
     effects.follow_up.push(Job::AnalyzeActivation(entry_activation));
@@ -91,6 +88,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
     let mut waits = HashSet::new();
     let mut follow_up = HashSet::new();
     let mut outputs = Vec::new();
+    let mut changed = Vec::new();
     let mut dependencies = DependencySnapshot::default();
 
     let root_fact = FactKey::RootEntry(root_id);
@@ -248,12 +246,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
         }
     }
 
-    outputs.extend(
-        executables
-            .iter()
-            .cloned()
-            .map(|executable| (FactKey::Executable(executable), false)),
-    );
+    outputs.extend(executables.iter().cloned().map(FactKey::Executable));
 
     if waits.is_empty() {
         let semantic_closed_fact = FactKey::SemanticClosed(root_id);
@@ -266,7 +259,10 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
             },
             dependencies,
         );
-        outputs.push((semantic_closed_fact, closure_changed));
+        outputs.push(semantic_closed_fact.clone());
+        if closure_changed {
+            changed.push(semantic_closed_fact);
+        }
         if closure_changed {
             follow_up.insert(Job::MaterializeRoot(root_id));
         }
@@ -276,6 +272,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
         reads,
         waits: waits.into_iter().collect(),
         outputs,
+        changed,
         follow_up: follow_up.into_iter().collect(),
     })
 }

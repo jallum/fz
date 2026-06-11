@@ -64,7 +64,11 @@ pub(super) fn derive_type_def(world: &mut World<'_>, name: &TypeName) -> Result<
     let changed = world.define_type_def(name.clone(), def);
     Ok(JobEffects {
         reads,
-        outputs: vec![(FactKey::TypeDefined(name.clone()), changed)],
+        outputs: vec![FactKey::TypeDefined(name.clone())],
+        changed: changed
+            .then_some(FactKey::TypeDefined(name.clone()))
+            .into_iter()
+            .collect(),
         ..JobEffects::default()
     })
 }

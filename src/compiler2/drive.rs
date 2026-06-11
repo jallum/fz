@@ -78,7 +78,8 @@ pub type WorkGraph = Scheduler<Job, FactKey>;
 pub(crate) struct JobEffects {
     pub(crate) reads: Vec<FactKey>,
     pub(crate) waits: Vec<FactKey>,
-    pub(crate) outputs: Vec<(FactKey, bool)>,
+    pub(crate) outputs: Vec<FactKey>,
+    pub(crate) changed: Vec<FactKey>,
     pub(crate) follow_up: Vec<Job>,
 }
 

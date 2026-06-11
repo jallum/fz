@@ -39,8 +39,8 @@ use super::source::{
 use super::type_expr::{NominalKind, TypeDefBody, TypeExpr, parse_type_def_body, parse_type_expr};
 use super::world::World;
 
-type Output = (FactKey, bool);
-type Outputs = Vec<Output>;
+type Outputs = Vec<FactKey>;
+type Changed = Vec<FactKey>;
 
 pub(crate) enum ScopePublication {
     Complete {
@@ -48,6 +48,7 @@ pub(crate) enum ScopePublication {
         revision_floor: u64,
         reads: Vec<FactKey>,
         outputs: Outputs,
+        changed: Changed,
         interface: ModuleInterface,
     },
     Blocked(JobEffects),
@@ -119,6 +120,7 @@ struct ScopeSession<'world, 'tel> {
     required_remote_macros: HashSet<FunctionId>,
     reads: Vec<FactKey>,
     outputs: Outputs,
+    changed: Changed,
     callables: Vec<ModuleInterfaceCallable>,
     revision_floor: u64,
 }
@@ -186,6 +188,7 @@ pub(crate) fn publish_protocol_surface(
     );
 
     let mut outputs = Vec::new();
+    let mut changed = Vec::new();
     let mut callables = Vec::new();
     for form in &surface.forms {
         let ScopeForm::Function(callback) = form else {
@@ -236,17 +239,24 @@ pub(crate) fn publish_protocol_surface(
         Vec::new(),
         &env,
     );
-    outputs.push(publication.output);
+    outputs.push(publication.output.clone());
+    if publication.changed {
+        changed.push(publication.output);
+    }
     if let Some(callable) = publication.callable {
         callables.push(callable);
     }
 
-    outputs.push(world.refresh_protocol_dispatch_fact(module_id));
+    outputs.push(FactKey::ProtocolDispatch(module_id));
+    if world.refresh_protocol_dispatch(module_id) {
+        changed.push(FactKey::ProtocolDispatch(module_id));
+    }
     Ok(ScopePublication::Complete {
         namespace: scope,
         revision_floor: 0,
         reads: Vec::new(),
         outputs,
+        changed,
         interface: ModuleInterface::new(callables),
     })
 }
@@ -258,6 +268,7 @@ pub(crate) fn discover_modules(
     surface: &ScopeSurface,
     ctx: &SurfaceSourceContext<'_>,
     outputs: &mut Outputs,
+    changed: &mut Changed,
 ) -> Result<(), FatalError> {
     for form in &surface.forms {
         match form {
@@ -274,8 +285,11 @@ pub(crate) fn discover_modules(
                     module.source.clone(),
                     nested.clone(),
                 );
-                outputs.push((FactKey::ModuleIndexed(module_id), revision));
-                discover_modules(world, code_id, module_id, &nested, ctx, outputs)?;
+                outputs.push(FactKey::ModuleIndexed(module_id));
+                if revision {
+                    changed.push(FactKey::ModuleIndexed(module_id));
+                }
+                discover_modules(world, code_id, module_id, &nested, ctx, outputs, changed)?;
             }
             ScopeForm::Protocol(protocol) => {
                 let module_id = reference_declared_protocol_module(world, parent_module, &protocol.name);
@@ -290,7 +304,10 @@ pub(crate) fn discover_modules(
                     protocol.source.clone(),
                     protocol_surface,
                 );
-                outputs.push((FactKey::ModuleIndexed(module_id), revision));
+                outputs.push(FactKey::ModuleIndexed(module_id));
+                if revision {
+                    changed.push(FactKey::ModuleIndexed(module_id));
+                }
             }
             ScopeForm::MacroCall(macro_call) => {
                 let Some(definition) = reserved_source_definition(&macro_call.source).map_err(|error| {
@@ -318,8 +335,11 @@ pub(crate) fn discover_modules(
                             module.source.clone(),
                             nested.clone(),
                         );
-                        outputs.push((FactKey::ModuleIndexed(module_id), revision));
-                        discover_modules(world, code_id, module_id, &nested, ctx, outputs)?;
+                        outputs.push(FactKey::ModuleIndexed(module_id));
+                        if revision {
+                            changed.push(FactKey::ModuleIndexed(module_id));
+                        }
+                        discover_modules(world, code_id, module_id, &nested, ctx, outputs, changed)?;
                     }
                     (ReservedSourceDefinition::Protocol { .. }, ScopeForm::Protocol(protocol)) => {
                         let module_id = reference_declared_protocol_module(world, parent_module, &protocol.name);
@@ -334,7 +354,10 @@ pub(crate) fn discover_modules(
                             protocol.source.clone(),
                             protocol_surface,
                         );
-                        outputs.push((FactKey::ModuleIndexed(module_id), revision));
+                        outputs.push(FactKey::ModuleIndexed(module_id));
+                        if revision {
+                            changed.push(FactKey::ModuleIndexed(module_id));
+                        }
                     }
                     _ => {}
                 }
@@ -384,6 +407,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             required_remote_macros: HashSet::new(),
             reads: Vec::new(),
             outputs: Vec::new(),
+            changed: Vec::new(),
             callables: Vec::new(),
             revision_floor: 0,
         }
@@ -441,7 +465,10 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             &function,
             &context,
         )?;
-        self.outputs.push(publication.output);
+        self.outputs.push(publication.output.clone());
+        if publication.changed {
+            self.changed.push(publication.output);
+        }
         if let Some(callable) = publication.callable {
             self.callables.push(callable);
         }
@@ -726,6 +753,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 surface,
                 &ctx,
                 &mut self.outputs,
+                &mut self.changed,
             )?;
         }
         self.reserve_types(&surface.attrs)?;
@@ -763,7 +791,10 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                     function,
                     context,
                 )?;
-                self.outputs.push(publication.output);
+                self.outputs.push(publication.output.clone());
+                if publication.changed {
+                    self.changed.push(publication.output);
+                }
                 if let Some(callable) = publication.callable {
                     self.callables.push(callable);
                 }
@@ -780,8 +811,9 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 Ok(None)
             }
             ScopeForm::ProtocolImpl(protocol_impl) => {
-                let mut outputs = self.define_protocol_impl(protocol_impl)?;
+                let (mut outputs, mut changed) = self.define_protocol_impl(protocol_impl)?;
                 self.outputs.append(&mut outputs);
+                self.changed.append(&mut changed);
                 Ok(None)
             }
             ScopeForm::MacroCall(macro_call) => self.apply_item_macro_call(macro_call),
@@ -792,6 +824,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     fn blocked_effects(&self, mut effects: JobEffects) -> JobEffects {
         effects.reads.extend(self.reads.clone());
         effects.outputs.extend(self.outputs.clone());
+        effects.changed.extend(self.changed.clone());
         effects
     }
 
@@ -1031,7 +1064,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             }
         }
     }
-    fn define_protocol_impl(&mut self, protocol_impl: &ProtocolImplForm) -> Result<Outputs, FatalError> {
+    fn define_protocol_impl(&mut self, protocol_impl: &ProtocolImplForm) -> Result<(Outputs, Changed), FatalError> {
         let protocol =
             reference_impl_protocol_module(self.world, self.current_module, self.namespace, &protocol_impl.protocol);
         let target =
@@ -1078,6 +1111,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         }
 
         let mut outputs = Vec::new();
+        let mut changed = Vec::new();
         let mut callbacks = HashMap::new();
         let context = FragmentPublicationContext {
             owner_module: self.current_module,
@@ -1088,7 +1122,10 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         for function in functions {
             let publication =
                 self.define_source_function(impl_module, self.current_module, impl_scope, &function, &context)?;
-            outputs.push(publication.output);
+            outputs.push(publication.output.clone());
+            if publication.changed {
+                changed.push(publication.output);
+            }
             callbacks.insert(
                 (function.name.clone(), function.arity),
                 ProtocolCallbackImpl {
@@ -1098,8 +1135,11 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             );
         }
         self.world.define_protocol_impl(protocol, target, callbacks);
-        outputs.push(self.world.refresh_protocol_dispatch_fact(protocol));
-        Ok(outputs)
+        outputs.push(FactKey::ProtocolDispatch(protocol));
+        if self.world.refresh_protocol_dispatch(protocol) {
+            changed.push(FactKey::ProtocolDispatch(protocol));
+        }
+        Ok((outputs, changed))
     }
 
     fn complete(self) -> ScopePublication {
@@ -1108,6 +1148,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             revision_floor: self.revision_floor,
             reads: self.reads,
             outputs: self.outputs,
+            changed: self.changed,
             interface: ModuleInterface::new(self.callables),
         }
     }
@@ -1205,7 +1246,8 @@ fn required_remote_macro_list(required_remote_macros: &HashSet<FunctionId>) -> V
 
 struct FunctionPublication {
     function: FunctionId,
-    output: Output,
+    output: FactKey,
+    changed: bool,
     callable: Option<ModuleInterfaceCallable>,
 }
 
@@ -1250,7 +1292,8 @@ fn publish_function_source(
     emit_compiler_service_define(world, function_id, &source, revision, env);
     FunctionPublication {
         function: function_id,
-        output: (FactKey::FunctionSource(function_id), revision),
+        output: FactKey::FunctionSource(function_id),
+        changed: revision,
         callable,
     }
 }

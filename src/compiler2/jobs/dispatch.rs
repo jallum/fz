@@ -88,7 +88,11 @@ pub(super) fn reify_guard_dispatch(world: &mut World<'_>, function: FunctionId) 
     let changed = world.define_guard_dispatch(function, dispatch);
     Ok(JobEffects {
         reads,
-        outputs: vec![(FactKey::GuardDispatch(function), changed)],
+        outputs: vec![FactKey::GuardDispatch(function)],
+        changed: changed
+            .then_some(FactKey::GuardDispatch(function))
+            .into_iter()
+            .collect(),
         ..JobEffects::default()
     })
 }
@@ -162,7 +166,11 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
     let changed = world.define_entry_dispatch(function, plan);
     Ok(JobEffects {
         reads,
-        outputs: vec![(FactKey::EntryDispatch(function), changed)],
+        outputs: vec![FactKey::EntryDispatch(function)],
+        changed: changed
+            .then_some(FactKey::EntryDispatch(function))
+            .into_iter()
+            .collect(),
         ..JobEffects::default()
     })
 }

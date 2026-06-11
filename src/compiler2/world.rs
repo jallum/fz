@@ -283,10 +283,11 @@ impl<'a> World<'a> {
     pub(crate) fn complete_job(&mut self, job: Job, effects: JobEffects) -> super::AppliedStep<Job, FactKey> {
         let reads = effects.reads.into_iter().collect();
         let waits = effects.waits.into_iter().collect();
-        let outputs = dedupe_job_outputs(effects.outputs);
+        let outputs = dedupe_job_facts(effects.outputs);
+        let changed = dedupe_job_facts(effects.changed);
         let step = self
             .work_graph
-            .complete(job.clone(), reads, waits, outputs, effects.follow_up);
+            .complete(job.clone(), reads, waits, outputs, changed, effects.follow_up);
         self.tel.event(
             &["fz", "compiler2", "work_graph", "applied"],
             metadata! {
@@ -963,7 +964,7 @@ impl<'a> World<'a> {
         changed
     }
 
-    pub(crate) fn refresh_protocol_dispatch_fact(&mut self, protocol: ModuleId) -> (FactKey, bool) {
+    pub(crate) fn refresh_protocol_dispatch(&mut self, protocol: ModuleId) -> bool {
         let dispatch = ProtocolDispatch {
             arms: self
                 .protocol_impls_for(protocol)
@@ -974,8 +975,7 @@ impl<'a> World<'a> {
                 })
                 .collect(),
         };
-        let changed = self.define_protocol_dispatch(protocol, dispatch);
-        (FactKey::ProtocolDispatch(protocol), changed)
+        self.define_protocol_dispatch(protocol, dispatch)
     }
 
     pub(crate) fn protocol_dispatch(&self, protocol: ModuleId) -> Option<&ProtocolDispatch> {
@@ -2165,15 +2165,8 @@ fn emit_job_diagnostic(world: &World<'_>, diagnostic: Diagnostic) -> FatalError 
     FatalError
 }
 
-fn dedupe_job_outputs(outputs: Vec<(FactKey, bool)>) -> Vec<(FactKey, bool)> {
-    let mut deduped = HashMap::new();
-    for (fact, changed) in outputs {
-        deduped
-            .entry(fact)
-            .and_modify(|current: &mut bool| *current |= changed)
-            .or_insert(changed);
-    }
-    deduped.into_iter().collect()
+fn dedupe_job_facts(facts: Vec<FactKey>) -> Vec<FactKey> {
+    facts.into_iter().collect::<HashSet<_>>().into_iter().collect()
 }
 
 fn callable_match_score(fixed_arity: usize, variadic: bool, actual_arity: usize) -> Option<CallableMatchScore> {

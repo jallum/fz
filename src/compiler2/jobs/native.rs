@@ -85,7 +85,8 @@ pub(super) fn lower_native_program(world: &mut World<'_>, root_id: RootId) -> Re
     let changed = world.define_native_program(root_id, program);
     Ok(JobEffects {
         reads: vec![backend_fact],
-        outputs: vec![(FactKey::NativeProgram(root_id), changed)],
+        outputs: vec![FactKey::NativeProgram(root_id)],
+        changed: changed.then_some(FactKey::NativeProgram(root_id)).into_iter().collect(),
         ..JobEffects::default()
     })
 }

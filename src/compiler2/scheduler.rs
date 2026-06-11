@@ -83,7 +83,8 @@ where
         job: J,
         reads: HashSet<F>,
         waits: HashSet<F>,
-        outputs: Vec<(F, bool)>,
+        outputs: Vec<F>,
+        changed: Vec<F>,
         follow_up: Vec<J>,
     ) -> AppliedStep<J, F> {
         let blocked = waits.iter().cloned().collect();
@@ -91,7 +92,9 @@ where
         self.deps.replace_waits(job.clone(), waits);
 
         let previous_output_keys = self.deps.output_keys(&job);
-        let replaced = self.facts.replace_outputs(&job, &previous_output_keys, outputs);
+        let replaced = self
+            .facts
+            .replace_outputs(&job, &previous_output_keys, outputs, changed);
         self.deps.replace_outputs(job.clone(), replaced.output_keys);
 
         let mut enqueued = Vec::new();

@@ -9,10 +9,11 @@ fn complete(
     job: u32,
     reads: HashSet<&'static str>,
     waits: HashSet<&'static str>,
-    outputs: Vec<(&'static str, bool)>,
+    outputs: Vec<&'static str>,
+    changed: Vec<&'static str>,
     follow_up: Vec<u32>,
 ) -> AppliedStep<u32, &'static str> {
-    scheduler.complete(job, reads, waits, outputs, follow_up)
+    scheduler.complete(job, reads, waits, outputs, changed, follow_up)
 }
 
 #[test]
@@ -56,6 +57,7 @@ fn compiler2_scheduler_wakes_on_content_change_suppresses_stable_republication()
         HashSet::new(),
         Vec::new(),
         Vec::new(),
+        Vec::new(),
     );
     assert!(
         subscribe.changed.is_empty(),
@@ -75,7 +77,8 @@ fn compiler2_scheduler_wakes_on_content_change_suppresses_stable_republication()
         writer,
         HashSet::new(),
         HashSet::new(),
-        vec![(fact, true)],
+        vec![fact],
+        vec![fact],
         Vec::new(),
     );
     assert_eq!(first.enqueued, vec![subscriber]);
@@ -91,7 +94,8 @@ fn compiler2_scheduler_wakes_on_content_change_suppresses_stable_republication()
         writer,
         HashSet::new(),
         HashSet::new(),
-        vec![(fact, false)],
+        vec![fact],
+        Vec::new(),
         Vec::new(),
     );
     assert!(
@@ -108,7 +112,8 @@ fn compiler2_scheduler_wakes_on_content_change_suppresses_stable_republication()
         writer,
         HashSet::new(),
         HashSet::new(),
-        vec![(fact, true)],
+        vec![fact],
+        vec![fact],
         Vec::new(),
     );
     assert_eq!(third.enqueued, vec![subscriber]);
@@ -133,13 +138,15 @@ fn compiler2_scheduler_retracts_outputs_a_job_stops_publishing() {
         HashSet::new(),
         Vec::new(),
         Vec::new(),
+        Vec::new(),
     );
     complete(
         &mut scheduler,
         writer,
         HashSet::new(),
         HashSet::new(),
-        vec![(fact, true)],
+        vec![fact],
+        vec![fact],
         Vec::new(),
     );
     assert_eq!(scheduler.facts().revision(&fact), Some(1));
@@ -150,6 +157,7 @@ fn compiler2_scheduler_retracts_outputs_a_job_stops_publishing() {
         writer,
         HashSet::new(),
         HashSet::new(),
+        Vec::new(),
         Vec::new(),
         Vec::new(),
     );
@@ -179,13 +187,15 @@ fn compiler2_scheduler_wakes_waiters_when_a_matching_fact_appears() {
         HashSet::from(["foo"]),
         Vec::new(),
         Vec::new(),
+        Vec::new(),
     );
     let result = complete(
         &mut scheduler,
         1_u32,
         HashSet::new(),
         HashSet::new(),
-        vec![("foo", true)],
+        vec!["foo"],
+        vec!["foo"],
         Vec::new(),
     );
     assert_eq!(result.enqueued, vec![waiter]);
@@ -206,6 +216,7 @@ fn compiler2_scheduler_has_unresolved_tracks_waiter_presence_without_materializi
         HashSet::from(["foo"]),
         Vec::new(),
         Vec::new(),
+        Vec::new(),
     );
     assert!(
         scheduler.has_unresolved(),
@@ -217,7 +228,8 @@ fn compiler2_scheduler_has_unresolved_tracks_waiter_presence_without_materializi
         1_u32,
         HashSet::new(),
         HashSet::new(),
-        vec![("foo", true)],
+        vec!["foo"],
+        vec!["foo"],
         Vec::new(),
     );
     assert_eq!(
@@ -230,6 +242,7 @@ fn compiler2_scheduler_has_unresolved_tracks_waiter_presence_without_materializi
         4_u32,
         HashSet::new(),
         HashSet::new(),
+        Vec::new(),
         Vec::new(),
         Vec::new(),
     );
@@ -250,6 +263,7 @@ fn compiler2_scheduler_complete_enqueues_follow_up_jobs_once() {
         1,
         HashSet::new(),
         HashSet::new(),
+        Vec::new(),
         Vec::new(),
         vec![3, 3, 4],
     );
@@ -280,6 +294,7 @@ fn compiler2_scheduler_reports_blocked_exact_facts() {
         1_u32,
         HashSet::new(),
         HashSet::from(["module_surface", "function_defined"]),
+        Vec::new(),
         Vec::new(),
         Vec::new(),
     );

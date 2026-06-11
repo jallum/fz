@@ -92,7 +92,11 @@ fn publish_contract(
     let changed = world.define_function_contract(function, FunctionContract::from_resolved(contract));
     JobEffects {
         reads,
-        outputs: vec![(FactKey::FunctionContract(function), changed)],
+        outputs: vec![FactKey::FunctionContract(function)],
+        changed: changed
+            .then_some(FactKey::FunctionContract(function))
+            .into_iter()
+            .collect(),
         ..JobEffects::default()
     }
 }
