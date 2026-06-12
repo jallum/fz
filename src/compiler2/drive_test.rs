@@ -5432,10 +5432,15 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
         .cloned()
         .collect::<Vec<_>>();
     partition_activations.sort_by(|left, right| left.input.cmp(&right.input));
+    // Both qsort activations call partition with the same canonical
+    // (pivot, rest) — hd/tl of a non-empty and a general list coincide — so
+    // ONE partition activation is the tight answer. The historical second
+    // key was mid-oscillation garbage (absent evidence read as the empty
+    // type) that lingered as dead demand; honest paths self-collect it.
     assert_eq!(
         partition_activations.len(),
-        2,
-        "root closure should keep the narrow and widened partition/4 recursive activations because pivot/rest participate in dispatch"
+        1,
+        "root closure should settle on the single live partition/4 activation"
     );
     assert!(
         partition_activations
@@ -5443,14 +5448,9 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
             .all(|activation| activation.input.len() == 4),
         "partition/4 should stay keyed on its four inputs"
     );
-    assert!(
-        partition_activations[0].input[..2] != partition_activations[1].input[..2],
-        "partition/4 should preserve distinct dispatch-driven pivot/rest keys"
-    );
     assert_eq!(
-        partition_activations[0].input[2..],
-        partition_activations[1].input[2..],
-        "partition/4 should collapse only the recursive accumulator slots after canonical keying"
+        partition_activations[0].input[2], partition_activations[0].input[3],
+        "partition/4's recursive accumulator slots share one convergence class"
     );
     let append_activations = activations
         .iter()
@@ -5469,8 +5469,12 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
         append_activations[0].input != append_activations[1].input,
         "the two append/2 recursive activations should remain distinct after canonical keying"
     );
+    // Honest argument evidence keys non-recursive runtime helpers
+    // per-callsite (the designed behavior); the old any-defaults
+    // accidentally merged those keys. The frontier stays small and finite —
+    // the runaway grew it without bound.
     assert!(
-        activations.len() <= 13,
+        activations.len() <= 26,
         "quicksort should settle to a small finite rooted activation frontier, including reached runtime helpers"
     );
     assert!(
@@ -9318,6 +9322,111 @@ fn compiler2_never_returning_function_settles_with_empty_evidence() {
             world.activation_return(activation),
             None,
             "settled evidence for a never-returning activation stays empty",
+        );
+    }
+}
+
+#[test]
+fn compiler2_unproductive_deepening_settles_at_bottom_without_widening() {
+    // fn deep(x), do: [deep(x)] — the inner call must produce a value before
+    // the list ever exists, so this function NEVER returns: its least
+    // fixpoint is bottom. Under the old absent-reads-as-none lie this very
+    // program manufactured a divergent ascent (list(none), list(list(none)),
+    // …); honest paths never start the chain.
+    let tel = ConfiguredTelemetry::new();
+    let widened = Capture::new();
+    tel.attach(&["fz", "compiler2", "return_type", "widened"], widened.handler());
+    let mut world = crate::compiler2::World::new(&tel);
+    world.submit_code(
+        Some("deep_unproductive.fz".to_string()),
+        concat!("fn deep(x), do: [deep(x)]\n", "fn main(), do: deep(1)\n").to_string(),
+    );
+    world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
+    assert_resolved(world.drive(), "an unproductive deepening program quiesces at bottom");
+    assert!(
+        widened.is_empty(),
+        "no evidence ever ascends, so widening must never engage",
+    );
+}
+
+#[test]
+fn compiler2_productive_deepening_terminates_by_widening() {
+    // fn deep(0), do: []
+    // fn deep(n), do: [deep(n - 1)]
+    // Every round produces REAL evidence one list deeper — the true value is
+    // the recursive type μt.([] | list(t)), which the lattice cannot
+    // express, so the precise ascent provably never lands. Termination must
+    // come from the widening operator, not from a timeout.
+    let tel = ConfiguredTelemetry::new();
+    let widened = Capture::new();
+    tel.attach(&["fz", "compiler2", "return_type", "widened"], widened.handler());
+    let mut world = crate::compiler2::World::new(&tel);
+    world.submit_code(
+        Some("deep_productive.fz".to_string()),
+        concat!(
+            "fn deep(0), do: []\n",
+            "fn deep(n), do: [deep(n - 1)]\n",
+            "fn main(), do: deep(3)\n",
+        )
+        .to_string(),
+    );
+    world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
+    assert_resolved(world.drive(), "the productive deepening program must converge");
+    assert!(
+        !widened.is_empty(),
+        "termination of a true divergent ascent must come from widening",
+    );
+}
+
+#[test]
+fn compiler2_quicksort_return_revisions_stay_bounded() {
+    // THE runaway invariant (fz-rh2.21): in the oscillating engine, one
+    // activation's ReturnType was re-defined 32,356 times and job counts hit
+    // 54,000+. Under monotone joins every activation's return is defined a
+    // small bounded number of times, on every schedule.
+    let tel = ConfiguredTelemetry::new();
+    #[derive(Default)]
+    struct ReturnStats {
+        define_calls: u64,
+        max_ascents: u64,
+    }
+    let defines: Rc<RefCell<HashMap<(u64, u64), ReturnStats>>> = Rc::new(RefCell::new(HashMap::new()));
+    let sink = Rc::clone(&defines);
+    tel.attach(
+        &["fz", "compiler2", "return_type", "defined"],
+        Box::new(move |event: &Event<'_, '_, '_>| {
+            let (Some(Value::U64(root)), Some(Value::U64(function)), Some(Value::U64(ascents))) = (
+                event.measurements.get("root_id"),
+                event.measurements.get("function_id"),
+                event.measurements.get("ascents"),
+            ) else {
+                return;
+            };
+            let mut defines = sink.borrow_mut();
+            let entry = defines.entry((*root, *function)).or_default();
+            entry.define_calls += 1;
+            entry.max_ascents = entry.max_ascents.max(*ascents);
+        }),
+    );
+
+    let mut world = crate::compiler2::World::new(&tel);
+    world.submit_code(
+        Some("quicksort.fz".to_string()),
+        include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
+    );
+    world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
+    assert_resolved(world.drive(), "quicksort converges by theorem, on every schedule");
+
+    for ((root, function), stats) in defines.borrow().iter() {
+        assert!(
+            stats.max_ascents <= 8,
+            "fn {function} (root {root}) ascended {} times — corpus programs converge well under the widening delay",
+            stats.max_ascents,
+        );
+        assert!(
+            stats.define_calls <= 64,
+            "fn {function} (root {root}) was re-analyzed {} times — the runaway re-ran one activation 32,366 times",
+            stats.define_calls,
         );
     }
 }

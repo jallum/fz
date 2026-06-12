@@ -75,7 +75,25 @@ pub struct SemanticClosure {
 #[derive(Debug, Clone)]
 pub struct ActivationSlot {
     return_ty: Option<Ty>,
+    /// Strict ascents of the return evidence since the last rebase. Past
+    /// `RETURN_WIDENING_DELAY` the join widens; past twice that it tops out.
+    ascents: u32,
     analysis: Option<ActivationAnalysis>,
+}
+
+/// How many strict ascents one activation's return may take before the join
+/// starts widening. Honest programs converge in a few rungs (the corpus
+/// maximum is measured by fz-rh2.21.5 and recorded here); only programs
+/// whose precise ascent provably never lands pay the precision loss.
+/// Derivation note: pencil value 8 ≈ 4× the expected corpus maximum (2–4).
+pub const RETURN_WIDENING_DELAY: u32 = 8;
+
+/// The outcome of installing one round's return evidence.
+#[derive(Debug, Clone, Copy)]
+pub struct ReturnDefine {
+    pub changed: bool,
+    pub ascents: u32,
+    pub widened: bool,
 }
 
 #[derive(Debug, Default)]
@@ -124,27 +142,78 @@ impl ActivationMap {
         self.slots.get(key)
     }
 
-    /// Install one round's return evidence. `None` is the ascent's bottom —
-    /// no evidence adds nothing and never erases standing evidence. (The
-    /// monotone join over `Some` evidence lands with the widening operator;
-    /// until then `Some` over `Some` is last-write.)
-    pub fn define_return(&mut self, _types: &mut Types, key: &ActivationKey, evidence: Option<Ty>) -> bool {
+    /// Install one round's return evidence — the single join point of the
+    /// fixpoint. `None` is the ascent's bottom: no evidence adds nothing and
+    /// never erases standing evidence. `Some` evidence JOINS by union (which
+    /// preserves closure identities; `refine_widen` does not and is not
+    /// idempotent), so within an epoch the stored value only ascends —
+    /// descent is unrepresentable. A `rebased` publisher REPLACES instead:
+    /// the only narrowing path, taken when its ground shifted.
+    ///
+    /// The ladder must end: past `RETURN_WIDENING_DELAY` strict ascents the
+    /// join widens the growing spine (`convergence_class`); past twice the
+    /// delay it tops out at `any`. Termination is then a theorem for every
+    /// program, not a property of lucky inputs.
+    pub fn define_return(
+        &mut self,
+        types: &mut Types,
+        key: &ActivationKey,
+        evidence: Option<Ty>,
+        rebased: bool,
+    ) -> ReturnDefine {
         let slot = self.slots.entry(key.clone()).or_insert_with(ActivationSlot::new);
+        if rebased {
+            let changed = slot.return_ty != evidence;
+            slot.return_ty = evidence;
+            slot.ascents = 0;
+            return ReturnDefine {
+                changed,
+                ascents: 0,
+                widened: false,
+            };
+        }
         let Some(next) = evidence else {
-            return false;
+            return ReturnDefine {
+                changed: false,
+                ascents: slot.ascents,
+                widened: false,
+            };
         };
-        match &slot.return_ty {
-            Some(current) => {
-                let changed = current != &next;
-                if changed {
-                    slot.return_ty = Some(next);
-                }
-                changed
+        let joined = match slot.return_ty {
+            None => next,
+            Some(current) if current == next => {
+                return ReturnDefine {
+                    changed: false,
+                    ascents: slot.ascents,
+                    widened: false,
+                };
             }
-            None => {
-                slot.return_ty = Some(next);
-                true
-            }
+            Some(current) => types.union(current, next),
+        };
+        if Some(joined) == slot.return_ty {
+            return ReturnDefine {
+                changed: false,
+                ascents: slot.ascents,
+                widened: false,
+            };
+        }
+        slot.ascents += 1;
+        let mut widened = false;
+        let stored = if slot.ascents > 2 * RETURN_WIDENING_DELAY {
+            widened = true;
+            types.any()
+        } else if slot.ascents > RETURN_WIDENING_DELAY {
+            widened = true;
+            types.convergence_class(&joined)
+        } else {
+            joined
+        };
+        let changed = Some(stored) != slot.return_ty;
+        slot.return_ty = Some(stored);
+        ReturnDefine {
+            changed,
+            ascents: slot.ascents,
+            widened,
         }
     }
 
@@ -275,6 +344,7 @@ impl ActivationSlot {
     fn new() -> Self {
         Self {
             return_ty: None,
+            ascents: 0,
             analysis: None,
         }
     }
@@ -414,25 +484,150 @@ mod tests {
     use crate::compiler2::{ExecutableNeed, World};
     use crate::telemetry::ConfiguredTelemetry;
 
-    #[test]
-    fn activation_return_replaces_stale_broad_result_with_current_precise_result() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
-        let mut activations = ActivationMap::new();
+    fn test_key(world: &mut World<'_>) -> ActivationKey {
         let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
         let any = world.types_mut().any();
-        let key = ActivationKey {
+        ActivationKey {
             root,
             function: world.root_function(root),
             input: vec![any, any],
-        };
+        }
+    }
+
+    #[test]
+    fn activation_return_joins_within_an_epoch_and_narrows_only_on_rebase() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let mut activations = ActivationMap::new();
+        let key = test_key(&mut world);
+        let any = world.types_mut().any();
         let int = world.types_mut().int();
 
-        assert!(activations.define_return(world.types_mut(), &key, Some(any)));
         assert!(
-            activations.define_return(world.types_mut(), &key, Some(int)),
-            "rerunning one activation with better evidence should replace the stale broad return"
+            activations
+                .define_return(world.types_mut(), &key, Some(any), false)
+                .changed
+        );
+        // Within an epoch evidence only ascends: int joins into any and
+        // disappears — descent is unrepresentable without a ground shift.
+        assert!(
+            !activations
+                .define_return(world.types_mut(), &key, Some(int), false)
+                .changed
+        );
+        assert_eq!(activations.get(&key).and_then(|slot| slot.return_ty()), Some(&any));
+
+        // The ground shifted (rebase): the fresh derivation replaces.
+        assert!(
+            activations
+                .define_return(world.types_mut(), &key, Some(int), true)
+                .changed
         );
         assert_eq!(activations.get(&key).and_then(|slot| slot.return_ty()), Some(&int));
+    }
+
+    #[test]
+    fn activation_return_bottom_is_the_join_identity() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let mut activations = ActivationMap::new();
+        let key = test_key(&mut world);
+        let int = world.types_mut().int();
+
+        // No evidence adds nothing — before and after real evidence lands.
+        assert!(!activations.define_return(world.types_mut(), &key, None, false).changed);
+        assert!(
+            activations
+                .define_return(world.types_mut(), &key, Some(int), false)
+                .changed
+        );
+        assert!(!activations.define_return(world.types_mut(), &key, None, false).changed);
+        assert_eq!(activations.get(&key).and_then(|slot| slot.return_ty()), Some(&int));
+    }
+
+    #[test]
+    fn activation_return_join_ascends_by_union_and_republication_is_quiet() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let mut activations = ActivationMap::new();
+        let key = test_key(&mut world);
+        let int = world.types_mut().int();
+        let atom = world.types_mut().atom();
+        let both = world.types_mut().union(int, atom);
+
+        assert!(
+            activations
+                .define_return(world.types_mut(), &key, Some(int), false)
+                .changed
+        );
+        // Equal republication is quiet — the load-bearing scheduler
+        // invariant: changed=false wakes nobody.
+        assert!(
+            !activations
+                .define_return(world.types_mut(), &key, Some(int), false)
+                .changed
+        );
+        assert!(
+            activations
+                .define_return(world.types_mut(), &key, Some(atom), false)
+                .changed
+        );
+        assert_eq!(activations.get(&key).and_then(|slot| slot.return_ty()), Some(&both));
+    }
+
+    #[test]
+    fn activation_return_join_preserves_closure_identity() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let mut activations = ActivationMap::new();
+        let key = test_key(&mut world);
+        let int = world.types_mut().int();
+        let target = world.reference_function(super::super::identity::ModuleId::GLOBAL, "f", 1);
+        let closure = world.closure_ty(target, vec![int]);
+
+        assert!(
+            activations
+                .define_return(world.types_mut(), &key, Some(closure), false)
+                .changed
+        );
+        assert!(
+            activations
+                .define_return(world.types_mut(), &key, Some(int), false)
+                .changed
+        );
+        let joined = *activations
+            .get(&key)
+            .and_then(|slot| slot.return_ty())
+            .expect("joined return");
+        assert!(
+            world.types_mut().callable_value_clauses(&joined).is_some(),
+            "the union join must keep the closure identity resolvable",
+        );
+    }
+
+    #[test]
+    fn activation_return_widens_past_the_delay_and_terminates() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let mut activations = ActivationMap::new();
+        let key = test_key(&mut world);
+
+        // The canonical divergent ascent: ever-deeper list nests.
+        let mut ty = world.types_mut().int();
+        let mut widened_at = None;
+        for round in 0..(2 * RETURN_WIDENING_DELAY + 8) {
+            ty = world.types_mut().list(ty);
+            let outcome = activations.define_return(world.types_mut(), &key, Some(ty), false);
+            if outcome.widened && widened_at.is_none() {
+                widened_at = Some(round);
+            }
+            if !outcome.changed {
+                // The ladder ended: a strictly-deepening ascent reached a
+                // fixed point through the widening operator.
+                assert!(widened_at.is_some(), "termination must come from widening");
+                return;
+            }
+        }
+        panic!("the widening operator must terminate a strictly-deepening ascent");
     }
 }

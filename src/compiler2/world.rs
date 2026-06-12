@@ -505,20 +505,39 @@ impl<'a> World<'a> {
 
     pub fn define_activation_return(&mut self, key: &ActivationKey, evidence: Option<Ty>) -> bool {
         let evidence = evidence.map(|ty| self.types.alpha_normalize_vars(&ty));
-        let changed = self.activations.define_return(&mut self.types, key, evidence);
+        // The publisher of a ReturnType claim is, by construction, the
+        // activation's own analysis job — its rebase state selects join
+        // (the within-epoch ascent) or replace (the narrowing path).
+        let rebased = self.work_graph.rebased(&Job::AnalyzeActivation(key.clone()));
+        let outcome = self.activations.define_return(&mut self.types, key, evidence, rebased);
         let evidence = self.activations.get(key).and_then(|slot| slot.return_ty().copied());
         self.tel.execute(
             &["fz", "compiler2", "return_type", "defined"],
             &measurements! {
                 root_id: key.root.as_u32(),
                 function_id: key.function.as_u32(),
+                ascents: outcome.ascents,
+                rebased: rebased,
             },
             &metadata! {
                 activation: opaque_debug(key),
                 return_ty: opaque_debug(&evidence),
             },
         );
-        changed
+        if outcome.widened {
+            self.tel.execute(
+                &["fz", "compiler2", "return_type", "widened"],
+                &measurements! {
+                    root_id: key.root.as_u32(),
+                    function_id: key.function.as_u32(),
+                    ascents: outcome.ascents,
+                },
+                &metadata! {
+                    activation: opaque_debug(key),
+                },
+            );
+        }
+        outcome.changed
     }
 
     pub fn define_callsite_summary(&mut self, key: CallSiteKey, mut summary: CallSiteSummary) -> bool {
