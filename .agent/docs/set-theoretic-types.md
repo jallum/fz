@@ -21,10 +21,8 @@ A type is a union across independent **axes**, one per runtime kind, held in
 disjunctive normal form (DNF). A `Descr` is that union:
 
 ```text
-basic      a 1-bit bitset: the single bit is `binary` (str is this bit)
+basic      presence bits: int, float, binary (str is the binary bit)
 atoms      finite-or-cofinite set of atom names   (:ok, :error, nil, true, …)
-ints       finite-or-cofinite set of i64
-floats     finite-or-cofinite set of f64 bit-patterns
 opaques    finite-or-cofinite set of opaque-type names   (nominal)
 brands     finite-or-cofinite set of brand names         (nominal)
 vars       finite-or-cofinite set of type-variable ids
@@ -37,6 +35,19 @@ maps       DNF of map shapes   (nested value types)
 
 `nil`, `true`, and `false` live on the `atoms` axis, not on `basic` (`bool_lit` is
 `atom_lit("true")` / `atom_lit("false")`). `str` is exactly the `binary` basic bit.
+
+**Numbers have no literal sets — numeric constants are values, not types.** The
+lattice deliberately cannot express `int_lit(42)` or `0 | 1`: `int()` and
+`float()` are indivisible presence bits, exactly as in Elixir's
+`Module.Types.Descr`. Constant dispatch (`fn f(0)`) is a value comparison the
+matcher performs at runtime; constant map keys ride the lowering as values
+(`LoweredMapKey`). A numeric literal written in TYPE position (`@type d :: 0`)
+means its kind and emits the `type/numeric-literal-widened` warning
+(`compiler2/resolve.rs`). Atoms keep singleton sets because `:ok | :error`
+unions are the language's backbone. (The old pipeline under
+`src/types/concrete_types/` still carries its literal axes until it retires;
+compiler2's `int_lit`/`as_int_singleton` trait methods are documented
+degenerates.)
 A value belongs to a type if it belongs to the axis for its kind. `any()` is every
 axis at top, `none()` every axis at bottom, and `is_empty` holds when every axis is
 empty (structural clauses checked recursively, with a coinductive memo for recursive

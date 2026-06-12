@@ -88,16 +88,22 @@ mechanisms bound it, both via the activation **key** (`canonical_activation_key`
   clause selection. A dispatch slot keeps empty-vs-cons (or tag) precision, so
   clause reachability stays sharp while accumulators balloon.
 
-Termination rests on finite height: `refine_widen` collapses literal axes to
-their base and merges list shapes, so a joined slot ascends a bounded chain
-(`int_lit(1) ⊔ int_lit(2) = int`; `[] ⊔ nonempty(t) = list(t)`). Return types
-ascend the same ladder. The key ops live in [`type-world`](type-world.md); the
-algebra in [`set-theoretic-types`](set-theoretic-types.md).
+Termination is a theorem, not a property of lucky inputs. Three facts carry it:
+numeric literal chains cannot exist (the lattice has no numeric singletons —
+see [`set-theoretic-types`](set-theoretic-types.md)); atom chains are bounded
+by the program's finite atom set; and structural deepening is cut by the
+return join's widening operator (`ActivationMap::define_return`,
+`RETURN_WIDENING_DELAY`): past N strict ascents of one activation's return the
+growing spine collapses via `convergence_class`, past 2N it tops out at `any`.
+Every engagement emits `fz.compiler2.return_type.widened`, so widening on a
+real program is a visible regression, never silent precision loss. The key ops
+live in [`type-world`](type-world.md).
 
 ```text
 fib(0,0,1), fib(1,0,1), fib(10,0,1), fib(20,0,1)
   n is a dispatch slot (matched 0,1); a,b are accumulators
-  recursive -> a,b keyed by convergence_class, n kept precise then widened to int
+  recursive -> a,b keyed by convergence_class, n kept precise (already int —
+  numeric literals are not types)
   one activation (root, fib, [int,int,int]); reachable clauses unioned -> int
 ```
 
@@ -105,19 +111,23 @@ fib(0,0,1), fib(1,0,1), fib(10,0,1), fib(20,0,1)
 
 Three states stay distinct, and conflating them poisons the fixpoint:
 
-- **Not computed yet** — the callee's `ReturnType` fact does not exist or has not
-  reached its final value. The caller subscribes and uses `none()` as the
-  lattice-bottom estimate (the identity for `union`/`refine_widen`), then re-runs
-  when the fact settles. The Pending/Known distinction is carried by *fact
-  presence and revision*, not by a placeholder type.
+- **Not computed yet** — the callee's return EVIDENCE is absent
+  (`world.activation_return` yields `None`). Absence never becomes a type: the
+  walk's path results are `Option<Ty>` and an evidence-less path contributes
+  the join identity (`jobs/semantic.rs`), while the caller's subscription to
+  the `ReturnType` fact re-wakes it when evidence rises. At the settled
+  fixpoint, still-absent evidence IS the fact "provably never returns" and
+  only there converts to `none` (`CallTargetSummary::settled_return`,
+  the materializer).
 - **`none`** — a settled empty type: the value set is uninhabited (a callee that
   always diverges, or a call with an empty argument type). It stays `none`.
 - **`any`** — a real top fact (an untracked value, a named-ref call), not a stand-in
   for missing proof.
 
-Because `none` is the union identity and the caller re-runs on every widening, a
-transient `none` estimate never freezes a caller's return: it only ascends as the
-callee settles.
+Because evidence only ascends between ground shifts (the return store joins by
+union; descent requires a rebased publisher — see
+[`fact-engine`](fact-engine.md)), a transient low read can never freeze or
+flap a caller's return: re-derivations join upward and equal joins are quiet.
 
 ## Proof gates
 

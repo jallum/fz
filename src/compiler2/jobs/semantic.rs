@@ -1838,8 +1838,8 @@ fn merge_call_input_vec(world: &mut World<'_>, current: &mut Vec<Ty>, observed: 
     if current.len() < observed.len() {
         current.resize_with(observed.len(), || any_ty(world));
     }
-    for (slot, observed_ty) in observed.iter().copied().enumerate() {
-        current[slot] = widen_semantic_summary_ty(world, current[slot], observed_ty);
+    for (slot, next_ty) in observed.iter().copied().enumerate() {
+        current[slot] = widen_semantic_summary_ty(world, current[slot], next_ty);
     }
 }
 

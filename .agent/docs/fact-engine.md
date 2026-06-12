@@ -17,8 +17,12 @@ loop drive parsing, lowering, type inference, and artifact emission.
   job is pending (a job queued ten times runs once); `pop` clears the set so a
   later fact change can queue it again. This is coalescing: duplicate *pending*
   work is suppressed, changed work never is.
-- **`FactTable`** — one `FactSlot` per `FactKey`. A slot holds the contributions
-  of every job that writes that key, the joined `value`, and a `revision`.
+- **`FactTable`** — one `FactSlot` per `FactKey`. A slot holds the set of
+  `publishers` claiming the fact, the `dirty_publishers` queued to re-run, and
+  a `revision` counter. Slots hold no values — typed values live in `World`
+  stores; the fact gates their visibility. Derived states: **present** (any
+  publisher), **retracted** (none — the slot drops), **settled** (present and
+  no claimant dirty).
 - **`DependencyIndex`** — five exact-keyed maps: `reads`↔`subscribers`,
   `waits`↔`waiters`, and `outputs`. Waking a fact's interested jobs is an O(1)
   lookup, not a scan.
@@ -41,25 +45,44 @@ A job that cannot proceed records `waits` and the `follow_up` jobs that will
 produce them, then returns. It is not an error to be blocked; it is how
 ordering emerges without a schedule.
 
-## Facts are owned, and they can shrink
+## Waiting extends, concluding replaces
 
-A `FactSlot` aggregates `contributions: HashMap<Job, FactValue>`:
+A completion's meaning bifurcates on its waits (`Scheduler::complete`):
 
-- **`FactValue::Presence(u64)`** — "this fact exists at this revision." Single
-  owner in practice; the join is `max`.
-- **`FactValue::Inputs(Vec<Ty>)`** — a real lattice value with many owners; the
-  join is element-wise `refine_widen` (see `semantic-fixpoint`).
+- **Concluding** (waits empty) replaces: reads swap subscriptions, the output
+  list replaces the job's claims, and retraction-by-omission is available and
+  final. Facts shrink as their owners stop deriving them — redefinition needs
+  no special path.
+- **Waiting** (waits non-empty) extends: reads union into the standing
+  subscriptions, listed outputs union into the standing claims, prior
+  activation-input contributions stand, and every claim the job holds is
+  marked dirty — a blocked publisher's facts are never settled. Pausing is
+  not recanting; a transient wait cannot destroy still-valid published work.
 
-`replace_contributions` re-runs the join and bumps the slot `revision` **only
-when the joined value actually changes** (exact `FactValue` equality, cheap
-because `Ty` is an interned id — see `type-world`). The revision is a
-change token, not a content hash; subscribers wake on `old_revision !=
-new_revision`.
+## Claims declare their shape; ascents wake, ground shifts rebase
 
-Each job rerun **replaces exactly the contributions it owns**. If a rerun stops
-emitting a key, that contribution is dropped; if it was the last one, the slot
-empties and the fact retracts. This is why redefinition needs no special path:
-facts shrink as their owners stop deriving them.
+`FactKey::is_cumulative` declares each fact's content algebra: `ReturnType`
+and `ActivationInputs` hold monotone joins maintained by their `World` stores
+(content only grows between ground shifts); every other fact's content
+overwrites. The scheduler classifies every content change:
+
+- **Ascent** — first appearance, or growth of a cumulative fact from an
+  unshifted publisher. Readers re-run and join. This is the within-epoch
+  chaotic iteration: monotone transfers over finite chains converge to the
+  unique least fixpoint on any fair schedule, so wake order is performance,
+  never correctness.
+- **Ground shift** — a retraction, a replacing fact's content change, or any
+  change concluded by a rebased publisher. Each reader's claims go unsettled,
+  the reader is flagged **rebased** and re-enqueued. A rebased job's next
+  conclusion replaces its cumulative store values instead of joining (the
+  only narrowing path) and its changes propagate as shifts in turn; equal
+  recomputation propagates nothing, so the shift cone is exactly the set of
+  jobs whose recomputed outputs actually differ — narrowing keeps today's
+  minimal-rerun incrementality.
+
+The revision is a change token, not a content hash: stores report `changed`
+only on real content movement (equal joins are quiet), and subscribers wake on
+`old_revision != new_revision`.
 
 ## The drive loop
 
@@ -67,9 +90,10 @@ facts shrink as their owners stop deriving them.
 while let Some(job) = agenda.pop():
     effects = run(job)              # may return Err -> fatal
     step    = complete(job, effects)
-        replace reads/waits/outputs in deps
-        join contributions, find changed facts
-        enqueue each changed fact's subscribers + waiters, then follow_ups
+        waiting?  extend reads/claims, dirty the job's claims
+        else      replace reads/waits/claims (retraction final)
+        classify each change: ascent -> wake; shift -> rebase + wake
+        enqueue dependents, then follow_ups
 ```
 
 The loop ends as `Resolved` (agenda empty, no waiters), `Unresolved { waits }`
