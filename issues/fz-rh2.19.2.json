@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.19.1"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-rh2.19",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "drive.rs job loop: clone-free span payloads",
   "type": "task",
-  "updated_at": "2026-06-12T09:37:35Z"
+  "updated_at": "2026-06-12T11:30:24Z"
 }
