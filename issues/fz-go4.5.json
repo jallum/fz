@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T18:42:56Z",
+  "description": "Goal\nClean dump/debug/reporting paths after hot-path ownership boundaries are fixed so they do only the formatting and collection work required for their user-visible output.\n\nScope\n- `src/lib.rs` dump emitters\n- ordering/sorting code that formats structures only to compare them\n- debug/reporting paths that clone intermediate strings or collections unnecessarily\n\nContract\n- formatting happens at the outermost user-facing boundary\n- intermediate sort/order logic uses structural ordering where available\n- dump/debug code does not leak extra ownership requirements back into hot paths\n\nValidation\n- dump-related tests and manual output checks where necessary\n- clippy sweep for redundant clone / implicit_clone\n- full `cargo test --workspace` before close",
+  "id": "fz-go4.5",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 2,
+  "status": "open",
+  "title": "Shrink dump and debug materialization paths",
+  "type": "task",
+  "updated_at": "2026-06-12T18:42:56Z"
+}
