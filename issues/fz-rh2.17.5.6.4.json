@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-12T18:51:30Z",
   "created": "2026-06-11T14:14:49Z",
   "description": "",
   "id": "fz-rh2.17.5.6.4",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 quoted surface: reject dangling function attrs that never attach to a function group",
   "type": "bug",
-  "updated_at": "2026-06-11T14:17:03Z"
+  "updated_at": "2026-06-12T18:51:30Z"
 }
