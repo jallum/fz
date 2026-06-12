@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.18.7.1"
+  ],
   "blocks": [],
   "created": "2026-06-12T05:16:31Z",
   "description": "Goal\nRemove unresolved-as-`any` behavior from call, protocol, provider-boundary, and runtime-module wait paths. If a required module/interface/dispatch/return fact is missing, the job waits; if a boundary is intentionally dynamic, the evidence says so.\n\nSignal\n- `resolve_function_call`, `resolve_protocol_call`, and closure-call paths no longer return `any` for missing module definition, missing protocol dispatch, missing impl owner, missing function surface, or missing callee return evidence.\n- Provider-boundary calls produce explicit dynamic evidence only when their contract/source says the boundary is dynamic or lacks a tighter return; this does not leak into local functions.\n- Tests cover unresolved runtime module, protocol dispatch pending, missing impl owner, and dynamic provider return as distinct cases.\n- Telemetry for Enum/protocol fixtures shows waits and evidence publication, not fake top return churn.\n\nTactics\n- Work in `src/compiler2/jobs/semantic.rs` around call resolution and protocol dispatch.\n- Reuse ReturnEvidence readiness instead of inventing a second missing-call state.\n- If a provider contract genuinely returns `any`, keep that as explicit source semantics and name the test accordingly.\n\nOutro\nNo unresolved function/module/protocol as `any`, no provider-boundary fallback that masks missing facts, no callsite summary published from absent evidence, and no runtime-helper special case.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 calls: remove unresolved-as-any wait fallbacks",
   "type": "task",
-  "updated_at": "2026-06-12T05:16:31Z"
+  "updated_at": "2026-06-12T05:16:33Z"
 }
