@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T16:22:40Z",
+  "description": "list_element_type (types/mod.rs descr-level) returns none for a list conjunction with no positive elem constraint, conflating 'unconstrained' with 'exact empty list'. any.lists = [Conj::top()] (pos empty), so list_element_type(any) = none — manufacturing the empty type from any. Under a root's earned-any input, SplitList binds head := none, the downstream call (h + h in fixtures2/00477) is dead-dropped as empty-argument, no CallSiteSummary is published, yet the entry stays in reachable_entries — MaterializeRoot then fatals with 'incomplete call edges'. Fix per-conjunction: positive sig with elem None marks exact-empty (conj contributes NO head — skip); elem-ful sigs intersect; a conj with no positive constraint contributes any. Preserves: elem(empty_list)=none, elem(list(int))=int. Add the conformance test list_element_type_of_any_is_any next to the existing macro cases in types_test.rs. Fixes guard_and_binding_reuse_single_list_head_extraction.",
+  "id": "fz-rh2.23.1",
+  "labels": [],
+  "parent": "fz-rh2.23",
+  "priority": 2,
+  "status": "open",
+  "title": "types: list head projection of an unconstrained list conjunction is any, not none",
+  "type": "bug",
+  "updated_at": "2026-06-12T16:22:40Z"
+}
