@@ -9,9 +9,15 @@
   "id": "fz-rh2.19.1",
   "labels": [],
   "parent": "fz-rh2.19",
+  "comments": [
+    {
+      "text": "Work parked in git stash 'fz-rh2.19.1 WIP: telemetry emit-point conformance' while fz-rh2.21 (fixpoint redesign) takes priority — 21 rewrites some of the same world.rs fns; expect small conflicts on pop. State at stash: all world.rs emit sites converted (define-then-re-borrow, no clones/format!), scheduler::complete takes \u0026J, telemetry handler.rs gained blanket impl Handler for Fn(\u0026Event), drive_test rewritten with event-time projections (rendered_type_defs helper + consumer_kind/consumer split). Verified: cargo check clean; compiler2 lib tests green except pre-existing failures (fz-rh2.20 abort + 4 pre-existing port test failures confirmed on HEAD baseline). Remaining: full lib+clippy sweep, then commit.",
+      "timestamp": "2026-06-12T10:37:09Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "world.rs fact emits: define-then-re-borrow, kill telemetry clones and preformatted type payloads",
   "type": "task",
-  "updated_at": "2026-06-12T09:38:22Z"
+  "updated_at": "2026-06-12T10:37:09Z"
 }
