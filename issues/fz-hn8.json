@@ -1,9 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [],
-  "blocks": [
-    "fz-rh2.18.9.5"
-  ],
+  "blocks": [],
   "closed_at": "2026-06-12T04:48:01Z",
   "close_reason": "Landed native CPS back-edge fix",
   "created": "2026-06-12T01:34:09Z",
