@@ -179,7 +179,6 @@ fn enum_reduce_with_inline_lambda_accumulates() {
 
 // Ported from src/ir_interp/tests/typed_slot.rs: Enum.take with list and range in chained non-tail call sequence
 #[test]
-#[ignore = "compiler2 DeriveAbiReady fatal on Enum.take+Range fixture — unblock when Range Enumerable is wired"]
 fn enum_take_chained_non_tail_calls_preserve_continuations() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
