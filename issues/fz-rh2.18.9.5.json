@@ -1,6 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [
+    "fz-hn8",
     "fz-rh2.18.9.4"
   ],
   "blocks": [
@@ -16,5 +17,5 @@
   "status": "in_progress",
   "title": "Compiler2 convergence: land activation partition foundation and split dirty state",
   "type": "task",
-  "updated_at": "2026-06-12T04:44:47Z"
+  "updated_at": "2026-06-12T04:45:56Z"
 }
