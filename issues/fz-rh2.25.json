@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-12T16:45:44Z",
   "created": "2026-06-12T16:11:05Z",
   "description": "Found while fixing fz-rh2.20. annotate_back_edges (jobs/native.rs) builds its SCC graph from Term::TailCall edges ONLY, so a recursion cycle threaded through Term::Call continuations — exactly the shape of count(n-1, acc+1), whose cycle is count__e3 -TailCall-\u003e count__clause_1 -Call/cont-\u003e resume_2 -\u003e resume_3 -TailCall-\u003e count__e3 — lands in separate SCCs and its closing TailCall keeps is_back_edge=false. The cooperative-yield check in emit_native_tail_call (terminator.rs, 'every native loop spends reductions') therefore never fires for such loops. Before fz-rh2.20 this was masked: the synchronous-call bug overflowed the stack before fairness could matter. Now that cont chains are frame-flat (return_call_indirect), a scalar native loop can spin without spending reductions — a scheduler-starvation hazard once concurrent processes share a scheduler. Fix shape: include Term::Call/Term::CallClosure successor edges (callee AND continuation fn) in the SCC graph; widening the edge set only grows SCCs, which only ADDS yield checks — safe direction. Verify with a telemetry-observing test that a count-style loop spends reductions per back edge.",
   "id": "fz-rh2.25",
   "labels": [],
   "parent": "fz-rh2",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 native codegen: cont-threaded loops evade back-edge yield checks",
   "type": "bug",
-  "updated_at": "2026-06-12T16:11:05Z"
+  "updated_at": "2026-06-12T16:45:44Z"
 }
