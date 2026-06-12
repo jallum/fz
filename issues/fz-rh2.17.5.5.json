@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.18.9.5"
+  ],
   "blocks": [],
   "created": "2026-06-11T14:00:56Z",
   "description": "After the current interface/source-production fixes, the wider compiler2 sweep still leaves several type/semantic tests unresolved rather than sealed. Current failures include enum_reduce_named_ref_ok_settles_to_int, enum_reduce_range_settles_to_int, corpus_folds_settle_myreduce_to_int_fold_state_machine, fixpoint_leaves_no_reached_fn_unknown_fold_state_machine, and mixed_enum_take_calls_preserve_list_and_range_activations. Isolate the missing semantic/artifact fact flow and recover closure over these Enum/list/range cases.",
@@ -17,5 +19,5 @@
   "status": "open",
   "title": "Compiler2 semantic sweep: recover unresolved Enum.reduce/Enum.take range/list fixpoint cases",
   "type": "bug",
-  "updated_at": "2026-06-12T02:14:14Z"
+  "updated_at": "2026-06-12T02:14:15Z"
 }

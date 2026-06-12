@@ -4,6 +4,7 @@
     "fz-rh2.18.9.4"
   ],
   "blocks": [
+    "fz-rh2.17.5.5",
     "fz-rh2.18.9.6"
   ],
   "created": "2026-06-12T02:13:32Z",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Compiler2 convergence: burn down quicksort and Enum.reduce overspecialization",
   "type": "task",
-  "updated_at": "2026-06-12T02:14:01Z"
+  "updated_at": "2026-06-12T02:14:15Z"
 }
