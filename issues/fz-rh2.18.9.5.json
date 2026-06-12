@@ -13,9 +13,15 @@
   "id": "fz-rh2.18.9.5",
   "labels": [],
   "parent": "fz-rh2.18.9",
+  "comments": [
+    {
+      "text": "Audit note: the attempted jobs/root.rs settled-read cleanup was removed from the .9.5 dirty batch because it made quicksort backend/materialization re-demand tests time out. Captured as fz-rh2.18.9.10 and wired after dynamic cycle/stored-state publication.",
+      "timestamp": "2026-06-12T05:04:37Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Compiler2 convergence: land activation partition foundation and split dirty state",
   "type": "task",
-  "updated_at": "2026-06-12T04:45:56Z"
+  "updated_at": "2026-06-12T05:04:37Z"
 }
