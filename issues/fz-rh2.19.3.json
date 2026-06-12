@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.19.2"
+  ],
   "blocks": [],
   "created": "2026-06-12T09:37:35Z",
   "description": "driver.rs: module_path().to_owned() -\u003e borrow everywhere (module_path() returns \u0026str); fn_name/display_name clones -\u003e borrows (span-start and stop_with metadata both accept borrowed lifetimes; only close_with needs 'static); abi_contract: param_repr_names Vec\u003cString\u003e -\u003e param_reprs: opaque(\u0026surface.param_reprs[sid]) (Vec\u003cArgRepr\u003e is 'static), body_origin/entry_abi format!(\"{:?}\") -\u003e opaque_debug(\u0026body_slot.native_body.origin/.entry_abi); compile span spec_count .filter().count() -\u003e precompute spec_count on NativeCodegenSurface at construction (raw stored state, correct by construction). terminator.rs closure_call_lowered: closure_binding_repr format!(\"{:?}\") -\u003e closure_binding.repr().as_str() (\u0026'static str, IDENTICAL strings — ir_codegen_test assertions on ValueRef unaffected). prim.rs callable_entry_selected: kill O(n) closure_fn_name find+clone+format fallback -\u003e module: opaque(env.module) (fz_ir::Module is 'static) and body_name borrow; module_path borrow. Tests: ir_codegen_test param_reprs (653/857/2694) and closure_fn_name (713) consumers move to event-time handlers that downcast \u0026Vec\u003cArgRepr\u003e (map as_str) and resolve the closure fn name from the opaque Module by fn_id.",
