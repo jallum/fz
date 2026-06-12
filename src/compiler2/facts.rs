@@ -220,6 +220,57 @@ where
         FactReplace { changed, output_keys }
     }
 
+    /// Extend one job's published facts without retracting anything. The
+    /// waiting-completion arm: listed keys gain the job as publisher (revision
+    /// rules identical to `replace_outputs`), unlisted keys the job previously
+    /// claimed are left standing untouched. Dirtiness is NOT cleared for the
+    /// listed keys — a blocked publisher is not vouching yet; the caller marks
+    /// the job's full claim set dirty after extending.
+    pub fn extend_outputs(&mut self, job: &J, outputs: Vec<F>, changed_keys: Vec<F>) -> FactReplace<F> {
+        let mut output_keys = HashSet::new();
+        for key in outputs {
+            assert!(output_keys.insert(key), "job emitted duplicate fact output for one key");
+        }
+        let mut changed_keys_set = HashSet::new();
+        for key in changed_keys {
+            assert!(
+                changed_keys_set.insert(key),
+                "job emitted duplicate changed fact for one key"
+            );
+        }
+
+        let mut changed = Vec::new();
+        for key in &output_keys {
+            let mut slot = self.slots.remove(key).unwrap_or_default();
+            let old_revision = slot.revision();
+            let old_settled = slot.is_settled();
+
+            let was_absent = slot.publishers.is_empty();
+            slot.publishers.insert(job.clone());
+            if was_absent {
+                slot.revision = 1;
+            } else if changed_keys_set.remove(key) {
+                slot.revision += 1;
+            }
+
+            let new_revision = slot.revision();
+            let new_settled = slot.is_settled();
+            self.slots.insert(key.clone(), slot);
+
+            if old_revision != new_revision || old_settled != new_settled {
+                changed.push(FactChange {
+                    key: key.clone(),
+                    old_revision,
+                    new_revision,
+                    old_settled,
+                    new_settled,
+                });
+            }
+        }
+
+        FactReplace { changed, output_keys }
+    }
+
     pub fn mark_dirty(&mut self, job: &J, output_keys: &HashSet<F>) -> Vec<FactChange<F>> {
         let mut changed = Vec::new();
         for key in output_keys {

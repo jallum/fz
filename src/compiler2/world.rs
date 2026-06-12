@@ -285,11 +285,18 @@ impl<'a> World<'a> {
 
     pub(crate) fn complete_job(&mut self, job: Job, effects: JobEffects) -> super::AppliedStep<Job, FactKey> {
         let reads = effects.reads.into_iter().collect();
-        let waits = effects.waits.into_iter().collect();
+        let waits: HashSet<_> = effects.waits.into_iter().collect();
+        // Waiting completions extend: a blocked job's prior contributions
+        // stand untouched (the scheduler likewise keeps its claims standing).
+        // Only a wait-free conclusion replaces the contribution set.
         let ActivationInputReplace {
             output_keys: activation_input_outputs,
             changed_keys: activation_input_changed,
-        } = self.replace_activation_input_contributions(&job, effects.activation_input_contributions);
+        } = if waits.is_empty() {
+            self.replace_activation_input_contributions(&job, effects.activation_input_contributions)
+        } else {
+            self.extend_activation_input_contributions(&job, effects.activation_input_contributions)
+        };
         let mut outputs = effects.outputs;
         outputs.extend(activation_input_outputs.into_iter().map(FactKey::ActivationInputs));
         let outputs = dedupe_job_facts(outputs);
@@ -434,6 +441,23 @@ impl<'a> World<'a> {
         job: &Job,
         contributions: Vec<(ActivationKey, Vec<Ty>)>,
     ) -> ActivationInputReplace {
+        let next = self.normalize_contributions(contributions);
+        self.activation_inputs.replace(&mut self.types, job.clone(), next)
+    }
+
+    fn extend_activation_input_contributions(
+        &mut self,
+        job: &Job,
+        contributions: Vec<(ActivationKey, Vec<Ty>)>,
+    ) -> ActivationInputReplace {
+        let next = self.normalize_contributions(contributions);
+        self.activation_inputs.extend(&mut self.types, job.clone(), next)
+    }
+
+    fn normalize_contributions(
+        &mut self,
+        contributions: Vec<(ActivationKey, Vec<Ty>)>,
+    ) -> HashMap<ActivationKey, Vec<Ty>> {
         let mut next = HashMap::<ActivationKey, Vec<Ty>>::new();
         for (activation, inputs) in contributions {
             let normalized = inputs
@@ -461,7 +485,7 @@ impl<'a> World<'a> {
                 }
             }
         }
-        self.activation_inputs.replace(&mut self.types, job.clone(), next)
+        next
     }
 
     pub fn define_activation_return(&mut self, key: &ActivationKey, return_ty: Ty) -> bool {

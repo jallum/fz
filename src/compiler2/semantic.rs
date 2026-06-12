@@ -197,6 +197,64 @@ where
             changed_keys,
         }
     }
+
+    /// The waiting-completion arm of contribution publication: listed keys
+    /// gain (or widen) this publisher's entry, unlisted keys it previously
+    /// contributed stand untouched. A blocked publisher recants nothing.
+    pub fn extend(
+        &mut self,
+        types: &mut Types,
+        publisher: P,
+        next: HashMap<ActivationKey, Vec<Ty>>,
+    ) -> ActivationInputReplace {
+        if next.is_empty() {
+            return ActivationInputReplace::default();
+        }
+        let next_output_keys = next.keys().cloned().collect::<HashSet<_>>();
+        self.output_keys
+            .entry(publisher.clone())
+            .or_default()
+            .extend(next_output_keys.iter().cloned());
+        let mut changed_keys = HashSet::new();
+
+        for (key, inputs) in next {
+            let mut slot = self.slots.remove(&key).unwrap_or_else(ActivationInputSlot::new);
+            let old_joined = (!slot.contributors.is_empty()).then(|| slot.joined.clone());
+
+            match slot.contributors.entry(publisher.clone()) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(inputs);
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    let current = entry.get_mut();
+                    assert_eq!(
+                        current.len(),
+                        inputs.len(),
+                        "one activation input fact cannot receive differing arities from one publisher",
+                    );
+                    for (current_input, next_input) in current.iter_mut().zip(inputs) {
+                        *current_input = if *current_input == next_input {
+                            *current_input
+                        } else {
+                            types.refine_widen(current_input, &next_input)
+                        };
+                    }
+                }
+            }
+
+            let joined = join_activation_inputs(types, slot.contributors.values());
+            if old_joined.as_ref() != Some(&joined) {
+                changed_keys.insert(key.clone());
+            }
+            slot.joined = joined;
+            self.slots.insert(key, slot);
+        }
+
+        ActivationInputReplace {
+            output_keys: next_output_keys,
+            changed_keys,
+        }
+    }
 }
 
 impl ActivationSlot {

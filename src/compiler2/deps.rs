@@ -39,6 +39,23 @@ where
         Self::default()
     }
 
+    /// Add reads without dropping existing subscriptions. A partial (waiting)
+    /// run reads less than the job's last full conclusion did, but its
+    /// standing claims still depend on those earlier reads — replacing would
+    /// unsubscribe the job from facts that can invalidate them.
+    pub fn union_reads(&mut self, job: J, mut next_reads: HashSet<FactUse<F>>) {
+        if let Some(previous) = self.reads.get(&job) {
+            next_reads.retain(|key| !previous.contains(key));
+        }
+        if next_reads.is_empty() {
+            return;
+        }
+        for key in &next_reads {
+            self.subscribers.entry(key.clone()).or_default().insert(job.clone());
+        }
+        self.reads.entry(job).or_default().extend(next_reads);
+    }
+
     pub fn replace_reads(&mut self, job: J, next_reads: HashSet<FactUse<F>>) {
         if let Some(previous_reads) = self.reads.insert(job.clone(), next_reads.clone()) {
             for key in previous_reads {

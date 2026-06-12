@@ -79,6 +79,15 @@ where
         self.agenda.pop()
     }
 
+    /// Apply one job completion. The semantics bifurcate on `waits`:
+    ///
+    /// **Concluding** (waits empty) replaces — reads swap subscriptions,
+    /// outputs replace claims (retraction-by-omission is available and final).
+    ///
+    /// **Waiting** (waits non-empty) extends — reads union into the standing
+    /// subscriptions, listed outputs union into the standing claims, nothing
+    /// retracts, and every claim the job holds is marked dirty so a blocked
+    /// publisher's facts never read as settled. Pausing is not recanting.
     pub fn complete(
         &mut self,
         job: &J,
@@ -88,18 +97,35 @@ where
         changed: Vec<F>,
         follow_up: Vec<J>,
     ) -> AppliedStep<J, F> {
+        let waiting = !waits.is_empty();
         let blocked = waits.iter().cloned().collect();
-        self.deps.replace_reads(job.clone(), reads);
+        if waiting {
+            self.deps.union_reads(job.clone(), reads);
+        } else {
+            self.deps.replace_reads(job.clone(), reads);
+        }
         self.deps.replace_waits(job.clone(), waits);
 
         let previous_output_keys = self.deps.output_keys(job);
-        let replaced = self.facts.replace_outputs(job, &previous_output_keys, outputs, changed);
-        self.deps.replace_outputs(job.clone(), replaced.output_keys);
+        let mut dirtied = Vec::new();
+        let replaced = if waiting {
+            let extended = self.facts.extend_outputs(job, outputs, changed);
+            let mut claims = previous_output_keys;
+            claims.extend(extended.output_keys.iter().cloned());
+            dirtied = self.facts.mark_dirty(job, &claims);
+            self.deps.replace_outputs(job.clone(), claims);
+            extended
+        } else {
+            let concluded = self.facts.replace_outputs(job, &previous_output_keys, outputs, changed);
+            self.deps.replace_outputs(job.clone(), concluded.output_keys.clone());
+            concluded
+        };
 
         let mut enqueued = Vec::new();
         let mut coalesced = Vec::new();
         let mut coalesced_seen = HashSet::new();
         let mut pending_changes = replaced.changed.clone();
+        pending_changes.extend(dirtied);
         while let Some(change) = pending_changes.pop() {
             if change.content_changed() {
                 self.enqueue_dependents(

@@ -1,3 +1,4 @@
+use super::facts::FactUse;
 use super::{DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, TypeName, TypeVarId, Types, World};
 use crate::ast::Attribute;
 use crate::compiler2::drive::JobEffects;
@@ -295,5 +296,42 @@ fn compiler2_activation_inputs_retract_one_publishers_stale_contribution() {
         world.activation_inputs(&key),
         Some(vec![input_b]),
         "the surviving publisher's input should remain as the body evidence after the stale contribution retracts",
+    );
+}
+
+#[test]
+fn compiler2_waiting_job_keeps_activation_input_contributions() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
+    assert!(world.define_recursive(function, false));
+    assert!(world.define_dispatch_mask(function, vec![true]));
+
+    let input = world.types_mut().int_lit(1);
+    let key = world.activation_key(root, function, &[input]);
+
+    world.complete_job(
+        Job::SeedRoot(root),
+        JobEffects {
+            activation_input_contributions: vec![(key.clone(), vec![input])],
+            ..JobEffects::default()
+        },
+    );
+    assert!(world.activation_inputs(&key).is_some());
+
+    // A blocked re-run of the same publisher lists no contributions. Pausing
+    // must not withdraw the standing body evidence.
+    world.complete_job(
+        Job::SeedRoot(root),
+        JobEffects {
+            waits: vec![FactUse::current(FactKey::FunctionDefined(function))],
+            ..JobEffects::default()
+        },
+    );
+    assert_eq!(
+        world.activation_inputs(&key),
+        Some(vec![input]),
+        "a waiting completion must not withdraw the publisher's standing contributions",
     );
 }

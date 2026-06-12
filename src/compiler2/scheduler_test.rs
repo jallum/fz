@@ -477,3 +477,125 @@ fn compiler2_scheduler_multi_publisher_fact_settles_only_when_every_publisher_is
     );
     assert!(scheduler.facts().is_settled(&"shared"));
 }
+
+#[test]
+fn compiler2_scheduler_waiting_completion_preserves_standing_claims() {
+    let mut scheduler = TestScheduler::new();
+    let job = 1_u32;
+
+    complete(
+        &mut scheduler,
+        job,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["fact"],
+        vec!["fact"],
+        Vec::new(),
+    );
+    assert_eq!(scheduler.facts().revision(&"fact"), Some(1));
+    assert!(scheduler.facts().is_settled(&"fact"));
+
+    // A blocked re-run lists no outputs. Pausing must not read as recanting:
+    // the standing claim survives, but it must not read as settled while the
+    // publisher is blocked.
+    complete(
+        &mut scheduler,
+        job,
+        HashSet::new(),
+        HashSet::from([current("gate")]),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    assert_eq!(
+        scheduler.facts().revision(&"fact"),
+        Some(1),
+        "a waiting completion must not retract the publisher's standing claims",
+    );
+    assert!(
+        !scheduler.facts().is_settled(&"fact"),
+        "a blocked publisher's facts are never settled",
+    );
+
+    // A wait-free conclusion re-publishes and settles.
+    complete(
+        &mut scheduler,
+        job,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["fact"],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert_eq!(scheduler.facts().revision(&"fact"), Some(1));
+    assert!(scheduler.facts().is_settled(&"fact"));
+}
+
+#[test]
+fn compiler2_scheduler_waiting_completion_keeps_subscriptions() {
+    let mut scheduler = TestScheduler::new();
+    let reader = 2_u32;
+    let writer = 1_u32;
+
+    complete(
+        &mut scheduler,
+        reader,
+        HashSet::from([current("foo")]),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    // A partial run reads less than the conclusion did. Its standing claims
+    // still depend on the earlier reads, so the subscription must survive.
+    complete(
+        &mut scheduler,
+        reader,
+        HashSet::new(),
+        HashSet::from([current("gate")]),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let step = complete(
+        &mut scheduler,
+        writer,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["foo"],
+        vec!["foo"],
+        Vec::new(),
+    );
+    assert!(
+        step.enqueued.contains(&reader),
+        "a waiting completion must not unsubscribe the job from its prior reads",
+    );
+}
+
+#[test]
+fn compiler2_scheduler_waiting_completion_publishes_alongside_the_wait() {
+    // The seed_root shape: a job publishes its root fact in the same
+    // completion that waits on the entry function's definition.
+    let mut scheduler = TestScheduler::new();
+    let job = 3_u32;
+
+    complete(
+        &mut scheduler,
+        job,
+        HashSet::new(),
+        HashSet::from([current("gate")]),
+        vec!["root"],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert_eq!(
+        scheduler.facts().revision(&"root"),
+        Some(1),
+        "outputs published alongside a wait must land as claims",
+    );
+    assert!(
+        !scheduler.facts().is_settled(&"root"),
+        "claims published by a blocked job stay unsettled until it concludes",
+    );
+}
