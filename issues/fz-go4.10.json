@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-12T23:07:02Z",
   "created": "2026-06-12T21:19:52Z",
   "description": "",
   "id": "fz-go4.10",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Fix compiler2 native selective receive over make_ref identities",
   "type": "bug",
-  "updated_at": "2026-06-12T22:20:24Z"
+  "updated_at": "2026-06-12T23:07:02Z"
 }
