@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-go4.10.3"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-go4.10",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Generalize compiler2 native delivery contracts beyond callable-entry adapters",
   "type": "task",
-  "updated_at": "2026-06-12T22:20:23Z"
+  "updated_at": "2026-06-12T22:36:05Z"
 }
