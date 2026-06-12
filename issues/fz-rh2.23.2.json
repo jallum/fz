@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T16:22:40Z",
+  "description": "merge_value_types (jobs/semantic.rs) merges per-path SemanticValues into ActivationAnalysis.value_types via widen_semantic_summary_ty -\u003e refine_widen — the operator fz-rh2.21.4 removed from the return join precisely because it drops ClosureLits and merges arrows. A case whose arms yield add_a / add_b publishes the summary type (a0|a1, a2|a3) -\u003e a4|a5 with NO closure identity; materialization's record_callable_value_entries sees clause.closure=None and fatals 'opaque callable value'. The per-path walk is precise (both callees demanded, both executables exist); only the published summary is wrecked. Fix: merge by clause-preserving union (the same join_evidence reasoning as returns — verified by probe that union(fn_ref_lit(a), fn_ref_lit(b)) keeps both callable clauses); melt widen_semantic_summary_ty. refine_widen stays ONLY at the activation-input contribution sites (semantic.rs upsert paths, world.rs:497) where key-coarsening is deliberate (fz-y6w). Fixes case_joined_fn_ref_remains_callable AND compiler2_native_program_joins_callable_resume_before_materializing_closure_call (the drive test additionally asserts both targets appear in the native callable inventory).",
+  "id": "fz-rh2.23.2",
+  "labels": [],
+  "parent": "fz-rh2.23",
+  "priority": 2,
+  "status": "open",
+  "title": "semantic: value-type summaries join by union, not refine_widen",
+  "type": "bug",
+  "updated_at": "2026-06-12T16:22:40Z"
+}
