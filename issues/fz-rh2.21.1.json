@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.19.1"
+  ],
   "blocks": [
     "fz-rh2.21.2"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "fact engine: waiting extends, concluding replaces",
   "type": "task",
-  "updated_at": "2026-06-12T12:52:42Z"
+  "updated_at": "2026-06-12T12:52:43Z"
 }
