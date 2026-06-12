@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-go4.11.1"
+  ],
   "blocks": [
     "fz-go4.11.3"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Publish canonical compiler2 call-edge facts and stable synthetic labels",
   "type": "task",
-  "updated_at": "2026-06-12T23:26:45Z"
+  "updated_at": "2026-06-12T23:26:56Z"
 }

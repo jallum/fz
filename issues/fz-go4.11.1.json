@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-go4.11.2",
     "fz-go4.11.3"
   ],
   "created": "2026-06-12T23:26:33Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Define fixtures2 compiler contract model and docs",
   "type": "task",
-  "updated_at": "2026-06-12T23:26:45Z"
+  "updated_at": "2026-06-12T23:26:56Z"
 }
