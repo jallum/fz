@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.18.7.2"
+  ],
   "blocks": [],
   "created": "2026-06-12T05:16:32Z",
   "description": "Goal\nRepair value-projection fallbacks that currently produce `any` when the compiler lacks precise field/key/pinned evidence. The right answer is a source fact, obligation, explicit dynamic boundary, or diagnostic, not silent top.\n\nSignal\n- Map index, field access, required map value, dispatch map/bitstring projections, missing semantic value lookup, and pinned comparison fallbacks are either precise, explicitly dynamic, or ticketed as a blocking data-model gap.\n- Tests distinguish unknown dynamic keys from known-missing keys and from pending schema/field obligations.\n- Struct field/schema interactions are reconciled with `fz-rh2.17.5.6.8`; if that ticket blocks a cleanup here, wire the dependency instead of encoding `any` locally.\n- No backend/display/planner patch hides a poisoned projection result downstream.\n\nTactics\n- Trace `map_field_lookup(...).unwrap_or_else(any_ty)`, `value_fact(... any_ty)`, `ProjectionKind::MapValue/BitstringField =\u003e any`, and `ComparisonValue::Pinned(_) =\u003e any` to their owning facts.\n- Prefer adding or consuming precise obligations over widening values locally.\n- When the source language truly permits dynamic unknown, name that boundary and test it.\n\nOutro\nNo silent field/key/pinned fallback to `any`, no local projection shim, no dropped missing-field diagnostic, and no unresolved struct/schema issue left unticketed or unblocked.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 value flow: repair projection top fallbacks",
   "type": "task",
-  "updated_at": "2026-06-12T05:16:32Z"
+  "updated_at": "2026-06-12T05:16:33Z"
 }
