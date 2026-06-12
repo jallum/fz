@@ -37,9 +37,12 @@ boxed `Handler`), a `span_stack`, and monotonic `next_handler_id` /
 mutability, no `Send`/`Sync`. The CLI driver and each test root own their own
 bus.
 
-**`Handler` trait** (`handler.rs`) — a subscriber: `handle(&Event)`. The bus
-routes an event to a handler when `name.starts_with(handler.prefix)`; the empty
-prefix `&[]` matches everything. Concrete handlers:
+**`Handler` trait** (`handler.rs`) — a subscriber: `handle(&Event)`. Any
+closure over a borrowed event is a handler too (`impl<F: Fn(&Event)> Handler
+for F`), which is how observers project opaque payloads — downcast, render,
+compute — while the event's borrows are still alive. The bus routes an event
+to a handler when `name.starts_with(handler.prefix)`; the empty prefix `&[]`
+matches everything. Concrete handlers:
 
 - `DiagRenderer` (`diag_render.rs`) — events under `[fz, diag]` carrying a
   `Diagnostic` in their metadata; it downcasts and hands them to
@@ -140,9 +143,11 @@ stderr; the driver calls it after a run.
 **Jsonl is dependency-free and lossy on purpose.** `JsonlBackend` hand-rolls the
 JSON and stamps each line with `time_ns`, a
 monotonic offset from when the backend was constructed, so relative ordering is
-trivial to profile. It drops `Opaque` values (no stable serialization), renders
-`Bytes` as `"<N bytes>"` to keep lines ASCII, and renders non-finite floats as
-`null`. A consumer needing binary round-trips uses a different channel.
+trivial to profile. It renders `Opaque` values as
+`{"opaque_type":"...","debug":"..."}` (the `debug` field only when the emit
+site used `opaque_debug`), renders `Bytes` as `"<N bytes>"` to keep lines
+ASCII, and renders non-finite floats as `null`. A consumer needing binary
+round-trips uses a different channel.
 
 **The bus is single-threaded.** No `Send`/`Sync`; the driver and each test hold
 their own `ConfiguredTelemetry`. This is why handlers can share state through
@@ -155,19 +160,31 @@ Compiler2 uses telemetry as its only observability surface. `Compiler2::new`
 hands one caller-owned sink to `World`, and every job/event under
 `[fz, compiler2, ...]` flows through that single bus.
 
-**Emit raw compiler facts, not formatted strings.** Compiler2 emission sites
-pass existing ids in measurements and existing compiler-owned structures in
-metadata via `opaque_debug(...)`: `Job`, `JobEffects`, `AppliedStep<Job, FactKey>`,
-`FunctionRef`, `CallSiteSummary`, `SemanticClosure`, `MaterializedProgram`,
-`AbiReadyProgram`, `EmissionReadyProgram`, `BackendProgram`, `Ty`, and
-unresolved waits. If an emit site has to build a display string just for
+**Emit points are cheap: raw borrowed state only.** An emit site performs no
+formatting, no processing, no allocation, no calculation, and no cloning. It
+passes O(1) reads of existing state — ids and stored counts in measurements;
+borrowed `&str`s and `opaque`/`opaque_debug` borrows of compiler-owned
+structures in metadata (`Job`, `JobEffects`, `AppliedStep<Job, FactKey>`,
+`FunctionRef`, `CallSiteSummary`, `SemanticClosure`, the program ladder,
+`TypeDef` with the `Types` interner beside it, `Vec<ArgRepr>`, …). Handlers do
+any rendering, counting, or projection at event time. If an emit site has to
+build a display string, a `Vec<String>`, or a derived value just for
 telemetry, that is the wrong side of the boundary. Plain `opaque(...)` values
-stay type-erased; `opaque_debug(...)` carries a borrowed `Debug` formatter so
-handlers can render those raw values when they need detail. The stock JSONL
-backend now serializes opaque values as
-`{"opaque_type":"...","debug":"..."}`, which means the normal
-`--log-telemetry` path and the ignored Compiler2 dump harness both show the
-precipitating actions without adding formatter code at the emit site.
+stay type-erased; `opaque_debug(...)` additionally carries a borrowed `Debug`
+formatter so rendering handlers (the JSONL backend) can print the value —
+choose it when the debug output is useful and bounded, plain `opaque` when it
+would explode a log line (a whole `fz_ir::Module`, the `Types` interner).
+
+Two recurring patterns keep emit sites clone-free:
+
+- **Define, then re-borrow.** A `World::define_*` moves the value into its
+  store first and borrows it back through the store's getter for the event
+  (`define_module` is the exemplar). A `store.define(k, v.clone())` written so
+  telemetry can borrow the local afterward is a telemetry-induced clone — the
+  pattern this rule exists to kill.
+- **Spans borrow.** Span-start metadata and `stop_with` payloads accept
+  borrowed lifetimes; only `close_with` (drop-time emission) demands
+  `'static`. Prefer `stop_with` so names and paths ride as borrows.
 
 **Slot revisions are the stable change signal.** Compiler2 state stores and fact
 slots bump revisions only when their aggregate value changes. Handlers and
@@ -185,11 +202,13 @@ If a handler wants a rendered type, it must derive that rendering on its side.
 
 **Drive and job spans are the execution spine.** `World::drive()` opens one
 `[fz, compiler2, drive]` span. Each popped job opens one
-`[fz, compiler2, job]` span. Successful job spans close with raw `effects` and
-the applied `work_graph` step in metadata; unresolved drives close with the raw
-wait frontier; fatal drives close with the fatal job. Because the JSONL handler
-renders opaque metadata now, the emitted log shows the actual precipitating
-`Job`, `JobEffects`, `AppliedStep`, and unresolved waits instead of hiding them
+`[fz, compiler2, job]` span. Successful job spans close with the raw `effects`
+borrowed in place; the applied graph step rides the separate
+`[fz, compiler2, work_graph, applied]` event that `complete_job` emits with
+the job and `AppliedStep`. Unresolved drives close with the raw wait frontier;
+fatal drives close with the fatal job. Because the JSONL handler renders
+opaque metadata, the emitted log shows the actual precipitating `Job`,
+`JobEffects`, `AppliedStep`, and unresolved waits instead of hiding them
 behind the final outcome. There is no extra "job_fatal" event and no redundant
 "fact_published" stream.
 
@@ -312,24 +331,34 @@ unattributed gap.
 Three codegen events carry stable enough fields to assert on in tests, proving
 codegen consumed the published ABI and callable-entry facts handed to it. They
 are emitted for reachable specs / lowered sites and pair with CLIF or runtime
-checks when the generated shape matters.
+checks when the generated shape matters. Both backends emit them; the
+compiler2 copy (`compiler2/native_codegen/`) follows the cheap-emit
+discipline, while the old-pipeline twin (`ir_codegen/`) still preformats some
+fields and dies with that pipeline.
 
-- `fz.codegen.abi_contract` (`ir_codegen/driver.rs`) — one per reachable lowered
-  spec. Measurements: `spec_id`, `fn_id`, `param_count`, `capture_count`.
-  Metadata: `module_path`, `fn_name`, `spec_key`, `param_reprs`, `return_repr`,
-  and the `is_native` / `is_cont_fn` / `is_closure_target` flags.
-- `fz.codegen.callable_entry_selected` (`ir_codegen/prim.rs`) — the site-specific
-  callable entry chosen while lowering `MakeFnRef` / `MakeClosure`. Measurements
-  include the active `spec_id`/`fn_id`, `closure_fn_id`, `capture_count`,
-  `callable_entry_spec_id`, `block_id`, `stmt_idx`, source `span_start`/
-  `span_end`, and `candidate_count`. Metadata includes `body_name`,
-  `closure_fn_name`, `selection_kind`, and the planned vs selected spec keys.
-- `fz.codegen.closure_call_lowered` (`ir_codegen/terminator.rs`) — one per
-  `CallClosure` lowering. Measurements: active `spec_id`, `closure_var`,
-  `continuation_spec_id`. Metadata: `body_name`, `call_kind`,
-  `closure_binding_repr`, `dispatch_kind` (`direct` when the body literal
-  resolves, else `indirect`), and `continuation_storage` (`lazy_descriptor` or
-  `heap_closure`).
+- `fz.codegen.abi_contract` (`compiler2/native_codegen/driver.rs`) — one per
+  lowered body slot. Measurements: `spec_id`, `fn_id`, `param_count`,
+  `capture_count`. Metadata: borrowed `module_path`/`fn_name`, `body_origin`
+  and `entry_abi` as `opaque_debug` enum borrows, `param_reprs` as an
+  `opaque_debug` `Vec<ArgRepr>` borrow, `return_repr` (`ArgRepr::as_str`,
+  `&'static str`), and the `is_native` / `is_cont_fn` / `is_closure_target`
+  flags. (The ir_codegen twin additionally carries `spec_key` and renders
+  `param_reprs` as strings.)
+- `fz.codegen.callable_entry_selected` (`compiler2/native_codegen/prim.rs`) —
+  the site-specific callable entry chosen while lowering `MakeFnRef` /
+  `MakeClosure`. Measurements include the active `spec_id`/`fn_id`,
+  `closure_fn_id`, `capture_count`, `callable_entry_spec_id`, `block_id`,
+  `stmt_idx`, source `span_start`/`span_end`, and `candidate_count`. Metadata:
+  borrowed `module_path`/`body_name`, `selection_kind`,
+  `callable_entry_body_fn_id`, and the `fz_ir::Module` as a plain `opaque`
+  borrow — a handler wanting the closure's name resolves `closure_fn_id`
+  against it at event time.
+- `fz.codegen.closure_call_lowered` (`compiler2/native_codegen/terminator.rs`)
+  — one per `CallClosure` lowering. Measurements: active `spec_id`,
+  `closure_var`, `continuation_spec_id`. Metadata: `body_name`, `call_kind`,
+  `closure_binding_repr` (`ArgRepr::as_str`), `dispatch_kind` (`direct` when
+  the body literal resolves, else `indirect`), and `continuation_storage`
+  (`lazy_descriptor` or `heap_closure`).
 
 ## Telemetry In Tests
 
@@ -349,7 +378,13 @@ cap.count(&["fz", "ir", "dce", "block_pruned"])   // assert the pass fired
 `Capture` offers `count`, `find` (prefix), `last`, `contains`, and
 `count_by_kind`; events come back as `OwnedEvent` with their measurements and
 metadata cloned into `'static` form (`durable_owned`, which drops `Opaque`
-values it cannot own).
+values it cannot own). That drop is by design: a test that needs an opaque
+payload attaches an event-time closure handler that downcasts and projects
+while the borrows are alive — `rendered_type_defs` in
+`src/compiler2/drive_test.rs` is the exemplar (it downcasts the `TypeDef` and
+`Types` interner off `[fz, compiler2, type, defined]` and renders the type in
+the handler). Borrowed `Str` values survive durable capture (the handler
+clones them at event time), so emit sites lending `&str`s cost tests nothing.
 
 The ownership rule is strict: only the true root of a run creates the
 `ConfiguredTelemetry`. Shared helpers take caller-owned `&dyn Telemetry`; they
