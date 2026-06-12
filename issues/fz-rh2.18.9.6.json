@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T02:13:39Z",
+  "description": "Goal: make the new partition-key model documented, observable, and mechanically protected from old-world regressions. Signal: .agent docs and relevant guides describe ActivationKey as identity partition, ActivationInputs as evidence, Return/Call facts as evidence movement, and partition policy as the source of finite semantic frontiers; grep-level checks prove discarded concepts are gone. Strategy: update semantic-fixpoint, type-specialization, fact-engine, telemetry, and northstar-facing docs only after code/tests prove the model; add deletion checks for convergence_class, recursive-only key widening, ActivationKey-as-body-input wording, raw closure-capture key defaults, missing-return-as-none, unresolved-as-any, and full telemetry payload budget leaks. Outro: no stale docs that describe the pre-partition model, no scaffolding or temporary fixtures from construction, and no hidden compatibility shim preserving old key semantics.",
+  "id": "fz-rh2.18.9.6",
+  "labels": [],
+  "parent": "fz-rh2.18.9",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 activation partitioning closeout: docs and deletion contract",
+  "type": "task",
+  "updated_at": "2026-06-12T02:13:39Z"
+}
