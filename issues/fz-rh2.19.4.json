@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.19.3"
+  ],
   "blocks": [],
   "created": "2026-06-12T09:37:35Z",
   "description": "Document the emit-point contract in the telemetry agent docs / guides: emit sites pass raw internal state (numerics, borrowed \u0026str, opaque/opaque_debug borrows); no formatting, processing, allocation, calculation, or cloning at emit; handlers project at event time; durable Capture drops opaque values by design, so tests needing opaque payloads attach event-time handlers. Record the define-then-re-borrow pattern (define_module is the exemplar).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "telemetry docs: emit-point discipline",
   "type": "task",
-  "updated_at": "2026-06-12T09:37:35Z"
+  "updated_at": "2026-06-12T09:37:36Z"
 }
