@@ -12,11 +12,15 @@
     {
       "text": "Current fz-rh2.18.9.5 dirty worktree includes a candidate fix: native back-edge annotation now treats CPS continuation edges as control-flow edges before JIT codegen. Before landing, either split that native change into fz-hn8's own ticket commit, or explicitly close fz-hn8 as fixed by the fz-rh2.18.9.5 commit if the batch intentionally retains it. Do not leave this bug as an unrelated ready item after the fix is verified.",
       "timestamp": "2026-06-12T03:54:16Z"
+    },
+    {
+      "text": "Now blocks fz-rh2.18.9.5 because the dirty worktree currently contains the candidate native back-edge fix. To keep one ticket == one commit, close fz-hn8 with that split fix first, or remove the native edit from the .9.5 foundation batch and then remove this dependency.",
+      "timestamp": "2026-06-12T04:46:05Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Compiler2 native JIT tail recursion overflows stack",
   "type": "bug",
-  "updated_at": "2026-06-12T04:45:56Z"
+  "updated_at": "2026-06-12T04:46:05Z"
 }
