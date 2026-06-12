@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.17.5.6"
+  ],
   "created": "2026-06-12T17:00:30Z",
   "description": "ProtocolImpl/ProtocolDispatchArm (compiler2/protocol.rs) key callbacks as HashMap\u003c(String, usize), ProtocolCallbackImpl\u003e — the last name-shaped callable keying in compiler2. resolve_protocol_call (jobs/semantic.rs) already holds the callback's FunctionId at the callsite and does function_ref.name.clone() per arm per resolution just to perform the lookup. Impl registration knows which protocol callback each impl function implements, so the maps can key by the callback FunctionId directly: HashMap\u003cFunctionId, ProtocolCallbackImpl\u003e. Deletes the parallel name surface (the per-protocol callback interface is then represented once, by the protocol module's interface) and the per-arm String clones. This is the 'protocol-specific name specialness that exists only because callables were not first-class' named by epic fz-rh2.17 — remove, don't paper over. Verify: protocol drive tests (00272/00006 fixtures et al), compiler2:: green, full-suite delta empty.",
   "id": "fz-rh2.17.5.8",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 protocols: key impl callbacks by callback FunctionId, not (name, arity)",
   "type": "task",
-  "updated_at": "2026-06-12T17:00:30Z"
+  "updated_at": "2026-06-12T17:00:36Z"
 }
