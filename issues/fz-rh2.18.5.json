@@ -16,11 +16,15 @@
     {
       "text": "WIP checkpoint: activation-input evidence is split from activation key identity; focused fact/world/contract/type/drive tests pass. This dirty arc also contains the operator-wrapper cleanup that routes +/comparison syntax through Kernel functions and typed extern intrinsics. Quicksort-wide convergence remains open; do not close this ticket from the checkpoint commit.",
       "timestamp": "2026-06-12T02:09:23Z"
+    },
+    {
+      "text": "Boundary clarification: this ticket should finish the key/evidence split and publisher-owned ActivationInputs. It should not attempt to solve quicksort overspecialization with another local convergence rule; the partition-key model is now fz-rh2.18.9 and depends on this split.",
+      "timestamp": "2026-06-12T02:14:52Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Compiler2 semantics: split activation demand from activation input evidence",
   "type": "task",
-  "updated_at": "2026-06-12T02:14:00Z"
+  "updated_at": "2026-06-12T02:14:52Z"
 }
