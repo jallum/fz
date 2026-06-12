@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-go4.11.1"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-go4.11",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Publish canonical compiler2 call-edge facts and stable synthetic labels",
   "type": "task",
-  "updated_at": "2026-06-12T23:26:56Z"
+  "updated_at": "2026-06-12T23:34:55Z"
 }
