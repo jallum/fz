@@ -3,9 +3,7 @@
   "blocked_by": [
     "fz-rh2.18.9.1"
   ],
-  "blocks": [
-    "fz-rh2.18.9.3"
-  ],
+  "blocks": [],
   "closed_at": "2026-06-12T02:32:39Z",
   "created": "2026-06-12T02:13:08Z",
   "description": "Goal: make type projection for activation identity a real structural operation instead of recursive-only list widening. Signal: type tests prove literals widen to their declared domains, list/tuple/resource/map shapes project predictably, closure/callable values project to callable surface/target classes when exact instance identity is unnecessary, and observed evidence remains available outside the key projection. Strategy: build the operation in Types using the existing interned/set-theoretic machinery and recursive mappers; reuse existing closure identity erasure and callable-clause representation where they are the right abstraction; make the partition operation total, deterministic, and small. Outro: the old list-only convergence_class behavior is deleted, not renamed; no quicksort, Enum, reduce, or operator-specific branches exist in the type projector.",
