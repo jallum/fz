@@ -2,8 +2,7 @@
   "assignee": "",
   "blocked_by": [
     "fz-rh2.18.9.16",
-    "fz-rh2.18.9.18",
-    "fz-rh2.18.9.9"
+    "fz-rh2.18.9.18"
   ],
   "blocks": [
     "fz-rh2.18.6.1"

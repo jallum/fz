@@ -3,9 +3,7 @@
   "blocked_by": [
     "fz-rh2.18.9.12"
   ],
-  "blocks": [
-    "fz-rh2.18.9.9"
-  ],
+  "blocks": [],
   "created": "2026-06-12T07:42:18Z",
   "description": "Goal\nMake the selective-receive fixture stop timing out in compiler2 semantic drive after a clean rebuild, and then either run correctly or fail with a precise semantic/runtime blocker. The current fresh-build failure is no longer just an opaque \u003e120s test hang: the backend-artifact interp test still fails to terminate, and the fresh `fz2 run` path now proves the compiler drive itself can burn its full 5s budget on this fixture.\n\nSignal\n- `/opt/homebrew/bin/timeout 30s target/debug/deps/fz-01415279b97da685 --exact compiler2::drive_test::compiler2_interp_runs_selective_receive_with_make_ref_from_backend_artifacts --nocapture` exits before timeout.\n- `/opt/homebrew/bin/timeout 10s target/debug/fz2 --log-telemetry \u003clog\u003e run fixtures/receive_selective_refs/input.fz` exits before the compiler2 5s drive limit.\n- Telemetry identifies and then eliminates the repeated activation/fact edge currently driving `20600` jobs with `1` pending at timeout.\n- The fix does not reintroduce missing-return-as-none/any, retained-output shims, longer timeouts, or receive-specific semantic shortcuts.\n\nStrategy\nStart from the fresh `fz2 run` telemetry, which now shows a single-pending-job convergence failure instead of a purely runtime mystery. Identify the repeating activation/return-readiness frontier for the selective-receive fixture, repair the producer boundary, and then re-check whether any residual runtime receive bug remains once semantic convergence is honest.\n\nOutro\nNo unbounded selective-receive drive, no hidden timeout dependency, no special receive wait shim, no broad any/none sentinel standing in for missing receive evidence, and no ticket text that pretends this is only a native/runtime bug.",
   "id": "fz-rh2.18.9.14",
