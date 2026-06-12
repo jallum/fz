@@ -9868,3 +9868,41 @@ fn compiler2_numeric_literal_in_type_position_widens_with_a_warning() {
         .expect("digit resolves");
     assert_eq!(digit, "int", "the literal type means its kind");
 }
+#[test]
+fn compiler2_native_program_jit_adapts_callable_raw_returns_back_to_value_refs() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/repr_seam_closure_predicate/input.fz".to_string()),
+        text: include_str!("../../fixtures/repr_seam_closure_predicate/input.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "native lowering should preserve callable return seams for closure predicates and reducers",
+    );
+
+    let program = native.last(root_id).program;
+    let compiled = jit_compile_native_program(&mut compiler, &program);
+    assert_eq!(
+        compiled.run(&tel, program.entry),
+        2,
+        "the fixture should still return the final count after native callable-entry adaptation",
+    );
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["false", "false", "true", ":no", "2", "2", "2"],
+        "callable-entry adapters should box raw predicate/reducer returns back onto the ValueRef callable seam",
+    );
+}

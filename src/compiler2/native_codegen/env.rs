@@ -1,5 +1,6 @@
 //! CodegenEnv (immutable per-module ctx) and CodegenCache (per-fn caches).
 
+use super::driver::BoundaryReturnAdapters;
 use super::*;
 use crate::compiler2::NativeBody;
 use crate::fz_ir::{BlockId, ExternId, FnId, Module, Var};
@@ -20,6 +21,7 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) active_body_name: &'a str,
     pub(super) fn_ids: &'a HashMap<u32, FuncId>,
     pub(super) callable_entry_fn_ids: &'a HashMap<u32, FuncId>,
+    pub(super) boundary_return_adapters: &'a BoundaryReturnAdapters,
     pub(super) mid_flight_cont_tail_fn_ids: &'a HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
     pub(super) tuple_schema_ids: &'a HashMap<usize, u32>,
     pub(super) named_schema_ids: &'a HashMap<String, u32>,

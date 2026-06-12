@@ -201,6 +201,41 @@ fn plan_closure_shaped_continuation(payload: ContinuationPayload, use_lazy: bool
     }
 }
 
+fn native_call_result_value<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    result: ir::Value,
+    repr: ArgRepr,
+) -> CodegenValue {
+    match repr {
+        ArgRepr::RawF64 => CodegenValue::RawF64(body.b.ins().bitcast(types::F64, MemFlags::new(), result)),
+        _ => CodegenValue::from_abi_value(result, repr),
+    }
+}
+
+fn build_boundary_return_adapter_cont<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    env: &CodegenEnv<'_>,
+    outer_cont: ir::Value,
+    source: ArgRepr,
+    dest: ArgRepr,
+) -> ir::Value {
+    let adapter_id = env.boundary_return_adapters.id_for(source, dest).unwrap_or_else(|| {
+        panic!(
+            "missing boundary return adapter for {} -> {}",
+            source.as_str(),
+            dest.as_str()
+        )
+    });
+    let adapter_addr = fn_addr(body.jmod, adapter_id, body.b);
+    let adapter_schema = body.b.ins().iconst(types::I32, 0);
+    let captured_count = body.b.ins().iconst(types::I32, 1);
+    let halt_kind = body.b.ins().iconst(types::I32, 0);
+    let adapter_cont = body.alloc_closure(adapter_schema, captured_count, halt_kind, adapter_addr);
+    let outer_cont = body.materialize_cont(outer_cont);
+    body.store_closure_capture_ref_word(adapter_cont, 0, outer_cont);
+    adapter_cont
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, '_, M>,
@@ -745,6 +780,7 @@ fn emit_tail_call_term<M: cranelift_module::Module>(
                 var_env,
                 is_native,
                 is_cont_fn,
+                this_spec_id,
                 frame_ptr,
                 host_ctx,
                 cont_param,
@@ -773,6 +809,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     var_env: &HashMap<u32, CodegenValue>,
     is_native: bool,
     is_cont_fn: bool,
+    this_spec_id: u32,
     frame_ptr: Option<ir::Value>,
     host_ctx: Option<ir::Value>,
     cont_param: Option<ir::Value>,
@@ -788,6 +825,14 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     let callee_param_reprs = &param_reprs[callee_sid as usize];
     let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
     let callee_fref = body.jmod.declare_func_in_func(callee_fid, body.b.func);
+    let callee_ret_repr = NativeDemandAbi::new(env.body_native(callee_sid))
+        .returned_delivers_value_lane(env.cont_fns.contains(&callee_fn_id))
+        .then_some(env.return_reprs[callee_sid as usize])
+        .expect("native tail callee must deliver one value lane");
+    let caller_ret_repr = NativeDemandAbi::new(env.body_native(this_spec_id))
+        .returned_delivers_value_lane(is_cont_fn)
+        .then_some(env.return_reprs[this_spec_id as usize])
+        .expect("native tail caller must deliver one value lane");
     let mut native_args = Vec::with_capacity(callee_param_reprs.iter().map(ArgRepr::abi_arity).sum());
     let mut mid_flight_arg_shapes: Vec<MidFlightArgShape> = Vec::with_capacity(callee_param_reprs.len() + 2);
     for (i, av) in args.iter().enumerate() {
@@ -819,7 +864,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     // forward outer_cont from their closure env; cont_param
     // for cont fns is self.
     let mut synth_halt_cont = false;
-    let tail_cont_arg = if is_cont_fn {
+    let caller_outer_cont = if is_cont_fn {
         let self_val = cont_param.expect("cont fn binds self via cont_param");
         body.outer_cont_ref(self_val)
     } else {
@@ -827,13 +872,14 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
             Some(c) => c,
             None => {
                 synth_halt_cont = true;
-                let callee_ret_repr = NativeDemandAbi::new(env.body_native(callee_sid))
-                    .returned_delivers_value_lane(env.cont_fns.contains(&callee_fn_id))
-                    .then_some(env.return_reprs[callee_sid as usize])
-                    .expect("synthesized halt continuation requires one delivered value lane");
-                synthesize_halt_cont(body, runtime, callee_ret_repr)
+                synthesize_halt_cont(body, runtime, caller_ret_repr)
             }
         }
+    };
+    let tail_cont_arg = if callee_ret_repr == caller_ret_repr {
+        caller_outer_cont
+    } else {
+        build_boundary_return_adapter_cont(body, env, caller_outer_cont, callee_ret_repr, caller_ret_repr)
     };
     native_args.push(tail_cont_arg);
     mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
@@ -866,11 +912,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         // into MY cont according to the continuation schema.
         let call_inst = body.b.ins().call(callee_fref, &native_args);
         let result = body.b.inst_results(call_inst)[0];
-        let callee_ret_repr = NativeDemandAbi::new(env.body_native(callee_sid))
-            .returned_delivers_value_lane(env.cont_fns.contains(&callee_fn_id))
-            .then_some(env.return_reprs[callee_sid as usize])
-            .expect("uniform native tail call requires one delivered value lane");
-        let result_value = CodegenValue::from_abi_value(result, callee_ret_repr);
+        let result_value = native_call_result_value(body, result, callee_ret_repr);
         let my_cont = body.b.ins().load(
             types::I64,
             MemFlags::trusted(),

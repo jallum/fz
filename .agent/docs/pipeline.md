@@ -347,6 +347,12 @@ authority for compiler2-native codegen after `NativeProgram(root)`. If the
 compiler2 backend still reads them, that is backend debt to remove, not part of
 the published handoff.
 
+The same rule applies to native return delivery. `NativeBody.return_abi` is the
+published result contract for a native body; codegen may derive boundary
+adapters from that authority when a producer and consumer disagree on the lane
+shape, but it must not rediscover or improvise the contract at individual
+tailcall or callable-entry sites.
+
 The same two-layer split now applies on both sides of the migration seam:
 legacy lowering may still project legacy `Ty` handles into
 `RuntimeTypePredicate` for cached receive dispatch while that world exists, but

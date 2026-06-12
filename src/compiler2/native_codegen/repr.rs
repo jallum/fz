@@ -18,7 +18,7 @@ use cranelift_frontend::FunctionBuilder;
 /// else `ValueRef`.
 /// `build_fn_signature` picks the AbiParam type from the repr; `compile_fn`
 /// populates `raw_*_vars` to match; call sites coerce at the seam.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum ArgRepr {
     ValueRef,
     RawInt,
