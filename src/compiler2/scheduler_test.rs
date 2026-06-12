@@ -1,8 +1,16 @@
 use std::collections::HashSet;
 
 use super::{Agenda, AppliedStep, DependencyIndex, FactUse, Scheduler};
+use crate::compiler2::facts::ClaimShape;
 
 type TestScheduler = Scheduler<u32, &'static str>;
+
+// Test claim-shape convention: keys starting with "cum" are cumulative.
+impl ClaimShape for &'static str {
+    fn is_cumulative(&self) -> bool {
+        self.starts_with("cum")
+    }
+}
 
 fn current(fact: &'static str) -> FactUse<&'static str> {
     FactUse::current(fact)
@@ -598,4 +606,328 @@ fn compiler2_scheduler_waiting_completion_publishes_alongside_the_wait() {
         !scheduler.facts().is_settled(&"root"),
         "claims published by a blocked job stay unsettled until it concludes",
     );
+}
+
+// Claim-shape conventions for these tests: keys starting with "cum" are
+// cumulative (monotone join content), everything else is replacing.
+
+#[test]
+fn compiler2_scheduler_replacing_change_rebases_readers_without_retracting() {
+    let mut scheduler = TestScheduler::new();
+    let writer = 1_u32;
+    let reader = 2_u32;
+
+    complete(
+        &mut scheduler,
+        reader,
+        HashSet::from([current("def")]),
+        HashSet::new(),
+        vec!["claim"],
+        vec!["claim"],
+        Vec::new(),
+    );
+    // First appearance is an ascent: news, not a shift.
+    let step = complete(
+        &mut scheduler,
+        writer,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["def"],
+        vec!["def"],
+        Vec::new(),
+    );
+    assert!(step.enqueued.contains(&reader));
+    assert!(
+        !scheduler.rebased(&reader),
+        "first appearance of a fact wakes readers without rebasing them",
+    );
+    let _ = scheduler.pop();
+
+    // A content change to a replacing fact is a ground shift.
+    let step = complete(
+        &mut scheduler,
+        writer,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["def"],
+        vec!["def"],
+        Vec::new(),
+    );
+    assert!(step.enqueued.contains(&reader));
+    assert!(
+        scheduler.rebased(&reader),
+        "a replacing fact's content change rebases its readers",
+    );
+    assert_eq!(
+        scheduler.facts().revision(&"claim"),
+        Some(1),
+        "a ground shift leaves the reader's claims standing",
+    );
+    assert!(
+        !scheduler.facts().is_settled(&"claim"),
+        "a shifted reader's claims are unsettled until it re-concludes",
+    );
+}
+
+#[test]
+fn compiler2_scheduler_cumulative_ascent_wakes_without_rebasing() {
+    let mut scheduler = TestScheduler::new();
+    let writer = 1_u32;
+    let reader = 2_u32;
+
+    complete(
+        &mut scheduler,
+        reader,
+        HashSet::from([current("cum_ret")]),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    complete(
+        &mut scheduler,
+        writer,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["cum_ret"],
+        vec!["cum_ret"],
+        Vec::new(),
+    );
+    let _ = scheduler.pop();
+    let step = complete(
+        &mut scheduler,
+        writer,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["cum_ret"],
+        vec!["cum_ret"],
+        Vec::new(),
+    );
+    assert!(step.enqueued.contains(&reader));
+    assert!(
+        !scheduler.rebased(&reader),
+        "growth of a cumulative fact is an ascent: readers re-run and join, no rebase",
+    );
+}
+
+#[test]
+fn compiler2_scheduler_retraction_always_shifts() {
+    let mut scheduler = TestScheduler::new();
+    let writer = 1_u32;
+    let reader = 2_u32;
+
+    complete(
+        &mut scheduler,
+        reader,
+        HashSet::from([current("cum_ret")]),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    complete(
+        &mut scheduler,
+        writer,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["cum_ret"],
+        vec!["cum_ret"],
+        Vec::new(),
+    );
+    let _ = scheduler.pop();
+    // The writer concludes without the fact: retraction, even of a cumulative
+    // claim, is never an ascent.
+    let step = complete(
+        &mut scheduler,
+        writer,
+        HashSet::new(),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    assert!(step.enqueued.contains(&reader));
+    assert!(scheduler.rebased(&reader), "retraction is a ground shift");
+}
+
+#[test]
+fn compiler2_scheduler_rebased_conclusion_propagates_changes_as_shifts() {
+    let mut scheduler = TestScheduler::new();
+    let upstream = 1_u32;
+    let middle = 2_u32;
+    let downstream = 3_u32;
+
+    // downstream reads middle's cumulative fact; middle reads upstream's def.
+    complete(
+        &mut scheduler,
+        downstream,
+        HashSet::from([current("cum_mid")]),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    complete(
+        &mut scheduler,
+        middle,
+        HashSet::from([current("def")]),
+        HashSet::new(),
+        vec!["cum_mid"],
+        vec!["cum_mid"],
+        Vec::new(),
+    );
+    complete(
+        &mut scheduler,
+        upstream,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["def"],
+        vec!["def"],
+        Vec::new(),
+    );
+    while scheduler.pop().is_some() {}
+    // Shift middle via a def content change.
+    complete(
+        &mut scheduler,
+        upstream,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["def"],
+        vec!["def"],
+        Vec::new(),
+    );
+    assert!(scheduler.rebased(&middle));
+
+    // A rebased conclusion's changes propagate as shifts even on a
+    // cumulative fact — this is the lazy transitivity of narrowing.
+    let step = complete(
+        &mut scheduler,
+        middle,
+        HashSet::from([current("def")]),
+        HashSet::new(),
+        vec!["cum_mid"],
+        vec!["cum_mid"],
+        Vec::new(),
+    );
+    assert!(step.enqueued.contains(&downstream));
+    assert!(
+        scheduler.rebased(&downstream),
+        "a rebased publisher's content changes shift its readers in turn",
+    );
+    assert!(!scheduler.rebased(&middle), "concluding clears the publisher's rebase",);
+}
+
+#[test]
+fn compiler2_scheduler_rebased_equal_conclusion_stops_the_cone() {
+    let mut scheduler = TestScheduler::new();
+    let upstream = 1_u32;
+    let middle = 2_u32;
+    let downstream = 3_u32;
+
+    complete(
+        &mut scheduler,
+        downstream,
+        HashSet::from([current("cum_mid")]),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    complete(
+        &mut scheduler,
+        middle,
+        HashSet::from([current("def")]),
+        HashSet::new(),
+        vec!["cum_mid"],
+        vec!["cum_mid"],
+        Vec::new(),
+    );
+    complete(
+        &mut scheduler,
+        upstream,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["def"],
+        vec!["def"],
+        Vec::new(),
+    );
+    while scheduler.pop().is_some() {}
+    complete(
+        &mut scheduler,
+        upstream,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["def"],
+        vec!["def"],
+        Vec::new(),
+    );
+    assert!(scheduler.rebased(&middle));
+
+    // The rebased job re-derives the same content (changed empty): the cone
+    // stops here — downstream is woken by nothing and keeps its standing.
+    let step = complete(
+        &mut scheduler,
+        middle,
+        HashSet::from([current("def")]),
+        HashSet::new(),
+        vec!["cum_mid"],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert!(
+        !step.enqueued.contains(&downstream),
+        "equal recomputation propagates nothing",
+    );
+    assert!(!scheduler.rebased(&downstream));
+    assert!(!scheduler.rebased(&middle), "concluding clears rebase");
+}
+
+#[test]
+fn compiler2_scheduler_waiting_keeps_rebase_pending() {
+    let mut scheduler = TestScheduler::new();
+    let writer = 1_u32;
+    let reader = 2_u32;
+
+    complete(
+        &mut scheduler,
+        reader,
+        HashSet::from([current("def")]),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    complete(
+        &mut scheduler,
+        writer,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["def"],
+        vec!["def"],
+        Vec::new(),
+    );
+    let _ = scheduler.pop();
+    complete(
+        &mut scheduler,
+        writer,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["def"],
+        vec!["def"],
+        Vec::new(),
+    );
+    assert!(scheduler.rebased(&reader));
+
+    // A blocked re-run does not discharge the rebase: the job has not yet
+    // re-derived its claims from the shifted ground.
+    complete(
+        &mut scheduler,
+        reader,
+        HashSet::new(),
+        HashSet::from([current("gate")]),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    assert!(scheduler.rebased(&reader), "waiting keeps rebase pending");
 }

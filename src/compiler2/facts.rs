@@ -7,6 +7,15 @@ pub enum FactReadiness {
     Settled,
 }
 
+/// The content algebra of a fact key. A **cumulative** fact's content is a
+/// monotone join maintained by its store — between ground shifts it only
+/// grows, so a content change is an ascent. A **replacing** fact's content
+/// overwrites, so any content change can invalidate what readers derived
+/// from it. This declares how content composes; it orders nothing.
+pub trait ClaimShape {
+    fn is_cumulative(&self) -> bool;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FactUse<F> {
     Current(F),

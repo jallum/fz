@@ -288,12 +288,15 @@ impl<'a> World<'a> {
         let waits: HashSet<_> = effects.waits.into_iter().collect();
         // Waiting completions extend: a blocked job's prior contributions
         // stand untouched (the scheduler likewise keeps its claims standing).
-        // Only a wait-free conclusion replaces the contribution set.
+        // A wait-free conclusion replaces the contribution key set; entry
+        // values join unless the publisher's ground shifted (rebase), which
+        // is the only path by which contributed inputs may narrow.
+        let rebased = self.work_graph.rebased(&job);
         let ActivationInputReplace {
             output_keys: activation_input_outputs,
             changed_keys: activation_input_changed,
         } = if waits.is_empty() {
-            self.replace_activation_input_contributions(&job, effects.activation_input_contributions)
+            self.conclude_activation_input_contributions(&job, effects.activation_input_contributions, rebased)
         } else {
             self.extend_activation_input_contributions(&job, effects.activation_input_contributions)
         };
@@ -436,13 +439,15 @@ impl<'a> World<'a> {
         changed
     }
 
-    fn replace_activation_input_contributions(
+    fn conclude_activation_input_contributions(
         &mut self,
         job: &Job,
         contributions: Vec<(ActivationKey, Vec<Ty>)>,
+        rebased: bool,
     ) -> ActivationInputReplace {
         let next = self.normalize_contributions(contributions);
-        self.activation_inputs.replace(&mut self.types, job.clone(), next)
+        self.activation_inputs
+            .conclude(&mut self.types, job.clone(), next, rebased)
     }
 
     fn extend_activation_input_contributions(

@@ -146,11 +146,17 @@ where
         self.slots.get(key).map(|slot| slot.joined.as_slice())
     }
 
-    pub fn replace(
+    /// The concluding-completion arm: the publisher's contribution key set is
+    /// replaced (dropping a key withdraws demand — final, and the only path
+    /// by which a sole-publisher activation retracts), while entry values
+    /// JOIN with the publisher's prior entry unless its ground shifted
+    /// (`rebased`) — the only path by which contributed inputs may narrow.
+    pub fn conclude(
         &mut self,
         types: &mut Types,
         publisher: P,
         next: HashMap<ActivationKey, Vec<Ty>>,
+        rebased: bool,
     ) -> ActivationInputReplace {
         let next_output_keys = next.keys().cloned().collect::<HashSet<_>>();
         let previous_output_keys = if next_output_keys.is_empty() {
@@ -173,7 +179,7 @@ where
 
             match next.get(&key) {
                 Some(inputs) => {
-                    slot.contributors.insert(publisher.clone(), inputs.clone());
+                    upsert_contribution(types, &mut slot, &publisher, inputs.clone(), !rebased);
                 }
                 None => {
                     slot.contributors.remove(&publisher);
@@ -198,9 +204,9 @@ where
         }
     }
 
-    /// The waiting-completion arm of contribution publication: listed keys
-    /// gain (or widen) this publisher's entry, unlisted keys it previously
-    /// contributed stand untouched. A blocked publisher recants nothing.
+    /// The waiting-completion arm: listed keys gain (or widen) this
+    /// publisher's entry, unlisted keys it previously contributed stand
+    /// untouched. A blocked publisher recants nothing.
     pub fn extend(
         &mut self,
         types: &mut Types,
@@ -221,26 +227,7 @@ where
             let mut slot = self.slots.remove(&key).unwrap_or_else(ActivationInputSlot::new);
             let old_joined = (!slot.contributors.is_empty()).then(|| slot.joined.clone());
 
-            match slot.contributors.entry(publisher.clone()) {
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(inputs);
-                }
-                std::collections::hash_map::Entry::Occupied(mut entry) => {
-                    let current = entry.get_mut();
-                    assert_eq!(
-                        current.len(),
-                        inputs.len(),
-                        "one activation input fact cannot receive differing arities from one publisher",
-                    );
-                    for (current_input, next_input) in current.iter_mut().zip(inputs) {
-                        *current_input = if *current_input == next_input {
-                            *current_input
-                        } else {
-                            types.refine_widen(current_input, &next_input)
-                        };
-                    }
-                }
-            }
+            upsert_contribution(types, &mut slot, &publisher, inputs, true);
 
             let joined = join_activation_inputs(types, slot.contributors.values());
             if old_joined.as_ref() != Some(&joined) {
@@ -331,6 +318,42 @@ impl<P> ActivationInputSlot<P> {
         Self {
             contributors: HashMap::new(),
             joined: Vec::new(),
+        }
+    }
+}
+
+/// Install one publisher's contribution into a slot. `join` widens slot-wise
+/// with the publisher's prior entry (the within-epoch ascent); without it the
+/// entry replaces (the rebase path).
+fn upsert_contribution<P: Clone + Eq + Hash>(
+    types: &mut Types,
+    slot: &mut ActivationInputSlot<P>,
+    publisher: &P,
+    inputs: Vec<Ty>,
+    join: bool,
+) {
+    match slot.contributors.entry(publisher.clone()) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(inputs);
+        }
+        std::collections::hash_map::Entry::Occupied(mut entry) => {
+            if !join {
+                entry.insert(inputs);
+                return;
+            }
+            let current = entry.get_mut();
+            assert_eq!(
+                current.len(),
+                inputs.len(),
+                "one activation input fact cannot receive differing arities from one publisher",
+            );
+            for (current_input, next_input) in current.iter_mut().zip(inputs) {
+                *current_input = if *current_input == next_input {
+                    *current_input
+                } else {
+                    types.refine_widen(current_input, &next_input)
+                };
+            }
         }
     }
 }

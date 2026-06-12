@@ -10,7 +10,7 @@ use crate::telemetry::{TelemetryExt, opaque_debug};
 use crate::{measurements, metadata};
 
 use super::code::CodeId;
-use super::facts::FactUse;
+use super::facts::{ClaimShape, FactUse};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId, TypeName};
 use super::scheduler::{DriveOutcome, Scheduler};
 use super::semantic::CallSiteKey;
@@ -74,6 +74,16 @@ pub enum FactKey {
     EmissionReadyProgram(RootId),
     BackendProgram(RootId),
     NativeProgram(RootId),
+}
+
+impl ClaimShape for FactKey {
+    /// The two fixpoint-evidence facts whose stores maintain a monotone join:
+    /// an activation's return ascends by union (`ActivationMap::define_return`)
+    /// and its body-input evidence ascends by the cross-publisher widen
+    /// (`ActivationInputMap`). Every other fact's content overwrites.
+    fn is_cumulative(&self) -> bool {
+        matches!(self, FactKey::ReturnType(_) | FactKey::ActivationInputs(_))
+    }
 }
 
 pub type WorkGraph = Scheduler<Job, FactKey>;

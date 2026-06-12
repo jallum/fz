@@ -4,7 +4,7 @@ use std::hash::Hash;
 
 use super::agenda::Agenda;
 use super::deps::{DependencyIndex, UnresolvedWait};
-use super::facts::{FactChange, FactTable, FactUse};
+use super::facts::{ClaimShape, FactChange, FactTable, FactUse};
 
 #[derive(Debug, Clone)]
 pub struct AppliedStep<J, F> {
@@ -30,12 +30,17 @@ pub struct Scheduler<J, F> {
     agenda: Agenda<J>,
     facts: FactTable<J, F>,
     deps: DependencyIndex<J, F>,
+    /// Jobs whose ground shifted: a fact they read changed in a way that can
+    /// invalidate their claims. A rebased job's next conclusion replaces its
+    /// cumulative store values instead of joining, and its content changes
+    /// propagate as shifts in turn. Cleared on conclusion; kept while waiting.
+    rebased: HashSet<J>,
 }
 
 impl<J, F> Default for Scheduler<J, F>
 where
     J: Clone + Debug + Eq + Hash,
-    F: Clone + Eq + Hash,
+    F: Clone + Eq + Hash + ClaimShape,
 {
     fn default() -> Self {
         Self::new()
@@ -45,14 +50,20 @@ where
 impl<J, F> Scheduler<J, F>
 where
     J: Clone + Debug + Eq + Hash,
-    F: Clone + Eq + Hash,
+    F: Clone + Eq + Hash + ClaimShape,
 {
     pub fn new() -> Self {
         Self {
             agenda: Agenda::new(),
             facts: FactTable::new(),
             deps: DependencyIndex::new(),
+            rebased: HashSet::new(),
         }
+    }
+
+    /// Whether `job`'s ground has shifted since it last concluded.
+    pub fn rebased(&self, job: &J) -> bool {
+        self.rebased.contains(job)
     }
 
     pub fn pending_jobs(&self) -> usize {
@@ -98,6 +109,13 @@ where
         follow_up: Vec<J>,
     ) -> AppliedStep<J, F> {
         let waiting = !waits.is_empty();
+        // A conclusion discharges the rebase; a blocked run has not yet
+        // re-derived its claims from the shifted ground, so it stays pending.
+        let was_rebased = if waiting {
+            self.rebased.contains(job)
+        } else {
+            self.rebased.remove(job)
+        };
         let blocked = waits.iter().cloned().collect();
         if waiting {
             self.deps.union_reads(job.clone(), reads);
@@ -128,8 +146,17 @@ where
         pending_changes.extend(dirtied);
         while let Some(change) = pending_changes.pop() {
             if change.content_changed() {
+                // Classify the wave. An ascent re-runs readers, who join. A
+                // ground shift additionally rebases them: a retraction, a
+                // replacing fact's content change, or any change concluded by
+                // a rebased publisher can invalidate what readers derived.
+                // First appearance is news, not a shift — nothing read it.
+                let retraction = change.new_revision.is_none();
+                let revision_bump = change.old_revision.is_some() && change.new_revision.is_some();
+                let shift = retraction || (revision_bump && (was_rebased || !change.key.is_cumulative()));
                 self.enqueue_dependents(
                     FactUse::current(change.key.clone()),
+                    shift,
                     &mut pending_changes,
                     &mut enqueued,
                     &mut coalesced,
@@ -137,6 +164,7 @@ where
                 );
                 self.enqueue_dependents(
                     FactUse::settled(change.key.clone()),
+                    shift,
                     &mut pending_changes,
                     &mut enqueued,
                     &mut coalesced,
@@ -145,6 +173,7 @@ where
             } else if change.readiness_changed() {
                 self.enqueue_dependents(
                     FactUse::settled(change.key.clone()),
+                    false,
                     &mut pending_changes,
                     &mut enqueued,
                     &mut coalesced,
@@ -175,6 +204,7 @@ where
     fn enqueue_dependents(
         &mut self,
         fact_use: FactUse<F>,
+        shift: bool,
         pending_changes: &mut Vec<FactChange<F>>,
         enqueued: &mut Vec<J>,
         coalesced: &mut Vec<J>,
@@ -189,6 +219,9 @@ where
         for job in dependents {
             let dirtied = self.facts.mark_dirty(&job, &self.deps.output_keys(&job));
             pending_changes.extend(dirtied);
+            if shift {
+                self.rebased.insert(job.clone());
+            }
             self.enqueue_step(job, enqueued, coalesced, coalesced_seen);
         }
     }
