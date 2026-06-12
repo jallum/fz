@@ -24,6 +24,9 @@ pub(crate) struct NativeCodegenSurface<'a> {
     pub module: &'a Module,
     pub diagnostics: Diagnostics,
     pub main_fn_id: Option<FnId>,
+    /// Number of populated body slots, fixed at construction so telemetry
+    /// reads stored state instead of re-counting at emit points.
+    pub spec_count: usize,
     pub body_slots: Vec<Option<NativeCodegenBody<'a>>>,
     pub callable_entries: BTreeMap<u32, NativeCallableEntrySurface>,
     pub mid_flight_cont_keys: Vec<(u32, Vec<MidFlightArgShape>)>,

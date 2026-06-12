@@ -2448,13 +2448,6 @@ fn emit_callable_entry_selected(
     selection: &NativeCallableEntrySelection,
 ) {
     let span = mk_ident.span();
-    let closure_fn_name = env
-        .module
-        .fns
-        .iter()
-        .find(|function| function.id == fn_id)
-        .map(|function| function.name.clone())
-        .unwrap_or_else(|| format!("fn_{}", fn_id.0));
     env.telemetry.execute(
         &["fz", "codegen", "callable_entry_selected"],
         &crate::measurements! {
@@ -2470,9 +2463,9 @@ fn emit_callable_entry_selected(
             candidate_count: selection.candidate_count as u64,
         },
         &crate::metadata! {
-            module_path: env.module.module_path().to_owned(),
-            body_name: env.active_body_name.to_owned(),
-            closure_fn_name: closure_fn_name,
+            module_path: env.module.module_path(),
+            body_name: env.active_body_name,
+            module: crate::telemetry::opaque(env.module),
             selection_kind: selection_kind,
             callable_entry_body_fn_id: env.body_fn_id(selection.spec_id).0 as u64,
         },

@@ -1052,7 +1052,7 @@ fn emit_call_closure<M: cranelift_module::Module>(
             &metadata! {
                 body_name: env.active_body_name,
                 call_kind: "call_closure",
-                closure_binding_repr: format!("{:?}", closure_binding.repr()),
+                closure_binding_repr: closure_binding.repr().as_str(),
                 dispatch_kind: if lit_resolved.is_some() { "direct" } else { "indirect" },
                 continuation_storage: continuation_storage,
             },
@@ -1189,7 +1189,7 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
             &metadata! {
                 body_name: env.active_body_name,
                 call_kind: "tail_call_closure",
-                closure_binding_repr: format!("{:?}", closure_binding.repr()),
+                closure_binding_repr: closure_binding.repr().as_str(),
                 dispatch_kind: if lit_resolved.is_some() { "direct" } else { "indirect" },
             },
         );

@@ -388,8 +388,8 @@ fn emit_callable_entry_bodies<M: cranelift_module::Module>(
                 capture_count: entry.capture_count as u64,
             },
             &crate::metadata! {
-                module_path: module_path.to_owned(),
-                fn_name: entry_name.clone(),
+                module_path: module_path,
+                fn_name: entry_name.as_str(),
                 body_fn_id: surface.body_fn_id(body_sid).0 as u64,
             },
         );
@@ -437,24 +437,20 @@ fn emit_codegen_abi_contracts(surface: &NativeCodegenSurface<'_>, tel: &dyn Tele
         };
         let sid = body_slot.codegen_id as usize;
         let f = &surface.module.fns[body_slot.fn_idx];
-        let param_repr_names = surface.param_reprs[sid]
-            .iter()
-            .map(|repr| repr.as_str().to_string())
-            .collect::<Vec<_>>();
         tel.execute(
             &["fz", "codegen", "abi_contract"],
             &crate::measurements! {
                 spec_id: sid as u64,
                 fn_id: f.id.0 as u64,
-                param_count: param_repr_names.len() as u64,
+                param_count: surface.param_reprs[sid].len() as u64,
                 capture_count: surface.closure_capture_counts.get(&f.id).copied().unwrap_or(0) as u64,
             },
             &crate::metadata! {
-                module_path: surface.module.module_path().to_owned(),
-                fn_name: f.name.clone(),
-                body_origin: format!("{:?}", body_slot.native_body.origin),
-                entry_abi: format!("{:?}", body_slot.native_body.entry_abi),
-                param_reprs: param_repr_names,
+                module_path: surface.module.module_path(),
+                fn_name: f.name.as_str(),
+                body_origin: crate::telemetry::opaque_debug(&body_slot.native_body.origin),
+                entry_abi: crate::telemetry::opaque_debug(&body_slot.native_body.entry_abi),
+                param_reprs: crate::telemetry::opaque_debug(&surface.param_reprs[sid]),
                 return_repr: surface.return_reprs[sid].as_str(),
                 is_native: surface.native_abi_fns.contains(&f.id),
                 is_cont_fn: surface.cont_fns.contains(&f.id),
@@ -782,8 +778,8 @@ fn declare_receive_dispatch_fns<M: cranelift_module::Module>(
                     dispatch_node_count: dispatch.graph.nodes.len() as u64,
                 },
                 &crate::metadata! {
-                    module_path: module.module_path().to_owned(),
-                    fn_name: f.name.clone(),
+                    module_path: module.module_path(),
+                    fn_name: f.name.as_str(),
                     dispatch: opaque(dispatch),
                 },
             );
@@ -828,8 +824,8 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
                 &["fz", "codegen", "lower_function"],
                 crate::metadata! {
                     body_kind: "receive_dispatch",
-                    module_path: module.module_path().to_owned(),
-                    fn_name: display_name.clone(),
+                    module_path: module.module_path(),
+                    fn_name: display_name.as_str(),
                     fn_id: fn_id.0 as u64,
                     block_id: blk_id.0 as u64,
                 },
@@ -883,7 +879,7 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
             },
             &crate::metadata! {
                 body_kind: "receive_dispatch",
-                module_path: module.module_path().to_owned(),
+                module_path: module.module_path(),
                 fn_name: display_name,
                 dispatch: opaque(dispatch),
             },
@@ -1157,6 +1153,7 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
         module: &program.module,
         diagnostics: Diagnostics::new(),
         main_fn_id: Some(program.entry),
+        spec_count: program.bodies.len(),
         body_slots,
         callable_entries: build_codegen_callable_entries(t, program),
         mid_flight_cont_keys: collect_codegen_mid_flight_cont_keys(program, &param_reprs, &closure_capture_counts),
@@ -1186,14 +1183,14 @@ pub(crate) fn compile_with_backend_surface<
     let _compile_span = tel.span(
         &["fz", "codegen", "compile"],
         crate::metadata! {
-            module_path: surface.module.module_path().to_owned(),
+            module_path: surface.module.module_path(),
             backend: backend.kind(),
-            spec_count: surface.body_slots.iter().filter(|slot| slot.is_some()).count() as u64,
+            spec_count: surface.spec_count as u64,
         },
     );
     let declare_span = tel.span(
         &["fz", "codegen", "declare"],
-        crate::metadata! { module_path: surface.module.module_path().to_owned() },
+        crate::metadata! { module_path: surface.module.module_path() },
     );
     let runtime = declare_runtime_symbols(backend.module_mut())?;
 
@@ -1283,8 +1280,8 @@ pub(crate) fn compile_with_backend_surface<
                 &["fz", "codegen", "lower_function"],
                 crate::metadata! {
                     body_kind: "fz_spec",
-                    module_path: module.module_path().to_owned(),
-                    fn_name: display_name.clone(),
+                    module_path: module.module_path(),
+                    fn_name: display_name.as_str(),
                     fn_id: body_slot.fn_id.0 as u64,
                     spec_id: sid as u64,
                 },
@@ -1313,8 +1310,8 @@ pub(crate) fn compile_with_backend_surface<
                 },
                 &crate::metadata! {
                     body_kind: "fz_spec",
-                    module_path: module.module_path().to_owned(),
-                    fn_name: display_name.clone(),
+                    module_path: module.module_path(),
+                    fn_name: display_name.as_str(),
                 },
             );
         }
@@ -1327,8 +1324,8 @@ pub(crate) fn compile_with_backend_surface<
             &["fz", "codegen", "define_function"],
             crate::metadata! {
                 body_kind: "fz_spec",
-                module_path: module.module_path().to_owned(),
-                fn_name: display_name.clone(),
+                module_path: module.module_path(),
+                fn_name: display_name.as_str(),
                 fn_id: body_slot.fn_id.0 as u64,
                 spec_id: sid as u64,
             },
@@ -1356,8 +1353,8 @@ pub(crate) fn compile_with_backend_surface<
             },
             &crate::metadata! {
                 body_kind: "fz_spec",
-                module_path: module.module_path().to_owned(),
-                fn_name: display_name.clone(),
+                module_path: module.module_path(),
+                fn_name: display_name.as_str(),
             },
         );
         backend.module_mut().clear_context(&mut ctx);
@@ -1365,7 +1362,7 @@ pub(crate) fn compile_with_backend_surface<
 
     let emit_runtime_span = tel.span(
         &["fz", "codegen", "emit_runtime"],
-        crate::metadata! { module_path: module.module_path().to_owned() },
+        crate::metadata! { module_path: module.module_path() },
     );
     emit_receive_dispatch_bodies(
         backend.module_mut(),
@@ -1435,7 +1432,7 @@ pub(crate) fn compile_with_backend_surface<
 
     let finalize_span = tel.span(
         &["fz", "codegen", "finalize"],
-        crate::metadata! { module_path: module.module_path().to_owned() },
+        crate::metadata! { module_path: module.module_path() },
     );
     backend.emit_metadata_carriers(&mut fbctx, &metadata)?;
     let output = backend.finalize(metadata)?;
