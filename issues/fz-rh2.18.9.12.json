@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T06:09:06Z",
+  "description": "Goal\nRemove the semantic-analysis oscillation caused by encoding missing callee return evidence as the concrete bottom type. A call whose return type is not known yet must not make the continuation look unreachable, retract later callsites, and then reintroduce them when the callee publishes a return. Readiness must be represented outside the `Ty` lattice, so `none` remains bottom/unreachable and never means \"not known yet\".\n\nSignal\n- A focused semantic test proves a previously analyzed sequential caller does not retract later callsites just because an earlier callee return is temporarily absent or not yet ready.\n- `prepare_function_call` and closure/protocol call paths no longer use `none` or `any` as the readiness state for missing `ReturnType` evidence unless the source program/spec explicitly demands those types.\n- Recursive activation components can still seed and ascend without deadlocking; dynamic activation cycles still publish activation demands and callsite edges before all returns are settled.\n- `compiler2::port_codegen_test::enum_sort_stable_order_with_custom_comparator` passes under a hard external timeout.\n- `target/debug/fz2 --log-telemetry build fixtures2/00285_enum_sort_stable.fz` completes under `/opt/homebrew/bin/timeout` with meaningful-event counts bounded well below the current runaway profile.\n- Quicksort and `Enum.to_list`/`Enum.map` convergence tests remain within their existing budgets or fail with a new blocking ticket grounded in telemetry.\n\nStrategy\n- Start with a failing focused test that models the observed telemetry: `main` reaches multiple sequential calls, a callee return is missing, and the caller must preserve already-published downstream activation demands instead of treating the path as unreachable.\n- Data-model-up: represent callee-return readiness separately from the return type. The walker may continue when a return value is unused or only reachability is needed, but typed consumers must wait for the missing fact unless the activation is in a cyclic component that is allowed to ascend.\n- Keep activation identity and body evidence separate: `ActivationKey` remains the coarse dispatch/partition key, while `ActivationInputs` carries joined observed inputs.\n- Do not paper over the fixture with Enum-specific handling, longer timeouts, retained-output shims, or `any`/`none` sentinels.\n\nOutro\nNo missing return encoded as `none`, no unresolved return encoded as `any`, no continuation reachability driven by bottom-as-unknown, no retained-output workaround masking a waiting job, no Enum/dbg special case, no deadlocked recursive cycles, and no unbounded sort telemetry accepted as normal.",
+  "id": "fz-rh2.18.9.12",
+  "labels": [],
+  "parent": "fz-rh2.18.9",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 semantics: separate missing call returns from bottom",
+  "type": "bug",
+  "updated_at": "2026-06-12T06:09:06Z"
+}
