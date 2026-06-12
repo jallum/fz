@@ -7,7 +7,7 @@
     "fz-rh2.18.8"
   ],
   "created": "2026-06-11T21:03:22Z",
-  "description": "Goal: remove the remaining places where any or none encode uncertainty or incomplete convergence rather than real source/spec semantics. Signal: the port_type_infer and port_planner acceptance assertions for fold_state_machine, Enum.reduce, Enum.reduce_while, and mixed Enum.take paths pass without local fallback shims; telemetry shows current vs settled evidence movements instead of fake top/bottom returns. Strategy: reintroduce or preserve the dirty semantic assertions as acceptance tests after the engine model lands, trace each remaining any/none to the earliest wrong fact, and repair the data model rather than downstream display or artifact code.",
+  "description": "Goal: remove the remaining places where any or none encode uncertainty, missing evidence, or incomplete convergence rather than real source/spec semantics, after activation partition keys and ReturnEvidence have made those states representable directly. Signal: compiler2 semantic/type tests that previously depended on fake top/bottom returns pass with explicit evidence states; telemetry shows current vs settled evidence movement and partition-key convergence instead of fake any/none facts. Strategy: preserve the failing assertions as acceptance tests, trace each remaining any/none to the earliest wrong fact, and repair the data model rather than downstream display, artifact, or planner code. Non-goal: do not solve activation overspecialization here; that belongs to fz-rh2.18.9. Outro: no missing-return-as-none, no unresolved-as-any, no underconstrained-call-as-any, and no local fallback shim that hides unknown evidence inside an ordinary domain type.",
   "id": "fz-rh2.18.7",
   "labels": [],
   "parent": "fz-rh2.18",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "Compiler2 type convergence: burn down any/none poison fallbacks",
   "type": "task",
-  "updated_at": "2026-06-11T21:03:55Z"
+  "updated_at": "2026-06-12T02:14:36Z"
 }
