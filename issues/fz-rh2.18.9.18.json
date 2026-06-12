@@ -11,9 +11,15 @@
   "id": "fz-rh2.18.9.18",
   "labels": [],
   "parent": "fz-rh2.18.9",
+  "comments": [
+    {
+      "text": "Additional reproduction while validating fz-rh2.18.9.17 after 51ca2320b: running `compiler2::drive_test::compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen` concurrently with `compiler2::compiler2_test::compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare` failed with `left: 3`, `right: 42`. Both tests pass alone under `/opt/homebrew/bin/timeout 120s`. This broadens the suspect shared state from backend interpreter artifact lookup to native/JIT executable/root behavior.",
+      "timestamp": "2026-06-12T08:03:54Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Compiler2 tests: isolate parallel quicksort backend artifact runs",
   "type": "bug",
-  "updated_at": "2026-06-12T08:01:55Z"
+  "updated_at": "2026-06-12T08:03:54Z"
 }
