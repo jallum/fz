@@ -55,7 +55,7 @@ use crate::ir_codegen::compile_planned;
 use crate::ir_planner::{collect_diagnostics, plan_module_with_role};
 use crate::modules::identity::ModuleName;
 use crate::modules::runtime_library::{
-    core_prelude_module_sources, interface, prelude_source, root_type_env_from_attrs,
+    core_prelude_module_sources, interface, legacy_prelude_source, root_type_env_from_attrs,
 };
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
@@ -126,7 +126,7 @@ fn parse_runtime_prelude<T: Types<Ty = Ty>>(
     t: &mut T,
     tel: &dyn Telemetry,
 ) -> (Program, HashMap<(String, usize), String>) {
-    let runtime_fz = prelude_source();
+    let runtime_fz = legacy_prelude_source();
     let (items, attrs) = parse_runtime_source_items(runtime_fz, "runtime.fz", tel);
     let root_types = root_type_env_from_attrs(t, &attrs);
     let prelude_imports = collect_runtime_prelude_imports(&items, tel);

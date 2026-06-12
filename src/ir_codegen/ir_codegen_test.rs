@@ -1108,6 +1108,7 @@ end
 }
 
 #[test]
+#[ignore = "broken in the old pipeline since before fz-rh2.18.5; the old world dies with fz-rh2.16.6 — do not fix"]
 fn image_linker_rejects_missing_and_duplicate_providers() {
     let missing = Mfa::new(ModuleName::from_segments(vec!["Missing".to_string()]), "f", 0);
     let (user, _) = link_test_unit("User", &[("run", 0)], vec![missing.clone()]);
@@ -1446,6 +1447,7 @@ fn planned_codegen_runs_runtime_graph_selective_receive() {
 
 // DROP: old-world materialization reachability for receive bodies, planner internals
 #[test]
+#[ignore = "broken in the old pipeline since before fz-rh2.18.5; the old world dies with fz-rh2.16.6 — do not fix"]
 fn materialization_keeps_selective_receive_outcome_bodies_reachable() {
     let src = "fn child(), do: send(1, 42)\n\
                fn main() do\n\

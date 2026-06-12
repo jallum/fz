@@ -1,0 +1,95 @@
+defmodule Kernel do
+  @moduledoc "Core prelude functions available without an explicit import."
+
+  extern "C" fn fz_dbg_value(any) :: any
+  extern "C" fn fz_panic(any) :: never
+  extern "C" fn fz_spawn(() -> any) :: pid
+  extern "C" fn fz_spawn_opt(() -> any, any) :: pid
+  extern "C" fn fz_self() :: pid
+  extern "C" fn fz_send(pid, t) :: t when t: any
+  extern "C" fn fz_make_ref() :: ref
+  extern "C" fn fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
+  extern "C" fn fz_binary_concat(binary, binary) :: binary
+
+  @doc "Aborts the current process."
+  @spec panic(any) :: never
+  fn panic(msg), do: fz_panic(msg)
+
+  @doc "Prints a value to standard output and returns it unchanged."
+  @spec dbg(t) :: t when t: any
+  fn dbg(x), do: fz_dbg_value(x)
+
+  @doc "Aborts if the value is nil or false."
+  @spec assert(any) :: nil
+  fn assert(x), do: if x, do: nil, else: panic("assertion failed")
+
+  @doc "Aborts with the given message if the value is nil or false."
+  @spec assert(any, any) :: nil
+  fn assert(x, msg), do: if x, do: nil, else: panic(msg)
+
+  @doc "Aborts if the value is truthy."
+  @spec refute(any) :: nil
+  fn refute(x), do: if x, do: panic("refutation failed"), else: nil
+
+  @doc "Aborts with the given message if the value is truthy."
+  @spec refute(any, any) :: nil
+  fn refute(x, msg), do: if x, do: panic(msg), else: nil
+
+  @doc "Starts a process by applying a zero-argument function."
+  @spec spawn(() -> any) :: pid
+  fn spawn(fun), do: fz_spawn(fun)
+
+  @doc "Starts a process with runtime options."
+  @spec spawn(() -> any, keyword()) :: pid
+  fn spawn(fun, opts), do: fz_spawn_opt(fun, opts)
+
+  @doc "Returns the current process identifier."
+  @spec self() :: pid
+  fn self(), do: fz_self()
+
+  @doc "Sends a message to a process and returns the message."
+  @spec send(pid, t) :: t when t: any
+  fn send(pid, msg), do: fz_send(pid, msg)
+
+  @doc "Returns a fresh opaque reference."
+  @spec make_ref() :: ref
+  fn make_ref(), do: fz_make_ref()
+
+  @doc "Wraps a host handle and destructor in a resource."
+  @spec make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
+  fn make_resource(value, dtor), do: fz_make_resource(value, dtor)
+
+  @doc "Constructs a Range struct."
+  @spec range(integer, integer, integer) :: any
+  fn range(first, last, step), do: Range.new(first, last, step)
+
+  @spec integer + integer :: integer
+  @spec float + float :: float
+  @spec integer + float :: float
+  @spec float + integer :: float
+  fn left + right, do: left + right
+
+  @spec integer - integer :: integer
+  @spec float - float :: float
+  @spec integer - float :: float
+  @spec float - integer :: float
+  fn left - right, do: left - right
+
+  @spec integer * integer :: integer
+  @spec float * float :: float
+  @spec integer * float :: float
+  @spec float * integer :: float
+  fn left * right, do: left * right
+
+  @spec integer / integer :: integer
+  @spec float / float :: float
+  @spec integer / float :: float
+  @spec float / integer :: float
+  fn left / right, do: left / right
+
+  @spec integer % integer :: integer
+  @spec float % float :: float
+  @spec integer % float :: float
+  @spec float % integer :: float
+  fn left % right, do: left % right
+end

@@ -28,10 +28,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 const RUNTIME_PRELUDE_FZ: &str = include_str!("runtime_library/runtime.fz");
+/// Pre-fz-rh2.18.5 prelude for the OLD pipeline only — see
+/// `runtime_library/legacy/README.md`. Deleted with the old pipeline
+/// (fz-rh2.16.6.1).
+const LEGACY_RUNTIME_PRELUDE_FZ: &str = include_str!("runtime_library/legacy/runtime.fz");
 
 struct RuntimeModuleSource {
     name: &'static str,
+    /// Current surface — compiler2's pipeline.
     source: &'static str,
+    /// Old-pipeline surface. Identical to `source` for every module except
+    /// Kernel, whose ascribed operator clauses the old parser cannot read
+    /// (and the old pipeline never consumes). Deleted with the old pipeline
+    /// (fz-rh2.16.6.1).
+    legacy_source: &'static str,
     role: RuntimeModuleRole,
 }
 
@@ -45,41 +55,49 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
     RuntimeModuleSource {
         name: "Kernel",
         source: include_str!("runtime_library/kernel.fz"),
+        legacy_source: include_str!("runtime_library/legacy/kernel.fz"),
         role: RuntimeModuleRole::CorePrelude,
     },
     RuntimeModuleSource {
         name: "Enumerable",
         source: include_str!("runtime_library/enumerable.fz"),
+        legacy_source: include_str!("runtime_library/enumerable.fz"),
         role: RuntimeModuleRole::CorePrelude,
     },
     RuntimeModuleSource {
         name: "Range",
         source: include_str!("runtime_library/range.fz"),
+        legacy_source: include_str!("runtime_library/range.fz"),
         role: RuntimeModuleRole::CorePrelude,
     },
     RuntimeModuleSource {
         name: "Process",
         source: include_str!("runtime_library/process.fz"),
+        legacy_source: include_str!("runtime_library/process.fz"),
         role: RuntimeModuleRole::Library,
     },
     RuntimeModuleSource {
         name: "List",
         source: include_str!("runtime_library/list.fz"),
+        legacy_source: include_str!("runtime_library/list.fz"),
         role: RuntimeModuleRole::CorePrelude,
     },
     RuntimeModuleSource {
         name: "Map",
         source: include_str!("runtime_library/map.fz"),
+        legacy_source: include_str!("runtime_library/map.fz"),
         role: RuntimeModuleRole::CorePrelude,
     },
     RuntimeModuleSource {
         name: "Enum",
         source: include_str!("runtime_library/enum.fz"),
+        legacy_source: include_str!("runtime_library/enum.fz"),
         role: RuntimeModuleRole::Library,
     },
     RuntimeModuleSource {
         name: "Utf8",
         source: include_str!("runtime_library/utf8.fz"),
+        legacy_source: include_str!("runtime_library/utf8.fz"),
         role: RuntimeModuleRole::Library,
     },
 ];
@@ -94,8 +112,14 @@ pub fn prelude_source() -> &'static str {
     RUNTIME_PRELUDE_FZ
 }
 
+/// The OLD pipeline's prelude. Everything the old parser touches reads the
+/// legacy surface; compiler2 reads `prelude_source`.
+pub fn legacy_prelude_source() -> &'static str {
+    LEGACY_RUNTIME_PRELUDE_FZ
+}
+
 pub fn root_type_env<T: Types>(t: &mut T, tel: &dyn Telemetry) -> RuntimeRootTypes<T::Ty> {
-    let toks = Lexer::with_source_name(prelude_source(), "runtime:runtime.fz")
+    let toks = Lexer::with_source_name(legacy_prelude_source(), "runtime:runtime.fz")
         .tokenize(tel)
         .expect("runtime.fz lex error (bug in built-in prelude)");
     let (_items, attrs) = Parser::new(toks)
@@ -124,7 +148,7 @@ pub fn core_prelude_module_sources() -> impl Iterator<Item = (&'static str, &'st
     RUNTIME_MODULE_SOURCES
         .iter()
         .filter(|source| source.role == RuntimeModuleRole::CorePrelude)
-        .map(|source| (source.name, source.source))
+        .map(|source| (source.name, source.legacy_source))
 }
 
 pub(crate) fn module_sources() -> impl Iterator<Item = (&'static str, &'static str)> {
@@ -157,7 +181,7 @@ pub fn parsed_program(tel: &dyn Telemetry) -> Program {
     let mut items = Vec::new();
     for module_source in RUNTIME_MODULE_SOURCES {
         let source_name = runtime_source_name(module_source.name);
-        let toks = Lexer::with_source_name(module_source.source, source_name.clone())
+        let toks = Lexer::with_source_name(module_source.legacy_source, source_name.clone())
             .tokenize(tel)
             .unwrap_or_else(|_| panic!("{}.fz lex error (bug in built-in runtime library)", module_source.name));
         let (mut parsed_items, _attrs) = Parser::new(toks).parse_prelude().unwrap_or_else(|err| {
@@ -412,11 +436,11 @@ fn runtime_module_source(name: &ModuleName) -> Option<&'static str> {
     RUNTIME_MODULE_SOURCES
         .iter()
         .find(|source| source.name == name.dotted())
-        .map(|source| source.source)
+        .map(|source| source.legacy_source)
 }
 
 pub fn primitive_prelude_program(tel: &dyn Telemetry) -> Program {
-    let toks = Lexer::with_source_name(RUNTIME_PRELUDE_FZ, "runtime:runtime.fz")
+    let toks = Lexer::with_source_name(LEGACY_RUNTIME_PRELUDE_FZ, "runtime:runtime.fz")
         .tokenize(tel)
         .expect("runtime.fz lex error (bug in built-in prelude)");
     let (items, attrs) = Parser::new(toks)
