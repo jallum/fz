@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.18.9.13"
+  ],
   "blocks": [
     "fz-rh2.18.9.6"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Compiler2 convergence: make Enum.to_list/map settle under a telemetry budget",
   "type": "task",
-  "updated_at": "2026-06-12T06:54:31Z"
+  "updated_at": "2026-06-12T06:54:35Z"
 }
