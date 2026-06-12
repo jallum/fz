@@ -10,3 +10,6 @@ fixtures/*/actual.diagnostics
 fixtures/*/actual.txt
 fixtures/*/actual.oracle.txt
 fixtures/*/actual.stderr
+fixtures2/*.actual.call_edges
+fixtures2/*.actual.contract_edges
+fixtures2/*.actual.contract_metrics

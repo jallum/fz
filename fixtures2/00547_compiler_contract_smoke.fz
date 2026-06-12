@@ -1,0 +1,19 @@
+#---
+# purpose: fixtures2 compiler contracts can pin metrics, edges, and canonical snapshots
+# root: main/0
+# assert.metric.semantic.activations: 3
+# assert.metric.semantic.executables: 3
+# assert.metric.semantic.callsites: 3
+# assert.metric.call_edges.count: 3
+# assert.metric.return_type.widened: 0
+# assert.edge: apply1/2[(α0) -> α1, int] | @21-26 | closure | main/0::lambda[@50-67]/1
+# assert.edge: main/0[] | @70-86 | direct | apply1/2
+# assert.edge: main/0::lambda[@50-67]/1[int] | @58-63 | direct | Kernel.+/2
+# snapshot.call_edges: call_edges
+#---
+fn apply1(f, x), do: f.(x)
+
+fn main() do
+  add1 = fn x -> x + 1 end
+  apply1(add1, 41)
+end

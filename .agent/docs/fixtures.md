@@ -56,8 +56,8 @@ source file itself:
 #---
 # purpose: closure call stays indirect
 # root: main/0
-# assert.metric.codegen.functions: 3
-# assert.edge: main/0 | @66-71 | closure | main/0::lambda[@14-33]/1
+# assert.metric.semantic.callsites: 2
+# assert.edge: main/0[] | @66-71 | closure | main/0::lambda[@14-33]/1
 # snapshot.call_edges: call_edges
 #---
 ```
@@ -202,9 +202,12 @@ The contract grammar is intentionally small:
 
 - `purpose:` — one-line reason the contract exists.
 - `root:` — compiler2 root to drive, written as `name/arity`.
-- `assert.metric.<name>:` — a telemetry-backed numeric invariant.
+- `assert.metric.<name>:` — a numeric invariant. The current built-in names are
+  `semantic.activations`, `semantic.executables`, `semantic.callsites`,
+  `call_edges.count`, and `return_type.widened`.
 - `assert.edge:` — one semantic edge claim, written
-  `caller | callsite | dispatch | target`.
+  `caller | callsite | dispatch | target`. `target` matches the canonical target
+  label, while the optional snapshot carries full input/return type detail.
 - `snapshot.call_edges:` — opt into a dense canonical call-edge snapshot sidecar.
 
 The source block is the authority. Optional sidecars exist only for dense
@@ -222,6 +225,11 @@ fixture contract surface.
 The legacy `fixtures/*/expected.outcomes` static sweep still exists until the
 remaining old-world dispatch pins finish migrating. New compiler-shape pins
 should land here instead of adding new `expected.outcomes` sidecars.
+
+`cargo test compiler2_contracts` runs the harness. Set
+`FIXTURE2_CONTRACT_FILTER=<substring>` to narrow the run to matching fixture
+stems. `BLESS=1` rewrites declared snapshot sidecars only; metric and edge
+assertions never auto-bless.
 
 ## Relationship to the runtime library
 

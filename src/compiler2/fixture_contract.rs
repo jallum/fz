@@ -136,6 +136,24 @@ pub fn parse_fixture_contract(source: &str) -> Result<Option<FixtureContract>, F
     Ok(Some(contract))
 }
 
+#[cfg(test)]
+pub fn fixture_contract_prefix_bytes(source: &str) -> Result<Option<u32>, FixtureContractError> {
+    if !source.starts_with("#---") {
+        return Ok(None);
+    }
+    let mut consumed = 0usize;
+    for (line_idx, line) in source.split_inclusive('\n').enumerate() {
+        consumed += line.len();
+        if line.trim() == "#---" && line_idx > 0 {
+            return Ok(Some(consumed as u32));
+        }
+    }
+    Err(FixtureContractError::new(
+        1,
+        "fixture contract block is missing its closing `#---`",
+    ))
+}
+
 fn set_singleton<T>(slot: &mut Option<T>, value: T, line_no: usize, key: &str) -> Result<(), FixtureContractError> {
     if slot.is_some() {
         return Err(FixtureContractError::new(

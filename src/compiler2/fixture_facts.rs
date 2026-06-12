@@ -32,8 +32,10 @@ pub struct CanonicalCallTargetFact {
 
 pub(crate) fn canonical_call_edge_facts(world: &World<'_>, root: RootId) -> Vec<CanonicalCallEdgeFact> {
     let closure = world.semantic_closure(root);
+    let root_code = world.function_definition(world.root_function(root)).0.code;
     let mut labels = HashMap::new();
     let mut activations = closure.activations.into_iter().collect::<Vec<_>>();
+    activations.retain(|activation| world.function_definition(activation.function).0.code == root_code);
     activations.sort_by_cached_key(|activation| activation_sort_key(world, activation, &mut labels));
 
     let mut facts = Vec::new();
@@ -104,16 +106,20 @@ fn canonical_call_edge_fact(
             .iter()
             .map(|target| CanonicalCallTargetFact {
                 target: target_label(world, target.callee.clone(), labels),
-                input_types: target.input_types.iter().map(|ty| world.types().display(ty)).collect(),
+                input_types: target
+                    .input_types
+                    .iter()
+                    .map(|ty| stable_type_text(world.types().display(ty)))
+                    .collect(),
                 return_ty: target
                     .return_ty
-                    .map(|ty| world.types().display(&ty))
+                    .map(|ty| stable_type_text(world.types().display(&ty)))
                     .unwrap_or_else(|| "none".to_string()),
             })
             .collect(),
         return_ty: summary
             .return_ty
-            .map(|ty| world.types().display(&ty))
+            .map(|ty| stable_type_text(world.types().display(&ty)))
             .unwrap_or_else(|| "none".to_string()),
     }
 }
@@ -183,7 +189,7 @@ fn activation_label(world: &World<'_>, activation: &ActivationKey, labels: &mut 
         activation
             .input
             .iter()
-            .map(|ty| world.types().display(ty))
+            .map(|ty| stable_type_text(world.types().display(ty)))
             .collect::<Vec<_>>()
             .join(", ")
     )
@@ -271,4 +277,19 @@ fn parse_generated_lambda(name: &str) -> Option<GeneratedLambda> {
 
 fn provenance_span_label(start: u32, end: u32) -> String {
     format!("@{}-{}", start, end)
+}
+
+fn stable_type_text(rendered: String) -> String {
+    let mut out = String::with_capacity(rendered.len());
+    let mut chars = rendered.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '#' && chars.peek().is_some_and(|next| next.is_ascii_digit()) {
+            while chars.peek().is_some_and(|next| next.is_ascii_digit()) {
+                let _ = chars.next();
+            }
+            continue;
+        }
+        out.push(ch);
+    }
+    out
 }
