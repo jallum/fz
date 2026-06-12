@@ -4,7 +4,6 @@
     "fz-rh2.18.9.6"
   ],
   "blocks": [
-    "fz-rh2.18.6.2",
     "fz-rh2.18.6.5"
   ],
   "created": "2026-06-12T05:16:31Z",
@@ -16,5 +15,5 @@
   "status": "open",
   "title": "Compiler2 return evidence: replace the activation return fact payload",
   "type": "task",
-  "updated_at": "2026-06-12T06:54:40Z"
+  "updated_at": "2026-06-12T06:54:47Z"
 }
