@@ -1,6 +1,8 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-go4.7"
+  ],
   "blocks": [
     "fz-go4.3"
   ],
@@ -13,5 +15,5 @@
   "status": "in_progress",
   "title": "Normalize front-door and CLI ownership boundaries",
   "type": "task",
-  "updated_at": "2026-06-12T18:43:12Z"
+  "updated_at": "2026-06-12T19:52:53Z"
 }
