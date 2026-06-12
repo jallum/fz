@@ -82,6 +82,13 @@ after the outer continuation: `[outer_cont, bound0, …, cap0, …]`. The matche
 then clears `wait`, cancels any after-timer, and moves the outcome closure into
 `runnable`.
 
+This is outcome-closure delivery, not mailbox delivery. A sender-side hit does
+not enqueue the message and does not wake the receiver for a second mailbox
+scan. The matcher projects only the winning arm's useful payload, the runtime
+deep-copies only that projected capture set into the receiver heap, and the
+receiver resumes directly from the receiver-owned outcome closure. Mailbox
+traffic is the miss path only.
+
 ```text
 message matches clause k:
   outcome = materialize_outcome_closure(clause_bodies[k], bound_vals)
@@ -91,9 +98,10 @@ message matches clause k:
 
 The scheduler never passes the message to the closure. The message is already
 consumed and its useful parts captured. Two entry points drive this: `probe_sender`
-runs the matcher on `send` arrival, and `initial_scan` walks the mailbox in
-arrival order when a parked task wakes Ready with messages already queued
-(rejected messages stay in the mailbox — Erlang save-queue semantics).
+runs the matcher on `send` arrival and bypasses the mailbox entirely on a hit,
+and `initial_scan` walks the mailbox in arrival order when a parked task wakes
+Ready with messages already queued (rejected messages stay in the mailbox —
+Erlang save-queue semantics).
 
 ## Timeout
 
@@ -211,6 +219,10 @@ The roots the boundary GC traces are exactly the `runnable` closure and the
 - `cargo test --test fixture_matrix receive_selective_refs` — selective receive
   with `^`-pinned matchers and an `after` timeout resumes through the closure entry
   across all four paths.
+- `cargo test send_probe_hit_projects_only_matched_payload_into_outcome_closure`
+  (`src/exec/runtime_test.rs`) — a sender-side hit bypasses the mailbox and
+  copies only the projected payload needed by the winning clause into the
+  receiver-owned outcome closure.
 - `cargo test --test fixture_matrix spawn` — selects `spawn2_basic` and
   `spawn_with_captures`: a spawned task resumed as an entry thunk through
   `fz_resume`, the same verb a continuation uses.

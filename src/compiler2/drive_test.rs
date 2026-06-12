@@ -4804,6 +4804,46 @@ fn compiler2_interp_runs_selective_receive_with_make_ref_from_backend_artifacts(
 }
 
 #[test]
+#[ignore = "temporary: fz-go4.10.2 native delivery planner not landed yet"]
+fn compiler2_native_receive_value_resumes_as_arithmetic_input() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("receive_resume_arith.fz".to_string()),
+        text: r#"
+fn main() do
+  me = self()
+  send(me, 1)
+  value = receive do
+    x -> x
+  end
+  dbg(value + 2)
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.run_root_jit(root_id).unwrap_or_else(|error| {
+        panic!("compiler2 native selective receive should resume with an arithmetic-ready value: {error}");
+    });
+
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["3"],
+        "a receive hit should resume through the outcome closure with the projected value ready for downstream arithmetic",
+    );
+}
+
+#[test]
 fn compiler2_interp_runs_resource_dtors_from_backend_runtime_intrinsics() {
     let _lock = tests_support_lock().lock().unwrap();
     tests_support_dtor_reset();
