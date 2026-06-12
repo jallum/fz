@@ -49,9 +49,11 @@ impl SemanticValue {
         }
     }
 
-    fn from_observed(world: &mut World<'_>, observed_ty: Ty) -> Self {
+    fn from_observed(_world: &mut World<'_>, observed_ty: Ty) -> Self {
+        // With numeric literal types gone the flow and observed planes are
+        // identical; the split itself dissolves in fz-rh2.21.8.
         Self {
-            flow_ty: world.types_mut().widen_literal_flow(&observed_ty),
+            flow_ty: observed_ty,
             observed_ty,
         }
     }
@@ -542,8 +544,7 @@ fn apply_step(
             let observed_literal_ty = literal_ty(world, literal);
             let observed_refined = world.types_mut().intersect(observed_source_ty, observed_literal_ty);
             let flow_source_ty = value_ty(world, values, *source);
-            let flow_literal_ty = world.types_mut().widen_literal_flow(&observed_literal_ty);
-            let flow_refined = world.types_mut().intersect(flow_source_ty, flow_literal_ty);
+            let flow_refined = world.types_mut().intersect(flow_source_ty, observed_literal_ty);
             values.insert(
                 *source,
                 SemanticValue {

@@ -2078,10 +2078,9 @@ impl<'a> World<'a> {
             .recursive
             .get(function)
             .expect("activation keying should wait for recursive facts before activation");
-        let canonical = inputs
-            .iter()
-            .map(|input| self.types.widen_for_recursive_spec_key(input))
-            .collect::<Vec<_>>();
+        // Numeric literals no longer exist in the lattice, so inputs arrive
+        // already kind-typed; canonicalization is keying + normalization.
+        let canonical = inputs.to_vec();
         let key_inputs = canonical
             .iter()
             .enumerate()

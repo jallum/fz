@@ -1105,10 +1105,14 @@ mod smoke {
     }
 
     pub(super) fn smoke_int_lit_in_int<T: Types>(t: &mut T) {
+        // Shared across both lattices: an int literal type is within int.
+        // Whether it is a STRICT subtype differs by design — the old
+        // pipeline keeps numeric singletons, compiler2's lattice cannot
+        // express them (int_lit ≡ int) — so strictness is pinned only by
+        // the concrete pipeline's key-specificity tests.
         let i = t.int();
         let lit = t.int_lit(42);
         assert!(t.is_subtype(&lit, &i));
-        assert!(!t.is_subtype(&i, &lit));
     }
 
     pub(super) fn smoke_nil_in_atom<T: Types>(t: &mut T) {

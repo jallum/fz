@@ -18,11 +18,13 @@ use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 
 use crate::runtime_type_predicate::{ListShape, ObservedSet, RuntimeTypePredicate};
+
 use crate::type_expr::opaque_owner_module;
 use crate::types::{
     ClosureTypes as SharedClosureTypes, RenderTypes as SharedRenderTypes, Types as SharedTypes,
     VisibilityTypes as SharedVisibilityTypes,
 };
+use bits::BasicBits;
 
 pub use crate::types::{
     CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, Nominals, OpaqueVisibilityError, Sigma,
@@ -218,16 +220,20 @@ impl Types {
         self.intern(Descr::int())
     }
 
-    pub fn int_lit(&mut self, n: i64) -> Ty {
-        self.intern(Descr::int_lit(n))
+    /// Numeric literals are VALUES, not types: the lattice deliberately
+    /// cannot express a numeric singleton (Elixir's descr draws the same
+    /// line). A literal in type position means its kind.
+    pub fn int_lit(&mut self, _n: i64) -> Ty {
+        self.int()
     }
 
     pub fn float(&mut self) -> Ty {
         self.intern(Descr::float())
     }
 
-    pub fn float_lit(&mut self, f: f64) -> Ty {
-        self.intern(Descr::float_lit(f))
+    /// See `int_lit`: a float literal in type position means `float()`.
+    pub fn float_lit(&mut self, _f: f64) -> Ty {
+        self.float()
     }
 
     pub fn atom(&mut self) -> Ty {
@@ -364,14 +370,11 @@ impl Types {
         map_known_keys(self.descr(a))
     }
 
-    pub fn widen_literal_flow(&mut self, a: &Ty) -> Ty {
-        let d = widen_literal_flow(self, *a);
-        self.intern(d)
-    }
-
+    /// Identity since numeric literal types left the lattice: there is
+    /// nothing to widen. Kept for the shared `Types` trait until the old
+    /// pipeline (which still carries literal types) retires.
     pub fn widen_for_recursive_spec_key(&mut self, a: &Ty) -> Ty {
-        let d = widen_literal_flow(self, *a);
-        self.intern(d)
+        *a
     }
 
     pub fn alpha_normalize_vars(&mut self, a: &Ty) -> Ty {
@@ -522,12 +525,15 @@ impl Types {
         self.descr(a).is_singleton_literal()
     }
 
-    pub fn as_int_singleton(&self, a: &Ty) -> Option<i64> {
-        self.descr(a).as_int_singleton()
+    /// Always `None`: the lattice holds no numeric singletons. Constants
+    /// ride the lowering as values (`LoweredMapKey`, dispatch consts).
+    pub fn as_int_singleton(&self, _a: &Ty) -> Option<i64> {
+        None
     }
 
-    pub fn as_float_singleton(&self, a: &Ty) -> Option<f64> {
-        self.descr(a).as_float_singleton().map(|b| b.get())
+    /// See `as_int_singleton`.
+    pub fn as_float_singleton(&self, _a: &Ty) -> Option<f64> {
+        None
     }
 
     pub fn as_atom_singleton(&self, a: &Ty) -> Option<String> {
@@ -540,13 +546,15 @@ impl Types {
             return RuntimeTypePredicate::any();
         }
         RuntimeTypePredicate {
+            // Numbers are presence bits: the predicate is a kind check,
+            // never a value-membership set, from this pipeline.
             ints: ObservedSet {
-                cofinite: descr.ints.cofinite,
-                values: descr.ints.set.iter().copied().collect(),
+                cofinite: descr.basic.contains_all(BasicBits::INT),
+                values: BTreeSet::new(),
             },
             floats: ObservedSet {
-                cofinite: descr.floats.cofinite,
-                values: descr.floats.set.iter().map(|bits| bits.get().to_bits()).collect(),
+                cofinite: descr.basic.contains_all(BasicBits::FLOAT),
+                values: BTreeSet::new(),
             },
             atoms: ObservedSet {
                 cofinite: descr.atoms.cofinite,
@@ -557,7 +565,7 @@ impl Types {
             named_structs: runtime_type_predicate_named_structs(descr),
             allow_other_structs: false,
             maps: !descr.maps.is_empty(),
-            binaries: !descr.basic.is_empty(),
+            binaries: descr.basic.contains_all(BasicBits::BINARY),
             closures: !descr.funcs.is_empty(),
             resources: !descr.resources.is_empty(),
         }
@@ -1067,8 +1075,6 @@ fn pure_var_ids(d: &Descr) -> Option<Vec<TypeVarId>> {
     let finite: Vec<TypeVarId> = d.vars.finite()?.collect();
     let only_vars = d.basic.is_empty()
         && d.atoms.is_none()
-        && d.ints.is_none()
-        && d.floats.is_none()
         && d.opaques.is_none()
         && d.brands.is_none()
         && d.tuples.is_empty()
@@ -1083,8 +1089,6 @@ fn intersect_descr(types: &mut Types, a: &Descr, b: &Descr) -> Descr {
     Descr {
         basic: a.basic.intersect(b.basic),
         atoms: a.atoms.intersect(&b.atoms),
-        ints: a.ints.intersect(&b.ints),
-        floats: a.floats.intersect(&b.floats),
         opaques: a.opaques.intersect(&b.opaques),
         brands: a.brands.intersect(&b.brands),
         vars: a.vars.intersect(&b.vars),
@@ -1485,11 +1489,6 @@ fn is_literal(cx: TyCtx<'_>, a: &Ty) -> bool {
 
 // More recursive transforms live in this module so they can thread the owning
 // interner explicitly without exposing the private descriptor representation.
-fn widen_literal_flow(t: &mut Types, a: Ty) -> Descr {
-    let base = t.descr(&a).widen_literals();
-    map_recursive_inputs(t, base, widen_literal_flow)
-}
-
 fn erase_closure_identity(t: &mut Types, a: Ty) -> Descr {
     let base = t.descr(&a).clone();
     map_recursive_inputs(t, base, erase_closure_identity).without_closure_lits()
@@ -1582,7 +1581,7 @@ fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Descr {
     }
 
     let u = t.union(a, b);
-    widen_literal_flow(t, u)
+    t.descr(&u).clone()
 }
 
 fn alpha_normalize_vars(t: &mut Types, a: Ty) -> Descr {

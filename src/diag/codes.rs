@@ -77,6 +77,7 @@ pub const TYPE_EXTERN_MARSHAL: DiagCode = DiagCode("type/extern-marshal");
 // call would never resolve. Distinct from a generic spec violation: it names
 // the protocol, the receiver type, and the known implementors.
 pub const TYPE_PROTOCOL_NO_IMPL: DiagCode = DiagCode("type/protocol-no-impl");
+pub const TYPE_NUMERIC_LITERAL_WIDENED: DiagCode = DiagCode("type/numeric-literal-widened");
 
 // ----- codegen -----
 

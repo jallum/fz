@@ -22,8 +22,6 @@ pub(crate) fn display(cx: TyCtx<'_>, d: &Descr) -> String {
         }
     }
     append_axis(&mut parts, &d.atoms, "atom", |s| format!(":{}", s));
-    append_axis(&mut parts, &d.ints, "int", |n| n.to_string());
-    append_axis(&mut parts, &d.floats, "float", |f| f.get().to_string());
     append_axis(&mut parts, &d.opaques, "opaque", Clone::clone);
     append_axis(&mut parts, &d.brands, "brand", Clone::clone);
     append_axis(&mut parts, &d.vars, "var", |id| id.to_string());

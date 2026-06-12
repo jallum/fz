@@ -6,13 +6,17 @@ use std::fmt;
 pub(crate) struct BasicBits(pub(super) u32);
 
 impl BasicBits {
-    // Kinds without value-level distinctions (or where we choose not to track
-    // them). int/float/str/atom moved into their own LiteralSet axes.
-    // fz-yan.2 — NIL/BOOL bits removed; both live in the atoms axis now.
+    // Kinds without value-level distinctions. Numbers live here as plain
+    // presence bits — the lattice cannot express a numeric singleton, by
+    // design (Elixir's Module.Types.Descr draws the same line; constants
+    // are VALUES the matcher compares at runtime). Atoms keep their
+    // finite/cofinite literal-set axis; nil/bool live there too (fz-yan.2).
     pub const BINARY: BasicBits = BasicBits(1 << 0);
+    pub const INT: BasicBits = BasicBits(1 << 1);
+    pub const FLOAT: BasicBits = BasicBits(1 << 2);
 
     pub const NONE: BasicBits = BasicBits(0);
-    pub const ALL: BasicBits = BasicBits((1 << 1) - 1);
+    pub const ALL: BasicBits = BasicBits((1 << 3) - 1);
     pub const fn contains_all(self, o: BasicBits) -> bool {
         (self.0 & o.0) == o.0
     }
@@ -27,7 +31,11 @@ impl fmt::Debug for BasicBits {
     }
 }
 
-pub(crate) const BASIC_NAMES: &[(BasicBits, &str)] = &[(BasicBits::BINARY, "binary")];
+pub(crate) const BASIC_NAMES: &[(BasicBits, &str)] = &[
+    (BasicBits::INT, "int"),
+    (BasicBits::FLOAT, "float"),
+    (BasicBits::BINARY, "binary"),
+];
 
 // ----------------------------------------------------------------------
 // BasicBits operations
@@ -42,27 +50,5 @@ impl BasicBits {
     }
     pub const fn neg(self) -> BasicBits {
         BasicBits(BasicBits::ALL.0 & !self.0)
-    }
-}
-
-/// Bit-pattern wrapper around a non-NaN `f64` so we can put floats in
-/// ordered/hashed sets. Two distinct bit patterns are considered distinct
-/// values. `+0.0` and `-0.0` are distinct (matches IEEE bit equality but not
-/// IEEE value equality — fine here, where the type system tracks values).
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(crate) struct F64Bits(u64);
-
-impl F64Bits {
-    pub(crate) fn new(f: f64) -> Self {
-        assert!(!f.is_nan(), "F64Bits literal types do not support NaN");
-        Self(f.to_bits())
-    }
-    pub(crate) fn get(self) -> f64 {
-        f64::from_bits(self.0)
-    }
-}
-impl fmt::Debug for F64Bits {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.get())
     }
 }

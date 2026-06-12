@@ -32,8 +32,8 @@ fn structural_children_are_interned_handles() {
 #[test]
 fn repeated_subtype_comparisons_are_memoized_by_type_id() {
     let mut t = Types::new();
-    let int = t.int();
-    let lit = t.int_lit(42);
+    let int = t.atom();
+    let lit = t.atom_lit("ok");
 
     let before = t.comparison_cache_stats();
     assert!(t.is_subtype(&lit, &int));
@@ -63,14 +63,17 @@ fn repeated_subtype_comparisons_are_memoized_by_type_id() {
 }
 
 #[test]
-fn runtime_type_predicate_projects_integer_singleton() {
+fn runtime_type_predicate_projects_integer_kind() {
+    // Numbers are presence bits: the predicate is a kind check, never a
+    // value-membership set, from this pipeline. Constants are compared as
+    // values by the matcher.
     let mut t = Types::new();
     let forty_two = t.int_lit(42);
     let predicate = t.runtime_type_predicate(&forty_two);
     assert_eq!(
         predicate,
         RuntimeTypePredicate {
-            ints: ObservedSet::lit(42),
+            ints: ObservedSet::any(),
             ..RuntimeTypePredicate::none()
         }
     );
@@ -180,10 +183,10 @@ macro_rules! key_helper_conformance_tests {
             #[test]
             fn key_is_strictly_more_specific_recognizes_strict_subtype_keys() {
                 let mut t = $ctor;
-                let int = t.int();
-                let int_lit = t.int_lit(7);
-                assert!(t.key_is_strictly_more_specific(slice::from_ref(&int_lit), slice::from_ref(&int)));
-                assert!(!t.key_is_strictly_more_specific(slice::from_ref(&int), slice::from_ref(&int_lit)));
+                let atom = t.atom();
+                let atom_lit = t.atom_lit("ok");
+                assert!(t.key_is_strictly_more_specific(slice::from_ref(&atom_lit), slice::from_ref(&atom)));
+                assert!(!t.key_is_strictly_more_specific(slice::from_ref(&atom), slice::from_ref(&atom_lit)));
             }
 
             #[test]
@@ -298,7 +301,9 @@ macro_rules! seam_helper_conformance_tests {
             }
 
             #[test]
-            fn as_map_key_recognizes_atom_and_int_singletons() {
+            fn as_map_key_recognizes_atom_singletons_only() {
+                // Int keys ride the lowering as values (LoweredMapKey); the
+                // lattice holds no numeric singletons to project.
                 let mut t = $ctor;
                 let ok = t.atom_lit("ok");
                 let seven = t.int_lit(7);
@@ -307,7 +312,7 @@ macro_rules! seam_helper_conformance_tests {
                     t.as_map_key(&ok),
                     Some(MapKey::Atom(name)) if name == "ok"
                 ));
-                assert!(matches!(t.as_map_key(&seven), Some(MapKey::Int(7))));
+                assert!(t.as_map_key(&seven).is_none());
                 assert!(t.as_map_key(&wide).is_none());
             }
 
@@ -768,40 +773,22 @@ macro_rules! semantic_helper_conformance_tests {
             }
 
             #[test]
-            fn widen_literal_flow_preserves_callable_surface_shape() {
+            fn numeric_literals_in_type_position_mean_their_kind() {
+                // The lattice cannot express a numeric singleton: a literal
+                // constructor yields the kind itself, and no singleton is
+                // ever observable. Atoms keep their singletons.
                 let mut t = $ctor;
-                let entries = {
-                    let one = t.int_lit(1);
-                    let two = t.int_lit(2);
-                    t.union(one, two)
-                };
-                let zero = t.int_lit(0);
-                let callable = {
-                    let lit = t.fn_ref_lit(ClosureTarget(19), 2);
-                    let surface = t.arrow(&[entries, zero], zero);
-                    t.intersect(lit, surface)
-                };
-                let widened = t.widen_literal_flow(&callable);
-                let clauses = t
-                    .callable_value_clauses(&widened)
-                    .expect("widened callable clauses");
-                let clause = clauses.into_iter().next().expect("widened callable clause");
+                let one = t.int_lit(1);
                 let int = t.int();
-                assert!(
-                    t.is_equivalent(&clause.args[0], &int),
-                    "literal-flow widening should widen callable arg literals to integer, got {}",
-                    t.display(&clause.args[0]),
-                );
-                assert!(
-                    t.is_equivalent(&clause.args[1], &int),
-                    "literal-flow widening should widen the accumulator literal to integer, got {}",
-                    t.display(&clause.args[1]),
-                );
-                assert!(
-                    t.is_equivalent(&clause.ret, &int),
-                    "literal-flow widening should widen the callable return literal to integer, got {}",
-                    t.display(&clause.ret),
-                );
+                assert!(t.is_equivalent(&one, &int));
+                assert_eq!(t.as_int_singleton(&one), None);
+                let pi = t.float_lit(2.5);
+                let float = t.float();
+                assert!(t.is_equivalent(&pi, &float));
+                assert_eq!(t.as_float_singleton(&pi), None);
+                assert!(!t.is_singleton_lit(&one));
+                let ok = t.atom_lit("ok");
+                assert!(t.is_singleton_lit(&ok));
             }
 
             #[test]
@@ -966,8 +953,8 @@ macro_rules! closure_helper_conformance_tests {
                 let any = t.any();
                 let suspended_tag = t.atom_lit("suspended");
                 let continuation_surface = t.arrow(&[], any);
-                let captured = t.int_lit(7);
-                let payload = t.int_lit(42);
+                let captured = t.atom_lit("captured");
+                let payload = t.atom_lit("payload");
                 let continuation = t.closure_lit(ClosureTarget(7), vec![captured], 0);
                 let observed = t.tuple(&[suspended_tag, payload, continuation]);
                 let contract = t.tuple(&[suspended_tag, any, continuation_surface]);
@@ -1111,10 +1098,12 @@ mod smoke {
     }
 
     fn smoke_int_lit_in_int(t: &mut Types) {
+        // A literal in type position means its kind: int_lit IS int. The
+        // lattice cannot express a numeric singleton, by design.
         let i = t.int();
         let lit = t.int_lit(42);
         assert!(t.is_subtype(&lit, &i));
-        assert!(!t.is_subtype(&i, &lit));
+        assert!(t.is_subtype(&i, &lit));
     }
 
     fn smoke_nil_in_atom(t: &mut Types) {

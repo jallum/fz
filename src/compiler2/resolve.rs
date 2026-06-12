@@ -21,6 +21,8 @@ use std::collections::HashMap;
 
 use crate::ast::{SpecDecl, TypeExprBody};
 use crate::compiler::source::Span;
+use crate::diag::Diagnostic;
+use crate::diag::codes;
 use crate::modules::identity::ModuleName;
 use crate::specs::{ResolvedStructFieldShape, ResolvedTypeShape};
 use crate::type_expr::ResolvedSpecDecl;
@@ -278,11 +280,17 @@ impl World<'_> {
                 self.types_mut().atom_lit(name),
                 ResolvedTypeShape::AtomLit(name.clone()),
             )),
-            TypeExpr::IntLit(value) => Ok((self.types_mut().int_lit(*value), ResolvedTypeShape::IntLit(*value))),
-            TypeExpr::FloatLit(bits) => Ok((
-                self.types_mut().float_lit(f64::from_bits(*bits)),
-                ResolvedTypeShape::FloatLit(*bits),
-            )),
+            // The lattice cannot express a numeric singleton (Elixir's
+            // descr draws the same line): a literal in type position means
+            // its kind, and says so once.
+            TypeExpr::IntLit(value) => {
+                self.warn_numeric_literal_type(&value.to_string());
+                Ok((self.types_mut().int(), ResolvedTypeShape::IntLit(*value)))
+            }
+            TypeExpr::FloatLit(bits) => {
+                self.warn_numeric_literal_type(&f64::from_bits(*bits).to_string());
+                Ok((self.types_mut().float(), ResolvedTypeShape::FloatLit(*bits)))
+            }
             TypeExpr::Wildcard => Ok((self.types_mut().any(), ResolvedTypeShape::Any)),
             TypeExpr::Nil => Ok((self.types_mut().nil(), ResolvedTypeShape::Nil)),
             TypeExpr::Bool => Ok((self.types_mut().bool(), ResolvedTypeShape::Bool)),
@@ -394,6 +402,16 @@ impl World<'_> {
             return NameClass::Var(id);
         }
         NameClass::Unknown
+    }
+
+    fn warn_numeric_literal_type(&mut self, literal: &str) {
+        self.emit_warning_once(Diagnostic::warning(
+            codes::TYPE_NUMERIC_LITERAL_WIDENED,
+            format!(
+                "`{literal}` is not a type; a numeric literal in type position means its kind — use a pattern or a guard to filter values"
+            ),
+            Span::DUMMY,
+        ));
     }
 
     fn builtin_ty(&mut self, builtin: Builtin) -> Ty {

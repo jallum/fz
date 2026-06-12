@@ -9652,3 +9652,45 @@ fn compiler2_int_keyed_map_index_types_through_the_carried_literal() {
         "the int-keyed lookup must keep its precise field type",
     );
 }
+
+#[test]
+fn compiler2_numeric_literal_in_type_position_widens_with_a_warning() {
+    // The lattice cannot express a numeric singleton: `@type digit :: 0`
+    // means integer(), and the compiler says so once instead of silently
+    // changing what the annotation filters.
+    let tel = ConfiguredTelemetry::new();
+    let diags = Capture::new();
+    tel.attach(&["fz", "diag"], diags.handler());
+    let rendered = rendered_type_defs(&tel);
+
+    let mut world = crate::compiler2::World::new(&tel);
+    world.submit_code(
+        Some("digit.fz".to_string()),
+        concat!(
+            "@type digit :: 0\n",
+            "fn pick(d :: digit), do: d\n",
+            "fn main(), do: pick(7)\n",
+        )
+        .to_string(),
+    );
+    world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
+    assert_resolved(world.drive(), "the literal-typed program settles");
+
+    assert!(
+        diags.find(&["fz", "diag", "warning"]).iter().any(|event| {
+            matches!(
+                event.metadata.get("code"),
+                Some(Value::Str(code)) if code == "type/numeric-literal-widened"
+            )
+        }),
+        "widening a numeric literal type must warn",
+    );
+    let digit = rendered
+        .borrow()
+        .iter()
+        .rev()
+        .find(|def| def.name == "digit")
+        .map(|def| def.rendered.clone())
+        .expect("digit resolves");
+    assert_eq!(digit, "int", "the literal type means its kind");
+}

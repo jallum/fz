@@ -5,14 +5,13 @@ use std::collections::BTreeSet;
 use crate::fz_ir::FnId;
 
 use super::TypeVarId;
-use super::bits::F64Bits;
-
 /// A finite-or-cofinite set over `T`. `cofinite=false` means "exactly these";
 /// `cofinite=true` means "every value of T EXCEPT these". `(false, {})` is
 /// empty; `(true, {})` is the full universe of T.
 ///
-/// Used to track singleton-type precision for atoms, ints, strs, and floats
-/// (the latter via the `F64Bits` wrapper for sane equality/ordering).
+/// Used to track singleton-type precision for atoms (and the atom-shaped
+/// nominal axes: opaques, brands, vars). Numbers deliberately have no
+/// literal sets — numeric constants are values, not types.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct LiteralSet<T: Ord + Clone> {
     pub set: BTreeSet<T>,
@@ -103,8 +102,6 @@ impl<T: Ord + Clone> LiteralSet<T> {
 }
 
 pub(crate) type AtomSet = LiteralSet<String>;
-pub(crate) type IntSet = LiteralSet<i64>;
-pub(crate) type FloatSet = LiteralSet<F64Bits>;
 
 /// fz-try.5 — parametric type-variable identifier. Vars are nominal placeholders
 /// distinguished only by id; the lattice cannot tell them apart from opaques.

@@ -1,12 +1,12 @@
 //! Private descriptor for the interned type implementation.
 
-use super::bits::{BasicBits, F64Bits};
+use super::bits::BasicBits;
 use super::conj::Conj;
 use super::dnf::{dnf_intersect, dnf_neg, dnf_union, is_dnf_top, normalize_empty_nonempty_list_unions};
 use super::emptiness::{
     Memo, func_clause_empty, list_clause_empty, map_clause_empty, resource_clause_empty, tuple_clause_empty,
 };
-use super::lit_set::{AtomSet, FloatSet, IntSet, LiteralSet, VarSet};
+use super::lit_set::{AtomSet, LiteralSet, VarSet};
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
 use super::{MapKey, Ty, TyCtx, TypeVarId};
 
@@ -14,8 +14,6 @@ use super::{MapKey, Ty, TyCtx, TypeVarId};
 pub(super) struct Descr {
     pub(super) basic: BasicBits,
     pub(super) atoms: AtomSet,
-    pub(super) ints: IntSet,
-    pub(super) floats: FloatSet,
     pub(super) opaques: LiteralSet<String>,
     pub(super) brands: LiteralSet<String>,
     pub(super) vars: VarSet,
@@ -31,8 +29,6 @@ impl Descr {
         Self {
             basic: BasicBits::ALL,
             atoms: AtomSet::any(),
-            ints: IntSet::any(),
-            floats: FloatSet::any(),
             opaques: LiteralSet::any(),
             brands: LiteralSet::any(),
             vars: VarSet::any(),
@@ -48,8 +44,6 @@ impl Descr {
         Self {
             basic: BasicBits::NONE,
             atoms: AtomSet::none(),
-            ints: IntSet::none(),
-            floats: FloatSet::none(),
             opaques: LiteralSet::none(),
             brands: LiteralSet::none(),
             vars: VarSet::none(),
@@ -102,27 +96,11 @@ impl Descr {
     }
 
     pub(super) fn int() -> Self {
-        let mut d = Self::none();
-        d.ints = IntSet::any();
-        d
-    }
-
-    pub(super) fn int_lit(n: i64) -> Self {
-        let mut d = Self::none();
-        d.ints = IntSet::lit(n);
-        d
+        Self::from_basic(BasicBits::INT)
     }
 
     pub(super) fn float() -> Self {
-        let mut d = Self::none();
-        d.floats = FloatSet::any();
-        d
-    }
-
-    pub(super) fn float_lit(f: f64) -> Self {
-        let mut d = Self::none();
-        d.floats = FloatSet::lit(F64Bits::new(f));
-        d
+        Self::from_basic(BasicBits::FLOAT)
     }
 
     pub(super) fn str_t() -> Self {
@@ -198,18 +176,6 @@ impl Descr {
         d
     }
 
-    pub(super) fn as_int_singleton(&self) -> Option<i64> {
-        (!self.ints.cofinite && self.ints.set.len() == 1)
-            .then(|| self.ints.set.iter().next().copied())
-            .flatten()
-    }
-
-    pub(super) fn as_float_singleton(&self) -> Option<F64Bits> {
-        (!self.floats.cofinite && self.floats.set.len() == 1)
-            .then(|| self.floats.set.iter().next().copied())
-            .flatten()
-    }
-
     pub(super) fn as_atom_singleton(&self) -> Option<&str> {
         (!self.atoms.cofinite && self.atoms.set.len() == 1)
             .then(|| self.atoms.set.iter().next().map(String::as_str))
@@ -237,8 +203,6 @@ impl Descr {
     pub(super) fn as_tuple_singleton(&self) -> Option<&[Ty]> {
         if self.basic.is_empty()
             && self.atoms.is_none()
-            && self.ints.is_none()
-            && self.floats.is_none()
             && self.opaques.is_none()
             && self.brands.is_none()
             && self.vars.is_none()
@@ -263,7 +227,8 @@ impl Descr {
     }
 
     pub(super) fn is_singleton_literal(&self) -> bool {
-        self.as_int_singleton().is_some() || self.as_atom_singleton().is_some() || self.as_float_singleton().is_some()
+        // Only atoms have singleton types; numeric constants are values.
+        self.as_atom_singleton().is_some()
     }
 
     pub(super) fn max_tuple_arity(&self) -> usize {
@@ -277,8 +242,6 @@ impl Descr {
     pub(super) fn kinds_overlap(&self, other: &Descr) -> bool {
         (!self.basic.intersect(other.basic).is_empty())
             || (!self.atoms.is_none() && !other.atoms.is_none())
-            || (!self.ints.is_none() && !other.ints.is_none())
-            || (!self.floats.is_none() && !other.floats.is_none())
             || (!self.opaques.is_none() && !other.opaques.is_none())
             || (!self.brands.is_none() && !other.brands.is_none())
             || (!self.vars.is_none() && !other.vars.is_none())
@@ -295,17 +258,6 @@ impl Descr {
             for sig in &mut clause.pos {
                 sig.fields.insert(key.clone(), vt);
             }
-        }
-        out
-    }
-
-    pub(super) fn widen_literals(&self) -> Descr {
-        let mut out = self.clone();
-        if !out.ints.is_none() && !out.ints.is_any() {
-            out.ints = IntSet::any();
-        }
-        if !out.floats.is_none() && !out.floats.is_any() {
-            out.floats = FloatSet::any();
         }
         out
     }
@@ -367,8 +319,6 @@ impl Descr {
     fn axis_free(&self) -> bool {
         self.basic.is_empty()
             && self.atoms.is_none()
-            && self.ints.is_none()
-            && self.floats.is_none()
             && self.opaques.is_none()
             && self.brands.is_none()
             && self.vars.is_none()
@@ -386,8 +336,6 @@ impl Descr {
     pub(super) fn looks_full(&self) -> bool {
         self.basic == BasicBits::ALL
             && self.atoms.is_any()
-            && self.ints.is_any()
-            && self.floats.is_any()
             && self.opaques.is_any()
             && self.brands.is_any()
             && self.vars.is_any()
@@ -402,8 +350,6 @@ impl Descr {
         Descr {
             basic: self.basic.union(other.basic),
             atoms: self.atoms.union(&other.atoms),
-            ints: self.ints.union(&other.ints),
-            floats: self.floats.union(&other.floats),
             opaques: self.opaques.union(&other.opaques),
             brands: self.brands.union(&other.brands),
             vars: self.vars.union(&other.vars),
@@ -419,8 +365,6 @@ impl Descr {
         Descr {
             basic: self.basic.intersect(other.basic),
             atoms: self.atoms.intersect(&other.atoms),
-            ints: self.ints.intersect(&other.ints),
-            floats: self.floats.intersect(&other.floats),
             opaques: self.opaques.intersect(&other.opaques),
             brands: self.brands.intersect(&other.brands),
             vars: self.vars.intersect(&other.vars),
@@ -436,8 +380,6 @@ impl Descr {
         Descr {
             basic: self.basic.neg(),
             atoms: self.atoms.neg(),
-            ints: self.ints.neg(),
-            floats: self.floats.neg(),
             opaques: self.opaques.neg(),
             brands: self.brands.neg(),
             vars: self.vars.neg(),
@@ -465,8 +407,6 @@ impl Descr {
         memo.in_flight.insert(self.clone());
         let result = self.basic.is_empty()
             && self.atoms.is_none()
-            && self.ints.is_none()
-            && self.floats.is_none()
             && self.opaques.is_none()
             && self.brands.is_none()
             && self.vars.is_none()

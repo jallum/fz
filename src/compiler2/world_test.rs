@@ -228,7 +228,12 @@ fn compiler2_activation_inputs_are_distinct_from_the_canonical_activation_key() 
     assert!(world.define_recursive(function, true));
     assert!(world.define_dispatch_mask(function, vec![false]));
 
-    let raw_input = world.types_mut().int_lit(7);
+    // A recursive fn's non-dispatch slot collapses to its convergence class
+    // in the KEY (list(int) -> list(any)), while the body-input EVIDENCE
+    // keeps the precise type. (Numeric literals no longer exist to widen;
+    // the list collapse is the surviving canonicalization.)
+    let int = world.types_mut().int();
+    let raw_input = world.types_mut().list(int);
     let key = world.activation_key(root, function, &[raw_input]);
     let canonical_input = key.input[0];
 
@@ -263,8 +268,8 @@ fn compiler2_activation_inputs_retract_one_publishers_stale_contribution() {
     assert!(world.define_recursive(function, false));
     assert!(world.define_dispatch_mask(function, vec![true]));
 
-    let input_a = world.types_mut().int_lit(1);
-    let input_b = world.types_mut().int_lit(2);
+    let input_a = world.types_mut().atom_lit("a");
+    let input_b = world.types_mut().atom_lit("b");
     let key = world.activation_key(root, function, &[input_a]);
 
     world.complete_job(
