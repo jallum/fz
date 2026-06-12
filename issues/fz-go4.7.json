@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-12T19:52:48Z",
@@ -26,8 +26,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Re-green fixture_matrix after rebasing onto latest fz-rh2",
   "type": "bug",
-  "updated_at": "2026-06-12T20:18:00Z"
+  "updated_at": "2026-06-12T20:58:39Z"
 }
