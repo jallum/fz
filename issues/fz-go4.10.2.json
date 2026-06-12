@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-go4.10.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-go4.10.4"
+  ],
   "created": "2026-06-12T22:20:09Z",
   "description": "Goal: consume the generalized delivery contract from compiler2 native terminator emission so resumed receive paths, native returns, and native tailcalls stop improvising ABI compatibility locally.\\n\\nOutput contract:\\n- emit_return_term, emit_call_term, and emit_native_tail_call consume one delivery plan\\n- resumed selective-receive outcome closures and other continuations re-enter through the same authoritative boundary logic\\n- repr mismatches are handled by generated adapters or rejected by construction, not by call-site-specific fixes\\n\\nChanges:\\n- refactor native terminator emission to ask the surface/driver for delivery plans\\n- route resumed receive continuation delivery through the same path\\n- remove ad hoc callee/caller repr mismatch handling that becomes obsolete\\n- recover compiler2 native selective receive over make_ref identities and minimal receive-\u003earithmetic repros\\n\\nValidation:\\n- fz2 native repros pass\\n- receive_selective_refs passes again\\n- workspace compiler2 native selective-receive coverage stays green",
   "id": "fz-go4.10.2",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Route compiler2 native return/resume/tailcall through one delivery planner",
   "type": "bug",
-  "updated_at": "2026-06-12T22:20:23Z"
+  "updated_at": "2026-06-12T22:20:24Z"
 }
