@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-go4.4"
+  ],
   "blocks": [],
   "created": "2026-06-12T18:42:56Z",
   "description": "Goal\nLock in the ownership-boundary invariant by promoting the relevant clippy lints and updating agent docs where the subsystem model becomes simpler or more explicit.\n\nScope\n- lint invocation / hook / CI surfaces used by this repo\n- `.agent/docs/telemetry.md` and `.agent/docs/pipeline.md` if the final model changes\n- only facts grounded in landed code\n\nContract\n- the selected clone/conversion lints are part of the enforced workflow\n- docs describe the current ownership model, not the migration story\n- no stale exceptions remain after the structural cleanup lands\n\nValidation\n- `cargo clippy --all-targets -- -D warnings ...` with the chosen lints\n- docs reviewed against landed code\n- full `cargo test --workspace` before close",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Ratchet ownership lints and restate the invariant docs",
   "type": "task",
-  "updated_at": "2026-06-12T18:42:56Z"
+  "updated_at": "2026-06-12T18:42:57Z"
 }
