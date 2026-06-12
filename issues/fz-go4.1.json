@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T18:42:56Z",
+  "description": "Goal\nRemove clone-driven front-door and CLI plumbing by making borrowed inputs stay borrowed until a real owner retains them.\n\nScope\n- `src/lib.rs` dump/compile pipeline helpers\n- compiler2 front-door parse entry points\n- call sites that currently clone path/source names only to satisfy owned signatures\n\nContract\n- parsing and pipeline front doors allocate source names and paths exactly once at the true owner\n- helper functions borrow names/paths when they do not retain them\n- no compatibility wrappers or alternate APIs remain after the change\n\nValidation\n- targeted clippy sweep for redundant clone / unnecessary_to_owned\n- targeted tests covering dump/run front doors\n- full `cargo test --workspace` before close",
+  "id": "fz-go4.1",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 2,
+  "status": "open",
+  "title": "Normalize front-door and CLI ownership boundaries",
+  "type": "task",
+  "updated_at": "2026-06-12T18:42:56Z"
+}
