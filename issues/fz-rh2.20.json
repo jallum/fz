@@ -7,9 +7,15 @@
   "id": "fz-rh2.20",
   "labels": [],
   "parent": "fz-rh2",
+  "comments": [
+    {
+      "text": "Diagnosis sharpened at 346ce046d: with RUST_MIN_STACK=2GiB the test PASSES and returns exactly 100_000, so the jitted code is semantically correct — the defect is purely a missing tail-call emission for the self-recursive DirectCall in count/2's second clause (100k real native frames overflow the default 2MiB test-thread stack while RUNNING the compiled code, not while compiling it). Orthogonal to the fz-rh2.21/.22 fixpoint work: drive resolves, lowering settles, codegen compiles. Note the failure mode is SIGABRT (stack overflow aborts the whole test binary), so every suite run must --skip this test until fixed — it is the one thing standing between compiler2:: and being a hard gate once fz-rh2.23's four failures land. Repro of the passing variant: RUST_MIN_STACK=2147483648 cargo test --lib compiler2_native_program_jit_keeps_tail_recursion_bounded",
+      "timestamp": "2026-06-12T16:00:08Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "drive_test: compiler2_native_program_jit_keeps_tail_recursion_bounded overflows its stack under cargo test",
   "type": "bug",
-  "updated_at": "2026-06-12T09:48:13Z"
+  "updated_at": "2026-06-12T16:00:08Z"
 }
