@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.18.6.1"
+  ],
   "blocks": [],
   "created": "2026-06-12T05:16:31Z",
   "description": "Goal\nMake semantic call resolution use return-evidence readiness honestly. A call that needs a callee's current return evidence must wait when that evidence is absent; it must not publish a callsite summary or caller return derived from `none`.\n\nSignal\n- The direct fallback `world.activation_return(...).unwrap_or_else(|| none_ty(world))` is gone.\n- Direct, protocol, and closure call resolution record current reads/waits for missing callee return evidence and stop the job until the needed evidence exists.\n- Callsite summaries are published only from produced evidence; absent evidence means no summary for that observation, not a summary with bottom/top return.\n- Tests assert that an absent callee return fact blocks the semantic job and that a produced no-return evidence value remains distinct from absence.\n\nTactics\n- Work in `src/compiler2/jobs/semantic.rs` around `prepare_function_call`, `resolve_function_call`, `resolve_protocol_call`, and closure-call resolution.\n- Keep the scheduler contract current-shaped for semantic iteration; do not wait on settled evidence inside ordinary semantic calls.\n- Preserve provider-boundary behavior only where it is a real dynamic boundary named by evidence.\n\nOutro\nNo absent callee return as `none`, no unresolved callsite summary with fake return type, no “try again later but publish `any` for now”, and no broad catch-all branch that keeps caller analysis moving with poisoned evidence.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 semantic calls: wait on absent return evidence",
   "type": "task",
-  "updated_at": "2026-06-12T05:16:31Z"
+  "updated_at": "2026-06-12T05:16:32Z"
 }
