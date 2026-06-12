@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.18.6.2"
+  ],
   "blocks": [],
   "created": "2026-06-12T05:16:31Z",
   "description": "Goal\nMove the remaining return-evidence-to-`Ty` projections to named completeness or dynamic boundaries. Artifact/backend/native consumers may need a type-shaped ABI input, but that projection must be explicit about which evidence states are acceptable.\n\nSignal\n- `world.activation_return` is replaced by evidence-named accessors; type projection methods are named by the boundary they serve.\n- `MaterializeRoot`, backend lowering, ABI-ready, emission-ready, and native lowering consume settled semantic closure plus settled return evidence, not opportunistic current type reads.\n- Produced dynamic/unknown evidence maps to `any` only at a named dynamic boundary; no-return evidence maps to bottom only where an empty value set is the correct ABI/semantic result.\n- Tests cover materialization/codegen behavior for known, dynamic-boundary, and no-return evidence.\n\nTactics\n- Start at `src/compiler2/jobs/artifact.rs`, then follow the return type through backend/native structs only where they need concrete `Ty`.\n- Do not introduce an adapter that lets all downstream code keep calling old `activation_return` semantics.\n- Prefer shrinking APIs over carrying both evidence and old type-return paths.\n\nOutro\nNo downstream consumer that infers fact readiness from a `Ty`, no projection helper with compatibility naming, no hidden `any` projection for missing evidence, and no artifact/native job that bypasses settled semantic evidence.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 artifacts: project return evidence only at explicit boundaries",
   "type": "task",
-  "updated_at": "2026-06-12T05:16:31Z"
+  "updated_at": "2026-06-12T05:16:32Z"
 }
