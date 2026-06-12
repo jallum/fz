@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-go4.11.1"
+    "fz-go4.11.1",
+    "fz-go4.11.2"
   ],
   "blocks": [
     "fz-go4.11.4"
