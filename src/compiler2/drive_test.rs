@@ -8312,16 +8312,20 @@ impl Handler for ReturnTypeCaptureHandler {
         else {
             return;
         };
-        let Some(return_ty) = event
+        // The event carries the activation's return EVIDENCE. Only rounds
+        // that hold evidence are recorded; the last record at quiescence is
+        // the settled return.
+        let Some(Some(return_ty)) = event
             .metadata
             .get("return_ty")
-            .and_then(|value| value.downcast_ref::<Ty>())
+            .and_then(|value| value.downcast_ref::<Option<Ty>>())
+            .copied()
         else {
             return;
         };
         self.defs.borrow_mut().push(ReturnTypeRecord {
             activation: activation.clone(),
-            return_ty: *return_ty,
+            return_ty,
         });
     }
 }
@@ -9429,4 +9433,128 @@ fn compiler2_quicksort_return_revisions_stay_bounded() {
             stats.define_calls,
         );
     }
+}
+
+#[test]
+fn compiler2_quicksort_converges_identically_on_every_schedule() {
+    // The runaway was bimodal: per-process hash seeds picked the wake order,
+    // and one order in a handful locked the engine into a period-2
+    // oscillation. Monotone joins make the least fixpoint unique and the
+    // schedule irrelevant: twenty fresh drives must do identical work and
+    // settle identical frontiers. If this test ever flakes, the design has
+    // a hole and the flake has found it — do not loosen it.
+    let mut shapes = Vec::new();
+    for _ in 0..20 {
+        let tel = ConfiguredTelemetry::new();
+        let semantic = SemanticClosedCapture::new();
+        tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
+        let jobs_ran: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
+        let sink = Rc::clone(&jobs_ran);
+        tel.attach(
+            &["fz", "compiler2", "job"],
+            Box::new(move |event: &Event<'_, '_, '_>| {
+                if event.kind == EventKind::SpanStart {
+                    *sink.borrow_mut() += 1;
+                }
+            }),
+        );
+
+        let mut world = crate::compiler2::World::new(&tel);
+        world.submit_code(
+            Some("quicksort.fz".to_string()),
+            include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
+        );
+        let root = world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
+        assert_resolved(world.drive(), "every schedule converges");
+        let closed = semantic.last(root);
+        shapes.push((*jobs_ran.borrow(), closed.activations.len(), closed.executables.len()));
+    }
+    // The fixpoint is unique: every schedule settles the exact same
+    // frontier. The WORK to reach it may vary slightly (a different
+    // interleaving costs a few extra quiet joins), but stays in a tight
+    // band — the runaway did 54,000+ jobs where these do ~300.
+    let frontier = (shapes[0].1, shapes[0].2);
+    assert!(
+        shapes.iter().all(|shape| (shape.1, shape.2) == frontier),
+        "all schedules must settle identical frontiers: {shapes:?}",
+    );
+    let min_jobs = shapes.iter().map(|shape| shape.0).min().expect("runs");
+    let max_jobs = shapes.iter().map(|shape| shape.0).max().expect("runs");
+    assert!(
+        max_jobs <= min_jobs + min_jobs / 10 && max_jobs < 1000,
+        "work must stay in a tight band across schedules: {shapes:?}",
+    );
+}
+
+#[test]
+fn compiler2_resolved_drive_is_quiescent() {
+    // After Resolved, the fixpoint is a fixpoint: re-driving with no new
+    // submissions runs zero jobs. Self-wake loops (the runaway's engine)
+    // would fail this immediately.
+    let tel = ConfiguredTelemetry::new();
+    let mut world = crate::compiler2::World::new(&tel);
+    world.submit_code(
+        Some("quicksort.fz".to_string()),
+        include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
+    );
+    world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
+    assert_resolved(world.drive(), "first drive settles");
+
+    let jobs_ran: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
+    let sink = Rc::clone(&jobs_ran);
+    tel.attach(
+        &["fz", "compiler2", "job"],
+        Box::new(move |event: &Event<'_, '_, '_>| {
+            if event.kind == EventKind::SpanStart {
+                *sink.borrow_mut() += 1;
+            }
+        }),
+    );
+    assert_resolved(world.drive(), "a settled world re-drives to Resolved");
+    assert_eq!(*jobs_ran.borrow(), 0, "a settled world has nothing to do");
+}
+
+#[test]
+#[ignore = "manual end-to-end smoke: shells the release fz2 binary 20x; run when touching the fact engine"]
+fn compiler2_quicksort_cli_builds_are_stable_smoke() {
+    // The original symptom: the same build command produced 2.5MB telemetry
+    // logs or 700MB runaways, decided by the process hash seed. Twenty
+    // builds must produce small logs of identical event counts.
+    let binary = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/release/fz2");
+    assert!(
+        binary.exists(),
+        "build the release binary first: cargo build --release --bin fz2",
+    );
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/quicksort/input.fz");
+    let mut line_counts = Vec::new();
+    for run in 0..20 {
+        let dir = std::env::temp_dir().join(format!("fz2-smoke-{run}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let log = dir.join("telemetry.jsonl");
+        let out = dir.join("out");
+        let status = std::process::Command::new(&binary)
+            .arg("build")
+            .arg("-o")
+            .arg(&out)
+            .arg("--log-telemetry")
+            .arg(&log)
+            .arg(&fixture)
+            .status()
+            .expect("fz2 build should run");
+        assert!(status.success(), "fz2 build should succeed on run {run}");
+        let bytes = std::fs::metadata(&log).expect("telemetry log").len();
+        assert!(
+            bytes < 8 * 1024 * 1024,
+            "telemetry log must stay in the megabytes on run {run}: {bytes} bytes",
+        );
+        let lines = std::fs::read_to_string(&log).expect("log").lines().count();
+        line_counts.push(lines);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    let min = line_counts.iter().min().expect("runs");
+    let max = line_counts.iter().max().expect("runs");
+    assert!(
+        max <= &(min + min / 10),
+        "event counts must stay in a tight band: {line_counts:?}",
+    );
 }
