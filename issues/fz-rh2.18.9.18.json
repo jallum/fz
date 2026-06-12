@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T08:01:48Z",
+  "description": "Goal\nMake compiler2 quicksort backend/artifact tests deterministic under the default Rust parallel test harness, or explicitly serialize the shared resource they mutate. Two focused quicksort tests pass alone, but one can fail when run concurrently with another quicksort compiler2 test.\n\nObserved reproduction\n`/opt/homebrew/bin/timeout 180s cargo test --lib compiler2::drive_test::compiler2_interp_runs_quicksort_from_backend_artifacts -- --exact --nocapture` passes alone.\nRunning it in parallel with `compiler2::activation_partition_telemetry_test::compiler2_quicksort_probe_has_a_hard_timeout_and_compact_budget_signal` produced: `function_clause: no backend entry clause matched for executable 2`.\n\nSignal\n- The two tests pass when selected together under the default parallel harness, not just with `--test-threads=1`.\n- The fix identifies the shared mutable resource or global cache involved; no test-only sleep, retry, or broad serializing shim.\n- `cargo test --lib compiler2::` closeout can rely on deterministic test isolation once the remaining semantic blockers are fixed.\n\nStrategy\nFind the shared state boundary first: backend executable ids, runtime/native registry, telemetry/output paths, and any global JIT/interpreter state. Move ownership into the per-test World/program artifact if that is the real model, or serialize only the true external singleton if one is unavoidable.",
+  "id": "fz-rh2.18.9.18",
+  "labels": [],
+  "parent": "fz-rh2.18.9",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 tests: isolate parallel quicksort backend artifact runs",
+  "type": "bug",
+  "updated_at": "2026-06-12T08:01:48Z"
+}
