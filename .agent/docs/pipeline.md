@@ -349,9 +349,10 @@ the published handoff.
 
 The same rule applies to native return delivery. `NativeBody.return_abi` is the
 published result contract for a native body; codegen may derive boundary
-adapters from that authority when a producer and consumer disagree on the lane
-shape, but it must not rediscover or improvise the contract at individual
-tailcall or callable-entry sites.
+adapters from that authority when a producer and consumer disagree on a single
+value lane, and must pass tuple-field delivery through structurally when the
+contracts already match. It must not rediscover or improvise the contract at
+individual tailcall or callable-entry sites.
 
 The same two-layer split now applies on both sides of the migration seam:
 legacy lowering may still project legacy `Ty` handles into

@@ -1,6 +1,13 @@
 //! Codegen view of compiler2-native return and continuation ABI facts.
 
+use super::{ArgRepr, arg_repr_from_compiler2};
 use crate::compiler2::{NativeBody, NativeEntryAbi, ReturnAbi};
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) enum DeliveredShape {
+    Value(ArgRepr),
+    TupleFields(Box<[ArgRepr]>),
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct NativeDemandAbi<'a> {
@@ -32,6 +39,28 @@ impl<'a> NativeDemandAbi<'a> {
             true
         } else {
             self.delivers_value_lane()
+        }
+    }
+
+    pub(crate) fn returned_shape(self, is_cont_fn: bool) -> DeliveredShape {
+        if self.returned_delivers_value_lane(is_cont_fn) {
+            let repr = match &self.body.return_abi {
+                ReturnAbi::Value(repr) => arg_repr_from_compiler2(*repr),
+                ReturnAbi::TupleFields(_) => ArgRepr::ValueRef,
+            };
+            DeliveredShape::Value(repr)
+        } else {
+            match &self.body.return_abi {
+                ReturnAbi::TupleFields(fields) => DeliveredShape::TupleFields(
+                    fields
+                        .iter()
+                        .copied()
+                        .map(arg_repr_from_compiler2)
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                ),
+                ReturnAbi::Value(repr) => DeliveredShape::Value(arg_repr_from_compiler2(*repr)),
+            }
         }
     }
 

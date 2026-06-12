@@ -272,11 +272,9 @@ fn build_boundary_return_adapter_signature(source: ArgRepr) -> Signature {
     sig
 }
 
-fn delivered_value_lane(surface: &NativeCodegenSurface<'_>, body_sid: u32, is_cont_fn: bool) -> Option<ArgRepr> {
+fn delivered_shape(surface: &NativeCodegenSurface<'_>, body_sid: u32, is_cont_fn: bool) -> DeliveredShape {
     let body = surface.body(body_sid).native_body;
-    NativeDemandAbi::new(body)
-        .returned_delivers_value_lane(is_cont_fn)
-        .then_some(surface.return_reprs[body_sid as usize])
+    NativeDemandAbi::new(body).returned_shape(is_cont_fn)
 }
 
 fn collect_boundary_return_adapter_pairs(surface: &NativeCodegenSurface<'_>) -> BTreeSet<(ArgRepr, ArgRepr)> {
@@ -293,9 +291,7 @@ fn collect_boundary_return_adapter_pairs(surface: &NativeCodegenSurface<'_>) -> 
         };
         let caller_sid = body_slot.codegen_id;
         let caller_is_cont = surface.cont_fns.contains(&body_slot.fn_id);
-        let Some(caller_repr) = delivered_value_lane(surface, caller_sid, caller_is_cont) else {
-            continue;
-        };
+        let caller_shape = delivered_shape(surface, caller_sid, caller_is_cont);
         for block in &body_slot.body.blocks {
             let Term::TailCall {
                 callee: DirectCallTarget::Local(callee),
@@ -311,11 +307,12 @@ fn collect_boundary_return_adapter_pairs(surface: &NativeCodegenSurface<'_>) -> 
                 continue;
             };
             let callee_is_cont = surface.cont_fns.contains(callee);
-            let Some(callee_repr) = delivered_value_lane(surface, callee_sid, callee_is_cont) else {
-                continue;
-            };
-            if callee_repr != caller_repr {
-                pairs.insert((callee_repr, caller_repr));
+            let callee_shape = delivered_shape(surface, callee_sid, callee_is_cont);
+            if let (DeliveredShape::Value(callee_repr), DeliveredShape::Value(caller_repr)) =
+                (&callee_shape, &caller_shape)
+                && callee_repr != caller_repr
+            {
+                pairs.insert((*callee_repr, *caller_repr));
             }
         }
     }

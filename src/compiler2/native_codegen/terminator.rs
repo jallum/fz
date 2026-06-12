@@ -236,6 +236,10 @@ fn build_boundary_return_adapter_cont<M: cranelift_module::Module>(
     adapter_cont
 }
 
+fn returned_shape(env: &CodegenEnv<'_>, body_sid: u32, is_cont_fn: bool) -> DeliveredShape {
+    NativeDemandAbi::new(env.body_native(body_sid)).returned_shape(is_cont_fn)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, '_, M>,
@@ -825,14 +829,8 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     let callee_param_reprs = &param_reprs[callee_sid as usize];
     let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
     let callee_fref = body.jmod.declare_func_in_func(callee_fid, body.b.func);
-    let callee_ret_repr = NativeDemandAbi::new(env.body_native(callee_sid))
-        .returned_delivers_value_lane(env.cont_fns.contains(&callee_fn_id))
-        .then_some(env.return_reprs[callee_sid as usize])
-        .expect("native tail callee must deliver one value lane");
-    let caller_ret_repr = NativeDemandAbi::new(env.body_native(this_spec_id))
-        .returned_delivers_value_lane(is_cont_fn)
-        .then_some(env.return_reprs[this_spec_id as usize])
-        .expect("native tail caller must deliver one value lane");
+    let callee_shape = returned_shape(env, callee_sid, env.cont_fns.contains(&callee_fn_id));
+    let caller_shape = returned_shape(env, this_spec_id, is_cont_fn);
     let mut native_args = Vec::with_capacity(callee_param_reprs.iter().map(ArgRepr::abi_arity).sum());
     let mut mid_flight_arg_shapes: Vec<MidFlightArgShape> = Vec::with_capacity(callee_param_reprs.len() + 2);
     for (i, av) in args.iter().enumerate() {
@@ -872,14 +870,27 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
             Some(c) => c,
             None => {
                 synth_halt_cont = true;
+                let DeliveredShape::Value(caller_ret_repr) = caller_shape else {
+                    panic!(
+                        "top-level native tail delivery must end in one value lane, got {:?}",
+                        caller_shape
+                    );
+                };
                 synthesize_halt_cont(body, runtime, caller_ret_repr)
             }
         }
     };
-    let tail_cont_arg = if callee_ret_repr == caller_ret_repr {
-        caller_outer_cont
-    } else {
-        build_boundary_return_adapter_cont(body, env, caller_outer_cont, callee_ret_repr, caller_ret_repr)
+    let tail_cont_arg = match (&callee_shape, &caller_shape) {
+        (left, right) if left == right => caller_outer_cont,
+        (DeliveredShape::Value(callee_ret_repr), DeliveredShape::Value(caller_ret_repr)) => {
+            build_boundary_return_adapter_cont(body, env, caller_outer_cont, *callee_ret_repr, *caller_ret_repr)
+        }
+        _ => {
+            panic!(
+                "native tail delivery mismatch requires structural agreement or a value-lane adapter: callee={:?}, caller={:?}",
+                callee_shape, caller_shape
+            );
+        }
     };
     native_args.push(tail_cont_arg);
     mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
@@ -912,6 +923,12 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         // into MY cont according to the continuation schema.
         let call_inst = body.b.ins().call(callee_fref, &native_args);
         let result = body.b.inst_results(call_inst)[0];
+        let DeliveredShape::Value(callee_ret_repr) = callee_shape else {
+            panic!(
+                "uniform native tail call requires one delivered value lane, got {:?}",
+                callee_shape
+            );
+        };
         let result_value = native_call_result_value(body, result, callee_ret_repr);
         let my_cont = body.b.ins().load(
             types::I64,
