@@ -3,9 +3,7 @@
   "blocked_by": [
     "fz-rh2.18.9.12"
   ],
-  "blocks": [
-    "fz-rh2.18.9.18"
-  ],
+  "blocks": [],
   "created": "2026-06-12T07:57:35Z",
   "description": "Goal\nMake the compiler-owned native-program quicksort path preserve the `entry/0` result after a clean rebuild. Fresh verification shows the front-door root JIT path now passes, but `compiler2::drive_test::compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen` still returns `3` instead of `42`.\n\nSignal\n- `/opt/homebrew/bin/timeout 60s target/debug/deps/fz-01415279b97da685 --exact compiler2::compiler2_test::compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare --nocapture` passes after `cargo clean` + fresh build.\n- `/opt/homebrew/bin/timeout 60s target/debug/deps/fz-01415279b97da685 --exact compiler2::drive_test::compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen --nocapture` fails from the same fresh build with `left: 3`, `right: 42`.\n- The fix makes the compiler-owned native-program path and the root-entry JIT path agree for `fixtures2/00020_quicksort_jit_entry.fz` without depending on stale artifacts.\n\nStrategy\nCompare the native program produced and consumed inside the compiler-owned drive/codegen path against the front-door path that now passes on a clean rebuild. Repair the stale-root/native-program replacement boundary or executable selection seam; do not paper over by changing expected values, adding a quicksort branch, or blaming parallelism before the alone failure is gone.\n\nOutro\nNo compiler-owned/native-program quicksort divergence, no stale prepared native program after clean rebuild, no quicksort-specific codegen branch, and no closure claim based on warm artifacts.",
   "id": "fz-rh2.18.9.17",
