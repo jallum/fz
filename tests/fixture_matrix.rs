@@ -331,15 +331,7 @@ fn temporarily_disabled_static_trial_reason(name: &str) -> Option<&'static str> 
 // on clean HEAD after the rebase. Track removal in fz-go4.7.
 fn temporarily_disabled_matrix_trial_reason(fixture: &str, path: &str) -> Option<&'static str> {
     match (fixture, path) {
-        ("case_tuple_pattern_sequential", "fz2-interp")
-        | ("concurrency_ping_pong", "fz2-interp")
-        | ("cross_module_macro", "fz2-interp")
-        | ("macro_inc", "fz2-interp")
-        | ("map_three_path_parity", "fz2-interp")
-        | ("opaque_fn_value_join", "fz2-interp")
-        | ("receive_selective_refs", _)
-        | ("repr_seam_closure_predicate", "fz2-interp")
-        | ("utf8_smart_constructor", "fz2-interp") => Some("fz-go4.7"),
+        ("receive_selective_refs", _) => Some("fz-go4.7"),
         ("lambda_sugars", "aot")
         | ("lambda_sugars", "fz2-build")
         | ("macro_inc", "aot")

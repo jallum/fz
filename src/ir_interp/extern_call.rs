@@ -24,6 +24,32 @@ use std::sync::Mutex;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
 
+fn interp_operator_extern(symbol: &str) -> Option<crate::fz_ir::BinOp> {
+    match symbol {
+        "fz_op_eq" => Some(crate::fz_ir::BinOp::Eq),
+        "fz_op_neq" => Some(crate::fz_ir::BinOp::Neq),
+        "fz_op_lt" => Some(crate::fz_ir::BinOp::Lt),
+        "fz_op_lte" => Some(crate::fz_ir::BinOp::Le),
+        "fz_op_gt" => Some(crate::fz_ir::BinOp::Gt),
+        "fz_op_gte" => Some(crate::fz_ir::BinOp::Ge),
+        _ => None,
+    }
+}
+
+fn eval_interp_operator_extern(
+    runtime: &mut IrInterpRuntime,
+    symbol: &str,
+    args: &[AnyValue],
+) -> Result<Option<AnyValue>, String> {
+    let Some(op) = interp_operator_extern(symbol) else {
+        return Ok(None);
+    };
+    if args.len() != 2 {
+        return Err(format!("{symbol}/2 got {} args", args.len()));
+    }
+    super::binop::eval_binop(runtime.cur_proc(), op, args[0], args[1]).map(Some)
+}
+
 fn format_extern_shape(ret: ExternTy, fixed: &[ExternTy], variadic: &[ExternTy]) -> String {
     let fixed = fixed
         .iter()
@@ -199,6 +225,9 @@ pub(super) fn call_lowered_extern(
     marshals: Option<&[ExternTy]>,
     args: &[AnyValue],
 ) -> Result<AnyValue, String> {
+    if let Some(value) = eval_interp_operator_extern(runtime, signature.symbol.as_str(), args)? {
+        return Ok(value);
+    }
     match signature.symbol.as_str() {
         "fz_panic" => {
             if args.len() != 1 {
@@ -395,6 +424,9 @@ pub(super) fn call_extern<T: Types<Ty = Ty>>(
     args: &[AnyValue],
 ) -> Result<AnyValue, String> {
     let decl = module.extern_by_id(eid);
+    if let Some(value) = eval_interp_operator_extern(runtime, decl.symbol.as_str(), args)? {
+        return Ok(value);
+    }
     match decl.symbol.as_str() {
         "fz_panic" => {
             if args.len() != 1 {
