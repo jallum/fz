@@ -11,9 +11,15 @@
   "id": "fz-rh2.18.9.17",
   "labels": [],
   "parent": "fz-rh2.18.9",
+  "comments": [
+    {
+      "text": "Fresh-build reconciliation on 2026-06-12 after \\, fresh \\, and fresh \\: the previous closure does not hold. Exact results from the same rebuilt test binary: 1. \\\nrunning 1 test\n[1, 1, 2, 3, 3, 4, 5, 5, 5, 6, 9]\ntest compiler2::compiler2_test::compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2175 filtered out; finished in 0.46s passed. 2. \\\nrunning 1 test\ntest compiler2::drive_test::compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen ... FAILED\n\nfailures:\n\nfailures:\n    compiler2::drive_test::compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2175 filtered out; finished in 0.10s failed with \\, \\. Reopened and retitled accordingly: the surviving bug is now in the compiler-owned native-program path, not the front-door root JIT path.",
+      "timestamp": "2026-06-12T09:47:56Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 native-program quicksort: preserve root result after clean rebuild",
   "type": "bug",
-  "updated_at": "2026-06-12T09:47:01Z"
+  "updated_at": "2026-06-12T09:47:56Z"
 }
