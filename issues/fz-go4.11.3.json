@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-go4.11.4"
+  ],
   "created": "2026-06-12T23:26:33Z",
   "description": "Goal\nBuild a dedicated fixtures2 harness that reads compiler contracts, runs compiler2 roots, gathers structured call-edge facts and telemetry metrics, and checks them without routing through old-world dump-only tests.\n\nSignal\n- fixtures2 contracts run as normal tests, not as one-off ad hoc assertions scattered across drive tests\n- metric assertions and semantic edge assertions are both supported\n- canonical snapshots are blessable but optional, and are produced from the same structured fact surface\n\nStrategy\n1. Discover compiler2 fixtures with declared contracts and compile their declared roots.\n2. Gather the structured fact surface and the needed telemetry counters in one place.\n3. Score assertions, write focused actual artifacts on failure, and support BLESS only for canonical snapshot sidecars.\n\nValidation\n- representative fixtures pass through the harness with metrics and semantic edges both asserted\n- failure output is fixture-local and readable\n- cargo test can target the harness by fixture or assertion family\n\nRemoval targets\n- ad hoc compiler2 corpus assertions that duplicate the same contract plumbing\n- dependence on the fixture_matrix static golden_outcomes sweep for compiler2 shape checks",
   "id": "fz-go4.11.3",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Build fixtures2 compiler contract harness",
   "type": "task",
-  "updated_at": "2026-06-12T23:26:33Z"
+  "updated_at": "2026-06-12T23:26:45Z"
 }
