@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.18.9.12"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.18.9.9"
+  ],
   "created": "2026-06-12T07:42:18Z",
   "description": "Goal\nMake `compiler2::drive_test::compiler2_interp_runs_selective_receive_with_make_ref_from_backend_artifacts` terminate under a hard timeout and either resolve or fail with a precise semantic/runtime blocker. After fz-rh2.18.9.12, the prior fast missing-return wait changed into a \u003e120s hang, so this needs a telemetry-led diagnosis rather than another local return fallback.\n\nSignal\n- `/opt/homebrew/bin/timeout 120s cargo test --lib compiler2::drive_test::compiler2_interp_runs_selective_receive_with_make_ref_from_backend_artifacts -- --exact --nocapture` exits before timeout.\n- Telemetry identifies the repeating fact/job cycle or runtime receive state responsible for the hang.\n- The fix does not reintroduce missing-return-as-none/any, retained-output shims, longer timeouts, or receive-specific semantic shortcuts.\n\nStrategy\nCapture `--log-telemetry`/job telemetry for the fixture, identify the minimal repeated fact edge, and repair the fact/evidence model at the producer boundary. Treat old-world behavior as inspiration only.\n\nOutro\nNo unbounded selective-receive test, no hidden timeout dependency, no special receive wait shim, and no broad any/none sentinel standing in for missing receive evidence.",
   "id": "fz-rh2.18.9.14",
