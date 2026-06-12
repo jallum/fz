@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-12T15:57:06Z",
@@ -14,8 +14,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2: recover the four known pre-existing compiler2:: failures now that the scope is checkable",
   "type": "bug",
-  "updated_at": "2026-06-12T16:11:05Z"
+  "updated_at": "2026-06-12T16:12:32Z"
 }
