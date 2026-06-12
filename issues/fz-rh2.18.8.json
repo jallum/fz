@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-06-11T21:03:28Z",
-  "description": "Goal: close the mini-epic only after the new model is documented, observable, and old concepts are mechanically absent. Signal: cargo test --lib compiler2:: passes; fact-engine and semantic-fixpoint docs describe current/settled evidence accurately; telemetry exposes readiness transitions; grep checks prove obsolete concepts are gone, not renamed. Strategy: update .agent docs and guides, add or adjust telemetry at the World scheduler seam, run hard no-go searches for semantic_closure_is_current, DependencySnapshot, ReturnType-as-ready-Ty, ActivationKey.input body evidence, outputs Vec\u003c(FactKey,bool)\u003e, missing-return-as-none, unresolved-as-any, and stale FactValue::Inputs docs. Any survivor requires either deletion in this ticket or a new blocking ticket.",
+  "description": "Goal: close the fact-readiness mini-epic only after the new evidence/partition model is documented, observable, and old concepts are mechanically absent. Signal: cargo test --lib compiler2:: passes; fact-engine, semantic-fixpoint, type-specialization, telemetry, and guide-facing docs describe current/settled evidence, ActivationInputs, activation partition keys, ReturnEvidence, and any/none semantics accurately; telemetry exposes readiness and frontier movement without giant payload logs. Strategy: update docs after code/tests prove the model, add or run no-go searches for semantic_closure_is_current, DependencySnapshot, ReturnType-as-ready-Ty, ActivationKey-as-body-input, recursive-only key widening, list-only convergence_class, raw closure-capture key defaults, outputs Vec\u003c(FactKey,bool)\u003e, missing-return-as-none, unresolved-as-any, stale FactValue::Inputs docs, and telemetry full-payload budget leaks. Any survivor requires deletion here or a new blocking ticket. Outro: no stale docs, no scaffolding, no compatibility shim preserving old key semantics, and no unbounded fz2 telemetry run as an accepted workflow.",
   "id": "fz-rh2.18.8",
   "labels": [],
   "parent": "fz-rh2.18",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 fact readiness closeout: docs telemetry and deletion contract",
   "type": "task",
-  "updated_at": "2026-06-11T21:03:55Z"
+  "updated_at": "2026-06-12T02:14:45Z"
 }
