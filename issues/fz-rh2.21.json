@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T10:17:04Z",
+  "description": "Symptom: ./target/release/fz2 build --log-telemetry on fixtures/quicksort/input.fz sometimes runs 332 jobs (2.5MB log), sometimes 54,203+ jobs (727MB log, killed) — same binary, same input. The log is the messenger: the semantic fixpoint does not converge. Evidence (from quicksort.really-bad.log): AnalyzeActivation(qsort/1=FunctionId(33)) ran 32,366x; ReturnType(qsort) revised 32,356x flipping Ty(37)\u003c-\u003eTy(46); its 4 callsite summaries republished ~32k each; append/1=FunctionId(31)'s Activation+ActivationInputs facts retracted AND republished 10,782x each while its analysis ran 10,782x yet published its return exactly once. Mechanism (non-monotone transfer function + caller-owned facts blipping): (1) prepare_function_call (jobs/semantic.rs:1841) reads an ABSENT callee ReturnType as none — unknown conflated with the empty type; (2) resolve_direct_call (jobs/semantic.rs:986) drops a call entirely — no summary, no activation contribution — when any arg is none, so append(qsort(lo), ...) vanishes whenever the self-return reads low/absent, withdrawing append's Activation/ActivationInputs; (3) define_activation_return is last-write-wins (no monotone join), so the published return goes DOWN as well as up; (4) early-wait returns from analyze_activation carry EMPTY outputs, and facts.rs replace_outputs retracts every fact the job previously owned — a waiting analysis retracts its ReturnType/callsites mid-fixpoint; (5) qsort is self-recursive so it reads its own ReturnType fact and self-wakes on every flip. Non-determinism: deps.rs subscribers()/waiters() iterate HashSet\u003cJ\u003e into Vec, and JobEffects.follow_up comes from HashSet\u003cJob\u003e::into_iter — wake/enqueue order is RandomState-seeded per process; some schedules reach the ascending fixpoint, others lock into a 2/3-beat attractor forever. Likely the same cause behind compiler2 quicksort drive tests running \u003e60s under cargo test. Fix direction is the fz-rh2.18 current-vs-settled evidence work: absent-vs-none must be distinct (cf. feedback memory 'unknown is not none'), recursive return facts need a monotone join or settled-evidence gating, and waiting jobs must not retract still-valid published facts.",
+  "id": "fz-rh2.21",
+  "labels": [],
+  "parent": "fz-rh2",
+  "priority": 1,
+  "status": "open",
+  "title": "compiler2 semantic fixpoint non-convergence: recursive activation return oscillates; schedule-order non-determinism decides settling",
+  "type": "bug",
+  "updated_at": "2026-06-12T10:17:04Z"
+}
