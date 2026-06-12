@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T15:32:02Z",
+  "description": "Three loose ends from the fz-rh2.21 retrospective re-read of ActivationMap::define_return (src/compiler2/semantic.rs) and the honest-paths walk:\n\n1. MISLEADING WIDENED EVENT: between RETURN_WIDENING_DELAY and 2x, the operator applies convergence_class, which only collapses pure list spines — for any other growing shape (tuple spines, map fields) it returns the input unchanged, yet ReturnDefine.widened is set and fz.compiler2.return_type.widened fires. Up to N events claim widening that did nothing before the any-backstop engages. Fix: report widened only when stored actually differs from joined (and consider a distinct topped_out marker for the any stage).\n\n2. COUNTER SEMANTICS ARE TOTAL-PER-EPOCH, NOT DELAY: slot.ascents counts every strict ascent since the last rebase, never resetting on quiescence. A legitimately convergent activation that ascends a few times, settles, and later ascends again within the same epoch (late-discovered callee) resumes from the old count and can widen after 8 LIFETIME ascents rather than 8 consecutive rungs of a diverging chain. Corpus headroom is large (observed max 3-4), but the operator is subtly more aggressive than the documented widening-with-delay. Either document the total-per-epoch semantics as intended or reset the counter on a quiet (changed=false) define.\n\n3. CORPUS-WIDE ZERO-ENGAGEMENT PIN IS MISSING: fz-rh2.21.4 intended a corpus/matrix-level assertion that widening never fires on real programs; only the quicksort ascent-bound test and the two deepening fixtures exist, because the matrix is pre-broken (517 baseline failures). When the matrix is restored, add the assertion (count return_type.widened events across the fixture corpus == 0) and record the measured corpus maximum ascent in RETURN_WIDENING_DELAY's doc comment as the ticket originally specified.\n\nRelated risk to note while in there: entry_scope (jobs/semantic.rs) now returns None when ANY listed capture is absent, where the old code silently skipped missing captures. If lowering ever lists a capture an entry does not actually need on some path, the whole entry contributes no evidence that round. No corpus program exhibits this (zero delta vs baseline), but the lowering invariant 'listed captures are needed captures' is assumed, not pinned — add a debug assertion or a test if it can be stated.",
+  "id": "fz-rh2.22",
+  "labels": [],
+  "parent": "fz-rh2",
+  "priority": 2,
+  "status": "open",
+  "title": "return-join widening: honest telemetry, true delay semantics, corpus-wide zero-engagement pin",
+  "type": "task",
+  "updated_at": "2026-06-12T15:32:02Z"
+}
