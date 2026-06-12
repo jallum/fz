@@ -230,6 +230,16 @@ pub enum LoweredTail {
     },
 }
 
+/// A lowered map key position: the runtime value, plus the compile-time
+/// constant when the source wrote a literal. Map keys are VALUES — the
+/// carried literal is what lets analysis type the field precisely without
+/// singleton numeric types in the lattice (mirroring `RequireMapValue`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoweredMapKey {
+    pub value: ValueId,
+    pub literal: Option<Literal>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoweredStep {
     Const {
@@ -247,12 +257,12 @@ pub enum LoweredStep {
     },
     Map {
         value: ValueId,
-        entries: Vec<(ValueId, ValueId)>,
+        entries: Vec<(LoweredMapKey, ValueId)>,
     },
     MapUpdate {
         value: ValueId,
         base: ValueId,
-        entries: Vec<(ValueId, ValueId)>,
+        entries: Vec<(LoweredMapKey, ValueId)>,
     },
     Struct {
         value: ValueId,
@@ -286,7 +296,7 @@ pub enum LoweredStep {
     MapIndex {
         value: ValueId,
         base: ValueId,
-        key: ValueId,
+        key: LoweredMapKey,
     },
     FieldAccess {
         value: ValueId,

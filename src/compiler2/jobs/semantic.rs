@@ -14,8 +14,8 @@ use crate::dispatch_matrix::{
 };
 
 use super::super::body::{
-    CallSiteId, ControlDestination, DirectCallee, Literal, LoweredBody, LoweredClause, LoweredEntry, LoweredStep,
-    LoweredTail, ValueId,
+    CallSiteId, ControlDestination, DirectCallee, Literal, LoweredBody, LoweredClause, LoweredEntry, LoweredMapKey,
+    LoweredStep, LoweredTail, ValueId,
 };
 use super::super::contract::FunctionContract;
 use super::super::drive::{FactKey, Job, JobEffects, current_uses};
@@ -421,8 +421,7 @@ fn apply_step(
             let mut flow_map_ty = value_ty(world, values, *base);
             let mut observed_map_ty = observed_value_ty(world, values, *base);
             for (key, item) in entries {
-                let key_ty = observed_value_ty(world, values, *key);
-                if let Some(key) = map_key_from_ty(world, key_ty) {
+                if let Some(key) = lowered_map_key(world, values, key) {
                     let flow_item_ty = value_ty(world, values, *item);
                     let observed_item_ty = observed_value_ty(world, values, *item);
                     flow_map_ty = world.types_mut().refine_map_field(&flow_map_ty, &key, &flow_item_ty);
@@ -501,13 +500,14 @@ fn apply_step(
             values.insert(*value, SemanticValue::same(lowered_unop_ty(world, *op, input)));
         }
         LoweredStep::MapIndex { value, base, key } => {
-            let key_ty = observed_value_ty(world, values, *key);
+            let map_key = lowered_map_key(world, values, key);
             let flow_base_ty = value_ty(world, values, *base);
             let observed_base_ty = observed_value_ty(world, values, *base);
-            let flow_value_ty = map_key_from_ty(world, key_ty)
+            let flow_value_ty = map_key
+                .clone()
                 .and_then(|key| world.types_mut().map_field_lookup(&flow_base_ty, &key))
                 .unwrap_or_else(|| any_ty(world));
-            let observed_value_ty = map_key_from_ty(world, key_ty)
+            let observed_value_ty = map_key
                 .and_then(|key| world.types_mut().map_field_lookup(&observed_base_ty, &key))
                 .unwrap_or_else(|| any_ty(world));
             values.insert(
@@ -2103,7 +2103,20 @@ fn branch_possible(world: &mut World<'_>, predicate: &RegionPredicate<Ty>, sourc
                 let overlap = world.types_mut().intersect(*source, target);
                 !world.types().is_empty(&overlap)
             } else {
-                !world.types().is_subtype(source, &target)
+                match value {
+                    // No type can witness "the scrutinee always equals this
+                    // constant" for numbers and strings: string literals
+                    // have no singleton types at all (the old subtype check
+                    // wrongly pruned live miss edges), and numeric literal
+                    // types are leaving the lattice. Equality is a VALUE
+                    // test the matcher performs at runtime; its miss edge
+                    // is always statically possible. Atoms, bools, nil and
+                    // the empty list keep their exact singleton proofs.
+                    ComparisonValue::Const(
+                        DispatchConst::Int(_) | DispatchConst::FloatBits(_) | DispatchConst::Utf8Binary(_),
+                    ) => true,
+                    _ => !world.types().is_subtype(source, &target),
+                }
             }
         }
         Region::TupleArity(arity) => {
@@ -2465,18 +2478,32 @@ fn list_ty(
 fn map_ty(
     world: &mut World<'_>,
     values: &SemanticValues,
-    entries: &[(ValueId, ValueId)],
+    entries: &[(LoweredMapKey, ValueId)],
     value_at: fn(&mut World<'_>, &SemanticValues, ValueId) -> Ty,
 ) -> Ty {
     let mut fields = BTreeMap::new();
     for (key, value) in entries {
-        let key_ty = value_at(world, values, *key);
-        let Some(key) = map_key_from_ty(world, key_ty) else {
+        let Some(key) = lowered_map_key(world, values, key) else {
             return world.types_mut().map_top();
         };
         fields.insert(key, value_at(world, values, *value));
     }
     world.types_mut().map(&fields.into_iter().collect::<Vec<_>>())
+}
+
+/// The map key at a lowered key position: the carried compile-time constant
+/// when the source wrote a literal (keys are values), falling back to the
+/// observed singleton type while numeric literal types still exist.
+fn lowered_map_key(
+    world: &mut World<'_>,
+    values: &SemanticValues,
+    key: &LoweredMapKey,
+) -> Option<super::super::types::MapKey> {
+    if let Some(literal) = &key.literal {
+        return literal_map_key(literal);
+    }
+    let key_ty = observed_value_ty(world, values, key.value);
+    map_key_from_ty(world, key_ty)
 }
 
 fn struct_assertion_ty(world: &mut World<'_>, module: ModuleId) -> Ty {

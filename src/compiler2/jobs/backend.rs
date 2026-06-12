@@ -211,12 +211,12 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
             },
             LoweredStep::Map { value, entries } => BackendStep::Map {
                 value: *value,
-                entries: entries.clone(),
+                entries: entries.iter().map(|(key, value)| (key.value, *value)).collect(),
             },
             LoweredStep::MapUpdate { value, base, entries } => BackendStep::MapUpdate {
                 value: *value,
                 base: *base,
-                entries: entries.clone(),
+                entries: entries.iter().map(|(key, value)| (key.value, *value)).collect(),
             },
             LoweredStep::Struct { value, module, fields } => BackendStep::Struct {
                 value: *value,
@@ -258,7 +258,7 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
             LoweredStep::MapIndex { value, base, key } => BackendStep::MapIndex {
                 value: *value,
                 base: *base,
-                key: *key,
+                key: key.value,
             },
             LoweredStep::FieldAccess { value, base, field } => BackendStep::FieldAccess {
                 value: *value,
@@ -615,14 +615,14 @@ fn collect_step_reads(step: &LoweredStep, out: &mut HashSet<ValueId>) {
         }
         LoweredStep::Map { entries, .. } => {
             for (key, value) in entries {
-                out.insert(*key);
+                out.insert(key.value);
                 out.insert(*value);
             }
         }
         LoweredStep::MapUpdate { base, entries, .. } => {
             out.insert(*base);
             for (key, value) in entries {
-                out.insert(*key);
+                out.insert(key.value);
                 out.insert(*value);
             }
         }
@@ -645,7 +645,7 @@ fn collect_step_reads(step: &LoweredStep, out: &mut HashSet<ValueId>) {
         }
         LoweredStep::MapIndex { base, key, .. } => {
             out.insert(*base);
-            out.insert(*key);
+            out.insert(key.value);
         }
         LoweredStep::FieldAccess { base, .. } | LoweredStep::AssertStruct { source: base, .. } => {
             out.insert(*base);

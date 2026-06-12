@@ -9558,3 +9558,97 @@ fn compiler2_quicksort_cli_builds_are_stable_smoke() {
         "event counts must stay in a tight band: {line_counts:?}",
     );
 }
+
+#[test]
+fn compiler2_string_constant_dispatch_keeps_the_miss_arm_reachable() {
+    // String literals have no singleton types (Literal::Binary types as
+    // str_t), so no subtype check can ever witness "the scrutinee always
+    // equals this string". The old miss-side proof !is_subtype(str, str)
+    // evaluated false and silently pruned the live wildcard clause — the
+    // value test happens at RUNTIME, so the statically pruned body was
+    // simply gone. Both clauses must stay reachable.
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    type ReachableByFunction = Vec<(u64, Vec<u32>)>;
+    let analyses: Rc<RefCell<ReachableByFunction>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = Rc::clone(&analyses);
+    tel.attach(
+        &["fz", "compiler2", "activation_analysis", "defined"],
+        Box::new(move |event: &Event<'_, '_, '_>| {
+            let Some(Value::U64(function)) = event.measurements.get("function_id") else {
+                return;
+            };
+            let Some(analysis) = event
+                .metadata
+                .get("analysis")
+                .and_then(|value| value.downcast_ref::<crate::compiler2::ActivationAnalysis>())
+            else {
+                return;
+            };
+            sink.borrow_mut().push((*function, analysis.reachable_clauses.clone()));
+        }),
+    );
+
+    let mut world = crate::compiler2::World::new(&tel);
+    world.submit_code(
+        Some("string_dispatch.fz".to_string()),
+        concat!(
+            "fn pick(\"a\"), do: 1\n",
+            "fn pick(_), do: 2\n",
+            "fn main(), do: pick(\"b\")\n",
+        )
+        .to_string(),
+    );
+    world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
+    assert_resolved(world.drive(), "string-constant dispatch should settle");
+
+    let pick_id = function_id(&functions, "pick", 1).as_u32() as u64;
+    let last = analyses
+        .borrow()
+        .iter()
+        .rev()
+        .find(|(function, _)| *function == pick_id)
+        .map(|(_, clauses)| clauses.clone())
+        .expect("pick/1 should be analyzed");
+    assert_eq!(
+        last,
+        vec![0, 1],
+        "a string constant cannot prove its miss edge dead; the wildcard clause must stay reachable",
+    );
+}
+
+#[test]
+fn compiler2_int_keyed_map_index_types_through_the_carried_literal() {
+    // Map keys are VALUES: the lowering carries the written constant
+    // alongside the runtime key (LoweredMapKey), so %{1 => 10}[1] keeps its
+    // precise int field type without numeric singleton types in the lattice.
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let returns = ReturnTypeCapture::new();
+    tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
+
+    let mut world = crate::compiler2::World::new(&tel);
+    world.submit_code(
+        Some("map_int_key.fz".to_string()),
+        concat!(
+            "fn pick() do\n",
+            "  m = %{1 => 10, 2 => 20}\n",
+            "  m[1]\n",
+            "end\n",
+            "fn main(), do: pick()\n",
+        )
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
+    assert_resolved(world.drive(), "int-keyed map program settles");
+
+    let pick_id = function_id(&functions, "pick", 0);
+    let settled = returns.last_for_function(root, pick_id).return_ty;
+    assert_eq!(
+        world.types().display(&settled),
+        "int",
+        "the int-keyed lookup must keep its precise field type",
+    );
+}

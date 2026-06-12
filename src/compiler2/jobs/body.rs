@@ -23,7 +23,7 @@ use crate::ir_lower::{explicit_extern_wire_hint, extern_semantic_contract, exter
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DirectCallee,
     DispatchBindings, Literal, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause,
-    LoweredEntry, LoweredExtern, LoweredStep, LoweredTail, ReceiveAfter, ReceiveClause, ValueId,
+    LoweredEntry, LoweredExtern, LoweredMapKey, LoweredStep, LoweredTail, ReceiveAfter, ReceiveClause, ValueId,
 };
 use super::super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::super::identity::{FunctionId, FunctionSource};
@@ -100,12 +100,12 @@ enum ExprStep {
     },
     Map {
         value: ValueId,
-        entries: Vec<(ValueId, ValueId)>,
+        entries: Vec<(LoweredMapKey, ValueId)>,
     },
     MapUpdate {
         value: ValueId,
         base: ValueId,
-        entries: Vec<(ValueId, ValueId)>,
+        entries: Vec<(LoweredMapKey, ValueId)>,
     },
     Struct {
         value: ValueId,
@@ -151,7 +151,7 @@ enum ExprStep {
     MapIndex {
         value: ValueId,
         base: ValueId,
-        key: ValueId,
+        key: LoweredMapKey,
     },
     FieldAccess {
         value: ValueId,
@@ -858,6 +858,18 @@ impl<'a, 'w, 'tel, 'env, 'steps> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps> {
 
     fn push_map(&mut self, entries: Vec<(ValueId, ValueId)>) -> ValueId {
         let value = self.lowerer.fresh_value();
+        let entries = entries
+            .into_iter()
+            .map(|(key, value)| {
+                (
+                    LoweredMapKey {
+                        value: key,
+                        literal: None,
+                    },
+                    value,
+                )
+            })
+            .collect();
         self.steps.push(ExprStep::Map { value, entries });
         value
     }
@@ -1132,7 +1144,11 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             Expr::Map(entries) => {
                 let mut lowered = Vec::with_capacity(entries.len());
                 for (key, value) in entries {
-                    lowered.push((self.lower_expr(key, env, steps)?, self.lower_expr(value, env, steps)?));
+                    let lowered_key = LoweredMapKey {
+                        value: self.lower_expr(key, env, steps)?,
+                        literal: expr_literal(&key.node),
+                    };
+                    lowered.push((lowered_key, self.lower_expr(value, env, steps)?));
                 }
                 let value = self.fresh_value();
                 steps.push(ExprStep::Map {
@@ -1145,7 +1161,11 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 let base = self.lower_expr(base, env, steps)?;
                 let mut lowered = Vec::with_capacity(entries.len());
                 for (key, value) in entries {
-                    lowered.push((self.lower_expr(key, env, steps)?, self.lower_expr(value, env, steps)?));
+                    let lowered_key = LoweredMapKey {
+                        value: self.lower_expr(key, env, steps)?,
+                        literal: expr_literal(&key.node),
+                    };
+                    lowered.push((lowered_key, self.lower_expr(value, env, steps)?));
                 }
                 let value = self.fresh_value();
                 steps.push(ExprStep::MapUpdate {
@@ -1167,8 +1187,15 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                         field: field.clone(),
                     });
                 } else {
-                    let key = self.lower_expr(key, env, steps)?;
-                    steps.push(ExprStep::MapIndex { value, base, key });
+                    let lowered_key = LoweredMapKey {
+                        value: self.lower_expr(key, env, steps)?,
+                        literal: expr_literal(&key.node),
+                    };
+                    steps.push(ExprStep::MapIndex {
+                        value,
+                        base,
+                        key: lowered_key,
+                    });
                 }
                 Ok(value)
             }
@@ -2817,7 +2844,7 @@ fn lower_projection_step(step: &ExprStep) -> LoweredStep {
         ExprStep::MapIndex { value, base, key } => LoweredStep::MapIndex {
             value: *value,
             base: *base,
-            key: *key,
+            key: key.clone(),
         },
         ExprStep::FieldAccess { value, base, field } => LoweredStep::FieldAccess {
             value: *value,
@@ -3039,14 +3066,14 @@ fn collect_used_values(steps: &[LoweredStep], out: &mut HashSet<ValueId>) {
             }
             LoweredStep::Map { entries, .. } => {
                 for (key, value) in entries {
-                    out.insert(*key);
+                    out.insert(key.value);
                     out.insert(*value);
                 }
             }
             LoweredStep::MapUpdate { base, entries, .. } => {
                 out.insert(*base);
                 for (key, value) in entries {
-                    out.insert(*key);
+                    out.insert(key.value);
                     out.insert(*value);
                 }
             }
@@ -3069,7 +3096,7 @@ fn collect_used_values(steps: &[LoweredStep], out: &mut HashSet<ValueId>) {
             }
             LoweredStep::MapIndex { base, key, .. } => {
                 out.insert(*base);
-                out.insert(*key);
+                out.insert(key.value);
             }
             LoweredStep::FieldAccess { base, .. } | LoweredStep::AssertStruct { source: base, .. } => {
                 out.insert(*base);
@@ -3704,4 +3731,18 @@ fn pattern_name(pattern: &Pattern) -> &'static str {
 fn emit_job_diagnostic(world: &World<'_>, diagnostic: Diagnostic) -> FatalError {
     emit_through(world.tel(), None, std::slice::from_ref(&diagnostic));
     FatalError
+}
+
+/// The compile-time constant of a literal expression, for positions where
+/// the lowering records values alongside their known constants (map keys).
+fn expr_literal(expr: &Expr) -> Option<Literal> {
+    match expr {
+        Expr::Int(value) => Some(Literal::Int(*value)),
+        Expr::Float(value) => Some(Literal::Float(*value)),
+        Expr::Binary(value) => Some(Literal::Binary(value.clone())),
+        Expr::Atom(value) => Some(Literal::Atom(value.clone())),
+        Expr::Bool(value) => Some(Literal::Bool(*value)),
+        Expr::Nil => Some(Literal::Nil),
+        _ => None,
+    }
 }
