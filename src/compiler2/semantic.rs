@@ -5,6 +5,7 @@
 //! return types, and the semantic closure each root has reached.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, RootId};
@@ -62,6 +63,11 @@ pub struct ActivationMap {
     slots: HashMap<ActivationKey, ActivationSlot>,
 }
 
+pub struct ActivationInputMap<P> {
+    slots: HashMap<ActivationKey, ActivationInputSlot<P>>,
+    output_keys: HashMap<P, HashSet<ActivationKey>>,
+}
+
 #[derive(Debug, Default)]
 pub struct CallSiteMap {
     slots: HashMap<CallSiteKey, CallSiteSummary>,
@@ -77,6 +83,18 @@ pub struct SemanticClosureMap {
     slots: Vec<Option<SemanticClosureSlot>>,
 }
 
+#[derive(Debug, Clone)]
+struct ActivationInputSlot<P> {
+    contributors: HashMap<P, Vec<Ty>>,
+    joined: Vec<Ty>,
+}
+
+#[derive(Debug, Default)]
+pub struct ActivationInputReplace {
+    pub output_keys: HashSet<ActivationKey>,
+    pub changed_keys: HashSet<ActivationKey>,
+}
+
 impl ActivationMap {
     pub fn new() -> Self {
         Self::default()
@@ -86,18 +104,13 @@ impl ActivationMap {
         self.slots.get(key)
     }
 
-    pub fn define_return(&mut self, types: &mut Types, key: &ActivationKey, return_ty: Ty) -> bool {
+    pub fn define_return(&mut self, _types: &mut Types, key: &ActivationKey, return_ty: Ty) -> bool {
         let slot = self.slots.entry(key.clone()).or_insert_with(ActivationSlot::new);
         match &slot.return_ty {
             Some(current) => {
-                let next = if current == &return_ty {
-                    *current
-                } else {
-                    types.refine_widen(current, &return_ty)
-                };
-                let changed = &next != current;
+                let changed = current != &return_ty;
                 if changed {
-                    slot.return_ty = Some(next);
+                    slot.return_ty = Some(return_ty);
                 }
                 changed
             }
@@ -115,6 +128,74 @@ impl ActivationMap {
             slot.analysis = Some(analysis);
         }
         changed
+    }
+}
+
+impl<P> ActivationInputMap<P>
+where
+    P: Clone + Eq + Hash,
+{
+    pub fn new() -> Self {
+        Self {
+            slots: HashMap::new(),
+            output_keys: HashMap::new(),
+        }
+    }
+
+    pub fn get(&self, key: &ActivationKey) -> Option<&[Ty]> {
+        self.slots.get(key).map(|slot| slot.joined.as_slice())
+    }
+
+    pub fn replace(
+        &mut self,
+        types: &mut Types,
+        publisher: P,
+        next: HashMap<ActivationKey, Vec<Ty>>,
+    ) -> ActivationInputReplace {
+        let next_output_keys = next.keys().cloned().collect::<HashSet<_>>();
+        let previous_output_keys = if next_output_keys.is_empty() {
+            self.output_keys.remove(&publisher).unwrap_or_default()
+        } else {
+            self.output_keys
+                .insert(publisher.clone(), next_output_keys.clone())
+                .unwrap_or_default()
+        };
+        let touched = previous_output_keys
+            .iter()
+            .cloned()
+            .chain(next_output_keys.iter().cloned())
+            .collect::<HashSet<_>>();
+        let mut changed_keys = HashSet::new();
+
+        for key in touched {
+            let mut slot = self.slots.remove(&key).unwrap_or_else(ActivationInputSlot::new);
+            let old_joined = (!slot.contributors.is_empty()).then(|| slot.joined.clone());
+
+            match next.get(&key) {
+                Some(inputs) => {
+                    slot.contributors.insert(publisher.clone(), inputs.clone());
+                }
+                None => {
+                    slot.contributors.remove(&publisher);
+                }
+            }
+
+            if slot.contributors.is_empty() {
+                continue;
+            }
+
+            let joined = join_activation_inputs(types, slot.contributors.values());
+            if old_joined.as_ref() != Some(&joined) {
+                changed_keys.insert(key.clone());
+            }
+            slot.joined = joined;
+            self.slots.insert(key, slot);
+        }
+
+        ActivationInputReplace {
+            output_keys: next_output_keys,
+            changed_keys,
+        }
     }
 }
 
@@ -184,5 +265,66 @@ impl SemanticClosureMap {
         if self.slots.len() < needed {
             self.slots.resize_with(needed, || None);
         }
+    }
+}
+
+impl<P> ActivationInputSlot<P> {
+    fn new() -> Self {
+        Self {
+            contributors: HashMap::new(),
+            joined: Vec::new(),
+        }
+    }
+}
+
+fn join_activation_inputs<'a>(types: &mut Types, contributors: impl Iterator<Item = &'a Vec<Ty>>) -> Vec<Ty> {
+    let mut contributors = contributors;
+    let Some(first) = contributors.next() else {
+        return Vec::new();
+    };
+    let mut joined = first.clone();
+    for inputs in contributors {
+        assert_eq!(
+            joined.len(),
+            inputs.len(),
+            "one activation cannot receive contributions with different arities",
+        );
+        for (joined_ty, input_ty) in joined.iter_mut().zip(inputs.iter().copied()) {
+            *joined_ty = if *joined_ty == input_ty {
+                *joined_ty
+            } else {
+                types.refine_widen(joined_ty, &input_ty)
+            };
+        }
+    }
+    joined
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compiler2::{ExecutableNeed, World};
+    use crate::telemetry::ConfiguredTelemetry;
+
+    #[test]
+    fn activation_return_replaces_stale_broad_result_with_current_precise_result() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let mut activations = ActivationMap::new();
+        let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+        let any = world.types_mut().any();
+        let key = ActivationKey {
+            root,
+            function: world.root_function(root),
+            input: vec![any, any],
+        };
+        let int = world.types_mut().int();
+
+        assert!(activations.define_return(world.types_mut(), &key, any));
+        assert!(
+            activations.define_return(world.types_mut(), &key, int),
+            "rerunning one activation with better evidence should replace the stale broad return"
+        );
+        assert_eq!(activations.get(&key).and_then(|slot| slot.return_ty()), Some(&int));
     }
 }

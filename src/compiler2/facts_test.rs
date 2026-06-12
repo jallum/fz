@@ -132,6 +132,29 @@ fn compiler2_fact_table_keeps_demand_facts_alive_until_the_last_demander_leaves(
 }
 
 #[test]
+fn compiler2_fact_table_allows_retraction_to_bump_a_still_present_joined_fact() {
+    let mut facts = TestFacts::new();
+    let fact = "activation-inputs";
+
+    facts.replace_outputs(&1_u32, &HashSet::new(), vec![fact], vec![fact]);
+    facts.replace_outputs(&2_u32, &HashSet::new(), vec![fact], Vec::new());
+
+    let changed = facts.replace_outputs(&1_u32, &HashSet::from([fact]), Vec::new(), vec![fact]);
+    assert_eq!(
+        changed.changed.len(),
+        1,
+        "retracting one publisher should still propagate when the joined payload changes"
+    );
+    assert_eq!(changed.changed[0].old_revision, Some(1));
+    assert_eq!(
+        changed.changed[0].new_revision,
+        Some(2),
+        "the surviving fact should receive a fresh revision when one publisher's removal changes it"
+    );
+    assert_eq!(facts.revision(&fact), Some(2));
+}
+
+#[test]
 #[should_panic(expected = "duplicate fact output")]
 fn compiler2_fact_table_rejects_duplicate_outputs_in_one_publication() {
     let mut facts = TestFacts::new();
@@ -140,7 +163,7 @@ fn compiler2_fact_table_rejects_duplicate_outputs_in_one_publication() {
 }
 
 #[test]
-#[should_panic(expected = "job marked a fact changed that it does not publish")]
+#[should_panic(expected = "job marked a fact changed that it neither publishes nor previously owned")]
 fn compiler2_fact_table_rejects_changed_facts_without_ownership() {
     let mut facts = TestFacts::new();
     facts.replace_outputs(&1_u32, &HashSet::new(), vec!["activation"], vec!["other"]);

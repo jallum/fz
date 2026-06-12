@@ -48,7 +48,8 @@ use super::runtime::{self, RuntimeModuleCode};
 use super::scheduler::FatalError;
 use super::scope::ScopeSnapshot;
 use super::semantic::{
-    ActivationAnalysis, ActivationMap, CallSiteKey, CallSiteMap, CallSiteSummary, SemanticClosure, SemanticClosureMap,
+    ActivationAnalysis, ActivationInputMap, ActivationInputReplace, ActivationMap, CallSiteKey, CallSiteMap,
+    CallSiteSummary, SemanticClosure, SemanticClosureMap,
 };
 use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
@@ -113,6 +114,7 @@ pub struct World<'a> {
     protocol_impls: ProtocolImplMap,
     protocol_dispatches: ProtocolDispatchMap,
     activations: ActivationMap,
+    activation_inputs: ActivationInputMap<Job>,
     callsites: CallSiteMap,
     semantic_closures: SemanticClosureMap,
     artifacts: MaterializedProgramMap,
@@ -171,6 +173,7 @@ impl<'a> World<'a> {
             protocol_impls: ProtocolImplMap::new(),
             protocol_dispatches: ProtocolDispatchMap::new(),
             activations: ActivationMap::new(),
+            activation_inputs: ActivationInputMap::new(),
             callsites: CallSiteMap::new(),
             semantic_closures: SemanticClosureMap::new(),
             artifacts: MaterializedProgramMap::new(),
@@ -283,8 +286,16 @@ impl<'a> World<'a> {
     pub(crate) fn complete_job(&mut self, job: Job, effects: JobEffects) -> super::AppliedStep<Job, FactKey> {
         let reads = effects.reads.into_iter().collect();
         let waits = effects.waits.into_iter().collect();
-        let outputs = dedupe_job_facts(effects.outputs);
-        let changed = dedupe_job_facts(effects.changed);
+        let ActivationInputReplace {
+            output_keys: activation_input_outputs,
+            changed_keys: activation_input_changed,
+        } = self.replace_activation_input_contributions(&job, effects.activation_input_contributions);
+        let mut outputs = effects.outputs;
+        outputs.extend(activation_input_outputs.into_iter().map(FactKey::ActivationInputs));
+        let outputs = dedupe_job_facts(outputs);
+        let mut changed = effects.changed;
+        changed.extend(activation_input_changed.into_iter().map(FactKey::ActivationInputs));
+        let changed = dedupe_job_facts(changed);
         let step = self
             .work_graph
             .complete(job.clone(), reads, waits, outputs, changed, effects.follow_up);
@@ -375,10 +386,11 @@ impl<'a> World<'a> {
 
     /// The canonical inputs of an activation, once its fact exists. The key
     /// itself carries the canonical (alpha-normalized) inputs — the fact only
-    /// records that the activation has been demanded.
+    /// records that the activation has been demanded. Body input evidence lives
+    /// in the separate `ActivationInputs(key)` fact.
     pub(crate) fn activation_inputs(&self, key: &ActivationKey) -> Option<Vec<Ty>> {
-        self.fact_revision(FactKey::Activation(key.clone()))?;
-        Some(key.input.clone())
+        self.fact_revision(FactKey::ActivationInputs(key.clone()))?;
+        Some(self.activation_inputs.get(key)?.to_vec())
     }
 
     pub fn activation_analysis(&self, key: &ActivationKey) -> Option<&ActivationAnalysis> {
@@ -410,6 +422,41 @@ impl<'a> World<'a> {
             },
         );
         changed
+    }
+
+    fn replace_activation_input_contributions(
+        &mut self,
+        job: &Job,
+        contributions: Vec<(ActivationKey, Vec<Ty>)>,
+    ) -> ActivationInputReplace {
+        let mut next = HashMap::<ActivationKey, Vec<Ty>>::new();
+        for (activation, inputs) in contributions {
+            let normalized = inputs
+                .into_iter()
+                .map(|input| self.types.alpha_normalize_vars(&input))
+                .collect::<Vec<_>>();
+            match next.entry(activation) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(normalized);
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    let current = entry.get_mut();
+                    assert_eq!(
+                        current.len(),
+                        normalized.len(),
+                        "one activation input fact cannot receive differing arities from one publisher",
+                    );
+                    for (current_input, next_input) in current.iter_mut().zip(normalized) {
+                        *current_input = if *current_input == next_input {
+                            *current_input
+                        } else {
+                            self.types.refine_widen(current_input, &next_input)
+                        };
+                    }
+                }
+            }
+        }
+        self.activation_inputs.replace(&mut self.types, job.clone(), next)
     }
 
     pub fn define_activation_return(&mut self, key: &ActivationKey, return_ty: Ty) -> bool {

@@ -56,6 +56,78 @@ fn marshal_arg(proc: *mut Process, value: AnyValue, ty: ExternTy) -> Result<u64,
     })
 }
 
+unsafe extern "C" fn fz_op_add_ii(a: u64, b: u64) -> u64 {
+    ((a as i64) + (b as i64)) as u64
+}
+
+unsafe extern "C" fn fz_op_add_if(a: u64, b: u64) -> u64 {
+    ((a as i64) as f64 + f64::from_bits(b)).to_bits()
+}
+
+unsafe extern "C" fn fz_op_add_ff(a: u64, b: u64) -> u64 {
+    (f64::from_bits(a) + f64::from_bits(b)).to_bits()
+}
+
+unsafe extern "C" fn fz_op_sub_ii(a: u64, b: u64) -> u64 {
+    ((a as i64) - (b as i64)) as u64
+}
+
+unsafe extern "C" fn fz_op_sub_if(a: u64, b: u64) -> u64 {
+    ((a as i64) as f64 - f64::from_bits(b)).to_bits()
+}
+
+unsafe extern "C" fn fz_op_sub_fi(a: u64, b: u64) -> u64 {
+    (f64::from_bits(a) - (b as i64) as f64).to_bits()
+}
+
+unsafe extern "C" fn fz_op_sub_ff(a: u64, b: u64) -> u64 {
+    (f64::from_bits(a) - f64::from_bits(b)).to_bits()
+}
+
+unsafe extern "C" fn fz_op_mul_ii(a: u64, b: u64) -> u64 {
+    ((a as i64) * (b as i64)) as u64
+}
+
+unsafe extern "C" fn fz_op_mul_if(a: u64, b: u64) -> u64 {
+    ((a as i64) as f64 * f64::from_bits(b)).to_bits()
+}
+
+unsafe extern "C" fn fz_op_mul_ff(a: u64, b: u64) -> u64 {
+    (f64::from_bits(a) * f64::from_bits(b)).to_bits()
+}
+
+unsafe extern "C" fn fz_op_div_ii(a: u64, b: u64) -> u64 {
+    ((a as i64) / (b as i64)) as u64
+}
+
+unsafe extern "C" fn fz_op_div_if(a: u64, b: u64) -> u64 {
+    ((a as i64) as f64 / f64::from_bits(b)).to_bits()
+}
+
+unsafe extern "C" fn fz_op_div_fi(a: u64, b: u64) -> u64 {
+    (f64::from_bits(a) / (b as i64) as f64).to_bits()
+}
+
+unsafe extern "C" fn fz_op_div_ff(a: u64, b: u64) -> u64 {
+    (f64::from_bits(a) / f64::from_bits(b)).to_bits()
+}
+
+unsafe extern "C" fn fz_op_rem_ii(a: u64, b: u64) -> u64 {
+    ((a as i64) % (b as i64)) as u64
+}
+
+unsafe extern "C" fn fz_op_rem_if(a: u64, b: u64) -> u64 {
+    ((a as i64) as f64 % f64::from_bits(b)).to_bits()
+}
+
+unsafe extern "C" fn fz_op_rem_fi(a: u64, b: u64) -> u64 {
+    (f64::from_bits(a) % (b as i64) as f64).to_bits()
+}
+
+unsafe extern "C" fn fz_op_rem_ff(a: u64, b: u64) -> u64 {
+    (f64::from_bits(a) % f64::from_bits(b)).to_bits()
+}
+
 fn call_variadic_extern(
     proc: *mut Process,
     module: &Module,
@@ -515,6 +587,24 @@ pub(super) fn resolve_symbol(name: &str) -> Result<*const (), String> {
         "fz_bitstring_valid_utf8" => Some(fz_bitstring_valid_utf8 as *const ()),
         "fz_brand_bitstring_as_utf8" => Some(fz_brand_bitstring_as_utf8 as *const ()),
         "fz_binary_concat" => Some(fz_binary_concat as *const ()),
+        "fz_op_add_ii" => Some(fz_op_add_ii as *const ()),
+        "fz_op_add_if" => Some(fz_op_add_if as *const ()),
+        "fz_op_add_ff" => Some(fz_op_add_ff as *const ()),
+        "fz_op_sub_ii" => Some(fz_op_sub_ii as *const ()),
+        "fz_op_sub_if" => Some(fz_op_sub_if as *const ()),
+        "fz_op_sub_fi" => Some(fz_op_sub_fi as *const ()),
+        "fz_op_sub_ff" => Some(fz_op_sub_ff as *const ()),
+        "fz_op_mul_ii" => Some(fz_op_mul_ii as *const ()),
+        "fz_op_mul_if" => Some(fz_op_mul_if as *const ()),
+        "fz_op_mul_ff" => Some(fz_op_mul_ff as *const ()),
+        "fz_op_div_ii" => Some(fz_op_div_ii as *const ()),
+        "fz_op_div_if" => Some(fz_op_div_if as *const ()),
+        "fz_op_div_fi" => Some(fz_op_div_fi as *const ()),
+        "fz_op_div_ff" => Some(fz_op_div_ff as *const ()),
+        "fz_op_rem_ii" => Some(fz_op_rem_ii as *const ()),
+        "fz_op_rem_if" => Some(fz_op_rem_if as *const ()),
+        "fz_op_rem_fi" => Some(fz_op_rem_fi as *const ()),
+        "fz_op_rem_ff" => Some(fz_op_rem_ff as *const ()),
         "fz_map_count" => Some(fz_map_count as *const ()),
         "fz_map_entry_key" => Some(fz_map_entry_key as *const ()),
         "fz_map_entry_value" => Some(fz_map_entry_value as *const ()),

@@ -68,17 +68,19 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
     let entry_activation = world.activation_key(root_id, root.function, &root.input);
     let activation_fact = FactKey::Activation(entry_activation.clone());
     outputs.push(activation_fact);
+    outputs.push(FactKey::ActivationInputs(entry_activation.clone()));
     outputs.push(FactKey::Executable(ExecutableKey {
         activation: entry_activation.clone(),
         need: root.need,
     }));
     follow_up.push(Job::LowerFunction(root.function));
     follow_up.push(Job::PlanEntryDispatch(root.function));
-    follow_up.push(Job::AnalyzeActivation(entry_activation));
+    follow_up.push(Job::AnalyzeActivation(entry_activation.clone()));
     follow_up.push(Job::SealSemanticClosure(root_id));
     Ok(JobEffects {
         reads: settled_uses(reads),
         outputs,
+        activation_input_contributions: vec![(entry_activation, root.input.clone())],
         follow_up,
         ..JobEffects::default()
     })
@@ -279,6 +281,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
         waits: settled_uses(waits),
         outputs,
         changed,
+        activation_input_contributions: Vec::new(),
         follow_up: follow_up.into_iter().collect(),
     })
 }

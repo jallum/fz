@@ -364,8 +364,13 @@ impl Types {
         map_known_keys(self.descr(a))
     }
 
+    pub fn widen_literal_flow(&mut self, a: &Ty) -> Ty {
+        let d = widen_literal_flow(self, *a);
+        self.intern(d)
+    }
+
     pub fn widen_for_recursive_spec_key(&mut self, a: &Ty) -> Ty {
-        let d = widen_for_recursive_spec_key(self, *a);
+        let d = widen_literal_flow(self, *a);
         self.intern(d)
     }
 
@@ -1480,9 +1485,9 @@ fn is_literal(cx: TyCtx<'_>, a: &Ty) -> bool {
 
 // More recursive transforms live in this module so they can thread the owning
 // interner explicitly without exposing the private descriptor representation.
-fn widen_for_recursive_spec_key(t: &mut Types, a: Ty) -> Descr {
+fn widen_literal_flow(t: &mut Types, a: Ty) -> Descr {
     let base = t.descr(&a).widen_literals();
-    map_recursive_inputs(t, base, widen_for_recursive_spec_key)
+    map_recursive_inputs(t, base, widen_literal_flow)
 }
 
 fn erase_closure_identity(t: &mut Types, a: Ty) -> Descr {
@@ -1536,7 +1541,32 @@ fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Descr {
         let args: Vec<Ty> = l.args.iter().zip(r.args.iter()).map(|(l, r)| t.union(*l, *r)).collect();
         let d = refine_widen(t, l.ret, r.ret);
         let ret = t.intern(d);
-        return Descr::arrow(args, ret);
+        let lit = match (l.lit, r.lit) {
+            (Some(lhs_lit), Some(rhs_lit))
+                if lhs_lit.kind == rhs_lit.kind
+                    && lhs_lit.fn_id == rhs_lit.fn_id
+                    && lhs_lit.captures.len() == rhs_lit.captures.len() =>
+            {
+                Some(ClosureLit {
+                    kind: lhs_lit.kind,
+                    fn_id: lhs_lit.fn_id,
+                    captures: lhs_lit
+                        .captures
+                        .into_iter()
+                        .zip(rhs_lit.captures)
+                        .map(|(lhs_capture, rhs_capture)| {
+                            let widened = refine_widen(t, lhs_capture, rhs_capture);
+                            t.intern(widened)
+                        })
+                        .collect(),
+                })
+            }
+            _ => None,
+        };
+        return Descr {
+            funcs: vec![Conj::pos_of(ArrowSig { args, ret, lit })],
+            ..Descr::none()
+        };
     }
     if let (Some(l), Some(r)) = (lhs.pure_map().cloned(), rhs.pure_map().cloned()) {
         let mut fields = l.fields.clone();
@@ -1552,7 +1582,7 @@ fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Descr {
     }
 
     let u = t.union(a, b);
-    widen_for_recursive_spec_key(t, u)
+    widen_literal_flow(t, u)
 }
 
 fn alpha_normalize_vars(t: &mut Types, a: Ty) -> Descr {

@@ -1,5 +1,6 @@
 use super::{DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, TypeName, TypeVarId, Types, World};
 use crate::ast::Attribute;
+use crate::compiler2::drive::JobEffects;
 use crate::specs::ResolvedTypeShape;
 use crate::telemetry::ConfiguredTelemetry;
 
@@ -214,5 +215,85 @@ fn compiler2_define_function_stages_expanded_source_before_definition() {
     assert!(
         world.function_defined_revision(main).is_some(),
         "the function should end the drive in the defined state",
+    );
+}
+
+#[test]
+fn compiler2_activation_inputs_are_distinct_from_the_canonical_activation_key() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
+    assert!(world.define_recursive(function, true));
+    assert!(world.define_dispatch_mask(function, vec![false]));
+
+    let raw_input = world.types_mut().int_lit(7);
+    let key = world.activation_key(root, function, &[raw_input]);
+    let canonical_input = key.input[0];
+
+    world.complete_job(
+        Job::SeedRoot(root),
+        JobEffects {
+            activation_input_contributions: vec![(key.clone(), vec![raw_input])],
+            ..JobEffects::default()
+        },
+    );
+
+    let observed_inputs = world
+        .activation_inputs(&key)
+        .expect("publishing activation inputs should materialize a separate body-evidence fact");
+    assert_eq!(
+        observed_inputs,
+        vec![raw_input],
+        "activation body evidence should preserve the published caller input",
+    );
+    assert!(
+        !world.types().is_equivalent(&canonical_input, &observed_inputs[0]),
+        "recursive key convergence should not overwrite the separate activation-input evidence",
+    );
+}
+
+#[test]
+fn compiler2_activation_inputs_retract_one_publishers_stale_contribution() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
+    assert!(world.define_recursive(function, false));
+    assert!(world.define_dispatch_mask(function, vec![true]));
+
+    let input_a = world.types_mut().int_lit(1);
+    let input_b = world.types_mut().int_lit(2);
+    let key = world.activation_key(root, function, &[input_a]);
+
+    world.complete_job(
+        Job::SeedRoot(root),
+        JobEffects {
+            activation_input_contributions: vec![(key.clone(), vec![input_a])],
+            ..JobEffects::default()
+        },
+    );
+    world.complete_job(
+        Job::AnalyzeActivation(key.clone()),
+        JobEffects {
+            activation_input_contributions: vec![(key.clone(), vec![input_b])],
+            ..JobEffects::default()
+        },
+    );
+
+    let step = world.complete_job(Job::SeedRoot(root), JobEffects::default());
+    assert!(
+        step.changed.iter().any(|change| {
+            change.key == FactKey::ActivationInputs(key.clone())
+                && change.old_revision.is_some()
+                && change.new_revision.is_some()
+                && change.new_revision > change.old_revision
+        }),
+        "retracting one publisher should republish the still-present activation-input fact when the joined body evidence changes",
+    );
+    assert_eq!(
+        world.activation_inputs(&key),
+        Some(vec![input_b]),
+        "the surviving publisher's input should remain as the body evidence after the stale contribution retracts",
     );
 }

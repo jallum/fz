@@ -10,6 +10,30 @@ defmodule Kernel do
   extern "C" fn fz_make_ref() :: ref
   extern "C" fn fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
   extern "C" fn fz_binary_concat(binary, binary) :: binary
+  extern "C" fn fz_op_add_ii(integer, integer) :: integer
+  extern "C" fn fz_op_add_if(integer, float) :: float
+  extern "C" fn fz_op_add_ff(float, float) :: float
+  extern "C" fn fz_op_sub_ii(integer, integer) :: integer
+  extern "C" fn fz_op_sub_if(integer, float) :: float
+  extern "C" fn fz_op_sub_fi(float, integer) :: float
+  extern "C" fn fz_op_sub_ff(float, float) :: float
+  extern "C" fn fz_op_mul_ii(integer, integer) :: integer
+  extern "C" fn fz_op_mul_if(integer, float) :: float
+  extern "C" fn fz_op_mul_ff(float, float) :: float
+  extern "C" fn fz_op_div_ii(integer, integer) :: integer
+  extern "C" fn fz_op_div_if(integer, float) :: float
+  extern "C" fn fz_op_div_fi(float, integer) :: float
+  extern "C" fn fz_op_div_ff(float, float) :: float
+  extern "C" fn fz_op_rem_ii(integer, integer) :: integer
+  extern "C" fn fz_op_rem_if(integer, float) :: float
+  extern "C" fn fz_op_rem_fi(float, integer) :: float
+  extern "C" fn fz_op_rem_ff(float, float) :: float
+  extern "C" fn fz_op_lt(any, any) :: bool
+  extern "C" fn fz_op_lte(any, any) :: bool
+  extern "C" fn fz_op_gt(any, any) :: bool
+  extern "C" fn fz_op_gte(any, any) :: bool
+  extern "C" fn fz_op_eq(any, any) :: bool
+  extern "C" fn fz_op_neq(any, any) :: bool
 
   @doc "Aborts the current process."
   @spec panic(any) :: never
@@ -67,29 +91,62 @@ defmodule Kernel do
   @spec float + float :: float
   @spec integer + float :: float
   @spec float + integer :: float
-  fn left + right, do: left + right
+  fn left :: integer + right :: integer, do: fz_op_add_ii(left, right)
+  fn left :: integer + right :: float, do: fz_op_add_if(left, right)
+  fn left :: float + right :: integer, do: fz_op_add_if(right, left)
+  fn left :: float + right :: float, do: fz_op_add_ff(left, right)
 
   @spec integer - integer :: integer
   @spec float - float :: float
   @spec integer - float :: float
   @spec float - integer :: float
-  fn left - right, do: left - right
+  fn left :: integer - right :: integer, do: fz_op_sub_ii(left, right)
+  fn left :: integer - right :: float, do: fz_op_sub_if(left, right)
+  fn left :: float - right :: integer, do: fz_op_sub_fi(left, right)
+  fn left :: float - right :: float, do: fz_op_sub_ff(left, right)
 
   @spec integer * integer :: integer
   @spec float * float :: float
   @spec integer * float :: float
   @spec float * integer :: float
-  fn left * right, do: left * right
+  fn left :: integer * right :: integer, do: fz_op_mul_ii(left, right)
+  fn left :: integer * right :: float, do: fz_op_mul_if(left, right)
+  fn left :: float * right :: integer, do: fz_op_mul_if(right, left)
+  fn left :: float * right :: float, do: fz_op_mul_ff(left, right)
 
   @spec integer / integer :: integer
   @spec float / float :: float
   @spec integer / float :: float
   @spec float / integer :: float
-  fn left / right, do: left / right
+  fn left :: integer / right :: integer, do: fz_op_div_ii(left, right)
+  fn left :: integer / right :: float, do: fz_op_div_if(left, right)
+  fn left :: float / right :: integer, do: fz_op_div_fi(left, right)
+  fn left :: float / right :: float, do: fz_op_div_ff(left, right)
 
   @spec integer % integer :: integer
   @spec float % float :: float
   @spec integer % float :: float
   @spec float % integer :: float
-  fn left % right, do: left % right
+  fn left :: integer % right :: integer, do: fz_op_rem_ii(left, right)
+  fn left :: integer % right :: float, do: fz_op_rem_if(left, right)
+  fn left :: float % right :: integer, do: fz_op_rem_fi(left, right)
+  fn left :: float % right :: float, do: fz_op_rem_ff(left, right)
+
+  @spec any < any :: bool
+  fn left < right, do: fz_op_lt(left, right)
+
+  @spec any <= any :: bool
+  fn left <= right, do: fz_op_lte(left, right)
+
+  @spec any > any :: bool
+  fn left > right, do: fz_op_gt(left, right)
+
+  @spec any >= any :: bool
+  fn left >= right, do: fz_op_gte(left, right)
+
+  @spec any == any :: bool
+  fn left == right, do: fz_op_eq(left, right)
+
+  @spec any != any :: bool
+  fn left != right, do: fz_op_neq(left, right)
 end

@@ -21,12 +21,12 @@ pub(crate) fn display(cx: TyCtx<'_>, d: &Descr) -> String {
             parts.push((*name).to_string());
         }
     }
-    append_lit_set(&mut parts, &d.atoms, |s| format!(":{}", s));
-    append_lit_set(&mut parts, &d.ints, |n| n.to_string());
-    append_lit_set(&mut parts, &d.floats, |f| f.get().to_string());
-    append_lit_set(&mut parts, &d.opaques, Clone::clone);
-    append_lit_set(&mut parts, &d.brands, Clone::clone);
-    append_lit_set(&mut parts, &d.vars, |id| id.to_string());
+    append_axis(&mut parts, &d.atoms, "atom", |s| format!(":{}", s));
+    append_axis(&mut parts, &d.ints, "int", |n| n.to_string());
+    append_axis(&mut parts, &d.floats, "float", |f| f.get().to_string());
+    append_axis(&mut parts, &d.opaques, "opaque", Clone::clone);
+    append_axis(&mut parts, &d.brands, "brand", Clone::clone);
+    append_axis(&mut parts, &d.vars, "var", |id| id.to_string());
     parts.extend(d.tuples.iter().map(|c| format_tuple_clause(cx, c)));
     parts.extend(d.lists.iter().map(|c| format_list_clause(cx, c)));
     parts.extend(d.resources.iter().map(|c| format_resource_clause(cx, c)));
@@ -39,7 +39,7 @@ pub(crate) fn display_for_diag(cx: TyCtx<'_>, d: &Descr) -> String {
     display(cx, d)
 }
 
-fn append_lit_set<T, F>(parts: &mut Vec<String>, set: &LiteralSet<T>, render: F)
+fn append_axis<T, F>(parts: &mut Vec<String>, set: &LiteralSet<T>, top_name: &str, render: F)
 where
     T: Ord + Clone,
     F: Fn(&T) -> String,
@@ -48,7 +48,7 @@ where
         return;
     }
     if set.is_any() {
-        parts.push("any".to_string());
+        parts.push(top_name.to_string());
         return;
     }
     let rendered: Vec<String> = set.set.iter().map(render).collect();

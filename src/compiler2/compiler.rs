@@ -199,6 +199,16 @@ impl<'a> Compiler2<'a> {
         .map_err(|err| format!("compiler2 native program JIT compile failed: {err}"))
     }
 
+    #[cfg(test)]
+    pub(crate) fn types_equivalent_for_test(&self, left: super::Ty, right: super::Ty) -> bool {
+        self.world.types().is_equivalent(&left, &right)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn display_ty_for_test(&self, ty: super::Ty) -> String {
+        self.world.types().display(&ty)
+    }
+
     /// Drives one root to `NativeProgram` and emits an AOT object through the
     /// shared native backend.
     pub fn compile_root_aot(&mut self, root: RootId, obj_name: &str) -> Result<crate::ir_codegen::AotArtifact, String> {

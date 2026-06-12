@@ -1210,14 +1210,34 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             Expr::BinOp(op, left, right) => {
                 let left = self.lower_expr(left, env, steps)?;
                 let right = self.lower_expr(right, env, steps)?;
-                let value = self.fresh_value();
-                steps.push(ExprStep::BinaryOp {
-                    value,
-                    op: *op,
-                    left,
-                    right,
-                });
-                Ok(value)
+                if let Some(name) = direct_operator_name(*op) {
+                    let value = self.fresh_value();
+                    steps.push(ExprStep::DirectCall {
+                        value,
+                        callsite: self.fresh_callsite(),
+                        callee: self.resolve_direct_callee(name, 2, expr.span)?,
+                        args: vec![
+                            CallArg {
+                                value: left,
+                                ascription: None,
+                            },
+                            CallArg {
+                                value: right,
+                                ascription: None,
+                            },
+                        ],
+                    });
+                    Ok(value)
+                } else {
+                    let value = self.fresh_value();
+                    steps.push(ExprStep::BinaryOp {
+                        value,
+                        op: *op,
+                        left,
+                        right,
+                    });
+                    Ok(value)
+                }
             }
             Expr::UnOp(op, input) => {
                 let input = self.lower_expr(input, env, steps)?;
@@ -3596,6 +3616,33 @@ fn direct_call_name(expr: &Spanned<Expr>, env: &HashMap<String, ValueId>) -> Opt
             }
             _ => return None,
         }
+    }
+}
+
+fn direct_operator_name(op: crate::ast::BinOp) -> Option<&'static str> {
+    match op {
+        crate::ast::BinOp::Add => Some("+"),
+        crate::ast::BinOp::Sub => Some("-"),
+        crate::ast::BinOp::Mul => Some("*"),
+        crate::ast::BinOp::Div => Some("/"),
+        crate::ast::BinOp::Rem => Some("%"),
+        crate::ast::BinOp::Eq => Some("=="),
+        crate::ast::BinOp::Neq => Some("!="),
+        crate::ast::BinOp::Lt => Some("<"),
+        crate::ast::BinOp::LtEq => Some("<="),
+        crate::ast::BinOp::Gt => Some(">"),
+        crate::ast::BinOp::GtEq => Some(">="),
+        crate::ast::BinOp::And
+        | crate::ast::BinOp::Or
+        | crate::ast::BinOp::Pipe
+        | crate::ast::BinOp::Cons
+        | crate::ast::BinOp::ListConcat
+        | crate::ast::BinOp::ListSubtract
+        | crate::ast::BinOp::BinConcat
+        | crate::ast::BinOp::Range
+        | crate::ast::BinOp::RangeStep
+        | crate::ast::BinOp::In
+        | crate::ast::BinOp::NotIn => None,
     }
 }
 

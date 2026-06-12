@@ -81,6 +81,27 @@ fn left + right, do: left + right
 }
 
 #[test]
+fn compiler2_quoted_function_surface_derives_typed_operator_clause_annotations() {
+    let source = r#"
+fn left :: integer + right :: float, do: left + right
+"#;
+    let root = grouped_function_root("typed_plus.fz", source);
+    let tel = ConfiguredTelemetry::new();
+    let surface = derive_function_surface(&root, CodeId::ZERO, Some("typed_plus.fz"), source, &tel)
+        .expect("derive function surface");
+
+    assert_eq!(surface.name, "+");
+    let left = surface.clauses[0].param_annotations[0]
+        .as_ref()
+        .expect("lhs annotation should decode");
+    let right = surface.clauses[0].param_annotations[1]
+        .as_ref()
+        .expect("rhs annotation should decode");
+    assert!(matches!(left.0.as_slice(), [token] if matches!(token.tok, Tok::Ident(ref name) if name == "integer")));
+    assert!(matches!(right.0.as_slice(), [token] if matches!(token.tok, Tok::Ident(ref name) if name == "float")));
+}
+
+#[test]
 fn compiler2_quoted_function_surface_derives_with_from_quoted_source() {
     let source = r#"
 fn pick(v) do

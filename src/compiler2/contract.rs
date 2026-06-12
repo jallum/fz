@@ -55,17 +55,26 @@ impl FunctionContract {
     }
 
     pub fn apply(&self, types: &mut Types, arg_tys: &[Ty]) -> AppliedFunctionContract {
-        let matched_arrows = self
-            .arrows
-            .iter()
-            .filter_map(|arrow| instantiate_matching_arrow(types, arrow, arg_tys))
-            .collect::<Vec<_>>();
-        let result = matched_arrows.iter().fold(None, |acc, arrow| {
-            Some(match acc {
-                Some(current) => types.union(current, arrow.result),
-                None => arrow.result,
-            })
-        });
+        let mut matched_arrows = Vec::new();
+        let mut result = None;
+        for arrow in &self.arrows {
+            let Some(matched) = instantiate_matching_arrow(types, arrow, arg_tys) else {
+                continue;
+            };
+            match matched {
+                SchemeInstantiation::Known(arrow) => {
+                    result = Some(match result {
+                        Some(current) => types.union(current, arrow.result),
+                        None => arrow.result,
+                    });
+                    matched_arrows.push(arrow);
+                }
+                SchemeInstantiation::Underconstrained(arrow) => {
+                    matched_arrows.push(arrow);
+                }
+                SchemeInstantiation::Invalid => {}
+            }
+        }
         AppliedFunctionContract { matched_arrows, result }
     }
 }
@@ -129,14 +138,18 @@ fn instantiate_matching_arrow(
     types: &mut Types,
     arrow: &ContractArrow,
     arg_tys: &[Ty],
-) -> Option<AppliedContractArrow> {
+) -> Option<SchemeInstantiation<AppliedContractArrow>> {
     let witnesses = overlapping_witnesses(types, &arrow.params, arg_tys)?;
     match instantiate_match(types, &arrow.params, &arrow.result, &arrow.constraints, &witnesses) {
-        SchemeInstantiation::Known(matched) | SchemeInstantiation::Underconstrained(matched) => {
-            Some(AppliedContractArrow {
+        SchemeInstantiation::Known(matched) => Some(SchemeInstantiation::Known(AppliedContractArrow {
+            params: matched.params,
+            result: matched.result,
+        })),
+        SchemeInstantiation::Underconstrained(matched) => {
+            Some(SchemeInstantiation::Underconstrained(AppliedContractArrow {
                 params: matched.params,
                 result: matched.result,
-            })
+            }))
         }
         SchemeInstantiation::Invalid => None,
     }

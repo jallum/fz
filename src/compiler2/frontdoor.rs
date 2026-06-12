@@ -516,7 +516,7 @@ impl<'a> FrontDoorParser<'a> {
             return Ok((name, head));
         }
 
-        let left = self.parse_bp(121, module_path, &[])?;
+        let left = self.parse_operator_head_operand(module_path, true)?;
         let op = self.operator_name(self.peek()).ok_or_else(|| {
             self.error(format!(
                 "expected `name(` or an operator-headed function clause, got {:?}",
@@ -524,10 +524,29 @@ impl<'a> FrontDoorParser<'a> {
             ))
         })?;
         self.bump();
-        let right = self.parse_bp(121, module_path, &[])?;
+        let right = self.parse_operator_head_operand(module_path, false)?;
         let meta = self.meta(module_path, &[op.to_string()], start.merge(self.prev_span()))?;
         let head = self.builder.call(op, &meta, &[left.root, right.root])?;
         Ok((op.to_string(), head))
+    }
+
+    fn parse_operator_head_operand(
+        &mut self,
+        module_path: &[String],
+        stop_at_operator: bool,
+    ) -> Result<ParsedExpr, FrontDoorError> {
+        let mut operand = self.parse_bp(121, module_path, &[])?;
+        if self.emit_type_payloads && self.eat(&Tok::ColonColon) {
+            let rhs_tokens = self.collect_operator_head_type_tokens(stop_at_operator)?;
+            if rhs_tokens.is_empty() {
+                return self.err("expected type expression after `::`");
+            }
+            let rhs = token_payload::encode_tokens(&self.builder, &rhs_tokens)?;
+            let span = operand.span.merge(self.prev_span());
+            let meta = self.meta(module_path, &[], span)?;
+            operand = ParsedExpr::plain(self.builder.call("::", &meta, &[operand.root, rhs])?, span);
+        }
+        Ok(operand)
     }
 
     fn callable_name_token<'tok>(&self, tok: &'tok Tok) -> Option<&'tok str> {
@@ -1933,6 +1952,52 @@ impl<'a> FrontDoorParser<'a> {
                 if let Some((lbp, _, _)) = self.infix_bp(&tok)
                     && lbp < min_bp
                 {
+                    break;
+                }
+            }
+            match tok {
+                Tok::LParen => parens += 1,
+                Tok::RParen if parens > 0 => parens -= 1,
+                Tok::LBrack => brackets += 1,
+                Tok::RBrack if brackets > 0 => brackets -= 1,
+                Tok::LBrace => braces += 1,
+                Tok::RBrace if braces > 0 => braces -= 1,
+                Tok::LBitstr => bitstrings += 1,
+                Tok::RBitstr if bitstrings > 0 => bitstrings -= 1,
+                _ => {}
+            }
+            self.bump();
+        }
+        Ok(self.toks[start..self.pos].to_vec())
+    }
+
+    fn collect_operator_head_type_tokens(&mut self, stop_at_operator: bool) -> Result<Vec<Token>, FrontDoorError> {
+        let start = self.pos;
+        let mut parens = 0_u32;
+        let mut brackets = 0_u32;
+        let mut braces = 0_u32;
+        let mut bitstrings = 0_u32;
+        while !self.peek_is(&Tok::Eof) {
+            let tok = self.peek().clone();
+            let at_top_level = parens == 0 && brackets == 0 && braces == 0 && bitstrings == 0;
+            if at_top_level {
+                if matches!(
+                    tok,
+                    Tok::Comma
+                        | Tok::Newline
+                        | Tok::Eof
+                        | Tok::End
+                        | Tok::Do
+                        | Tok::When
+                        | Tok::RParen
+                        | Tok::RBrack
+                        | Tok::RBrace
+                        | Tok::RBitstr
+                        | Tok::Arrow
+                ) {
+                    break;
+                }
+                if stop_at_operator && self.operator_name(&tok).is_some() {
                     break;
                 }
             }

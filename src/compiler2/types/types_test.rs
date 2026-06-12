@@ -768,6 +768,43 @@ macro_rules! semantic_helper_conformance_tests {
             }
 
             #[test]
+            fn widen_literal_flow_preserves_callable_surface_shape() {
+                let mut t = $ctor;
+                let entries = {
+                    let one = t.int_lit(1);
+                    let two = t.int_lit(2);
+                    t.union(one, two)
+                };
+                let zero = t.int_lit(0);
+                let callable = {
+                    let lit = t.fn_ref_lit(ClosureTarget(19), 2);
+                    let surface = t.arrow(&[entries, zero], zero);
+                    t.intersect(lit, surface)
+                };
+                let widened = t.widen_literal_flow(&callable);
+                let clauses = t
+                    .callable_value_clauses(&widened)
+                    .expect("widened callable clauses");
+                let clause = clauses.into_iter().next().expect("widened callable clause");
+                let int = t.int();
+                assert!(
+                    t.is_equivalent(&clause.args[0], &int),
+                    "literal-flow widening should widen callable arg literals to integer, got {}",
+                    t.display(&clause.args[0]),
+                );
+                assert!(
+                    t.is_equivalent(&clause.args[1], &int),
+                    "literal-flow widening should widen the accumulator literal to integer, got {}",
+                    t.display(&clause.args[1]),
+                );
+                assert!(
+                    t.is_equivalent(&clause.ret, &int),
+                    "literal-flow widening should widen the callable return literal to integer, got {}",
+                    t.display(&clause.ret),
+                );
+            }
+
+            #[test]
             fn widen_for_recursive_spec_key_preserves_callable_surface_shape() {
                 let mut t = $ctor;
                 let entries = {
@@ -843,6 +880,53 @@ macro_rules! closure_helper_conformance_tests {
                 assert!(clause.closure.is_some(), "value clauses should preserve closure identity");
                 assert!(t.is_integer(&clause.args[0]), "the surface should specialize the closure arg");
                 assert!(t.is_nil(&clause.ret), "the surface should specialize the closure return");
+            }
+
+            #[test]
+            fn refine_widen_same_fn_ref_preserves_closure_identity() {
+                let mut t = $ctor;
+                let one = t.int_lit(1);
+                let two = t.int_lit(2);
+                let nil = t.nil();
+                let fn_ref = t.fn_ref_lit(ClosureTarget(3), 1);
+                let one_surface = t.arrow(&[one], nil);
+                let two_surface = t.arrow(&[two], nil);
+                let a = t.intersect(fn_ref, one_surface);
+                let b = t.intersect(fn_ref, two_surface);
+                let widened = t.refine_widen(&a, &b);
+                let clauses = t
+                    .callable_value_clauses(&widened)
+                    .expect("same-target fn-ref widen should stay callable");
+                assert_eq!(clauses.len(), 1);
+                let clause = &clauses[0];
+                assert!(
+                    clause.closure.is_some(),
+                    "same-target fn-ref widen should preserve callable identity instead of erasing to an opaque surface"
+                );
+                assert!(
+                    t.is_integer(&clause.args[0]),
+                    "same-target fn-ref widen should widen literal arg observations through the preserved callable clause"
+                );
+                assert!(t.is_nil(&clause.ret));
+            }
+
+            #[test]
+            fn refine_widen_same_closure_target_preserves_widened_captures() {
+                let mut t = $ctor;
+                let one = t.int_lit(1);
+                let two = t.int_lit(2);
+                let a = t.closure_lit(ClosureTarget(3), vec![one], 1);
+                let b = t.closure_lit(ClosureTarget(3), vec![two], 1);
+                let widened = t.refine_widen(&a, &b);
+                let parts = t
+                    .closure_lit_parts(&widened)
+                    .expect("same-target closure widen should preserve closure identity");
+                assert_eq!(parts.target, ClosureTarget(3));
+                assert_eq!(parts.captures.len(), 1);
+                assert!(
+                    t.is_integer(&parts.captures[0]),
+                    "same-target closure widen should widen captures elementwise through the preserved closure literal"
+                );
             }
 
             #[test]
@@ -1110,7 +1194,7 @@ mod smoke {
     fn smoke_display_renders(t: &mut Types) {
         let i = t.int();
         let s = t.display(&i);
-        assert!(!s.is_empty(), "display of int must not be empty");
+        assert_eq!(s, "int", "display should name the integer axis, not collapse it to any");
     }
 
     macro_rules! impl_smoke_suite {

@@ -1143,6 +1143,51 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             if decl.symbol == "fz_binary_concat" && args.len() == 2 {
                 return lower_extern_fz_binary_concat(body, var_env, &arg_vars, dest_var);
             }
+            if matches!(decl.symbol.as_str(), "fz_op_add_ii" | "fz_op_add_if" | "fz_op_add_ff") && args.len() == 2 {
+                return lower_extern_fz_op_arith(body, t, value_types, var_env, runtime, BinOp::Add, &arg_vars);
+            }
+            if matches!(
+                decl.symbol.as_str(),
+                "fz_op_sub_ii" | "fz_op_sub_if" | "fz_op_sub_fi" | "fz_op_sub_ff"
+            ) && args.len() == 2
+            {
+                return lower_extern_fz_op_arith(body, t, value_types, var_env, runtime, BinOp::Sub, &arg_vars);
+            }
+            if matches!(decl.symbol.as_str(), "fz_op_mul_ii" | "fz_op_mul_if" | "fz_op_mul_ff") && args.len() == 2 {
+                return lower_extern_fz_op_arith(body, t, value_types, var_env, runtime, BinOp::Mul, &arg_vars);
+            }
+            if matches!(
+                decl.symbol.as_str(),
+                "fz_op_div_ii" | "fz_op_div_if" | "fz_op_div_fi" | "fz_op_div_ff"
+            ) && args.len() == 2
+            {
+                return lower_extern_fz_op_arith(body, t, value_types, var_env, runtime, BinOp::Div, &arg_vars);
+            }
+            if matches!(
+                decl.symbol.as_str(),
+                "fz_op_rem_ii" | "fz_op_rem_if" | "fz_op_rem_fi" | "fz_op_rem_ff"
+            ) && args.len() == 2
+            {
+                return lower_extern_fz_op_arith(body, t, value_types, var_env, runtime, BinOp::Mod, &arg_vars);
+            }
+            if decl.symbol == "fz_op_eq" && args.len() == 2 {
+                return lower_extern_fz_op_cmp(body, t, value_types, var_env, runtime, BinOp::Eq, &arg_vars, dest_var);
+            }
+            if decl.symbol == "fz_op_neq" && args.len() == 2 {
+                return lower_extern_fz_op_cmp(body, t, value_types, var_env, runtime, BinOp::Neq, &arg_vars, dest_var);
+            }
+            if decl.symbol == "fz_op_lt" && args.len() == 2 {
+                return lower_extern_fz_op_cmp(body, t, value_types, var_env, runtime, BinOp::Lt, &arg_vars, dest_var);
+            }
+            if decl.symbol == "fz_op_lte" && args.len() == 2 {
+                return lower_extern_fz_op_cmp(body, t, value_types, var_env, runtime, BinOp::Le, &arg_vars, dest_var);
+            }
+            if decl.symbol == "fz_op_gt" && args.len() == 2 {
+                return lower_extern_fz_op_cmp(body, t, value_types, var_env, runtime, BinOp::Gt, &arg_vars, dest_var);
+            }
+            if decl.symbol == "fz_op_gte" && args.len() == 2 {
+                return lower_extern_fz_op_cmp(body, t, value_types, var_env, runtime, BinOp::Ge, &arg_vars, dest_var);
+            }
             if decl.variadic {
                 return emit_variadic_extern_call(
                     body,
@@ -2135,6 +2180,47 @@ fn lower_extern_fz_binary_concat<M: cranelift_module::Module>(
         return Ok(LowerOut::Strict(CodegenValue::AnyRef(result)));
     }
     Ok(LowerOut::DeadUnit)
+}
+
+fn lower_extern_fz_op_arith<M, T>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    t: &mut T,
+    value_types: &HashMap<Var, Ty>,
+    var_env: &HashMap<u32, CodegenValue>,
+    runtime: &RuntimeRefs,
+    op: BinOp,
+    args: &[Var],
+) -> Result<LowerOut, CodegenError>
+where
+    M: cranelift_module::Module,
+    T: Types<Ty = Ty>,
+{
+    lower_arith_binop(body, t, value_types, var_env, runtime, op, args[0], args[1])
+}
+
+fn lower_extern_fz_op_cmp<M, T>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    t: &mut T,
+    value_types: &HashMap<Var, Ty>,
+    var_env: &HashMap<u32, CodegenValue>,
+    runtime: &RuntimeRefs,
+    op: BinOp,
+    args: &[Var],
+    dest_var: Var,
+) -> Result<LowerOut, CodegenError>
+where
+    M: cranelift_module::Module,
+    T: Types<Ty = Ty>,
+{
+    match op {
+        BinOp::Eq | BinOp::Neq => {
+            lower_eq_binop(body, t, value_types, var_env, runtime, op, args[0], args[1], dest_var)
+        }
+        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+            lower_cmp_binop(body, t, value_types, var_env, runtime, op, args[0], args[1], dest_var)
+        }
+        _ => unreachable!(),
+    }
 }
 
 /// `fz_send(receiver, msg)`: marshals `msg` as a single ABI ValueRef arg and

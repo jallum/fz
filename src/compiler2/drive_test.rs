@@ -1035,6 +1035,17 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
     assert!(
         seed_outputs.iter().any(|(fact, _)| {
             *fact
+                == FactKey::ActivationInputs(ActivationKey {
+                    root: root_id,
+                    function: main_id,
+                    input: Vec::new(),
+                })
+        }),
+        "SeedRoot should publish the entry activation-input evidence fact",
+    );
+    assert!(
+        seed_outputs.iter().any(|(fact, _)| {
+            *fact
                 == FactKey::Executable(ExecutableKey {
                     activation: ActivationKey {
                         root: root_id,
@@ -1603,12 +1614,15 @@ fn compiler2_analyze_activation_publishes_one_whole_callsite_fact_per_call() {
     );
 
     let main_id = function_id(&functions, "main", 0);
+    let activation = ActivationKey {
+        root: root_id,
+        function: main_id,
+        input: Vec::new(),
+    };
+    let activation_job = Job::AnalyzeActivation(activation.clone());
+    let effects = outputs.effects(activation_job.clone());
     let outputs = outputs
-        .take(Job::AnalyzeActivation(ActivationKey {
-            root: root_id,
-            function: main_id,
-            input: Vec::new(),
-        }))
+        .take(activation_job)
         .expect("AnalyzeActivation job effects for main/0");
     let callsite_facts = outputs
         .iter()
@@ -1618,6 +1632,12 @@ fn compiler2_analyze_activation_publishes_one_whole_callsite_fact_per_call() {
     assert_eq!(
         callsite_facts, 1,
         "an activation with one reached direct call should publish one whole callsite-summary fact",
+    );
+    assert!(
+        effects
+            .reads
+            .contains(&FactUse::current(FactKey::ActivationInputs(activation))),
+        "AnalyzeActivation should read the activation-input evidence fact rather than the key's canonical input alone",
     );
 }
 
@@ -1685,6 +1705,8 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
     tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
     let returns = ReturnTypeCapture::new();
     tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
+    let bodies = LoweredBodyCapture::new();
+    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
@@ -1798,6 +1820,7 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
     let activation_ids = semantic
         .last(root_id)
         .activations
+        .clone()
         .into_iter()
         .map(|activation| activation.function)
         .collect::<HashSet<_>>();
@@ -1823,13 +1846,34 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
     let main_return = returns.last_for_function(root_id, main_id).return_ty;
     let enum_reduce_return = returns.last_for_function(root_id, enum_reduce_id).return_ty;
     let list_impl_return = returns.last_for_function(root_id, list_impl_reduce_id).return_ty;
-    assert_eq!(
-        main_return, enum_reduce_return,
-        "the selected reduce path should settle main/0 and Enum.reduce/3 to one return type",
+    let bridge_return = returns.last_for_function(root_id, bridge_reducer_id).return_ty;
+    let user_reducer_return = returns.last_for_function(root_id, user_reducer_id).return_ty;
+    assert!(
+        compiler.types_equivalent_for_test(main_return, enum_reduce_return),
+        "the selected reduce path should settle main/0 and Enum.reduce/3 to one return type, got main={} reduce={}",
+        compiler.display_ty_for_test(main_return),
+        compiler.display_ty_for_test(enum_reduce_return),
     );
-    assert_ne!(
-        list_impl_return, main_return,
-        "the selected List-backed protocol callback should keep a distinct wrapper return from the reduced accumulator value",
+    assert!(
+        !compiler.types_equivalent_for_test(list_impl_return, main_return),
+        "the selected List-backed protocol callback should keep a distinct wrapper return from the reduced accumulator value, got impl={} main={}",
+        compiler.display_ty_for_test(list_impl_return),
+        compiler.display_ty_for_test(main_return),
+    );
+    assert_eq!(
+        compiler.display_ty_for_test(main_return),
+        "int",
+        "the selected reduce path should settle to an integer accumulator value",
+    );
+    assert_eq!(
+        compiler.display_ty_for_test(bridge_return),
+        "{:cont, int}",
+        "the reducer bridge should carry the integer accumulator through its continuation tuple",
+    );
+    assert_eq!(
+        compiler.display_ty_for_test(user_reducer_return),
+        "int",
+        "the user reducer callable should settle to the same integer value it feeds back into reduce",
     );
 }
 
@@ -1898,9 +1942,10 @@ fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
         "function-ref reducers should surface Kernel.+/2 as an ordinary callable edge",
     );
 
-    let activation_ids = semantic
-        .last(root_id)
+    let closed = semantic.last(root_id);
+    let activation_ids = closed
         .activations
+        .clone()
         .into_iter()
         .map(|activation| activation.function)
         .collect::<HashSet<_>>();
@@ -1920,12 +1965,31 @@ fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
     let enum_reduce_return = returns.last_for_function(root_id, enum_reduce_id).return_ty;
     let kernel_plus_return = returns.last_for_function(root_id, kernel_plus_id).return_ty;
     assert!(
-        main_return != kernel_plus_return,
-        "main/0 should keep a distinct tuple-shaped return from the reducer callback's scalar return",
+        !compiler.types_equivalent_for_test(main_return, kernel_plus_return),
+        "main/0 should keep a distinct tuple-shaped return from the reducer callback's scalar return, got main={} kernel_plus={}",
+        compiler.display_ty_for_test(main_return),
+        compiler.display_ty_for_test(kernel_plus_return),
     );
     assert!(
-        enum_reduce_return == kernel_plus_return,
-        "Enum.reduce/3 should settle to the same scalar return as the reached Kernel.+/2 reducer callback",
+        compiler.types_equivalent_for_test(enum_reduce_return, kernel_plus_return),
+        "Enum.reduce/3 should settle to the same scalar return as the reached Kernel.+/2 reducer callback, got reduce={} kernel_plus={}",
+        compiler.display_ty_for_test(enum_reduce_return),
+        compiler.display_ty_for_test(kernel_plus_return),
+    );
+    assert_eq!(
+        compiler.display_ty_for_test(main_return),
+        "{int, int}",
+        "the qualified and bare operator-ref reducers should both settle to integer results",
+    );
+    assert_eq!(
+        compiler.display_ty_for_test(enum_reduce_return),
+        "int",
+        "the protocol-selected reduce path should settle to int for operator refs",
+    );
+    assert_eq!(
+        compiler.display_ty_for_test(kernel_plus_return),
+        "int",
+        "the reached Kernel.+ activation should stay on the integer lane",
     );
 }
 
@@ -2104,15 +2168,14 @@ fn compiler2_materialization_turns_semantically_cold_cond_arms_into_halt_stubs()
             )
         })
         .count();
-
     assert_eq!(
         executable.call_edges.len(),
-        1,
-        "only the semantically reachable dbg/1 call should survive materialization",
+        3,
+        "materialization should prune the cold dbg arm while keeping the live Kernel.+/2, Kernel.==/2, and dbg/1 calls",
     );
     assert_eq!(
-        direct_calls, 1,
-        "the specialized materialized body should keep only one live direct-call tail",
+        direct_calls, 3,
+        "the specialized materialized body should keep the live condition-evaluation calls plus the surviving dbg/1 tail",
     );
     assert!(
         cold_halts >= 1,
@@ -6121,6 +6184,88 @@ fn compiler2_lowered_body_keeps_local_match_asserts_inside_the_body() {
         }),
         "local match expressions should still lower their own assert steps inside the body",
     );
+}
+
+#[test]
+fn compiler2_operator_expressions_lower_to_kernel_wrapper_calls() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module"], modules.handler());
+    let callsites = CallsiteCapture::new();
+    tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/operator_wrapper_calls.fz".to_string()),
+        text: "defmodule Main do\n  fn main(x), do: {x + 1, x == 1, x < 2}\nend\n".to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: Some("Main".to_string()),
+        name: "main".to_string(),
+        arity: 1,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "operator expressions should lower through wrapper calls",
+    );
+
+    let main_id = compiler.root_function(root_id);
+    let add_id = function_id_in_module(&functions, &modules, "Kernel", "+", 2);
+    let eq_id = function_id_in_module(&functions, &modules, "Kernel", "==", 2);
+    let lt_id = function_id_in_module(&functions, &modules, "Kernel", "<", 2);
+    let reached = callsites
+        .all()
+        .into_iter()
+        .filter(|record| record.key.activation.root == root_id && record.key.activation.function == main_id)
+        .filter_map(|record| record.summary.single_target().map(|target| target.callee.clone()))
+        .collect::<Vec<_>>();
+    assert!(
+        reached.contains(&SelectedCallee::Function(add_id))
+            && reached.contains(&SelectedCallee::Function(eq_id))
+            && reached.contains(&SelectedCallee::Function(lt_id)),
+        "main/1 should resolve operator syntax through Kernel wrapper functions, got {reached:?}",
+    );
+}
+
+#[test]
+fn compiler2_kernel_operator_wrappers_lower_to_intrinsic_extern_calls() {
+    let tel = ConfiguredTelemetry::new();
+    let bodies = LoweredBodyCapture::new();
+    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module"], modules.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/operator_intrinsic_lanes.fz".to_string()),
+        text: "defmodule Main do\n  fn main(), do: {1 + 2, 1 + 2.0, 2.0 + 1, 2.0 + 3.0}\nend\n".to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: Some("Main".to_string()),
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "Kernel operator wrapper should lower through typed intrinsic lanes",
+    );
+
+    let add_id = function_id_in_module(&functions, &modules, "Kernel", "+", 2);
+    let extern_ii = function_id_in_module(&functions, &modules, "Kernel", "fz_op_add_ii", 2);
+    let extern_if = function_id_in_module(&functions, &modules, "Kernel", "fz_op_add_if", 2);
+    let extern_ff = function_id_in_module(&functions, &modules, "Kernel", "fz_op_add_ff", 2);
+    let body = lowered_body(&bodies, add_id);
+    direct_call_in_body(body.clone(), extern_ii);
+    direct_call_in_body(body.clone(), extern_if);
+    direct_call_in_body(body, extern_ff);
 }
 
 #[test]

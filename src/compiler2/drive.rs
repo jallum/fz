@@ -63,6 +63,7 @@ pub enum FactKey {
     DispatchMask(FunctionId),
     RootEntry(RootId),
     Activation(ActivationKey),
+    ActivationInputs(ActivationKey),
     ActivationAnalyzed(ActivationKey),
     ReturnType(ActivationKey),
     CallSiteSummary(CallSiteKey),
@@ -83,6 +84,7 @@ pub(crate) struct JobEffects {
     pub(crate) waits: Vec<FactUse<FactKey>>,
     pub(crate) outputs: Vec<FactKey>,
     pub(crate) changed: Vec<FactKey>,
+    pub(crate) activation_input_contributions: Vec<(ActivationKey, Vec<super::types::Ty>)>,
     pub(crate) follow_up: Vec<Job>,
 }
 

@@ -144,7 +144,9 @@ where
     /// but no longer does lose that job's entry; a fact with no publishers
     /// left is retracted. The `changed` flag on each output means the job's
     /// content moved; the table increments the fact's revision only when that
-    /// flag is set (or when the fact is newly appearing).
+    /// flag is set (or when the fact is newly appearing). A job may also mark
+    /// one of its previous outputs as changed while retracting it if removing
+    /// that contribution changes a still-present multi-publisher fact.
     pub fn replace_outputs(
         &mut self,
         job: &J,
@@ -165,8 +167,8 @@ where
         }
         for key in &changed_keys_set {
             assert!(
-                output_keys.contains(key),
-                "job marked a fact changed that it does not publish"
+                output_keys.contains(key) || previous_output_keys.contains(key),
+                "job marked a fact changed that it neither publishes nor previously owned"
             );
         }
         let touched = previous_output_keys
@@ -193,6 +195,9 @@ where
             } else {
                 slot.publishers.remove(job);
                 slot.dirty_publishers.remove(job);
+                if changed_keys_set.remove(&key) && !slot.publishers.is_empty() {
+                    slot.revision += 1;
+                }
             }
 
             let new_revision = slot.revision();
