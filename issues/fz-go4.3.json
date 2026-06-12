@@ -5,7 +5,8 @@
     "fz-go4.2"
   ],
   "blocks": [
-    "fz-go4.4"
+    "fz-go4.4",
+    "fz-go4.5"
   ],
   "created": "2026-06-12T18:42:56Z",
   "description": "Goal\nEnforce the telemetry contract that compiler2 jobs move computed state into world storage once and then re-borrow the stored value for telemetry or downstream use.\n\nScope\n- code indexing / scoping publication\n- activation analysis / return type / semantic closure publication\n- any compiler2 publication path that preserves locals with clones only so later observers can read them\n\nContract\n- define/store first\n- telemetry observes the stored state\n- local-before-store or store-and-keep-local clone patterns are removed\n\nValidation\n- targeted compiler2 telemetry-observed tests\n- clippy sweep for redundant clone / unnecessary_to_owned\n- full `cargo test --workspace` before close",
