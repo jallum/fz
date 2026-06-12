@@ -4,14 +4,15 @@
   "blocks": [
     "fz-rh2.17.5.6"
   ],
+  "closed_at": "2026-06-12T18:32:06Z",
   "created": "2026-06-12T17:00:30Z",
   "description": "DirectCallee (compiler2/body.rs:71) is a one-variant enum: { Function(FunctionId) }. The enum existed to host the deleted Named variant (removed in c7d21d580); its reason died with its sibling. Replace DirectCallee with FunctionId at LoweredTail::DirectCall.callee and every consumer (body lowering, semantic walk's resolve_direct_call, artifact planning, native lowering, tests). Pure melt: no behavior change, fewer wrappers, one less match at every callsite consumer. Verify by compiler2:: staying green (hard gate, 735) and full-suite name-set delta empty.",
   "id": "fz-rh2.17.5.7",
   "labels": [],
   "parent": "fz-rh2.17.5",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 body tier: melt the single-variant DirectCallee enum to a bare FunctionId",
   "type": "task",
-  "updated_at": "2026-06-12T17:00:36Z"
+  "updated_at": "2026-06-12T18:32:06Z"
 }
