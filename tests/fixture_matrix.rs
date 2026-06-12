@@ -85,13 +85,10 @@ fn main() {
     // `#[test]` form; libtest-mimic catches panics from `assert!` and
     // reports them as failures.
     for (name, f) in static_tests() {
-        let mut trial = Trial::test(name, move || {
+        let trial = Trial::test(name, move || {
             f();
             Ok(())
         });
-        if temporarily_disabled_static_trial_reason(name).is_some() {
-            trial = trial.with_ignored_flag(true);
-        }
         trials.push(trial);
     }
 
@@ -313,18 +310,8 @@ fn static_tests() -> Vec<(&'static str, fn())> {
         ),
         // disabled: fz dump → abi_facts.rs:293 panic
         // ("dump_budgets", dump_budgets),
-        ("golden_outcomes", golden_outcomes),
         ("oracle_goldens_match_elixir", oracle_goldens_match_elixir),
     ]
-}
-
-// Temporary: latest origin/fz-rh2 is red in these exact fixture-matrix cases
-// on clean HEAD after the rebase. Track removal in fz-go4.7.
-fn temporarily_disabled_static_trial_reason(name: &str) -> Option<&'static str> {
-    match name {
-        "golden_outcomes" => Some("fz-go4.7"),
-        _ => None,
-    }
 }
 
 // Temporary: latest origin/fz-rh2 is red in these exact fixture-matrix cases
@@ -1981,94 +1968,6 @@ fn parse_spec_dump_stanzas(specs: &str) -> Vec<SpecDumpStanza<'_>> {
 
 fn specs_for<'a>(stanzas: &'a [SpecDumpStanza<'a>], name: &str, arity: usize) -> Vec<&'a SpecDumpStanza<'a>> {
     stanzas.iter().filter(|s| s.name == name && s.arity == arity).collect()
-}
-
-/// fz-9pr.16 — `expected.outcomes` goldens. Opt-in: only fixtures that
-/// ship an `expected.outcomes` sidecar are checked. CLIF/spec shape
-/// coverage lives in telemetry budgets instead of checked-in dump files.
-fn golden_outcomes() {
-    let mut failures: Vec<String> = Vec::new();
-
-    for dir in discover() {
-        let header = match parse_header_from_dir(&dir) {
-            Ok(h) => h,
-            Err(_) => continue, // matrix test surfaces header errors
-        };
-        if header.paths.is_empty() {
-            // Deferred fixtures don't participate in goldens — their dumps
-            // may not even compile, and pinning nonsense is worse than
-            // pinning nothing.
-            continue;
-        }
-        if header.kind == Kind::Test {
-            // `kind: test` fixtures route through the `fz test` runner,
-            // which expands the prelude `test()` macro. `fz dump` doesn't
-            // — so dumping them surfaces a `not-a-defmacro` error. Skip;
-            // their drift detection lives in `fixture_matrix` itself.
-            continue;
-        }
-        let src_path = dir.join("input.fz");
-        let golden_path = dir.join("expected.outcomes");
-        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
-
-        if !golden_path.exists() {
-            continue;
-        }
-
-        let out = Command::new(FZ_BIN)
-            .args(["dump", "--emit", "outcomes"])
-            .arg(&src_path)
-            .output()
-            .unwrap_or_else(|e| panic!("spawn fz dump {}: {}", name, e));
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            failures.push(format!(
-                "fz dump --emit {} {} exited {}: {}",
-                "outcomes",
-                name,
-                out.status,
-                stderr.trim_end(),
-            ));
-            continue;
-        }
-        let actual = String::from_utf8_lossy(&out.stdout).into_owned();
-
-        let expected = match fs::read_to_string(&golden_path) {
-            Ok(s) => s,
-            Err(_) => {
-                failures.push(format!(
-                    "golden {} missing for {}: {}",
-                    "outcomes",
-                    name,
-                    golden_path.display(),
-                ));
-                continue;
-            }
-        };
-
-        if actual != expected {
-            failures.push(format!(
-                "golden {} mismatch for {} ({}):\n\n\
-                 --- expected ({} bytes)\n{}\n\
-                 --- actual ({} bytes)\n{}",
-                "outcomes",
-                name,
-                golden_path.display(),
-                expected.len(),
-                expected,
-                actual.len(),
-                actual,
-            ));
-        }
-    }
-
-    assert!(
-        failures.is_empty(),
-        "{} golden {} failure(s):\n\n{}",
-        failures.len(),
-        "outcomes",
-        failures.join("\n\n---\n\n"),
-    );
 }
 
 /// fz-466 fz-ul4.dce.1 — proof test (RED gate).

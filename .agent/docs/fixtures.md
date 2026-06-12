@@ -5,8 +5,8 @@ thing about the language and proves it on every execution path that applies.
 `tests/fixture_matrix.rs` is the harness: it discovers every fixture directory,
 reads each `README.md` frontmatter, and runs `input.fz` through the paths the
 fixture declares, scoring each run against goldens. The same file also holds a
-set of static trials (the Elixir oracle, the index check, dump budgets, outcome
-goldens, CLIF-shape proofs) that don't fit the per-path mould.
+set of static trials (the Elixir oracle, the index check, dump budgets,
+CLIF-shape proofs) that don't fit the per-path mould.
 
 ## Anatomy
 
@@ -20,7 +20,6 @@ fixtures/<name>/
   expected.<path>.diagnostics  per-path diagnostic golden (optional)
   expected.stderr              stderr substring golden for `expect: abort`
   expected.<path>.stderr       per-path stderr substring golden (optional)
-  expected.outcomes            per-callsite planner-verdict golden (legacy)
   oracle.exs                   Elixir twin whose stdout owns expected.txt (optional)
 ```
 
@@ -222,9 +221,8 @@ Fixture-facing identity is provenance-based rather than allocator-order based:
 Raw generated numbering (`#lambda:<owner_id>:...`, `FnId`, etc.) is not the
 fixture contract surface.
 
-The legacy `fixtures/*/expected.outcomes` static sweep still exists until the
-remaining old-world dispatch pins finish migrating. New compiler-shape pins
-should land here instead of adding new `expected.outcomes` sidecars.
+This harness replaces the old `fixtures/*/expected.outcomes` sweep. New
+compiler-shape pins belong here instead of in the fixture matrix.
 
 `cargo test compiler2_contracts` runs the harness. Set
 `FIXTURE2_CONTRACT_FILTER=<substring>` to narrow the run to matching fixture

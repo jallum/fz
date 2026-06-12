@@ -120,8 +120,10 @@ the `:error` tag are visible in one golden).
 `spec_ok`, `spec_boundary`, `shared_heap_send_large_bitstring`, and the
 `receive_*` family (their `matcher_specs` budget pins `SwitchKind` parity).
 
-**Move old dispatch pins into compiler2 contracts under `fixtures2/`:**
-`multi_clause`, `fib_tailrec`, `curried_add`, `ast_eval`, `closure_typed_captures`.
+**Compiler-shape pins live in compiler2 contracts under `fixtures2/`:**
+`00547_compiler_contract_smoke`, `00548_contract_ast_eval`,
+`00549_contract_closure_typed_captures`, `00550_contract_curried_add`,
+`00551_contract_fib_tailrec`, `00552_contract_multi_clause`.
 
 **Keep memory-floor stats (harness-level):** `append`, `reverse`, `filter`,
 `tree`, `quicksort`, `enum_sort`, `enum_list_allocations`, `enum_reduce_suspend`,

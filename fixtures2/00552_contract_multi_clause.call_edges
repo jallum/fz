@@ -1,0 +1,11 @@
+fact/1[int] | @132-147 | direct | Kernel.*/2(int, int) => int => int
+fact/1[int] | @136-147 | direct | fact/1(int) => int => int
+fact/1[int] | @141-146 | direct | Kernel.-/2(int, int) => int => int
+main/0[] | @164-180 | direct | Kernel.dbg/1(:negative | :positive | :zero) => :negative | :positive | :zero => :negative | :positive | :zero
+main/0[] | @168-179 | direct | classify/1(int) => :negative | :positive | :zero => :negative | :positive | :zero
+main/0[] | @183-199 | direct | Kernel.dbg/1(:negative | :positive | :zero) => :negative | :positive | :zero => :negative | :positive | :zero
+main/0[] | @187-198 | direct | classify/1(int) => :negative | :positive | :zero => :negative | :positive | :zero
+main/0[] | @202-219 | direct | Kernel.dbg/1(:negative | :positive | :zero) => :negative | :positive | :zero => :negative | :positive | :zero
+main/0[] | @206-218 | direct | classify/1(int) => :negative | :positive | :zero => :negative | :positive | :zero
+main/0[] | @222-234 | direct | Kernel.dbg/1(int) => int => int
+main/0[] | @226-233 | direct | fact/1(int) => int => int

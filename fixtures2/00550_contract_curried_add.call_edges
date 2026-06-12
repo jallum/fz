@@ -1,0 +1,15 @@
+add3/1::lambda[@16-51]/1::lambda[@25-47]/1[int, int, int] | @34-39 | direct | Kernel.+/2(int, int) => int => int
+add3/1::lambda[@16-51]/1::lambda[@25-47]/1[int, int, int] | @34-43 | direct | Kernel.+/2(int, int) => int => int
+add3/1::lambda[@16-51]/1::lambda[@25-47]/1[int, int, α0] | @34-39 | direct | Kernel.+/2(int, int) => int => int
+add3/1::lambda[@16-51]/1::lambda[@25-47]/1[int, int, α0] | @34-43 | direct | Kernel.+/2(int, α0) => none => none
+add3/1::lambda[@16-51]/1::lambda[@25-47]/1[int, α0, α0] | @34-39 | direct | Kernel.+/2(int, α0) => none => none
+apply/2[(α0) -> α1, int] | @72-77 | closure | add3/1::lambda[@16-51]/1(int, int) => (α0) -> α1 => (α0) -> α1
+apply/2[(α0) -> α1, int] | @72-77 | closure | add3/1::lambda[@16-51]/1::lambda[@25-47]/1(int, int, int) => int => int
+main/0[] | @94-129 | direct | Kernel.dbg/1(int) => int => int
+main/0[] | @98-128 | direct | apply/2((α0) -> α1, int) => int => int
+main/0[] | @104-123 | direct | apply/2((α0) -> α1, int) => (α0) -> α1 => (α0) -> α1
+main/0[] | @110-118 | direct | add3/1(int) => (α0) -> α1 => (α0) -> α1
+main/0[] | @132-164 | direct | Kernel.dbg/1(int) => int => int
+main/0[] | @136-163 | direct | apply/2((α0) -> α1, int) => int => int
+main/0[] | @142-159 | direct | apply/2((α0) -> α1, int) => (α0) -> α1 => (α0) -> α1
+main/0[] | @148-155 | direct | add3/1(int) => (α0) -> α1 => (α0) -> α1
