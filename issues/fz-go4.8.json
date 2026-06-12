@@ -7,9 +7,15 @@
   "id": "fz-go4.8",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "Temporary ignore added in tests/fixture_matrix.rs for the exact timeout-sensitive matrix legs owned by this bug: lambda_sugars::{aot,fz2-build}, macro_inc::{aot,fz2-build}, make_ref_distinct::aot, utf8_smart_constructor::aot, vr1_int_arith::aot, vr2_float_arith::aot, vr3_4_typed_capture::aot, vr3_float_args::aot, vr3_int_args::aot, vr4_2_native_call::aot, vr5a_cross_kind_eq::aot, vr5a_typed_eq::aot, vr5b_typed_print::aot, wildcard_then_specific::aot.",
+      "timestamp": "2026-06-12T20:14:05Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Re-enable timeout-sensitive fixture_matrix AOT legs after investigating workspace-load timeouts",
   "type": "bug",
-  "updated_at": "2026-06-12T20:13:36Z"
+  "updated_at": "2026-06-12T20:14:05Z"
 }
