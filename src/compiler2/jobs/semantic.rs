@@ -361,26 +361,38 @@ fn apply_step(
             values.insert(*value, literal_ty);
         }
         LoweredStep::Tuple { value, items } => {
-            let items = items
+            let Some(items) = items
                 .iter()
-                .map(|item| value_ty(world, values, *item))
-                .collect::<Vec<_>>();
+                .map(|item| value_ty(values, *item))
+                .collect::<Option<Vec<_>>>()
+            else {
+                return Ok(());
+            };
             let tuple = world.types_mut().tuple(&items);
             values.insert(*value, tuple);
         }
         LoweredStep::List { value, items, tail } => {
-            let list = list_ty(world, values, items, *tail);
-            values.insert(*value, list);
+            if let Some(list) = list_ty(world, values, items, *tail) {
+                values.insert(*value, list);
+            }
         }
         LoweredStep::Map { value, entries } => {
-            let map = map_ty(world, values, entries);
-            values.insert(*value, map);
+            if let Some(map) = map_ty(world, values, entries) {
+                values.insert(*value, map);
+            }
         }
         LoweredStep::MapUpdate { value, base, entries } => {
-            let mut map_ty = value_ty(world, values, *base);
+            let Some(mut map_ty) = value_ty(values, *base) else {
+                return Ok(());
+            };
             for (key, item) in entries {
-                if let Some(key) = lowered_map_key(world, values, key) {
-                    let item_ty = value_ty(world, values, *item);
+                let Some(key) = lowered_map_key(world, values, key) else {
+                    return Ok(());
+                };
+                let Some(item_ty) = value_ty(values, *item) else {
+                    return Ok(());
+                };
+                if let Some(key) = key {
                     map_ty = world.types_mut().refine_map_field(&map_ty, &key, &item_ty);
                 } else {
                     map_ty = world.types_mut().map_top();
@@ -390,10 +402,13 @@ fn apply_step(
             values.insert(*value, map_ty);
         }
         LoweredStep::Struct { value, module, fields } => {
-            let field_tys = fields
+            let Some(field_tys) = fields
                 .iter()
-                .map(|(_, value)| value_ty(world, values, *value))
-                .collect::<Vec<_>>();
+                .map(|(_, value)| value_ty(values, *value))
+                .collect::<Option<Vec<_>>>()
+            else {
+                return Ok(());
+            };
             let struct_ty = world.module_struct_value_ty(*module, &field_tys);
             values.insert(*value, struct_ty);
         }
@@ -412,31 +427,44 @@ fn apply_step(
             function,
             captures,
         } => {
-            let captures = captures
+            let Some(captures) = captures
                 .iter()
-                .map(|capture| value_ty(world, values, *capture))
-                .collect();
+                .map(|capture| value_ty(values, *capture))
+                .collect::<Option<Vec<_>>>()
+            else {
+                return Ok(());
+            };
             let closure = world.closure_ty(*function, captures);
             values.insert(*value, closure);
         }
         LoweredStep::BinaryOp { value, op, left, right } => {
-            let left = value_ty(world, values, *left);
-            let right = value_ty(world, values, *right);
+            let (Some(left), Some(right)) = (value_ty(values, *left), value_ty(values, *right)) else {
+                return Ok(());
+            };
             values.insert(*value, lowered_binop_ty(world, *op, left, right));
         }
         LoweredStep::UnaryOp { value, op, input } => {
-            let input = value_ty(world, values, *input);
+            let Some(input) = value_ty(values, *input) else {
+                return Ok(());
+            };
             values.insert(*value, lowered_unop_ty(world, *op, input));
         }
         LoweredStep::MapIndex { value, base, key } => {
-            let base_ty = value_ty(world, values, *base);
-            let field_ty = lowered_map_key(world, values, key)
+            let Some(base_ty) = value_ty(values, *base) else {
+                return Ok(());
+            };
+            let Some(key) = lowered_map_key(world, values, key) else {
+                return Ok(());
+            };
+            let field_ty = key
                 .and_then(|key| world.types_mut().map_field_lookup(&base_ty, &key))
                 .unwrap_or_else(|| any_ty(world));
             values.insert(*value, field_ty);
         }
         LoweredStep::FieldAccess { value, base, field } => {
-            let base_ty = value_ty(world, values, *base);
+            let Some(base_ty) = value_ty(values, *base) else {
+                return Ok(());
+            };
             let field_ty = world
                 .types_mut()
                 .map_field_lookup(&base_ty, &super::super::types::MapKey::Atom(field.clone()))
@@ -444,19 +472,25 @@ fn apply_step(
             values.insert(*value, field_ty);
         }
         LoweredStep::AssertLiteral { source, literal } => {
-            let source_ty = value_ty(world, values, *source);
+            let Some(source_ty) = value_ty(values, *source) else {
+                return Ok(());
+            };
             let literal_ty = literal_ty(world, literal);
             let refined = world.types_mut().intersect(source_ty, literal_ty);
             values.insert(*source, refined);
         }
         LoweredStep::AssertStruct { source, module } => {
-            let source_ty = value_ty(world, values, *source);
+            let Some(source_ty) = value_ty(values, *source) else {
+                return Ok(());
+            };
             let asserted = struct_assertion_ty(world, *module);
             let refined = world.types_mut().intersect(source_ty, asserted);
             values.insert(*source, refined);
         }
         LoweredStep::RequireMapValue { value, source, key } => {
-            let source_ty = value_ty(world, values, *source);
+            let Some(source_ty) = value_ty(values, *source) else {
+                return Ok(());
+            };
             let field_ty = literal_map_key(key)
                 .and_then(|key| world.types_mut().map_field_lookup(&source_ty, &key))
                 .unwrap_or_else(|| any_ty(world));
@@ -466,37 +500,48 @@ fn apply_step(
             let any = world.types_mut().any();
             let fields = world.types_mut().repeat(any, *arity);
             let tuple = world.types_mut().tuple(&fields);
-            let source_ty = value_ty(world, values, *source);
+            let Some(source_ty) = value_ty(values, *source) else {
+                return Ok(());
+            };
             let refined = world.types_mut().intersect(source_ty, tuple);
             values.insert(*source, refined);
         }
         LoweredStep::TupleField { value, source, index } => {
-            let source_ty = value_ty(world, values, *source);
+            let Some(source_ty) = value_ty(values, *source) else {
+                return Ok(());
+            };
             let field_ty = world.types_mut().tuple_field_type(&source_ty, *index);
             values.insert(*value, field_ty);
         }
         LoweredStep::AssertEmptyList { source } => {
             let empty = world.types_mut().empty_list();
-            let source_ty = value_ty(world, values, *source);
+            let Some(source_ty) = value_ty(values, *source) else {
+                return Ok(());
+            };
             let refined = world.types_mut().intersect(source_ty, empty);
             values.insert(*source, refined);
         }
         LoweredStep::AssertSame { source, value } => {
-            let source_ty = value_ty(world, values, *source);
-            let value_ty = value_ty(world, values, *value);
+            let (Some(source_ty), Some(value_ty)) = (value_ty(values, *source), value_ty(values, *value)) else {
+                return Ok(());
+            };
             let both = world.types_mut().intersect(source_ty, value_ty);
             values.insert(*source, both);
             values.insert(*value, both);
         }
         LoweredStep::SplitList { source, head, tail } => {
-            let source_ty = value_ty(world, values, *source);
+            let Some(source_ty) = value_ty(values, *source) else {
+                return Ok(());
+            };
             let elem = world.types_mut().list_element_type(&source_ty);
             let rest = world.types_mut().list(elem);
             values.insert(*head, elem);
             values.insert(*tail, rest);
         }
         LoweredStep::BitstringInit { reader, source } => {
-            values.insert(*reader, value_fact(world, values, *source));
+            if let Some(source_ty) = value_ty(values, *source) {
+                values.insert(*reader, source_ty);
+            }
         }
         LoweredStep::BitstringRead {
             ok,
@@ -508,7 +553,9 @@ fn apply_step(
         } => {
             values.insert(*ok, world.types_mut().bool());
             values.insert(*value, bitfield_value_ty(world, spec));
-            values.insert(*next_reader, value_fact(world, values, *reader));
+            if let Some(reader_ty) = value_ty(values, *reader) {
+                values.insert(*next_reader, reader_ty);
+            }
         }
         LoweredStep::AssertBitstringDone { reader: _ } => {}
     }
@@ -525,8 +572,7 @@ fn join_evidence(world: &mut World<'_>, a: Option<Ty>, b: Option<Ty>) -> Option<
     }
 }
 
-/// Analyze one entry reached as a plain branch (no delivered value). A
-/// branch whose scope cannot be built yet contributes no evidence.
+/// Analyze one entry reached as a plain branch (no delivered value).
 #[allow(clippy::too_many_arguments)]
 fn analyze_branch(
     world: &mut World<'_>,
@@ -542,9 +588,7 @@ fn analyze_branch(
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
 ) -> Result<Option<Ty>, FatalError> {
-    let Some(scope) = entry_scope(entries, entry_id, values, None, params) else {
-        return Ok(None);
-    };
+    let scope = entry_scope(entries, entry_id, values, None, params);
     analyze_entry(
         world,
         entries,
@@ -596,10 +640,13 @@ fn analyze_tail(
             args,
             dest,
         } => {
-            let arg_types = args
+            let Some(arg_types) = args
                 .iter()
-                .map(|arg| value_ty(world, values, arg.value))
-                .collect::<Vec<_>>();
+                .map(|arg| value_ty(values, arg.value))
+                .collect::<Option<Vec<_>>>()
+            else {
+                return Ok(None);
+            };
             let (emission, return_ty) =
                 resolve_direct_call(world, activation, *callsite, callee, arg_types, reads, waits, follow_up)?;
             if let Some(emission) = emission {
@@ -633,11 +680,14 @@ fn analyze_tail(
             args,
             dest,
         } => {
-            let callee_ty = value_ty(world, values, *callee);
-            let arg_types = args
-                .iter()
-                .map(|arg| value_ty(world, values, arg.value))
-                .collect::<Vec<_>>();
+            let (Some(callee_ty), Some(arg_types)) = (
+                value_ty(values, *callee),
+                args.iter()
+                    .map(|arg| value_ty(values, arg.value))
+                    .collect::<Option<Vec<_>>>(),
+            ) else {
+                return Ok(None);
+            };
             let (emission, return_ty) = resolve_closure_call(
                 world, activation, *callsite, callee_ty, arg_types, reads, waits, follow_up,
             )?;
@@ -699,10 +749,13 @@ fn analyze_tail(
             Ok(join_evidence(world, then_ty, else_ty))
         }
         LoweredTail::Dispatch { inputs, dispatch, .. } => {
-            let input_tys = inputs
+            let Some(input_tys) = inputs
                 .iter()
-                .map(|input| value_ty(world, values, *input))
-                .collect::<Vec<_>>();
+                .map(|input| value_ty(values, *input))
+                .collect::<Option<Vec<_>>>()
+            else {
+                return Ok(None);
+            };
             let reachable = reachable_clause_ids(world, &dispatch.plan, &input_tys);
             let mut merged = None;
             for body_id in reachable {
@@ -808,19 +861,19 @@ fn deliver_tail_value(
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
 ) -> Result<Option<Ty>, FatalError> {
-    let delivered = value_fact(world, values, value);
+    // No evidence for the delivered value means no evidence for the path.
+    let Some(delivered) = value_ty(values, value) else {
+        return Ok(None);
+    };
     // A proven-empty value is evidence: nothing flows past this point, the
-    // path is dead. (Absence of evidence never reaches here — an
-    // unresolved call short-circuits to a `None` path before delivery.)
+    // path is dead.
     if world.types().is_empty(&delivered) {
         return Ok(Some(delivered));
     }
     match dest {
         ControlDestination::Return => Ok(Some(delivered)),
         ControlDestination::Deliver(entry_id) => {
-            let Some(scope) = entry_scope(entries, *entry_id, values, Some((value, delivered)), &[]) else {
-                return Ok(None);
-            };
+            let scope = entry_scope(entries, *entry_id, values, Some((value, delivered)), &[]);
             analyze_entry(
                 world,
                 entries,
@@ -838,16 +891,18 @@ fn deliver_tail_value(
     }
 }
 
-/// Build an entry's scope, or `None` when a required capture is absent —
-/// meaning the path that defines it produced no evidence this round, so the
-/// entry cannot be analyzed yet. Absence never defaults to a type.
+/// Build an entry's scope from whatever evidence exists. Captures are the
+/// TRANSITIVE free-value closure (`compute_entry_captures`): an entry lists
+/// values only its children read, so a missing capture must not suppress the
+/// entry — every read enforces its own availability via `value_ty`, and a
+/// child entry re-scopes and gates itself.
 fn entry_scope(
     entries: &[LoweredEntry],
     entry_id: super::super::body::ControlEntryId,
     values: &SemanticValues,
     delivered: Option<(ValueId, Ty)>,
     params: &[(ValueId, Ty)],
-) -> Option<SemanticValues> {
+) -> SemanticValues {
     let entry = &entries[entry_id.as_u32() as usize];
     let mut scope = HashMap::new();
     if let Some((_, value)) = delivered
@@ -862,9 +917,11 @@ fn entry_scope(
         if scope.contains_key(capture) {
             continue;
         }
-        scope.insert(*capture, values.get(capture).copied()?);
+        if let Some(value) = values.get(capture).copied() {
+            scope.insert(*capture, value);
+        }
     }
-    Some(scope)
+    scope
 }
 
 fn resolve_direct_call(
@@ -2224,17 +2281,11 @@ fn record_callsite_need(out: &mut HashMap<CallSiteId, ExecutableNeed>, callsite:
     }
 }
 
-fn value_fact(_world: &mut World<'_>, values: &SemanticValues, value: ValueId) -> Ty {
-    // Scope construction is total (`entry_scope` yields no scope at all when
-    // a capture is absent), so every value an analyzed entry touches is
-    // present. `any` is earned at boundaries, never defaulted here.
-    *values
-        .get(&value)
-        .unwrap_or_else(|| panic!("semantic value {value:?} must be in scope for an analyzed entry"))
-}
-
-fn value_ty(world: &mut World<'_>, values: &SemanticValues, value: ValueId) -> Ty {
-    value_fact(world, values, value)
+/// Read one value's evidence. `None` means the path that defines it has
+/// produced no evidence this round — the reader contributes nothing and is
+/// re-run when the evidence lands. Absence never defaults to a type.
+fn value_ty(values: &SemanticValues, value: ValueId) -> Option<Ty> {
+    values.get(&value).copied()
 }
 
 fn literal_ty(world: &mut World<'_>, literal: &Literal) -> Ty {
@@ -2266,19 +2317,19 @@ fn dispatch_const_ty(world: &mut World<'_>, value: &DispatchConst) -> Ty {
     }
 }
 
-fn list_ty(world: &mut World<'_>, values: &SemanticValues, items: &[ValueId], tail: Option<ValueId>) -> Ty {
+fn list_ty(world: &mut World<'_>, values: &SemanticValues, items: &[ValueId], tail: Option<ValueId>) -> Option<Ty> {
     let mut elem_ty = none_ty(world);
     for item in items {
-        let item_ty = value_ty(world, values, *item);
+        let item_ty = value_ty(values, *item)?;
         elem_ty = if world.types().is_empty(&elem_ty) {
             item_ty
         } else {
             world.types_mut().union(elem_ty, item_ty)
         };
     }
-    match tail {
+    let list = match tail {
         Some(tail) => {
-            let tail_ty = value_ty(world, values, tail);
+            let tail_ty = value_ty(values, tail)?;
             if world.types().has_list_shape(&tail_ty) {
                 let tail_elem = world.types_mut().list_element_type(&tail_ty);
                 let elem_ty = if world.types().is_empty(&elem_ty) {
@@ -2304,33 +2355,36 @@ fn list_ty(world: &mut World<'_>, values: &SemanticValues, items: &[ValueId], ta
                 world.types_mut().non_empty_list(elem_ty)
             }
         }
-    }
+    };
+    Some(list)
 }
 
-fn map_ty(world: &mut World<'_>, values: &SemanticValues, entries: &[(LoweredMapKey, ValueId)]) -> Ty {
+fn map_ty(world: &mut World<'_>, values: &SemanticValues, entries: &[(LoweredMapKey, ValueId)]) -> Option<Ty> {
     let mut fields = BTreeMap::new();
     for (key, value) in entries {
-        let Some(key) = lowered_map_key(world, values, key) else {
-            return world.types_mut().map_top();
+        let Some(key) = lowered_map_key(world, values, key)? else {
+            return Some(world.types_mut().map_top());
         };
-        fields.insert(key, value_ty(world, values, *value));
+        fields.insert(key, value_ty(values, *value)?);
     }
-    world.types_mut().map(&fields.into_iter().collect::<Vec<_>>())
+    Some(world.types_mut().map(&fields.into_iter().collect::<Vec<_>>()))
 }
 
-/// The map key at a lowered key position: the carried compile-time constant
-/// when the source wrote a literal (keys are values), falling back to the
-/// observed singleton type while numeric literal types still exist.
+/// The map key at a lowered key position. Outer `None` = no evidence yet for
+/// the key value (the reader contributes nothing this round); inner `None` =
+/// evidence exists but the key is not a singleton. The key is the carried
+/// compile-time constant when the source wrote a literal (keys are values),
+/// falling back to the observed singleton type.
 fn lowered_map_key(
     world: &mut World<'_>,
     values: &SemanticValues,
     key: &LoweredMapKey,
-) -> Option<super::super::types::MapKey> {
+) -> Option<Option<super::super::types::MapKey>> {
     if let Some(literal) = &key.literal {
-        return literal_map_key(literal);
+        return Some(literal_map_key(literal));
     }
-    let key_ty = value_ty(world, values, key.value);
-    map_key_from_ty(world, key_ty)
+    let key_ty = value_ty(values, key.value)?;
+    Some(map_key_from_ty(world, key_ty))
 }
 
 fn struct_assertion_ty(world: &mut World<'_>, module: ModuleId) -> Ty {

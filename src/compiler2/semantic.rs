@@ -76,17 +76,22 @@ pub struct SemanticClosure {
 pub struct ActivationSlot {
     return_ty: Option<Ty>,
     /// Strict ascents of the return evidence since the last rebase. Past
-    /// `RETURN_WIDENING_DELAY` the join widens; past twice that it tops out.
+    /// `RETURN_WIDENING_BUDGET` the join widens; past twice that it tops out.
     ascents: u32,
     analysis: Option<ActivationAnalysis>,
 }
 
-/// How many strict ascents one activation's return may take before the join
-/// starts widening. Honest programs converge in a few rungs (the corpus
-/// maximum is measured by fz-rh2.21.5 and recorded here); only programs
-/// whose precise ascent provably never lands pay the precision loss.
-/// Derivation note: pencil value 8 ≈ 4× the expected corpus maximum (2–4).
-pub const RETURN_WIDENING_DELAY: u32 = 8;
+/// The BUDGET of strict ascents one activation's return may take per epoch
+/// (between rebases) before the join starts widening. This is deliberately a
+/// total, not a consecutive-ascent delay: resetting on a quiet round would
+/// let spurious wakes interleave with a genuinely divergent chain and starve
+/// the widening forever — the per-epoch total makes termination a theorem.
+/// Honest programs converge in a few rungs; only programs whose precise
+/// ascent provably never lands pay the precision loss. The corpus sweep
+/// (`compiler2_corpus_never_engages_return_widening_*`) pins the measured
+/// maximum at ≤ 4 strict ascents across every fixture; the budget sits at
+/// 2× that headroom.
+pub const RETURN_WIDENING_BUDGET: u32 = 8;
 
 /// The outcome of installing one round's return evidence.
 #[derive(Debug, Clone, Copy)]
@@ -150,9 +155,9 @@ impl ActivationMap {
     /// descent is unrepresentable. A `rebased` publisher REPLACES instead:
     /// the only narrowing path, taken when its ground shifted.
     ///
-    /// The ladder must end: past `RETURN_WIDENING_DELAY` strict ascents the
+    /// The ladder must end: past `RETURN_WIDENING_BUDGET` strict ascents the
     /// join widens the growing spine (`convergence_class`); past twice the
-    /// delay it tops out at `any`. Termination is then a theorem for every
+    /// budget it tops out at `any`. Termination is then a theorem for every
     /// program, not a property of lucky inputs.
     pub fn define_return(
         &mut self,
@@ -198,16 +203,17 @@ impl ActivationMap {
             };
         }
         slot.ascents += 1;
-        let mut widened = false;
-        let stored = if slot.ascents > 2 * RETURN_WIDENING_DELAY {
-            widened = true;
+        let stored = if slot.ascents > 2 * RETURN_WIDENING_BUDGET {
             types.any()
-        } else if slot.ascents > RETURN_WIDENING_DELAY {
-            widened = true;
+        } else if slot.ascents > RETURN_WIDENING_BUDGET {
             types.convergence_class(&joined)
         } else {
             joined
         };
+        // `widened` reports what actually happened to the stored value, not
+        // that the budget threshold was crossed: past the threshold the
+        // operator is often the identity (the spine already collapsed).
+        let widened = stored != joined;
         let changed = Some(stored) != slot.return_ty;
         slot.return_ty = Some(stored);
         ReturnDefine {
@@ -606,6 +612,41 @@ mod tests {
     }
 
     #[test]
+    fn activation_return_widening_reports_only_real_coarsening() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let mut activations = ActivationMap::new();
+        let key = test_key(&mut world);
+
+        // Atom-by-atom growth ascends strictly but never builds a list
+        // spine, so past the budget `convergence_class` is the identity:
+        // crossing the threshold coarsens nothing and must not be reported
+        // as widening.
+        for index in 0..(2 * RETURN_WIDENING_BUDGET) {
+            let atom = world.types_mut().atom_lit(&format!("a{index}"));
+            let outcome = activations.define_return(world.types_mut(), &key, Some(atom), false);
+            assert!(outcome.changed, "each fresh atom is a strict ascent");
+            assert!(
+                !outcome.widened,
+                "round {index}: nothing was coarsened, so nothing may report as widened",
+            );
+        }
+
+        // The ascent past twice the budget tops out at `any` — a real
+        // coarsening, reported exactly once; at the top further evidence
+        // joins quietly.
+        let atom = world.types_mut().atom_lit("top");
+        let outcome = activations.define_return(world.types_mut(), &key, Some(atom), false);
+        assert!(outcome.changed && outcome.widened, "topping out at any IS a coarsening");
+        let atom = world.types_mut().atom_lit("after");
+        let outcome = activations.define_return(world.types_mut(), &key, Some(atom), false);
+        assert!(
+            !outcome.changed && !outcome.widened,
+            "evidence joins quietly at the top"
+        );
+    }
+
+    #[test]
     fn activation_return_widens_past_the_delay_and_terminates() {
         let tel = ConfiguredTelemetry::new();
         let mut world = World::new(&tel);
@@ -615,7 +656,7 @@ mod tests {
         // The canonical divergent ascent: ever-deeper list nests.
         let mut ty = world.types_mut().int();
         let mut widened_at = None;
-        for round in 0..(2 * RETURN_WIDENING_DELAY + 8) {
+        for round in 0..(2 * RETURN_WIDENING_BUDGET + 8) {
             ty = world.types_mut().list(ty);
             let outcome = activations.define_return(world.types_mut(), &key, Some(ty), false);
             if outcome.widened && widened_at.is_none() {

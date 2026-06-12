@@ -9435,6 +9435,93 @@ fn compiler2_quicksort_return_revisions_stay_bounded() {
     }
 }
 
+/// The widening operator is a terminator of last resort, not a feature any
+/// honest program meets: across the whole fixture corpus the return join
+/// must converge precisely, with zero widening engagements. The measured
+/// maximum ascent pinned here is what justifies the headroom documented on
+/// RETURN_WIDENING_BUDGET — if this pin moves, that doc comment moves with
+/// it. The sweep is sharded into four `#[test]`s purely so it parallelizes
+/// across the harness's threads; together the shards cover every fixture.
+fn sweep_corpus_for_return_widening(shard: usize, shards: usize) {
+    let mut swept = 0u32;
+    let mut corpus_max_ascents = 0u64;
+    let mut entries = std::fs::read_dir("fixtures2")
+        .expect("fixtures2 corpus")
+        .map(|entry| entry.expect("corpus entry").path())
+        .collect::<Vec<_>>();
+    entries.sort();
+    for (index, path) in entries.into_iter().enumerate() {
+        if index % shards != shard {
+            continue;
+        }
+        if path.extension().is_none_or(|ext| ext != "fz") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("fixture source");
+        if !text.contains("fn main()") {
+            continue;
+        }
+        swept += 1;
+
+        let tel = ConfiguredTelemetry::new();
+        let widened = Capture::new();
+        tel.attach(&["fz", "compiler2", "return_type", "widened"], widened.handler());
+        let max_ascents: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
+        let sink = Rc::clone(&max_ascents);
+        tel.attach(
+            &["fz", "compiler2", "return_type", "defined"],
+            Box::new(move |event: &Event<'_, '_, '_>| {
+                if let Some(Value::U64(ascents)) = event.measurements.get("ascents") {
+                    let mut max = sink.borrow_mut();
+                    *max = (*max).max(*ascents);
+                }
+            }),
+        );
+
+        let mut world = crate::compiler2::World::new(&tel);
+        world.submit_code(Some(path.display().to_string()), text);
+        world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
+        // Diagnostics are fixture-specific; the corpus invariants are that
+        // the drive terminates (it returned) and never widened a return.
+        let _ = world.drive();
+        assert!(
+            widened.is_empty(),
+            "return widening engaged on corpus fixture {}",
+            path.display(),
+        );
+        corpus_max_ascents = corpus_max_ascents.max(*max_ascents.borrow());
+    }
+    assert!(
+        swept >= 25,
+        "corpus shard {shard}/{shards} swept only {swept} fixtures — wrong path?"
+    );
+    assert!(
+        corpus_max_ascents <= 4,
+        "corpus max return ascents grew to {corpus_max_ascents} — \
+         re-derive RETURN_WIDENING_BUDGET's headroom before loosening this",
+    );
+}
+
+#[test]
+fn compiler2_corpus_never_engages_return_widening_shard_0() {
+    sweep_corpus_for_return_widening(0, 4);
+}
+
+#[test]
+fn compiler2_corpus_never_engages_return_widening_shard_1() {
+    sweep_corpus_for_return_widening(1, 4);
+}
+
+#[test]
+fn compiler2_corpus_never_engages_return_widening_shard_2() {
+    sweep_corpus_for_return_widening(2, 4);
+}
+
+#[test]
+fn compiler2_corpus_never_engages_return_widening_shard_3() {
+    sweep_corpus_for_return_widening(3, 4);
+}
+
 #[test]
 fn compiler2_quicksort_converges_identically_on_every_schedule() {
     // The runaway was bimodal: per-process hash seeds picked the wake order,

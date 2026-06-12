@@ -93,10 +93,11 @@ numeric literal chains cannot exist (the lattice has no numeric singletons —
 see [`set-theoretic-types`](set-theoretic-types.md)); atom chains are bounded
 by the program's finite atom set; and structural deepening is cut by the
 return join's widening operator (`ActivationMap::define_return`,
-`RETURN_WIDENING_DELAY`): past N strict ascents of one activation's return the
-growing spine collapses via `convergence_class`, past 2N it tops out at `any`.
-Every engagement emits `fz.compiler2.return_type.widened`, so widening on a
-real program is a visible regression, never silent precision loss. The key ops
+`RETURN_WIDENING_BUDGET`): past N strict ascents of one activation's return
+within an epoch the growing spine collapses via `convergence_class`, past 2N
+it tops out at `any`. Every widening that coarsens the stored value emits
+`fz.compiler2.return_type.widened`, so widening on a real program is a
+visible regression, never silent precision loss. The key ops
 live in [`type-world`](type-world.md).
 
 ```text
