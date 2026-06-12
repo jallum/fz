@@ -20,7 +20,7 @@ fixtures/<name>/
   expected.<path>.diagnostics  per-path diagnostic golden (optional)
   expected.stderr              stderr substring golden for `expect: abort`
   expected.<path>.stderr       per-path stderr substring golden (optional)
-  expected.outcomes            per-callsite planner-verdict golden (optional)
+  expected.outcomes            per-callsite planner-verdict golden (legacy)
   oracle.exs                   Elixir twin whose stdout owns expected.txt (optional)
 ```
 
@@ -48,6 +48,23 @@ It is a tiny YAML subset, only the keys below:
 - `timeout.<path>_secs:` — per-path wall-clock timeout override.
 - `budget.<namespace>.<metric>:` — a compiler-shape target counter (see Dump
   budgets).
+
+Fixtures under `fixtures2/` may also open with a compiler-contract block in the
+source file itself:
+
+```text
+#---
+# purpose: closure call stays indirect
+# root: main/0
+# assert.metric.codegen.functions: 3
+# assert.edge: main/0 | @66-71 | closure | main/0::lambda[@14-33]/1
+# snapshot.call_edges: call_edges
+#---
+```
+
+This is raw source metadata, not language syntax. The parser sees ordinary
+comments; compiler2's contract harness reads the leading block directly from the
+fixture text so one file owns both the program and the compiler-shape claims.
 
 The prose body after the frontmatter is a plain statement of present-tense facts
 about what the fixture proves. It is optional and carries no code: the code is
@@ -153,6 +170,9 @@ A fixture pins its claim in the most direct medium for what it tests.
    that pins what the language must *refuse*: the program must abort (run-time)
    or be rejected (compile-time). Positive media (assertions, goldens) can only
    say what it must accept.
+6. **Compiler2 contract** — `fixtures2` comment-frontmatter plus optional
+   sidecars. Use when the point is compiler2's own semantic/codegen surface:
+   metrics, canonical call-edge facts, or a dense snapshot of those facts.
 
 ## Dump budgets
 
@@ -172,12 +192,27 @@ and `actual.specs` as local debugging artifacts (gitignored). Budgets have no
 BLESS step — the frontmatter target is hand-updated in the same commit as the
 change that moves it.
 
-## Outcome goldens
+## Fixtures2 Compiler Contracts
 
-A fixture that ships `expected.outcomes` opts into the static `golden_outcomes`
-trial, which runs `fz dump --emit outcomes` (a per-callsite planner-verdict
-diary) and asserts an exact match against the sidecar. This is independent of the
-per-path matrix and skips `kind: test` and deferred fixtures.
+Compiler2 fixtures live under `fixtures2/`. Their contract surface is separate
+from the old `fixtures/` matrix because the claims are not "this path prints
+X" but "compiler2 observed this semantic/codegen shape for this source".
+
+The contract grammar is intentionally small:
+
+- `purpose:` — one-line reason the contract exists.
+- `root:` — compiler2 root to drive, written as `name/arity`.
+- `assert.metric.<name>:` — a telemetry-backed numeric invariant.
+- `assert.edge:` — one semantic edge claim, written
+  `caller | callsite | dispatch | target`.
+- `snapshot.call_edges:` — opt into a dense canonical call-edge snapshot sidecar.
+
+The source block is the authority. Optional sidecars exist only for dense
+snapshots that would be noisy inline.
+
+The legacy `fixtures/*/expected.outcomes` static sweep still exists until the
+remaining old-world dispatch pins finish migrating. New compiler-shape pins
+should land here instead of adding new `expected.outcomes` sidecars.
 
 ## Relationship to the runtime library
 

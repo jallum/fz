@@ -42,8 +42,9 @@ A fixture proves its claim through one (occasionally two) of these:
    Use this for negative claims — what the language must *refuse* — which the
    positive media cannot express.
 
-A fixture may also carry an `expected.outcomes` planner-dispatch golden — a
-structural pin on how calls lower to specs/continuations.
+A compiler2 fixture under `fixtures2/` may instead carry a comment-frontmatter
+compiler contract. That medium pins compiler2-native semantic/codegen facts:
+metrics, selected call edges, or a dense canonical snapshot.
 
 ## Choosing rule
 
@@ -53,7 +54,7 @@ structural pin on how calls lower to specs/continuations.
   **assertion**, no golden.
 - Purpose is "this value renders as exactly this string" → **rendering golden**.
 - Purpose is "this allocates exactly this much" → **memory-floor stats**.
-- Purpose is "this lowers to this shape" → **budget** (and/or `expected.outcomes`).
+- Purpose is "this lowers to this shape" → **budget** or a **compiler2 contract**.
 - Purpose is "this is rejected / aborts" → **expect-failure** (`expect:` +
   `expected.stderr`).
 
@@ -119,7 +120,7 @@ the `:error` tag are visible in one golden).
 `spec_ok`, `spec_boundary`, `shared_heap_send_large_bitstring`, and the
 `receive_*` family (their `matcher_specs` budget pins `SwitchKind` parity).
 
-**Keep `expected.outcomes` / dispatch pins (converting would shift the graph):**
+**Move old dispatch pins into compiler2 contracts under `fixtures2/`:**
 `multi_clause`, `fib_tailrec`, `curried_add`, `ast_eval`, `closure_typed_captures`.
 
 **Keep memory-floor stats (harness-level):** `append`, `reverse`, `filter`,
