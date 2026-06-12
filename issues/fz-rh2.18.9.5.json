@@ -8,6 +8,8 @@
     "fz-rh2.17.5.5",
     "fz-rh2.18.9.7"
   ],
+  "closed_at": "2026-06-12T05:06:03Z",
+  "close_reason": "Landed in c8d8ec68a",
   "created": "2026-06-12T02:13:32Z",
   "description": "Goal\nResolve the current dirty convergence work into intentional ticket commits before the dynamic activation-cycle work starts. Keep only foundational changes that are independently justified by tests and telemetry: structural activation partition classes, `ActivationInputs` as body evidence, list-cons typing in the type kernel, callable identity preservation when it is semantically necessary, exact artifact-rung demands that are already stable, and the native CPS back-edge fix only if it lands under `fz-hn8` first.\n\nSignal\n- The native JIT tail-recursion edit is split and closed through `fz-hn8`, or absent from this commit.\n- The worktree becomes clean through a coherent foundation commit; unrelated edits are removed, ticketed, or split, not smuggled into the convergence ticket.\n- Focused tests cover each retained foundation fact: callable identity preservation under widening, list cons non-empty construction, activation key/body evidence split, activation-input contributor replacement, stable artifact-rung demands, and the quicksort finite-frontier budget.\n- The attempted `SealSemanticClosure` settled-read cleanup is not in this commit; its re-demand churn is captured by `fz-rh2.18.9.10`.\n- Real quicksort telemetry runs under `/opt/homebrew/bin/timeout`, resolves within the activation-partition budget, and does not produce runaway logs.\n- If the broad `cargo test --lib compiler2::` remains blocked by later dynamic-cycle/seal/Enum work, those blockers are carried by `fz-rh2.18.9.7` through `fz-rh2.18.9.10`; no untracked known failure is left behind.\n- No debug prints, temporary fixtures, fixture-name special cases, qsort-specific logic, Enum.reduce-specific logic, or unchecked `fz2` run remains.\n\nStrategy\n- Treat every modified file as suspect until re-derived from an observed failure and covered by a focused test.\n- Split ticket ownership before commit: native back-edge work belongs to `fz-hn8`; semantic partition foundation belongs here; dynamic cycle convergence and honest semantic sealing belong to the follow-on tickets.\n- Keep activation identity and body input evidence separate everywhere. `ActivationKey` is the partition identity; `ActivationInputs` is the joined caller evidence consumed by analysis.\n- Move source-shape facts such as `[head | tail]` into the type kernel so semantic lowering does not carry local approximations.\n- Preserve callable identity only where call discovery requires it; otherwise let partition policy and `ActivationInputs` carry evidence.\n- Run dangerous `fz2 --log-telemetry` probes only with `/opt/homebrew/bin/timeout` and compiler drive timeouts.\n\nOutro\nNo mixed-ticket native edit, no qsort/Enum/runtime-helper special cases, no local semantic list workaround, no closure identity erasure that loses callable targets, no broken `SealSemanticClosure` settled-read cleanup, no pass-shaped artifact test assumption that hangs under re-demand, no hidden native stack-overflow regression, no unbounded telemetry command, and no claim that static `Recursive(function)` solves dynamic activation cycles.",
   "id": "fz-rh2.18.9.5",
@@ -20,8 +22,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 convergence: land activation partition foundation and split dirty state",
   "type": "task",
-  "updated_at": "2026-06-12T05:04:56Z"
+  "updated_at": "2026-06-12T05:06:03Z"
 }
