@@ -7,9 +7,15 @@
   "id": "fz-rh2.23",
   "labels": [],
   "parent": "fz-rh2",
+  "comments": [
+    {
+      "text": "fz-rh2.20 landed (dbb7bd621): the suite no longer needs any --skip. The goal line simplifies to: these four failures are ALL that stands between compiler2:: and green-as-a-hard-gate.",
+      "timestamp": "2026-06-12T16:11:05Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Compiler2: recover the four known pre-existing compiler2:: failures now that the scope is checkable",
   "type": "bug",
-  "updated_at": "2026-06-12T15:57:06Z"
+  "updated_at": "2026-06-12T16:11:05Z"
 }
