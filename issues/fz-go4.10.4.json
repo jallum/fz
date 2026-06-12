@@ -4,14 +4,15 @@
     "fz-go4.10.2"
   ],
   "blocks": [],
+  "closed_at": "2026-06-12T22:58:39Z",
   "created": "2026-06-12T22:20:09Z",
   "description": "Goal: land the selective-receive native fix without leaving scaffolding, ignored tests, or ambiguous fixture edits behind.\\n\\nChanges:\\n- remove the ignored debug helper from compiler2/drive_test\\n- re-enable temporarily ignored selective-receive coverage once fixed\\n- resolve the local receive_selective_refs expected.txt divergence deliberately\\n- update any docs/tests that still describe the old bug shape\\n\\nValidation:\\n- no ignored selective-receive debug helper remains\\n- re-enabled selective-receive tests pass in workspace runs\\n- worktree is clean aside from intended follow-on tickets",
   "id": "fz-go4.10.4",
   "labels": [],
   "parent": "fz-go4.10",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Remove selective-receive debugging debt and re-enable deferred coverage",
   "type": "task",
-  "updated_at": "2026-06-12T22:20:24Z"
+  "updated_at": "2026-06-12T22:58:39Z"
 }
