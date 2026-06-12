@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T16:22:40Z",
+  "description": "DeriveFunctionContract fatals with 'compiler2 could not resolve function contract for add1: unknown type name unknown_thing' on fixtures2/00090_spec_unknown_type.fz. The ported old-world intent (port_resolve_test::spec_unknown_type_is_resolve_error) is a resolve-TIME DIAGNOSTIC with the drive still settling (assert_resolved + TODO 'assert resolve error message contains unknown type name'). Fix: emit the error diagnostic at the unknown-name site and degrade that contract position honestly (the unconstrained position is any — a diagnosed-erroneous spec must not constrain inference), letting DeriveFunctionContract conclude. Strengthen the test to assert the diagnostic text once the outcome is Resolved. Survey DeriveFunctionContract for sibling fatal paths with the same ported intent while in there.",
+  "id": "fz-rh2.23.3",
+  "labels": [],
+  "parent": "fz-rh2.23",
+  "priority": 2,
+  "status": "open",
+  "title": "contract: unknown type name in @spec is a resolve diagnostic, not a fatal",
+  "type": "bug",
+  "updated_at": "2026-06-12T16:22:40Z"
+}
