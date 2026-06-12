@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T02:12:53Z",
+  "description": "Goal: replace recursive-only convergence keying with activation partition keys: each semantic job identity keeps only the distinctions required to do that job correctly, while ActivationInputs remains the joined evidence authority. Signal: quicksort and Enum.reduce-style runtime helpers settle through a small intentional activation frontier; generated bridge lambdas no longer specialize by exact captures/state; telemetry meaningful events drop from the current runaway shape to an explicit budget. Strategy: prove the current blowup with telemetry first, define a structural Types partition operation, derive per-function partition policy from dispatch/callable/value use, route world canonical activation keys through that policy, then update docs and grep-level deletion checks so shallow convergence_class/raw evidence keying cannot survive under a new name. Outro: no recursive-only key widening, no list-only convergence_class, no raw closure-capture identity in activation keys unless policy says that identity is semantically necessary, no quicksort/Enum special cases.",
+  "id": "fz-rh2.18.9",
+  "labels": [],
+  "parent": "fz-rh2.18",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 activation partitioning: key semantic work by necessary identity",
+  "type": "epic",
+  "updated_at": "2026-06-12T02:12:53Z"
+}
