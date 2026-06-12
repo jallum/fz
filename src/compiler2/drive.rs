@@ -122,10 +122,10 @@ impl World<'_> {
 
     /// Runs queued jobs until the work graph has no ready work.
     ///
-    /// Each job gets one telemetry span. A successful job publishes its effects
-    /// to the graph, then closes with the raw effects and applied graph step. A
-    /// fatal job closes its span, closes the drive span as fatal, and stops the
-    /// loop.
+    /// Each job gets one telemetry span that closes with the job's raw effects
+    /// borrowed in place; the applied graph step rides the separate
+    /// `work_graph.applied` event that `complete_job` emits. A fatal job closes
+    /// its span, closes the drive span as fatal, and stops the loop.
     pub fn drive(&mut self) -> DriveOutcome<Job, FactKey> {
         self.drive_until(None, None)
     }
@@ -175,14 +175,13 @@ impl World<'_> {
             match result {
                 Ok(effects) => {
                     jobs_ran += 1;
-                    let step = self.complete_job(job.clone(), effects.clone());
                     job_span.stop_with(
                         &measurements! {},
                         &metadata! {
                             effects: opaque_debug(&effects),
-                            step: opaque_debug(&step),
                         },
                     );
+                    self.complete_job(job, effects);
                 }
                 Err(_) => {
                     job_span.stop_with(&measurements! {}, &metadata! {});
