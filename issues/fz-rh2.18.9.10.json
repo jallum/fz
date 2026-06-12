@@ -4,6 +4,7 @@
     "fz-rh2.18.9.8"
   ],
   "blocks": [
+    "fz-rh2.18.9.11",
     "fz-rh2.18.9.9"
   ],
   "created": "2026-06-12T05:04:30Z",
@@ -15,5 +16,5 @@
   "status": "in_progress",
   "title": "Compiler2 semantic closure: restore honest settled reads without re-demand churn",
   "type": "bug",
-  "updated_at": "2026-06-12T05:31:25Z"
+  "updated_at": "2026-06-12T05:49:57Z"
 }
