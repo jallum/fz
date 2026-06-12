@@ -7,6 +7,12 @@
   "id": "fz-rh2.18.9.13",
   "labels": [],
   "parent": "fz-rh2.18.9",
+  "comments": [
+    {
+      "text": "Folded into fz-rh2.18.9.12 after diagnosis showed the artifact fatal was caused by the same missing-return readiness split: SealSemanticClosure was sealing from required direct-call summaries that were no longer published while pending. The fix belongs with .9.12's readiness model, not a separate commit. Current evidence: quicksort backend interpreter passes; fz2 builds fixtures2/00020_quicksort_jit_entry.fz and fixtures2/00001_quicksort_plus_foo.fz under 10s with compact telemetry.",
+      "timestamp": "2026-06-12T07:07:49Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 materialization: restore quicksort backend interpreter after return-readiness split",
