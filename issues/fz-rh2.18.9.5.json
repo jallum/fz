@@ -5,8 +5,7 @@
     "fz-rh2.18.9.4"
   ],
   "blocks": [
-    "fz-rh2.17.5.5",
-    "fz-rh2.18.9.7"
+    "fz-rh2.17.5.5"
   ],
   "closed_at": "2026-06-12T05:06:03Z",
   "close_reason": "Landed in c8d8ec68a",
