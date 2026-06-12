@@ -7,9 +7,15 @@
   "id": "fz-rh2.21",
   "labels": [],
   "parent": "fz-rh2",
+  "comments": [
+    {
+      "text": "Baseline accounting addition: ir_planner::quicksort_partition_accumulators_converge_to_one_spec and ir_planner::return_capabilities_classify_quicksort_fn_shapes fail at the fz-rh2.21.2 tip (old pipeline, untouched by this epic) — pre-existing alongside the known trio + fz-rh2.20 overflow. To be re-verified in the 21.9 closeout sweep.",
+      "timestamp": "2026-06-12T14:40:44Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "compiler2 semantic fixpoint non-convergence: recursive activation return oscillates; schedule-order non-determinism decides settling",
   "type": "epic",
-  "updated_at": "2026-06-12T12:52:40Z"
+  "updated_at": "2026-06-12T14:40:44Z"
 }
