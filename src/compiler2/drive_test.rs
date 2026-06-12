@@ -4804,7 +4804,6 @@ fn compiler2_interp_runs_selective_receive_with_make_ref_from_backend_artifacts(
 }
 
 #[test]
-#[ignore = "temporary: fz-go4.10.2 native delivery planner not landed yet"]
 fn compiler2_native_receive_value_resumes_as_arithmetic_input() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();

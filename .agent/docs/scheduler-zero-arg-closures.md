@@ -89,6 +89,15 @@ deep-copies only that projected capture set into the receiver heap, and the
 receiver resumes directly from the receiver-owned outcome closure. Mailbox
 traffic is the miss path only.
 
+For compiler2-native codegen, that resumed clause body is just another
+continuation boundary. The parked outcome closure publishes the bound-value
+projection; if the resumed native body then tailcalls a callee whose published
+return lane differs from the body's own published return lane, codegen must
+insert a compiler-generated boundary adapter closure and pass that adapter as
+the callee's continuation. Passing the receiver's outer continuation straight
+through would let the callee deliver on the wrong ABI lane and corrupt the
+resumed receive path.
+
 ```text
 message matches clause k:
   outcome = materialize_outcome_closure(clause_bodies[k], bound_vals)
