@@ -5,14 +5,15 @@
     "fz-go4.11.2",
     "fz-go4.11.3"
   ],
+  "closed_at": "2026-06-12T23:34:55Z",
   "created": "2026-06-12T23:26:33Z",
   "description": "Goal\nDefine one compiler2-native fixture contract model for fixtures2 that can express roots, semantic edge assertions, metric assertions, and optional canonical snapshot assertions without reusing the old fixture_matrix dump-golden shape.\n\nSignal\n- fixtures2 has a documented contract surface and parsing model\n- the contract chooses structured assertions first and snapshots only where dense pinning is justified\n- docs clearly explain when to use metrics, semantic edges, or snapshots\n\nStrategy\n1. Decide the source-of-truth format for compiler2 fixture contracts (inline file header, sidecar, or minimal paired files) with single-file ergonomics as the default.\n2. Define the assertion vocabulary: roots, metrics, semantic edges, snapshot opt-in, blessing behavior, and failure artifact paths.\n3. Update fixture docs so compiler2 fixtures stop being an ad hoc corpus and become a first-class contract surface beside fixtures/.\n\nValidation\n- the parser/data model compiles and round-trips representative fixture metadata\n- docs are concrete enough that later harness tickets can implement them without inventing semantics\n\nRemoval targets\n- undocumented fixtures2 test conventions\n- ambiguity about when exact snapshots are allowed versus when structured assertions are required",
   "id": "fz-go4.11.1",
   "labels": [],
   "parent": "fz-go4.11",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Define fixtures2 compiler contract model and docs",
   "type": "task",
-  "updated_at": "2026-06-12T23:26:57Z"
+  "updated_at": "2026-06-12T23:34:55Z"
 }
