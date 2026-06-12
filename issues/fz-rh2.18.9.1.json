@@ -3,9 +3,7 @@
   "blocked_by": [
     "fz-rh2.18.5"
   ],
-  "blocks": [
-    "fz-rh2.18.9.2"
-  ],
+  "blocks": [],
   "closed_at": "2026-06-12T02:22:43Z",
   "created": "2026-06-12T02:13:01Z",
   "description": "Goal: turn the current quicksort runaway into a hard, observable contract before changing the model. Signal: a focused test/harness compiles the quicksort fixture under a hard time limit and reports bounded semantic frontier metrics: activation keys by function, activation analyses, callsite definitions, native-body/codegen work, and total meaningful events. Strategy: use existing telemetry rather than payload dumps; classify meaningful events as durable semantic/artifact movement or summarized compiler work; preserve the current failing/too-high budget as the red test; explicitly exclude job span noise, unchanged republishes, and giant debug payloads from the budget. Outro: temporary ad-hoc log parsing, qsort.log dependence, and full-payload event counting are absent from checked-in tests.",
