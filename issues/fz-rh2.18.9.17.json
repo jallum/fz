@@ -1,21 +1,19 @@
 {
-  "assignee": "Jason Allum",
+  "assignee": "",
   "blocked_by": [
     "fz-rh2.18.9.12"
   ],
   "blocks": [
     "fz-rh2.18.9.9"
   ],
-  "closed_at": "2026-06-12T08:04:20Z",
-  "close_reason": "Resolved by 51ca2320b while closing fz-rh2.18.9.12; no additional source change was required for this ticket.\n\nVerification after 51ca2320b:\n- /opt/homebrew/bin/timeout 120s cargo test --lib compiler2::compiler2_test::compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare -- --exact --nocapture: passed, returned expected 42 path.\n- /opt/homebrew/bin/timeout 120s cargo test --lib compiler2::drive_test::compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen -- --exact --nocapture: passed alone.\n- Temp CLI root-entry check renaming fixture entry/0 to main/0: target/debug/fz2 --log-telemetry \u003ctmp\u003e run \u003ctmp-src\u003e exited rc=0 with runtime process_exited halt_value=42, 1,259 telemetry events, 1,303,504 bytes.\n\nConcurrency caveat is tracked separately in fz-rh2.18.9.18: the quicksort native/JIT tests can cross-contaminate when run in parallel, but both deterministic exact tests now pass alone.",
   "created": "2026-06-12T07:57:35Z",
   "description": "Goal\nMake `compiler2::compiler2_test::compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare` preserve the quicksort `entry/0` result. It currently fails exactly with `left: 3`, `right: 42`, while `compiler2::drive_test::compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen` passes when it compiles the native program captured after a full `compiler.drive()`.\n\nSignal\n- `/opt/homebrew/bin/timeout 120s cargo test --lib compiler2::compiler2_test::compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare -- --exact --nocapture` passes.\n- Root-driven `compile_root_jit` and the full-drive native-program path produce the same root entry behavior for `fixtures2/00020_quicksort_jit_entry.fz`.\n- A temp/root-entry CLI or equivalent telemetry confirms the native entry no longer exits with `halt_value=3` for the `dbg(qsort(...)); 42` shape.\n\nStrategy\nCompare the native program produced by `native_program_for_root` against the final native_program telemetry payload from a full drive. Repair the fact/root-driving handoff or native-program replacement boundary; do not paper over by changing expected values, adding a special quicksort branch, or hiding the front-door path behind the test helper.\n\nOutro\nNo front-door/native-program divergence, no stale root-driven NativeProgram, no quicksort-specific codegen branch, and no legacy planner fallback.",
   "id": "fz-rh2.18.9.17",
   "labels": [],
   "parent": "fz-rh2.18.9",
   "priority": 1,
-  "status": "closed",
+  "status": "open",
   "title": "Compiler2 JIT front door: compile_root_jit uses wrong quicksort entry program",
   "type": "bug",
-  "updated_at": "2026-06-12T08:04:20Z"
+  "updated_at": "2026-06-12T09:46:48Z"
 }
