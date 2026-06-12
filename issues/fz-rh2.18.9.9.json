@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T04:44:05Z",
+  "description": "Goal\nTurn the current `Enum.to_list`/`Enum.map` timeout into a bounded compiler2 acceptance case. The fixture should converge because dynamic activation cycles and stored-state publication are correct, not because the test is ignored, time-limited into silence, or special-cased around Enum helpers.\n\nSignal\n- `compiler2::port_codegen_test::enum_to_list_and_map_preserve_structure` no longer contains a placeholder `let _ = compiler.drive()` acceptance. It asserts the intended compiler/program behavior under a hard timeout.\n- `target/debug/fz2 --log-telemetry build fixtures2/00276_enum_to_list_and_map.fz` completes under `/opt/homebrew/bin/timeout` and compiler drive timeout without runaway memory growth.\n- Meaningful telemetry for this fixture is recorded and kept within an explicit budget: no more than 400 activation analyses, 400 return/evidence publications, 900 callsite publications, 2,000 total meaningful semantic/artifact events, and no raw log explosion from debug payload noise.\n- Quicksort remains within the activation-partition budget established by `activation_partition_telemetry_test` after the Enum fix.\n- The wider `cargo test --lib compiler2:: -- --test-threads=1` progresses past this test under a hard timeout.\n\nStrategy\n- Start from telemetry, not speculation: capture the pre-fix hot jobs/retractions for `fixtures2/00276_enum_to_list_and_map.fz` with a hard external timeout, then write the failing test around the smallest stable signal.\n- Apply `fz-rh2.18.9.7` and `fz-rh2.18.9.8` concepts to the real fixture: dynamic activation-cycle classification decides ascent; stored semantic state decides published effects.\n- Keep Enum/Kernel/protocol helpers ordinary functions with specs. Do not add runtime-helper branches, source-fixture branches, or operator/binop-style shortcuts.\n- Tighten the budget from measured green numbers before closing if the first passing implementation beats the proposed cap materially; do not loosen the cap to hide churn.\n- Run both focused fixture tests and the quicksort probe after the change, because fixing one cyclic shape must not re-open over-specialization elsewhere.\n\nOutro\nNo ignored Enum map test, no placeholder drive-only assertion, no test-local timeout masking unresolved convergence, no Enum/runtime-helper special case, no unbounded `fz2 --log-telemetry` command, and no accepting a 100MB-class telemetry log as normal compiler work.",
+  "id": "fz-rh2.18.9.9",
+  "labels": [],
+  "parent": "fz-rh2.18.9",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 convergence: make Enum.to_list/map settle under a telemetry budget",
+  "type": "task",
+  "updated_at": "2026-06-12T04:44:05Z"
+}
