@@ -452,7 +452,7 @@ mod any_value_ref_tests {
     #[test]
     fn heap_object_refs_clear_addresses_before_projection() {
         let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
-        let mut heap = Heap::new(4096, schemas.clone());
+        let mut heap = Heap::new(4096, schemas);
         let schema_id = heap.register_schema(Schema::tuple_of_arity(1));
 
         let list_bits = heap.alloc_list_cons_slot(AnyValue::int(1), EMPTY_LIST_BITS);

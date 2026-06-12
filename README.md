@@ -568,10 +568,12 @@ dump-budget mechanism — are explained in
 
 A tracked pre-commit hook lives in [`.githooks/`](.githooks/). It formats
 the staged Rust with `cargo fmt --all`, re-stages it, then runs
-`cargo check --all` and `cargo clippy --all-targets -- -D warnings` —
-mirroring the CI lint job, so a clippy complaint aborts the commit before
-it ever reaches CI. Git looks for hooks in `.git/hooks` by default, so
-enable the tracked directory once per clone:
+`cargo check --all` and `cargo clippy --workspace --all-targets -- -D warnings`.
+The lint set itself lives in the workspace manifest, so the hook and CI both
+enforce the same ownership/cloning policy without carrying a second copy of
+the lint list. A clippy complaint aborts the commit before it ever reaches CI.
+Git looks for hooks in `.git/hooks` by default, so enable the tracked
+directory once per clone:
 
 ```sh
 git config core.hooksPath .githooks

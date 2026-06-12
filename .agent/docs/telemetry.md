@@ -191,6 +191,12 @@ Two recurring patterns keep emit sites clone-free:
   share one `Rc<str>` internally; owned `String`s are created only where a
   stored span or emitted metadata actually requires ownership.
 
+The workspace ratchets this boundary through Cargo-owned clippy policy:
+`redundant_clone`, `map_clone`, `iter_cloned_collect`, `implicit_clone`,
+`useless_conversion`, and `unnecessary_to_owned` all warn in both workspace
+crates, and the canonical `cargo clippy --workspace --all-targets -- -D warnings`
+path promotes them to errors in the hook and CI.
+
 **Slot revisions are the stable change signal.** Compiler2 state stores and fact
 slots bump revisions only when their aggregate value changes. Handlers and
 tests that care about "did this semantic thing actually change?" should key on

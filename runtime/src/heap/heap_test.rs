@@ -1583,7 +1583,7 @@ fn gc_handles_cycle_via_forwarding() {
             },
         ],
     });
-    let mut h = Heap::new(1024, reg.clone());
+    let mut h = Heap::new(1024, reg);
     let a = h.alloc_struct(pair_id);
     let b = h.alloc_struct(pair_id);
     h.write_field_slot(a, 0, AnyValue::heap_ptr(b, ValueKind::STRUCT));

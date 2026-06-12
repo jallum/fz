@@ -6,6 +6,23 @@ edition = "2024"
 [workspace]
 members = ["runtime"]
 
+[workspace.lints.rust]
+# `runtime` uses `cfg(loom)` to swap in loom's synchronization primitives for
+# model checking. Teach the whole workspace that this cfg is intentional so the
+# runtime can inherit the workspace lint contract without a crate-local carveout.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
+[workspace.lints.clippy]
+redundant_clone = "warn"
+map_clone = "warn"
+iter_cloned_collect = "warn"
+implicit_clone = "warn"
+useless_conversion = "warn"
+unnecessary_to_owned = "warn"
+
+[lints]
+workspace = true
+
 [dependencies]
 libc = "0.2"
 cranelift-codegen = { version = "0.131", features = ["disas"] }
