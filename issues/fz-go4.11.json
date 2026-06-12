@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T21:19:52Z",
+  "description": "",
+  "id": "fz-go4.11",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 3,
+  "status": "open",
+  "title": "Stabilize golden_outcomes against incidental internal id drift",
+  "type": "bug",
+  "updated_at": "2026-06-12T21:19:52Z"
+}
