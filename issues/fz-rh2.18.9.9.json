@@ -17,11 +17,15 @@
     {
       "text": "2026-06-12 refresh after fz-rh2.18.9.12 worktree: `cargo test --lib compiler2::port_codegen_test::enum_to_list_and_map_preserve_structure -- --exact --nocapture` passes, but `/opt/homebrew/bin/timeout 10s target/debug/fz2 --log-telemetry /tmp/fz-enum-map-912-now.jsonl build fixtures2/00276_enum_to_list_and_map.fz -o /tmp/fz-enum-map-912-now-out` exits 1 unresolved at `Settled(SemanticClosed(RootId(0)))` with a pending `Activation(FunctionId(179), [Ty(47), Ty(145), Ty(105)])`; telemetry baseline 3,370 events, 3.4M JSONL. This remains the ticket's CLI convergence gate, not part of .9.12.",
       "timestamp": "2026-06-12T06:59:13Z"
+    },
+    {
+      "text": "2026-06-12 refresh after fz-rh2.18.9.12 semantic-summary fixes: /opt/homebrew/bin/timeout 60s target/debug/fz2 --log-telemetry \u003clog\u003e build fixtures2/00276_enum_to_list_and_map.fz -o \u003cout\u003e exits 1 with artifact/incomplete-semantic-plan: callable entry target #lambda:179:2417-2461/0 with 3 captures is missing from the closed executable frontier. Current baseline: 2,546 events, 2.55M JSONL. This replaces the earlier unresolved Activation(FunctionId(179), ...) symptom; the remaining blocker is now at the semantic-closure/materialization frontier.",
+      "timestamp": "2026-06-12T07:45:13Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 convergence: make Enum.to_list/map settle under a telemetry budget",
   "type": "task",
-  "updated_at": "2026-06-12T07:42:45Z"
+  "updated_at": "2026-06-12T07:45:13Z"
 }
