@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T15:57:06Z",
+  "description": "Two sound-but-lingering retro notes from fz-rh2.21: (1) Scheduler::rebased marks are only removed when the marked job next CONCLUDES; a job that never reruns keeps its mark forever (bounded by job count, no correctness impact — the mark only changes that job's own next conclude). (2) union_reads only ever grows a blocked job's subscription set; reads it no longer performs are dropped only at the next wait-free conclusion, so a long-blocked job can be woken by facts it stopped caring about (bounded wake amplification, no correctness impact). Neither blocks anything; address only with a holistic look at scheduler lifecycle — do not bolt on ad-hoc pruning.",
+  "id": "fz-rh2.24",
+  "labels": [],
+  "parent": "fz-rh2",
+  "priority": 3,
+  "status": "open",
+  "title": "Compiler2 fact-engine hygiene: prune rebased marks and shrink waiting subscriptions",
+  "type": "task",
+  "updated_at": "2026-06-12T15:57:06Z"
+}
