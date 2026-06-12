@@ -63,12 +63,15 @@ pub(super) fn derive_function_contract(world: &mut World<'_>, function: Function
         });
     }
 
-    let contract = specs
-        .iter()
-        .map(|spec| world.resolve_spec_decl(source.namespace, spec))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| {
-            emit_job_diagnostic(
+    // A spec that fails to resolve is the user's error, not the engine's:
+    // report it and let the diagnosed spec constrain nothing. Resolved
+    // sibling specs still contribute, and the contract fact still publishes
+    // so consumers never block on a diagnosed declaration.
+    let mut contract = Vec::with_capacity(specs.len());
+    for spec in &specs {
+        match world.resolve_spec_decl(source.namespace, spec) {
+            Ok(resolved) => contract.push(resolved),
+            Err(error) => emit_job_diagnostic(
                 world,
                 Diagnostic::error(
                     codes::RESOLVE_TYPE_ALIAS,
@@ -78,8 +81,9 @@ pub(super) fn derive_function_contract(world: &mut World<'_>, function: Function
                     ),
                     error.span,
                 ),
-            )
-        })?;
+            ),
+        }
+    }
     Ok(publish_contract(world, function, reads, contract))
 }
 
@@ -101,7 +105,6 @@ fn publish_contract(
     }
 }
 
-fn emit_job_diagnostic(world: &World<'_>, diagnostic: Diagnostic) -> FatalError {
+fn emit_job_diagnostic(world: &World<'_>, diagnostic: Diagnostic) {
     emit_through(world.tel(), None, &[diagnostic]);
-    FatalError
 }

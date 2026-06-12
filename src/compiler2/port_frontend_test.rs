@@ -173,6 +173,8 @@ fn protocol_domain_spec_rejects_type_without_impl() {
 #[test]
 fn spec_with_unknown_type_alias_produces_diagnostic() {
     let tel = ConfiguredTelemetry::new();
+    let capture = crate::telemetry::Capture::new();
+    tel.attach(&[], capture.handler());
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00148_spec_unknown_type_alias.fz".to_string()),
@@ -184,12 +186,24 @@ fn spec_with_unknown_type_alias_produces_diagnostic() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    // Unknown type alias causes a fatal during contract derivation — expect non-Resolved outcome
-    assert!(
-        !matches!(compiler.drive(), DriveOutcome::Resolved),
-        "unknown type alias in @spec should produce a fatal or unresolved outcome"
+    // The user's bad spec is reported as a diagnostic; the diagnosed spec
+    // constrains nothing and the program still compiles (old-world
+    // spec_check behavior, shared with
+    // port_resolve_test::spec_unknown_type_is_resolve_error).
+    assert_resolved(
+        compiler.drive(),
+        "a diagnosed @spec must not stop the program from compiling",
     );
-    // TODO: assert diagnostics contain an "unknown type name" error for unknown_thing
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("the unknown spec type must surface as a diagnostic");
+    let Some(crate::telemetry::Value::Str(message)) = diagnostic.metadata.get("message") else {
+        panic!("diagnostic message missing");
+    };
+    assert!(
+        message.contains("unknown type name `unknown_thing`"),
+        "diagnostic names the unknown type: {message}",
+    );
 }
 
 // Ported from src/frontend/spec_check_test.rs: fn with no @spec annotation produces no type validation diagnostics

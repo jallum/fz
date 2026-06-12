@@ -850,6 +850,8 @@ fn multiple_spec_overloads_attach_in_order() {
 #[test]
 fn spec_unknown_type_is_resolve_error() {
     let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00090_spec_unknown_type.fz".to_string()),
@@ -861,8 +863,18 @@ fn spec_unknown_type_is_resolve_error() {
         arity: 1,
         need: ExecutableNeed::Value,
     });
+    // A spec that names an unknown type is the USER's error, reported as a
+    // resolve diagnostic — never a fatal: the diagnosed spec constrains
+    // nothing and the program still compiles.
     assert_resolved(compiler.drive(), "@spec with unknown_thing type errors at resolve time");
-    // TODO: assert resolve error message contains "unknown type name"
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("the unknown spec type must surface as a resolve diagnostic");
+    assert!(
+        metadata_str(&diagnostic, "message").contains("unknown type name `unknown_thing`"),
+        "diagnostic names the unknown type: {}",
+        metadata_str(&diagnostic, "message"),
+    );
 }
 
 // Ported from src/frontend/resolve_test.rs: @spec type names resolve against local @type aliases in the module
