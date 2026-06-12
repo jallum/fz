@@ -258,6 +258,19 @@ macro_rules! seam_helper_conformance_tests {
             }
 
             #[test]
+            fn list_element_type_of_an_unconstrained_list_is_any() {
+                // `any`'s list fragment is the unconstrained conjunction: a
+                // value flowing here may be ANY cons cell, so its head is
+                // `any` — never the empty type. Conflating "unconstrained"
+                // with "exact empty list" manufactured `none` heads under a
+                // root's earned-any inputs and dead-dropped live calls.
+                let mut t = $ctor;
+                let any = t.any();
+                let projected = t.list_element_type(&any);
+                assert!(t.is_top(&projected));
+            }
+
+            #[test]
             fn tuple_projections_fall_back_to_any() {
                 let mut t = $ctor;
                 let int = t.int();

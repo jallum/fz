@@ -1139,25 +1139,25 @@ fn list_element_type(cx: TyCtx<'_>, d: &Descr) -> Descr {
         return Descr::any();
     }
     let mut elem = Descr::none();
-    let mut found = false;
     for conj in &d.lists {
+        // A positive sig with no elem is the exact empty list: the whole
+        // conjunction is a subset of it and has no head to project.
+        if conj.pos.iter().any(|sig| sig.elem.is_none()) {
+            continue;
+        }
         let mut clause_elem: Option<Descr> = None;
         for sig in &conj.pos {
-            let Some(sig_elem) = sig.elem else {
-                continue;
-            };
-            let sig_elem = cx.descr(&sig_elem);
+            let sig_elem = cx.descr(&sig.elem.expect("empty-list sigs were skipped above"));
             clause_elem = Some(match clause_elem {
                 None => sig_elem.clone(),
                 Some(prev) => prev.intersect(sig_elem),
             });
         }
-        if let Some(e) = clause_elem {
-            elem = elem.union(cx, &e);
-            found = true;
-        }
+        // No positive constraint at all (`Conj::top()`, as in `any`'s list
+        // fragment) leaves the element unconstrained: `any`, never `none`.
+        elem = elem.union(cx, &clause_elem.unwrap_or_else(Descr::any));
     }
-    if found { elem } else { Descr::none() }
+    elem
 }
 
 fn resource_payload_type(cx: TyCtx<'_>, d: &Descr) -> Option<Descr> {
