@@ -27,15 +27,26 @@ impl ValueId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CallSiteId(u32);
+pub struct CallSiteId {
+    raw: u32,
+    span: Span,
+}
 
 impl CallSiteId {
+    pub fn new(raw: u32, span: Span) -> Self {
+        Self { raw, span }
+    }
+
     pub fn from_u32(value: u32) -> Self {
-        Self(value)
+        Self::new(value, Span::DUMMY)
     }
 
     pub fn as_u32(self) -> u32 {
-        self.0
+        self.raw
+    }
+
+    pub fn span(self) -> Span {
+        self.span
     }
 }
 

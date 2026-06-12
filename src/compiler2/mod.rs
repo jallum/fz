@@ -107,6 +107,10 @@ mod facts_test;
 #[cfg(test)]
 mod fixture_contract_test;
 #[cfg(test)]
+mod fixture_facts;
+#[cfg(test)]
+mod fixture_facts_test;
+#[cfg(test)]
 mod frontdoor_test;
 #[cfg(test)]
 mod identity_test;

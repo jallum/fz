@@ -1201,7 +1201,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             }
             Expr::Call(target, args) => {
                 let lowered_args = self.lower_call_args(args, env, steps)?;
-                let callsite = self.fresh_callsite();
+                let callsite = self.fresh_callsite(expr.span);
                 if let Some(name) = direct_call_name(target, env) {
                     let value = self.fresh_value();
                     steps.push(ExprStep::DirectCall {
@@ -1228,7 +1228,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 let value = self.fresh_value();
                 steps.push(ExprStep::ClosureCall {
                     value,
-                    callsite: self.fresh_callsite(),
+                    callsite: self.fresh_callsite(expr.span),
                     callee,
                     args: lowered_args,
                 });
@@ -1241,7 +1241,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                     let value = self.fresh_value();
                     steps.push(ExprStep::DirectCall {
                         value,
-                        callsite: self.fresh_callsite(),
+                        callsite: self.fresh_callsite(expr.span),
                         callee: self.resolve_direct_callee(name, 2, expr.span)?,
                         args: vec![
                             CallArg {
@@ -2777,8 +2777,8 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         value
     }
 
-    fn fresh_callsite(&mut self) -> CallSiteId {
-        let value = CallSiteId::from_u32(self.next_callsite);
+    fn fresh_callsite(&mut self, span: Span) -> CallSiteId {
+        let value = CallSiteId::new(self.next_callsite, span);
         self.next_callsite += 1;
         value
     }

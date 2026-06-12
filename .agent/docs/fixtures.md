@@ -210,6 +210,15 @@ The contract grammar is intentionally small:
 The source block is the authority. Optional sidecars exist only for dense
 snapshots that would be noisy inline.
 
+Fixture-facing identity is provenance-based rather than allocator-order based:
+
+- caller labels are canonical function labels plus the activation input surface
+- callsites identify source spans as `@start-end`
+- generated lambdas identify as `owner::lambda[@start-end]/arity`
+
+Raw generated numbering (`#lambda:<owner_id>:...`, `FnId`, etc.) is not the
+fixture contract surface.
+
 The legacy `fixtures/*/expected.outcomes` static sweep still exists until the
 remaining old-world dispatch pins finish migrating. New compiler-shape pins
 should land here instead of adding new `expected.outcomes` sidecars.
