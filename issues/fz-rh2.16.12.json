@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T19:18:34Z",
+  "description": "fz-rh2.18.5 migrated kernel.fz's operator clauses to ascribed params (fn left :: integer + right :: integer, do: fz_op_add_ii(...)) plus 6 matching import-filter lines in runtime.fz. The old parser cannot read that surface, so every old-world test/matrix lane that loads the runtime library died at parse (~420 lib failures + the oracle lanes of the 517 matrix failures) — while .agent/docs.md still names old fz THE migration oracle for the 16.x cutover. The dependency is disjoint: old-world never consumes the new clauses (own binop special cases); compiler2 requires them. Fix: freeze pre-18.5 kernel.fz+runtime.fz under src/modules/runtime_library/legacy/ (they are only consistent as a pair: current runtime.fz imports operators the legacy kernel does not export); RuntimeModuleSource gains a legacy_source field (only Kernel diverges) and the prelude gets a legacy const; every old-parser consumer (parsed_program, interfaces, source/runtime_module_source, primitive_prelude_program, root_type_env, core_prelude_module_sources, ir_lower's prelude) reads legacy; compiler2's module_sources()/prelude_source() keep current. Verified by experiment: old-world buckets 836 passed / 4 failed; matrix old lanes 100% green. The 4 stragglers get #[ignore] with reasons (they die with the old pipeline).",
+  "id": "fz-rh2.16.12",
+  "labels": [],
+  "parent": "fz-rh2.16",
+  "priority": 2,
+  "status": "open",
+  "title": "Restore the old-world oracle: legacy runtime-library snapshot for the old pipeline",
+  "type": "task",
+  "updated_at": "2026-06-12T19:18:34Z"
+}
