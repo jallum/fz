@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.21.5"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-rh2.21",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "dispatch pre-patch: numeric-constant miss rule + literal map keys as values",
   "type": "task",
-  "updated_at": "2026-06-12T12:52:42Z"
+  "updated_at": "2026-06-12T14:48:59Z"
 }
