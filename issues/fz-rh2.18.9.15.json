@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T07:42:28Z",
+  "description": "Goal\nMake `compiler2::port_codegen_test::enum_tier0_fixture_exercises_basic_operations` bounded. The test is currently a TODO that ignores `drive()` result, but it still hangs for more than 90s and can stall the wider `cargo test --lib compiler2::` run.\n\nSignal\n- `/opt/homebrew/bin/timeout 90s cargo test --lib compiler2::port_codegen_test::enum_tier0_fixture_exercises_basic_operations -- --exact --nocapture` exits before timeout.\n- The test either asserts the intended resolved behavior or explicitly records a bounded unresolved outcome with a narrower follow-up; it must not silently ignore an unbounded drive.\n- Telemetry gives a compact event budget and identifies the remaining Enum operation if resolution is still not complete.\n\nStrategy\nRun the fixture under telemetry, identify the repeated activation/callsite frontier, and either finish the missing Enum semantic path or split a smaller blocker. Do not solve by increasing timeouts or leaving the TODO as an unbounded smoke test.\n\nOutro\nNo unbounded TODO test, no swallowed drive hang, no fixture-wide special case, and no broad top/bottom readiness sentinel.",
+  "id": "fz-rh2.18.9.15",
+  "labels": [],
+  "parent": "fz-rh2.18.9",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 Enum tier0: replace hanging TODO drive with bounded convergence evidence",
+  "type": "bug",
+  "updated_at": "2026-06-12T07:42:28Z"
+}
