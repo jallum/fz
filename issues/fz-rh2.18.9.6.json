@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [
     "fz-rh2.18.9.16",
+    "fz-rh2.18.9.18",
     "fz-rh2.18.9.9"
   ],
   "blocks": [
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "Compiler2 activation partitioning closeout: docs and deletion contract",
   "type": "task",
-  "updated_at": "2026-06-12T07:45:03Z"
+  "updated_at": "2026-06-12T08:01:55Z"
 }
