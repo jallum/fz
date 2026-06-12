@@ -1,8 +1,6 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [
-    "fz-rh2.18.4"
-  ],
+  "blocked_by": [],
   "blocks": [],
   "closed_at": "2026-06-11T22:15:45Z",
   "close_reason": "Landed in e9dbb61e3",
