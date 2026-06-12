@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T22:20:09Z",
+  "description": "Goal: make continuation/result delivery a first-class compiler2 native codegen concept instead of callable-entry-only adapter logic plus terminator-local special cases.\\n\\nOutput contract:\\n- producer delivery shape and consumer delivery shape are derived once from authoritative NativeBody ABI facts\\n- codegen owns one reusable boundary-adapter inventory for mismatched value-lane / tuple-field delivery seams\\n- callable entries, resumed receive continuations, and ordinary native return boundaries all consume the same contract\\n\\nChanges:\\n- introduce a delivery-shape / delivery-contract model on the compiler2 native codegen surface\\n- derive it from NativeBody entry_abi / param_reprs / return_abi facts\\n- generalize callable-return adapters into boundary adapters\\n- add telemetry for selected delivery path / adapter insertion\\n\\nValidation:\\n- focused native codegen tests for direct, adapted, and tuple-field delivery shapes\\n- telemetry-observed tests for adapter selection\\n- no ad hoc delivery-shape synthesis outside the model",
+  "id": "fz-go4.10.1",
+  "labels": [],
+  "parent": "fz-go4.10",
+  "priority": 2,
+  "status": "open",
+  "title": "Generalize compiler2 native delivery contracts beyond callable-entry adapters",
+  "type": "task",
+  "updated_at": "2026-06-12T22:20:09Z"
+}
