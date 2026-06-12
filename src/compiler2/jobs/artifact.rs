@@ -67,9 +67,12 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
             .activation_analysis(&executable.activation)
             .cloned()
             .expect("settled semantic closure should have activation analysis for every executable");
+        // The Kleene reading at the settled boundary: return evidence still
+        // absent at the fixpoint means no value ever flows — the function
+        // provably never returns, and its return type is the empty type.
         let return_ty = world
             .activation_return(&executable.activation)
-            .expect("settled semantic closure should have activation return for every executable");
+            .unwrap_or_else(|| world.types_mut().none());
         let mut body = prune_lowered_body(
             world.lowered_body(executable.activation.function),
             &analysis.reachable_clauses,
@@ -365,7 +368,7 @@ fn rewrite_protocol_dispatch_calls(
                 SyntheticCallTarget {
                     function,
                     input_types: target.input_types.clone(),
-                    return_ty: target.return_ty,
+                    return_ty: target.settled_return(world.types_mut()),
                 },
             );
             arm_entries.push(arm_entry);
@@ -588,7 +591,7 @@ fn lower_materialized_call_target(
     };
     Ok(MaterializedCallEdge {
         callee,
-        return_ty: target.return_ty,
+        return_ty: target.settled_return(world.types_mut()),
         extern_marshals,
     })
 }
@@ -725,7 +728,7 @@ fn call_target_summary(callee: SelectedCallee, input_types: Vec<Ty>, return_ty: 
     CallTargetSummary {
         callee,
         input_types,
-        return_ty,
+        return_ty: Some(return_ty),
     }
 }
 

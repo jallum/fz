@@ -31,6 +31,9 @@ type DispatchPlan = PatternDispatchPlan<Ty>;
 type SemanticValues = HashMap<ValueId, SemanticValue>;
 type ValueTypes = HashMap<ValueId, Ty>;
 type RefinedCallSurface = (Vec<Ty>, Option<Ty>);
+/// One resolved call: its summary (when a single emission applies), the
+/// activation demand it contributes, and its return evidence.
+type ResolvedCall = (Option<CallSiteSummary>, Vec<ActivationContribution>, Option<Ty>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SemanticValue {
@@ -131,14 +134,26 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     let mut analysis_calls = Vec::new();
     let mut reachable_entries = HashSet::new();
     let mut value_types = HashMap::new();
-    let mut return_ty = none_ty(world);
+    // The activation's return evidence. `None` is the ascent's bottom — "no
+    // path has produced a value yet" — never the type `none`, which remains
+    // a provable fact (a body all of whose paths halt). At the fixpoint the
+    // two coincide; mid-climb only readers of settled facts may conflate
+    // them, and the settled gate keeps everyone else out.
+    let mut return_evidence: Option<Ty> = None;
     match lowered_body {
         LoweredBody::Extern { signature } => {
-            return_ty = signature.return_ty;
+            return_evidence = Some(signature.return_ty);
         }
         LoweredBody::Clauses { clauses, entries, .. } => {
             for clause_id in &reachable_clauses {
                 let clause = &clauses[*clause_id as usize];
+                // Input evidence that has not caught up to the clause's
+                // arity cannot bind its params. Like an absent capture,
+                // incomplete evidence yields no evidence — the analysis
+                // re-runs when the joined inputs grow. Never `any`.
+                if clause.params.len() > inputs.len() {
+                    continue;
+                }
                 let mut values = HashMap::new();
                 for (value, ty) in clause.params.iter().copied().zip(inputs.iter().cloned()) {
                     values.insert(value, SemanticValue::from_observed(world, ty));
@@ -167,11 +182,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
                     &mut waits,
                     &mut follow_up,
                 )?;
-                return_ty = if world.types().is_empty(&return_ty) {
-                    clause_return
-                } else {
-                    world.types_mut().union(return_ty, clause_return)
-                };
+                return_evidence = join_evidence(world, return_evidence, clause_return);
             }
         }
     }
@@ -179,18 +190,12 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     if let Some(contract_return_ty) =
         activation_contract_return(world, function, &inputs, &mut reads, &mut waits, &mut follow_up)?
     {
-        return_ty = refine_call_return(world, return_ty, Some(contract_return_ty));
+        return_evidence = refine_call_return(world, return_evidence, Some(contract_return_ty));
     }
 
-    if !waits.is_empty() {
-        return Ok(JobEffects {
-            reads: current_uses(reads),
-            waits: current_uses(waits),
-            follow_up: follow_up.into_iter().collect(),
-            ..JobEffects::default()
-        });
-    }
-
+    // Waits no longer bail: a waiting completion extends the job's standing
+    // claims (it cannot retract), so partial evidence publishes safely and
+    // the waits simply ride the final effects.
     analysis_calls = coalesce_call_emissions(
         world,
         activation,
@@ -199,33 +204,20 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         &mut waits,
         &mut follow_up,
     )?;
-    if !waits.is_empty() {
-        return Ok(JobEffects {
-            reads: current_uses(reads),
-            waits: current_uses(waits),
-            follow_up: follow_up.into_iter().collect(),
-            ..JobEffects::default()
-        });
-    }
 
     let covered_callable_activations = covered_callable_activations(&analysis_calls);
-    let latent_callable_activations = resolve_escaping_callable_activations_from_type(
-        world,
-        activation,
-        return_ty,
-        &covered_callable_activations,
-        &mut reads,
-        &mut waits,
-        &mut follow_up,
-    );
-    if !waits.is_empty() {
-        return Ok(JobEffects {
-            reads: current_uses(reads),
-            waits: current_uses(waits),
-            follow_up: follow_up.into_iter().collect(),
-            ..JobEffects::default()
-        });
-    }
+    let latent_callable_activations = match return_evidence {
+        Some(return_ty) => resolve_escaping_callable_activations_from_type(
+            world,
+            activation,
+            return_ty,
+            &covered_callable_activations,
+            &mut reads,
+            &mut waits,
+            &mut follow_up,
+        ),
+        None => Vec::new(),
+    };
 
     let mut emitted_activations = HashSet::new();
     let mut emitted_executables = HashSet::new();
@@ -269,7 +261,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         follow_up.insert(Job::SealSemanticClosure(activation.root));
     }
 
-    let return_changed = world.define_activation_return(activation, return_ty);
+    let return_changed = world.define_activation_return(activation, return_evidence);
     let return_fact = FactKey::ReturnType(activation.clone());
     outputs.push(return_fact.clone());
     if return_changed {
@@ -309,11 +301,11 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     follow_up.insert(Job::SealSemanticClosure(activation.root));
     Ok(JobEffects {
         reads: current_uses(reads),
+        waits: current_uses(waits),
         outputs: dedupe_facts(outputs),
         changed: dedupe_facts(changed),
         activation_input_contributions,
         follow_up: follow_up.into_iter().collect(),
-        ..JobEffects::default()
     })
 }
 
@@ -329,7 +321,7 @@ fn analyze_entry(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
-) -> Result<Ty, FatalError> {
+) -> Result<Option<Ty>, FatalError> {
     reachable_entries.insert(entry_id);
     let entry = &entries[entry_id.as_u32() as usize];
     let mut local = values.clone();
@@ -680,6 +672,51 @@ fn apply_step(
     Ok(())
 }
 
+/// Join two path results. `None` ("no evidence on this path yet") is the
+/// identity; evidence joins by union, which preserves closure identities.
+fn join_evidence(world: &mut World<'_>, a: Option<Ty>, b: Option<Ty>) -> Option<Ty> {
+    match (a, b) {
+        (None, x) | (x, None) => x,
+        (Some(a), Some(b)) if a == b => Some(a),
+        (Some(a), Some(b)) => Some(world.types_mut().union(a, b)),
+    }
+}
+
+/// Analyze one entry reached as a plain branch (no delivered value). A
+/// branch whose scope cannot be built yet contributes no evidence.
+#[allow(clippy::too_many_arguments)]
+fn analyze_branch(
+    world: &mut World<'_>,
+    entries: &[LoweredEntry],
+    entry_id: super::super::body::ControlEntryId,
+    values: &SemanticValues,
+    params: &[(ValueId, SemanticValue)],
+    reachable_entries: &mut HashSet<super::super::body::ControlEntryId>,
+    value_types: &mut ValueTypes,
+    calls: &mut Vec<CallEmission>,
+    activation: &ActivationKey,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Result<Option<Ty>, FatalError> {
+    let Some(scope) = entry_scope(entries, entry_id, values, None, params) else {
+        return Ok(None);
+    };
+    analyze_entry(
+        world,
+        entries,
+        entry_id,
+        &scope,
+        reachable_entries,
+        value_types,
+        calls,
+        activation,
+        reads,
+        waits,
+        follow_up,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn analyze_tail(
     world: &mut World<'_>,
@@ -693,7 +730,7 @@ fn analyze_tail(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
-) -> Result<Ty, FatalError> {
+) -> Result<Option<Ty>, FatalError> {
     match tail {
         LoweredTail::Value { value, dest } => deliver_tail_value(
             world,
@@ -725,6 +762,9 @@ fn analyze_tail(
             if let Some(emission) = emission {
                 calls.push(emission);
             }
+            let Some(return_ty) = return_ty else {
+                return Ok(None);
+            };
             let mut delivered = values.clone();
             delivered.insert(*value, SemanticValue::same(return_ty));
             merge_value_types(world, value_types, &delivered);
@@ -761,6 +801,9 @@ fn analyze_tail(
             if let Some(emission) = emission {
                 calls.push(emission);
             }
+            let Some(return_ty) = return_ty else {
+                return Ok(None);
+            };
             let mut delivered = values.clone();
             delivered.insert(*value, SemanticValue::same(return_ty));
             merge_value_types(world, value_types, &delivered);
@@ -782,11 +825,12 @@ fn analyze_tail(
         LoweredTail::If {
             then_entry, else_entry, ..
         } => {
-            let then_ty = analyze_entry(
+            let then_ty = analyze_branch(
                 world,
                 entries,
                 *then_entry,
-                &entry_scope(entries, *then_entry, values, None, &[]),
+                values,
+                &[],
                 reachable_entries,
                 value_types,
                 calls,
@@ -795,11 +839,12 @@ fn analyze_tail(
                 waits,
                 follow_up,
             )?;
-            let else_ty = analyze_entry(
+            let else_ty = analyze_branch(
                 world,
                 entries,
                 *else_entry,
-                &entry_scope(entries, *else_entry, values, None, &[]),
+                values,
+                &[],
                 reachable_entries,
                 value_types,
                 calls,
@@ -808,7 +853,7 @@ fn analyze_tail(
                 waits,
                 follow_up,
             )?;
-            Ok(world.types_mut().union(then_ty, else_ty))
+            Ok(join_evidence(world, then_ty, else_ty))
         }
         LoweredTail::Dispatch { inputs, dispatch, .. } => {
             let input_tys = inputs
@@ -822,11 +867,12 @@ fn analyze_tail(
                     .arm_entries
                     .get(body_id as usize)
                     .unwrap_or_else(|| panic!("compiler2 local dispatch arm {} is out of bounds", body_id));
-                let arm_ty = analyze_entry(
+                let arm_ty = analyze_branch(
                     world,
                     entries,
                     arm_entry,
-                    &entry_scope(entries, arm_entry, values, None, &[]),
+                    values,
+                    &[],
                     reachable_entries,
                     value_types,
                     calls,
@@ -835,16 +881,14 @@ fn analyze_tail(
                     waits,
                     follow_up,
                 )?;
-                merged = Some(match merged {
-                    None => arm_ty,
-                    Some(current) => world.types_mut().union(current, arm_ty),
-                });
+                merged = join_evidence(world, merged, arm_ty);
             }
-            let miss_ty = analyze_entry(
+            let miss_ty = analyze_branch(
                 world,
                 entries,
                 dispatch.miss_entry,
-                &entry_scope(entries, dispatch.miss_entry, values, None, &[]),
+                values,
+                &[],
                 reachable_entries,
                 value_types,
                 calls,
@@ -853,12 +897,10 @@ fn analyze_tail(
                 waits,
                 follow_up,
             )?;
-            Ok(match merged {
-                None => miss_ty,
-                Some(current) => world.types_mut().union(current, miss_ty),
-            })
+            Ok(join_evidence(world, merged, miss_ty))
         }
         LoweredTail::Receive(receive) => {
+            // Mailbox messages are a runtime boundary: `any` is earned here.
             let any = world.types_mut().any();
             let mut merged = None;
             for clause in &receive.clauses {
@@ -868,11 +910,12 @@ fn analyze_tail(
                     .iter()
                     .map(|param| (*param, SemanticValue::same(any)))
                     .collect::<Vec<_>>();
-                let clause_ty = analyze_entry(
+                let clause_ty = analyze_branch(
                     world,
                     entries,
                     clause.entry,
-                    &entry_scope(entries, clause.entry, values, None, &clause_params),
+                    values,
+                    &clause_params,
                     reachable_entries,
                     value_types,
                     calls,
@@ -881,17 +924,15 @@ fn analyze_tail(
                     waits,
                     follow_up,
                 )?;
-                merged = Some(match merged {
-                    None => clause_ty,
-                    Some(current) => world.types_mut().union(current, clause_ty),
-                });
+                merged = join_evidence(world, merged, clause_ty);
             }
             if let Some(after) = &receive.after {
-                let after_ty = analyze_entry(
+                let after_ty = analyze_branch(
                     world,
                     entries,
                     after.entry,
-                    &entry_scope(entries, after.entry, values, None, &[]),
+                    values,
+                    &[],
                     reachable_entries,
                     value_types,
                     calls,
@@ -900,14 +941,12 @@ fn analyze_tail(
                     waits,
                     follow_up,
                 )?;
-                merged = Some(match merged {
-                    None => after_ty,
-                    Some(current) => world.types_mut().union(current, after_ty),
-                });
+                merged = join_evidence(world, merged, after_ty);
             }
-            Ok(merged.unwrap_or_else(|| world.types_mut().none()))
+            Ok(merged)
         }
-        LoweredTail::Halt { .. } => Ok(world.types_mut().none()),
+        // A halt path contributes no value: the join identity, not a type.
+        LoweredTail::Halt { .. } => Ok(None),
     }
 }
 
@@ -925,36 +964,47 @@ fn deliver_tail_value(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
-) -> Result<Ty, FatalError> {
+) -> Result<Option<Ty>, FatalError> {
     let delivered = value_fact(world, values, value);
+    // A proven-empty value is evidence: nothing flows past this point, the
+    // path is dead. (Absence of evidence never reaches here — an
+    // unresolved call short-circuits to a `None` path before delivery.)
     if world.types().is_empty(&delivered.flow_ty) {
-        return Ok(delivered.flow_ty);
+        return Ok(Some(delivered.flow_ty));
     }
     match dest {
-        ControlDestination::Return => Ok(delivered.flow_ty),
-        ControlDestination::Deliver(entry_id) => analyze_entry(
-            world,
-            entries,
-            *entry_id,
-            &entry_scope(entries, *entry_id, values, Some((value, delivered)), &[]),
-            reachable_entries,
-            value_types,
-            calls,
-            activation,
-            reads,
-            waits,
-            follow_up,
-        ),
+        ControlDestination::Return => Ok(Some(delivered.flow_ty)),
+        ControlDestination::Deliver(entry_id) => {
+            let Some(scope) = entry_scope(entries, *entry_id, values, Some((value, delivered)), &[]) else {
+                return Ok(None);
+            };
+            analyze_entry(
+                world,
+                entries,
+                *entry_id,
+                &scope,
+                reachable_entries,
+                value_types,
+                calls,
+                activation,
+                reads,
+                waits,
+                follow_up,
+            )
+        }
     }
 }
 
+/// Build an entry's scope, or `None` when a required capture is absent —
+/// meaning the path that defines it produced no evidence this round, so the
+/// entry cannot be analyzed yet. Absence never defaults to a type.
 fn entry_scope(
     entries: &[LoweredEntry],
     entry_id: super::super::body::ControlEntryId,
     values: &SemanticValues,
     delivered: Option<(ValueId, SemanticValue)>,
     params: &[(ValueId, SemanticValue)],
-) -> SemanticValues {
+) -> Option<SemanticValues> {
     let entry = &entries[entry_id.as_u32() as usize];
     let mut scope = HashMap::new();
     if let Some((_, value)) = delivered
@@ -966,11 +1016,12 @@ fn entry_scope(
         scope.insert(*param, *value);
     }
     for capture in &entry.captures {
-        if let Some(value) = values.get(capture).copied() {
-            scope.insert(*capture, value);
+        if scope.contains_key(capture) {
+            continue;
         }
+        scope.insert(*capture, values.get(capture).copied()?);
     }
-    scope
+    Some(scope)
 }
 
 fn resolve_direct_call(
@@ -982,9 +1033,12 @@ fn resolve_direct_call(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
-) -> Result<(Option<CallEmission>, Ty), FatalError> {
+) -> Result<(Option<CallEmission>, Option<Ty>), FatalError> {
+    // A proven-empty argument type is a real fact: no value can reach this
+    // call, the path is dead. (Absence cannot arrive here — an unresolved
+    // upstream call already short-circuited the path.)
     if arg_types.iter().any(|arg| world.types().is_empty(arg)) {
-        return Ok((None, none_ty(world)));
+        return Ok((None, Some(none_ty(world))));
     }
 
     let DirectCallee::Function(function) = callee;
@@ -1094,7 +1148,7 @@ fn merge_call_emission(
     match (&mut current.summary, observed.summary) {
         (Some(current_summary), Some(observed_summary)) => {
             merge_call_targets(world, &mut current_summary.targets, observed_summary.targets)?;
-            current_summary.return_ty = merge_observed_ty(world, current_summary.return_ty, observed_summary.return_ty);
+            current_summary.return_ty = join_evidence(world, current_summary.return_ty, observed_summary.return_ty);
         }
         (None, None) => {}
         (Some(_), None) | (None, Some(_)) => return Err(FatalError),
@@ -1116,7 +1170,7 @@ fn rebuild_coalesced_call_emission(
         return Ok(call);
     };
     let mut rebuilt_targets = Vec::new();
-    let mut rebuilt_return = none_ty(world);
+    let mut rebuilt_return = None;
     let mut rebuilt_activations = Vec::new();
     let mut rebuilt_latent = Vec::new();
 
@@ -1142,13 +1196,13 @@ fn rebuild_coalesced_call_emission(
                 let Some(rebuilt_target) = rebuilt_summary.single_target().cloned() else {
                     return Ok(call);
                 };
-                rebuilt_return = merge_observed_ty(world, rebuilt_return, rebuilt_target.return_ty);
+                rebuilt_return = join_evidence(world, rebuilt_return, rebuilt_target.return_ty);
                 rebuilt_targets.push(rebuilt_target);
                 rebuilt_activations.extend(rebuilt.activations);
                 rebuilt_latent.extend(rebuilt.latent_executables);
             }
             SelectedCallee::ProviderBoundary(_) => {
-                rebuilt_return = merge_observed_ty(world, rebuilt_return, target.return_ty);
+                rebuilt_return = join_evidence(world, rebuilt_return, target.return_ty);
                 rebuilt_targets.push(target.clone());
             }
         }
@@ -1183,7 +1237,8 @@ fn call_emission_for_function(
         return Ok(None);
     };
     if world.function_is_provider_boundary(function) {
-        let return_ty = contract_return_ty.unwrap_or_else(|| any_ty(world));
+        // The earned dynamic edge: a boundary with no contract is `any`.
+        let return_ty = Some(contract_return_ty.unwrap_or_else(|| any_ty(world)));
         return Ok(Some(CallEmission {
             key,
             summary: Some(CallSiteSummary {
@@ -1241,16 +1296,6 @@ fn call_emission_for_function(
     }))
 }
 
-fn merge_observed_ty(world: &mut World<'_>, current: Ty, observed: Ty) -> Ty {
-    if world.types().is_empty(&current) {
-        observed
-    } else if world.types().is_empty(&observed) {
-        current
-    } else {
-        world.types_mut().union(current, observed)
-    }
-}
-
 fn resolve_function_call(
     world: &mut World<'_>,
     caller: &ActivationKey,
@@ -1259,7 +1304,7 @@ fn resolve_function_call(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
-) -> Result<(Option<CallSiteSummary>, Vec<ActivationContribution>, Ty), FatalError> {
+) -> Result<ResolvedCall, FatalError> {
     if let Some(callback) = world.protocol_callback(function) {
         return resolve_protocol_call(
             world,
@@ -1273,34 +1318,36 @@ fn resolve_function_call(
         );
     }
     if wait_for_unresolved_function_module(world, function, waits, follow_up) {
-        return Ok((None, Vec::new(), any_ty(world)));
+        return Ok((None, Vec::new(), None));
     }
     let Some((input_types, contract_return_ty)) =
         refine_function_call_surface(world, function, input_types, reads, waits, follow_up)?
     else {
-        return Ok((None, Vec::new(), any_ty(world)));
+        return Ok((None, Vec::new(), None));
     };
     if world.function_is_provider_boundary(function) {
+        // The provider boundary is the public dynamic edge: `any` is earned
+        // here (and only here and at unresolvable callable values).
         let return_ty = contract_return_ty.unwrap_or_else(|| any_ty(world));
         return Ok((
             Some(CallSiteSummary {
                 targets: vec![call_target_summary(
                     SelectedCallee::ProviderBoundary(function),
                     input_types,
-                    return_ty,
+                    Some(return_ty),
                 )],
-                return_ty,
+                return_ty: Some(return_ty),
             }),
             Vec::new(),
-            return_ty,
+            Some(return_ty),
         ));
     }
-    let Some((activation, already_present, return_ty)) =
+    let Some((activation, already_present, return_evidence)) =
         prepare_function_call(world, caller, function, input_types.clone(), reads, waits, follow_up)
     else {
-        return Ok((None, Vec::new(), any_ty(world)));
+        return Ok((None, Vec::new(), None));
     };
-    let return_ty = refine_call_return(world, return_ty, contract_return_ty);
+    let return_ty = refine_call_return(world, return_evidence, contract_return_ty);
     Ok((
         Some(CallSiteSummary {
             targets: vec![call_target_summary(
@@ -1328,18 +1375,18 @@ fn resolve_protocol_call(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
-) -> Result<(Option<CallSiteSummary>, Vec<ActivationContribution>, Ty), FatalError> {
+) -> Result<ResolvedCall, FatalError> {
     let protocol_fact = FactKey::ModuleDefined(protocol);
     if world.module_defined_revision(protocol).is_none() {
         wait_for_protocol_module(world, protocol, waits, follow_up);
-        return Ok((None, Vec::new(), any_ty(world)));
+        return Ok((None, Vec::new(), None));
     }
     reads.push(protocol_fact);
     let dispatch_fact = FactKey::ProtocolDispatch(protocol);
     if !world.has_fact(&dispatch_fact) {
         waits.insert(dispatch_fact);
         follow_up.insert(Job::DefineModule(protocol));
-        return Ok((None, Vec::new(), any_ty(world)));
+        return Ok((None, Vec::new(), None));
     }
     reads.push(dispatch_fact);
 
@@ -1373,18 +1420,18 @@ fn resolve_protocol_call(
             }
             wait_for_runtime_module(world, module, waits, follow_up);
         }
-        return Ok((None, Vec::new(), any_ty(world)));
+        return Ok((None, Vec::new(), None));
     }
 
     let mut targets = Vec::new();
     let mut activations = Vec::new();
-    let mut return_ty = none_ty(world);
+    let mut return_ty = None;
     for (selected, overlap) in matches {
         let owner_fact = FactKey::ModuleDefined(selected.owner_module);
         if world.module_defined_revision(selected.owner_module).is_none() {
             waits.insert(owner_fact);
             follow_up.insert(Job::DefineModule(selected.owner_module));
-            return Ok((None, Vec::new(), any_ty(world)));
+            return Ok((None, Vec::new(), None));
         }
         reads.push(owner_fact);
 
@@ -1392,7 +1439,7 @@ fn resolve_protocol_call(
         let Some((refined_inputs, contract_return_ty)) =
             refine_function_call_surface(world, selected.function, refined_inputs, reads, waits, follow_up)?
         else {
-            return Ok((None, Vec::new(), any_ty(world)));
+            return Ok((None, Vec::new(), None));
         };
         let Some((activation, already_present, observed_return)) = prepare_function_call(
             world,
@@ -1403,10 +1450,10 @@ fn resolve_protocol_call(
             waits,
             follow_up,
         ) else {
-            return Ok((None, Vec::new(), any_ty(world)));
+            return Ok((None, Vec::new(), None));
         };
         let target_return = refine_call_return(world, observed_return, contract_return_ty);
-        return_ty = merge_observed_ty(world, return_ty, target_return);
+        return_ty = join_evidence(world, return_ty, target_return);
         targets.push(call_target_summary(
             SelectedCallee::Function(selected.function),
             refined_inputs.clone(),
@@ -1430,19 +1477,24 @@ fn resolve_closure_call(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
-) -> Result<(Option<CallEmission>, Ty), FatalError> {
+) -> Result<(Option<CallEmission>, Option<Ty>), FatalError> {
     if world.types().is_empty(&callee_ty) || arg_types.iter().any(|arg| world.types().is_empty(arg)) {
-        return Ok((None, none_ty(world)));
+        // Proven-empty callee or argument: the call site is dead. This is
+        // evidence (the empty type), not absence — absence short-circuits
+        // upstream before any argument reaches a call.
+        return Ok((None, Some(none_ty(world))));
     }
     let Some(clauses) = world.types_mut().callable_value_clauses(&callee_ty) else {
-        return Ok((None, any_ty(world)));
+        // A callable value the engine cannot resolve to closure targets is a
+        // dynamic edge: `any` is earned here, as at provider boundaries.
+        return Ok((None, Some(any_ty(world))));
     };
     let mut selected_functions = Vec::new();
     let mut singleton_summary_inputs = None;
     let mut activations = Vec::new();
     let mut callable_target_executables = Vec::new();
     let mut latent_executables = Vec::new();
-    let mut return_ty = none_ty(world);
+    let mut return_ty = None;
 
     for clause in clauses {
         let Some(closure) = clause.closure else {
@@ -1472,11 +1524,7 @@ fn resolve_closure_call(
             }
         }
         let clause_return = refine_call_return(world, observed_return, Some(clause.ret));
-        return_ty = if world.types().is_empty(&return_ty) {
-            clause_return
-        } else {
-            world.types_mut().union(return_ty, clause_return)
-        };
+        return_ty = join_evidence(world, return_ty, clause_return);
 
         if let Some(summary) = summary {
             let Some(target) = summary.single_target() else {
@@ -1502,7 +1550,9 @@ fn resolve_closure_call(
     }
 
     if selected_functions.is_empty() {
-        return Ok((None, any_ty(world)));
+        // No closure-shaped clause: a dynamic callable, the other earned-any
+        // edge.
+        return Ok((None, Some(any_ty(world))));
     };
     let summary = if selected_functions.len() == 1 {
         let function = selected_functions[0];
@@ -1762,7 +1812,17 @@ fn refine_contract_inputs<'a>(
         .collect()
 }
 
-fn refine_call_return(world: &mut World<'_>, observed: Ty, contract: Option<Ty>) -> Ty {
+fn refine_call_return(world: &mut World<'_>, observed: Option<Ty>, contract: Option<Ty>) -> Option<Ty> {
+    let Some(observed) = observed else {
+        // No body evidence yet: a contract bounds the eventual value but
+        // does not witness that the call returns at all. Nothing is
+        // manufactured from absence.
+        return None;
+    };
+    Some(refine_observed_return(world, observed, contract))
+}
+
+fn refine_observed_return(world: &mut World<'_>, observed: Ty, contract: Option<Ty>) -> Ty {
     let Some(contract) = contract else {
         return observed;
     };
@@ -1829,17 +1889,21 @@ fn prepare_function_call(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
-) -> Option<(ActivationKey, bool, Ty)> {
+) -> Option<(ActivationKey, bool, Option<Ty>)> {
     if !world.require_activation_key_facts(function, reads, waits, follow_up) {
         return None;
     }
 
     let activation = world.activation_key(caller.root, function, &arg_types);
     let already_present = world.has_fact(&FactKey::Activation(activation.clone()));
+    // The read is the subscription that re-wakes this caller when the
+    // callee's return evidence rises — chaotic iteration needs no wait here,
+    // so mutual recursion cannot deadlock. Absent evidence stays absent: it
+    // is the ascent's bottom, never the type `none`.
     reads.push(FactKey::ReturnType(activation.clone()));
     follow_up.insert(Job::SealSemanticClosure(caller.root));
-    let return_ty = world.activation_return(&activation).unwrap_or_else(|| none_ty(world));
-    Some((activation, already_present, return_ty))
+    let return_evidence = world.activation_return(&activation);
+    Some((activation, already_present, return_evidence))
 }
 
 fn wait_for_runtime_module(
@@ -1908,7 +1972,7 @@ fn merge_call_targets(
             .find(|target| target.callee == observed_target.callee)
         {
             merge_call_input_vec(world, &mut current_target.input_types, &observed_target.input_types);
-            current_target.return_ty = merge_observed_ty(world, current_target.return_ty, observed_target.return_ty);
+            current_target.return_ty = join_evidence(world, current_target.return_ty, observed_target.return_ty);
             continue;
         }
         current.push(observed_target);
@@ -1953,7 +2017,7 @@ fn refine_protocol_target_inputs(world: &mut World<'_>, input_types: &[Ty], rece
     refined
 }
 
-fn call_target_summary(callee: SelectedCallee, input_types: Vec<Ty>, return_ty: Ty) -> CallTargetSummary {
+fn call_target_summary(callee: SelectedCallee, input_types: Vec<Ty>, return_ty: Option<Ty>) -> CallTargetSummary {
     CallTargetSummary {
         input_types,
         callee,
@@ -2305,11 +2369,13 @@ fn record_callsite_need(out: &mut HashMap<CallSiteId, ExecutableNeed>, callsite:
     }
 }
 
-fn value_fact(world: &mut World<'_>, values: &SemanticValues, value: ValueId) -> SemanticValue {
-    values
+fn value_fact(_world: &mut World<'_>, values: &SemanticValues, value: ValueId) -> SemanticValue {
+    // Scope construction is total (`entry_scope` yields no scope at all when
+    // a capture is absent), so every value an analyzed entry touches is
+    // present. `any` is earned at boundaries, never defaulted here.
+    *values
         .get(&value)
-        .copied()
-        .unwrap_or_else(|| SemanticValue::same(any_ty(world)))
+        .unwrap_or_else(|| panic!("semantic value {value:?} must be in scope for an analyzed entry"))
 }
 
 fn value_ty(world: &mut World<'_>, values: &SemanticValues, value: ValueId) -> Ty {

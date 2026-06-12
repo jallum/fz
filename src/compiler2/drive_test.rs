@@ -9216,3 +9216,108 @@ fn sorted_strings(mut values: Vec<String>) -> Vec<String> {
     values.sort();
     values
 }
+
+#[test]
+fn compiler2_recursive_first_round_reads_absence_not_the_empty_type() {
+    // A self-recursive function's first analysis round reads its own
+    // not-yet-published return. Absence must surface as a summary with NO
+    // return evidence — never the empty type (which would prove the call
+    // dead) and never an `any` placeholder (`any` is earned at boundaries).
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let callsites = CallsiteCapture::new();
+    tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+
+    let mut world = crate::compiler2::World::new(&tel);
+    world.submit_code(
+        Some("count.fz".to_string()),
+        concat!(
+            "fn count(0), do: 0\n",
+            "fn count(n), do: count(n - 1)\n",
+            "fn main(), do: count(3)\n",
+        )
+        .to_string(),
+    );
+    world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
+    assert_resolved(world.drive(), "the recursive count program should converge");
+
+    let count_id = function_id(&functions, "count", 1);
+    let self_calls: Vec<_> = callsites
+        .all()
+        .into_iter()
+        .filter(|record| record.key.activation.function == count_id)
+        .filter(|record| {
+            record
+                .summary
+                .targets
+                .iter()
+                .any(|target| target.callee == SelectedCallee::Function(count_id))
+        })
+        .collect();
+    assert!(!self_calls.is_empty(), "the self-callsite should publish summaries");
+    assert!(
+        self_calls.last().expect("self calls").summary.return_ty.is_some(),
+        "the ascent should land on real return evidence",
+    );
+
+    // Mid-ascent, not-yet-derived callee returns surface as ABSENT evidence
+    // (return_ty None) — the honest snapshot the engine now records.
+    assert!(
+        callsites.all().iter().any(|record| record.summary.return_ty.is_none()),
+        "some round must record absent return evidence",
+    );
+
+    // The two lies are gone. Every function in this program returns, so the
+    // empty type may never appear as a return (the old absent-reads-as-none
+    // lie), and there are no boundaries or dynamic callables, so `any` may
+    // never appear either (the old wait-placeholder lie).
+    let any = world.types_mut().any();
+    for record in callsites.all() {
+        for target in &record.summary.targets {
+            if let Some(ty) = target.return_ty {
+                assert!(
+                    !world.types().is_empty(&ty),
+                    "the empty type must never stand in for absent evidence: {:?}",
+                    record.key,
+                );
+                assert!(
+                    !world.types().is_equivalent(&ty, &any),
+                    "no `any` placeholder may reach a summary: {:?}",
+                    record.key,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn compiler2_never_returning_function_settles_with_empty_evidence() {
+    // fn forever(), do: forever() — the least fixpoint of its return is
+    // bottom. The drive must quiesce (absent evidence is the join identity,
+    // so the activation stops waking itself), and the settled evidence stays
+    // empty: at the fixpoint, "no evidence" IS the fact "never returns".
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let semantic = SemanticClosedCapture::new();
+    tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
+
+    let mut world = crate::compiler2::World::new(&tel);
+    world.submit_code(
+        Some("forever.fz".to_string()),
+        concat!("fn forever(), do: forever()\n", "fn main(), do: forever()\n").to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
+    assert_resolved(world.drive(), "a never-returning program still quiesces");
+
+    let closure = semantic.last(root);
+    assert!(!closure.activations.is_empty());
+    for activation in &closure.activations {
+        assert_eq!(
+            world.activation_return(activation),
+            None,
+            "settled evidence for a never-returning activation stays empty",
+        );
+    }
+}

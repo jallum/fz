@@ -27,13 +27,33 @@ pub enum SelectedCallee {
 pub struct CallTargetSummary {
     pub callee: SelectedCallee,
     pub input_types: Vec<Ty>,
-    pub return_ty: Ty,
+    /// `None` means the callee has produced no return evidence yet — an
+    /// honest snapshot mid-ascent. Settledness guarantees resolution before
+    /// consumers read; at the fixpoint a still-`None` return *is* the empty
+    /// type (a callee that provably never returns), see `settled_return`.
+    pub return_ty: Option<Ty>,
+}
+
+impl CallTargetSummary {
+    /// The Kleene reading of a settled summary: evidence absent at the
+    /// fixpoint means no value ever flows — the empty type. Only valid
+    /// behind the settled gate (seal/materialization).
+    pub fn settled_return(&self, types: &mut Types) -> Ty {
+        self.return_ty.unwrap_or_else(|| types.none())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallSiteSummary {
     pub targets: Vec<CallTargetSummary>,
-    pub return_ty: Ty,
+    pub return_ty: Option<Ty>,
+}
+
+impl CallSiteSummary {
+    /// See [`CallTargetSummary::settled_return`].
+    pub fn settled_return(&self, types: &mut Types) -> Ty {
+        self.return_ty.unwrap_or_else(|| types.none())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,18 +124,25 @@ impl ActivationMap {
         self.slots.get(key)
     }
 
-    pub fn define_return(&mut self, _types: &mut Types, key: &ActivationKey, return_ty: Ty) -> bool {
+    /// Install one round's return evidence. `None` is the ascent's bottom —
+    /// no evidence adds nothing and never erases standing evidence. (The
+    /// monotone join over `Some` evidence lands with the widening operator;
+    /// until then `Some` over `Some` is last-write.)
+    pub fn define_return(&mut self, _types: &mut Types, key: &ActivationKey, evidence: Option<Ty>) -> bool {
         let slot = self.slots.entry(key.clone()).or_insert_with(ActivationSlot::new);
+        let Some(next) = evidence else {
+            return false;
+        };
         match &slot.return_ty {
             Some(current) => {
-                let changed = current != &return_ty;
+                let changed = current != &next;
                 if changed {
-                    slot.return_ty = Some(return_ty);
+                    slot.return_ty = Some(next);
                 }
                 changed
             }
             None => {
-                slot.return_ty = Some(return_ty);
+                slot.return_ty = Some(next);
                 true
             }
         }
@@ -401,9 +428,9 @@ mod tests {
         };
         let int = world.types_mut().int();
 
-        assert!(activations.define_return(world.types_mut(), &key, any));
+        assert!(activations.define_return(world.types_mut(), &key, Some(any)));
         assert!(
-            activations.define_return(world.types_mut(), &key, int),
+            activations.define_return(world.types_mut(), &key, Some(int)),
             "rerunning one activation with better evidence should replace the stale broad return"
         );
         assert_eq!(activations.get(&key).and_then(|slot| slot.return_ty()), Some(&int));

@@ -254,9 +254,14 @@ impl<'a> World<'a> {
             None => ModuleId::GLOBAL,
         };
         let function = self.reference_function(module, name.clone(), arity);
+        // The root is the program's public entry: its inputs arrive from
+        // outside the analyzed world, so `any` is earned here — the same
+        // boundary rule macro roots already follow. An arity-N root must
+        // carry N slots of evidence; absence would starve its clauses.
+        let any = self.types.any();
         let root_id = self.roots.define(RootEntry {
             function,
-            input: Vec::new(),
+            input: vec![any; arity],
             need,
             kind: RootKind::Runtime,
         });
@@ -407,6 +412,11 @@ impl<'a> World<'a> {
         self.activations.get(key).and_then(|slot| slot.analysis())
     }
 
+    /// The activation's current return EVIDENCE. `None` means the claim is
+    /// retracted or no path has produced a value yet — the ascent's bottom,
+    /// never the type `none`. Behind the settled gate, a still-`None` read
+    /// is the fixpoint fact "provably never returns" (Kleene), and only
+    /// there may consumers convert it to the empty type.
     pub fn activation_return(&self, key: &ActivationKey) -> Option<Ty> {
         self.fact_revision(FactKey::ReturnType(key.clone()))?;
         self.activations.get(key).and_then(|slot| slot.return_ty().cloned())
@@ -493,9 +503,10 @@ impl<'a> World<'a> {
         next
     }
 
-    pub fn define_activation_return(&mut self, key: &ActivationKey, return_ty: Ty) -> bool {
-        let return_ty = self.types.alpha_normalize_vars(&return_ty);
-        let changed = self.activations.define_return(&mut self.types, key, return_ty);
+    pub fn define_activation_return(&mut self, key: &ActivationKey, evidence: Option<Ty>) -> bool {
+        let evidence = evidence.map(|ty| self.types.alpha_normalize_vars(&ty));
+        let changed = self.activations.define_return(&mut self.types, key, evidence);
+        let evidence = self.activations.get(key).and_then(|slot| slot.return_ty().copied());
         self.tel.execute(
             &["fz", "compiler2", "return_type", "defined"],
             &measurements! {
@@ -504,7 +515,7 @@ impl<'a> World<'a> {
             },
             &metadata! {
                 activation: opaque_debug(key),
-                return_ty: opaque_debug(&return_ty),
+                return_ty: opaque_debug(&evidence),
             },
         );
         changed
@@ -518,9 +529,9 @@ impl<'a> World<'a> {
                 .copied()
                 .map(|input| self.types.alpha_normalize_vars(&input))
                 .collect();
-            target.return_ty = self.types.alpha_normalize_vars(&target.return_ty);
+            target.return_ty = target.return_ty.map(|ty| self.types.alpha_normalize_vars(&ty));
         }
-        summary.return_ty = self.types.alpha_normalize_vars(&summary.return_ty);
+        summary.return_ty = summary.return_ty.map(|ty| self.types.alpha_normalize_vars(&ty));
         let changed = self.callsites.define(key.clone(), summary);
         let summary = self
             .callsites

@@ -171,33 +171,32 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
         }
         activations.insert(activation.clone());
 
+        // Every gate here is a SETTLED gate, matching the `settled_uses`
+        // registration below. Presence alone is not enough: a blocked
+        // analyzer's claims stand (waiting extends, it cannot retract), so a
+        // merely-present analysis may be a half-built snapshot. Settledness
+        // is the freshness marker.
         let analyzed_fact = FactKey::ActivationAnalyzed(activation.clone());
-        let Some(_analyzed_revision) = world.fact_revision(analyzed_fact.clone()) else {
-            waits.insert(analyzed_fact);
+        if !read_fact(world, analyzed_fact, &mut reads, &mut waits) {
             follow_up.insert(Job::AnalyzeActivation(activation.clone()));
             continue;
-        };
-        reads.push(analyzed_fact);
+        }
         let analysis = world
             .activation_analysis(&activation)
             .expect("activation analysis fact should have an analysis value")
             .clone();
 
         let return_fact = FactKey::ReturnType(activation.clone());
-        let Some(_return_revision) = world.fact_revision(return_fact.clone()) else {
-            waits.insert(return_fact);
+        if !read_fact(world, return_fact, &mut reads, &mut waits) {
             follow_up.insert(Job::AnalyzeActivation(activation.clone()));
             continue;
-        };
-        reads.push(return_fact);
+        }
 
         let lowered_fact = FactKey::LoweredBody(activation.function);
-        let Some(_lowered_revision) = world.fact_revision(lowered_fact.clone()) else {
-            waits.insert(lowered_fact);
+        if !read_fact(world, lowered_fact.clone(), &mut reads, &mut waits) {
             follow_up.insert(Job::LowerFunction(activation.function));
             continue;
-        };
-        reads.push(lowered_fact.clone());
+        }
 
         let lowered_body = world.lowered_body(activation.function);
         let callsite_needs = executable_callsite_needs(&lowered_body, &analysis.reachable_clauses, executable.need);
