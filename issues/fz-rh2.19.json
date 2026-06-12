@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T09:37:35Z",
+  "description": "Telemetry must be cheap at emit points: no formatting, no processing, no allocation, no calculation, no cloning. Emit sites pass raw internal state via borrowed \u0026str / opaque / opaque_debug values; handlers (tests, JSONL, stats) do any rendering, counting, or projection at event time. Audit (2026-06-12) found three violation families in compiler2: (1) telemetry-induced value clones in world.rs define_* fns (store.define(k, v.clone()) then emit borrows the local — fix is define-then-re-borrow via the store getter, the define_module pattern); (2) preformatted/derived payloads: format!/display()/to_string/Vec\u003cString\u003e at type noted/defined/referenced, abi_contract, callable_entry_selected, closure_call_lowered, and module_path().to_owned()/display_name.clone() across native_codegen spans (module_path() already returns \u0026str); (3) hot-path clones in drive.rs job loop (job.clone() + effects.clone() per job) and complete_job (job.clone() for the work_graph.applied event). Borrowed Str survives durable Capture (cloned handler-side at event time), so borrow-conversions are test-transparent; only removed preformatted fields need test handlers corrected to project opaque payloads at event time (compiler2_test OutputCaptureHandler is the precedent).",
+  "id": "fz-rh2.19",
+  "labels": [],
+  "parent": "fz-rh2",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 telemetry emit-point conformance: raw borrowed state only",
+  "type": "epic",
+  "updated_at": "2026-06-12T09:37:35Z"
+}
