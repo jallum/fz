@@ -601,7 +601,7 @@ fn collect_local_guard_requirements(
     for call in calls {
         let callee = resolve_guard_callee(world, namespace, &call)?;
         let fact = FactKey::GuardDispatch(callee);
-        if world.fact_revision(fact.clone()).is_some() {
+        if world.fact_revision(&fact).is_some() {
             reads.push(fact);
         } else {
             waits.insert(fact);

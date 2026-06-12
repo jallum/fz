@@ -56,7 +56,7 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
     }
 
     let closed_revision = world
-        .fact_revision(closed_fact.clone())
+        .fact_revision(&closed_fact)
         .expect("settled semantic closure should have a revision");
     let closure = world.semantic_closure(root_id);
     let reads = settled_uses([closed_fact]);
@@ -135,7 +135,7 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
 /// semantic question or discovering new executable work.
 pub(super) fn derive_abi_ready(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let materialized_fact = FactKey::MaterializedProgram(root_id);
-    let Some(materialized_revision) = world.fact_revision(materialized_fact.clone()) else {
+    let Some(materialized_revision) = world.fact_revision(&materialized_fact) else {
         return Ok(JobEffects::wait_on_settled(
             materialized_fact,
             [Job::MaterializeRoot(root_id)],
@@ -212,7 +212,7 @@ enum DeliverySource {
 /// payload.
 pub(super) fn derive_emission_ready(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let abi_ready_fact = FactKey::AbiReadyProgram(root_id);
-    let Some(abi_ready_revision) = world.fact_revision(abi_ready_fact.clone()) else {
+    let Some(abi_ready_revision) = world.fact_revision(&abi_ready_fact) else {
         return Ok(JobEffects::wait_on_settled(
             abi_ready_fact,
             [Job::DeriveAbiReady(root_id)],

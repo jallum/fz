@@ -249,7 +249,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     let analysis_changed = world.define_activation_analysis(
         activation,
         ActivationAnalysis {
-            reachable_clauses: reachable_clauses.clone(),
+            reachable_clauses,
             reachable_entries: {
                 let mut entries = reachable_entries.into_iter().collect::<Vec<_>>();
                 entries.sort_by_key(|entry| entry.as_u32());
@@ -943,7 +943,7 @@ fn resolve_direct_call(
     }
 
     let (summary, mut activations, return_ty) =
-        resolve_function_call(world, caller, function, arg_types.clone(), reads, waits, follow_up)?;
+        resolve_function_call(world, caller, function, arg_types, reads, waits, follow_up)?;
     let mut latent_executables = Vec::new();
     if let Some(summary) = &summary {
         for target in &summary.targets {
@@ -1160,7 +1160,7 @@ fn call_emission_for_function(
         }));
     }
     let Some((activation, already_present, return_ty)) =
-        prepare_function_call(world, caller, function, input_types.clone(), reads, waits, follow_up)
+        prepare_function_call(world, caller, function, &input_types, reads, waits, follow_up)
     else {
         return Ok(None);
     };
@@ -1249,7 +1249,7 @@ fn resolve_function_call(
         ));
     }
     let Some((activation, already_present, return_evidence)) =
-        prepare_function_call(world, caller, function, input_types.clone(), reads, waits, follow_up)
+        prepare_function_call(world, caller, function, &input_types, reads, waits, follow_up)
     else {
         return Ok((None, Vec::new(), None));
     };
@@ -1353,7 +1353,7 @@ fn resolve_protocol_call(
             world,
             caller,
             selected.function,
-            refined_inputs.clone(),
+            &refined_inputs,
             reads,
             waits,
             follow_up,
@@ -1619,7 +1619,7 @@ fn resolve_uncovered_callable_activations_from_type(
         if covered_activations.contains(&activation) {
             continue;
         }
-        let already_present = world.fact_revision(FactKey::Activation(activation.clone())).is_some();
+        let already_present = world.fact_revision(&FactKey::Activation(activation.clone())).is_some();
         activations.push(ActivationContribution {
             key: activation,
             inputs: input_types.clone(),
@@ -1793,7 +1793,7 @@ fn prepare_function_call(
     world: &mut World<'_>,
     caller: &ActivationKey,
     function: FunctionId,
-    arg_types: Vec<Ty>,
+    arg_types: &[Ty],
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
@@ -1802,7 +1802,7 @@ fn prepare_function_call(
         return None;
     }
 
-    let activation = world.activation_key(caller.root, function, &arg_types);
+    let activation = world.activation_key(caller.root, function, arg_types);
     let already_present = world.has_fact(&FactKey::Activation(activation.clone()));
     // The read is the subscription that re-wakes this caller when the
     // callee's return evidence rises — chaotic iteration needs no wait here,

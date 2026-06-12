@@ -29,13 +29,7 @@ fn main(), do: User.run()
     let mut world = World::new();
 
     compiler
-        .prepare_execution_graph_from_source(
-            &mut world,
-            src.to_string(),
-            "telemetry.fz".to_string(),
-            &tel,
-            CompileMode::Lto,
-        )
+        .prepare_execution_graph_from_source(&mut world, src.to_string(), "telemetry.fz", &tel, CompileMode::Lto)
         .expect("execution graph");
 
     assert!(
@@ -55,7 +49,7 @@ fn compiler_prepares_execution_graph_from_frontend_output() {
     let mut compiler = Compiler::new();
     let mut world = World::new();
 
-    let frontend = match compiler.compile_source(&mut world, src.to_string(), "frontend.fz".to_string(), &tel) {
+    let frontend = match compiler.compile_source(&mut world, src.to_string(), "frontend.fz", &tel) {
         Ok(frontend) => frontend,
         Err(_) => panic!("frontend result"),
     };
@@ -100,7 +94,7 @@ fn compiler_compile_planned_runs_spawn_with_captures_through_single_plan_path() 
         .prepare_execution_graph_from_source(
             &mut world,
             include_str!("../../fixtures/spawn_with_captures/input.fz").to_string(),
-            "fixtures/spawn_with_captures/input.fz".to_string(),
+            "fixtures/spawn_with_captures/input.fz",
             &tel,
             CompileMode::Normal,
         )
@@ -130,13 +124,7 @@ fn compiler_compile_planned_consumes_authoritative_plan_without_replanning() {
     let mut world = World::new();
 
     compiler
-        .prepare_execution_graph_from_source(
-            &mut world,
-            src.to_string(),
-            "planned.fz".to_string(),
-            &tel,
-            CompileMode::Normal,
-        )
+        .prepare_execution_graph_from_source(&mut world, src.to_string(), "planned.fz", &tel, CompileMode::Normal)
         .expect("execution graph");
     let _compiled = compiler.compile_planned(&mut world, &tel).expect("compile planned");
 
@@ -156,13 +144,7 @@ fn compiler_compile_aot_planned_produces_main_symbol() {
     let mut world = World::new();
 
     compiler
-        .prepare_execution_graph_from_source(
-            &mut world,
-            src.to_string(),
-            "aot.fz".to_string(),
-            &tel,
-            CompileMode::Normal,
-        )
+        .prepare_execution_graph_from_source(&mut world, src.to_string(), "aot.fz", &tel, CompileMode::Normal)
         .expect("execution graph");
     let artifact = compiler
         .compile_aot_planned(&mut world, "aot_test", &tel)

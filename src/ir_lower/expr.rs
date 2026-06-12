@@ -1178,7 +1178,7 @@ pub(super) fn lower_case<T: Types<Ty = Ty>>(
                         cont.id,
                         ContinuationProvenance {
                             caller: ctx.cur_fn_id.expect("lower_case: missing current fn id"),
-                            captured: cont.outer_captured.iter().map(|(_, var)| *var).collect(),
+                            semantic_capture_count: cont.outer_captured.len(),
                             capture_param_offset: 0,
                             kind: ContinuationProvenanceKind::DispatchBody {
                                 bindings: bindings
@@ -1491,7 +1491,7 @@ pub(super) fn lower_with<T: Types<Ty = Ty>>(
                             cont.id,
                             ContinuationProvenance {
                                 caller: ctx.cur_fn_id.expect("lower_with else: missing current fn id"),
-                                captured: cont.outer_captured.iter().map(|(_, var)| *var).collect(),
+                                semantic_capture_count: cont.outer_captured.len(),
                                 capture_param_offset: 0,
                                 kind: ContinuationProvenanceKind::DispatchBody {
                                     bindings: bindings

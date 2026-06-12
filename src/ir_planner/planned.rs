@@ -309,8 +309,8 @@ where
             module_path: module.module_path().to_owned(),
             reachable_specs: display_spec_ids(&reachable_specs),
             materialized_reachability_missing_body_specs:
-                materialized_reachability.missing_body_specs.clone(),
-            make_closure_callable_gaps: make_closure_callable_gaps.clone(),
+                materialized_reachability.missing_body_specs,
+            make_closure_callable_gaps: make_closure_callable_gaps,
         },
     );
 

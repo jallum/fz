@@ -185,6 +185,11 @@ Two recurring patterns keep emit sites clone-free:
 - **Spans borrow.** Span-start metadata and `stop_with` payloads accept
   borrowed lifetimes; only `close_with` (drop-time emission) demands
   `'static`. Prefer `stop_with` so names and paths ride as borrows.
+- **Front doors borrow labels until storage.** CLI helpers, `compile_pipeline`,
+  and `parse_quoted_program` thread `source_name` as `&str` across the public
+  entry seams. If both the lexer and parser need the same label at once, they
+  share one `Rc<str>` internally; owned `String`s are created only where a
+  stored span or emitted metadata actually requires ownership.
 
 **Slot revisions are the stable change signal.** Compiler2 state stores and fact
 slots bump revisions only when their aggregate value changes. Handlers and

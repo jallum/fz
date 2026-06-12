@@ -27,7 +27,7 @@ pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
         .map(str::to_owned)
         .unwrap_or_else(|| format!("<code:{}>", code_id.as_u32()));
     let source_text = world.code_text(code_id).to_owned();
-    let quoted_root = parse_quoted_program(source_name.clone(), &source_text, world.tel())
+    let quoted_root = parse_quoted_program(&source_name, &source_text, world.tel())
         .map_err(|error| emit_job_diagnostic(world, error.to_diagnostic()))?;
     let ctx = SurfaceSourceContext::new(code_id, &source_text);
     let read_surface = if world.is_runtime_prelude(code_id) || world.is_runtime_module_code(code_id) {
@@ -37,11 +37,6 @@ pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
     };
     let surface = read_surface(&quoted_root, &ctx)
         .map_err(|error| emit_surface_read_error(world, "quoted surface read failed", &error))?;
-    let quoted = QuotedCodeSource {
-        quoted: quoted_root.clone(),
-        surface: surface.clone(),
-    };
-
     let mut outputs = Vec::new();
     let mut changed = Vec::new();
     source_publish::discover_modules(
@@ -54,6 +49,10 @@ pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
         &mut changed,
     )?;
 
+    let quoted = QuotedCodeSource {
+        quoted: quoted_root,
+        surface,
+    };
     let code_changed = world.finish_code_index(code_id, quoted);
     outputs.push(FactKey::CodeIndexed(code_id));
     if code_changed {

@@ -394,7 +394,7 @@ fn linked_ir_units_rewrite_provider_boundary_calls_and_run_provider_body() {
     );
     let user_unit =
         CompiledUnit::from_ir_module_with_plan(user.module, Some(user.module_plan), None, Diagnostics::new());
-    let linked = link_ir_units(&[math_unit.clone(), user_unit.clone()]).expect("link ir units");
+    let linked = link_ir_units(&[math_unit, user_unit]).expect("link ir units");
     // Re-plan the linked module: after the linker rewrites provider-boundary
     // callsites to their resolved targets, a fresh plan must show no
     // provider-boundary call edges and no protocol-stub targets.

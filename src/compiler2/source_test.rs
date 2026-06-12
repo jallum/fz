@@ -410,7 +410,7 @@ fn semantic_walk_compares_bitstring_payloads_in_long_lists() {
 }
 
 fn parse_src(name: &str, text: &str) -> QuotedSourceRoot {
-    parse_quoted_program(name.to_string(), text, &ConfiguredTelemetry::new()).expect("parse quoted program")
+    parse_quoted_program(name, text, &ConfiguredTelemetry::new()).expect("parse quoted program")
 }
 
 // Spans and source positions are not semantic content: the same code parsed

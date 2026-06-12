@@ -1577,7 +1577,7 @@ fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Descr {
         }
     }
     if let (Some(l), Some(r)) = (lhs.pure_map().cloned(), rhs.pure_map().cloned()) {
-        let mut fields = l.fields.clone();
+        let mut fields = l.fields;
         for (key, rv) in &r.fields {
             if let Some(lv) = fields.get_mut(key) {
                 let d = refine_widen(t, *lv, *rv);

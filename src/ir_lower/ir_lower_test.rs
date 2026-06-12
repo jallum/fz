@@ -358,18 +358,37 @@ fn lower_persists_direct_call_continuation_provenance() {
         .get(&continuation.id)
         .expect("continuation provenance missing");
     let id = m.fn_by_name("id").expect("id fn missing");
+    let caller_term = pair_after_id
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            term @ Term::Call { .. } => Some(term),
+            _ => None,
+        })
+        .expect("caller term missing");
     assert_eq!(
         provenance,
         &ContinuationProvenance {
             caller: pair_after_id.id,
-            captured: vec![pair_after_id.block(pair_after_id.entry).params[0]],
+            semantic_capture_count: 1,
             capture_param_offset: 1,
-            kind: ContinuationProvenanceKind::DirectCall {
-                callee: id.id,
-                args: vec![pair_after_id.block(pair_after_id.entry).params[0]],
-            },
+            kind: ContinuationProvenanceKind::CallResult,
         }
     );
+    match caller_term {
+        Term::Call {
+            callee: DirectCallTarget::Local(callee),
+            args,
+            continuation: cont,
+            ..
+        } => {
+            assert_eq!(*callee, id.id);
+            assert_eq!(args.as_slice(), [pair_after_id.block(pair_after_id.entry).params[0]]);
+            assert_eq!(cont.fn_id, continuation.id);
+            assert_eq!(cont.captured, vec![pair_after_id.block(pair_after_id.entry).params[0]]);
+        }
+        other => panic!("expected direct call term, got {:?}", other),
+    }
 }
 
 // DROP: old-world continuation correspondence table, no compiler2 analogue
@@ -446,6 +465,7 @@ fn lower_persists_matcher_body_continuation_provenance() {
         .expect("matcher-body provenance missing");
     match &provenance.kind {
         ContinuationProvenanceKind::DispatchBody { bindings } => {
+            assert_eq!(provenance.semantic_capture_count, 3);
             assert_eq!(provenance.capture_param_offset, 0);
             assert_eq!(bindings.len(), 2, "expected head/tail bindings");
         }

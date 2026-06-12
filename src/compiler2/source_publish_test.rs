@@ -79,7 +79,7 @@ fn publish_compiler_fragment_scope(
 
 fn grouped_function_root(source_name: &str, text: &str) -> QuotedSourceRoot {
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program(source_name.to_string(), text, &tel).expect("quoted parse");
+    let root = parse_quoted_program(source_name, text, &tel).expect("quoted parse");
     let items = root.cursor().list_items().expect("top-level items");
     let item_roots = items.into_iter().map(|item| item.root()).collect::<Vec<_>>();
     root.interned_list_subroot(&item_roots)

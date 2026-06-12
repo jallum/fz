@@ -699,19 +699,10 @@ fn lowered_tuple_fields_project_variable_operand_types() {
     let int = t.int();
     let lo_ty = t.list(int.clone());
     let hi_ty = t.non_empty_list(int);
-    let original_types = type_fn(
-        &mut crate::types::new(),
-        &original.fns[0],
-        &original,
-        Some(&[lo_ty.clone(), hi_ty.clone()]),
-    );
+    let param_tys = [lo_ty, hi_ty];
+    let original_types = type_fn(&mut crate::types::new(), &original.fns[0], &original, Some(&param_tys));
     lower_tuple_destinations(&mut original);
-    let lowered_types = type_fn(
-        &mut crate::types::new(),
-        &original.fns[0],
-        &original,
-        Some(&[lo_ty.clone(), hi_ty.clone()]),
-    );
+    let lowered_types = type_fn(&mut crate::types::new(), &original.fns[0], &original, Some(&param_tys));
 
     let original_lo = original_types.vars.get(&lo_field).unwrap();
     let lowered_lo = lowered_types.vars.get(&lo_field).unwrap();
@@ -1241,7 +1232,7 @@ fn reachable_specs_do_not_seed_uninvoked_closure_targets() {
     specs.insert(value_spec_key(FnId(1), main_key.clone()), SpecPlan::default());
     let mt = ModulePlan {
         specs,
-        reachable_specs: HashSet::from([value_spec_key(FnId(1), main_key.clone())]),
+        reachable_specs: HashSet::from([value_spec_key(FnId(1), main_key)]),
         spec_roles: HashMap::new(),
         effective_returns: HashMap::new(),
         any_key_specs: HashMap::new(),
@@ -3588,7 +3579,7 @@ fn main(), do: dbg(sum([1, 2, 3, 4, 5]))
 "#,
         &crate::telemetry::ConfiguredTelemetry::new(),
     );
-    let returns = mt.effective_returns.clone();
+    let returns = &mt.effective_returns;
     let sum_fn = m.fns.iter().find(|f| f.name == "sum").unwrap();
     // At least one of sum's specs has a non-trivial return.
     let int = t.int();
@@ -3605,7 +3596,7 @@ fn main(), do: dbg(sum([1, 2, 3, 4, 5]))
     );
     // CRUCIAL: no spec should claim return = singleton 0 (the
     // base case alone). That would mean cycle-cut leaked through.
-    for (key, d) in &returns {
+    for (key, d) in returns {
         if key.fn_id != sum_fn.id {
             continue;
         }
@@ -3712,7 +3703,7 @@ end
     );
     let double = m.fns.iter().find(|f| f.name == "double").unwrap();
     let any_key = key_tys(vec![t.any()]);
-    let any_spec_key = value_spec_key(double.id, any_key.clone());
+    let any_spec_key = value_spec_key(double.id, any_key);
     assert!(
         mt.specs.contains_key(&any_spec_key),
         "expected double to keep one callable-entry contract when it is passed as a closure value; \
@@ -3763,7 +3754,7 @@ fn main(), do: dbg(add(1, 2))
         key_tys(vec![a, b])
     };
     assert!(
-        !mt.specs.contains_key(&value_spec_key(add.id, any_key.clone())),
+        !mt.specs.contains_key(&value_spec_key(add.id, any_key)),
         "expected add's any-key to be dropped (no [any, any] callsite); \
          registered specs for add: {:?}",
         mt.specs.keys().filter(|key| key.fn_id == add.id).collect::<Vec<_>>()

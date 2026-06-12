@@ -108,7 +108,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
 
     let root_fact = FactKey::RootEntry(root_id);
     if world.fact_is_settled(&root_fact) {
-        reads.push(root_fact.clone());
+        reads.push(root_fact);
     } else {
         waits.insert(root_fact);
         follow_up.insert(Job::SeedRoot(root_id));
@@ -116,7 +116,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
 
     let function_fact = FactKey::FunctionDefined(root.function);
     let function_ready = if world.fact_is_settled(&function_fact) {
-        reads.push(function_fact.clone());
+        reads.push(function_fact);
         true
     } else {
         let wait = world.wait_for_function_definition(root.function);
@@ -261,7 +261,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
         let closure_changed = world.define_semantic_closure(
             root_id,
             SemanticClosure {
-                entry: entry.clone(),
+                entry,
                 activations,
                 executables,
             },
@@ -287,7 +287,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
 
 fn read_fact(world: &World<'_>, fact: FactKey, reads: &mut Vec<FactKey>, waits: &mut HashSet<FactKey>) -> bool {
     if world.fact_is_settled(&fact) {
-        reads.push(fact.clone());
+        reads.push(fact);
         true
     } else {
         waits.insert(fact);

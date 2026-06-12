@@ -195,7 +195,7 @@ pub fn run() {
                     eprintln!("reading stdin: {}", e);
                     exit(1);
                 }
-                run_jit_src(&tel, src, "<stdin>".into(), CompileMode::Normal);
+                run_jit_src(&tel, src, "<stdin>", CompileMode::Normal);
             }
         }
     }
@@ -340,7 +340,7 @@ fn run_build(tel: &dyn Telemetry, args: &[String]) {
 
     let mut world = World::new();
     compiler
-        .prepare_execution_graph_from_source(&mut world, src, src_path.clone(), tel, mode)
+        .prepare_execution_graph_from_source(&mut world, src, &src_path, tel, mode)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz build", tel, &sm_cell, err));
     *sm_cell.borrow_mut() = world.sm().clone();
     report_or_exit_through(tel, world.diagnostics().as_slice());
@@ -414,7 +414,7 @@ fn run_interp(tel: &dyn Telemetry, args: &[String]) {
     });
     let mut world = World::new();
     compiler
-        .prepare_execution_graph_from_source(&mut world, src, path, tel, CompileMode::Normal)
+        .prepare_execution_graph_from_source(&mut world, src, &path, tel, CompileMode::Normal)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz interp", tel, &sm_cell, err));
     *sm_cell.borrow_mut() = world.sm().clone();
     report_or_exit_through(tel, world.diagnostics().as_slice());
@@ -458,7 +458,7 @@ fn run_jit_from_path(tel: &dyn Telemetry, args: &[String]) {
         eprintln!("read {}: {}", src_path, e);
         exit(1);
     });
-    run_jit_src(tel, src, src_path, mode);
+    run_jit_src(tel, src, &src_path, mode);
 }
 
 /// `fz dump <src.fz> [--emit clif|asm|both] [--fn <name>]` — drive a
@@ -668,7 +668,7 @@ fn run_dump(tel: &dyn Telemetry, args: &[String]) {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit specs (spec dump is per-module)");
         }
-        let dump = dump_specs_pipeline(&mut compiler, tel, &sm_cell, src, path.clone());
+        let dump = dump_specs_pipeline(&mut compiler, tel, &sm_cell, src, &path);
         tel.event(&["fz", "dump", "specs"], metadata! { text: dump });
         return;
     }
@@ -677,7 +677,7 @@ fn run_dump(tel: &dyn Telemetry, args: &[String]) {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit interfaces");
         }
-        let dump = dump_interfaces_pipeline(&mut compiler, tel, &sm_cell, src, path.clone(), strict_interfaces);
+        let dump = dump_interfaces_pipeline(&mut compiler, tel, &sm_cell, src, &path, strict_interfaces);
         tel.event(&["fz", "dump", "interfaces"], metadata! { text: dump });
         return;
     }
@@ -688,7 +688,7 @@ fn run_dump(tel: &dyn Telemetry, args: &[String]) {
         }
         tel.event(
             &["fz", "dump", "bodies"],
-            metadata! { text: dump_bodies_pipeline(&mut compiler, tel, &sm_cell, src, path.clone(), mode) },
+            metadata! { text: dump_bodies_pipeline(&mut compiler, tel, &sm_cell, src, &path, mode) },
         );
         return;
     }
@@ -700,7 +700,7 @@ fn run_dump(tel: &dyn Telemetry, args: &[String]) {
         tel.event(
             &["fz", "dump", "outcomes"],
             metadata! {
-                text: dump_outcomes_pipeline(&mut compiler, tel, &sm_cell, src, path.clone(), show_all, mode)
+                text: dump_outcomes_pipeline(&mut compiler, tel, &sm_cell, src, &path, show_all, mode)
             },
         );
         return;
@@ -710,7 +710,7 @@ fn run_dump(tel: &dyn Telemetry, args: &[String]) {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit stats");
         }
-        let _ = compile_pipeline(&mut compiler, tel, &sm_cell, src, path.clone(), mode);
+        let _ = compile_pipeline(&mut compiler, tel, &sm_cell, src, &path, mode);
         return;
     }
 
@@ -720,7 +720,7 @@ fn run_dump(tel: &dyn Telemetry, args: &[String]) {
     if emit_asm {
         asm_record_enable();
     }
-    let compiled = compile_pipeline(&mut compiler, tel, &sm_cell, src, path.clone(), mode);
+    let compiled = compile_pipeline(&mut compiler, tel, &sm_cell, src, &path, mode);
     let clif_entries = if emit_clif { ir_text_record_take() } else { Vec::new() };
     let asm_entries = if emit_asm { asm_record_take() } else { Vec::new() };
 
@@ -838,7 +838,7 @@ fn dump_specs_pipeline(
     tel: &dyn Telemetry,
     sm_cell: &Rc<RefCell<SourceMap>>,
     src: String,
-    source_name: String,
+    source_name: &str,
 ) -> String {
     let mut world = World::new();
     let frontend = run_frontend(compiler.compile_source(&mut world, src, source_name, tel), sm_cell, tel);
@@ -850,7 +850,7 @@ fn dump_interfaces_pipeline(
     tel: &dyn Telemetry,
     sm_cell: &Rc<RefCell<SourceMap>>,
     src: String,
-    source_name: String,
+    source_name: &str,
     strict: bool,
 ) -> String {
     let mut world = World::new();
@@ -896,7 +896,7 @@ fn dump_bodies_pipeline(
     tel: &dyn Telemetry,
     sm_cell: &Rc<RefCell<SourceMap>>,
     src: String,
-    source_name: String,
+    source_name: &str,
     mode: CompileMode,
 ) -> String {
     use crate::telemetry::TelemetryExt as _;
@@ -992,7 +992,7 @@ fn dump_outcomes_pipeline(
     tel: &dyn Telemetry,
     sm_cell: &Rc<RefCell<SourceMap>>,
     src: String,
-    source_name: String,
+    source_name: &str,
     show_all: bool,
     mode: CompileMode,
 ) -> String {
@@ -1000,7 +1000,7 @@ fn dump_outcomes_pipeline(
     use crate::telemetry::TelemetryExt as _;
     let mut world = World::new();
     compiler
-        .prepare_execution_graph_from_source(&mut world, src, source_name.clone(), tel, mode)
+        .prepare_execution_graph_from_source(&mut world, src, source_name, tel, mode)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz dump", tel, sm_cell, err));
     *sm_cell.borrow_mut() = world.sm().clone();
     report_or_exit_through(tel, world.diagnostics().as_slice());
@@ -1173,7 +1173,7 @@ fn compile_pipeline(
     tel: &dyn Telemetry,
     sm_cell: &Rc<RefCell<SourceMap>>,
     src: String,
-    source_name: String,
+    source_name: &str,
     mode: CompileMode,
 ) -> Compiled {
     let mut world = World::new();
@@ -1236,7 +1236,7 @@ fn compile_pipeline(
 /// `fz run <path>` (and the no-argument stdin route) — compile, then drive
 /// the program through the Runtime so concurrency-using fixtures work
 /// end-to-end.
-fn run_jit_src(tel: &dyn Telemetry, src: String, source_name: String, mode: CompileMode) {
+fn run_jit_src(tel: &dyn Telemetry, src: String, source_name: &str, mode: CompileMode) {
     let sm_cell: Rc<RefCell<SourceMap>> = Rc::new(RefCell::new(SourceMap::new()));
     tel.attach(&["fz", "diag"], Box::new(DiagRenderer::new_stderr(sm_cell.clone())));
     let mut compiler = Compiler::new();

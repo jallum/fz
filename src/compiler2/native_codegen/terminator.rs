@@ -1410,7 +1410,7 @@ fn build_park_record<M: cranelift_module::Module>(
     let (after_deadline_v, after_cont_v) = match after {
         Some(a) => {
             let cont_sid = resolve_body_sid(a.body);
-            let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings.clone(), vec![], vec![]);
+            let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings, vec![], vec![]);
             let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
                 body,
                 runtime,

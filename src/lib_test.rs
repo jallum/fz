@@ -29,7 +29,7 @@ fn main(), do: User.run()
         &tel,
         &sm_cell,
         src.to_string(),
-        "telemetry.fz".to_string(),
+        "telemetry.fz",
         CompileMode::Lto,
     );
 
@@ -52,7 +52,7 @@ fn compile_pipeline_runs_spawn_with_captures_through_single_plan_path() {
         &tel,
         &sm_cell,
         include_str!("../fixtures/spawn_with_captures/input.fz").to_string(),
-        "fixtures/spawn_with_captures/input.fz".to_string(),
+        "fixtures/spawn_with_captures/input.fz",
         CompileMode::Normal,
     );
     let main_fn = compiled.main_fn.expect("main fn");

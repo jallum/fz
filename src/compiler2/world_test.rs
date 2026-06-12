@@ -192,7 +192,7 @@ fn compiler2_define_function_stages_expanded_source_before_definition() {
         .function_source(main)
         .expect("scoping should note raw function source");
     assert!(
-        world.fact_revision(FactKey::ExpandedFunctionSource(main)).is_none(),
+        world.fact_revision(&FactKey::ExpandedFunctionSource(main)).is_none(),
         "scoping alone should not yet stage expanded function source",
     );
 

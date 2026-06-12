@@ -1,4 +1,5 @@
 use std::fmt;
+use std::rc::Rc;
 use std::str::from_utf8;
 
 use crate::compiler::source::{Id as CodeId, Span};
@@ -131,7 +132,7 @@ pub struct Lexer<'a> {
     src: &'a [u8],
     pos: usize,
     code_id: CodeId,
-    source_name: Option<String>,
+    source_name: Option<Rc<str>>,
 }
 
 #[derive(Debug)]
@@ -159,16 +160,16 @@ impl LexError {
 }
 
 impl<'a> Lexer<'a> {
-    pub fn with_source_name(src: &'a str, source_name: impl Into<String>) -> Self {
+    pub fn with_source_name(src: &'a str, source_name: impl AsRef<str>) -> Self {
         Self::with_code_id_and_source_name(src, CodeId(0), source_name)
     }
 
-    pub fn with_code_id_and_source_name(src: &'a str, code_id: CodeId, source_name: impl Into<String>) -> Self {
+    pub fn with_code_id_and_source_name(src: &'a str, code_id: CodeId, source_name: impl AsRef<str>) -> Self {
         Self {
             src: src.as_bytes(),
             pos: 0,
             code_id,
-            source_name: Some(source_name.into()),
+            source_name: Some(Rc::from(source_name.as_ref())),
         }
     }
 
@@ -721,7 +722,7 @@ impl<'a> Lexer<'a> {
         let mut metadata = Metadata::new();
         metadata.0.push(("code_id", Value::from(self.code_id.0)));
         if let Some(source_name) = &self.source_name {
-            metadata.0.push(("source_name", Value::from(source_name.clone())));
+            metadata.0.push(("source_name", Value::from(source_name.to_string())));
         }
         metadata
     }

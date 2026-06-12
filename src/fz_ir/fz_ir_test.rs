@@ -143,7 +143,7 @@ fn lto_rewrites_external_call_edge_to_direct_fn_id() {
     caller.set_terminator(
         entry,
         Term::TailCall {
-            ident: ident.clone(),
+            ident,
             callee: DirectCallTarget::ProviderBoundary(Mfa::new(
                 ModuleName::from_segments(vec!["A".to_string()]),
                 "f",
@@ -180,7 +180,7 @@ fn lto_reports_missing_external_call_target() {
     caller.set_terminator(
         entry,
         Term::TailCall {
-            ident: ident.clone(),
+            ident,
             callee: DirectCallTarget::ProviderBoundary(export.clone()),
             args: Vec::new(),
             is_back_edge: false,

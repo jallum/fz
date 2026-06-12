@@ -648,12 +648,12 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         "protocol definition should note t/0 and t/1 but leave TypeDefined facts to DeriveTypeDef",
     );
     assert_eq!(
-        world.fact_revision(FactKey::TypeDefined(t0.clone())),
+        world.fact_revision(&FactKey::TypeDefined(t0.clone())),
         None,
         "t/0 should stay unresolved until a type consumer demands it",
     );
     assert_eq!(
-        world.fact_revision(FactKey::TypeDefined(t1.clone())),
+        world.fact_revision(&FactKey::TypeDefined(t1.clone())),
         None,
         "t/1 should stay unresolved until a type consumer demands it",
     );
@@ -712,12 +712,13 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
     let marker = expect.opaque_of(&crate::frontend::protocols::protocol_domain_tag(
         &crate::modules::identity::ModuleName::parse_dotted("Proof").expect("protocol name should parse"),
     ));
-    let rendered = expect.display(&marker).to_string();
-    assert_eq!(
-        type_events,
-        vec![(0, 1, rendered.clone()), (1, 1, rendered.clone())],
-        "both protocol-domain arities should resolve to the same protocol marker",
-    );
+    let rendered = expect.display(&marker);
+    assert_eq!(type_events[0].0, 0);
+    assert_eq!(type_events[0].1, 1);
+    assert_eq!(type_events[0].2, *rendered);
+    assert_eq!(type_events[1].0, 1);
+    assert_eq!(type_events[1].1, 1);
+    assert_eq!(type_events[1].2, *rendered);
     assert_eq!(t0_def.params, Vec::new(), "t/0 should remain monomorphic");
     assert_eq!(
         t1_def.params,
@@ -761,12 +762,12 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         "adding an impl should not revise protocol-domain type facts",
     );
     assert_eq!(
-        world.fact_revision(FactKey::TypeDefined(t0.clone())),
+        world.fact_revision(&FactKey::TypeDefined(t0.clone())),
         Some(1),
         "t/0 should keep its original type fact revision after the impl lands",
     );
     assert_eq!(
-        world.fact_revision(FactKey::TypeDefined(t1.clone())),
+        world.fact_revision(&FactKey::TypeDefined(t1.clone())),
         Some(1),
         "t/1 should keep its original type fact revision after the impl lands",
     );
@@ -1875,8 +1876,7 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
     let activation_ids = semantic
         .last(root_id)
         .activations
-        .clone()
-        .into_iter()
+        .iter()
         .map(|activation| activation.function)
         .collect::<HashSet<_>>();
     assert!(
@@ -2000,8 +2000,7 @@ fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
     let closed = semantic.last(root_id);
     let activation_ids = closed
         .activations
-        .clone()
-        .into_iter()
+        .iter()
         .map(|activation| activation.function)
         .collect::<HashSet<_>>();
     assert!(

@@ -107,7 +107,7 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
                         cont.id,
                         ContinuationProvenance {
                             caller: ctx.cur_fn_id.expect("lower_multi_clause: missing current fn id"),
-                            captured: cont.outer_captured.iter().map(|(_, var)| *var).collect(),
+                            semantic_capture_count: cont.outer_captured.len(),
                             capture_param_offset: 0,
                             kind: ContinuationProvenanceKind::DispatchBody {
                                 bindings: bindings

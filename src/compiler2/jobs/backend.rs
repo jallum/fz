@@ -37,7 +37,7 @@ use super::super::world::World;
 /// or backend-specific discovery.
 pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let emission_ready_fact = FactKey::EmissionReadyProgram(root_id);
-    let Some(emission_ready_revision) = world.fact_revision(emission_ready_fact.clone()) else {
+    let Some(emission_ready_revision) = world.fact_revision(&emission_ready_fact) else {
         return Ok(JobEffects::wait_on_settled(
             emission_ready_fact,
             [Job::DeriveEmissionReady(root_id)],
@@ -447,7 +447,7 @@ fn entry_input_abis(
             executable,
             entries,
             clause.entry,
-            executable.return_abi.clone(),
+            &executable.return_abi,
             &mut needs,
         );
     }
@@ -482,7 +482,7 @@ fn collect_entry_input_need(
     executable: &super::super::artifact::EmissionReadyExecutable,
     entries: &[LoweredEntry],
     entry_id: super::super::body::ControlEntryId,
-    outgoing_need: ReturnAbi,
+    outgoing_need: &ReturnAbi,
     out: &mut [Option<ExecutableNeed>],
 ) -> ExecutableNeed {
     let entry = &entries[entry_id.as_u32() as usize];
@@ -492,7 +492,7 @@ fn collect_entry_input_need(
         LoweredTail::Value { value, dest } => {
             used_values.insert(*value);
             if let ExecutableNeed::TupleFields(arity) =
-                destination_need(world, executable, entries, dest, outgoing_need.clone(), out)
+                destination_need(world, executable, entries, dest, outgoing_need, out)
             {
                 tuple_demands.insert(*value, arity);
             }
@@ -501,14 +501,14 @@ fn collect_entry_input_need(
             for arg in args {
                 used_values.insert(arg.value);
             }
-            let _ = destination_need(world, executable, entries, dest, outgoing_need.clone(), out);
+            let _ = destination_need(world, executable, entries, dest, outgoing_need, out);
         }
         LoweredTail::ClosureCall { callee, args, dest, .. } => {
             used_values.insert(*callee);
             for arg in args {
                 used_values.insert(arg.value);
             }
-            let _ = destination_need(world, executable, entries, dest, outgoing_need.clone(), out);
+            let _ = destination_need(world, executable, entries, dest, outgoing_need, out);
         }
         LoweredTail::If {
             cond,
@@ -517,7 +517,7 @@ fn collect_entry_input_need(
             ..
         } => {
             used_values.insert(*cond);
-            let _ = collect_entry_input_need(world, executable, entries, *then_entry, outgoing_need.clone(), out);
+            let _ = collect_entry_input_need(world, executable, entries, *then_entry, outgoing_need, out);
             let _ = collect_entry_input_need(world, executable, entries, *else_entry, outgoing_need, out);
         }
         LoweredTail::Dispatch {
@@ -529,7 +529,7 @@ fn collect_entry_input_need(
             used_values.extend(bindings.pinned.iter().copied());
             used_values.extend(bindings.prepared.iter().copied());
             for arm_entry in &dispatch.arm_entries {
-                let _ = collect_entry_input_need(world, executable, entries, *arm_entry, outgoing_need.clone(), out);
+                let _ = collect_entry_input_need(world, executable, entries, *arm_entry, outgoing_need, out);
             }
             let _ = collect_entry_input_need(world, executable, entries, dispatch.miss_entry, outgoing_need, out);
         }
@@ -538,7 +538,7 @@ fn collect_entry_input_need(
             used_values.extend(bindings.pinned.iter().copied());
             used_values.extend(bindings.prepared.iter().copied());
             for clause in &receive.clauses {
-                let _ = collect_entry_input_need(world, executable, entries, clause.entry, outgoing_need.clone(), out);
+                let _ = collect_entry_input_need(world, executable, entries, clause.entry, outgoing_need, out);
             }
             if let Some(after) = &receive.after {
                 used_values.insert(after.timeout);
@@ -685,13 +685,13 @@ fn destination_need(
     executable: &super::super::artifact::EmissionReadyExecutable,
     entries: &[LoweredEntry],
     dest: &ControlDestination,
-    outgoing_need: ReturnAbi,
+    outgoing_need: &ReturnAbi,
     out: &mut [Option<ExecutableNeed>],
 ) -> ExecutableNeed {
     match dest {
         ControlDestination::Return => match outgoing_need {
             ReturnAbi::Value(_) => ExecutableNeed::Value,
-            ReturnAbi::TupleFields(ref reprs) => ExecutableNeed::TupleFields(reprs.len()),
+            ReturnAbi::TupleFields(reprs) => ExecutableNeed::TupleFields(reprs.len()),
         },
         ControlDestination::Deliver(entry_id) => {
             collect_entry_input_need(world, executable, entries, *entry_id, outgoing_need, out)

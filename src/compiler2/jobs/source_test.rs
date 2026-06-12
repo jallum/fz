@@ -72,7 +72,7 @@ fn re_scoping_the_runtime_prelude_does_not_churn_fn_macro_source() {
     world.complete_job(Job::DefineFunction(fn_macro), define);
 
     let initial_revision = world
-        .fact_revision(FactKey::FunctionSource(fn_macro))
+        .fact_revision(&FactKey::FunctionSource(fn_macro))
         .expect("fn/1 source fact should exist after first scope");
     let replay = scope_code(&mut world, prelude).expect("re-scoping runtime prelude should not fatal");
     assert!(
@@ -81,7 +81,7 @@ fn re_scoping_the_runtime_prelude_does_not_churn_fn_macro_source() {
     );
     world.complete_job(Job::ScopeCode(prelude), replay);
     assert_eq!(
-        world.fact_revision(FactKey::FunctionSource(fn_macro)),
+        world.fact_revision(&FactKey::FunctionSource(fn_macro)),
         Some(initial_revision),
         "re-scoping the unchanged prelude must keep the fn/1 source revision stable",
     );

@@ -317,8 +317,8 @@ fn declared_spec_coverage_accepts_matching_overload_arrow() {
     let float = t.float();
     let set = ResolvedSpecSet {
         arrows: vec![
-            resolved_spec(vec![int.clone()], int.clone()),
-            resolved_spec(vec![float.clone()], float.clone()),
+            resolved_spec(vec![int.clone()], int),
+            resolved_spec(vec![float.clone()], float),
         ],
     };
 
@@ -399,7 +399,7 @@ fn spec_application_unions_successful_overlap_returns() {
     let set = ResolvedSpecSet {
         arrows: vec![
             resolved_spec(vec![int.clone(), int.clone()], int.clone()),
-            resolved_spec(vec![float.clone(), int.clone()], float.clone()),
+            resolved_spec(vec![float.clone(), int.clone()], float),
         ],
     };
 

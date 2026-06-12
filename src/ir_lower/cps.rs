@@ -301,10 +301,10 @@ pub(crate) fn cps_split_call_closure(
         Term::CallClosure {
             ident: CallsiteIdent::from_source(Span::DUMMY),
             closure: closure_var,
-            args: arg_vars.clone(),
+            args: arg_vars,
             continuation: Cont {
                 fn_id: cont_id,
-                captured: captured_vars.clone(),
+                captured: captured_vars,
             },
         },
         call_span,
@@ -313,12 +313,9 @@ pub(crate) fn cps_split_call_closure(
         cont_id,
         ContinuationProvenance {
             caller,
-            captured: captured.iter().map(|(_, var)| *var).collect(),
+            semantic_capture_count: captured.len(),
             capture_param_offset: 1,
-            kind: ContinuationProvenanceKind::ClosureCall {
-                closure: closure_var,
-                args: arg_vars.clone(),
-            },
+            kind: ContinuationProvenanceKind::CallResult,
         },
     );
 
@@ -349,10 +346,10 @@ pub(crate) fn cps_split_call(
         Term::Call {
             ident: CallsiteIdent::from_source(Span::DUMMY),
             callee: DirectCallTarget::Local(callee),
-            args: arg_vars.clone(),
+            args: arg_vars,
             continuation: Cont {
                 fn_id: cont_id,
-                captured: captured_vars.clone(),
+                captured: captured_vars,
             },
         },
         call_span,
@@ -361,12 +358,9 @@ pub(crate) fn cps_split_call(
         cont_id,
         ContinuationProvenance {
             caller,
-            captured: captured.iter().map(|(_, var)| *var).collect(),
+            semantic_capture_count: captured.len(),
             capture_param_offset: 1,
-            kind: ContinuationProvenanceKind::DirectCall {
-                callee,
-                args: arg_vars.clone(),
-            },
+            kind: ContinuationProvenanceKind::CallResult,
         },
     );
 
@@ -397,7 +391,7 @@ pub(crate) fn cps_split_external_call(
             args: arg_vars,
             continuation: Cont {
                 fn_id: cont_id,
-                captured: captured_vars.clone(),
+                captured: captured_vars,
             },
         },
         call_span,

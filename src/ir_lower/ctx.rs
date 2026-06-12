@@ -265,16 +265,11 @@ impl LowerCtx {
             .collect();
         let entry = tb.block(params);
         let returns_value = !matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
+        let extern_call = Prim::Extern(CallsiteIdent::from_source(Span::DUMMY), eid, extern_args);
         let ret_var = if returns_value {
-            tb.let_(
-                entry,
-                Prim::Extern(CallsiteIdent::from_source(Span::DUMMY), eid, extern_args.clone()),
-            )
+            tb.let_(entry, extern_call)
         } else {
-            let _ = tb.let_(
-                entry,
-                Prim::Extern(CallsiteIdent::from_source(Span::DUMMY), eid, extern_args),
-            );
+            let _ = tb.let_(entry, extern_call);
             tb.let_(entry, Prim::Const(Const::Nil))
         };
         tb.set_terminator(entry, Term::Return(ret_var));

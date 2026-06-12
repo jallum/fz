@@ -165,7 +165,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
             variadic: false,
             source: quoted_source("math.fz", "fn add(x, y), do: 42\n"),
         },
-        add_ast.clone(),
+        add_ast,
     );
     assert!(add_changed, "first function define should be a change");
     assert!(

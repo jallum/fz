@@ -520,7 +520,7 @@ where
                 &entry_key,
                 per_arg,
             ) {
-                self.out.capability_updates.push(entry_key.clone());
+                self.out.capability_updates.push(entry_key);
             }
             return;
         }
@@ -558,7 +558,7 @@ where
         }
         let per_arg = self.callable_capability_args(args, n_params);
         if merge_incoming_param_callable_capabilities(self.incoming_param_callable_capabilities, &entry_key, per_arg) {
-            self.out.capability_updates.push(entry_key.clone());
+            self.out.capability_updates.push(entry_key);
         }
     }
 
@@ -577,7 +577,7 @@ where
             _ => ReturnDemand::value(),
         };
         self.out
-            .record_external_dispatch(self.caller_spec_key, term_ident, slot, target, input, demand.clone());
+            .record_external_dispatch(self.caller_spec_key, term_ident, slot, target, input, demand);
         self.record_external_callable_targets(args, env, term_ident);
     }
 
@@ -762,7 +762,7 @@ where
         let per_param_capabilities = self.continuation_callable_capabilities(&cont, n_params, slot0_capability);
         let demand = continuation_return_demand(self.m, self.caller_spec_key, self.return_capabilities, &cont, &source);
         let mut entry_key = spec_key_for_fn(cont_fn, take(&mut key));
-        entry_key.demand = demand.clone();
+        entry_key.demand = demand;
         entry_key = self.activation_returns.canonical_public_key(self.t, entry_key);
         if merge_incoming_param_callable_capabilities(
             self.incoming_param_callable_capabilities,
@@ -772,7 +772,7 @@ where
             self.out.capability_updates.push(entry_key.clone());
         }
         self.out
-            .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
+            .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key);
     }
 
     fn continuation_key(

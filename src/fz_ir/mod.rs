@@ -781,15 +781,14 @@ pub enum Term {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContinuationProvenanceKind {
-    DirectCall { callee: FnId, args: Vec<Var> },
-    ClosureCall { closure: Var, args: Vec<Var> },
+    CallResult,
     DispatchBody { bindings: Vec<(Var, PatternSubjectRef)> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContinuationProvenance {
     pub caller: FnId,
-    pub captured: Vec<Var>,
+    pub semantic_capture_count: usize,
     pub capture_param_offset: usize,
     pub kind: ContinuationProvenanceKind,
 }

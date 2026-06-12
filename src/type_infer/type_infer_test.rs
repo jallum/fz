@@ -572,7 +572,7 @@ fn receive_clause_body_keeps_typed_capture_and_settles_caller_return() {
     let mut t = crate::types::new();
     let int = t.int();
     let any = t.any();
-    let parent_ret = t.tuple(&[int.clone(), any.clone()]);
+    let parent_ret = t.tuple(&[int, any]);
     let main_ret = t.tuple(std::slice::from_ref(&parent_ret));
     let report = infer_report_via_main(&mut t, &module);
 

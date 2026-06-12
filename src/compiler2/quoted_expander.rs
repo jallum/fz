@@ -324,7 +324,7 @@ pub(crate) trait QuotedExpansionCtx<'tel> {
         args: &[QuotedSourceCursor],
     ) -> Result<ExpandedValue, super::scheduler::FatalError> {
         let macro_fact = FactKey::MacroExecutable(function);
-        if self.world().fact_revision(macro_fact.clone()).is_none() {
+        if self.world().fact_revision(&macro_fact).is_none() {
             return Ok(ExpandedValue::Blocked(JobEffects::wait_on_current(
                 macro_fact,
                 [Job::BuildMacroExecutable(function)],
